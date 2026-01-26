@@ -2,5 +2,7 @@
 name = "elfq"
 version = "0.1.0"
 edition = "2024"
+description = "TODO"
+license = "MIT"
 
 [dependencies]
