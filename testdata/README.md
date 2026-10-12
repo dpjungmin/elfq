@@ -1,6 +1,6 @@
 # Sample binaries
 
-Small programs built for x86-64 Linux and for a Cortex-M4 microcontroller,
+Small programs built for x86-64 Linux and for Cortex-M microcontrollers,
 used by elfq's tests and docs. Each function in them exists to create one
 shape in the call graph or one DWARF pattern, so tests can check elfq against
 known answers.
@@ -20,11 +20,13 @@ testdata/
 |---|---|---|
 | `c-x86_64*.elf` | C | x86-64 Linux, PIE, dynamically linked against glibc |
 | `c-cortex-m4*.elf` | C | Cortex-M4 bare metal, newlib-nano, `--gc-sections` |
+| `c-cortex-m7.elf` | C | Cortex-M7 bare metal, with code and data in TCM, OCRAM and flash |
 | `cpp-x86_64*.elf` | C++ | x86-64 Linux, PIE, dynamically linked against glibc and libstdc++ |
 | `rust-x86_64*.elf` | Rust | x86-64 Linux, std |
 | `rust-cortex-m4*.elf` | Rust | Cortex-M4 bare metal, `no_std` |
 
-Each comes in up to three variants, matching what people usually have:
+Each comes in up to three variants, matching what people usually have
+(`c-cortex-m7.elf` only in the first):
 
 | Suffix | Symbols | DWARF | Typical of |
 |---|---|---|---|
@@ -61,6 +63,27 @@ On Cortex-M ([c/platform_cortexm.c](c/platform_cortexm.c)), `Reset_Handler`
 is the entry point and `SysTick_Handler` is reached only through
 `vector_table`, which is data. The compiler turned `Reset_Handler`'s copy and
 clear loops into calls to `memcpy` and `memset`.
+
+### Cortex-M7 sample ([c/platform_cortexm7.c](c/platform_cortexm7.c))
+
+The C sample again, with a platform file and linker script
+([c/cortex-m7.ld](c/cortex-m7.ld)) that spread it over several kinds of
+memory, for looking at one range of memory at a time. The addresses are
+those of the M7 core in an NXP i.MX RT1176, a common chip with tightly
+coupled memory (TCM), but elfq knows nothing about the chip itself:
+
+| Memory | Address | Holds |
+|---|---|---|
+| ITCM | `0x00000000` | `.itcm`: `SysTick_Handler`, `crc32`, `filter_tap`, `apply_filter`, copied from flash at startup |
+| DTCM | `0x20000000` | `.data`: `crc_table` and `stats`, copied from flash; `.bss`: the other variables |
+| OCRAM | `0x20240000` | `.ocram_bss`: `tx_buffer`, the UART's 4 KiB buffer |
+| Flash | `0x30000000` | `.isr_vector`, `.text`, `.rodata`, and the load images of `.itcm` and `.data` |
+
+Calls between flash and ITCM are too far for one branch instruction, so the
+linker adds veneers such as `__crc32_veneer`, which `process_frame` calls
+and which jumps to `crc32`. `Reset_Handler` loads where `.itcm`, `.data`
+and `.bss` start and end, but doesn't use `SysTick_Handler`, `crc_table` or
+`config_sum`, which start at the same addresses.
 
 ### C++ sample ([cpp/app.cpp](cpp/app.cpp))
 

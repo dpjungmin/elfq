@@ -67,20 +67,20 @@ fn firmware_gets_the_same_overview() {
         "\
 testdata/bin/c-cortex-m4.elf: 32-bit Arm executable, with symbols and DWARF debug info
 
-25 functions and 31 data objects, with 97 references between them.
+25 functions and 31 data objects, with 94 references between them.
 1 call or jump goes through pointers set at run time, which elfq can't follow.
 
 The items that keep the most of the file's 3577 bytes:
 
 RETAINED   OWN  ITEM
     3111    76  Reset_Handler
-    2529   132  ├─ main
+    2565   132  ├─ main
     1684   376  │  ├─ process_frame
     1076    52  │  │  ├─ crc32
     1024  1024  │  │  │  └─ crc_table
      232        │  │  └─ 4 more
-     713        │  └─ 12 more
-     506        └─ 4 more
+     749        │  └─ 14 more
+     470        └─ 2 more
      466        7 more
 
 Try:

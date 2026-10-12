@@ -249,6 +249,58 @@ fn interrupt_handlers_are_reached_through_the_vector_table() {
 }
 
 #[test]
+fn startup_code_copies_whole_sections_without_using_their_first_items() {
+    // Reset_Handler loads where .data and .bss start and end, to copy and
+    // clear them. The first variable in each starts at the same address.
+    let (binary, graph) = load("c-cortex-m4.elf");
+    assert_eq!(
+        callees(&binary, &graph, "Reset_Handler"),
+        pairs(&[("main", Call), ("memcpy", Call), ("memset", Call)])
+    );
+    // report loads the same addresses, to read stats and config_sum.
+    let report = callees(&binary, &graph, "report");
+    assert!(report.contains(&("stats".to_string(), Address)));
+    assert!(report.contains(&("config_sum".to_string(), Address)));
+
+    let (binary, graph) = load("rust-cortex-m4.elf");
+    assert_eq!(
+        callees(&binary, &graph, "Reset"),
+        pairs(&[("elfq_sample::app_main", Call)])
+    );
+
+    // The same for .itcm, whose first function is SysTick_Handler.
+    let (binary, graph) = load("c-cortex-m7.elf");
+    assert_eq!(
+        callees(&binary, &graph, "Reset_Handler"),
+        pairs(&[("main", Call), ("memcpy", Call), ("memset", Call)])
+    );
+}
+
+#[test]
+fn calls_between_flash_and_itcm_go_through_veneers() {
+    // ITCM at 0 is too far from flash at 0x30000000 for one branch
+    // instruction, so the linker adds a stub that jumps to the target.
+    let (binary, graph) = load("c-cortex-m7.elf");
+    assert_eq!(
+        callers(&binary, &graph, "__crc32_veneer"),
+        pairs(&[("process_frame", Call)])
+    );
+    assert_eq!(
+        callers(&binary, &graph, "crc32"),
+        pairs(&[("__crc32_veneer", TailCall)])
+    );
+    // And back, from SysTick_Handler in ITCM to app_tick in flash.
+    assert_eq!(
+        callees(&binary, &graph, "SysTick_Handler"),
+        pairs(&[("__app_tick_veneer", TailCall), ("systick_count", Address)])
+    );
+    assert_eq!(
+        callees(&binary, &graph, "__app_tick_veneer"),
+        pairs(&[("app_tick", TailCall)])
+    );
+}
+
+#[test]
 fn imports_are_reached_through_stubs_and_the_global_offset_table() {
     let (binary, graph) = load("c-x86_64.elf");
     // Through the PLT: `platform_write` ends with a jump to `write@plt`.
