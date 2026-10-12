@@ -5,12 +5,12 @@ use std::io::Write;
 use anyhow::{Result, bail};
 
 use crate::binary::{Binary, ItemKind};
-use crate::graph::{self, Node, Unresolved};
+use crate::graph::{Node, Unresolved};
 use crate::render::{Align, Table};
 
 pub fn run(binary: &Binary, symbol: &str, out: &mut dyn Write) -> Result<()> {
     let graph = super::reference_graph(binary)?;
-    let node = graph::find(binary, symbol)?;
+    let node = super::symbol::find(binary, symbol)?;
     let name = node.name(binary);
     let Node::Item(index) = node else {
         bail!("{name} is imported from a shared library, so its code isn't in this file");

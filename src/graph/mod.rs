@@ -10,10 +10,6 @@
 //! jumps it can't follow, such as a call through a function pointer, are kept
 //! in [`Graph::unresolved`] so that answers can say what they don't know.
 
-mod find;
-
-pub use find::find;
-
 use crate::arch::{self, CodeReference, CodeReferenceKind};
 use crate::binary::{Binary, ItemKind, Relocation, RelocationTarget};
 

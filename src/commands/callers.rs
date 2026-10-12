@@ -5,12 +5,12 @@ use std::io::Write;
 use anyhow::Result;
 
 use crate::binary::Binary;
-use crate::graph::{self, Node};
+use crate::graph::Node;
 use crate::render::{Align, Table};
 
 pub fn run(binary: &Binary, symbol: &str, out: &mut dyn Write) -> Result<()> {
     let graph = super::reference_graph(binary)?;
-    let node = graph::find(binary, symbol)?;
+    let node = super::symbol::find(binary, symbol)?;
     let name = node.name(binary);
 
     let mut rows = super::rows(graph.references_to(node), |reference| {

@@ -30,10 +30,10 @@ cargo test
 |---|---|
 | `src/main.rs` | The program: parses arguments, runs one command, prints errors. |
 | `src/cli.rs` | Command-line arguments, one struct per subcommand. |
-| `src/commands/` | One file per subcommand. Commands connect a question to output; they do no analysis. |
-| `src/binary/` | Reading an ELF file: its functions and data objects ("items"), imports and stored pointers. |
+| `src/commands/` | One file per subcommand, plus `symbol.rs`, which works out what a user means by SYMBOL. Commands connect a question to output; they do no analysis. |
+| `src/binary/` | Reading an ELF file: its functions and data objects ("items"), their names, imports and stored pointers. |
 | `src/arch/` | Finding the addresses that machine code calls or uses, one file per instruction set. |
-| `src/graph/` | The reference graph that connects items, and finding the item a user names. |
+| `src/graph/` | The reference graph that connects items. |
 | `src/render/` | Text output. |
 | `tests/` | Integration tests that run on the sample binaries. |
 | `testdata/` | The sample programs and the ELF files built from them. |
@@ -49,7 +49,8 @@ Commands take the form `elfq FILE <command> [ARGS]`.
 
 1. Add its arguments to `src/cli.rs`.
 2. Add `src/commands/<name>.rs` with a `run` function, and call it from
-   `src/commands/mod.rs`.
+   `src/commands/mod.rs`. A command that takes a SYMBOL turns it into an
+   item with `symbol::find`.
 3. Add tests under `tests/` that run it on files in `testdata/bin`.
 
 ## Adding an instruction set

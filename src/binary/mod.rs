@@ -17,9 +17,12 @@
 //! it imports from shared libraries.
 
 mod eh_frame;
+mod names;
 mod plt;
 mod relocations;
 mod symbols;
+
+pub use names::{demangle, short_names};
 
 use std::collections::HashSet;
 use std::fmt;
@@ -86,9 +89,12 @@ pub struct Section {
 /// A function or data object.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Item {
-    /// The item's symbol name, or `fn_0x...` when it has no symbol.
+    /// The item's symbol name, demangled if it is a Rust symbol, or
+    /// `fn_0x...` when it has no symbol.
     pub name: String,
-    /// Other symbols at the same address, such as weak aliases.
+    /// Other names for the item: the symbol as the file has it when `name`
+    /// is demangled, and other symbols at the same address, such as weak
+    /// aliases.
     pub aliases: Vec<String>,
     pub kind: ItemKind,
     pub address: u64,
@@ -253,6 +259,11 @@ impl Item {
     /// Whether `address` is the item's first byte or falls inside it.
     pub fn contains(&self, address: u64) -> bool {
         address == self.address || (address > self.address && address - self.address < self.size)
+    }
+
+    /// The item's name, then its aliases.
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.name.as_str()).chain(self.aliases.iter().map(String::as_str))
     }
 }
 

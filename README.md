@@ -20,6 +20,7 @@ elfq app.elf callees main       # what main calls or uses
 ```
 
 **Status:** early development. The overview, `callers` and `callees` work on
-x86-64; the questions above come next. See [docs/design.md](docs/design.md)
-for the plan, [docs/survey.md](docs/survey.md) for how existing tools
-compare, and [CONTRIBUTING.md](CONTRIBUTING.md) to build it.
+x86-64, with readable Rust names; the questions above come next. See
+[docs/design.md](docs/design.md) for the plan, [docs/survey.md](docs/survey.md)
+for how existing tools compare, and [CONTRIBUTING.md](CONTRIBUTING.md) to
+build it.

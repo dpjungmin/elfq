@@ -6,6 +6,7 @@ use std::path::Path;
 
 use anyhow::Result;
 
+use super::symbol::Names;
 use crate::arch;
 use crate::binary::{Binary, ItemKind, Source};
 use crate::graph::{Graph, Node};
@@ -71,16 +72,17 @@ pub fn run(path: &Path, binary: &Binary, out: &mut dyn Write) -> Result<()> {
         ("callers", most_used(binary, &graph)),
         ("callees", starting_point(binary)),
     ];
-    if examples.iter().any(|(_, name)| name.is_some()) {
+    if examples.iter().any(|(_, item)| item.is_some()) {
+        let names = Names::new(binary);
         writeln!(out)?;
         writeln!(out, "Try:")?;
-        for (command, name) in examples {
-            if let Some(name) = name {
+        for (command, item) in examples {
+            if let Some(item) = item {
                 writeln!(
                     out,
                     "  elfq {} {command} {}",
-                    shell_quote(&path.display().to_string()),
-                    shell_quote(name)
+                    super::shell_quote(&path.display().to_string()),
+                    super::shell_quote(&names.query_for(Node::Item(item)))
                 )?;
             }
         }
@@ -90,7 +92,7 @@ pub fn run(path: &Path, binary: &Binary, out: &mut dyn Write) -> Result<()> {
 
 /// The function with the most distinct callers, leaving out PLT stubs,
 /// whose code is a library's.
-fn most_used<'a>(binary: &'a Binary, graph: &Graph) -> Option<&'a str> {
+fn most_used(binary: &Binary, graph: &Graph) -> Option<usize> {
     let mut callers: Vec<(usize, usize)> = graph
         .references
         .iter()
@@ -107,32 +109,20 @@ fn most_used<'a>(binary: &'a Binary, graph: &Graph) -> Option<&'a str> {
             best = Some((chunk[0].0, chunk.len()));
         }
     }
-    best.map(|(index, _)| binary.items[index].name.as_str())
+    best.map(|(index, _)| index)
 }
 
 /// `main` if there is one, since every reader knows where it fits;
 /// otherwise the largest function.
-fn starting_point(binary: &Binary) -> Option<&str> {
+fn starting_point(binary: &Binary) -> Option<usize> {
     let main = binary.items.iter().position(|i| i.name == "main");
     let largest = (0..binary.items.len())
         .filter(|&index| is_own_function(binary, index))
         .max_by_key(|&index| binary.items[index].size);
     main.or(largest)
-        .map(|index| binary.items[index].name.as_str())
 }
 
 fn is_own_function(binary: &Binary, index: usize) -> bool {
     let item = &binary.items[index];
     item.kind == ItemKind::Function && item.source != Source::Plt
-}
-
-/// `text` as one shell word: quoted when it holds anything but letters,
-/// digits and `_./@:-`.
-fn shell_quote(text: &str) -> String {
-    let plain = |c: char| c.is_ascii_alphanumeric() || "_./@:-".contains(c);
-    if !text.is_empty() && text.chars().all(plain) {
-        text.to_string()
-    } else {
-        format!("'{}'", text.replace('\'', r"'\''"))
-    }
 }

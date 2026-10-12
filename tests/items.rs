@@ -172,14 +172,37 @@ fn symbols_at_one_address_are_aliases_of_one_item() {
     assert_eq!(handler.aliases.len(), 8);
     assert_eq!(handler.address, item(&binary, "PendSV_Handler").address);
 
-    // Identical code folding: two Display impls share one function.
+    // Identical code folding: two Display impls share one function. Each
+    // one's mangled symbol is an alias too.
     let binary = load("rust-cortex-m4.elf");
     let fmt = binary
         .items
         .iter()
         .find(|i| i.address == 0x0800_176c)
         .unwrap();
-    assert_eq!(fmt.aliases.len(), 1);
+    assert_eq!(fmt.name, "<u32 as core::fmt::Display>::fmt");
+    assert_eq!(fmt.aliases.len(), 3);
+    assert!(fmt.aliases[1..].contains(&"<usize as core::fmt::Display>::fmt".to_string()));
+    assert_eq!(
+        fmt.aliases.iter().filter(|a| a.starts_with("_R")).count(),
+        2
+    );
+}
+
+#[test]
+fn rust_names_are_demangled() {
+    let binary = load("rust-x86_64-nodebug.elf");
+    let process_frame = item(&binary, "elfq_sample::process_frame");
+    assert_eq!(
+        process_frame.aliases,
+        ["_RNvCsjtrlrMDykj5_11elfq_sample13process_frame"]
+    );
+    let run = item(&binary, "<elfq_sample::Gain as elfq_sample::Stage>::run");
+    assert_eq!(run.address, 0x15080);
+    // Each copy of a generic function has its own name.
+    for name in ["checksum::<u8>", "checksum::<u16>", "checksum::<u32>"] {
+        item(&binary, &format!("elfq_sample::{name}"));
+    }
 }
 
 #[test]

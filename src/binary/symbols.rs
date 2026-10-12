@@ -5,11 +5,15 @@ use std::cmp::Reverse;
 
 use object::{Object, ObjectSymbol, SymbolKind, SymbolSection};
 
+use super::names::demangle;
 use super::{Item, ItemKind, Section, Source, code_address};
 
 /// A symbol that can become an item, before aliases are merged.
 struct Candidate {
+    /// The readable name: the symbol, demangled if it is mangled.
     name: String,
+    /// The symbol as the file has it.
+    symbol: String,
     kind: ItemKind,
     address: u64,
     size: u64,
@@ -64,8 +68,8 @@ fn candidate(
     if kind == ItemKind::Data && symbol.size() == 0 {
         return None;
     }
-    let name = String::from_utf8_lossy(symbol.name_bytes().ok()?).into_owned();
-    if name.is_empty() {
+    let symbol_name = String::from_utf8_lossy(symbol.name_bytes().ok()?).into_owned();
+    if symbol_name.is_empty() {
         return None;
     }
     let address = match kind {
@@ -80,7 +84,8 @@ fn candidate(
         Binding::Local
     };
     Some(Candidate {
-        name,
+        name: demangle(&symbol_name).unwrap_or_else(|| symbol_name.clone()),
+        symbol: symbol_name,
         kind,
         address,
         size: symbol.size(),
@@ -92,7 +97,8 @@ fn candidate(
 
 /// Turns symbols into items, one per kind and address. Symbols that share an
 /// address are aliases of one item, like a weak `NMI_Handler` that points at
-/// `Default_Handler`, or the same symbol listed in both tables.
+/// `Default_Handler`, or the same symbol listed in both tables. A mangled
+/// symbol is an alias of its readable name.
 fn merge_aliases(mut candidates: Vec<Candidate>) -> Vec<Item> {
     drop_containers(&mut candidates);
     // Within an address, the candidate that best names the item comes first:
@@ -118,12 +124,11 @@ fn merge_aliases(mut candidates: Vec<Candidate>) -> Vec<Item> {
             && item.address == candidate.address
         {
             item.size = item.size.max(candidate.size);
-            if candidate.name != item.name && !item.aliases.contains(&candidate.name) {
-                item.aliases.push(candidate.name);
-            }
+            add_alias(item, candidate.name);
+            add_alias(item, candidate.symbol);
             continue;
         }
-        items.push(Item {
+        let mut item = Item {
             name: candidate.name,
             aliases: Vec::new(),
             kind: candidate.kind,
@@ -132,9 +137,17 @@ fn merge_aliases(mut candidates: Vec<Candidate>) -> Vec<Item> {
             size_estimated: false,
             section: candidate.section,
             source: candidate.source,
-        });
+        };
+        add_alias(&mut item, candidate.symbol);
+        items.push(item);
     }
     items
+}
+
+fn add_alias(item: &mut Item, name: String) {
+    if name != item.name && !item.aliases.contains(&name) {
+        item.aliases.push(name);
+    }
 }
 
 /// Drops data symbols that only enclose other data symbols, such as LLVM's

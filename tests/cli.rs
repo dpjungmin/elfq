@@ -62,6 +62,23 @@ report         call       0x1a72
 }
 
 #[test]
+fn rust_names_are_readable_and_short_ones_work() {
+    assert_eq!(
+        stdout(&[
+            "testdata/bin/rust-x86_64-nodebug.elf",
+            "callers",
+            "process_frame"
+        ]),
+        "\
+elfq_sample::process_frame is used by 1 function:
+
+CALLER                 HOW   AT
+elfq_sample::app_main  call  0x14f12, 0x14f29, 0x14f40
+"
+    );
+}
+
+#[test]
 fn callees_also_reports_what_it_cannot_follow() {
     assert_eq!(
         stdout(&[SAMPLE, "callees", "dispatch_event"]),
