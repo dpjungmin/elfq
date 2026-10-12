@@ -80,8 +80,9 @@ finds the references between them, `graph` computes dominators and paths,
 2. **Discover items**, each with an address, size and a record of how it was
    found. Sources, best first: the symbol table; the dynamic symbol table;
    `.eh_frame` entries (on x86-64 they cover almost every function, even in
-   stripped files); targets of calls found during scanning. Items found
-   only by the last two sources get names like `fn_0x1690`.
+   stripped files); the entry point; targets of calls found during scanning.
+   Items without a symbol get names like `fn_0x1690`, or `entry`.
+   `elfq debug items FILE` lists what was found, for checking this step.
 3. **Scan code** with an architecture backend. For each function it decodes
    the instructions and reports direct calls, tail jumps to other items,
    indirect call sites (target unknown), and PC-relative references to items
@@ -123,8 +124,9 @@ src/
 
 Rules that keep it approachable:
 
-- **Data flows one way**: binary, then arch, then graph, then commands, then
-  render. A module never imports from a module later in that chain.
+- **Analysis flows one way**: binary, then arch, then graph, each importing
+  only from the ones before it. `render` knows nothing about ELF files, and
+  `commands` connect the two.
 - **Analysis never prints and commands never analyze.** A command is a short
   function that wires a query to a renderer.
 - **Adding an architecture** means implementing one trait ("given a
