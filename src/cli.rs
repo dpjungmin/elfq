@@ -32,6 +32,7 @@ Examples:
   elfq app.elf retained process_frame     What process_frame keeps in the file
   elfq app.elf exclusive process_frame    What only process_frame leads to
   elfq app.elf why crc_table              What keeps crc_table in the file
+  elfq app.elf inlined                    Which inlined functions take the most bytes
   elfq app.elf callers log_msg            What calls or uses log_msg
   elfq app.elf callees main               What main calls or uses";
 
@@ -49,6 +50,9 @@ pub enum Command {
     /// Show the chains of calls and references that keep SYMBOL in the file
     #[command(after_help = format!("{WHY}\n\n{HOW}"))]
     Why(SymbolArgs),
+    /// List the functions the compiler inlined, by the bytes their copies take
+    #[command(after_help = INLINED)]
+    Inlined(InlinedArgs),
     /// List what calls or uses SYMBOL
     #[command(after_help = HOW)]
     Callers(SymbolArgs),
@@ -87,6 +91,16 @@ items; lines such as \"└─ 6 more\" sum up the rest.
 A function that is only called through pointers counts for the code or data
 that holds its address. Sizes marked ~ are estimates.";
 
+const INLINED: &str = "\
+The compiler inlines a function by putting a copy of its code into the
+function that calls it. Only DWARF debug info says where it did that, so
+this command needs a file built with debug info, such as with -g.
+
+In the list, a function's bytes leave out the functions inlined into its
+copies in turn, which have rows of their own. In the tree that --in shows,
+they include the rows below. A copy of 0 bytes is one the compiler merged
+into the code around it.";
+
 const EXCLUSIVE: &str = "\
 An item is exclusive to SYMBOL when every path to it, from where the program
 starts, goes through SYMBOL: without SYMBOL it would be dead code. SYMBOL's
@@ -101,6 +115,14 @@ pub struct SymbolArgs {
     /// A function or data object: its name, the end of its name
     /// (process_frame for app::process_frame), or an address such as 0x1700
     pub symbol: String,
+}
+
+#[derive(Debug, Args)]
+pub struct InlinedArgs {
+    /// Show the inlined code in one function instead, as a tree. SYMBOL is
+    /// its name, the end of its name, or an address in it
+    #[arg(long = "in", value_name = "SYMBOL")]
+    pub within: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]

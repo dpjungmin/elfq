@@ -5,6 +5,7 @@ mod callees;
 mod callers;
 mod debug_items;
 mod exclusive;
+mod inlined;
 mod overview;
 mod retained;
 pub mod symbol;
@@ -34,6 +35,9 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<()> {
         Some(Command::Exclusive(args)) => exclusive::run(&binary, &args.symbol, out),
         Some(Command::Why(args)) => why::run(&cli.file, &binary, &args.symbol, out),
         Some(Command::Top) => top::run(&binary, out),
+        Some(Command::Inlined(args)) => {
+            inlined::run(&cli.file, &binary, args.within.as_deref(), out)
+        }
         Some(Command::Callers(args)) => callers::run(&binary, &args.symbol, out),
         Some(Command::Callees(args)) => callees::run(&binary, &args.symbol, out),
         Some(Command::Debug(DebugCommand::Items)) => debug_items::run(&binary, out),
