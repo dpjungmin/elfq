@@ -43,13 +43,13 @@ variants arm-none-eabi-strip c-cortex-m4
 
 # Only the full build: this sample is for looking at memory ranges, which
 # doesn't depend on how much of the symbols and DWARF the file keeps.
-echo "C, i.MX RT1176-style Cortex-M7"
+echo "C, Cortex-M7 with TCMs"
 arm-none-eabi-gcc $cflags \
     -mcpu=cortex-m7 -mthumb -mfloat-abi=hard -mfpu=fpv5-d16 \
     -ffunction-sections -fdata-sections \
     -nostartfiles --specs=nano.specs --specs=nosys.specs \
-    -T c/rt1176.ld -Wl,--gc-sections \
-    -o "$out/c-rt1176.elf" c/app.c c/platform_rt1176.c
+    -T c/cortex-m7.ld -Wl,--gc-sections \
+    -o "$out/c-cortex-m7.elf" c/app.c c/platform_cortexm7.c
 
 echo "C++, x86-64 Linux"
 g++ $cflags -o "$out/cpp-x86_64.elf" cpp/app.cpp

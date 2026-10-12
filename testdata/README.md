@@ -20,13 +20,13 @@ testdata/
 |---|---|---|
 | `c-x86_64*.elf` | C | x86-64 Linux, PIE, dynamically linked against glibc |
 | `c-cortex-m4*.elf` | C | Cortex-M4 bare metal, newlib-nano, `--gc-sections` |
-| `c-rt1176.elf` | C | Cortex-M7 bare metal, laid out like an i.MX RT1176 |
+| `c-cortex-m7.elf` | C | Cortex-M7 bare metal, with code and data in TCM, OCRAM and flash |
 | `cpp-x86_64*.elf` | C++ | x86-64 Linux, PIE, dynamically linked against glibc and libstdc++ |
 | `rust-x86_64*.elf` | Rust | x86-64 Linux, std |
 | `rust-cortex-m4*.elf` | Rust | Cortex-M4 bare metal, `no_std` |
 
 Each comes in up to three variants, matching what people usually have
-(`c-rt1176.elf` only in the first):
+(`c-cortex-m7.elf` only in the first):
 
 | Suffix | Symbols | DWARF | Typical of |
 |---|---|---|---|
@@ -64,12 +64,13 @@ is the entry point and `SysTick_Handler` is reached only through
 `vector_table`, which is data. The compiler turned `Reset_Handler`'s copy and
 clear loops into calls to `memcpy` and `memset`.
 
-### i.MX RT1176-style sample ([c/platform_rt1176.c](c/platform_rt1176.c))
+### Cortex-M7 sample ([c/platform_cortexm7.c](c/platform_cortexm7.c))
 
 The C sample again, with a platform file and linker script
-([c/rt1176.ld](c/rt1176.ld)) that spread it over the kinds of memory an
-i.MX RT1176's Cortex-M7 core has, for looking at one range of memory at a
-time:
+([c/cortex-m7.ld](c/cortex-m7.ld)) that spread it over several kinds of
+memory, for looking at one range of memory at a time. The addresses are
+those of the M7 core in an NXP i.MX RT1176, a common chip with tightly
+coupled memory (TCM), but elfq knows nothing about the chip itself:
 
 | Memory | Address | Holds |
 |---|---|---|

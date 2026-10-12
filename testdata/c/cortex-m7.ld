@@ -1,9 +1,10 @@
 /*
- * Linker script in the style of an NXP i.MX RT1176's Cortex-M7 core: code
- * and constants in external flash, hot code in ITCM, variables in DTCM and
- * large buffers in OCRAM. The FlexRAM banks are split into 256 KiB of ITCM
- * and 256 KiB of DTCM. A real image also starts with a boot header for the
- * chip's boot ROM, which elfq doesn't need.
+ * Linker script for a Cortex-M7 with tightly coupled memory (TCM). The
+ * memory map follows the M7 core of an NXP i.MX RT1176, a common chip of
+ * this kind: code and constants in external flash, hot code in ITCM,
+ * variables in DTCM and large buffers in OCRAM. The FlexRAM banks are split
+ * into 256 KiB of ITCM and 256 KiB of DTCM. A real RT1176 image also starts
+ * with a boot header for the chip's boot ROM, which elfq doesn't need.
  */
 ENTRY(Reset_Handler)
 

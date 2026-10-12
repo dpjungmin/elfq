@@ -1,15 +1,15 @@
 /*
- * Bare-metal platform in the style of an NXP i.MX RT1176's Cortex-M7 core,
- * whose memory comes in several kinds:
+ * Bare-metal platform for a Cortex-M7 whose memory comes in several kinds,
+ * at the addresses they have on the M7 core of an NXP i.MX RT1176:
  *
  *   ITCM   0x00000000  fast memory for code, next to the core
  *   DTCM   0x20000000  fast memory for data, next to the core
  *   OCRAM  0x20240000  larger on-chip RAM
  *   flash  0x30000000  external flash, read through FlexSPI
  *
- * rt1176.ld puts the hot signal-processing functions and the SysTick handler
- * in ITCM, variables and the CRC table in DTCM, the UART's buffer in OCRAM,
- * and everything else in flash. Calls between flash and ITCM are too far for
+ * cortex-m7.ld puts the hot signal-processing functions and the SysTick
+ * handler in ITCM, variables and the CRC table in DTCM, the UART's buffer in
+ * OCRAM, and everything else in flash. Calls between flash and ITCM are too far for
  * one branch instruction, so the linker adds veneers: small stubs that load
  * the target's address and jump to it.
  */
@@ -41,7 +41,7 @@ void platform_write(const char *buf, size_t len)
     }
 }
 
-/* Symbols provided by rt1176.ld. */
+/* Symbols provided by cortex-m7.ld. */
 extern uint32_t _siitcm, _sitcm, _eitcm;
 extern uint32_t _sidata, _sdata, _edata, _sbss, _ebss, _estack;
 

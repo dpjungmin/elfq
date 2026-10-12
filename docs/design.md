@@ -303,7 +303,7 @@ starts.
 | 2. Core engine | 2a: crate skeleton, CLI, CI, ELF loading and item discovery. 2b: x86-64 scanning, PLT stub names, the reference graph, `callers`, `callees` and the overview. 2c: Rust demangling and short names for SYMBOL. 2d: Cortex-M Thumb scanning, and pointers in firmware data such as the vector table. 2e: items for unnamed data, such as vtables and string literals. |
 | 3. Headline queries | 3a: roots, dominators, `retained` and `exclusive`. 3b: `why`. 3c: `top`. 3d: `inlined`. |
 | 4. Polish | 4a: C++ demangling, with a C++ sample. 4b: JSON output for `callers`, `callees`, `exclusive` and `inlined`. 4c: JSON for `top`, `retained`, `why` and the overview. 4d: warnings where indirect calls make answers uncertain. |
-| 5. Memory ranges | 5a: a sample laid out like an i.MX RT1176, with code and data in ITCM, DTCM, OCRAM and flash; startup code no longer seems to use the first item of each section it copies. 5b: answers about one range of memory, such as ITCM or DTCM, with `--range START..END` or `--range START+SIZE`. The overview lists the address blocks that the file's sections occupy, so the range needn't come from the reference manual. |
+| 5. Memory ranges | 5a: a Cortex-M7 sample with code and data in ITCM, DTCM, OCRAM and flash, at the addresses an i.MX RT1176 uses; startup code no longer seems to use the first item of each section it copies. 5b: answers about one range of memory, such as ITCM or DTCM, with `--range START..END` or `--range START+SIZE`. The overview lists the address blocks that the file's sections occupy, so the range needn't come from the reference manual. |
 
 Later: a query language, and worst-case stack depth (call graph plus each
 function's stack frame).

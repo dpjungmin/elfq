@@ -269,7 +269,7 @@ fn startup_code_copies_whole_sections_without_using_their_first_items() {
     );
 
     // The same for .itcm, whose first function is SysTick_Handler.
-    let (binary, graph) = load("c-rt1176.elf");
+    let (binary, graph) = load("c-cortex-m7.elf");
     assert_eq!(
         callees(&binary, &graph, "Reset_Handler"),
         pairs(&[("main", Call), ("memcpy", Call), ("memset", Call)])
@@ -280,7 +280,7 @@ fn startup_code_copies_whole_sections_without_using_their_first_items() {
 fn calls_between_flash_and_itcm_go_through_veneers() {
     // ITCM at 0 is too far from flash at 0x30000000 for one branch
     // instruction, so the linker adds a stub that jumps to the target.
-    let (binary, graph) = load("c-rt1176.elf");
+    let (binary, graph) = load("c-cortex-m7.elf");
     assert_eq!(
         callers(&binary, &graph, "__crc32_veneer"),
         pairs(&[("process_frame", Call)])
