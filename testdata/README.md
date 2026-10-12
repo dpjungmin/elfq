@@ -10,6 +10,7 @@ testdata/
 ├── build.sh     Rebuilds everything in bin/ from the sources.
 ├── bin/         The built files (committed).
 ├── c/           C sample: app.c plus a platform file per target.
+├── cpp/         C++ sample: the kinds of names C++ compilers make.
 └── rust/        Rust sample: the same program, plus Rust-only patterns.
 ```
 
@@ -19,6 +20,7 @@ testdata/
 |---|---|---|
 | `c-x86_64*.elf` | C | x86-64 Linux, PIE, dynamically linked against glibc |
 | `c-cortex-m4*.elf` | C | Cortex-M4 bare metal, newlib-nano, `--gc-sections` |
+| `cpp-x86_64*.elf` | C++ | x86-64 Linux, PIE, dynamically linked against glibc and libstdc++ |
 | `rust-x86_64*.elf` | Rust | x86-64 Linux, std |
 | `rust-cortex-m4*.elf` | Rust | Cortex-M4 bare metal, `no_std` |
 
@@ -60,6 +62,23 @@ is the entry point and `SysTick_Handler` is reached only through
 `vector_table`, which is data. The compiler turned `Reset_Handler`'s copy and
 clear loops into calls to `memcpy` and `memset`.
 
+### C++ sample ([cpp/app.cpp](cpp/app.cpp))
+
+A smaller program in `namespace app`, built for x86-64 only, since C++
+names are the same on every target. Each part makes one kind of C++
+symbol:
+
+| Item | Shape | Expected answer |
+|---|---|---|
+| `app::log(char const*)`, `app::log(unsigned int)` | Two overloads of one name. | `log` alone is ambiguous; `log(unsigned int)` picks one. |
+| `app::Gain::run`, `app::DcBlock::run` | Virtual functions, called through a `Stage&` in `process_frame`. | Each hangs under its class's vtable (`vtable for app::Gain`), which hangs under `main`, where the objects are made. The vtables point to `typeinfo for app::Gain`, which points to an import from libstdc++. |
+| `app::(anonymous namespace)::crc32` | An anonymous namespace, holding `crc32` and `crc_table` as in the C sample. | Exclusive to `process_frame`, with `crc_table`, `frames_bad` and the strings `"bad header\n"` and `"bad crc\n"`. |
+| `app::checksum<unsigned char>` and two more | One template, three machine-code copies. | `checksum` alone is ambiguous. |
+| `app::operator<(app::Reading const&, app::Reading const&)` | An operator, whose name has an unpaired `<`. Called by `sort_readings`. | `operator<` finds it. |
+| `app::setup_handlers()::{lambda(unsigned int)#1}::_FUN(unsigned int)` and `#2` | Lambdas stored as function pointers. | Reached only through `setup_handlers`, which takes their addresses. Inlined into those functions, their bodies have only the name `operator()` in DWARF, so `inlined` counts both on one row. |
+| `app::Config::load_defaults()` | Called from the constructor of the global `app::config`, which GCC puts in `_GLOBAL__sub_I__ZN3app3logEPKc`, listed in `.init_array`. | Hangs under that function, a root. |
+| `app::Frame::payload_length() const`, `app::Gain::Gain(short)` | Inlined into `process_frame` and `main`. | Shown by `inlined`. |
+
 ### Rust sample ([rust/src/main.rs](rust/src/main.rs))
 
 It mirrors the C sample (`process_frame`, `crc32`, `apply_filter`,
@@ -83,7 +102,7 @@ symbolizer; that is a good case for `top`, `why` and `retained`.
 ./testdata/build.sh
 ```
 
-This needs `gcc`, `arm-none-eabi-gcc` with newlib, and Rust with the
+This needs `gcc` and `g++`, `arm-none-eabi-gcc` with newlib, and Rust with the
 `thumbv7em-none-eabihf` target (`rustup target add thumbv7em-none-eabihf`).
 The committed files were built with GCC 13.3.0 (Ubuntu 24.04),
 arm-none-eabi-gcc 13.2.1 with newlib 4.4.0, and rustc 1.97.0.

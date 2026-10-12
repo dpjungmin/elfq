@@ -1,11 +1,12 @@
 #!/bin/sh
-# Rebuilds the sample ELF files in testdata/bin from testdata/c and testdata/rust.
+# Rebuilds the sample ELF files in testdata/bin from testdata/c, testdata/cpp
+# and testdata/rust.
 #
 # The outputs are committed so that tests and docs do not need cross
 # toolchains, and so that their bytes stay stable across machines. Only run
 # this when a sample's source changes, and commit the results together.
 #
-# Needs: gcc, arm-none-eabi-gcc with newlib, cargo with the
+# Needs: gcc and g++, arm-none-eabi-gcc with newlib, cargo with the
 # thumbv7em-none-eabihf target (rustup target add thumbv7em-none-eabihf).
 set -eu
 
@@ -39,6 +40,10 @@ arm-none-eabi-gcc $cflags \
     -T c/cortex-m4.ld -Wl,--gc-sections \
     -o "$out/c-cortex-m4.elf" c/app.c c/platform_cortexm.c
 variants arm-none-eabi-strip c-cortex-m4
+
+echo "C++, x86-64 Linux"
+g++ $cflags -o "$out/cpp-x86_64.elf" cpp/app.cpp
+variants strip cpp-x86_64
 
 rustflags="--remap-path-prefix=$here=."
 

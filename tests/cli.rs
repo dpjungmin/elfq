@@ -451,6 +451,56 @@ elfq_sample::app_main  call  0x14f12, 0x14f29, 0x14f40
 }
 
 #[test]
+fn cpp_names_are_readable_and_short_ones_work() {
+    const CPP: &str = "testdata/bin/cpp-x86_64.elf";
+    // A virtual function is reached through its class's vtable.
+    assert_eq!(
+        stdout(&[CPP, "why", "Gain::run"]),
+        "\
+app::Gain::run(short*, unsigned long) is in the file because vtable for app::Gain uses it. The shortest chain to it, from where the program starts:
+
+HOW            ITEM
+entry point    _start
+address taken  └─ main
+address taken     └─ vtable for app::Gain
+pointer              └─ app::Gain::run(short*, unsigned long)
+
+Every chain to app::Gain::run(short*, unsigned long) goes through vtable for app::Gain, so it counts toward vtable for app::Gain's retained size.
+"
+    );
+    // Overloads share a name, so their parameters tell them apart.
+    assert_eq!(
+        stderr(&[CPP, "callers", "log"], 1),
+        "\
+error: `log` could mean 2 functions; use one of the names on the left instead:
+  'log(char const*)'   app::log(char const*)
+  'log(unsigned int)'  app::log(unsigned int)
+"
+    );
+    // An operator, and imports from the C++ runtime.
+    assert_eq!(
+        stdout(&[CPP, "callers", "operator<"]),
+        "\
+app::operator<(app::Reading const&, app::Reading const&) is used by 1 function:
+
+CALLER                                            HOW   AT
+app::sort_readings(app::Reading*, unsigned long)  call  0x156f
+"
+    );
+    assert_eq!(
+        stdout(&[CPP, "callees", "typeinfo for Gain"]),
+        "\
+typeinfo for app::Gain uses 3 items:
+
+CALLEE                                       HOW      AT
+vtable for __cxxabiv1::__si_class_type_info  pointer  0x3d78
+typeinfo name for app::Gain                  pointer  0x3d80
+typeinfo for app::Stage                      pointer  0x3d88
+"
+    );
+}
+
+#[test]
 fn data_without_a_symbol_is_named_by_section_and_address() {
     // The vtable through which `app_main` reaches `Gain::run`.
     assert_eq!(
