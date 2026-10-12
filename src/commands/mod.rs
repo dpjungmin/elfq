@@ -33,17 +33,19 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<()> {
 
 /// Builds the reference graph, or explains why elfq can't yet.
 fn reference_graph(binary: &Binary) -> Result<Graph> {
-    if !arch::is_supported(binary.architecture) {
+    if !arch::is_supported(binary) {
         bail!("{}", cannot_read_code(binary));
     }
     Ok(Graph::build(binary))
 }
 
 fn cannot_read_code(binary: &Binary) -> String {
-    format!(
-        "elfq can't read {} code yet, so it can't tell what calls what",
-        architecture_name(binary.architecture)
-    )
+    let code = match binary.architecture {
+        // Thumb code is readable; this is the older instruction set.
+        Architecture::Arm => "32-bit Arm (A32)".to_string(),
+        other => architecture_name(other),
+    };
+    format!("elfq can't read {code} code yet, so it can't tell what calls what")
 }
 
 fn architecture_name(architecture: Architecture) -> String {

@@ -158,6 +158,7 @@ fn stripped_firmware_has_only_its_entry_point_so_far() {
 fn thumb_addresses_are_even() {
     // Arm sets bit 0 in Thumb function symbols and in the entry point.
     let binary = load("c-cortex-m4.elf");
+    assert!(binary.thumb);
     assert_eq!(item(&binary, "process_frame").address, 0x0800_02c8);
     assert_eq!(binary.entry, 0x0800_05a0);
     assert_eq!(item(&binary, "Reset_Handler").address, binary.entry);

@@ -32,7 +32,7 @@ cargo test
 | `src/cli.rs` | Command-line arguments, one struct per subcommand. |
 | `src/commands/` | One file per subcommand, plus `symbol.rs`, which works out what a user means by SYMBOL. Commands connect a question to output; they do no analysis. |
 | `src/binary/` | Reading an ELF file: its functions and data objects ("items"), their names, imports and stored pointers. |
-| `src/arch/` | Finding the addresses that machine code calls or uses, one file per instruction set. |
+| `src/arch/` | Finding the addresses that machine code calls or uses, one file per instruction set (x86-64 and Thumb). |
 | `src/graph/` | The reference graph that connects items. |
 | `src/render/` | Text output. |
 | `tests/` | Integration tests that run on the sample binaries. |

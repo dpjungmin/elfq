@@ -45,6 +45,32 @@ Try:
 }
 
 #[test]
+fn firmware_gets_the_same_overview() {
+    assert_eq!(
+        stdout(&["testdata/bin/c-cortex-m4.elf"]),
+        "\
+testdata/bin/c-cortex-m4.elf: 32-bit Arm executable, with symbols and DWARF debug info
+
+25 functions and 20 data objects, with 86 references between them.
+1 call or jump goes through pointers set at run time, which elfq can't follow.
+
+Try:
+  elfq testdata/bin/c-cortex-m4.elf callers log_msg
+  elfq testdata/bin/c-cortex-m4.elf callees main
+"
+    );
+    assert_eq!(
+        stdout(&["testdata/bin/c-cortex-m4.elf", "callers", "SysTick_Handler"]),
+        "\
+SysTick_Handler is used by 1 data object:
+
+CALLER        HOW      AT
+vector_table  pointer  0x800003c
+"
+    );
+}
+
+#[test]
 fn callers_lists_each_caller_and_how_it_calls() {
     assert_eq!(
         stdout(&[SAMPLE, "callers", "log_msg"]),

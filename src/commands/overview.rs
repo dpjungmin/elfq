@@ -6,7 +6,7 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use super::symbol::Names;
+use super::symbol::{self, Names};
 use crate::arch;
 use crate::binary::{Binary, ItemKind, Source};
 use crate::graph::{Graph, Node};
@@ -37,7 +37,7 @@ pub fn run(path: &Path, binary: &Binary, out: &mut dyn Write) -> Result<()> {
             super::plural(n, "import", "imports")
         ),
     };
-    if !arch::is_supported(binary.architecture) {
+    if !arch::is_supported(binary) {
         writeln!(out, "{found}.")?;
         writeln!(out, "{}.", super::cannot_read_code(binary))?;
         return Ok(());
@@ -48,6 +48,18 @@ pub fn run(path: &Path, binary: &Binary, out: &mut dyn Write) -> Result<()> {
         super::plural(graph.references.len(), "reference", "references")
     );
     writeln!(out, "{found}.")?;
+    let has_function_lists = binary.items.iter().any(|i| {
+        matches!(
+            i.source,
+            Source::SymbolTable | Source::DynamicSymbolTable | Source::EhFrame
+        )
+    });
+    if !has_function_lists {
+        writeln!(
+            out,
+            "The file has no symbols or unwind table, so elfq can't find its functions yet."
+        )?;
+    }
     if let Some(unnamed) = binary.items.iter().find(|i| i.source == Source::EhFrame) {
         writeln!(
             out,
@@ -112,17 +124,29 @@ fn most_used(binary: &Binary, graph: &Graph) -> Option<usize> {
     best.map(|(index, _)| index)
 }
 
-/// `main` if there is one, since every reader knows where it fits;
-/// otherwise the largest function.
+/// `main` if there is one, or else the function where the program starts,
+/// such as firmware's reset handler, since every reader knows where those
+/// fit; otherwise the largest function.
 fn starting_point(binary: &Binary) -> Option<usize> {
-    let main = binary.items.iter().position(|i| i.name == "main");
+    // `main` as SYMBOL would find it, so also `app::main` in Rust.
+    let main = match symbol::find(binary, "main") {
+        Ok(Node::Item(index)) => Some(index),
+        _ => None,
+    };
+    let entry = binary.item_at(binary.entry);
     let largest = (0..binary.items.len())
         .filter(|&index| is_own_function(binary, index))
         .max_by_key(|&index| binary.items[index].size);
-    main.or(largest)
+    [main, entry]
+        .into_iter()
+        .flatten()
+        .find(|&index| is_own_function(binary, index))
+        .or(largest)
 }
 
+/// A function whose code is in this file and readable: not a PLT stub,
+/// whose code is a library's, nor a function of unknown size.
 fn is_own_function(binary: &Binary, index: usize) -> bool {
     let item = &binary.items[index];
-    item.kind == ItemKind::Function && item.source != Source::Plt
+    item.kind == ItemKind::Function && item.source != Source::Plt && item.size > 0
 }

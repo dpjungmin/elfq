@@ -49,7 +49,8 @@ The HOW column says how one item uses the other:
   call           a direct call
   tail call      a jump to the start of a function, which then returns to
                  the caller's caller
-  address taken  code computes the address, as when passing a pointer
+  address taken  code computes or loads the address, as when passing a
+                 pointer (Arm code also does this to use a variable)
   access         code reads or writes it
   pointer        data holds a pointer to it, as in a table of functions";
 

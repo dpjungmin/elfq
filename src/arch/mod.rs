@@ -6,9 +6,12 @@
 //! about the instructions. The graph module then works out which item each
 //! address belongs to.
 
+mod thumb;
 mod x86_64;
 
 use object::Architecture;
+
+use crate::binary::Binary;
 
 /// One use of an address by one instruction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,23 +36,33 @@ pub enum CodeReferenceKind {
     IndirectCall,
     /// A jump to an address computed at run time, such as `jmp rax`.
     IndirectJump,
-    /// Computing an address without touching memory there (`lea`), as when
-    /// passing a pointer to a function or a variable.
+    /// An address that code computes or loads as a number, without touching
+    /// memory there: `lea` on x86-64, or on Arm a constant from a literal
+    /// pool or a `movw`/`movt` pair. Code does this to pass a pointer, and
+    /// on Arm also before reading or writing a variable.
     Address(u64),
     /// Reading or writing memory at an address, as when using a variable.
     Memory(u64),
 }
 
-/// Whether elfq can read code for this instruction set yet.
-pub fn is_supported(architecture: Architecture) -> bool {
-    architecture == Architecture::X86_64
+/// Whether elfq can read this file's code yet: x86-64, or Thumb, which is
+/// what Cortex-M runs. 32-bit Arm code in the older Arm (A32) instruction
+/// set isn't read.
+pub fn is_supported(binary: &Binary) -> bool {
+    match binary.architecture {
+        Architecture::X86_64 => true,
+        Architecture::Arm => binary.thumb,
+        _ => false,
+    }
 }
 
 /// The references in one function's code, which starts at `address`.
-/// Returns nothing for instruction sets elfq can't read yet.
+/// Returns nothing for instruction sets elfq can't read yet; check
+/// [`is_supported`] first.
 pub fn scan(architecture: Architecture, code: &[u8], address: u64) -> Vec<CodeReference> {
     match architecture {
         Architecture::X86_64 => x86_64::scan(code, address),
+        Architecture::Arm => thumb::scan(code, address),
         _ => Vec::new(),
     }
 }

@@ -48,7 +48,7 @@ uses Ubuntu's GCC defaults, so it has stack-protector calls
 | `apply_filter`, `filter_tap` | A chain reachable only through `process_frame`. | Both exclusive to `process_frame`. On Cortex-M, `apply_filter` also calls `memcpy`, which is shared with `Reset_Handler`. |
 | `log_msg` | Shared helper. | Callers: `process_frame`, `report`, `app_tick`, `on_button` (tail call), and `debug_dump` on x86-64. Calls `strlen` (added by the compiler) and `platform_write` (tail call). |
 | `on_timer`, `on_button`, `on_data` | Reached only through the `handlers` table. | Address taken by `main`; called indirectly from `dispatch_event`. |
-| `dispatch_event` | Indirect call through a table. | One indirect call site, whose target is unknown. On x86-64 it is an indirect tail jump. |
+| `dispatch_event` | Indirect call through a table. | One indirect call site, whose target is unknown. Both builds make it an indirect tail jump (`jmp rax`, `bx r3`). |
 | `app_tick` | Ends in a tail call to `dispatch_event`. | On Cortex-M it is also reached from `SysTick_Handler`. |
 | `parse_value`, `parse_list` | Mutual recursion: a cycle. | `parse_value` reaches `parse_list` by a tail call. |
 | `count_nodes` | Direct recursion: a self-loop. | |
