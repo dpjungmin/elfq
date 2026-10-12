@@ -113,6 +113,7 @@ dependencies = [
  "gimli",
  "iced-x86",
  "object",
+ "rustc-demangle",
 ]
 
 [[package]]
@@ -189,6 +190,12 @@ checksum = "1fbf4db142a473a8d80c26bbf18454ed458bf8d26c8219c331daecfdbd079001"
 dependencies = [
  "proc-macro2",
 ]
+
+[[package]]
+name = "rustc-demangle"
+version = "0.1.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b74b56ffa8bb2830709a538c2cbcae9aa062db0d2a42563bfb09bdaae44020eb"
 
 [[package]]
 name = "stable_deref_trait"

@@ -5,6 +5,7 @@ mod callees;
 mod callers;
 mod debug_items;
 mod overview;
+pub mod symbol;
 
 use std::io::Write;
 
@@ -141,5 +142,16 @@ fn addresses(sites: &[u64]) -> String {
     match sites.len().checked_sub(SHOWN) {
         Some(more) if more > 0 => format!("{} and {more} more", shown.join(", ")),
         _ => shown.join(", "),
+    }
+}
+
+/// `text` as one shell word: quoted when it holds anything but letters,
+/// digits and `_./@:-`.
+fn shell_quote(text: &str) -> String {
+    let plain = |c: char| c.is_ascii_alphanumeric() || "_./@:-".contains(c);
+    if !text.is_empty() && text.chars().all(plain) {
+        text.to_string()
+    } else {
+        format!("'{}'", text.replace('\'', r"'\''"))
     }
 }

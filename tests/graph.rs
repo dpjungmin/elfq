@@ -3,7 +3,8 @@
 use std::path::Path;
 
 use elfq::binary::{Binary, ItemKind};
-use elfq::graph::{self, Graph, Node, ReferenceKind};
+use elfq::commands::symbol;
+use elfq::graph::{Graph, Node, ReferenceKind};
 
 use ReferenceKind::*;
 
@@ -18,7 +19,7 @@ fn load(name: &str) -> (Binary, Graph) {
 
 /// What uses `name`, and how: one entry per caller and kind, sorted.
 fn callers(binary: &Binary, graph: &Graph, name: &str) -> Vec<(String, ReferenceKind)> {
-    let node = graph::find(binary, name).unwrap();
+    let node = symbol::find(binary, name).unwrap();
     let mut callers: Vec<(String, ReferenceKind)> = graph
         .references_to(node)
         .map(|r| (binary.items[r.from].name.clone(), r.kind))
@@ -30,7 +31,7 @@ fn callers(binary: &Binary, graph: &Graph, name: &str) -> Vec<(String, Reference
 
 /// What `name` uses, and how: one entry per callee and kind, sorted.
 fn callees(binary: &Binary, graph: &Graph, name: &str) -> Vec<(String, ReferenceKind)> {
-    let Node::Item(item) = graph::find(binary, name).unwrap() else {
+    let Node::Item(item) = symbol::find(binary, name).unwrap() else {
         panic!("{name} is an import");
     };
     let mut callees: Vec<(String, ReferenceKind)> = graph
@@ -96,7 +97,7 @@ fn functions_called_through_pointers_have_their_address_taken() {
         );
     }
     // The call through the table is a jump whose target elfq can't know.
-    let Node::Item(dispatch) = graph::find(&binary, "dispatch_event").unwrap() else {
+    let Node::Item(dispatch) = symbol::find(&binary, "dispatch_event").unwrap() else {
         unreachable!()
     };
     let unresolved = graph.unresolved_in(dispatch);
@@ -197,39 +198,10 @@ fn stripping_keeps_the_calls_between_functions() {
 #[test]
 fn calls_through_trait_objects_are_indirect() {
     let (binary, graph) = load("rust-x86_64-nodebug.elf");
-    let process_frame = binary
-        .items
-        .iter()
-        .position(|i| i.name.ends_with("11elfq_sample13process_frame"))
-        .unwrap();
+    let Node::Item(process_frame) = symbol::find(&binary, "process_frame").unwrap() else {
+        panic!("process_frame is an import");
+    };
     let unresolved = graph.unresolved_in(process_frame);
     assert_eq!(unresolved.len(), 2);
     assert!(unresolved.iter().all(|u| u.is_call && u.target.is_none()));
-}
-
-#[test]
-fn find_takes_names_addresses_and_import_names() {
-    let (binary, _) = load("c-x86_64.elf");
-    let name = |query| {
-        graph::find(&binary, query)
-            .unwrap()
-            .name(&binary)
-            .to_string()
-    };
-    assert_eq!(name("process_frame"), "process_frame");
-    assert_eq!(name("0x1700"), "process_frame");
-    assert_eq!(name("0x1705"), "process_frame");
-    // An imported function means its stub, which is what code calls.
-    assert_eq!(name("write"), "write@plt");
-    assert_eq!(name("__libc_start_main"), "__libc_start_main");
-
-    let error = |query| graph::find(&binary, query).unwrap_err().to_string();
-    assert_eq!(
-        error("proces_frame"),
-        "no function or data object is named `proces_frame`; did you mean process_frame?"
-    );
-    assert_eq!(
-        error("0x10"),
-        "no function or data object contains address 0x10"
-    );
 }

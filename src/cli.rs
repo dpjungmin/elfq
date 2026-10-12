@@ -55,7 +55,8 @@ The HOW column says how one item uses the other:
 
 #[derive(Debug, Args)]
 pub struct SymbolArgs {
-    /// A function or data object: its name, or an address such as 0x1700
+    /// A function or data object: its name, the end of its name
+    /// (process_frame for app::process_frame), or an address such as 0x1700
     pub symbol: String,
 }
 

@@ -37,8 +37,13 @@ support them.
 | `elfq FILE inlined [--in SYMBOL]` | Which inlined functions cost the most bytes across the binary, or inside SYMBOL? Needs DWARF. |
 
 SYMBOL is a function or data object's name, an import (`write` finds the
-`write@plt` stub that code calls), or an address such as `0x1700`. A
-misspelled name gets suggestions. Typing the command first, as in
+`write@plt` stub that code calls), or an address such as `0x1700`. Names are
+shown demangled (`app::process_frame`, not `_RNvCs…13process_frame`), and
+the end of a name is enough: `process_frame`, or `Gain::run` for the trait
+method `<app::Gain as app::Stage>::run`. A name that matches exactly wins
+over one that only ends the same way. When a name could mean several items,
+the error lists the shortest name that picks each one, and a misspelled name
+gets suggestions. Typing the command first, as in
 `elfq callers app.elf log_msg`, gets a hint that the file comes first.
 
 All commands print a table or tree for people by default and take
@@ -93,7 +98,8 @@ finds the references between them, `graph` computes dominators and paths,
    section; `.eh_frame` entries (on x86-64 they cover almost every
    function, even in stripped files); the entry point; targets of calls
    found during scanning. Items without a symbol get names like
-   `fn_0x1690`, or `entry`. `elfq FILE debug items` lists what was found,
+   `fn_0x1690`, or `entry`. Rust symbols are demangled, and the mangled
+   symbol stays as an alias. `elfq FILE debug items` lists what was found,
    for checking this step.
 3. **Scan code** with an architecture backend. For each function it decodes
    the instructions and reports direct calls, tail jumps to other items,
@@ -126,10 +132,10 @@ src/
 ├── main.rs        Parses arguments, runs one command, prints errors. Nothing else.
 ├── lib.rs         Declares the modules below. elfq is a library plus a thin binary.
 ├── cli.rs         clap definitions, one struct per subcommand.
-├── commands/      One file per subcommand: find the symbol, run a query, render.
-├── binary/        ELF loading and item discovery.
+├── commands/      One file per subcommand: find the symbol (symbol.rs), run a query, render.
+├── binary/        ELF loading, item discovery and names.
 ├── arch/          One file per instruction set (x86_64.rs, later arm.rs), each with one `scan` function.
-├── graph/         The reference graph and symbol lookup; later roots, dominators, paths.
+├── graph/         The reference graph; later roots, dominators, paths.
 ├── debuginfo/     Optional DWARF enrichment.
 └── render/        Table, tree and JSON output.
 ```
@@ -153,9 +159,10 @@ Rules that keep it approachable:
 
 Pure Rust only, so `cargo install elfq` needs no C toolchain:
 `object` (ELF), `gimli` (DWARF), `iced-x86` (x86-64 decoding), `petgraph`
-(graph and dominators), `clap` (arguments), and later `rustc-demangle` and
-`cpp_demangle`. Thumb decoding is chosen in step 2 between `yaxpeax-arm` and a
-small decoder for the handful of instructions the code scan needs.
+(graph and dominators), `clap` (arguments), `rustc-demangle` (Rust names),
+and later `cpp_demangle` (C++ names). Thumb decoding is chosen in step 2
+between `yaxpeax-arm` and a small decoder for the handful of instructions
+the code scan needs.
 
 ## Testing
 
@@ -179,9 +186,9 @@ starts.
 | Step | Pull requests |
 |---|---|
 | 1. Survey and samples | This document, survey.md, testdata/ |
-| 2. Core engine | 2a: crate skeleton, CLI, CI, ELF loading and item discovery. 2b: x86-64 scanning, PLT stub names, the reference graph, `callers`, `callees` and the overview. 2c: Cortex-M Thumb scanning and vector-table roots. |
+| 2. Core engine | 2a: crate skeleton, CLI, CI, ELF loading and item discovery. 2b: x86-64 scanning, PLT stub names, the reference graph, `callers`, `callees` and the overview. 2c: Rust demangling and short names for SYMBOL. 2d: Cortex-M Thumb scanning and vector-table roots. |
 | 3. Headline queries | 3a: dominators, `retained` and `exclusive`. 3b: `why`. 3c: `top`. 3d: `inlined`. |
-| 4. Polish | Demangling, fuzzy symbol matching, JSON output, warnings where indirect calls make answers uncertain. |
+| 4. Polish | C++ demangling, with a C++ sample; JSON output; warnings where indirect calls make answers uncertain. |
 
 Later: a query language, and worst-case stack depth (call graph plus each
 function's stack frame).
@@ -189,12 +196,12 @@ function's stack frame).
 ## Open questions
 
 1. **Names.** `why` or `paths`? `exclusive` or `only-from`?
-2. **Thumb decoder.** An existing crate or our own small decoder (step 2c).
+2. **Thumb decoder.** An existing crate or our own small decoder (step 2d).
 3. **Pointer-reached functions in `exclusive`.** Listed with a marker (the
    current plan) or in a separate section?
 4. **Stripped Cortex-M files** have no `.eh_frame`, so item discovery relies
    on the vector table and call targets. How well that works is unknown until
-   step 2c.
+   step 2d.
 5. **Anonymous data** such as vtables and merged string literals has no
    symbol. elfq still has to make items for it, or references through it are
    lost: in the Rust sample, `app_main` reaches `<Gain as Stage>::run` only
