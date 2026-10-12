@@ -1,0 +1,335 @@
+//! `elfq FILE why SYMBOL`: the chains of references, from where the program
+//! starts, that keep SYMBOL in the file.
+//!
+//! Every item that uses SYMBOL keeps it there, unless nothing reaches that
+//! item or it is there only because of SYMBOL. The answer shows the
+//! shortest chain to each item that keeps SYMBOL, merged into one tree.
+
+use std::collections::BTreeMap;
+use std::io::Write;
+use std::path::Path;
+
+use anyhow::{Result, bail};
+
+use crate::binary::{Binary, FileKind};
+use crate::graph::{DominatorTree, Graph, Node, Root, RootKind, ShortestPaths};
+use crate::render::{Align, Table};
+
+/// How many items that keep SYMBOL get their chain shown, at most.
+const SHOWN: usize = 10;
+
+pub fn run(path: &Path, binary: &Binary, symbol: &str, out: &mut dyn Write) -> Result<()> {
+    let graph = super::reference_graph(binary)?;
+    let node = super::symbol::find(binary, symbol)?;
+    let name = node.name(binary);
+    if binary.kind == FileKind::SharedLibrary {
+        bail!(
+            "elfq doesn't know yet which functions a shared library offers to other files, \
+             so it can't tell why {name} is in it"
+        );
+    }
+    if let Some(root) = graph.roots.iter().find(|root| root.node == node) {
+        writeln!(out, "{}", root_sentence(binary, root))?;
+        return Ok(());
+    }
+
+    let paths = ShortestPaths::avoiding(binary, &graph, node);
+    let tree = DominatorTree::build(binary, &graph);
+    // References are sorted by the item that makes them, so each user
+    // appears once after `dedup`.
+    let mut users: Vec<usize> = graph.references_to(node).map(|r| r.from).collect();
+    users.dedup();
+    let (mut keeping, others): (Vec<usize>, Vec<usize>) = users
+        .into_iter()
+        .partition(|&user| paths.is_reached(Node::Item(user)));
+    let unreachable: Vec<&str> = others
+        .into_iter()
+        .filter(|&user| !tree.is_reachable(Node::Item(user)))
+        .map(|user| binary.items[user].name.as_str())
+        .collect();
+    if keeping.is_empty() {
+        return write_unreachable(name, &unreachable, out);
+    }
+
+    // Those with the shortest chains first, then by name.
+    keeping.sort_by_key(|&user| {
+        let user_node = Node::Item(user);
+        (paths.distance(user_node), user_node.name(binary))
+    });
+    writeln!(out, "{}", lead(binary, node, &keeping))?;
+    writeln!(out)?;
+    let shown = &keeping[..keeping.len().min(SHOWN)];
+    let chains = Chains::new(binary, &graph, &paths, node, shown);
+    let mut table = Table::new(&[("HOW", Align::Left), ("ITEM", Align::Left)]);
+    chains.add_rows(&mut table);
+    table.write(out)?;
+
+    if keeping.len() > SHOWN {
+        writeln!(out)?;
+        writeln!(
+            out,
+            "To list everything that uses {name}:\n  elfq {} callers {}",
+            super::shell_quote(&path.display().to_string()),
+            super::shell_quote(symbol)
+        )?;
+    }
+    if !unreachable.is_empty() {
+        let (verb, pronoun) = verb_and_pronoun(&unreachable);
+        writeln!(out)?;
+        writeln!(
+            out,
+            "{} {verb} {name} too, but nothing reaches {pronoun}.",
+            super::names_text(&unreachable),
+        )?;
+    }
+    writeln!(out)?;
+    writeln!(out, "{}", on_every_chain(binary, &tree, node))?;
+    Ok(())
+}
+
+/// Says that nothing reaches SYMBOL, nor the items that use it.
+fn write_unreachable(name: &str, users: &[&str], out: &mut dyn Write) -> Result<()> {
+    writeln!(
+        out,
+        "Nothing reaches {name} from where the program starts, as far as elfq can tell. It may \
+         be dead code, or used in a way elfq can't see."
+    )?;
+    if !users.is_empty() {
+        let (verb, pronoun) = verb_and_pronoun(users);
+        writeln!(
+            out,
+            "{} {verb} it, but nothing reaches {pronoun} either.",
+            super::names_text(users),
+        )?;
+    }
+    Ok(())
+}
+
+/// The first line of the answer: how many items keep SYMBOL.
+fn lead(binary: &Binary, symbol: Node, keeping: &[usize]) -> String {
+    let name = symbol.name(binary);
+    // An import's code is in another file.
+    let is_here = match symbol {
+        Node::Item(_) => "is in the file",
+        Node::Import(_) => "is imported",
+    };
+    if let [user] = keeping {
+        return format!(
+            "{name} {is_here} because {} uses it. The shortest chain to it, from where the \
+             program starts:",
+            binary.items[*user].name
+        );
+    }
+    let nodes: Vec<Node> = keeping.iter().map(|&user| Node::Item(user)).collect();
+    let through = if keeping.len() <= SHOWN {
+        "each".to_string()
+    } else {
+        format!("the nearest {SHOWN}")
+    };
+    format!(
+        "{name} {is_here} because {} use it. The shortest chain through {through}, from where \
+         the program starts:",
+        super::count_text(binary, &nodes)
+    )
+}
+
+/// The last line of the answer: the closest item that every chain to
+/// SYMBOL goes through, which is the item it counts toward in `retained`.
+fn on_every_chain(binary: &Binary, tree: &DominatorTree, symbol: Node) -> String {
+    let name = symbol.name(binary);
+    // Imports have no bytes in the file to count.
+    let counts = matches!(symbol, Node::Item(_));
+    match tree.parent(symbol) {
+        Some(parent) if counts => format!(
+            "Every chain to {name} goes through {parent}, so it counts toward {parent}'s retained \
+             size.",
+            parent = parent.name(binary)
+        ),
+        Some(parent) => format!(
+            "Every chain to {name} goes through {}.",
+            parent.name(binary)
+        ),
+        None if counts => format!(
+            "No single item is on every chain to {name}, so it doesn't count toward any one \
+             item's retained size."
+        ),
+        None => format!("No single item is on every chain to {name}."),
+    }
+}
+
+/// The chains to the items that keep SYMBOL, merged into a tree: each item
+/// hangs under the item that uses it on the way from a root, and SYMBOL
+/// under each item that keeps it.
+struct Chains<'a> {
+    binary: &'a Binary,
+    graph: &'a Graph,
+    /// The roots that the chains start from, and why each is one.
+    roots: Vec<Root>,
+    /// The items each item leads to, in the tree.
+    children: BTreeMap<Node, Vec<Node>>,
+}
+
+impl<'a> Chains<'a> {
+    fn new(
+        binary: &'a Binary,
+        graph: &'a Graph,
+        paths: &ShortestPaths,
+        symbol: Node,
+        keeping: &[usize],
+    ) -> Chains<'a> {
+        let mut chains = Chains {
+            binary,
+            graph,
+            roots: Vec::new(),
+            children: BTreeMap::new(),
+        };
+        for &user in keeping {
+            let user = Node::Item(user);
+            let path = paths.path_to(user).unwrap_or_default();
+            let start = path.first().map_or(user, |r| Node::Item(r.from));
+            if let Some(&root) = graph.roots.iter().find(|root| root.node == start)
+                && !chains.roots.contains(&root)
+            {
+                chains.roots.push(root);
+            }
+            for reference in &path {
+                chains.add(Node::Item(reference.from), reference.to);
+            }
+            chains.add(user, symbol);
+        }
+        // SYMBOL first, then by name.
+        let name = |node: &Node| (*node != symbol, node.name(binary));
+        chains
+            .roots
+            .sort_by(|a, b| name(&a.node).cmp(&name(&b.node)));
+        for children in chains.children.values_mut() {
+            children.sort_by(|a, b| name(a).cmp(&name(b)));
+        }
+        chains
+    }
+
+    fn add(&mut self, parent: Node, child: Node) {
+        let children = self.children.entry(parent).or_default();
+        if !children.contains(&child) {
+            children.push(child);
+        }
+    }
+
+    fn add_rows(&self, table: &mut Table) {
+        for root in &self.roots {
+            table.row(vec![
+                root_how(self.binary, root.kind),
+                root.node.name(self.binary).to_string(),
+            ]);
+            self.add_children(root.node, "", table);
+        }
+    }
+
+    /// Adds a row for each of `node`'s children, and below each, its own
+    /// children. `indent` draws the tree's branches above them.
+    fn add_children(&self, node: Node, indent: &str, table: &mut Table) {
+        let Some(children) = self.children.get(&node) else {
+            return;
+        };
+        for (i, &child) in children.iter().enumerate() {
+            let last = i + 1 == children.len();
+            table.row(vec![
+                self.how(node, child),
+                format!(
+                    "{indent}{}{}",
+                    if last { "└─ " } else { "├─ " },
+                    child.name(self.binary)
+                ),
+            ]);
+            let indent = format!("{indent}{}", if last { "   " } else { "│  " });
+            self.add_children(child, &indent, table);
+        }
+    }
+
+    /// How `from` uses `to`, in words: "call", or "call, address taken".
+    fn how(&self, from: Node, to: Node) -> String {
+        let Node::Item(from) = from else {
+            return String::new();
+        };
+        let mut hows: Vec<&str> = Vec::new();
+        for reference in self.graph.references_from(from) {
+            let how = super::how(reference);
+            if reference.to == to && !hows.contains(&how) {
+                hows.push(how);
+            }
+        }
+        hows.join(", ")
+    }
+}
+
+/// Why a root is one, for the HOW column.
+fn root_how(binary: &Binary, kind: RootKind) -> String {
+    match kind {
+        RootKind::Entry => "entry point".to_string(),
+        RootKind::InSection(section) => format!("in {}", binary.sections[section].name),
+        RootKind::ListedIn(section) => format!("listed in {}", binary.sections[section].name),
+        RootKind::PltHeader => "used by the dynamic loader".to_string(),
+        RootKind::Personality => "used by the unwinder".to_string(),
+        RootKind::VectorTable => "vector table".to_string(),
+        RootKind::Handler => "listed in the vector table".to_string(),
+    }
+}
+
+/// Why a root is one, as a sentence.
+fn root_sentence(binary: &Binary, root: &Root) -> String {
+    let name = root.node.name(binary);
+    // Whether the program uses a startup section when it starts or exits.
+    let when = |section: usize| {
+        let section = &binary.sections[section].name;
+        if section.contains("fini") || section.contains("dtors") {
+            "exits"
+        } else {
+            "starts"
+        }
+    };
+    match root.kind {
+        RootKind::Entry => format!("{name} is the entry point, where the program starts."),
+        RootKind::InSection(section)
+            if binary.sections[section].kind == object::SectionKind::Note =>
+        {
+            format!(
+                "{name} is a note in {}, which the system reads when it loads the program.",
+                binary.sections[section].name
+            )
+        }
+        RootKind::InSection(section) => format!(
+            "{name} is in {}, which the program uses when it {}.",
+            binary.sections[section].name,
+            when(section)
+        ),
+        RootKind::ListedIn(section) => format!(
+            "{name} is listed in {}, so the program runs it when it {}.",
+            binary.sections[section].name,
+            when(section)
+        ),
+        RootKind::PltHeader => format!(
+            "{name} is the header of the procedure linkage table, which the dynamic loader uses \
+             to find imported functions."
+        ),
+        RootKind::Personality => format!(
+            "{name} is a personality routine, which the unwinder calls while it handles a panic \
+             or an exception."
+        ),
+        RootKind::VectorTable => format!(
+            "{name} holds the vector table, from which the processor takes the addresses of its \
+             handlers."
+        ),
+        RootKind::Handler => format!(
+            "{name} is listed in the vector table, so the processor runs it for an exception or \
+             an interrupt."
+        ),
+    }
+}
+
+/// "uses" and the item's name for one item, or "use" and "them" for several.
+fn verb_and_pronoun<'a>(names: &[&'a str]) -> (&'static str, &'a str) {
+    match names {
+        [one] => ("uses", one),
+        _ => ("use", "them"),
+    }
+}

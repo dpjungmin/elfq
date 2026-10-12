@@ -15,12 +15,16 @@
 //!
 //! [`Graph::roots`] are where the program starts running (see `roots.rs`).
 //! From them, [`DominatorTree`] works out which items are reachable only
-//! through which (see `dominators.rs`).
+//! through which (see `dominators.rs`), and [`ShortestPaths`] finds the
+//! shortest chain of references to each item (see `paths.rs`).
 
 mod dominators;
+mod paths;
 mod roots;
 
 pub use dominators::DominatorTree;
+pub use paths::ShortestPaths;
+pub use roots::{Root, RootKind};
 
 use crate::arch::{self, CodeReference, CodeReferenceKind};
 use crate::binary::{Binary, FileKind, ItemKind, Relocation, RelocationTarget};
@@ -83,8 +87,8 @@ pub struct Graph {
     /// Calls and jumps the graph can't follow, sorted the same way.
     pub unresolved: Vec<Unresolved>,
     /// Where the program starts running, such as the entry point; see
-    /// `roots.rs`. Sorted.
-    pub roots: Vec<Node>,
+    /// `roots.rs`. Sorted by node.
+    pub roots: Vec<Root>,
 }
 
 impl Graph {
@@ -275,6 +279,15 @@ impl Node {
             Node::Item(index) => &binary.items[index].name,
             Node::Import(index) => &binary.imports[index],
         }
+    }
+}
+
+/// A node's position in one list of `items` items followed by the imports,
+/// for analyses that keep a value per node.
+fn index(items: usize, node: Node) -> usize {
+    match node {
+        Node::Item(i) => i,
+        Node::Import(i) => items + i,
     }
 }
 

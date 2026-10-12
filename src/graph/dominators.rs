@@ -13,13 +13,13 @@
 use petgraph::algo::dominators::simple_fast;
 use petgraph::graph::{DiGraph, NodeIndex};
 
-use super::{Graph, Node};
+use super::{Graph, Node, index};
 use crate::binary::Binary;
 
 /// The dominator tree of a binary's graph.
 #[derive(Debug)]
 pub struct DominatorTree {
-    /// Each node's closest dominator, indexed as in [`DominatorTree::index`].
+    /// Each node's closest dominator, indexed by `graph::index`.
     /// `None` for nodes that no root reaches, and for the roots, which hang
     /// directly under the tree's top.
     parent: Vec<Option<Node>>,
@@ -38,11 +38,12 @@ impl DominatorTree {
         let mut sizes: Vec<u64> = binary.items.iter().map(|item| item.size).collect();
         // Imports have no bytes in the file.
         sizes.resize(binary.items.len() + binary.imports.len(), 0);
+        let roots: Vec<Node> = graph.roots.iter().map(|root| root.node).collect();
         let edges = graph
             .references
             .iter()
             .map(|reference| (Node::Item(reference.from), reference.to));
-        DominatorTree::from_edges(binary.items.len(), &sizes, &graph.roots, edges)
+        DominatorTree::from_edges(binary.items.len(), &sizes, &roots, edges)
     }
 
     /// Builds the tree for a graph of `sizes.len()` nodes, of which the
@@ -172,14 +173,6 @@ impl DominatorTree {
 
     fn index(&self, node: Node) -> usize {
         index(self.items, node)
-    }
-}
-
-/// A node's position in one list of items followed by imports.
-fn index(items: usize, node: Node) -> usize {
-    match node {
-        Node::Item(i) => i,
-        Node::Import(i) => items + i,
     }
 }
 

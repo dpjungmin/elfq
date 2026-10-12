@@ -72,6 +72,32 @@ Also uses, but shares with other code: __stack_chk_fail@plt, dispatch_event, fra
 A tree shows its 30 largest items and sums up the rest under their parents
 (`└─ 6 more`); `exclusive` lists every item, largest first.
 
+`why` answers from the other end: each item that uses SYMBOL keeps it in the
+file, and the tree shows the shortest chain to each of them from where the
+program starts. Users that nothing reaches, or that are there only because
+of SYMBOL, don't keep it and are left out of the tree:
+
+```
+$ elfq testdata/bin/c-x86_64.elf why log_msg
+log_msg is in the file because 4 functions use it. The shortest chain through each, from where the program starts:
+
+HOW            ITEM
+entry point    _start
+address taken  └─ main
+call              ├─ app_tick
+call              │  └─ log_msg
+address taken     ├─ on_button
+tail call         │  └─ log_msg
+call              ├─ process_frame
+call              │  └─ log_msg
+call              └─ report
+call                 └─ log_msg
+
+debug_dump uses log_msg too, but nothing reaches debug_dump.
+
+Every chain to log_msg goes through main, so it counts toward main's retained size.
+```
+
 ### What "exclusive" and "retained" mean
 
 elfq builds a graph whose nodes are **items** (functions and data objects) and
@@ -142,8 +168,10 @@ references and computes dominators and paths, `commands` run queries, and
    (`.L_MergedGlobals`) and code uses them through the block's address, so
    that address counts as a use of each variable in the block.
 6. **Analyze**: compute the dominator tree once from a virtual node that
-   points at every root. `retained`, `exclusive` and `top` read it; `why` is a
-   shortest-path search back to the roots; `callers` and `callees` read edges.
+   points at every root. `retained`, `exclusive` and `top` read it. `why`
+   searches from the roots for the shortest chain to each item that uses
+   SYMBOL, going around SYMBOL itself, and prefers calls among equally short
+   chains. `callers` and `callees` read edges.
 7. **Enrich with DWARF** when it is present (`gimli`): inlined-subroutine
    ranges attribute each function's bytes to the functions inlined into it,
    and source locations make output easier to follow. Nothing above depends on
@@ -159,7 +187,7 @@ src/
 ├── commands/      One file per subcommand: find the symbol (symbol.rs), run a query, render.
 ├── binary/        ELF loading, item discovery and names.
 ├── arch/          One file per instruction set (x86_64.rs, thumb.rs), each with one `scan` function.
-├── graph/         The reference graph, its roots and dominator tree; later paths.
+├── graph/         The reference graph, its roots, dominator tree and shortest paths.
 ├── debuginfo/     Optional DWARF enrichment.
 └── render/        Table, tree and JSON output.
 ```
@@ -220,7 +248,7 @@ function's stack frame).
 
 ## Open questions
 
-1. **Names.** `why` or `paths`? `exclusive` or `only-from`?
+1. **Names.** `exclusive` or `only-from`?
 2. **Pointer-reached functions in `exclusive`.** Listed with a marker (the
    current plan) or in a separate section?
 3. **Stripped Cortex-M files** have no symbols and no `.eh_frame`, so elfq

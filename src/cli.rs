@@ -30,6 +30,7 @@ Examples:
   elfq app.elf                            Overview of app.elf
   elfq app.elf retained process_frame     What process_frame keeps in the file
   elfq app.elf exclusive process_frame    What only process_frame leads to
+  elfq app.elf why crc_table              What keeps crc_table in the file
   elfq app.elf callers log_msg            What calls or uses log_msg
   elfq app.elf callees main               What main calls or uses";
 
@@ -41,6 +42,9 @@ pub enum Command {
     /// List the items that only SYMBOL leads to
     #[command(after_help = EXCLUSIVE)]
     Exclusive(SymbolArgs),
+    /// Show the chains of calls and references that keep SYMBOL in the file
+    #[command(after_help = format!("{WHY}\n\n{HOW}"))]
+    Why(SymbolArgs),
     /// List what calls or uses SYMBOL
     #[command(after_help = HOW)]
     Callers(SymbolArgs),
@@ -61,6 +65,12 @@ The HOW column says how one item uses the other:
                  pointer (Arm code also does this to use a variable)
   access         code reads or writes it
   pointer        data holds a pointer to it, as in a table of functions";
+
+const WHY: &str = "\
+The tree starts where the program does: at the entry point, a function the
+C runtime runs at startup, or a handler in the vector table. Each item in
+it is used by the one above it, and the chains end at SYMBOL. Only the
+shortest chain through each item that uses SYMBOL is shown.";
 
 const EXCLUSIVE: &str = "\
 An item is exclusive to SYMBOL when every path to it, from where the program
