@@ -19,18 +19,27 @@ what existing tools do on the same sample binaries.
 
 ## Commands
 
-Every command has the form `elfq <command> <FILE> [ARGS]`. The first three are
-the reason elfq exists; the rest support them.
+Every command has the form `elfq <FILE> <command> [ARGS]`: the file first,
+then the question, so that a command sits next to the symbol it asks about
+(`elfq app.elf callers log_msg`). `elfq <FILE>` alone prints an overview.
+`retained`, `exclusive` and `why` are the reason elfq exists; the rest
+support them.
 
 | Command | Answers |
 |---|---|
-| `elfq retained FILE SYMBOL` | What does SYMBOL keep alive, as a tree, and how many bytes is that? |
-| `elfq exclusive FILE SYMBOL` | Which functions and data are reachable only through SYMBOL? (flat list) |
-| `elfq why FILE SYMBOL` | Which chains of calls and references from the roots keep SYMBOL in the binary? |
-| `elfq top FILE` | Which items retain the most bytes? |
-| `elfq callers FILE SYMBOL` | What calls or references SYMBOL directly, and how (call, tail call, address taken)? |
-| `elfq callees FILE SYMBOL` | What does SYMBOL call or reference directly? |
-| `elfq inlined FILE [--in SYMBOL]` | Which inlined functions cost the most bytes across the binary, or inside SYMBOL? Needs DWARF. |
+| `elfq FILE` | What is this file, what did elfq find in it, and what can I ask next? From step 3 it leads with the items that retain the most bytes. |
+| `elfq FILE retained SYMBOL` | What does SYMBOL keep alive, as a tree, and how many bytes is that? |
+| `elfq FILE exclusive SYMBOL` | Which functions and data are reachable only through SYMBOL? (flat list) |
+| `elfq FILE why SYMBOL` | Which chains of calls and references from the roots keep SYMBOL in the binary? |
+| `elfq FILE top` | Which items retain the most bytes? |
+| `elfq FILE callers SYMBOL` | What calls or uses SYMBOL directly, and how (call, tail call, address taken, access, pointer in data)? |
+| `elfq FILE callees SYMBOL` | What does SYMBOL call or use directly? |
+| `elfq FILE inlined [--in SYMBOL]` | Which inlined functions cost the most bytes across the binary, or inside SYMBOL? Needs DWARF. |
+
+SYMBOL is a function or data object's name, an import (`write` finds the
+`write@plt` stub that code calls), or an address such as `0x1700`. A
+misspelled name gets suggestions. Typing the command first, as in
+`elfq callers app.elf log_msg`, gets a hint that the file comes first.
 
 All commands print a table or tree for people by default and take
 `--format json` for scripts.
@@ -39,7 +48,7 @@ Illustrative output (format to be settled when the command is built). The
 sizes are the real ones for `testdata/bin/c-x86_64.elf`:
 
 ```
-$ elfq retained testdata/bin/c-x86_64.elf process_frame
+$ elfq testdata/bin/c-x86_64.elf retained process_frame
 retained  own   item
   2047    532   process_frame
   1083     59   ├─ crc32
@@ -79,10 +88,13 @@ finds the references between them, `graph` computes dominators and paths,
    dynamic relocations.
 2. **Discover items**, each with an address, size and a record of how it was
    found. Sources, best first: the symbol table; the dynamic symbol table;
-   `.eh_frame` entries (on x86-64 they cover almost every function, even in
-   stripped files); the entry point; targets of calls found during scanning.
-   Items without a symbol get names like `fn_0x1690`, or `entry`.
-   `elfq debug items FILE` lists what was found, for checking this step.
+   PLT stubs, named after the import they jump to (`write@plt`), and
+   arrays of startup functions such as `.init_array`, named after their
+   section; `.eh_frame` entries (on x86-64 they cover almost every
+   function, even in stripped files); the entry point; targets of calls
+   found during scanning. Items without a symbol get names like
+   `fn_0x1690`, or `entry`. `elfq FILE debug items` lists what was found,
+   for checking this step.
 3. **Scan code** with an architecture backend. For each function it decodes
    the instructions and reports direct calls, tail jumps to other items,
    indirect call sites (target unknown), and PC-relative references to items
@@ -116,8 +128,8 @@ src/
 ├── cli.rs         clap definitions, one struct per subcommand.
 ├── commands/      One file per subcommand: find the symbol, run a query, render.
 ├── binary/        ELF loading and item discovery.
-├── arch/          One file per architecture (x86_64.rs, arm.rs) behind one trait.
-├── graph/         The reference graph, roots, dominators, paths.
+├── arch/          One file per instruction set (x86_64.rs, later arm.rs), each with one `scan` function.
+├── graph/         The reference graph and symbol lookup; later roots, dominators, paths.
 ├── debuginfo/     Optional DWARF enrichment.
 └── render/        Table, tree and JSON output.
 ```
@@ -129,7 +141,7 @@ Rules that keep it approachable:
   `commands` connect the two.
 - **Analysis never prints and commands never analyze.** A command is a short
   function that wires a query to a renderer.
-- **Adding an architecture** means implementing one trait ("given a
+- **Adding an architecture** means writing one function ("given a
   function's bytes and address, report its references") in a new file under
   `arch/`, plus sample binaries.
 - **Adding a command** means one clap struct in `cli.rs`, one file in
@@ -167,7 +179,7 @@ starts.
 | Step | Pull requests |
 |---|---|
 | 1. Survey and samples | This document, survey.md, testdata/ |
-| 2. Core engine | 2a: crate skeleton, CLI, CI, ELF loading and item discovery. 2b: x86-64 scanning, the reference graph, `callers` and `callees`. 2c: Cortex-M Thumb scanning and vector-table roots. |
+| 2. Core engine | 2a: crate skeleton, CLI, CI, ELF loading and item discovery. 2b: x86-64 scanning, PLT stub names, the reference graph, `callers`, `callees` and the overview. 2c: Cortex-M Thumb scanning and vector-table roots. |
 | 3. Headline queries | 3a: dominators, `retained` and `exclusive`. 3b: `why`. 3c: `top`. 3d: `inlined`. |
 | 4. Polish | Demangling, fuzzy symbol matching, JSON output, warnings where indirect calls make answers uncertain. |
 
@@ -186,5 +198,7 @@ function's stack frame).
 5. **Anonymous data** such as vtables and merged string literals has no
    symbol. elfq still has to make items for it, or references through it are
    lost: in the Rust sample, `app_main` reaches `<Gain as Stage>::run` only
-   through an unnamed vtable. The plan is to name such items by section and
-   address and never guess an owning function.
+   through an unnamed vtable, so today `callers` finds nothing for it. The
+   plan is to name such items by section and address and never guess an
+   owning function. This must land before step 3, or dominators would call
+   such functions unreachable.

@@ -1,17 +1,27 @@
 //! Loading an ELF file and finding the items in it.
 //!
 //! An *item* is a function or a data object: a named range of addresses that
-//! the rest of elfq reasons about. [`Binary::load`] finds items in three
+//! the rest of elfq reasons about. [`Binary::load`] finds items in these
 //! places, each one only adding what the earlier ones missed:
 //!
 //! 1. the symbol tables, `.symtab` and `.dynsym` (see `symbols.rs`);
-//! 2. the unwind table, `.eh_frame`, which still describes most functions in
+//! 2. the stubs that call shared libraries, such as `write@plt` (see
+//!    `plt.rs`), and arrays of startup and shutdown functions such as
+//!    `.init_array`, which have no symbols;
+//! 3. the unwind table, `.eh_frame`, which still describes most functions in
 //!    stripped x86-64 files (see `eh_frame.rs`);
-//! 3. the entry point.
+//! 4. the entry point.
+//!
+//! Loading also reads the dynamic relocations (see `relocations.rs`), which
+//! say where the program stores pointers and which functions and variables
+//! it imports from shared libraries.
 
 mod eh_frame;
+mod plt;
+mod relocations;
 mod symbols;
 
+use std::collections::HashSet;
 use std::fmt;
 use std::path::Path;
 
@@ -23,17 +33,39 @@ use object::{Architecture, Object, ObjectKind, ObjectSection, SectionFlags, Sect
 pub struct Binary {
     /// The instruction set, such as x86-64 or 32-bit Arm.
     pub architecture: Architecture,
-    /// An executable, or a shared library or position-independent executable.
-    pub kind: ObjectKind,
+    pub kind: FileKind,
     /// The address where execution starts.
     pub entry: u64,
+    /// Whether the file has a symbol table (`.symtab`). Stripping removes it.
+    pub has_symbols: bool,
+    /// Whether the file has DWARF debug info (`.debug_info`).
+    pub has_dwarf: bool,
     /// The file's sections, indexed by section number as `readelf -S` shows
     /// them. Entry 0 is the ELF null section.
     pub sections: Vec<Section>,
     /// Functions and data objects, sorted by address.
     pub items: Vec<Item>,
+    /// Names of the functions and variables the program uses from shared
+    /// libraries, such as `write`.
+    pub imports: Vec<String>,
+    /// Pointers that the dynamic loader writes into memory at startup,
+    /// sorted by address.
+    pub relocations: Vec<Relocation>,
     /// Problems that did not stop loading but may make answers incomplete.
     pub warnings: Vec<String>,
+    /// The whole file.
+    data: Vec<u8>,
+}
+
+/// What kind of program the file holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileKind {
+    /// An executable that runs at a fixed address, such as firmware.
+    Executable,
+    /// An executable that can run at any address, as most Linux programs do.
+    PositionIndependentExecutable,
+    /// A shared library.
+    SharedLibrary,
 }
 
 /// A section of the file, such as `.text` or `.rodata`.
@@ -46,6 +78,9 @@ pub struct Section {
     /// Whether the section is loaded into memory when the program runs.
     /// Only allocated sections hold items.
     pub allocated: bool,
+    /// Where the section's bytes are in the file, as (offset, size). `None`
+    /// for sections such as `.bss` that take no space in the file.
+    pub file_range: Option<(u64, u64)>,
 }
 
 /// A function or data object.
@@ -85,6 +120,30 @@ pub enum Source {
     EhFrame,
     /// The ELF header's entry point. The item has no name of its own.
     EntryPoint,
+    /// The procedure linkage table. The item is a stub named after the
+    /// import it jumps to, or the table's header named after its section.
+    Plt,
+    /// A section with a known purpose, such as `.init_array`, and no symbol.
+    /// The item is named after the section.
+    Section,
+}
+
+/// A place where the dynamic loader writes an address at startup, such as a
+/// function pointer in a table or an entry in the global offset table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Relocation {
+    /// Where the pointer is stored.
+    pub address: u64,
+    /// What it points at.
+    pub target: RelocationTarget,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelocationTarget {
+    /// An address in this file.
+    Address(u64),
+    /// An import, as an index into [`Binary::imports`].
+    Import(usize),
 }
 
 impl Binary {
@@ -101,39 +160,99 @@ impl Binary {
             bail!("not an ELF file");
         }
         let file = object::File::parse(data).context("malformed ELF file")?;
-        match file.kind() {
-            ObjectKind::Executable | ObjectKind::Dynamic => {}
+        let kind = match file.kind() {
+            ObjectKind::Executable => FileKind::Executable,
+            // Both are position-independent; only executables name the
+            // dynamic loader that starts them.
+            ObjectKind::Dynamic if file.section_by_name(".interp").is_some() => {
+                FileKind::PositionIndependentExecutable
+            }
+            ObjectKind::Dynamic => FileKind::SharedLibrary,
             ObjectKind::Relocatable => bail!(
                 "this is an object file; elfq needs a linked executable, shared library \
                  or firmware image"
             ),
             ObjectKind::Core => bail!("core dumps are not supported"),
             _ => bail!("unknown ELF file type"),
-        }
+        };
 
         let architecture = file.architecture();
-        let sections = read_sections(&file);
-        let mut warnings = Vec::new();
+        let mut binary = Binary {
+            architecture,
+            kind,
+            entry: code_address(architecture, file.entry()),
+            has_symbols: file.symbol_table().is_some(),
+            has_dwarf: file.section_by_name(".debug_info").is_some(),
+            sections: read_sections(&file),
+            items: Vec::new(),
+            imports: Vec::new(),
+            relocations: Vec::new(),
+            warnings: Vec::new(),
+            data: data.to_vec(),
+        };
+        (binary.imports, binary.relocations) = relocations::read(&file, architecture);
 
-        let mut items = symbols::items(&file, &sections);
+        let mut items = symbols::items(&file, &binary.sections);
+        add_new_items(&mut items, plt::stubs(&binary));
+        add_new_items(&mut items, section_items(&binary.sections));
         match eh_frame::function_ranges(&file) {
-            Ok(ranges) => add_unwind_items(&mut items, &ranges, &sections),
-            Err(err) => warnings.push(format!("cannot read .eh_frame: {err}")),
+            Ok(ranges) => add_unwind_items(&mut items, &ranges, &binary.sections),
+            Err(err) => binary
+                .warnings
+                .push(format!("cannot read .eh_frame: {err}")),
         }
-        let entry = code_address(architecture, file.entry());
-        add_entry_item(&mut items, entry, &sections);
+        add_entry_item(&mut items, binary.entry, &binary.sections);
 
         items.sort_by(|a, b| (a.address, b.size, &a.name).cmp(&(b.address, a.size, &b.name)));
-        estimate_missing_sizes(&mut items, &sections);
+        estimate_missing_sizes(&mut items, &binary.sections);
+        binary.items = items;
+        Ok(binary)
+    }
 
-        Ok(Binary {
-            architecture,
-            kind: file.kind(),
-            entry,
-            sections,
-            items,
-            warnings,
-        })
+    /// The bytes at `address`, or `None` if the file doesn't hold all `size`
+    /// of them. `.bss`, for example, takes no space in the file.
+    pub fn bytes(&self, address: u64, size: u64) -> Option<&[u8]> {
+        let section = self
+            .sections
+            .iter()
+            .find(|section| section.allocated && section.contains(address))?;
+        let (offset, file_size) = section.file_range?;
+        let start = address - section.address;
+        let end = start.checked_add(size)?;
+        if end > file_size {
+            return None;
+        }
+        self.data
+            .get(usize::try_from(offset + start).ok()?..usize::try_from(offset + end).ok()?)
+    }
+
+    /// The item whose bytes include `address`, as an index into
+    /// [`Binary::items`].
+    pub fn item_at(&self, address: u64) -> Option<usize> {
+        // Items don't overlap, except that several can start at one address,
+        // such as a function of unknown size and a data object.
+        let end = self.items.partition_point(|item| item.address <= address);
+        let start = self.items.get(end.checked_sub(1)?)?.address;
+        (0..end)
+            .rev()
+            .take_while(|&index| self.items[index].address == start)
+            .find(|&index| self.items[index].contains(address))
+    }
+
+    /// The relocation that stores a pointer at `address`, if any.
+    pub fn relocation_at(&self, address: u64) -> Option<&Relocation> {
+        let index = self
+            .relocations
+            .binary_search_by_key(&address, |relocation| relocation.address)
+            .ok()?;
+        Some(&self.relocations[index])
+    }
+}
+
+impl Item {
+    /// Whether `address` is the item's first byte or falls inside it.
+    pub fn contains(&self, address: u64) -> bool {
+        address == self.address || (address > self.address && address - self.address < self.size)
     }
 }
 
@@ -141,6 +260,16 @@ impl Section {
     /// Whether `address` falls inside the section.
     pub fn contains(&self, address: u64) -> bool {
         address >= self.address && address - self.address < self.size
+    }
+}
+
+impl fmt::Display for FileKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            FileKind::Executable => "executable",
+            FileKind::PositionIndependentExecutable => "position-independent executable",
+            FileKind::SharedLibrary => "shared library",
+        })
     }
 }
 
@@ -160,6 +289,8 @@ impl fmt::Display for Source {
             Source::DynamicSymbolTable => "dynsym",
             Source::EhFrame => "eh_frame",
             Source::EntryPoint => "entry",
+            Source::Plt => "plt",
+            Source::Section => "section",
         })
     }
 }
@@ -191,6 +322,7 @@ fn read_sections(file: &object::File) -> Vec<Section> {
             size: section.size(),
             kind: section.kind(),
             allocated,
+            file_range: section.file_range(),
         };
     }
     sections
@@ -203,6 +335,7 @@ fn null_section() -> Section {
         size: 0,
         kind: SectionKind::Unknown,
         allocated: false,
+        file_range: None,
     }
 }
 
@@ -211,6 +344,46 @@ fn code_section(sections: &[Section], address: u64) -> Option<usize> {
     sections
         .iter()
         .position(|s| s.allocated && s.kind == SectionKind::Text && s.contains(address))
+}
+
+/// Adds each of `new` unless an item of its kind already starts at its
+/// address: symbols always win.
+fn add_new_items(items: &mut Vec<Item>, new: Vec<Item>) {
+    let known: HashSet<(ItemKind, u64)> =
+        items.iter().map(|item| (item.kind, item.address)).collect();
+    items.extend(
+        new.into_iter()
+            .filter(|item| !known.contains(&(item.kind, item.address))),
+    );
+}
+
+/// Items for the arrays of functions that run at startup and exit, which
+/// have no symbols of their own.
+fn section_items(sections: &[Section]) -> Vec<Item> {
+    const ARRAYS: [&str; 5] = [
+        ".preinit_array",
+        ".init_array",
+        ".fini_array",
+        ".ctors",
+        ".dtors",
+    ];
+    sections
+        .iter()
+        .enumerate()
+        .filter(|(_, section)| {
+            section.allocated && section.size > 0 && ARRAYS.contains(&section.name.as_str())
+        })
+        .map(|(index, section)| Item {
+            name: section.name.clone(),
+            aliases: Vec::new(),
+            kind: ItemKind::Data,
+            address: section.address,
+            size: section.size,
+            size_estimated: false,
+            section: index,
+            source: Source::Section,
+        })
+        .collect()
 }
 
 /// Adds a function for each unwind-table range that the symbols missed, and
@@ -314,6 +487,7 @@ mod tests {
             size: 0x1000,
             kind: SectionKind::Text,
             allocated: true,
+            file_range: None,
         }
     }
 
