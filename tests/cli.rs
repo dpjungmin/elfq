@@ -39,7 +39,7 @@ testdata/bin/c-x86_64.elf: x86-64 position-independent executable, with symbols 
 
 Try:
   elfq testdata/bin/c-x86_64.elf callers log_msg
-  elfq testdata/bin/c-x86_64.elf callees main
+  elfq testdata/bin/c-x86_64.elf retained main
 "
     );
 }
@@ -56,7 +56,7 @@ testdata/bin/c-cortex-m4.elf: 32-bit Arm executable, with symbols and DWARF debu
 
 Try:
   elfq testdata/bin/c-cortex-m4.elf callers log_msg
-  elfq testdata/bin/c-cortex-m4.elf callees main
+  elfq testdata/bin/c-cortex-m4.elf retained main
 "
     );
     assert_eq!(
@@ -67,6 +67,96 @@ SysTick_Handler is used by 1 data object:
 CALLER        HOW      AT
 vector_table  pointer  0x800003c
 "
+    );
+}
+
+#[test]
+fn retained_shows_what_a_function_keeps_as_a_tree() {
+    assert_eq!(
+        stdout(&[SAMPLE, "retained", "process_frame"]),
+        "\
+process_frame keeps 2068 bytes in the file: its own 532, and 1536 in 8 items that only it leads to.
+
+RETAINED   OWN  ITEM
+    2068   532  process_frame
+    1083    59  ├─ crc32
+    1024  1024  │  └─ crc_table
+     378   271  ├─ apply_filter
+     107    75  │  └─ filter_tap
+      32    32  │     └─ fir_coeffs
+      54    54  ├─ decode_header
+      12   ~12  ├─ .rodata@0x2012
+       9    ~9  └─ .rodata@0x201e
+
+Also uses, but shares with other code: __stack_chk_fail@plt, dispatch_event, frames_bad, frames_ok, log_msg, stats.
+"
+    );
+}
+
+#[test]
+fn a_large_tree_shows_its_largest_items() {
+    let output = stdout(&[SAMPLE, "retained", "main"]);
+    assert!(
+        output.starts_with("main keeps 3597 bytes in the file"),
+        "{output}"
+    );
+    // Smaller items are summed up under their parent.
+    assert!(
+        output.contains("      21        │  └─ 2 more\n"),
+        "{output}"
+    );
+    assert!(
+        output.contains(
+            "The tree shows the largest 30 of the 50 items. To list them all:\n  \
+             elfq testdata/bin/c-x86_64.elf exclusive main\n"
+        ),
+        "{output}"
+    );
+    // The handlers are only called through the `handlers` table.
+    assert!(
+        output.contains("├─ on_button (through a pointer)\n"),
+        "{output}"
+    );
+    assert!(
+        output.ends_with(
+            "Nothing calls the functions marked \"through a pointer\" directly, so elfq counts \
+             them for the code or data that holds their address.\n"
+        ),
+        "{output}"
+    );
+}
+
+#[test]
+fn exclusive_lists_what_only_a_function_leads_to() {
+    assert_eq!(
+        stdout(&[SAMPLE, "exclusive", "process_frame"]),
+        "\
+process_frame is the only way to reach 8 items, 1536 bytes in all:
+
+SIZE  KIND      ITEM
+1024  data      crc_table
+ 271  function  apply_filter
+  75  function  filter_tap
+  59  function  crc32
+  54  function  decode_header
+  32  data      fir_coeffs
+ ~12  data      .rodata@0x2012
+  ~9  data      .rodata@0x201e
+"
+    );
+    assert_eq!(
+        stdout(&[SAMPLE, "exclusive", "crc_table"]),
+        "Nothing else is in the file only because of crc_table.\n"
+    );
+}
+
+#[test]
+fn dead_code_keeps_nothing() {
+    assert_eq!(
+        stdout(&[SAMPLE, "retained", "debug_dump"]),
+        "Nothing reaches debug_dump from where the program starts, as far as elfq can tell, so \
+         nothing is there only because of it. It may be dead code, or used in a way elfq can't \
+         see.\n"
     );
 }
 

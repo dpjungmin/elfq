@@ -49,22 +49,28 @@ gets suggestions. Typing the command first, as in
 All commands print a table or tree for people by default and take
 `--format json` for scripts.
 
-Illustrative output (format to be settled when the command is built). The
-sizes are the real ones for `testdata/bin/c-x86_64.elf`:
+For example:
 
 ```
 $ elfq testdata/bin/c-x86_64.elf retained process_frame
-retained  own   item
-  2047    532   process_frame
-  1083     59   ├─ crc32
-  1024   1024   │  └─ crc_table (data)
-   378    271   ├─ apply_filter
-   107     75   │  └─ filter_tap
-    32     32   │     └─ fir_coeffs (data)
-    54     54   └─ decode_header
+process_frame keeps 2068 bytes in the file: its own 532, and 1536 in 8 items that only it leads to.
 
-Shared with other code, not counted: log_msg, dispatch_event, __stack_chk_fail
+RETAINED   OWN  ITEM
+    2068   532  process_frame
+    1083    59  ├─ crc32
+    1024  1024  │  └─ crc_table
+     378   271  ├─ apply_filter
+     107    75  │  └─ filter_tap
+      32    32  │     └─ fir_coeffs
+      54    54  ├─ decode_header
+      12   ~12  ├─ .rodata@0x2012
+       9    ~9  └─ .rodata@0x201e
+
+Also uses, but shares with other code: __stack_chk_fail@plt, dispatch_event, frames_bad, frames_ok, log_msg, stats.
 ```
+
+A tree shows its 30 largest items and sums up the rest under their parents
+(`└─ 6 more`); `exclusive` lists every item, largest first.
 
 ### What "exclusive" and "retained" mean
 
@@ -81,7 +87,7 @@ through pointers, static analysis cannot know which indirect call reaches
 them, so elfq attributes them to the code that takes their address (and the
 table that stores it). That is the same rule the linker's `--gc-sections`
 uses, so retained sizes match what removing code would save. Output marks such
-items so the reader knows they were reached through a pointer.
+functions "(through a pointer)" so the reader knows.
 
 ## How it works
 
@@ -121,12 +127,20 @@ references and computes dominators and paths, `commands` run queries, and
    of an item (plus 1 for a Thumb function) for a pointer to it. A number
    that happens to equal an address is mistaken for a pointer, which is rare
    because addresses are large numbers.
-5. **Find roots**: the ELF entry point, `.preinit_array`, `.init_array` and
-   `.fini_array` entries, exported symbols of shared libraries, and the
-   Cortex-M vector table (recognized by section name or by its shape: a RAM
-   address followed by the entry point). `--root SYMBOL` adds more.
-   Non-allocated sections and unwind tables (`.eh_frame`, `.ARM.exidx`) are
-   never sources of references; otherwise everything would look reachable.
+5. **Find roots**, where the program starts running: the ELF entry point;
+   the functions in `.preinit_array`, `.init_array` and `.fini_array`, and
+   the code in `.init` and `.fini`; the PLT header, which the dynamic
+   loader uses; personality routines that `.eh_frame` names, which the
+   unwinder calls; notes such as `__abi_tag`; and the Cortex-M vector table,
+   recognized by its shape rather than its section name: a word holding the
+   entry point's Thumb address, then handlers until an entry is neither 0
+   nor a handler. Not yet: exported symbols of shared libraries, which need
+   a shared-library sample, and `--root SYMBOL`. Non-allocated sections and
+   unwind tables (`.eh_frame`, `.ARM.exidx`) are never sources of
+   references; otherwise everything would look reachable. One more source
+   is only on Arm: LLVM merges small variables into one block
+   (`.L_MergedGlobals`) and code uses them through the block's address, so
+   that address counts as a use of each variable in the block.
 6. **Analyze**: compute the dominator tree once from a virtual node that
    points at every root. `retained`, `exclusive` and `top` read it; `why` is a
    shortest-path search back to the roots; `callers` and `callees` read edges.
@@ -145,7 +159,7 @@ src/
 ├── commands/      One file per subcommand: find the symbol (symbol.rs), run a query, render.
 ├── binary/        ELF loading, item discovery and names.
 ├── arch/          One file per instruction set (x86_64.rs, thumb.rs), each with one `scan` function.
-├── graph/         The reference graph; later roots, dominators, paths.
+├── graph/         The reference graph, its roots and dominator tree; later paths.
 ├── debuginfo/     Optional DWARF enrichment.
 └── render/        Table, tree and JSON output.
 ```
@@ -181,8 +195,8 @@ than through a general disassembler's API.
 - **Integration tests** run each command on the committed files in
   `testdata/bin`. [testdata/README.md](../testdata/README.md) lists the
   expected answers, for example that `exclusive process_frame` on any C build
-  is `decode_header`, `crc32`, `crc_table`, `apply_filter`, `filter_tap` and
-  `fir_coeffs`, with or without DWARF.
+  is `decode_header`, `crc32`, `crc_table`, `apply_filter`, `filter_tap`,
+  `fir_coeffs` and two message strings, with or without DWARF.
 - **Snapshot tests** pin the human-readable output so format changes are
   reviewed on purpose.
 - **CI** runs `cargo fmt --check`, `cargo clippy -- -D warnings` and

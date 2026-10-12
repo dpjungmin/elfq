@@ -12,6 +12,15 @@
 //! [`Graph::build`] works out which item each address belongs to. Calls and
 //! jumps it can't follow, such as a call through a function pointer, are kept
 //! in [`Graph::unresolved`] so that answers can say what they don't know.
+//!
+//! [`Graph::roots`] are where the program starts running (see `roots.rs`).
+//! From them, [`DominatorTree`] works out which items are reachable only
+//! through which (see `dominators.rs`).
+
+mod dominators;
+mod roots;
+
+pub use dominators::DominatorTree;
 
 use crate::arch::{self, CodeReference, CodeReferenceKind};
 use crate::binary::{Binary, FileKind, ItemKind, Relocation, RelocationTarget};
@@ -73,6 +82,9 @@ pub struct Graph {
     pub references: Vec<Reference>,
     /// Calls and jumps the graph can't follow, sorted the same way.
     pub unresolved: Vec<Unresolved>,
+    /// Where the program starts running, such as the entry point; see
+    /// `roots.rs`. Sorted.
+    pub roots: Vec<Node>,
 }
 
 impl Graph {
@@ -99,6 +111,7 @@ impl Graph {
         graph
             .unresolved
             .sort_by_key(|unresolved| (unresolved.from, unresolved.site));
+        graph.roots = roots::find(binary);
         graph
     }
 
@@ -182,23 +195,28 @@ impl Graph {
             CodeReferenceKind::IndirectCall => self.unresolved.push(unresolved(true, None)),
             CodeReferenceKind::IndirectJump => self.unresolved.push(unresolved(false, None)),
             CodeReferenceKind::Address(address) => {
-                if let Some(to) = binary.item_at(address)
-                    && to != from
-                {
-                    self.add(from, Node::Item(to), ReferenceKind::Address, site);
+                for to in items_used_at(binary, address) {
+                    if to != from {
+                        self.add(from, Node::Item(to), ReferenceKind::Address, site);
+                    }
                 }
             }
-            CodeReferenceKind::Memory(address) => match binary.item_at(address) {
-                Some(to) if to == from => {}
-                Some(to) => self.add(from, Node::Item(to), ReferenceKind::Access, site),
-                // Not in any item: maybe a global offset table entry, which
-                // code reads to get the address the loader stored there.
-                None => {
+            CodeReferenceKind::Memory(address) => {
+                let used = items_used_at(binary, address);
+                if used.is_empty() {
+                    // Not in any item: maybe a global offset table entry,
+                    // which code reads to get the address the loader stored
+                    // there.
                     if let Some(to) = pointer_target(binary, address) {
                         self.add(from, to, ReferenceKind::Address, site);
                     }
                 }
-            },
+                for to in used {
+                    if to != from {
+                        self.add(from, Node::Item(to), ReferenceKind::Access, site);
+                    }
+                }
+            }
         }
     }
 
@@ -274,6 +292,24 @@ fn item_starting_at(binary: &Binary, address: u64) -> Option<usize> {
         let function = starts_at(address & !1).filter(|_| binary.thumb && address & 1 == 1)?;
         (binary.items[function].kind == ItemKind::Function).then_some(function)
     })
+}
+
+/// The items that code using `address` uses: the item there, or every
+/// variable in a block of merged variables that starts there.
+fn items_used_at(binary: &Binary, address: u64) -> Vec<usize> {
+    let block = binary
+        .merged_variables
+        .iter()
+        .find(|&&(start, _)| start == address);
+    match block {
+        Some(&(start, size)) => {
+            let first = binary.items.partition_point(|item| item.address < start);
+            (first..binary.items.len())
+                .take_while(|&index| binary.items[index].address < start + size)
+                .collect()
+        }
+        None => binary.item_at(address).into_iter().collect(),
+    }
 }
 
 /// What the pointer at `address` points to, when the dynamic loader writes
