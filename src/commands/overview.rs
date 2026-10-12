@@ -5,18 +5,45 @@ use std::io::Write;
 use std::path::Path;
 
 use anyhow::Result;
+use serde::Serialize;
 
 use super::symbol::{self, Names};
-use super::top;
 use super::tree::RetainedTree;
+use super::{json, top};
 use crate::arch;
 use crate::binary::{Binary, FileKind, ItemKind, Source};
+use crate::cli::Format;
 use crate::graph::{Graph, Node};
 
 /// How many items the tree of the largest items shows.
 const SHOWN: usize = 5;
 
-pub fn run(path: &Path, binary: &Binary, out: &mut dyn Write) -> Result<()> {
+/// What the file is and what elfq found in it. The largest items are in
+/// `top`'s JSON, and the commands to try next are only for people.
+#[derive(Serialize)]
+struct OverviewJson {
+    file: String,
+    /// As the text names it, such as `x86-64` or `32-bit Arm`.
+    architecture: String,
+    /// `executable`, `position-independent executable` or `shared library`.
+    kind: String,
+    has_symbols: bool,
+    has_dwarf: bool,
+    functions: usize,
+    data_objects: usize,
+    imports: usize,
+    /// How many references elfq found between the items, or `null` when it
+    /// can't read the file's code.
+    references: Option<usize>,
+    /// How many calls and jumps go through pointers set at run time, which
+    /// elfq can't follow, or `null` when it can't read the file's code.
+    indirect_calls: Option<usize>,
+}
+
+pub fn run(path: &Path, binary: &Binary, format: Format, out: &mut dyn Write) -> Result<()> {
+    if format == Format::Json {
+        return write_json(path, binary, out);
+    }
     let names = match (binary.has_symbols, binary.has_dwarf) {
         (true, true) => "with symbols and DWARF debug info",
         (true, false) => "with symbols",
@@ -32,7 +59,7 @@ pub fn run(path: &Path, binary: &Binary, out: &mut dyn Write) -> Result<()> {
     )?;
     writeln!(out)?;
 
-    let count = |kind| binary.items.iter().filter(|i| i.kind == kind).count();
+    let count = |kind| count(binary, kind);
     let functions = super::plural(count(ItemKind::Function), "function", "functions");
     let data = super::plural(count(ItemKind::Data), "data object", "data objects");
     let mut found = match binary.imports.len() {
@@ -81,11 +108,7 @@ pub fn run(path: &Path, binary: &Binary, out: &mut dyn Write) -> Result<()> {
         )?,
         _ => {}
     }
-    let indirect = graph
-        .unresolved
-        .iter()
-        .filter(|u| u.target.is_none())
-        .count();
+    let indirect = indirect_calls(&graph);
     if indirect > 0 {
         writeln!(
             out,
@@ -135,6 +158,37 @@ pub fn run(path: &Path, binary: &Binary, out: &mut dyn Write) -> Result<()> {
     .flatten()
     .collect();
     write_try(path, &examples, out)
+}
+
+fn write_json(path: &Path, binary: &Binary, out: &mut dyn Write) -> Result<()> {
+    let graph = arch::is_supported(binary.architecture, binary.thumb).then(|| Graph::build(binary));
+    let answer = OverviewJson {
+        file: path.display().to_string(),
+        architecture: super::architecture_name(binary.architecture),
+        kind: binary.kind.to_string(),
+        has_symbols: binary.has_symbols,
+        has_dwarf: binary.has_dwarf,
+        functions: count(binary, ItemKind::Function),
+        data_objects: count(binary, ItemKind::Data),
+        imports: binary.imports.len(),
+        references: graph.as_ref().map(|graph| graph.references.len()),
+        indirect_calls: graph.as_ref().map(indirect_calls),
+    };
+    json::write(&answer, out)
+}
+
+/// How many items of `kind` the file has.
+fn count(binary: &Binary, kind: ItemKind) -> usize {
+    binary.items.iter().filter(|item| item.kind == kind).count()
+}
+
+/// How many calls and jumps go through pointers set at run time.
+fn indirect_calls(graph: &Graph) -> usize {
+    graph
+        .unresolved
+        .iter()
+        .filter(|unresolved| unresolved.target.is_none())
+        .count()
 }
 
 /// Writes the commands to try next, each given without `elfq FILE`.

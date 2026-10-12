@@ -9,9 +9,13 @@ use std::io::Write;
 use std::path::Path;
 
 use anyhow::Result;
+use serde::Serialize;
 
 use super::exclusive::Exclusive;
+use super::json;
+use super::tree::KeptItem;
 use crate::binary::Binary;
+use crate::cli::Format;
 use crate::graph::Node;
 use crate::render::{Align, Table};
 
@@ -19,8 +23,34 @@ use crate::render::{Align, Table};
 /// rest.
 const SHOWN: usize = 30;
 
-pub fn run(path: &Path, binary: &Binary, symbol: &str, out: &mut dyn Write) -> Result<()> {
+#[derive(Serialize)]
+struct RetainedJson<'a> {
+    symbol: json::Item<'a>,
+    /// Whether anything reaches SYMBOL from where the program starts. When
+    /// nothing does, nothing is there only because of it.
+    reachable: bool,
+    /// SYMBOL's own bytes and those of everything it keeps: the bytes that
+    /// would go away if it did.
+    retained: u64,
+    /// The items that only SYMBOL leads to, as a tree: each has what it
+    /// keeps in turn, and the largest come first.
+    keeps: Vec<KeptItem<'a>>,
+    /// What SYMBOL's code uses that other code uses too, and so isn't
+    /// counted, sorted by name.
+    shares: Vec<json::Item<'a>>,
+}
+
+pub fn run(
+    path: &Path,
+    binary: &Binary,
+    symbol: &str,
+    format: Format,
+    out: &mut dyn Write,
+) -> Result<()> {
     let exclusive = Exclusive::find(binary, symbol)?;
+    if format == Format::Json {
+        return write_json(&exclusive, out);
+    }
     if !exclusive.is_reachable() {
         return exclusive.write_unreachable(out);
     }
@@ -75,10 +105,32 @@ pub fn run(path: &Path, binary: &Binary, symbol: &str, out: &mut dyn Write) -> R
     retained.write_pointer_note(&shown, out)
 }
 
-/// Names what SYMBOL's code uses that other code uses too, and so isn't
-/// counted.
-fn write_shared(exclusive: &Exclusive, out: &mut dyn Write) -> Result<()> {
-    const NAMED: usize = 10;
+fn write_json(exclusive: &Exclusive, out: &mut dyn Write) -> Result<()> {
+    let retained = &exclusive.retained;
+    let binary = retained.binary;
+    let node = exclusive.node;
+    let reachable = exclusive.is_reachable();
+    let shares = if reachable {
+        shared(exclusive)
+    } else {
+        Vec::new()
+    };
+    let answer = RetainedJson {
+        symbol: json::Item::new(binary, node),
+        reachable,
+        retained: retained.tree.retained(node),
+        keeps: retained.to_json(retained.tree.children(node)),
+        shares: shares
+            .into_iter()
+            .map(|node| json::Item::new(binary, node))
+            .collect(),
+    };
+    json::write(&answer, out)
+}
+
+/// What SYMBOL's code uses that other code uses too, and so isn't counted,
+/// sorted by name.
+fn shared(exclusive: &Exclusive) -> Vec<Node> {
     let binary = exclusive.retained.binary;
     let mut kept: HashSet<Node> = exclusive
         .retained
@@ -87,15 +139,28 @@ fn write_shared(exclusive: &Exclusive, out: &mut dyn Write) -> Result<()> {
         .into_iter()
         .collect();
     kept.insert(exclusive.node);
-    let mut shared: Vec<&str> = exclusive
+    let mut shared: Vec<Node> = exclusive
         .retained
         .graph
         .references
         .iter()
         .filter(|r| kept.contains(&Node::Item(r.from)) && !kept.contains(&r.to))
-        .map(|r| r.to.name(binary))
+        .map(|r| r.to)
         .collect();
-    shared.sort_unstable();
+    shared.sort_by_key(|&node| (node.name(binary), node));
+    shared.dedup();
+    shared
+}
+
+/// Names what SYMBOL's code uses that other code uses too, and so isn't
+/// counted.
+fn write_shared(exclusive: &Exclusive, out: &mut dyn Write) -> Result<()> {
+    const NAMED: usize = 10;
+    let binary = exclusive.retained.binary;
+    let mut shared: Vec<&str> = shared(exclusive)
+        .into_iter()
+        .map(|node| node.name(binary))
+        .collect();
     shared.dedup();
     if shared.is_empty() {
         return Ok(());

@@ -84,7 +84,9 @@ impl DominatorTree {
             children: vec![Vec::new(); count],
             top: Vec::new(),
             reachable: vec![false; count],
-            retained: vec![0; count],
+            // Nothing is exclusive to a node that no root reaches, so its
+            // retained size stays its own.
+            retained: sizes.to_vec(),
             items,
         };
         for i in 0..count {
@@ -221,5 +223,6 @@ mod tests {
         assert!(!tree.is_reachable(Item(2)));
         assert_eq!(tree.parent(Item(1)), Some(Item(0)));
         assert_eq!(tree.retained(Item(0)), 11);
+        assert_eq!(tree.retained(Item(2)), 100);
     }
 }
