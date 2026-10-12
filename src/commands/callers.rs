@@ -3,12 +3,21 @@
 use std::io::Write;
 
 use anyhow::Result;
+use serde::Serialize;
 
+use super::json;
 use crate::binary::Binary;
+use crate::cli::Format;
 use crate::graph::Node;
 use crate::render::{Align, Table};
 
-pub fn run(binary: &Binary, symbol: &str, out: &mut dyn Write) -> Result<()> {
+#[derive(Serialize)]
+struct Callers<'a> {
+    symbol: json::Item<'a>,
+    callers: Vec<json::Use<'a>>,
+}
+
+pub fn run(binary: &Binary, symbol: &str, format: Format, out: &mut dyn Write) -> Result<()> {
     let graph = super::reference_graph(binary)?;
     let node = super::symbol::find(binary, symbol)?;
     let name = node.name(binary);
@@ -17,6 +26,13 @@ pub fn run(binary: &Binary, symbol: &str, out: &mut dyn Write) -> Result<()> {
         Node::Item(reference.from)
     });
     rows.sort_by(|a, b| a.node.name(binary).cmp(b.node.name(binary)));
+    if format == Format::Json {
+        let callers = Callers {
+            symbol: json::Item::new(binary, node),
+            callers: json::uses(binary, &rows),
+        };
+        return json::write(&callers, out);
+    }
     if rows.is_empty() {
         let entry = binary.item_at(binary.entry).map(Node::Item);
         if entry == Some(node) {

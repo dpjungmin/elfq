@@ -15,3 +15,5 @@ iced-x86 = { version = "1.21.0", default-features = false, features = ["std", "d
 object = { version = "0.40.0", default-features = false, features = ["read_core", "elf", "std"] }
 petgraph = { version = "0.8.3", default-features = false, features = ["std"] }
 rustc-demangle = "0.1.28"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"

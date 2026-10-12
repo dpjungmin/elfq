@@ -11,9 +11,12 @@ use std::io::Write;
 use std::path::Path;
 
 use anyhow::{Result, bail};
+use serde::Serialize;
 
+use super::json;
 use super::symbol::Names;
 use crate::binary::{Binary, ItemKind};
+use crate::cli::Format;
 use crate::debuginfo::{self, InlinedCopy};
 use crate::graph::Node;
 use crate::render::{Align, Table};
@@ -22,7 +25,13 @@ use crate::render::{Align, Table};
 /// lines that sum up the rest.
 const SHOWN: usize = 30;
 
-pub fn run(path: &Path, binary: &Binary, within: Option<&str>, out: &mut dyn Write) -> Result<()> {
+pub fn run(
+    path: &Path,
+    binary: &Binary,
+    within: Option<&str>,
+    format: Format,
+    out: &mut dyn Write,
+) -> Result<()> {
     if !binary.has_dwarf {
         bail!(
             "{} has no DWARF debug info, which elfq needs to tell what the compiler inlined; \
@@ -32,12 +41,23 @@ pub fn run(path: &Path, binary: &Binary, within: Option<&str>, out: &mut dyn Wri
     }
     let copies = debuginfo::inlined_copies(binary)?;
     match within {
-        None => write_list(path, binary, &copies, out),
-        Some(symbol) => write_tree(binary, &copies, symbol, out),
+        None => write_list(path, binary, &copies, format, out),
+        Some(symbol) => write_tree(binary, &copies, symbol, format, out),
     }
 }
 
+/// The list as JSON: every inlined function, not only the largest.
+#[derive(Serialize)]
+struct ListJson<'a> {
+    /// The bytes of code that inlined copies take in all.
+    inlined_bytes: u64,
+    /// The bytes of all the functions in the file.
+    code_bytes: u64,
+    functions: Vec<Total<'a>>,
+}
+
 /// One inlined function's copies, added up.
+#[derive(Serialize)]
 struct Total<'a> {
     name: &'a str,
     /// The bytes the copies take, not counting the functions inlined into
@@ -51,12 +71,9 @@ fn write_list(
     path: &Path,
     binary: &Binary,
     copies: &[InlinedCopy],
+    format: Format,
     out: &mut dyn Write,
 ) -> Result<()> {
-    if copies.is_empty() {
-        writeln!(out, "The debug info lists no inlined code.")?;
-        return Ok(());
-    }
     let mut by_name: BTreeMap<&str, Total> = BTreeMap::new();
     for copy in copies {
         let total = by_name.entry(&copy.name).or_insert(Total {
@@ -77,6 +94,18 @@ fn write_list(
         .filter(|item| item.kind == ItemKind::Function)
         .map(|item| item.size)
         .sum();
+    if format == Format::Json {
+        let list = ListJson {
+            inlined_bytes: inlined,
+            code_bytes: code,
+            functions: totals,
+        };
+        return json::write(&list, out);
+    }
+    if copies.is_empty() {
+        writeln!(out, "The debug info lists no inlined code.")?;
+        return Ok(());
+    }
     writeln!(
         out,
         "Inlined copies of {} take {inlined} of the file's {code} bytes of code:",
@@ -137,6 +166,7 @@ fn write_tree(
     binary: &Binary,
     copies: &[InlinedCopy],
     symbol: &str,
+    format: Format,
     out: &mut dyn Write,
 ) -> Result<()> {
     let node = super::symbol::find(binary, symbol)?;
@@ -149,16 +179,24 @@ fn write_tree(
         bail!("{name} is a data object, not a function, so nothing is inlined into it");
     }
     let groups = Groups::new(copies, index);
-    if groups.top.is_empty() {
-        writeln!(out, "The debug info lists no inlined code in {name}.")?;
-        return Ok(());
-    }
-
     let bytes: u64 = groups
         .top
         .iter()
         .map(|&group| groups.list[group].bytes)
         .sum();
+    if format == Format::Json {
+        let tree = TreeJson {
+            function: json::Item::new(binary, node),
+            inlined_bytes: bytes,
+            inlined: groups.to_json(&groups.top),
+        };
+        return json::write(&tree, out);
+    }
+    if groups.top.is_empty() {
+        writeln!(out, "The debug info lists no inlined code in {name}.")?;
+        return Ok(());
+    }
+
     let functions: BTreeSet<&str> = groups.list.iter().map(|group| group.name).collect();
     let functions = super::plural(functions.len(), "function", "functions");
     let are = if bytes == 1 { "is" } else { "are" };
@@ -203,6 +241,25 @@ fn write_empty_copies_note(out: &mut dyn Write) -> Result<()> {
          info gives it no bytes of its own."
     )?;
     Ok(())
+}
+
+/// The tree as JSON: every group, not only the largest.
+#[derive(Serialize)]
+struct TreeJson<'a> {
+    function: json::Item<'a>,
+    /// The bytes of the function's code that inlined copies take.
+    inlined_bytes: u64,
+    inlined: Vec<GroupJson<'a>>,
+}
+
+#[derive(Serialize)]
+struct GroupJson<'a> {
+    name: &'a str,
+    /// The bytes the copies take, including the copies inlined into them.
+    bytes: u64,
+    copies: usize,
+    /// The functions inlined into these copies.
+    inlined: Vec<GroupJson<'a>>,
 }
 
 /// The inlined copies in one function, as a tree in which the copies of
@@ -299,6 +356,21 @@ impl<'a> Groups<'a> {
             }
         }
         shown
+    }
+
+    fn to_json(&self, groups: &[usize]) -> Vec<GroupJson<'a>> {
+        groups
+            .iter()
+            .map(|&group| {
+                let group = &self.list[group];
+                GroupJson {
+                    name: group.name,
+                    bytes: group.bytes,
+                    copies: group.copies,
+                    inlined: self.to_json(&group.children),
+                }
+            })
+            .collect()
     }
 
     /// Adds `group`'s row and, below it, its shown children, with one line
