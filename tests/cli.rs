@@ -34,7 +34,7 @@ fn a_file_alone_gets_an_overview() {
         "\
 testdata/bin/c-x86_64.elf: x86-64 position-independent executable, with symbols and DWARF debug info
 
-32 functions, 23 data objects and 8 imports, with 106 references between them.
+32 functions, 36 data objects and 8 imports, with 119 references between them.
 4 calls or jumps go through pointers set at run time, which elfq can't follow.
 
 Try:
@@ -51,7 +51,7 @@ fn firmware_gets_the_same_overview() {
         "\
 testdata/bin/c-cortex-m4.elf: 32-bit Arm executable, with symbols and DWARF debug info
 
-25 functions and 20 data objects, with 86 references between them.
+25 functions and 31 data objects, with 97 references between them.
 1 call or jump goes through pointers set at run time, which elfq can't follow.
 
 Try:
@@ -101,6 +101,32 @@ elfq_sample::process_frame is used by 1 function:
 CALLER                 HOW   AT
 elfq_sample::app_main  call  0x14f12, 0x14f29, 0x14f40
 "
+    );
+}
+
+#[test]
+fn data_without_a_symbol_is_named_by_section_and_address() {
+    // The vtable through which `app_main` reaches `Gain::run`.
+    assert_eq!(
+        stdout(&[
+            "testdata/bin/rust-x86_64-nodebug.elf",
+            "callers",
+            "Gain::run"
+        ]),
+        "\
+<elfq_sample::Gain as elfq_sample::Stage>::run is used by 1 data object:
+
+CALLER                HOW      AT
+.data.rel.ro@0x52da8  pointer  0x52dc0
+"
+    );
+    let overview = stdout(&["testdata/bin/c-x86_64-stripped.elf"]);
+    assert!(
+        overview.contains(
+            "Functions and data without symbols are named by address, like fn_0x10a0 and \
+             .rodata@0x2004.\n"
+        ),
+        "{overview}"
     );
 }
 

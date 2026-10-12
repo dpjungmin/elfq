@@ -37,7 +37,7 @@ pub fn run(path: &Path, binary: &Binary, out: &mut dyn Write) -> Result<()> {
             super::plural(n, "import", "imports")
         ),
     };
-    if !arch::is_supported(binary) {
+    if !arch::is_supported(binary.architecture, binary.thumb) {
         writeln!(out, "{found}.")?;
         writeln!(out, "{}.", super::cannot_read_code(binary))?;
         return Ok(());
@@ -60,12 +60,21 @@ pub fn run(path: &Path, binary: &Binary, out: &mut dyn Write) -> Result<()> {
             "The file has no symbols or unwind table, so elfq can't find its functions yet."
         )?;
     }
-    if let Some(unnamed) = binary.items.iter().find(|i| i.source == Source::EhFrame) {
-        writeln!(
+    // Unnamed data is common even with symbols, such as string literals, so
+    // explain its names only in files that have unnamed functions too.
+    let unnamed = |source| binary.items.iter().find(|i| i.source == source);
+    match (unnamed(Source::EhFrame), unnamed(Source::Reference)) {
+        (Some(function), Some(data)) => writeln!(
+            out,
+            "Functions and data without symbols are named by address, like {} and {}.",
+            function.name, data.name
+        )?,
+        (Some(function), None) => writeln!(
             out,
             "Functions without symbols are named by address, like {}.",
-            unnamed.name
-        )?;
+            function.name
+        )?,
+        _ => {}
     }
     let indirect = graph
         .unresolved

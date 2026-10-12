@@ -31,14 +31,14 @@ cargo test
 | `src/main.rs` | The program: parses arguments, runs one command, prints errors. |
 | `src/cli.rs` | Command-line arguments, one struct per subcommand. |
 | `src/commands/` | One file per subcommand, plus `symbol.rs`, which works out what a user means by SYMBOL. Commands connect a question to output; they do no analysis. |
-| `src/binary/` | Reading an ELF file: its functions and data objects ("items"), their names, imports and stored pointers. |
 | `src/arch/` | Finding the addresses that machine code calls or uses, one file per instruction set (x86-64 and Thumb). |
+| `src/binary/` | Reading an ELF file: its functions and data objects ("items"), their names, imports and stored pointers. Unnamed data, such as string literals, is found from what code and pointers refer to. |
 | `src/graph/` | The reference graph that connects items. |
 | `src/render/` | Text output. |
 | `tests/` | Integration tests that run on the sample binaries. |
 | `testdata/` | The sample programs and the ELF files built from them. |
 
-Analysis flows one way: `binary`, then `arch`, then `graph`, each importing
+Analysis flows one way: `arch`, then `binary`, then `graph`, each importing
 only from the ones before it. `render` knows nothing about ELF files, and
 `commands` connect the two. A command does no analysis of its own and the
 analysis modules never print.

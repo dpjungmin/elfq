@@ -155,6 +155,29 @@ fn stripped_firmware_has_only_its_entry_point_so_far() {
 }
 
 #[test]
+fn data_without_symbols_starts_where_something_refers_to_it() {
+    let binary = load("c-x86_64.elf");
+    // A string literal, which runs to the next one: "bad header\n" and its
+    // terminating NUL.
+    let string = item(&binary, ".rodata@0x2012");
+    assert_eq!(
+        (
+            string.kind,
+            string.address,
+            string.size,
+            string.size_estimated
+        ),
+        (ItemKind::Data, 0x2012, 12, true)
+    );
+    assert_eq!(string.source, Source::Reference);
+    // The global offset table gets no items: elfq follows its pointers.
+    assert!(binary.items.iter().all(|item| {
+        let section = &binary.sections[item.section].name;
+        section != ".got" && section != ".got.plt"
+    }));
+}
+
+#[test]
 fn thumb_addresses_are_even() {
     // Arm sets bit 0 in Thumb function symbols and in the entry point.
     let binary = load("c-cortex-m4.elf");

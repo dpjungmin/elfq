@@ -85,9 +85,10 @@ items so the reader knows they were reached through a pointer.
 
 ## How it works
 
-Data moves through five modules in order: `binary` finds the items, `arch`
-finds the references between them, `graph` computes dominators and paths,
-`commands` run queries, and `render` prints text or JSON.
+Data moves through five modules in order: `arch` finds the addresses that
+machine code uses, `binary` finds the items, `graph` connects them by those
+references and computes dominators and paths, `commands` run queries, and
+`render` prints text or JSON.
 
 1. **Load** the file with the `object` crate: sections, symbols, entry point,
    dynamic relocations.
@@ -97,10 +98,15 @@ finds the references between them, `graph` computes dominators and paths,
    arrays of startup functions such as `.init_array`, named after their
    section; `.eh_frame` entries (on x86-64 they cover almost every
    function, even in stripped files); the entry point; targets of calls
-   found during scanning. Items without a symbol get names like
-   `fn_0x1690`, or `entry`. Rust symbols are demangled, and the mangled
-   symbol stays as an alias. `elfq FILE debug items` lists what was found,
-   for checking this step.
+   found during scanning; and data that code or a stored pointer refers to
+   but no symbol names, such as vtables, string literals and, in stripped
+   files, variables. Such data starts at each address something refers to
+   and runs to the next one, the next item or the end of its section; elfq
+   never guesses which function it belongs to. Items without a symbol get
+   names like `fn_0x1690`, `.rodata@0x2004` (section and address) or
+   `entry`. Rust symbols are demangled, and the mangled symbol stays as an
+   alias. `elfq FILE debug items` lists what was found, for checking this
+   step.
 3. **Scan code** with an architecture backend. For each function it decodes
    the instructions and reports direct calls, tail jumps to other items,
    indirect call sites (target unknown), and PC-relative references to items
@@ -146,7 +152,7 @@ src/
 
 Rules that keep it approachable:
 
-- **Analysis flows one way**: binary, then arch, then graph, each importing
+- **Analysis flows one way**: arch, then binary, then graph, each importing
   only from the ones before it. `render` knows nothing about ELF files, and
   `commands` connect the two.
 - **Analysis never prints and commands never analyze.** A command is a short
@@ -191,7 +197,7 @@ starts.
 | Step | Pull requests |
 |---|---|
 | 1. Survey and samples | This document, survey.md, testdata/ |
-| 2. Core engine | 2a: crate skeleton, CLI, CI, ELF loading and item discovery. 2b: x86-64 scanning, PLT stub names, the reference graph, `callers`, `callees` and the overview. 2c: Rust demangling and short names for SYMBOL. 2d: Cortex-M Thumb scanning, and pointers in firmware data such as the vector table. 2e: items for anonymous data (open question 5). |
+| 2. Core engine | 2a: crate skeleton, CLI, CI, ELF loading and item discovery. 2b: x86-64 scanning, PLT stub names, the reference graph, `callers`, `callees` and the overview. 2c: Rust demangling and short names for SYMBOL. 2d: Cortex-M Thumb scanning, and pointers in firmware data such as the vector table. 2e: items for unnamed data, such as vtables and string literals. |
 | 3. Headline queries | 3a: roots, dominators, `retained` and `exclusive`. 3b: `why`. 3c: `top`. 3d: `inlined`. |
 | 4. Polish | C++ demangling, with a C++ sample; JSON output; warnings where indirect calls make answers uncertain. |
 
@@ -211,12 +217,9 @@ function's stack frame).
    in the C sample, `Reset_Handler` appears to use `stats`. Should elfq tell
    such symbols apart? The reference is harmless, since the code does write
    there.
-5. **Anonymous data** such as vtables and merged string literals has no
-   symbol. elfq still has to make items for it, or references through it are
-   lost: in the x86-64 Rust sample, `app_main` reaches `<Gain as Stage>::run`
-   only through an unnamed vtable, so today `callers` finds nothing for it.
-   (The Cortex-M build keeps local `.Lanon` symbols for its vtables, so
-   there it works.) The
-   plan is to name such items by section and address and never guess an
-   owning function. This must land before step 3, or dominators would call
-   such functions unreachable.
+5. **Where unnamed data ends.** Unnamed data starts wherever something
+   refers to it, so a struct in a stripped file whose fields code uses one
+   at a time becomes one item per field, and the end address of an array,
+   which loops compare against, can start an item of its own. The bytes
+   still all count, split across more items than the source has. Worth
+   fixing only if it makes real answers confusing.

@@ -3,8 +3,8 @@
 //! The code is organized as a pipeline; docs/design.md describes all of it.
 //! So far it has:
 //!
-//! - [`binary`]: reads an ELF file and finds its functions and data objects.
 //! - [`arch`]: finds the addresses that machine code calls or uses.
+//! - [`binary`]: reads an ELF file and finds its functions and data objects.
 //! - [`graph`]: connects items by the references between them.
 //! - [`commands`]: one module per subcommand, connecting a question to output.
 //! - [`render`]: text output.

@@ -33,7 +33,7 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<()> {
 
 /// Builds the reference graph, or explains why elfq can't yet.
 fn reference_graph(binary: &Binary) -> Result<Graph> {
-    if !arch::is_supported(binary) {
+    if !arch::is_supported(binary.architecture, binary.thumb) {
         bail!("{}", cannot_read_code(binary));
     }
     Ok(Graph::build(binary))

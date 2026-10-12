@@ -11,8 +11,6 @@ mod x86_64;
 
 use object::Architecture;
 
-use crate::binary::Binary;
-
 /// One use of an address by one instruction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CodeReference {
@@ -45,13 +43,13 @@ pub enum CodeReferenceKind {
     Memory(u64),
 }
 
-/// Whether elfq can read this file's code yet: x86-64, or Thumb, which is
-/// what Cortex-M runs. 32-bit Arm code in the older Arm (A32) instruction
-/// set isn't read.
-pub fn is_supported(binary: &Binary) -> bool {
-    match binary.architecture {
+/// Whether elfq can read a file's code yet: x86-64, or 32-bit Arm when the
+/// code is Thumb, which is what Cortex-M runs. Code in the older Arm (A32)
+/// instruction set isn't read.
+pub fn is_supported(architecture: Architecture, thumb: bool) -> bool {
+    match architecture {
         Architecture::X86_64 => true,
-        Architecture::Arm => binary.thumb,
+        Architecture::Arm => thumb,
         _ => false,
     }
 }
