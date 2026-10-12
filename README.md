@@ -26,7 +26,7 @@ elfq app.elf callees main               # what main calls or uses
 ```
 
 Every command also prints JSON for scripts with `--format json`. The
-overview and `top` can count only one range of memory, such as a
+commands that count bytes can count only one range of memory, such as a
 microcontroller's ITCM, with `--range START..END` or `--range START+SIZE`;
 for firmware, the overview lists the ranges its sections occupy.
 

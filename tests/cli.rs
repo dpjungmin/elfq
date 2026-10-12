@@ -255,6 +255,47 @@ Try:
 }
 
 #[test]
+fn retained_and_exclusive_count_only_the_range_too() {
+    assert_eq!(
+        stdout(&[TCM_SAMPLE, "retained", "process_frame", "--range", "0x0..0xe0"]),
+        "\
+process_frame keeps 200 bytes in 0x00000000..0x000000e0 (.itcm): its own 0, and 200 in 4 functions that only it leads to.
+
+RETAINED  OWN  ITEM
+     200    0  process_frame
+     152    0  ├─ __apply_filter_veneer
+     152   92  │  └─ apply_filter
+      52   52  │     ├─ filter_tap
+       8    8  │     └─ __memcpy_veneer
+      48    0  └─ __crc32_veneer
+      48   48     └─ crc32
+"
+    );
+    assert_eq!(
+        stdout(&[
+            TCM_SAMPLE,
+            "exclusive",
+            "process_frame",
+            "--range",
+            "0x0..0xe0"
+        ]),
+        "\
+process_frame is the only way to reach 4 functions, 200 bytes in 0x00000000..0x000000e0 (.itcm):
+
+SIZE  KIND      ITEM
+  92  function  apply_filter
+  52  function  filter_tap
+  48  function  crc32
+   8  function  __memcpy_veneer
+"
+    );
+    assert_eq!(
+        stdout(&[TCM_SAMPLE, "retained", "log_msg", "--range", "0x0..0xe0"]),
+        "log_msg keeps none of the bytes in 0x00000000..0x000000e0 (.itcm).\n"
+    );
+}
+
+#[test]
 fn a_range_must_hold_something() {
     assert_eq!(
         stderr(&[TCM_SAMPLE, "top", "--range", "0x40000000+4K"], 1),
@@ -267,7 +308,7 @@ fn a_range_must_hold_something() {
     );
     assert_eq!(
         stderr(&[TCM_SAMPLE, "callers", "crc32", "--range", "0+1K"], 1),
-        "error: only the overview and top take --range so far\n"
+        "error: --range limits sizes, so only the overview, top, retained and exclusive take it\n"
     );
 }
 

@@ -97,7 +97,7 @@ impl<'a> RetainedTree<'a> {
     }
 
     /// The OWN column for an item. Outside the range it is 0.
-    fn own_text(&self, index: usize) -> String {
+    pub fn own_text(&self, index: usize) -> String {
         let item = &self.binary.items[index];
         match (self.range, self.own(index)) {
             (None, _) => super::size_text(item),

@@ -143,9 +143,9 @@ BYTES  COPIES  FUNCTION
   150       6  append
 ```
 
-With `--range START..END` or `--range START+SIZE`, the overview and `top`
-count only the bytes inside one range of memory, such as a microcontroller's
-ITCM or DTCM. An item outside the range still shows when it alone keeps
+With `--range START..END` or `--range START+SIZE`, the overview, `top`,
+`retained` and `exclusive` count only the bytes inside one range of memory,
+such as a microcontroller's ITCM or DTCM. An item outside the range still shows when it alone keeps
 bytes inside it, with none of its own: on the Cortex-M7 sample, which
 follows an i.MX RT1176's memory map, `process_frame` in flash keeps 200 of
 ITCM's 224 bytes. When the sections sit in several blocks of addresses, as
@@ -314,7 +314,7 @@ starts.
 | 2. Core engine | 2a: crate skeleton, CLI, CI, ELF loading and item discovery. 2b: x86-64 scanning, PLT stub names, the reference graph, `callers`, `callees` and the overview. 2c: Rust demangling and short names for SYMBOL. 2d: Cortex-M Thumb scanning, and pointers in firmware data such as the vector table. 2e: items for unnamed data, such as vtables and string literals. |
 | 3. Headline queries | 3a: roots, dominators, `retained` and `exclusive`. 3b: `why`. 3c: `top`. 3d: `inlined`. |
 | 4. Polish | 4a: C++ demangling, with a C++ sample. 4b: JSON output for `callers`, `callees`, `exclusive` and `inlined`. 4c: JSON for `top`, `retained`, `why` and the overview. 4d: warnings where indirect calls make answers uncertain. |
-| 5. Memory ranges | 5a: a Cortex-M7 sample with code and data in ITCM, DTCM, OCRAM and flash, at the addresses an i.MX RT1176 uses; startup code no longer seems to use the first item of each section it copies. 5b: `--range START..END` or `--range START+SIZE` for the overview and `top`, and the overview lists the address blocks that the file's sections occupy. 5c: `--range` for `retained`. |
+| 5. Memory ranges | 5a: a Cortex-M7 sample with code and data in ITCM, DTCM, OCRAM and flash, at the addresses an i.MX RT1176 uses; startup code no longer seems to use the first item of each section it copies. 5b: `--range START..END` or `--range START+SIZE` for the overview and `top`, and the overview lists the address blocks that the file's sections occupy. 5c: `--range` for `retained` and `exclusive`. |
 
 Later: a query language, and worst-case stack depth (call graph plus each
 function's stack frame).
