@@ -2,7 +2,8 @@
 name = "elfq"
 version = "0.1.0"
 edition = "2024"
-description = "TODO"
+description = "Query ELF binaries: call graphs, exclusive code and retained size"
 license = "MIT"
+exclude = ["/testdata"]
 
 [dependencies]
