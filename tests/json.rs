@@ -45,7 +45,8 @@ fn items_have_the_same_keys_everywhere() {
             },
             "reachable": false,
             "bytes": 0,
-            "items": []
+            "items": [],
+            "indirect_calls": 0
         })
     );
     // An import has no address or size in this file.
@@ -78,6 +79,12 @@ fn callers_and_callees_list_every_use() {
     );
     assert_eq!(callers["callers"][2]["how"], "tail call");
     assert_eq!(callers["callers"][3]["sites"], json!(["0x18ee", "0x1908"]));
+    assert_eq!(callers["complete"], true);
+    // Calls through a pointer to on_button don't show.
+    assert_eq!(
+        elfq_json(&[SAMPLE, "callers", "on_button"])["complete"],
+        false
+    );
 
     // The jump through the handler table goes where only the running
     // program knows.
@@ -87,6 +94,7 @@ fn callers_and_callees_list_every_use() {
         callees["unresolved"],
         json!([{ "site": "0x16ad", "how": "jump", "target": null }])
     );
+    assert_eq!(callees["complete"], false);
 }
 
 #[test]
@@ -110,6 +118,12 @@ fn exclusive_lists_every_item_largest_first() {
     // A string literal without a symbol has an estimated size.
     assert_eq!(exclusive["items"][6]["size_estimated"], true);
     assert_eq!(exclusive["items"][6]["through_pointer"], false);
+    assert_eq!(exclusive["indirect_calls"], 0);
+    // The jump through the `handlers` table, in `dispatch_event`.
+    assert_eq!(
+        elfq_json(&[SAMPLE, "exclusive", "main"])["indirect_calls"],
+        1
+    );
 }
 
 #[test]
@@ -225,6 +239,7 @@ fn retained_has_what_symbol_keeps_as_a_tree() {
     let mut items = names(&exclusive["items"]);
     items.sort_unstable();
     assert_eq!(kept, items);
+    assert_eq!(retained["indirect_calls"], 0);
 
     // Nothing is there only because of something that nothing reaches.
     let unreachable = elfq_json(&[SAMPLE, "retained", "debug_dump"]);

@@ -6,15 +6,19 @@ use anyhow::Result;
 use serde::Serialize;
 
 use super::json;
-use crate::binary::Binary;
+use crate::binary::{Binary, ItemKind};
 use crate::cli::Format;
-use crate::graph::Node;
+use crate::graph::{Graph, Node, ReferenceKind};
 use crate::render::{Align, Table};
 
 #[derive(Serialize)]
 struct Callers<'a> {
     symbol: json::Item<'a>,
     callers: Vec<json::Use<'a>>,
+    /// Whether the list has every caller, as far as elfq can tell: `false`
+    /// when SYMBOL is a function whose address is taken or stored, so that
+    /// calls through a pointer to it don't show.
+    complete: bool,
 }
 
 pub fn run(binary: &Binary, symbol: &str, format: Format, out: &mut dyn Write) -> Result<()> {
@@ -26,23 +30,30 @@ pub fn run(binary: &Binary, symbol: &str, format: Format, out: &mut dyn Write) -
         Node::Item(reference.from)
     });
     rows.sort_by(|a, b| a.node.name(binary).cmp(b.node.name(binary)));
+    let through_pointer = can_be_called_through_pointer(binary, &graph, node);
     if format == Format::Json {
         let callers = Callers {
             symbol: json::Item::new(binary, node),
             callers: json::uses(binary, &rows),
+            complete: !through_pointer,
         };
         return json::write(&callers, out);
     }
+    // Some calls can't be listed: the system's, to where the program starts,
+    // and those through a pointer.
+    let root = graph.roots.iter().find(|root| root.node == node);
+    let note = match root {
+        Some(root) => Some(super::why::root_sentence(binary, root)),
+        None if through_pointer => Some(format!(
+            "This list leaves out calls to {name} through a pointer, since elfq can't tell \
+             where they are."
+        )),
+        None => None,
+    };
     if rows.is_empty() {
-        let entry = binary.item_at(binary.entry).map(Node::Item);
-        if entry == Some(node) {
-            writeln!(
-                out,
-                "Nothing in the file calls or uses {name}: it is the entry point, where the \
-                 program starts."
-            )?;
-        } else {
-            writeln!(out, "Nothing in the file calls or uses {name}.")?;
+        writeln!(out, "Nothing in the file calls or uses {name}.")?;
+        if let Some(note) = note {
+            writeln!(out, "{note}")?;
         }
         return Ok(());
     }
@@ -67,5 +78,22 @@ pub fn run(binary: &Binary, symbol: &str, format: Format, out: &mut dyn Write) -
         ]);
     }
     table.write(out)?;
+    if let Some(note) = note {
+        writeln!(out)?;
+        writeln!(out, "{note}")?;
+    }
     Ok(())
+}
+
+/// Whether `node` is a function whose address is taken or stored, so that
+/// code, a library or the processor can call it through a pointer.
+fn can_be_called_through_pointer(binary: &Binary, graph: &Graph, node: Node) -> bool {
+    let is_function = match node {
+        Node::Item(index) => binary.items[index].kind == ItemKind::Function,
+        Node::Import(_) => false,
+    };
+    is_function
+        && graph
+            .references_to(node)
+            .any(|r| matches!(r.kind, ReferenceKind::Address | ReferenceKind::Pointer))
 }

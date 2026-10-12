@@ -160,6 +160,14 @@ table that stores it). That is the same rule the linker's `--gc-sections`
 uses, so retained sizes match what removing code would save. Output marks such
 functions "(through a pointer)" so the reader knows.
 
+Calls through pointers also leave some answers incomplete, and elfq says so
+where they do. `callers` notes that it leaves out calls through a pointer to
+a function whose address is taken or stored, and `callees` lists the calls
+and jumps it can't follow. `retained` and `exclusive` note when SYMBOL's code
+calls through pointers, since what those calls reach may count for other
+items. In JSON, `callers` and `callees` have `complete`, and `retained` and
+`exclusive` have `indirect_calls`.
+
 ## How it works
 
 Data moves through five modules in order: `arch` finds the addresses that
@@ -290,6 +298,7 @@ starts.
 | 2. Core engine | 2a: crate skeleton, CLI, CI, ELF loading and item discovery. 2b: x86-64 scanning, PLT stub names, the reference graph, `callers`, `callees` and the overview. 2c: Rust demangling and short names for SYMBOL. 2d: Cortex-M Thumb scanning, and pointers in firmware data such as the vector table. 2e: items for unnamed data, such as vtables and string literals. |
 | 3. Headline queries | 3a: roots, dominators, `retained` and `exclusive`. 3b: `why`. 3c: `top`. 3d: `inlined`. |
 | 4. Polish | 4a: C++ demangling, with a C++ sample. 4b: JSON output for `callers`, `callees`, `exclusive` and `inlined`. 4c: JSON for `top`, `retained`, `why` and the overview. 4d: warnings where indirect calls make answers uncertain. |
+| 5. Memory regions | Answers about one region of memory, such as ITCM or DTCM on an i.MX RT1176, with `--region START..END` or `--region START+SIZE`. The overview lists the address blocks that the file's sections occupy, so the range needn't come from the reference manual. Needs a sample with TCM sections. |
 
 Later: a query language, and worst-case stack depth (call graph plus each
 function's stack frame).

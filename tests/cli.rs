@@ -97,6 +97,8 @@ SysTick_Handler is used by 1 data object:
 
 CALLER        HOW      AT
 vector_table  pointer  0x800003c
+
+SysTick_Handler is listed in the vector table, so the processor runs it for an exception or an interrupt.
 "
     );
 }
@@ -213,11 +215,54 @@ fn a_large_tree_shows_its_largest_items() {
         "{output}"
     );
     assert!(
-        output.ends_with(
+        output.contains(
             "Nothing calls the functions marked \"through a pointer\" directly, so elfq counts \
              them for the code or data that holds their address.\n"
         ),
         "{output}"
+    );
+    // The jump through the `handlers` table, in `dispatch_event`.
+    assert!(
+        output.ends_with(
+            "main and the items that only it leads to make 1 jump through a pointer set at run \
+             time, which elfq can't follow, so what it reaches may count for other items.\n"
+        ),
+        "{output}"
+    );
+}
+
+#[test]
+fn calls_through_pointers_are_pointed_out() {
+    // A virtual call: what it reaches counts for the vtables, which `main`
+    // keeps.
+    let retained = stdout(&["testdata/bin/cpp-x86_64.elf", "retained", "process_frame"]);
+    assert!(
+        retained.ends_with(
+            "app::process_frame(app::Frame const&, app::Stage&) makes 1 call through a pointer \
+             set at run time, which elfq can't follow, so what it reaches may count for other \
+             items.\n"
+        ),
+        "{retained}"
+    );
+    // `main` takes the address of `on_button` to store it in a table.
+    assert_eq!(
+        stdout(&[SAMPLE, "callers", "on_button"]),
+        "\
+on_button is used by 1 function:
+
+CALLER  HOW            AT
+main    address taken  0x10b6
+
+This list leaves out calls to on_button through a pointer, since elfq can't tell where they are.
+"
+    );
+    // Where the program starts, nothing in the file calls it.
+    assert_eq!(
+        stdout(&[SAMPLE, "callers", "_init"]),
+        "\
+Nothing in the file calls or uses _init.
+_init is in .init, which the program uses when it starts.
+"
     );
 }
 
@@ -514,6 +559,8 @@ fn data_without_a_symbol_is_named_by_section_and_address() {
 
 CALLER                HOW      AT
 .data.rel.ro@0x52da8  pointer  0x52dc0
+
+This list leaves out calls to <elfq_sample::Gain as elfq_sample::Stage>::run through a pointer, since elfq can't tell where they are.
 "
     );
     let overview = stdout(&["testdata/bin/c-x86_64-stripped.elf"]);

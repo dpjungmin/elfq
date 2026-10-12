@@ -381,7 +381,7 @@ fn root_how(binary: &Binary, kind: RootKind) -> String {
 }
 
 /// Why a root is one, as a sentence.
-fn root_sentence(binary: &Binary, root: &Root) -> String {
+pub(super) fn root_sentence(binary: &Binary, root: &Root) -> String {
     let name = root.node.name(binary);
     // Whether the program uses a startup section when it starts or exits.
     let when = |section: usize| {

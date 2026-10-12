@@ -17,6 +17,9 @@ struct Callees<'a> {
     callees: Vec<json::Use<'a>>,
     /// The calls and jumps that elfq can't follow.
     unresolved: Vec<UnresolvedJson>,
+    /// Whether the list has everything SYMBOL calls, as far as elfq can
+    /// tell: `false` when `unresolved` isn't empty.
+    complete: bool,
 }
 
 #[derive(Serialize)]
@@ -56,6 +59,7 @@ pub fn run(binary: &Binary, symbol: &str, format: Format, out: &mut dyn Write) -
                     target: u.target.map(json::address),
                 })
                 .collect(),
+            complete: unresolved.is_empty(),
         };
         return json::write(&callees, out);
     }
