@@ -6,7 +6,7 @@
 //! - [`arch`]: finds the addresses that machine code calls or uses.
 //! - [`binary`]: reads an ELF file and finds its functions and data objects.
 //! - [`graph`]: connects items by the references between them, and works
-//!   out what is exclusive to what.
+//!   out what is exclusive to what and the shortest chains to each item.
 //! - [`commands`]: one module per subcommand, connecting a question to output.
 //! - [`render`]: text output.
 //! - [`cli`]: command-line arguments.

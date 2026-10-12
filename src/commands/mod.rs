@@ -8,6 +8,7 @@ mod exclusive;
 mod overview;
 mod retained;
 pub mod symbol;
+mod why;
 
 use std::io::Write;
 
@@ -29,6 +30,7 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<()> {
         None => overview::run(&cli.file, &binary, out),
         Some(Command::Retained(args)) => retained::run(&cli.file, &binary, &args.symbol, out),
         Some(Command::Exclusive(args)) => exclusive::run(&binary, &args.symbol, out),
+        Some(Command::Why(args)) => why::run(&cli.file, &binary, &args.symbol, out),
         Some(Command::Callers(args)) => callers::run(&binary, &args.symbol, out),
         Some(Command::Callees(args)) => callees::run(&binary, &args.symbol, out),
         Some(Command::Debug(DebugCommand::Items)) => debug_items::run(&binary, out),
@@ -72,6 +74,22 @@ fn size_text(item: &Item) -> String {
 /// "1 function", "2 functions".
 fn plural(n: usize, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
+}
+
+/// Names joined into a phrase: "a", "a and b", "a, b and c", or for more
+/// than ten, "a, b, … and 5 more".
+fn names_text(names: &[&str]) -> String {
+    const NAMED: usize = 10;
+    match names {
+        _ if names.len() > NAMED => format!(
+            "{} and {} more",
+            names[..NAMED].join(", "),
+            names.len() - NAMED
+        ),
+        [] => String::new(),
+        [one] => one.to_string(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
 }
 
 /// "3 functions", "2 data objects" or "4 items", whichever fits `nodes`.

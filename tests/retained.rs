@@ -5,7 +5,7 @@ use std::path::Path;
 
 use elfq::binary::{Binary, ItemKind, Source};
 use elfq::commands::symbol;
-use elfq::graph::{DominatorTree, Graph, Node};
+use elfq::graph::{DominatorTree, Graph, Node, RootKind};
 
 fn load(name: &str) -> (Binary, Graph, DominatorTree) {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -124,14 +124,18 @@ fn dead_code_is_unreachable() {
 #[test]
 fn firmware_starts_from_its_vector_table() {
     let (binary, graph, tree) = load("c-cortex-m4.elf");
-    let roots: Vec<&str> = graph.roots.iter().map(|root| root.name(&binary)).collect();
+    let roots: Vec<(&str, RootKind)> = graph
+        .roots
+        .iter()
+        .map(|root| (root.node.name(&binary), root.kind))
+        .collect();
     assert_eq!(
         roots,
         [
-            "vector_table",
-            "Default_Handler",
-            "Reset_Handler",
-            "SysTick_Handler"
+            ("vector_table", RootKind::VectorTable),
+            ("Default_Handler", RootKind::Handler),
+            ("Reset_Handler", RootKind::Entry),
+            ("SysTick_Handler", RootKind::Handler),
         ]
     );
     // The processor starts each handler, so nothing else leads to them.
@@ -160,9 +164,31 @@ fn everything_in_the_samples_is_reachable_but_dead_code() {
 #[test]
 fn the_unwinder_and_the_dynamic_loader_are_starting_points() {
     let (binary, graph, _) = load("rust-x86_64-nodebug.elf");
-    let roots: Vec<&str> = graph.roots.iter().map(|root| root.name(&binary)).collect();
-    for root in ["_start", "rust_eh_personality", ".plt", "_init", "_fini"] {
-        assert!(roots.contains(&root), "{root} in {roots:?}");
+    let roots: Vec<(&str, String)> = graph
+        .roots
+        .iter()
+        .map(|root| {
+            let kind = match root.kind {
+                RootKind::InSection(section) => format!("in {}", binary.sections[section].name),
+                RootKind::ListedIn(section) => {
+                    format!("listed in {}", binary.sections[section].name)
+                }
+                kind => format!("{kind:?}"),
+            };
+            (root.node.name(&binary), kind)
+        })
+        .collect();
+    for root in [
+        ("_start", "Entry"),
+        ("rust_eh_personality", "Personality"),
+        (".plt", "PltHeader"),
+        ("_init", "in .init"),
+        ("_fini", "in .fini"),
+        ("frame_dummy", "listed in .init_array"),
+        ("__do_global_dtors_aux", "listed in .fini_array"),
+    ] {
+        let root = (root.0, root.1.to_string());
+        assert!(roots.contains(&root), "{root:?} in {roots:?}");
     }
 }
 

@@ -161,6 +161,85 @@ fn dead_code_keeps_nothing() {
 }
 
 #[test]
+fn why_shows_the_chains_that_keep_an_item() {
+    assert_eq!(
+        stdout(&[SAMPLE, "why", "log_msg"]),
+        "\
+log_msg is in the file because 4 functions use it. The shortest chain through each, from where the program starts:
+
+HOW            ITEM
+entry point    _start
+address taken  └─ main
+call              ├─ app_tick
+call              │  └─ log_msg
+address taken     ├─ on_button
+tail call         │  └─ log_msg
+call              ├─ process_frame
+call              │  └─ log_msg
+call              └─ report
+call                 └─ log_msg
+
+debug_dump uses log_msg too, but nothing reaches debug_dump.
+
+Every chain to log_msg goes through main, so it counts toward main's retained size.
+"
+    );
+}
+
+#[test]
+fn why_on_firmware_can_start_from_an_interrupt() {
+    assert_eq!(
+        stdout(&["testdata/bin/c-cortex-m4.elf", "why", "app_tick"]),
+        "\
+app_tick is in the file because 2 functions use it. The shortest chain through each, from where the program starts:
+
+HOW                         ITEM
+entry point                 Reset_Handler
+call                        └─ main
+call                           └─ app_tick
+listed in the vector table  SysTick_Handler
+tail call                   └─ app_tick
+
+No single item is on every chain to app_tick, so it doesn't count toward any one item's retained size.
+"
+    );
+}
+
+#[test]
+fn why_explains_where_the_program_starts() {
+    let why = |file, symbol| stdout(&[file, "why", symbol]);
+    assert_eq!(
+        why(SAMPLE, "_start"),
+        "_start is the entry point, where the program starts.\n"
+    );
+    assert_eq!(
+        why(SAMPLE, "frame_dummy"),
+        "frame_dummy is listed in .init_array, so the program runs it when it starts.\n"
+    );
+    assert_eq!(
+        why("testdata/bin/c-cortex-m4.elf", "SysTick_Handler"),
+        "SysTick_Handler is listed in the vector table, so the processor runs it for an \
+         exception or an interrupt.\n"
+    );
+}
+
+#[test]
+fn why_says_when_nothing_reaches_an_item() {
+    assert_eq!(
+        stdout(&[SAMPLE, "why", "debug_dump"]),
+        "Nothing reaches debug_dump from where the program starts, as far as elfq can tell. It \
+         may be dead code, or used in a way elfq can't see.\n"
+    );
+    // The string that only `debug_dump` prints.
+    assert_eq!(
+        stdout(&[SAMPLE, "why", ".rodata@0x2056"]),
+        "Nothing reaches .rodata@0x2056 from where the program starts, as far as elfq can tell. \
+         It may be dead code, or used in a way elfq can't see.\n\
+         debug_dump uses it, but nothing reaches debug_dump either.\n"
+    );
+}
+
+#[test]
 fn callers_lists_each_caller_and_how_it_calls() {
     assert_eq!(
         stdout(&[SAMPLE, "callers", "log_msg"]),
