@@ -157,21 +157,68 @@ fn inlined_lists_every_function_and_the_whole_tree() {
 
 #[test]
 fn the_overview_says_what_the_file_is() {
+    let mut overview = elfq_json(&[SAMPLE]);
+    // One block, from .interp to .bss.
+    let memory = overview["memory"].take();
+    assert_eq!(memory.as_array().unwrap().len(), 1);
+    assert_eq!(memory[0]["start"], "0x318");
+    assert_eq!(memory[0]["end"], "0x4088");
+    assert_eq!(memory[0]["size"], 0x4088 - 0x318);
+    assert_eq!(memory[0]["sections"][0], ".interp");
+    assert_eq!(memory[0]["sections"][26], ".bss");
     assert_eq!(
-        elfq_json(&[SAMPLE]),
+        overview,
         json!({
             "file": SAMPLE,
             "architecture": "x86-64",
             "kind": "position-independent executable",
             "has_symbols": true,
             "has_dwarf": true,
+            "memory": null,
+            "range": null,
             "functions": 32,
             "data_objects": 36,
+            "bytes": 4021,
             "imports": 8,
             "references": 119,
             "indirect_calls": 4
         })
     );
+}
+
+#[test]
+fn a_range_limits_the_counts_to_it() {
+    let tcm_sample = "testdata/bin/c-cortex-m7.elf";
+    let overview = elfq_json(&[tcm_sample, "--range", "0x0..0xe0"]);
+    assert_eq!(overview["range"], json!({"start": "0x0", "end": "0xe0"}));
+    assert_eq!(overview["functions"], 6);
+    assert_eq!(overview["data_objects"], 0);
+    assert_eq!(overview["bytes"], 224);
+    assert_eq!(overview["imports"], Value::Null);
+    assert_eq!(overview["references"], Value::Null);
+    assert_eq!(overview["memory"].as_array().unwrap().len(), 4);
+
+    let top = elfq_json(&[tcm_sample, "top", "--range", "0x0..0xe0"]);
+    assert_eq!(top["range"], json!({"start": "0x0", "end": "0xe0"}));
+    assert_eq!(top["bytes"], 224);
+    // Only items that keep some of the range's bytes.
+    assert_eq!(
+        tree_names(&top["items"]),
+        [
+            "Reset_Handler",
+            "main",
+            "process_frame",
+            "__apply_filter_veneer",
+            "apply_filter",
+            "filter_tap",
+            "__memcpy_veneer",
+            "__crc32_veneer",
+            "crc32",
+            "SysTick_Handler",
+            "__app_tick_veneer"
+        ]
+    );
+    assert_eq!(top["items"][0]["retained"], 200);
 }
 
 /// The names of the items in a tree from `top` or `retained`, each followed

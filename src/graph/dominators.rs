@@ -14,7 +14,7 @@ use petgraph::algo::dominators::simple_fast;
 use petgraph::graph::{DiGraph, NodeIndex};
 
 use super::{Graph, Node, index};
-use crate::binary::Binary;
+use crate::binary::{AddressRange, Binary};
 
 /// The dominator tree of a binary's graph.
 #[derive(Debug)]
@@ -34,8 +34,18 @@ pub struct DominatorTree {
 }
 
 impl DominatorTree {
-    pub fn build(binary: &Binary, graph: &Graph) -> DominatorTree {
-        let mut sizes: Vec<u64> = binary.items.iter().map(|item| item.size).collect();
+    /// Builds the tree of `binary`'s graph. With a `range`, sizes count only
+    /// the bytes inside it, so an item outside it retains what it alone
+    /// keeps there.
+    pub fn build(binary: &Binary, graph: &Graph, range: Option<AddressRange>) -> DominatorTree {
+        let mut sizes: Vec<u64> = binary
+            .items
+            .iter()
+            .map(|item| match range {
+                Some(range) => range.overlap(item.address, item.size),
+                None => item.size,
+            })
+            .collect();
         // Imports have no bytes in the file.
         sizes.resize(binary.items.len() + binary.imports.len(), 0);
         let roots: Vec<Node> = graph.roots.iter().map(|root| root.node).collect();

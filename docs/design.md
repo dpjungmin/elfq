@@ -143,6 +143,17 @@ BYTES  COPIES  FUNCTION
   150       6  append
 ```
 
+With `--range START..END` or `--range START+SIZE`, the overview and `top`
+count only the bytes inside one range of memory, such as a microcontroller's
+ITCM or DTCM. An item outside the range still shows when it alone keeps
+bytes inside it, with none of its own: on the Cortex-M7 sample, which
+follows an i.MX RT1176's memory map, `process_frame` in flash keeps 200 of
+ITCM's 224 bytes. When the sections sit in several blocks of addresses, as
+firmware's flash and RAMs do, the overview lists the blocks, each with a
+`--range` command to try, so the range needn't come from the chip's
+reference manual. Sizes can take a unit, in any case: `0x20000000+256K`.
+Units are powers of 1024, as memory sizes usually are.
+
 ### What "exclusive" and "retained" mean
 
 elfq builds a graph whose nodes are **items** (functions and data objects) and
@@ -246,7 +257,7 @@ src/
 ├── lib.rs         Declares the modules below. elfq is a library plus a thin binary.
 ├── cli.rs         clap definitions, one struct per subcommand.
 ├── commands/      One file per subcommand: find the symbol (symbol.rs), run a query, render (tree.rs draws retained sizes, json.rs has shared JSON shapes).
-├── binary/        ELF loading, item discovery and names.
+├── binary/        ELF loading, item discovery, names and address ranges.
 ├── arch/          One file per instruction set (x86_64.rs, thumb.rs), each with one `scan` function.
 ├── graph/         The reference graph, its roots, dominator tree and shortest paths.
 ├── debuginfo/     DWARF, when the file has it: what the compiler inlined.
@@ -303,7 +314,7 @@ starts.
 | 2. Core engine | 2a: crate skeleton, CLI, CI, ELF loading and item discovery. 2b: x86-64 scanning, PLT stub names, the reference graph, `callers`, `callees` and the overview. 2c: Rust demangling and short names for SYMBOL. 2d: Cortex-M Thumb scanning, and pointers in firmware data such as the vector table. 2e: items for unnamed data, such as vtables and string literals. |
 | 3. Headline queries | 3a: roots, dominators, `retained` and `exclusive`. 3b: `why`. 3c: `top`. 3d: `inlined`. |
 | 4. Polish | 4a: C++ demangling, with a C++ sample. 4b: JSON output for `callers`, `callees`, `exclusive` and `inlined`. 4c: JSON for `top`, `retained`, `why` and the overview. 4d: warnings where indirect calls make answers uncertain. |
-| 5. Memory ranges | 5a: a Cortex-M7 sample with code and data in ITCM, DTCM, OCRAM and flash, at the addresses an i.MX RT1176 uses; startup code no longer seems to use the first item of each section it copies. 5b: answers about one range of memory, such as ITCM or DTCM, with `--range START..END` or `--range START+SIZE`. The overview lists the address blocks that the file's sections occupy, so the range needn't come from the reference manual. |
+| 5. Memory ranges | 5a: a Cortex-M7 sample with code and data in ITCM, DTCM, OCRAM and flash, at the addresses an i.MX RT1176 uses; startup code no longer seems to use the first item of each section it copies. 5b: `--range START..END` or `--range START+SIZE` for the overview and `top`, and the overview lists the address blocks that the file's sections occupy. 5c: `--range` for `retained`. |
 
 Later: a query language, and worst-case stack depth (call graph plus each
 function's stack frame).

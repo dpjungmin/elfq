@@ -83,7 +83,7 @@ pub fn run(
     }
 
     let paths = ShortestPaths::avoiding(binary, &graph, node);
-    let tree = DominatorTree::build(binary, &graph);
+    let tree = DominatorTree::build(binary, &graph, None);
     // References are sorted by the item that makes them, so each user
     // appears once after `dedup`.
     let mut users: Vec<usize> = graph.references_to(node).map(|r| r.from).collect();

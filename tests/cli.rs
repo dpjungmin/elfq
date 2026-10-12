@@ -3,6 +3,8 @@
 use std::process::{Command, Output};
 
 const SAMPLE: &str = "testdata/bin/c-x86_64.elf";
+/// Firmware with code and data in several kinds of memory.
+const TCM_SAMPLE: &str = "testdata/bin/c-cortex-m7.elf";
 
 fn elfq(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_elfq"))
@@ -70,6 +72,10 @@ testdata/bin/c-cortex-m4.elf: 32-bit Arm executable, with symbols and DWARF debu
 25 functions and 31 data objects, with 94 references between them.
 1 call or jump goes through pointers set at run time, which elfq can't follow.
 
+MEMORY                  SIZE  SECTIONS
+0x08000000..0x08000dec  3564  .isr_vector .text .rodata .ARM.exidx
+0x20000000..0x20000048    72  .data .bss
+
 The items that keep the most of the file's 3577 bytes:
 
 RETAINED   OWN  ITEM
@@ -84,6 +90,8 @@ RETAINED   OWN  ITEM
      466        7 more
 
 Try:
+  elfq testdata/bin/c-cortex-m4.elf --range 0x08000000..0x08000dec
+  elfq testdata/bin/c-cortex-m4.elf --range 0x20000000..0x20000048
   elfq testdata/bin/c-cortex-m4.elf top
   elfq testdata/bin/c-cortex-m4.elf retained main
   elfq testdata/bin/c-cortex-m4.elf why crc_table
@@ -164,6 +172,102 @@ Nothing calls the functions marked \"through a pointer\" directly, so elfq count
     assert!(
         firmware.contains("\n     276    26  log_msg\n     216   216  ├─ strlen\n"),
         "{firmware}"
+    );
+}
+
+#[test]
+fn the_overview_lists_where_firmware_is_in_memory() {
+    let overview = stdout(&[TCM_SAMPLE]);
+    assert!(
+        overview.contains(
+            "\
+MEMORY                  SIZE  SECTIONS
+0x00000000..0x000000e0   224  .itcm
+0x20000000..0x20000450  1104  .data .bss
+0x20240000..0x20241000  4096  .ocram_bss
+0x30000000..0x30000edc  3804  .isr_vector .text .rodata .ARM.exidx
+"
+        ),
+        "{overview}"
+    );
+    assert!(
+        overview.contains(
+            "\
+Try:
+  elfq testdata/bin/c-cortex-m7.elf --range 0x00000000..0x000000e0
+  elfq testdata/bin/c-cortex-m7.elf --range 0x20000000..0x20000450
+  elfq testdata/bin/c-cortex-m7.elf --range 0x20240000..0x20241000
+  elfq testdata/bin/c-cortex-m7.elf --range 0x30000000..0x30000edc
+  elfq testdata/bin/c-cortex-m7.elf top
+"
+        ),
+        "{overview}"
+    );
+    // One block of addresses needs no table.
+    assert!(!stdout(&[SAMPLE]).contains("MEMORY"));
+}
+
+#[test]
+fn a_range_counts_only_the_bytes_in_it() {
+    // Functions in flash keep what they alone call in ITCM, through the
+    // linker's veneers, so they show with none of their own bytes.
+    assert_eq!(
+        stdout(&[TCM_SAMPLE, "top", "--range", "0x0..0xe0"]),
+        "\
+The items that keep the most of the 224 bytes in 0x00000000..0x000000e0 (.itcm):
+
+RETAINED  OWN  ITEM
+     200    0  Reset_Handler
+     200    0  └─ main
+     200    0     └─ process_frame
+     152    0        ├─ __apply_filter_veneer
+     152   92        │  └─ apply_filter
+      52   52        │     ├─ filter_tap
+       8    8        │     └─ __memcpy_veneer
+      48    0        └─ __crc32_veneer
+      48   48           └─ crc32
+      24   16  SysTick_Handler
+       8    8  └─ __app_tick_veneer
+"
+    );
+    // The same range as a start and a size, with a unit in any case.
+    assert_eq!(
+        stdout(&[TCM_SAMPLE, "top", "--range", "0+224B"]),
+        stdout(&[TCM_SAMPLE, "top", "--range", "0x0..0xe0"])
+    );
+    assert_eq!(
+        stdout(&[TCM_SAMPLE, "--range", "0x20240000+4k"]),
+        "\
+testdata/bin/c-cortex-m7.elf: 32-bit Arm executable, with symbols and DWARF debug info
+
+The items that keep the most of the 4096 bytes in 0x20240000..0x20241000 (.ocram_bss):
+
+RETAINED   OWN  ITEM
+    4096     0  log_msg
+    4096     0  └─ platform_write
+    4096  4096     └─ tx_buffer
+
+Try:
+  elfq testdata/bin/c-cortex-m7.elf top --range 0x20240000..0x20241000
+  elfq testdata/bin/c-cortex-m7.elf why tx_buffer
+"
+    );
+}
+
+#[test]
+fn a_range_must_hold_something() {
+    assert_eq!(
+        stderr(&[TCM_SAMPLE, "top", "--range", "0x40000000+4K"], 1),
+        "error: nothing in the file is in 0x40000000..0x40001000; the overview lists the ranges \
+         that the file's sections occupy\n"
+    );
+    assert!(
+        stderr(&[TCM_SAMPLE, "--range", "0x20000000"], 2)
+            .contains("expected START..END or START+SIZE")
+    );
+    assert_eq!(
+        stderr(&[TCM_SAMPLE, "callers", "crc32", "--range", "0+1K"], 1),
+        "error: only the overview and top take --range so far\n"
     );
 }
 

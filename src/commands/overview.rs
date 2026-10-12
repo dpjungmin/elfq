@@ -1,19 +1,21 @@
-//! `elfq FILE`: what the file is, what elfq found in it, which items keep
-//! the most bytes, and what to ask next.
+//! `elfq FILE`: what the file is, what elfq found in it, where in memory
+//! its sections are, which items keep the most bytes, and what to ask next.
+//! With `--range`, only which items keep the most bytes in the range.
 
 use std::io::Write;
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use serde::Serialize;
 
 use super::symbol::{self, Names};
 use super::tree::RetainedTree;
 use super::{json, top};
 use crate::arch;
-use crate::binary::{Binary, FileKind, ItemKind, Source};
+use crate::binary::{AddressRange, Binary, FileKind, ItemKind, MemoryBlock, Source, memory_blocks};
 use crate::cli::Format;
 use crate::graph::{Graph, Node};
+use crate::render::{Align, Table};
 
 /// How many items the tree of the largest items shows.
 const SHOWN: usize = 5;
@@ -21,7 +23,7 @@ const SHOWN: usize = 5;
 /// What the file is and what elfq found in it. The largest items are in
 /// `top`'s JSON, and the commands to try next are only for people.
 #[derive(Serialize)]
-struct OverviewJson {
+struct OverviewJson<'a> {
     file: String,
     /// As the text names it, such as `x86-64` or `32-bit Arm`.
     architecture: String,
@@ -29,20 +31,37 @@ struct OverviewJson {
     kind: String,
     has_symbols: bool,
     has_dwarf: bool,
+    /// The blocks of addresses that the file's sections occupy, such as
+    /// flash and RAM, in address order.
+    memory: Vec<json::Block<'a>>,
+    /// The range of memory that `--range` picked, or `null`. With a range,
+    /// the counts and bytes below are of the items that have bytes in it,
+    /// and the rest are `null`.
+    range: Option<json::Range>,
     functions: usize,
     data_objects: usize,
-    imports: usize,
+    /// The bytes of all the functions and data objects.
+    bytes: u64,
+    /// `null` with a range, since imports take no memory in the file.
+    imports: Option<usize>,
     /// How many references elfq found between the items, or `null` when it
-    /// can't read the file's code.
+    /// can't read the file's code, or with a range.
     references: Option<usize>,
     /// How many calls and jumps go through pointers set at run time, which
-    /// elfq can't follow, or `null` when it can't read the file's code.
+    /// elfq can't follow, or `null` when it can't read the file's code, or
+    /// with a range.
     indirect_calls: Option<usize>,
 }
 
-pub fn run(path: &Path, binary: &Binary, format: Format, out: &mut dyn Write) -> Result<()> {
+pub fn run(
+    path: &Path,
+    binary: &Binary,
+    range: Option<AddressRange>,
+    format: Format,
+    out: &mut dyn Write,
+) -> Result<()> {
     if format == Format::Json {
-        return write_json(path, binary, out);
+        return write_json(path, binary, range, out);
     }
     let names = match (binary.has_symbols, binary.has_dwarf) {
         (true, true) => "with symbols and DWARF debug info",
@@ -58,6 +77,9 @@ pub fn run(path: &Path, binary: &Binary, format: Format, out: &mut dyn Write) ->
         binary.kind
     )?;
     writeln!(out)?;
+    if let Some(range) = range {
+        return write_range(path, binary, range, out);
+    }
 
     let count = |kind| count(binary, kind);
     let functions = super::plural(count(ItemKind::Function), "function", "functions");
@@ -116,6 +138,11 @@ pub fn run(path: &Path, binary: &Binary, format: Format, out: &mut dyn Write) ->
             super::plural(indirect, "call or jump goes", "calls or jumps go")
         )?;
     }
+    let blocks = write_memory(binary, out)?;
+    let ranges: Vec<String> = blocks
+        .iter()
+        .map(|block| format!("--range {}", super::range_argument(block.range)))
+        .collect();
 
     // `retained` and `why` need roots, which a shared library doesn't have
     // yet.
@@ -135,7 +162,7 @@ pub fn run(path: &Path, binary: &Binary, format: Format, out: &mut dyn Write) ->
         .collect();
         return write_try(path, &examples, out);
     }
-    let retained = RetainedTree::from_graph(binary, graph);
+    let retained = RetainedTree::from_graph(binary, graph, None);
     // Without functions, as in stripped firmware, there is nothing to rank.
     let kept: u64 = retained
         .tree
@@ -148,11 +175,47 @@ pub fn run(path: &Path, binary: &Binary, format: Format, out: &mut dyn Write) ->
         let shown = top::write_largest(&retained, SHOWN, out)?;
         retained.write_pointer_note(&shown, out)?;
     }
+    let examples: Vec<String> = ranges
+        .into_iter()
+        .chain(
+            [
+                (kept > 0).then(|| "top".to_string()),
+                starting_point(binary).map(|item| about("retained", item)),
+                largest_kept(&retained).map(|item| about("why", item)),
+                inlined(binary),
+            ]
+            .into_iter()
+            .flatten(),
+        )
+        .collect();
+    write_try(path, &examples, out)
+}
+
+/// The overview of one range of memory: which items keep the most bytes
+/// in it.
+fn write_range(
+    path: &Path,
+    binary: &Binary,
+    range: AddressRange,
+    out: &mut dyn Write,
+) -> Result<()> {
+    if binary.kind == FileKind::SharedLibrary {
+        bail!(
+            "elfq doesn't know yet which functions a shared library offers to other files, so \
+             it can't tell what keeps the bytes in a range of it"
+        );
+    }
+    let retained = RetainedTree::build(binary, Some(range))?;
+    top::check_range_has_bytes(&retained)?;
+    let shown = top::write_largest(&retained, SHOWN, out)?;
+    retained.write_pointer_note(&shown, out)?;
+    let queries = Names::new(binary);
     let examples: Vec<String> = [
-        (kept > 0).then(|| "top".to_string()),
-        starting_point(binary).map(|item| about("retained", item)),
-        largest_kept(&retained).map(|item| about("why", item)),
-        inlined(binary),
+        Some(format!("top --range {}", super::range_argument(range))),
+        largest_kept(&retained).map(|item| {
+            let symbol = queries.query_for(Node::Item(item));
+            format!("why {}", super::shell_quote(&symbol))
+        }),
     ]
     .into_iter()
     .flatten()
@@ -160,17 +223,68 @@ pub fn run(path: &Path, binary: &Binary, format: Format, out: &mut dyn Write) ->
     write_try(path, &examples, out)
 }
 
-fn write_json(path: &Path, binary: &Binary, out: &mut dyn Write) -> Result<()> {
-    let graph = arch::is_supported(binary.architecture, binary.thumb).then(|| Graph::build(binary));
+/// Lists the blocks of addresses that the sections occupy, when there are
+/// several, as in firmware with flash and RAM, and returns them.
+fn write_memory(binary: &Binary, out: &mut dyn Write) -> Result<Vec<MemoryBlock>> {
+    let blocks = memory_blocks(&binary.sections);
+    if blocks.len() < 2 {
+        return Ok(Vec::new());
+    }
+    let mut table = Table::new(&[
+        ("MEMORY", Align::Left),
+        ("SIZE", Align::Right),
+        ("SECTIONS", Align::Left),
+    ]);
+    for block in &blocks {
+        let sections: Vec<&str> = block
+            .sections
+            .iter()
+            .map(|&index| binary.sections[index].name.as_str())
+            .collect();
+        table.row(vec![
+            super::range_argument(block.range),
+            (block.range.end - block.range.start).to_string(),
+            sections.join(" "),
+        ]);
+    }
+    writeln!(out)?;
+    table.write(out)?;
+    Ok(blocks)
+}
+
+fn write_json(
+    path: &Path,
+    binary: &Binary,
+    range: Option<AddressRange>,
+    out: &mut dyn Write,
+) -> Result<()> {
+    let readable = arch::is_supported(binary.architecture, binary.thumb);
+    let graph = (readable && range.is_none()).then(|| Graph::build(binary));
+    let in_range = |index: usize| {
+        let item = &binary.items[index];
+        range.map_or(item.size, |range| range.overlap(item.address, item.size))
+    };
+    let counted = |kind: ItemKind| {
+        (0..binary.items.len())
+            .filter(|&index| binary.items[index].kind == kind)
+            .filter(|&index| range.is_none() || in_range(index) > 0)
+            .count()
+    };
     let answer = OverviewJson {
         file: path.display().to_string(),
         architecture: super::architecture_name(binary.architecture),
         kind: binary.kind.to_string(),
         has_symbols: binary.has_symbols,
         has_dwarf: binary.has_dwarf,
-        functions: count(binary, ItemKind::Function),
-        data_objects: count(binary, ItemKind::Data),
-        imports: binary.imports.len(),
+        memory: memory_blocks(&binary.sections)
+            .iter()
+            .map(|block| json::Block::new(binary, block))
+            .collect(),
+        range: range.map(json::Range::new),
+        functions: counted(ItemKind::Function),
+        data_objects: counted(ItemKind::Data),
+        bytes: (0..binary.items.len()).map(in_range).sum(),
+        imports: range.is_none().then_some(binary.imports.len()),
         references: graph.as_ref().map(|graph| graph.references.len()),
         indirect_calls: graph.as_ref().map(indirect_calls),
     };
@@ -223,7 +337,8 @@ fn largest_kept(retained: &RetainedTree) -> Option<usize> {
     };
     (0..binary.items.len())
         .filter(|&index| retained.tree.is_reachable(Node::Item(index)) && !is_root(index))
-        .max_by_key(|&index| (binary.items[index].size, std::cmp::Reverse(index)))
+        .filter(|&index| retained.own(index) > 0)
+        .max_by_key(|&index| (retained.own(index), std::cmp::Reverse(index)))
 }
 
 /// The function with the most distinct callers, leaving out PLT stubs,

@@ -21,11 +21,13 @@
 mod eh_frame;
 mod names;
 mod plt;
+mod range;
 mod relocations;
 mod symbols;
 mod unnamed_data;
 
 pub use names::{demangle, short_names};
+pub use range::{AddressRange, MemoryBlock, memory_blocks};
 
 use std::collections::HashSet;
 use std::fmt;
