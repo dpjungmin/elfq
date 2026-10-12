@@ -16,7 +16,7 @@ use super::json;
 use crate::binary::{Binary, FileKind};
 use crate::cli::Format;
 use crate::graph::{DominatorTree, Graph, Node, Root, RootKind, ShortestPaths};
-use crate::render::{Align, Table};
+use crate::render::{Align, Table, TreeRow};
 
 /// How many items that keep SYMBOL get their chain shown, at most.
 const SHOWN: usize = 10;
@@ -139,7 +139,7 @@ pub fn run(
     let shown = &keeping[..keeping.len().min(SHOWN)];
     let chains = Chains::new(binary, &graph, &paths, node, shown);
     let mut table = Table::new(&[("HOW", Align::Left), ("ITEM", Align::Left)]);
-    chains.add_rows(&mut table);
+    table.tree(&chains.rows());
     table.write(out)?;
 
     if keeping.len() > SHOWN {
@@ -320,35 +320,36 @@ impl<'a> Chains<'a> {
         }
     }
 
-    fn add_rows(&self, table: &mut Table) {
-        for root in &self.roots {
-            table.row(vec![
-                root_how(self.binary, root.kind),
-                root.node.name(self.binary).to_string(),
-            ]);
-            self.add_children(root.node, "", table);
-        }
+    /// The tree's rows: each root, and under it the chains that start
+    /// there.
+    fn rows(&self) -> Vec<TreeRow> {
+        self.roots
+            .iter()
+            .map(|root| {
+                TreeRow::new(
+                    vec![root_how(self.binary, root.kind)],
+                    root.node.name(self.binary),
+                    self.children_rows(root.node),
+                )
+            })
+            .collect()
     }
 
-    /// Adds a row for each of `node`'s children, and below each, its own
-    /// children. `indent` draws the tree's branches above them.
-    fn add_children(&self, node: Node, indent: &str, table: &mut Table) {
+    /// The rows of `node`'s children, each with the rows of its own.
+    fn children_rows(&self, node: Node) -> Vec<TreeRow> {
         let Some(children) = self.children.get(&node) else {
-            return;
+            return Vec::new();
         };
-        for (i, &child) in children.iter().enumerate() {
-            let last = i + 1 == children.len();
-            table.row(vec![
-                how(self.graph, node, child),
-                format!(
-                    "{indent}{}{}",
-                    if last { "└─ " } else { "├─ " },
-                    child.name(self.binary)
-                ),
-            ]);
-            let indent = format!("{indent}{}", if last { "   " } else { "│  " });
-            self.add_children(child, &indent, table);
-        }
+        children
+            .iter()
+            .map(|&child| {
+                TreeRow::new(
+                    vec![how(self.graph, node, child)],
+                    child.name(self.binary),
+                    self.children_rows(child),
+                )
+            })
+            .collect()
     }
 }
 

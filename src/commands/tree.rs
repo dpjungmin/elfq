@@ -13,7 +13,7 @@ use serde::Serialize;
 use super::json;
 use crate::binary::{AddressRange, Binary, ItemKind};
 use crate::graph::{DominatorTree, Graph, Node, ReferenceKind};
-use crate::render::Table;
+use crate::render::TreeRow;
 
 /// An item and everything it keeps, for `--format json`.
 #[derive(Serialize)]
@@ -112,18 +112,22 @@ impl<'a> RetainedTree<'a> {
         self.range.is_none() || self.retained(index) > 0
     }
 
-    /// An item's name, marked when it is a function that only pointers lead
-    /// to, and so counts for whatever holds its address.
+    /// An item's name, with its [mark](RetainedTree::mark) if it has one.
     pub fn label(&self, index: usize) -> String {
         let name = &self.binary.items[index].name;
-        if self.through_pointer(index) {
-            format!("{name} (through a pointer)")
-        } else {
-            name.clone()
+        match self.mark(index) {
+            Some(mark) => format!("{name} {mark}"),
+            None => name.clone(),
         }
     }
 
-    /// Explains the marks that [`RetainedTree::label`] added to `shown`, if
+    /// The mark after the name of a function that only pointers lead to,
+    /// and so counts for whatever holds its address.
+    fn mark(&self, index: usize) -> Option<&'static str> {
+        self.through_pointer(index).then_some("(through a pointer)")
+    }
+
+    /// Explains the marks that [`RetainedTree::mark`] adds to `shown`, if
     /// any.
     pub fn write_pointer_note(&self, shown: &[usize], out: &mut dyn Write) -> Result<()> {
         if shown.iter().any(|&index| self.through_pointer(index)) {
@@ -176,42 +180,33 @@ impl<'a> RetainedTree<'a> {
         shown
     }
 
-    /// Adds `node`'s row and, below it, its shown children, with one line
-    /// that sums up the children not shown. `prefix` draws the tree's
-    /// branches for this row, and `indent` for the rows below it.
-    pub fn add_rows(
-        &self,
-        shown: &HashSet<usize>,
-        node: Node,
-        prefix: &str,
-        indent: &str,
-        table: &mut Table,
-    ) {
-        let Node::Item(index) = node else { return };
-        table.row(vec![
-            self.retained(index).to_string(),
-            self.own_text(index),
-            format!("{prefix}{}", self.label(index)),
-        ]);
-        let (visible, hidden) = self.split(self.tree.children(node), shown);
-        let lines = visible.len() + usize::from(!hidden.is_empty());
-        for (i, &child) in visible.iter().enumerate() {
-            let last = i + 1 == lines;
-            self.add_rows(
-                shown,
-                Node::Item(child),
-                &format!("{indent}{}", if last { "└─ " } else { "├─ " }),
-                &format!("{indent}{}", if last { "   " } else { "│  " }),
-                table,
-            );
+    /// The rows of the shown items in `nodes`, each with the rows of its
+    /// shown children under it, and one row that sums up those not shown.
+    pub fn rows(&self, shown: &HashSet<usize>, nodes: &[Node]) -> Vec<TreeRow> {
+        let (visible, hidden) = self.split(nodes, shown);
+        let mut rows: Vec<TreeRow> = visible
+            .iter()
+            .map(|&index| self.tree_row(shown, index))
+            .collect();
+        rows.extend(self.more(&hidden));
+        rows
+    }
+
+    /// The row of the item at `index`, with the rows of its shown children
+    /// under it.
+    pub fn tree_row(&self, shown: &HashSet<usize>, index: usize) -> TreeRow {
+        let cells = vec![self.retained(index).to_string(), self.own_text(index)];
+        let children = self.rows(shown, self.tree.children(Node::Item(index)));
+        TreeRow {
+            mark: self.mark(index),
+            ..TreeRow::new(cells, &self.binary.items[index].name, children)
         }
-        self.add_more(&hidden, &format!("{indent}└─ "), table);
     }
 
     /// Splits `nodes` into the items shown and those not, leaving out
     /// imports, which have no bytes in the file, and items that keep none
     /// of the range's bytes.
-    pub fn split(&self, nodes: &[Node], shown: &HashSet<usize>) -> (Vec<usize>, Vec<usize>) {
+    fn split(&self, nodes: &[Node], shown: &HashSet<usize>) -> (Vec<usize>, Vec<usize>) {
         nodes
             .iter()
             .filter_map(|&node| match node {
@@ -221,17 +216,18 @@ impl<'a> RetainedTree<'a> {
             .partition(|index| shown.contains(index))
     }
 
-    /// Adds the line that sums up `hidden` items, if there are any.
-    pub fn add_more(&self, hidden: &[usize], prefix: &str, table: &mut Table) {
+    /// The row that sums up `hidden` items, if there are any.
+    fn more(&self, hidden: &[usize]) -> Option<TreeRow> {
         if hidden.is_empty() {
-            return;
+            return None;
         }
         let bytes: u64 = hidden.iter().map(|&index| self.retained(index)).sum();
-        table.row(vec![
-            bytes.to_string(),
-            String::new(),
-            format!("{prefix}{} more", hidden.len()),
-        ]);
+        let cells = vec![bytes.to_string(), String::new()];
+        Some(TreeRow::new(
+            cells,
+            format!("{} more", hidden.len()),
+            Vec::new(),
+        ))
     }
 
     /// The items in `nodes`, each with the whole tree of what it keeps.

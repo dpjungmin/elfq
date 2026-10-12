@@ -1,7 +1,12 @@
-//! Turning answers into text for people. Commands fill a [`Table`] and write
-//! it out.
+//! Turning answers into text for people. Commands fill a [`Table`], with
+//! rows or with a tree in its last column ([`Table::tree`]), and write it
+//! out.
 
 use std::io::{self, Write};
+
+mod tree;
+
+pub use tree::TreeRow;
 
 /// How a column's cells line up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

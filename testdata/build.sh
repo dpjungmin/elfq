@@ -51,6 +51,11 @@ arm-none-eabi-gcc $cflags \
     -T c/cortex-m7.ld -Wl,--gc-sections \
     -o "$out/c-cortex-m7.elf" c/app.c c/platform_cortexm7.c
 
+# Only the full build too: this sample is for looking at trees deeper than
+# elfq draws in one piece.
+echo "C, nested 20 deep, x86-64 Linux"
+gcc $cflags -o "$out/c-deep.elf" c/deep.c
+
 echo "C++, x86-64 Linux"
 g++ $cflags -o "$out/cpp-x86_64.elf" cpp/app.cpp
 variants strip cpp-x86_64

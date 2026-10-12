@@ -319,6 +319,21 @@ fn retained_has_what_symbol_keeps_as_a_tree() {
 }
 
 #[test]
+fn deep_trees_are_whole() {
+    // The text continues a tree deeper than 9 levels below it; JSON nests
+    // all of it.
+    let answer = elfq_json(&["testdata/bin/c-deep.elf", "retained", "chain1"]);
+    let mut chain = Vec::new();
+    let mut keeps = &answer["keeps"];
+    while let [item] = &keeps.as_array().unwrap()[..] {
+        chain.push(item["name"].as_str().unwrap());
+        keeps = &item["keeps"];
+    }
+    let expected: Vec<String> = (2..=20).map(|n| format!("chain{n}")).collect();
+    assert_eq!(chain, expected);
+}
+
+#[test]
 fn why_has_the_chain_through_every_user() {
     let why = elfq_json(&[SAMPLE, "why", "log_msg"]);
     // Each chain as one line: every item, and how it is used.

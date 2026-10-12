@@ -112,11 +112,7 @@ pub(super) fn write_largest(
         ("OWN", Align::Right),
         ("ITEM", Align::Left),
     ]);
-    let (visible, hidden) = retained.split(tree.top(), &shown);
-    for &index in &visible {
-        retained.add_rows(&shown, Node::Item(index), "", "", &mut table);
-    }
-    retained.add_more(&hidden, "", &mut table);
+    table.tree(&retained.rows(&shown, tree.top()));
     table.write(out)?;
     Ok(shown.into_iter().collect())
 }

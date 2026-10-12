@@ -19,7 +19,7 @@ use crate::binary::{Binary, ItemKind};
 use crate::cli::Format;
 use crate::debuginfo::{self, InlinedCopy};
 use crate::graph::Node;
-use crate::render::{Align, Table};
+use crate::render::{Align, Table, TreeRow};
 
 /// How many functions the list shows, or the tree, at most, besides the
 /// lines that sum up the rest.
@@ -221,11 +221,7 @@ fn write_tree(
         ("COPIES", Align::Right),
         ("FUNCTION", Align::Left),
     ]);
-    let (visible, hidden) = split(&groups.top, &shown);
-    for &group in &visible {
-        groups.add_rows(&shown, group, "", "", &mut table);
-    }
-    groups.add_more(&hidden, "", &mut table);
+    table.tree(&groups.rows(&shown, &groups.top));
     table.write(out)?;
     if shown.iter().any(|&group| groups.list[group].bytes == 0) {
         write_empty_copies_note(out)?;
@@ -373,50 +369,38 @@ impl<'a> Groups<'a> {
             .collect()
     }
 
-    /// Adds `group`'s row and, below it, its shown children, with one line
-    /// that sums up the children not shown. `prefix` draws the tree's
-    /// branches for this row, and `indent` for the rows below it.
-    fn add_rows(
-        &self,
-        shown: &HashSet<usize>,
-        group: usize,
-        prefix: &str,
-        indent: &str,
-        table: &mut Table,
-    ) {
-        let row = &self.list[group];
-        table.row(vec![
-            row.bytes.to_string(),
-            row.copies.to_string(),
-            format!("{prefix}{}", row.name),
-        ]);
-        let (visible, hidden) = split(&row.children, shown);
-        let lines = visible.len() + usize::from(!hidden.is_empty());
-        for (i, &child) in visible.iter().enumerate() {
-            let last = i + 1 == lines;
-            self.add_rows(
-                shown,
-                child,
-                &format!("{indent}{}", if last { "└─ " } else { "├─ " }),
-                &format!("{indent}{}", if last { "   " } else { "│  " }),
-                table,
-            );
-        }
-        self.add_more(&hidden, &format!("{indent}└─ "), table);
+    /// The rows of the shown groups in `groups`, each with the rows of its
+    /// shown children under it, and one row that sums up those not shown.
+    fn rows(&self, shown: &HashSet<usize>, groups: &[usize]) -> Vec<TreeRow> {
+        let (visible, hidden) = split(groups, shown);
+        let mut rows: Vec<TreeRow> = visible
+            .iter()
+            .map(|&group| self.tree_row(shown, group))
+            .collect();
+        rows.extend(self.more(&hidden));
+        rows
     }
 
-    /// Adds the line that sums up `hidden` groups, if there are any.
-    fn add_more(&self, hidden: &[usize], prefix: &str, table: &mut Table) {
+    /// The row of `group`, with the rows of its shown children under it.
+    fn tree_row(&self, shown: &HashSet<usize>, group: usize) -> TreeRow {
+        let row = &self.list[group];
+        let cells = vec![row.bytes.to_string(), row.copies.to_string()];
+        TreeRow::new(cells, row.name, self.rows(shown, &row.children))
+    }
+
+    /// The row that sums up `hidden` groups, if there are any.
+    fn more(&self, hidden: &[usize]) -> Option<TreeRow> {
         if hidden.is_empty() {
-            return;
+            return None;
         }
         let bytes: u64 = hidden.iter().map(|&group| self.list[group].bytes).sum();
         let copies: usize = hidden.iter().map(|&group| self.list[group].copies).sum();
-        table.row(vec![
-            bytes.to_string(),
-            copies.to_string(),
-            format!("{prefix}{} more", hidden.len()),
-        ]);
+        let cells = vec![bytes.to_string(), copies.to_string()];
+        Some(TreeRow::new(
+            cells,
+            format!("{} more", hidden.len()),
+            Vec::new(),
+        ))
     }
 }
 
