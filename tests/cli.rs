@@ -37,9 +37,24 @@ testdata/bin/c-x86_64.elf: x86-64 position-independent executable, with symbols 
 32 functions, 36 data objects and 8 imports, with 119 references between them.
 4 calls or jumps go through pointers set at run time, which elfq can't follow.
 
+The items that keep the most of the file's 4021 bytes:
+
+RETAINED   OWN  ITEM
+    3635    38  _start
+    3597   195  └─ main (through a pointer)
+    2068   532     ├─ process_frame
+    1083    59     │  ├─ crc32
+    1024  1024     │  │  └─ crc_table
+     453           │  └─ 4 more
+    1334           └─ 19 more
+     345        9 more
+
+Nothing calls the functions marked \"through a pointer\" directly, so elfq counts them for the code or data that holds their address.
+
 Try:
-  elfq testdata/bin/c-x86_64.elf callers log_msg
+  elfq testdata/bin/c-x86_64.elf top
   elfq testdata/bin/c-x86_64.elf retained main
+  elfq testdata/bin/c-x86_64.elf why crc_table
 "
     );
 }
@@ -54,9 +69,23 @@ testdata/bin/c-cortex-m4.elf: 32-bit Arm executable, with symbols and DWARF debu
 25 functions and 31 data objects, with 97 references between them.
 1 call or jump goes through pointers set at run time, which elfq can't follow.
 
+The items that keep the most of the file's 3577 bytes:
+
+RETAINED   OWN  ITEM
+    3111    76  Reset_Handler
+    2529   132  ├─ main
+    1684   376  │  ├─ process_frame
+    1076    52  │  │  ├─ crc32
+    1024  1024  │  │  │  └─ crc_table
+     232        │  │  └─ 4 more
+     713        │  └─ 12 more
+     506        └─ 4 more
+     466        7 more
+
 Try:
-  elfq testdata/bin/c-cortex-m4.elf callers log_msg
+  elfq testdata/bin/c-cortex-m4.elf top
   elfq testdata/bin/c-cortex-m4.elf retained main
+  elfq testdata/bin/c-cortex-m4.elf why crc_table
 "
     );
     assert_eq!(
@@ -67,6 +96,70 @@ SysTick_Handler is used by 1 data object:
 CALLER        HOW      AT
 vector_table  pointer  0x800003c
 "
+    );
+}
+
+#[test]
+fn top_shows_what_keeps_the_most_bytes() {
+    assert_eq!(
+        stdout(&[SAMPLE, "top"]),
+        "\
+The items that keep the most of the file's 4021 bytes:
+
+RETAINED   OWN  ITEM
+    3635    38  _start
+    3597   195  └─ main (through a pointer)
+    2068   532     ├─ process_frame
+    1083    59     │  ├─ crc32
+    1024  1024     │  │  └─ crc_table
+     378   271     │  ├─ apply_filter
+     107    75     │  │  └─ filter_tap
+      32    32     │  │     └─ fir_coeffs
+      54    54     │  ├─ decode_header
+      21           │  └─ 2 more
+     705   370     ├─ report
+     162   162     │  ├─ format_u32
+      80    16     │  ├─ root
+      48    16     │  │  ├─ inner
+      32           │  │  │  └─ 2 more
+      16           │  │  └─ 1 more
+      46    46     │  ├─ count_nodes
+      47           │  └─ 6 more
+     187    84     ├─ parse_value
+     103   103     │  └─ parse_list
+     103    51     ├─ log_msg
+      36    20     │  ├─ platform_write
+      16           │  │  └─ 1 more
+      16           │  └─ 1 more
+      57    51     ├─ app_tick
+       6           │  └─ 1 more
+      34   ~34     ├─ .rodata@0x205e
+      33    33     ├─ dispatch_event
+      32    32     ├─ stats
+      31    19     ├─ on_button (through a pointer)
+      12           │  └─ 2 more
+      25    25     ├─ frame_a
+     127           └─ 10 more
+     152   ~64  __do_global_dtors_aux
+      48   ~48  ├─ deregister_tm_clones
+      40        └─ 2 more
+      80   ~16  frame_dummy
+      64   ~64  └─ register_tm_clones
+      64    64  .plt
+      32    32  __abi_tag
+      17        5 more
+
+Nothing reaches 3 items, 41 bytes in all, as far as elfq can tell: debug_dump, .rodata@0x2056 and _IO_stdin_used. They may be dead code, or used in a way elfq can't see.
+
+Nothing calls the functions marked \"through a pointer\" directly, so elfq counts them for the code or data that holds their address.
+"
+    );
+    // On Cortex-M the SysTick interrupt also reaches `log_msg`, so it isn't
+    // under `main` but at the top, with what only it leads to.
+    let firmware = stdout(&["testdata/bin/c-cortex-m4.elf", "top"]);
+    assert!(
+        firmware.contains("\n     276    26  log_msg\n     216   216  ├─ strlen\n"),
+        "{firmware}"
     );
 }
 

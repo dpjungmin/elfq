@@ -75,7 +75,7 @@ It mirrors the C sample (`process_frame`, `crc32`, `apply_filter`,
 | `Reset`, `EXCEPTIONS` | Entry point and vector table, as in the C sample. |
 
 On x86-64, most of the file is the standard library, led by the backtrace
-symbolizer; that is a good case for `why` and `retained`.
+symbolizer; that is a good case for `top`, `why` and `retained`.
 
 ## Rebuilding
 

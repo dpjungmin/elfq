@@ -1,5 +1,5 @@
-//! `elfq FILE`: what the file is, what elfq found in it, and what to ask
-//! next.
+//! `elfq FILE`: what the file is, what elfq found in it, which items keep
+//! the most bytes, and what to ask next.
 
 use std::io::Write;
 use std::path::Path;
@@ -7,9 +7,14 @@ use std::path::Path;
 use anyhow::Result;
 
 use super::symbol::{self, Names};
+use super::top;
+use super::tree::RetainedTree;
 use crate::arch;
 use crate::binary::{Binary, FileKind, ItemKind, Source};
 use crate::graph::{Graph, Node};
+
+/// How many items the tree of the largest items shows.
+const SHOWN: usize = 5;
 
 pub fn run(path: &Path, binary: &Binary, out: &mut dyn Write) -> Result<()> {
     let names = match (binary.has_symbols, binary.has_dwarf) {
@@ -89,31 +94,75 @@ pub fn run(path: &Path, binary: &Binary, out: &mut dyn Write) -> Result<()> {
         )?;
     }
 
-    // `retained` needs roots, which a shared library doesn't have yet.
-    let tree_command = match binary.kind {
-        FileKind::SharedLibrary => "callees",
-        _ => "retained",
+    // `retained` and `why` need roots, which a shared library doesn't have
+    // yet.
+    let queries = Names::new(binary);
+    let about = |command: &str, item: usize| {
+        let symbol = queries.query_for(Node::Item(item));
+        format!("{command} {}", super::shell_quote(&symbol))
     };
-    let examples = [
-        ("callers", most_used(binary, &graph)),
-        (tree_command, starting_point(binary)),
-    ];
-    if examples.iter().any(|(_, item)| item.is_some()) {
-        let names = Names::new(binary);
+    if binary.kind == FileKind::SharedLibrary {
+        let examples: Vec<String> = [
+            most_used(binary, &graph).map(|item| about("callers", item)),
+            starting_point(binary).map(|item| about("callees", item)),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        return write_try(path, &examples, out);
+    }
+    let retained = RetainedTree::from_graph(binary, graph);
+    // Without functions, as in stripped firmware, there is nothing to rank.
+    let kept: u64 = retained
+        .tree
+        .top()
+        .iter()
+        .map(|&node| retained.tree.retained(node))
+        .sum();
+    if kept > 0 {
         writeln!(out)?;
-        writeln!(out, "Try:")?;
-        for (command, item) in examples {
-            if let Some(item) = item {
-                writeln!(
-                    out,
-                    "  elfq {} {command} {}",
-                    super::shell_quote(&path.display().to_string()),
-                    super::shell_quote(&names.query_for(Node::Item(item)))
-                )?;
-            }
-        }
+        let shown = top::write_largest(&retained, SHOWN, out)?;
+        retained.write_pointer_note(&shown, out)?;
+    }
+    let examples: Vec<String> = [
+        (kept > 0).then(|| "top".to_string()),
+        starting_point(binary).map(|item| about("retained", item)),
+        largest_kept(&retained).map(|item| about("why", item)),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    write_try(path, &examples, out)
+}
+
+/// Writes the commands to try next, each given without `elfq FILE`.
+fn write_try(path: &Path, commands: &[String], out: &mut dyn Write) -> Result<()> {
+    if commands.is_empty() {
+        return Ok(());
+    }
+    let file = super::shell_quote(&path.display().to_string());
+    writeln!(out)?;
+    writeln!(out, "Try:")?;
+    for command in commands {
+        writeln!(out, "  elfq {file} {command}")?;
     }
     Ok(())
+}
+
+/// The largest item that something keeps in the file, as opposed to one
+/// where the program starts: a good question for `why`.
+fn largest_kept(retained: &RetainedTree) -> Option<usize> {
+    let binary = retained.binary;
+    let is_root = |index| {
+        retained
+            .graph
+            .roots
+            .iter()
+            .any(|root| root.node == Node::Item(index))
+    };
+    (0..binary.items.len())
+        .filter(|&index| retained.tree.is_reachable(Node::Item(index)) && !is_root(index))
+        .max_by_key(|&index| (binary.items[index].size, std::cmp::Reverse(index)))
 }
 
 /// The function with the most distinct callers, leaving out PLT stubs,

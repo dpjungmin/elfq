@@ -127,6 +127,12 @@ impl DominatorTree {
         &self.children[self.index(node)]
     }
 
+    /// The nodes directly under the tree's top: the roots, and the nodes
+    /// that several roots reach, largest retained size first.
+    pub fn top(&self) -> &[Node] {
+        &self.top
+    }
+
     /// Everything exclusive to `node`: all the nodes below it in the tree.
     pub fn exclusive(&self, node: Node) -> Vec<Node> {
         let mut exclusive = Vec::new();

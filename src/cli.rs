@@ -28,6 +28,7 @@ pub struct Cli {
 const EXAMPLES: &str = "\
 Examples:
   elfq app.elf                            Overview of app.elf
+  elfq app.elf top                        What keeps the most bytes in app.elf
   elfq app.elf retained process_frame     What process_frame keeps in the file
   elfq app.elf exclusive process_frame    What only process_frame leads to
   elfq app.elf why crc_table              What keeps crc_table in the file
@@ -36,6 +37,9 @@ Examples:
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Show the items that keep the most bytes in the file, as a tree
+    #[command(after_help = TOP)]
+    Top,
     /// Show what SYMBOL keeps in the file, as a tree, and how many bytes
     #[command(after_help = EXCLUSIVE)]
     Retained(SymbolArgs),
@@ -71,6 +75,17 @@ The tree starts where the program does: at the entry point, a function the
 C runtime runs at startup, or a handler in the vector table. Each item in
 it is used by the one above it, and the chains end at SYMBOL. Only the
 shortest chain through each item that uses SYMBOL is shown.";
+
+const TOP: &str = "\
+An item's retained size is its own size plus the sizes of the items that
+only it leads to, from where the program starts: what removing it would
+save. Each item hangs under the closest item that every path to it goes
+through, and the items at the top are where the program starts, or are
+reached from more than one of those places. The tree shows the 30 largest
+items; lines such as \"└─ 6 more\" sum up the rest.
+
+A function that is only called through pointers counts for the code or data
+that holds its address. Sizes marked ~ are estimates.";
 
 const EXCLUSIVE: &str = "\
 An item is exclusive to SYMBOL when every path to it, from where the program
