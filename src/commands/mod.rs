@@ -4,7 +4,9 @@
 mod callees;
 mod callers;
 mod debug_items;
+mod exclusive;
 mod overview;
+mod retained;
 pub mod symbol;
 
 use std::io::Write;
@@ -13,7 +15,7 @@ use anyhow::{Result, bail};
 use object::Architecture;
 
 use crate::arch;
-use crate::binary::{Binary, ItemKind};
+use crate::binary::{Binary, Item, ItemKind};
 use crate::cli::{Cli, Command, DebugCommand};
 use crate::graph::{Graph, Node, Reference, ReferenceKind};
 
@@ -25,6 +27,8 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<()> {
     }
     match &cli.command {
         None => overview::run(&cli.file, &binary, out),
+        Some(Command::Retained(args)) => retained::run(&cli.file, &binary, &args.symbol, out),
+        Some(Command::Exclusive(args)) => exclusive::run(&binary, &args.symbol, out),
         Some(Command::Callers(args)) => callers::run(&binary, &args.symbol, out),
         Some(Command::Callees(args)) => callees::run(&binary, &args.symbol, out),
         Some(Command::Debug(DebugCommand::Items)) => debug_items::run(&binary, out),
@@ -53,6 +57,15 @@ fn architecture_name(architecture: Architecture) -> String {
         Architecture::X86_64 => "x86-64".to_string(),
         Architecture::Arm => "32-bit Arm".to_string(),
         other => format!("{other:?}"),
+    }
+}
+
+/// An item's size, `~N` when it is an estimate, or `?` when it is unknown.
+fn size_text(item: &Item) -> String {
+    match (item.size, item.size_estimated) {
+        (0, _) => "?".to_string(),
+        (size, true) => format!("~{size}"),
+        (size, false) => size.to_string(),
     }
 }
 

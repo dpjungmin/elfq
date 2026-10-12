@@ -31,8 +31,9 @@ enum Binding {
     Global,
 }
 
-/// Returns one item per address that has function or data symbols.
-pub(super) fn items(file: &object::File, sections: &[Section]) -> Vec<Item> {
+/// Returns one item per address that has function or data symbols, and the
+/// blocks of merged variables, as `(address, size)`.
+pub(super) fn items(file: &object::File, sections: &[Section]) -> (Vec<Item>, Vec<(u64, u64)>) {
     let mut candidates: Vec<Candidate> = file
         .symbols()
         .filter_map(|symbol| candidate(file, &symbol, Source::SymbolTable, sections))
@@ -41,7 +42,8 @@ pub(super) fn items(file: &object::File, sections: &[Section]) -> Vec<Item> {
         file.dynamic_symbols()
             .filter_map(|symbol| candidate(file, &symbol, Source::DynamicSymbolTable, sections)),
     );
-    merge_aliases(candidates)
+    let blocks = drop_containers(&mut candidates);
+    (merge_aliases(candidates), blocks)
 }
 
 fn candidate(
@@ -100,7 +102,6 @@ fn candidate(
 /// `Default_Handler`, or the same symbol listed in both tables. A mangled
 /// symbol is an alias of its readable name.
 fn merge_aliases(mut candidates: Vec<Candidate>) -> Vec<Item> {
-    drop_containers(&mut candidates);
     // Within an address, the candidate that best names the item comes first:
     // the strongest binding, then a real name over an assembler-local `.L` one.
     candidates.sort_by(|a, b| {
@@ -152,8 +153,9 @@ fn add_alias(item: &mut Item, name: String) {
 
 /// Drops data symbols that only enclose other data symbols, such as LLVM's
 /// `.L_MergedGlobals`, which covers several variables placed side by side.
-/// The variables inside are the items.
-fn drop_containers(candidates: &mut Vec<Candidate>) {
+/// The variables inside are the items. Returns the dropped symbols, as
+/// `(address, size)`.
+fn drop_containers(candidates: &mut Vec<Candidate>) -> Vec<(u64, u64)> {
     candidates.sort_by_key(|c| (c.kind, c.address, Reverse(c.size)));
     let shape = |c: &Candidate| (c.kind, c.address, c.size);
     let keep: Vec<bool> = (0..candidates.len())
@@ -170,6 +172,13 @@ fn drop_containers(candidates: &mut Vec<Candidate>) {
                 && next.address + next.size <= end)
         })
         .collect();
+    let containers = candidates
+        .iter()
+        .zip(&keep)
+        .filter(|(_, keep)| !**keep)
+        .map(|(candidate, _)| (candidate.address, candidate.size))
+        .collect();
     let mut keep = keep.into_iter();
     candidates.retain(|_| keep.next().unwrap_or(true));
+    containers
 }

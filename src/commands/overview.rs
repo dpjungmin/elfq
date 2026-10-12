@@ -8,7 +8,7 @@ use anyhow::Result;
 
 use super::symbol::{self, Names};
 use crate::arch;
-use crate::binary::{Binary, ItemKind, Source};
+use crate::binary::{Binary, FileKind, ItemKind, Source};
 use crate::graph::{Graph, Node};
 
 pub fn run(path: &Path, binary: &Binary, out: &mut dyn Write) -> Result<()> {
@@ -89,9 +89,14 @@ pub fn run(path: &Path, binary: &Binary, out: &mut dyn Write) -> Result<()> {
         )?;
     }
 
+    // `retained` needs roots, which a shared library doesn't have yet.
+    let tree_command = match binary.kind {
+        FileKind::SharedLibrary => "callees",
+        _ => "retained",
+    };
     let examples = [
         ("callers", most_used(binary, &graph)),
-        ("callees", starting_point(binary)),
+        (tree_command, starting_point(binary)),
     ];
     if examples.iter().any(|(_, item)| item.is_some()) {
         let names = Names::new(binary);

@@ -27,12 +27,20 @@ pub struct Cli {
 
 const EXAMPLES: &str = "\
 Examples:
-  elfq app.elf                    Overview of app.elf
-  elfq app.elf callers log_msg    What calls or uses log_msg
-  elfq app.elf callees main       What main calls or uses";
+  elfq app.elf                            Overview of app.elf
+  elfq app.elf retained process_frame     What process_frame keeps in the file
+  elfq app.elf exclusive process_frame    What only process_frame leads to
+  elfq app.elf callers log_msg            What calls or uses log_msg
+  elfq app.elf callees main               What main calls or uses";
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Show what SYMBOL keeps in the file, as a tree, and how many bytes
+    #[command(after_help = EXCLUSIVE)]
+    Retained(SymbolArgs),
+    /// List the items that only SYMBOL leads to
+    #[command(after_help = EXCLUSIVE)]
+    Exclusive(SymbolArgs),
     /// List what calls or uses SYMBOL
     #[command(after_help = HOW)]
     Callers(SymbolArgs),
@@ -53,6 +61,15 @@ The HOW column says how one item uses the other:
                  pointer (Arm code also does this to use a variable)
   access         code reads or writes it
   pointer        data holds a pointer to it, as in a table of functions";
+
+const EXCLUSIVE: &str = "\
+An item is exclusive to SYMBOL when every path to it, from where the program
+starts, goes through SYMBOL: without SYMBOL it would be dead code. SYMBOL's
+retained size is its own size plus the sizes of everything exclusive to it,
+which is what removing SYMBOL would save.
+
+A function that is only called through pointers counts for the code or data
+that holds its address. Sizes marked ~ are estimates.";
 
 #[derive(Debug, Args)]
 pub struct SymbolArgs {

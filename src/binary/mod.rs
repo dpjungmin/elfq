@@ -66,6 +66,16 @@ pub struct Binary {
     /// Pointers that the dynamic loader writes into memory at startup,
     /// sorted by address.
     pub relocations: Vec<Relocation>,
+    /// Addresses that the unwinder uses while it handles a panic or an
+    /// exception, as the unwind table names them (see `eh_frame.rs`): the
+    /// personality routines it calls, and where pointers to them are stored
+    /// when the table points there instead.
+    pub used_by_unwinder: Vec<u64>,
+    /// Blocks of variables that the compiler placed side by side, such as
+    /// LLVM's `.L_MergedGlobals`, as `(address, size)`. Code takes the
+    /// block's address and reaches each variable at an offset from it, so
+    /// taking that address can mean using any of them.
+    pub merged_variables: Vec<(u64, u64)>,
     /// Problems that did not stop loading but may make answers incomplete.
     pub warnings: Vec<String>,
     /// The whole file.
@@ -214,17 +224,30 @@ impl Binary {
             items: Vec::new(),
             imports: Vec::new(),
             relocations: Vec::new(),
+            used_by_unwinder: Vec::new(),
+            merged_variables: Vec::new(),
             warnings: Vec::new(),
             data: data.to_vec(),
             big_endian: !file.is_little_endian(),
         };
         (binary.imports, binary.relocations) = relocations::read(&file, architecture);
 
-        let mut items = symbols::items(&file, &binary.sections);
+        let (mut items, merged_variables) = symbols::items(&file, &binary.sections);
+        binary.merged_variables = merged_variables;
         add_new_items(&mut items, plt::stubs(&binary));
         add_new_items(&mut items, section_items(&binary.sections));
-        match eh_frame::function_ranges(&file) {
-            Ok(ranges) => add_unwind_items(&mut items, &ranges, &binary.sections),
+        match eh_frame::read(&file) {
+            Ok(table) => {
+                add_unwind_items(&mut items, &table.functions, &binary.sections);
+                for pointer in table.personalities {
+                    if let gimli::Pointer::Indirect(stored_at) = pointer {
+                        binary.used_by_unwinder.push(stored_at);
+                    }
+                    binary
+                        .used_by_unwinder
+                        .extend(binary.personality_address(pointer));
+                }
+            }
             Err(err) => binary
                 .warnings
                 .push(format!("cannot read .eh_frame: {err}")),
@@ -292,6 +315,22 @@ impl Binary {
             .rev()
             .take_while(|&index| self.items[index].address == start)
             .find(|&index| self.items[index].contains(address))
+    }
+
+    /// Where a personality routine is, given the unwind table's pointer to
+    /// it. `None` when it is in a shared library.
+    fn personality_address(&self, pointer: gimli::Pointer) -> Option<u64> {
+        let stored_at = match pointer {
+            gimli::Pointer::Direct(address) => return Some(address),
+            gimli::Pointer::Indirect(stored_at) => stored_at,
+        };
+        match self.relocation_at(stored_at) {
+            Some(relocation) => match relocation.target {
+                RelocationTarget::Address(address) => Some(address),
+                RelocationTarget::Import(_) => None,
+            },
+            None => self.pointer_at(stored_at),
+        }
     }
 
     /// The relocation that stores a pointer at `address`, if any.
