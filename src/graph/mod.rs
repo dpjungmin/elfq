@@ -26,6 +26,8 @@ pub use dominators::DominatorTree;
 pub use paths::ShortestPaths;
 pub use roots::{Root, RootKind};
 
+use std::collections::HashSet;
+
 use crate::arch::{self, CodeReference, CodeReferenceKind};
 use crate::binary::{Binary, FileKind, ItemKind, Relocation, RelocationTarget};
 
@@ -151,7 +153,18 @@ impl Graph {
         let Some(code) = binary.bytes(item.address, item.size) else {
             return;
         };
-        for reference in arch::scan(binary.architecture, code, item.address) {
+        let references = arch::scan(binary.architecture, code, item.address);
+        let bounds = if item.contains(binary.entry) {
+            section_bounds(binary, &references)
+        } else {
+            HashSet::new()
+        };
+        for reference in references {
+            if let CodeReferenceKind::Address(address) = reference.kind
+                && bounds.contains(&address)
+            {
+                continue;
+            }
             self.add_code_reference(binary, function, reference);
         }
     }
@@ -288,6 +301,35 @@ impl Node {
             Node::Import(index) => &binary.imports[index],
         }
     }
+}
+
+/// The addresses where a section starts and ends, for each section whose
+/// start and end addresses the entry point's code both loads. Startup code
+/// does that to copy or clear a whole section, such as `.data` or `.bss`,
+/// through symbols that the linker script defines. The section's first item
+/// starts at the same address, but the code means the section, not the item.
+///
+/// Other code can load the same addresses to use the items there, such as
+/// a function that reads the first variable in `.data` and the first one in
+/// `.bss`, which starts where `.data` ends. So only the entry point gets
+/// this treatment, and only for addresses it loads, not ones it reads or
+/// writes.
+fn section_bounds(binary: &Binary, references: &[CodeReference]) -> HashSet<u64> {
+    let used: HashSet<u64> = references
+        .iter()
+        .filter_map(|reference| match reference.kind {
+            CodeReferenceKind::Address(address) => Some(address),
+            _ => None,
+        })
+        .collect();
+    binary
+        .sections
+        .iter()
+        .filter(|section| section.allocated && section.size > 0)
+        .map(|section| (section.address, section.address + section.size))
+        .filter(|(start, end)| used.contains(start) && used.contains(end))
+        .flat_map(|(start, end)| [start, end])
+        .collect()
 }
 
 /// A node's position in one list of `items` items followed by the imports,

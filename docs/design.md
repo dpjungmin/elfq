@@ -199,7 +199,12 @@ references and computes dominators and paths, `commands` run queries, and
    (`lea rip+...` on x86-64; `adr`, literal-pool `ldr` and `movw`/`movt` on
    Thumb). It does not need a full disassembler, only these instructions.
    On Thumb it also skips the literal pools and jump tables inside
-   functions, which would otherwise decode as instructions.
+   functions, which would otherwise decode as instructions. The entry
+   point's code is a special case: startup code copies or clears whole
+   sections such as `.data` and `.bss`, loading where each starts and ends
+   through symbols that the linker script defines, such as `_sdata` and
+   `_edata`. When the entry point loads both ends of a section, those
+   addresses aren't uses of the items that start there.
 4. **Scan data** for references from data items to other items. When the file
    is position-independent (most Linux executables are), its dynamic
    relocations give every stored pointer exactly. Otherwise, as in firmware,
@@ -298,7 +303,7 @@ starts.
 | 2. Core engine | 2a: crate skeleton, CLI, CI, ELF loading and item discovery. 2b: x86-64 scanning, PLT stub names, the reference graph, `callers`, `callees` and the overview. 2c: Rust demangling and short names for SYMBOL. 2d: Cortex-M Thumb scanning, and pointers in firmware data such as the vector table. 2e: items for unnamed data, such as vtables and string literals. |
 | 3. Headline queries | 3a: roots, dominators, `retained` and `exclusive`. 3b: `why`. 3c: `top`. 3d: `inlined`. |
 | 4. Polish | 4a: C++ demangling, with a C++ sample. 4b: JSON output for `callers`, `callees`, `exclusive` and `inlined`. 4c: JSON for `top`, `retained`, `why` and the overview. 4d: warnings where indirect calls make answers uncertain. |
-| 5. Memory regions | Answers about one region of memory, such as ITCM or DTCM on an i.MX RT1176, with `--region START..END` or `--region START+SIZE`. The overview lists the address blocks that the file's sections occupy, so the range needn't come from the reference manual. Needs a sample with TCM sections. |
+| 5. Memory ranges | 5a: a sample laid out like an i.MX RT1176, with code and data in ITCM, DTCM, OCRAM and flash; startup code no longer seems to use the first item of each section it copies. 5b: answers about one range of memory, such as ITCM or DTCM, with `--range START..END` or `--range START+SIZE`. The overview lists the address blocks that the file's sections occupy, so the range needn't come from the reference manual. |
 
 Later: a query language, and worst-case stack depth (call graph plus each
 function's stack frame).
@@ -311,12 +316,7 @@ function's stack frame).
 3. **Stripped Cortex-M files** have no symbols and no `.eh_frame`, so elfq
    finds only the entry point in them today. Finding functions would mean
    following calls from the entry point and the vector table.
-4. **Linker-script symbols in Arm code.** Code that loads a symbol such as
-   `_sdata` gets an "address taken" reference to whatever item starts there:
-   in the C sample, `Reset_Handler` appears to use `stats`. Should elfq tell
-   such symbols apart? The reference is harmless, since the code does write
-   there.
-5. **Where unnamed data ends.** Unnamed data starts wherever something
+4. **Where unnamed data ends.** Unnamed data starts wherever something
    refers to it, so a struct in a stripped file whose fields code uses one
    at a time becomes one item per field, and the end address of an array,
    which loops compare against, can start an item of its own. The bytes
