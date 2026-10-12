@@ -5,6 +5,8 @@ use std::process::{Command, Output};
 const SAMPLE: &str = "testdata/bin/c-x86_64.elf";
 /// Firmware with code and data in several kinds of memory.
 const TCM_SAMPLE: &str = "testdata/bin/c-cortex-m7.elf";
+/// Calls and inlined code nested 20 deep.
+const DEEP_SAMPLE: &str = "testdata/bin/c-deep.elf";
 
 fn elfq(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_elfq"))
@@ -374,6 +376,100 @@ fn a_large_tree_shows_its_largest_items() {
         ),
         "{output}"
     );
+}
+
+#[test]
+fn a_deep_tree_continues_below() {
+    assert_eq!(
+        stdout(&[DEEP_SAMPLE, "retained", "chain1"]),
+        "\
+chain1 keeps 402 bytes in the file: its own 16, and 386 in 19 functions that only it leads to.
+
+RETAINED  OWN  ITEM
+     402   16  chain1
+     386   17  └─ chain2
+     369   17     └─ chain3
+     352   20        └─ chain4
+     332   17           └─ chain5
+     315   20              └─ chain6
+     295   27                 └─ chain7
+     268   20                    └─ chain8
+     248   17                       └─ chain9 (continued below)
+
+               chain9 (continued)
+     231   20  └─ chain10
+     211   20     └─ chain11
+     191   23        └─ chain12
+     168   20           └─ chain13
+     148   19              └─ chain14
+     129   23                 └─ chain15
+     106   19                    └─ chain16
+      87   22                       └─ chain17 (continued below)
+
+               chain17 (continued)
+      65   20  └─ chain18
+      45   20     └─ chain19
+      25   25        └─ chain20
+
+Also uses, but shares with other code: chain_table.
+"
+    );
+}
+
+#[test]
+fn every_tree_is_at_most_nine_levels_deep() {
+    // Each command, and the rows whose part of the tree is continued below.
+    let trees = [
+        (&[DEEP_SAMPLE, "top"][..], &["stage7", "stage15"][..]),
+        (&[DEEP_SAMPLE, "retained", "stage1"], &["stage9", "stage17"]),
+        (&[DEEP_SAMPLE, "why", "chain_table"], &["chain7", "chain15"]),
+        (&[DEEP_SAMPLE, "why", "stage_table"], &["stage7", "stage15"]),
+        (
+            &[DEEP_SAMPLE, "inlined", "--in", "run_steps"],
+            &["step9", "step17"],
+        ),
+        (
+            &["testdata/bin/rust-x86_64-nodebug.elf", "why", "memset"],
+            &[
+                "std::panicking::default_hook",
+                "rustc_demangle::try_demangle",
+                "__rustc::__rust_alloc_zeroed",
+            ],
+        ),
+    ];
+    for (args, cuts) in trees {
+        let text = stdout(args);
+        // The tree is in the last column, which starts where its header
+        // does. Each level is 3 columns.
+        let header = text
+            .lines()
+            .find(|line| line.ends_with("ITEM") || line.ends_with("FUNCTION"));
+        let column = header.unwrap().rfind(' ').unwrap() + 1;
+        let deepest = text
+            .lines()
+            .filter(|line| line.contains("─ "))
+            .map(|line| {
+                line.chars()
+                    .skip(column)
+                    .take_while(|c| "│├└─ ".contains(*c))
+                    .count()
+            })
+            .max();
+        assert!(deepest.unwrap() <= 9 * 3, "{args:?}\n{text}");
+        // Each part cut from the tree is continued below, in order.
+        let cut: Vec<&str> = text
+            .lines()
+            .filter_map(|line| line.strip_suffix(" (continued below)"))
+            .map(|line| line.rsplit("─ ").next().unwrap())
+            .collect();
+        let continued: Vec<&str> = text
+            .lines()
+            .filter_map(|line| line.strip_suffix(" (continued)"))
+            .map(str::trim)
+            .collect();
+        assert_eq!(cut, cuts, "{args:?}\n{text}");
+        assert_eq!(continued, cuts, "{args:?}\n{text}");
+    }
 }
 
 #[test]

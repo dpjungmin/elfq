@@ -9,7 +9,7 @@ known answers.
 testdata/
 ├── build.sh     Rebuilds everything in bin/ from the sources.
 ├── bin/         The built files (committed).
-├── c/           C sample: app.c plus a platform file per target.
+├── c/           C samples: app.c plus a platform file per target, and deep.c.
 ├── cpp/         C++ sample: the kinds of names C++ compilers make.
 └── rust/        Rust sample: the same program, plus Rust-only patterns.
 ```
@@ -21,12 +21,13 @@ testdata/
 | `c-x86_64*.elf` | C | x86-64 Linux, PIE, dynamically linked against glibc |
 | `c-cortex-m4*.elf` | C | Cortex-M4 bare metal, newlib-nano, `--gc-sections` |
 | `c-cortex-m7.elf` | C | Cortex-M7 bare metal, with code and data in TCM, OCRAM and flash |
+| `c-deep.elf` | C | x86-64 Linux, PIE, with calls and inlined code nested 20 deep |
 | `cpp-x86_64*.elf` | C++ | x86-64 Linux, PIE, dynamically linked against glibc and libstdc++ |
 | `rust-x86_64*.elf` | Rust | x86-64 Linux, std |
 | `rust-cortex-m4*.elf` | Rust | Cortex-M4 bare metal, `no_std` |
 
 Each comes in up to three variants, matching what people usually have
-(`c-cortex-m7.elf` only in the first):
+(`c-cortex-m7.elf` and `c-deep.elf` only in the first):
 
 | Suffix | Symbols | DWARF | Typical of |
 |---|---|---|---|
@@ -84,6 +85,17 @@ linker adds veneers such as `__crc32_veneer`, which `process_frame` calls
 and which jumps to `crc32`. `Reset_Handler` loads where `.itcm`, `.data`
 and `.bss` start and end, but doesn't use `SysTick_Handler`, `crc_table` or
 `config_sum`, which start at the same addresses.
+
+### Deep sample ([c/deep.c](c/deep.c))
+
+Calls and inlined code nested deeper than elfq draws a tree in one piece,
+which is 9 levels:
+
+| Item | Shape | Expected answer |
+|---|---|---|
+| `chain1` to `chain20` | Each calls the next; `chain20` uses `chain_table`, which `run_steps` reads too. | `retained chain1` continues below twice, after `chain9` and `chain17`, and shares `chain_table`. `why chain_table` starts from `_start`, so it continues after `chain7` and `chain15`. |
+| `stage1` to `stage20` | The same, but `stage1` to `stage19` also call a `check` function that only they use, so the tree branches at every level. | `retained stage1` continues below after `stage9` and `stage17`. `check17` moves below with `stage18`, since rows under a cut row move together. |
+| `step1` to `step20` | Inlined into each other, and all into `run_steps`. | `inlined --in run_steps` continues below after `step9` and `step17`. |
 
 ### C++ sample ([cpp/app.cpp](cpp/app.cpp))
 

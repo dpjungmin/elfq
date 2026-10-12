@@ -106,7 +106,7 @@ pub fn run(
         ("OWN", Align::Right),
         ("ITEM", Align::Left),
     ]);
-    retained.add_rows(&shown, node, "", "", &mut table);
+    table.tree(&[retained.tree_row(&shown, index)]);
     table.write(out)?;
     write_shared(&exclusive, out)?;
     // Only the items that count, which leaves out SYMBOL's own item and,

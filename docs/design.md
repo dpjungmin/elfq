@@ -96,6 +96,14 @@ Also uses, but shares with other code: __stack_chk_fail@plt, dispatch_event, fra
 A tree shows its 30 largest items and sums up the rest under their parents
 (`└─ 6 more`); `exclusive` lists every item, largest first.
 
+Every tree, in every command, is drawn at most 9 levels below its top
+row, so names never start more than 27 columns into the tree and long names
+don't push it off the screen. Where a tree goes deeper, the row 8 levels
+down ends with `(continued below)`, and the rows under it come after the
+rest of the table, under a row `NAME (continued)`, by the same rule. Rows
+with nothing under them stay in place, 9 levels down. `retained chain1`
+on `testdata/bin/c-deep.elf`, a chain of calls 20 deep, shows it.
+
 `top` shows the same kind of tree for the whole file, starting from the
 roots, and the overview starts with its five largest items. On the Rust
 x86-64 sample it shows that the standard library's backtrace printer keeps
@@ -184,7 +192,7 @@ items. In JSON, `callers` and `callees` have `complete`, and `retained` and
 Data moves through five modules in order: `arch` finds the addresses that
 machine code uses, `binary` finds the items, `graph` connects them by those
 references and computes dominators and paths, `commands` run queries, and
-`render` prints text or JSON. `debuginfo` reads DWARF beside the graph, for
+`render` prints text. `debuginfo` reads DWARF beside the graph, for
 `inlined`.
 
 1. **Load** the file with the `object` crate: sections, symbols, entry point,
@@ -256,12 +264,12 @@ src/
 ├── main.rs        Parses arguments, runs one command, prints errors. Nothing else.
 ├── lib.rs         Declares the modules below. elfq is a library plus a thin binary.
 ├── cli.rs         clap definitions, one struct per subcommand.
-├── commands/      One file per subcommand: find the symbol (symbol.rs), run a query, render (tree.rs draws retained sizes, json.rs has shared JSON shapes).
+├── commands/      One file per subcommand: find the symbol (symbol.rs), run a query, render (tree.rs builds the rows of retained sizes, json.rs has shared JSON shapes).
 ├── binary/        ELF loading, item discovery, names and address ranges.
 ├── arch/          One file per instruction set (x86_64.rs, thumb.rs), each with one `scan` function.
 ├── graph/         The reference graph, its roots, dominator tree and shortest paths.
 ├── debuginfo/     DWARF, when the file has it: what the compiler inlined.
-└── render/        Table, tree and JSON output.
+└── render/        Tables, and trees drawn in a table's last column (tree.rs).
 ```
 
 Rules that keep it approachable:
