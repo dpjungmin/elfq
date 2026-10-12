@@ -20,7 +20,7 @@ use anyhow::{Result, bail};
 use object::Architecture;
 
 use crate::arch;
-use crate::binary::{Binary, Item, ItemKind};
+use crate::binary::{AddressRange, Binary, Item, ItemKind};
 use crate::cli::{Cli, Command, DebugCommand, Format};
 use crate::graph::{Graph, Node, Reference, ReferenceKind};
 
@@ -31,9 +31,11 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<()> {
         eprintln!("warning: {warning}");
     }
     let format = cli.format;
+    let range = cli.range;
     match &cli.command {
-        None => overview::run(&cli.file, &binary, format, out),
-        Some(Command::Top) => top::run(&binary, format, out),
+        None => overview::run(&cli.file, &binary, range, format, out),
+        Some(Command::Top) => top::run(&binary, range, format, out),
+        Some(_) if range.is_some() => bail!("only the overview and top take --range so far"),
         Some(Command::Retained(args)) => {
             retained::run(&cli.file, &binary, &args.symbol, format, out)
         }
@@ -196,6 +198,27 @@ fn addresses(sites: &[u64]) -> String {
         Some(more) if more > 0 => format!("{} and {more} more", shown.join(", ")),
         _ => shown.join(", "),
     }
+}
+
+/// A range as `--range` takes it, with the sections that have bytes in it,
+/// such as `0x00000000..0x000000e0 (.itcm)`.
+fn range_text(binary: &Binary, range: AddressRange) -> String {
+    let sections: Vec<&str> = binary
+        .sections
+        .iter()
+        .filter(|section| section.allocated && range.overlap(section.address, section.size) > 0)
+        .map(|section| section.name.as_str())
+        .collect();
+    match sections[..] {
+        [] => range_argument(range),
+        _ => format!("{} ({})", range_argument(range), names_text(&sections)),
+    }
+}
+
+/// A range as `--range` takes it, its addresses padded to 8 hex digits so
+/// that a column of ranges lines up, such as `0x00000000..0x000000e0`.
+fn range_argument(range: AddressRange) -> String {
+    range.text(format!("{:x}", range.end).len().max(8))
 }
 
 /// `text` as one shell word: quoted when it holds anything but letters,

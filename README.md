@@ -16,6 +16,7 @@ by an AI (Claude).
 ```sh
 elfq app.elf                            # what's in app.elf, and what to ask next
 elfq app.elf top                        # what keeps the most bytes in app.elf
+elfq app.elf top --range 0x0+256K       # the same, counting only the first 256 KiB
 elfq app.elf retained process_frame     # what process_frame keeps in the file
 elfq app.elf exclusive process_frame    # what only process_frame leads to
 elfq app.elf why crc_table              # what keeps crc_table in the file
@@ -24,7 +25,10 @@ elfq app.elf callers log_msg            # what calls or uses log_msg
 elfq app.elf callees main               # what main calls or uses
 ```
 
-Every command also prints JSON for scripts with `--format json`.
+Every command also prints JSON for scripts with `--format json`. The
+overview and `top` can count only one range of memory, such as a
+microcontroller's ITCM, with `--range START..END` or `--range START+SIZE`;
+for firmware, the overview lists the ranges its sections occupy.
 
 **Status:** early development. The overview, `top`, `retained`, `exclusive`,
 `why`, `callers` and `callees` work on x86-64 and Cortex-M executables, with

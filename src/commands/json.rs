@@ -10,7 +10,7 @@ use std::io::Write;
 use anyhow::Result;
 use serde::Serialize;
 
-use crate::binary::Binary;
+use crate::binary::{AddressRange, Binary, MemoryBlock};
 use crate::graph::Node;
 
 /// Writes `value` as indented JSON.
@@ -80,6 +80,46 @@ pub(super) fn uses<'a>(binary: &'a Binary, rows: &[super::Row]) -> Vec<Use<'a>> 
             sites: row.sites.iter().map(|&site| address(site)).collect(),
         })
         .collect()
+}
+
+/// The addresses from `start` up to, but not including, `end`.
+#[derive(Serialize)]
+pub(super) struct Range {
+    pub start: String,
+    pub end: String,
+}
+
+impl Range {
+    pub fn new(range: AddressRange) -> Range {
+        Range {
+            start: address(range.start),
+            end: address(range.end),
+        }
+    }
+}
+
+/// A block of addresses that sections occupy, such as one memory.
+#[derive(Serialize)]
+pub(super) struct Block<'a> {
+    #[serde(flatten)]
+    pub range: Range,
+    pub size: u64,
+    /// The sections in it, in address order.
+    pub sections: Vec<&'a str>,
+}
+
+impl<'a> Block<'a> {
+    pub fn new(binary: &'a Binary, block: &MemoryBlock) -> Block<'a> {
+        Block {
+            range: Range::new(block.range),
+            size: block.range.end - block.range.start,
+            sections: block
+                .sections
+                .iter()
+                .map(|&index| binary.sections[index].name.as_str())
+                .collect(),
+        }
+    }
 }
 
 pub(super) fn address(address: u64) -> String {

@@ -1,6 +1,8 @@
 //! The dominator tree as `retained`, `exclusive` and `top` show it: items
 //! with their retained sizes, functions marked when only pointers lead to
-//! them, and large trees cut down to their largest items.
+//! them, and large trees cut down to their largest items. With `--range`,
+//! sizes count only the bytes in the range, and items that keep none of
+//! them are left out.
 
 use std::collections::HashSet;
 use std::io::Write;
@@ -9,7 +11,7 @@ use anyhow::Result;
 use serde::Serialize;
 
 use super::json;
-use crate::binary::{Binary, ItemKind};
+use crate::binary::{AddressRange, Binary, ItemKind};
 use crate::graph::{DominatorTree, Graph, Node, ReferenceKind};
 use crate::render::Table;
 
@@ -33,6 +35,8 @@ pub(super) struct RetainedTree<'a> {
     pub binary: &'a Binary,
     pub graph: Graph,
     pub tree: DominatorTree,
+    /// The range of memory that sizes count, if not all of it.
+    pub range: Option<AddressRange>,
     /// The items that something calls directly, rather than only through a
     /// pointer.
     called: HashSet<usize>,
@@ -41,16 +45,21 @@ pub(super) struct RetainedTree<'a> {
 impl<'a> RetainedTree<'a> {
     /// Builds the graph and its dominator tree, or explains why elfq can't
     /// yet.
-    pub fn build(binary: &'a Binary) -> Result<RetainedTree<'a>> {
+    pub fn build(binary: &'a Binary, range: Option<AddressRange>) -> Result<RetainedTree<'a>> {
         Ok(RetainedTree::from_graph(
             binary,
             super::reference_graph(binary)?,
+            range,
         ))
     }
 
     /// Builds the dominator tree of a graph already built.
-    pub fn from_graph(binary: &'a Binary, graph: Graph) -> RetainedTree<'a> {
-        let tree = DominatorTree::build(binary, &graph);
+    pub fn from_graph(
+        binary: &'a Binary,
+        graph: Graph,
+        range: Option<AddressRange>,
+    ) -> RetainedTree<'a> {
+        let tree = DominatorTree::build(binary, &graph, range);
         let called = graph
             .references
             .iter()
@@ -64,8 +73,43 @@ impl<'a> RetainedTree<'a> {
             binary,
             graph,
             tree,
+            range,
             called,
         }
+    }
+
+    /// The bytes of the file that sizes count: all of them, or those in
+    /// the range.
+    pub fn bytes(&self) -> u64 {
+        (0..self.binary.items.len())
+            .map(|index| self.own(index))
+            .sum()
+    }
+
+    /// The item's own bytes that sizes count: all of them, or those in the
+    /// range.
+    pub fn own(&self, index: usize) -> u64 {
+        let item = &self.binary.items[index];
+        match self.range {
+            Some(range) => range.overlap(item.address, item.size),
+            None => item.size,
+        }
+    }
+
+    /// The OWN column for an item. Outside the range it is 0.
+    fn own_text(&self, index: usize) -> String {
+        let item = &self.binary.items[index];
+        match (self.range, self.own(index)) {
+            (None, _) => super::size_text(item),
+            (Some(_), own) if item.size_estimated && own > 0 => format!("~{own}"),
+            (Some(_), own) => own.to_string(),
+        }
+    }
+
+    /// Whether to show an item: with a range, only items that keep some of
+    /// its bytes are worth a row.
+    fn counts(&self, index: usize) -> bool {
+        self.range.is_none() || self.retained(index) > 0
     }
 
     /// An item's name, marked when it is a function that only pointers lead
@@ -111,7 +155,11 @@ impl<'a> RetainedTree<'a> {
         count: usize,
         mut shown: HashSet<usize>,
     ) -> HashSet<usize> {
-        let mut by_size = items.to_vec();
+        let mut by_size: Vec<usize> = items
+            .iter()
+            .copied()
+            .filter(|&index| self.counts(index))
+            .collect();
         by_size.sort_by_key(|&index| (std::cmp::Reverse(self.retained(index)), index));
         for &index in by_size.iter().take(count) {
             let mut node = Node::Item(index);
@@ -142,7 +190,7 @@ impl<'a> RetainedTree<'a> {
         let Node::Item(index) = node else { return };
         table.row(vec![
             self.retained(index).to_string(),
-            super::size_text(&self.binary.items[index]),
+            self.own_text(index),
             format!("{prefix}{}", self.label(index)),
         ]);
         let (visible, hidden) = self.split(self.tree.children(node), shown);
@@ -161,13 +209,14 @@ impl<'a> RetainedTree<'a> {
     }
 
     /// Splits `nodes` into the items shown and those not, leaving out
-    /// imports, which have no bytes in the file.
+    /// imports, which have no bytes in the file, and items that keep none
+    /// of the range's bytes.
     pub fn split(&self, nodes: &[Node], shown: &HashSet<usize>) -> (Vec<usize>, Vec<usize>) {
         nodes
             .iter()
             .filter_map(|&node| match node {
-                Node::Item(index) => Some(index),
-                Node::Import(_) => None,
+                Node::Item(index) if self.counts(index) => Some(index),
+                _ => None,
             })
             .partition(|index| shown.contains(index))
     }
@@ -186,18 +235,19 @@ impl<'a> RetainedTree<'a> {
     }
 
     /// The items in `nodes`, each with the whole tree of what it keeps.
-    /// Imports are left out: their code isn't in the file.
+    /// Imports are left out, since their code isn't in the file, and so are
+    /// items that keep none of the range's bytes.
     pub fn to_json(&self, nodes: &[Node]) -> Vec<KeptItem<'a>> {
         nodes
             .iter()
             .filter_map(|&node| match node {
-                Node::Item(index) => Some(KeptItem {
+                Node::Item(index) if self.counts(index) => Some(KeptItem {
                     item: json::Item::new(self.binary, node),
                     retained: self.retained(index),
                     through_pointer: self.through_pointer(index),
                     keeps: self.to_json(self.tree.children(node)),
                 }),
-                Node::Import(_) => None,
+                _ => None,
             })
             .collect()
     }

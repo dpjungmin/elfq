@@ -120,7 +120,7 @@ impl<'a> Exclusive<'a> {
                  so it can't tell what only {name} leads to"
             );
         }
-        let retained = RetainedTree::build(binary)?;
+        let retained = RetainedTree::build(binary, None)?;
         Ok(Exclusive { retained, node })
     }
 

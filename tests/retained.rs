@@ -13,7 +13,7 @@ fn load(name: &str) -> (Binary, Graph, DominatorTree) {
         .join(name);
     let binary = Binary::load(&path).unwrap();
     let graph = Graph::build(&binary);
-    let tree = DominatorTree::build(&binary, &graph);
+    let tree = DominatorTree::build(&binary, &graph, None);
     (binary, graph, tree)
 }
 

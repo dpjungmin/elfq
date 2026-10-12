@@ -8,6 +8,8 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
+use crate::binary::AddressRange;
+
 #[derive(Debug, Parser)]
 #[command(
     name = "elfq",
@@ -26,6 +28,11 @@ pub struct Cli {
     /// How to print the answer
     #[arg(long, global = true, value_enum, default_value_t = Format::Text)]
     pub format: Format,
+    /// Count only the bytes in one range of memory, such as ITCM: START..END
+    /// or START+SIZE, like 0x20000000+256K. The overview lists the ranges
+    /// that the file's sections occupy. For the overview and top.
+    #[arg(long, global = true, value_name = "RANGE")]
+    pub range: Option<AddressRange>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -40,6 +47,7 @@ const EXAMPLES: &str = "\
 Examples:
   elfq app.elf                            Overview of app.elf
   elfq app.elf top                        What keeps the most bytes in app.elf
+  elfq app.elf top --range 0x0+256K       The same, counting only the first 256 KiB
   elfq app.elf retained process_frame     What process_frame keeps in the file
   elfq app.elf exclusive process_frame    What only process_frame leads to
   elfq app.elf why crc_table              What keeps crc_table in the file
