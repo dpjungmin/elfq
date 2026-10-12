@@ -27,11 +27,11 @@ support them.
 
 | Command | Answers |
 |---|---|
-| `elfq FILE` | What is this file, what did elfq find in it, and what can I ask next? From step 3 it leads with the items that retain the most bytes. |
+| `elfq FILE` | What is this file, what did elfq find in it, which items keep the most bytes, and what can I ask next? |
 | `elfq FILE retained SYMBOL` | What does SYMBOL keep alive, as a tree, and how many bytes is that? |
 | `elfq FILE exclusive SYMBOL` | Which functions and data are reachable only through SYMBOL? (flat list) |
 | `elfq FILE why SYMBOL` | Which chains of calls and references from the roots keep SYMBOL in the binary? |
-| `elfq FILE top` | Which items retain the most bytes? |
+| `elfq FILE top` | Which items keep the most bytes, as a tree? |
 | `elfq FILE callers SYMBOL` | What calls or uses SYMBOL directly, and how (call, tail call, address taken, access, pointer in data)? |
 | `elfq FILE callees SYMBOL` | What does SYMBOL call or use directly? |
 | `elfq FILE inlined [--in SYMBOL]` | Which inlined functions cost the most bytes across the binary, or inside SYMBOL? Needs DWARF. |
@@ -71,6 +71,11 @@ Also uses, but shares with other code: __stack_chk_fail@plt, dispatch_event, fra
 
 A tree shows its 30 largest items and sums up the rest under their parents
 (`└─ 6 more`); `exclusive` lists every item, largest first.
+
+`top` shows the same kind of tree for the whole file, starting from the
+roots, and the overview starts with its five largest items. On the Rust
+x86-64 sample it shows that the standard library's backtrace printer keeps
+228,391 of the file's 282,384 bytes.
 
 `why` answers from the other end: each item that uses SYMBOL keeps it in the
 file, and the tree shows the shortest chain to each of them from where the
@@ -184,7 +189,7 @@ src/
 ├── main.rs        Parses arguments, runs one command, prints errors. Nothing else.
 ├── lib.rs         Declares the modules below. elfq is a library plus a thin binary.
 ├── cli.rs         clap definitions, one struct per subcommand.
-├── commands/      One file per subcommand: find the symbol (symbol.rs), run a query, render.
+├── commands/      One file per subcommand: find the symbol (symbol.rs), run a query, render (tree.rs draws retained sizes).
 ├── binary/        ELF loading, item discovery and names.
 ├── arch/          One file per instruction set (x86_64.rs, thumb.rs), each with one `scan` function.
 ├── graph/         The reference graph, its roots, dominator tree and shortest paths.

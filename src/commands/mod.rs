@@ -8,6 +8,8 @@ mod exclusive;
 mod overview;
 mod retained;
 pub mod symbol;
+mod top;
+mod tree;
 mod why;
 
 use std::io::Write;
@@ -31,6 +33,7 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<()> {
         Some(Command::Retained(args)) => retained::run(&cli.file, &binary, &args.symbol, out),
         Some(Command::Exclusive(args)) => exclusive::run(&binary, &args.symbol, out),
         Some(Command::Why(args)) => why::run(&cli.file, &binary, &args.symbol, out),
+        Some(Command::Top) => top::run(&binary, out),
         Some(Command::Callers(args)) => callers::run(&binary, &args.symbol, out),
         Some(Command::Callees(args)) => callees::run(&binary, &args.symbol, out),
         Some(Command::Debug(DebugCommand::Items)) => debug_items::run(&binary, out),
@@ -39,10 +42,16 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<()> {
 
 /// Builds the reference graph, or explains why elfq can't yet.
 fn reference_graph(binary: &Binary) -> Result<Graph> {
+    check_code_is_readable(binary)?;
+    Ok(Graph::build(binary))
+}
+
+/// Explains why elfq can't build the reference graph yet, if it can't.
+fn check_code_is_readable(binary: &Binary) -> Result<()> {
     if !arch::is_supported(binary.architecture, binary.thumb) {
         bail!("{}", cannot_read_code(binary));
     }
-    Ok(Graph::build(binary))
+    Ok(())
 }
 
 fn cannot_read_code(binary: &Binary) -> String {
