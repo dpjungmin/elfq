@@ -254,3 +254,42 @@ fn stripping_keeps_the_exclusive_functions() {
         );
     }
 }
+
+#[test]
+fn cpp_virtual_functions_and_constructors_have_their_starting_points() {
+    let (binary, graph, tree) = load("cpp-x86_64.elf");
+    // `main` makes the objects, so it takes the vtables' addresses; each
+    // override hangs under its class's vtable, as in Rust.
+    for class in ["Gain", "DcBlock"] {
+        assert_eq!(
+            parent(&binary, &tree, &format!("{class}::run")),
+            Some(format!("vtable for app::{class}"))
+        );
+        assert_eq!(
+            parent(&binary, &tree, &format!("vtable for {class}")),
+            Some("main".to_string())
+        );
+    }
+    // A global object's constructor runs from a function that GCC lists in
+    // .init_array.
+    let constructor = tree.parent(node(&binary, "load_defaults")).unwrap();
+    let root = graph
+        .roots
+        .iter()
+        .find(|root| root.node == constructor)
+        .unwrap();
+    let RootKind::ListedIn(section) = root.kind else {
+        panic!("{root:?}");
+    };
+    assert_eq!(binary.sections[section].name, ".init_array");
+    assert_eq!(
+        exclusive(&binary, &tree, "process_frame"),
+        [
+            "\"bad crc\\n\"",
+            "\"bad header\\n\"",
+            "app::(anonymous namespace)::crc32(unsigned char const*, unsigned long)",
+            "app::(anonymous namespace)::crc_table",
+            "app::frames_bad"
+        ]
+    );
+}

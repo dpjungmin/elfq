@@ -26,7 +26,8 @@ elfq app.elf callees main               # what main calls or uses
 
 **Status:** early development. The overview, `top`, `retained`, `exclusive`,
 `why`, `callers` and `callees` work on x86-64 and Cortex-M executables, with
-readable Rust names, and `inlined` works on any file with DWARF debug info.
+readable Rust and C++ names, and `inlined` works on any file with DWARF debug
+info.
 See [docs/design.md](docs/design.md) for the plan,
 [docs/survey.md](docs/survey.md) for how existing tools compare, and
 [CONTRIBUTING.md](CONTRIBUTING.md) to build it.

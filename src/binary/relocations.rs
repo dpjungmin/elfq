@@ -13,7 +13,7 @@ use object::{
     Architecture, Object, ObjectSymbol, ObjectSymbolTable, RelocationFlags, SymbolKind, elf,
 };
 
-use super::{Relocation, RelocationTarget, code_address};
+use super::{Relocation, RelocationTarget, code_address, demangle};
 
 /// Returns the imports, and the relocations sorted by address.
 pub(super) fn read(
@@ -49,8 +49,9 @@ pub(super) fn read(
                     let Ok(name) = symbol.name() else {
                         continue;
                     };
-                    let index = *import_index.entry(name.to_string()).or_insert_with(|| {
-                        imports.push(name.to_string());
+                    let name = demangle(name).unwrap_or_else(|| name.to_string());
+                    let index = *import_index.entry(name.clone()).or_insert_with(|| {
+                        imports.push(name);
                         imports.len() - 1
                     });
                     RelocationTarget::Import(index)

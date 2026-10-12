@@ -40,8 +40,12 @@ SYMBOL is a function or data object's name, an import (`write` finds the
 `write@plt` stub that code calls), or an address such as `0x1700`. Names are
 shown demangled (`app::process_frame`, not `_RNvCs…13process_frame`), and
 the end of a name is enough: `process_frame`, or `Gain::run` for the trait
-method `<app::Gain as app::Stage>::run`. A name that matches exactly wins
-over one that only ends the same way. When a name could mean several items,
+method `<app::Gain as app::Stage>::run`. C++ names are shown with their
+parameters, as `c++filt` shows them, but can be typed without:
+`process_frame` finds `app::process_frame(app::Frame const&, app::Stage&)`,
+`log(unsigned int)` picks one of two overloads of `app::log`, and
+`vtable for Gain` finds `vtable for app::Gain`. A name that matches exactly
+wins over one that only ends the same way. When a name could mean several items,
 the error lists the shortest name that picks each one, and a misspelled name
 gets suggestions. Typing the command first, as in
 `elfq callers app.elf log_msg`, gets a hint that the file comes first.
@@ -158,8 +162,8 @@ references and computes dominators and paths, `commands` run queries, and
    and runs to the next one, the next item or the end of its section; elfq
    never guesses which function it belongs to. Items without a symbol get
    names like `fn_0x1690`, `.rodata@0x2004` (section and address) or
-   `entry`. Rust symbols are demangled, and the mangled symbol stays as an
-   alias. `elfq FILE debug items` lists what was found, for checking this
+   `entry`. Rust and C++ symbols are demangled, and the mangled symbol
+   stays as an alias. `elfq FILE debug items` lists what was found, for checking this
    step.
 3. **Scan code** with an architecture backend. For each function it decodes
    the instructions and reports direct calls, tail jumps to other items,
@@ -235,8 +239,8 @@ Rules that keep it approachable:
 
 Pure Rust only, so `cargo install elfq` needs no C toolchain:
 `object` (ELF), `gimli` (DWARF), `iced-x86` (x86-64 decoding), `petgraph`
-(graph and dominators), `clap` (arguments), `rustc-demangle` (Rust names),
-and later `cpp_demangle` (C++ names). Thumb has its own small decoder in
+(graph and dominators), `clap` (arguments), `rustc-demangle` (Rust names)
+and `cpp_demangle` (C++ names). Thumb has its own small decoder in
 `arch/thumb.rs`: the code scan needs about a dozen instructions, which are
 easier to read in one file, with the samples' disassembly as the reference,
 than through a general disassembler's API.
@@ -265,7 +269,7 @@ starts.
 | 1. Survey and samples | This document, survey.md, testdata/ |
 | 2. Core engine | 2a: crate skeleton, CLI, CI, ELF loading and item discovery. 2b: x86-64 scanning, PLT stub names, the reference graph, `callers`, `callees` and the overview. 2c: Rust demangling and short names for SYMBOL. 2d: Cortex-M Thumb scanning, and pointers in firmware data such as the vector table. 2e: items for unnamed data, such as vtables and string literals. |
 | 3. Headline queries | 3a: roots, dominators, `retained` and `exclusive`. 3b: `why`. 3c: `top`. 3d: `inlined`. |
-| 4. Polish | C++ demangling, with a C++ sample; JSON output; warnings where indirect calls make answers uncertain. |
+| 4. Polish | 4a: C++ demangling, with a C++ sample. 4b: JSON output. 4c: warnings where indirect calls make answers uncertain. |
 
 Later: a query language, and worst-case stack depth (call graph plus each
 function's stack frame).
