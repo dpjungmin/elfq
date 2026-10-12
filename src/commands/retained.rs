@@ -38,6 +38,10 @@ struct RetainedJson<'a> {
     /// What SYMBOL's code uses that other code uses too, and so isn't
     /// counted, sorted by name.
     shares: Vec<json::Item<'a>>,
+    /// How many calls and jumps in SYMBOL and the items it keeps go through
+    /// pointers set at run time, which elfq can't follow. A function called
+    /// that way counts for the code or data that holds its address.
+    indirect_calls: usize,
 }
 
 pub fn run(
@@ -67,7 +71,8 @@ pub fn run(
             "{name} keeps only its own {own} bytes: nothing else is in the file only because \
              of it."
         )?;
-        return write_shared(&exclusive, out);
+        write_shared(&exclusive, out)?;
+        return exclusive.write_indirect_note(out);
     }
     let retained = &exclusive.retained;
     let nodes: Vec<Node> = items.iter().map(|&index| Node::Item(index)).collect();
@@ -102,7 +107,8 @@ pub fn run(
         )?;
     }
     let shown: Vec<usize> = shown.into_iter().collect();
-    retained.write_pointer_note(&shown, out)
+    retained.write_pointer_note(&shown, out)?;
+    exclusive.write_indirect_note(out)
 }
 
 fn write_json(exclusive: &Exclusive, out: &mut dyn Write) -> Result<()> {
@@ -124,6 +130,7 @@ fn write_json(exclusive: &Exclusive, out: &mut dyn Write) -> Result<()> {
             .into_iter()
             .map(|node| json::Item::new(binary, node))
             .collect(),
+        indirect_calls: exclusive.indirect_calls().len(),
     };
     json::write(&answer, out)
 }

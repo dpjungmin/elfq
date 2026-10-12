@@ -80,6 +80,14 @@ pub struct Unresolved {
     pub target: Option<u64>,
 }
 
+impl Unresolved {
+    /// Whether it goes through a pointer set at run time, rather than to
+    /// code outside every item.
+    pub fn is_indirect(&self) -> bool {
+        self.target.is_none()
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct Graph {
     /// Every reference, sorted by the item that makes it, then by site.

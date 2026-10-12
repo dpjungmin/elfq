@@ -187,7 +187,7 @@ fn indirect_calls(graph: &Graph) -> usize {
     graph
         .unresolved
         .iter()
-        .filter(|unresolved| unresolved.target.is_none())
+        .filter(|unresolved| unresolved.is_indirect())
         .count()
 }
 
