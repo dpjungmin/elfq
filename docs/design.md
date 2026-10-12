@@ -77,7 +77,7 @@ For example:
 
 ```
 $ elfq testdata/bin/c-x86_64.elf retained process_frame
-process_frame keeps 2068 bytes in the file: its own 532, and 1536 in 8 items that only it leads to.
+Removing process_frame would save 2068 bytes:
 
 RETAINED   OWN  ITEM
     2068   532  process_frame
@@ -90,7 +90,7 @@ RETAINED   OWN  ITEM
       12   ~12  ├─ .rodata@0x2012
        9    ~9  └─ .rodata@0x201e
 
-Also uses, but shares with other code: __stack_chk_fail@plt, dispatch_event, frames_bad, frames_ok, log_msg, stats.
+Shared with other code, so not counted: __stack_chk_fail@plt, dispatch_event, frames_bad, frames_ok, log_msg, stats.
 ```
 
 A tree shows its 30 largest items and sums up the rest under their parents
@@ -107,7 +107,7 @@ on `testdata/bin/c-deep.elf`, a chain of calls 20 deep, shows it.
 `top` shows the same kind of tree for the whole file, starting from the
 roots, and the overview starts with its five largest items. On the Rust
 x86-64 sample it shows that the standard library's backtrace printer keeps
-228,391 of the file's 282,384 bytes.
+228,391 of the file's 282,384 bytes of code and data.
 
 `why` answers from the other end: each item that uses SYMBOL keeps it in the
 file, and the tree shows the shortest chain to each of them from where the
@@ -323,6 +323,7 @@ starts.
 | 3. Headline queries | 3a: roots, dominators, `retained` and `exclusive`. 3b: `why`. 3c: `top`. 3d: `inlined`. |
 | 4. Polish | 4a: C++ demangling, with a C++ sample. 4b: JSON output for `callers`, `callees`, `exclusive` and `inlined`. 4c: JSON for `top`, `retained`, `why` and the overview. 4d: warnings where indirect calls make answers uncertain. |
 | 5. Memory ranges | 5a: a Cortex-M7 sample with code and data in ITCM, DTCM, OCRAM and flash, at the addresses an i.MX RT1176 uses; startup code no longer seems to use the first item of each section it copies. 5b: `--range START..END` or `--range START+SIZE` for the overview and `top`, and the overview lists the address blocks that the file's sections occupy. 5c: `--range` for `retained` and `exclusive`. |
+| 6. Clear output | 6a: trees deeper than 9 levels continue below them. 6b: shorter lead lines and notes for the overview, `top` and `retained`, which say what a size means. |
 
 Later: a query language, and worst-case stack depth (call graph plus each
 function's stack frame).

@@ -1,6 +1,7 @@
 //! `elfq FILE`: what the file is, what elfq found in it, where in memory
 //! its sections are, which items keep the most bytes, and what to ask next.
-//! With `--range`, only which items keep the most bytes in the range.
+//! With `--range`, what elfq found in the range and which items keep the
+//! most of its bytes.
 
 use std::io::Write;
 use std::path::Path;
@@ -12,7 +13,9 @@ use super::symbol::{self, Names};
 use super::tree::RetainedTree;
 use super::{json, top};
 use crate::arch;
-use crate::binary::{AddressRange, Binary, FileKind, ItemKind, MemoryBlock, Source, memory_blocks};
+use crate::binary::{
+    AddressRange, Binary, FileKind, Item, ItemKind, MemoryBlock, Source, memory_blocks,
+};
 use crate::cli::Format;
 use crate::graph::{Graph, Node};
 use crate::render::{Align, Table};
@@ -76,32 +79,28 @@ pub fn run(
         super::architecture_name(binary.architecture),
         binary.kind
     )?;
-    writeln!(out)?;
     if let Some(range) = range {
         return write_range(path, binary, range, out);
     }
 
-    let count = |kind| count(binary, kind);
-    let functions = super::plural(count(ItemKind::Function), "function", "functions");
-    let data = super::plural(count(ItemKind::Data), "data object", "data objects");
-    let mut found = match binary.imports.len() {
-        0 => format!("{functions} and {data}"),
-        n => format!(
-            "{functions}, {data} and {}",
-            super::plural(n, "import", "imports")
-        ),
-    };
+    let mut found = items_text(binary, None);
+    // Stripped firmware may have only its reset handler, of unknown size.
+    let bytes = total_bytes(binary, None);
+    if bytes > 0 {
+        found += &format!(", {bytes} bytes of code and data");
+    }
+    if !binary.imports.is_empty() {
+        found += &format!(
+            ", plus {}",
+            super::plural(binary.imports.len(), "import", "imports")
+        );
+    }
+    writeln!(out, "{found}")?;
     if !arch::is_supported(binary.architecture, binary.thumb) {
-        writeln!(out, "{found}.")?;
         writeln!(out, "{}.", super::cannot_read_code(binary))?;
         return Ok(());
     }
     let graph = Graph::build(binary);
-    found += &format!(
-        ", with {} between them",
-        super::plural(graph.references.len(), "reference", "references")
-    );
-    writeln!(out, "{found}.")?;
     let has_function_lists = binary.items.iter().any(|i| {
         matches!(
             i.source,
@@ -129,14 +128,6 @@ pub fn run(
             function.name
         )?,
         _ => {}
-    }
-    let indirect = indirect_calls(&graph);
-    if indirect > 0 {
-        writeln!(
-            out,
-            "{} through pointers set at run time, which elfq can't follow.",
-            super::plural(indirect, "call or jump goes", "calls or jumps go")
-        )?;
     }
     let blocks = write_memory(binary, out)?;
     let ranges: Vec<String> = blocks
@@ -172,8 +163,7 @@ pub fn run(
         .sum();
     if kept > 0 {
         writeln!(out)?;
-        let shown = top::write_largest(&retained, SHOWN, out)?;
-        retained.write_pointer_note(&shown, out)?;
+        top::write_largest(&retained, SHOWN, out)?;
     }
     let examples: Vec<String> = ranges
         .into_iter()
@@ -191,8 +181,8 @@ pub fn run(
     write_try(path, &examples, out)
 }
 
-/// The overview of one range of memory: which items keep the most bytes
-/// in it.
+/// The overview of one range of memory: what elfq found in it, and which
+/// items keep the most of its bytes.
 fn write_range(
     path: &Path,
     binary: &Binary,
@@ -207,8 +197,15 @@ fn write_range(
     }
     let retained = RetainedTree::build(binary, Some(range))?;
     top::check_range_has_bytes(&retained)?;
-    let shown = top::write_largest(&retained, SHOWN, out)?;
-    retained.write_pointer_note(&shown, out)?;
+    writeln!(
+        out,
+        "{} in {}, {} bytes of code and data",
+        items_text(binary, Some(range)),
+        super::range_text(binary, range),
+        total_bytes(binary, Some(range))
+    )?;
+    writeln!(out)?;
+    top::write_largest(&retained, SHOWN, out)?;
     let queries = Names::new(binary);
     let examples: Vec<String> = [
         Some(format!("top --range {}", super::range_argument(range))),
@@ -260,16 +257,6 @@ fn write_json(
 ) -> Result<()> {
     let readable = arch::is_supported(binary.architecture, binary.thumb);
     let graph = (readable && range.is_none()).then(|| Graph::build(binary));
-    let in_range = |index: usize| {
-        let item = &binary.items[index];
-        range.map_or(item.size, |range| range.overlap(item.address, item.size))
-    };
-    let counted = |kind: ItemKind| {
-        (0..binary.items.len())
-            .filter(|&index| binary.items[index].kind == kind)
-            .filter(|&index| range.is_none() || in_range(index) > 0)
-            .count()
-    };
     let answer = OverviewJson {
         file: path.display().to_string(),
         architecture: super::architecture_name(binary.architecture),
@@ -281,9 +268,9 @@ fn write_json(
             .map(|block| json::Block::new(binary, block))
             .collect(),
         range: range.map(json::Range::new),
-        functions: counted(ItemKind::Function),
-        data_objects: counted(ItemKind::Data),
-        bytes: (0..binary.items.len()).map(in_range).sum(),
+        functions: count(binary, ItemKind::Function, range),
+        data_objects: count(binary, ItemKind::Data, range),
+        bytes: total_bytes(binary, range),
         imports: range.is_none().then_some(binary.imports.len()),
         references: graph.as_ref().map(|graph| graph.references.len()),
         indirect_calls: graph.as_ref().map(indirect_calls),
@@ -291,9 +278,40 @@ fn write_json(
     json::write(&answer, out)
 }
 
-/// How many items of `kind` the file has.
-fn count(binary: &Binary, kind: ItemKind) -> usize {
-    binary.items.iter().filter(|item| item.kind == kind).count()
+/// The bytes of an item that are in `range`, or all of them without one.
+fn in_range(item: &Item, range: Option<AddressRange>) -> u64 {
+    range.map_or(item.size, |range| range.overlap(item.address, item.size))
+}
+
+/// How many items of `kind` the file has, or with a range, how many have
+/// bytes in it.
+fn count(binary: &Binary, kind: ItemKind, range: Option<AddressRange>) -> usize {
+    binary
+        .items
+        .iter()
+        .filter(|item| item.kind == kind)
+        .filter(|item| range.is_none() || in_range(item, range) > 0)
+        .count()
+}
+
+/// The bytes of all the items, or with a range, those in it.
+fn total_bytes(binary: &Binary, range: Option<AddressRange>) -> u64 {
+    binary.items.iter().map(|item| in_range(item, range)).sum()
+}
+
+/// What elfq found, such as "25 functions and 31 data objects", leaving
+/// out a count of none unless both are.
+fn items_text(binary: &Binary, range: Option<AddressRange>) -> String {
+    let functions = count(binary, ItemKind::Function, range);
+    let data = count(binary, ItemKind::Data, range);
+    let mut counts = Vec::new();
+    if functions > 0 || data == 0 {
+        counts.push(super::plural(functions, "function", "functions"));
+    }
+    if data > 0 || functions == 0 {
+        counts.push(super::plural(data, "data object", "data objects"));
+    }
+    counts.join(" and ")
 }
 
 /// How many calls and jumps go through pointers set at run time.

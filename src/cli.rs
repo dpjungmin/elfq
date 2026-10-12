@@ -49,20 +49,23 @@ Examples:
   elfq app.elf                            Overview of app.elf
   elfq app.elf top                        What keeps the most bytes in app.elf
   elfq app.elf top --range 0x0+256K       The same, counting only the first 256 KiB
-  elfq app.elf retained process_frame     What process_frame keeps in the file
+  elfq app.elf retained process_frame     What removing process_frame would save
   elfq app.elf exclusive process_frame    What only process_frame leads to
   elfq app.elf why crc_table              What keeps crc_table in the file
   elfq app.elf inlined                    Which inlined functions take the most bytes
   elfq app.elf callers log_msg            What calls or uses log_msg
-  elfq app.elf callees main               What main calls or uses";
+  elfq app.elf callees main               What main calls or uses
+
+The overview's tree is the start of the one top shows; elfq FILE top --help
+explains it.";
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Show the items that keep the most bytes in the file, as a tree
     #[command(after_help = TOP)]
     Top,
-    /// Show what SYMBOL keeps in the file, as a tree, and how many bytes
-    #[command(after_help = EXCLUSIVE)]
+    /// Show what removing SYMBOL would save, as a tree
+    #[command(after_help = format!("{EXCLUSIVE}\n\n{RETAINED}"))]
     Retained(SymbolArgs),
     /// List the items that only SYMBOL leads to
     #[command(after_help = EXCLUSIVE)]
@@ -112,8 +115,8 @@ through, and the items at the top are where the program starts, or are
 reached from more than one of those places. The tree shows the 30 largest
 items; lines such as \"└─ 6 more\" sum up the rest.
 
-A function that is only called through pointers counts for the code or data
-that holds its address. Sizes marked ~ are estimates.";
+Nothing calls a function marked \"(through a pointer)\" directly, so it counts
+for the code or data that holds its address. Sizes marked ~ are estimates.";
 
 const INLINED: &str = "\
 The compiler inlines a function by putting a copy of its code into the
@@ -131,8 +134,12 @@ starts, goes through SYMBOL: without SYMBOL it would be dead code. SYMBOL's
 retained size is its own size plus the sizes of everything exclusive to it,
 which is what removing SYMBOL would save.
 
-A function that is only called through pointers counts for the code or data
-that holds its address. Sizes marked ~ are estimates.";
+Nothing calls a function marked \"(through a pointer)\" directly, so it counts
+for the code or data that holds its address. Sizes marked ~ are estimates.";
+
+const RETAINED: &str = "\
+The tree shows the 30 largest items; lines such as \"└─ 6 more\" sum up the
+rest, and the exclusive command lists every item.";
 
 #[derive(Debug, Args)]
 pub struct SymbolArgs {

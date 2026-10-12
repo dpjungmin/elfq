@@ -7,7 +7,6 @@
 
 use std::collections::HashSet;
 use std::io::Write;
-use std::path::Path;
 
 use anyhow::Result;
 use serde::Serialize;
@@ -48,7 +47,6 @@ struct RetainedJson<'a> {
 }
 
 pub fn run(
-    path: &Path,
     binary: &Binary,
     symbol: &str,
     range: Option<AddressRange>,
@@ -73,31 +71,29 @@ pub fn run(
     let range = range.map(|range| super::range_text(binary, range));
     if items.is_empty() {
         match &range {
-            Some(range) if own == 0 => writeln!(out, "{name} keeps none of the bytes in {range}.")?,
+            Some(range) if own == 0 => writeln!(
+                out,
+                "Removing {name} would save none of the bytes in {range}."
+            )?,
             Some(range) => writeln!(
                 out,
-                "{name} keeps only its own {own} bytes in {range}: nothing else there is in the \
-                 file only because of it."
+                "Removing {name} would save its own {own} bytes in {range}, and nothing else."
             )?,
             None => writeln!(
                 out,
-                "{name} keeps only its own {own} bytes: nothing else is in the file only because \
-                 of it."
+                "Removing {name} would save its own {own} bytes, and nothing else."
             )?,
         }
         write_shared(&exclusive, out)?;
         return exclusive.write_indirect_note(out);
     }
-    let nodes: Vec<Node> = items.iter().map(|&index| Node::Item(index)).collect();
+    let in_range = range
+        .map(|range| format!(" in {range}"))
+        .unwrap_or_default();
     writeln!(
         out,
-        "{name} keeps {} bytes {}: its own {own}, and {} in {} that only it leads to.",
-        retained.retained(index),
-        range
-            .as_ref()
-            .map_or("in the file".to_string(), |range| format!("in {range}")),
-        retained.retained(index) - own,
-        super::count_text(binary, &nodes)
+        "Removing {name} would save {} bytes{in_range}:",
+        retained.retained(index)
     )?;
     writeln!(out)?;
     let shown = retained.largest(&items, SHOWN, HashSet::from([index]));
@@ -109,27 +105,6 @@ pub fn run(
     table.tree(&[retained.tree_row(&shown, index)]);
     table.write(out)?;
     write_shared(&exclusive, out)?;
-    // Only the items that count, which leaves out SYMBOL's own item and,
-    // with a range, the items outside it that lead into it.
-    let shown_items = items.iter().filter(|index| shown.contains(index)).count();
-    if shown_items < items.len() {
-        let range = exclusive
-            .retained
-            .range
-            .map(|range| format!(" --range {}", super::range_argument(range)))
-            .unwrap_or_default();
-        writeln!(out)?;
-        writeln!(
-            out,
-            "The tree shows the largest {shown_items} of the {} items. To list them all:\n  \
-             elfq {} exclusive {}{range}",
-            items.len(),
-            super::shell_quote(&path.display().to_string()),
-            super::shell_quote(symbol)
-        )?;
-    }
-    let shown: Vec<usize> = shown.into_iter().collect();
-    retained.write_pointer_note(&shown, out)?;
     exclusive.write_indirect_note(out)
 }
 
@@ -205,6 +180,6 @@ fn write_shared(exclusive: &Exclusive, out: &mut dyn Write) -> Result<()> {
         names += &format!(" and {} more", shared.len() - NAMED);
     }
     writeln!(out)?;
-    writeln!(out, "Also uses, but shares with other code: {names}.")?;
+    writeln!(out, "Shared with other code, so not counted: {names}.")?;
     Ok(())
 }
