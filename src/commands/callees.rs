@@ -3,12 +3,34 @@
 use std::io::Write;
 
 use anyhow::{Result, bail};
+use serde::Serialize;
 
+use super::json;
 use crate::binary::{Binary, ItemKind};
+use crate::cli::Format;
 use crate::graph::{Node, Unresolved};
 use crate::render::{Align, Table};
 
-pub fn run(binary: &Binary, symbol: &str, out: &mut dyn Write) -> Result<()> {
+#[derive(Serialize)]
+struct Callees<'a> {
+    symbol: json::Item<'a>,
+    callees: Vec<json::Use<'a>>,
+    /// The calls and jumps that elfq can't follow.
+    unresolved: Vec<UnresolvedJson>,
+}
+
+#[derive(Serialize)]
+struct UnresolvedJson {
+    /// The instruction's address.
+    site: String,
+    /// `call` or `jump`.
+    how: &'static str,
+    /// Where it goes, when the code says so but no item is there, or
+    /// `null` when only the running program knows.
+    target: Option<String>,
+}
+
+pub fn run(binary: &Binary, symbol: &str, format: Format, out: &mut dyn Write) -> Result<()> {
     let graph = super::reference_graph(binary)?;
     let node = super::symbol::find(binary, symbol)?;
     let name = node.name(binary);
@@ -22,6 +44,21 @@ pub fn run(binary: &Binary, symbol: &str, out: &mut dyn Write) -> Result<()> {
 
     let rows = super::rows(graph.references_from(index), |reference| reference.to);
     let unresolved = graph.unresolved_in(index);
+    if format == Format::Json {
+        let callees = Callees {
+            symbol: json::Item::new(binary, node),
+            callees: json::uses(binary, &rows),
+            unresolved: unresolved
+                .iter()
+                .map(|u| UnresolvedJson {
+                    site: json::address(u.site),
+                    how: if u.is_call { "call" } else { "jump" },
+                    target: u.target.map(json::address),
+                })
+                .collect(),
+        };
+        return json::write(&callees, out);
+    }
     if rows.is_empty() && unresolved.is_empty() {
         writeln!(out, "{name} doesn't call or use anything.")?;
         return Ok(());

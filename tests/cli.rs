@@ -579,5 +579,8 @@ fn a_command_typed_before_the_file_gets_a_hint() {
 #[test]
 fn no_arguments_prints_help() {
     let help = stderr(&[], 2);
-    assert!(help.contains("Usage: elfq <FILE> [COMMAND]"), "{help}");
+    assert!(
+        help.contains("Usage: elfq [OPTIONS] <FILE> [COMMAND]"),
+        "{help}"
+    );
 }

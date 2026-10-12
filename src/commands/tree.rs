@@ -76,7 +76,9 @@ impl<'a> RetainedTree<'a> {
         Ok(())
     }
 
-    fn through_pointer(&self, index: usize) -> bool {
+    /// Whether `index` is a function that nothing calls directly, and so
+    /// counts for whatever holds its address.
+    pub fn through_pointer(&self, index: usize) -> bool {
         self.binary.items[index].kind == ItemKind::Function
             && !self.called.contains(&index)
             && self.tree.parent(Node::Item(index)).is_some()

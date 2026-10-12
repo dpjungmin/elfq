@@ -20,9 +20,10 @@ use crate::render::{Align, Table};
 const SHOWN: usize = 30;
 
 pub fn run(path: &Path, binary: &Binary, symbol: &str, out: &mut dyn Write) -> Result<()> {
-    let Some(exclusive) = Exclusive::find(binary, symbol, out)? else {
-        return Ok(());
-    };
+    let exclusive = Exclusive::find(binary, symbol)?;
+    if !exclusive.is_reachable() {
+        return exclusive.write_unreachable(out);
+    }
     let node = exclusive.node;
     let Node::Item(index) = node else {
         unreachable!("Exclusive::find rejects imports");

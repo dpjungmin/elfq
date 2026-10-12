@@ -50,8 +50,25 @@ the error lists the shortest name that picks each one, and a misspelled name
 gets suggestions. Typing the command first, as in
 `elfq callers app.elf log_msg`, gets a hint that the file comes first.
 
-All commands print a table or tree for people by default and take
-`--format json` for scripts.
+All commands print a table or tree for people by default. `--format json`
+prints the same answer for scripts; so far `callers`, `callees`, `exclusive`
+and `inlined` take it, and the others follow. The JSON has every item, where
+the text shows only the largest; every key is always there, `null` when it
+has no value; addresses are hex strings, as elfq prints them and SYMBOL takes
+them, and sizes are numbers. An item looks like this:
+
+```json
+{
+  "name": "process_frame",
+  "kind": "function",
+  "address": "0x1700",
+  "size": 532,
+  "size_estimated": false
+}
+```
+
+`kind` is `function`, `data` or `import`; an import has no address or size
+in the file.
 
 For example:
 
@@ -212,7 +229,7 @@ src/
 ├── main.rs        Parses arguments, runs one command, prints errors. Nothing else.
 ├── lib.rs         Declares the modules below. elfq is a library plus a thin binary.
 ├── cli.rs         clap definitions, one struct per subcommand.
-├── commands/      One file per subcommand: find the symbol (symbol.rs), run a query, render (tree.rs draws retained sizes).
+├── commands/      One file per subcommand: find the symbol (symbol.rs), run a query, render (tree.rs draws retained sizes, json.rs has shared JSON shapes).
 ├── binary/        ELF loading, item discovery and names.
 ├── arch/          One file per instruction set (x86_64.rs, thumb.rs), each with one `scan` function.
 ├── graph/         The reference graph, its roots, dominator tree and shortest paths.
@@ -269,7 +286,7 @@ starts.
 | 1. Survey and samples | This document, survey.md, testdata/ |
 | 2. Core engine | 2a: crate skeleton, CLI, CI, ELF loading and item discovery. 2b: x86-64 scanning, PLT stub names, the reference graph, `callers`, `callees` and the overview. 2c: Rust demangling and short names for SYMBOL. 2d: Cortex-M Thumb scanning, and pointers in firmware data such as the vector table. 2e: items for unnamed data, such as vtables and string literals. |
 | 3. Headline queries | 3a: roots, dominators, `retained` and `exclusive`. 3b: `why`. 3c: `top`. 3d: `inlined`. |
-| 4. Polish | 4a: C++ demangling, with a C++ sample. 4b: JSON output. 4c: warnings where indirect calls make answers uncertain. |
+| 4. Polish | 4a: C++ demangling, with a C++ sample. 4b: JSON output for `callers`, `callees`, `exclusive` and `inlined`. 4c: JSON for `top`, `retained`, `why` and the overview. 4d: warnings where indirect calls make answers uncertain. |
 
 Later: a query language, and worst-case stack depth (call graph plus each
 function's stack frame).

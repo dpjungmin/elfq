@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -23,6 +23,17 @@ pub struct Cli {
     /// What to ask about FILE. Without one, elfq prints an overview.
     #[command(subcommand)]
     pub command: Option<Command>,
+    /// How to print the answer
+    #[arg(long, global = true, value_enum, default_value_t = Format::Text)]
+    pub format: Format,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum Format {
+    /// Tables and trees, for people
+    Text,
+    /// JSON, for scripts
+    Json,
 }
 
 const EXAMPLES: &str = "\

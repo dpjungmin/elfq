@@ -6,6 +6,7 @@ mod callers;
 mod debug_items;
 mod exclusive;
 mod inlined;
+mod json;
 mod overview;
 mod retained;
 pub mod symbol;
@@ -20,7 +21,7 @@ use object::Architecture;
 
 use crate::arch;
 use crate::binary::{Binary, Item, ItemKind};
-use crate::cli::{Cli, Command, DebugCommand};
+use crate::cli::{Cli, Command, DebugCommand, Format};
 use crate::graph::{Graph, Node, Reference, ReferenceKind};
 
 /// Runs the command in `cli`, writing its answer to `out`.
@@ -29,17 +30,29 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<()> {
     for warning in &binary.warnings {
         eprintln!("warning: {warning}");
     }
+    let format = cli.format;
     match &cli.command {
+        Some(Command::Exclusive(args)) => exclusive::run(&binary, &args.symbol, format, out),
+        Some(Command::Inlined(args)) => {
+            inlined::run(&cli.file, &binary, args.within.as_deref(), format, out)
+        }
+        Some(Command::Callers(args)) => callers::run(&binary, &args.symbol, format, out),
+        Some(Command::Callees(args)) => callees::run(&binary, &args.symbol, format, out),
+        _ if format == Format::Json => bail!(
+            "`--format json` works with callers, callees, exclusive and inlined so far, not \
+             with {}",
+            match &cli.command {
+                None => "the overview",
+                Some(Command::Top) => "top",
+                Some(Command::Retained(_)) => "retained",
+                Some(Command::Why(_)) => "why",
+                Some(_) => "this command",
+            }
+        ),
         None => overview::run(&cli.file, &binary, out),
         Some(Command::Retained(args)) => retained::run(&cli.file, &binary, &args.symbol, out),
-        Some(Command::Exclusive(args)) => exclusive::run(&binary, &args.symbol, out),
         Some(Command::Why(args)) => why::run(&cli.file, &binary, &args.symbol, out),
         Some(Command::Top) => top::run(&binary, out),
-        Some(Command::Inlined(args)) => {
-            inlined::run(&cli.file, &binary, args.within.as_deref(), out)
-        }
-        Some(Command::Callers(args)) => callers::run(&binary, &args.symbol, out),
-        Some(Command::Callees(args)) => callees::run(&binary, &args.symbol, out),
         Some(Command::Debug(DebugCommand::Items)) => debug_items::run(&binary, out),
     }
 }

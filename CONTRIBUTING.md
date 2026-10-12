@@ -30,7 +30,7 @@ cargo test
 |---|---|
 | `src/main.rs` | The program: parses arguments, runs one command, prints errors. |
 | `src/cli.rs` | Command-line arguments, one struct per subcommand. |
-| `src/commands/` | One file per subcommand, plus `symbol.rs`, which works out what a user means by SYMBOL, and `tree.rs`, which draws the trees of retained sizes that `top` and `retained` show. Commands connect a question to output; they do no analysis. |
+| `src/commands/` | One file per subcommand, plus `symbol.rs`, which works out what a user means by SYMBOL, `tree.rs`, which draws the trees of retained sizes that `top` and `retained` show, and `json.rs`, the JSON shapes that commands share. Commands connect a question to output; they do no analysis. |
 | `src/arch/` | Finding the addresses that machine code calls or uses, one file per instruction set (x86-64 and Thumb). |
 | `src/binary/` | Reading an ELF file: its functions and data objects ("items"), their names, imports and stored pointers. Unnamed data, such as string literals, is found from what code and pointers refer to. |
 | `src/graph/` | The reference graph that connects items, the roots where the program starts, the dominator tree that says what is exclusive to what, and the shortest paths that `why` shows. |
@@ -52,7 +52,10 @@ Commands take the form `elfq FILE <command> [ARGS]`.
 2. Add `src/commands/<name>.rs` with a `run` function, and call it from
    `src/commands/mod.rs`. A command that takes a SYMBOL turns it into an
    item with `symbol::find`.
-3. Add tests under `tests/` that run it on files in `testdata/bin`.
+3. Work out the answer first, then write it as text or, for
+   `--format json`, as a struct that derives `Serialize`, using the shapes
+   in `src/commands/json.rs` for items. `callers.rs` is a short example.
+4. Add tests under `tests/` that run it on files in `testdata/bin`.
 
 ## Adding an instruction set
 
