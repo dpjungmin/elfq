@@ -2,7 +2,8 @@
 //!
 //! The tree is the part of the dominator tree under SYMBOL: each item hangs
 //! under the closest item that every path to it passes through. Large trees
-//! show only their largest items.
+//! show only their largest items. With `--range`, only the bytes in the
+//! range count.
 
 use std::collections::HashSet;
 use std::io::Write;
@@ -14,7 +15,7 @@ use serde::Serialize;
 use super::exclusive::Exclusive;
 use super::json;
 use super::tree::KeptItem;
-use crate::binary::Binary;
+use crate::binary::{AddressRange, Binary};
 use crate::cli::Format;
 use crate::graph::Node;
 use crate::render::{Align, Table};
@@ -29,14 +30,16 @@ struct RetainedJson<'a> {
     /// Whether anything reaches SYMBOL from where the program starts. When
     /// nothing does, nothing is there only because of it.
     reachable: bool,
+    /// The range of memory that sizes count, or `null` for all of it.
+    range: Option<json::Range>,
     /// SYMBOL's own bytes and those of everything it keeps: the bytes that
-    /// would go away if it did.
+    /// would go away if it did. With a range, only those in it.
     retained: u64,
     /// The items that only SYMBOL leads to, as a tree: each has what it
     /// keeps in turn, and the largest come first.
     keeps: Vec<KeptItem<'a>>,
     /// What SYMBOL's code uses that other code uses too, and so isn't
-    /// counted, sorted by name.
+    /// counted, sorted by name. With a range, only items with bytes in it.
     shares: Vec<json::Item<'a>>,
     /// How many calls and jumps in SYMBOL and the items it keeps go through
     /// pointers set at run time, which elfq can't follow. A function called
@@ -48,10 +51,11 @@ pub fn run(
     path: &Path,
     binary: &Binary,
     symbol: &str,
+    range: Option<AddressRange>,
     format: Format,
     out: &mut dyn Write,
 ) -> Result<()> {
-    let exclusive = Exclusive::find(binary, symbol)?;
+    let exclusive = Exclusive::find(binary, symbol, range)?;
     if format == Format::Json {
         return write_json(&exclusive, out);
     }
@@ -63,23 +67,35 @@ pub fn run(
         unreachable!("Exclusive::find rejects imports");
     };
     let name = node.name(binary);
-    let items = exclusive.items();
-    let own = binary.items[index].size;
+    let retained = &exclusive.retained;
+    let items = exclusive.counted_items();
+    let own = retained.own(index);
+    let range = range.map(|range| super::range_text(binary, range));
     if items.is_empty() {
-        writeln!(
-            out,
-            "{name} keeps only its own {own} bytes: nothing else is in the file only because \
-             of it."
-        )?;
+        match &range {
+            Some(range) if own == 0 => writeln!(out, "{name} keeps none of the bytes in {range}.")?,
+            Some(range) => writeln!(
+                out,
+                "{name} keeps only its own {own} bytes in {range}: nothing else there is in the \
+                 file only because of it."
+            )?,
+            None => writeln!(
+                out,
+                "{name} keeps only its own {own} bytes: nothing else is in the file only because \
+                 of it."
+            )?,
+        }
         write_shared(&exclusive, out)?;
         return exclusive.write_indirect_note(out);
     }
-    let retained = &exclusive.retained;
     let nodes: Vec<Node> = items.iter().map(|&index| Node::Item(index)).collect();
     writeln!(
         out,
-        "{name} keeps {} bytes in the file: its own {own}, and {} in {} that only it leads to.",
+        "{name} keeps {} bytes {}: its own {own}, and {} in {} that only it leads to.",
         retained.retained(index),
+        range
+            .as_ref()
+            .map_or("in the file".to_string(), |range| format!("in {range}")),
         retained.retained(index) - own,
         super::count_text(binary, &nodes)
     )?;
@@ -93,14 +109,20 @@ pub fn run(
     retained.add_rows(&shown, node, "", "", &mut table);
     table.write(out)?;
     write_shared(&exclusive, out)?;
-    // Not counting SYMBOL's own item.
-    let shown_items = shown.len() - 1;
+    // Only the items that count, which leaves out SYMBOL's own item and,
+    // with a range, the items outside it that lead into it.
+    let shown_items = items.iter().filter(|index| shown.contains(index)).count();
     if shown_items < items.len() {
+        let range = exclusive
+            .retained
+            .range
+            .map(|range| format!(" --range {}", super::range_argument(range)))
+            .unwrap_or_default();
         writeln!(out)?;
         writeln!(
             out,
             "The tree shows the largest {shown_items} of the {} items. To list them all:\n  \
-             elfq {} exclusive {}",
+             elfq {} exclusive {}{range}",
             items.len(),
             super::shell_quote(&path.display().to_string()),
             super::shell_quote(symbol)
@@ -124,6 +146,7 @@ fn write_json(exclusive: &Exclusive, out: &mut dyn Write) -> Result<()> {
     let answer = RetainedJson {
         symbol: json::Item::new(binary, node),
         reachable,
+        range: retained.range.map(json::Range::new),
         retained: retained.tree.retained(node),
         keeps: retained.to_json(retained.tree.children(node)),
         shares: shares
@@ -136,7 +159,7 @@ fn write_json(exclusive: &Exclusive, out: &mut dyn Write) -> Result<()> {
 }
 
 /// What SYMBOL's code uses that other code uses too, and so isn't counted,
-/// sorted by name.
+/// sorted by name. With a range, only items with bytes in it.
 fn shared(exclusive: &Exclusive) -> Vec<Node> {
     let binary = exclusive.retained.binary;
     let mut kept: HashSet<Node> = exclusive
@@ -153,6 +176,11 @@ fn shared(exclusive: &Exclusive) -> Vec<Node> {
         .iter()
         .filter(|r| kept.contains(&Node::Item(r.from)) && !kept.contains(&r.to))
         .map(|r| r.to)
+        .filter(|&node| match (exclusive.retained.range, node) {
+            (None, _) => true,
+            (Some(_), Node::Item(index)) => exclusive.retained.own(index) > 0,
+            (Some(_), Node::Import(_)) => false,
+        })
         .collect();
     shared.sort_by_key(|&node| (node.name(binary), node));
     shared.dedup();

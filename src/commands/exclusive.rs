@@ -1,7 +1,7 @@
 //! `elfq FILE exclusive SYMBOL`: the items that only SYMBOL leads to.
 //!
 //! [`Exclusive`] also serves `retained`, which shows the same items as a
-//! tree.
+//! tree. With `--range`, both count only the bytes in the range.
 
 use std::io::Write;
 
@@ -10,7 +10,7 @@ use serde::Serialize;
 
 use super::json;
 use super::tree::RetainedTree;
-use crate::binary::{Binary, FileKind, ItemKind};
+use crate::binary::{AddressRange, Binary, FileKind, ItemKind};
 use crate::cli::Format;
 use crate::graph::{Node, Unresolved};
 use crate::render::{Align, Table};
@@ -21,9 +21,12 @@ struct ExclusiveJson<'a> {
     /// Whether anything reaches SYMBOL from where the program starts. When
     /// nothing does, nothing is there only because of it.
     reachable: bool,
+    /// The range of memory that sizes count, or `null` for all of it.
+    range: Option<json::Range>,
     /// The bytes of the items exclusive to SYMBOL, not counting its own.
     bytes: u64,
-    /// The items exclusive to SYMBOL, largest first.
+    /// The items exclusive to SYMBOL, largest first. With a range, only
+    /// those with bytes in it.
     items: Vec<ExclusiveItem<'a>>,
     /// How many calls and jumps in SYMBOL and those items go through
     /// pointers set at run time, which elfq can't follow. A function called
@@ -40,16 +43,24 @@ struct ExclusiveItem<'a> {
     through_pointer: bool,
 }
 
-pub fn run(binary: &Binary, symbol: &str, format: Format, out: &mut dyn Write) -> Result<()> {
-    let exclusive = Exclusive::find(binary, symbol)?;
+pub fn run(
+    binary: &Binary,
+    symbol: &str,
+    range: Option<AddressRange>,
+    format: Format,
+    out: &mut dyn Write,
+) -> Result<()> {
+    let exclusive = Exclusive::find(binary, symbol, range)?;
+    let retained = &exclusive.retained;
     let name = exclusive.node.name(binary);
-    let mut items = exclusive.items();
-    items.sort_by_key(|&index| (std::cmp::Reverse(binary.items[index].size), index));
-    let bytes: u64 = items.iter().map(|&index| binary.items[index].size).sum();
+    let mut items = exclusive.counted_items();
+    items.sort_by_key(|&index| (std::cmp::Reverse(retained.own(index)), index));
+    let bytes: u64 = items.iter().map(|&index| retained.own(index)).sum();
     if format == Format::Json {
         let answer = ExclusiveJson {
             symbol: json::Item::new(binary, exclusive.node),
             reachable: exclusive.is_reachable(),
+            range: range.map(json::Range::new),
             bytes,
             items: items
                 .iter()
@@ -66,13 +77,24 @@ pub fn run(binary: &Binary, symbol: &str, format: Format, out: &mut dyn Write) -
         return exclusive.write_unreachable(out);
     }
     if items.is_empty() {
-        writeln!(out, "Nothing else is in the file only because of {name}.")?;
+        match range {
+            Some(range) => writeln!(
+                out,
+                "Nothing in {} is in the file only because of {name}.",
+                super::range_text(binary, range)
+            )?,
+            None => writeln!(out, "Nothing else is in the file only because of {name}.")?,
+        }
         return exclusive.write_indirect_note(out);
     }
     let nodes: Vec<Node> = items.iter().map(|&index| Node::Item(index)).collect();
+    let place = match range {
+        Some(range) => format!("in {}", super::range_text(binary, range)),
+        None => "in all".to_string(),
+    };
     writeln!(
         out,
-        "{name} is the only way to reach {}, {bytes} bytes in all:",
+        "{name} is the only way to reach {}, {bytes} bytes {place}:",
         super::count_text(binary, &nodes)
     )?;
     writeln!(out)?;
@@ -84,9 +106,9 @@ pub fn run(binary: &Binary, symbol: &str, format: Format, out: &mut dyn Write) -
     for &index in &items {
         let item = &binary.items[index];
         table.row(vec![
-            super::size_text(item),
+            retained.own_text(index),
             item.kind.to_string(),
-            exclusive.retained.label(index),
+            retained.label(index),
         ]);
     }
     table.write(out)?;
@@ -102,8 +124,13 @@ pub(super) struct Exclusive<'a> {
 }
 
 impl<'a> Exclusive<'a> {
-    /// Finds SYMBOL's item and what is exclusive to it.
-    pub fn find(binary: &'a Binary, symbol: &str) -> Result<Exclusive<'a>> {
+    /// Finds SYMBOL's item and what is exclusive to it, counting only the
+    /// bytes in `range`, if there is one.
+    pub fn find(
+        binary: &'a Binary,
+        symbol: &str,
+        range: Option<AddressRange>,
+    ) -> Result<Exclusive<'a>> {
         super::check_code_is_readable(binary)?;
         let node = super::symbol::find(binary, symbol)?;
         let name = node.name(binary);
@@ -120,7 +147,7 @@ impl<'a> Exclusive<'a> {
                  so it can't tell what only {name} leads to"
             );
         }
-        let retained = RetainedTree::build(binary, None)?;
+        let retained = RetainedTree::build(binary, range)?;
         Ok(Exclusive { retained, node })
     }
 
@@ -193,6 +220,16 @@ impl<'a> Exclusive<'a> {
              {reach} may count for other items."
         )?;
         Ok(())
+    }
+
+    /// The items exclusive to SYMBOL that sizes count: all of them, or with
+    /// a range, those with bytes in it. In no particular order.
+    pub fn counted_items(&self) -> Vec<usize> {
+        let retained = &self.retained;
+        self.items()
+            .into_iter()
+            .filter(|&index| retained.range.is_none() || retained.own(index) > 0)
+            .collect()
     }
 
     /// The items exclusive to SYMBOL's item, in no particular order.

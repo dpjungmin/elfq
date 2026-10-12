@@ -30,7 +30,8 @@ pub struct Cli {
     pub format: Format,
     /// Count only the bytes in one range of memory, such as ITCM: START..END
     /// or START+SIZE, like 0x20000000+256K. The overview lists the ranges
-    /// that the file's sections occupy. For the overview and top.
+    /// that the file's sections occupy. For the overview, top, retained and
+    /// exclusive.
     #[arg(long, global = true, value_name = "RANGE")]
     pub range: Option<AddressRange>,
 }

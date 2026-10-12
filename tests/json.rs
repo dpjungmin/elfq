@@ -44,6 +44,7 @@ fn items_have_the_same_keys_everywhere() {
                 "size_estimated": false
             },
             "reachable": false,
+            "range": null,
             "bytes": 0,
             "items": [],
             "indirect_calls": 0
@@ -219,6 +220,27 @@ fn a_range_limits_the_counts_to_it() {
         ]
     );
     assert_eq!(top["items"][0]["retained"], 200);
+
+    let retained = elfq_json(&[
+        tcm_sample,
+        "retained",
+        "crc32",
+        "--range",
+        "0x20000000+1104",
+    ]);
+    assert_eq!(
+        retained["range"],
+        json!({"start": "0x20000000", "end": "0x20000450"})
+    );
+    assert_eq!(retained["retained"], 1024);
+    assert_eq!(tree_names(&retained["keeps"]), ["crc_table"]);
+
+    let exclusive = elfq_json(&[tcm_sample, "exclusive", "process_frame", "--range", "0+224"]);
+    assert_eq!(exclusive["bytes"], 200);
+    assert_eq!(
+        names(&exclusive["items"]),
+        ["apply_filter", "filter_tap", "crc32", "__memcpy_veneer"]
+    );
 }
 
 /// The names of the items in a tree from `top` or `retained`, each followed
