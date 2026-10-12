@@ -24,8 +24,7 @@ elfq app.elf callers log_msg            # what calls or uses log_msg
 elfq app.elf callees main               # what main calls or uses
 ```
 
-`callers`, `callees`, `exclusive` and `inlined` also print JSON for scripts
-with `--format json`.
+Every command also prints JSON for scripts with `--format json`.
 
 **Status:** early development. The overview, `top`, `retained`, `exclusive`,
 `why`, `callers` and `callees` work on x86-64 and Cortex-M executables, with

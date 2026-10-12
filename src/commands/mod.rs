@@ -32,27 +32,21 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<()> {
     }
     let format = cli.format;
     match &cli.command {
+        None => overview::run(&cli.file, &binary, format, out),
+        Some(Command::Top) => top::run(&binary, format, out),
+        Some(Command::Retained(args)) => {
+            retained::run(&cli.file, &binary, &args.symbol, format, out)
+        }
         Some(Command::Exclusive(args)) => exclusive::run(&binary, &args.symbol, format, out),
+        Some(Command::Why(args)) => why::run(&cli.file, &binary, &args.symbol, format, out),
         Some(Command::Inlined(args)) => {
             inlined::run(&cli.file, &binary, args.within.as_deref(), format, out)
         }
         Some(Command::Callers(args)) => callers::run(&binary, &args.symbol, format, out),
         Some(Command::Callees(args)) => callees::run(&binary, &args.symbol, format, out),
-        _ if format == Format::Json => bail!(
-            "`--format json` works with callers, callees, exclusive and inlined so far, not \
-             with {}",
-            match &cli.command {
-                None => "the overview",
-                Some(Command::Top) => "top",
-                Some(Command::Retained(_)) => "retained",
-                Some(Command::Why(_)) => "why",
-                Some(_) => "this command",
-            }
-        ),
-        None => overview::run(&cli.file, &binary, out),
-        Some(Command::Retained(args)) => retained::run(&cli.file, &binary, &args.symbol, out),
-        Some(Command::Why(args)) => why::run(&cli.file, &binary, &args.symbol, out),
-        Some(Command::Top) => top::run(&binary, out),
+        Some(Command::Debug(_)) if format == Format::Json => {
+            bail!("the debug commands print only text")
+        }
         Some(Command::Debug(DebugCommand::Items)) => debug_items::run(&binary, out),
     }
 }

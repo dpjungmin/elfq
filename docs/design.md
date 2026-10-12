@@ -51,11 +51,10 @@ gets suggestions. Typing the command first, as in
 `elfq callers app.elf log_msg`, gets a hint that the file comes first.
 
 All commands print a table or tree for people by default. `--format json`
-prints the same answer for scripts; so far `callers`, `callees`, `exclusive`
-and `inlined` take it, and the others follow. The JSON has every item, where
-the text shows only the largest; every key is always there, `null` when it
-has no value; addresses are hex strings, as elfq prints them and SYMBOL takes
-them, and sizes are numbers. An item looks like this:
+prints the same answer for scripts. The JSON has every item, where the text
+shows only the largest; every key is always there, `null` when it has no
+value; addresses are hex strings, as elfq prints them and SYMBOL takes them,
+and sizes are numbers. An item looks like this:
 
 ```json
 {
@@ -68,7 +67,11 @@ them, and sizes are numbers. An item looks like this:
 ```
 
 `kind` is `function`, `data` or `import`; an import has no address or size
-in the file.
+in the file. In the trees of `top` and `retained`, each item also has its
+`retained` size and `keeps`, the items under it. `why` gives each chain as a
+list of steps, each an item and how the one before uses it. The overview's
+JSON says what the file is and what elfq found in it; the largest items are
+in `top`'s.
 
 For example:
 

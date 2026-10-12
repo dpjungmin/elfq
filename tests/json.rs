@@ -142,16 +142,150 @@ fn inlined_lists_every_function_and_the_whole_tree() {
 }
 
 #[test]
-fn commands_without_json_say_so() {
+fn the_overview_says_what_the_file_is() {
+    assert_eq!(
+        elfq_json(&[SAMPLE]),
+        json!({
+            "file": SAMPLE,
+            "architecture": "x86-64",
+            "kind": "position-independent executable",
+            "has_symbols": true,
+            "has_dwarf": true,
+            "functions": 32,
+            "data_objects": 36,
+            "imports": 8,
+            "references": 119,
+            "indirect_calls": 4
+        })
+    );
+}
+
+/// The names of the items in a tree from `top` or `retained`, each followed
+/// by those it keeps.
+fn tree_names(items: &Value) -> Vec<&str> {
+    let mut names = Vec::new();
+    for item in items.as_array().unwrap() {
+        names.push(item["name"].as_str().unwrap());
+        names.extend(tree_names(&item["keeps"]));
+    }
+    names
+}
+
+#[test]
+fn top_has_every_item_in_the_file() {
+    let top = elfq_json(&[SAMPLE, "top"]);
+    // What the tree keeps and what nothing reaches add up to the file.
+    let kept: u64 = top["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["retained"].as_u64().unwrap())
+        .sum();
+    let unreachable: u64 = top["unreachable"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["size"].as_u64().unwrap())
+        .sum();
+    assert_eq!(top["bytes"], 4021);
+    assert_eq!(kept + unreachable, 4021);
+    assert_eq!(tree_names(&top["items"]).len(), 65);
+    assert_eq!(top["items"][0]["name"], "_start");
+    assert_eq!(
+        names(&top["unreachable"]),
+        ["debug_dump", ".rodata@0x2056", "_IO_stdin_used"]
+    );
+}
+
+#[test]
+fn retained_has_what_symbol_keeps_as_a_tree() {
+    let retained = elfq_json(&[SAMPLE, "retained", "process_frame"]);
+    assert_eq!(retained["reachable"], true);
+    assert_eq!(retained["retained"], 2068);
+    let crc32 = &retained["keeps"][0];
+    assert_eq!(crc32["name"], "crc32");
+    assert_eq!(crc32["retained"], 1083);
+    assert_eq!(crc32["through_pointer"], false);
+    assert_eq!(crc32["keeps"][0]["name"], "crc_table");
+    assert_eq!(
+        names(&retained["shares"]),
+        [
+            "__stack_chk_fail@plt",
+            "dispatch_event",
+            "frames_bad",
+            "frames_ok",
+            "log_msg",
+            "stats"
+        ]
+    );
+    // The tree holds the same items as `exclusive`.
+    let mut kept = tree_names(&retained["keeps"]);
+    kept.sort_unstable();
+    let exclusive = elfq_json(&[SAMPLE, "exclusive", "process_frame"]);
+    let mut items = names(&exclusive["items"]);
+    items.sort_unstable();
+    assert_eq!(kept, items);
+
+    // Nothing is there only because of something that nothing reaches.
+    let unreachable = elfq_json(&[SAMPLE, "retained", "debug_dump"]);
+    assert_eq!(unreachable["reachable"], false);
+    assert_eq!(unreachable["retained"], 29);
+    assert_eq!(unreachable["keeps"], json!([]));
+    assert_eq!(unreachable["shares"], json!([]));
+}
+
+#[test]
+fn why_has_the_chain_through_every_user() {
+    let why = elfq_json(&[SAMPLE, "why", "log_msg"]);
+    // Each chain as one line: every item, and how it is used.
+    let chains: Vec<String> = why["chains"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|chain| {
+            let steps: Vec<String> = chain
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|step| {
+                    let name = step["item"]["name"].as_str().unwrap();
+                    format!("{name} ({})", step["how"].as_str().unwrap())
+                })
+                .collect();
+            steps.join(" > ")
+        })
+        .collect();
+    assert_eq!(
+        chains,
+        [
+            "_start (entry point) > main (address taken) > app_tick (call) > log_msg (call)",
+            "_start (entry point) > main (address taken) > on_button (address taken) > log_msg \
+             (tail call)",
+            "_start (entry point) > main (address taken) > process_frame (call) > log_msg (call)",
+            "_start (entry point) > main (address taken) > report (call) > log_msg (call)",
+        ]
+    );
+    assert_eq!(why["root"], Value::Null);
+    assert_eq!(names(&why["unreachable_users"]), ["debug_dump"]);
+    assert_eq!(why["on_every_chain"]["name"], "main");
+
+    // Nothing needs to keep where the program starts.
+    let start = elfq_json(&[SAMPLE, "why", "_start"]);
+    assert_eq!(start["root"], "entry point");
+    assert_eq!(start["chains"], json!([]));
+    assert_eq!(start["on_every_chain"], Value::Null);
+}
+
+#[test]
+fn debug_commands_print_only_text() {
     let output = Command::new(env!("CARGO_BIN_EXE_elfq"))
-        .args([SAMPLE, "top", "--format", "json"])
+        .args([SAMPLE, "debug", "items", "--format", "json"])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         String::from_utf8(output.stderr).unwrap(),
-        "error: `--format json` works with callers, callees, exclusive and inlined so far, not \
-         with top\n"
+        "error: the debug commands print only text\n"
     );
 }

@@ -10,9 +10,12 @@ use std::collections::HashSet;
 use std::io::Write;
 
 use anyhow::{Result, bail};
+use serde::Serialize;
 
-use super::tree::RetainedTree;
+use super::json;
+use super::tree::{KeptItem, RetainedTree};
 use crate::binary::{Binary, FileKind};
+use crate::cli::Format;
 use crate::graph::Node;
 use crate::render::{Align, Table};
 
@@ -20,7 +23,19 @@ use crate::render::{Align, Table};
 /// rest.
 pub(super) const SHOWN: usize = 30;
 
-pub fn run(binary: &Binary, out: &mut dyn Write) -> Result<()> {
+#[derive(Serialize)]
+struct TopJson<'a> {
+    /// The bytes of every item in the file.
+    bytes: u64,
+    /// The top of the tree: where the program starts, and the items that
+    /// several of those places reach. Each has the whole tree of what it
+    /// keeps, and the largest come first.
+    items: Vec<KeptItem<'a>>,
+    /// The items that nothing reaches, largest first.
+    unreachable: Vec<json::Item<'a>>,
+}
+
+pub fn run(binary: &Binary, format: Format, out: &mut dyn Write) -> Result<()> {
     if binary.kind == FileKind::SharedLibrary {
         bail!(
             "elfq doesn't know yet which functions a shared library offers to other files, so \
@@ -28,6 +43,17 @@ pub fn run(binary: &Binary, out: &mut dyn Write) -> Result<()> {
         );
     }
     let retained = RetainedTree::build(binary)?;
+    if format == Format::Json {
+        let answer = TopJson {
+            bytes: binary.items.iter().map(|item| item.size).sum(),
+            items: retained.to_json(retained.tree.top()),
+            unreachable: unreachable(&retained)
+                .into_iter()
+                .map(|index| json::Item::new(binary, Node::Item(index)))
+                .collect(),
+        };
+        return json::write(&answer, out);
+    }
     let shown = write_largest(&retained, SHOWN, out)?;
     write_unreachable(&retained, out)?;
     retained.write_pointer_note(&shown, out)
@@ -66,16 +92,23 @@ pub(super) fn write_largest(
     Ok(shown.into_iter().collect())
 }
 
-/// Names the items that nothing reaches, if any.
-fn write_unreachable(retained: &RetainedTree, out: &mut dyn Write) -> Result<()> {
+/// The items that nothing reaches, largest first.
+fn unreachable(retained: &RetainedTree) -> Vec<usize> {
     let binary = retained.binary;
     let mut unreachable: Vec<usize> = (0..binary.items.len())
         .filter(|&index| !retained.tree.is_reachable(Node::Item(index)))
         .collect();
+    unreachable.sort_by_key(|&index| (std::cmp::Reverse(binary.items[index].size), index));
+    unreachable
+}
+
+/// Names the items that nothing reaches, if any.
+fn write_unreachable(retained: &RetainedTree, out: &mut dyn Write) -> Result<()> {
+    let binary = retained.binary;
+    let unreachable = unreachable(retained);
     if unreachable.is_empty() {
         return Ok(());
     }
-    unreachable.sort_by_key(|&index| (std::cmp::Reverse(binary.items[index].size), index));
     let bytes: u64 = unreachable
         .iter()
         .map(|&index| binary.items[index].size)

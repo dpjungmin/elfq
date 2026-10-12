@@ -10,15 +10,53 @@ use std::io::Write;
 use std::path::Path;
 
 use anyhow::{Result, bail};
+use serde::Serialize;
 
+use super::json;
 use crate::binary::{Binary, FileKind};
+use crate::cli::Format;
 use crate::graph::{DominatorTree, Graph, Node, Root, RootKind, ShortestPaths};
 use crate::render::{Align, Table};
 
 /// How many items that keep SYMBOL get their chain shown, at most.
 const SHOWN: usize = 10;
 
-pub fn run(path: &Path, binary: &Binary, symbol: &str, out: &mut dyn Write) -> Result<()> {
+#[derive(Serialize)]
+struct WhyJson<'a> {
+    symbol: json::Item<'a>,
+    /// Whether anything reaches SYMBOL from where the program starts.
+    reachable: bool,
+    /// Why SYMBOL is itself where the program starts, as in the HOW column,
+    /// or `null` when it isn't. When it is, nothing else needs to keep it,
+    /// and `chains` is empty.
+    root: Option<String>,
+    /// The shortest chain from where the program starts, through each item
+    /// that keeps SYMBOL, to SYMBOL. The shortest chains come first.
+    chains: Vec<Vec<Step<'a>>>,
+    /// The items that use SYMBOL but that nothing reaches.
+    unreachable_users: Vec<json::Item<'a>>,
+    /// The closest item that every chain goes through, toward whose
+    /// retained size SYMBOL counts, or `null` when no single item is.
+    on_every_chain: Option<json::Item<'a>>,
+}
+
+/// One item on a chain: one row of the text's tree.
+#[derive(Serialize)]
+struct Step<'a> {
+    item: json::Item<'a>,
+    /// As in the HOW column: for the first item, why the program starts
+    /// there, such as `entry point`; for the others, how the item before
+    /// uses this one, such as `call` or `call, address taken`.
+    how: String,
+}
+
+pub fn run(
+    path: &Path,
+    binary: &Binary,
+    symbol: &str,
+    format: Format,
+    out: &mut dyn Write,
+) -> Result<()> {
     let graph = super::reference_graph(binary)?;
     let node = super::symbol::find(binary, symbol)?;
     let name = node.name(binary);
@@ -29,6 +67,17 @@ pub fn run(path: &Path, binary: &Binary, symbol: &str, out: &mut dyn Write) -> R
         );
     }
     if let Some(root) = graph.roots.iter().find(|root| root.node == node) {
+        if format == Format::Json {
+            let answer = WhyJson {
+                symbol: json::Item::new(binary, node),
+                reachable: true,
+                root: Some(root_how(binary, root.kind)),
+                chains: Vec::new(),
+                unreachable_users: Vec::new(),
+                on_every_chain: None,
+            };
+            return json::write(&answer, out);
+        }
         writeln!(out, "{}", root_sentence(binary, root))?;
         return Ok(());
     }
@@ -42,20 +91,49 @@ pub fn run(path: &Path, binary: &Binary, symbol: &str, out: &mut dyn Write) -> R
     let (mut keeping, others): (Vec<usize>, Vec<usize>) = users
         .into_iter()
         .partition(|&user| paths.is_reached(Node::Item(user)));
-    let unreachable: Vec<&str> = others
+    let unreachable: Vec<usize> = others
         .into_iter()
         .filter(|&user| !tree.is_reachable(Node::Item(user)))
-        .map(|user| binary.items[user].name.as_str())
         .collect();
-    if keeping.is_empty() {
-        return write_unreachable(name, &unreachable, out);
-    }
-
     // Those with the shortest chains first, then by name.
     keeping.sort_by_key(|&user| {
         let user_node = Node::Item(user);
         (paths.distance(user_node), user_node.name(binary))
     });
+    if format == Format::Json {
+        let item = |node: Node| json::Item::new(binary, node);
+        let answer = WhyJson {
+            symbol: item(node),
+            reachable: !keeping.is_empty(),
+            root: None,
+            chains: keeping
+                .iter()
+                .map(|&user| {
+                    chain(binary, &graph, &paths, Node::Item(user), node)
+                        .into_iter()
+                        .map(|(node, how)| Step {
+                            item: item(node),
+                            how,
+                        })
+                        .collect()
+                })
+                .collect(),
+            unreachable_users: unreachable
+                .iter()
+                .map(|&user| item(Node::Item(user)))
+                .collect(),
+            on_every_chain: tree.parent(node).map(item),
+        };
+        return json::write(&answer, out);
+    }
+
+    let unreachable: Vec<&str> = unreachable
+        .iter()
+        .map(|&user| binary.items[user].name.as_str())
+        .collect();
+    if keeping.is_empty() {
+        return write_unreachable(name, &unreachable, out);
+    }
     writeln!(out, "{}", lead(binary, node, &keeping))?;
     writeln!(out)?;
     let shown = &keeping[..keeping.len().min(SHOWN)];
@@ -85,6 +163,33 @@ pub fn run(path: &Path, binary: &Binary, symbol: &str, out: &mut dyn Write) -> R
     writeln!(out)?;
     writeln!(out, "{}", on_every_chain(binary, &tree, node))?;
     Ok(())
+}
+
+/// The shortest chain from where the program starts, through `user`, to
+/// SYMBOL: each item on it, with how the one before uses it, or for the
+/// first, why the program starts there.
+fn chain(
+    binary: &Binary,
+    graph: &Graph,
+    paths: &ShortestPaths,
+    user: Node,
+    symbol: Node,
+) -> Vec<(Node, String)> {
+    let path = paths.path_to(user).unwrap_or_default();
+    let start = path.first().map_or(user, |r| Node::Item(r.from));
+    let root = graph.roots.iter().find(|root| root.node == start);
+    let mut chain = vec![(
+        start,
+        root.map_or(String::new(), |root| root_how(binary, root.kind)),
+    )];
+    for reference in &path {
+        chain.push((
+            reference.to,
+            how(graph, Node::Item(reference.from), reference.to),
+        ));
+    }
+    chain.push((symbol, how(graph, user, symbol)));
+    chain
 }
 
 /// Says that nothing reaches SYMBOL, nor the items that use it.
@@ -234,7 +339,7 @@ impl<'a> Chains<'a> {
         for (i, &child) in children.iter().enumerate() {
             let last = i + 1 == children.len();
             table.row(vec![
-                self.how(node, child),
+                how(self.graph, node, child),
                 format!(
                     "{indent}{}{}",
                     if last { "└─ " } else { "├─ " },
@@ -245,21 +350,21 @@ impl<'a> Chains<'a> {
             self.add_children(child, &indent, table);
         }
     }
+}
 
-    /// How `from` uses `to`, in words: "call", or "call, address taken".
-    fn how(&self, from: Node, to: Node) -> String {
-        let Node::Item(from) = from else {
-            return String::new();
-        };
-        let mut hows: Vec<&str> = Vec::new();
-        for reference in self.graph.references_from(from) {
-            let how = super::how(reference);
-            if reference.to == to && !hows.contains(&how) {
-                hows.push(how);
-            }
+/// How `from` uses `to`, in words: "call", or "call, address taken".
+fn how(graph: &Graph, from: Node, to: Node) -> String {
+    let Node::Item(from) = from else {
+        return String::new();
+    };
+    let mut hows: Vec<&str> = Vec::new();
+    for reference in graph.references_from(from) {
+        let how = super::how(reference);
+        if reference.to == to && !hows.contains(&how) {
+            hows.push(how);
         }
-        hows.join(", ")
     }
+    hows.join(", ")
 }
 
 /// Why a root is one, for the HOW column.

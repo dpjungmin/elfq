@@ -6,10 +6,27 @@ use std::collections::HashSet;
 use std::io::Write;
 
 use anyhow::Result;
+use serde::Serialize;
 
+use super::json;
 use crate::binary::{Binary, ItemKind};
 use crate::graph::{DominatorTree, Graph, Node, ReferenceKind};
 use crate::render::Table;
+
+/// An item and everything it keeps, for `--format json`.
+#[derive(Serialize)]
+pub(super) struct KeptItem<'a> {
+    #[serde(flatten)]
+    item: json::Item<'a>,
+    /// Its own bytes and those of everything it keeps.
+    retained: u64,
+    /// Whether nothing calls this function directly, so that it counts for
+    /// the code or data that holds its address.
+    through_pointer: bool,
+    /// The items that only it leads to, each with what it keeps in turn,
+    /// largest first.
+    keeps: Vec<KeptItem<'a>>,
+}
 
 /// A binary's graph and dominator tree.
 pub(super) struct RetainedTree<'a> {
@@ -166,6 +183,23 @@ impl<'a> RetainedTree<'a> {
             String::new(),
             format!("{prefix}{} more", hidden.len()),
         ]);
+    }
+
+    /// The items in `nodes`, each with the whole tree of what it keeps.
+    /// Imports are left out: their code isn't in the file.
+    pub fn to_json(&self, nodes: &[Node]) -> Vec<KeptItem<'a>> {
+        nodes
+            .iter()
+            .filter_map(|&node| match node {
+                Node::Item(index) => Some(KeptItem {
+                    item: json::Item::new(self.binary, node),
+                    retained: self.retained(index),
+                    through_pointer: self.through_pointer(index),
+                    keeps: self.to_json(self.tree.children(node)),
+                }),
+                Node::Import(_) => None,
+            })
+            .collect()
     }
 
     pub fn retained(&self, index: usize) -> u64 {
