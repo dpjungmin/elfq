@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use elfq::binary::{Binary, ItemKind};
+use elfq::binary::{Binary, ItemKind, Source};
 use elfq::commands::symbol;
 use elfq::graph::{Graph, Node, ReferenceKind};
 
@@ -44,6 +44,18 @@ fn callees(binary: &Binary, graph: &Graph, name: &str) -> Vec<(String, Reference
     callees
 }
 
+/// The text of a C string: the bytes of the item named `name`, up to the
+/// first NUL.
+fn text(binary: &Binary, name: &str) -> String {
+    let Node::Item(index) = symbol::find(binary, name).unwrap() else {
+        panic!("{name} is an import");
+    };
+    let item = &binary.items[index];
+    let bytes = binary.bytes(item.address, item.size).unwrap();
+    let end = bytes.iter().position(|&byte| byte == 0).unwrap();
+    String::from_utf8(bytes[..end].to_vec()).unwrap()
+}
+
 fn pairs(expected: &[(&str, ReferenceKind)]) -> Vec<(String, ReferenceKind)> {
     expected.iter().map(|&(n, k)| (n.to_string(), k)).collect()
 }
@@ -80,6 +92,9 @@ fn a_function_uses_its_helpers_and_variables() {
     assert_eq!(
         callees(&binary, &graph, "process_frame"),
         pairs(&[
+            // Two log messages; see string_literals_are_unnamed_data.
+            (".rodata@0x2012", Address),
+            (".rodata@0x201e", Address),
             ("__stack_chk_fail@plt", Call),
             ("apply_filter", Call),
             ("crc32", Call),
@@ -102,6 +117,8 @@ fn a_function_uses_its_helpers_and_variables() {
     assert_eq!(
         callees(&binary, &graph, "process_frame"),
         pairs(&[
+            (".rodata@0x8000900", Address),
+            (".rodata@0x800090c", Address),
             ("apply_filter", Call),
             ("crc32", Call),
             ("decode_header", Call),
@@ -112,6 +129,28 @@ fn a_function_uses_its_helpers_and_variables() {
             ("stats", Address),
         ])
     );
+}
+
+#[test]
+fn string_literals_are_unnamed_data() {
+    // String literals have no symbols, so elfq names them by section and
+    // address. `process_frame` alone uses its two log messages.
+    for sample in C_SAMPLES {
+        let (binary, graph) = load(sample);
+        let mut strings = Vec::new();
+        for (name, kind) in callees(&binary, &graph, "process_frame") {
+            if name.starts_with(".rodata@") {
+                assert_eq!(kind, Address, "{sample}: {name}");
+                assert_eq!(
+                    callers(&binary, &graph, &name),
+                    pairs(&[("process_frame", Address)]),
+                    "{sample}: {name}"
+                );
+                strings.push(text(&binary, &name));
+            }
+        }
+        assert_eq!(strings, ["bad header\n", "bad crc\n"], "{sample}");
+    }
 }
 
 #[test]
@@ -269,6 +308,36 @@ fn stripping_keeps_the_calls_between_functions() {
 }
 
 #[test]
+fn stripped_files_still_show_which_variables_code_uses() {
+    // Without symbols, variables are unnamed data, found where code uses
+    // them. Names differ, so compare by address.
+    let (named, named_graph) = load("c-x86_64-nodebug.elf");
+    let (stripped, stripped_graph) = load("c-x86_64-stripped.elf");
+    let users = |binary: &Binary, graph: &Graph, variable: usize| {
+        let mut users: Vec<(u64, ReferenceKind)> = graph
+            .references_to(Node::Item(variable))
+            .map(|r| (binary.items[r.from].address, r.kind))
+            .collect();
+        users.sort();
+        users
+    };
+    for name in ["crc_table", "fir_coeffs", "frames_ok", "handlers", "inner"] {
+        let Node::Item(variable) = symbol::find(&named, name).unwrap() else {
+            unreachable!()
+        };
+        let address = named.items[variable].address;
+        let unnamed = stripped.item_at(address).unwrap();
+        let item = &stripped.items[unnamed];
+        assert_eq!((item.address, item.source), (address, Source::Reference));
+        assert_eq!(
+            users(&stripped, &stripped_graph, unnamed),
+            users(&named, &named_graph, variable),
+            "{name}"
+        );
+    }
+}
+
+#[test]
 fn calls_through_trait_objects_are_indirect() {
     for sample in ["rust-x86_64-nodebug.elf", "rust-cortex-m4.elf"] {
         let (binary, graph) = load(sample);
@@ -283,16 +352,20 @@ fn calls_through_trait_objects_are_indirect() {
         );
     }
 
-    // On Cortex-M the vtables have local symbols, so each implementation
-    // is reached from its vtable, which `app_main` uses.
-    let (binary, graph) = load("rust-cortex-m4.elf");
-    for implementation in ["Gain::run", "DcBlock::run"] {
-        let [(vtable, Pointer)] = &callers(&binary, &graph, implementation)[..] else {
-            panic!("{implementation}");
-        };
-        assert_eq!(
-            callers(&binary, &graph, vtable),
-            pairs(&[("elfq_sample::app_main", Address)])
-        );
+    // Each implementation is reached from its vtable, which `app_main`
+    // uses. On x86-64 the vtables have no symbols, so they are unnamed data
+    // such as `.data.rel.ro@0x52da8`; on Cortex-M they have local symbols.
+    for sample in ["rust-x86_64-nodebug.elf", "rust-cortex-m4.elf"] {
+        let (binary, graph) = load(sample);
+        for implementation in ["Gain::run", "DcBlock::run"] {
+            let [(vtable, Pointer)] = &callers(&binary, &graph, implementation)[..] else {
+                panic!("{sample}: {implementation}");
+            };
+            assert_eq!(
+                callers(&binary, &graph, vtable),
+                pairs(&[("elfq_sample::app_main", Address)]),
+                "{sample}: {vtable}"
+            );
+        }
     }
 }

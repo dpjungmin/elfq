@@ -10,7 +10,9 @@
 //!    `.init_array`, which have no symbols;
 //! 3. the unwind table, `.eh_frame`, which still describes most functions in
 //!    stripped x86-64 files (see `eh_frame.rs`);
-//! 4. the entry point.
+//! 4. the entry point;
+//! 5. references to data that has no symbol, such as vtables and string
+//!    literals (see `unnamed_data.rs`).
 //!
 //! Loading also reads the dynamic relocations (see `relocations.rs`), which
 //! say where the program stores pointers and which functions and variables
@@ -21,6 +23,7 @@ mod names;
 mod plt;
 mod relocations;
 mod symbols;
+mod unnamed_data;
 
 pub use names::{demangle, short_names};
 
@@ -99,8 +102,9 @@ pub struct Section {
 /// A function or data object.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Item {
-    /// The item's symbol name, demangled if it is a Rust symbol, or
-    /// `fn_0x...` when it has no symbol.
+    /// The item's symbol name, demangled if it is a Rust symbol. Without a
+    /// symbol, a name made from where it is, such as `fn_0x1690` or
+    /// `.rodata@0x2004`.
     pub name: String,
     /// Other names for the item: the symbol as the file has it when `name`
     /// is demangled, and other symbols at the same address, such as weak
@@ -110,8 +114,9 @@ pub struct Item {
     pub address: u64,
     /// Size in bytes, or 0 when it is unknown.
     pub size: u64,
-    /// Whether `size` is a guess: the distance to the next item, used when
-    /// the file does not record the size.
+    /// Whether `size` is a guess, made when the file doesn't record the
+    /// size: the distance to the next item, or for unnamed data, to the next
+    /// address that something refers to.
     pub size_estimated: bool,
     /// The section holding the item, as an index into [`Binary::sections`].
     pub section: usize,
@@ -142,6 +147,10 @@ pub enum Source {
     /// A section with a known purpose, such as `.init_array`, and no symbol.
     /// The item is named after the section.
     Section,
+    /// Code or a stored pointer refers to the address, and nothing else
+    /// names what is there, as with vtables and string literals. The item is
+    /// data named after its section and address, such as `.rodata@0x2004`.
+    Reference,
 }
 
 /// A place where the dynamic loader writes an address at startup, such as a
@@ -222,19 +231,20 @@ impl Binary {
         }
         add_entry_item(&mut items, binary.entry, &binary.sections);
 
-        items.sort_by(|a, b| (a.address, b.size, &a.name).cmp(&(b.address, a.size, &b.name)));
+        sort_items(&mut items);
         estimate_missing_sizes(&mut items, &binary.sections);
         binary.items = items;
+        // Last, since finding unnamed data needs all the other items.
+        let unnamed = unnamed_data::items(&binary);
+        binary.items.extend(unnamed);
+        sort_items(&mut binary.items);
         Ok(binary)
     }
 
     /// The bytes at `address`, or `None` if the file doesn't hold all `size`
     /// of them. `.bss`, for example, takes no space in the file.
     pub fn bytes(&self, address: u64, size: u64) -> Option<&[u8]> {
-        let section = self
-            .sections
-            .iter()
-            .find(|section| section.allocated && section.contains(address))?;
+        let section = &self.sections[self.section_at(address)?];
         let (offset, file_size) = section.file_range?;
         let start = address - section.address;
         let end = start.checked_add(size)?;
@@ -257,6 +267,18 @@ impl Binary {
             word[..bytes.len()].copy_from_slice(bytes);
             Some(u64::from_le_bytes(word))
         }
+    }
+
+    /// The section that holds `address` when the program runs, as an index
+    /// into [`Binary::sections`].
+    pub fn section_at(&self, address: u64) -> Option<usize> {
+        self.sections.iter().position(|section| {
+            // `.tbss` only describes each thread's copy of its variables,
+            // so other sections share its addresses.
+            section.allocated
+                && section.kind != SectionKind::UninitializedTls
+                && section.contains(address)
+        })
     }
 
     /// The item whose bytes include `address`, as an index into
@@ -329,8 +351,15 @@ impl fmt::Display for Source {
             Source::EntryPoint => "entry",
             Source::Plt => "plt",
             Source::Section => "section",
+            Source::Reference => "reference",
         })
     }
+}
+
+/// Sorts items by address. Of several items at one address, the largest
+/// comes first.
+fn sort_items(items: &mut [Item]) {
+    items.sort_by(|a, b| (a.address, b.size, &a.name).cmp(&(b.address, a.size, &b.name)));
 }
 
 /// Whether a 32-bit Arm file's code is Thumb: its entry point or any

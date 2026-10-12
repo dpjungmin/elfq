@@ -80,7 +80,7 @@ impl Graph {
     /// read yet, it only has the pointers stored in data.
     pub fn build(binary: &Binary) -> Graph {
         let mut graph = Graph::default();
-        let scan_code = arch::is_supported(binary);
+        let scan_code = arch::is_supported(binary.architecture, binary.thumb);
         for (index, item) in binary.items.iter().enumerate() {
             match item.kind {
                 ItemKind::Function if scan_code => graph.add_code_references(binary, index),

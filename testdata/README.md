@@ -43,7 +43,7 @@ uses Ubuntu's GCC defaults, so it has stack-protector calls
 
 | Function | Shape | Expected answer |
 |---|---|---|
-| `process_frame` | The function under investigation. | Exclusive: `decode_header`, `crc32`, `crc_table`, `apply_filter`, `filter_tap`, `fir_coeffs`. Inlined into it: `load_le32`, `unpack_samples`, `update_stats`. |
+| `process_frame` | The function under investigation. | Exclusive: `decode_header`, `crc32`, `crc_table`, `apply_filter`, `filter_tap`, `fir_coeffs`, and the strings `"bad header\n"` and `"bad crc\n"`, which have no symbols. Inlined into it: `load_le32`, `unpack_samples`, `update_stats`. |
 | `crc32` | Reads a 1 KiB table (`crc_table`) that nothing else reads. | `crc_table` is retained by `crc32`. |
 | `apply_filter`, `filter_tap` | A chain reachable only through `process_frame`. | Both exclusive to `process_frame`. On Cortex-M, `apply_filter` also calls `memcpy`, which is shared with `Reset_Handler`. |
 | `log_msg` | Shared helper. | Callers: `process_frame`, `report`, `app_tick`, `on_button` (tail call), and `debug_dump` on x86-64. Calls `strlen` (added by the compiler) and `platform_write` (tail call). |
@@ -69,7 +69,7 @@ It mirrors the C sample (`process_frame`, `crc32`, `apply_filter`,
 | Item | Shape |
 |---|---|
 | `checksum::<u8>`, `checksum::<u16>`, `checksum::<u32>` | One generic function, three machine-code copies. |
-| `<Gain as Stage>::run`, `<DcBlock as Stage>::run` | Called through trait objects from `process_frame`. Their vtables are data with no symbol, referenced from `app_main` (`objdump` labels one `HANDLERS+0x18`). |
+| `<Gain as Stage>::run`, `<DcBlock as Stage>::run` | Called through trait objects from `process_frame`. Their vtables are referenced from `app_main`. On x86-64 the vtables have no symbol (`objdump` labels one `HANDLERS+0x18`), so elfq names them like `.data.rel.ro@0x52da8`; on Cortex-M they keep local `.Lanon` symbols. |
 | Panic paths | Slicing and indexing can panic, which pulls in `core::panicking` and parts of `core::fmt`. |
 | `<u32 as Display>::fmt`, `<usize as Display>::fmt` | On Cortex-M both symbols name the same address. |
 | `Reset`, `EXCEPTIONS` | Entry point and vector table, as in the C sample. |
