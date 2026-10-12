@@ -48,19 +48,30 @@ fn pairs(expected: &[(&str, ReferenceKind)]) -> Vec<(String, ReferenceKind)> {
     expected.iter().map(|&(n, k)| (n.to_string(), k)).collect()
 }
 
+/// The C sample, built for x86-64 Linux and for Cortex-M.
+const C_SAMPLES: [&str; 2] = ["c-x86_64.elf", "c-cortex-m4.elf"];
+
 #[test]
 fn a_shared_helper_has_every_caller() {
-    let (binary, graph) = load("c-x86_64.elf");
-    assert_eq!(
-        callers(&binary, &graph, "log_msg"),
-        pairs(&[
+    for sample in C_SAMPLES {
+        let (binary, graph) = load(sample);
+        let mut expected = vec![
             ("app_tick", Call),
-            ("debug_dump", Call),
             ("on_button", TailCall),
             ("process_frame", Call),
             ("report", Call),
-        ])
-    );
+        ];
+        // The Cortex-M linker removes debug_dump, which nothing calls.
+        if sample == "c-x86_64.elf" {
+            expected.push(("debug_dump", Call));
+            expected.sort();
+        }
+        assert_eq!(
+            callers(&binary, &graph, "log_msg"),
+            pairs(&expected),
+            "{sample}"
+        );
+    }
 }
 
 #[test]
@@ -84,55 +95,117 @@ fn a_function_uses_its_helpers_and_variables() {
         callees(&binary, &graph, "crc32"),
         pairs(&[("crc_table", Address)])
     );
+
+    // Arm code loads a variable's address before using it, so variables
+    // have their address taken rather than being accessed.
+    let (binary, graph) = load("c-cortex-m4.elf");
+    assert_eq!(
+        callees(&binary, &graph, "process_frame"),
+        pairs(&[
+            ("apply_filter", Call),
+            ("crc32", Call),
+            ("decode_header", Call),
+            ("dispatch_event", Call),
+            ("frames_bad", Address),
+            ("frames_ok", Address),
+            ("log_msg", Call),
+            ("stats", Address),
+        ])
+    );
 }
 
 #[test]
 fn functions_called_through_pointers_have_their_address_taken() {
-    let (binary, graph) = load("c-x86_64.elf");
-    for handler in ["on_timer", "on_button", "on_data"] {
+    for sample in C_SAMPLES {
+        let (binary, graph) = load(sample);
+        for handler in ["on_timer", "on_button", "on_data"] {
+            assert_eq!(
+                callers(&binary, &graph, handler),
+                pairs(&[("main", Address)]),
+                "{sample}: {handler}"
+            );
+        }
+        // The call through the table is a tail jump whose target elfq
+        // can't know: `jmp rax` on x86-64, `bx r3` on Cortex-M.
+        let Node::Item(dispatch) = symbol::find(&binary, "dispatch_event").unwrap() else {
+            unreachable!()
+        };
+        let unresolved = graph.unresolved_in(dispatch);
+        assert_eq!(unresolved.len(), 1, "{sample}");
         assert_eq!(
-            callers(&binary, &graph, handler),
-            pairs(&[("main", Address)]),
-            "{handler}"
+            (unresolved[0].is_call, unresolved[0].target),
+            (false, None),
+            "{sample}"
+        );
+        assert_eq!(
+            callees(&binary, &graph, "dispatch_event"),
+            pairs(&[("handlers", Address)]),
+            "{sample}"
         );
     }
-    // The call through the table is a jump whose target elfq can't know.
-    let Node::Item(dispatch) = symbol::find(&binary, "dispatch_event").unwrap() else {
-        unreachable!()
-    };
-    let unresolved = graph.unresolved_in(dispatch);
-    assert_eq!(unresolved.len(), 1);
-    assert_eq!((unresolved[0].is_call, unresolved[0].target), (false, None));
-    assert_eq!(
-        callees(&binary, &graph, "dispatch_event"),
-        pairs(&[("handlers", Address)])
-    );
 }
 
 #[test]
 fn recursion_and_cycles_are_references_too() {
-    let (binary, graph) = load("c-x86_64.elf");
-    assert!(callers(&binary, &graph, "count_nodes").contains(&("count_nodes".to_string(), Call)));
-    assert!(
-        callees(&binary, &graph, "parse_value").contains(&("parse_list".to_string(), TailCall))
-    );
-    assert!(callees(&binary, &graph, "parse_list").contains(&("parse_value".to_string(), Call)));
+    for sample in C_SAMPLES {
+        let (binary, graph) = load(sample);
+        let calls =
+            |from, to: &str| callees(&binary, &graph, from).contains(&(to.to_string(), Call));
+        assert!(calls("count_nodes", "count_nodes"), "{sample}");
+        assert!(calls("parse_list", "parse_value"), "{sample}");
+        assert!(
+            callees(&binary, &graph, "parse_value").contains(&("parse_list".to_string(), TailCall)),
+            "{sample}"
+        );
+    }
 }
 
 #[test]
 fn pointers_stored_in_data_are_references() {
+    // On x86-64 the dynamic relocations list them; the Cortex-M file has
+    // none, so elfq reads the data instead.
+    for sample in C_SAMPLES {
+        let (binary, graph) = load(sample);
+        assert_eq!(
+            callees(&binary, &graph, "root"),
+            pairs(&[("inner", Pointer), ("leaf_a", Pointer)]),
+            "{sample}"
+        );
+        assert_eq!(
+            callees(&binary, &graph, "inner"),
+            pairs(&[("leaf_b", Pointer), ("leaf_c", Pointer)]),
+            "{sample}"
+        );
+    }
     let (binary, graph) = load("c-x86_64.elf");
-    assert_eq!(
-        callees(&binary, &graph, "root"),
-        pairs(&[("inner", Pointer), ("leaf_a", Pointer)])
-    );
-    assert_eq!(
-        callees(&binary, &graph, "inner"),
-        pairs(&[("leaf_b", Pointer), ("leaf_c", Pointer)])
-    );
     assert_eq!(
         callers(&binary, &graph, "frame_dummy"),
         pairs(&[(".init_array", Pointer)])
+    );
+}
+
+#[test]
+fn interrupt_handlers_are_reached_through_the_vector_table() {
+    let (binary, graph) = load("c-cortex-m4.elf");
+    for handler in ["Reset_Handler", "SysTick_Handler", "Default_Handler"] {
+        assert_eq!(
+            callers(&binary, &graph, handler),
+            pairs(&[("vector_table", Pointer)]),
+            "{handler}"
+        );
+    }
+    assert_eq!(
+        callees(&binary, &graph, "SysTick_Handler"),
+        pairs(&[("app_tick", TailCall), ("systick_count", Address)])
+    );
+    // The compiler turned Reset_Handler's copy and clear loops into calls.
+    assert_eq!(
+        callers(&binary, &graph, "memcpy"),
+        pairs(&[("Reset_Handler", Call), ("apply_filter", Call)])
+    );
+    assert_eq!(
+        callers(&binary, &graph, "memset"),
+        pairs(&[("Reset_Handler", Call)])
     );
 }
 
@@ -197,11 +270,29 @@ fn stripping_keeps_the_calls_between_functions() {
 
 #[test]
 fn calls_through_trait_objects_are_indirect() {
-    let (binary, graph) = load("rust-x86_64-nodebug.elf");
-    let Node::Item(process_frame) = symbol::find(&binary, "process_frame").unwrap() else {
-        panic!("process_frame is an import");
-    };
-    let unresolved = graph.unresolved_in(process_frame);
-    assert_eq!(unresolved.len(), 2);
-    assert!(unresolved.iter().all(|u| u.is_call && u.target.is_none()));
+    for sample in ["rust-x86_64-nodebug.elf", "rust-cortex-m4.elf"] {
+        let (binary, graph) = load(sample);
+        let Node::Item(process_frame) = symbol::find(&binary, "process_frame").unwrap() else {
+            panic!("process_frame is an import");
+        };
+        let unresolved = graph.unresolved_in(process_frame);
+        assert_eq!(unresolved.len(), 2, "{sample}");
+        assert!(
+            unresolved.iter().all(|u| u.is_call && u.target.is_none()),
+            "{sample}"
+        );
+    }
+
+    // On Cortex-M the vtables have local symbols, so each implementation
+    // is reached from its vtable, which `app_main` uses.
+    let (binary, graph) = load("rust-cortex-m4.elf");
+    for implementation in ["Gain::run", "DcBlock::run"] {
+        let [(vtable, Pointer)] = &callers(&binary, &graph, implementation)[..] else {
+            panic!("{implementation}");
+        };
+        assert_eq!(
+            callers(&binary, &graph, vtable),
+            pairs(&[("elfq_sample::app_main", Address)])
+        );
+    }
 }

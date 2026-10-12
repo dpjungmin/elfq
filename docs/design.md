@@ -106,11 +106,15 @@ finds the references between them, `graph` computes dominators and paths,
    indirect call sites (target unknown), and PC-relative references to items
    (`lea rip+...` on x86-64; `adr`, literal-pool `ldr` and `movw`/`movt` on
    Thumb). It does not need a full disassembler, only these instructions.
+   On Thumb it also skips the literal pools and jump tables inside
+   functions, which would otherwise decode as instructions.
 4. **Scan data** for references from data items to other items. When the file
-   has dynamic relocations (most Linux executables are position-independent)
-   they give every stored pointer exactly. Otherwise, as in firmware, elfq
-   scans aligned words for values equal to an item's address (with the Thumb
-   bit cleared) and marks those edges as heuristic.
+   is position-independent (most Linux executables are), its dynamic
+   relocations give every stored pointer exactly. Otherwise, as in firmware,
+   elfq reads data items word by word and takes a word that equals the start
+   of an item (plus 1 for a Thumb function) for a pointer to it. A number
+   that happens to equal an address is mistaken for a pointer, which is rare
+   because addresses are large numbers.
 5. **Find roots**: the ELF entry point, `.preinit_array`, `.init_array` and
    `.fini_array` entries, exported symbols of shared libraries, and the
    Cortex-M vector table (recognized by section name or by its shape: a RAM
@@ -134,7 +138,7 @@ src/
 ├── cli.rs         clap definitions, one struct per subcommand.
 ├── commands/      One file per subcommand: find the symbol (symbol.rs), run a query, render.
 ├── binary/        ELF loading, item discovery and names.
-├── arch/          One file per instruction set (x86_64.rs, later arm.rs), each with one `scan` function.
+├── arch/          One file per instruction set (x86_64.rs, thumb.rs), each with one `scan` function.
 ├── graph/         The reference graph; later roots, dominators, paths.
 ├── debuginfo/     Optional DWARF enrichment.
 └── render/        Table, tree and JSON output.
@@ -160,9 +164,10 @@ Rules that keep it approachable:
 Pure Rust only, so `cargo install elfq` needs no C toolchain:
 `object` (ELF), `gimli` (DWARF), `iced-x86` (x86-64 decoding), `petgraph`
 (graph and dominators), `clap` (arguments), `rustc-demangle` (Rust names),
-and later `cpp_demangle` (C++ names). Thumb decoding is chosen in step 2
-between `yaxpeax-arm` and a small decoder for the handful of instructions
-the code scan needs.
+and later `cpp_demangle` (C++ names). Thumb has its own small decoder in
+`arch/thumb.rs`: the code scan needs about a dozen instructions, which are
+easier to read in one file, with the samples' disassembly as the reference,
+than through a general disassembler's API.
 
 ## Testing
 
@@ -186,8 +191,8 @@ starts.
 | Step | Pull requests |
 |---|---|
 | 1. Survey and samples | This document, survey.md, testdata/ |
-| 2. Core engine | 2a: crate skeleton, CLI, CI, ELF loading and item discovery. 2b: x86-64 scanning, PLT stub names, the reference graph, `callers`, `callees` and the overview. 2c: Rust demangling and short names for SYMBOL. 2d: Cortex-M Thumb scanning and vector-table roots. |
-| 3. Headline queries | 3a: dominators, `retained` and `exclusive`. 3b: `why`. 3c: `top`. 3d: `inlined`. |
+| 2. Core engine | 2a: crate skeleton, CLI, CI, ELF loading and item discovery. 2b: x86-64 scanning, PLT stub names, the reference graph, `callers`, `callees` and the overview. 2c: Rust demangling and short names for SYMBOL. 2d: Cortex-M Thumb scanning, and pointers in firmware data such as the vector table. 2e: items for anonymous data (open question 5). |
+| 3. Headline queries | 3a: roots, dominators, `retained` and `exclusive`. 3b: `why`. 3c: `top`. 3d: `inlined`. |
 | 4. Polish | C++ demangling, with a C++ sample; JSON output; warnings where indirect calls make answers uncertain. |
 
 Later: a query language, and worst-case stack depth (call graph plus each
@@ -196,16 +201,22 @@ function's stack frame).
 ## Open questions
 
 1. **Names.** `why` or `paths`? `exclusive` or `only-from`?
-2. **Thumb decoder.** An existing crate or our own small decoder (step 2d).
-3. **Pointer-reached functions in `exclusive`.** Listed with a marker (the
+2. **Pointer-reached functions in `exclusive`.** Listed with a marker (the
    current plan) or in a separate section?
-4. **Stripped Cortex-M files** have no `.eh_frame`, so item discovery relies
-   on the vector table and call targets. How well that works is unknown until
-   step 2d.
+3. **Stripped Cortex-M files** have no symbols and no `.eh_frame`, so elfq
+   finds only the entry point in them today. Finding functions would mean
+   following calls from the entry point and the vector table.
+4. **Linker-script symbols in Arm code.** Code that loads a symbol such as
+   `_sdata` gets an "address taken" reference to whatever item starts there:
+   in the C sample, `Reset_Handler` appears to use `stats`. Should elfq tell
+   such symbols apart? The reference is harmless, since the code does write
+   there.
 5. **Anonymous data** such as vtables and merged string literals has no
    symbol. elfq still has to make items for it, or references through it are
-   lost: in the Rust sample, `app_main` reaches `<Gain as Stage>::run` only
-   through an unnamed vtable, so today `callers` finds nothing for it. The
+   lost: in the x86-64 Rust sample, `app_main` reaches `<Gain as Stage>::run`
+   only through an unnamed vtable, so today `callers` finds nothing for it.
+   (The Cortex-M build keeps local `.Lanon` symbols for its vtables, so
+   there it works.) The
    plan is to name such items by section and address and never guess an
    owning function. This must land before step 3, or dominators would call
    such functions unreachable.

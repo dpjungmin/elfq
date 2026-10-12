@@ -29,16 +29,25 @@ use std::fmt;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use object::{Architecture, Object, ObjectKind, ObjectSection, SectionFlags, SectionKind};
+use object::{
+    Architecture, Object, ObjectKind, ObjectSection, ObjectSymbol, SectionFlags, SectionKind,
+    SymbolKind,
+};
 
 /// An ELF file that has been read, with the items found in it.
 #[derive(Debug)]
 pub struct Binary {
     /// The instruction set, such as x86-64 or 32-bit Arm.
     pub architecture: Architecture,
+    /// The size of a pointer in bytes: 4 or 8.
+    pub pointer_size: u64,
     pub kind: FileKind,
     /// The address where execution starts.
     pub entry: u64,
+    /// For 32-bit Arm, whether the code is Thumb, the instruction set that
+    /// Cortex-M runs, rather than the older Arm (A32) instruction set. Thumb
+    /// functions have bit 0 set in their symbols and in the entry point.
+    pub thumb: bool,
     /// Whether the file has a symbol table (`.symtab`). Stripping removes it.
     pub has_symbols: bool,
     /// Whether the file has DWARF debug info (`.debug_info`).
@@ -58,6 +67,7 @@ pub struct Binary {
     pub warnings: Vec<String>,
     /// The whole file.
     data: Vec<u8>,
+    big_endian: bool,
 }
 
 /// What kind of program the file holds.
@@ -185,8 +195,10 @@ impl Binary {
         let architecture = file.architecture();
         let mut binary = Binary {
             architecture,
+            pointer_size: if file.is_64() { 8 } else { 4 },
             kind,
             entry: code_address(architecture, file.entry()),
+            thumb: architecture == Architecture::Arm && is_thumb(&file),
             has_symbols: file.symbol_table().is_some(),
             has_dwarf: file.section_by_name(".debug_info").is_some(),
             sections: read_sections(&file),
@@ -195,6 +207,7 @@ impl Binary {
             relocations: Vec::new(),
             warnings: Vec::new(),
             data: data.to_vec(),
+            big_endian: !file.is_little_endian(),
         };
         (binary.imports, binary.relocations) = relocations::read(&file, architecture);
 
@@ -230,6 +243,20 @@ impl Binary {
         }
         self.data
             .get(usize::try_from(offset + start).ok()?..usize::try_from(offset + end).ok()?)
+    }
+
+    /// The pointer stored at `address`, as the file holds it before the
+    /// program runs.
+    pub fn pointer_at(&self, address: u64) -> Option<u64> {
+        let bytes = self.bytes(address, self.pointer_size)?;
+        let mut word = [0; 8];
+        if self.big_endian {
+            word[8 - bytes.len()..].copy_from_slice(bytes);
+            Some(u64::from_be_bytes(word))
+        } else {
+            word[..bytes.len()].copy_from_slice(bytes);
+            Some(u64::from_le_bytes(word))
+        }
     }
 
     /// The item whose bytes include `address`, as an index into
@@ -304,6 +331,15 @@ impl fmt::Display for Source {
             Source::Section => "section",
         })
     }
+}
+
+/// Whether a 32-bit Arm file's code is Thumb: its entry point or any
+/// function symbol has bit 0 set.
+fn is_thumb(file: &object::File) -> bool {
+    file.entry() & 1 == 1
+        || file
+            .symbols()
+            .any(|symbol| symbol.kind() == SymbolKind::Text && symbol.address() & 1 == 1)
 }
 
 /// Clears the Thumb bit that 32-bit Arm sets in the addresses of Thumb

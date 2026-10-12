@@ -4,14 +4,17 @@
 //! found in two places:
 //!
 //! - the code of every function, which the `arch` module scans;
-//! - pointers stored in data, which the dynamic relocations list.
+//! - pointers stored in data. In a position-independent file the dynamic
+//!   relocations list them. In a file linked to run at one address, such as
+//!   firmware, they are found by reading data items word by word: a word
+//!   equal to where an item starts is taken to point at it.
 //!
 //! [`Graph::build`] works out which item each address belongs to. Calls and
 //! jumps it can't follow, such as a call through a function pointer, are kept
 //! in [`Graph::unresolved`] so that answers can say what they don't know.
 
 use crate::arch::{self, CodeReference, CodeReferenceKind};
-use crate::binary::{Binary, ItemKind, Relocation, RelocationTarget};
+use crate::binary::{Binary, FileKind, ItemKind, Relocation, RelocationTarget};
 
 /// A node of the graph: an item in the file, or an import.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -77,15 +80,14 @@ impl Graph {
     /// read yet, it only has the pointers stored in data.
     pub fn build(binary: &Binary) -> Graph {
         let mut graph = Graph::default();
+        let scan_code = arch::is_supported(binary);
         for (index, item) in binary.items.iter().enumerate() {
-            if item.kind != ItemKind::Function {
-                continue;
-            }
-            let Some(code) = binary.bytes(item.address, item.size) else {
-                continue;
-            };
-            for reference in arch::scan(binary.architecture, code, item.address) {
-                graph.add_code_reference(binary, index, reference);
+            match item.kind {
+                ItemKind::Function if scan_code => graph.add_code_references(binary, index),
+                ItemKind::Data if binary.kind == FileKind::Executable => {
+                    graph.add_pointers_in_data(binary, index);
+                }
+                _ => {}
             }
         }
         for relocation in &binary.relocations {
@@ -117,6 +119,16 @@ impl Graph {
         let start = self.unresolved.partition_point(|u| u.from < item);
         let end = self.unresolved.partition_point(|u| u.from <= item);
         &self.unresolved[start..end]
+    }
+
+    fn add_code_references(&mut self, binary: &Binary, function: usize) {
+        let item = &binary.items[function];
+        let Some(code) = binary.bytes(item.address, item.size) else {
+            return;
+        };
+        for reference in arch::scan(binary.architecture, code, item.address) {
+            self.add_code_reference(binary, function, reference);
+        }
     }
 
     fn add_code_reference(&mut self, binary: &Binary, from: usize, reference: CodeReference) {
@@ -205,6 +217,30 @@ impl Graph {
         }
     }
 
+    /// Adds a reference for each word in a data item that holds where
+    /// another item starts, such as an entry in a table of functions. Only
+    /// for files linked to run at one address, whose pointers are stored as
+    /// they are.
+    ///
+    /// A number that happens to equal an item's address is taken for a
+    /// pointer too. That is rare, because addresses are large numbers, and
+    /// requiring the exact start of an item keeps it rarer.
+    fn add_pointers_in_data(&mut self, binary: &Binary, from: usize) {
+        let item = &binary.items[from];
+        let size = binary.pointer_size;
+        // Pointers are aligned to their size.
+        let mut site = item.address.next_multiple_of(size);
+        while site + size <= item.address + item.size {
+            if let Some(value) = binary.pointer_at(site)
+                && let Some(to) = item_starting_at(binary, value)
+                && to != from
+            {
+                self.add(from, Node::Item(to), ReferenceKind::Pointer, site);
+            }
+            site += size;
+        }
+    }
+
     fn add(&mut self, from: usize, to: Node, kind: ReferenceKind, site: u64) {
         self.references.push(Reference {
             from,
@@ -222,6 +258,22 @@ impl Node {
             Node::Import(index) => &binary.imports[index],
         }
     }
+}
+
+/// The item that starts at `address`. On Arm, a pointer to a Thumb function
+/// is its address plus 1.
+fn item_starting_at(binary: &Binary, address: u64) -> Option<usize> {
+    let starts_at = |address| {
+        let index = binary.item_at(address)?;
+        (binary.items[index].address == address).then_some(index)
+    };
+    if address == 0 {
+        return None;
+    }
+    starts_at(address).or_else(|| {
+        let function = starts_at(address & !1).filter(|_| binary.thumb && address & 1 == 1)?;
+        (binary.items[function].kind == ItemKind::Function).then_some(function)
+    })
 }
 
 /// What the pointer at `address` points to, when the dynamic loader writes
