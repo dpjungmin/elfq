@@ -1,30 +1,23 @@
-//! `elfq debug items FILE`: lists the items elfq found and where it found
+//! `elfq FILE debug items`: lists the items elfq found and where it found
 //! each one. It exists to check item discovery while developing elfq; for
 //! browsing symbols, `nm` and `readelf -s` are better tools.
 
 use std::io::Write;
 
 use anyhow::Result;
-use object::{Architecture, ObjectKind};
 
 use crate::binary::{Binary, Item, ItemKind};
-use crate::cli::ItemsArgs;
 use crate::render::{Align, Table};
 
-pub fn run(args: &ItemsArgs, out: &mut dyn Write) -> Result<()> {
-    let binary = Binary::load(&args.file)?;
-    for warning in &binary.warnings {
-        eprintln!("warning: {warning}");
-    }
-
+pub fn run(binary: &Binary, out: &mut dyn Write) -> Result<()> {
     writeln!(
         out,
-        "{}, {}, entry {:#x}: {}, {}",
-        architecture_name(binary.architecture),
-        kind_name(binary.kind),
+        "{} {}, entry {:#x}: {}, {}",
+        super::architecture_name(binary.architecture),
+        binary.kind,
         binary.entry,
-        count(&binary, ItemKind::Function, "function", "functions"),
-        count(&binary, ItemKind::Data, "data object", "data objects"),
+        count(binary, ItemKind::Function, "function", "functions"),
+        count(binary, ItemKind::Data, "data object", "data objects"),
     )?;
     writeln!(out)?;
 
@@ -48,10 +41,9 @@ pub fn run(args: &ItemsArgs, out: &mut dyn Write) -> Result<()> {
     Ok(())
 }
 
-/// "1 function", "2 functions".
 fn count(binary: &Binary, kind: ItemKind, one: &str, many: &str) -> String {
     let n = binary.items.iter().filter(|item| item.kind == kind).count();
-    format!("{n} {}", if n == 1 { one } else { many })
+    super::plural(n, one, many)
 }
 
 /// The size, `~N` when it is an estimate, or `?` when it is unknown.
@@ -68,21 +60,5 @@ fn name_text(item: &Item) -> String {
         item.name.clone()
     } else {
         format!("{} (also {})", item.name, item.aliases.join(", "))
-    }
-}
-
-fn architecture_name(architecture: Architecture) -> String {
-    match architecture {
-        Architecture::X86_64 => "x86-64".to_string(),
-        Architecture::Arm => "32-bit Arm".to_string(),
-        other => format!("{other:?}"),
-    }
-}
-
-fn kind_name(kind: ObjectKind) -> &'static str {
-    match kind {
-        ObjectKind::Executable => "executable",
-        ObjectKind::Dynamic => "shared library or position-independent executable",
-        _ => "unsupported file type",
     }
 }

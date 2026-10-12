@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use elfq::binary::{Binary, Item, ItemKind, Source};
+use elfq::binary::{Binary, Item, ItemKind, RelocationTarget, Source};
 
 fn path(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(name)
@@ -53,14 +53,16 @@ fn debug_info_does_not_change_the_items() {
 
 #[test]
 fn stripped_x86_64_files_get_functions_from_the_unwind_table() {
-    for (sample, expected) in [("c-x86_64", 24), ("rust-x86_64", 531)] {
+    for (sample, expected) in [("c-x86_64", 21), ("rust-x86_64", 531)] {
         let named = load(&format!("{sample}-nodebug.elf"));
         let stripped = load(&format!("{sample}-stripped.elf"));
-        let found = functions(&stripped);
+        let found: Vec<&Item> = functions(&stripped)
+            .into_iter()
+            .filter(|function| function.source == Source::EhFrame)
+            .collect();
         assert_eq!(found.len(), expected, "{sample}");
         // Each one matches a function the symbols describe, start and size.
         for function in found {
-            assert_eq!(function.source, Source::EhFrame);
             assert!(
                 functions(&named)
                     .iter()
@@ -73,6 +75,71 @@ fn stripped_x86_64_files_get_functions_from_the_unwind_table() {
     let stripped = load("c-x86_64-stripped.elf");
     let process_frame = item(&stripped, "fn_0x1700");
     assert_eq!(process_frame.size, 532);
+}
+
+#[test]
+fn plt_stubs_are_named_after_the_imports_they_call() {
+    // Both PLT layouts: GCC's, with `.plt.sec` and `.plt.got`, and lld's
+    // single `.plt` (Rust).
+    for sample in ["c-x86_64.elf", "c-x86_64-stripped.elf"] {
+        let binary = load(sample);
+        let stubs: Vec<(&str, u64, u64)> = binary
+            .items
+            .iter()
+            .filter(|item| item.source == Source::Plt)
+            .map(|item| (item.name.as_str(), item.address, item.size))
+            .collect();
+        assert_eq!(
+            stubs,
+            [
+                (".plt", 0x1020, 64),
+                ("__cxa_finalize@plt", 0x1060, 16),
+                ("write@plt", 0x1070, 16),
+                ("strlen@plt", 0x1080, 16),
+                ("__stack_chk_fail@plt", 0x1090, 16),
+            ],
+            "{sample}"
+        );
+    }
+    let binary = load("rust-x86_64-stripped.elf");
+    assert_eq!(item(&binary, "_Unwind_Resume@plt").address, 0x51cb0);
+}
+
+#[test]
+fn startup_and_exit_arrays_are_data_items() {
+    let binary = load("c-x86_64-stripped.elf");
+    let init = item(&binary, ".init_array");
+    assert_eq!(
+        (init.kind, init.address, init.size),
+        (ItemKind::Data, 0x3d80, 8)
+    );
+    assert_eq!(init.source, Source::Section);
+}
+
+#[test]
+fn dynamic_relocations_give_stored_pointers_and_imports() {
+    let binary = load("c-x86_64.elf");
+    // `.init_array` holds a pointer to `frame_dummy`.
+    let relocation = binary.relocation_at(0x3d80).unwrap();
+    assert_eq!(
+        relocation.target,
+        RelocationTarget::Address(item(&binary, "frame_dummy").address)
+    );
+    let mut imports = binary.imports.clone();
+    imports.sort();
+    assert_eq!(
+        imports,
+        [
+            "_ITM_deregisterTMCloneTable",
+            "_ITM_registerTMCloneTable",
+            "__cxa_finalize",
+            "__gmon_start__",
+            "__libc_start_main",
+            "__stack_chk_fail",
+            "strlen",
+            "write",
+        ]
+    );
 }
 
 #[test]

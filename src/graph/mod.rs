@@ -1,0 +1,242 @@
+//! The reference graph: which items use which, and how.
+//!
+//! Its nodes are a binary's items and imports. Its edges are references,
+//! found in two places:
+//!
+//! - the code of every function, which the `arch` module scans;
+//! - pointers stored in data, which the dynamic relocations list.
+//!
+//! [`Graph::build`] works out which item each address belongs to. Calls and
+//! jumps it can't follow, such as a call through a function pointer, are kept
+//! in [`Graph::unresolved`] so that answers can say what they don't know.
+
+mod find;
+
+pub use find::find;
+
+use crate::arch::{self, CodeReference, CodeReferenceKind};
+use crate::binary::{Binary, ItemKind, Relocation, RelocationTarget};
+
+/// A node of the graph: an item in the file, or an import.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Node {
+    /// An index into [`Binary::items`].
+    Item(usize),
+    /// An index into [`Binary::imports`].
+    Import(usize),
+}
+
+/// One item's use of another item or of an import.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Reference {
+    /// The item that makes the reference, as an index into [`Binary::items`].
+    pub from: usize,
+    pub to: Node,
+    pub kind: ReferenceKind,
+    /// Where it is: the address of the instruction, or of the stored pointer.
+    pub site: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ReferenceKind {
+    /// A direct call.
+    Call,
+    /// A jump to another function, which then returns straight to the
+    /// caller's caller.
+    TailCall,
+    /// Code taking an item's address, as when passing a function or a
+    /// buffer to another function.
+    Address,
+    /// Code reading or writing an item's bytes, such as a global variable.
+    Access,
+    /// A pointer stored in data, such as an entry in a table of functions.
+    Pointer,
+}
+
+/// A call or jump that the graph can't follow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Unresolved {
+    /// The function it is in, as an index into [`Binary::items`].
+    pub from: usize,
+    /// The instruction's address.
+    pub site: u64,
+    /// Whether it is a call rather than a jump.
+    pub is_call: bool,
+    /// The target, when the code says where it is but no item contains it.
+    /// `None` when the target is only known at run time, as in a call
+    /// through a function pointer.
+    pub target: Option<u64>,
+}
+
+#[derive(Debug, Default)]
+pub struct Graph {
+    /// Every reference, sorted by the item that makes it, then by site.
+    pub references: Vec<Reference>,
+    /// Calls and jumps the graph can't follow, sorted the same way.
+    pub unresolved: Vec<Unresolved>,
+}
+
+impl Graph {
+    /// Builds the graph. For instruction sets that the `arch` module can't
+    /// read yet, it only has the pointers stored in data.
+    pub fn build(binary: &Binary) -> Graph {
+        let mut graph = Graph::default();
+        for (index, item) in binary.items.iter().enumerate() {
+            if item.kind != ItemKind::Function {
+                continue;
+            }
+            let Some(code) = binary.bytes(item.address, item.size) else {
+                continue;
+            };
+            for reference in arch::scan(binary.architecture, code, item.address) {
+                graph.add_code_reference(binary, index, reference);
+            }
+        }
+        for relocation in &binary.relocations {
+            graph.add_stored_pointer(binary, relocation);
+        }
+        graph
+            .references
+            .sort_by_key(|reference| (reference.from, reference.site));
+        graph
+            .unresolved
+            .sort_by_key(|unresolved| (unresolved.from, unresolved.site));
+        graph
+    }
+
+    /// The references that `item` makes, in the order they appear in it.
+    pub fn references_from(&self, item: usize) -> &[Reference] {
+        let start = self.references.partition_point(|r| r.from < item);
+        let end = self.references.partition_point(|r| r.from <= item);
+        &self.references[start..end]
+    }
+
+    /// The references to `node`, sorted by the item that makes them.
+    pub fn references_to(&self, node: Node) -> impl Iterator<Item = &Reference> {
+        self.references.iter().filter(move |r| r.to == node)
+    }
+
+    /// The calls and jumps in `item` that the graph can't follow.
+    pub fn unresolved_in(&self, item: usize) -> &[Unresolved] {
+        let start = self.unresolved.partition_point(|u| u.from < item);
+        let end = self.unresolved.partition_point(|u| u.from <= item);
+        &self.unresolved[start..end]
+    }
+
+    fn add_code_reference(&mut self, binary: &Binary, from: usize, reference: CodeReference) {
+        let function = &binary.items[from];
+        let site = reference.site;
+        let unresolved = |is_call, target| Unresolved {
+            from,
+            site,
+            is_call,
+            target,
+        };
+        match reference.kind {
+            CodeReferenceKind::Call(target) => match binary.item_at(target) {
+                // A call into the function's own middle, not a recursive
+                // call: nothing outside the function is involved.
+                Some(to) if to == from && target != function.address => {}
+                Some(to) => self.add(from, Node::Item(to), ReferenceKind::Call, site),
+                None => self.unresolved.push(unresolved(true, Some(target))),
+            },
+            CodeReferenceKind::Jump(target) => {
+                // Most jumps stay inside the function: loops and branches.
+                if function.contains(target) {
+                    return;
+                }
+                match binary.item_at(target) {
+                    Some(to) => self.add(from, Node::Item(to), ReferenceKind::TailCall, site),
+                    None => self.unresolved.push(unresolved(false, Some(target))),
+                }
+            }
+            CodeReferenceKind::CallThrough(pointer) | CodeReferenceKind::JumpThrough(pointer) => {
+                let is_call = matches!(reference.kind, CodeReferenceKind::CallThrough(_));
+                if let Some(variable) = binary.item_at(pointer) {
+                    // A function pointer variable: it can hold anything.
+                    if variable != from {
+                        self.add(from, Node::Item(variable), ReferenceKind::Access, site);
+                    }
+                    self.unresolved.push(unresolved(is_call, None));
+                } else if let Some(to) = pointer_target(binary, pointer) {
+                    // A pointer the loader fills in, such as a global offset
+                    // table entry: the target is known.
+                    let kind = if is_call {
+                        ReferenceKind::Call
+                    } else {
+                        ReferenceKind::TailCall
+                    };
+                    self.add(from, to, kind, site);
+                } else {
+                    self.unresolved.push(unresolved(is_call, None));
+                }
+            }
+            CodeReferenceKind::IndirectCall => self.unresolved.push(unresolved(true, None)),
+            CodeReferenceKind::IndirectJump => self.unresolved.push(unresolved(false, None)),
+            CodeReferenceKind::Address(address) => {
+                if let Some(to) = binary.item_at(address)
+                    && to != from
+                {
+                    self.add(from, Node::Item(to), ReferenceKind::Address, site);
+                }
+            }
+            CodeReferenceKind::Memory(address) => match binary.item_at(address) {
+                Some(to) if to == from => {}
+                Some(to) => self.add(from, Node::Item(to), ReferenceKind::Access, site),
+                // Not in any item: maybe a global offset table entry, which
+                // code reads to get the address the loader stored there.
+                None => {
+                    if let Some(to) = pointer_target(binary, address) {
+                        self.add(from, to, ReferenceKind::Address, site);
+                    }
+                }
+            },
+        }
+    }
+
+    /// Adds a reference for a pointer stored inside an item, such as a table
+    /// of functions. Pointers outside items, such as global offset table
+    /// entries, are followed from the code that loads them instead.
+    fn add_stored_pointer(&mut self, binary: &Binary, relocation: &Relocation) {
+        let Some(from) = binary.item_at(relocation.address) else {
+            return;
+        };
+        let Some(to) = target_node(binary, relocation.target) else {
+            return;
+        };
+        if to != Node::Item(from) {
+            self.add(from, to, ReferenceKind::Pointer, relocation.address);
+        }
+    }
+
+    fn add(&mut self, from: usize, to: Node, kind: ReferenceKind, site: u64) {
+        self.references.push(Reference {
+            from,
+            to,
+            kind,
+            site,
+        });
+    }
+}
+
+impl Node {
+    pub fn name(self, binary: &Binary) -> &str {
+        match self {
+            Node::Item(index) => &binary.items[index].name,
+            Node::Import(index) => &binary.imports[index],
+        }
+    }
+}
+
+/// What the pointer at `address` points to, when the dynamic loader writes
+/// it.
+fn pointer_target(binary: &Binary, address: u64) -> Option<Node> {
+    target_node(binary, binary.relocation_at(address)?.target)
+}
+
+fn target_node(binary: &Binary, target: RelocationTarget) -> Option<Node> {
+    match target {
+        RelocationTarget::Address(address) => binary.item_at(address).map(Node::Item),
+        RelocationTarget::Import(import) => Some(Node::Import(import)),
+    }
+}
