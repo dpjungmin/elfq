@@ -189,6 +189,12 @@ impl Binary {
         Binary::parse(&data).with_context(|| format!("cannot load {}", path.display()))
     }
 
+    /// The whole file, for reading parts of it that elfq doesn't keep, such
+    /// as DWARF debug info.
+    pub fn file_data(&self) -> &[u8] {
+        &self.data
+    }
+
     /// Parses an ELF file that is already in memory.
     pub fn parse(data: &[u8]) -> Result<Binary> {
         if !data.starts_with(b"\x7fELF") {

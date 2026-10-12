@@ -34,12 +34,13 @@ cargo test
 | `src/arch/` | Finding the addresses that machine code calls or uses, one file per instruction set (x86-64 and Thumb). |
 | `src/binary/` | Reading an ELF file: its functions and data objects ("items"), their names, imports and stored pointers. Unnamed data, such as string literals, is found from what code and pointers refer to. |
 | `src/graph/` | The reference graph that connects items, the roots where the program starts, the dominator tree that says what is exclusive to what, and the shortest paths that `why` shows. |
+| `src/debuginfo/` | Reading DWARF, when the file has it: the copies of functions that the compiler inlined, for `inlined`. |
 | `src/render/` | Text output. |
 | `tests/` | Integration tests that run on the sample binaries. |
 | `testdata/` | The sample programs and the ELF files built from them. |
 
 Analysis flows one way: `arch`, then `binary`, then `graph`, each importing
-only from the ones before it. `render` knows nothing about ELF files, and
+only from the ones before it; `debuginfo` imports only `binary`. `render` knows nothing about ELF files, and
 `commands` connect the two. A command does no analysis of its own and the
 analysis modules never print.
 

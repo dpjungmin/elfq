@@ -55,6 +55,7 @@ Try:
   elfq testdata/bin/c-x86_64.elf top
   elfq testdata/bin/c-x86_64.elf retained main
   elfq testdata/bin/c-x86_64.elf why crc_table
+  elfq testdata/bin/c-x86_64.elf inlined
 "
     );
 }
@@ -86,6 +87,7 @@ Try:
   elfq testdata/bin/c-cortex-m4.elf top
   elfq testdata/bin/c-cortex-m4.elf retained main
   elfq testdata/bin/c-cortex-m4.elf why crc_table
+  elfq testdata/bin/c-cortex-m4.elf inlined
 "
     );
     assert_eq!(
@@ -329,6 +331,88 @@ fn why_says_when_nothing_reaches_an_item() {
         "Nothing reaches .rodata@0x2056 from where the program starts, as far as elfq can tell. \
          It may be dead code, or used in a way elfq can't see.\n\
          debug_dump uses it, but nothing reaches debug_dump either.\n"
+    );
+}
+
+#[test]
+fn inlined_ranks_the_functions_the_compiler_copied() {
+    assert_eq!(
+        stdout(&[SAMPLE, "inlined"]),
+        "\
+Inlined copies of 5 functions take 420 of the file's 2557 bytes of code:
+
+BYTES  COPIES  FUNCTION
+  164       1  update_stats
+  150       6  append
+   74       1  unpack_samples
+   32       1  saturate
+    0       1  load_le32
+
+A copy of 0 bytes is one the compiler merged into the code around it, so the debug info gives it no bytes of its own.
+
+To see the inlined code in one function, as a tree:
+  elfq testdata/bin/c-x86_64.elf inlined --in process_frame
+"
+    );
+    assert_eq!(
+        stdout(&[SAMPLE, "inlined", "--in", "process_frame"]),
+        "\
+Of process_frame's 532 bytes, 238 are inlined copies of 3 functions:
+
+BYTES  COPIES  FUNCTION
+  164       1  update_stats
+   74       1  unpack_samples
+    0       1  load_le32
+
+A copy of 0 bytes is one the compiler merged into the code around it, so the debug info gives it no bytes of its own.
+"
+    );
+    // The six calls to `append` in `report` make one row.
+    assert_eq!(
+        stdout(&[SAMPLE, "inlined", "--in", "report"]),
+        "\
+Of report's 370 bytes, 150 are inlined copies of 1 function:
+
+BYTES  COPIES  FUNCTION
+  150       6  append
+"
+    );
+    assert_eq!(
+        stdout(&[SAMPLE, "inlined", "--in", "main"]),
+        "The debug info lists no inlined code in main.\n"
+    );
+}
+
+#[test]
+fn inlined_shows_copies_inside_copies_as_a_tree() {
+    let tree = stdout(&[
+        "testdata/bin/rust-cortex-m4.elf",
+        "inlined",
+        "--in",
+        "memcpy",
+    ]);
+    assert!(
+        tree.starts_with(
+            "\
+Of compiler_builtins::mem::memcpy's 730 bytes, 712 are inlined copies of 17 functions:
+
+BYTES  COPIES  FUNCTION
+  712       1  compiler_builtins::mem::impls::copy_forward
+  392       1  ├─ compiler_builtins::mem::impls::copy_forward::copy_forward_misaligned_words
+   74       1  │  ├─ compiler_builtins::mem::impls::load_aligned_partial
+"
+        ),
+        "{tree}"
+    );
+}
+
+#[test]
+fn inlined_needs_dwarf() {
+    assert_eq!(
+        stderr(&["testdata/bin/c-x86_64-nodebug.elf", "inlined"], 1),
+        "error: testdata/bin/c-x86_64-nodebug.elf has no DWARF debug info, which elfq needs to \
+         tell what the compiler inlined; build it with debug info (such as -g) and don't strip \
+         it\n"
     );
 }
 

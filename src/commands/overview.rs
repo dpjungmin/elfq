@@ -105,6 +105,7 @@ pub fn run(path: &Path, binary: &Binary, out: &mut dyn Write) -> Result<()> {
         let examples: Vec<String> = [
             most_used(binary, &graph).map(|item| about("callers", item)),
             starting_point(binary).map(|item| about("callees", item)),
+            inlined(binary),
         ]
         .into_iter()
         .flatten()
@@ -128,6 +129,7 @@ pub fn run(path: &Path, binary: &Binary, out: &mut dyn Write) -> Result<()> {
         (kept > 0).then(|| "top".to_string()),
         starting_point(binary).map(|item| about("retained", item)),
         largest_kept(&retained).map(|item| about("why", item)),
+        inlined(binary),
     ]
     .into_iter()
     .flatten()
@@ -147,6 +149,11 @@ fn write_try(path: &Path, commands: &[String], out: &mut dyn Write) -> Result<()
         writeln!(out, "  elfq {file} {command}")?;
     }
     Ok(())
+}
+
+/// `inlined`, when the file has the debug info it needs.
+fn inlined(binary: &Binary) -> Option<String> {
+    binary.has_dwarf.then(|| "inlined".to_string())
 }
 
 /// The largest item that something keeps in the file, as opposed to one

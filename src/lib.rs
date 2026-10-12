@@ -7,6 +7,8 @@
 //! - [`binary`]: reads an ELF file and finds its functions and data objects.
 //! - [`graph`]: connects items by the references between them, and works
 //!   out what is exclusive to what and the shortest chains to each item.
+//! - [`debuginfo`]: reads DWARF, when the file has it, for what the compiler
+//!   inlined.
 //! - [`commands`]: one module per subcommand, connecting a question to output.
 //! - [`render`]: text output.
 //! - [`cli`]: command-line arguments.
@@ -15,5 +17,6 @@ pub mod arch;
 pub mod binary;
 pub mod cli;
 pub mod commands;
+pub mod debuginfo;
 pub mod graph;
 pub mod render;

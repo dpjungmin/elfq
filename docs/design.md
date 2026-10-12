@@ -23,7 +23,7 @@ Every command has the form `elfq <FILE> <command> [ARGS]`: the file first,
 then the question, so that a command sits next to the symbol it asks about
 (`elfq app.elf callers log_msg`). `elfq <FILE>` alone prints an overview.
 `retained`, `exclusive` and `why` are the reason elfq exists; the rest
-support them.
+support them, except `inlined`, which reads DWARF instead of machine code.
 
 | Command | Answers |
 |---|---|
@@ -103,6 +103,22 @@ debug_dump uses log_msg too, but nothing reaches debug_dump.
 Every chain to log_msg goes through main, so it counts toward main's retained size.
 ```
 
+`inlined` ranks the functions that the compiler copied into their callers by
+the bytes all their copies take, which ddbug shows only one function at a
+time. Each copy's bytes leave out the copies inlined into it, so the rows add
+up to the file's inlined code. On the Rust x86-64 sample, built with DWARF,
+`EndianSlice::read_slice` tops the list: 302 copies in 6,388 bytes. With
+`--in SYMBOL` it shows the copies in one function as a tree, merging the
+copies of one function in one place:
+
+```
+$ elfq testdata/bin/c-x86_64.elf inlined --in report
+Of report's 370 bytes, 150 are inlined copies of 1 function:
+
+BYTES  COPIES  FUNCTION
+  150       6  append
+```
+
 ### What "exclusive" and "retained" mean
 
 elfq builds a graph whose nodes are **items** (functions and data objects) and
@@ -125,7 +141,8 @@ functions "(through a pointer)" so the reader knows.
 Data moves through five modules in order: `arch` finds the addresses that
 machine code uses, `binary` finds the items, `graph` connects them by those
 references and computes dominators and paths, `commands` run queries, and
-`render` prints text or JSON.
+`render` prints text or JSON. `debuginfo` reads DWARF beside the graph, for
+`inlined`.
 
 1. **Load** the file with the `object` crate: sections, symbols, entry point,
    dynamic relocations.
@@ -177,10 +194,12 @@ references and computes dominators and paths, `commands` run queries, and
    searches from the roots for the shortest chain to each item that uses
    SYMBOL, going around SYMBOL itself, and prefers calls among equally short
    chains. `callers` and `callees` read edges.
-7. **Enrich with DWARF** when it is present (`gimli`): inlined-subroutine
-   ranges attribute each function's bytes to the functions inlined into it,
-   and source locations make output easier to follow. Nothing above depends on
-   DWARF.
+7. **Read DWARF** when it is present (`gimli`), in `debuginfo`: each
+   inlined-subroutine entry is a copy of one function in another, with the
+   address ranges of its code. `inlined` adds them up. Copies whose code the
+   linker dropped still have entries, so elfq skips those that don't start
+   inside an item. Nothing above depends on DWARF; source locations could
+   make output easier to follow later.
 
 ## Code layout
 
@@ -193,14 +212,14 @@ src/
 ├── binary/        ELF loading, item discovery and names.
 ├── arch/          One file per instruction set (x86_64.rs, thumb.rs), each with one `scan` function.
 ├── graph/         The reference graph, its roots, dominator tree and shortest paths.
-├── debuginfo/     Optional DWARF enrichment.
+├── debuginfo/     DWARF, when the file has it: what the compiler inlined.
 └── render/        Table, tree and JSON output.
 ```
 
 Rules that keep it approachable:
 
 - **Analysis flows one way**: arch, then binary, then graph, each importing
-  only from the ones before it. `render` knows nothing about ELF files, and
+  only from the ones before it. debuginfo imports only binary. `render` knows nothing about ELF files, and
   `commands` connect the two.
 - **Analysis never prints and commands never analyze.** A command is a short
   function that wires a query to a renderer.

@@ -43,7 +43,7 @@ uses Ubuntu's GCC defaults, so it has stack-protector calls
 
 | Function | Shape | Expected answer |
 |---|---|---|
-| `process_frame` | The function under investigation. | Exclusive: `decode_header`, `crc32`, `crc_table`, `apply_filter`, `filter_tap`, `fir_coeffs`, and the strings `"bad header\n"` and `"bad crc\n"`, which have no symbols. Inlined into it: `load_le32`, `unpack_samples`, `update_stats`. |
+| `process_frame` | The function under investigation. | Exclusive: `decode_header`, `crc32`, `crc_table`, `apply_filter`, `filter_tap`, `fir_coeffs`, and the strings `"bad header\n"` and `"bad crc\n"`, which have no symbols. Inlined into it: `load_le32`, `unpack_samples`, `update_stats`. On x86-64 the compiler merged `load_le32` into the code around it, so DWARF gives its copy no bytes. |
 | `crc32` | Reads a 1 KiB table (`crc_table`) that nothing else reads. | `crc_table` is retained by `crc32`. |
 | `apply_filter`, `filter_tap` | A chain reachable only through `process_frame`. | Both exclusive to `process_frame`. On Cortex-M, `apply_filter` also calls `memcpy`, which is shared with `Reset_Handler`. |
 | `log_msg` | Shared helper. | Callers: `process_frame`, `report`, `app_tick`, `on_button` (tail call), and `debug_dump` on x86-64. Calls `strlen` (added by the compiler) and `platform_write` (tail call). |
