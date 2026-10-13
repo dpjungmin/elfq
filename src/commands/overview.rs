@@ -20,7 +20,7 @@ use crate::cli::Format;
 use crate::graph::{Graph, Node};
 use crate::render::{Align, Table};
 
-/// How many items the tree of the largest items shows.
+/// How many of the largest items the tree shows, as `top`'s tree does.
 const SHOWN: usize = 5;
 
 /// What the file is and what elfq found in it. The largest items are in
@@ -87,7 +87,7 @@ pub fn run(
     // Stripped firmware may have only its reset handler, of unknown size.
     let bytes = total_bytes(binary, None);
     if bytes > 0 {
-        found += &format!(", {bytes} bytes of code and data");
+        found += &format!(", {} of code and data", super::bytes_text(bytes));
     }
     if !binary.imports.is_empty() {
         found += &format!(
@@ -199,10 +199,10 @@ fn write_range(
     top::check_range_has_bytes(&retained)?;
     writeln!(
         out,
-        "{} in {}, {} bytes of code and data",
+        "{} in {}, {} of code and data",
         items_text(binary, Some(range)),
         super::range_text(binary, range),
-        total_bytes(binary, Some(range))
+        super::bytes_text(total_bytes(binary, Some(range)))
     )?;
     writeln!(out)?;
     top::write_largest(&retained, SHOWN, out)?;

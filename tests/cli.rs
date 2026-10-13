@@ -45,9 +45,9 @@ RETAINED   OWN  ITEM
     2068   532     ├─ process_frame
     1083    59     │  ├─ crc32
     1024  1024     │  │  └─ crc_table
-     453           │  └─ 4 more
-    1334           └─ 19 more
-     345        9 more
+     453           │  └─ 6 more
+    1334           └─ 41 more
+     345        13 more
 
 Try:
   elfq testdata/bin/c-x86_64.elf top
@@ -76,10 +76,10 @@ RETAINED   OWN  ITEM
     1684   376  │  ├─ process_frame
     1076    52  │  │  ├─ crc32
     1024  1024  │  │  │  └─ crc_table
-     232        │  │  └─ 4 more
-     749        │  └─ 14 more
+     232        │  │  └─ 6 more
+     749        │  └─ 32 more
      470        └─ 2 more
-     466        7 more
+     466        11 more
 
 Try:
   elfq testdata/bin/c-cortex-m4.elf --range 0x08000000..0x08000dec
@@ -143,24 +143,24 @@ RETAINED   OWN  ITEM
       80    16     │  ├─ root
       48    16     │  │  ├─ inner
       32           │  │  │  └─ 2 more
-      16           │  │  └─ 1 more
+      16    16     │  │  └─ leaf_a
       46    46     │  ├─ count_nodes
       47           │  └─ 6 more
      187    84     ├─ parse_value
      103   103     │  └─ parse_list
      103    51     ├─ log_msg
       36    20     │  ├─ platform_write
-      16           │  │  └─ 1 more
-      16           │  └─ 1 more
+      16    16     │  │  └─ write@plt
+      16    16     │  └─ strlen@plt
       57    51     ├─ app_tick
-       6           │  └─ 1 more
+       6    ~6     │  └─ .rodata@0x200c
       34   ~34     ├─ .rodata@0x205e
       33    33     ├─ dispatch_event
       32    32     ├─ stats
       31    19     ├─ on_button (through a pointer)
       12           │  └─ 2 more
       25    25     ├─ frame_a
-     127           └─ 10 more
+     127           └─ 12 more
      152   ~64  __do_global_dtors_aux
       48   ~48  ├─ deregister_tm_clones
       40        └─ 2 more
@@ -245,6 +245,14 @@ RETAINED  OWN  ITEM
       24   16  SysTick_Handler
        8    8  └─ __app_tick_veneer
 "
+    );
+    // A line that sums up items counts only those with bytes in the range:
+    // under process_frame, crc32 and crc_table are in ITCM and DTCM, and
+    // so the line stands for two .rodata items and __crc32_veneer.
+    let flash = stdout(&[TCM_SAMPLE, "top", "--range", "0x30000000..0x30000edc"]);
+    assert!(
+        flash.contains("      32       │  │  └─ 3 more\n"),
+        "{flash}"
     );
     // The same range as a start and a size, with a unit in any case.
     assert_eq!(
@@ -363,6 +371,10 @@ Shared with other code, so not counted: __stack_chk_fail@plt, dispatch_event, fr
         stdout(&[SAMPLE, "retained", "crc_table"]),
         "Removing crc_table would save its own 1024 bytes, and nothing else.\n"
     );
+    assert_eq!(
+        stdout(&[SAMPLE, "retained", "completed.0"]),
+        "Removing completed.0 would save its own 1 byte, and nothing else.\n"
+    );
 }
 
 #[test]
@@ -390,6 +402,61 @@ fn a_large_tree_shows_its_largest_items() {
         ),
         "{output}"
     );
+}
+
+#[test]
+fn no_line_sums_up_a_single_item() {
+    // A line such as "└─ 12 more" counts every item it sums up, so one
+    // that would sum up a single item shows the item instead, and so do
+    // lists of names.
+    let bin = concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/bin");
+    let mut samples: Vec<String> = std::fs::read_dir(bin)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .filter(|name| name.ends_with(".elf"))
+        .map(|name| format!("testdata/bin/{name}"))
+        .collect();
+    samples.sort();
+    assert!(samples.len() > 10);
+    for sample in &samples {
+        let overview = stdout(&[sample]);
+        let mut runs = vec![vec![sample.as_str()], vec![sample, "top"]];
+        // The ranges in the overview's Try list.
+        for (_, range) in overview
+            .lines()
+            .filter_map(|line| line.split_once(" --range "))
+        {
+            runs.push(vec![sample, "--range", range]);
+            runs.push(vec![sample, "top", "--range", range]);
+        }
+        for args in &runs {
+            // A stripped file's ranges hold no items yet, so elfq fails on
+            // them; what it prints before that is still checked.
+            let text = String::from_utf8(elfq(args).stdout).unwrap();
+            assert!(
+                !text
+                    .lines()
+                    .any(|line| line.ends_with(" 1 more") || line.contains(" and 1 more")),
+                "{args:?}\n{text}"
+            );
+        }
+    }
+}
+
+#[test]
+fn long_lists_name_the_first_few() {
+    let sample = "testdata/bin/rust-x86_64-nodebug.elf";
+    let choices = stderr(&[sample, "callers", "fmt"], 1);
+    assert!(
+        choices.starts_with("error: `fmt` could mean 53 functions;"),
+        "{choices}"
+    );
+    assert_eq!(choices.lines().count(), 12, "{choices}");
+    assert!(choices.ends_with("\n  and 43 more\n"), "{choices}");
+    let retained = stdout(&[sample, "retained", "main"]);
+    assert!(retained.contains(" and 48 more.\n"), "{retained}");
+    let inlined = stdout(&["testdata/bin/rust-cortex-m4.elf", "inlined"]);
+    assert!(inlined.contains("     231  133 more\n"), "{inlined}");
 }
 
 #[test]

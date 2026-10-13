@@ -7,7 +7,6 @@
 //! or are reached from more than one of those places. With `--range`, only
 //! the bytes in the range count.
 
-use std::collections::HashSet;
 use std::io::Write;
 
 use anyhow::{Result, bail};
@@ -20,8 +19,9 @@ use crate::cli::Format;
 use crate::graph::Node;
 use crate::render::{Align, Table};
 
-/// How many items the tree shows at most, besides the lines that sum up the
-/// rest.
+/// How many of the largest items the tree shows. Lines such as "└─ 6 more"
+/// sum up the rest, and an item that would be left out on its own is shown
+/// too.
 pub(super) const SHOWN: usize = 30;
 
 #[derive(Serialize)]
@@ -64,14 +64,14 @@ pub fn run(
         };
         return json::write(&answer, out);
     }
-    let total = retained.bytes();
+    let total = super::bytes_text(retained.bytes());
     match range {
         Some(range) => writeln!(
             out,
-            "{total} bytes of code and data in {}, by what keeps them:",
+            "{total} of code and data in {}, by what keeps them:",
             super::range_text(binary, range)
         )?,
-        None => writeln!(out, "{total} bytes of code and data, by what keeps them:")?,
+        None => writeln!(out, "{total} of code and data, by what keeps them:")?,
     }
     writeln!(out)?;
     write_largest(&retained, SHOWN, out)?;
@@ -101,7 +101,7 @@ pub(super) fn write_largest(
     let reachable: Vec<usize> = (0..binary.items.len())
         .filter(|&index| tree.is_reachable(Node::Item(index)))
         .collect();
-    let shown = retained.largest(&reachable, count, HashSet::new());
+    let shown = retained.largest(tree.top(), &reachable, count);
     let mut table = Table::new(&[
         ("RETAINED", Align::Right),
         ("OWN", Align::Right),
@@ -140,16 +140,17 @@ fn write_unreachable(retained: &RetainedTree, out: &mut dyn Write) -> Result<()>
     if let [name] = names[..] {
         writeln!(
             out,
-            "Nothing reaches {name}, {bytes} bytes: it is dead code, or used in a way elfq can't \
-             see."
+            "Nothing reaches {name}, {}: it is dead code, or used in a way elfq can't see.",
+            super::bytes_text(bytes)
         )?;
     } else {
         let nodes: Vec<Node> = unreachable.iter().map(|&index| Node::Item(index)).collect();
         writeln!(
             out,
-            "Nothing reaches {}, {bytes} bytes in all: {}. They are dead code, or used in a way \
-             elfq can't see.",
+            "Nothing reaches {}, {} in all: {}. They are dead code, or used in a way elfq can't \
+             see.",
             super::count_text(binary, &nodes),
+            super::bytes_text(bytes),
             super::names_text(&names)
         )?;
     }

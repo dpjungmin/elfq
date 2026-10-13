@@ -125,9 +125,9 @@ impl<'a> Names<'a> {
     /// each, next to its full name.
     fn choices(&self, query: &str, nodes: &[Node]) -> String {
         const SHOWN: usize = 10;
-        let rows: Vec<(String, &str)> = nodes
+        let shown = super::shown_count(nodes.len(), SHOWN);
+        let rows: Vec<(String, &str)> = nodes[..shown]
             .iter()
-            .take(SHOWN)
             .map(|&node| {
                 let query = super::shell_quote(&self.query_for(node));
                 (query, node.name(self.binary))
@@ -150,8 +150,8 @@ impl<'a> Names<'a> {
                 message += &format!("\n  {query:width$}  {name}");
             }
         }
-        if nodes.len() > SHOWN {
-            message += &format!("\n  and {} more", nodes.len() - SHOWN);
+        if shown < nodes.len() {
+            message += &format!("\n  and {} more", nodes.len() - shown);
         }
         message
     }

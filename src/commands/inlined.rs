@@ -21,8 +21,9 @@ use crate::debuginfo::{self, InlinedCopy};
 use crate::graph::Node;
 use crate::render::{Align, Table, TreeRow};
 
-/// How many functions the list shows, or the tree, at most, besides the
-/// lines that sum up the rest.
+/// How many of the largest functions the list or the tree shows. Lines such
+/// as "└─ 6 more" sum up the rest, and a function that would be left out on
+/// its own is shown too.
 const SHOWN: usize = 30;
 
 pub fn run(
@@ -108,8 +109,9 @@ fn write_list(
     }
     writeln!(
         out,
-        "Inlined copies of {} take {inlined} of the file's {code} bytes of code:",
-        super::plural(totals.len(), "function", "functions")
+        "Inlined copies of {} take {inlined} of the file's {} of code:",
+        super::plural(totals.len(), "function", "functions"),
+        super::bytes_text(code)
     )?;
     writeln!(out)?;
     let mut table = Table::new(&[
@@ -117,7 +119,7 @@ fn write_list(
         ("COPIES", Align::Right),
         ("FUNCTION", Align::Left),
     ]);
-    let (shown, hidden) = totals.split_at(totals.len().min(SHOWN));
+    let (shown, hidden) = totals.split_at(super::shown_count(totals.len(), SHOWN));
     for total in shown {
         table.row(vec![
             total.bytes.to_string(),
@@ -205,13 +207,14 @@ fn write_tree(
     if bytes <= item.size {
         writeln!(
             out,
-            "Of {name}'s {} bytes, {bytes} {are} inlined copies of {functions}:",
-            item.size
+            "Of {name}'s {}, {bytes} {are} inlined copies of {functions}:",
+            super::bytes_text(item.size)
         )?;
     } else {
         writeln!(
             out,
-            "{bytes} bytes of {name}'s code are inlined copies of {functions}:"
+            "{} of {name}'s code {are} inlined copies of {functions}:",
+            super::bytes_text(bytes)
         )?;
     }
     writeln!(out)?;
@@ -337,7 +340,9 @@ impl<'a> Groups<'a> {
 
     /// The groups to show of a large tree: the `count` largest, and every
     /// group between each of them and the top, so that the tree holds
-    /// together.
+    /// together. A group that would be left out on its own, with nothing
+    /// inlined into it, is shown too, since its row takes no more room than
+    /// "1 more" would.
     fn largest(&self, count: usize) -> HashSet<usize> {
         let mut by_size: Vec<usize> = (0..self.list.len()).collect();
         by_size.sort_by_key(|&group| (Reverse(self.list[group].bytes), group));
@@ -351,7 +356,24 @@ impl<'a> Groups<'a> {
                 group = self.list[index].parent;
             }
         }
+        let lone: Vec<usize> = shown
+            .iter()
+            .map(|&group| &self.list[group].children)
+            .chain([&self.top])
+            .filter_map(|groups| self.lone(groups, &shown))
+            .collect();
+        shown.extend(lone);
         shown
+    }
+
+    /// The one group in `groups` that isn't in `shown`, if there is only
+    /// one and nothing is inlined into it.
+    fn lone(&self, groups: &[usize], shown: &HashSet<usize>) -> Option<usize> {
+        let mut hidden = groups.iter().filter(|group| !shown.contains(group));
+        match (hidden.next(), hidden.next()) {
+            (Some(&lone), None) if self.list[lone].children.is_empty() => Some(lone),
+            _ => None,
+        }
     }
 
     fn to_json(&self, groups: &[usize]) -> Vec<GroupJson<'a>> {
@@ -370,9 +392,11 @@ impl<'a> Groups<'a> {
     }
 
     /// The rows of the shown groups in `groups`, each with the rows of its
-    /// shown children under it, and one row that sums up those not shown.
+    /// shown children under it, and one row that sums up those not shown
+    /// and the groups inlined into them.
     fn rows(&self, shown: &HashSet<usize>, groups: &[usize]) -> Vec<TreeRow> {
-        let (visible, hidden) = split(groups, shown);
+        let (visible, hidden): (Vec<usize>, Vec<usize>) =
+            groups.iter().partition(|group| shown.contains(group));
         let mut rows: Vec<TreeRow> = visible
             .iter()
             .map(|&group| self.tree_row(shown, group))
@@ -388,23 +412,82 @@ impl<'a> Groups<'a> {
         TreeRow::new(cells, row.name, self.rows(shown, &row.children))
     }
 
-    /// The row that sums up `hidden` groups, if there are any.
+    /// The groups in `groups` and all the groups inlined into them.
+    fn with_inlined(&self, groups: &[usize]) -> Vec<usize> {
+        groups
+            .iter()
+            .flat_map(|&group| {
+                std::iter::once(group).chain(self.with_inlined(&self.list[group].children))
+            })
+            .collect()
+    }
+
+    /// The row that sums up `hidden` groups and the groups inlined into
+    /// them, if there are any.
     fn more(&self, hidden: &[usize]) -> Option<TreeRow> {
         if hidden.is_empty() {
             return None;
         }
+        // A group's bytes include those inlined into it, but its copies
+        // don't.
         let bytes: u64 = hidden.iter().map(|&group| self.list[group].bytes).sum();
-        let copies: usize = hidden.iter().map(|&group| self.list[group].copies).sum();
+        let all = self.with_inlined(hidden);
+        let copies: usize = all.iter().map(|&group| self.list[group].copies).sum();
         let cells = vec![bytes.to_string(), copies.to_string()];
         Some(TreeRow::new(
             cells,
-            format!("{} more", hidden.len()),
+            format!("{} more", all.len()),
             Vec::new(),
         ))
     }
 }
 
-/// Splits `groups` into those shown and those not.
-fn split(groups: &[usize], shown: &HashSet<usize>) -> (Vec<usize>, Vec<usize>) {
-    groups.iter().partition(|group| shown.contains(group))
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn copy(name: &str, size: u64, parent: Option<usize>) -> InlinedCopy {
+        InlinedCopy {
+            name: name.to_string(),
+            into: 0,
+            size,
+            own: size,
+            parent,
+        }
+    }
+
+    /// Each row as "NAME BYTES COPIES", indented two spaces a level.
+    fn lines(rows: &[TreeRow], depth: usize) -> Vec<String> {
+        rows.iter()
+            .flat_map(|row| {
+                let line = format!("{}{} {}", "  ".repeat(depth), row.name, row.cells.join(" "));
+                std::iter::once(line).chain(lines(&row.children, depth + 1))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_summary_counts_every_group_it_stands_for() {
+        let copies = [
+            copy("big", 200, None),
+            copy("parent", 100, None),
+            copy("child_a", 60, Some(1)),
+            copy("child_a", 0, Some(1)),
+            copy("child_b", 30, Some(1)),
+            copy("leaf", 5, None),
+        ];
+        let groups = Groups::new(&copies, 0);
+        // The last line stands for parent, the two groups inlined into it,
+        // and leaf. Its bytes are parent's and leaf's, since parent's
+        // include child_a's and child_b's, and its copies are all five.
+        let rows = groups.rows(&groups.largest(1), &groups.top);
+        assert_eq!(lines(&rows, 0), ["big 200 1", "4 more 105 5"]);
+        // With parent picked too, leaf would be left out on its own, so it
+        // is shown instead of "1 more".
+        let rows = groups.rows(&groups.largest(2), &groups.top);
+        assert_eq!(
+            lines(&rows, 0),
+            ["big 200 1", "parent 100 1", "  2 more 90 3", "leaf 5 1"]
+        );
+    }
 }

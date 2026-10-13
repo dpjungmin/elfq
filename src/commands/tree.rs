@@ -134,26 +134,24 @@ impl<'a> RetainedTree<'a> {
             && self.tree.parent(Node::Item(index)).is_some()
     }
 
-    /// The items to show of a large tree: the `count` largest of `items`,
-    /// and every item between each of them and the top of what is shown,
-    /// so that the tree holds together. `shown` starts with the items that
-    /// are always shown, such as the top.
-    pub fn largest(
-        &self,
-        items: &[usize],
-        count: usize,
-        mut shown: HashSet<usize>,
-    ) -> HashSet<usize> {
+    /// The items to show of a large tree drawn from `roots`: the `count`
+    /// largest of `items`, and every item between each of them and the
+    /// roots, so that the tree holds together. An item that would be left
+    /// out on its own, keeping nothing that gets a row, is shown too, since
+    /// its row takes no more room than "1 more" would.
+    pub fn largest(&self, roots: &[Node], items: &[usize], count: usize) -> HashSet<usize> {
+        let is_root: HashSet<Node> = roots.iter().copied().collect();
         let mut by_size: Vec<usize> = items
             .iter()
             .copied()
             .filter(|&index| self.counts(index))
             .collect();
         by_size.sort_by_key(|&index| (std::cmp::Reverse(self.retained(index)), index));
+        let mut shown = HashSet::new();
         for &index in by_size.iter().take(count) {
             let mut node = Node::Item(index);
             while let Node::Item(item) = node {
-                if !shown.insert(item) {
+                if !shown.insert(item) || is_root.contains(&node) {
                     break;
                 }
                 match self.tree.parent(node) {
@@ -162,13 +160,32 @@ impl<'a> RetainedTree<'a> {
                 }
             }
         }
+        let lone: Vec<usize> = shown
+            .iter()
+            .map(|&index| self.tree.children(Node::Item(index)))
+            .chain([roots])
+            .filter_map(|nodes| self.lone(nodes, &shown))
+            .collect();
+        shown.extend(lone);
         shown
     }
 
+    /// The one item in `nodes` that gets a row but isn't in `shown`, if
+    /// there is only one and it keeps nothing that gets a row.
+    fn lone(&self, nodes: &[Node], shown: &HashSet<usize>) -> Option<usize> {
+        let mut hidden = self.counted(nodes).filter(|index| !shown.contains(index));
+        match (hidden.next(), hidden.next()) {
+            (Some(lone), None) if self.kept_items(lone) == 0 => Some(lone),
+            _ => None,
+        }
+    }
+
     /// The rows of the shown items in `nodes`, each with the rows of its
-    /// shown children under it, and one row that sums up those not shown.
+    /// shown children under it, and one row that sums up those not shown
+    /// and what they keep.
     pub fn rows(&self, shown: &HashSet<usize>, nodes: &[Node]) -> Vec<TreeRow> {
-        let (visible, hidden) = self.split(nodes, shown);
+        let (visible, hidden): (Vec<usize>, Vec<usize>) =
+            self.counted(nodes).partition(|index| shown.contains(index));
         let mut rows: Vec<TreeRow> = visible
             .iter()
             .map(|&index| self.tree_row(shown, index))
@@ -188,47 +205,44 @@ impl<'a> RetainedTree<'a> {
         }
     }
 
-    /// Splits `nodes` into the items shown and those not, leaving out
-    /// imports, which have no bytes in the file, and items that keep none
-    /// of the range's bytes.
-    fn split(&self, nodes: &[Node], shown: &HashSet<usize>) -> (Vec<usize>, Vec<usize>) {
-        nodes
-            .iter()
-            .filter_map(|&node| match node {
-                Node::Item(index) if self.counts(index) => Some(index),
-                _ => None,
-            })
-            .partition(|index| shown.contains(index))
+    /// The items in `nodes` that get rows: not imports, which have no bytes
+    /// in the file, nor items that keep none of the range's bytes.
+    fn counted(&self, nodes: &[Node]) -> impl Iterator<Item = usize> {
+        nodes.iter().filter_map(|&node| match node {
+            Node::Item(index) if self.counts(index) => Some(index),
+            _ => None,
+        })
     }
 
-    /// The row that sums up `hidden` items, if there are any.
+    /// How many items the item at `index` keeps that would get rows.
+    fn kept_items(&self, index: usize) -> usize {
+        self.counted(self.tree.children(Node::Item(index)))
+            .map(|child| 1 + self.kept_items(child))
+            .sum()
+    }
+
+    /// The row that sums up `hidden` items and what they keep, if there are
+    /// any.
     fn more(&self, hidden: &[usize]) -> Option<TreeRow> {
         if hidden.is_empty() {
             return None;
         }
         let bytes: u64 = hidden.iter().map(|&index| self.retained(index)).sum();
+        let items: usize = hidden.iter().map(|&index| 1 + self.kept_items(index)).sum();
         let cells = vec![bytes.to_string(), String::new()];
-        Some(TreeRow::new(
-            cells,
-            format!("{} more", hidden.len()),
-            Vec::new(),
-        ))
+        Some(TreeRow::new(cells, format!("{items} more"), Vec::new()))
     }
 
     /// The items in `nodes`, each with the whole tree of what it keeps.
     /// Imports are left out, since their code isn't in the file, and so are
     /// items that keep none of the range's bytes.
     pub fn to_json(&self, nodes: &[Node]) -> Vec<KeptItem<'a>> {
-        nodes
-            .iter()
-            .filter_map(|&node| match node {
-                Node::Item(index) if self.counts(index) => Some(KeptItem {
-                    item: json::Item::new(self.binary, node),
-                    retained: self.retained(index),
-                    through_pointer: self.through_pointer(index),
-                    keeps: self.to_json(self.tree.children(node)),
-                }),
-                _ => None,
+        self.counted(nodes)
+            .map(|index| KeptItem {
+                item: json::Item::new(self.binary, Node::Item(index)),
+                retained: self.retained(index),
+                through_pointer: self.through_pointer(index),
+                keeps: self.to_json(self.tree.children(Node::Item(index))),
             })
             .collect()
     }
