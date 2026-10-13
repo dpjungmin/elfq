@@ -11,7 +11,7 @@ use anyhow::Result;
 use serde::Serialize;
 
 use crate::binary::{AddressRange, Binary, MemoryBlock};
-use crate::graph::Node;
+use crate::graph::{Node, ReferenceKind};
 
 /// Writes `value` as indented JSON.
 pub(super) fn write(value: &impl Serialize, out: &mut dyn Write) -> Result<()> {
@@ -65,8 +65,7 @@ impl<'a> Item<'a> {
 pub(super) struct Use<'a> {
     /// The item on the other end: the caller, or the callee.
     pub item: Item<'a>,
-    /// As in the HOW column: `call`, `tail call`, `address taken`, `access`
-    /// or `pointer`.
+    /// The [kind of reference](how).
     pub how: &'static str,
     /// The addresses of the instructions or pointers.
     pub sites: Vec<String>,
@@ -80,6 +79,19 @@ pub(super) fn uses<'a>(binary: &'a Binary, rows: &[super::Row]) -> Vec<Use<'a>> 
             sites: row.sites.iter().map(|&site| address(site)).collect(),
         })
         .collect()
+}
+
+/// A kind of reference in words: `call`, `tail call`, `address taken`,
+/// `access` or `pointer`. Unlike the HOW column, which says "uses" for
+/// both, JSON tells reading or writing data from loading its address.
+pub(super) fn how(kind: ReferenceKind) -> &'static str {
+    match kind {
+        ReferenceKind::Call => "call",
+        ReferenceKind::TailCall => "tail call",
+        ReferenceKind::Address => "address taken",
+        ReferenceKind::Access => "access",
+        ReferenceKind::Pointer => "pointer",
+    }
 }
 
 /// The addresses from `start` up to, but not including, `end`.

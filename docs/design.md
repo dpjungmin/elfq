@@ -32,7 +32,7 @@ support them, except `inlined`, which reads DWARF instead of machine code.
 | `elfq FILE exclusive SYMBOL` | Which functions and data are reachable only through SYMBOL? (flat list) |
 | `elfq FILE why SYMBOL` | Which chains of calls and references from the roots keep SYMBOL in the binary? |
 | `elfq FILE top` | Which items keep the most bytes, as a tree? |
-| `elfq FILE callers SYMBOL` | What calls or uses SYMBOL directly, and how (call, tail call, address taken, access, pointer in data)? |
+| `elfq FILE callers SYMBOL` | What calls or uses SYMBOL directly, and how (call, tail call, uses, address taken, pointer in data)? |
 | `elfq FILE callees SYMBOL` | What does SYMBOL call or use directly? |
 | `elfq FILE inlined [--in SYMBOL]` | Which inlined functions cost the most bytes across the binary, or inside SYMBOL? Needs DWARF. |
 
@@ -69,7 +69,9 @@ and sizes are numbers. An item looks like this:
 `kind` is `function`, `data` or `import`; an import has no address or size
 in the file. In the trees of `top` and `retained`, each item also has its
 `retained` size and `keeps`, the items under it. `why` gives each chain as a
-list of steps, each an item and how the one before uses it. The overview's
+list of steps, each an item and how the one before uses it. Where the HOW
+column says `uses` for data, JSON keeps `access` (code reads or writes it)
+apart from `address taken` (code loads its address). The overview's
 JSON says what the file is and what elfq found in it; the largest items are
 in `top`'s.
 
@@ -119,7 +121,7 @@ of SYMBOL, don't keep it and are left out of the tree:
 
 ```
 $ elfq testdata/bin/c-x86_64.elf why log_msg
-log_msg is in the file because 4 functions use it. The shortest chain through each, from where the program starts:
+log_msg is used by 4 functions, through these chains:
 
 HOW            ITEM
 entry point    _start
@@ -135,7 +137,7 @@ call                 └─ log_msg
 
 debug_dump uses log_msg too, but nothing reaches debug_dump.
 
-Every chain to log_msg goes through main, so it counts toward main's retained size.
+Removing main would remove log_msg too.
 ```
 
 `inlined` ranks the functions that the compiler copied into their callers by
@@ -326,7 +328,7 @@ starts.
 | 3. Headline queries | 3a: roots, dominators, `retained` and `exclusive`. 3b: `why`. 3c: `top`. 3d: `inlined`. |
 | 4. Polish | 4a: C++ demangling, with a C++ sample. 4b: JSON output for `callers`, `callees`, `exclusive` and `inlined`. 4c: JSON for `top`, `retained`, `why` and the overview. 4d: warnings where indirect calls make answers uncertain. |
 | 5. Memory ranges | 5a: a Cortex-M7 sample with code and data in ITCM, DTCM, OCRAM and flash, at the addresses an i.MX RT1176 uses; startup code no longer seems to use the first item of each section it copies. 5b: `--range START..END` or `--range START+SIZE` for the overview and `top`, and the overview lists the address blocks that the file's sections occupy. 5c: `--range` for `retained` and `exclusive`. |
-| 6. Clear output | 6a: trees deeper than 9 levels continue below them. 6b: shorter lead lines and notes for the overview, `top` and `retained`, which say what a size means. 6c: no line sums up a single item, and "1 byte". |
+| 6. Clear output | 6a: trees deeper than 9 levels continue below them. 6b: shorter lead lines and notes for the overview, `top` and `retained`, which say what a size means. 6c: no line sums up a single item, and "1 byte". 6d: shorter lead lines and notes for `why`, `callers`, `callees` and `inlined`, and "uses" for data on every architecture. |
 
 Later: a query language, and worst-case stack depth (call graph plus each
 function's stack frame).

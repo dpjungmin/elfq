@@ -98,7 +98,7 @@ SysTick_Handler is used by 1 data object:
 CALLER        HOW      AT
 vector_table  pointer  0x800003c
 
-SysTick_Handler is listed in the vector table, so the processor runs it for an exception or an interrupt.
+SysTick_Handler is in the vector table: the processor runs it on an interrupt or exception.
 "
     );
 }
@@ -594,7 +594,7 @@ on_button is used by 1 function:
 CALLER  HOW            AT
 main    address taken  0x10b6
 
-This list leaves out calls to on_button through a pointer, since elfq can't tell where they are.
+Calls to on_button through a pointer aren't listed, since elfq can't see them.
 "
     );
     // Where the program starts, nothing in the file calls it.
@@ -645,7 +645,7 @@ fn why_shows_the_chains_that_keep_an_item() {
     assert_eq!(
         stdout(&[SAMPLE, "why", "log_msg"]),
         "\
-log_msg is in the file because 4 functions use it. The shortest chain through each, from where the program starts:
+log_msg is used by 4 functions, through these chains:
 
 HOW            ITEM
 entry point    _start
@@ -661,8 +661,30 @@ call                 └─ log_msg
 
 debug_dump uses log_msg too, but nothing reaches debug_dump.
 
-Every chain to log_msg goes through main, so it counts toward main's retained size.
+Removing main would remove log_msg too.
 "
+    );
+    // parse_list calls parse_value back, so it doesn't keep it.
+    let why = stdout(&[SAMPLE, "why", "parse_value"]);
+    assert!(
+        why.contains(
+            "\nparse_list uses parse_value too, but only parse_value leads to parse_list.\n"
+        ),
+        "{why}"
+    );
+    // With more than ten users, the tree shows the chains through the
+    // nearest ten.
+    let why = stdout(&[
+        "testdata/bin/rust-x86_64-nodebug.elf",
+        "why",
+        ".rodata@0x5633",
+    ]);
+    assert!(
+        why.starts_with(
+            ".rodata@0x5633 is used by 36 data objects; these are the chains through the \
+             nearest 10:\n"
+        ),
+        "{why}"
     );
 }
 
@@ -671,16 +693,16 @@ fn why_on_firmware_can_start_from_an_interrupt() {
     assert_eq!(
         stdout(&["testdata/bin/c-cortex-m4.elf", "why", "app_tick"]),
         "\
-app_tick is in the file because 2 functions use it. The shortest chain through each, from where the program starts:
+app_tick is used by 2 functions, through these chains:
 
-HOW                         ITEM
-entry point                 Reset_Handler
-call                        └─ main
-call                           └─ app_tick
-listed in the vector table  SysTick_Handler
-tail call                   └─ app_tick
+HOW           ITEM
+entry point   Reset_Handler
+call          └─ main
+call             └─ app_tick
+vector table  SysTick_Handler
+tail call     └─ app_tick
 
-No single item is on every chain to app_tick, so it doesn't count toward any one item's retained size.
+Removing any single item wouldn't remove app_tick.
 "
     );
 }
@@ -698,8 +720,8 @@ fn why_explains_where_the_program_starts() {
     );
     assert_eq!(
         why("testdata/bin/c-cortex-m4.elf", "SysTick_Handler"),
-        "SysTick_Handler is listed in the vector table, so the processor runs it for an \
-         exception or an interrupt.\n"
+        "SysTick_Handler is in the vector table: the processor runs it on an interrupt or \
+         exception.\n"
     );
 }
 
@@ -707,14 +729,14 @@ fn why_explains_where_the_program_starts() {
 fn why_says_when_nothing_reaches_an_item() {
     assert_eq!(
         stdout(&[SAMPLE, "why", "debug_dump"]),
-        "Nothing reaches debug_dump from where the program starts, as far as elfq can tell. It \
-         may be dead code, or used in a way elfq can't see.\n"
+        "Nothing reaches debug_dump from where the program starts: it is dead code, or used in a \
+         way elfq can't see.\n"
     );
     // The string that only `debug_dump` prints.
     assert_eq!(
         stdout(&[SAMPLE, "why", ".rodata@0x2056"]),
-        "Nothing reaches .rodata@0x2056 from where the program starts, as far as elfq can tell. \
-         It may be dead code, or used in a way elfq can't see.\n\
+        "Nothing reaches .rodata@0x2056 from where the program starts: it is dead code, or used \
+         in a way elfq can't see.\n\
          debug_dump uses it, but nothing reaches debug_dump either.\n"
     );
 }
@@ -724,7 +746,7 @@ fn inlined_ranks_the_functions_the_compiler_copied() {
     assert_eq!(
         stdout(&[SAMPLE, "inlined"]),
         "\
-Inlined copies of 5 functions take 420 of the file's 2557 bytes of code:
+Inlined copies of 5 functions take 420 of the 2557 bytes of code:
 
 BYTES  COPIES  FUNCTION
   164       1  update_stats
@@ -734,9 +756,6 @@ BYTES  COPIES  FUNCTION
     0       1  load_le32
 
 A copy of 0 bytes is one the compiler merged into the code around it, so the debug info gives it no bytes of its own.
-
-To see the inlined code in one function, as a tree:
-  elfq testdata/bin/c-x86_64.elf inlined --in process_frame
 "
     );
     assert_eq!(
@@ -842,15 +861,15 @@ fn cpp_names_are_readable_and_short_ones_work() {
     assert_eq!(
         stdout(&[CPP, "why", "Gain::run"]),
         "\
-app::Gain::run(short*, unsigned long) is in the file because vtable for app::Gain uses it. The shortest chain to it, from where the program starts:
+app::Gain::run(short*, unsigned long) is used by vtable for app::Gain, through this chain:
 
 HOW            ITEM
 entry point    _start
 address taken  └─ main
-address taken     └─ vtable for app::Gain
+uses              └─ vtable for app::Gain
 pointer              └─ app::Gain::run(short*, unsigned long)
 
-Every chain to app::Gain::run(short*, unsigned long) goes through vtable for app::Gain, so it counts toward vtable for app::Gain's retained size.
+Removing vtable for app::Gain would remove app::Gain::run(short*, unsigned long) too.
 "
     );
     // Overloads share a name, so their parameters tell them apart.
@@ -900,7 +919,7 @@ fn data_without_a_symbol_is_named_by_section_and_address() {
 CALLER                HOW      AT
 .data.rel.ro@0x52da8  pointer  0x52dc0
 
-This list leaves out calls to <elfq_sample::Gain as elfq_sample::Stage>::run through a pointer, since elfq can't tell where they are.
+Calls to <elfq_sample::Gain as elfq_sample::Stage>::run through a pointer aren't listed, since elfq can't see them.
 "
     );
     let overview = stdout(&["testdata/bin/c-x86_64-stripped.elf"]);
@@ -920,11 +939,54 @@ fn callees_also_reports_what_it_cannot_follow() {
         "\
 dispatch_event uses 1 data object:
 
-CALLEE    HOW            AT
-handlers  address taken  0x169b
+CALLEE    HOW   AT
+handlers  uses  0x169b
 
-1 indirect jump at 0x16ad can go anywhere: the target is only known at run time.
+Also 1 jump through a pointer, at 0x16ad, which elfq can't follow.
 "
+    );
+    const RUST_M4: &str = "testdata/bin/rust-cortex-m4.elf";
+    assert!(
+        stdout(&[RUST_M4, "callees", "<core::fmt::Formatter>::pad_integral"]).ends_with(
+            "\nAlso 5 calls and 1 jump through pointers, at 0x8001004, 0x80010c4, 0x80010d6 \
+             and 3 more, which elfq can't follow.\n"
+        )
+    );
+    // With nothing else to list, the sentence leads.
+    assert_eq!(
+        stdout(&[
+            RUST_M4,
+            "callees",
+            "<core::fmt::Formatter>::pad_integral::write_prefix"
+        ]),
+        "<core::fmt::Formatter>::pad_integral::write_prefix makes 1 call and 1 jump through \
+         pointers, at 0x8001744 and 0x8001762, which elfq can't follow.\n"
+    );
+}
+
+#[test]
+fn code_uses_data_whether_it_reads_it_or_loads_its_address() {
+    // lang_start_internal reads CLEANUP in one place and loads its address
+    // in another: both are one row.
+    assert_eq!(
+        stdout(&[
+            "testdata/bin/rust-x86_64-nodebug.elf",
+            "callers",
+            "std::rt::cleanup::CLEANUP"
+        ]),
+        "\
+std::rt::cleanup::CLEANUP is used by 1 function:
+
+CALLER                        HOW   AT
+std::rt::lang_start_internal  uses  0x3a60a, 0x3a66d
+"
+    );
+    // Arm code loads a variable's address before it reads or writes it,
+    // and that is "uses" too.
+    let stats = stdout(&["testdata/bin/c-cortex-m4.elf", "callers", "stats"]);
+    assert!(
+        stats.contains("\nprocess_frame  uses  0x8000332\n"),
+        "{stats}"
     );
 }
 

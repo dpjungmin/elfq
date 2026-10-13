@@ -21,6 +21,7 @@ elfq app.elf retained process_frame     # what removing process_frame would save
 elfq app.elf exclusive process_frame    # what only process_frame leads to
 elfq app.elf why crc_table              # what keeps crc_table in the file
 elfq app.elf inlined                    # which inlined functions take the most bytes
+elfq app.elf inlined --in main          # the inlined code in main, as a tree
 elfq app.elf callers log_msg            # what calls or uses log_msg
 elfq app.elf callees main               # what main calls or uses
 ```

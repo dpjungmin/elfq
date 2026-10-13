@@ -53,6 +53,7 @@ Examples:
   elfq app.elf exclusive process_frame    What only process_frame leads to
   elfq app.elf why crc_table              What keeps crc_table in the file
   elfq app.elf inlined                    Which inlined functions take the most bytes
+  elfq app.elf inlined --in main          The inlined code in main, as a tree
   elfq app.elf callers log_msg            What calls or uses log_msg
   elfq app.elf callees main               What main calls or uses
 
@@ -92,9 +93,9 @@ The HOW column says how one item uses the other:
   call           a direct call
   tail call      a jump to the start of a function, which then returns to
                  the caller's caller
-  address taken  code computes or loads the address, as when passing a
-                 pointer (Arm code also does this to use a variable)
-  access         code reads or writes it
+  uses           code reads or writes data, or loads its address
+  address taken  code loads a function's address, as when passing a
+                 function pointer, or an import's
   pointer        data holds a pointer to it, as in a table of functions
 
 Calls through a pointer set at run time don't show, since elfq can't tell
@@ -105,7 +106,13 @@ const WHY: &str = "\
 The tree starts where the program does: at the entry point, a function the
 C runtime runs at startup, or a handler in the vector table. Each item in
 it is used by the one above it, and the chains end at SYMBOL. Only the
-shortest chain through each item that uses SYMBOL is shown.";
+shortest chain through each item that uses SYMBOL is shown, for the 10
+nearest at most; elfq FILE callers SYMBOL lists them all. Items that
+nothing reaches, or that only SYMBOL leads to, don't keep it, and are
+named below the tree.
+
+The last line names the closest item that every chain goes through, if
+there is one: SYMBOL counts toward that item's retained size.";
 
 const TOP: &str = "\
 An item's retained size is its own size plus the sizes of the items that

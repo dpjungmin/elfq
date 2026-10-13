@@ -7,7 +7,6 @@
 
 use std::collections::BTreeMap;
 use std::io::Write;
-use std::path::Path;
 
 use anyhow::{Result, bail};
 use serde::Serialize;
@@ -15,7 +14,7 @@ use serde::Serialize;
 use super::json;
 use crate::binary::{Binary, FileKind};
 use crate::cli::Format;
-use crate::graph::{DominatorTree, Graph, Node, Root, RootKind, ShortestPaths};
+use crate::graph::{DominatorTree, Graph, Node, Reference, Root, RootKind, ShortestPaths};
 use crate::render::{Align, Table, TreeRow};
 
 /// How many items that keep SYMBOL get their chain shown, at most.
@@ -26,9 +25,10 @@ struct WhyJson<'a> {
     symbol: json::Item<'a>,
     /// Whether anything reaches SYMBOL from where the program starts.
     reachable: bool,
-    /// Why SYMBOL is itself where the program starts, as in the HOW column,
-    /// or `null` when it isn't. When it is, nothing else needs to keep it,
-    /// and `chains` is empty.
+    /// Why SYMBOL is itself where the program starts, in the words of
+    /// [`root_json`], such as `entry point` or `listed in the vector
+    /// table`, or `null` when it isn't. When it is, nothing else needs to
+    /// keep it, and `chains` is empty.
     root: Option<String>,
     /// The shortest chain from where the program starts, through each item
     /// that keeps SYMBOL, to SYMBOL. The shortest chains come first.
@@ -44,19 +44,13 @@ struct WhyJson<'a> {
 #[derive(Serialize)]
 struct Step<'a> {
     item: json::Item<'a>,
-    /// As in the HOW column: for the first item, why the program starts
-    /// there, such as `entry point`; for the others, how the item before
-    /// uses this one, such as `call` or `call, address taken`.
+    /// For the first item, why the program starts there, such as `entry
+    /// point`; for the others, how the item before uses this one, in the
+    /// words of [`json::how`], such as `call` or `call, address taken`.
     how: String,
 }
 
-pub fn run(
-    path: &Path,
-    binary: &Binary,
-    symbol: &str,
-    format: Format,
-    out: &mut dyn Write,
-) -> Result<()> {
+pub fn run(binary: &Binary, symbol: &str, format: Format, out: &mut dyn Write) -> Result<()> {
     let graph = super::reference_graph(binary)?;
     let node = super::symbol::find(binary, symbol)?;
     let name = node.name(binary);
@@ -71,7 +65,7 @@ pub fn run(
             let answer = WhyJson {
                 symbol: json::Item::new(binary, node),
                 reachable: true,
-                root: Some(root_how(binary, root.kind)),
+                root: Some(root_json(binary, root.kind)),
                 chains: Vec::new(),
                 unreachable_users: Vec::new(),
                 on_every_chain: None,
@@ -91,10 +85,13 @@ pub fn run(
     let (mut keeping, others): (Vec<usize>, Vec<usize>) = users
         .into_iter()
         .partition(|&user| paths.is_reached(Node::Item(user)));
-    let unreachable: Vec<usize> = others
+    // The other users don't keep SYMBOL: nothing reaches them, or only
+    // SYMBOL leads to them, as when it calls them and they call it back.
+    // SYMBOL using itself goes unsaid.
+    let (unreachable, behind): (Vec<usize>, Vec<usize>) = others
         .into_iter()
-        .filter(|&user| !tree.is_reachable(Node::Item(user)))
-        .collect();
+        .filter(|&user| Node::Item(user) != node)
+        .partition(|&user| !tree.is_reachable(Node::Item(user)));
     // Those with the shortest chains first, then by name.
     keeping.sort_by_key(|&user| {
         let user_node = Node::Item(user);
@@ -127,10 +124,14 @@ pub fn run(
         return json::write(&answer, out);
     }
 
-    let unreachable: Vec<&str> = unreachable
-        .iter()
-        .map(|&user| binary.items[user].name.as_str())
-        .collect();
+    let names = |users: &[usize]| -> Vec<&str> {
+        users
+            .iter()
+            .map(|&user| binary.items[user].name.as_str())
+            .collect()
+    };
+    let unreachable = names(&unreachable);
+    let behind = names(&behind);
     if keeping.is_empty() {
         return write_unreachable(name, &unreachable, out);
     }
@@ -142,15 +143,6 @@ pub fn run(
     table.tree(&chains.rows());
     table.write(out)?;
 
-    if keeping.len() > SHOWN {
-        writeln!(out)?;
-        writeln!(
-            out,
-            "To list everything that uses {name}:\n  elfq {} callers {}",
-            super::shell_quote(&path.display().to_string()),
-            super::shell_quote(symbol)
-        )?;
-    }
     if !unreachable.is_empty() {
         let (verb, pronoun) = verb_and_pronoun(&unreachable);
         writeln!(out)?;
@@ -160,14 +152,31 @@ pub fn run(
             super::names_text(&unreachable),
         )?;
     }
+    if !behind.is_empty() {
+        let (verb, pronoun) = verb_and_pronoun(&behind);
+        writeln!(out)?;
+        writeln!(
+            out,
+            "{} {verb} {name} too, but only {name} leads to {pronoun}.",
+            super::names_text(&behind),
+        )?;
+    }
     writeln!(out)?;
-    writeln!(out, "{}", on_every_chain(binary, &tree, node))?;
+    match tree.parent(node) {
+        Some(parent) => writeln!(
+            out,
+            "Removing {} would remove {name} too.",
+            parent.name(binary)
+        )?,
+        None => writeln!(out, "Removing any single item wouldn't remove {name}.")?,
+    }
     Ok(())
 }
 
 /// The shortest chain from where the program starts, through `user`, to
-/// SYMBOL: each item on it, with how the one before uses it, or for the
-/// first, why the program starts there.
+/// SYMBOL, for `--format json`: each item on it, with how the one before
+/// uses it, or for the first, why the program starts there, in JSON's words
+/// ([`json::how`] and [`root_json`]).
 fn chain(
     binary: &Binary,
     graph: &Graph,
@@ -180,25 +189,22 @@ fn chain(
     let root = graph.roots.iter().find(|root| root.node == start);
     let mut chain = vec![(
         start,
-        root.map_or(String::new(), |root| root_how(binary, root.kind)),
+        root.map_or(String::new(), |root| root_json(binary, root.kind)),
     )];
+    let json_how = |from: Node, to: Node| how(graph, from, to, |r| json::how(r.kind));
     for reference in &path {
         chain.push((
             reference.to,
-            how(graph, Node::Item(reference.from), reference.to),
+            json_how(Node::Item(reference.from), reference.to),
         ));
     }
-    chain.push((symbol, how(graph, user, symbol)));
+    chain.push((symbol, json_how(user, symbol)));
     chain
 }
 
 /// Says that nothing reaches SYMBOL, nor the items that use it.
 fn write_unreachable(name: &str, users: &[&str], out: &mut dyn Write) -> Result<()> {
-    writeln!(
-        out,
-        "Nothing reaches {name} from where the program starts, as far as elfq can tell. It may \
-         be dead code, or used in a way elfq can't see."
-    )?;
+    writeln!(out, "{}", super::nothing_reaches(name))?;
     if !users.is_empty() {
         let (verb, pronoun) = verb_and_pronoun(users);
         writeln!(
@@ -210,55 +216,21 @@ fn write_unreachable(name: &str, users: &[&str], out: &mut dyn Write) -> Result<
     Ok(())
 }
 
-/// The first line of the answer: how many items keep SYMBOL.
+/// The first line of the answer: what keeps SYMBOL.
 fn lead(binary: &Binary, symbol: Node, keeping: &[usize]) -> String {
     let name = symbol.name(binary);
-    // An import's code is in another file.
-    let is_here = match symbol {
-        Node::Item(_) => "is in the file",
-        Node::Import(_) => "is imported",
-    };
     if let [user] = keeping {
         return format!(
-            "{name} {is_here} because {} uses it. The shortest chain to it, from where the \
-             program starts:",
+            "{name} is used by {}, through this chain:",
             binary.items[*user].name
         );
     }
     let nodes: Vec<Node> = keeping.iter().map(|&user| Node::Item(user)).collect();
-    let through = if keeping.len() <= SHOWN {
-        "each".to_string()
+    let users = super::count_text(binary, &nodes);
+    if keeping.len() <= SHOWN {
+        format!("{name} is used by {users}, through these chains:")
     } else {
-        format!("the nearest {SHOWN}")
-    };
-    format!(
-        "{name} {is_here} because {} use it. The shortest chain through {through}, from where \
-         the program starts:",
-        super::count_text(binary, &nodes)
-    )
-}
-
-/// The last line of the answer: the closest item that every chain to
-/// SYMBOL goes through, which is the item it counts toward in `retained`.
-fn on_every_chain(binary: &Binary, tree: &DominatorTree, symbol: Node) -> String {
-    let name = symbol.name(binary);
-    // Imports have no bytes in the file to count.
-    let counts = matches!(symbol, Node::Item(_));
-    match tree.parent(symbol) {
-        Some(parent) if counts => format!(
-            "Every chain to {name} goes through {parent}, so it counts toward {parent}'s retained \
-             size.",
-            parent = parent.name(binary)
-        ),
-        Some(parent) => format!(
-            "Every chain to {name} goes through {}.",
-            parent.name(binary)
-        ),
-        None if counts => format!(
-            "No single item is on every chain to {name}, so it doesn't count toward any one \
-             item's retained size."
-        ),
-        None => format!("No single item is on every chain to {name}."),
+        format!("{name} is used by {users}; these are the chains through the nearest {SHOWN}:")
     }
 }
 
@@ -344,7 +316,7 @@ impl<'a> Chains<'a> {
             .iter()
             .map(|&child| {
                 TreeRow::new(
-                    vec![how(self.graph, node, child)],
+                    vec![how(self.graph, node, child, |r| super::how(self.binary, r))],
                     child.name(self.binary),
                     self.children_rows(child),
                 )
@@ -353,14 +325,15 @@ impl<'a> Chains<'a> {
     }
 }
 
-/// How `from` uses `to`, in words: "call", or "call, address taken".
-fn how(graph: &Graph, from: Node, to: Node) -> String {
+/// How `from` uses `to`, in words such as "call", or "call, address
+/// taken", with `word` saying how each reference uses it.
+fn how(graph: &Graph, from: Node, to: Node, word: impl Fn(&Reference) -> &'static str) -> String {
     let Node::Item(from) = from else {
         return String::new();
     };
     let mut hows: Vec<&str> = Vec::new();
     for reference in graph.references_from(from) {
-        let how = super::how(reference);
+        let how = word(reference);
         if reference.to == to && !hows.contains(&how) {
             hows.push(how);
         }
@@ -370,6 +343,15 @@ fn how(graph: &Graph, from: Node, to: Node) -> String {
 
 /// Why a root is one, for the HOW column.
 fn root_how(binary: &Binary, kind: RootKind) -> String {
+    match kind {
+        RootKind::Handler => "vector table".to_string(),
+        _ => root_json(binary, kind),
+    }
+}
+
+/// Why a root is one, as JSON says it, in the words the HOW column used
+/// before it was shortened, since scripts may count on them.
+fn root_json(binary: &Binary, kind: RootKind) -> String {
     match kind {
         RootKind::Entry => "entry point".to_string(),
         RootKind::InSection(section) => format!("in {}", binary.sections[section].name),
@@ -426,8 +408,7 @@ pub(super) fn root_sentence(binary: &Binary, root: &Root) -> String {
              handlers."
         ),
         RootKind::Handler => format!(
-            "{name} is listed in the vector table, so the processor runs it for an exception or \
-             an interrupt."
+            "{name} is in the vector table: the processor runs it on an interrupt or exception."
         ),
     }
 }
