@@ -40,7 +40,7 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<()> {
         Some(_) if range.is_some() => {
             bail!("--range limits sizes, so only the overview, top, retained and exclusive take it")
         }
-        Some(Command::Why(args)) => why::run(&cli.file, &binary, &args.symbol, format, out),
+        Some(Command::Why(args)) => why::run(&binary, &args.symbol, format, out),
         Some(Command::Inlined(args)) => {
             inlined::run(&cli.file, &binary, args.within.as_deref(), format, out)
         }
@@ -113,17 +113,40 @@ fn shown_count(count: usize, room: usize) -> usize {
 /// Names joined into a phrase: "a", "a and b", "a, b and c", or for more
 /// than eleven, "a, b, … and 5 more".
 fn names_text(names: &[&str]) -> String {
-    let named = shown_count(names.len(), 10);
-    match names {
-        _ if named < names.len() => format!(
+    phrase(names, 10)
+}
+
+/// Addresses for a sentence: "0x1795", "0x1795 and 0x17d4", or for more
+/// than four, "0x1795, 0x17d4, 0x17e0 and 3 more".
+fn addresses_text(sites: &[u64]) -> String {
+    let sites: Vec<String> = sites.iter().map(|site| format!("{site:#x}")).collect();
+    let sites: Vec<&str> = sites.iter().map(String::as_str).collect();
+    phrase(&sites, 3)
+}
+
+/// Words joined into a phrase: "a", "a and b", "a, b and c", or for more
+/// than `room` and one, the first `room` of them and "and 5 more".
+fn phrase(words: &[&str], room: usize) -> String {
+    let shown = shown_count(words.len(), room);
+    match words {
+        _ if shown < words.len() => format!(
             "{} and {} more",
-            names[..named].join(", "),
-            names.len() - named
+            words[..shown].join(", "),
+            words.len() - shown
         ),
         [] => String::new(),
         [one] => one.to_string(),
         [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
     }
+}
+
+/// Says that nothing reaches the item called `name` from where the program
+/// starts.
+fn nothing_reaches(name: &str) -> String {
+    format!(
+        "Nothing reaches {name} from where the program starts: it is dead code, or used in a \
+         way elfq can't see."
+    )
 }
 
 /// "3 functions", "2 data objects" or "4 items", whichever fits `nodes`.
@@ -142,20 +165,24 @@ fn count_text(binary: &Binary, nodes: &[Node]) -> String {
     }
 }
 
-/// One line of a callers or callees table: all the references of one kind
-/// between one pair of nodes.
+/// One line of a callers or callees table: the references between one pair
+/// of nodes that are worded the same way.
 struct Row {
     /// The node on the other end: the caller, or the callee.
     node: Node,
+    /// How the node is used, in the words that [`rows`] was given: the HOW
+    /// column's, or JSON's.
     how: &'static str,
     sites: Vec<u64>,
 }
 
 /// Groups references into rows, in the order each row first appears.
-/// `other_end` picks the node that the table lists for each reference.
+/// `other_end` picks the node that the table lists for each reference, and
+/// `how` says how it is used: references with the same words share a row.
 fn rows<'a>(
     references: impl IntoIterator<Item = &'a Reference>,
     other_end: impl Fn(&Reference) -> Node,
+    how: impl Fn(&Reference) -> &'static str,
 ) -> Vec<Row> {
     let mut rows: Vec<Row> = Vec::new();
     for reference in references {
@@ -187,18 +214,25 @@ fn distinct_nodes(rows: &[Row]) -> Vec<Node> {
     nodes
 }
 
-/// How a reference uses its target, in words.
-fn how(reference: &Reference) -> &'static str {
+/// How a reference uses its target, for the HOW column. Code that reads,
+/// writes or loads the address of a data object "uses" it, on every
+/// architecture, while "address taken" means a pointer to a function. An
+/// import keeps "address taken", since elfq doesn't record yet whether it
+/// is a function or data.
+fn how(binary: &Binary, reference: &Reference) -> &'static str {
+    let is_data = match reference.to {
+        Node::Item(index) => binary.items[index].kind == ItemKind::Data,
+        Node::Import(_) => false,
+    };
     match reference.kind {
-        ReferenceKind::Call => "call",
-        ReferenceKind::TailCall => "tail call",
-        ReferenceKind::Address => "address taken",
-        ReferenceKind::Access => "access",
-        ReferenceKind::Pointer => "pointer",
+        ReferenceKind::Access => "uses",
+        ReferenceKind::Address if is_data => "uses",
+        kind => json::how(kind),
     }
 }
 
-/// Addresses, the first few of them: "0x1795, 0x17d4, 0x17e0 and 3 more".
+/// Addresses for the AT column, the first few of them: "0x1795, 0x17d4",
+/// or "0x1795, 0x17d4, 0x17e0 and 3 more".
 fn addresses(sites: &[u64]) -> String {
     let shown: Vec<String> = sites
         .iter()
@@ -261,6 +295,14 @@ mod tests {
         );
         assert_eq!(addresses(&[1, 2, 3, 4]), "0x1, 0x2, 0x3, 0x4");
         assert_eq!(addresses(&[1, 2, 3, 4, 5]), "0x1, 0x2, 0x3 and 2 more");
+        assert_eq!(addresses_text(&[1, 2, 3, 4]), "0x1, 0x2, 0x3 and 0x4");
+        assert_eq!(addresses_text(&[1, 2, 3, 4, 5]), "0x1, 0x2, 0x3 and 2 more");
+    }
+
+    #[test]
+    fn a_sentence_joins_its_last_two_words_with_and() {
+        assert_eq!(addresses_text(&[0x10]), "0x10");
+        assert_eq!(addresses_text(&[0x10, 0x20]), "0x10 and 0x20");
     }
 
     #[test]

@@ -8,7 +8,7 @@ use serde::Serialize;
 use super::json;
 use crate::binary::{Binary, ItemKind};
 use crate::cli::Format;
-use crate::graph::{Graph, Node, ReferenceKind};
+use crate::graph::{Graph, Node, Reference, ReferenceKind};
 use crate::render::{Align, Table};
 
 #[derive(Serialize)]
@@ -26,27 +26,35 @@ pub fn run(binary: &Binary, symbol: &str, format: Format, out: &mut dyn Write) -
     let node = super::symbol::find(binary, symbol)?;
     let name = node.name(binary);
 
-    let mut rows = super::rows(graph.references_to(node), |reference| {
-        Node::Item(reference.from)
-    });
-    rows.sort_by(|a, b| a.node.name(binary).cmp(b.node.name(binary)));
+    // The callers by name, with `how` saying how each uses SYMBOL. The text
+    // and JSON word some uses differently ("uses" for both "access" and
+    // "address taken" on data), so each gets its own rows.
+    let rows = |how: &dyn Fn(&Reference) -> &'static str| {
+        let mut rows = super::rows(
+            graph.references_to(node),
+            |reference| Node::Item(reference.from),
+            how,
+        );
+        rows.sort_by(|a, b| a.node.name(binary).cmp(b.node.name(binary)));
+        rows
+    };
     let through_pointer = can_be_called_through_pointer(binary, &graph, node);
     if format == Format::Json {
         let callers = Callers {
             symbol: json::Item::new(binary, node),
-            callers: json::uses(binary, &rows),
+            callers: json::uses(binary, &rows(&|reference| json::how(reference.kind))),
             complete: !through_pointer,
         };
         return json::write(&callers, out);
     }
+    let rows = rows(&|reference| super::how(binary, reference));
     // Some calls can't be listed: the system's, to where the program starts,
     // and those through a pointer.
     let root = graph.roots.iter().find(|root| root.node == node);
     let note = match root {
         Some(root) => Some(super::why::root_sentence(binary, root)),
         None if through_pointer => Some(format!(
-            "This list leaves out calls to {name} through a pointer, since elfq can't tell \
-             where they are."
+            "Calls to {name} through a pointer aren't listed, since elfq can't see them."
         )),
         None => None,
     };

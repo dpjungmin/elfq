@@ -161,9 +161,8 @@ impl<'a> Exclusive<'a> {
     pub fn write_unreachable(&self, out: &mut dyn Write) -> Result<()> {
         writeln!(
             out,
-            "Nothing reaches {} from where the program starts: it is dead code, or used in a \
-             way elfq can't see.",
-            self.node.name(self.retained.binary)
+            "{}",
+            super::nothing_reaches(self.node.name(self.retained.binary))
         )?;
         Ok(())
     }

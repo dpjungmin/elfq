@@ -14,7 +14,6 @@ use anyhow::{Result, bail};
 use serde::Serialize;
 
 use super::json;
-use super::symbol::Names;
 use crate::binary::{Binary, ItemKind};
 use crate::cli::Format;
 use crate::debuginfo::{self, InlinedCopy};
@@ -42,7 +41,7 @@ pub fn run(
     }
     let copies = debuginfo::inlined_copies(binary)?;
     match within {
-        None => write_list(path, binary, &copies, format, out),
+        None => write_list(binary, &copies, format, out),
         Some(symbol) => write_tree(binary, &copies, symbol, format, out),
     }
 }
@@ -69,7 +68,6 @@ struct Total<'a> {
 
 /// Writes the inlined functions whose copies take the most bytes.
 fn write_list(
-    path: &Path,
     binary: &Binary,
     copies: &[InlinedCopy],
     format: Format,
@@ -109,7 +107,7 @@ fn write_list(
     }
     writeln!(
         out,
-        "Inlined copies of {} take {inlined} of the file's {} of code:",
+        "Inlined copies of {} take {inlined} of the {} of code:",
         super::plural(totals.len(), "function", "functions"),
         super::bytes_text(code)
     )?;
@@ -139,26 +137,6 @@ fn write_list(
     table.write(out)?;
     if shown.iter().any(|total| total.bytes == 0) {
         write_empty_copies_note(out)?;
-    }
-
-    // The function that holds the most inlined code is the one most worth
-    // a closer look.
-    let mut held: HashMap<usize, u64> = HashMap::new();
-    for copy in copies {
-        *held.entry(copy.into).or_default() += copy.own;
-    }
-    if let Some((&into, _)) = held
-        .iter()
-        .max_by_key(|&(&into, &bytes)| (bytes, Reverse(into)))
-    {
-        let symbol = Names::new(binary).query_for(Node::Item(into));
-        writeln!(out)?;
-        writeln!(
-            out,
-            "To see the inlined code in one function, as a tree:\n  elfq {} inlined --in {}",
-            super::shell_quote(&path.display().to_string()),
-            super::shell_quote(&symbol)
-        )?;
     }
     Ok(())
 }

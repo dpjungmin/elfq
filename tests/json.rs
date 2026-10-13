@@ -81,6 +81,15 @@ fn callers_and_callees_list_every_use() {
     assert_eq!(callers["callers"][2]["how"], "tail call");
     assert_eq!(callers["callers"][3]["sites"], json!(["0x18ee", "0x1908"]));
     assert_eq!(callers["complete"], true);
+    // Unlike the HOW column, which says "uses" for both, JSON tells reading
+    // data apart from loading its address.
+    let cleanup = elfq_json(&[
+        "testdata/bin/rust-x86_64-nodebug.elf",
+        "callers",
+        "std::rt::cleanup::CLEANUP",
+    ]);
+    assert_eq!(cleanup["callers"][0]["how"], "access");
+    assert_eq!(cleanup["callers"][1]["how"], "address taken");
     // Calls through a pointer to on_button don't show.
     assert_eq!(
         elfq_json(&[SAMPLE, "callers", "on_button"])["complete"],
@@ -367,6 +376,22 @@ fn why_has_the_chain_through_every_user() {
     assert_eq!(why["root"], Value::Null);
     assert_eq!(names(&why["unreachable_users"]), ["debug_dump"]);
     assert_eq!(why["on_every_chain"]["name"], "main");
+    // JSON keeps its words where the HOW column shortened them: Arm code
+    // takes the address of `stats` to use it, and a handler is listed in
+    // the vector table.
+    const FIRMWARE: &str = "testdata/bin/c-cortex-m4.elf";
+    assert_eq!(
+        elfq_json(&[FIRMWARE, "why", "stats"])["chains"][0][3]["how"],
+        "address taken"
+    );
+    assert_eq!(
+        elfq_json(&[FIRMWARE, "why", "app_tick"])["chains"][0][0]["how"],
+        "listed in the vector table"
+    );
+    assert_eq!(
+        elfq_json(&[FIRMWARE, "why", "SysTick_Handler"])["root"],
+        "listed in the vector table"
+    );
 
     // Nothing needs to keep where the program starts.
     let start = elfq_json(&[SAMPLE, "why", "_start"]);
