@@ -35,9 +35,7 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<()> {
     match &cli.command {
         None => overview::run(&cli.file, &binary, range, format, out),
         Some(Command::Top) => top::run(&binary, range, format, out),
-        Some(Command::Retained(args)) => {
-            retained::run(&cli.file, &binary, &args.symbol, range, format, out)
-        }
+        Some(Command::Retained(args)) => retained::run(&binary, &args.symbol, range, format, out),
         Some(Command::Exclusive(args)) => exclusive::run(&binary, &args.symbol, range, format, out),
         Some(_) if range.is_some() => {
             bail!("--range limits sizes, so only the overview, top, retained and exclusive take it")

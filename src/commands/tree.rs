@@ -5,7 +5,6 @@
 //! them are left out.
 
 use std::collections::HashSet;
-use std::io::Write;
 
 use anyhow::Result;
 use serde::Serialize;
@@ -125,20 +124,6 @@ impl<'a> RetainedTree<'a> {
     /// and so counts for whatever holds its address.
     fn mark(&self, index: usize) -> Option<&'static str> {
         self.through_pointer(index).then_some("(through a pointer)")
-    }
-
-    /// Explains the marks that [`RetainedTree::mark`] adds to `shown`, if
-    /// any.
-    pub fn write_pointer_note(&self, shown: &[usize], out: &mut dyn Write) -> Result<()> {
-        if shown.iter().any(|&index| self.through_pointer(index)) {
-            writeln!(out)?;
-            writeln!(
-                out,
-                "Nothing calls the functions marked \"through a pointer\" directly, so elfq \
-                 counts them for the code or data that holds their address."
-            )?;
-        }
-        Ok(())
     }
 
     /// Whether `index` is a function that nothing calls directly, and so

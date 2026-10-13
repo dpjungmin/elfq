@@ -112,7 +112,6 @@ pub fn run(
         ]);
     }
     table.write(out)?;
-    exclusive.retained.write_pointer_note(&items, out)?;
     exclusive.write_indirect_note(out)
 }
 
@@ -156,14 +155,13 @@ impl<'a> Exclusive<'a> {
         self.retained.tree.is_reachable(self.node)
     }
 
-    /// Says that nothing reaches SYMBOL, so nothing is there only because of
-    /// it.
+    /// Says that nothing reaches SYMBOL, so it is dead code, or used in a way
+    /// elfq can't see.
     pub fn write_unreachable(&self, out: &mut dyn Write) -> Result<()> {
         writeln!(
             out,
-            "Nothing reaches {} from where the program starts, as far as elfq can tell, so \
-             nothing is there only because of it. It may be dead code, or used in a way elfq \
-             can't see.",
+            "Nothing reaches {} from where the program starts: it is dead code, or used in a \
+             way elfq can't see.",
             self.node.name(self.retained.binary)
         )?;
         Ok(())
@@ -192,32 +190,31 @@ impl<'a> Exclusive<'a> {
             return Ok(());
         }
         let name = self.node.name(self.retained.binary);
-        let who = if indirect.iter().all(|u| Node::Item(u.from) == self.node) {
-            format!("{name} makes")
-        } else {
-            format!("{name} and the items that only it leads to make")
+        let in_symbol = indirect.iter().any(|u| Node::Item(u.from) == self.node);
+        let in_items = indirect.iter().any(|u| Node::Item(u.from) != self.node);
+        let calls = indirect.iter().any(|u| u.is_call);
+        let jumps = indirect.iter().any(|u| !u.is_call);
+        // The verb after one subject, and after two.
+        let (one, two) = match (calls, jumps) {
+            (true, true) => ("calls and jumps", "call and jump"),
+            (true, false) => ("calls", "call"),
+            (false, _) => ("jumps", "jump"),
         };
-        let calls = indirect.iter().filter(|u| u.is_call).count();
-        let jumps = indirect.len() - calls;
-        let what = match (calls, jumps) {
-            (calls, 0) => super::plural(calls, "call", "calls"),
-            (0, jumps) => super::plural(jumps, "jump", "jumps"),
-            (calls, jumps) => format!(
-                "{} and {}",
-                super::plural(calls, "call", "calls"),
-                super::plural(jumps, "jump", "jumps")
-            ),
+        let what = match (in_symbol, in_items) {
+            (true, false) => format!("{name} also {one}"),
+            (false, _) => format!("Code that only {name} leads to also {one}"),
+            (true, true) => format!("{name} and the code that only it leads to also {two}"),
         };
         let (through, reach) = if indirect.len() == 1 {
-            ("a pointer", "it reaches")
+            ("a pointer", "that reaches")
         } else {
             ("pointers", "they reach")
         };
         writeln!(out)?;
         writeln!(
             out,
-            "{who} {what} through {through} set at run time, which elfq can't follow, so what \
-             {reach} may count for other items."
+            "{what} through {through}, which elfq can't follow, so what {reach} may count \
+             elsewhere."
         )?;
         Ok(())
     }

@@ -64,9 +64,18 @@ pub fn run(
         };
         return json::write(&answer, out);
     }
-    let shown = write_largest(&retained, SHOWN, out)?;
-    write_unreachable(&retained, out)?;
-    retained.write_pointer_note(&shown, out)
+    let total = retained.bytes();
+    match range {
+        Some(range) => writeln!(
+            out,
+            "{total} bytes of code and data in {}, by what keeps them:",
+            super::range_text(binary, range)
+        )?,
+        None => writeln!(out, "{total} bytes of code and data, by what keeps them:")?,
+    }
+    writeln!(out)?;
+    write_largest(&retained, SHOWN, out)?;
+    write_unreachable(&retained, out)
 }
 
 /// Explains that nothing is in the range, if nothing is, since the range is
@@ -81,28 +90,14 @@ pub(super) fn check_range_has_bytes(retained: &RetainedTree) -> Result<()> {
     }
 }
 
-/// Writes the tree of the `count` items that keep the most bytes, and
-/// returns the items shown.
+/// Writes the tree of the `count` items that keep the most bytes.
 pub(super) fn write_largest(
     retained: &RetainedTree,
     count: usize,
     out: &mut dyn Write,
-) -> Result<Vec<usize>> {
+) -> Result<()> {
     let binary = retained.binary;
     let tree = &retained.tree;
-    let total = retained.bytes();
-    match retained.range {
-        Some(range) => writeln!(
-            out,
-            "The items that keep the most of the {total} bytes in {}:",
-            super::range_text(binary, range)
-        )?,
-        None => writeln!(
-            out,
-            "The items that keep the most of the file's {total} bytes:"
-        )?,
-    }
-    writeln!(out)?;
     let reachable: Vec<usize> = (0..binary.items.len())
         .filter(|&index| tree.is_reachable(Node::Item(index)))
         .collect();
@@ -114,7 +109,7 @@ pub(super) fn write_largest(
     ]);
     table.tree(&retained.rows(&shown, tree.top()));
     table.write(out)?;
-    Ok(shown.into_iter().collect())
+    Ok(())
 }
 
 /// The items that nothing reaches, largest first, leaving out those with no
@@ -145,15 +140,15 @@ fn write_unreachable(retained: &RetainedTree, out: &mut dyn Write) -> Result<()>
     if let [name] = names[..] {
         writeln!(
             out,
-            "Nothing reaches {name}, {bytes} bytes, as far as elfq can tell. It may be dead code, \
-             or used in a way elfq can't see."
+            "Nothing reaches {name}, {bytes} bytes: it is dead code, or used in a way elfq can't \
+             see."
         )?;
     } else {
         let nodes: Vec<Node> = unreachable.iter().map(|&index| Node::Item(index)).collect();
         writeln!(
             out,
-            "Nothing reaches {}, {bytes} bytes in all, as far as elfq can tell: {}. They may be \
-             dead code, or used in a way elfq can't see.",
+            "Nothing reaches {}, {bytes} bytes in all: {}. They are dead code, or used in a way \
+             elfq can't see.",
             super::count_text(binary, &nodes),
             super::names_text(&names)
         )?;

@@ -37,11 +37,7 @@ fn a_file_alone_gets_an_overview() {
         stdout(&[SAMPLE]),
         "\
 testdata/bin/c-x86_64.elf: x86-64 position-independent executable, with symbols and DWARF debug info
-
-32 functions, 36 data objects and 8 imports, with 119 references between them.
-4 calls or jumps go through pointers set at run time, which elfq can't follow.
-
-The items that keep the most of the file's 4021 bytes:
+32 functions and 36 data objects, 4021 bytes of code and data, plus 8 imports
 
 RETAINED   OWN  ITEM
     3635    38  _start
@@ -52,8 +48,6 @@ RETAINED   OWN  ITEM
      453           │  └─ 4 more
     1334           └─ 19 more
      345        9 more
-
-Nothing calls the functions marked \"through a pointer\" directly, so elfq counts them for the code or data that holds their address.
 
 Try:
   elfq testdata/bin/c-x86_64.elf top
@@ -70,15 +64,11 @@ fn firmware_gets_the_same_overview() {
         stdout(&["testdata/bin/c-cortex-m4.elf"]),
         "\
 testdata/bin/c-cortex-m4.elf: 32-bit Arm executable, with symbols and DWARF debug info
-
-25 functions and 31 data objects, with 94 references between them.
-1 call or jump goes through pointers set at run time, which elfq can't follow.
+25 functions and 31 data objects, 3577 bytes of code and data
 
 MEMORY                  SIZE  SECTIONS
 0x08000000..0x08000dec  3564  .isr_vector .text .rodata .ARM.exidx
 0x20000000..0x20000048    72  .data .bss
-
-The items that keep the most of the file's 3577 bytes:
 
 RETAINED   OWN  ITEM
     3111    76  Reset_Handler
@@ -114,11 +104,28 @@ SysTick_Handler is listed in the vector table, so the processor runs it for an e
 }
 
 #[test]
+fn stripped_firmware_has_only_its_entry_point() {
+    // Without symbols or an unwind table, elfq finds only the reset
+    // handler, whose size it doesn't know.
+    let overview = stdout(&["testdata/bin/c-cortex-m4-stripped.elf"]);
+    assert!(
+        overview.starts_with(
+            "\
+testdata/bin/c-cortex-m4-stripped.elf: 32-bit Arm executable, stripped
+1 function
+The file has no symbols or unwind table, so elfq can't find its functions yet.
+"
+        ),
+        "{overview}"
+    );
+}
+
+#[test]
 fn top_shows_what_keeps_the_most_bytes() {
     assert_eq!(
         stdout(&[SAMPLE, "top"]),
         "\
-The items that keep the most of the file's 4021 bytes:
+4021 bytes of code and data, by what keeps them:
 
 RETAINED   OWN  ITEM
     3635    38  _start
@@ -163,9 +170,7 @@ RETAINED   OWN  ITEM
       32    32  __abi_tag
       17        5 more
 
-Nothing reaches 3 items, 41 bytes in all, as far as elfq can tell: debug_dump, .rodata@0x2056 and _IO_stdin_used. They may be dead code, or used in a way elfq can't see.
-
-Nothing calls the functions marked \"through a pointer\" directly, so elfq counts them for the code or data that holds their address.
+Nothing reaches 3 items, 41 bytes in all: debug_dump, .rodata@0x2056 and _IO_stdin_used. They are dead code, or used in a way elfq can't see.
 "
     );
     // On Cortex-M the SysTick interrupt also reaches `log_msg`, so it isn't
@@ -174,6 +179,15 @@ Nothing calls the functions marked \"through a pointer\" directly, so elfq count
     assert!(
         firmware.contains("\n     276    26  log_msg\n     216   216  ├─ strlen\n"),
         "{firmware}"
+    );
+    // One item that nothing reaches.
+    let cpp = stdout(&["testdata/bin/cpp-x86_64.elf", "top"]);
+    assert!(
+        cpp.ends_with(
+            "\n\nNothing reaches _IO_stdin_used, 4 bytes: it is dead code, or used in a way elfq \
+             can't see.\n"
+        ),
+        "{cpp}"
     );
 }
 
@@ -216,7 +230,7 @@ fn a_range_counts_only_the_bytes_in_it() {
     assert_eq!(
         stdout(&[TCM_SAMPLE, "top", "--range", "0x0..0xe0"]),
         "\
-The items that keep the most of the 224 bytes in 0x00000000..0x000000e0 (.itcm):
+224 bytes of code and data in 0x00000000..0x000000e0 (.itcm), by what keeps them:
 
 RETAINED  OWN  ITEM
      200    0  Reset_Handler
@@ -241,8 +255,7 @@ RETAINED  OWN  ITEM
         stdout(&[TCM_SAMPLE, "--range", "0x20240000+4k"]),
         "\
 testdata/bin/c-cortex-m7.elf: 32-bit Arm executable, with symbols and DWARF debug info
-
-The items that keep the most of the 4096 bytes in 0x20240000..0x20241000 (.ocram_bss):
+1 data object in 0x20240000..0x20241000 (.ocram_bss), 4096 bytes of code and data
 
 RETAINED   OWN  ITEM
     4096     0  log_msg
@@ -259,9 +272,15 @@ Try:
 #[test]
 fn retained_and_exclusive_count_only_the_range_too() {
     assert_eq!(
-        stdout(&[TCM_SAMPLE, "retained", "process_frame", "--range", "0x0..0xe0"]),
+        stdout(&[
+            TCM_SAMPLE,
+            "retained",
+            "process_frame",
+            "--range",
+            "0x0..0xe0"
+        ]),
         "\
-process_frame keeps 200 bytes in 0x00000000..0x000000e0 (.itcm): its own 0, and 200 in 4 functions that only it leads to.
+Removing process_frame would save 200 bytes in 0x00000000..0x000000e0 (.itcm):
 
 RETAINED  OWN  ITEM
      200    0  process_frame
@@ -292,8 +311,13 @@ SIZE  KIND      ITEM
 "
     );
     assert_eq!(
+        stdout(&[TCM_SAMPLE, "retained", "crc32", "--range", "0x0..0xe0"]),
+        "Removing crc32 would save its own 48 bytes in 0x00000000..0x000000e0 (.itcm), and \
+         nothing else.\n"
+    );
+    assert_eq!(
         stdout(&[TCM_SAMPLE, "retained", "log_msg", "--range", "0x0..0xe0"]),
-        "log_msg keeps none of the bytes in 0x00000000..0x000000e0 (.itcm).\n"
+        "Removing log_msg would save none of the bytes in 0x00000000..0x000000e0 (.itcm).\n"
     );
 }
 
@@ -319,7 +343,7 @@ fn retained_shows_what_a_function_keeps_as_a_tree() {
     assert_eq!(
         stdout(&[SAMPLE, "retained", "process_frame"]),
         "\
-process_frame keeps 2068 bytes in the file: its own 532, and 1536 in 8 items that only it leads to.
+Removing process_frame would save 2068 bytes:
 
 RETAINED   OWN  ITEM
     2068   532  process_frame
@@ -332,8 +356,12 @@ RETAINED   OWN  ITEM
       12   ~12  ├─ .rodata@0x2012
        9    ~9  └─ .rodata@0x201e
 
-Also uses, but shares with other code: __stack_chk_fail@plt, dispatch_event, frames_bad, frames_ok, log_msg, stats.
+Shared with other code, so not counted: __stack_chk_fail@plt, dispatch_event, frames_bad, frames_ok, log_msg, stats.
 "
+    );
+    assert_eq!(
+        stdout(&[SAMPLE, "retained", "crc_table"]),
+        "Removing crc_table would save its own 1024 bytes, and nothing else.\n"
     );
 }
 
@@ -341,7 +369,7 @@ Also uses, but shares with other code: __stack_chk_fail@plt, dispatch_event, fra
 fn a_large_tree_shows_its_largest_items() {
     let output = stdout(&[SAMPLE, "retained", "main"]);
     assert!(
-        output.starts_with("main keeps 3597 bytes in the file"),
+        output.starts_with("Removing main would save 3597 bytes:\n"),
         "{output}"
     );
     // Smaller items are summed up under their parent.
@@ -349,30 +377,16 @@ fn a_large_tree_shows_its_largest_items() {
         output.contains("      21        │  └─ 2 more\n"),
         "{output}"
     );
-    assert!(
-        output.contains(
-            "The tree shows the largest 30 of the 50 items. To list them all:\n  \
-             elfq testdata/bin/c-x86_64.elf exclusive main\n"
-        ),
-        "{output}"
-    );
     // The handlers are only called through the `handlers` table.
     assert!(
         output.contains("├─ on_button (through a pointer)\n"),
         "{output}"
     );
-    assert!(
-        output.contains(
-            "Nothing calls the functions marked \"through a pointer\" directly, so elfq counts \
-             them for the code or data that holds their address.\n"
-        ),
-        "{output}"
-    );
     // The jump through the `handlers` table, in `dispatch_event`.
     assert!(
         output.ends_with(
-            "main and the items that only it leads to make 1 jump through a pointer set at run \
-             time, which elfq can't follow, so what it reaches may count for other items.\n"
+            "Code that only main leads to also jumps through a pointer, which elfq can't \
+             follow, so what that reaches may count elsewhere.\n"
         ),
         "{output}"
     );
@@ -383,7 +397,7 @@ fn a_deep_tree_continues_below() {
     assert_eq!(
         stdout(&[DEEP_SAMPLE, "retained", "chain1"]),
         "\
-chain1 keeps 402 bytes in the file: its own 16, and 386 in 19 functions that only it leads to.
+Removing chain1 would save 402 bytes:
 
 RETAINED  OWN  ITEM
      402   16  chain1
@@ -411,7 +425,7 @@ RETAINED  OWN  ITEM
       45   20     └─ chain19
       25   25        └─ chain20
 
-Also uses, but shares with other code: chain_table.
+Shared with other code, so not counted: chain_table.
 "
     );
 }
@@ -479,11 +493,30 @@ fn calls_through_pointers_are_pointed_out() {
     let retained = stdout(&["testdata/bin/cpp-x86_64.elf", "retained", "process_frame"]);
     assert!(
         retained.ends_with(
-            "app::process_frame(app::Frame const&, app::Stage&) makes 1 call through a pointer \
-             set at run time, which elfq can't follow, so what it reaches may count for other \
-             items.\n"
+            "app::process_frame(app::Frame const&, app::Stage&) also calls through a pointer, \
+             which elfq can't follow, so what that reaches may count elsewhere.\n"
         ),
         "{retained}"
+    );
+    // Calls through pointers in what only `main` leads to, and in both
+    // `process_frame` and what only it leads to.
+    assert!(
+        stdout(&["testdata/bin/cpp-x86_64.elf", "retained", "main"]).ends_with(
+            "Code that only main leads to also calls and jumps through pointers, which elfq \
+             can't follow, so what they reach may count elsewhere.\n"
+        )
+    );
+    assert!(
+        stdout(&[
+            "testdata/bin/rust-cortex-m4.elf",
+            "retained",
+            "elfq_sample::process_frame"
+        ])
+        .ends_with(
+            "elfq_sample::process_frame and the code that only it leads to also call and jump \
+             through pointers, which elfq can't follow, so what they reach may count \
+             elsewhere.\n"
+        )
     );
     // `main` takes the address of `on_button` to store it in a table.
     assert_eq!(
@@ -535,9 +568,8 @@ SIZE  KIND      ITEM
 fn dead_code_keeps_nothing() {
     assert_eq!(
         stdout(&[SAMPLE, "retained", "debug_dump"]),
-        "Nothing reaches debug_dump from where the program starts, as far as elfq can tell, so \
-         nothing is there only because of it. It may be dead code, or used in a way elfq can't \
-         see.\n"
+        "Nothing reaches debug_dump from where the program starts: it is dead code, or used in \
+         a way elfq can't see.\n"
     );
 }
 

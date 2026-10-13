@@ -17,7 +17,7 @@ by an AI (Claude).
 elfq app.elf                            # what's in app.elf, and what to ask next
 elfq app.elf top                        # what keeps the most bytes in app.elf
 elfq app.elf top --range 0x0+256K       # the same, counting only the first 256 KiB
-elfq app.elf retained process_frame     # what process_frame keeps in the file
+elfq app.elf retained process_frame     # what removing process_frame would save
 elfq app.elf exclusive process_frame    # what only process_frame leads to
 elfq app.elf why crc_table              # what keeps crc_table in the file
 elfq app.elf inlined                    # which inlined functions take the most bytes
