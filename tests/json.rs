@@ -118,12 +118,7 @@ fn inlined_lists_every_function_and_the_whole_tree() {
         json!({ "name": "append", "bytes": 150, "copies": 6 })
     );
 
-    let tree = elfq_json(&[
-        "testdata/bin/rust-cortex-m4.elf",
-        "inlined",
-        "--in",
-        "memcpy",
-    ]);
+    let tree = elfq_json(&["testdata/bin/rust-cortex-m4.elf", "inlined", "memcpy"]);
     assert_eq!(tree["function"]["name"], "compiler_builtins::mem::memcpy");
     assert_eq!(tree["inlined_bytes"], 712);
     let copy_forward = &tree["inlined"][0];

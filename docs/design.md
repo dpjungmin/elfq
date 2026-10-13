@@ -33,7 +33,7 @@ except `inlined`, which reads DWARF instead of machine code.
 | `elfq FILE top` | Which items keep the most bytes, as a tree? |
 | `elfq FILE callers SYMBOL` | What calls or uses SYMBOL directly, and how (call, tail call, uses, address taken, pointer in data)? |
 | `elfq FILE callees SYMBOL` | What does SYMBOL call or use directly? |
-| `elfq FILE inlined [--in SYMBOL]` | Which inlined functions cost the most bytes across the binary, or inside SYMBOL? Needs DWARF. |
+| `elfq FILE inlined [SYMBOL]` | Which inlined functions cost the most bytes across the binary, or inside SYMBOL? Needs DWARF. |
 
 SYMBOL is a function or data object's name, an import (`write` finds the
 `write@plt` stub that code calls), or an address such as `0x1700`. Names are
@@ -145,11 +145,11 @@ the bytes all their copies take, which ddbug shows only one function at a
 time. Each copy's bytes leave out the copies inlined into it, so the rows add
 up to the file's inlined code. On the Rust x86-64 sample, built with DWARF,
 `EndianSlice::read_slice` tops the list: 302 copies in 6,388 bytes. With
-`--in SYMBOL` it shows the copies in one function as a tree, merging the
-copies of one function in one place:
+SYMBOL it shows the copies in one function as a tree, merging the copies of
+one function in one place:
 
 ```
-$ elfq testdata/bin/c-x86_64.elf inlined --in report
+$ elfq testdata/bin/c-x86_64.elf inlined report
 Of report's 370 bytes, 150 are inlined copies of 1 function:
 
 BYTES  COPIES  FUNCTION
@@ -328,7 +328,7 @@ starts.
 | 3. Headline queries | 3a: roots, dominators, `retained` and `exclusive`. 3b: `why`. 3c: `top`. 3d: `inlined`. |
 | 4. Polish | 4a: C++ demangling, with a C++ sample. 4b: JSON output for `callers`, `callees`, `exclusive` and `inlined`. 4c: JSON for `top`, `retained`, `why` and the overview. 4d: warnings where indirect calls make answers uncertain. |
 | 5. Memory ranges | 5a: a Cortex-M7 sample with code and data in ITCM, DTCM, OCRAM and flash, at the addresses an i.MX RT1176 uses; startup code no longer seems to use the first item of each section it copies. 5b: `--range START..END` or `--range START+SIZE` for the overview and `top`, and the overview lists the address blocks that the file's sections occupy. 5c: `--range` for `retained` and `exclusive`. |
-| 6. Clear output | 6a: trees deeper than 9 levels continue below them. 6b: shorter lead lines and notes for the overview, `top` and `retained`, which say what a size means. 6c: no line sums up a single item, and "1 byte". 6d: shorter lead lines and notes for `why`, `callers`, `callees` and `inlined`, and "uses" for data on every architecture. 6e: `exclusive` folds into `retained`, and `--all` shows every item. |
+| 6. Clear output | 6a: trees deeper than 9 levels continue below them. 6b: shorter lead lines and notes for the overview, `top` and `retained`, which say what a size means. 6c: no line sums up a single item, and "1 byte". 6d: shorter lead lines and notes for `why`, `callers`, `callees` and `inlined`, and "uses" for data on every architecture. 6e: `exclusive` folds into `retained`, and `--all` shows every item; `inlined SYMBOL` instead of `inlined --in SYMBOL`. |
 
 Later: a query language, and worst-case stack depth (call graph plus each
 function's stack frame).

@@ -487,10 +487,7 @@ fn every_tree_is_at_most_nine_levels_deep() {
         (&[DEEP_SAMPLE, "retained", "stage1"], &["stage9", "stage17"]),
         (&[DEEP_SAMPLE, "why", "chain_table"], &["chain7", "chain15"]),
         (&[DEEP_SAMPLE, "why", "stage_table"], &["stage7", "stage15"]),
-        (
-            &[DEEP_SAMPLE, "inlined", "--in", "run_steps"],
-            &["step9", "step17"],
-        ),
+        (&[DEEP_SAMPLE, "inlined", "run_steps"], &["step9", "step17"]),
         (
             &["testdata/bin/rust-x86_64-nodebug.elf", "why", "memset"],
             &[
@@ -740,7 +737,7 @@ A copy of 0 bytes is one the compiler merged into the code around it, so the deb
 "
     );
     assert_eq!(
-        stdout(&[SAMPLE, "inlined", "--in", "process_frame"]),
+        stdout(&[SAMPLE, "inlined", "process_frame"]),
         "\
 Of process_frame's 532 bytes, 238 are inlined copies of 3 functions:
 
@@ -754,7 +751,7 @@ A copy of 0 bytes is one the compiler merged into the code around it, so the deb
     );
     // The six calls to `append` in `report` make one row.
     assert_eq!(
-        stdout(&[SAMPLE, "inlined", "--in", "report"]),
+        stdout(&[SAMPLE, "inlined", "report"]),
         "\
 Of report's 370 bytes, 150 are inlined copies of 1 function:
 
@@ -763,19 +760,14 @@ BYTES  COPIES  FUNCTION
 "
     );
     assert_eq!(
-        stdout(&[SAMPLE, "inlined", "--in", "main"]),
+        stdout(&[SAMPLE, "inlined", "main"]),
         "The debug info lists no inlined code in main.\n"
     );
 }
 
 #[test]
 fn inlined_shows_copies_inside_copies_as_a_tree() {
-    let tree = stdout(&[
-        "testdata/bin/rust-cortex-m4.elf",
-        "inlined",
-        "--in",
-        "memcpy",
-    ]);
+    let tree = stdout(&["testdata/bin/rust-cortex-m4.elf", "inlined", "memcpy"]);
     assert!(
         tree.starts_with(
             "\

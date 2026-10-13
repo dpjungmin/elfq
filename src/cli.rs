@@ -51,7 +51,7 @@ Examples:
   elfq app.elf retained process_frame     What removing process_frame would save
   elfq app.elf why crc_table              What keeps crc_table in the file
   elfq app.elf inlined                    Which inlined functions take the most bytes
-  elfq app.elf inlined --in main          The inlined code in main, as a tree
+  elfq app.elf inlined main               The inlined code in main, as a tree
   elfq app.elf callers log_msg            What calls or uses log_msg
   elfq app.elf callees main               What main calls or uses
 
@@ -127,9 +127,9 @@ function that calls it. Only DWARF debug info says where it did that, so
 this command needs a file built with debug info, such as with -g.
 
 In the list, a function's bytes leave out the functions inlined into its
-copies in turn, which have rows of their own. In the tree that --in shows,
-they include the rows below. A copy of 0 bytes is one the compiler merged
-into the code around it.";
+copies in turn, which have rows of their own. In the tree for SYMBOL, they
+include the rows below. A copy of 0 bytes is one the compiler merged into
+the code around it.";
 
 const RETAINED: &str = "\
 SYMBOL's retained size is its own size plus the sizes of the items that only
@@ -167,9 +167,8 @@ pub struct SymbolArgs {
 
 #[derive(Debug, Args)]
 pub struct InlinedArgs {
-    /// Show the inlined code in one function instead, as a tree. SYMBOL is
-    /// its name, the end of its name, or an address in it
-    #[arg(long = "in", value_name = "SYMBOL")]
+    /// Show the inlined code in one function instead, as a tree: its name,
+    /// the end of its name, or an address in it
     pub symbol: Option<String>,
     /// Show every function, not only the 30 largest
     #[arg(long)]

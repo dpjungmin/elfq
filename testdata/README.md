@@ -95,7 +95,7 @@ which is 9 levels:
 |---|---|---|
 | `chain1` to `chain20` | Each calls the next; `chain20` uses `chain_table`, which `run_steps` reads too. | `retained chain1` continues below twice, after `chain9` and `chain17`, and shares `chain_table`. `why chain_table` starts from `_start`, so it continues after `chain7` and `chain15`. |
 | `stage1` to `stage20` | The same, but `stage1` to `stage19` also call a `check` function that only they use, so the tree branches at every level. | `retained stage1` continues below after `stage9` and `stage17`. `check17` moves below with `stage18`, since rows under a cut row move together. |
-| `step1` to `step20` | Inlined into each other, and all into `run_steps`. | `inlined --in run_steps` continues below after `step9` and `step17`. |
+| `step1` to `step20` | Inlined into each other, and all into `run_steps`. | `inlined run_steps` continues below after `step9` and `step17`. |
 
 ### C++ sample ([cpp/app.cpp](cpp/app.cpp))
 
