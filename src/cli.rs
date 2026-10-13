@@ -67,7 +67,7 @@ Examples:
   elfq app.elf callers log_msg            What calls or uses log_msg
   elfq app.elf callees main               What main calls or uses
 
-The overview's tree is the start of the one top shows; elfq FILE top --help
+The overview's tree is the start of the one top shows; elfq help top
 explains it.";
 
 #[derive(Debug, Subcommand)]

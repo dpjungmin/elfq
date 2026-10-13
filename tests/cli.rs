@@ -999,6 +999,24 @@ fn a_command_typed_before_the_file_gets_a_hint() {
 }
 
 #[test]
+fn help_comes_before_a_command_too() {
+    let help = stdout(&["help", "top"]);
+    assert!(
+        help.starts_with("Show the items that keep the most bytes in the file, as a tree\n"),
+        "{help}"
+    );
+    assert_eq!(help, stdout(&[SAMPLE, "top", "--help"]));
+    assert_eq!(stdout(&["help"]), stdout(&["--help"]));
+    assert_eq!(stdout(&["help", "top", "--json"]), help);
+    // A misspelled command gets the same error as after a file.
+    assert!(
+        stderr(&["help", "retaind"], 2).contains("a similar subcommand exists: 'retained'"),
+        "{}",
+        stderr(&["help", "retaind"], 2)
+    );
+}
+
+#[test]
 fn no_arguments_prints_help() {
     let help = stderr(&[], 2);
     assert!(
