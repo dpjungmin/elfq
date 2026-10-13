@@ -93,8 +93,11 @@ RETAINED   OWN  ITEM
 Shared with other code, so not counted: __stack_chk_fail@plt, dispatch_event, frames_bad, frames_ok, log_msg, stats.
 ```
 
-A tree shows its 30 largest items and sums up the rest under their parents
-(`└─ 6 more`); `exclusive` lists every item, largest first.
+A tree shows its 30 largest items and sums up the rest under their parents:
+`└─ 6 more` stands for six items, and its RETAINED column adds up their
+bytes. A line never stands for a single item, since the item's own line
+takes no more room, and lists of names and addresses never end in "and 1
+more" either. `exclusive` lists every item, largest first.
 
 Every tree, in every command, is drawn at most 9 levels below its top
 row, so names never start more than 27 columns into the tree and long names
@@ -323,7 +326,7 @@ starts.
 | 3. Headline queries | 3a: roots, dominators, `retained` and `exclusive`. 3b: `why`. 3c: `top`. 3d: `inlined`. |
 | 4. Polish | 4a: C++ demangling, with a C++ sample. 4b: JSON output for `callers`, `callees`, `exclusive` and `inlined`. 4c: JSON for `top`, `retained`, `why` and the overview. 4d: warnings where indirect calls make answers uncertain. |
 | 5. Memory ranges | 5a: a Cortex-M7 sample with code and data in ITCM, DTCM, OCRAM and flash, at the addresses an i.MX RT1176 uses; startup code no longer seems to use the first item of each section it copies. 5b: `--range START..END` or `--range START+SIZE` for the overview and `top`, and the overview lists the address blocks that the file's sections occupy. 5c: `--range` for `retained` and `exclusive`. |
-| 6. Clear output | 6a: trees deeper than 9 levels continue below them. 6b: shorter lead lines and notes for the overview, `top` and `retained`, which say what a size means. |
+| 6. Clear output | 6a: trees deeper than 9 levels continue below them. 6b: shorter lead lines and notes for the overview, `top` and `retained`, which say what a size means. 6c: no line sums up a single item, and "1 byte". |
 
 Later: a query language, and worst-case stack depth (call graph plus each
 function's stack frame).

@@ -94,8 +94,9 @@ pub fn run(
     };
     writeln!(
         out,
-        "{name} is the only way to reach {}, {bytes} bytes {place}:",
-        super::count_text(binary, &nodes)
+        "{name} is the only way to reach {}, {} {place}:",
+        super::count_text(binary, &nodes),
+        super::bytes_text(bytes)
     )?;
     writeln!(out)?;
     let mut table = Table::new(&[

@@ -19,8 +19,9 @@ use crate::cli::Format;
 use crate::graph::Node;
 use crate::render::{Align, Table};
 
-/// How many items a tree shows at most, besides the lines that sum up the
-/// rest.
+/// How many of the largest items a tree shows. Lines such as "└─ 6 more"
+/// sum up the rest, and an item that would be left out on its own is shown
+/// too.
 const SHOWN: usize = 30;
 
 #[derive(Serialize)]
@@ -68,6 +69,7 @@ pub fn run(
     let retained = &exclusive.retained;
     let items = exclusive.counted_items();
     let own = retained.own(index);
+    let own_bytes = super::bytes_text(own);
     let range = range.map(|range| super::range_text(binary, range));
     if items.is_empty() {
         match &range {
@@ -77,11 +79,11 @@ pub fn run(
             )?,
             Some(range) => writeln!(
                 out,
-                "Removing {name} would save its own {own} bytes in {range}, and nothing else."
+                "Removing {name} would save its own {own_bytes} in {range}, and nothing else."
             )?,
             None => writeln!(
                 out,
-                "Removing {name} would save its own {own} bytes, and nothing else."
+                "Removing {name} would save its own {own_bytes}, and nothing else."
             )?,
         }
         write_shared(&exclusive, out)?;
@@ -92,11 +94,11 @@ pub fn run(
         .unwrap_or_default();
     writeln!(
         out,
-        "Removing {name} would save {} bytes{in_range}:",
-        retained.retained(index)
+        "Removing {name} would save {}{in_range}:",
+        super::bytes_text(retained.retained(index))
     )?;
     writeln!(out)?;
-    let shown = retained.largest(&items, SHOWN, HashSet::from([index]));
+    let shown = retained.largest(&[node], &items, SHOWN);
     let mut table = Table::new(&[
         ("RETAINED", Align::Right),
         ("OWN", Align::Right),
@@ -175,9 +177,10 @@ fn write_shared(exclusive: &Exclusive, out: &mut dyn Write) -> Result<()> {
     if shared.is_empty() {
         return Ok(());
     }
-    let mut names = shared[..shared.len().min(NAMED)].join(", ");
-    if shared.len() > NAMED {
-        names += &format!(" and {} more", shared.len() - NAMED);
+    let named = super::shown_count(shared.len(), NAMED);
+    let mut names = shared[..named].join(", ");
+    if named < shared.len() {
+        names += &format!(" and {} more", shared.len() - named);
     }
     writeln!(out)?;
     writeln!(out, "Shared with other code, so not counted: {names}.")?;

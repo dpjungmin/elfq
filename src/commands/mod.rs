@@ -98,15 +98,27 @@ fn plural(n: usize, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
 
+/// "1 byte", "2 bytes".
+fn bytes_text(n: u64) -> String {
+    format!("{n} {}", if n == 1 { "byte" } else { "bytes" })
+}
+
+/// How many of `count` things to show where `room` fit: all of them, or
+/// `room` and a summary of the rest, such as "and 5 more". A summary never
+/// stands for one thing, since naming the thing takes no more room.
+fn shown_count(count: usize, room: usize) -> usize {
+    if count > room + 1 { room } else { count }
+}
+
 /// Names joined into a phrase: "a", "a and b", "a, b and c", or for more
-/// than ten, "a, b, … and 5 more".
+/// than eleven, "a, b, … and 5 more".
 fn names_text(names: &[&str]) -> String {
-    const NAMED: usize = 10;
+    let named = shown_count(names.len(), 10);
     match names {
-        _ if names.len() > NAMED => format!(
+        _ if named < names.len() => format!(
             "{} and {} more",
-            names[..NAMED].join(", "),
-            names.len() - NAMED
+            names[..named].join(", "),
+            names.len() - named
         ),
         [] => String::new(),
         [one] => one.to_string(),
@@ -186,17 +198,16 @@ fn how(reference: &Reference) -> &'static str {
     }
 }
 
-/// Addresses, the first few of them: "0x1795, 0x17d4 and 3 more".
+/// Addresses, the first few of them: "0x1795, 0x17d4, 0x17e0 and 3 more".
 fn addresses(sites: &[u64]) -> String {
-    const SHOWN: usize = 3;
     let shown: Vec<String> = sites
         .iter()
-        .take(SHOWN)
+        .take(shown_count(sites.len(), 3))
         .map(|site| format!("{site:#x}"))
         .collect();
-    match sites.len().checked_sub(SHOWN) {
-        Some(more) if more > 0 => format!("{} and {more} more", shown.join(", ")),
-        _ => shown.join(", "),
+    match sites.len() - shown.len() {
+        0 => shown.join(", "),
+        more => format!("{} and {more} more", shown.join(", ")),
     }
 }
 
@@ -229,5 +240,33 @@ fn shell_quote(text: &str) -> String {
         text.to_string()
     } else {
         format!("'{}'", text.replace('\'', r"'\''"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_summary_never_stands_for_one_thing() {
+        let names: Vec<String> = (1..=12).map(|n| format!("f{n}")).collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        assert_eq!(
+            names_text(&names[..11]),
+            "f1, f2, f3, f4, f5, f6, f7, f8, f9, f10 and f11"
+        );
+        assert_eq!(
+            names_text(&names),
+            "f1, f2, f3, f4, f5, f6, f7, f8, f9, f10 and 2 more"
+        );
+        assert_eq!(addresses(&[1, 2, 3, 4]), "0x1, 0x2, 0x3, 0x4");
+        assert_eq!(addresses(&[1, 2, 3, 4, 5]), "0x1, 0x2, 0x3 and 2 more");
+    }
+
+    #[test]
+    fn one_byte_is_a_byte() {
+        assert_eq!(bytes_text(0), "0 bytes");
+        assert_eq!(bytes_text(1), "1 byte");
+        assert_eq!(bytes_text(2), "2 bytes");
     }
 }
