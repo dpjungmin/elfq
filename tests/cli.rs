@@ -278,7 +278,7 @@ Try:
 }
 
 #[test]
-fn retained_and_exclusive_count_only_the_range_too() {
+fn retained_counts_only_the_range_too() {
     assert_eq!(
         stdout(&[
             TCM_SAMPLE,
@@ -298,24 +298,6 @@ RETAINED  OWN  ITEM
        8    8  │     └─ __memcpy_veneer
       48    0  └─ __crc32_veneer
       48   48     └─ crc32
-"
-    );
-    assert_eq!(
-        stdout(&[
-            TCM_SAMPLE,
-            "exclusive",
-            "process_frame",
-            "--range",
-            "0x0..0xe0"
-        ]),
-        "\
-process_frame is the only way to reach 4 functions, 200 bytes in 0x00000000..0x000000e0 (.itcm):
-
-SIZE  KIND      ITEM
-  92  function  apply_filter
-  52  function  filter_tap
-  48  function  crc32
-   8  function  __memcpy_veneer
 "
     );
     assert_eq!(
@@ -342,7 +324,7 @@ fn a_range_must_hold_something() {
     );
     assert_eq!(
         stderr(&[TCM_SAMPLE, "callers", "crc32", "--range", "0+1K"], 1),
-        "error: --range limits sizes, so only the overview, top, retained and exclusive take it\n"
+        "error: --range limits sizes, so only the overview, top and retained take it\n"
     );
 }
 
@@ -608,26 +590,25 @@ _init is in .init, which the program uses when it starts.
 }
 
 #[test]
-fn exclusive_lists_what_only_a_function_leads_to() {
+fn all_shows_every_item() {
+    let sample = "testdata/bin/rust-x86_64-nodebug.elf";
+    let firmware = "testdata/bin/rust-cortex-m4.elf";
+    for args in [
+        vec![sample, "top"],
+        vec![sample, "retained", "main"],
+        vec![firmware, "inlined"],
+    ] {
+        let largest = stdout(&args);
+        let all = stdout(&[&args[..], &["--all"]].concat());
+        let sums_up = |text: &str| text.lines().any(|line| line.ends_with(" more"));
+        assert!(sums_up(&largest), "{args:?}\n{largest}");
+        assert!(!sums_up(&all), "{args:?}\n{all}");
+        assert!(all.lines().count() > largest.lines().count());
+    }
+    // A tree of fewer than 30 items is the same either way.
     assert_eq!(
-        stdout(&[SAMPLE, "exclusive", "process_frame"]),
-        "\
-process_frame is the only way to reach 8 items, 1536 bytes in all:
-
-SIZE  KIND      ITEM
-1024  data      crc_table
- 271  function  apply_filter
-  75  function  filter_tap
-  59  function  crc32
-  54  function  decode_header
-  32  data      fir_coeffs
- ~12  data      .rodata@0x2012
-  ~9  data      .rodata@0x201e
-"
-    );
-    assert_eq!(
-        stdout(&[SAMPLE, "exclusive", "crc_table"]),
-        "Nothing else is in the file only because of crc_table.\n"
+        stdout(&[SAMPLE, "retained", "process_frame", "--all"]),
+        stdout(&[SAMPLE, "retained", "process_frame"])
     );
 }
 

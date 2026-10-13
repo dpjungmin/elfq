@@ -34,7 +34,7 @@ fn names(list: &Value) -> Vec<&str> {
 fn items_have_the_same_keys_everywhere() {
     // An item, and an answer with nothing in it.
     assert_eq!(
-        elfq_json(&[SAMPLE, "exclusive", "debug_dump"]),
+        elfq_json(&[SAMPLE, "retained", "debug_dump"]),
         json!({
             "symbol": {
                 "name": "debug_dump",
@@ -45,8 +45,9 @@ fn items_have_the_same_keys_everywhere() {
             },
             "reachable": false,
             "range": null,
-            "bytes": 0,
-            "items": [],
+            "retained": 29,
+            "keeps": [],
+            "shares": [],
             "indirect_calls": 0
         })
     );
@@ -105,35 +106,6 @@ fn callers_and_callees_list_every_use() {
         json!([{ "site": "0x16ad", "how": "jump", "target": null }])
     );
     assert_eq!(callees["complete"], false);
-}
-
-#[test]
-fn exclusive_lists_every_item_largest_first() {
-    let exclusive = elfq_json(&[SAMPLE, "exclusive", "process_frame"]);
-    assert_eq!(exclusive["reachable"], true);
-    assert_eq!(exclusive["bytes"], 1536);
-    assert_eq!(
-        names(&exclusive["items"]),
-        [
-            "crc_table",
-            "apply_filter",
-            "filter_tap",
-            "crc32",
-            "decode_header",
-            "fir_coeffs",
-            ".rodata@0x2012",
-            ".rodata@0x201e"
-        ]
-    );
-    // A string literal without a symbol has an estimated size.
-    assert_eq!(exclusive["items"][6]["size_estimated"], true);
-    assert_eq!(exclusive["items"][6]["through_pointer"], false);
-    assert_eq!(exclusive["indirect_calls"], 0);
-    // The jump through the `handlers` table, in `dispatch_event`.
-    assert_eq!(
-        elfq_json(&[SAMPLE, "exclusive", "main"])["indirect_calls"],
-        1
-    );
 }
 
 #[test]
@@ -244,11 +216,18 @@ fn a_range_limits_the_counts_to_it() {
     assert_eq!(retained["retained"], 1024);
     assert_eq!(tree_names(&retained["keeps"]), ["crc_table"]);
 
-    let exclusive = elfq_json(&[tcm_sample, "exclusive", "process_frame", "--range", "0+224"]);
-    assert_eq!(exclusive["bytes"], 200);
+    let retained = elfq_json(&[tcm_sample, "retained", "process_frame", "--range", "0+224"]);
+    assert_eq!(retained["retained"], 200);
     assert_eq!(
-        names(&exclusive["items"]),
-        ["apply_filter", "filter_tap", "crc32", "__memcpy_veneer"]
+        tree_names(&retained["keeps"]),
+        [
+            "__apply_filter_veneer",
+            "apply_filter",
+            "filter_tap",
+            "__memcpy_veneer",
+            "__crc32_veneer",
+            "crc32"
+        ]
     );
 }
 
@@ -310,14 +289,30 @@ fn retained_has_what_symbol_keeps_as_a_tree() {
             "stats"
         ]
     );
-    // The tree holds the same items as `exclusive`.
-    let mut kept = tree_names(&retained["keeps"]);
-    kept.sort_unstable();
-    let exclusive = elfq_json(&[SAMPLE, "exclusive", "process_frame"]);
-    let mut items = names(&exclusive["items"]);
-    items.sort_unstable();
-    assert_eq!(kept, items);
+    // The tree holds every item that only process_frame leads to.
+    assert_eq!(
+        tree_names(&retained["keeps"]),
+        [
+            "crc32",
+            "crc_table",
+            "apply_filter",
+            "filter_tap",
+            "fir_coeffs",
+            "decode_header",
+            ".rodata@0x2012",
+            ".rodata@0x201e"
+        ]
+    );
+    // A string literal without a symbol has an estimated size.
+    let literal = &retained["keeps"][3];
+    assert_eq!(literal["name"], ".rodata@0x2012");
+    assert_eq!(literal["size_estimated"], true);
     assert_eq!(retained["indirect_calls"], 0);
+    // The jump through the `handlers` table, in `dispatch_event`.
+    assert_eq!(
+        elfq_json(&[SAMPLE, "retained", "main"])["indirect_calls"],
+        1
+    );
 
     // Nothing is there only because of something that nothing reaches.
     let unreachable = elfq_json(&[SAMPLE, "retained", "debug_dump"]);

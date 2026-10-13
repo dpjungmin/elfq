@@ -2,10 +2,10 @@
 //! tree.
 //!
 //! The tree is the top of the dominator tree, cut down to its largest
-//! items: each item hangs under the closest item that every path to it
-//! passes through, and the items at the top are where the program starts,
-//! or are reached from more than one of those places. With `--range`, only
-//! the bytes in the range count.
+//! items unless `--all` asks for every one: each item hangs under the
+//! closest item that every path to it passes through, and the items at the
+//! top are where the program starts, or are reached from more than one of
+//! those places. With `--range`, only the bytes in the range count.
 
 use std::io::Write;
 
@@ -18,11 +18,6 @@ use crate::binary::{AddressRange, Binary, FileKind};
 use crate::cli::Format;
 use crate::graph::Node;
 use crate::render::{Align, Table};
-
-/// How many of the largest items the tree shows. Lines such as "└─ 6 more"
-/// sum up the rest, and an item that would be left out on its own is shown
-/// too.
-pub(super) const SHOWN: usize = 30;
 
 #[derive(Serialize)]
 struct TopJson<'a> {
@@ -41,6 +36,7 @@ struct TopJson<'a> {
 pub fn run(
     binary: &Binary,
     range: Option<AddressRange>,
+    all: bool,
     format: Format,
     out: &mut dyn Write,
 ) -> Result<()> {
@@ -74,7 +70,7 @@ pub fn run(
         None => writeln!(out, "{total} of code and data, by what keeps them:")?,
     }
     writeln!(out)?;
-    write_largest(&retained, SHOWN, out)?;
+    write_largest(&retained, super::shown(all), out)?;
     write_unreachable(&retained, out)
 }
 
