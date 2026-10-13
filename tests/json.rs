@@ -1,5 +1,4 @@
-//! `--format json`: the same answers as the text, in a shape scripts can
-//! read.
+//! `--json`: the same answers as the text, in a shape scripts can read.
 
 use std::process::Command;
 
@@ -7,12 +6,11 @@ use serde_json::{Value, json};
 
 const SAMPLE: &str = "testdata/bin/c-x86_64.elf";
 
-/// Runs elfq with `--format json`, expecting success, and parses what it
-/// printed.
+/// Runs elfq with `--json`, expecting success, and parses what it printed.
 fn elfq_json(args: &[&str]) -> Value {
     let output = Command::new(env!("CARGO_BIN_EXE_elfq"))
         .args(args)
-        .args(["--format", "json"])
+        .arg("--json")
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()
         .unwrap();
@@ -393,7 +391,7 @@ fn why_has_the_chain_through_every_user() {
 #[test]
 fn debug_commands_print_only_text() {
     let output = Command::new(env!("CARGO_BIN_EXE_elfq"))
-        .args([SAMPLE, "debug", "items", "--format", "json"])
+        .args([SAMPLE, "debug", "items", "--json"])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()
         .unwrap();

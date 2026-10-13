@@ -14,7 +14,7 @@ use crate::binary::{AddressRange, Binary, ItemKind};
 use crate::graph::{DominatorTree, Graph, Node, ReferenceKind};
 use crate::render::TreeRow;
 
-/// An item and everything it keeps, for `--format json`.
+/// An item and everything it keeps, for `--json`.
 #[derive(Serialize)]
 pub(super) struct KeptItem<'a> {
     #[serde(flatten)]

@@ -1,4 +1,4 @@
-//! The shapes of the JSON that commands write for `--format json`.
+//! The shapes of the JSON that commands write for `--json`.
 //!
 //! A command builds one value from these and its own shapes, and writes it
 //! with [`write`]. Every key is always there, `null` when it has no value,

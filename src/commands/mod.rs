@@ -29,7 +29,7 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<()> {
     for warning in &binary.warnings {
         eprintln!("warning: {warning}");
     }
-    let format = cli.format;
+    let format = cli.format();
     let range = cli.range;
     match &cli.command {
         None => overview::run(&cli.file, &binary, range, format, out),

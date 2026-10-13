@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand};
 
 use crate::binary::AddressRange;
 
@@ -25,9 +25,9 @@ pub struct Cli {
     /// What to ask about FILE. Without one, elfq prints an overview.
     #[command(subcommand)]
     pub command: Option<Command>,
-    /// How to print the answer
-    #[arg(long, global = true, value_enum, default_value_t = Format::Text)]
-    pub format: Format,
+    /// Print the answer as JSON, for scripts
+    #[arg(long, global = true)]
+    pub json: bool,
     /// Count only the bytes in one range of memory, such as ITCM: START..END
     /// or START+SIZE, like 0x20000000+256K. The overview lists the ranges
     /// that the file's sections occupy. For the overview, top and retained.
@@ -35,11 +35,23 @@ pub struct Cli {
     pub range: Option<AddressRange>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+impl Cli {
+    /// How to print the answer.
+    pub fn format(&self) -> Format {
+        if self.json {
+            Format::Json
+        } else {
+            Format::Text
+        }
+    }
+}
+
+/// How a command prints its answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
     /// Tables and trees, for people
     Text,
-    /// JSON, for scripts
+    /// JSON, for scripts, with `--json`
     Json,
 }
 

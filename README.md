@@ -25,10 +25,10 @@ elfq app.elf callers log_msg            # what calls or uses log_msg
 elfq app.elf callees main               # what main calls or uses
 ```
 
-Every command also prints JSON for scripts with `--format json`. The
-commands that count bytes can count only one range of memory, such as a
-microcontroller's ITCM, with `--range START..END` or `--range START+SIZE`;
-for firmware, the overview lists the ranges its sections occupy.
+Every command also prints JSON for scripts with `--json`. The commands that
+count bytes can count only one range of memory, such as a microcontroller's
+ITCM, with `--range START..END` or `--range START+SIZE`; for firmware, the
+overview lists the ranges its sections occupy.
 
 **Status:** early development. The overview, `top`, `retained`, `why`,
 `callers` and `callees` work on x86-64 and Cortex-M executables, with

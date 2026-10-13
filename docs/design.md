@@ -49,8 +49,8 @@ the error lists the shortest name that picks each one, and a misspelled name
 gets suggestions. Typing the command first, as in
 `elfq callers app.elf log_msg`, gets a hint that the file comes first.
 
-All commands print a table or tree for people by default. `--format json`
-prints the same answer for scripts. The JSON has every item, where the text
+All commands print a table or tree for people by default. `--json` prints
+the same answer for scripts. The JSON has every item, where the text
 shows only the largest; every key is always there, `null` when it has no
 value; addresses are hex strings, as elfq prints them and SYMBOL takes them,
 and sizes are numbers. An item looks like this:
@@ -328,7 +328,7 @@ starts.
 | 3. Headline queries | 3a: roots, dominators, `retained` and `exclusive`. 3b: `why`. 3c: `top`. 3d: `inlined`. |
 | 4. Polish | 4a: C++ demangling, with a C++ sample. 4b: JSON output for `callers`, `callees`, `exclusive` and `inlined`. 4c: JSON for `top`, `retained`, `why` and the overview. 4d: warnings where indirect calls make answers uncertain. |
 | 5. Memory ranges | 5a: a Cortex-M7 sample with code and data in ITCM, DTCM, OCRAM and flash, at the addresses an i.MX RT1176 uses; startup code no longer seems to use the first item of each section it copies. 5b: `--range START..END` or `--range START+SIZE` for the overview and `top`, and the overview lists the address blocks that the file's sections occupy. 5c: `--range` for `retained` and `exclusive`. |
-| 6. Clear output | 6a: trees deeper than 9 levels continue below them. 6b: shorter lead lines and notes for the overview, `top` and `retained`, which say what a size means. 6c: no line sums up a single item, and "1 byte". 6d: shorter lead lines and notes for `why`, `callers`, `callees` and `inlined`, and "uses" for data on every architecture. 6e: `exclusive` folds into `retained`, and `--all` shows every item; `inlined SYMBOL` instead of `inlined --in SYMBOL`. |
+| 6. Clear output | 6a: trees deeper than 9 levels continue below them. 6b: shorter lead lines and notes for the overview, `top` and `retained`, which say what a size means. 6c: no line sums up a single item, and "1 byte". 6d: shorter lead lines and notes for `why`, `callers`, `callees` and `inlined`, and "uses" for data on every architecture. 6e: `exclusive` folds into `retained`, and `--all` shows every item; `inlined SYMBOL` instead of `inlined --in SYMBOL`; `--json` instead of `--format json`. |
 
 Later: a query language, and worst-case stack depth (call graph plus each
 function's stack frame).

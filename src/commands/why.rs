@@ -174,8 +174,8 @@ pub fn run(binary: &Binary, symbol: &str, format: Format, out: &mut dyn Write) -
 }
 
 /// The shortest chain from where the program starts, through `user`, to
-/// SYMBOL, for `--format json`: each item on it, with how the one before
-/// uses it, or for the first, why the program starts there, in JSON's words
+/// SYMBOL, for `--json`: each item on it, with how the one before uses it,
+/// or for the first, why the program starts there, in JSON's words
 /// ([`json::how`] and [`root_json`]).
 fn chain(
     binary: &Binary,
