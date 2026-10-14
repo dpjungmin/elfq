@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand};
 
 use crate::binary::AddressRange;
 
@@ -25,22 +25,33 @@ pub struct Cli {
     /// What to ask about FILE. Without one, elfq prints an overview.
     #[command(subcommand)]
     pub command: Option<Command>,
-    /// How to print the answer
-    #[arg(long, global = true, value_enum, default_value_t = Format::Text)]
-    pub format: Format,
+    /// Print the answer as JSON, for scripts
+    #[arg(long, global = true)]
+    pub json: bool,
     /// Count only the bytes in one range of memory, such as ITCM: START..END
     /// or START+SIZE, like 0x20000000+256K. The overview lists the ranges
-    /// that the file's sections occupy. For the overview, top, retained and
-    /// exclusive.
+    /// that the file's sections occupy. For the overview, top and retained.
     #[arg(long, global = true, value_name = "RANGE")]
     pub range: Option<AddressRange>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+impl Cli {
+    /// How to print the answer.
+    pub fn format(&self) -> Format {
+        if self.json {
+            Format::Json
+        } else {
+            Format::Text
+        }
+    }
+}
+
+/// How a command prints its answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
     /// Tables and trees, for people
     Text,
-    /// JSON, for scripts
+    /// JSON, for scripts, with `--json`
     Json,
 }
 
@@ -50,27 +61,23 @@ Examples:
   elfq app.elf top                        What keeps the most bytes in app.elf
   elfq app.elf top --range 0x0+256K       The same, counting only the first 256 KiB
   elfq app.elf retained process_frame     What removing process_frame would save
-  elfq app.elf exclusive process_frame    What only process_frame leads to
   elfq app.elf why crc_table              What keeps crc_table in the file
   elfq app.elf inlined                    Which inlined functions take the most bytes
-  elfq app.elf inlined --in main          The inlined code in main, as a tree
+  elfq app.elf inlined main               The inlined code in main, as a tree
   elfq app.elf callers log_msg            What calls or uses log_msg
   elfq app.elf callees main               What main calls or uses
 
-The overview's tree is the start of the one top shows; elfq FILE top --help
+The overview's tree is the start of the one top shows; elfq help top
 explains it.";
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Show the items that keep the most bytes in the file, as a tree
     #[command(after_help = TOP)]
-    Top,
+    Top(TopArgs),
     /// Show what removing SYMBOL would save, as a tree
-    #[command(after_help = format!("{EXCLUSIVE}\n\n{RETAINED}"))]
-    Retained(SymbolArgs),
-    /// List the items that only SYMBOL leads to
-    #[command(after_help = EXCLUSIVE)]
-    Exclusive(SymbolArgs),
+    #[command(after_help = RETAINED)]
+    Retained(RetainedArgs),
     /// Show the chains of calls and references that keep SYMBOL in the file
     #[command(after_help = format!("{WHY}\n\n{HOW}"))]
     Why(SymbolArgs),
@@ -120,7 +127,8 @@ only it leads to, from where the program starts: what removing it would
 save. Each item hangs under the closest item that every path to it goes
 through, and the items at the top are where the program starts, or are
 reached from more than one of those places. The tree shows the 30 largest
-items; lines such as \"└─ 6 more\" sum up the rest.
+items, or every item with --all; lines such as \"└─ 6 more\" sum up the
+rest.
 
 Nothing calls a function marked \"(through a pointer)\" directly, so it counts
 for the code or data that holds its address. Sizes marked ~ are estimates.";
@@ -131,22 +139,36 @@ function that calls it. Only DWARF debug info says where it did that, so
 this command needs a file built with debug info, such as with -g.
 
 In the list, a function's bytes leave out the functions inlined into its
-copies in turn, which have rows of their own. In the tree that --in shows,
-they include the rows below. A copy of 0 bytes is one the compiler merged
-into the code around it.";
+copies in turn, which have rows of their own. In the tree for SYMBOL, they
+include the rows below. A copy of 0 bytes is one the compiler merged into
+the code around it.";
 
-const EXCLUSIVE: &str = "\
-An item is exclusive to SYMBOL when every path to it, from where the program
-starts, goes through SYMBOL: without SYMBOL it would be dead code. SYMBOL's
-retained size is its own size plus the sizes of everything exclusive to it,
-which is what removing SYMBOL would save.
+const RETAINED: &str = "\
+SYMBOL's retained size is its own size plus the sizes of the items that only
+it leads to, from where the program starts: what removing it would save.
+Each item hangs under the closest item that every path to it goes through.
+The tree shows the 30 largest items, or every item with --all; lines such as
+\"└─ 6 more\" sum up the rest.
 
 Nothing calls a function marked \"(through a pointer)\" directly, so it counts
 for the code or data that holds its address. Sizes marked ~ are estimates.";
 
-const RETAINED: &str = "\
-The tree shows the 30 largest items; lines such as \"└─ 6 more\" sum up the
-rest, and the exclusive command lists every item.";
+#[derive(Debug, Args)]
+pub struct TopArgs {
+    /// Show every item, not only the 30 largest
+    #[arg(long)]
+    pub all: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct RetainedArgs {
+    /// A function or data object: its name, the end of its name
+    /// (process_frame for app::process_frame), or an address such as 0x1700
+    pub symbol: String,
+    /// Show every item, not only the 30 largest
+    #[arg(long)]
+    pub all: bool,
+}
 
 #[derive(Debug, Args)]
 pub struct SymbolArgs {
@@ -157,10 +179,12 @@ pub struct SymbolArgs {
 
 #[derive(Debug, Args)]
 pub struct InlinedArgs {
-    /// Show the inlined code in one function instead, as a tree. SYMBOL is
-    /// its name, the end of its name, or an address in it
-    #[arg(long = "in", value_name = "SYMBOL")]
-    pub within: Option<String>,
+    /// Show the inlined code in one function instead, as a tree: its name,
+    /// the end of its name, or an address in it
+    pub symbol: Option<String>,
+    /// Show every function, not only the 30 largest
+    #[arg(long)]
+    pub all: bool,
 }
 
 #[derive(Debug, Subcommand)]

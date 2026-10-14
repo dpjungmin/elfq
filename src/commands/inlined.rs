@@ -1,6 +1,6 @@
 //! `elfq FILE inlined`: the functions that the compiler inlined, ranked by
-//! the bytes their copies take across the file. With `--in SYMBOL`, the
-//! inlined code in one function, as a tree.
+//! the bytes their copies take across the file. `elfq FILE inlined SYMBOL`
+//! shows the inlined code in one function, as a tree.
 //!
 //! Only DWARF says what was inlined: in the machine code, an inlined copy is
 //! just part of the function that holds it.
@@ -20,15 +20,11 @@ use crate::debuginfo::{self, InlinedCopy};
 use crate::graph::Node;
 use crate::render::{Align, Table, TreeRow};
 
-/// How many of the largest functions the list or the tree shows. Lines such
-/// as "└─ 6 more" sum up the rest, and a function that would be left out on
-/// its own is shown too.
-const SHOWN: usize = 30;
-
 pub fn run(
     path: &Path,
     binary: &Binary,
-    within: Option<&str>,
+    symbol: Option<&str>,
+    all: bool,
     format: Format,
     out: &mut dyn Write,
 ) -> Result<()> {
@@ -40,9 +36,9 @@ pub fn run(
         );
     }
     let copies = debuginfo::inlined_copies(binary)?;
-    match within {
-        None => write_list(binary, &copies, format, out),
-        Some(symbol) => write_tree(binary, &copies, symbol, format, out),
+    match symbol {
+        None => write_list(binary, &copies, all, format, out),
+        Some(symbol) => write_tree(binary, &copies, symbol, all, format, out),
     }
 }
 
@@ -70,6 +66,7 @@ struct Total<'a> {
 fn write_list(
     binary: &Binary,
     copies: &[InlinedCopy],
+    all: bool,
     format: Format,
     out: &mut dyn Write,
 ) -> Result<()> {
@@ -117,7 +114,7 @@ fn write_list(
         ("COPIES", Align::Right),
         ("FUNCTION", Align::Left),
     ]);
-    let (shown, hidden) = totals.split_at(super::shown_count(totals.len(), SHOWN));
+    let (shown, hidden) = totals.split_at(super::shown_count(totals.len(), super::shown(all)));
     for total in shown {
         table.row(vec![
             total.bytes.to_string(),
@@ -146,6 +143,7 @@ fn write_tree(
     binary: &Binary,
     copies: &[InlinedCopy],
     symbol: &str,
+    all: bool,
     format: Format,
     out: &mut dyn Write,
 ) -> Result<()> {
@@ -196,7 +194,7 @@ fn write_tree(
         )?;
     }
     writeln!(out)?;
-    let shown = groups.largest(SHOWN);
+    let shown = groups.largest(super::shown(all));
     let mut table = Table::new(&[
         ("BYTES", Align::Right),
         ("COPIES", Align::Right),

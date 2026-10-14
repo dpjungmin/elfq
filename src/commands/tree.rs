@@ -1,8 +1,8 @@
-//! The dominator tree as `retained`, `exclusive` and `top` show it: items
-//! with their retained sizes, functions marked when only pointers lead to
-//! them, and large trees cut down to their largest items. With `--range`,
-//! sizes count only the bytes in the range, and items that keep none of
-//! them are left out.
+//! The dominator tree as `retained` and `top` show it: items with their
+//! retained sizes, functions marked when only pointers lead to them, and
+//! large trees cut down to their largest items. With `--range`, sizes count
+//! only the bytes in the range, and items that keep none of them are left
+//! out.
 
 use std::collections::HashSet;
 
@@ -14,7 +14,7 @@ use crate::binary::{AddressRange, Binary, ItemKind};
 use crate::graph::{DominatorTree, Graph, Node, ReferenceKind};
 use crate::render::TreeRow;
 
-/// An item and everything it keeps, for `--format json`.
+/// An item and everything it keeps, for `--json`.
 #[derive(Serialize)]
 pub(super) struct KeptItem<'a> {
     #[serde(flatten)]
@@ -109,15 +109,6 @@ impl<'a> RetainedTree<'a> {
     /// its bytes are worth a row.
     fn counts(&self, index: usize) -> bool {
         self.range.is_none() || self.retained(index) > 0
-    }
-
-    /// An item's name, with its [mark](RetainedTree::mark) if it has one.
-    pub fn label(&self, index: usize) -> String {
-        let name = &self.binary.items[index].name;
-        match self.mark(index) {
-            Some(mark) => format!("{name} {mark}"),
-            None => name.clone(),
-        }
     }
 
     /// The mark after the name of a function that only pointers lead to,

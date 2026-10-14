@@ -22,19 +22,18 @@ what existing tools do on the same sample binaries.
 Every command has the form `elfq <FILE> <command> [ARGS]`: the file first,
 then the question, so that a command sits next to the symbol it asks about
 (`elfq app.elf callers log_msg`). `elfq <FILE>` alone prints an overview.
-`retained`, `exclusive` and `why` are the reason elfq exists; the rest
-support them, except `inlined`, which reads DWARF instead of machine code.
+`retained` and `why` are the reason elfq exists; the rest support them,
+except `inlined`, which reads DWARF instead of machine code.
 
 | Command | Answers |
 |---|---|
 | `elfq FILE` | What is this file, what did elfq find in it, which items keep the most bytes, and what can I ask next? |
 | `elfq FILE retained SYMBOL` | What does SYMBOL keep alive, as a tree, and how many bytes is that? |
-| `elfq FILE exclusive SYMBOL` | Which functions and data are reachable only through SYMBOL? (flat list) |
 | `elfq FILE why SYMBOL` | Which chains of calls and references from the roots keep SYMBOL in the binary? |
 | `elfq FILE top` | Which items keep the most bytes, as a tree? |
 | `elfq FILE callers SYMBOL` | What calls or uses SYMBOL directly, and how (call, tail call, uses, address taken, pointer in data)? |
 | `elfq FILE callees SYMBOL` | What does SYMBOL call or use directly? |
-| `elfq FILE inlined [--in SYMBOL]` | Which inlined functions cost the most bytes across the binary, or inside SYMBOL? Needs DWARF. |
+| `elfq FILE inlined [SYMBOL]` | Which inlined functions cost the most bytes across the binary, or inside SYMBOL? Needs DWARF. |
 
 SYMBOL is a function or data object's name, an import (`write` finds the
 `write@plt` stub that code calls), or an address such as `0x1700`. Names are
@@ -48,10 +47,11 @@ parameters, as `c++filt` shows them, but can be typed without:
 wins over one that only ends the same way. When a name could mean several items,
 the error lists the shortest name that picks each one, and a misspelled name
 gets suggestions. Typing the command first, as in
-`elfq callers app.elf log_msg`, gets a hint that the file comes first.
+`elfq callers app.elf log_msg`, gets a hint that the file comes first, and
+`elfq help top` prints the same help as `elfq app.elf top --help`.
 
-All commands print a table or tree for people by default. `--format json`
-prints the same answer for scripts. The JSON has every item, where the text
+All commands print a table or tree for people by default. `--json` prints
+the same answer for scripts. The JSON has every item, where the text
 shows only the largest; every key is always there, `null` when it has no
 value; addresses are hex strings, as elfq prints them and SYMBOL takes them,
 and sizes are numbers. An item looks like this:
@@ -99,7 +99,8 @@ A tree shows its 30 largest items and sums up the rest under their parents:
 `└─ 6 more` stands for six items, and its RETAINED column adds up their
 bytes. A line never stands for a single item, since the item's own line
 takes no more room, and lists of names and addresses never end in "and 1
-more" either. `exclusive` lists every item, largest first.
+more" either. `--all` shows every item instead, in `top`, `retained` and
+`inlined`.
 
 Every tree, in every command, is drawn at most 9 levels below its top
 row, so names never start more than 27 columns into the tree and long names
@@ -145,20 +146,20 @@ the bytes all their copies take, which ddbug shows only one function at a
 time. Each copy's bytes leave out the copies inlined into it, so the rows add
 up to the file's inlined code. On the Rust x86-64 sample, built with DWARF,
 `EndianSlice::read_slice` tops the list: 302 copies in 6,388 bytes. With
-`--in SYMBOL` it shows the copies in one function as a tree, merging the
-copies of one function in one place:
+SYMBOL it shows the copies in one function as a tree, merging the copies of
+one function in one place:
 
 ```
-$ elfq testdata/bin/c-x86_64.elf inlined --in report
+$ elfq testdata/bin/c-x86_64.elf inlined report
 Of report's 370 bytes, 150 are inlined copies of 1 function:
 
 BYTES  COPIES  FUNCTION
   150       6  append
 ```
 
-With `--range START..END` or `--range START+SIZE`, the overview, `top`,
-`retained` and `exclusive` count only the bytes inside one range of memory,
-such as a microcontroller's ITCM or DTCM. An item outside the range still shows when it alone keeps
+With `--range START..END` or `--range START+SIZE`, the overview, `top` and
+`retained` count only the bytes inside one range of memory, such as a
+microcontroller's ITCM or DTCM. An item outside the range still shows when it alone keeps
 bytes inside it, with none of its own: on the Cortex-M7 sample, which
 follows an i.MX RT1176's memory map, `process_frame` in flash keeps 200 of
 ITCM's 224 bytes. When the sections sit in several blocks of addresses, as
@@ -187,10 +188,10 @@ functions "(through a pointer)" so the reader knows.
 Calls through pointers also leave some answers incomplete, and elfq says so
 where they do. `callers` notes that it leaves out calls through a pointer to
 a function whose address is taken or stored, and `callees` lists the calls
-and jumps it can't follow. `retained` and `exclusive` note when SYMBOL's code
-calls through pointers, since what those calls reach may count for other
-items. In JSON, `callers` and `callees` have `complete`, and `retained` and
-`exclusive` have `indirect_calls`.
+and jumps it can't follow. `retained` notes when SYMBOL's code calls
+through pointers, since what those calls reach may count for other items.
+In JSON, `callers` and `callees` have `complete`, and `retained` has
+`indirect_calls`.
 
 ## How it works
 
@@ -251,10 +252,10 @@ references and computes dominators and paths, `commands` run queries, and
    (`.L_MergedGlobals`) and code uses them through the block's address, so
    that address counts as a use of each variable in the block.
 6. **Analyze**: compute the dominator tree once from a virtual node that
-   points at every root. `retained`, `exclusive` and `top` read it. `why`
-   searches from the roots for the shortest chain to each item that uses
-   SYMBOL, going around SYMBOL itself, and prefers calls among equally short
-   chains. `callers` and `callees` read edges.
+   points at every root. `retained` and `top` read it. `why` searches from
+   the roots for the shortest chain to each item that uses SYMBOL, going
+   around SYMBOL itself, and prefers calls among equally short chains.
+   `callers` and `callees` read edges.
 7. **Read DWARF** when it is present (`gimli`), in `debuginfo`: each
    inlined-subroutine entry is a copy of one function in another, with the
    address ranges of its code. `inlined` adds them up. Copies whose code the
@@ -307,9 +308,9 @@ than through a general disassembler's API.
 - **Unit tests** beside the code for algorithms, using hand-built graphs.
 - **Integration tests** run each command on the committed files in
   `testdata/bin`. [testdata/README.md](../testdata/README.md) lists the
-  expected answers, for example that `exclusive process_frame` on any C build
-  is `decode_header`, `crc32`, `crc_table`, `apply_filter`, `filter_tap`,
-  `fir_coeffs` and two message strings, with or without DWARF.
+  expected answers, for example that what only `process_frame` leads to on
+  any C build is `decode_header`, `crc32`, `crc_table`, `apply_filter`,
+  `filter_tap`, `fir_coeffs` and two message strings, with or without DWARF.
 - **Snapshot tests** pin the human-readable output so format changes are
   reviewed on purpose.
 - **CI** runs `cargo fmt --check`, `cargo clippy -- -D warnings` and
@@ -328,20 +329,17 @@ starts.
 | 3. Headline queries | 3a: roots, dominators, `retained` and `exclusive`. 3b: `why`. 3c: `top`. 3d: `inlined`. |
 | 4. Polish | 4a: C++ demangling, with a C++ sample. 4b: JSON output for `callers`, `callees`, `exclusive` and `inlined`. 4c: JSON for `top`, `retained`, `why` and the overview. 4d: warnings where indirect calls make answers uncertain. |
 | 5. Memory ranges | 5a: a Cortex-M7 sample with code and data in ITCM, DTCM, OCRAM and flash, at the addresses an i.MX RT1176 uses; startup code no longer seems to use the first item of each section it copies. 5b: `--range START..END` or `--range START+SIZE` for the overview and `top`, and the overview lists the address blocks that the file's sections occupy. 5c: `--range` for `retained` and `exclusive`. |
-| 6. Clear output | 6a: trees deeper than 9 levels continue below them. 6b: shorter lead lines and notes for the overview, `top` and `retained`, which say what a size means. 6c: no line sums up a single item, and "1 byte". 6d: shorter lead lines and notes for `why`, `callers`, `callees` and `inlined`, and "uses" for data on every architecture. |
+| 6. Clear output | 6a: trees deeper than 9 levels continue below them. 6b: shorter lead lines and notes for the overview, `top` and `retained`, which say what a size means. 6c: no line sums up a single item, and "1 byte". 6d: shorter lead lines and notes for `why`, `callers`, `callees` and `inlined`, and "uses" for data on every architecture. 6e: `exclusive` folds into `retained`, and `--all` shows every item; `inlined SYMBOL` instead of `inlined --in SYMBOL`; `--json` instead of `--format json`; `elfq help top` works. |
 
 Later: a query language, and worst-case stack depth (call graph plus each
 function's stack frame).
 
 ## Open questions
 
-1. **Names.** `exclusive` or `only-from`?
-2. **Pointer-reached functions in `exclusive`.** Listed with a marker (the
-   current plan) or in a separate section?
-3. **Stripped Cortex-M files** have no symbols and no `.eh_frame`, so elfq
+1. **Stripped Cortex-M files** have no symbols and no `.eh_frame`, so elfq
    finds only the entry point in them today. Finding functions would mean
    following calls from the entry point and the vector table.
-4. **Where unnamed data ends.** Unnamed data starts wherever something
+2. **Where unnamed data ends.** Unnamed data starts wherever something
    refers to it, so a struct in a stripped file whose fields code uses one
    at a time becomes one item per field, and the end address of an array,
    which loops compare against, can start an item of its own. The bytes

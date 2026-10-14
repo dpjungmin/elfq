@@ -4,7 +4,6 @@
 mod callees;
 mod callers;
 mod debug_items;
-mod exclusive;
 mod inlined;
 mod json;
 mod overview;
@@ -30,20 +29,26 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<()> {
     for warning in &binary.warnings {
         eprintln!("warning: {warning}");
     }
-    let format = cli.format;
+    let format = cli.format();
     let range = cli.range;
     match &cli.command {
         None => overview::run(&cli.file, &binary, range, format, out),
-        Some(Command::Top) => top::run(&binary, range, format, out),
-        Some(Command::Retained(args)) => retained::run(&binary, &args.symbol, range, format, out),
-        Some(Command::Exclusive(args)) => exclusive::run(&binary, &args.symbol, range, format, out),
+        Some(Command::Top(args)) => top::run(&binary, range, args.all, format, out),
+        Some(Command::Retained(args)) => {
+            retained::run(&binary, &args.symbol, range, args.all, format, out)
+        }
         Some(_) if range.is_some() => {
-            bail!("--range limits sizes, so only the overview, top, retained and exclusive take it")
+            bail!("--range limits sizes, so only the overview, top and retained take it")
         }
         Some(Command::Why(args)) => why::run(&binary, &args.symbol, format, out),
-        Some(Command::Inlined(args)) => {
-            inlined::run(&cli.file, &binary, args.within.as_deref(), format, out)
-        }
+        Some(Command::Inlined(args)) => inlined::run(
+            &cli.file,
+            &binary,
+            args.symbol.as_deref(),
+            args.all,
+            format,
+            out,
+        ),
         Some(Command::Callers(args)) => callers::run(&binary, &args.symbol, format, out),
         Some(Command::Callees(args)) => callees::run(&binary, &args.symbol, format, out),
         Some(Command::Debug(_)) if format == Format::Json => {
@@ -103,11 +108,26 @@ fn bytes_text(n: u64) -> String {
     format!("{n} {}", if n == 1 { "byte" } else { "bytes" })
 }
 
+/// How many of the largest items the trees of `top` and `retained`, and
+/// the list and tree of `inlined`, show. Lines such as "└─ 6 more" sum up
+/// the rest, and an item that would be left out on its own is shown too.
+const SHOWN: usize = 30;
+
+/// How many of the largest items to show: [`SHOWN`], or with `--all`, every
+/// one.
+fn shown(all: bool) -> usize {
+    if all { usize::MAX } else { SHOWN }
+}
+
 /// How many of `count` things to show where `room` fit: all of them, or
 /// `room` and a summary of the rest, such as "and 5 more". A summary never
 /// stands for one thing, since naming the thing takes no more room.
 fn shown_count(count: usize, room: usize) -> usize {
-    if count > room + 1 { room } else { count }
+    if count > room.saturating_add(1) {
+        room
+    } else {
+        count
+    }
 }
 
 /// Names joined into a phrase: "a", "a and b", "a, b and c", or for more

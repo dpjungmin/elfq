@@ -52,9 +52,9 @@ Commands take the form `elfq FILE <command> [ARGS]`.
 2. Add `src/commands/<name>.rs` with a `run` function, and call it from
    `src/commands/mod.rs`. A command that takes a SYMBOL turns it into an
    item with `symbol::find`.
-3. Work out the answer first, then write it as text or, for
-   `--format json`, as a struct that derives `Serialize`, using the shapes
-   in `src/commands/json.rs` for items. `callers.rs` is a short example.
+3. Work out the answer first, then write it as text or, for `--json`, as a
+   struct that derives `Serialize`, using the shapes in
+   `src/commands/json.rs` for items. `callers.rs` is a short example.
 4. Add tests under `tests/` that run it on files in `testdata/bin`.
 
 ## Adding an instruction set

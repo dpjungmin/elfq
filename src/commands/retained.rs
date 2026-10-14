@@ -2,27 +2,21 @@
 //!
 //! The tree is the part of the dominator tree under SYMBOL: each item hangs
 //! under the closest item that every path to it passes through. Large trees
-//! show only their largest items. With `--range`, only the bytes in the
-//! range count.
+//! show only their largest items, unless `--all` asks for every one. With
+//! `--range`, only the bytes in the range count.
 
 use std::collections::HashSet;
 use std::io::Write;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use serde::Serialize;
 
-use super::exclusive::Exclusive;
 use super::json;
-use super::tree::KeptItem;
-use crate::binary::{AddressRange, Binary};
+use super::tree::{KeptItem, RetainedTree};
+use crate::binary::{AddressRange, Binary, FileKind, ItemKind};
 use crate::cli::Format;
-use crate::graph::Node;
+use crate::graph::{Node, Unresolved};
 use crate::render::{Align, Table};
-
-/// How many of the largest items a tree shows. Lines such as "└─ 6 more"
-/// sum up the rest, and an item that would be left out on its own is shown
-/// too.
-const SHOWN: usize = 30;
 
 #[derive(Serialize)]
 struct RetainedJson<'a> {
@@ -51,6 +45,7 @@ pub fn run(
     binary: &Binary,
     symbol: &str,
     range: Option<AddressRange>,
+    all: bool,
     format: Format,
     out: &mut dyn Write,
 ) -> Result<()> {
@@ -98,7 +93,7 @@ pub fn run(
         super::bytes_text(retained.retained(index))
     )?;
     writeln!(out)?;
-    let shown = retained.largest(&[node], &items, SHOWN);
+    let shown = retained.largest(&[node], &items, super::shown(all));
     let mut table = Table::new(&[
         ("RETAINED", Align::Right),
         ("OWN", Align::Right),
@@ -185,4 +180,132 @@ fn write_shared(exclusive: &Exclusive, out: &mut dyn Write) -> Result<()> {
     writeln!(out)?;
     writeln!(out, "Shared with other code, so not counted: {names}.")?;
     Ok(())
+}
+
+/// SYMBOL's item, in the dominator tree that says what is exclusive to it.
+struct Exclusive<'a> {
+    retained: RetainedTree<'a>,
+    /// SYMBOL's item.
+    node: Node,
+}
+
+impl<'a> Exclusive<'a> {
+    /// Finds SYMBOL's item and what is exclusive to it, counting only the
+    /// bytes in `range`, if there is one.
+    fn find(
+        binary: &'a Binary,
+        symbol: &str,
+        range: Option<AddressRange>,
+    ) -> Result<Exclusive<'a>> {
+        super::check_code_is_readable(binary)?;
+        let node = super::symbol::find(binary, symbol)?;
+        let name = node.name(binary);
+        let Node::Item(index) = node else {
+            bail!("{name} is imported from a shared library, so its code isn't in this file");
+        };
+        let item = &binary.items[index];
+        if item.kind == ItemKind::Function && item.size == 0 {
+            bail!("elfq doesn't know where {name} ends, so it can't read its code");
+        }
+        if binary.kind == FileKind::SharedLibrary {
+            bail!(
+                "elfq doesn't know yet which functions a shared library offers to other files, \
+                 so it can't tell what only {name} leads to"
+            );
+        }
+        let retained = RetainedTree::build(binary, range)?;
+        Ok(Exclusive { retained, node })
+    }
+
+    /// Whether anything reaches SYMBOL from where the program starts.
+    fn is_reachable(&self) -> bool {
+        self.retained.tree.is_reachable(self.node)
+    }
+
+    /// Says that nothing reaches SYMBOL, so it is dead code, or used in a way
+    /// elfq can't see.
+    fn write_unreachable(&self, out: &mut dyn Write) -> Result<()> {
+        writeln!(
+            out,
+            "{}",
+            super::nothing_reaches(self.node.name(self.retained.binary))
+        )?;
+        Ok(())
+    }
+
+    /// The calls and jumps through pointers set at run time in SYMBOL and
+    /// the items exclusive to it.
+    fn indirect_calls(&self) -> Vec<Unresolved> {
+        let Node::Item(index) = self.node else {
+            return Vec::new();
+        };
+        let graph = &self.retained.graph;
+        std::iter::once(index)
+            .chain(self.items())
+            .flat_map(|item| graph.unresolved_in(item))
+            .filter(|unresolved| unresolved.is_indirect())
+            .copied()
+            .collect()
+    }
+
+    /// Says that what SYMBOL's code calls through pointers may count for
+    /// other items, if it calls anything that way.
+    fn write_indirect_note(&self, out: &mut dyn Write) -> Result<()> {
+        let indirect = self.indirect_calls();
+        if indirect.is_empty() {
+            return Ok(());
+        }
+        let name = self.node.name(self.retained.binary);
+        let in_symbol = indirect.iter().any(|u| Node::Item(u.from) == self.node);
+        let in_items = indirect.iter().any(|u| Node::Item(u.from) != self.node);
+        let calls = indirect.iter().any(|u| u.is_call);
+        let jumps = indirect.iter().any(|u| !u.is_call);
+        // The verb after one subject, and after two.
+        let (one, two) = match (calls, jumps) {
+            (true, true) => ("calls and jumps", "call and jump"),
+            (true, false) => ("calls", "call"),
+            (false, _) => ("jumps", "jump"),
+        };
+        let what = match (in_symbol, in_items) {
+            (true, false) => format!("{name} also {one}"),
+            (false, _) => format!("Code that only {name} leads to also {one}"),
+            (true, true) => format!("{name} and the code that only it leads to also {two}"),
+        };
+        let (through, reach) = if indirect.len() == 1 {
+            ("a pointer", "that reaches")
+        } else {
+            ("pointers", "they reach")
+        };
+        writeln!(out)?;
+        writeln!(
+            out,
+            "{what} through {through}, which elfq can't follow, so what {reach} may count \
+             elsewhere."
+        )?;
+        Ok(())
+    }
+
+    /// The items exclusive to SYMBOL that sizes count: all of them, or with
+    /// a range, those with bytes in it. In no particular order.
+    fn counted_items(&self) -> Vec<usize> {
+        let retained = &self.retained;
+        self.items()
+            .into_iter()
+            .filter(|&index| retained.range.is_none() || retained.own(index) > 0)
+            .collect()
+    }
+
+    /// The items exclusive to SYMBOL's item, in no particular order.
+    /// Imports are left out: their code isn't in the file.
+    fn items(&self) -> Vec<usize> {
+        self.retained
+            .tree
+            .exclusive(self.node)
+            .into_iter()
+            .filter_map(|node| match node {
+                Node::Item(index) => Some(index),
+                Node::Import(_) => None,
+            })
+            .collect()
+    }
 }

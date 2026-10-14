@@ -278,7 +278,7 @@ Try:
 }
 
 #[test]
-fn retained_and_exclusive_count_only_the_range_too() {
+fn retained_counts_only_the_range_too() {
     assert_eq!(
         stdout(&[
             TCM_SAMPLE,
@@ -298,24 +298,6 @@ RETAINED  OWN  ITEM
        8    8  │     └─ __memcpy_veneer
       48    0  └─ __crc32_veneer
       48   48     └─ crc32
-"
-    );
-    assert_eq!(
-        stdout(&[
-            TCM_SAMPLE,
-            "exclusive",
-            "process_frame",
-            "--range",
-            "0x0..0xe0"
-        ]),
-        "\
-process_frame is the only way to reach 4 functions, 200 bytes in 0x00000000..0x000000e0 (.itcm):
-
-SIZE  KIND      ITEM
-  92  function  apply_filter
-  52  function  filter_tap
-  48  function  crc32
-   8  function  __memcpy_veneer
 "
     );
     assert_eq!(
@@ -342,7 +324,7 @@ fn a_range_must_hold_something() {
     );
     assert_eq!(
         stderr(&[TCM_SAMPLE, "callers", "crc32", "--range", "0+1K"], 1),
-        "error: --range limits sizes, so only the overview, top, retained and exclusive take it\n"
+        "error: --range limits sizes, so only the overview, top and retained take it\n"
     );
 }
 
@@ -505,10 +487,7 @@ fn every_tree_is_at_most_nine_levels_deep() {
         (&[DEEP_SAMPLE, "retained", "stage1"], &["stage9", "stage17"]),
         (&[DEEP_SAMPLE, "why", "chain_table"], &["chain7", "chain15"]),
         (&[DEEP_SAMPLE, "why", "stage_table"], &["stage7", "stage15"]),
-        (
-            &[DEEP_SAMPLE, "inlined", "--in", "run_steps"],
-            &["step9", "step17"],
-        ),
+        (&[DEEP_SAMPLE, "inlined", "run_steps"], &["step9", "step17"]),
         (
             &["testdata/bin/rust-x86_64-nodebug.elf", "why", "memset"],
             &[
@@ -608,26 +587,25 @@ _init is in .init, which the program uses when it starts.
 }
 
 #[test]
-fn exclusive_lists_what_only_a_function_leads_to() {
+fn all_shows_every_item() {
+    let sample = "testdata/bin/rust-x86_64-nodebug.elf";
+    let firmware = "testdata/bin/rust-cortex-m4.elf";
+    for args in [
+        vec![sample, "top"],
+        vec![sample, "retained", "main"],
+        vec![firmware, "inlined"],
+    ] {
+        let largest = stdout(&args);
+        let all = stdout(&[&args[..], &["--all"]].concat());
+        let sums_up = |text: &str| text.lines().any(|line| line.ends_with(" more"));
+        assert!(sums_up(&largest), "{args:?}\n{largest}");
+        assert!(!sums_up(&all), "{args:?}\n{all}");
+        assert!(all.lines().count() > largest.lines().count());
+    }
+    // A tree of fewer than 30 items is the same either way.
     assert_eq!(
-        stdout(&[SAMPLE, "exclusive", "process_frame"]),
-        "\
-process_frame is the only way to reach 8 items, 1536 bytes in all:
-
-SIZE  KIND      ITEM
-1024  data      crc_table
- 271  function  apply_filter
-  75  function  filter_tap
-  59  function  crc32
-  54  function  decode_header
-  32  data      fir_coeffs
- ~12  data      .rodata@0x2012
-  ~9  data      .rodata@0x201e
-"
-    );
-    assert_eq!(
-        stdout(&[SAMPLE, "exclusive", "crc_table"]),
-        "Nothing else is in the file only because of crc_table.\n"
+        stdout(&[SAMPLE, "retained", "process_frame", "--all"]),
+        stdout(&[SAMPLE, "retained", "process_frame"])
     );
 }
 
@@ -759,7 +737,7 @@ A copy of 0 bytes is one the compiler merged into the code around it, so the deb
 "
     );
     assert_eq!(
-        stdout(&[SAMPLE, "inlined", "--in", "process_frame"]),
+        stdout(&[SAMPLE, "inlined", "process_frame"]),
         "\
 Of process_frame's 532 bytes, 238 are inlined copies of 3 functions:
 
@@ -773,7 +751,7 @@ A copy of 0 bytes is one the compiler merged into the code around it, so the deb
     );
     // The six calls to `append` in `report` make one row.
     assert_eq!(
-        stdout(&[SAMPLE, "inlined", "--in", "report"]),
+        stdout(&[SAMPLE, "inlined", "report"]),
         "\
 Of report's 370 bytes, 150 are inlined copies of 1 function:
 
@@ -782,19 +760,14 @@ BYTES  COPIES  FUNCTION
 "
     );
     assert_eq!(
-        stdout(&[SAMPLE, "inlined", "--in", "main"]),
+        stdout(&[SAMPLE, "inlined", "main"]),
         "The debug info lists no inlined code in main.\n"
     );
 }
 
 #[test]
 fn inlined_shows_copies_inside_copies_as_a_tree() {
-    let tree = stdout(&[
-        "testdata/bin/rust-cortex-m4.elf",
-        "inlined",
-        "--in",
-        "memcpy",
-    ]);
+    let tree = stdout(&["testdata/bin/rust-cortex-m4.elf", "inlined", "memcpy"]);
     assert!(
         tree.starts_with(
             "\
@@ -1022,6 +995,24 @@ fn a_command_typed_before_the_file_gets_a_hint() {
         stderr(&["callers", SAMPLE, "log_msg"], 2),
         "error: the file comes before the command, as in: \
          elfq testdata/bin/c-x86_64.elf callers log_msg\n"
+    );
+}
+
+#[test]
+fn help_comes_before_a_command_too() {
+    let help = stdout(&["help", "top"]);
+    assert!(
+        help.starts_with("Show the items that keep the most bytes in the file, as a tree\n"),
+        "{help}"
+    );
+    assert_eq!(help, stdout(&[SAMPLE, "top", "--help"]));
+    assert_eq!(stdout(&["help"]), stdout(&["--help"]));
+    assert_eq!(stdout(&["help", "top", "--json"]), help);
+    // A misspelled command gets the same error as after a file.
+    assert!(
+        stderr(&["help", "retaind"], 2).contains("a similar subcommand exists: 'retained'"),
+        "{}",
+        stderr(&["help", "retaind"], 2)
     );
 }
 
