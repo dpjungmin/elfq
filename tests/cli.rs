@@ -1091,6 +1091,25 @@ fn help_comes_before_a_command_too() {
 }
 
 #[test]
+#[cfg(unix)]
+fn an_argument_that_is_not_utf8_is_an_error() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    for args in [[SAMPLE, "retained"], ["retained", SAMPLE]] {
+        let output = Command::new(env!("CARGO_BIN_EXE_elfq"))
+            .args(args)
+            .arg(OsStr::from_bytes(b"\xff"))
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.starts_with("error: "), "{error}");
+    }
+}
+
+#[test]
 fn no_arguments_prints_help() {
     let help = stderr(&[], 2);
     assert!(
