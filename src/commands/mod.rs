@@ -19,7 +19,7 @@ use anyhow::{Result, bail};
 use object::Architecture;
 
 use crate::arch;
-use crate::binary::{AddressRange, Binary, Item, ItemKind};
+use crate::binary::{AddressRange, Binary, Item, ItemKind, Source};
 use crate::cli::{Cli, Command, DebugCommand, Format};
 use crate::graph::{Graph, Node, Reference, ReferenceKind};
 
@@ -265,15 +265,32 @@ fn addresses(sites: &[u64]) -> String {
     }
 }
 
-/// A range as `--range` takes it, with the sections that have bytes in it,
-/// such as `0x00000000..0x000000e0 (.itcm)`.
-fn range_text(binary: &Binary, range: AddressRange) -> String {
-    let sections: Vec<&str> = binary
+/// The names of the sections that have bytes in `range`.
+fn sections_in(binary: &Binary, range: AddressRange) -> Vec<&str> {
+    binary
         .sections
         .iter()
         .filter(|section| section.allocated && range.overlap(section.address, section.size) > 0)
         .map(|section| section.name.as_str())
-        .collect();
+        .collect()
+}
+
+/// Whether the file lists its functions where elfq looks for them: in a
+/// symbol table or an unwind table. Stripped firmware has neither, so elfq
+/// finds only the function where it starts.
+fn lists_functions(binary: &Binary) -> bool {
+    binary.items.iter().any(|item| {
+        matches!(
+            item.source,
+            Source::SymbolTable | Source::DynamicSymbolTable | Source::EhFrame
+        )
+    })
+}
+
+/// A range as `--range` takes it, with the sections that have bytes in it,
+/// such as `0x00000000..0x000000e0 (.itcm)`.
+fn range_text(binary: &Binary, range: AddressRange) -> String {
+    let sections = sections_in(binary, range);
     match sections[..] {
         [] => range_argument(range),
         _ => format!("{} ({})", range_argument(range), names_text(&sections)),

@@ -23,6 +23,20 @@ fn stdout(args: &[&str]) -> String {
     String::from_utf8(output.stdout).unwrap()
 }
 
+/// Every sample file, as a path relative to the crate.
+fn samples() -> Vec<String> {
+    let bin = concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/bin");
+    let mut samples: Vec<String> = std::fs::read_dir(bin)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .filter(|name| name.ends_with(".elf"))
+        .map(|name| format!("testdata/bin/{name}"))
+        .collect();
+    samples.sort();
+    assert!(samples.len() > 10);
+    samples
+}
+
 /// Runs elfq, expecting failure with `code`, and returns its error output.
 fn stderr(args: &[&str], code: i32) -> String {
     let output = elfq(args);
@@ -107,17 +121,48 @@ SysTick_Handler is in the vector table: the processor runs it on an interrupt or
 fn stripped_firmware_has_only_its_entry_point() {
     // Without symbols or an unwind table, elfq finds only the reset
     // handler, whose size it doesn't know.
-    let overview = stdout(&["testdata/bin/c-cortex-m4-stripped.elf"]);
-    assert!(
-        overview.starts_with(
-            "\
+    let stripped = "testdata/bin/c-cortex-m4-stripped.elf";
+    assert_eq!(
+        stdout(&[stripped]),
+        "\
 testdata/bin/c-cortex-m4-stripped.elf: 32-bit Arm executable, stripped
 1 function
 The file has no symbols or unwind table, so elfq can't find its functions yet.
+
+MEMORY                  SIZE  SECTIONS
+0x08000000..0x08000dec  3564  .isr_vector .text .rodata .ARM.exidx
+0x20000000..0x20000048    72  .data .bss
 "
-        ),
-        "{overview}"
     );
+    // So nothing has a size to count.
+    for args in [
+        vec![stripped, "top"],
+        vec![stripped, "--range", "0x08000000+4K"],
+    ] {
+        assert_eq!(
+            stderr(&args, 1),
+            "error: the file has no symbols or unwind table, so elfq can't find its functions \
+             yet\n"
+        );
+    }
+}
+
+#[test]
+fn every_command_the_overview_suggests_works() {
+    for sample in &samples() {
+        let overview = stdout(&[sample]);
+        let prefix = format!("  elfq {sample} ");
+        for line in overview
+            .lines()
+            .filter_map(|line| line.strip_prefix(&prefix))
+        {
+            // No suggestion for the samples needs quotes.
+            let mut args = vec![sample.as_str()];
+            args.extend(line.split(' '));
+            let output = elfq(&args);
+            assert!(output.status.success(), "{args:?}\n{output:?}");
+        }
+    }
 }
 
 #[test]
@@ -278,6 +323,26 @@ Try:
 }
 
 #[test]
+fn a_range_that_nothing_reaches_has_no_tree() {
+    // `debug_dump` is all that is in this range.
+    assert_eq!(
+        stdout(&[SAMPLE, "top", "--range", "0x1aa0+29"]),
+        "Nothing reaches debug_dump, 29 bytes: it is dead code, or used in a way elfq can't \
+         see.\n"
+    );
+    assert_eq!(
+        stdout(&[SAMPLE, "--range", "0x1aa0+29"]),
+        "\
+testdata/bin/c-x86_64.elf: x86-64 position-independent executable, with symbols and DWARF debug info
+1 function in 0x00001aa0..0x00001abd (.text), 29 bytes of code and data
+
+Try:
+  elfq testdata/bin/c-x86_64.elf top --range 0x00001aa0..0x00001abd
+"
+    );
+}
+
+#[test]
 fn retained_counts_only_the_range_too() {
     assert_eq!(
         stdout(&[
@@ -317,6 +382,24 @@ fn a_range_must_hold_something() {
         stderr(&[TCM_SAMPLE, "top", "--range", "0x40000000+4K"], 1),
         "error: nothing in the file is in 0x40000000..0x40001000; the overview lists the ranges \
          that the file's sections occupy\n"
+    );
+    // The range is written as the overview writes it, whatever its spelling.
+    assert_eq!(
+        stderr(&[TCM_SAMPLE, "top", "--range", "0x4000000+16"], 1),
+        "error: nothing in the file is in 0x04000000..0x04000010; the overview lists the ranges \
+         that the file's sections occupy\n"
+    );
+    // A section with no functions or data, such as the unwind table.
+    assert_eq!(
+        stderr(&[SAMPLE, "--range", "0x25f0+0x2c8"], 1),
+        "error: elfq found no functions or data in 0x000025f0..0x000028b8 (.eh_frame)\n"
+    );
+    // A function with no size in the symbol table, as in hand-written
+    // assembly: glibc's `_init`.
+    assert_eq!(
+        stderr(&[SAMPLE, "top", "--range", "0x1000+4"], 1),
+        "error: elfq doesn't know where _init ends, so it can't count the bytes in \
+         0x00001000..0x00001004 (.init)\n"
     );
     assert!(
         stderr(&[TCM_SAMPLE, "--range", "0x20000000"], 2)
@@ -391,16 +474,7 @@ fn no_line_sums_up_a_single_item() {
     // A line such as "└─ 12 more" counts every item it sums up, so one
     // that would sum up a single item shows the item instead, and so do
     // lists of names.
-    let bin = concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/bin");
-    let mut samples: Vec<String> = std::fs::read_dir(bin)
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-        .filter(|name| name.ends_with(".elf"))
-        .map(|name| format!("testdata/bin/{name}"))
-        .collect();
-    samples.sort();
-    assert!(samples.len() > 10);
-    for sample in &samples {
+    for sample in &samples() {
         let overview = stdout(&[sample]);
         let mut runs = vec![vec![sample.as_str()], vec![sample, "top"]];
         // The ranges in the overview's Try list.
@@ -412,8 +486,8 @@ fn no_line_sums_up_a_single_item() {
             runs.push(vec![sample, "top", "--range", range]);
         }
         for args in &runs {
-            // A stripped file's ranges hold no items yet, so elfq fails on
-            // them; what it prints before that is still checked.
+            // `top` fails on stripped firmware, whose functions elfq can't
+            // find yet.
             let text = String::from_utf8(elfq(args).stdout).unwrap();
             assert!(
                 !text
@@ -1014,6 +1088,25 @@ fn help_comes_before_a_command_too() {
         "{}",
         stderr(&["help", "retaind"], 2)
     );
+}
+
+#[test]
+#[cfg(unix)]
+fn an_argument_that_is_not_utf8_is_an_error() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    for args in [[SAMPLE, "retained"], ["retained", SAMPLE]] {
+        let output = Command::new(env!("CARGO_BIN_EXE_elfq"))
+            .args(args)
+            .arg(OsStr::from_bytes(b"\xff"))
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.starts_with("error: "), "{error}");
+    }
 }
 
 #[test]

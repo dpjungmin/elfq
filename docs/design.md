@@ -159,14 +159,15 @@ BYTES  COPIES  FUNCTION
 
 With `--range START..END` or `--range START+SIZE`, the overview, `top` and
 `retained` count only the bytes inside one range of memory, such as a
-microcontroller's ITCM or DTCM. An item outside the range still shows when it alone keeps
-bytes inside it, with none of its own: on the Cortex-M7 sample, which
-follows an i.MX RT1176's memory map, `process_frame` in flash keeps 200 of
-ITCM's 224 bytes. When the sections sit in several blocks of addresses, as
-firmware's flash and RAMs do, the overview lists the blocks, each with a
-`--range` command to try, so the range needn't come from the chip's
-reference manual. Sizes can take a unit, in any case: `0x20000000+256K`.
-Units are powers of 1024, as memory sizes usually are.
+microcontroller's ITCM or DTCM. An item outside the range still shows when
+it alone keeps bytes inside it, with none of its own: on the Cortex-M7
+sample, which follows an i.MX RT1176's memory map, `process_frame` in flash
+keeps 200 of ITCM's 224 bytes. When the sections sit in several blocks of
+addresses, as firmware's flash and RAMs do, the overview lists the blocks,
+and a `--range` command to try for each block that elfq counts bytes in, so
+the range needn't come from the chip's reference manual. Sizes can take a
+unit, in any case: `0x20000000+256K`. Units are powers of 1024, as memory
+sizes usually are.
 
 ### What "exclusive" and "retained" mean
 
@@ -308,9 +309,10 @@ than through a general disassembler's API.
 - **Unit tests** beside the code for algorithms, using hand-built graphs.
 - **Integration tests** run each command on the committed files in
   `testdata/bin`. [testdata/README.md](../testdata/README.md) lists the
-  expected answers, for example that what only `process_frame` leads to on
-  any C build is `decode_header`, `crc32`, `crc_table`, `apply_filter`,
-  `filter_tap`, `fir_coeffs` and two message strings, with or without DWARF.
+  expected answers, for example that what only `process_frame` leads to in
+  the C sample is `decode_header`, `crc32`, `crc_table`, `apply_filter`,
+  `filter_tap`, `fir_coeffs` and two message strings, with or without DWARF,
+  plus the linker's veneers on Cortex-M7.
 - **Snapshot tests** pin the human-readable output so format changes are
   reviewed on purpose.
 - **CI** runs `cargo fmt --check`, `cargo clippy -- -D warnings` and
@@ -329,7 +331,7 @@ starts.
 | 3. Headline queries | 3a: roots, dominators, `retained` and `exclusive`. 3b: `why`. 3c: `top`. 3d: `inlined`. |
 | 4. Polish | 4a: C++ demangling, with a C++ sample. 4b: JSON output for `callers`, `callees`, `exclusive` and `inlined`. 4c: JSON for `top`, `retained`, `why` and the overview. 4d: warnings where indirect calls make answers uncertain. |
 | 5. Memory ranges | 5a: a Cortex-M7 sample with code and data in ITCM, DTCM, OCRAM and flash, at the addresses an i.MX RT1176 uses; startup code no longer seems to use the first item of each section it copies. 5b: `--range START..END` or `--range START+SIZE` for the overview and `top`, and the overview lists the address blocks that the file's sections occupy. 5c: `--range` for `retained` and `exclusive`. |
-| 6. Clear output | 6a: trees deeper than 9 levels continue below them. 6b: shorter lead lines and notes for the overview, `top` and `retained`, which say what a size means. 6c: no line sums up a single item, and "1 byte". 6d: shorter lead lines and notes for `why`, `callers`, `callees` and `inlined`, and "uses" for data on every architecture. 6e: `exclusive` folds into `retained`, and `--all` shows every item; `inlined SYMBOL` instead of `inlined --in SYMBOL`; `--json` instead of `--format json`; `elfq help top` works. |
+| 6. Clear output | 6a: trees deeper than 9 levels continue below them. 6b: shorter lead lines and notes for the overview, `top` and `retained`, which say what a size means. 6c: no line sums up a single item, and "1 byte". 6d: shorter lead lines and notes for `why`, `callers`, `callees` and `inlined`, and "uses" for data on every architecture. 6e: `exclusive` folds into `retained`, and `--all` shows every item; `inlined SYMBOL` instead of `inlined --in SYMBOL`; `--json` instead of `--format json`; `elfq help top` works. 6f: fixes for what step 6 turned up: no `--range` suggestions that fail on stripped firmware, no empty tree for a range that nothing reaches, and no crash on an argument that isn't UTF-8. |
 
 Later: a query language, and worst-case stack depth (call graph plus each
 function's stack frame).

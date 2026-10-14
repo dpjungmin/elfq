@@ -53,7 +53,12 @@ fn args() -> Vec<OsString> {
 /// A hint for people used to tools like `git`, who type the command before
 /// the file: `elfq callers app.elf log_msg`.
 fn file_first_hint() -> Option<String> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    // Lossy, since `args()` panics on an argument that isn't UTF-8, and the
+    // hint only shows the arguments.
+    let args: Vec<String> = std::env::args_os()
+        .skip(1)
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
     let command = args.first()?;
     if !cli::command_names().contains(command) {
         return None;

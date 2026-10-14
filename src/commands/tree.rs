@@ -85,6 +85,17 @@ impl<'a> RetainedTree<'a> {
             .sum()
     }
 
+    /// The bytes that the items where the program starts keep, and so
+    /// everything reachable: all the bytes that sizes count, but those of
+    /// items that nothing reaches.
+    pub fn kept(&self) -> u64 {
+        self.tree
+            .top()
+            .iter()
+            .map(|&node| self.tree.retained(node))
+            .sum()
+    }
+
     /// The item's own bytes that sizes count: all of them, or those in the
     /// range.
     pub fn own(&self, index: usize) -> u64 {
