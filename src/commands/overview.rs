@@ -140,12 +140,7 @@ pub fn run(
     }
     let retained = RetainedTree::from_graph(binary, graph, None);
     // Without functions, as in stripped firmware, there is nothing to rank.
-    let kept: u64 = retained
-        .tree
-        .top()
-        .iter()
-        .map(|&node| retained.tree.retained(node))
-        .sum();
+    let kept = retained.kept();
     if kept > 0 {
         writeln!(out)?;
         top::write_largest(&retained, SHOWN, out)?;
@@ -190,8 +185,11 @@ fn write_range(
         super::range_text(binary, range),
         super::bytes_text(total_bytes(binary, Some(range)))
     )?;
-    writeln!(out)?;
-    top::write_largest(&retained, SHOWN, out)?;
+    // When nothing reaches the items in the range, there is nothing to rank.
+    if retained.kept() > 0 {
+        writeln!(out)?;
+        top::write_largest(&retained, SHOWN, out)?;
+    }
     let queries = Names::new(binary);
     let examples: Vec<String> = [
         Some(format!("top --range {}", super::range_argument(range))),

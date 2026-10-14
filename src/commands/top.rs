@@ -60,18 +60,29 @@ pub fn run(
         };
         return json::write(&answer, out);
     }
-    let total = super::bytes_text(retained.bytes());
-    match range {
-        Some(range) => writeln!(
-            out,
-            "{total} of code and data in {}, by what keeps them:",
-            super::range_text(binary, range)
-        )?,
-        None => writeln!(out, "{total} of code and data, by what keeps them:")?,
+    // When nothing reaches the items in the range, which items nothing
+    // reaches is the whole answer.
+    let kept = retained.kept() > 0;
+    if kept {
+        let total = super::bytes_text(retained.bytes());
+        match range {
+            Some(range) => writeln!(
+                out,
+                "{total} of code and data in {}, by what keeps them:",
+                super::range_text(binary, range)
+            )?,
+            None => writeln!(out, "{total} of code and data, by what keeps them:")?,
+        }
+        writeln!(out)?;
+        write_largest(&retained, super::shown(all), out)?;
     }
-    writeln!(out)?;
-    write_largest(&retained, super::shown(all), out)?;
-    write_unreachable(&retained, out)
+    if let Some(unreachable) = unreachable_text(&retained) {
+        if kept {
+            writeln!(out)?;
+        }
+        writeln!(out, "{unreachable}")?;
+    }
+    Ok(())
 }
 
 /// Explains why there are no bytes to count, if there aren't: a range that
@@ -143,35 +154,29 @@ fn unreachable(retained: &RetainedTree) -> Vec<usize> {
     unreachable
 }
 
-/// Names the items that nothing reaches, if any.
-fn write_unreachable(retained: &RetainedTree, out: &mut dyn Write) -> Result<()> {
+/// The sentence that names the items that nothing reaches, if any.
+fn unreachable_text(retained: &RetainedTree) -> Option<String> {
     let binary = retained.binary;
     let unreachable = unreachable(retained);
     if unreachable.is_empty() {
-        return Ok(());
+        return None;
     }
     let bytes: u64 = unreachable.iter().map(|&index| retained.own(index)).sum();
     let names: Vec<&str> = unreachable
         .iter()
         .map(|&index| binary.items[index].name.as_str())
         .collect();
-    writeln!(out)?;
     if let [name] = names[..] {
-        writeln!(
-            out,
+        return Some(format!(
             "Nothing reaches {name}, {}: it is dead code, or used in a way elfq can't see.",
             super::bytes_text(bytes)
-        )?;
-    } else {
-        let nodes: Vec<Node> = unreachable.iter().map(|&index| Node::Item(index)).collect();
-        writeln!(
-            out,
-            "Nothing reaches {}, {} in all: {}. They are dead code, or used in a way elfq can't \
-             see.",
-            super::count_text(binary, &nodes),
-            super::bytes_text(bytes),
-            super::names_text(&names)
-        )?;
+        ));
     }
-    Ok(())
+    let nodes: Vec<Node> = unreachable.iter().map(|&index| Node::Item(index)).collect();
+    Some(format!(
+        "Nothing reaches {}, {} in all: {}. They are dead code, or used in a way elfq can't see.",
+        super::count_text(binary, &nodes),
+        super::bytes_text(bytes),
+        super::names_text(&names)
+    ))
 }

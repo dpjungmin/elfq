@@ -323,6 +323,26 @@ Try:
 }
 
 #[test]
+fn a_range_that_nothing_reaches_has_no_tree() {
+    // `debug_dump` is all that is in this range.
+    assert_eq!(
+        stdout(&[SAMPLE, "top", "--range", "0x1aa0+29"]),
+        "Nothing reaches debug_dump, 29 bytes: it is dead code, or used in a way elfq can't \
+         see.\n"
+    );
+    assert_eq!(
+        stdout(&[SAMPLE, "--range", "0x1aa0+29"]),
+        "\
+testdata/bin/c-x86_64.elf: x86-64 position-independent executable, with symbols and DWARF debug info
+1 function in 0x00001aa0..0x00001abd (.text), 29 bytes of code and data
+
+Try:
+  elfq testdata/bin/c-x86_64.elf top --range 0x00001aa0..0x00001abd
+"
+    );
+}
+
+#[test]
 fn retained_counts_only_the_range_too() {
     assert_eq!(
         stdout(&[
