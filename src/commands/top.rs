@@ -14,7 +14,7 @@ use serde::Serialize;
 
 use super::json;
 use super::tree::{KeptItem, RetainedTree};
-use crate::binary::{AddressRange, Binary, FileKind};
+use crate::binary::{AddressRange, Binary, FileKind, Item};
 use crate::cli::Format;
 use crate::graph::Node;
 use crate::render::{Align, Table};
@@ -47,7 +47,7 @@ pub fn run(
         );
     }
     let retained = RetainedTree::build(binary, range)?;
-    check_range_has_bytes(&retained)?;
+    check_has_bytes(&retained)?;
     if format == Format::Json {
         let answer = TopJson {
             range: range.map(json::Range::new),
@@ -74,16 +74,39 @@ pub fn run(
     write_unreachable(&retained, out)
 }
 
-/// Explains that nothing is in the range, if nothing is, since the range is
-/// then most likely mistyped.
-pub(super) fn check_range_has_bytes(retained: &RetainedTree) -> Result<()> {
-    match retained.range {
-        Some(range) if retained.bytes() == 0 => bail!(
-            "nothing in the file is in {range}; the overview lists the ranges that the file's \
-             sections occupy"
-        ),
-        _ => Ok(()),
+/// Explains why there are no bytes to count, if there aren't: a range that
+/// no section is in is most likely mistyped, in stripped firmware elfq
+/// can't find the functions yet, and hand-written assembly often leaves out
+/// the sizes.
+pub(super) fn check_has_bytes(retained: &RetainedTree) -> Result<()> {
+    let binary = retained.binary;
+    if retained.bytes() > 0 {
+        return Ok(());
     }
+    let place = match retained.range {
+        Some(range) if super::sections_in(binary, range).is_empty() => bail!(
+            "nothing in the file is in {}; the overview lists the ranges that the file's \
+             sections occupy",
+            super::range_argument(range)
+        ),
+        Some(range) => super::range_text(binary, range),
+        None => "the file".to_string(),
+    };
+    if !super::lists_functions(binary) {
+        bail!("the file has no symbols or unwind table, so elfq can't find its functions yet");
+    }
+    let starts_in_place = |item: &&Item| {
+        retained
+            .range
+            .is_none_or(|range| range.overlap(item.address, 1) > 0)
+    };
+    if let Some(item) = binary.items.iter().find(starts_in_place) {
+        bail!(
+            "elfq doesn't know where {} ends, so it can't count the bytes in {place}",
+            item.name
+        );
+    }
+    bail!("elfq found no functions or data in {place}")
 }
 
 /// Writes the tree of the `count` items that keep the most bytes.

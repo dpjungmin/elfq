@@ -159,14 +159,15 @@ BYTES  COPIES  FUNCTION
 
 With `--range START..END` or `--range START+SIZE`, the overview, `top` and
 `retained` count only the bytes inside one range of memory, such as a
-microcontroller's ITCM or DTCM. An item outside the range still shows when it alone keeps
-bytes inside it, with none of its own: on the Cortex-M7 sample, which
-follows an i.MX RT1176's memory map, `process_frame` in flash keeps 200 of
-ITCM's 224 bytes. When the sections sit in several blocks of addresses, as
-firmware's flash and RAMs do, the overview lists the blocks, each with a
-`--range` command to try, so the range needn't come from the chip's
-reference manual. Sizes can take a unit, in any case: `0x20000000+256K`.
-Units are powers of 1024, as memory sizes usually are.
+microcontroller's ITCM or DTCM. An item outside the range still shows when
+it alone keeps bytes inside it, with none of its own: on the Cortex-M7
+sample, which follows an i.MX RT1176's memory map, `process_frame` in flash
+keeps 200 of ITCM's 224 bytes. When the sections sit in several blocks of
+addresses, as firmware's flash and RAMs do, the overview lists the blocks,
+and a `--range` command to try for each block that elfq counts bytes in, so
+the range needn't come from the chip's reference manual. Sizes can take a
+unit, in any case: `0x20000000+256K`. Units are powers of 1024, as memory
+sizes usually are.
 
 ### What "exclusive" and "retained" mean
 

@@ -66,22 +66,10 @@ pub fn run(
     if format == Format::Json {
         return write_json(path, binary, range, out);
     }
-    let names = match (binary.has_symbols, binary.has_dwarf) {
-        (true, true) => "with symbols and DWARF debug info",
-        (true, false) => "with symbols",
-        (false, true) => "with DWARF debug info but no symbol table",
-        (false, false) => "stripped",
-    };
-    writeln!(
-        out,
-        "{}: {} {}, {names}",
-        path.display(),
-        super::architecture_name(binary.architecture),
-        binary.kind
-    )?;
     if let Some(range) = range {
         return write_range(path, binary, range, out);
     }
+    write_file(path, binary, out)?;
 
     let mut found = items_text(binary, None);
     // Stripped firmware may have only its reset handler, of unknown size.
@@ -101,13 +89,7 @@ pub fn run(
         return Ok(());
     }
     let graph = Graph::build(binary);
-    let has_function_lists = binary.items.iter().any(|i| {
-        matches!(
-            i.source,
-            Source::SymbolTable | Source::DynamicSymbolTable | Source::EhFrame
-        )
-    });
-    if !has_function_lists {
+    if !super::lists_functions(binary) {
         writeln!(
             out,
             "The file has no symbols or unwind table, so elfq can't find its functions yet."
@@ -130,8 +112,11 @@ pub fn run(
         _ => {}
     }
     let blocks = write_memory(binary, out)?;
+    // Only ranges that hold something: stripped firmware has sections, but
+    // elfq can't find the functions in them yet.
     let ranges: Vec<String> = blocks
         .iter()
+        .filter(|block| total_bytes(binary, Some(block.range)) > 0)
         .map(|block| format!("--range {}", super::range_argument(block.range)))
         .collect();
 
@@ -196,7 +181,8 @@ fn write_range(
         );
     }
     let retained = RetainedTree::build(binary, Some(range))?;
-    top::check_range_has_bytes(&retained)?;
+    top::check_has_bytes(&retained)?;
+    write_file(path, binary, out)?;
     writeln!(
         out,
         "{} in {}, {} of code and data",
@@ -218,6 +204,24 @@ fn write_range(
     .flatten()
     .collect();
     write_try(path, &examples, out)
+}
+
+/// Writes what the file is, such as "app.elf: x86-64 executable, stripped".
+fn write_file(path: &Path, binary: &Binary, out: &mut dyn Write) -> Result<()> {
+    let names = match (binary.has_symbols, binary.has_dwarf) {
+        (true, true) => "with symbols and DWARF debug info",
+        (true, false) => "with symbols",
+        (false, true) => "with DWARF debug info but no symbol table",
+        (false, false) => "stripped",
+    };
+    writeln!(
+        out,
+        "{}: {} {}, {names}",
+        path.display(),
+        super::architecture_name(binary.architecture),
+        binary.kind
+    )?;
+    Ok(())
 }
 
 /// Lists the blocks of addresses that the sections occupy, when there are
