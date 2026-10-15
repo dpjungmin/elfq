@@ -149,9 +149,11 @@ fn stripped_firmware_functions_are_found_by_following_the_code() {
     // Each function starts where the twin with symbols has one, and has the
     // same size once the padding after it is left out. Strings in the
     // Cortex-M7 sample's data look like addresses in its ITCM, which starts
-    // at 0, but start nothing.
+    // at 0, but start nothing. In the CMSIS layout, the constants that
+    // follow the code in `.text` end the last function.
     for (sample, found) in [
         ("c-cortex-m4", 25),
+        ("c-cortex-m4-cmsis", 25),
         ("c-cortex-m7", 29),
         ("rust-cortex-m4", 34),
     ] {
@@ -183,6 +185,7 @@ fn the_vector_table_is_found_by_its_shape() {
     // functions that the copy with symbols names.
     for (sample, address) in [
         ("c-cortex-m4", 0x0800_0000),
+        ("c-cortex-m4-cmsis", 0x0800_0000),
         ("c-cortex-m7", 0x3000_0000),
         ("rust-cortex-m4", 0x0800_0000),
     ] {
@@ -190,7 +193,9 @@ fn the_vector_table_is_found_by_its_shape() {
         let stripped = load(&format!("{sample}-stripped.elf"));
         let table = stripped.vector_table.as_ref().unwrap();
         // 16 words: the stack pointer and the Cortex-M exceptions. The walk
-        // stops at the end of the table's section, before the code.
+        // stops at the end of the table's section, before the code, or in
+        // the CMSIS layout, where the table is first in `.text`, at the
+        // first word of code.
         assert_eq!((table.address, table.size), (address, 0x40), "{sample}");
         assert_eq!(table.handlers[0], stripped.entry, "{sample}");
         for &handler in &table.handlers {
@@ -233,8 +238,10 @@ fn reserved_vector_table_entries_can_hold_other_words() {
 
 #[test]
 fn a_vector_table_without_symbols_is_named_after_its_section() {
+    // In the CMSIS layout it is only the start of its section.
     for (sample, section) in [
         ("c-cortex-m4", ".isr_vector"),
+        ("c-cortex-m4-cmsis", ".text@0x8000000"),
         ("rust-cortex-m4", ".vector_table"),
     ] {
         let stripped = load(&format!("{sample}-stripped.elf"));
@@ -252,6 +259,20 @@ fn a_vector_table_without_symbols_is_named_after_its_section() {
             "{sample}"
         );
     }
+}
+
+#[test]
+fn constants_among_the_code_of_stripped_firmware_are_data() {
+    // In the CMSIS layout, `.rodata` is part of `.text`, and `crc_table` has
+    // only its address there.
+    let named = load("c-cortex-m4-cmsis-nodebug.elf");
+    let stripped = load("c-cortex-m4-cmsis-stripped.elf");
+    let crc_table = item(&named, "crc_table");
+    let constants = item(&stripped, &format!(".text@{:#x}", crc_table.address));
+    assert_eq!(
+        (constants.kind, constants.size, constants.source),
+        (ItemKind::Data, crc_table.size, Source::Reference)
+    );
 }
 
 #[test]

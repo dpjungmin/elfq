@@ -347,6 +347,7 @@ fn stripping_keeps_the_calls_between_functions() {
         "c-x86_64",
         "rust-x86_64",
         "c-cortex-m4",
+        "c-cortex-m4-cmsis",
         "c-cortex-m7",
         "rust-cortex-m4",
     ] {
@@ -386,7 +387,12 @@ fn stripped_firmware_keeps_the_pointers_in_its_vector_table() {
         handlers.dedup();
         handlers
     };
-    for sample in ["c-cortex-m4", "c-cortex-m7", "rust-cortex-m4"] {
+    for sample in [
+        "c-cortex-m4",
+        "c-cortex-m4-cmsis",
+        "c-cortex-m7",
+        "rust-cortex-m4",
+    ] {
         let named = handlers(&format!("{sample}-nodebug.elf"));
         assert!(named.len() >= 3, "{sample}");
         assert_eq!(

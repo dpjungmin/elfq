@@ -24,9 +24,12 @@ pub(super) fn items(binary: &Binary) -> Vec<Item> {
         // Zero is a null pointer, or just a number.
         .filter(|&address| address != 0 && binary.item_at(address).is_none())
         .filter(|&address| {
-            binary
-                .section_at(address)
-                .is_some_and(|index| holds_data(&binary.sections[index]))
+            binary.section_at(address).is_some_and(|index| {
+                let section = &binary.sections[index];
+                // In Thumb code, what no function covers is constants, as
+                // when a linker script puts `.rodata` in `.text`.
+                holds_data(section) || (binary.thumb && section.kind == SectionKind::Text)
+            })
         })
         .collect();
     starts.sort_unstable();

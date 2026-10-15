@@ -20,6 +20,7 @@ testdata/
 |---|---|---|
 | `c-x86_64*.elf` | C | x86-64 Linux, PIE, dynamically linked against glibc |
 | `c-cortex-m4*.elf` | C | Cortex-M4 bare metal, newlib-nano, `--gc-sections` |
+| `c-cortex-m4-cmsis*.elf` | C | The same, laid out as CMSIS's linker script template does |
 | `c-cortex-m7*.elf` | C | Cortex-M7 bare metal, with code and data in TCM, OCRAM and flash |
 | `c-deep.elf` | C | x86-64 Linux, PIE, with calls and inlined code nested 20 deep |
 | `cpp-x86_64*.elf` | C++ | x86-64 Linux, PIE, dynamically linked against glibc and libstdc++ |
@@ -27,7 +28,8 @@ testdata/
 | `rust-cortex-m4*.elf` | Rust | Cortex-M4 bare metal, `no_std` |
 
 Each comes in up to three variants, matching what people usually have
-(`c-deep.elf` only in the first):
+(`c-deep.elf` only in the first, `c-cortex-m4-cmsis` only in the last
+two):
 
 | Suffix | Symbols | DWARF | Typical of |
 |---|---|---|---|
@@ -85,6 +87,14 @@ linker adds veneers such as `__crc32_veneer`, which `process_frame` calls
 and which jumps to `crc32`. `Reset_Handler` loads where `.itcm`, `.data`
 and `.bss` start and end, but doesn't use `SysTick_Handler`, `crc_table` or
 `config_sum`, which start at the same addresses.
+
+### CMSIS layout sample ([c/cortex-m4-cmsis.ld](c/cortex-m4-cmsis.ld))
+
+The Cortex-M4 C sample again, linked the way CMSIS's `gcc_arm.ld` template
+and the linker scripts based on it do: the vector table and the constants
+are in `.text`, with the code between them. In the stripped file, elfq
+finds the vector table at the start of `.text` and the constants after the
+last function, and names the table `.text@0x8000000`.
 
 ### Deep sample ([c/deep.c](c/deep.c))
 

@@ -242,6 +242,7 @@ fn stripping_keeps_the_exclusive_functions() {
         "c-x86_64",
         "rust-x86_64",
         "c-cortex-m4",
+        "c-cortex-m4-cmsis",
         "c-cortex-m7",
         "rust-cortex-m4",
     ] {

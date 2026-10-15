@@ -7,8 +7,9 @@
 //! Thumb), then the other handlers. Reserved entries are 0, or on some parts
 //! another word, such as the checksum that NXP's LPC boot ROM checks in
 //! entry 7. Linker scripts name its section differently (`.isr_vector`,
-//! `.vector_table`), so it is found by its shape: the first word in data
-//! that holds the entry point's Thumb address is taken for the reset entry.
+//! `.vector_table`) or put it first in `.text`, so it is found by its shape:
+//! the first word in data that holds the entry point's Thumb address, or
+//! the second word of code, is taken for the reset entry.
 
 use object::SectionKind;
 
@@ -36,12 +37,19 @@ const RESERVED: [u64; 5] = [7, 8, 9, 10, 13];
 pub(super) fn find(binary: &Binary) -> Option<VectorTable> {
     let size = binary.pointer_size;
     let (section, reset) = binary.sections.iter().find_map(|section| {
-        if !section.allocated || section.kind == SectionKind::Text {
+        if !section.allocated {
             return None;
         }
         // The reset entry follows the stack pointer, so it can't be first.
-        let mut slot = section.address.next_multiple_of(size) + size;
-        while slot + size <= section.address + section.size {
+        let first = section.address.next_multiple_of(size) + size;
+        let mut end = section.address + section.size;
+        // In code, only there, so that no constant in a function is taken
+        // for it.
+        if section.kind == SectionKind::Text {
+            end = end.min(first + size);
+        }
+        let mut slot = first;
+        while slot + size <= end {
             if binary.pointer_at(slot) == Some(binary.entry | 1) {
                 return Some((section, slot));
             }
@@ -73,7 +81,9 @@ pub(super) fn find(binary: &Binary) -> Option<VectorTable> {
 }
 
 /// An item for the vector table when no item covers any of it, as in
-/// stripped firmware, named after its section, such as `.isr_vector`.
+/// stripped firmware. It is named after its section, such as
+/// `.isr_vector`, or when it is only part of it, after the section and its
+/// address, as in `.text@0x0`.
 pub(super) fn item(binary: &Binary, items: &[Item]) -> Option<Item> {
     let table = binary.vector_table.as_ref()?;
     let end = table.address + table.size;
@@ -84,15 +94,21 @@ pub(super) fn item(binary: &Binary, items: &[Item]) -> Option<Item> {
     if covered {
         return None;
     }
-    let section = binary.section_at(table.address)?;
+    let index = binary.section_at(table.address)?;
+    let section = &binary.sections[index];
+    let name = if (section.address, section.size) == (table.address, table.size) {
+        section.name.clone()
+    } else {
+        format!("{}@{:#x}", section.name, table.address)
+    };
     Some(Item {
-        name: binary.sections[section].name.clone(),
+        name,
         aliases: Vec::new(),
         kind: ItemKind::Data,
         address: table.address,
         size: table.size,
         size_estimated: false,
-        section,
+        section: index,
         source: Source::Section,
     })
 }
