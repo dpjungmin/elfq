@@ -41,8 +41,6 @@ arm-none-eabi-gcc $cflags \
     -o "$out/c-cortex-m4.elf" c/app.c c/platform_cortexm.c
 variants arm-none-eabi-strip c-cortex-m4
 
-# Only the full build: this sample is for looking at memory ranges, which
-# doesn't depend on how much of the symbols and DWARF the file keeps.
 echo "C, Cortex-M7 with TCMs"
 arm-none-eabi-gcc $cflags \
     -mcpu=cortex-m7 -mthumb -mfloat-abi=hard -mfpu=fpv5-d16 \
@@ -50,9 +48,10 @@ arm-none-eabi-gcc $cflags \
     -nostartfiles --specs=nano.specs --specs=nosys.specs \
     -T c/cortex-m7.ld -Wl,--gc-sections \
     -o "$out/c-cortex-m7.elf" c/app.c c/platform_cortexm7.c
+variants arm-none-eabi-strip c-cortex-m7
 
-# Only the full build too: this sample is for looking at trees deeper than
-# elfq draws in one piece.
+# Only the full build: this sample is for looking at trees deeper than elfq
+# draws in one piece.
 echo "C, nested 20 deep, x86-64 Linux"
 gcc $cflags -o "$out/c-deep.elf" c/deep.c
 

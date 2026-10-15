@@ -44,7 +44,7 @@ fn symbols_give_names_addresses_and_sizes() {
 
 #[test]
 fn debug_info_does_not_change_the_items() {
-    for sample in ["c-x86_64", "c-cortex-m4", "rust-cortex-m4"] {
+    for sample in ["c-x86_64", "c-cortex-m4", "c-cortex-m7", "rust-cortex-m4"] {
         let full = load(&format!("{sample}.elf"));
         let nodebug = load(&format!("{sample}-nodebug.elf"));
         assert_eq!(full.items, nodebug.items, "{sample}");
@@ -146,12 +146,17 @@ fn dynamic_relocations_give_stored_pointers_and_imports() {
 fn stripped_firmware_has_only_its_entry_point_so_far() {
     // No symbols and no unwind table. Scanning the vector table and the code
     // will find more; until then the entry point is all there is.
-    let binary = load("c-cortex-m4-stripped.elf");
-    let [entry] = &binary.items[..] else {
-        panic!("expected one item, found {}", binary.items.len());
-    };
-    assert_eq!((entry.name.as_str(), entry.address), ("entry", 0x0800_05a0));
-    assert_eq!((entry.source, entry.size), (Source::EntryPoint, 0));
+    for (sample, address) in [
+        ("c-cortex-m4-stripped.elf", 0x0800_05a0),
+        ("c-cortex-m7-stripped.elf", 0x3000_05f8),
+    ] {
+        let binary = load(sample);
+        let [entry] = &binary.items[..] else {
+            panic!("{sample}: expected one item, found {}", binary.items.len());
+        };
+        assert_eq!((entry.name.as_str(), entry.address), ("entry", address));
+        assert_eq!((entry.source, entry.size), (Source::EntryPoint, 0));
+    }
 }
 
 #[test]
