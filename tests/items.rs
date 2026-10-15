@@ -231,6 +231,29 @@ fn reserved_vector_table_entries_can_hold_other_words() {
 }
 
 #[test]
+fn a_vector_table_without_symbols_is_named_after_its_section() {
+    for (sample, section) in [
+        ("c-cortex-m4", ".isr_vector"),
+        ("rust-cortex-m4", ".vector_table"),
+    ] {
+        let stripped = load(&format!("{sample}-stripped.elf"));
+        let table = item(&stripped, section);
+        assert_eq!(
+            (table.kind, table.address, table.size),
+            (ItemKind::Data, 0x0800_0000, 0x40)
+        );
+        assert_eq!(table.source, Source::Section);
+        // With symbols, they cover the table instead, even if only in part:
+        // the Rust sample has none for the stack pointer's word.
+        let named = load(&format!("{sample}-nodebug.elf"));
+        assert!(
+            named.items.iter().all(|item| item.name != section),
+            "{sample}"
+        );
+    }
+}
+
+#[test]
 fn data_without_symbols_starts_where_something_refers_to_it() {
     let binary = load("c-x86_64.elf");
     // A string literal, which runs to the next one: "bad header\n" and its

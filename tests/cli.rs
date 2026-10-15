@@ -125,7 +125,7 @@ fn stripped_firmware_is_followed_from_its_entry_point() {
         stdout(&["testdata/bin/c-cortex-m4-stripped.elf"]),
         "\
 testdata/bin/c-cortex-m4-stripped.elf: 32-bit Arm executable, stripped
-25 functions and 26 data objects, 3564 bytes of code and data
+25 functions and 27 data objects, 3628 bytes of code and data
 Functions and data without symbols are named by address, like fn_0x8000040 and .rodata@0x80008f0.
 
 MEMORY                  SIZE  SECTIONS
@@ -141,7 +141,7 @@ RETAINED    OWN  ITEM
      232         │  │  └─ 6 more
      760         │  └─ 28 more
      472         └─ 2 more
-     440         10 more
+     504         11 more
 
 Try:
   elfq testdata/bin/c-cortex-m4-stripped.elf --range 0x08000000..0x08000dec

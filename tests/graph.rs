@@ -366,6 +366,38 @@ fn stripping_keeps_the_calls_between_functions() {
 }
 
 #[test]
+fn stripped_firmware_keeps_the_pointers_in_its_vector_table() {
+    // Stripping removes the table's symbols but not its words, so an item
+    // still holds them and points to the same handlers.
+    let handlers = |name: &str| {
+        let (binary, graph) = load(name);
+        let table = binary.vector_table.as_ref().unwrap();
+        let in_table = |site: u64| (table.address..table.address + table.size).contains(&site);
+        let mut handlers: Vec<u64> = graph
+            .references
+            .iter()
+            .filter(|r| r.kind == Pointer && in_table(r.site))
+            .filter_map(|r| match r.to {
+                Node::Item(to) => Some(binary.items[to].address),
+                Node::Import(_) => None,
+            })
+            .collect();
+        handlers.sort();
+        handlers.dedup();
+        handlers
+    };
+    for sample in ["c-cortex-m4", "c-cortex-m7", "rust-cortex-m4"] {
+        let named = handlers(&format!("{sample}-nodebug.elf"));
+        assert!(named.len() >= 3, "{sample}");
+        assert_eq!(
+            handlers(&format!("{sample}-stripped.elf")),
+            named,
+            "{sample}"
+        );
+    }
+}
+
+#[test]
 fn stripped_files_still_show_which_variables_code_uses() {
     // Without symbols, variables are unnamed data, found where code uses
     // them. Names differ, so compare by address.

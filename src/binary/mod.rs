@@ -10,7 +10,8 @@
 //!    `.init_array`, which have no symbols;
 //! 3. the unwind table, `.eh_frame`, which still describes most functions in
 //!    stripped x86-64 files (see `eh_frame.rs`);
-//! 4. the entry point;
+//! 4. the entry point, and in firmware the vector table, when no symbol
+//!    covers it;
 //! 5. in firmware that nothing lists functions for, the code itself,
 //!    followed from the entry point and the vector table (see
 //!    `unnamed_functions.rs`);
@@ -165,8 +166,8 @@ pub enum Source {
     /// The procedure linkage table. The item is a stub named after the
     /// import it jumps to, or the table's header named after its section.
     Plt,
-    /// A section with a known purpose, such as `.init_array`, and no symbol.
-    /// The item is named after the section.
+    /// A section with a known purpose and no symbol, such as `.init_array`
+    /// or the vector table's. The item is named after the section.
     Section,
     /// Code that elfq followed from the entry point reaches the address, in
     /// firmware that nothing lists functions for. The item is a function
@@ -289,6 +290,7 @@ impl Binary {
                 .push(format!("cannot read .eh_frame: {err}")),
         }
         add_entry_item(&mut items, binary.entry, &binary.sections);
+        items.extend(vector_table::item(&binary, &items));
         let listed = items
             .iter()
             .any(|item| item.kind == ItemKind::Function && item.source.lists_functions());

@@ -12,7 +12,7 @@
 
 use object::SectionKind;
 
-use super::{Binary, code_section};
+use super::{Binary, Item, ItemKind, Source, code_section};
 
 /// Where the vector table is and the handlers it lists.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,5 +69,30 @@ pub(super) fn find(binary: &Binary) -> Option<VectorTable> {
         address,
         size: slot - address,
         handlers,
+    })
+}
+
+/// An item for the vector table when no item covers any of it, as in
+/// stripped firmware, named after its section, such as `.isr_vector`.
+pub(super) fn item(binary: &Binary, items: &[Item]) -> Option<Item> {
+    let table = binary.vector_table.as_ref()?;
+    let end = table.address + table.size;
+    // An item of unknown size that starts in the table covers it.
+    let covered = items
+        .iter()
+        .any(|item| item.address < end && table.address < item.address + item.size.max(1));
+    if covered {
+        return None;
+    }
+    let section = binary.section_at(table.address)?;
+    Some(Item {
+        name: binary.sections[section].name.clone(),
+        aliases: Vec::new(),
+        kind: ItemKind::Data,
+        address: table.address,
+        size: table.size,
+        size_estimated: false,
+        section,
+        source: Source::Section,
     })
 }
