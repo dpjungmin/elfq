@@ -70,3 +70,15 @@ pub fn scan(architecture: Architecture, code: &[u8], address: u64) -> Vec<CodeRe
         _ => Vec::new(),
     }
 }
+
+/// How many bytes at the start of `code` a function's instructions and
+/// constants take, when `code` may run on past its end to the next
+/// function. Only Thumb tells the padding between functions apart; for
+/// other instruction sets, this is all of `code`.
+pub fn code_size(architecture: Architecture, code: &[u8], address: u64) -> u64 {
+    let size = match architecture {
+        Architecture::Arm => thumb::code_size(code, address),
+        _ => code.len(),
+    };
+    size as u64
+}

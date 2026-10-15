@@ -22,13 +22,7 @@ const LR: u16 = 14;
 const PC: u16 = 15;
 
 pub(super) fn scan(code: &[u8], address: u64) -> Vec<CodeReference> {
-    let mut scanner = Scanner {
-        code,
-        address,
-        references: Vec::new(),
-        data: BTreeMap::new(),
-        low_halves: [None; 16],
-    };
+    let mut scanner = Scanner::new(code, address);
     let mut offset = 0;
     while let Some(first) = scanner.halfword(offset) {
         if let Some(end) = scanner.data_end(offset) {
@@ -41,6 +35,30 @@ pub(super) fn scan(code: &[u8], address: u64) -> Vec<CodeReference> {
         offset += size;
     }
     scanner.references
+}
+
+/// How many bytes of `code` its instructions and constants take, leaving
+/// out the padding after them: `nop`s, zeros, and the `0xd4d4` that lld
+/// fills gaps with. A constant that a load reads is never padding.
+pub(super) fn code_size(code: &[u8], address: u64) -> usize {
+    let mut scanner = Scanner::new(code, address);
+    let mut size = 0;
+    let mut offset = 0;
+    while let Some(first) = scanner.halfword(offset) {
+        if let Some(end) = scanner.data_end(offset) {
+            (offset, size) = (end, end);
+            continue;
+        }
+        let Some(step) = scanner.step(offset, first) else {
+            return code.len();
+        };
+        let nop_w = (first, scanner.halfword(offset + 2)) == (0xf3af, Some(0x8000));
+        if !matches!(first, 0xbf00 | 0x46c0 | 0x0000 | 0xd4d4) && !nop_w {
+            size = offset + step;
+        }
+        offset += step;
+    }
+    size.min(code.len())
 }
 
 struct Scanner<'a> {
@@ -56,7 +74,17 @@ struct Scanner<'a> {
     low_halves: [Option<u32>; 16],
 }
 
-impl Scanner<'_> {
+impl<'a> Scanner<'a> {
+    fn new(code: &'a [u8], address: u64) -> Self {
+        Scanner {
+            code,
+            address,
+            references: Vec::new(),
+            data: BTreeMap::new(),
+            low_halves: [None; 16],
+        }
+    }
+
     /// Decodes the instruction at `offset` and reports its reference, if
     /// any. Returns the instruction's size.
     fn step(&mut self, offset: usize, first: u16) -> Option<usize> {
@@ -356,6 +384,20 @@ mod tests {
         // movw r0, #0x1234; movt r0, #0x0800
         let code = [0x41, 0xf2, 0x34, 0x20, 0xc0, 0xf6, 0x00, 0x00];
         assert_eq!(kinds(&code, 0), [(4, Address(0x0800_1234))]);
+    }
+
+    #[test]
+    fn padding_after_the_code_is_left_out() {
+        // bx lr, then nop and nop.w, which align what follows.
+        assert_eq!(
+            code_size(&[0x70, 0x47, 0x00, 0xbf, 0xaf, 0xf3, 0x00, 0x80], 0),
+            2
+        );
+        // b . (an endless loop), then lld's filler.
+        assert_eq!(code_size(&[0xfe, 0xe7, 0xd4, 0xd4], 0), 2);
+        // ldr r2, [pc, #0]; bx lr; then the constant it loads, which is 0.
+        let code = [0x00, 0x4a, 0x70, 0x47, 0x00, 0x00, 0x00, 0x00];
+        assert_eq!(code_size(&code, 0x0800_0040), 8);
     }
 
     #[test]

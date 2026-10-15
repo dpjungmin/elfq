@@ -146,9 +146,10 @@ fn dynamic_relocations_give_stored_pointers_and_imports() {
 fn stripped_firmware_functions_are_found_by_following_the_code() {
     // No symbols and no unwind table, so elfq follows the code from the
     // entry point and the vector table, and the addresses stored in data.
-    // Each function starts where the twin with symbols has one, and runs to
-    // the next. Strings in the Cortex-M7 sample's data look like addresses
-    // in its ITCM, which starts at 0, but start nothing.
+    // Each function starts where the twin with symbols has one, and has the
+    // same size once the padding after it is left out. Strings in the
+    // Cortex-M7 sample's data look like addresses in its ITCM, which starts
+    // at 0, but start nothing.
     for (sample, found) in [
         ("c-cortex-m4", 25),
         ("c-cortex-m7", 29),
@@ -162,7 +163,7 @@ fn stripped_firmware_functions_are_found_by_following_the_code() {
                 .into_iter()
                 .find(|twin| twin.address == function.address)
                 .unwrap_or_else(|| panic!("{sample}: no function starts at {}", function.name));
-            assert!(function.size >= twin.size, "{sample}: {}", twin.name);
+            assert_eq!(function.size, twin.size, "{sample}: {}", twin.name);
             assert!(function.size_estimated, "{sample}: {}", twin.name);
             if function.address != stripped.entry {
                 let name = format!("fn_{:#x}", function.address);

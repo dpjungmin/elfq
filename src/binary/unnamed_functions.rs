@@ -20,10 +20,10 @@
 //! function only if that cuts nothing in two: no jump crosses it, and the
 //! code on either side still finds the constants it loads.
 //!
-//! Each function runs to the next start, or the end of its section, so its
-//! size is an estimate. It is named after its address, as in
-//! `fn_0x8000040`. Code that nothing calls or points to stays part of the
-//! function before it.
+//! Each function runs to the next start, or the end of its section, less
+//! the padding before it, so its size is an estimate. It is named after its
+//! address, as in `fn_0x8000040`. Code that nothing calls or points to
+//! stays part of the function before it.
 
 use std::collections::BTreeSet;
 
@@ -65,11 +65,17 @@ pub(super) fn add(binary: &Binary, items: &mut Vec<Item>) {
     }
 
     for (start, end) in ranges(binary, &starts) {
+        // Without the padding that aligns the next function.
+        let size = binary
+            .bytes(start, end - start)
+            .map_or(end - start, |code| {
+                arch::code_size(binary.architecture, code, start)
+            });
         if let Some(item) = items
             .iter_mut()
             .find(|item| item.kind == ItemKind::Function && item.address == start)
         {
-            item.size = end - start;
+            item.size = size;
             item.size_estimated = true;
             continue;
         }
@@ -81,7 +87,7 @@ pub(super) fn add(binary: &Binary, items: &mut Vec<Item>) {
             aliases: Vec::new(),
             kind: ItemKind::Function,
             address: start,
-            size: end - start,
+            size,
             size_estimated: true,
             section,
             source: Source::Reached,

@@ -138,7 +138,8 @@ pub struct Item {
     pub size: u64,
     /// Whether `size` is a guess, made when the file doesn't record the
     /// size: the distance to the next item, or for unnamed data, to the next
-    /// address that something refers to.
+    /// address that something refers to. A function found by following the
+    /// code leaves out the padding before the next.
     pub size_estimated: bool,
     /// The section holding the item, as an index into [`Binary::sections`].
     pub section: usize,
