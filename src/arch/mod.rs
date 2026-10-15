@@ -1,10 +1,14 @@
 //! Finding references in machine code.
 //!
-//! Each instruction set has a module with one function, `scan`: given a
+//! Each instruction set has a module with a function `scan`: given a
 //! function's bytes and address, it reports every address the code calls,
 //! jumps to or otherwise uses. It doesn't need to understand anything else
 //! about the instructions. The graph module then works out which item each
 //! address belongs to.
+//!
+//! In stripped Cortex-M firmware, elfq also has to work out where functions
+//! end, so the Thumb module also tells the padding between functions apart
+//! and how a stretch of code ends.
 
 mod thumb;
 mod x86_64;
@@ -49,6 +53,21 @@ pub enum CodeReferenceKind {
     Memory(u64),
 }
 
+/// How a stretch of code ends, which tells whether another function can
+/// start right after it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ending {
+    /// The processor can run on past the end: the code ends inside an
+    /// instruction or an `it` block, or with an instruction that runs on
+    /// into the next.
+    RunsOn,
+    /// With a call, which returns unless what it calls never does, as with
+    /// a panic.
+    Call,
+    /// With a jump, a return or data, such as a literal pool.
+    Stops,
+}
+
 /// Whether elfq can read a file's code yet: x86-64, or 32-bit Arm when the
 /// code is Thumb, which is what Cortex-M runs. Code in the older Arm (A32)
 /// instruction set isn't read.
@@ -81,4 +100,23 @@ pub fn code_size(architecture: Architecture, code: &[u8], address: u64) -> u64 {
         _ => code.len(),
     };
     size as u64
+}
+
+/// How many bytes of padding between functions `code` starts with. Only
+/// Thumb tells padding apart; for other instruction sets, this is 0.
+pub fn leading_padding(architecture: Architecture, code: &[u8]) -> u64 {
+    let size = match architecture {
+        Architecture::Arm => thumb::leading_padding(code),
+        _ => 0,
+    };
+    size as u64
+}
+
+/// How the code that starts at `address` ends. Only Thumb is read; for other
+/// instruction sets, the code may always run on.
+pub fn ending(architecture: Architecture, code: &[u8], address: u64) -> Ending {
+    match architecture {
+        Architecture::Arm => thumb::ending(code, address),
+        _ => Ending::RunsOn,
+    }
 }

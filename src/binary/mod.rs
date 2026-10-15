@@ -13,7 +13,8 @@
 //! 4. the entry point, and in firmware the vector table, when no symbol
 //!    covers it;
 //! 5. in firmware that nothing lists functions for, the code itself,
-//!    followed from the entry point and the vector table (see
+//!    followed from the entry point, the vector table's handlers and the
+//!    Thumb addresses that code loads or data holds (see
 //!    `unnamed_functions.rs`);
 //! 6. references to data that has no symbol, such as vtables and string
 //!    literals (see `unnamed_data.rs`).
@@ -46,6 +47,16 @@ use object::{
     Architecture, Object, ObjectKind, ObjectSection, ObjectSymbol, SectionFlags, SectionKind,
     SymbolKind,
 };
+
+/// Arrays of pointers to the functions that the C runtime calls at startup
+/// and exit.
+pub(crate) const STARTUP_ARRAYS: [&str; 5] = [
+    ".preinit_array",
+    ".init_array",
+    ".fini_array",
+    ".ctors",
+    ".dtors",
+];
 
 /// An ELF file that has been read, with the items found in it.
 #[derive(Debug)]
@@ -170,9 +181,11 @@ pub enum Source {
     /// A section with a known purpose and no symbol, such as `.init_array`
     /// or the vector table's. The item is named after the section.
     Section,
-    /// Code that elfq followed from the entry point reaches the address, in
-    /// firmware that nothing lists functions for. The item is a function
-    /// named after its address, such as `fn_0x8000040`.
+    /// Following the code from the entry point and the vector table's
+    /// handlers, or from a Thumb address that code loads or data holds,
+    /// leads to the address, in firmware that nothing lists functions for
+    /// (see `unnamed_functions.rs`). The item is a function named after its
+    /// address, such as `fn_0x8000040`.
     Reached,
     /// Code or a stored pointer refers to the address, and nothing else
     /// names what is there, as with vtables and string literals. The item is
@@ -521,18 +534,11 @@ fn add_new_items(items: &mut Vec<Item>, new: Vec<Item>) {
 /// Items for the arrays of functions that run at startup and exit, which
 /// have no symbols of their own.
 fn section_items(sections: &[Section]) -> Vec<Item> {
-    const ARRAYS: [&str; 5] = [
-        ".preinit_array",
-        ".init_array",
-        ".fini_array",
-        ".ctors",
-        ".dtors",
-    ];
     sections
         .iter()
         .enumerate()
         .filter(|(_, section)| {
-            section.allocated && section.size > 0 && ARRAYS.contains(&section.name.as_str())
+            section.allocated && section.size > 0 && STARTUP_ARRAYS.contains(&section.name.as_str())
         })
         .map(|(index, section)| Item {
             name: section.name.clone(),

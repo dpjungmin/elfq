@@ -18,7 +18,7 @@
 
 use object::SectionKind;
 
-use crate::binary::{Binary, FileKind, Source};
+use crate::binary::{Binary, FileKind, STARTUP_ARRAYS, Source};
 
 use super::{Node, item_starting_at, pointer_target};
 
@@ -50,15 +50,6 @@ pub enum RootKind {
     Handler,
 }
 
-/// Arrays of pointers to the functions that the C runtime calls at startup
-/// and exit.
-const STARTUP_ARRAYS: [&str; 5] = [
-    ".preinit_array",
-    ".init_array",
-    ".fini_array",
-    ".ctors",
-    ".dtors",
-];
 /// Code that the dynamic loader runs at startup and exit.
 const STARTUP_CODE: [&str; 2] = [".init", ".fini"];
 
