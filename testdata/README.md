@@ -20,14 +20,14 @@ testdata/
 |---|---|---|
 | `c-x86_64*.elf` | C | x86-64 Linux, PIE, dynamically linked against glibc |
 | `c-cortex-m4*.elf` | C | Cortex-M4 bare metal, newlib-nano, `--gc-sections` |
-| `c-cortex-m7.elf` | C | Cortex-M7 bare metal, with code and data in TCM, OCRAM and flash |
+| `c-cortex-m7*.elf` | C | Cortex-M7 bare metal, with code and data in TCM, OCRAM and flash |
 | `c-deep.elf` | C | x86-64 Linux, PIE, with calls and inlined code nested 20 deep |
 | `cpp-x86_64*.elf` | C++ | x86-64 Linux, PIE, dynamically linked against glibc and libstdc++ |
 | `rust-x86_64*.elf` | Rust | x86-64 Linux, std |
 | `rust-cortex-m4*.elf` | Rust | Cortex-M4 bare metal, `no_std` |
 
 Each comes in up to three variants, matching what people usually have
-(`c-cortex-m7.elf` and `c-deep.elf` only in the first):
+(`c-deep.elf` only in the first):
 
 | Suffix | Symbols | DWARF | Typical of |
 |---|---|---|---|
