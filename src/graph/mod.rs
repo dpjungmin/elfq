@@ -186,7 +186,7 @@ impl Graph {
                 Some(to) => self.add(from, Node::Item(to), ReferenceKind::Call, site),
                 None => self.unresolved.push(unresolved(true, Some(target))),
             },
-            CodeReferenceKind::Jump(target) => {
+            CodeReferenceKind::Jump(target) | CodeReferenceKind::TailJump(target) => {
                 // Most jumps stay inside the function: loops and branches.
                 if function.contains(target) {
                     return;

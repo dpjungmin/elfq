@@ -154,7 +154,7 @@ impl Scanner<'_> {
         if first & 0xff7f == 0xf85f {
             let value = self.constant(literal(pc, first, u64::from(second & 0xfff)), 4)?;
             return Some(if rt == PC {
-                Jump(value & !1)
+                TailJump(value & !1)
             } else {
                 Address(value)
             });
@@ -252,7 +252,7 @@ fn branch(pc: u64, first: u16, second: u16) -> Option<CodeReferenceKind> {
     };
     match second & 0x5000 {
         0x5000 => Some(CodeReferenceKind::Call(long())),
-        0x1000 => Some(CodeReferenceKind::Jump(long())),
+        0x1000 => Some(CodeReferenceKind::TailJump(long())),
         // b<cond>.w: 21 bits. Conditions 0b1110 and 0b1111 are other
         // instructions, such as barriers.
         0x0000 if (first >> 6) & 0xf < 0xe => {
@@ -309,7 +309,7 @@ mod tests {
         );
         assert_eq!(
             kinds(&[0x00, 0xf0, 0x08, 0xb8], 0x0800_0184),
-            [(0x0800_0184, Jump(0x0800_0198))]
+            [(0x0800_0184, TailJump(0x0800_0198))]
         );
         assert_eq!(
             kinds(&[0x01, 0xe0], 0x0800_00ca),
@@ -318,6 +318,26 @@ mod tests {
         // bx lr returns; blx r3 calls through a register.
         assert_eq!(kinds(&[0x70, 0x47], 0), []);
         assert_eq!(kinds(&[0x98, 0x47], 0), [(0, IndirectCall)]);
+    }
+
+    #[test]
+    fn jumps_that_can_carry_on_in_another_function() {
+        // A conditional b.w stays inside its function; from the C sample:
+        //   80002dc: f040 8091  bne.w 8000402 <process_frame+0x13a>
+        assert_eq!(
+            kinds(&[0x40, 0xf0, 0x91, 0x80], 0x0800_02dc),
+            [(0x0800_02dc, Jump(0x0800_0402))]
+        );
+        // A linker's veneer loads where to jump; from the Cortex-M7 sample:
+        //   300009b0: f85f f000  ldr.w pc, [pc]
+        //   300009b4: 00000011   .word 0x00000011 <crc32 + 1>
+        assert_eq!(
+            kinds(
+                &[0x5f, 0xf8, 0x00, 0xf0, 0x11, 0x00, 0x00, 0x00],
+                0x3000_09b0
+            ),
+            [(0x3000_09b0, TailJump(0x10))]
+        );
     }
 
     #[test]

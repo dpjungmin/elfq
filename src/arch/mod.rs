@@ -26,6 +26,12 @@ pub enum CodeReferenceKind {
     /// A direct jump, conditional or not: `jmp target`. Usually to another
     /// place in the same function; otherwise a tail call.
     Jump(u64),
+    /// A direct jump of the kind that compilers and linkers use to carry on
+    /// in another function. Only Thumb tells these apart, and only as a
+    /// hint: an unconditional `b.w`, which long functions also use inside
+    /// themselves, and the `ldr.w pc` of a linker's veneer. The graph treats
+    /// it as a `Jump`.
+    TailJump(u64),
     /// A call through the pointer stored at an address: `call [pointer]`.
     CallThrough(u64),
     /// A jump through the pointer stored at an address: `jmp [pointer]`.
