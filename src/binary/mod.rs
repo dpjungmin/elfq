@@ -16,7 +16,8 @@
 //!
 //! Loading also reads the dynamic relocations (see `relocations.rs`), which
 //! say where the program stores pointers and which functions and variables
-//! it imports from shared libraries.
+//! it imports from shared libraries, and in Cortex-M firmware the vector
+//! table (see `vector_table.rs`).
 
 mod eh_frame;
 mod names;
@@ -25,9 +26,11 @@ mod range;
 mod relocations;
 mod symbols;
 mod unnamed_data;
+mod vector_table;
 
 pub use names::{demangle, short_names};
 pub use range::{AddressRange, MemoryBlock, memory_blocks};
+pub use vector_table::VectorTable;
 
 use std::collections::HashSet;
 use std::fmt;
@@ -78,6 +81,8 @@ pub struct Binary {
     /// block's address and reaches each variable at an offset from it, so
     /// taking that address can mean using any of them.
     pub merged_variables: Vec<(u64, u64)>,
+    /// The Cortex-M vector table, in Thumb files that have one.
+    pub vector_table: Option<VectorTable>,
     /// Problems that did not stop loading but may make answers incomplete.
     pub warnings: Vec<String>,
     /// The whole file.
@@ -234,11 +239,15 @@ impl Binary {
             relocations: Vec::new(),
             used_by_unwinder: Vec::new(),
             merged_variables: Vec::new(),
+            vector_table: None,
             warnings: Vec::new(),
             data: data.to_vec(),
             big_endian: !file.is_little_endian(),
         };
         (binary.imports, binary.relocations) = relocations::read(&file, architecture);
+        if binary.thumb {
+            binary.vector_table = vector_table::find(&binary);
+        }
 
         let (mut items, merged_variables) = symbols::items(&file, &binary.sections);
         binary.merged_variables = merged_variables;

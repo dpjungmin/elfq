@@ -160,6 +160,60 @@ fn stripped_firmware_has_only_its_entry_point_so_far() {
 }
 
 #[test]
+fn the_vector_table_is_found_by_its_shape() {
+    // Stripping keeps the table, so its handlers can be checked against the
+    // functions that the copy with symbols names.
+    for (sample, address) in [
+        ("c-cortex-m4", 0x0800_0000),
+        ("c-cortex-m7", 0x3000_0000),
+        ("rust-cortex-m4", 0x0800_0000),
+    ] {
+        let named = load(&format!("{sample}-nodebug.elf"));
+        let stripped = load(&format!("{sample}-stripped.elf"));
+        let table = stripped.vector_table.as_ref().unwrap();
+        // 16 words: the stack pointer and the Cortex-M exceptions. The walk
+        // stops at the end of the table's section, before the code.
+        assert_eq!((table.address, table.size), (address, 0x40), "{sample}");
+        assert_eq!(table.handlers[0], stripped.entry, "{sample}");
+        for &handler in &table.handlers {
+            assert!(
+                functions(&named).iter().any(|f| f.address == handler),
+                "{sample}: no function starts at {handler:#x}"
+            );
+        }
+        assert_eq!(named.vector_table.as_ref(), Some(table), "{sample}");
+    }
+    // The Cortex-M7 sample's SysTick handler is in ITCM, at address 0.
+    let m7 = load("c-cortex-m7-stripped.elf");
+    assert_eq!(m7.vector_table.unwrap().handlers.last(), Some(&0));
+    assert_eq!(load("c-x86_64.elf").vector_table, None);
+}
+
+#[test]
+fn reserved_vector_table_entries_can_hold_other_words() {
+    // NXP's LPC parts want the checksum of the first seven words in entry
+    // 7, which the architecture reserves. The table goes on past it.
+    let sample = "c-cortex-m4-stripped.elf";
+    let binary = load(sample);
+    let table = binary.vector_table.clone().unwrap();
+    let words: Vec<u32> = (0..7)
+        .map(|index| binary.pointer_at(table.address + index * 4).unwrap() as u32)
+        .collect();
+    let mut data = std::fs::read(path(&format!("testdata/bin/{sample}"))).unwrap();
+    let first_words: Vec<u8> = words[..2]
+        .iter()
+        .flat_map(|word| word.to_le_bytes())
+        .collect();
+    let offset = data
+        .windows(8)
+        .position(|bytes| bytes == first_words)
+        .unwrap();
+    let checksum = words.iter().fold(0u32, |sum, word| sum.wrapping_sub(*word));
+    data[offset + 28..offset + 32].copy_from_slice(&checksum.to_le_bytes());
+    assert_eq!(Binary::parse(&data).unwrap().vector_table, Some(table));
+}
+
+#[test]
 fn data_without_symbols_starts_where_something_refers_to_it() {
     let binary = load("c-x86_64.elf");
     // A string literal, which runs to the next one: "bad header\n" and its
