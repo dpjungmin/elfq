@@ -13,8 +13,8 @@
 
 use std::collections::BTreeMap;
 
-use super::CodeReference;
 use super::CodeReferenceKind::{self, *};
+use super::{CodeReference, Ending};
 
 /// The stack pointer, link register and program counter.
 const SP: u16 = 13;
@@ -22,13 +22,7 @@ const LR: u16 = 14;
 const PC: u16 = 15;
 
 pub(super) fn scan(code: &[u8], address: u64) -> Vec<CodeReference> {
-    let mut scanner = Scanner {
-        code,
-        address,
-        references: Vec::new(),
-        data: BTreeMap::new(),
-        low_halves: [None; 16],
-    };
+    let mut scanner = Scanner::new(code, address);
     let mut offset = 0;
     while let Some(first) = scanner.halfword(offset) {
         if let Some(end) = scanner.data_end(offset) {
@@ -41,6 +35,119 @@ pub(super) fn scan(code: &[u8], address: u64) -> Vec<CodeReference> {
         offset += size;
     }
     scanner.references
+}
+
+/// How many bytes of `code` its instructions and constants take, leaving
+/// out the padding after them: `nop`s, zeros, and the `0xd4d4` that lld
+/// fills gaps with. A constant that a load reads is never padding.
+pub(super) fn code_size(code: &[u8], address: u64) -> usize {
+    let mut scanner = Scanner::new(code, address);
+    let mut size = 0;
+    let mut offset = 0;
+    while let Some(first) = scanner.halfword(offset) {
+        if let Some(end) = scanner.data_end(offset) {
+            (offset, size) = (end, end);
+            continue;
+        }
+        let Some(step) = scanner.step(offset, first) else {
+            return code.len();
+        };
+        if !is_padding(first, scanner.halfword(offset + 2)) {
+            size = offset + step;
+        }
+        offset += step;
+    }
+    size.min(code.len())
+}
+
+/// How the code that starts at `address` ends: whether its last
+/// instructions could run on past its end. Padding after them doesn't
+/// count.
+pub(super) fn ending(code: &[u8], address: u64) -> Ending {
+    let mut scanner = Scanner::new(code, address);
+    let mut ending = Ending::Stops;
+    // How many of the next instructions an `it` makes conditional.
+    let mut conditional = 0;
+    let mut offset = 0;
+    while let Some(first) = scanner.halfword(offset) {
+        if let Some(end) = scanner.data_end(offset) {
+            (offset, ending, conditional) = (end, Ending::Stops, 0);
+            continue;
+        }
+        let Some(step) = scanner.step(offset, first) else {
+            // The code ends inside an instruction.
+            return Ending::RunsOn;
+        };
+        let second = scanner.halfword(offset + 2);
+        if !is_padding(first, second) {
+            ending = match conditional {
+                0 => exit(first, second.unwrap_or(0)),
+                _ => Ending::RunsOn,
+            };
+        }
+        conditional = match first {
+            // it, with a mask that says how many instructions follow.
+            _ if first & 0xff00 == 0xbf00 && first & 0xf != 0 => 4 - (first & 0xf).trailing_zeros(),
+            _ => conditional.saturating_sub(1),
+        };
+        offset += step;
+    }
+    if conditional > 0 {
+        return Ending::RunsOn;
+    }
+    ending
+}
+
+/// How many bytes of padding `code` starts with.
+pub(super) fn leading_padding(code: &[u8]) -> usize {
+    let halfword = |offset: usize| {
+        let bytes = code.get(offset..offset + 2)?;
+        Some(u16::from_le_bytes([bytes[0], bytes[1]]))
+    };
+    let mut offset = 0;
+    while let Some(first) = halfword(offset)
+        && is_padding(first, halfword(offset + 2))
+    {
+        offset += if first == 0xf3af { 4 } else { 2 };
+    }
+    offset
+}
+
+/// Whether the instruction that starts with `first`, followed by `second`,
+/// is padding that compilers and linkers put between functions: `nop`,
+/// `nop.w`, zeros, or lld's `0xd4d4`.
+fn is_padding(first: u16, second: Option<u16>) -> bool {
+    matches!(first, 0xbf00 | 0x46c0 | 0x0000 | 0xd4d4) || (first, second) == (0xf3af, Some(0x8000))
+}
+
+/// Where the processor goes after the instruction made of `first` and, if
+/// it is 32 bits long, `second`.
+fn exit(first: u16, second: u16) -> Ending {
+    let stops = if first >> 11 < 0b11101 {
+        // blx register
+        if first & 0xff80 == 0x4780 {
+            return Ending::Call;
+        }
+        // b, bx register, mov pc, pop {..., pc} and udf
+        first & 0xf800 == 0xe000
+            || first & 0xff80 == 0x4700
+            || first & 0xff87 == 0x4687
+            || first & 0xff00 == 0xbd00
+            || first & 0xff00 == 0xde00
+    } else {
+        let branch = first & 0xf800 == 0xf000;
+        // bl
+        if branch && second & 0xd000 == 0xd000 {
+            return Ending::Call;
+        }
+        // b.w, a load into pc, pop.w {..., pc}, tbb and tbh, and udf.w
+        (branch && second & 0xd000 == 0x9000)
+            || (matches!(first & 0xfff0, 0xf850 | 0xf8d0) && second >> 12 == PC)
+            || (first == 0xe8bd && second & 0x8000 != 0)
+            || (first == 0xe8df && second & 0xffe0 == 0xf000)
+            || (first & 0xfff0 == 0xf7f0 && second & 0xf000 == 0xa000)
+    };
+    if stops { Ending::Stops } else { Ending::RunsOn }
 }
 
 struct Scanner<'a> {
@@ -56,7 +163,17 @@ struct Scanner<'a> {
     low_halves: [Option<u32>; 16],
 }
 
-impl Scanner<'_> {
+impl<'a> Scanner<'a> {
+    fn new(code: &'a [u8], address: u64) -> Self {
+        Scanner {
+            code,
+            address,
+            references: Vec::new(),
+            data: BTreeMap::new(),
+            low_halves: [None; 16],
+        }
+    }
+
     /// Decodes the instruction at `offset` and reports its reference, if
     /// any. Returns the instruction's size.
     fn step(&mut self, offset: usize, first: u16) -> Option<usize> {
@@ -112,7 +229,9 @@ impl Scanner<'_> {
         }
         // adr register, label
         if op & 0xf800 == 0xa000 {
-            return Some(Address(align(pc) + u64::from(op & 0xff) * 4));
+            return Some(Address(
+                self.pointed_at(align(pc) + u64::from(op & 0xff) * 4),
+            ));
         }
         None
     }
@@ -144,17 +263,17 @@ impl Scanner<'_> {
         }
         // adr.w register, label, before or after the instruction.
         if first & 0xfbff == 0xf2af && second & 0x8000 == 0 {
-            return Some(Address(align(pc) - u64::from(imm12)));
+            return Some(Address(self.pointed_at(align(pc) - u64::from(imm12))));
         }
         if first & 0xfbff == 0xf20f && second & 0x8000 == 0 {
-            return Some(Address(align(pc) + u64::from(imm12)));
+            return Some(Address(self.pointed_at(align(pc) + u64::from(imm12))));
         }
         // ldr.w register, [pc, #imm]. Into pc it jumps, as in the veneers
         // that linkers add for calls too far for bl.
         if first & 0xff7f == 0xf85f {
             let value = self.constant(literal(pc, first, u64::from(second & 0xfff)), 4)?;
             return Some(if rt == PC {
-                Jump(value & !1)
+                TailJump(value & !1)
             } else {
                 Address(value)
             });
@@ -218,6 +337,14 @@ impl Scanner<'_> {
         Some(u64::from(u32::from_le_bytes(word)))
     }
 
+    /// Marks what an `adr` at `address` points to in this function as data,
+    /// and returns `address`. Compilers point `adr` at a `double`, or at a
+    /// table of words, so its first 8 bytes are data.
+    fn pointed_at(&mut self, address: u64) -> u64 {
+        self.constant(address, 8);
+        address
+    }
+
     /// Where the data at `offset` ends, if `offset` is inside data.
     fn data_end(&self, offset: usize) -> Option<usize> {
         let (_, &end) = self.data.range(..=offset).next_back()?;
@@ -252,7 +379,7 @@ fn branch(pc: u64, first: u16, second: u16) -> Option<CodeReferenceKind> {
     };
     match second & 0x5000 {
         0x5000 => Some(CodeReferenceKind::Call(long())),
-        0x1000 => Some(CodeReferenceKind::Jump(long())),
+        0x1000 => Some(CodeReferenceKind::TailJump(long())),
         // b<cond>.w: 21 bits. Conditions 0b1110 and 0b1111 are other
         // instructions, such as barriers.
         0x0000 if (first >> 6) & 0xf < 0xe => {
@@ -309,7 +436,7 @@ mod tests {
         );
         assert_eq!(
             kinds(&[0x00, 0xf0, 0x08, 0xb8], 0x0800_0184),
-            [(0x0800_0184, Jump(0x0800_0198))]
+            [(0x0800_0184, TailJump(0x0800_0198))]
         );
         assert_eq!(
             kinds(&[0x01, 0xe0], 0x0800_00ca),
@@ -318,6 +445,26 @@ mod tests {
         // bx lr returns; blx r3 calls through a register.
         assert_eq!(kinds(&[0x70, 0x47], 0), []);
         assert_eq!(kinds(&[0x98, 0x47], 0), [(0, IndirectCall)]);
+    }
+
+    #[test]
+    fn jumps_that_can_carry_on_in_another_function() {
+        // A conditional b.w stays inside its function; from the C sample:
+        //   80002dc: f040 8091  bne.w 8000402 <process_frame+0x13a>
+        assert_eq!(
+            kinds(&[0x40, 0xf0, 0x91, 0x80], 0x0800_02dc),
+            [(0x0800_02dc, Jump(0x0800_0402))]
+        );
+        // A linker's veneer loads where to jump; from the Cortex-M7 sample:
+        //   300009b0: f85f f000  ldr.w pc, [pc]
+        //   300009b4: 00000011   .word 0x00000011 <crc32 + 1>
+        assert_eq!(
+            kinds(
+                &[0x5f, 0xf8, 0x00, 0xf0, 0x11, 0x00, 0x00, 0x00],
+                0x3000_09b0
+            ),
+            [(0x3000_09b0, TailJump(0x10))]
+        );
     }
 
     #[test]
@@ -336,6 +483,55 @@ mod tests {
         // movw r0, #0x1234; movt r0, #0x0800
         let code = [0x41, 0xf2, 0x34, 0x20, 0xc0, 0xf6, 0x00, 0x00];
         assert_eq!(kinds(&code, 0), [(4, Address(0x0800_1234))]);
+    }
+
+    #[test]
+    fn padding_after_the_code_is_left_out() {
+        // bx lr, then nop and nop.w, which align what follows.
+        assert_eq!(
+            code_size(&[0x70, 0x47, 0x00, 0xbf, 0xaf, 0xf3, 0x00, 0x80], 0),
+            2
+        );
+        // b . (an endless loop), then lld's filler.
+        assert_eq!(code_size(&[0xfe, 0xe7, 0xd4, 0xd4], 0), 2);
+        // ldr r2, [pc, #0]; bx lr; then the constant it loads, which is 0.
+        let code = [0x00, 0x4a, 0x70, 0x47, 0x00, 0x00, 0x00, 0x00];
+        assert_eq!(code_size(&code, 0x0800_0040), 8);
+    }
+
+    #[test]
+    fn what_adr_points_to_is_data() {
+        // adr r0, 0x4; bx lr; then the double 0.0 it points to, which would
+        // otherwise look like padding.
+        let code = [0x00, 0xa0, 0x70, 0x47, 0, 0, 0, 0, 0, 0, 0, 0];
+        assert_eq!(kinds(&code, 0), [(0, Address(4))]);
+        assert_eq!(code_size(&code, 0), 12);
+    }
+
+    #[test]
+    fn how_code_ends() {
+        // bx lr returns, then nop pads.
+        assert_eq!(ending(&[0x70, 0x47, 0x00, 0xbf], 0), Ending::Stops);
+        // bl calls, and movs r0, #1 runs on.
+        assert_eq!(ending(&[0xff, 0xf7, 0xd3, 0xff], 0x0800_010e), Ending::Call);
+        assert_eq!(ending(&[0x01, 0x20], 0), Ending::RunsOn);
+        // The first half of movw r0, #0x1234.
+        assert_eq!(ending(&[0x41, 0xf2], 0), Ending::RunsOn);
+        // it eq; bxeq lr: the return may not happen. And ite eq; moveq r0,
+        // #1: the code ends inside the `it` block.
+        assert_eq!(ending(&[0x08, 0xbf, 0x70, 0x47], 0), Ending::RunsOn);
+        assert_eq!(ending(&[0x0c, 0xbf, 0x01, 0x20], 0), Ending::RunsOn);
+        // ldr r2, [pc, #0]; bx lr; then the constant 1 it loads.
+        let code = [0x00, 0x4a, 0x70, 0x47, 0x01, 0x00, 0x00, 0x00];
+        assert_eq!(ending(&code, 0), Ending::Stops);
+    }
+
+    #[test]
+    fn padding_before_the_code_is_counted() {
+        // nop, nop.w, then bx lr.
+        let code = [0x00, 0xbf, 0xaf, 0xf3, 0x00, 0x80, 0x70, 0x47];
+        assert_eq!(leading_padding(&code), 6);
+        assert_eq!(leading_padding(&code[6..]), 0);
     }
 
     #[test]

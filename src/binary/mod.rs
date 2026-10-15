@@ -10,13 +10,19 @@
 //!    `.init_array`, which have no symbols;
 //! 3. the unwind table, `.eh_frame`, which still describes most functions in
 //!    stripped x86-64 files (see `eh_frame.rs`);
-//! 4. the entry point;
-//! 5. references to data that has no symbol, such as vtables and string
+//! 4. the entry point, and in firmware the vector table, when no symbol
+//!    covers it;
+//! 5. in firmware that nothing lists functions for, the code itself,
+//!    followed from the entry point, the vector table's handlers and the
+//!    Thumb addresses that code loads or data holds (see
+//!    `unnamed_functions.rs`);
+//! 6. references to data that has no symbol, such as vtables and string
 //!    literals (see `unnamed_data.rs`).
 //!
 //! Loading also reads the dynamic relocations (see `relocations.rs`), which
 //! say where the program stores pointers and which functions and variables
-//! it imports from shared libraries.
+//! it imports from shared libraries, and in Cortex-M firmware the vector
+//! table (see `vector_table.rs`).
 
 mod eh_frame;
 mod names;
@@ -25,9 +31,12 @@ mod range;
 mod relocations;
 mod symbols;
 mod unnamed_data;
+mod unnamed_functions;
+mod vector_table;
 
 pub use names::{demangle, short_names};
 pub use range::{AddressRange, MemoryBlock, memory_blocks};
+pub use vector_table::VectorTable;
 
 use std::collections::HashSet;
 use std::fmt;
@@ -38,6 +47,16 @@ use object::{
     Architecture, Object, ObjectKind, ObjectSection, ObjectSymbol, SectionFlags, SectionKind,
     SymbolKind,
 };
+
+/// Arrays of pointers to the functions that the C runtime calls at startup
+/// and exit.
+pub(crate) const STARTUP_ARRAYS: [&str; 5] = [
+    ".preinit_array",
+    ".init_array",
+    ".fini_array",
+    ".ctors",
+    ".dtors",
+];
 
 /// An ELF file that has been read, with the items found in it.
 #[derive(Debug)]
@@ -78,6 +97,8 @@ pub struct Binary {
     /// block's address and reaches each variable at an offset from it, so
     /// taking that address can mean using any of them.
     pub merged_variables: Vec<(u64, u64)>,
+    /// The Cortex-M vector table, in Thumb files that have one.
+    pub vector_table: Option<VectorTable>,
     /// Problems that did not stop loading but may make answers incomplete.
     pub warnings: Vec<String>,
     /// The whole file.
@@ -128,7 +149,8 @@ pub struct Item {
     pub size: u64,
     /// Whether `size` is a guess, made when the file doesn't record the
     /// size: the distance to the next item, or for unnamed data, to the next
-    /// address that something refers to.
+    /// address that something refers to. A function found by following the
+    /// code leaves out the padding before the next.
     pub size_estimated: bool,
     /// The section holding the item, as an index into [`Binary::sections`].
     pub section: usize,
@@ -156,13 +178,30 @@ pub enum Source {
     /// The procedure linkage table. The item is a stub named after the
     /// import it jumps to, or the table's header named after its section.
     Plt,
-    /// A section with a known purpose, such as `.init_array`, and no symbol.
-    /// The item is named after the section.
+    /// A section with a known purpose and no symbol, such as `.init_array`
+    /// or the vector table's. The item is named after the section.
     Section,
+    /// Following the code from the entry point and the vector table's
+    /// handlers, or from a Thumb address that code loads or data holds,
+    /// leads to the address, in firmware that nothing lists functions for
+    /// (see `unnamed_functions.rs`). The item is a function named after its
+    /// address, such as `fn_0x8000040`.
+    Reached,
     /// Code or a stored pointer refers to the address, and nothing else
     /// names what is there, as with vtables and string literals. The item is
     /// data named after its section and address, such as `.rodata@0x2004`.
     Reference,
+}
+
+impl Source {
+    /// Whether the source lists the file's functions, as the symbol tables
+    /// and the unwind table do.
+    pub fn lists_functions(self) -> bool {
+        matches!(
+            self,
+            Source::SymbolTable | Source::DynamicSymbolTable | Source::EhFrame
+        )
+    }
 }
 
 /// A place where the dynamic loader writes an address at startup, such as a
@@ -234,11 +273,15 @@ impl Binary {
             relocations: Vec::new(),
             used_by_unwinder: Vec::new(),
             merged_variables: Vec::new(),
+            vector_table: None,
             warnings: Vec::new(),
             data: data.to_vec(),
             big_endian: !file.is_little_endian(),
         };
         (binary.imports, binary.relocations) = relocations::read(&file, architecture);
+        if binary.thumb {
+            binary.vector_table = vector_table::find(&binary);
+        }
 
         let (mut items, merged_variables) = symbols::items(&file, &binary.sections);
         binary.merged_variables = merged_variables;
@@ -261,6 +304,13 @@ impl Binary {
                 .push(format!("cannot read .eh_frame: {err}")),
         }
         add_entry_item(&mut items, binary.entry, &binary.sections);
+        items.extend(vector_table::item(&binary, &items));
+        let listed = items
+            .iter()
+            .any(|item| item.kind == ItemKind::Function && item.source.lists_functions());
+        if binary.thumb && binary.kind == FileKind::Executable && !listed {
+            unnamed_functions::add(&binary, &mut items);
+        }
 
         sort_items(&mut items);
         estimate_missing_sizes(&mut items, &binary.sections);
@@ -398,6 +448,7 @@ impl fmt::Display for Source {
             Source::EntryPoint => "entry",
             Source::Plt => "plt",
             Source::Section => "section",
+            Source::Reached => "reached",
             Source::Reference => "reference",
         })
     }
@@ -483,18 +534,11 @@ fn add_new_items(items: &mut Vec<Item>, new: Vec<Item>) {
 /// Items for the arrays of functions that run at startup and exit, which
 /// have no symbols of their own.
 fn section_items(sections: &[Section]) -> Vec<Item> {
-    const ARRAYS: [&str; 5] = [
-        ".preinit_array",
-        ".init_array",
-        ".fini_array",
-        ".ctors",
-        ".dtors",
-    ];
     sections
         .iter()
         .enumerate()
         .filter(|(_, section)| {
-            section.allocated && section.size > 0 && ARRAYS.contains(&section.name.as_str())
+            section.allocated && section.size > 0 && STARTUP_ARRAYS.contains(&section.name.as_str())
         })
         .map(|(index, section)| Item {
             name: section.name.clone(),

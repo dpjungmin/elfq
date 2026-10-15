@@ -1,10 +1,14 @@
 //! Finding references in machine code.
 //!
-//! Each instruction set has a module with one function, `scan`: given a
+//! Each instruction set has a module with a function `scan`: given a
 //! function's bytes and address, it reports every address the code calls,
 //! jumps to or otherwise uses. It doesn't need to understand anything else
 //! about the instructions. The graph module then works out which item each
 //! address belongs to.
+//!
+//! In stripped Cortex-M firmware, elfq also has to work out where functions
+//! end, so the Thumb module also tells the padding between functions apart
+//! and how a stretch of code ends.
 
 mod thumb;
 mod x86_64;
@@ -26,6 +30,12 @@ pub enum CodeReferenceKind {
     /// A direct jump, conditional or not: `jmp target`. Usually to another
     /// place in the same function; otherwise a tail call.
     Jump(u64),
+    /// A direct jump of the kind that compilers and linkers use to carry on
+    /// in another function. Only Thumb tells these apart, and only as a
+    /// hint: an unconditional `b.w`, which long functions also use inside
+    /// themselves, and the `ldr.w pc` of a linker's veneer. The graph treats
+    /// it as a `Jump`.
+    TailJump(u64),
     /// A call through the pointer stored at an address: `call [pointer]`.
     CallThrough(u64),
     /// A jump through the pointer stored at an address: `jmp [pointer]`.
@@ -41,6 +51,21 @@ pub enum CodeReferenceKind {
     Address(u64),
     /// Reading or writing memory at an address, as when using a variable.
     Memory(u64),
+}
+
+/// How a stretch of code ends, which tells whether another function can
+/// start right after it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ending {
+    /// The processor can run on past the end: the code ends inside an
+    /// instruction or an `it` block, or with an instruction that runs on
+    /// into the next.
+    RunsOn,
+    /// With a call, which returns unless what it calls never does, as with
+    /// a panic.
+    Call,
+    /// With a jump, a return or data, such as a literal pool.
+    Stops,
 }
 
 /// Whether elfq can read a file's code yet: x86-64, or 32-bit Arm when the
@@ -62,5 +87,36 @@ pub fn scan(architecture: Architecture, code: &[u8], address: u64) -> Vec<CodeRe
         Architecture::X86_64 => x86_64::scan(code, address),
         Architecture::Arm => thumb::scan(code, address),
         _ => Vec::new(),
+    }
+}
+
+/// How many bytes at the start of `code` a function's instructions and
+/// constants take, when `code` may run on past its end to the next
+/// function. Only Thumb tells the padding between functions apart; for
+/// other instruction sets, this is all of `code`.
+pub fn code_size(architecture: Architecture, code: &[u8], address: u64) -> u64 {
+    let size = match architecture {
+        Architecture::Arm => thumb::code_size(code, address),
+        _ => code.len(),
+    };
+    size as u64
+}
+
+/// How many bytes of padding between functions `code` starts with. Only
+/// Thumb tells padding apart; for other instruction sets, this is 0.
+pub fn leading_padding(architecture: Architecture, code: &[u8]) -> u64 {
+    let size = match architecture {
+        Architecture::Arm => thumb::leading_padding(code),
+        _ => 0,
+    };
+    size as u64
+}
+
+/// How the code that starts at `address` ends. Only Thumb is read; for other
+/// instruction sets, the code may always run on.
+pub fn ending(architecture: Architecture, code: &[u8], address: u64) -> Ending {
+    match architecture {
+        Architecture::Arm => thumb::ending(code, address),
+        _ => Ending::RunsOn,
     }
 }

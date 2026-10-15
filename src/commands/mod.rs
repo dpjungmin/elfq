@@ -275,15 +275,14 @@ fn sections_in(binary: &Binary, range: AddressRange) -> Vec<&str> {
         .collect()
 }
 
-/// Whether the file lists its functions where elfq looks for them: in a
-/// symbol table or an unwind table. Stripped firmware has neither, so elfq
-/// finds only the function where it starts.
-fn lists_functions(binary: &Binary) -> bool {
-    binary.items.iter().any(|item| {
-        matches!(
-            item.source,
-            Source::SymbolTable | Source::DynamicSymbolTable | Source::EhFrame
-        )
+/// Whether elfq found the file's functions: a symbol table or an unwind
+/// table lists them, or in firmware elfq followed the code (see
+/// `unnamed_functions.rs`). Otherwise it has only the entry point, and
+/// doesn't know its size.
+fn found_functions(binary: &Binary) -> bool {
+    binary.items.iter().any(|item| match item.source {
+        Source::EntryPoint | Source::Reached => item.size > 0,
+        source => source.lists_functions(),
     })
 }
 
@@ -316,6 +315,8 @@ fn shell_quote(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
 
     #[test]
@@ -340,6 +341,37 @@ mod tests {
     fn a_sentence_joins_its_last_two_words_with_and() {
         assert_eq!(addresses_text(&[0x10]), "0x10");
         assert_eq!(addresses_text(&[0x10, 0x20]), "0x10 and 0x20");
+    }
+
+    #[test]
+    fn a_file_whose_functions_elfq_cant_find_says_so() {
+        // Such as stripped firmware for a processor whose code elfq can
+        // read but not follow yet: it has only its entry point.
+        let path = Path::new("testdata/bin/c-cortex-m4-stripped.elf");
+        let mut binary = Binary::load(&Path::new(env!("CARGO_MANIFEST_DIR")).join(path)).unwrap();
+        binary
+            .items
+            .retain(|item| item.source == Source::EntryPoint);
+        binary.items[0].size = 0;
+        let mut out = Vec::new();
+        overview::run(path, &binary, None, Format::Text, &mut out).unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "\
+testdata/bin/c-cortex-m4-stripped.elf: 32-bit Arm executable, stripped
+1 function
+The file has no symbols or unwind table, so elfq can't find its functions yet.
+
+MEMORY                  SIZE  SECTIONS
+0x08000000..0x08000dec  3564  .isr_vector .text .rodata .ARM.exidx
+0x20000000..0x20000048    72  .data .bss
+"
+        );
+        let error = top::run(&binary, None, false, Format::Text, &mut Vec::new()).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "the file has no symbols or unwind table, so elfq can't find its functions yet"
+        );
     }
 
     #[test]

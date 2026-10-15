@@ -320,8 +320,8 @@ fn imports_are_reached_through_stubs_and_the_global_offset_table() {
 fn stripping_keeps_the_calls_between_functions() {
     // Names differ, so compare by address. Stripped files lose their data
     // symbols, which changes how code reaches data, and the few functions
-    // that have no unwind information. So compare calls and tail calls
-    // between the functions that both files have.
+    // that neither the unwind table lists nor the code leads to. So compare
+    // calls and tail calls between the functions that both files have.
     let shape = |binary: &Binary, graph: &Graph, functions: &[u64]| {
         let function = |index: usize| {
             let item = &binary.items[index];
@@ -343,7 +343,14 @@ fn stripping_keeps_the_calls_between_functions() {
         shape.sort();
         shape
     };
-    for sample in ["c-x86_64", "rust-x86_64"] {
+    for sample in [
+        "c-x86_64",
+        "rust-x86_64",
+        "c-cortex-m4",
+        "c-cortex-m4-cmsis",
+        "c-cortex-m7",
+        "rust-cortex-m4",
+    ] {
         let (named, named_graph) = load(&format!("{sample}-nodebug.elf"));
         let (stripped, stripped_graph) = load(&format!("{sample}-stripped.elf"));
         let functions: Vec<u64> = stripped
@@ -354,8 +361,45 @@ fn stripping_keeps_the_calls_between_functions() {
             .collect();
         let named_shape = shape(&named, &named_graph, &functions);
         let stripped_shape = shape(&stripped, &stripped_graph, &functions);
-        assert!(named_shape.len() > 50, "{sample}");
+        assert!(named_shape.len() > 40, "{sample}");
         assert_eq!(named_shape, stripped_shape, "{sample}");
+    }
+}
+
+#[test]
+fn stripped_firmware_keeps_the_pointers_in_its_vector_table() {
+    // Stripping removes the table's symbols but not its words, so an item
+    // still holds them and points to the same handlers.
+    let handlers = |name: &str| {
+        let (binary, graph) = load(name);
+        let table = binary.vector_table.as_ref().unwrap();
+        let in_table = |site: u64| (table.address..table.address + table.size).contains(&site);
+        let mut handlers: Vec<u64> = graph
+            .references
+            .iter()
+            .filter(|r| r.kind == Pointer && in_table(r.site))
+            .filter_map(|r| match r.to {
+                Node::Item(to) => Some(binary.items[to].address),
+                Node::Import(_) => None,
+            })
+            .collect();
+        handlers.sort();
+        handlers.dedup();
+        handlers
+    };
+    for sample in [
+        "c-cortex-m4",
+        "c-cortex-m4-cmsis",
+        "c-cortex-m7",
+        "rust-cortex-m4",
+    ] {
+        let named = handlers(&format!("{sample}-nodebug.elf"));
+        assert!(named.len() >= 3, "{sample}");
+        assert_eq!(
+            handlers(&format!("{sample}-stripped.elf")),
+            named,
+            "{sample}"
+        );
     }
 }
 

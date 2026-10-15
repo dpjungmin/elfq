@@ -206,31 +206,36 @@ references and computes dominators and paths, `commands` run queries, and
    dynamic relocations.
 2. **Discover items**, each with an address, size and a record of how it was
    found. Sources, best first: the symbol table; the dynamic symbol table;
-   PLT stubs, named after the import they jump to (`write@plt`), and
-   arrays of startup functions such as `.init_array`, named after their
-   section; `.eh_frame` entries (on x86-64 they cover almost every
-   function, even in stripped files); the entry point; targets of calls
-   found during scanning; and data that code or a stored pointer refers to
-   but no symbol names, such as vtables, string literals and, in stripped
-   files, variables. Such data starts at each address something refers to
-   and runs to the next one, the next item or the end of its section; elfq
-   never guesses which function it belongs to. Items without a symbol get
-   names like `fn_0x1690`, `.rodata@0x2004` (section and address) or
-   `entry`. Rust and C++ symbols are demangled, and the mangled symbol
-   stays as an alias. `elfq FILE debug items` lists what was found, for checking this
-   step.
+   PLT stubs, named after the import they jump to (`write@plt`), and arrays
+   of startup functions such as `.init_array`, named after their section;
+   `.eh_frame` entries (on x86-64 they cover almost every function, even in
+   stripped files); the entry point, and the Cortex-M vector table when no
+   item covers any of it, named after its section; in firmware that nothing
+   lists functions for, the functions that the code leads to from the entry
+   point, the vector table's handlers and the startup arrays, and those
+   whose Thumb addresses code loads or data holds, where the code before
+   them ends (see `unnamed_functions.rs`); and data that code or a stored
+   pointer refers to but no symbol names, such as vtables, string literals
+   and, in stripped files, variables and the constants that some linker
+   scripts put in `.text`. Such data starts at each address something refers
+   to and runs to the next one, the next item or the end of its section;
+   elfq never guesses which function it belongs to. Items without a symbol
+   get names like `fn_0x1690`, `.rodata@0x2004` (section and address) or
+   `entry`. Rust and C++ symbols are demangled, and the mangled symbol stays
+   as an alias. `elfq FILE debug items` lists what was found, for checking
+   this step.
 3. **Scan code** with an architecture backend. For each function it decodes
    the instructions and reports direct calls, tail jumps to other items,
    indirect call sites (target unknown), and PC-relative references to items
    (`lea rip+...` on x86-64; `adr`, literal-pool `ldr` and `movw`/`movt` on
-   Thumb). It does not need a full disassembler, only these instructions.
-   On Thumb it also skips the literal pools and jump tables inside
-   functions, which would otherwise decode as instructions. The entry
-   point's code is a special case: startup code copies or clears whole
-   sections such as `.data` and `.bss`, loading where each starts and ends
-   through symbols that the linker script defines, such as `_sdata` and
-   `_edata`. When the entry point loads both ends of a section, those
-   addresses aren't uses of the items that start there.
+   Thumb). It does not need a full disassembler, only these instructions. On
+   Thumb it also skips the literal pools, jump tables and constants that
+   `adr` points at inside functions, which would otherwise decode as
+   instructions. The entry point's code is a special case: startup code
+   copies or clears whole sections such as `.data` and `.bss`, loading where
+   each starts and ends through symbols that the linker script defines, such
+   as `_sdata` and `_edata`. When the entry point loads both ends of a
+   section, those addresses aren't uses of the items that start there.
 4. **Scan data** for references from data items to other items. When the file
    is position-independent (most Linux executables are), its dynamic
    relocations give every stored pointer exactly. Otherwise, as in firmware,
@@ -240,18 +245,20 @@ references and computes dominators and paths, `commands` run queries, and
    because addresses are large numbers.
 5. **Find roots**, where the program starts running: the ELF entry point;
    the functions in `.preinit_array`, `.init_array` and `.fini_array`, and
-   the code in `.init` and `.fini`; the PLT header, which the dynamic
-   loader uses; personality routines that `.eh_frame` names, which the
-   unwinder calls; notes such as `__abi_tag`; and the Cortex-M vector table,
-   recognized by its shape rather than its section name: a word holding the
-   entry point's Thumb address, then handlers until an entry is neither 0
-   nor a handler. Not yet: exported symbols of shared libraries, which need
-   a shared-library sample, and `--root SYMBOL`. Non-allocated sections and
-   unwind tables (`.eh_frame`, `.ARM.exidx`) are never sources of
-   references; otherwise everything would look reachable. One more source
-   is only on Arm: LLVM merges small variables into one block
-   (`.L_MergedGlobals`) and code uses them through the block's address, so
-   that address counts as a use of each variable in the block.
+   the code in `.init` and `.fini`; the PLT header, which the dynamic loader
+   uses; personality routines that `.eh_frame` names, which the unwinder
+   calls; notes such as `__abi_tag`; and the Cortex-M vector table,
+   recognized by its shape rather than its section name: a word in data
+   holding the entry point's Thumb address, or the second word of a code
+   section, where a linker script may put the table; then handlers until an
+   entry other than a reserved one is neither 0 nor the address of Thumb
+   code, or the table's section ends. Not yet: exported symbols of shared
+   libraries, which need a shared-library sample, and `--root SYMBOL`.
+   Non-allocated sections and unwind tables (`.eh_frame`, `.ARM.exidx`) are
+   never sources of references; otherwise everything would look reachable.
+   One more source is only on Arm: LLVM merges small variables into one
+   block (`.L_MergedGlobals`) and code uses them through the block's
+   address, so that address counts as a use of each variable in the block.
 6. **Analyze**: compute the dominator tree once from a virtual node that
    points at every root. `retained` and `top` read it. `why` searches from
    the roots for the shortest chain to each item that uses SYMBOL, going
@@ -273,7 +280,7 @@ src/
 ├── cli.rs         clap definitions, one struct per subcommand.
 ├── commands/      One file per subcommand: find the symbol (symbol.rs), run a query, render (tree.rs builds the rows of retained sizes, json.rs has shared JSON shapes).
 ├── binary/        ELF loading, item discovery, names and address ranges.
-├── arch/          One file per instruction set (x86_64.rs, thumb.rs), each with one `scan` function.
+├── arch/          One file per instruction set (x86_64.rs, thumb.rs), each with a `scan` function.
 ├── graph/         The reference graph, its roots, dominator tree and shortest paths.
 ├── debuginfo/     DWARF, when the file has it: what the compiler inlined.
 └── render/        Tables, and trees drawn in a table's last column (tree.rs).
@@ -332,19 +339,26 @@ starts.
 | 4. Polish | 4a: C++ demangling, with a C++ sample. 4b: JSON output for `callers`, `callees`, `exclusive` and `inlined`. 4c: JSON for `top`, `retained`, `why` and the overview. 4d: warnings where indirect calls make answers uncertain. |
 | 5. Memory ranges | 5a: a Cortex-M7 sample with code and data in ITCM, DTCM, OCRAM and flash, at the addresses an i.MX RT1176 uses; startup code no longer seems to use the first item of each section it copies. 5b: `--range START..END` or `--range START+SIZE` for the overview and `top`, and the overview lists the address blocks that the file's sections occupy. 5c: `--range` for `retained` and `exclusive`. |
 | 6. Clear output | 6a: trees deeper than 9 levels continue below them. 6b: shorter lead lines and notes for the overview, `top` and `retained`, which say what a size means. 6c: no line sums up a single item, and "1 byte". 6d: shorter lead lines and notes for `why`, `callers`, `callees` and `inlined`, and "uses" for data on every architecture. 6e: `exclusive` folds into `retained`, and `--all` shows every item; `inlined SYMBOL` instead of `inlined --in SYMBOL`; `--json` instead of `--format json`; `elfq help top` works. 6f: fixes for what step 6 turned up: no `--range` suggestions that fail on stripped firmware, no empty tree for a range that nothing reaches, and no crash on an argument that isn't UTF-8. |
-| 7. Stripped firmware | 7a: stripped and `-nodebug` copies of the Cortex-M7 sample. |
+| 7. Stripped firmware | 7a: stripped and `-nodebug` copies of the Cortex-M7 sample. 7b: the vector table is found while loading the file. 7c: the Thumb decoder tells apart the jumps that can carry on in another function. 7d: functions in stripped firmware, found by following the code from the entry point and the vector table. 7e: functions that only data points to, such as Rust trait methods in vtables. 7f: an item for the vector table of stripped firmware, so that its bytes count. 7g: those functions leave out the padding after them, so their sizes match the symbols'. 7h: fixes for what a review and 91 other builds turned up: the startup arrays are followed too, a `b.w` that stays in its function starts nothing, and an address that code loads or data holds starts a function only where the code before it ends, so numbers that look like addresses start none. 7i: firmware whose linker script puts the vector table and the constants in `.text`, as CMSIS's template does, with a sample laid out that way. |
 
 Later: a query language, and worst-case stack depth (call graph plus each
 function's stack frame).
 
 ## Open questions
 
-1. **Stripped Cortex-M files** have no symbols and no `.eh_frame`, so elfq
-   finds only the entry point in them today. Finding functions would mean
-   following calls from the entry point and the vector table.
-2. **Where unnamed data ends.** Unnamed data starts wherever something
+1. **Where unnamed data ends.** Unnamed data starts wherever something
    refers to it, so a struct in a stripped file whose fields code uses one
    at a time becomes one item per field, and the end address of an array,
    which loops compare against, can start an item of its own. The bytes
    still all count, split across more items than the source has. Worth
    fixing only if it makes real answers confusing.
+2. **Functions that following the code misses.** In stripped firmware,
+   code that nothing calls or points to, and a function that code reaches
+   only with a 16-bit `b`, stay part of the function before them. A `bl`
+   to a place inside its own function, as Cortex-M0 code uses for far
+   jumps, and a forward `b.w` in a long unoptimized function start a
+   function where there is none. In big-endian (BE8) firmware, elfq reads
+   the constants in code the wrong way round, so it misses the functions
+   that only their addresses lead to. The bytes still all count, under a
+   neighbouring function. Worth improving if it makes answers on real
+   firmware confusing.

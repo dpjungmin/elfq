@@ -24,9 +24,12 @@ pub(super) fn items(binary: &Binary) -> Vec<Item> {
         // Zero is a null pointer, or just a number.
         .filter(|&address| address != 0 && binary.item_at(address).is_none())
         .filter(|&address| {
-            binary
-                .section_at(address)
-                .is_some_and(|index| holds_data(&binary.sections[index]))
+            binary.section_at(address).is_some_and(|index| {
+                let section = &binary.sections[index];
+                // In Thumb code, what no function covers is constants, as
+                // when a linker script puts `.rodata` in `.text`.
+                holds_data(section) || (binary.thumb && section.kind == SectionKind::Text)
+            })
         })
         .collect();
     starts.sort_unstable();
@@ -94,7 +97,7 @@ fn referenced_addresses(binary: &Binary) -> Vec<u64> {
 /// Whether unnamed data in `section` gets items. Not in code, and not in
 /// the global offset table: elfq follows the pointers stored there to what
 /// they point at instead.
-fn holds_data(section: &Section) -> bool {
+pub(super) fn holds_data(section: &Section) -> bool {
     matches!(
         section.kind,
         SectionKind::Data

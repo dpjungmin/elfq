@@ -118,33 +118,39 @@ SysTick_Handler is in the vector table: the processor runs it on an interrupt or
 }
 
 #[test]
-fn stripped_firmware_has_only_its_entry_point() {
-    // Without symbols or an unwind table, elfq finds only the reset
-    // handler, whose size it doesn't know.
-    let stripped = "testdata/bin/c-cortex-m4-stripped.elf";
+fn stripped_firmware_is_followed_from_its_entry_point() {
+    // Without symbols or an unwind table, elfq finds the functions by
+    // following the code, and names them by address.
     assert_eq!(
-        stdout(&[stripped]),
+        stdout(&["testdata/bin/c-cortex-m4-stripped.elf"]),
         "\
 testdata/bin/c-cortex-m4-stripped.elf: 32-bit Arm executable, stripped
-1 function
-The file has no symbols or unwind table, so elfq can't find its functions yet.
+25 functions and 27 data objects, 3586 bytes of code and data
+Functions and data without symbols are named by address, like fn_0x8000040 and .rodata@0x80008f0.
 
 MEMORY                  SIZE  SECTIONS
 0x08000000..0x08000dec  3564  .isr_vector .text .rodata .ARM.exidx
 0x20000000..0x20000048    72  .data .bss
+
+RETAINED    OWN  ITEM
+    3120    ~76  entry
+    2574   ~132  ├─ fn_0x8000518
+    1684   ~376  │  ├─ fn_0x80002c8
+    1076    ~52  │  │  ├─ fn_0x8000060
+    1024  ~1024  │  │  │  └─ .rodata@0x80009e4
+     232         │  │  └─ 6 more
+     758         │  └─ 28 more
+     470         └─ 2 more
+     466         11 more
+
+Try:
+  elfq testdata/bin/c-cortex-m4-stripped.elf --range 0x08000000..0x08000dec
+  elfq testdata/bin/c-cortex-m4-stripped.elf --range 0x20000000..0x20000048
+  elfq testdata/bin/c-cortex-m4-stripped.elf top
+  elfq testdata/bin/c-cortex-m4-stripped.elf retained entry
+  elfq testdata/bin/c-cortex-m4-stripped.elf why .rodata@0x80009e4
 "
     );
-    // So nothing has a size to count.
-    for args in [
-        vec![stripped, "top"],
-        vec![stripped, "--range", "0x08000000+4K"],
-    ] {
-        assert_eq!(
-            stderr(&args, 1),
-            "error: the file has no symbols or unwind table, so elfq can't find its functions \
-             yet\n"
-        );
-    }
 }
 
 #[test]
@@ -486,9 +492,7 @@ fn no_line_sums_up_a_single_item() {
             runs.push(vec![sample, "top", "--range", range]);
         }
         for args in &runs {
-            // `top` fails on stripped firmware, whose functions elfq can't
-            // find yet.
-            let text = String::from_utf8(elfq(args).stdout).unwrap();
+            let text = stdout(args);
             assert!(
                 !text
                     .lines()
