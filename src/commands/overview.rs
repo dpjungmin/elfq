@@ -72,7 +72,7 @@ pub fn run(
     write_file(path, binary, out)?;
 
     let mut found = items_text(binary, None);
-    // Stripped firmware may have only its reset handler, of unknown size.
+    // A stripped file may have only its entry point, of unknown size.
     let bytes = total_bytes(binary, None);
     if bytes > 0 {
         found += &format!(", {} of code and data", super::bytes_text(bytes));
@@ -89,7 +89,7 @@ pub fn run(
         return Ok(());
     }
     let graph = Graph::build(binary);
-    if !super::lists_functions(binary) {
+    if !super::found_functions(binary) {
         writeln!(
             out,
             "The file has no symbols or unwind table, so elfq can't find its functions yet."
@@ -97,8 +97,16 @@ pub fn run(
     }
     // Unnamed data is common even with symbols, such as string literals, so
     // explain its names only in files that have unnamed functions too.
-    let unnamed = |source| binary.items.iter().find(|i| i.source == source);
-    match (unnamed(Source::EhFrame), unnamed(Source::Reference)) {
+    let unnamed = |sources: &[Source]| {
+        binary
+            .items
+            .iter()
+            .find(|item| sources.contains(&item.source))
+    };
+    match (
+        unnamed(&[Source::EhFrame, Source::Reached]),
+        unnamed(&[Source::Reference]),
+    ) {
         (Some(function), Some(data)) => writeln!(
             out,
             "Functions and data without symbols are named by address, like {} and {}.",
@@ -112,8 +120,8 @@ pub fn run(
         _ => {}
     }
     let blocks = write_memory(binary, out)?;
-    // Only ranges that hold something: stripped firmware has sections, but
-    // elfq can't find the functions in them yet.
+    // Only ranges that hold something: in a stripped file whose functions
+    // elfq can't find, the sections hold nothing it knows of.
     let ranges: Vec<String> = blocks
         .iter()
         .filter(|block| total_bytes(binary, Some(block.range)) > 0)
@@ -139,7 +147,8 @@ pub fn run(
         return write_try(path, &examples, out);
     }
     let retained = RetainedTree::from_graph(binary, graph, None);
-    // Without functions, as in stripped firmware, there is nothing to rank.
+    // Without functions, as in a stripped file whose functions elfq can't
+    // find, there is nothing to rank.
     let kept = retained.kept();
     if kept > 0 {
         writeln!(out)?;

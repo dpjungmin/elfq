@@ -11,7 +11,10 @@
 //! 3. the unwind table, `.eh_frame`, which still describes most functions in
 //!    stripped x86-64 files (see `eh_frame.rs`);
 //! 4. the entry point;
-//! 5. references to data that has no symbol, such as vtables and string
+//! 5. in firmware that nothing lists functions for, the code itself,
+//!    followed from the entry point and the vector table (see
+//!    `unnamed_functions.rs`);
+//! 6. references to data that has no symbol, such as vtables and string
 //!    literals (see `unnamed_data.rs`).
 //!
 //! Loading also reads the dynamic relocations (see `relocations.rs`), which
@@ -26,6 +29,7 @@ mod range;
 mod relocations;
 mod symbols;
 mod unnamed_data;
+mod unnamed_functions;
 mod vector_table;
 
 pub use names::{demangle, short_names};
@@ -164,10 +168,25 @@ pub enum Source {
     /// A section with a known purpose, such as `.init_array`, and no symbol.
     /// The item is named after the section.
     Section,
+    /// Code that elfq followed from the entry point reaches the address, in
+    /// firmware that nothing lists functions for. The item is a function
+    /// named after its address, such as `fn_0x8000040`.
+    Reached,
     /// Code or a stored pointer refers to the address, and nothing else
     /// names what is there, as with vtables and string literals. The item is
     /// data named after its section and address, such as `.rodata@0x2004`.
     Reference,
+}
+
+impl Source {
+    /// Whether the source lists the file's functions, as the symbol tables
+    /// and the unwind table do.
+    pub fn lists_functions(self) -> bool {
+        matches!(
+            self,
+            Source::SymbolTable | Source::DynamicSymbolTable | Source::EhFrame
+        )
+    }
 }
 
 /// A place where the dynamic loader writes an address at startup, such as a
@@ -270,6 +289,12 @@ impl Binary {
                 .push(format!("cannot read .eh_frame: {err}")),
         }
         add_entry_item(&mut items, binary.entry, &binary.sections);
+        let listed = items
+            .iter()
+            .any(|item| item.kind == ItemKind::Function && item.source.lists_functions());
+        if binary.thumb && binary.kind == FileKind::Executable && !listed {
+            unnamed_functions::add(&binary, &mut items);
+        }
 
         sort_items(&mut items);
         estimate_missing_sizes(&mut items, &binary.sections);
@@ -407,6 +432,7 @@ impl fmt::Display for Source {
             Source::EntryPoint => "entry",
             Source::Plt => "plt",
             Source::Section => "section",
+            Source::Reached => "reached",
             Source::Reference => "reference",
         })
     }

@@ -143,20 +143,36 @@ fn dynamic_relocations_give_stored_pointers_and_imports() {
 }
 
 #[test]
-fn stripped_firmware_has_only_its_entry_point_so_far() {
-    // No symbols and no unwind table. Scanning the vector table and the code
-    // will find more; until then the entry point is all there is.
-    for (sample, address) in [
-        ("c-cortex-m4-stripped.elf", 0x0800_05a0),
-        ("c-cortex-m7-stripped.elf", 0x3000_05f8),
+fn stripped_firmware_functions_are_found_by_following_the_code() {
+    // No symbols and no unwind table, so elfq follows the code from the
+    // entry point and the vector table. Each function starts where the twin
+    // with symbols has one, and runs to the next. The Rust sample stores
+    // five functions' addresses only in data, which this doesn't follow.
+    for (sample, found) in [
+        ("c-cortex-m4", 25),
+        ("c-cortex-m7", 29),
+        ("rust-cortex-m4", 29),
     ] {
-        let binary = load(sample);
-        let [entry] = &binary.items[..] else {
-            panic!("{sample}: expected one item, found {}", binary.items.len());
-        };
-        assert_eq!((entry.name.as_str(), entry.address), ("entry", address));
-        assert_eq!((entry.source, entry.size), (Source::EntryPoint, 0));
+        let named = load(&format!("{sample}-nodebug.elf"));
+        let stripped = load(&format!("{sample}-stripped.elf"));
+        assert_eq!(functions(&stripped).len(), found, "{sample}");
+        for function in functions(&stripped) {
+            let twin = functions(&named)
+                .into_iter()
+                .find(|twin| twin.address == function.address)
+                .unwrap_or_else(|| panic!("{sample}: no function starts at {}", function.name));
+            assert!(function.size >= twin.size, "{sample}: {}", twin.name);
+            assert!(function.size_estimated, "{sample}: {}", twin.name);
+            if function.address != stripped.entry {
+                let name = format!("fn_{:#x}", function.address);
+                assert_eq!((&function.name, function.source), (&name, Source::Reached));
+            }
+        }
     }
+    let binary = load("c-cortex-m4-stripped.elf");
+    let entry = item(&binary, "entry");
+    assert_eq!((entry.address, entry.size), (0x0800_05a0, 76));
+    assert_eq!(entry.source, Source::EntryPoint);
 }
 
 #[test]

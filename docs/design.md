@@ -209,12 +209,14 @@ references and computes dominators and paths, `commands` run queries, and
    PLT stubs, named after the import they jump to (`write@plt`), and
    arrays of startup functions such as `.init_array`, named after their
    section; `.eh_frame` entries (on x86-64 they cover almost every
-   function, even in stripped files); the entry point; targets of calls
-   found during scanning; and data that code or a stored pointer refers to
-   but no symbol names, such as vtables, string literals and, in stripped
-   files, variables. Such data starts at each address something refers to
-   and runs to the next one, the next item or the end of its section; elfq
-   never guesses which function it belongs to. Items without a symbol get
+   function, even in stripped files); the entry point; in firmware that
+   nothing lists functions for, the functions that the code leads to from
+   the entry point and the vector table (see `unnamed_functions.rs`); and
+   data that code or a stored pointer refers to but no symbol names, such
+   as vtables, string literals and, in stripped files, variables. Such
+   data starts at each address something refers to and runs to the next
+   one, the next item or the end of its section; elfq never guesses which
+   function it belongs to. Items without a symbol get
    names like `fn_0x1690`, `.rodata@0x2004` (section and address) or
    `entry`. Rust and C++ symbols are demangled, and the mangled symbol
    stays as an alias. `elfq FILE debug items` lists what was found, for checking this
@@ -333,7 +335,7 @@ starts.
 | 4. Polish | 4a: C++ demangling, with a C++ sample. 4b: JSON output for `callers`, `callees`, `exclusive` and `inlined`. 4c: JSON for `top`, `retained`, `why` and the overview. 4d: warnings where indirect calls make answers uncertain. |
 | 5. Memory ranges | 5a: a Cortex-M7 sample with code and data in ITCM, DTCM, OCRAM and flash, at the addresses an i.MX RT1176 uses; startup code no longer seems to use the first item of each section it copies. 5b: `--range START..END` or `--range START+SIZE` for the overview and `top`, and the overview lists the address blocks that the file's sections occupy. 5c: `--range` for `retained` and `exclusive`. |
 | 6. Clear output | 6a: trees deeper than 9 levels continue below them. 6b: shorter lead lines and notes for the overview, `top` and `retained`, which say what a size means. 6c: no line sums up a single item, and "1 byte". 6d: shorter lead lines and notes for `why`, `callers`, `callees` and `inlined`, and "uses" for data on every architecture. 6e: `exclusive` folds into `retained`, and `--all` shows every item; `inlined SYMBOL` instead of `inlined --in SYMBOL`; `--json` instead of `--format json`; `elfq help top` works. 6f: fixes for what step 6 turned up: no `--range` suggestions that fail on stripped firmware, no empty tree for a range that nothing reaches, and no crash on an argument that isn't UTF-8. |
-| 7. Stripped firmware | 7a: stripped and `-nodebug` copies of the Cortex-M7 sample. 7b: the vector table is found while loading the file. 7c: the Thumb decoder tells apart the jumps that can carry on in another function. |
+| 7. Stripped firmware | 7a: stripped and `-nodebug` copies of the Cortex-M7 sample. 7b: the vector table is found while loading the file. 7c: the Thumb decoder tells apart the jumps that can carry on in another function. 7d: functions in stripped firmware, found by following the code from the entry point and the vector table. |
 
 Later: a query language, and worst-case stack depth (call graph plus each
 function's stack frame).
@@ -341,8 +343,10 @@ function's stack frame).
 ## Open questions
 
 1. **Stripped Cortex-M files** have no symbols and no `.eh_frame`, so elfq
-   finds only the entry point in them today. Finding functions would mean
-   following calls from the entry point and the vector table.
+   follows the code from the entry point and the vector table. It doesn't
+   follow function pointers stored in data yet, such as a table of
+   handlers, so a function that only data points to stays part of the
+   function before it.
 2. **Where unnamed data ends.** Unnamed data starts wherever something
    refers to it, so a struct in a stripped file whose fields code uses one
    at a time becomes one item per field, and the end address of an array,

@@ -86,7 +86,7 @@ pub fn run(
 }
 
 /// Explains why there are no bytes to count, if there aren't: a range that
-/// no section is in is most likely mistyped, in stripped firmware elfq
+/// no section is in is most likely mistyped, in some stripped files elfq
 /// can't find the functions yet, and hand-written assembly often leaves out
 /// the sizes.
 pub(super) fn check_has_bytes(retained: &RetainedTree) -> Result<()> {
@@ -103,7 +103,7 @@ pub(super) fn check_has_bytes(retained: &RetainedTree) -> Result<()> {
         Some(range) => super::range_text(binary, range),
         None => "the file".to_string(),
     };
-    if !super::lists_functions(binary) {
+    if !super::found_functions(binary) {
         bail!("the file has no symbols or unwind table, so elfq can't find its functions yet");
     }
     let starts_in_place = |item: &&Item| {

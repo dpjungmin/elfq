@@ -320,8 +320,8 @@ fn imports_are_reached_through_stubs_and_the_global_offset_table() {
 fn stripping_keeps_the_calls_between_functions() {
     // Names differ, so compare by address. Stripped files lose their data
     // symbols, which changes how code reaches data, and the few functions
-    // that have no unwind information. So compare calls and tail calls
-    // between the functions that both files have.
+    // that neither the unwind table lists nor the code leads to. So compare
+    // calls and tail calls between the functions that both files have.
     let shape = |binary: &Binary, graph: &Graph, functions: &[u64]| {
         let function = |index: usize| {
             let item = &binary.items[index];
@@ -343,7 +343,7 @@ fn stripping_keeps_the_calls_between_functions() {
         shape.sort();
         shape
     };
-    for sample in ["c-x86_64", "rust-x86_64"] {
+    for sample in ["c-x86_64", "rust-x86_64", "c-cortex-m4", "c-cortex-m7"] {
         let (named, named_graph) = load(&format!("{sample}-nodebug.elf"));
         let (stripped, stripped_graph) = load(&format!("{sample}-stripped.elf"));
         let functions: Vec<u64> = stripped
@@ -354,7 +354,7 @@ fn stripping_keeps_the_calls_between_functions() {
             .collect();
         let named_shape = shape(&named, &named_graph, &functions);
         let stripped_shape = shape(&stripped, &stripped_graph, &functions);
-        assert!(named_shape.len() > 50, "{sample}");
+        assert!(named_shape.len() > 40, "{sample}");
         assert_eq!(named_shape, stripped_shape, "{sample}");
     }
 }

@@ -275,15 +275,13 @@ fn sections_in(binary: &Binary, range: AddressRange) -> Vec<&str> {
         .collect()
 }
 
-/// Whether the file lists its functions where elfq looks for them: in a
-/// symbol table or an unwind table. Stripped firmware has neither, so elfq
-/// finds only the function where it starts.
-fn lists_functions(binary: &Binary) -> bool {
-    binary.items.iter().any(|item| {
-        matches!(
-            item.source,
-            Source::SymbolTable | Source::DynamicSymbolTable | Source::EhFrame
-        )
+/// Whether elfq found the file's functions: a symbol table or an unwind
+/// table lists them, or in firmware elfq followed the code from the entry
+/// point. Otherwise it has only the entry point, and doesn't know its size.
+fn found_functions(binary: &Binary) -> bool {
+    binary.items.iter().any(|item| match item.source {
+        Source::EntryPoint | Source::Reached => item.size > 0,
+        source => source.lists_functions(),
     })
 }
 
