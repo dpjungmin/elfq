@@ -238,7 +238,13 @@ fn stripping_keeps_the_exclusive_functions() {
         functions.sort();
         functions
     };
-    for sample in ["c-x86_64", "rust-x86_64", "c-cortex-m4", "c-cortex-m7"] {
+    for sample in [
+        "c-x86_64",
+        "rust-x86_64",
+        "c-cortex-m4",
+        "c-cortex-m7",
+        "rust-cortex-m4",
+    ] {
         let (named, _, named_tree) = load(&format!("{sample}-nodebug.elf"));
         let (stripped, _, stripped_tree) = load(&format!("{sample}-stripped.elf"));
         let Node::Item(process_frame) = node(&named, "process_frame") else {

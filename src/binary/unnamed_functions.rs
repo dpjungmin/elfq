@@ -12,14 +12,22 @@
 //! - the addresses of Thumb functions that it loads, which have bit 0 set,
 //!   as when it passes a handler to another function.
 //!
-//! Scanning repeats until nothing new turns up. Each function then runs to
-//! the next start, or the end of its section, so its size is an estimate.
-//! It is named after its address, as in `fn_0x8000040`. Code that nothing
-//! calls or points to stays part of the function before it.
+//! Scanning repeats until nothing new turns up. Then the Thumb addresses
+//! stored in data start functions too, such as a table of handlers or a
+//! vtable, and their code is followed in turn. A word in data can also be
+//! a number that only looks like such an address, as the string `"=\0\0\0"`
+//! does where code starts at address 0. So an address in data starts a
+//! function only if that cuts nothing in two: no jump crosses it, and the
+//! code on either side still finds the constants it loads.
+//!
+//! Each function runs to the next start, or the end of its section, so its
+//! size is an estimate. It is named after its address, as in
+//! `fn_0x8000040`. Code that nothing calls or points to stays part of the
+//! function before it.
 
 use std::collections::BTreeSet;
 
-use super::{Binary, Item, ItemKind, Source, code_section};
+use super::{Binary, Item, ItemKind, Source, code_section, unnamed_data};
 use crate::arch::{self, CodeReferenceKind};
 
 /// Adds the functions that following the code finds, and gives the ones
@@ -33,11 +41,23 @@ pub(super) fn add(binary: &Binary, items: &mut Vec<Item>) {
     if let Some(table) = &binary.vector_table {
         starts.extend(&table.handlers);
     }
+    let stored = stored_addresses(binary);
     loop {
-        let found: BTreeSet<u64> = ranges(binary, &starts)
+        let mut found: BTreeSet<u64> = ranges(binary, &starts)
             .flat_map(|(start, end)| targets(binary, start, end))
             .filter(|target| !starts.contains(target))
             .collect();
+        // Addresses in data are checked against the functions found so
+        // far, so only once the code leads nowhere new.
+        if found.is_empty() {
+            found = stored
+                .iter()
+                .copied()
+                .filter(|&address| {
+                    !starts.contains(&address) && splits_cleanly(binary, &starts, address)
+                })
+                .collect();
+        }
         if found.is_empty() {
             break;
         }
@@ -100,4 +120,60 @@ fn targets(binary: &Binary, start: u64, end: u64) -> Vec<u64> {
         })
         .filter(|&target| code_section(&binary.sections, target).is_some())
         .collect()
+}
+
+/// The Thumb code addresses stored in data, word by word.
+fn stored_addresses(binary: &Binary) -> Vec<u64> {
+    let size = binary.pointer_size;
+    let mut addresses = Vec::new();
+    for section in &binary.sections {
+        if !section.allocated || !unnamed_data::holds_data(section) {
+            continue;
+        }
+        let mut slot = section.address.next_multiple_of(size);
+        while slot + size <= section.address + section.size {
+            if let Some(value) = binary.pointer_at(slot)
+                && value & 1 == 1
+                && code_section(&binary.sections, value & !1).is_some()
+            {
+                addresses.push(value & !1);
+            }
+            slot += size;
+        }
+    }
+    addresses
+}
+
+/// Whether a function can start at `address` without cutting the code
+/// around it in two, as far as the functions in `starts` tell: no jump
+/// crosses it, except to where a function starts, and scanning the code on
+/// either side finds what scanning it whole does, such as each constant it
+/// loads.
+fn splits_cleanly(binary: &Binary, starts: &BTreeSet<u64>, address: u64) -> bool {
+    let Some(index) = code_section(&binary.sections, address) else {
+        return false;
+    };
+    let section = &binary.sections[index];
+    let section_end = section.address + section.size;
+    let start = starts.range(section.address..address).next_back();
+    let start = start.copied().unwrap_or(section.address);
+    let end = starts.range(address..section_end).next();
+    let end = end.copied().unwrap_or(section_end);
+    let scan = |from: u64, to: u64| {
+        let code = binary.bytes(from, to - from).unwrap_or_default();
+        arch::scan(binary.architecture, code, from)
+    };
+    let whole = scan(start, end);
+    let mut halves = scan(start, address);
+    halves.extend(scan(address, end));
+    let crosses = whole.iter().any(|reference| match reference.kind {
+        CodeReferenceKind::Jump(target) | CodeReferenceKind::TailJump(target) => {
+            (reference.site < address) != (target < address)
+                && (start..end).contains(&target)
+                && target != address
+                && !starts.contains(&target)
+        }
+        _ => false,
+    });
+    whole == halves && !crosses
 }

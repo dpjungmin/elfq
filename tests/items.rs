@@ -145,13 +145,14 @@ fn dynamic_relocations_give_stored_pointers_and_imports() {
 #[test]
 fn stripped_firmware_functions_are_found_by_following_the_code() {
     // No symbols and no unwind table, so elfq follows the code from the
-    // entry point and the vector table. Each function starts where the twin
-    // with symbols has one, and runs to the next. The Rust sample stores
-    // five functions' addresses only in data, which this doesn't follow.
+    // entry point and the vector table, and the addresses stored in data.
+    // Each function starts where the twin with symbols has one, and runs to
+    // the next. Strings in the Cortex-M7 sample's data look like addresses
+    // in its ITCM, which starts at 0, but start nothing.
     for (sample, found) in [
         ("c-cortex-m4", 25),
         ("c-cortex-m7", 29),
-        ("rust-cortex-m4", 29),
+        ("rust-cortex-m4", 34),
     ] {
         let named = load(&format!("{sample}-nodebug.elf"));
         let stripped = load(&format!("{sample}-stripped.elf"));

@@ -343,7 +343,13 @@ fn stripping_keeps_the_calls_between_functions() {
         shape.sort();
         shape
     };
-    for sample in ["c-x86_64", "rust-x86_64", "c-cortex-m4", "c-cortex-m7"] {
+    for sample in [
+        "c-x86_64",
+        "rust-x86_64",
+        "c-cortex-m4",
+        "c-cortex-m7",
+        "rust-cortex-m4",
+    ] {
         let (named, named_graph) = load(&format!("{sample}-nodebug.elf"));
         let (stripped, stripped_graph) = load(&format!("{sample}-stripped.elf"));
         let functions: Vec<u64> = stripped
