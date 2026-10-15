@@ -18,27 +18,34 @@
 //! code is followed in turn. Such a word can also be a number that only
 //! looks like an address, so it starts a function only where the code
 //! before it ends, with a return, a jump or a call that may never return,
-//! outside the padding between functions; where no jump crosses it; and
-//! where the code on either side still finds the constants it loads.
+//! outside the padding between functions; where no jump crosses it, and
+//! none but a `b.w` lands on it; and where the code on either side still
+//! finds the constants it loads.
 //!
 //! Some linker scripts put constants in `.text` after the code, as CMSIS's
 //! template does. Code loads their addresses from outside the function they
-//! follow, and such an address ends that function where the same checks
-//! pass and the code before it ends with a return or a jump. Code followed
-//! before may have read the constants as code, so it is followed again.
+//! follow, and such an address ends that function where the code before it
+//! ends with a return or a jump, doesn't jump to it or past it, and still
+//! finds what it did when scanned alone. Unlike a function, constants may
+//! start with zeros, which look like padding. Code followed before may have
+//! read the constants as code, so it is followed again.
 //!
 //! Each function runs to the next start, or the end of its section, less
 //! the padding after it, so its size is an estimate. It is named after its
 //! address, as in `fn_0x8000040`. What this misses:
 //!
 //! - Code that nothing calls or points to stays part of the function
-//!   before it, and so does a function that code reaches only with a
-//!   16-bit `b`, since compilers use it for tail calls to nearby functions
-//!   as well as for jumps inside one.
+//!   before it. So does a function that code reaches only with a 16-bit
+//!   `b`, or that only data points to when such a `b` just before it jumps
+//!   there, since compilers use `b` for tail calls to nearby functions as
+//!   well as for jumps inside one. So do constants after a function that
+//!   only that function loads.
 //! - A `bl` to a place inside a function starts a function there, as in
 //!   Cortex-M0 code, which jumps that way where `b` can't reach; and so
 //!   does a `b.w` past everything the function has reached so far, as in
-//!   long unoptimized functions.
+//!   long unoptimized functions. A number that equals the address right
+//!   after a return, a jump or a call starts one too, as a CRC polynomial
+//!   or a table entry can where code starts at address 0.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -287,9 +294,10 @@ fn code_start(binary: &Binary, section: &Section) -> u64 {
 /// cutting the code before it in two, as far as `starts` tell: that code
 /// ends there, with an instruction that doesn't run on into it, such as a
 /// return or, before a function, a call that may never return; and no jump
-/// crosses into it, except to where a function starts. Scanning the code
-/// before it must also find what it does with what follows, such as each
-/// constant it loads, and so must scanning a function after it.
+/// crosses into it, except to where a function starts, or lands on it,
+/// except a `b.w`, which may be a tail call. Scanning the code before it
+/// must also find what it does with what follows, such as each constant it
+/// loads, and so must scanning a function after it.
 fn splits_cleanly(
     binary: &Binary,
     starts: &BTreeMap<u64, Start>,
@@ -353,9 +361,12 @@ fn splits_cleanly(
     let whole = scan(start, end);
     let mut halves = scan(start, address);
     halves.extend(scan(address, end));
+    // A `b.w` from before may be a tail call to a function there, but other
+    // jumps to it stay inside one function.
     let crosses = whole.iter().any(|reference| {
         if reference.site < address {
-            jumps_into(reference, address + 1, end)
+            reference.kind == CodeReferenceKind::Jump(address)
+                || jumps_into(reference, address + 1, end)
         } else {
             jumps_into(reference, start, address)
         }
@@ -373,6 +384,15 @@ mod tests {
     /// The functions found in firmware that runs `text` from its start at
     /// 0x1000 and has `rodata` at 0x2000, as (address, size).
     fn functions(text: &[u8], rodata: &[u8]) -> Vec<(u64, u64)> {
+        functions_with(text, (".rodata", SectionKind::ReadOnlyData, rodata))
+    }
+
+    /// The same, with another section at 0x2000 than `.rodata`: its name,
+    /// kind and bytes.
+    fn functions_with(
+        text: &[u8],
+        (name, kind, data): (&str, SectionKind, &[u8]),
+    ) -> Vec<(u64, u64)> {
         let section = |name: &str, address, kind, offset, bytes: &[u8]| Section {
             name: name.to_string(),
             address,
@@ -391,13 +411,7 @@ mod tests {
             has_dwarf: false,
             sections: vec![
                 section(".text", 0x1000, SectionKind::Text, 0, text),
-                section(
-                    ".rodata",
-                    0x2000,
-                    SectionKind::ReadOnlyData,
-                    text.len() as u64,
-                    rodata,
-                ),
+                section(name, 0x2000, kind, text.len() as u64, data),
             ],
             items: Vec::new(),
             imports: Vec::new(),
@@ -406,7 +420,7 @@ mod tests {
             merged_variables: Vec::new(),
             vector_table: None,
             warnings: Vec::new(),
-            data: [text, rodata].concat(),
+            data: [text, data].concat(),
             big_endian: false,
         };
         let mut items = vec![Item {
@@ -444,6 +458,18 @@ mod tests {
     }
 
     #[test]
+    fn startup_arrays_are_followed() {
+        // movs r0, #1; bx lr; movs r0, #2; bx lr. Only `.init_array`
+        // points to 0x1004.
+        let code = [0x01, 0x20, 0x70, 0x47, 0x02, 0x20, 0x70, 0x47];
+        let init_array = (".init_array", SectionKind::Unknown, &[0x05, 0x10, 0, 0][..]);
+        assert_eq!(
+            functions_with(&code, init_array),
+            [(0x1000, 4), (0x1004, 4)]
+        );
+    }
+
+    #[test]
     fn an_address_in_data_starts_a_function_where_the_code_before_ends() {
         // movs r0, #1; bx lr; movs r0, #2; bx lr. Only data points to 0x1004.
         let code = [0x01, 0x20, 0x70, 0x47, 0x02, 0x20, 0x70, 0x47];
@@ -464,6 +490,25 @@ mod tests {
             functions(&padded, &[0x05, 0x10, 0, 0]),
             [(0x1000, 2), (0x1004, 4)]
         );
+        // bl 0x1008; bx lr; nop; then the function it calls, bx lr. Data
+        // points to the nop, which pads.
+        let padded = [0x00, 0xf0, 0x02, 0xf8, 0x70, 0x47, 0x00, 0xbf, 0x70, 0x47];
+        assert_eq!(
+            functions(&padded, &[0x07, 0x10, 0, 0]),
+            [(0x1000, 6), (0x1008, 2)]
+        );
+        // bl 0x1008, which may never return; movs r0, #1; bx lr; b 0x1008.
+        let after_a_call = [0x00, 0xf0, 0x02, 0xf8, 0x01, 0x20, 0x70, 0x47, 0xfe, 0xe7];
+        assert_eq!(
+            functions(&after_a_call, &[0x05, 0x10, 0, 0]),
+            [(0x1000, 4), (0x1004, 4), (0x1008, 2)]
+        );
+        // ldr r0, [pc, #4]; bx lr; movs r0, #2; bx lr; the word it loads,
+        // which the code before 0x1004 no longer finds when cut there.
+        let loads = [
+            0x01, 0x48, 0x70, 0x47, 0x02, 0x20, 0x70, 0x47, 0x78, 0x56, 0x34, 0x12,
+        ];
+        assert_eq!(functions(&loads, &[0x05, 0x10, 0, 0]), [(0x1000, 12)]);
     }
 
     #[test]
@@ -474,6 +519,55 @@ mod tests {
             0x00, 0x28, 0x02, 0xd0, 0x70, 0x47, 0x01, 0x20, 0x70, 0x47, 0x02, 0x20, 0x70, 0x47,
         ];
         assert_eq!(functions(&code, &[0x07, 0x10, 0, 0]), [(0x1000, 14)]);
+        // movs r0, #1; bx lr; subs r0, #1; bne 0x1002; bx lr. The bne
+        // jumps back past 0x1004.
+        let back = [0x01, 0x20, 0x70, 0x47, 0x01, 0x38, 0xfc, 0xd1, 0x70, 0x47];
+        assert_eq!(functions(&back, &[0x05, 0x10, 0, 0]), [(0x1000, 10)]);
+    }
+
+    #[test]
+    fn an_address_in_data_that_a_jump_lands_on_starts_nothing() {
+        // ldr r0, [pc, #0]; b 0x1008, over the word it loads; the word;
+        // adds r0, #1; bx lr.
+        let island = [
+            0x00, 0x48, 0x01, 0xe0, 0x00, 0x00, 0x00, 0x20, 0x01, 0x30, 0x70, 0x47,
+        ];
+        assert_eq!(functions(&island, &[0x09, 0x10, 0, 0]), [(0x1000, 12)]);
+        // cmp r0, #0; beq 0x1008; movs r0, #1; bx lr; movs r0, #2; bx lr.
+        let branch = [
+            0x00, 0x28, 0x01, 0xd0, 0x01, 0x20, 0x70, 0x47, 0x02, 0x20, 0x70, 0x47,
+        ];
+        assert_eq!(functions(&branch, &[0x09, 0x10, 0, 0]), [(0x1000, 12)]);
+    }
+
+    #[test]
+    fn an_address_in_data_at_a_case_of_a_jump_table_starts_nothing() {
+        // cmp r0, #1; bhi 0x100a; tbb [pc, r0] with cases at 0x100e and
+        // 0x1012. Then for other values, movs r0, #0; bx lr; and the cases,
+        // movs r0, #n; bx lr.
+        let code = [
+            0x01, 0x28, 0x02, 0xd8, 0xdf, 0xe8, 0x00, 0xf0, 0x03, 0x05, 0x00, 0x20, 0x70, 0x47,
+            0x01, 0x20, 0x70, 0x47, 0x02, 0x20, 0x70, 0x47,
+        ];
+        assert_eq!(functions(&code, &[0x0f, 0x10, 0, 0]), [(0x1000, 22)]);
+        assert_eq!(functions(&code, &[0x13, 0x10, 0, 0]), [(0x1000, 22)]);
+    }
+
+    #[test]
+    fn an_adr_to_a_function_starts_it() {
+        // As GNU as assembles `adr r0, function` to a Thumb function, at
+        // the function's address + 1: push {r4, lr}; adr.w r0, 0x100d;
+        // bl 0x101a; pop {r4, pc}. Then 0x100c: push {r4, lr}; movs r1, #2;
+        // bl 0x1016; pop {r4, pc}. 0x1016: movs r0, #1; bx lr. 0x101a: bx
+        // lr.
+        let code = [
+            0x10, 0xb5, 0x0f, 0xf2, 0x09, 0x00, 0x00, 0xf0, 0x08, 0xf8, 0x10, 0xbd, 0x10, 0xb5,
+            0x02, 0x21, 0x00, 0xf0, 0x01, 0xf8, 0x10, 0xbd, 0x01, 0x20, 0x70, 0x47, 0x70, 0x47,
+        ];
+        assert_eq!(
+            functions(&code, &[]),
+            [(0x1000, 12), (0x100c, 10), (0x1016, 4), (0x101a, 2)]
+        );
     }
 
     #[test]
@@ -486,5 +580,64 @@ mod tests {
             0x00, 0x00, 0x01, 0x20, 0x70, 0x47, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x00,
         ];
         assert_eq!(functions(&code, &[]), [(0x1000, 16), (0x1010, 4)]);
+        // The same, but the constants decode as bl 0x101a, which the code
+        // followed again no longer finds.
+        let code = [
+            0x10, 0xb5, 0x00, 0xf0, 0x05, 0xf8, 0x01, 0x48, 0x10, 0xbd, 0x00, 0xbf, 0x14, 0x10,
+            0x00, 0x00, 0x01, 0x20, 0x70, 0x47, 0x00, 0xf0, 0x01, 0xf8, 0x45, 0x46, 0x47, 0x00,
+        ];
+        assert_eq!(functions(&code, &[]), [(0x1000, 16), (0x1010, 4)]);
+        // bl 0x1010; bx lr; 2 bytes of padding; constants that start with
+        // zeros; then the function it calls: ldr r0, =0x1008; bx lr; the
+        // word it loads.
+        let zeros = [
+            0x00, 0xf0, 0x06, 0xf8, 0x70, 0x47, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00,
+            0x00, 0x00, 0x00, 0x48, 0x70, 0x47, 0x08, 0x10, 0x00, 0x00,
+        ];
+        assert_eq!(functions(&zeros, &[]), [(0x1000, 6), (0x1010, 8)]);
+    }
+
+    #[test]
+    fn tables_among_constants_start_functions() {
+        // push {r4, lr}; bl 0x1010; ldr r0, =0x1018; pop {r4, pc}; nop; the
+        // word it loads. Then 0x1010: movs r0, #1; bx lr. 0x1014: movs r0,
+        // #2; bx lr, which only the table at 0x1018 points to.
+        let code = [
+            0x10, 0xb5, 0x00, 0xf0, 0x05, 0xf8, 0x01, 0x48, 0x10, 0xbd, 0x00, 0xbf, 0x18, 0x10,
+            0x00, 0x00, 0x01, 0x20, 0x70, 0x47, 0x02, 0x20, 0x70, 0x47, 0x15, 0x10, 0x00, 0x00,
+        ];
+        assert_eq!(
+            functions(&code, &[]),
+            [(0x1000, 16), (0x1010, 4), (0x1014, 4)]
+        );
+    }
+
+    #[test]
+    fn what_a_function_points_to_in_itself_ends_nothing() {
+        // adr r0, 0x1008; ldr r0, [r0]; bx lr; nop; the word it points to.
+        let code = [
+            0x01, 0xa0, 0x00, 0x68, 0x70, 0x47, 0x00, 0xbf, 0x78, 0x56, 0x34, 0x12,
+        ];
+        assert_eq!(functions(&code, &[]), [(0x1000, 12)]);
+    }
+
+    #[test]
+    fn constants_at_a_case_of_a_jump_table_end_nothing() {
+        // 0x1000: push {r4, lr}; bl 0x1028; cmp r0, #2; bls 0x100e; movs
+        // r0, #0; pop {r4, pc}. 0x100e: tbb [pc, r0] with cases at 0x1016,
+        // 0x101a and 0x101e: movs r0, #10; pop {r4, pc}; movs r0, #20; pop
+        // {r4, pc}; bl 0x1024; pop {r4, pc}. 0x1024: movs r0, #1; bx lr.
+        // 0x1028: ldr r0, =0x101a; bx lr; the word, which is the second
+        // case's address.
+        let code = [
+            0x10, 0xb5, 0x00, 0xf0, 0x11, 0xf8, 0x02, 0x28, 0x01, 0xd9, 0x00, 0x20, 0x10, 0xbd,
+            0xdf, 0xe8, 0x00, 0xf0, 0x02, 0x04, 0x06, 0x00, 0x0a, 0x20, 0x10, 0xbd, 0x14, 0x20,
+            0x10, 0xbd, 0x00, 0xf0, 0x01, 0xf8, 0x10, 0xbd, 0x01, 0x20, 0x70, 0x47, 0x00, 0x48,
+            0x70, 0x47, 0x1a, 0x10, 0x00, 0x00,
+        ];
+        assert_eq!(
+            functions(&code, &[]),
+            [(0x1000, 36), (0x1024, 4), (0x1028, 8)]
+        );
     }
 }

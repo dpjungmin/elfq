@@ -94,9 +94,10 @@ fn referenced_addresses(binary: &Binary) -> Vec<u64> {
     addresses
 }
 
-/// Whether unnamed data in `section` gets items. Not in code, and not in
-/// the global offset table: elfq follows the pointers stored there to what
-/// they point at instead.
+/// Whether `section` holds data, whose unnamed objects get items. Not code,
+/// though in Thumb files the constants in code get items too (see
+/// `items`), and not the global offset table: elfq follows the pointers
+/// stored there to what they point at instead.
 pub(super) fn holds_data(section: &Section) -> bool {
     matches!(
         section.kind,

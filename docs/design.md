@@ -210,7 +210,8 @@ references and computes dominators and paths, `commands` run queries, and
    of startup functions such as `.init_array`, named after their section;
    `.eh_frame` entries (on x86-64 they cover almost every function, even in
    stripped files); the entry point, and the Cortex-M vector table when no
-   item covers any of it, named after its section; in firmware that nothing
+   item covers any of it, named after its section, or after the section and
+   address (`.text@0x8000000`) when it shares it; in firmware that nothing
    lists functions for, the functions that the code leads to from the entry
    point, the vector table's handlers and the startup arrays, and those
    whose Thumb addresses code loads or data holds, where the code before
@@ -252,13 +253,15 @@ references and computes dominators and paths, `commands` run queries, and
    holding the entry point's Thumb address, or the second word of a code
    section, where a linker script may put the table; then handlers until an
    entry other than a reserved one is neither 0 nor the address of Thumb
-   code, or the table's section ends. Not yet: exported symbols of shared
-   libraries, which need a shared-library sample, and `--root SYMBOL`.
-   Non-allocated sections and unwind tables (`.eh_frame`, `.ARM.exidx`) are
-   never sources of references; otherwise everything would look reachable.
-   One more source is only on Arm: LLVM merges small variables into one
-   block (`.L_MergedGlobals`) and code uses them through the block's
-   address, so that address counts as a use of each variable in the block.
+   code, or the table's section ends, less the reserved entries at its end
+   that hold other words, which are code after a short table. Not yet:
+   exported symbols of shared libraries, which need a shared-library sample,
+   and `--root SYMBOL`. Non-allocated sections and unwind tables
+   (`.eh_frame`, `.ARM.exidx`) are never sources of references; otherwise
+   everything would look reachable. One more source is only on Arm: LLVM
+   merges small variables into one block (`.L_MergedGlobals`) and code uses
+   them through the block's address, so that address counts as a use of each
+   variable in the block.
 6. **Analyze**: compute the dominator tree once from a virtual node that
    points at every root. `retained` and `top` read it. `why` searches from
    the roots for the shortest chain to each item that uses SYMBOL, going
@@ -339,7 +342,7 @@ starts.
 | 4. Polish | 4a: C++ demangling, with a C++ sample. 4b: JSON output for `callers`, `callees`, `exclusive` and `inlined`. 4c: JSON for `top`, `retained`, `why` and the overview. 4d: warnings where indirect calls make answers uncertain. |
 | 5. Memory ranges | 5a: a Cortex-M7 sample with code and data in ITCM, DTCM, OCRAM and flash, at the addresses an i.MX RT1176 uses; startup code no longer seems to use the first item of each section it copies. 5b: `--range START..END` or `--range START+SIZE` for the overview and `top`, and the overview lists the address blocks that the file's sections occupy. 5c: `--range` for `retained` and `exclusive`. |
 | 6. Clear output | 6a: trees deeper than 9 levels continue below them. 6b: shorter lead lines and notes for the overview, `top` and `retained`, which say what a size means. 6c: no line sums up a single item, and "1 byte". 6d: shorter lead lines and notes for `why`, `callers`, `callees` and `inlined`, and "uses" for data on every architecture. 6e: `exclusive` folds into `retained`, and `--all` shows every item; `inlined SYMBOL` instead of `inlined --in SYMBOL`; `--json` instead of `--format json`; `elfq help top` works. 6f: fixes for what step 6 turned up: no `--range` suggestions that fail on stripped firmware, no empty tree for a range that nothing reaches, and no crash on an argument that isn't UTF-8. |
-| 7. Stripped firmware | 7a: stripped and `-nodebug` copies of the Cortex-M7 sample. 7b: the vector table is found while loading the file. 7c: the Thumb decoder tells apart the jumps that can carry on in another function. 7d: functions in stripped firmware, found by following the code from the entry point and the vector table. 7e: functions that only data points to, such as Rust trait methods in vtables. 7f: an item for the vector table of stripped firmware, so that its bytes count. 7g: those functions leave out the padding after them, so their sizes match the symbols'. 7h: fixes for what a review and 91 other builds turned up: the startup arrays are followed too, a `b.w` that stays in its function starts nothing, and an address that code loads or data holds starts a function only where the code before it ends, so numbers that look like addresses start none. 7i: firmware whose linker script puts the vector table and the constants in `.text`, as CMSIS's template does, with a sample laid out that way. |
+| 7. Stripped firmware | 7a: stripped and `-nodebug` copies of the Cortex-M7 sample. 7b: the vector table is found while loading the file. 7c: the Thumb decoder tells apart the jumps that can carry on in another function. 7d: functions in stripped firmware, found by following the code from the entry point and the vector table. 7e: functions that only data points to, such as Rust trait methods in vtables. 7f: an item for the vector table of stripped firmware, so that its bytes count. 7g: those functions leave out the padding after them, so their sizes match the symbols'. 7h: fixes for what a review and 91 other builds turned up: the startup arrays are followed too, a `b.w` that stays in its function starts nothing, and an address that code loads or data holds starts a function only where the code before it ends, so far fewer numbers that look like addresses start one. 7i: firmware whose linker script puts the vector table and the constants in `.text`, as CMSIS's template does, with a sample laid out that way. 7j: fixes for what a second review turned up: a jump that lands where a number points keeps it from starting a function, the jump tables of `tbb` and `tbh` end where the `cmp` before them says and jump to their cases, a short vector table in `.text` ends at its last handler, an `adr` to Thumb code marks no data, and a test for each rule. |
 
 Later: a query language, and worst-case stack depth (call graph plus each
 function's stack frame).
@@ -353,11 +356,13 @@ function's stack frame).
    still all count, split across more items than the source has. Worth
    fixing only if it makes real answers confusing.
 2. **Functions that following the code misses.** In stripped firmware,
-   code that nothing calls or points to, and a function that code reaches
-   only with a 16-bit `b`, stay part of the function before them. A `bl`
-   to a place inside its own function, as Cortex-M0 code uses for far
-   jumps, and a forward `b.w` in a long unoptimized function start a
-   function where there is none. In big-endian (BE8) firmware, elfq reads
+   code that nothing calls or points to, a function that code reaches only
+   with a 16-bit `b`, and constants that only the function before them
+   loads stay part of that function. A `bl` to a place inside its own
+   function, as Cortex-M0 code uses for far jumps, a forward `b.w` in a
+   long unoptimized function, and a number that equals the address right
+   after a return, such as a CRC polynomial in firmware whose code starts
+   at address 0, start a function where there is none. In big-endian (BE8) firmware, elfq reads
    the constants in code the wrong way round, so it misses the functions
    that only their addresses lead to. The bytes still all count, under a
    neighbouring function. Worth improving if it makes answers on real

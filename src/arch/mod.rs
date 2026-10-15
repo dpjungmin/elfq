@@ -27,8 +27,9 @@ pub struct CodeReference {
 pub enum CodeReferenceKind {
     /// A direct call: `call target`.
     Call(u64),
-    /// A direct jump, conditional or not: `jmp target`. Usually to another
-    /// place in the same function; otherwise a tail call.
+    /// A direct jump, conditional or not: `jmp target`, or to a case of a
+    /// jump table. Usually to another place in the same function; otherwise
+    /// a tail call.
     Jump(u64),
     /// A direct jump of the kind that compilers and linkers use to carry on
     /// in another function. Only Thumb tells these apart, and only as a
