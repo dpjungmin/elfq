@@ -103,6 +103,16 @@ pub fn code_size(architecture: Architecture, code: &[u8], address: u64) -> u64 {
     size as u64
 }
 
+/// Whether `code` is all of a veneer: a stub that a linker puts near a call
+/// whose target is too far away for the call instruction, and that only
+/// jumps on to the target. Only Thumb's are recognized.
+pub fn is_veneer(architecture: Architecture, code: &[u8]) -> bool {
+    match architecture {
+        Architecture::Arm => thumb::is_veneer(code),
+        _ => false,
+    }
+}
+
 /// How many bytes of padding between functions `code` starts with. Only
 /// Thumb tells padding apart; for other instruction sets, this is 0.
 pub fn leading_padding(architecture: Architecture, code: &[u8]) -> u64 {

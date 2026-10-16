@@ -66,6 +66,7 @@ Examples:
   elfq app.elf inlined main               The inlined code in main, as a tree
   elfq app.elf callers log_msg            What calls or uses log_msg
   elfq app.elf callees main               What main calls or uses
+  elfq app.elf callees 0x0+256K           What the first 256 KiB uses outside it
 
 The overview's tree is the start of the one top shows; elfq help top
 explains it.";
@@ -85,11 +86,11 @@ pub enum Command {
     #[command(after_help = INLINED)]
     Inlined(InlinedArgs),
     /// List what calls or uses SYMBOL
-    #[command(after_help = HOW)]
-    Callers(SymbolArgs),
+    #[command(after_help = format!("{HOW}\n\n{CALLERS_RANGES}"))]
+    Callers(UsesArgs),
     /// List what SYMBOL calls or uses
-    #[command(after_help = HOW)]
-    Callees(SymbolArgs),
+    #[command(after_help = format!("{HOW}\n\n{CALLEES_RANGES}"))]
+    Callees(UsesArgs),
     /// Show elfq's own view of the file (for developing elfq)
     #[command(subcommand, hide = true)]
     Debug(DebugCommand),
@@ -108,6 +109,23 @@ The HOW column says how one item uses the other:
 Calls through a pointer set at run time don't show, since elfq can't tell
 where they go; the address taken and pointer rows show where such pointers
 come from.";
+
+const CALLEES_RANGES: &str = "\
+SYMBOL can also be one or more ranges of memory, START..END or START+SIZE,
+such as 0x0+256K for an ITCM. Then elfq lists only what the code and data
+in them use outside them, and elfq's exit status is 1 if anything does, or
+if a call elfq can't follow might: a CI job can check that time-critical
+code stays in fast memory, or that code run from RAM never touches flash.
+A call that goes through a veneer, which the linker adds when the target
+is too far away, is listed where it calls the veneer.";
+
+const CALLERS_RANGES: &str = "\
+SYMBOL can also be one or more ranges of memory, START..END or START+SIZE,
+such as 0x0+256K for an ITCM. Then elfq lists only what outside them uses
+the code and data in them, and elfq's exit status is 1 if anything does,
+or if a call through a pointer might. A call that goes through a veneer,
+which the linker adds when the target is too far away, is listed where it
+calls the veneer.";
 
 const WHY: &str = "\
 The tree starts where the program does: at the entry point, a function the
@@ -175,6 +193,15 @@ pub struct SymbolArgs {
     /// A function or data object: its name, the end of its name
     /// (process_frame for app::process_frame), or an address such as 0x1700
     pub symbol: String,
+}
+
+#[derive(Debug, Args)]
+pub struct UsesArgs {
+    /// A function or data object: its name, the end of its name
+    /// (process_frame for app::process_frame), or an address such as 0x1700.
+    /// Or ranges of memory, such as 0x0+256K, for everything in them
+    #[arg(required = true, value_name = "SYMBOL")]
+    pub symbols: Vec<String>,
 }
 
 #[derive(Debug, Args)]

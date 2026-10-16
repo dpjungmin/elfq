@@ -4,6 +4,7 @@
 mod callees;
 mod callers;
 mod debug_items;
+mod edge;
 mod inlined;
 mod json;
 mod overview;
@@ -23,39 +24,73 @@ use crate::binary::{AddressRange, Binary, Item, ItemKind, Source};
 use crate::cli::{Cli, Command, DebugCommand, Format};
 use crate::graph::{Graph, Node, Reference, ReferenceKind};
 
+/// What an answer means for elfq's exit status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    /// Exit status 0.
+    Answered,
+    /// Something crosses the edge of the ranges that `callers` or
+    /// `callees` asked about, or may: exit status 1, so that a script can
+    /// check that code in a range stays in it.
+    Crossed,
+}
+
 /// Runs the command in `cli`, writing its answer to `out`.
-pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<()> {
+pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<Outcome> {
     let binary = Binary::load(&cli.file)?;
     for warning in &binary.warnings {
         eprintln!("warning: {warning}");
     }
     let format = cli.format();
     let range = cli.range;
+    let answered = |result: Result<()>| result.map(|()| Outcome::Answered);
     match &cli.command {
-        None => overview::run(&cli.file, &binary, range, format, out),
-        Some(Command::Top(args)) => top::run(&binary, range, args.all, format, out),
-        Some(Command::Retained(args)) => {
-            retained::run(&binary, &args.symbol, range, args.all, format, out)
+        None => answered(overview::run(&cli.file, &binary, range, format, out)),
+        Some(Command::Top(args)) => answered(top::run(&binary, range, args.all, format, out)),
+        Some(Command::Retained(args)) => answered(retained::run(
+            &binary,
+            &args.symbol,
+            range,
+            args.all,
+            format,
+            out,
+        )),
+        Some(command @ (Command::Callers(_) | Command::Callees(_))) if range.is_some() => {
+            bail!("{}", range_in_place_of_symbol(cli, command))
         }
         Some(_) if range.is_some() => {
             bail!("--range limits sizes, so only the overview, top and retained take it")
         }
-        Some(Command::Why(args)) => why::run(&binary, &args.symbol, format, out),
-        Some(Command::Inlined(args)) => inlined::run(
+        Some(Command::Why(args)) => answered(why::run(&binary, &args.symbol, format, out)),
+        Some(Command::Inlined(args)) => answered(inlined::run(
             &cli.file,
             &binary,
             args.symbol.as_deref(),
             args.all,
             format,
             out,
-        ),
-        Some(Command::Callers(args)) => callers::run(&binary, &args.symbol, format, out),
-        Some(Command::Callees(args)) => callees::run(&binary, &args.symbol, format, out),
+        )),
+        Some(Command::Callers(args)) => callers::run(&binary, &args.symbols, format, out),
+        Some(Command::Callees(args)) => callees::run(&binary, &args.symbols, format, out),
         Some(Command::Debug(_)) if format == Format::Json => {
             bail!("the debug commands print only text")
         }
-        Some(Command::Debug(DebugCommand::Items)) => debug_items::run(&binary, out),
+        Some(Command::Debug(DebugCommand::Items)) => answered(debug_items::run(&binary, out)),
     }
+}
+
+/// The error for `--range` with `callers` or `callees`, which take a range
+/// in place of SYMBOL instead, with the command to type.
+fn range_in_place_of_symbol(cli: &Cli, command: &Command) -> String {
+    let name = match command {
+        Command::Callers(_) => "callers",
+        _ => "callees",
+    };
+    let range = cli.range.map(range_argument).unwrap_or_default();
+    format!(
+        "{name} takes a range in place of SYMBOL, not with --range: elfq {} {name} {range}",
+        shell_quote(&cli.file.display().to_string())
+    )
 }
 
 /// Builds the reference graph, or explains why elfq can't yet.

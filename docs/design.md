@@ -33,6 +33,7 @@ except `inlined`, which reads DWARF instead of machine code.
 | `elfq FILE top` | Which items keep the most bytes, as a tree? |
 | `elfq FILE callers SYMBOL` | What calls or uses SYMBOL directly, and how (call, tail call, uses, address taken, pointer in data)? |
 | `elfq FILE callees SYMBOL` | What does SYMBOL call or use directly? |
+| `elfq FILE callees RANGE...` | What do the code and data in these ranges of memory use outside them, such as code in ITCM that calls a function in flash? `callers RANGE...` asks the reverse. |
 | `elfq FILE inlined [SYMBOL]` | Which inlined functions cost the most bytes across the binary, or inside SYMBOL? Needs DWARF. |
 
 SYMBOL is a function or data object's name, an import (`write` finds the
@@ -49,6 +50,18 @@ the error lists the shortest name that picks each one, and a misspelled name
 gets suggestions. Typing the command first, as in
 `elfq callers app.elf log_msg`, gets a hint that the file comes first, and
 `elfq help top` prints the same help as `elfq app.elf top --help`.
+
+`callers` and `callees` also take one or more ranges of memory in place of
+SYMBOL, written as `--range` takes them: `0x0+256K`, or `0x0..0x40000`.
+Names don't start with a digit, so an argument that does and has `..` or
+`+` in it is a range. Then they list only the references that cross the
+edge of the ranges, one row per pair of items, grouped by the item outside,
+largest first. A call that goes through a linker's veneer is listed at the
+call to the veneer, which is in code someone wrote, with "via veneer"
+after how it calls. elfq's exit status is then 1 when anything crosses, or
+might through a call elfq can't follow, so that a CI job can check that
+code in ITCM stays there, or that code run from RAM never touches flash.
+As with `diff`, it is 0 otherwise, and 2 for any error.
 
 All commands print a table or tree for people by default. `--json` prints
 the same answer for scripts. The JSON has every item, where the text
@@ -192,7 +205,9 @@ a function whose address is taken or stored, and `callees` lists the calls
 and jumps it can't follow. `retained` notes when SYMBOL's code calls
 through pointers, since what those calls reach may count for other items.
 In JSON, `callers` and `callees` have `complete`, and `retained` has
-`indirect_calls`.
+`indirect_calls`. For ranges, `complete` is `false` when `callees` finds a
+call it can't follow in them, or a function whose end it doesn't know, or
+when `callers` finds a function in them whose address is taken or stored.
 
 ## How it works
 
@@ -284,7 +299,7 @@ src/
 ├── commands/      One file per subcommand: find the symbol (symbol.rs), run a query, render (tree.rs builds the rows of retained sizes, json.rs has shared JSON shapes).
 ├── binary/        ELF loading, item discovery, names and address ranges.
 ├── arch/          One file per instruction set (x86_64.rs, thumb.rs), each with a `scan` function.
-├── graph/         The reference graph, its roots, dominator tree and shortest paths.
+├── graph/         The reference graph, its roots, dominator tree and shortest paths, and what crosses the edge of ranges of memory.
 ├── debuginfo/     DWARF, when the file has it: what the compiler inlined.
 └── render/        Tables, and trees drawn in a table's last column (tree.rs).
 ```
@@ -343,6 +358,7 @@ starts.
 | 5. Memory ranges | 5a: a Cortex-M7 sample with code and data in ITCM, DTCM, OCRAM and flash, at the addresses an i.MX RT1176 uses; startup code no longer seems to use the first item of each section it copies. 5b: `--range START..END` or `--range START+SIZE` for the overview and `top`, and the overview lists the address blocks that the file's sections occupy. 5c: `--range` for `retained` and `exclusive`. |
 | 6. Clear output | 6a: trees deeper than 9 levels continue below them. 6b: shorter lead lines and notes for the overview, `top` and `retained`, which say what a size means. 6c: no line sums up a single item, and "1 byte". 6d: shorter lead lines and notes for `why`, `callers`, `callees` and `inlined`, and "uses" for data on every architecture. 6e: `exclusive` folds into `retained`, and `--all` shows every item; `inlined SYMBOL` instead of `inlined --in SYMBOL`; `--json` instead of `--format json`; `elfq help top` works. 6f: fixes for what step 6 turned up: no `--range` suggestions that fail on stripped firmware, no empty tree for a range that nothing reaches, and no crash on an argument that isn't UTF-8. |
 | 7. Stripped firmware | 7a: stripped and `-nodebug` copies of the Cortex-M7 sample. 7b: the vector table is found while loading the file. 7c: the Thumb decoder tells apart the jumps that can carry on in another function. 7d: functions in stripped firmware, found by following the code from the entry point and the vector table. 7e: functions that only data points to, such as Rust trait methods in vtables. 7f: an item for the vector table of stripped firmware, so that its bytes count. 7g: those functions leave out the padding after them, so their sizes match the symbols'. 7h: fixes for what a review and 91 other builds turned up: the startup arrays are followed too, a `b.w` that stays in its function starts nothing, and an address that code loads or data holds starts a function only where the code before it ends, so far fewer numbers that look like addresses start one. 7i: firmware whose linker script puts the vector table and the constants in `.text`, as CMSIS's template does, with a sample laid out that way. 7j: fixes for what a second review turned up: a jump that lands where a number points keeps it from starting a function, the jump tables of `tbb` and `tbh` end where the `cmp` before them says and jump to their cases, a short vector table in `.text` ends at its last handler, an `adr` to Thumb code marks no data, and a test for each rule. |
+| 8. Range checks | 8a: `callers` and `callees` take ranges of memory in place of SYMBOL and list what crosses their edge, at the call that goes through a linker's veneer; the exit status is 1 when something crosses, and 2 for errors. |
 
 Later: a query language, and worst-case stack depth (call graph plus each
 function's stack frame).

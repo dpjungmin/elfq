@@ -88,6 +88,11 @@ and which jumps to `crc32`. `Reset_Handler` loads where `.itcm`, `.data`
 and `.bss` start and end, but doesn't use `SysTick_Handler`, `crc_table` or
 `config_sum`, which start at the same addresses.
 
+Three things leave ITCM and DTCM, so `callees 0x0+256K 0x20000000+256K`
+lists them: `apply_filter` calls `memcpy` and `SysTick_Handler` jumps to
+`app_tick`, each through a veneer, and `filter_tap` reads `fir_coeffs`,
+all in flash.
+
 ### CMSIS layout sample ([c/cortex-m4-cmsis.ld](c/cortex-m4-cmsis.ld))
 
 The Cortex-M4 C sample again, linked the way CMSIS's `gcc_arm.ld` template

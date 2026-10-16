@@ -9,13 +9,55 @@
 //! 3. a short name: the end of an item's path, as in `process_frame` for
 //!    `app::process_frame`, or `Gain::run` for
 //!    `<app::Gain as app::Stage>::run` (see [`short_names`]).
+//!
+//! For `callers` and `callees`, SYMBOL can also be one or more ranges of
+//! memory instead (see [`subject`]).
 
 use std::collections::HashMap;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 
-use crate::binary::{Binary, demangle, short_names};
+use crate::binary::{AddressRange, Binary, demangle, short_names};
 use crate::graph::Node;
+
+/// What `callers` and `callees` ask about.
+pub enum Subject {
+    /// One item or import.
+    Node(Node),
+    /// Everything in some ranges of memory, together.
+    Ranges(Vec<AddressRange>),
+}
+
+/// Works out what `queries` ask about: one SYMBOL (see [`find`]), or one or
+/// more ranges of memory.
+pub fn subject(binary: &Binary, queries: &[String]) -> Result<Subject> {
+    if let [query] = queries
+        && range(query).is_none()
+    {
+        return Ok(Subject::Node(find(binary, query)?));
+    }
+    let ranges = queries
+        .iter()
+        .map(|query| match range(query) {
+            Some(range) => range,
+            None => bail!("`{query}` isn't a range; give one SYMBOL, or ranges such as 0x0+256K"),
+        })
+        .collect::<Result<_>>()?;
+    Ok(Subject::Ranges(ranges))
+}
+
+/// The range that `query` gives, if it gives one: `START..END` or
+/// `START+SIZE`, as `--range` takes it. Names don't start with a digit, so
+/// a query that does and has `..` or `+` in it is taken for a range.
+fn range(query: &str) -> Option<Result<AddressRange>> {
+    let is_range = query.starts_with(|c: char| c.is_ascii_digit())
+        && (query.contains("..") || query.contains('+'));
+    is_range.then(|| {
+        query
+            .parse()
+            .map_err(|error| anyhow!("`{query}` isn't a range: {error}"))
+    })
+}
 
 /// Finds the item or import that `query` names. When it could mean several,
 /// or none, the error lists names to try instead.
@@ -249,6 +291,27 @@ fn edit_distance(a: &str, b: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_query_that_starts_with_a_digit_can_be_a_range() {
+        let range = |query| range(query).map(|range| range.map_err(|error| error.to_string()));
+        let itcm = AddressRange {
+            start: 0,
+            end: 0x40000,
+        };
+        assert_eq!(range("0x0+256K"), Some(Ok(itcm)));
+        assert_eq!(range("0..0x40000"), Some(Ok(itcm)));
+        assert_eq!(
+            range("0x40000..0x0"),
+            Some(Err(
+                "`0x40000..0x0` isn't a range: the range must end after it starts".to_string()
+            ))
+        );
+        // An address, and names, even with `+` in them.
+        assert_eq!(range("0x1700"), None);
+        assert_eq!(range("operator+"), None);
+        assert_eq!(range("Vec<T>::operator+="), None);
+    }
 
     #[test]
     fn edit_distance_counts_typos() {

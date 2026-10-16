@@ -23,12 +23,19 @@ elfq app.elf inlined                    # which inlined functions take the most 
 elfq app.elf inlined main               # the inlined code in main, as a tree
 elfq app.elf callers log_msg            # what calls or uses log_msg
 elfq app.elf callees main               # what main calls or uses
+elfq app.elf callees 0x0+256K           # what the first 256 KiB uses outside it
 ```
 
 Every command also prints JSON for scripts with `--json`. The commands that
 count bytes can count only one range of memory, such as a microcontroller's
 ITCM, with `--range START..END` or `--range START+SIZE`; for firmware, the
 overview lists the ranges its sections occupy.
+
+`callers` and `callees` take ranges in place of a symbol, and then list
+only what crosses their edge, such as code in ITCM that calls a function in
+flash. elfq's exit status is then 1 if anything does, so a CI job can check
+that time-critical code stays in fast memory, or that code run from RAM
+never touches flash. Errors exit with status 2.
 
 **Status:** early development. The overview, `top`, `retained`, `why`,
 `callers` and `callees` work on x86-64 and Cortex-M executables, with

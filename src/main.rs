@@ -7,6 +7,7 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use elfq::cli::{self, Cli};
+use elfq::commands::Outcome;
 
 fn main() -> ExitCode {
     let cli = match Cli::try_parse_from(args()) {
@@ -23,14 +24,20 @@ fn main() -> ExitCode {
         }
     };
     let mut out = BufWriter::new(io::stdout().lock());
-    let result = elfq::commands::run(&cli, &mut out).and_then(|()| Ok(out.flush()?));
+    let result = elfq::commands::run(&cli, &mut out).and_then(|outcome| {
+        out.flush()?;
+        Ok(outcome)
+    });
+    // As with diff: 0 for an answer, 1 for one that a script may want to
+    // act on, and 2 for an error, as for clap's errors in the arguments.
     match result {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(Outcome::Answered) => ExitCode::SUCCESS,
+        Ok(Outcome::Crossed) => ExitCode::from(1),
         // The reader stopped early, as in `elfq ... | head`. Not an error.
         Err(err) if is_broken_pipe(&err) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("error: {err:#}");
-            ExitCode::FAILURE
+            ExitCode::from(2)
         }
     }
 }

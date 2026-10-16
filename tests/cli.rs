@@ -385,25 +385,25 @@ RETAINED  OWN  ITEM
 #[test]
 fn a_range_must_hold_something() {
     assert_eq!(
-        stderr(&[TCM_SAMPLE, "top", "--range", "0x40000000+4K"], 1),
+        stderr(&[TCM_SAMPLE, "top", "--range", "0x40000000+4K"], 2),
         "error: nothing in the file is in 0x40000000..0x40001000; the overview lists the ranges \
          that the file's sections occupy\n"
     );
     // The range is written as the overview writes it, whatever its spelling.
     assert_eq!(
-        stderr(&[TCM_SAMPLE, "top", "--range", "0x4000000+16"], 1),
+        stderr(&[TCM_SAMPLE, "top", "--range", "0x4000000+16"], 2),
         "error: nothing in the file is in 0x04000000..0x04000010; the overview lists the ranges \
          that the file's sections occupy\n"
     );
     // A section with no functions or data, such as the unwind table.
     assert_eq!(
-        stderr(&[SAMPLE, "--range", "0x25f0+0x2c8"], 1),
+        stderr(&[SAMPLE, "--range", "0x25f0+0x2c8"], 2),
         "error: elfq found no functions or data in 0x000025f0..0x000028b8 (.eh_frame)\n"
     );
     // A function with no size in the symbol table, as in hand-written
     // assembly: glibc's `_init`.
     assert_eq!(
-        stderr(&[SAMPLE, "top", "--range", "0x1000+4"], 1),
+        stderr(&[SAMPLE, "top", "--range", "0x1000+4"], 2),
         "error: elfq doesn't know where _init ends, so it can't count the bytes in \
          0x00001000..0x00001004 (.init)\n"
     );
@@ -412,7 +412,7 @@ fn a_range_must_hold_something() {
             .contains("expected START..END or START+SIZE")
     );
     assert_eq!(
-        stderr(&[TCM_SAMPLE, "callers", "crc32", "--range", "0+1K"], 1),
+        stderr(&[TCM_SAMPLE, "why", "crc32", "--range", "0+1K"], 2),
         "error: --range limits sizes, so only the overview, top and retained take it\n"
     );
 }
@@ -506,7 +506,7 @@ fn no_line_sums_up_a_single_item() {
 #[test]
 fn long_lists_name_the_first_few() {
     let sample = "testdata/bin/rust-x86_64-nodebug.elf";
-    let choices = stderr(&[sample, "callers", "fmt"], 1);
+    let choices = stderr(&[sample, "callers", "fmt"], 2);
     assert!(
         choices.starts_with("error: `fmt` could mean 53 functions;"),
         "{choices}"
@@ -864,7 +864,7 @@ BYTES  COPIES  FUNCTION
 #[test]
 fn inlined_needs_dwarf() {
     assert_eq!(
-        stderr(&["testdata/bin/c-x86_64-nodebug.elf", "inlined"], 1),
+        stderr(&["testdata/bin/c-x86_64-nodebug.elf", "inlined"], 2),
         "error: testdata/bin/c-x86_64-nodebug.elf has no DWARF debug info, which elfq needs to \
          tell what the compiler inlined; build it with debug info (such as -g) and don't strip \
          it\n"
@@ -925,7 +925,7 @@ Removing vtable for app::Gain would remove app::Gain::run(short*, unsigned long)
     );
     // Overloads share a name, so their parameters tell them apart.
     assert_eq!(
-        stderr(&[CPP, "callers", "log"], 1),
+        stderr(&[CPP, "callers", "log"], 2),
         "\
 error: `log` could mean 2 functions; use one of the names on the left instead:
   'log(char const*)'   app::log(char const*)
@@ -1041,6 +1041,158 @@ std::rt::lang_start_internal  uses  0x3a60a, 0x3a66d
     );
 }
 
+/// Runs elfq, expecting it to find something that crosses the edge of the
+/// ranges it was given (exit status 1), and returns what it printed.
+fn crossing(args: &[&str]) -> String {
+    let output = elfq(args);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    String::from_utf8(output.stdout).unwrap()
+}
+
+#[test]
+fn callees_of_ranges_lists_what_leaves_them() {
+    // ITCM and DTCM together: only what is in neither, at the call that
+    // goes through the linker's veneer.
+    assert_eq!(
+        crossing(&[TCM_SAMPLE, "callees", "0x0+256K", "0x20000000..0x20040000"]),
+        "\
+0x00000000..0x00040000 (.itcm) and 0x20000000..0x20040000 (.data and .bss) use 3 items outside them:
+
+CALLEE      ADDRESS     SIZE  CALLER           HOW                   AT
+memcpy      0x3000087c   308  apply_filter     call via veneer       0xbc
+app_tick    0x300002e4    60  SysTick_Handler  tail call via veneer  0x8
+fir_coeffs  0x30000eb4    32  filter_tap       uses                  0x56
+"
+    );
+    // The same without symbols, where the veneers are known by their code.
+    assert_eq!(
+        crossing(&[
+            "testdata/bin/c-cortex-m7-stripped.elf",
+            "callees",
+            "0x0+256K",
+            "0x20000000+256K"
+        ]),
+        "\
+0x00000000..0x00040000 (.itcm) and 0x20000000..0x20040000 (.data and .bss) use 3 items outside them:
+
+CALLEE              ADDRESS     SIZE  CALLER   HOW                   AT
+fn_0x3000087c       0x3000087c  ~308  fn_0x74  call via veneer       0xbc
+fn_0x300002e4       0x300002e4   ~60  fn_0x0   tail call via veneer  0x8
+.rodata@0x30000eb4  0x30000eb4   ~32  fn_0x40  uses                  0x56
+"
+    );
+    // ITCM alone: DTCM is outside it too.
+    assert_eq!(
+        crossing(&[TCM_SAMPLE, "callees", "0x0+256K"]),
+        "\
+0x00000000..0x00040000 (.itcm) uses 5 items outside it:
+
+CALLEE         ADDRESS     SIZE  CALLER           HOW                   AT
+crc_table      0x20000000  1024  crc32            uses                  0x18
+memcpy         0x3000087c   308  apply_filter     call via veneer       0xbc
+app_tick       0x300002e4    60  SysTick_Handler  tail call via veneer  0x8
+fir_coeffs     0x30000eb4    32  filter_tap       uses                  0x56
+systick_count  0x20000444     4  SysTick_Handler  uses                  0x0
+"
+    );
+    // Data that holds no pointers uses nothing: exit status 0.
+    assert_eq!(
+        stdout(&[TCM_SAMPLE, "callees", "0x20000000+256K"]),
+        "0x20000000..0x20040000 (.data and .bss) uses nothing outside it.\n"
+    );
+}
+
+#[test]
+fn callees_of_ranges_lists_first_what_elfq_cannot_follow() {
+    let flash = crossing(&[TCM_SAMPLE, "callees", "0x30000000+16M"]);
+    let lines: Vec<&str> = flash.lines().take(6).collect();
+    assert_eq!(
+        lines,
+        [
+            "0x30000000..0x31000000 (.isr_vector, .text, .rodata and .ARM.exidx) uses 14 items \
+             outside it, and makes 1 jump that elfq can't follow:",
+            "",
+            "CALLEE               ADDRESS     SIZE  CALLER            HOW              AT",
+            "(through a pointer)                    dispatch_event    jump             0x300002da",
+            "tx_buffer            0x20240000  4096  platform_write    uses             0x30000674, 0x30000696",
+            "apply_filter         0x74          92  process_frame     call via veneer  0x30000386, 0x30000454",
+        ]
+    );
+    // An item used from several places is named once.
+    assert!(
+        flash.contains(
+            "\nstats                0x20000400    32  process_frame     uses             0x3000038a\n\
+             \x20                                      report            uses             0x300004de\n"
+        ),
+        "{flash}"
+    );
+    // glibc's _init has no size, so its code can't be read.
+    assert_eq!(
+        crossing(&[SAMPLE, "callees", "0x1000+4"]),
+        "\
+0x00001000..0x00001004 (.init) uses nothing outside it.
+
+elfq can't read the code of _init, since it doesn't know where it ends.
+"
+    );
+}
+
+#[test]
+fn callers_of_ranges_lists_what_uses_them_from_outside() {
+    assert_eq!(
+        crossing(&[TCM_SAMPLE, "callers", "0x0+256K"]),
+        "\
+0x00000000..0x00040000 (.itcm) is used by 2 items outside it:
+
+CALLER         ADDRESS     SIZE  CALLEE           HOW              AT
+process_frame  0x30000320   376  crc32            call via veneer  0x3000034c
+                                 apply_filter     call via veneer  0x30000386, 0x30000454
+vector_table   0x30000000    64  SysTick_Handler  pointer          0x3000003c
+"
+    );
+    // Code outside may call a function through a pointer to it.
+    assert_eq!(
+        crossing(&[SAMPLE, "callers", "0x1260+0x20"]),
+        "\
+0x00001260..0x00001280 (.text) is used by 1 function outside it:
+
+CALLER  ADDRESS  SIZE  CALLEE    HOW            AT
+main    0x10a0    195  on_timer  address taken  0x10a8
+                       on_data   address taken  0x10c7
+
+Calls through a pointer to on_timer and on_data aren't listed, since elfq can't see them.
+"
+    );
+    assert_eq!(
+        crossing(&[TCM_SAMPLE, "callers", "0x20240000+4K"])
+            .lines()
+            .next(),
+        Some("0x20240000..0x20241000 (.ocram_bss) is used by 1 function outside it:")
+    );
+}
+
+#[test]
+fn ranges_in_place_of_symbol_must_be_ranges_with_something_in_them() {
+    assert_eq!(
+        stderr(&[TCM_SAMPLE, "callees", "0x40000000+4K"], 2),
+        "error: nothing in the file is in 0x40000000..0x40001000; the overview lists the ranges \
+         that the file's sections occupy\n"
+    );
+    assert_eq!(
+        stderr(&[TCM_SAMPLE, "callees", "0x0+256K", "main"], 2),
+        "error: `main` isn't a range; give one SYMBOL, or ranges such as 0x0+256K\n"
+    );
+    assert_eq!(
+        stderr(&[TCM_SAMPLE, "callers", "0x100..0x0"], 2),
+        "error: `0x100..0x0` isn't a range: the range must end after it starts\n"
+    );
+    assert_eq!(
+        stderr(&[TCM_SAMPLE, "callees", "crc32", "--range", "0+1K"], 2),
+        "error: callees takes a range in place of SYMBOL, not with --range: \
+         elfq testdata/bin/c-cortex-m7.elf callees 0x00000000..0x00000400\n"
+    );
+}
+
 #[test]
 fn debug_items_lists_each_item() {
     let output = stdout(&[SAMPLE, "debug", "items"]);
@@ -1056,13 +1208,13 @@ fn debug_items_lists_each_item() {
 }
 
 #[test]
-fn errors_go_to_stderr_with_a_failing_exit_code() {
+fn errors_go_to_stderr_with_exit_code_2() {
     assert_eq!(
-        stderr(&["Cargo.toml"], 1),
+        stderr(&["Cargo.toml"], 2),
         "error: cannot load Cargo.toml: not an ELF file\n"
     );
     assert_eq!(
-        stderr(&[SAMPLE, "callers", "proces_frame"], 1),
+        stderr(&[SAMPLE, "callers", "proces_frame"], 2),
         "error: no function or data object is named `proces_frame`; did you mean process_frame?\n"
     );
 }

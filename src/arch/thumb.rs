@@ -99,6 +99,17 @@ pub(super) fn ending(code: &[u8], address: u64) -> Ending {
     ending
 }
 
+/// Whether `code` is a veneer that GNU ld adds for Thumb-2, from the
+/// Cortex-M7 sample:
+///
+/// ```text
+/// 000000d8: f85f f000  ldr.w pc, [pc]
+/// 000000dc: 3000087d   .word 0x3000087d <memcpy + 1>
+/// ```
+pub(super) fn is_veneer(code: &[u8]) -> bool {
+    code.len() == 8 && code[..4] == [0x5f, 0xf8, 0x00, 0xf0]
+}
+
 /// How many bytes of padding `code` starts with.
 pub(super) fn leading_padding(code: &[u8]) -> usize {
     let halfword = |offset: usize| {
@@ -524,6 +535,15 @@ mod tests {
             ),
             [(0x3000_09b0, TailJump(0x10))]
         );
+    }
+
+    #[test]
+    fn a_veneer_is_a_load_into_pc_and_its_constant() {
+        let veneer = [0x5f, 0xf8, 0x00, 0xf0, 0x7d, 0x08, 0x00, 0x30];
+        assert!(is_veneer(&veneer));
+        // Not the same load in a longer function, nor a b.w.
+        assert!(!is_veneer(&[&veneer[..], &[0x70, 0x47]].concat()));
+        assert!(!is_veneer(&[0x00, 0xf0, 0x00, 0xb8]));
     }
 
     #[test]
