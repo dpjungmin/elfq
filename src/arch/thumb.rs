@@ -14,6 +14,8 @@
 
 use std::collections::BTreeMap;
 
+use object::{Endian, Endianness};
+
 use super::CodeReferenceKind::{self, *};
 use super::{CodeReference, Ending};
 
@@ -22,8 +24,8 @@ const SP: u16 = 13;
 const LR: u16 = 14;
 const PC: u16 = 15;
 
-pub(super) fn scan(code: &[u8], address: u64) -> Vec<CodeReference> {
-    let mut scanner = Scanner::new(code, address);
+pub(super) fn scan(code: &[u8], address: u64, endianness: Endianness) -> Vec<CodeReference> {
+    let mut scanner = Scanner::new(code, address, endianness);
     let mut offset = 0;
     while let Some(first) = scanner.halfword(offset) {
         if let Some(end) = scanner.data_end(offset) {
@@ -41,8 +43,8 @@ pub(super) fn scan(code: &[u8], address: u64) -> Vec<CodeReference> {
 /// How many bytes of `code` its instructions and constants take, leaving
 /// out the padding after them: `nop`s, zeros, and the `0xd4d4` that lld
 /// fills gaps with. A constant that a load reads is never padding.
-pub(super) fn code_size(code: &[u8], address: u64) -> usize {
-    let mut scanner = Scanner::new(code, address);
+pub(super) fn code_size(code: &[u8], address: u64, endianness: Endianness) -> usize {
+    let mut scanner = Scanner::new(code, address, endianness);
     let mut size = 0;
     let mut offset = 0;
     while let Some(first) = scanner.halfword(offset) {
@@ -64,8 +66,8 @@ pub(super) fn code_size(code: &[u8], address: u64) -> usize {
 /// How the code that starts at `address` ends: whether its last
 /// instructions could run on past its end. Padding after them doesn't
 /// count.
-pub(super) fn ending(code: &[u8], address: u64) -> Ending {
-    let mut scanner = Scanner::new(code, address);
+pub(super) fn ending(code: &[u8], address: u64, endianness: Endianness) -> Ending {
+    let mut scanner = Scanner::new(code, address, endianness);
     let mut ending = Ending::Stops;
     // How many of the next instructions an `it` makes conditional.
     let mut conditional = 0;
@@ -97,6 +99,17 @@ pub(super) fn ending(code: &[u8], address: u64) -> Ending {
         return Ending::RunsOn;
     }
     ending
+}
+
+/// Whether `code` is a veneer that GNU ld adds for Thumb-2, from the
+/// Cortex-M7 sample:
+///
+/// ```text
+/// 000000d8: f85f f000  ldr.w pc, [pc]
+/// 000000dc: 3000087d   .word 0x3000087d <memcpy + 1>
+/// ```
+pub(super) fn is_veneer(code: &[u8]) -> bool {
+    code.len() == 8 && code[..4] == [0x5f, 0xf8, 0x00, 0xf0]
 }
 
 /// How many bytes of padding `code` starts with.
@@ -155,6 +168,9 @@ struct Scanner<'a> {
     code: &'a [u8],
     /// The address of `code[0]`.
     address: u64,
+    /// The order of the bytes in constants and jump tables. Instructions
+    /// are always little-endian, even in big-endian (BE8) files.
+    endianness: Endianness,
     references: Vec<CodeReference>,
     /// Constants and jump tables found so far, as offsets into `code`: the
     /// start of each, mapped to its end.
@@ -168,10 +184,11 @@ struct Scanner<'a> {
 }
 
 impl<'a> Scanner<'a> {
-    fn new(code: &'a [u8], address: u64) -> Self {
+    fn new(code: &'a [u8], address: u64, endianness: Endianness) -> Self {
         Scanner {
             code,
             address,
+            endianness,
             references: Vec::new(),
             data: BTreeMap::new(),
             low_halves: [None; 16],
@@ -361,7 +378,7 @@ impl<'a> Scanner<'a> {
         while entry + entry_size <= end.min(self.code.len()) {
             let distance = match entry_size {
                 1 => u16::from(self.code[entry]),
-                _ => self.halfword(entry).unwrap_or(0),
+                _ => self.table_entry(entry).unwrap_or(0),
             };
             let target = start + usize::from(distance) * 2;
             if entries.is_none() {
@@ -390,7 +407,7 @@ impl<'a> Scanner<'a> {
         let end = self.data.entry(offset).or_insert(offset + size);
         *end = (*end).max(offset + size);
         let word: [u8; 4] = bytes.try_into().ok()?;
-        Some(u64::from(u32::from_le_bytes(word)))
+        Some(u64::from(self.endianness.read_u32(word)))
     }
 
     /// Marks what an `adr` at `address` points to in this function as data,
@@ -410,9 +427,16 @@ impl<'a> Scanner<'a> {
         (offset < end).then_some(end)
     }
 
+    /// The 16 bits of an instruction at `offset`.
     fn halfword(&self, offset: usize) -> Option<u16> {
         let bytes = self.code.get(offset..offset + 2)?;
         Some(u16::from_le_bytes([bytes[0], bytes[1]]))
+    }
+
+    /// The entry of a `tbh` jump table at `offset`, which is data.
+    fn table_entry(&self, offset: usize) -> Option<u16> {
+        let bytes: [u8; 2] = self.code.get(offset..offset + 2)?.try_into().ok()?;
+        Some(self.endianness.read_u16(bytes))
     }
 
     /// The value of the program counter when the instruction at `offset`
@@ -474,10 +498,12 @@ fn align(pc: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use object::Endianness::{Big, Little};
+
     use super::*;
 
     fn kinds(code: &[u8], address: u64) -> Vec<(u64, CodeReferenceKind)> {
-        scan(code, address)
+        scan(code, address, Little)
             .into_iter()
             .map(|r| (r.site, r.kind))
             .collect()
@@ -527,6 +553,15 @@ mod tests {
     }
 
     #[test]
+    fn a_veneer_is_a_load_into_pc_and_its_constant() {
+        let veneer = [0x5f, 0xf8, 0x00, 0xf0, 0x7d, 0x08, 0x00, 0x30];
+        assert!(is_veneer(&veneer));
+        // Not the same load in a longer function, nor a b.w.
+        assert!(!is_veneer(&[&veneer[..], &[0x70, 0x47]].concat()));
+        assert!(!is_veneer(&[0x00, 0xf0, 0x00, 0xb8]));
+    }
+
+    #[test]
     fn constants_in_literal_pools_are_read_and_skipped() {
         // ldr r2, [pc, #0]; bx lr; then the constant 0x20000024, which
         // would otherwise decode as instructions.
@@ -548,14 +583,14 @@ mod tests {
     fn padding_after_the_code_is_left_out() {
         // bx lr, then nop and nop.w, which align what follows.
         assert_eq!(
-            code_size(&[0x70, 0x47, 0x00, 0xbf, 0xaf, 0xf3, 0x00, 0x80], 0),
+            code_size(&[0x70, 0x47, 0x00, 0xbf, 0xaf, 0xf3, 0x00, 0x80], 0, Little),
             2
         );
         // b . (an endless loop), then lld's filler.
-        assert_eq!(code_size(&[0xfe, 0xe7, 0xd4, 0xd4], 0), 2);
+        assert_eq!(code_size(&[0xfe, 0xe7, 0xd4, 0xd4], 0, Little), 2);
         // ldr r2, [pc, #0]; bx lr; then the constant it loads, which is 0.
         let code = [0x00, 0x4a, 0x70, 0x47, 0x00, 0x00, 0x00, 0x00];
-        assert_eq!(code_size(&code, 0x0800_0040), 8);
+        assert_eq!(code_size(&code, 0x0800_0040, Little), 8);
     }
 
     #[test]
@@ -564,25 +599,28 @@ mod tests {
         // otherwise look like padding.
         let code = [0x00, 0xa0, 0x70, 0x47, 0, 0, 0, 0, 0, 0, 0, 0];
         assert_eq!(kinds(&code, 0), [(0, Address(4))]);
-        assert_eq!(code_size(&code, 0), 12);
+        assert_eq!(code_size(&code, 0, Little), 12);
     }
 
     #[test]
     fn how_code_ends() {
         // bx lr returns, then nop pads.
-        assert_eq!(ending(&[0x70, 0x47, 0x00, 0xbf], 0), Ending::Stops);
+        assert_eq!(ending(&[0x70, 0x47, 0x00, 0xbf], 0, Little), Ending::Stops);
         // bl calls, and movs r0, #1 runs on.
-        assert_eq!(ending(&[0xff, 0xf7, 0xd3, 0xff], 0x0800_010e), Ending::Call);
-        assert_eq!(ending(&[0x01, 0x20], 0), Ending::RunsOn);
+        assert_eq!(
+            ending(&[0xff, 0xf7, 0xd3, 0xff], 0x0800_010e, Little),
+            Ending::Call
+        );
+        assert_eq!(ending(&[0x01, 0x20], 0, Little), Ending::RunsOn);
         // The first half of movw r0, #0x1234.
-        assert_eq!(ending(&[0x41, 0xf2], 0), Ending::RunsOn);
+        assert_eq!(ending(&[0x41, 0xf2], 0, Little), Ending::RunsOn);
         // it eq; bxeq lr: the return may not happen. And ite eq; moveq r0,
         // #1: the code ends inside the `it` block.
-        assert_eq!(ending(&[0x08, 0xbf, 0x70, 0x47], 0), Ending::RunsOn);
-        assert_eq!(ending(&[0x0c, 0xbf, 0x01, 0x20], 0), Ending::RunsOn);
+        assert_eq!(ending(&[0x08, 0xbf, 0x70, 0x47], 0, Little), Ending::RunsOn);
+        assert_eq!(ending(&[0x0c, 0xbf, 0x01, 0x20], 0, Little), Ending::RunsOn);
         // ldr r2, [pc, #0]; bx lr; then the constant 1 it loads.
         let code = [0x00, 0x4a, 0x70, 0x47, 0x01, 0x00, 0x00, 0x00];
-        assert_eq!(ending(&code, 0), Ending::Stops);
+        assert_eq!(ending(&code, 0, Little), Ending::Stops);
     }
 
     #[test]
@@ -614,6 +652,26 @@ mod tests {
             kinds(&code, 0),
             [(2, Jump(0xa)), (4, Jump(0xe)), (4, Jump(0x10))]
         );
+    }
+
+    #[test]
+    fn big_endian_files_have_big_endian_constants_and_tables() {
+        // In big-endian (BE8) firmware, instructions are still
+        // little-endian. ldr r2, [pc, #0]; bx lr; then 0x20000024.
+        let code = [0x00, 0x4a, 0x70, 0x47, 0x20, 0x00, 0x00, 0x24];
+        let kinds = |code: &[u8]| -> Vec<(u64, CodeReferenceKind)> {
+            scan(code, 0, Big)
+                .into_iter()
+                .map(|r| (r.site, r.kind))
+                .collect()
+        };
+        assert_eq!(kinds(&code), [(0, Address(0x2000_0024))]);
+        // tbh [pc, r0, lsl #1], then a table of two halfwords, 2 and 3,
+        // then two cases of bx lr.
+        let code = [
+            0xdf, 0xe8, 0x10, 0xf0, 0x00, 0x02, 0x00, 0x03, 0x70, 0x47, 0x70, 0x47,
+        ];
+        assert_eq!(kinds(&code), [(0, Jump(8)), (0, Jump(10))]);
     }
 
     #[test]

@@ -1,11 +1,14 @@
-//! `elfq FILE callers SYMBOL`: what calls or uses SYMBOL.
+//! `elfq FILE callers SYMBOL`: what calls or uses SYMBOL. For ranges of
+//! memory in place of SYMBOL, see `edge.rs`.
 
 use std::io::Write;
 
 use anyhow::Result;
 use serde::Serialize;
 
-use super::json;
+use super::edge::{self, Direction};
+use super::symbol::{self, Subject};
+use super::{Outcome, json};
 use crate::binary::{Binary, ItemKind};
 use crate::cli::Format;
 use crate::graph::{Graph, Node, Reference, ReferenceKind};
@@ -21,9 +24,30 @@ struct Callers<'a> {
     complete: bool,
 }
 
-pub fn run(binary: &Binary, symbol: &str, format: Format, out: &mut dyn Write) -> Result<()> {
+pub fn run(
+    binary: &Binary,
+    symbols: &[String],
+    format: Format,
+    out: &mut dyn Write,
+) -> Result<Outcome> {
     let graph = super::reference_graph(binary)?;
-    let node = super::symbol::find(binary, symbol)?;
+    match symbol::subject(binary, symbols)? {
+        Subject::Node(node) => {
+            callers(binary, &graph, node, format, out)?;
+            Ok(Outcome::Answered)
+        }
+        Subject::Ranges(ranges) => edge::run(binary, &graph, &ranges, Direction::In, format, out),
+    }
+}
+
+/// What calls or uses `node`.
+fn callers(
+    binary: &Binary,
+    graph: &Graph,
+    node: Node,
+    format: Format,
+    out: &mut dyn Write,
+) -> Result<()> {
     let name = node.name(binary);
 
     // The callers by name, with `how` saying how each uses SYMBOL. The text
@@ -38,7 +62,7 @@ pub fn run(binary: &Binary, symbol: &str, format: Format, out: &mut dyn Write) -
         rows.sort_by(|a, b| a.node.name(binary).cmp(b.node.name(binary)));
         rows
     };
-    let through_pointer = can_be_called_through_pointer(binary, &graph, node);
+    let through_pointer = can_be_called_through_pointer(binary, graph, node);
     if format == Format::Json {
         let callers = Callers {
             symbol: json::Item::new(binary, node),
@@ -47,7 +71,7 @@ pub fn run(binary: &Binary, symbol: &str, format: Format, out: &mut dyn Write) -
         };
         return json::write(&callers, out);
     }
-    let rows = rows(&|reference| super::how(binary, reference));
+    let rows = rows(&|reference| super::how(binary, reference.to, reference.kind));
     // Some calls can't be listed: the system's, to where the program starts,
     // and those through a pointer.
     let root = graph.roots.iter().find(|root| root.node == node);

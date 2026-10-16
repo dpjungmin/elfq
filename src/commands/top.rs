@@ -94,18 +94,7 @@ pub(super) fn check_has_bytes(retained: &RetainedTree) -> Result<()> {
     if retained.bytes() > 0 {
         return Ok(());
     }
-    let place = match retained.range {
-        Some(range) if super::sections_in(binary, range).is_empty() => bail!(
-            "nothing in the file is in {}; the overview lists the ranges that the file's \
-             sections occupy",
-            super::range_argument(range)
-        ),
-        Some(range) => super::range_text(binary, range),
-        None => "the file".to_string(),
-    };
-    if !super::found_functions(binary) {
-        bail!("the file has no symbols or unwind table, so elfq can't find its functions yet");
-    }
+    let place = super::empty_place(binary, retained.range)?;
     let starts_in_place = |item: &&Item| {
         retained
             .range

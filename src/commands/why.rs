@@ -316,7 +316,9 @@ impl<'a> Chains<'a> {
             .iter()
             .map(|&child| {
                 TreeRow::new(
-                    vec![how(self.graph, node, child, |r| super::how(self.binary, r))],
+                    vec![how(self.graph, node, child, |r| {
+                        super::how(self.binary, r.to, r.kind)
+                    })],
                     child.name(self.binary),
                     self.children_rows(child),
                 )

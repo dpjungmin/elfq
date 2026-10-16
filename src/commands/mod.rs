@@ -4,6 +4,7 @@
 mod callees;
 mod callers;
 mod debug_items;
+mod edge;
 mod inlined;
 mod json;
 mod overview;
@@ -21,40 +22,101 @@ use object::Architecture;
 use crate::arch;
 use crate::binary::{AddressRange, Binary, Item, ItemKind, Source};
 use crate::cli::{Cli, Command, DebugCommand, Format};
-use crate::graph::{Graph, Node, Reference, ReferenceKind};
+use crate::graph::{Graph, Node, Reference, ReferenceKind, Unresolved};
+
+/// What an answer means for elfq's exit status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    /// Exit status 0.
+    Answered,
+    /// Something crosses the edge of the ranges that `callers` or
+    /// `callees` asked about, or may: exit status 1, so that a script can
+    /// check that code in a range stays in it.
+    Crossed,
+}
 
 /// Runs the command in `cli`, writing its answer to `out`.
-pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<()> {
+pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<Outcome> {
     let binary = Binary::load(&cli.file)?;
     for warning in &binary.warnings {
         eprintln!("warning: {warning}");
     }
     let format = cli.format();
     let range = cli.range;
+    let answered = |result: Result<()>| result.map(|()| Outcome::Answered);
     match &cli.command {
-        None => overview::run(&cli.file, &binary, range, format, out),
-        Some(Command::Top(args)) => top::run(&binary, range, args.all, format, out),
-        Some(Command::Retained(args)) => {
-            retained::run(&binary, &args.symbol, range, args.all, format, out)
+        None => answered(overview::run(&cli.file, &binary, range, format, out)),
+        Some(Command::Top(args)) => answered(top::run(&binary, range, args.all, format, out)),
+        Some(Command::Retained(args)) => answered(retained::run(
+            &binary,
+            &args.symbol,
+            range,
+            args.all,
+            format,
+            out,
+        )),
+        Some(command @ (Command::Callers(args) | Command::Callees(args)))
+            if range.is_some() && args.symbols.iter().all(|query| symbol::is_range(query)) =>
+        {
+            bail!("{}", range_in_place_of_symbol(cli, command, &args.symbols))
+        }
+        Some(command @ (Command::Callers(args) | Command::Callees(args)))
+            if args.symbols.is_empty() =>
+        {
+            bail!(
+                "{} needs a SYMBOL, or ranges such as 0x0+256K",
+                command_name(command)
+            )
         }
         Some(_) if range.is_some() => {
             bail!("--range limits sizes, so only the overview, top and retained take it")
         }
-        Some(Command::Why(args)) => why::run(&binary, &args.symbol, format, out),
-        Some(Command::Inlined(args)) => inlined::run(
+        Some(Command::Why(args)) => answered(why::run(&binary, &args.symbol, format, out)),
+        Some(Command::Inlined(args)) => answered(inlined::run(
             &cli.file,
             &binary,
             args.symbol.as_deref(),
             args.all,
             format,
             out,
-        ),
-        Some(Command::Callers(args)) => callers::run(&binary, &args.symbol, format, out),
-        Some(Command::Callees(args)) => callees::run(&binary, &args.symbol, format, out),
+        )),
+        Some(Command::Callers(args)) => callers::run(&binary, &args.symbols, format, out),
+        Some(Command::Callees(args)) => callees::run(&binary, &args.symbols, format, out),
         Some(Command::Debug(_)) if format == Format::Json => {
             bail!("the debug commands print only text")
         }
-        Some(Command::Debug(DebugCommand::Items)) => debug_items::run(&binary, out),
+        Some(Command::Debug(DebugCommand::Items)) => answered(debug_items::run(&binary, out)),
+    }
+}
+
+/// The error for `--range` with `callers` or `callees`, when it adds to the
+/// ranges in place of SYMBOL, or there is no SYMBOL: they take ranges there
+/// instead. Says the command to type.
+fn range_in_place_of_symbol(cli: &Cli, command: &Command, ranges: &[String]) -> String {
+    let name = command_name(command);
+    let ranges: Vec<String> = ranges
+        .iter()
+        .map(|range| shell_quote(range))
+        .chain(cli.range.map(range_argument))
+        .collect();
+    format!(
+        "{name} takes ranges in place of SYMBOL, not with --range: elfq {} {name} {}{}",
+        shell_quote(&cli.file.display().to_string()),
+        ranges.join(" "),
+        if cli.json { " --json" } else { "" }
+    )
+}
+
+/// The name of `command` as typed: `callers` for [`Command::Callers`].
+fn command_name(command: &Command) -> &'static str {
+    match command {
+        Command::Top(_) => "top",
+        Command::Retained(_) => "retained",
+        Command::Why(_) => "why",
+        Command::Inlined(_) => "inlined",
+        Command::Callers(_) => "callers",
+        Command::Callees(_) => "callees",
+        Command::Debug(_) => "debug",
     }
 }
 
@@ -234,20 +296,42 @@ fn distinct_nodes(rows: &[Row]) -> Vec<Node> {
     nodes
 }
 
-/// How a reference uses its target, for the HOW column. Code that reads,
-/// writes or loads the address of a data object "uses" it, on every
+/// How a reference of `kind` uses `to`, for the HOW column. Code that
+/// reads, writes or loads the address of a data object "uses" it, on every
 /// architecture, while "address taken" means a pointer to a function. An
 /// import keeps "address taken", since elfq doesn't record yet whether it
 /// is a function or data.
-fn how(binary: &Binary, reference: &Reference) -> &'static str {
-    let is_data = match reference.to {
+fn how(binary: &Binary, to: Node, kind: ReferenceKind) -> &'static str {
+    let is_data = match to {
         Node::Item(index) => binary.items[index].kind == ItemKind::Data,
         Node::Import(_) => false,
     };
-    match reference.kind {
+    match kind {
         ReferenceKind::Access => "uses",
         ReferenceKind::Address if is_data => "uses",
         kind => json::how(kind),
+    }
+}
+
+/// "call" or "jump", for a call or jump that elfq can't follow.
+fn call_or_jump(unresolved: &Unresolved) -> &'static str {
+    if unresolved.is_call { "call" } else { "jump" }
+}
+
+/// "1 call", "2 jumps" or "1 call and 2 jumps", for calls and jumps that
+/// elfq can't follow.
+fn calls_and_jumps<'a>(unresolved: impl IntoIterator<Item = &'a Unresolved>) -> String {
+    let unresolved: Vec<&Unresolved> = unresolved.into_iter().collect();
+    let calls = unresolved.iter().filter(|u| u.is_call).count();
+    let jumps = unresolved.len() - calls;
+    match (calls, jumps) {
+        (_, 0) => plural(calls, "call", "calls"),
+        (0, _) => plural(jumps, "jump", "jumps"),
+        _ => format!(
+            "{} and {}",
+            plural(calls, "call", "calls"),
+            plural(jumps, "jump", "jumps")
+        ),
     }
 }
 
@@ -273,6 +357,26 @@ fn sections_in(binary: &Binary, range: AddressRange) -> Vec<&str> {
         .filter(|section| section.allocated && range.overlap(section.address, section.size) > 0)
         .map(|section| section.name.as_str())
         .collect()
+}
+
+/// Where an answer that found nothing looked, for its error: `range`, such
+/// as `0x00000000..0x000000e0 (.itcm)`, or without one, "the file". Fails
+/// instead when no section is in `range`, which is then most likely
+/// mistyped, or when elfq can't find the file's functions yet.
+fn empty_place(binary: &Binary, range: Option<AddressRange>) -> Result<String> {
+    let place = match range {
+        Some(range) if sections_in(binary, range).is_empty() => bail!(
+            "nothing in the file is in {}; the overview lists the ranges that the file's \
+             sections occupy",
+            range_argument(range)
+        ),
+        Some(range) => range_text(binary, range),
+        None => "the file".to_string(),
+    };
+    if !found_functions(binary) {
+        bail!("the file has no symbols or unwind table, so elfq can't find its functions yet");
+    }
+    Ok(place)
 }
 
 /// Whether elfq found the file's functions: a symbol table or an unwind
@@ -303,9 +407,9 @@ fn range_argument(range: AddressRange) -> String {
 }
 
 /// `text` as one shell word: quoted when it holds anything but letters,
-/// digits and `_./@:-`.
+/// digits and `_./@:+-`.
 fn shell_quote(text: &str) -> String {
-    let plain = |c: char| c.is_ascii_alphanumeric() || "_./@:-".contains(c);
+    let plain = |c: char| c.is_ascii_alphanumeric() || "_./@:+-".contains(c);
     if !text.is_empty() && text.chars().all(plain) {
         text.to_string()
     } else {

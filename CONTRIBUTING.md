@@ -30,10 +30,10 @@ cargo test
 |---|---|
 | `src/main.rs` | The program: parses arguments, runs one command, prints errors. |
 | `src/cli.rs` | Command-line arguments, one struct per subcommand. |
-| `src/commands/` | One file per subcommand, plus `symbol.rs`, which works out what a user means by SYMBOL, `tree.rs`, which builds the trees of retained sizes that `top` and `retained` show and writes them as JSON, and `json.rs`, the JSON shapes that commands share. Commands connect a question to output; they do no analysis. |
+| `src/commands/` | One file per subcommand, plus `symbol.rs`, which works out what a user means by SYMBOL, `tree.rs`, which builds the trees of retained sizes that `top` and `retained` show and writes them as JSON, `json.rs`, the JSON shapes that commands share, and `edge.rs`, which `callers` and `callees` use for ranges of memory. Commands connect a question to output; they do no analysis. |
 | `src/arch/` | Finding the addresses that machine code calls or uses, one file per instruction set (x86-64 and Thumb). |
 | `src/binary/` | Reading an ELF file: its functions and data objects ("items"), their names, imports and stored pointers. Unnamed data, such as string literals, is found from what code and pointers refer to. |
-| `src/graph/` | The reference graph that connects items, the roots where the program starts, the dominator tree that says what is exclusive to what, and the shortest paths that `why` shows. |
+| `src/graph/` | The reference graph that connects items, the roots where the program starts, the dominator tree that says what is exclusive to what, the shortest paths that `why` shows, and the references that cross the edge of ranges of memory. |
 | `src/debuginfo/` | Reading DWARF, when the file has it: the copies of functions that the compiler inlined, for `inlined`. |
 | `src/render/` | Text output: tables, and the trees drawn in their last column (`tree.rs`), which every command draws the same way. |
 | `tests/` | Integration tests that run on the sample binaries. |
@@ -51,7 +51,8 @@ Commands take the form `elfq FILE <command> [ARGS]`.
 1. Add its arguments to `src/cli.rs`.
 2. Add `src/commands/<name>.rs` with a `run` function, and call it from
    `src/commands/mod.rs`. A command that takes a SYMBOL turns it into an
-   item with `symbol::find`.
+   item with `symbol::find`. Its answer gives exit status 0, unless it
+   returns an `Outcome` that says otherwise, as `callers` does for ranges.
 3. Work out the answer first, then write it as text or, for `--json`, as a
    struct that derives `Serialize`, using the shapes in
    `src/commands/json.rs` for items. `callers.rs` is a short example.

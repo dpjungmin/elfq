@@ -107,6 +107,65 @@ fn callers_and_callees_list_every_use() {
 }
 
 #[test]
+fn ranges_list_what_crosses_their_edge() {
+    let output = Command::new(env!("CARGO_BIN_EXE_elfq"))
+        .args([
+            "testdata/bin/c-cortex-m7.elf",
+            "callees",
+            "0x0+256K",
+            "--json",
+        ])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .unwrap();
+    // Something leaves the range.
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let callees: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        callees["ranges"],
+        json!([{ "start": "0x0", "end": "0x40000" }])
+    );
+    assert_eq!(
+        names(&callees["callees"]),
+        [
+            "crc_table",
+            "memcpy",
+            "app_tick",
+            "fir_coeffs",
+            "systick_count"
+        ]
+    );
+    let memcpy = &callees["callees"][1];
+    assert_eq!(memcpy["caller"]["name"], "apply_filter");
+    assert_eq!(memcpy["how"], "call");
+    assert_eq!(memcpy["veneer"]["name"], "__memcpy_veneer");
+    assert_eq!(memcpy["sites"], json!(["0xbc"]));
+    assert_eq!(callees["callees"][0]["how"], "address taken");
+    assert_eq!(callees["callees"][0]["veneer"], Value::Null);
+    assert_eq!(callees["unresolved"], json!([]));
+    assert_eq!(callees["unreadable"], json!([]));
+    assert_eq!(callees["complete"], true);
+
+    // Data that holds no pointers: nothing leaves, exit status 0.
+    let dtcm = elfq_json(&["testdata/bin/c-cortex-m7.elf", "callees", "0x20000000+256K"]);
+    assert_eq!(dtcm["callees"], json!([]));
+    assert_eq!(dtcm["complete"], true);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_elfq"))
+        .args([SAMPLE, "callers", "0x1260+0x20", "--json"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let callers: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(names(&callers["callers"]), ["main", "main"]);
+    assert_eq!(callers["callers"][0]["callee"]["name"], "on_timer");
+    assert_eq!(callers["callers"][0]["how"], "address taken");
+    assert_eq!(names(&callers["through_pointer"]), ["on_timer", "on_data"]);
+    assert_eq!(callers["complete"], false);
+}
+
+#[test]
 fn inlined_lists_every_function_and_the_whole_tree() {
     let list = elfq_json(&[SAMPLE, "inlined"]);
     assert_eq!(list["inlined_bytes"], 420);
@@ -395,7 +454,7 @@ fn debug_commands_print_only_text() {
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(2));
     assert_eq!(
         String::from_utf8(output.stderr).unwrap(),
         "error: the debug commands print only text\n"

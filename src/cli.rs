@@ -66,6 +66,7 @@ Examples:
   elfq app.elf inlined main               The inlined code in main, as a tree
   elfq app.elf callers log_msg            What calls or uses log_msg
   elfq app.elf callees main               What main calls or uses
+  elfq app.elf callees 0x0+256K           What the first 256 KiB uses outside it
 
 The overview's tree is the start of the one top shows; elfq help top
 explains it.";
@@ -85,11 +86,19 @@ pub enum Command {
     #[command(after_help = INLINED)]
     Inlined(InlinedArgs),
     /// List what calls or uses SYMBOL
-    #[command(after_help = HOW)]
-    Callers(SymbolArgs),
+    #[command(
+        override_usage = "elfq <FILE> callers [OPTIONS] <SYMBOL>\n       \
+                          elfq <FILE> callers [OPTIONS] <RANGE>...",
+        after_help = format!("{HOW}\n\n{CALLERS_RANGES}")
+    )]
+    Callers(UsesArgs),
     /// List what SYMBOL calls or uses
-    #[command(after_help = HOW)]
-    Callees(SymbolArgs),
+    #[command(
+        override_usage = "elfq <FILE> callees [OPTIONS] <SYMBOL>\n       \
+                          elfq <FILE> callees [OPTIONS] <RANGE>...",
+        after_help = format!("{HOW}\n\n{CALLEES_RANGES}")
+    )]
+    Callees(UsesArgs),
     /// Show elfq's own view of the file (for developing elfq)
     #[command(subcommand, hide = true)]
     Debug(DebugCommand),
@@ -105,9 +114,32 @@ The HOW column says how one item uses the other:
                  function pointer, or an import's
   pointer        data holds a pointer to it, as in a table of functions
 
-Calls through a pointer set at run time don't show, since elfq can't tell
-where they go; the address taken and pointer rows show where such pointers
-come from.";
+elfq can't tell where a call through a pointer set at run time goes; the
+address taken and pointer rows show where such pointers come from.";
+
+const CALLEES_RANGES: &str = "\
+With ranges of memory in place of SYMBOL, such as 0x0+256K for an ITCM,
+elfq lists only what the code and data in them use outside them. Calls and
+jumps that elfq can't follow come first, as \"(through a pointer)\", or as
+\"(outside any function)\" when they go to an address no function holds. A
+call through a veneer, which a linker adds when the target is too far away
+for the call instruction, is listed where it calls the veneer, as \"call
+via veneer\". For now, elfq only knows the veneers GNU ld adds for Thumb-2
+cores, such as the Cortex-M4 and M7, without --pic-veneer.
+
+Exit status: 0 if nothing leaves the ranges, 1 if something does or might,
+and 2 for an error.";
+
+const CALLERS_RANGES: &str = "\
+With ranges of memory in place of SYMBOL, such as 0x0+256K for an ITCM,
+elfq lists only the code and data outside them that use what is in them.
+A call through a veneer, which a linker adds when the target is too far
+away for the call instruction, is listed where it calls the veneer, as
+\"call via veneer\". For now, elfq only knows the veneers GNU ld adds for
+Thumb-2 cores, such as the Cortex-M4 and M7, without --pic-veneer.
+
+Exit status: 0 if nothing outside uses the ranges, 1 if something does or
+might through a pointer, and 2 for an error.";
 
 const WHY: &str = "\
 The tree starts where the program does: at the entry point, a function the
@@ -175,6 +207,18 @@ pub struct SymbolArgs {
     /// A function or data object: its name, the end of its name
     /// (process_frame for app::process_frame), or an address such as 0x1700
     pub symbol: String,
+}
+
+#[derive(Debug, Args)]
+pub struct UsesArgs {
+    /// A function or data object: its name, the end of its name
+    /// (process_frame for app::process_frame), or an address such as 0x1700.
+    /// Or one or more ranges of memory, START..END or START+SIZE, to list
+    /// only what crosses their edge
+    // Not required here: commands::run says what is missing, and with
+    // --range, to give the range here instead.
+    #[arg(value_name = "SYMBOL|RANGE")]
+    pub symbols: Vec<String>,
 }
 
 #[derive(Debug, Args)]

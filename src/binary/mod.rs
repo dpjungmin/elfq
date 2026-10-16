@@ -44,8 +44,8 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use object::{
-    Architecture, Object, ObjectKind, ObjectSection, ObjectSymbol, SectionFlags, SectionKind,
-    SymbolKind,
+    Architecture, Endianness, Object, ObjectKind, ObjectSection, ObjectSymbol, SectionFlags,
+    SectionKind, SymbolKind,
 };
 
 /// Arrays of pointers to the functions that the C runtime calls at startup
@@ -72,6 +72,10 @@ pub struct Binary {
     /// Cortex-M runs, rather than the older Arm (A32) instruction set. Thumb
     /// functions have bit 0 set in their symbols and in the entry point.
     pub thumb: bool,
+    /// The order of the bytes in the numbers the file holds. In big-endian
+    /// Arm firmware (BE8), only data is big-endian: instructions are still
+    /// little-endian.
+    pub endianness: Endianness,
     /// Whether the file has a symbol table (`.symtab`). Stripping removes it.
     pub has_symbols: bool,
     /// Whether the file has DWARF debug info (`.debug_info`).
@@ -103,7 +107,6 @@ pub struct Binary {
     pub warnings: Vec<String>,
     /// The whole file.
     data: Vec<u8>,
-    big_endian: bool,
 }
 
 /// What kind of program the file holds.
@@ -267,6 +270,11 @@ impl Binary {
             kind,
             entry: code_address(architecture, file.entry()),
             thumb: architecture == Architecture::Arm && is_thumb(&file),
+            endianness: if file.is_little_endian() {
+                Endianness::Little
+            } else {
+                Endianness::Big
+            },
             has_symbols: file.symbol_table().is_some(),
             has_dwarf: file.section_by_name(".debug_info").is_some(),
             sections: read_sections(&file),
@@ -278,7 +286,6 @@ impl Binary {
             vector_table: None,
             warnings: Vec::new(),
             data: data.to_vec(),
-            big_endian: !file.is_little_endian(),
         };
         (binary.imports, binary.relocations) = relocations::read(&file, architecture);
         if binary.thumb {
@@ -343,7 +350,7 @@ impl Binary {
     pub fn pointer_at(&self, address: u64) -> Option<u64> {
         let bytes = self.bytes(address, self.pointer_size)?;
         let mut word = [0; 8];
-        if self.big_endian {
+        if self.endianness == Endianness::Big {
             word[8 - bytes.len()..].copy_from_slice(bytes);
             Some(u64::from_be_bytes(word))
         } else {

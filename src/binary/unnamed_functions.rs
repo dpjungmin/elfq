@@ -110,7 +110,7 @@ pub(super) fn add(binary: &Binary, items: &mut Vec<Item>) {
         let size = binary
             .bytes(start, end - start)
             .map_or(end - start, |code| {
-                arch::code_size(binary.architecture, code, start)
+                arch::code_size(binary.architecture, binary.endianness, code, start)
             });
         if let Some(item) = items
             .iter_mut()
@@ -225,7 +225,7 @@ fn leads(binary: &Binary, start: u64, end: u64) -> Leads {
     let code = binary.bytes(start, end - start).unwrap_or_default();
     // How far the function's other jumps reach, so far.
     let mut reach = start;
-    for reference in arch::scan(binary.architecture, code, start) {
+    for reference in arch::scan(binary.architecture, binary.endianness, code, start) {
         match reference.kind {
             CodeReferenceKind::Call(target) => leads.functions.push(target),
             CodeReferenceKind::Jump(target) if target < end => reach = reach.max(target),
@@ -325,10 +325,22 @@ fn splits_cleanly(
     let end = starts.range(address..section_end).next();
     let end = end.map_or(section_end, |(&end, _)| end);
     let bytes = |from: u64, to: u64| binary.bytes(from, to - from).unwrap_or_default();
-    let scan = |from: u64, to: u64| arch::scan(binary.architecture, bytes(from, to), from);
+    let scan = |from: u64, to: u64| {
+        arch::scan(
+            binary.architecture,
+            binary.endianness,
+            bytes(from, to),
+            from,
+        )
+    };
     // Before the first function known in a section, there may be data.
     if before.is_some() {
-        match arch::ending(binary.architecture, bytes(start, address), start) {
+        match arch::ending(
+            binary.architecture,
+            binary.endianness,
+            bytes(start, address),
+            start,
+        ) {
             Ending::RunsOn => return false,
             Ending::Call if kind == Start::Constants => return false,
             _ => {}
@@ -353,7 +365,13 @@ fn splits_cleanly(
                 .any(|reference| jumps_into(reference, address, end));
     }
     // Without the padding after the code, which can decode as a jump.
-    let end = start + arch::code_size(binary.architecture, bytes(start, end), start);
+    let end = start
+        + arch::code_size(
+            binary.architecture,
+            binary.endianness,
+            bytes(start, end),
+            start,
+        );
     // A function starts after the padding before it.
     if address >= end || arch::leading_padding(binary.architecture, bytes(address, end)) > 0 {
         return false;
@@ -376,7 +394,7 @@ fn splits_cleanly(
 
 #[cfg(test)]
 mod tests {
-    use object::{Architecture, SectionKind};
+    use object::{Architecture, Endianness, SectionKind};
 
     use super::*;
     use crate::binary::FileKind;
@@ -407,6 +425,7 @@ mod tests {
             kind: FileKind::Executable,
             entry: 0x1000,
             thumb: true,
+            endianness: Endianness::Little,
             has_symbols: false,
             has_dwarf: false,
             sections: vec![
@@ -421,7 +440,6 @@ mod tests {
             vector_table: None,
             warnings: Vec::new(),
             data: [text, data].concat(),
-            big_endian: false,
         };
         let mut items = vec![Item {
             name: "entry".to_string(),

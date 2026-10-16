@@ -75,7 +75,8 @@ fn referenced_addresses(binary: &Binary) -> Vec<u64> {
             let Some(code) = binary.bytes(item.address, item.size) else {
                 continue;
             };
-            for reference in arch::scan(binary.architecture, code, item.address) {
+            for reference in arch::scan(binary.architecture, binary.endianness, code, item.address)
+            {
                 match reference.kind {
                     CodeReferenceKind::Address(address)
                     | CodeReferenceKind::Memory(address)

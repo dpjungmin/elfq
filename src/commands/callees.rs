@@ -1,14 +1,17 @@
-//! `elfq FILE callees SYMBOL`: what SYMBOL calls or uses.
+//! `elfq FILE callees SYMBOL`: what SYMBOL calls or uses. For ranges of
+//! memory in place of SYMBOL, see `edge.rs`.
 
 use std::io::Write;
 
 use anyhow::{Result, bail};
 use serde::Serialize;
 
-use super::json;
+use super::edge::{self, Direction};
+use super::symbol::{self, Subject};
+use super::{Outcome, json};
 use crate::binary::{Binary, ItemKind};
 use crate::cli::Format;
-use crate::graph::{Node, Reference, Unresolved};
+use crate::graph::{Graph, Node, Reference, Unresolved};
 use crate::render::{Align, Table};
 
 #[derive(Serialize)]
@@ -33,9 +36,30 @@ struct UnresolvedJson {
     target: Option<String>,
 }
 
-pub fn run(binary: &Binary, symbol: &str, format: Format, out: &mut dyn Write) -> Result<()> {
+pub fn run(
+    binary: &Binary,
+    symbols: &[String],
+    format: Format,
+    out: &mut dyn Write,
+) -> Result<Outcome> {
     let graph = super::reference_graph(binary)?;
-    let node = super::symbol::find(binary, symbol)?;
+    match symbol::subject(binary, symbols)? {
+        Subject::Node(node) => {
+            callees(binary, &graph, node, format, out)?;
+            Ok(Outcome::Answered)
+        }
+        Subject::Ranges(ranges) => edge::run(binary, &graph, &ranges, Direction::Out, format, out),
+    }
+}
+
+/// What `node` calls or uses.
+fn callees(
+    binary: &Binary,
+    graph: &Graph,
+    node: Node,
+    format: Format,
+    out: &mut dyn Write,
+) -> Result<()> {
     let name = node.name(binary);
     let Node::Item(index) = node else {
         bail!("{name} is imported from a shared library, so its code isn't in this file");
@@ -59,7 +83,7 @@ pub fn run(binary: &Binary, symbol: &str, format: Format, out: &mut dyn Write) -
                 .iter()
                 .map(|u| UnresolvedJson {
                     site: json::address(u.site),
-                    how: if u.is_call { "call" } else { "jump" },
+                    how: super::call_or_jump(u),
                     target: u.target.map(json::address),
                 })
                 .collect(),
@@ -67,7 +91,7 @@ pub fn run(binary: &Binary, symbol: &str, format: Format, out: &mut dyn Write) -
         };
         return json::write(&callees, out);
     }
-    let rows = rows(&|reference| super::how(binary, reference));
+    let rows = rows(&|reference| super::how(binary, reference.to, reference.kind));
     if rows.is_empty() && unresolved.is_empty() {
         writeln!(out, "{name} doesn't call or use anything.")?;
         return Ok(());
@@ -119,17 +143,7 @@ fn unresolved_lines(name: &str, unresolved: &[Unresolved], listed: bool) -> Vec<
         if these.is_empty() {
             continue;
         }
-        let calls = these.iter().filter(|u| u.is_call).count();
-        let jumps = these.len() - calls;
-        let what = match (calls, jumps) {
-            (_, 0) => super::plural(calls, "call", "calls"),
-            (0, _) => super::plural(jumps, "jump", "jumps"),
-            _ => format!(
-                "{} and {}",
-                super::plural(calls, "call", "calls"),
-                super::plural(jumps, "jump", "jumps")
-            ),
-        };
+        let what = super::calls_and_jumps(these.iter().copied());
         let through = match (known_target, these.len()) {
             (true, _) => "",
             (false, 1) => " through a pointer",

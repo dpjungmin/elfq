@@ -13,16 +13,21 @@
 //! jumps it can't follow, such as a call through a function pointer, are kept
 //! in [`Graph::unresolved`] so that answers can say what they don't know.
 //!
+//! [`Edge`] tells which references cross the edge of some ranges of
+//! memory (see `edge.rs`).
+//!
 //! [`Graph::roots`] are where the program starts running (see `roots.rs`).
 //! From them, [`DominatorTree`] works out which items are reachable only
 //! through which (see `dominators.rs`), and [`ShortestPaths`] finds the
 //! shortest chain of references to each item (see `paths.rs`).
 
 mod dominators;
+mod edge;
 mod paths;
 mod roots;
 
 pub use dominators::DominatorTree;
+pub use edge::{Crossing, Edge};
 pub use paths::ShortestPaths;
 pub use roots::{Root, RootKind};
 
@@ -153,7 +158,7 @@ impl Graph {
         let Some(code) = binary.bytes(item.address, item.size) else {
             return;
         };
-        let references = arch::scan(binary.architecture, code, item.address);
+        let references = arch::scan(binary.architecture, binary.endianness, code, item.address);
         let bounds = if item.contains(binary.entry) {
             section_bounds(binary, &references)
         } else {
