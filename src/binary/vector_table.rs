@@ -122,7 +122,7 @@ pub(super) fn item(binary: &Binary, items: &[Item]) -> Option<Item> {
 
 #[cfg(test)]
 mod tests {
-    use object::Architecture;
+    use object::{Architecture, Endianness};
 
     use super::*;
     use crate::binary::{FileKind, Section};
@@ -143,6 +143,7 @@ mod tests {
             kind: FileKind::Executable,
             entry: 0x1030,
             thumb: true,
+            endianness: Endianness::Little,
             has_symbols: false,
             has_dwarf: false,
             sections: vec![Section {
@@ -161,7 +162,6 @@ mod tests {
             vector_table: None,
             warnings: Vec::new(),
             data: text,
-            big_endian: false,
         };
         let table = VectorTable {
             address: 0x1000,

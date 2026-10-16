@@ -378,8 +378,6 @@ function's stack frame).
    function, as Cortex-M0 code uses for far jumps, a forward `b.w` in a
    long unoptimized function, and a number that equals the address right
    after a return, such as a CRC polynomial in firmware whose code starts
-   at address 0, start a function where there is none. In big-endian (BE8) firmware, elfq reads
-   the constants in code the wrong way round, so it misses the functions
-   that only their addresses lead to. The bytes still all count, under a
-   neighbouring function. Worth improving if it makes answers on real
-   firmware confusing.
+   at address 0, start a function where there is none. The bytes still
+   all count, under a neighbouring function. Worth improving if it makes
+   answers on real firmware confusing.

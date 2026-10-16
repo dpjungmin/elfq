@@ -158,7 +158,7 @@ impl Graph {
         let Some(code) = binary.bytes(item.address, item.size) else {
             return;
         };
-        let references = arch::scan(binary.architecture, code, item.address);
+        let references = arch::scan(binary.architecture, binary.endianness, code, item.address);
         let bounds = if item.contains(binary.entry) {
             section_bounds(binary, &references)
         } else {

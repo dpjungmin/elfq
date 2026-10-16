@@ -13,7 +13,7 @@
 mod thumb;
 mod x86_64;
 
-use object::Architecture;
+use object::{Architecture, Endianness};
 
 /// One use of an address by one instruction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,12 +81,18 @@ pub fn is_supported(architecture: Architecture, thumb: bool) -> bool {
 }
 
 /// The references in one function's code, which starts at `address`.
+/// `endianness` is the file's, for reading the constants in Thumb code.
 /// Returns nothing for instruction sets elfq can't read yet; check
 /// [`is_supported`] first.
-pub fn scan(architecture: Architecture, code: &[u8], address: u64) -> Vec<CodeReference> {
+pub fn scan(
+    architecture: Architecture,
+    endianness: Endianness,
+    code: &[u8],
+    address: u64,
+) -> Vec<CodeReference> {
     match architecture {
         Architecture::X86_64 => x86_64::scan(code, address),
-        Architecture::Arm => thumb::scan(code, address),
+        Architecture::Arm => thumb::scan(code, address, endianness),
         _ => Vec::new(),
     }
 }
@@ -95,9 +101,14 @@ pub fn scan(architecture: Architecture, code: &[u8], address: u64) -> Vec<CodeRe
 /// constants take, when `code` may run on past its end to the next
 /// function. Only Thumb tells the padding between functions apart; for
 /// other instruction sets, this is all of `code`.
-pub fn code_size(architecture: Architecture, code: &[u8], address: u64) -> u64 {
+pub fn code_size(
+    architecture: Architecture,
+    endianness: Endianness,
+    code: &[u8],
+    address: u64,
+) -> u64 {
     let size = match architecture {
-        Architecture::Arm => thumb::code_size(code, address),
+        Architecture::Arm => thumb::code_size(code, address, endianness),
         _ => code.len(),
     };
     size as u64
@@ -125,9 +136,14 @@ pub fn leading_padding(architecture: Architecture, code: &[u8]) -> u64 {
 
 /// How the code that starts at `address` ends. Only Thumb is read; for other
 /// instruction sets, the code may always run on.
-pub fn ending(architecture: Architecture, code: &[u8], address: u64) -> Ending {
+pub fn ending(
+    architecture: Architecture,
+    endianness: Endianness,
+    code: &[u8],
+    address: u64,
+) -> Ending {
     match architecture {
-        Architecture::Arm => thumb::ending(code, address),
+        Architecture::Arm => thumb::ending(code, address, endianness),
         _ => Ending::RunsOn,
     }
 }
