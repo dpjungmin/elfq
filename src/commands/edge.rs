@@ -10,7 +10,7 @@ use serde::Serialize;
 use super::{Outcome, json};
 use crate::binary::{AddressRange, Binary};
 use crate::cli::Format;
-use crate::graph::{Crossing, Edge, Graph, Node, Reference, Unresolved};
+use crate::graph::{Crossing, Edge, Graph, Node, Unresolved};
 use crate::render::{Align, Table};
 
 /// Which way the references cross the edge.
@@ -40,7 +40,7 @@ struct Leaving<'a> {
 
 #[derive(Serialize)]
 struct CalleeJson<'a> {
-    /// The item outside the ranges.
+    /// The item or import outside the ranges.
     item: json::Item<'a>,
     /// The item in the ranges that uses it.
     caller: json::Item<'a>,
@@ -69,7 +69,8 @@ struct Entering<'a> {
     callers: Vec<CallerJson<'a>>,
     /// The functions in the ranges whose address is taken or stored, so
     /// that code outside may call them through a pointer, which elfq can't
-    /// see.
+    /// see. A pointer in the vector table doesn't count, since only the
+    /// processor calls through it.
     through_pointer: Vec<json::Item<'a>>,
     /// Whether `callers` has everything outside the ranges that uses them,
     /// as far as elfq can tell: `false` when `through_pointer` isn't empty.
@@ -98,20 +99,8 @@ pub fn run(
 ) -> Result<Outcome> {
     let edge = Edge::new(binary, graph, ranges);
     if let Some(range) = edge.empty_range() {
-        if super::sections_in(binary, range).is_empty() {
-            bail!(
-                "nothing in the file is in {}; the overview lists the ranges that the file's \
-                 sections occupy",
-                super::range_argument(range)
-            );
-        }
-        if !super::found_functions(binary) {
-            bail!("the file has no symbols or unwind table, so elfq can't find its functions yet");
-        }
-        bail!(
-            "elfq found no functions or data in {}",
-            super::range_text(binary, range)
-        );
+        let place = super::empty_place(binary, Some(range))?;
+        bail!("elfq found no functions or data in {place}");
     }
     match direction {
         Direction::Out => leaving(binary, &edge, ranges, format, out),
@@ -131,20 +120,22 @@ fn leaving(
     let unreadable = edge.unreadable();
     let outcome = outcome(crossings.is_empty() && unfollowed.is_empty() && unreadable.is_empty());
     if format == Format::Json {
-        let callees = groups(binary, &crossings, |crossing| json::how(crossing.kind))
-            .into_iter()
-            .flat_map(|group| {
-                group.rows.into_iter().map(move |row| CalleeJson {
-                    item: json::Item::new(binary, group.outside),
-                    caller: json::Item::new(binary, Node::Item(row.inside)),
-                    how: row.how,
-                    veneer: row
-                        .veneer
-                        .map(|veneer| json::Item::new(binary, Node::Item(veneer))),
-                    sites: row.sites.iter().map(|&site| json::address(site)).collect(),
-                })
+        let callees = groups(binary, &crossings, Direction::Out, |crossing| {
+            json::how(crossing.kind)
+        })
+        .into_iter()
+        .flat_map(|group| {
+            group.rows.into_iter().map(move |row| CalleeJson {
+                item: json::Item::new(binary, group.outside),
+                caller: json::Item::new(binary, row.inside),
+                how: row.how,
+                veneer: row
+                    .veneer
+                    .map(|veneer| json::Item::new(binary, Node::Item(veneer))),
+                sites: row.sites.iter().map(|&site| json::address(site)).collect(),
             })
-            .collect();
+        })
+        .collect();
         let leaving = Leaving {
             ranges: ranges
                 .iter()
@@ -156,7 +147,7 @@ fn leaving(
                 .map(|unresolved| UnresolvedJson {
                     caller: json::Item::new(binary, Node::Item(unresolved.from)),
                     site: json::address(unresolved.site),
-                    how: call_or_jump(unresolved),
+                    how: super::call_or_jump(unresolved),
                     target: unresolved.target.map(json::address),
                 })
                 .collect(),
@@ -173,13 +164,19 @@ fn leaving(
     let subject = ranges_text(binary, ranges);
     let it = if ranges.len() == 1 { "it" } else { "them" };
     let verb = |one: &str, many: &str| if ranges.len() == 1 { one } else { many }.to_string();
-    let groups = groups(binary, &crossings, |crossing| {
-        how(binary, crossing, Direction::Out)
+    let groups = groups(binary, &crossings, Direction::Out, |crossing| {
+        super::how(binary, crossing.to, crossing.kind)
     });
     let used = super::count_text(binary, &outside_nodes(&groups));
-    let unknown = calls_and_jumps(&unfollowed);
+    let unknown = super::calls_and_jumps(&unfollowed);
     let lead = match (groups.is_empty(), unfollowed.is_empty()) {
-        (true, true) => format!("{subject} {} nothing outside {it}.", verb("uses", "use")),
+        (true, true) if unreadable.is_empty() => {
+            format!("{subject} {} nothing outside {it}.", verb("uses", "use"))
+        }
+        (true, true) => format!(
+            "{subject} {} nothing outside {it} in the code elfq can read.",
+            verb("uses", "use")
+        ),
         (false, true) => format!("{subject} {} {used} outside {it}:", verb("uses", "use")),
         (true, false) => format!(
             "{subject} {} {unknown} that elfq can't follow:",
@@ -193,7 +190,8 @@ fn leaving(
     };
     writeln!(out, "{lead}")?;
 
-    if !groups.is_empty() || !unfollowed.is_empty() {
+    let listed = !groups.is_empty() || !unfollowed.is_empty();
+    if listed {
         writeln!(out)?;
         let mut table = Table::new(&[
             ("CALLEE", Align::Left),
@@ -207,14 +205,14 @@ fn leaving(
         for (unresolved, sites) in group_unfollowed(&unfollowed) {
             let (callee, address) = match unresolved.target {
                 None => ("(through a pointer)", String::new()),
-                Some(target) => ("(unknown code)", format!("{target:#x}")),
+                Some(target) => ("(outside any function)", format!("{target:#x}")),
             };
             table.row(vec![
                 callee.to_string(),
                 address,
                 String::new(),
                 binary.items[unresolved.from].name.clone(),
-                call_or_jump(&unresolved).to_string(),
+                super::call_or_jump(&unresolved).to_string(),
                 super::addresses(&sites),
             ]);
         }
@@ -226,13 +224,16 @@ fn leaving(
             .iter()
             .map(|&index| binary.items[index].name.as_str())
             .collect();
-        writeln!(out)?;
+        if listed {
+            writeln!(out)?;
+        }
+        // As `callees SYMBOL` says it.
         writeln!(
             out,
-            "elfq can't read the code of {}, since it doesn't know where {} {}.",
+            "elfq doesn't know where {} {}, so it can't read {} code.",
             super::names_text(&names),
-            if names.len() == 1 { "it" } else { "they" },
-            if names.len() == 1 { "ends" } else { "end" }
+            if names.len() == 1 { "ends" } else { "end" },
+            if names.len() == 1 { "its" } else { "their" }
         )?;
     }
     Ok(outcome)
@@ -249,20 +250,22 @@ fn entering(
     let through_pointer = edge.callable_through_pointer();
     let outcome = outcome(crossings.is_empty() && through_pointer.is_empty());
     if format == Format::Json {
-        let callers = groups(binary, &crossings, |crossing| json::how(crossing.kind))
-            .into_iter()
-            .flat_map(|group| {
-                group.rows.into_iter().map(move |row| CallerJson {
-                    item: json::Item::new(binary, group.outside),
-                    callee: json::Item::new(binary, Node::Item(row.inside)),
-                    how: row.how,
-                    veneer: row
-                        .veneer
-                        .map(|veneer| json::Item::new(binary, Node::Item(veneer))),
-                    sites: row.sites.iter().map(|&site| json::address(site)).collect(),
-                })
+        let callers = groups(binary, &crossings, Direction::In, |crossing| {
+            json::how(crossing.kind)
+        })
+        .into_iter()
+        .flat_map(|group| {
+            group.rows.into_iter().map(move |row| CallerJson {
+                item: json::Item::new(binary, group.outside),
+                callee: json::Item::new(binary, row.inside),
+                how: row.how,
+                veneer: row
+                    .veneer
+                    .map(|veneer| json::Item::new(binary, Node::Item(veneer))),
+                sites: row.sites.iter().map(|&site| json::address(site)).collect(),
             })
-            .collect();
+        })
+        .collect();
         let entering = Entering {
             ranges: ranges
                 .iter()
@@ -281,11 +284,13 @@ fn entering(
 
     let subject = ranges_text(binary, ranges);
     let it = if ranges.len() == 1 { "it" } else { "them" };
-    let groups = groups(binary, &crossings, |crossing| {
-        how(binary, crossing, Direction::In)
+    let groups = groups(binary, &crossings, Direction::In, |crossing| {
+        super::how(binary, crossing.to, crossing.kind)
     });
-    if groups.is_empty() {
+    if groups.is_empty() && through_pointer.is_empty() {
         writeln!(out, "Nothing outside {subject} uses {it}.")?;
+    } else if groups.is_empty() {
+        writeln!(out, "Nothing outside {subject} uses {it} directly.")?;
     } else {
         writeln!(
             out,
@@ -334,47 +339,52 @@ fn outcome(nothing_crosses: bool) -> Outcome {
 /// The crossings with one item or import outside the ranges.
 struct Group {
     outside: Node,
-    rows: Vec<Row>,
+    rows: Vec<CrossingRow>,
 }
 
-/// The crossings between one pair of items that are worded the same way.
-struct Row {
-    inside: usize,
+/// The crossings between one item in the ranges and the one outside, with
+/// the same words and veneer.
+struct CrossingRow {
+    inside: Node,
     how: &'static str,
     veneer: Option<usize>,
     sites: Vec<u64>,
 }
 
 /// Groups `crossings` by the item or import outside the ranges, largest
-/// first, and each group's rows by the item inside and `how` it is used,
-/// in the order of their first site.
+/// first, and each group's rows by the item inside, `how` it is used and
+/// the veneer, in the order of their first site.
 fn groups(
     binary: &Binary,
     crossings: &[Crossing],
+    direction: Direction,
     how: impl Fn(&Crossing) -> &'static str,
 ) -> Vec<Group> {
     let mut groups: Vec<Group> = Vec::new();
     for crossing in crossings {
+        let (outside, inside) = match direction {
+            Direction::Out => (crossing.to, Node::Item(crossing.from)),
+            Direction::In => (Node::Item(crossing.from), crossing.to),
+        };
         let how = how(crossing);
-        let group = match groups
-            .iter_mut()
-            .position(|group| group.outside == crossing.outside)
-        {
+        let group = match groups.iter().position(|group| group.outside == outside) {
             Some(index) => &mut groups[index],
             None => {
                 groups.push(Group {
-                    outside: crossing.outside,
+                    outside,
                     rows: Vec::new(),
                 });
                 groups.last_mut().unwrap()
             }
         };
-        match group.rows.iter_mut().find(|row| {
-            (row.inside, row.how, row.veneer) == (crossing.inside, how, crossing.veneer)
-        }) {
+        match group
+            .rows
+            .iter_mut()
+            .find(|row| (row.inside, row.how, row.veneer) == (inside, how, crossing.veneer))
+        {
             Some(row) => row.sites.push(crossing.site),
-            None => group.rows.push(Row {
-                inside: crossing.inside,
+            None => group.rows.push(CrossingRow {
+                inside,
                 how,
                 veneer: crossing.veneer,
                 sites: vec![crossing.site],
@@ -404,7 +414,8 @@ fn outside_nodes(groups: &[Group]) -> Vec<Node> {
 }
 
 /// Adds a line to `table` for each row of `groups`, naming the item
-/// outside the ranges only on the first line of its group.
+/// outside the ranges only on the first line of its group, and saying "via
+/// veneer" after a call through one.
 fn write_groups(binary: &Binary, groups: &[Group], table: &mut Table) {
     for group in groups {
         for (index, row) in group.rows.iter().enumerate() {
@@ -420,57 +431,20 @@ fn write_groups(binary: &Binary, groups: &[Group], table: &mut Table) {
                 (0, node) => (node.name(binary).to_string(), String::new(), String::new()),
                 _ => (String::new(), String::new(), String::new()),
             };
+            let how = match (row.veneer, row.how) {
+                (Some(_), "call") => "call via veneer",
+                (Some(_), "tail call") => "tail call via veneer",
+                (_, how) => how,
+            };
             table.row(vec![
                 name,
                 address,
                 size,
-                binary.items[row.inside].name.clone(),
-                row.how.to_string(),
+                row.inside.name(binary).to_string(),
+                how.to_string(),
                 super::addresses(&row.sites),
             ]);
         }
-    }
-}
-
-/// How a crossing in `direction` uses its target, for the HOW column, as
-/// `callers` and `callees` word it, with "via veneer" after a call through
-/// one.
-fn how(binary: &Binary, crossing: &Crossing, direction: Direction) -> &'static str {
-    let to = match direction {
-        Direction::Out => crossing.outside,
-        Direction::In => Node::Item(crossing.inside),
-    };
-    let reference = Reference {
-        from: crossing.inside,
-        to,
-        kind: crossing.kind,
-        site: crossing.site,
-    };
-    let how = super::how(binary, &reference);
-    match (crossing.veneer, how) {
-        (None, how) => how,
-        (Some(_), "call") => "call via veneer",
-        (Some(_), "tail call") => "tail call via veneer",
-        (Some(_), how) => how,
-    }
-}
-
-fn call_or_jump(unresolved: &Unresolved) -> &'static str {
-    if unresolved.is_call { "call" } else { "jump" }
-}
-
-/// "1 call", "2 jumps" or "1 call and 2 jumps".
-fn calls_and_jumps(unresolved: &[Unresolved]) -> String {
-    let calls = unresolved.iter().filter(|u| u.is_call).count();
-    let jumps = unresolved.len() - calls;
-    match (calls, jumps) {
-        (_, 0) => super::plural(calls, "call", "calls"),
-        (0, _) => super::plural(jumps, "jump", "jumps"),
-        _ => format!(
-            "{} and {}",
-            super::plural(calls, "call", "calls"),
-            super::plural(jumps, "jump", "jumps")
-        ),
     }
 }
 
@@ -500,4 +474,47 @@ fn ranges_text(binary: &Binary, ranges: &[AddressRange]) -> String {
         .collect();
     let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
     super::names_text(&texts)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+
+    #[test]
+    fn a_call_to_code_outside_every_function_has_a_row() {
+        // As when code in ITCM calls a routine in a microcontroller's ROM,
+        // which the file has no symbol for.
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/bin/c-cortex-m7.elf");
+        let binary = Binary::load(&path).unwrap();
+        let mut graph = Graph::build(&binary);
+        let crc32 = binary
+            .items
+            .iter()
+            .position(|item| item.name == "crc32")
+            .unwrap();
+        graph.unresolved.push(Unresolved {
+            from: crc32,
+            site: 0x20,
+            is_call: true,
+            target: Some(0x1fff_0100),
+        });
+        let ranges = ["0x0+256K".parse().unwrap()];
+        let mut out = Vec::new();
+        let outcome = run(
+            &binary,
+            &graph,
+            &ranges,
+            Direction::Out,
+            Format::Text,
+            &mut out,
+        );
+        assert_eq!(outcome.unwrap(), Outcome::Crossed);
+        let out = String::from_utf8(out).unwrap();
+        assert!(
+            out.contains("\n(outside any function)  0x1fff0100        crc32            call "),
+            "{out}"
+        );
+    }
 }

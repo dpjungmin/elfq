@@ -83,7 +83,7 @@ fn callees(
                 .iter()
                 .map(|u| UnresolvedJson {
                     site: json::address(u.site),
-                    how: if u.is_call { "call" } else { "jump" },
+                    how: super::call_or_jump(u),
                     target: u.target.map(json::address),
                 })
                 .collect(),
@@ -91,7 +91,7 @@ fn callees(
         };
         return json::write(&callees, out);
     }
-    let rows = rows(&|reference| super::how(binary, reference));
+    let rows = rows(&|reference| super::how(binary, reference.to, reference.kind));
     if rows.is_empty() && unresolved.is_empty() {
         writeln!(out, "{name} doesn't call or use anything.")?;
         return Ok(());
@@ -143,17 +143,7 @@ fn unresolved_lines(name: &str, unresolved: &[Unresolved], listed: bool) -> Vec<
         if these.is_empty() {
             continue;
         }
-        let calls = these.iter().filter(|u| u.is_call).count();
-        let jumps = these.len() - calls;
-        let what = match (calls, jumps) {
-            (_, 0) => super::plural(calls, "call", "calls"),
-            (0, _) => super::plural(jumps, "jump", "jumps"),
-            _ => format!(
-                "{} and {}",
-                super::plural(calls, "call", "calls"),
-                super::plural(jumps, "jump", "jumps")
-            ),
-        };
+        let what = super::calls_and_jumps(these.iter().copied());
         let through = match (known_target, these.len()) {
             (true, _) => "",
             (false, 1) => " through a pointer",

@@ -33,9 +33,9 @@ overview lists the ranges its sections occupy.
 
 `callers` and `callees` take ranges in place of a symbol, and then list
 only what crosses their edge, such as code in ITCM that calls a function in
-flash. elfq's exit status is then 1 if anything does, so a CI job can check
-that time-critical code stays in fast memory, or that code run from RAM
-never touches flash. Errors exit with status 2.
+flash. elfq's exit status is then 1 if anything does or might, so a CI job
+can check that time-critical code stays in fast memory, or that code run
+from RAM never touches flash. Errors exit with status 2.
 
 **Status:** early development. The overview, `top`, `retained`, `why`,
 `callers` and `callees` work on x86-64 and Cortex-M executables, with

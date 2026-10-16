@@ -71,7 +71,7 @@ fn callers(
         };
         return json::write(&callers, out);
     }
-    let rows = rows(&|reference| super::how(binary, reference));
+    let rows = rows(&|reference| super::how(binary, reference.to, reference.kind));
     // Some calls can't be listed: the system's, to where the program starts,
     // and those through a pointer.
     let root = graph.roots.iter().find(|root| root.node == node);

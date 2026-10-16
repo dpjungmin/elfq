@@ -46,17 +46,20 @@ pub fn subject(binary: &Binary, queries: &[String]) -> Result<Subject> {
     Ok(Subject::Ranges(ranges))
 }
 
-/// The range that `query` gives, if it gives one: `START..END` or
-/// `START+SIZE`, as `--range` takes it. Names don't start with a digit, so
-/// a query that does and has `..` or `+` in it is taken for a range.
+/// The range that `query` gives, if it gives one (see [`is_range`]):
+/// `START..END` or `START+SIZE`, as `--range` takes it.
 fn range(query: &str) -> Option<Result<AddressRange>> {
-    let is_range = query.starts_with(|c: char| c.is_ascii_digit())
-        && (query.contains("..") || query.contains('+'));
-    is_range.then(|| {
+    is_range(query).then(|| {
         query
             .parse()
             .map_err(|error| anyhow!("`{query}` isn't a range: {error}"))
     })
+}
+
+/// Whether `query` is meant as a range of memory rather than a symbol: it
+/// starts with a digit, as no name does, and has `..` or `+` in it.
+pub fn is_range(query: &str) -> bool {
+    query.starts_with(|c: char| c.is_ascii_digit()) && (query.contains("..") || query.contains('+'))
 }
 
 /// Finds the item or import that `query` names. When it could mean several,

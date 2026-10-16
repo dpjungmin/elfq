@@ -1,6 +1,6 @@
 //! Runs the elfq program the way a user would.
 
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 const SAMPLE: &str = "testdata/bin/c-x86_64.elf";
 /// Firmware with code and data in several kinds of memory.
@@ -1130,9 +1130,8 @@ fn callees_of_ranges_lists_first_what_elfq_cannot_follow() {
     assert_eq!(
         crossing(&[SAMPLE, "callees", "0x1000+4"]),
         "\
-0x00001000..0x00001004 (.init) uses nothing outside it.
-
-elfq can't read the code of _init, since it doesn't know where it ends.
+0x00001000..0x00001004 (.init) uses nothing outside it in the code elfq can read.
+elfq doesn't know where _init ends, so it can't read its code.
 "
     );
 }
@@ -1169,6 +1168,47 @@ Calls through a pointer to on_timer and on_data aren't listed, since elfq can't 
             .next(),
         Some("0x20240000..0x20241000 (.ocram_bss) is used by 1 function outside it:")
     );
+    // Nothing is outside all the memory, but the handlers' addresses are
+    // taken, and could be passed on.
+    assert_eq!(
+        crossing(&[
+            TCM_SAMPLE,
+            "callers",
+            "0x0+16M",
+            "0x20000000+16M",
+            "0x30000000+16M"
+        ]),
+        "Nothing outside 0x00000000..0x01000000 (.itcm), 0x20000000..0x21000000 (.data, .bss \
+         and .ocram_bss) and 0x30000000..0x31000000 (.isr_vector, .text, .rodata and \
+         .ARM.exidx) uses them directly.\n\
+         Calls through a pointer to on_timer, on_data and on_button aren't listed, since elfq \
+         can't see them.\n"
+    );
+}
+
+#[test]
+fn a_reader_that_stops_early_keeps_the_exit_status() {
+    // As in `elfq ... | head`, in a shell with `set -o pipefail`. Each
+    // answer is larger than a pipe holds, so elfq writes after the reader
+    // has gone.
+    for (args, code) in [
+        (&["callees", "0x1000+0x40000"][..], 1),
+        (&["callees", "0x1000+0x40000", "--json"], 1),
+        (&["top", "--all"], 0),
+    ] {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_elfq"))
+            .arg("testdata/bin/rust-x86_64-nodebug.elf")
+            .args(args)
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        drop(child.stdout.take());
+        let output = child.wait_with_output().unwrap();
+        assert_eq!(output.status.code(), Some(code), "{args:?}: {output:?}");
+        assert!(output.stderr.is_empty(), "{args:?}: {output:?}");
+    }
 }
 
 #[test]
@@ -1186,10 +1226,29 @@ fn ranges_in_place_of_symbol_must_be_ranges_with_something_in_them() {
         stderr(&[TCM_SAMPLE, "callers", "0x100..0x0"], 2),
         "error: `0x100..0x0` isn't a range: the range must end after it starts\n"
     );
+    // --range is for sizes; ranges to check go in place of SYMBOL.
+    assert_eq!(
+        stderr(&[TCM_SAMPLE, "callees", "--range", "0+1K"], 2),
+        "error: callees takes ranges in place of SYMBOL, not with --range: \
+         elfq testdata/bin/c-cortex-m7.elf callees 0x00000000..0x00000400\n"
+    );
+    assert_eq!(
+        stderr(
+            &[
+                TCM_SAMPLE,
+                "callers",
+                "0x0+256K",
+                "--range",
+                "0x20000000+256K"
+            ],
+            2
+        ),
+        "error: callers takes ranges in place of SYMBOL, not with --range: \
+         elfq testdata/bin/c-cortex-m7.elf callers 0x0+256K 0x20000000..0x20040000\n"
+    );
     assert_eq!(
         stderr(&[TCM_SAMPLE, "callees", "crc32", "--range", "0+1K"], 2),
-        "error: callees takes a range in place of SYMBOL, not with --range: \
-         elfq testdata/bin/c-cortex-m7.elf callees 0x00000000..0x00000400\n"
+        "error: --range limits sizes, so only the overview, top and retained take it\n"
     );
 }
 

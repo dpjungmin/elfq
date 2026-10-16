@@ -56,12 +56,18 @@ SYMBOL, written as `--range` takes them: `0x0+256K`, or `0x0..0x40000`.
 Names don't start with a digit, so an argument that does and has `..` or
 `+` in it is a range. Then they list only the references that cross the
 edge of the ranges, one row per pair of items, grouped by the item outside,
-largest first. A call that goes through a linker's veneer is listed at the
-call to the veneer, which is in code someone wrote, with "via veneer"
-after how it calls. elfq's exit status is then 1 when anything crosses, or
-might through a call elfq can't follow, so that a CI job can check that
-code in ITCM stays there, or that code run from RAM never touches flash.
-As with `diff`, it is 0 otherwise, and 2 for any error.
+largest first. A call that goes through a linker's veneer is listed as a
+call to the veneer's target, at the call to the veneer, which is in code
+someone wrote, with "via veneer" after how it calls. For now, elfq only
+recognizes the veneers GNU ld adds for Thumb-2 (`ldr.w pc, [pc]` and the
+target's address); other veneers are listed as functions of their own.
+elfq's exit status is then 1 when anything crosses, or might: through a
+call elfq can't follow, through a pointer to a function in the ranges, or
+in a function in them whose end elfq doesn't know. A CI job can then check
+that code in ITCM stays there, or that code run from RAM never touches
+flash. As with `diff`, the exit status is 0 otherwise, and 2 for any
+error, with or without ranges. When the reader stops early, as `head`
+does, elfq still finishes and exits with the answer's status.
 
 All commands print a table or tree for people by default. `--json` prints
 the same answer for scripts. The JSON has every item, where the text
@@ -207,7 +213,11 @@ through pointers, since what those calls reach may count for other items.
 In JSON, `callers` and `callees` have `complete`, and `retained` has
 `indirect_calls`. For ranges, `complete` is `false` when `callees` finds a
 call it can't follow in them, or a function whose end it doesn't know, or
-when `callers` finds a function in them whose address is taken or stored.
+when `callers` finds a function in them whose address is taken or stored,
+other than in the vector table, which only the processor calls through.
+`callers` can't see calls from code whose end elfq doesn't know, such as
+assembly without a `.size`, but C runtimes have such code (`_init`,
+`_fini`) in almost every file, so it doesn't make the answer incomplete.
 
 ## How it works
 
@@ -296,7 +306,7 @@ src/
 ├── main.rs        Parses arguments, runs one command, prints errors. Nothing else.
 ├── lib.rs         Declares the modules below. elfq is a library plus a thin binary.
 ├── cli.rs         clap definitions, one struct per subcommand.
-├── commands/      One file per subcommand: find the symbol (symbol.rs), run a query, render (tree.rs builds the rows of retained sizes, json.rs has shared JSON shapes).
+├── commands/      One file per subcommand: find the symbol (symbol.rs), run a query, render (tree.rs builds the rows of retained sizes, json.rs has shared JSON shapes, edge.rs is callers and callees for ranges).
 ├── binary/        ELF loading, item discovery, names and address ranges.
 ├── arch/          One file per instruction set (x86_64.rs, thumb.rs), each with a `scan` function.
 ├── graph/         The reference graph, its roots, dominator tree and shortest paths, and what crosses the edge of ranges of memory.
@@ -358,7 +368,7 @@ starts.
 | 5. Memory ranges | 5a: a Cortex-M7 sample with code and data in ITCM, DTCM, OCRAM and flash, at the addresses an i.MX RT1176 uses; startup code no longer seems to use the first item of each section it copies. 5b: `--range START..END` or `--range START+SIZE` for the overview and `top`, and the overview lists the address blocks that the file's sections occupy. 5c: `--range` for `retained` and `exclusive`. |
 | 6. Clear output | 6a: trees deeper than 9 levels continue below them. 6b: shorter lead lines and notes for the overview, `top` and `retained`, which say what a size means. 6c: no line sums up a single item, and "1 byte". 6d: shorter lead lines and notes for `why`, `callers`, `callees` and `inlined`, and "uses" for data on every architecture. 6e: `exclusive` folds into `retained`, and `--all` shows every item; `inlined SYMBOL` instead of `inlined --in SYMBOL`; `--json` instead of `--format json`; `elfq help top` works. 6f: fixes for what step 6 turned up: no `--range` suggestions that fail on stripped firmware, no empty tree for a range that nothing reaches, and no crash on an argument that isn't UTF-8. |
 | 7. Stripped firmware | 7a: stripped and `-nodebug` copies of the Cortex-M7 sample. 7b: the vector table is found while loading the file. 7c: the Thumb decoder tells apart the jumps that can carry on in another function. 7d: functions in stripped firmware, found by following the code from the entry point and the vector table. 7e: functions that only data points to, such as Rust trait methods in vtables. 7f: an item for the vector table of stripped firmware, so that its bytes count. 7g: those functions leave out the padding after them, so their sizes match the symbols'. 7h: fixes for what a review and 91 other builds turned up: the startup arrays are followed too, a `b.w` that stays in its function starts nothing, and an address that code loads or data holds starts a function only where the code before it ends, so far fewer numbers that look like addresses start one. 7i: firmware whose linker script puts the vector table and the constants in `.text`, as CMSIS's template does, with a sample laid out that way. 7j: fixes for what a second review turned up: a jump that lands where a number points keeps it from starting a function, the jump tables of `tbb` and `tbh` end where the `cmp` before them says and jump to their cases, a short vector table in `.text` ends at its last handler, an `adr` to Thumb code marks no data, and a test for each rule. |
-| 8. Range checks | 8a: `callers` and `callees` take ranges of memory in place of SYMBOL and list what crosses their edge, at the call that goes through a linker's veneer; the exit status is 1 when something crosses, and 2 for errors. |
+| 8. Range checks | 8a: `callers` and `callees` take ranges of memory in place of SYMBOL and list what crosses their edge, at the call that goes through a linker's veneer; the exit status is 1 when something crosses or might, and 2 for errors; the constants in big-endian (BE8) firmware are read the right way round. |
 
 Later: a query language, and worst-case stack depth (call graph plus each
 function's stack frame).
@@ -381,3 +391,12 @@ function's stack frame).
    at address 0, start a function where there is none. The bytes still
    all count, under a neighbouring function. Worth improving if it makes
    answers on real firmware confusing.
+3. **What range checks don't see yet.** LLD's veneers, GNU ld's for
+   Cortex-M0 and M23 or with `--pic-veneer`, and long calls such as
+   `ldr r3, =f; bx r3` load an address and jump through a register, so
+   `callees` lists them as calls through a pointer and the veneer as
+   taking the target's address; the exit status is still right. A veneer
+   to code outside every item, such as a routine in ROM, is listed under
+   the veneer's name. Startup code that copies sections outside the entry
+   function, or reads a table of them as CMSIS does, adds rows to
+   `callers`. The next step, which follows long calls, covers the first.

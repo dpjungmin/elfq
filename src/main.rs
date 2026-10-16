@@ -23,7 +23,7 @@ fn main() -> ExitCode {
             err.exit();
         }
     };
-    let mut out = BufWriter::new(io::stdout().lock());
+    let mut out = BufWriter::new(Stdout::default());
     let result = elfq::commands::run(&cli, &mut out).and_then(|outcome| {
         out.flush()?;
         Ok(outcome)
@@ -33,11 +33,42 @@ fn main() -> ExitCode {
     match result {
         Ok(Outcome::Answered) => ExitCode::SUCCESS,
         Ok(Outcome::Crossed) => ExitCode::from(1),
-        // The reader stopped early, as in `elfq ... | head`. Not an error.
-        Err(err) if is_broken_pipe(&err) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("error: {err:#}");
             ExitCode::from(2)
+        }
+    }
+}
+
+/// Standard output, which drops what is written to it once the reader has
+/// stopped reading, as `head` does after its first lines. Then the command
+/// still finishes, and elfq's exit status still says what the answer was.
+#[derive(Default)]
+struct Stdout {
+    closed: bool,
+}
+
+impl Write for Stdout {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if self.closed {
+            return Ok(bytes.len());
+        }
+        match io::stdout().write(bytes) {
+            Err(err) if err.kind() == ErrorKind::BrokenPipe => {
+                self.closed = true;
+                Ok(bytes.len())
+            }
+            result => result,
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match io::stdout().flush() {
+            Err(err) if err.kind() == ErrorKind::BrokenPipe => {
+                self.closed = true;
+                Ok(())
+            }
+            result => result,
         }
     }
 }
@@ -83,12 +114,4 @@ fn file_first_hint() -> Option<String> {
         "error: the file comes before the command, as in: {}",
         example.trim_end()
     ))
-}
-
-fn is_broken_pipe(err: &anyhow::Error) -> bool {
-    err.chain().any(|cause| {
-        cause
-            .downcast_ref::<io::Error>()
-            .is_some_and(|err| err.kind() == ErrorKind::BrokenPipe)
-    })
 }
