@@ -179,7 +179,9 @@ pub enum Source {
     /// import it jumps to, or the table's header named after its section.
     Plt,
     /// A section with a known purpose and no symbol, such as `.init_array`
-    /// or the vector table's. The item is named after the section.
+    /// or the vector table's. The item is named after the section, or when
+    /// the vector table is only part of it, after the section and the
+    /// table's address, such as `.text@0x8000000`.
     Section,
     /// Following the code from the entry point and the vector table's
     /// handlers, or from a Thumb address that code loads or data holds,

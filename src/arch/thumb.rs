@@ -9,7 +9,8 @@
 //! "literal pools", and reads them with loads relative to the program
 //! counter. The scanner reports the address each such load reads, and marks
 //! the constant as data, so that it doesn't decode it as an instruction when
-//! it gets there. It does the same for the jump tables of `tbb` and `tbh`.
+//! it gets there. It does the same for the jump tables of `tbb` and `tbh`,
+//! and reports a jump to each of their targets.
 
 use std::collections::BTreeMap;
 
@@ -161,6 +162,9 @@ struct Scanner<'a> {
     /// For each register, the value of its last `movw`, which a `movt`
     /// completes into a 32-bit address.
     low_halves: [Option<u32>; 16],
+    /// The last two instructions decoded, as (offset, first halfword,
+    /// second halfword or 0), which can say how long a jump table is.
+    previous: [Option<(usize, u16, u16)>; 2],
 }
 
 impl<'a> Scanner<'a> {
@@ -171,6 +175,7 @@ impl<'a> Scanner<'a> {
             references: Vec::new(),
             data: BTreeMap::new(),
             low_halves: [None; 16],
+            previous: [None; 2],
         }
     }
 
@@ -178,12 +183,13 @@ impl<'a> Scanner<'a> {
     /// any. Returns the instruction's size.
     fn step(&mut self, offset: usize, first: u16) -> Option<usize> {
         // 32-bit instructions start with 0b11101, 0b11110 or 0b11111.
-        let (kind, size) = if first >> 11 >= 0b11101 {
+        let (kind, size, second) = if first >> 11 >= 0b11101 {
             let second = self.halfword(offset + 2)?;
-            (self.wide(offset, first, second), 4)
+            (self.wide(offset, first, second), 4, second)
         } else {
-            (self.narrow(offset, first), 2)
+            (self.narrow(offset, first), 2, 0)
         };
+        self.previous = [self.previous[1], Some((offset, first, second))];
         if let Some(kind) = kind {
             self.references.push(CodeReference {
                 site: self.address + offset as u64,
@@ -263,7 +269,9 @@ impl<'a> Scanner<'a> {
         }
         // adr.w register, label, before or after the instruction.
         if first & 0xfbff == 0xf2af && second & 0x8000 == 0 {
-            return Some(Address(self.pointed_at(align(pc) - u64::from(imm12))));
+            return Some(Address(
+                self.pointed_at(align(pc).wrapping_sub(u64::from(imm12))),
+            ));
         }
         if first & 0xfbff == 0xf20f && second & 0x8000 == 0 {
             return Some(Address(self.pointed_at(align(pc) + u64::from(imm12))));
@@ -300,37 +308,85 @@ impl<'a> Scanner<'a> {
         if (first & 0xfff0 == 0xf8d0 || first & 0xfff0 == 0xf850) && rt == PC {
             return (first & 0xf != SP).then_some(IndirectJump);
         }
-        // tbb [pc, register] and tbh [pc, register, lsl #1]: a jump table
-        // whose targets are all in this function, so only the table itself
-        // needs skipping.
+        // tbb [pc, register] and tbh [pc, register, lsl #1]: a jump table,
+        // whose targets are all in this function.
         if first == 0xe8df && second & 0xffe0 == 0xf000 {
-            self.jump_table(offset + 4, if second & 0x10 == 0 { 1 } else { 2 });
+            let entries = self.table_entries(offset, second & 0xf);
+            let entry_size = if second & 0x10 == 0 { 1 } else { 2 };
+            self.jump_table(offset, entry_size, entries);
         }
         None
     }
 
-    /// Marks the jump table that starts at `start` as data. Its entries
-    /// are distances forward from `start`, in halfwords. The table ends
-    /// where the nearest target begins.
-    fn jump_table(&mut self, start: usize, entry_size: usize) {
-        let mut end = self.code.len();
+    /// How many entries the jump table of a `tbb` or `tbh` on `register`
+    /// at `offset` has, when the two instructions before it say so: `cmp
+    /// register, #n` and then `bhi`, which leaves n + 1.
+    fn table_entries(&self, offset: usize, register: u16) -> Option<usize> {
+        let [
+            Some((cmp, first, second)),
+            Some((bhi, branch, branch_second)),
+        ] = self.previous
+        else {
+            return None;
+        };
+        let bhi_size = if branch & 0xff00 == 0xd800 {
+            2
+        } else if branch & 0xfbc0 == 0xf200 && branch_second & 0xd000 == 0x8000 {
+            4
+        } else {
+            return None;
+        };
+        // cmp and cmp.w, with an immediate below 256.
+        let (cmp_size, cmp_register, n) = if first & 0xf800 == 0x2800 {
+            (2, (first >> 8) & 7, first & 0xff)
+        } else if first & 0xfff0 == 0xf1b0 && second & 0xff00 == 0x0f00 {
+            (4, first & 0xf, second & 0xff)
+        } else {
+            return None;
+        };
+        (cmp + cmp_size == bhi && bhi + bhi_size == offset && cmp_register == register)
+            .then_some(usize::from(n) + 1)
+    }
+
+    /// Marks the jump table after the `tbb` or `tbh` at `site` as data, and
+    /// reports a jump to each of its targets. Its entries are distances
+    /// forward from the table's start, in halfwords. It has `entries`
+    /// entries when the code before says so, and otherwise ends where the
+    /// nearest target begins.
+    fn jump_table(&mut self, site: usize, entry_size: usize, entries: Option<usize>) {
+        let start = site + 4;
+        let mut end = entries.map_or(self.code.len(), |entries| start + entries * entry_size);
         let mut entry = start;
-        while entry + entry_size <= end {
+        let mut targets = Vec::new();
+        while entry + entry_size <= end.min(self.code.len()) {
             let distance = match entry_size {
                 1 => u16::from(self.code[entry]),
                 _ => self.halfword(entry).unwrap_or(0),
             };
-            end = end.min(start + usize::from(distance) * 2);
+            let target = start + usize::from(distance) * 2;
+            if entries.is_none() {
+                end = end.min(target);
+            }
+            targets.push(target);
             entry += entry_size;
         }
         self.data.insert(start, entry.next_multiple_of(2));
+        // An entry of 0, as in the byte that pads a table, points at the
+        // table itself.
+        targets.retain(|&target| target >= entry);
+        for target in targets {
+            self.references.push(CodeReference {
+                site: self.address + site as u64,
+                kind: Jump(self.address + target as u64),
+            });
+        }
     }
 
     /// Reads the constant of `size` bytes at `address` and marks it as
     /// data. Returns its value if it is a 32-bit word inside this function.
     fn constant(&mut self, address: u64, size: usize) -> Option<u64> {
         let offset = usize::try_from(address.checked_sub(self.address)?).ok()?;
-        let bytes = self.code.get(offset..offset + size)?;
+        let bytes = self.code.get(offset..offset.checked_add(size)?)?;
         let end = self.data.entry(offset).or_insert(offset + size);
         *end = (*end).max(offset + size);
         let word: [u8; 4] = bytes.try_into().ok()?;
@@ -339,9 +395,12 @@ impl<'a> Scanner<'a> {
 
     /// Marks what an `adr` at `address` points to in this function as data,
     /// and returns `address`. Compilers point `adr` at a `double`, or at a
-    /// table of words, so its first 8 bytes are data.
+    /// table of words, so its first 8 bytes are data. An odd address is
+    /// Thumb code, as when hand-written assembly takes a function's address.
     fn pointed_at(&mut self, address: u64) -> u64 {
-        self.constant(address, 8);
+        if address & 1 == 0 {
+            self.constant(address, 8);
+        }
         address
     }
 
@@ -535,9 +594,45 @@ mod tests {
     }
 
     #[test]
-    fn jump_tables_are_skipped() {
-        // tbb [pc, r0], then a table of four byte offsets, then bx lr.
-        let code = [0xdf, 0xe8, 0x00, 0xf0, 0x02, 0x03, 0x02, 0x02, 0x70, 0x47];
-        assert_eq!(kinds(&code, 0), []);
+    fn jump_tables_are_skipped_and_jump_to_their_targets() {
+        // tbb [pc, r0], then a table of four byte offsets, then four cases
+        // of bx lr. The table ends where the nearest case starts.
+        let code = [
+            0xdf, 0xe8, 0x00, 0xf0, 0x02, 0x03, 0x04, 0x05, 0x70, 0x47, 0x70, 0x47, 0x70, 0x47,
+            0x70, 0x47,
+        ];
+        let jumps = [8, 10, 12, 14].map(|target| (0, Jump(target)));
+        assert_eq!(kinds(&code, 0), jumps);
+        // cmp r0, #1; bhi 0xa; tbb [pc, r0], then a table of two entries.
+        // The code for other values follows it (movs r0, #5; bx lr), before
+        // the two cases (bx lr): cmp and bhi say where the table ends.
+        let code = [
+            0x01, 0x28, 0x02, 0xd8, 0xdf, 0xe8, 0x00, 0xf0, 0x03, 0x04, 0x05, 0x20, 0x70, 0x47,
+            0x70, 0x47, 0x70, 0x47,
+        ];
+        assert_eq!(
+            kinds(&code, 0),
+            [(2, Jump(0xa)), (4, Jump(0xe)), (4, Jump(0x10))]
+        );
+    }
+
+    #[test]
+    fn an_adr_to_thumb_code_marks_no_data() {
+        // adr.w r0, 0xd, the address of Thumb code at 0xc; bx lr; four
+        // nops; bl 0x20, which the scan still decodes.
+        let code = [
+            0x0f, 0xf2, 0x09, 0x00, 0x70, 0x47, 0x00, 0xbf, 0x00, 0xbf, 0x00, 0xbf, 0x00, 0xbf,
+            0x00, 0xf0, 0x07, 0xf8,
+        ];
+        assert_eq!(kinds(&code, 0), [(0, Address(0xd)), (14, Call(0x20))]);
+    }
+
+    #[test]
+    fn addresses_before_0_are_not_an_error() {
+        // adr.w r0 and ldr.w r0 eight bytes before the program counter, in
+        // code at address 0.
+        let adr = [0xaf, 0xf2, 0x08, 0x00];
+        assert_eq!(kinds(&adr, 0), [(0, Address(4u64.wrapping_sub(8)))]);
+        assert_eq!(kinds(&[0x5f, 0xf8, 0x08, 0x00], 0), []);
     }
 }

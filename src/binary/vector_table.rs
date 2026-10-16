@@ -22,7 +22,8 @@ pub struct VectorTable {
     pub address: u64,
     /// Its size in bytes: up to the first entry outside the reserved ones
     /// that is neither 0 nor the address of Thumb code, or the end of its
-    /// section.
+    /// section, and without the reserved entries before it that hold other
+    /// words, which are code after a short table.
     pub size: u64,
     /// Where each handler's code starts, without the Thumb bit, in the
     /// table's order: first the reset handler, which is the entry point. A
@@ -59,23 +60,29 @@ pub(super) fn find(binary: &Binary) -> Option<VectorTable> {
     })?;
 
     let address = reset - size;
-    let end = section.address + section.size;
+    let section_end = section.address + section.size;
     let mut handlers = Vec::new();
     let mut slot = reset;
-    while slot + size <= end {
+    let mut end = slot;
+    while slot + size <= section_end {
         let Some(value) = binary.pointer_at(slot) else {
             break;
         };
+        let index = (slot - address) / size;
+        slot += size;
         if value & 1 == 1 && code_section(&binary.sections, value & !1).is_some() {
             handlers.push(value & !1);
-        } else if value != 0 && !RESERVED.contains(&((slot - address) / size)) {
+        } else if value != 0 {
+            if RESERVED.contains(&index) {
+                continue;
+            }
             break;
         }
-        slot += size;
+        end = slot;
     }
     Some(VectorTable {
         address,
-        size: slot - address,
+        size: end - address,
         handlers,
     })
 }
@@ -111,4 +118,56 @@ pub(super) fn item(binary: &Binary, items: &[Item]) -> Option<Item> {
         section: index,
         source: Source::Section,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use object::Architecture;
+
+    use super::*;
+    use crate::binary::{FileKind, Section};
+
+    #[test]
+    fn a_short_table_in_code_ends_at_its_last_handler() {
+        // The stack pointer, then the reset handler and five fault handlers,
+        // all at 0x1030. Five words of code follow, where entries 7 to 10
+        // would be reserved, and then the reset handler's code.
+        let mut words = vec![0x2000_1000_u32];
+        words.extend([0x1031; 6]);
+        words.extend([0xbf00_bf00; 5]);
+        words.push(0xe7fe_e7fe);
+        let text: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        let binary = Binary {
+            architecture: Architecture::Arm,
+            pointer_size: 4,
+            kind: FileKind::Executable,
+            entry: 0x1030,
+            thumb: true,
+            has_symbols: false,
+            has_dwarf: false,
+            sections: vec![Section {
+                name: ".text".to_string(),
+                address: 0x1000,
+                size: text.len() as u64,
+                kind: SectionKind::Text,
+                allocated: true,
+                file_range: Some((0, text.len() as u64)),
+            }],
+            items: Vec::new(),
+            imports: Vec::new(),
+            relocations: Vec::new(),
+            used_by_unwinder: Vec::new(),
+            merged_variables: Vec::new(),
+            vector_table: None,
+            warnings: Vec::new(),
+            data: text,
+            big_endian: false,
+        };
+        let table = VectorTable {
+            address: 0x1000,
+            size: 28,
+            handlers: vec![0x1030; 6],
+        };
+        assert_eq!(find(&binary), Some(table));
+    }
 }
