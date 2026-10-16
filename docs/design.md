@@ -395,7 +395,10 @@ function's stack frame).
    Cortex-M0 and M23, and long calls such as `ldr r3, =f; bx r3` load the
    target's address and jump through a register, so the veneer or the
    function that calls is listed as taking that address, and the jump as
-   one elfq can't follow; the exit status is still right. GNU ld's veneers
+   one elfq can't follow; the exit status is still right. In stripped
+   firmware, elfq doesn't find the functions that only such veneers lead
+   to, so their calls are missing too, and a range that holds only them
+   is an error. GNU ld's veneers
    with `--pic-veneer` add an offset to the program counter instead,
    which elfq reads as an address: `callees` names the wrong function,
    and `callers` misses the call and can exit 0. A veneer to code outside
