@@ -55,10 +55,18 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<Outcome> {
             format,
             out,
         )),
-        Some(Command::Callers(args) | Command::Callees(args))
+        Some(command @ (Command::Callers(args) | Command::Callees(args)))
             if range.is_some() && args.symbols.iter().all(|query| symbol::is_range(query)) =>
         {
-            bail!("{}", range_in_place_of_symbol(cli, &args.symbols))
+            bail!("{}", range_in_place_of_symbol(cli, command, &args.symbols))
+        }
+        Some(command @ (Command::Callers(args) | Command::Callees(args)))
+            if args.symbols.is_empty() =>
+        {
+            bail!(
+                "{} needs a SYMBOL, or ranges such as 0x0+256K",
+                command_name(command)
+            )
         }
         Some(_) if range.is_some() => {
             bail!("--range limits sizes, so only the overview, top and retained take it")
@@ -84,21 +92,32 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<Outcome> {
 /// The error for `--range` with `callers` or `callees`, when it adds to the
 /// ranges in place of SYMBOL, or there is no SYMBOL: they take ranges there
 /// instead. Says the command to type.
-fn range_in_place_of_symbol(cli: &Cli, ranges: &[String]) -> String {
-    let name = match cli.command {
-        Some(Command::Callers(_)) => "callers",
-        _ => "callees",
-    };
+fn range_in_place_of_symbol(cli: &Cli, command: &Command, ranges: &[String]) -> String {
+    let name = command_name(command);
     let ranges: Vec<String> = ranges
         .iter()
         .map(|range| shell_quote(range))
         .chain(cli.range.map(range_argument))
         .collect();
     format!(
-        "{name} takes ranges in place of SYMBOL, not with --range: elfq {} {name} {}",
+        "{name} takes ranges in place of SYMBOL, not with --range: elfq {} {name} {}{}",
         shell_quote(&cli.file.display().to_string()),
-        ranges.join(" ")
+        ranges.join(" "),
+        if cli.json { " --json" } else { "" }
     )
+}
+
+/// The name of `command` as typed: `callers` for [`Command::Callers`].
+fn command_name(command: &Command) -> &'static str {
+    match command {
+        Command::Top(_) => "top",
+        Command::Retained(_) => "retained",
+        Command::Why(_) => "why",
+        Command::Inlined(_) => "inlined",
+        Command::Callers(_) => "callers",
+        Command::Callees(_) => "callees",
+        Command::Debug(_) => "debug",
+    }
 }
 
 /// Builds the reference graph, or explains why elfq can't yet.

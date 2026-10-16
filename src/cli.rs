@@ -120,11 +120,12 @@ address taken and pointer rows show where such pointers come from.";
 const CALLEES_RANGES: &str = "\
 With ranges of memory in place of SYMBOL, such as 0x0+256K for an ITCM,
 elfq lists only what the code and data in them use outside them. Calls and
-jumps that elfq can't follow come first, as \"(through a pointer)\". A call
-through a veneer, which a linker adds when the target is too far away for
-the call instruction, is listed where it calls the veneer, as \"call via
-veneer\". For now, elfq only knows the veneers GNU ld adds for Thumb-2
-cores, such as the Cortex-M4 and M7.
+jumps that elfq can't follow come first, as \"(through a pointer)\", or as
+\"(outside any function)\" when they go to an address no function holds. A
+call through a veneer, which a linker adds when the target is too far away
+for the call instruction, is listed where it calls the veneer, as \"call
+via veneer\". For now, elfq only knows the veneers GNU ld adds for Thumb-2
+cores, such as the Cortex-M4 and M7, without --pic-veneer.
 
 Exit status: 0 if nothing leaves the ranges, 1 if something does or might,
 and 2 for an error.";
@@ -135,7 +136,7 @@ elfq lists only the code and data outside them that use what is in them.
 A call through a veneer, which a linker adds when the target is too far
 away for the call instruction, is listed where it calls the veneer, as
 \"call via veneer\". For now, elfq only knows the veneers GNU ld adds for
-Thumb-2 cores, such as the Cortex-M4 and M7.
+Thumb-2 cores, such as the Cortex-M4 and M7, without --pic-veneer.
 
 Exit status: 0 if nothing outside uses the ranges, 1 if something does or
 might through a pointer, and 2 for an error.";
@@ -214,8 +215,9 @@ pub struct UsesArgs {
     /// (process_frame for app::process_frame), or an address such as 0x1700.
     /// Or one or more ranges of memory, START..END or START+SIZE, to list
     /// only what crosses their edge
-    // Not required with --range, so that elfq can say to give the range here.
-    #[arg(required_unless_present = "range", value_name = "SYMBOL|RANGE")]
+    // Not required here: commands::run says what is missing, and with
+    // --range, to give the range here instead.
+    #[arg(value_name = "SYMBOL|RANGE")]
     pub symbols: Vec<String>,
 }
 

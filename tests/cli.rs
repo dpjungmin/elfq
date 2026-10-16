@@ -1227,10 +1227,20 @@ fn ranges_in_place_of_symbol_must_be_ranges_with_something_in_them() {
         "error: `0x100..0x0` isn't a range: the range must end after it starts\n"
     );
     // --range is for sizes; ranges to check go in place of SYMBOL.
+    for args in [
+        &[TCM_SAMPLE, "callees", "--range", "0+1K"],
+        &[TCM_SAMPLE, "--range", "0+1K", "callees"],
+    ] {
+        assert_eq!(
+            stderr(args, 2),
+            "error: callees takes ranges in place of SYMBOL, not with --range: \
+             elfq testdata/bin/c-cortex-m7.elf callees 0x00000000..0x00000400\n"
+        );
+    }
     assert_eq!(
-        stderr(&[TCM_SAMPLE, "callees", "--range", "0+1K"], 2),
+        stderr(&[TCM_SAMPLE, "callees", "--range", "0+1K", "--json"], 2),
         "error: callees takes ranges in place of SYMBOL, not with --range: \
-         elfq testdata/bin/c-cortex-m7.elf callees 0x00000000..0x00000400\n"
+         elfq testdata/bin/c-cortex-m7.elf callees 0x00000000..0x00000400 --json\n"
     );
     assert_eq!(
         stderr(
@@ -1249,6 +1259,10 @@ fn ranges_in_place_of_symbol_must_be_ranges_with_something_in_them() {
     assert_eq!(
         stderr(&[TCM_SAMPLE, "callees", "crc32", "--range", "0+1K"], 2),
         "error: --range limits sizes, so only the overview, top and retained take it\n"
+    );
+    assert_eq!(
+        stderr(&[TCM_SAMPLE, "callers"], 2),
+        "error: callers needs a SYMBOL, or ranges such as 0x0+256K\n"
     );
 }
 

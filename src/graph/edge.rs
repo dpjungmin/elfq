@@ -163,11 +163,11 @@ impl<'a> Edge<'a> {
             {
                 continue;
             }
-            let crossing = |call: &Reference, veneer: Option<usize>, to: Node| Crossing {
-                from: call.from,
+            let crossing = |used: &Reference, veneer: Option<usize>, to: Node| Crossing {
+                from: used.from,
                 to,
-                kind: call.kind,
-                site: call.site,
+                kind: used.kind,
+                site: used.site,
                 veneer,
             };
             let calls = self.calls_from_its_side(reference.from);
@@ -177,7 +177,8 @@ impl<'a> Edge<'a> {
                 for call in calls {
                     crossings.push(crossing(call, Some(reference.from), reference.to));
                 }
-            } else if let Node::Item(veneer) = reference.to
+            } else if is_call(reference)
+                && let Node::Item(veneer) = reference.to
                 && let Some(target) = self.veneer_target(veneer)
                 && self.contains(target) != from_inside
             {
@@ -201,12 +202,7 @@ impl<'a> Edge<'a> {
         let side = self.inside[item];
         self.graph
             .references_to(Node::Item(item))
-            .filter(|reference| {
-                matches!(
-                    reference.kind,
-                    ReferenceKind::Call | ReferenceKind::TailCall
-                ) && self.inside[reference.from] == side
-            })
+            .filter(|reference| is_call(reference) && self.inside[reference.from] == side)
             .collect()
     }
 
@@ -223,6 +219,13 @@ impl<'a> Edge<'a> {
             _ => None,
         }
     }
+}
+
+fn is_call(reference: &Reference) -> bool {
+    matches!(
+        reference.kind,
+        ReferenceKind::Call | ReferenceKind::TailCall
+    )
 }
 
 #[cfg(test)]
@@ -333,6 +336,15 @@ mod tests {
             "{:?}",
             edge.leaving()
         );
+        // Nor is a function a veneer when it only makes one tail call, but
+        // its code isn't a veneer's.
+        let handler = index(&binary, "SysTick_Handler");
+        graph
+            .references
+            .retain(|r| r.from != handler || r.kind == ReferenceKind::TailCall);
+        let edge = Edge::new(&binary, &graph, &ranges);
+        assert_eq!(graph.references_from(handler).len(), 1);
+        assert_eq!(edge.veneer_target(handler), None);
     }
 
     #[test]
@@ -381,6 +393,18 @@ mod tests {
             kind: ReferenceKind::Address,
             site: graph.references[start].site,
         };
+        let edge = Edge::new(&binary, &graph, &ranges);
+        assert_eq!(edge.callable_through_pointer(), [handler]);
+        // So can data that holds it, other than the vector table.
+        let (binary, mut graph) = sample();
+        let handlers = index(&binary, "handlers");
+        graph.references.push(Reference {
+            from: handlers,
+            to: Node::Item(handler),
+            kind: ReferenceKind::Pointer,
+            site: binary.items[handlers].address,
+        });
+        graph.references.sort_by_key(|r| (r.from, r.site));
         let edge = Edge::new(&binary, &graph, &ranges);
         assert_eq!(edge.callable_through_pointer(), [handler]);
     }

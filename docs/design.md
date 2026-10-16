@@ -392,11 +392,14 @@ function's stack frame).
    all count, under a neighbouring function. Worth improving if it makes
    answers on real firmware confusing.
 3. **What range checks don't see yet.** LLD's veneers, GNU ld's for
-   Cortex-M0 and M23 or with `--pic-veneer`, and long calls such as
-   `ldr r3, =f; bx r3` load an address and jump through a register, so
-   `callees` lists them as calls through a pointer and the veneer as
-   taking the target's address; the exit status is still right. A veneer
-   to code outside every item, such as a routine in ROM, is listed under
-   the veneer's name. Startup code that copies sections outside the entry
-   function, or reads a table of them as CMSIS does, adds rows to
-   `callers`. The next step, which follows long calls, covers the first.
+   Cortex-M0 and M23, and long calls such as `ldr r3, =f; bx r3` load the
+   target's address and jump through a register, so the veneer or the
+   function that calls is listed as taking that address, and the jump as
+   one elfq can't follow; the exit status is still right. GNU ld's veneers
+   with `--pic-veneer` add an offset to the program counter instead,
+   which elfq reads as an address: `callees` names the wrong function,
+   and `callers` misses the call and can exit 0. A veneer to code outside
+   every item, such as a routine in ROM, is listed under the veneer's
+   name. Startup code that copies sections outside the entry function, or
+   reads a table of them as CMSIS does, adds rows to `callers`. The next
+   step, which follows long calls, covers the veneers.
