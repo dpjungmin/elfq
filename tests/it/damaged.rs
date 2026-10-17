@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use elfq::binary::Binary;
 use elfq::graph::{Graph, ReferenceKind};
-use object::{Object, ObjectSection, ObjectSymbol};
+use object::{Object, ObjectSection, ObjectSymbol, elf};
 
 use crate::support::{assert_output, elfq, load_sample, sample_path};
 
@@ -121,6 +121,33 @@ fn run(name: &str, data: &[u8], args: &[&str]) -> (String, String) {
     let (stdout, stderr) = (text(output.stdout), text(output.stderr));
     assert!(output.status.success(), "{name}: {stderr}");
     (stdout, stderr)
+}
+
+#[test]
+fn the_addend_of_a_pointer_that_a_plt_stub_jumps_through_is_ignored() {
+    // glibc's own libc.so.6 gives each of these pointers an address in its
+    // stub as the addend, which the dynamic loader ignores. The stubs in
+    // `.plt` jump through JUMP_SLOT pointers, listed in `.rela.plt`, and
+    // those in `.plt.got` through GLOB_DAT ones, listed in `.rela.dyn`.
+    let mut data = sample("c-plt.so");
+    let file = object::File::parse(&*data).unwrap();
+    let tables = [".rela.plt", ".rela.dyn"]
+        .map(|name| file.section_by_name(name).unwrap().file_range().unwrap());
+    for (table, size) in tables {
+        // Each entry takes 24 bytes: `r_offset`, then `r_info`, whose low
+        // 32 bits are the type, then `r_addend`.
+        for entry in (table as usize..(table + size) as usize).step_by(24) {
+            let r_type = data[entry + 8..entry + 12].try_into().unwrap();
+            let r_type = elf::RelocationType(u32::from_le_bytes(r_type));
+            if [elf::R_X86_64_JUMP_SLOT, elf::R_X86_64_GLOB_DAT].contains(&r_type) {
+                write(&mut data, entry + 16, 8, 0x1064);
+            }
+        }
+    }
+    let (binary, _) = parse(&data);
+    let stubs = load_sample("c-plt.so").own_function_stubs();
+    assert_eq!(stubs.len(), 6);
+    assert_eq!(binary.own_function_stubs(), stubs);
 }
 
 #[test]
