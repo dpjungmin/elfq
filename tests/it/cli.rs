@@ -2,7 +2,7 @@
 
 use std::process::Stdio;
 
-use crate::support::{DEEP_SAMPLE, SAMPLE, TCM_SAMPLE, command, elfq};
+use crate::support::{DEEP_SAMPLE, SAMPLE, TCM_SAMPLE, assert_output, command, elfq};
 
 /// Runs elfq, expecting success, and returns what it printed.
 fn stdout(args: &[&str]) -> String {
@@ -35,8 +35,8 @@ fn stderr(args: &[&str], code: i32) -> String {
 
 #[test]
 fn a_file_alone_gets_an_overview() {
-    assert_eq!(
-        stdout(&[SAMPLE]),
+    assert_output(
+        &stdout(&[SAMPLE]),
         "\
 testdata/bin/c-x86_64.elf: x86-64 position-independent executable, with symbols and DWARF debug info
 32 functions and 36 data objects, 4021 bytes of code and data, plus 8 imports
@@ -56,14 +56,14 @@ Try:
   elfq testdata/bin/c-x86_64.elf retained main
   elfq testdata/bin/c-x86_64.elf why crc_table
   elfq testdata/bin/c-x86_64.elf inlined
-"
+",
     );
 }
 
 #[test]
 fn firmware_gets_the_same_overview() {
-    assert_eq!(
-        stdout(&["testdata/bin/c-cortex-m4.elf"]),
+    assert_output(
+        &stdout(&["testdata/bin/c-cortex-m4.elf"]),
         "\
 testdata/bin/c-cortex-m4.elf: 32-bit Arm executable, with symbols and DWARF debug info
 25 functions and 31 data objects, 3577 bytes of code and data
@@ -90,10 +90,10 @@ Try:
   elfq testdata/bin/c-cortex-m4.elf retained main
   elfq testdata/bin/c-cortex-m4.elf why crc_table
   elfq testdata/bin/c-cortex-m4.elf inlined
-"
+",
     );
-    assert_eq!(
-        stdout(&["testdata/bin/c-cortex-m4.elf", "callers", "SysTick_Handler"]),
+    assert_output(
+        &stdout(&["testdata/bin/c-cortex-m4.elf", "callers", "SysTick_Handler"]),
         "\
 SysTick_Handler is used by 1 data object:
 
@@ -101,7 +101,7 @@ CALLER        HOW      AT
 vector_table  pointer  0x800003c
 
 SysTick_Handler is in the vector table: the processor runs it on an interrupt or exception.
-"
+",
     );
 }
 
@@ -109,8 +109,8 @@ SysTick_Handler is in the vector table: the processor runs it on an interrupt or
 fn stripped_firmware_is_followed_from_its_entry_point() {
     // Without symbols or an unwind table, elfq finds the functions by
     // following the code, and names them by address.
-    assert_eq!(
-        stdout(&["testdata/bin/c-cortex-m4-stripped.elf"]),
+    assert_output(
+        &stdout(&["testdata/bin/c-cortex-m4-stripped.elf"]),
         "\
 testdata/bin/c-cortex-m4-stripped.elf: 32-bit Arm executable, stripped
 25 functions and 27 data objects, 3586 bytes of code and data
@@ -137,7 +137,7 @@ Try:
   elfq testdata/bin/c-cortex-m4-stripped.elf top
   elfq testdata/bin/c-cortex-m4-stripped.elf retained entry
   elfq testdata/bin/c-cortex-m4-stripped.elf why .rodata@0x80009e4
-"
+",
     );
 }
 
@@ -161,8 +161,8 @@ fn every_command_the_overview_suggests_works() {
 
 #[test]
 fn top_shows_what_keeps_the_most_bytes() {
-    assert_eq!(
-        stdout(&[SAMPLE, "top"]),
+    assert_output(
+        &stdout(&[SAMPLE, "top"]),
         "\
 4021 bytes of code and data, by what keeps them:
 
@@ -266,8 +266,8 @@ Try:
 fn a_range_counts_only_the_bytes_in_it() {
     // Functions in flash keep what they alone call in ITCM, through the
     // linker's veneers, so they show with none of their own bytes.
-    assert_eq!(
-        stdout(&[TCM_SAMPLE, "top", "--range", "0x0..0xe0"]),
+    assert_output(
+        &stdout(&[TCM_SAMPLE, "top", "--range", "0x0..0xe0"]),
         "\
 224 bytes of code and data in 0x00000000..0x000000e0 (.itcm), by what keeps them:
 
@@ -283,7 +283,7 @@ RETAINED  OWN  ITEM
       48   48           └─ crc32
       24   16  SysTick_Handler
        8    8  └─ __app_tick_veneer
-"
+",
     );
     // A line that sums up items counts only those with bytes in the range:
     // under process_frame, crc32 and crc_table are in ITCM and DTCM, and
@@ -294,12 +294,12 @@ RETAINED  OWN  ITEM
         "{flash}"
     );
     // The same range as a start and a size, with a unit in any case.
-    assert_eq!(
-        stdout(&[TCM_SAMPLE, "top", "--range", "0+224B"]),
-        stdout(&[TCM_SAMPLE, "top", "--range", "0x0..0xe0"])
+    assert_output(
+        &stdout(&[TCM_SAMPLE, "top", "--range", "0+224B"]),
+        &stdout(&[TCM_SAMPLE, "top", "--range", "0x0..0xe0"]),
     );
-    assert_eq!(
-        stdout(&[TCM_SAMPLE, "--range", "0x20240000+4k"]),
+    assert_output(
+        &stdout(&[TCM_SAMPLE, "--range", "0x20240000+4k"]),
         "\
 testdata/bin/c-cortex-m7.elf: 32-bit Arm executable, with symbols and DWARF debug info
 1 data object in 0x20240000..0x20241000 (.ocram_bss), 4096 bytes of code and data
@@ -312,39 +312,39 @@ RETAINED   OWN  ITEM
 Try:
   elfq testdata/bin/c-cortex-m7.elf top --range 0x20240000..0x20241000
   elfq testdata/bin/c-cortex-m7.elf why tx_buffer
-"
+",
     );
 }
 
 #[test]
 fn a_range_that_nothing_reaches_has_no_tree() {
     // `debug_dump` is all that is in this range.
-    assert_eq!(
-        stdout(&[SAMPLE, "top", "--range", "0x1aa0+29"]),
+    assert_output(
+        &stdout(&[SAMPLE, "top", "--range", "0x1aa0+29"]),
         "Nothing reaches debug_dump, 29 bytes: it is dead code, or used in a way elfq can't \
-         see.\n"
+         see.\n",
     );
-    assert_eq!(
-        stdout(&[SAMPLE, "--range", "0x1aa0+29"]),
+    assert_output(
+        &stdout(&[SAMPLE, "--range", "0x1aa0+29"]),
         "\
 testdata/bin/c-x86_64.elf: x86-64 position-independent executable, with symbols and DWARF debug info
 1 function in 0x00001aa0..0x00001abd (.text), 29 bytes of code and data
 
 Try:
   elfq testdata/bin/c-x86_64.elf top --range 0x00001aa0..0x00001abd
-"
+",
     );
 }
 
 #[test]
 fn retained_counts_only_the_range_too() {
-    assert_eq!(
-        stdout(&[
+    assert_output(
+        &stdout(&[
             TCM_SAMPLE,
             "retained",
             "process_frame",
             "--range",
-            "0x0..0xe0"
+            "0x0..0xe0",
         ]),
         "\
 Removing process_frame would save 200 bytes in 0x00000000..0x000000e0 (.itcm):
@@ -357,58 +357,58 @@ RETAINED  OWN  ITEM
        8    8  │     └─ __memcpy_veneer
       48    0  └─ __crc32_veneer
       48   48     └─ crc32
-"
+",
     );
-    assert_eq!(
-        stdout(&[TCM_SAMPLE, "retained", "crc32", "--range", "0x0..0xe0"]),
+    assert_output(
+        &stdout(&[TCM_SAMPLE, "retained", "crc32", "--range", "0x0..0xe0"]),
         "Removing crc32 would save its own 48 bytes in 0x00000000..0x000000e0 (.itcm), and \
-         nothing else.\n"
+         nothing else.\n",
     );
-    assert_eq!(
-        stdout(&[TCM_SAMPLE, "retained", "log_msg", "--range", "0x0..0xe0"]),
-        "Removing log_msg would save none of the bytes in 0x00000000..0x000000e0 (.itcm).\n"
+    assert_output(
+        &stdout(&[TCM_SAMPLE, "retained", "log_msg", "--range", "0x0..0xe0"]),
+        "Removing log_msg would save none of the bytes in 0x00000000..0x000000e0 (.itcm).\n",
     );
 }
 
 #[test]
 fn a_range_must_hold_something() {
-    assert_eq!(
-        stderr(&[TCM_SAMPLE, "top", "--range", "0x40000000+4K"], 2),
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "top", "--range", "0x40000000+4K"], 2),
         "error: nothing in the file is in 0x40000000..0x40001000; the overview lists the ranges \
-         that the file's sections occupy\n"
+         that the file's sections occupy\n",
     );
     // The range is written as the overview writes it, whatever its spelling.
-    assert_eq!(
-        stderr(&[TCM_SAMPLE, "top", "--range", "0x4000000+16"], 2),
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "top", "--range", "0x4000000+16"], 2),
         "error: nothing in the file is in 0x04000000..0x04000010; the overview lists the ranges \
-         that the file's sections occupy\n"
+         that the file's sections occupy\n",
     );
     // A section with no functions or data, such as the unwind table.
-    assert_eq!(
-        stderr(&[SAMPLE, "--range", "0x25f0+0x2c8"], 2),
-        "error: elfq found no functions or data in 0x000025f0..0x000028b8 (.eh_frame)\n"
+    assert_output(
+        &stderr(&[SAMPLE, "--range", "0x25f0+0x2c8"], 2),
+        "error: elfq found no functions or data in 0x000025f0..0x000028b8 (.eh_frame)\n",
     );
     // A function with no size in the symbol table, as in hand-written
     // assembly: glibc's `_init`.
-    assert_eq!(
-        stderr(&[SAMPLE, "top", "--range", "0x1000+4"], 2),
+    assert_output(
+        &stderr(&[SAMPLE, "top", "--range", "0x1000+4"], 2),
         "error: elfq doesn't know where _init ends, so it can't count the bytes in \
-         0x00001000..0x00001004 (.init)\n"
+         0x00001000..0x00001004 (.init)\n",
     );
     assert!(
         stderr(&[TCM_SAMPLE, "--range", "0x20000000"], 2)
             .contains("expected START..END or START+SIZE")
     );
-    assert_eq!(
-        stderr(&[TCM_SAMPLE, "why", "crc32", "--range", "0+1K"], 2),
-        "error: --range limits sizes, so only the overview, top and retained take it\n"
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "why", "crc32", "--range", "0+1K"], 2),
+        "error: --range limits sizes, so only the overview, top and retained take it\n",
     );
 }
 
 #[test]
 fn retained_shows_what_a_function_keeps_as_a_tree() {
-    assert_eq!(
-        stdout(&[SAMPLE, "retained", "process_frame"]),
+    assert_output(
+        &stdout(&[SAMPLE, "retained", "process_frame"]),
         "\
 Removing process_frame would save 2068 bytes:
 
@@ -426,13 +426,13 @@ RETAINED   OWN  ITEM
 Shared with other code, so not counted: __stack_chk_fail@plt, dispatch_event, frames_bad, frames_ok, log_msg, stats.
 "
     );
-    assert_eq!(
-        stdout(&[SAMPLE, "retained", "crc_table"]),
-        "Removing crc_table would save its own 1024 bytes, and nothing else.\n"
+    assert_output(
+        &stdout(&[SAMPLE, "retained", "crc_table"]),
+        "Removing crc_table would save its own 1024 bytes, and nothing else.\n",
     );
-    assert_eq!(
-        stdout(&[SAMPLE, "retained", "completed.0"]),
-        "Removing completed.0 would save its own 1 byte, and nothing else.\n"
+    assert_output(
+        &stdout(&[SAMPLE, "retained", "completed.0"]),
+        "Removing completed.0 would save its own 1 byte, and nothing else.\n",
     );
 }
 
@@ -509,8 +509,8 @@ fn long_lists_name_the_first_few() {
 
 #[test]
 fn a_deep_tree_continues_below() {
-    assert_eq!(
-        stdout(&[DEEP_SAMPLE, "retained", "chain1"]),
+    assert_output(
+        &stdout(&[DEEP_SAMPLE, "retained", "chain1"]),
         "\
 Removing chain1 would save 402 bytes:
 
@@ -541,7 +541,7 @@ RETAINED  OWN  ITEM
       25   25        └─ chain20
 
 Shared with other code, so not counted: chain_table.
-"
+",
     );
 }
 
@@ -631,8 +631,8 @@ fn calls_through_pointers_are_pointed_out() {
         )
     );
     // `main` takes the address of `on_button` to store it in a table.
-    assert_eq!(
-        stdout(&[SAMPLE, "callers", "on_button"]),
+    assert_output(
+        &stdout(&[SAMPLE, "callers", "on_button"]),
         "\
 on_button is used by 1 function:
 
@@ -640,15 +640,15 @@ CALLER  HOW            AT
 main    address taken  0x10b6
 
 Calls to on_button through a pointer aren't listed, since elfq can't see them.
-"
+",
     );
     // Where the program starts, nothing in the file calls it.
-    assert_eq!(
-        stdout(&[SAMPLE, "callers", "_init"]),
+    assert_output(
+        &stdout(&[SAMPLE, "callers", "_init"]),
         "\
 Nothing in the file calls or uses _init.
 _init is in .init, which the program uses when it starts.
-"
+",
     );
 }
 
@@ -669,25 +669,25 @@ fn all_shows_every_item() {
         assert!(all.lines().count() > largest.lines().count());
     }
     // A tree of fewer than 30 items is the same either way.
-    assert_eq!(
-        stdout(&[SAMPLE, "retained", "process_frame", "--all"]),
-        stdout(&[SAMPLE, "retained", "process_frame"])
+    assert_output(
+        &stdout(&[SAMPLE, "retained", "process_frame", "--all"]),
+        &stdout(&[SAMPLE, "retained", "process_frame"]),
     );
 }
 
 #[test]
 fn dead_code_keeps_nothing() {
-    assert_eq!(
-        stdout(&[SAMPLE, "retained", "debug_dump"]),
+    assert_output(
+        &stdout(&[SAMPLE, "retained", "debug_dump"]),
         "Nothing reaches debug_dump from where the program starts: it is dead code, or used in \
-         a way elfq can't see.\n"
+         a way elfq can't see.\n",
     );
 }
 
 #[test]
 fn why_shows_the_chains_that_keep_an_item() {
-    assert_eq!(
-        stdout(&[SAMPLE, "why", "log_msg"]),
+    assert_output(
+        &stdout(&[SAMPLE, "why", "log_msg"]),
         "\
 log_msg is used by 4 functions, through these chains:
 
@@ -706,7 +706,7 @@ call                 └─ log_msg
 debug_dump uses log_msg too, but nothing reaches debug_dump.
 
 Removing main would remove log_msg too.
-"
+",
     );
     // parse_list calls parse_value back, so it doesn't keep it.
     let why = stdout(&[SAMPLE, "why", "parse_value"]);
@@ -734,8 +734,8 @@ Removing main would remove log_msg too.
 
 #[test]
 fn why_on_firmware_can_start_from_an_interrupt() {
-    assert_eq!(
-        stdout(&["testdata/bin/c-cortex-m4.elf", "why", "app_tick"]),
+    assert_output(
+        &stdout(&["testdata/bin/c-cortex-m4.elf", "why", "app_tick"]),
         "\
 app_tick is used by 2 functions, through these chains:
 
@@ -747,7 +747,7 @@ vector table  SysTick_Handler
 tail call     └─ app_tick
 
 Removing any single item wouldn't remove app_tick.
-"
+",
     );
 }
 
@@ -771,24 +771,24 @@ fn why_explains_where_the_program_starts() {
 
 #[test]
 fn why_says_when_nothing_reaches_an_item() {
-    assert_eq!(
-        stdout(&[SAMPLE, "why", "debug_dump"]),
+    assert_output(
+        &stdout(&[SAMPLE, "why", "debug_dump"]),
         "Nothing reaches debug_dump from where the program starts: it is dead code, or used in a \
-         way elfq can't see.\n"
+         way elfq can't see.\n",
     );
     // The string that only `debug_dump` prints.
-    assert_eq!(
-        stdout(&[SAMPLE, "why", ".rodata@0x2056"]),
+    assert_output(
+        &stdout(&[SAMPLE, "why", ".rodata@0x2056"]),
         "Nothing reaches .rodata@0x2056 from where the program starts: it is dead code, or used \
          in a way elfq can't see.\n\
-         debug_dump uses it, but nothing reaches debug_dump either.\n"
+         debug_dump uses it, but nothing reaches debug_dump either.\n",
     );
 }
 
 #[test]
 fn inlined_ranks_the_functions_the_compiler_copied() {
-    assert_eq!(
-        stdout(&[SAMPLE, "inlined"]),
+    assert_output(
+        &stdout(&[SAMPLE, "inlined"]),
         "\
 Inlined copies of 5 functions take 420 of the 2557 bytes of code:
 
@@ -802,8 +802,8 @@ BYTES  COPIES  FUNCTION
 A copy of 0 bytes is one the compiler merged into the code around it, so the debug info gives it no bytes of its own.
 "
     );
-    assert_eq!(
-        stdout(&[SAMPLE, "inlined", "process_frame"]),
+    assert_output(
+        &stdout(&[SAMPLE, "inlined", "process_frame"]),
         "\
 Of process_frame's 532 bytes, 238 are inlined copies of 3 functions:
 
@@ -816,18 +816,18 @@ A copy of 0 bytes is one the compiler merged into the code around it, so the deb
 "
     );
     // The six calls to `append` in `report` make one row.
-    assert_eq!(
-        stdout(&[SAMPLE, "inlined", "report"]),
+    assert_output(
+        &stdout(&[SAMPLE, "inlined", "report"]),
         "\
 Of report's 370 bytes, 150 are inlined copies of 1 function:
 
 BYTES  COPIES  FUNCTION
   150       6  append
-"
+",
     );
-    assert_eq!(
-        stdout(&[SAMPLE, "inlined", "main"]),
-        "The debug info lists no inlined code in main.\n"
+    assert_output(
+        &stdout(&[SAMPLE, "inlined", "main"]),
+        "The debug info lists no inlined code in main.\n",
     );
 }
 
@@ -851,18 +851,18 @@ BYTES  COPIES  FUNCTION
 
 #[test]
 fn inlined_needs_dwarf() {
-    assert_eq!(
-        stderr(&["testdata/bin/c-x86_64-nodebug.elf", "inlined"], 2),
+    assert_output(
+        &stderr(&["testdata/bin/c-x86_64-nodebug.elf", "inlined"], 2),
         "error: testdata/bin/c-x86_64-nodebug.elf has no DWARF debug info, which elfq needs to \
          tell what the compiler inlined; build it with debug info (such as -g) and don't strip \
-         it\n"
+         it\n",
     );
 }
 
 #[test]
 fn callers_lists_each_caller_and_how_it_calls() {
-    assert_eq!(
-        stdout(&[SAMPLE, "callers", "log_msg"]),
+    assert_output(
+        &stdout(&[SAMPLE, "callers", "log_msg"]),
         "\
 log_msg is used by 5 functions:
 
@@ -872,24 +872,24 @@ debug_dump     call       0x1aaf
 on_button      tail call  0x1661
 process_frame  call       0x18ee, 0x1908
 report         call       0x1a72
-"
+",
     );
 }
 
 #[test]
 fn rust_names_are_readable_and_short_ones_work() {
-    assert_eq!(
-        stdout(&[
+    assert_output(
+        &stdout(&[
             "testdata/bin/rust-x86_64-nodebug.elf",
             "callers",
-            "process_frame"
+            "process_frame",
         ]),
         "\
 elfq_sample::process_frame is used by 1 function:
 
 CALLER                 HOW   AT
 elfq_sample::app_main  call  0x14f12, 0x14f29, 0x14f40
-"
+",
     );
 }
 
@@ -897,8 +897,8 @@ elfq_sample::app_main  call  0x14f12, 0x14f29, 0x14f40
 fn cpp_names_are_readable_and_short_ones_work() {
     const CPP: &str = "testdata/bin/cpp-x86_64.elf";
     // A virtual function is reached through its class's vtable.
-    assert_eq!(
-        stdout(&[CPP, "why", "Gain::run"]),
+    assert_output(
+        &stdout(&[CPP, "why", "Gain::run"]),
         "\
 app::Gain::run(short*, unsigned long) is used by vtable for app::Gain, through this chain:
 
@@ -909,29 +909,29 @@ uses              └─ vtable for app::Gain
 pointer              └─ app::Gain::run(short*, unsigned long)
 
 Removing vtable for app::Gain would remove app::Gain::run(short*, unsigned long) too.
-"
+",
     );
     // Overloads share a name, so their parameters tell them apart.
-    assert_eq!(
-        stderr(&[CPP, "callers", "log"], 2),
+    assert_output(
+        &stderr(&[CPP, "callers", "log"], 2),
         "\
 error: `log` could mean 2 functions; use one of the names on the left instead:
   'log(char const*)'   app::log(char const*)
   'log(unsigned int)'  app::log(unsigned int)
-"
+",
     );
     // An operator, and imports from the C++ runtime.
-    assert_eq!(
-        stdout(&[CPP, "callers", "operator<"]),
+    assert_output(
+        &stdout(&[CPP, "callers", "operator<"]),
         "\
 app::operator<(app::Reading const&, app::Reading const&) is used by 1 function:
 
 CALLER                                            HOW   AT
 app::sort_readings(app::Reading*, unsigned long)  call  0x156f
-"
+",
     );
-    assert_eq!(
-        stdout(&[CPP, "callees", "typeinfo for Gain"]),
+    assert_output(
+        &stdout(&[CPP, "callees", "typeinfo for Gain"]),
         "\
 typeinfo for app::Gain uses 3 items:
 
@@ -939,15 +939,15 @@ CALLEE                                       HOW      AT
 vtable for __cxxabiv1::__si_class_type_info  pointer  0x3d78
 typeinfo name for app::Gain                  pointer  0x3d80
 typeinfo for app::Stage                      pointer  0x3d88
-"
+",
     );
 }
 
 #[test]
 fn data_without_a_symbol_is_named_by_section_and_address() {
     // The vtable through which `app_main` reaches `Gain::run`.
-    assert_eq!(
-        stdout(&[
+    assert_output(
+        &stdout(&[
             "testdata/bin/rust-x86_64-nodebug.elf",
             "callers",
             "Gain::run"
@@ -973,8 +973,8 @@ Calls to <elfq_sample::Gain as elfq_sample::Stage>::run through a pointer aren't
 
 #[test]
 fn callees_also_reports_what_it_cannot_follow() {
-    assert_eq!(
-        stdout(&[SAMPLE, "callees", "dispatch_event"]),
+    assert_output(
+        &stdout(&[SAMPLE, "callees", "dispatch_event"]),
         "\
 dispatch_event uses 1 data object:
 
@@ -982,7 +982,7 @@ CALLEE    HOW   AT
 handlers  uses  0x169b
 
 Also 1 jump through a pointer, at 0x16ad, which elfq can't follow.
-"
+",
     );
     const RUST_M4: &str = "testdata/bin/rust-cortex-m4.elf";
     assert!(
@@ -992,14 +992,14 @@ Also 1 jump through a pointer, at 0x16ad, which elfq can't follow.
         )
     );
     // With nothing else to list, the sentence leads.
-    assert_eq!(
-        stdout(&[
+    assert_output(
+        &stdout(&[
             RUST_M4,
             "callees",
-            "<core::fmt::Formatter>::pad_integral::write_prefix"
+            "<core::fmt::Formatter>::pad_integral::write_prefix",
         ]),
         "<core::fmt::Formatter>::pad_integral::write_prefix makes 1 call and 1 jump through \
-         pointers, at 0x8001744 and 0x8001762, which elfq can't follow.\n"
+         pointers, at 0x8001744 and 0x8001762, which elfq can't follow.\n",
     );
 }
 
@@ -1007,18 +1007,18 @@ Also 1 jump through a pointer, at 0x16ad, which elfq can't follow.
 fn code_uses_data_whether_it_reads_it_or_loads_its_address() {
     // lang_start_internal reads CLEANUP in one place and loads its address
     // in another: both are one row.
-    assert_eq!(
-        stdout(&[
+    assert_output(
+        &stdout(&[
             "testdata/bin/rust-x86_64-nodebug.elf",
             "callers",
-            "std::rt::cleanup::CLEANUP"
+            "std::rt::cleanup::CLEANUP",
         ]),
         "\
 std::rt::cleanup::CLEANUP is used by 1 function:
 
 CALLER                        HOW   AT
 std::rt::lang_start_internal  uses  0x3a60a, 0x3a66d
-"
+",
     );
     // Arm code loads a variable's address before it reads or writes it,
     // and that is "uses" too.
@@ -1041,8 +1041,8 @@ fn crossing(args: &[&str]) -> String {
 fn callees_of_ranges_lists_what_leaves_them() {
     // ITCM and DTCM together: only what is in neither, at the call that
     // goes through the linker's veneer.
-    assert_eq!(
-        crossing(&[TCM_SAMPLE, "callees", "0x0+256K", "0x20000000..0x20040000"]),
+    assert_output(
+        &crossing(&[TCM_SAMPLE, "callees", "0x0+256K", "0x20000000..0x20040000"]),
         "\
 0x00000000..0x00040000 (.itcm) and 0x20000000..0x20040000 (.data and .bss) use 3 items outside them:
 
@@ -1050,15 +1050,15 @@ CALLEE      ADDRESS     SIZE  CALLER           HOW                   AT
 memcpy      0x3000087c   308  apply_filter     call via veneer       0xbc
 app_tick    0x300002e4    60  SysTick_Handler  tail call via veneer  0x8
 fir_coeffs  0x30000eb4    32  filter_tap       uses                  0x56
-"
+",
     );
     // The same without symbols, where the veneers are known by their code.
-    assert_eq!(
-        crossing(&[
+    assert_output(
+        &crossing(&[
             "testdata/bin/c-cortex-m7-stripped.elf",
             "callees",
             "0x0+256K",
-            "0x20000000+256K"
+            "0x20000000+256K",
         ]),
         "\
 0x00000000..0x00040000 (.itcm) and 0x20000000..0x20040000 (.data and .bss) use 3 items outside them:
@@ -1067,11 +1067,11 @@ CALLEE              ADDRESS     SIZE  CALLER   HOW                   AT
 fn_0x3000087c       0x3000087c  ~308  fn_0x74  call via veneer       0xbc
 fn_0x300002e4       0x300002e4   ~60  fn_0x0   tail call via veneer  0x8
 .rodata@0x30000eb4  0x30000eb4   ~32  fn_0x40  uses                  0x56
-"
+",
     );
     // ITCM alone: DTCM is outside it too.
-    assert_eq!(
-        crossing(&[TCM_SAMPLE, "callees", "0x0+256K"]),
+    assert_output(
+        &crossing(&[TCM_SAMPLE, "callees", "0x0+256K"]),
         "\
 0x00000000..0x00040000 (.itcm) uses 5 items outside it:
 
@@ -1081,12 +1081,12 @@ memcpy         0x3000087c   308  apply_filter     call via veneer       0xbc
 app_tick       0x300002e4    60  SysTick_Handler  tail call via veneer  0x8
 fir_coeffs     0x30000eb4    32  filter_tap       uses                  0x56
 systick_count  0x20000444     4  SysTick_Handler  uses                  0x0
-"
+",
     );
     // Data that holds no pointers uses nothing: exit status 0.
-    assert_eq!(
-        stdout(&[TCM_SAMPLE, "callees", "0x20000000+256K"]),
-        "0x20000000..0x20040000 (.data and .bss) uses nothing outside it.\n"
+    assert_output(
+        &stdout(&[TCM_SAMPLE, "callees", "0x20000000+256K"]),
+        "0x20000000..0x20040000 (.data and .bss) uses nothing outside it.\n",
     );
 }
 
@@ -1115,19 +1115,19 @@ fn callees_of_ranges_lists_first_what_elfq_cannot_follow() {
         "{flash}"
     );
     // glibc's _init has no size, so its code can't be read.
-    assert_eq!(
-        crossing(&[SAMPLE, "callees", "0x1000+4"]),
+    assert_output(
+        &crossing(&[SAMPLE, "callees", "0x1000+4"]),
         "\
 0x00001000..0x00001004 (.init) uses nothing outside it in the code elfq can read.
 elfq doesn't know where _init ends, so it can't read its code.
-"
+",
     );
 }
 
 #[test]
 fn callers_of_ranges_lists_what_uses_them_from_outside() {
-    assert_eq!(
-        crossing(&[TCM_SAMPLE, "callers", "0x0+256K"]),
+    assert_output(
+        &crossing(&[TCM_SAMPLE, "callers", "0x0+256K"]),
         "\
 0x00000000..0x00040000 (.itcm) is used by 2 items outside it:
 
@@ -1135,11 +1135,11 @@ CALLER         ADDRESS     SIZE  CALLEE           HOW              AT
 process_frame  0x30000320   376  crc32            call via veneer  0x3000034c
                                  apply_filter     call via veneer  0x30000386, 0x30000454
 vector_table   0x30000000    64  SysTick_Handler  pointer          0x3000003c
-"
+",
     );
     // Code outside may call a function through a pointer to it.
-    assert_eq!(
-        crossing(&[SAMPLE, "callers", "0x1260+0x20"]),
+    assert_output(
+        &crossing(&[SAMPLE, "callers", "0x1260+0x20"]),
         "\
 0x00001260..0x00001280 (.text) is used by 1 function outside it:
 
@@ -1148,29 +1148,29 @@ main    0x10a0    195  on_timer  address taken  0x10a8
                        on_data   address taken  0x10c7
 
 Calls through a pointer to on_timer and on_data aren't listed, since elfq can't see them.
-"
+",
     );
     assert_eq!(
         crossing(&[TCM_SAMPLE, "callers", "0x20240000+4K"])
             .lines()
             .next(),
-        Some("0x20240000..0x20241000 (.ocram_bss) is used by 1 function outside it:")
+        Some("0x20240000..0x20241000 (.ocram_bss) is used by 1 function outside it:"),
     );
     // Nothing is outside all the memory, but the handlers' addresses are
     // taken, and could be passed on.
-    assert_eq!(
-        crossing(&[
+    assert_output(
+        &crossing(&[
             TCM_SAMPLE,
             "callers",
             "0x0+16M",
             "0x20000000+16M",
-            "0x30000000+16M"
+            "0x30000000+16M",
         ]),
         "Nothing outside 0x00000000..0x01000000 (.itcm), 0x20000000..0x21000000 (.data, .bss \
          and .ocram_bss) and 0x30000000..0x31000000 (.isr_vector, .text, .rodata and \
          .ARM.exidx) uses them directly.\n\
          Calls through a pointer to on_timer, on_data and on_button aren't listed, since elfq \
-         can't see them.\n"
+         can't see them.\n",
     );
 }
 
@@ -1200,56 +1200,56 @@ fn a_reader_that_stops_early_keeps_the_exit_status() {
 
 #[test]
 fn ranges_in_place_of_symbol_must_be_ranges_with_something_in_them() {
-    assert_eq!(
-        stderr(&[TCM_SAMPLE, "callees", "0x40000000+4K"], 2),
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "callees", "0x40000000+4K"], 2),
         "error: nothing in the file is in 0x40000000..0x40001000; the overview lists the ranges \
-         that the file's sections occupy\n"
+         that the file's sections occupy\n",
     );
-    assert_eq!(
-        stderr(&[TCM_SAMPLE, "callees", "0x0+256K", "main"], 2),
-        "error: `main` isn't a range; give one SYMBOL, or ranges such as 0x0+256K\n"
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "callees", "0x0+256K", "main"], 2),
+        "error: `main` isn't a range; give one SYMBOL, or ranges such as 0x0+256K\n",
     );
-    assert_eq!(
-        stderr(&[TCM_SAMPLE, "callers", "0x100..0x0"], 2),
-        "error: `0x100..0x0` isn't a range: the range must end after it starts\n"
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "callers", "0x100..0x0"], 2),
+        "error: `0x100..0x0` isn't a range: the range must end after it starts\n",
     );
     // --range is for sizes; ranges to check go in place of SYMBOL.
     for args in [
         &[TCM_SAMPLE, "callees", "--range", "0+1K"],
         &[TCM_SAMPLE, "--range", "0+1K", "callees"],
     ] {
-        assert_eq!(
-            stderr(args, 2),
+        assert_output(
+            &stderr(args, 2),
             "error: callees takes ranges in place of SYMBOL, not with --range: \
-             elfq testdata/bin/c-cortex-m7.elf callees 0x00000000..0x00000400\n"
+             elfq testdata/bin/c-cortex-m7.elf callees 0x00000000..0x00000400\n",
         );
     }
-    assert_eq!(
-        stderr(&[TCM_SAMPLE, "callees", "--range", "0+1K", "--json"], 2),
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "callees", "--range", "0+1K", "--json"], 2),
         "error: callees takes ranges in place of SYMBOL, not with --range: \
-         elfq testdata/bin/c-cortex-m7.elf callees 0x00000000..0x00000400 --json\n"
+         elfq testdata/bin/c-cortex-m7.elf callees 0x00000000..0x00000400 --json\n",
     );
-    assert_eq!(
-        stderr(
+    assert_output(
+        &stderr(
             &[
                 TCM_SAMPLE,
                 "callers",
                 "0x0+256K",
                 "--range",
-                "0x20000000+256K"
+                "0x20000000+256K",
             ],
-            2
+            2,
         ),
         "error: callers takes ranges in place of SYMBOL, not with --range: \
-         elfq testdata/bin/c-cortex-m7.elf callers 0x0+256K 0x20000000..0x20040000\n"
+         elfq testdata/bin/c-cortex-m7.elf callers 0x0+256K 0x20000000..0x20040000\n",
     );
-    assert_eq!(
-        stderr(&[TCM_SAMPLE, "callees", "crc32", "--range", "0+1K"], 2),
-        "error: --range limits sizes, so only the overview, top and retained take it\n"
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "callees", "crc32", "--range", "0+1K"], 2),
+        "error: --range limits sizes, so only the overview, top and retained take it\n",
     );
-    assert_eq!(
-        stderr(&[TCM_SAMPLE, "callers"], 2),
-        "error: callers needs a SYMBOL, or ranges such as 0x0+256K\n"
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "callers"], 2),
+        "error: callers needs a SYMBOL, or ranges such as 0x0+256K\n",
     );
 }
 
@@ -1269,22 +1269,22 @@ fn debug_items_lists_each_item() {
 
 #[test]
 fn errors_go_to_stderr_with_exit_code_2() {
-    assert_eq!(
-        stderr(&["Cargo.toml"], 2),
-        "error: cannot load Cargo.toml: not an ELF file\n"
+    assert_output(
+        &stderr(&["Cargo.toml"], 2),
+        "error: cannot load Cargo.toml: not an ELF file\n",
     );
-    assert_eq!(
-        stderr(&[SAMPLE, "callers", "proces_frame"], 2),
-        "error: no function or data object is named `proces_frame`; did you mean process_frame?\n"
+    assert_output(
+        &stderr(&[SAMPLE, "callers", "proces_frame"], 2),
+        "error: no function or data object is named `proces_frame`; did you mean process_frame?\n",
     );
 }
 
 #[test]
 fn a_command_typed_before_the_file_gets_a_hint() {
-    assert_eq!(
-        stderr(&["callers", SAMPLE, "log_msg"], 2),
+    assert_output(
+        &stderr(&["callers", SAMPLE, "log_msg"], 2),
         "error: the file comes before the command, as in: \
-         elfq testdata/bin/c-x86_64.elf callers log_msg\n"
+         elfq testdata/bin/c-x86_64.elf callers log_msg\n",
     );
 }
 
@@ -1295,9 +1295,9 @@ fn help_comes_before_a_command_too() {
         help.starts_with("Show the items that keep the most bytes in the file, as a tree\n"),
         "{help}"
     );
-    assert_eq!(help, stdout(&[SAMPLE, "top", "--help"]));
-    assert_eq!(stdout(&["help"]), stdout(&["--help"]));
-    assert_eq!(stdout(&["help", "top", "--json"]), help);
+    assert_output(&help, &stdout(&[SAMPLE, "top", "--help"]));
+    assert_output(&stdout(&["help"]), &stdout(&["--help"]));
+    assert_output(&stdout(&["help", "top", "--json"]), &help);
     // A misspelled command gets the same error as after a file.
     assert!(
         stderr(&["help", "retaind"], 2).contains("a similar subcommand exists: 'retained'"),

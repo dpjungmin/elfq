@@ -1,5 +1,5 @@
-//! What several test modules share: the sample files, and running elfq the
-//! way a user would.
+//! What several test modules share: the sample files, running elfq the way
+//! a user would, and checking whole outputs.
 
 use std::path::Path;
 use std::process::{Command, Output};
@@ -39,4 +39,30 @@ pub fn command() -> Command {
 /// Runs elfq with `args` and returns what it did.
 pub fn elfq(args: &[&str]) -> Output {
     command().args(args).output().unwrap()
+}
+
+/// Checks that elfq printed `expected`. When it didn't, the failure names
+/// the first line that differs and then prints the whole output as it is,
+/// ready to paste into the test.
+#[track_caller]
+pub fn assert_output(actual: &str, expected: &str) {
+    if actual == expected {
+        return;
+    }
+    let show = |line: Option<&str>| line.map_or("the end".to_string(), |line| format!("{line:?}"));
+    let mut actual_lines = actual.split_inclusive('\n');
+    let mut expected_lines = expected.split_inclusive('\n');
+    for number in 1.. {
+        let (got, wanted) = (actual_lines.next(), expected_lines.next());
+        if got != wanted {
+            panic!(
+                "the output differs from line {number}:\n\
+                 expected: {}\n\
+                 actual:   {}\n\n\
+                 The whole output:\n{actual}",
+                show(wanted),
+                show(got)
+            );
+        }
+    }
 }

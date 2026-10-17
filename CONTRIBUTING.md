@@ -28,6 +28,11 @@ cargo test --locked
 CI also checks that elfq builds with Rust 1.88, the oldest version it
 supports (`rust-version` in `Cargo.toml`).
 
+Most tests in `tests/it/cli.rs` check a command's whole output with
+`assert_output`. When you change what elfq prints on purpose, the test
+that fails shows the first line that differs, then the new output in full,
+ready to paste into the test once you have checked it.
+
 ## Where things live
 
 [docs/design.md](docs/design.md) explains how elfq works and why. In short:
