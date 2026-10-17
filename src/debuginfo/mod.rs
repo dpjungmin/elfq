@@ -120,11 +120,13 @@ impl<'a, 'd> Walk<'a, 'd> {
     ) -> Result<Option<InlinedCopy>> {
         let mut ranges = self.dwarf.die_ranges(unit, entry)?;
         let mut start = None;
-        let mut size = 0;
+        let mut size: u64 = 0;
         while let Some(range) = ranges.next()? {
             if range.end > range.begin {
                 start.get_or_insert(range.begin);
-                size += range.end - range.begin;
+                // Ranges that overlap, which only damaged debug info has,
+                // can add up to more than a u64 holds.
+                size = size.saturating_add(range.end - range.begin);
             }
         }
         // A copy that the optimizer merged into the code around it has no

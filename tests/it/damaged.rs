@@ -70,6 +70,22 @@ fn set_symbol_size(data: &mut [u8], symbol: &str, size: u64) {
     write(data, table as usize + index * 24 + 16, 8, size);
 }
 
+/// Puts `bytes` at the end of the file and points `section` at them.
+fn replace_section(data: &mut Vec<u8>, section: &str, bytes: &[u8]) {
+    let offset = data.len() as u64;
+    data.extend_from_slice(bytes);
+    set_section_field(data, section, OFFSET, offset);
+    set_section_field(data, section, SIZE, bytes.len() as u64);
+}
+
+/// `bytes` after their length in 4 bytes, as DWARF starts a unit or a
+/// list of ranges.
+fn with_length(bytes: &[u8]) -> Vec<u8> {
+    let mut all = (bytes.len() as u32).to_le_bytes().to_vec();
+    all.extend(bytes);
+    all
+}
+
 fn parse(data: &[u8]) -> (Binary, Graph) {
     let binary = Binary::parse(data).unwrap_or_else(|err| panic!("{err:#}"));
     let graph = Graph::build(&binary);
@@ -334,4 +350,96 @@ fn a_64_bit_file_marked_as_arm_is_not_read_as_thumb() {
     write(&mut data, 0x18, 8, entry | 1);
     let (binary, _) = parse(&data);
     assert!(!binary.thumb);
+}
+
+#[test]
+fn inlined_copies_that_add_up_past_the_largest_number_stop_there() {
+    // Two inlined copies of one function, whose two ranges each cover
+    // nearly the whole address space. Abbreviation 1 is an inlined copy
+    // without children, with its ranges at an offset in
+    // `.debug_rnglists`, and 2 a compile unit with children and no
+    // attributes.
+    let abbrev = [1, 0x1d, 0, 0x55, 0x17, 0, 0, 2, 0x11, 1, 0, 0, 0];
+    // DWARF 5, a compile unit, 8-byte addresses, abbreviations at offset
+    // 0. Then the compile unit, the two copies with their ranges at offset
+    // 12, past the list's length and header, and the end of the unit's
+    // children.
+    let mut unit = vec![5, 0, 1, 8, 0, 0, 0, 0, 2];
+    for _ in 0..2 {
+        unit.push(1);
+        unit.extend(12u32.to_le_bytes());
+    }
+    unit.push(0);
+    // DWARF 5, 8-byte addresses, no segments and no offsets. Then each
+    // range as its start and end (DW_RLE_start_end), and the end of the
+    // list.
+    let mut ranges = vec![5, 0, 8, 0, 0, 0, 0, 0];
+    for _ in 0..2 {
+        ranges.push(6);
+        ranges.extend(0x1000u64.to_le_bytes());
+        ranges.extend(0xffff_ffff_ffff_fff0u64.to_le_bytes());
+    }
+    ranges.push(0);
+
+    let mut data = sample("c-x86_64.elf");
+    replace_section(&mut data, ".debug_info", &with_length(&unit));
+    replace_section(&mut data, ".debug_abbrev", &abbrev);
+    replace_section(&mut data, ".debug_rnglists", &with_length(&ranges));
+    let (stdout, _) = run("huge-inlined-copies.elf", &data, &["inlined"]);
+    assert_output(
+        &stdout,
+        "\
+Inlined copies of 1 function take 18446744073709551615 of the 2557 bytes of code:
+
+               BYTES  COPIES  FUNCTION
+18446744073709551615       2  (unnamed)
+",
+    );
+    let (stdout, _) = run("huge-inlined-copies.elf", &data, &["inlined", "_init"]);
+    assert_output(
+        &stdout,
+        "\
+18446744073709551615 bytes of _init's code are inlined copies of 1 function:
+
+               BYTES  COPIES  FUNCTION
+18446744073709551615       2  (unnamed)
+",
+    );
+}
+
+#[test]
+fn an_inlined_copy_that_would_end_past_the_last_address_has_no_bytes() {
+    // Its DW_AT_high_pc gives a size that, added to its DW_AT_low_pc, ends
+    // past the last address. Abbreviation 1 is an inlined copy without
+    // children, with a DW_AT_low_pc address and a DW_AT_high_pc size of 8
+    // bytes, and 2 a compile unit with children and no attributes.
+    let abbrev = [
+        1, 0x1d, 0, 0x11, 0x01, 0x12, 0x07, 0, 0, 2, 0x11, 1, 0, 0, 0,
+    ];
+    let items = load_sample("c-x86_64.elf").items;
+    let main = items.iter().find(|item| item.name == "main").unwrap();
+    // DWARF 4, abbreviations at offset 0, 8-byte addresses. Then the
+    // compile unit, the copy in main, and the end of the unit's children.
+    let mut unit = vec![4, 0, 0, 0, 0, 0, 8, 2, 1];
+    unit.extend(main.address.to_le_bytes());
+    unit.extend(0xffff_ffff_ffff_ff00u64.to_le_bytes());
+    unit.push(0);
+
+    let mut data = sample("c-x86_64.elf");
+    replace_section(&mut data, ".debug_info", &with_length(&unit));
+    replace_section(&mut data, ".debug_abbrev", &abbrev);
+    // As in a release build, the range is dropped, and the copy is found at
+    // its DW_AT_low_pc, without bytes.
+    let (stdout, _) = run("huge-high-pc.elf", &data, &["inlined"]);
+    assert_output(
+        &stdout,
+        "\
+Inlined copies of 1 function take 0 of the 2557 bytes of code:
+
+BYTES  COPIES  FUNCTION
+    0       1  (unnamed)
+
+A copy of 0 bytes is one the compiler merged into the code around it, so the debug info gives it no bytes of its own.
+",
+    );
 }

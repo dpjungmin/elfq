@@ -77,13 +77,13 @@ fn write_list(
             bytes: 0,
             copies: 0,
         });
-        total.bytes += copy.own;
+        total.bytes = total.bytes.saturating_add(copy.own);
         total.copies += 1;
     }
     let mut totals: Vec<Total> = by_name.into_values().collect();
     totals.sort_by_key(|total| (Reverse(total.bytes), Reverse(total.copies), total.name));
 
-    let inlined: u64 = copies.iter().map(|copy| copy.own).sum();
+    let inlined = super::total(copies.iter().map(|copy| copy.own));
     let functions = binary
         .items
         .iter()
@@ -122,7 +122,7 @@ fn write_list(
         ]);
     }
     if !hidden.is_empty() {
-        let bytes: u64 = hidden.iter().map(|total| total.bytes).sum();
+        let bytes = super::total(hidden.iter().map(|total| total.bytes));
         let copies: usize = hidden.iter().map(|total| total.copies).sum();
         table.row(vec![
             bytes.to_string(),
@@ -156,11 +156,7 @@ fn write_tree(
         bail!("{name} is a data object, not a function, so nothing is inlined into it");
     }
     let groups = Groups::new(copies, index);
-    let bytes: u64 = groups
-        .top
-        .iter()
-        .map(|&group| groups.list[group].bytes)
-        .sum();
+    let bytes = super::total(groups.top.iter().map(|&group| groups.list[group].bytes));
     if format == Format::Json {
         let tree = TreeJson {
             function: json::Item::new(binary, node),
@@ -281,7 +277,8 @@ impl<'a> Groups<'a> {
                 .copied()
                 .find(|&group| groups.list[group].name == copy.name);
             let group = same.unwrap_or_else(|| groups.add(&copy.name, parent));
-            groups.list[group].bytes += copy.size;
+            let bytes = &mut groups.list[group].bytes;
+            *bytes = bytes.saturating_add(copy.size);
             groups.list[group].copies += 1;
             group_of.insert(index, group);
         }
@@ -405,7 +402,7 @@ impl<'a> Groups<'a> {
         }
         // A group's bytes include those inlined into it, but its copies
         // don't.
-        let bytes: u64 = hidden.iter().map(|&group| self.list[group].bytes).sum();
+        let bytes = super::total(hidden.iter().map(|&group| self.list[group].bytes));
         let all = self.with_inlined(hidden);
         let copies: usize = all.iter().map(|&group| self.list[group].copies).sum();
         let cells = vec![bytes.to_string(), copies.to_string()];

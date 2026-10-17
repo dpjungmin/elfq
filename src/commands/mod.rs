@@ -166,8 +166,8 @@ fn plural(n: usize, one: &str, many: &str) -> String {
 }
 
 /// The sum of `sizes`, which stops at the largest `u64` rather than
-/// overflow: in a damaged file, items can overlap, and their sizes add up to
-/// more than a `u64` holds.
+/// overflow: in a damaged file, items or inlined copies can overlap, and
+/// their sizes add up to more than a `u64` holds.
 fn total(sizes: impl Iterator<Item = u64>) -> u64 {
     sizes.fold(0, u64::saturating_add)
 }

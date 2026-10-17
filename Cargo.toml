@@ -22,3 +22,10 @@ serde_json = "1.0.151"
 
 [lints.rust]
 unsafe_code = "forbid"
+
+# gimli adds a size in DW_AT_high_pc to DW_AT_low_pc without a check. When
+# damaged debug info makes the sum overflow, a release build wraps it, and
+# elfq drops the range, which then ends before it starts. Debug builds, which
+# the tests use, do the same rather than panic.
+[profile.dev.package.gimli]
+overflow-checks = false
