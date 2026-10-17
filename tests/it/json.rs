@@ -2,7 +2,9 @@
 
 use serde_json::{Value, json};
 
-use crate::support::{DEEP_SAMPLE, SAMPLE, TCM_SAMPLE, command, elfq};
+use elfq::binary::{ItemKind, Source};
+
+use crate::support::{DEEP_SAMPLE, LIBRARY_SAMPLE, SAMPLE, TCM_SAMPLE, command, elfq, load_sample};
 
 /// Runs elfq with `--json`, expecting success, and parses what it printed.
 fn elfq_json(args: &[&str]) -> Value {
@@ -54,6 +56,41 @@ fn items_have_the_same_keys_everywhere() {
             "size_estimated": false
         })
     );
+}
+
+#[test]
+fn a_shared_library_has_the_same_callers_as_the_program() {
+    // Each caller and how it calls, and whether that is every caller.
+    let callers = |sample: &str, function: &str| {
+        let answer = elfq_json(&[sample, "callers", function]);
+        let callers: Vec<(Value, Value)> = answer["callers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|caller| (caller["item"]["name"].clone(), caller["how"].clone()))
+            .collect();
+        (callers, answer["complete"].clone())
+    };
+    let library = load_sample("c-x86_64.so");
+    let functions = library
+        .items
+        .iter()
+        .filter(|item| item.kind == ItemKind::Function && item.source == Source::SymbolTable);
+    let mut checked = 0;
+    for function in functions {
+        // In the program, `_start` hands `main` to the C library.
+        if function.name == "main" {
+            continue;
+        }
+        assert_eq!(
+            callers(LIBRARY_SAMPLE, &function.name),
+            callers(SAMPLE, &function.name),
+            "{}",
+            function.name
+        );
+        checked += 1;
+    }
+    assert!(checked > 20, "{checked}");
 }
 
 #[test]

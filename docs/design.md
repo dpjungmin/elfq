@@ -292,7 +292,9 @@ references and computes dominators and paths, `commands` run queries, and
    points at every root. `retained` and `top` read it. `why` searches from
    the roots for the shortest chain to each item that uses SYMBOL, going
    around SYMBOL itself, and prefers calls among equally short chains.
-   `callers` and `callees` read edges.
+   `callers` and `callees` read edges. `callers` counts a call to the stub
+   for one of the file's own functions, such as `log_msg@plt` in a shared
+   library, as a call to the function, and says so.
 7. **Read DWARF** when it is present (`gimli`), in `debuginfo`: each
    inlined-subroutine entry is a copy of one function in another, with the
    address ranges of its code. `inlined` adds them up. Copies whose code the

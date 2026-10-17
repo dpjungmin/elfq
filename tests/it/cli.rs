@@ -28,6 +28,25 @@ fn samples() -> Vec<String> {
     samples
 }
 
+/// Splits a command line into its arguments as a shell would, for the
+/// quotes that elfq puts around a name such as `'log(char const*)'`.
+fn shell_words(line: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut quoted = false;
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' => quoted = !quoted,
+            '\\' if !quoted => word.extend(chars.next()),
+            ' ' if !quoted => words.push(std::mem::take(&mut word)),
+            _ => word.push(c),
+        }
+    }
+    words.push(word);
+    words
+}
+
 /// Runs elfq, expecting failure with `code`, and returns its error output.
 fn stderr(args: &[&str], code: i32) -> String {
     let output = elfq(args);
@@ -155,7 +174,7 @@ testdata/bin/c-x86_64.so: x86-64 shared library, with symbols and DWARF debug in
 38 functions and 34 data objects, 4197 bytes of code and data, plus 7 imports
 
 Try:
-  elfq testdata/bin/c-x86_64.so callers parse_value
+  elfq testdata/bin/c-x86_64.so callers log_msg
   elfq testdata/bin/c-x86_64.so callees main
   elfq testdata/bin/c-x86_64.so inlined
 ",
@@ -192,9 +211,9 @@ fn every_command_the_overview_suggests_works() {
             .lines()
             .filter_map(|line| line.strip_prefix(&prefix))
         {
-            // No suggestion for the samples needs quotes.
-            let mut args = vec![sample.as_str()];
-            args.extend(line.split(' '));
+            let mut args = vec![sample.clone()];
+            args.extend(shell_words(line));
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
             let output = elfq(&args);
             assert!(output.status.success(), "{args:?}\n{output:?}");
         }
@@ -967,6 +986,74 @@ debug_dump     call       0x1aaf
 on_button      tail call  0x1661
 process_frame  call       0x18ee, 0x1908
 report         call       0x1a72
+",
+    );
+}
+
+#[test]
+fn callers_in_a_shared_library_include_calls_through_its_stubs() {
+    assert_output(
+        &stdout(&[LIBRARY_SAMPLE, "callers", "log_msg"]),
+        "\
+log_msg is used by 5 functions:
+
+CALLER         HOW        AT
+app_tick       call       0x179f
+debug_dump     call       0x1b5f
+on_button      tail call  0x1711
+process_frame  call       0x199e, 0x19b8
+report         call       0x1b22
+
+This includes calls through log_msg@plt.
+",
+    );
+    // The stub itself is still there to ask about.
+    assert_output(
+        &stdout(&[LIBRARY_SAMPLE, "callees", "log_msg@plt"]),
+        "\
+log_msg@plt uses 1 function:
+
+CALLEE   HOW        AT
+log_msg  tail call  0x1144
+",
+    );
+    // The same goes for an 8-byte stub in `.plt.got`, and for an ifunc's.
+    const PLT: &str = "testdata/bin/c-plt.so";
+    assert_output(
+        &stdout(&[PLT, "callers", "negate"]),
+        "\
+negate is used by 2 functions:
+
+CALLER  HOW            AT
+pick    address taken  0x1210
+run     call           0x126a
+
+This includes calls through negate@plt.
+Calls to negate through a pointer aren't listed, since elfq can't see them.
+",
+    );
+    assert_output(
+        &stdout(&[PLT, "callers", "sum_to"]),
+        "\
+sum_to is used by 1 function:
+
+CALLER  HOW   AT
+run     call  0x1273
+
+This includes calls through sum_to@plt.
+",
+    );
+    // Code that only takes the address of an ifunc's stub takes the
+    // ifunc's address, and calls nothing through the stub.
+    assert_output(
+        &stdout(&[PLT, "callers", "square"]),
+        "\
+square is used by 1 function:
+
+CALLER       HOW            AT
+pick_square  address taken  0x1240
+
+Calls to square through a pointer aren't listed, since elfq can't see them.
 ",
     );
 }

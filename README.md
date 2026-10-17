@@ -48,7 +48,8 @@ The `elfq` crate on crates.io is only a placeholder for now.
 **Status:** early development. The overview, `top`, `retained`, `why`,
 `callers` and `callees` work on x86-64 and Cortex-M executables, with
 readable Rust and C++ names, and `inlined` works on any file with DWARF debug
-info.
+info. The overview, `callers` and `callees` also work on x86-64 shared
+libraries.
 See [docs/design.md](docs/design.md) for the plan,
 [docs/survey.md](docs/survey.md) for how existing tools compare, and
 [CONTRIBUTING.md](CONTRIBUTING.md) to build it.

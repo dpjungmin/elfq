@@ -371,15 +371,19 @@ fn largest_kept(retained: &RetainedTree) -> Option<usize> {
 }
 
 /// The function with the most distinct callers, leaving out PLT stubs,
-/// whose code is a library's.
+/// whose code is a library's. A call through the stub for one of the file's
+/// own functions counts as a call to the function.
 fn most_used(binary: &Binary, graph: &Graph) -> Option<usize> {
+    let stubs = binary.own_function_stubs();
     let mut callers: Vec<(usize, usize)> = graph
         .references
         .iter()
+        .filter(|reference| !stubs.contains_key(&reference.from))
         .filter_map(|reference| match reference.to {
-            Node::Item(to) if is_own_function(binary, to) => Some((to, reference.from)),
-            _ => None,
+            Node::Item(to) => Some((*stubs.get(&to).unwrap_or(&to), reference.from)),
+            Node::Import(_) => None,
         })
+        .filter(|&(to, _)| is_own_function(binary, to))
         .collect();
     callers.sort_unstable();
     callers.dedup();
