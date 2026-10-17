@@ -331,7 +331,7 @@ Rules that keep it approachable:
 
 ## Dependencies
 
-Pure Rust only, so `cargo install elfq` needs no C toolchain:
+Pure Rust only, so installing elfq needs no C toolchain:
 `object` (ELF), `gimli` (DWARF), `iced-x86` (x86-64 decoding), `petgraph`
 (graph and dominators), `clap` (arguments), `rustc-demangle` (Rust names)
 and `cpp_demangle` (C++ names). Thumb has its own small decoder in
@@ -350,8 +350,9 @@ than through a general disassembler's API.
   plus the linker's veneers on Cortex-M7.
 - **Snapshot tests** pin the human-readable output so format changes are
   reviewed on purpose.
-- **CI** runs `cargo fmt --check`, `cargo clippy -- -D warnings` and
-  `cargo test`. The sample binaries are committed, so CI needs no cross
+- **CI** runs the checks that [CONTRIBUTING.md](../CONTRIBUTING.md) lists,
+  and checks that elfq builds with Rust 1.88, the oldest version it
+  supports. The sample binaries are committed, so CI needs no cross
   toolchains.
 
 ## Delivery
