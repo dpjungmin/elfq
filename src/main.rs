@@ -1,5 +1,6 @@
-//! The elfq program: parses arguments, runs one command and reports errors.
-//! Everything else lives in the library (src/lib.rs).
+//! The elfq program: parses arguments, runs one command on a thread with a
+//! large stack, and reports errors. Everything else lives in the library
+//! (src/lib.rs).
 
 use std::ffi::OsString;
 use std::io::{self, BufWriter, ErrorKind, Write};
@@ -9,7 +10,54 @@ use clap::Parser;
 use elfq::cli::{self, Cli};
 use elfq::commands::Outcome;
 
+/// The stack for the thread that runs elfq. Trees are built, drawn and
+/// written as JSON recursively, as deep as the file nests them: the retained
+/// tree as deep as the longest chain of calls, and the tree of inlined
+/// copies as deep as the copies nest. The main thread's stack, usually
+/// 8 MiB, runs out at a chain of some 10,000 calls, and of fewer in a debug
+/// build; this one holds 32 times as many. The thread's memory grows only as
+/// far as its stack is used, but all of its addresses are set aside from the
+/// start.
+const STACK_SIZE: usize = 256 << 20;
+
 fn main() -> ExitCode {
+    // Under a limit on address space, as `ulimit -v` sets, the stack's
+    // addresses count in full, and would leave that much less for the
+    // file's data.
+    if address_space_is_limited() {
+        return run();
+    }
+    let thread = std::thread::Builder::new()
+        .name("elfq".to_string())
+        .stack_size(STACK_SIZE)
+        .spawn(run);
+    match thread {
+        Ok(thread) => thread
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+        // When no thread can start, try with the main thread's stack.
+        Err(_) => run(),
+    }
+}
+
+/// Whether a limit on address space is set, as `ulimit -v` sets it. Linux
+/// lists it in /proc/self/limits; elsewhere, elfq takes it that there is
+/// none.
+fn address_space_is_limited() -> bool {
+    let Ok(limits) = std::fs::read_to_string("/proc/self/limits") else {
+        return false;
+    };
+    // As in "Max address space  unlimited  unlimited  bytes", where the
+    // first value is the limit that applies.
+    limits.lines().any(|line| {
+        line.strip_prefix("Max address space")
+            .and_then(|values| values.split_whitespace().next())
+            .is_some_and(|limit| limit != "unlimited")
+    })
+}
+
+/// Parses the arguments, runs the command and returns the exit status.
+fn run() -> ExitCode {
     let cli = match Cli::try_parse_from(args()) {
         Ok(cli) => cli,
         Err(err) => {

@@ -528,3 +528,31 @@ fn inlined_copies_that_nest_deeply_are_summed_up() {
     let (stdout, _) = run("deep-inlined-copies.elf", &data, &["inlined", "main"]);
     assert!(stdout.contains("└─ 99970 more\n"), "{stdout}");
 }
+
+#[test]
+fn a_long_chain_of_calls_is_read() {
+    // Thumb functions that each call the next, 10,000 of them, in place of
+    // `.text`. The retained tree is as deep as the chain: deeper than the
+    // main thread's stack holds in a debug build.
+    let count = 10_000;
+    let mut code: Vec<u16> = Vec::new();
+    for _ in 1..count {
+        // push {lr}; bl to the next function; pop {pc}
+        code.extend([0xb500, 0xf000, 0xf801, 0xbd00]);
+    }
+    // bx lr, then three nops as padding, which elfq leaves out: the last
+    // function takes 2 bytes, so the functions take 9,999 × 8 + 2.
+    code.extend([0x4770, 0xbf00, 0xbf00, 0xbf00]);
+    let code: Vec<u8> = code.iter().flat_map(|half| half.to_le_bytes()).collect();
+
+    let mut data = sample("c-cortex-m4-stripped.elf");
+    let address = 0x0810_0000;
+    replace_section(&mut data, ".text", &code);
+    set_section_field(&mut data, ".text", ADDRESS, address);
+    // `e_entry`, in the file's header: the first function, as Thumb code.
+    write(&mut data, 0x18, 4, address | 1);
+    let (stdout, _) = run("long-chain.elf", &data, &[]);
+    let total = stdout.lines().nth(1).unwrap();
+    assert_eq!(total, "10000 functions, 79994 bytes of code and data");
+    run("long-chain.elf", &data, &["top", "--all"]);
+}

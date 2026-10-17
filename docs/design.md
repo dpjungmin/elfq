@@ -303,7 +303,7 @@ references and computes dominators and paths, `commands` run queries, and
 
 ```
 src/
-├── main.rs        Parses arguments, runs one command, prints errors. Nothing else.
+├── main.rs        Parses arguments, runs one command on a thread with a large stack, prints errors. Nothing else.
 ├── lib.rs         Declares the modules below. elfq is a library plus a thin binary.
 ├── cli.rs         clap definitions, one struct per subcommand.
 ├── commands/      One file per subcommand: find the symbol (symbol.rs), run a query, render (tree.rs builds the rows of retained sizes, json.rs has shared JSON shapes, edge.rs is callers and callees for ranges).
