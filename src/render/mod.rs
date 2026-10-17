@@ -54,14 +54,17 @@ impl Table {
                 if column > 0 {
                     line.push_str("  ");
                 }
-                let padding = " ".repeat(widths[column] - cell.chars().count());
+                let padding = std::iter::repeat_n(' ', widths[column] - cell.chars().count());
                 match self.aligns[column] {
+                    // Nothing follows the last column, so it needs no
+                    // padding: the line's trailing spaces are trimmed.
+                    Align::Left if column + 1 == row.len() => line.push_str(cell),
                     Align::Left => {
                         line.push_str(cell);
-                        line.push_str(&padding);
+                        line.extend(padding);
                     }
                     Align::Right => {
-                        line.push_str(&padding);
+                        line.extend(padding);
                         line.push_str(cell);
                     }
                 }
