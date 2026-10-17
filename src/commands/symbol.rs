@@ -17,7 +17,7 @@ use std::collections::HashMap;
 
 use anyhow::{Context, Result, anyhow, bail};
 
-use crate::binary::{AddressRange, Binary, demangle, short_names};
+use crate::binary::{AddressRange, Binary, demangle, hex_number, short_names};
 use crate::graph::Node;
 
 /// What `callers` and `callees` ask about.
@@ -65,9 +65,8 @@ pub fn is_range(query: &str) -> bool {
 /// Finds the item or import that `query` names. When it could mean several,
 /// or none, the error lists names to try instead.
 pub fn find(binary: &Binary, query: &str) -> Result<Node> {
-    if let Some(hex) = query.strip_prefix("0x") {
-        let address = u64::from_str_radix(hex, 16)
-            .with_context(|| format!("`{query}` is not a hexadecimal address"))?;
+    if let Some(address) = hex_number(query) {
+        let address = address.with_context(|| format!("`{query}` is not a hexadecimal address"))?;
         return match binary.item_at(address) {
             Some(index) => Ok(Node::Item(index)),
             None => bail!("no function or data object contains address {address:#x}"),
