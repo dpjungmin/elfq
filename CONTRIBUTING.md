@@ -39,7 +39,7 @@ ready to paste into the test once you have checked it.
 
 | Path | What it holds |
 |---|---|
-| `src/main.rs` | The program: parses arguments, runs one command, prints errors. |
+| `src/main.rs` | The program: parses arguments, runs one command on a thread with a large stack, prints errors. |
 | `src/cli.rs` | Command-line arguments, one struct per subcommand. |
 | `src/commands/` | One file per subcommand, plus `symbol.rs`, which works out what a user means by SYMBOL, `tree.rs`, which builds the trees of retained sizes that `top` and `retained` show and writes them as JSON, `json.rs`, the JSON shapes that commands share, and `edge.rs`, which `callers` and `callees` use for ranges of memory. Commands connect a question to output; they do no analysis. |
 | `src/arch/` | Finding the addresses that machine code calls or uses, one file per instruction set (x86-64 and Thumb). |

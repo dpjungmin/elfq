@@ -3,6 +3,7 @@
 //! occupy, which the overview lists so that nobody has to look them up.
 
 use std::fmt;
+use std::num::ParseIntError;
 use std::str::FromStr;
 
 use super::Section;
@@ -65,6 +66,16 @@ impl FromStr for AddressRange {
     }
 }
 
+/// The number that `text` writes in hexadecimal, after `0x` or `0X`, as
+/// in `0x20000000`. `None` when it doesn't start with either, and an error
+/// when the rest isn't a hexadecimal number.
+pub fn hex_number(text: &str) -> Option<Result<u64, ParseIntError>> {
+    let digits = text
+        .strip_prefix("0x")
+        .or_else(|| text.strip_prefix("0X"))?;
+    Some(u64::from_str_radix(digits, 16))
+}
+
 /// A number in a range: hex such as `0x20000000`, or decimal with an
 /// optional unit such as `256K`. The units, in any case, are `B` for bytes,
 /// `K`, `KB` or `KiB` for 1024 bytes and `M`, `MB` or `MiB` for 1024 × 1024,
@@ -74,8 +85,8 @@ fn number(text: &str) -> Result<u64, String> {
     if text.is_empty() {
         return Err("expected START..END or START+SIZE, with a number on each side".to_string());
     }
-    if let Some(hex) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
-        return u64::from_str_radix(hex, 16).map_err(|_| format!("`{text}` isn't a hex number"));
+    if let Some(number) = hex_number(text) {
+        return number.map_err(|_| format!("`{text}` isn't a hex number"));
     }
     let digits = text
         .find(|c: char| !c.is_ascii_digit())

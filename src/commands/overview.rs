@@ -307,7 +307,7 @@ fn count(binary: &Binary, kind: ItemKind, range: Option<AddressRange>) -> usize 
 
 /// The bytes of all the items, or with a range, those in it.
 fn total_bytes(binary: &Binary, range: Option<AddressRange>) -> u64 {
-    binary.items.iter().map(|item| in_range(item, range)).sum()
+    super::total(binary.items.iter().map(|item| in_range(item, range)))
 }
 
 /// What elfq found, such as "25 functions and 31 data objects", leaving

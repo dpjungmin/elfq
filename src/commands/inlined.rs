@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::Write;
 use std::path::Path;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use serde::Serialize;
 
 use super::json;
@@ -35,7 +35,8 @@ pub fn run(
             path.display()
         );
     }
-    let copies = debuginfo::inlined_copies(binary)?;
+    let copies = debuginfo::inlined_copies(binary)
+        .with_context(|| format!("cannot read the DWARF debug info in {}", path.display()))?;
     match symbol {
         None => write_list(binary, &copies, all, format, out),
         Some(symbol) => write_tree(binary, &copies, symbol, all, format, out),
@@ -77,19 +78,18 @@ fn write_list(
             bytes: 0,
             copies: 0,
         });
-        total.bytes += copy.own;
+        total.bytes = total.bytes.saturating_add(copy.own);
         total.copies += 1;
     }
     let mut totals: Vec<Total> = by_name.into_values().collect();
     totals.sort_by_key(|total| (Reverse(total.bytes), Reverse(total.copies), total.name));
 
-    let inlined: u64 = copies.iter().map(|copy| copy.own).sum();
-    let code: u64 = binary
+    let inlined = super::total(copies.iter().map(|copy| copy.own));
+    let functions = binary
         .items
         .iter()
-        .filter(|item| item.kind == ItemKind::Function)
-        .map(|item| item.size)
-        .sum();
+        .filter(|item| item.kind == ItemKind::Function);
+    let code = super::total(functions.map(|item| item.size));
     if format == Format::Json {
         let list = ListJson {
             inlined_bytes: inlined,
@@ -123,7 +123,7 @@ fn write_list(
         ]);
     }
     if !hidden.is_empty() {
-        let bytes: u64 = hidden.iter().map(|total| total.bytes).sum();
+        let bytes = super::total(hidden.iter().map(|total| total.bytes));
         let copies: usize = hidden.iter().map(|total| total.copies).sum();
         table.row(vec![
             bytes.to_string(),
@@ -157,11 +157,7 @@ fn write_tree(
         bail!("{name} is a data object, not a function, so nothing is inlined into it");
     }
     let groups = Groups::new(copies, index);
-    let bytes: u64 = groups
-        .top
-        .iter()
-        .map(|&group| groups.list[group].bytes)
-        .sum();
+    let bytes = super::total(groups.top.iter().map(|&group| groups.list[group].bytes));
     if format == Format::Json {
         let tree = TreeJson {
             function: json::Item::new(binary, node),
@@ -266,6 +262,9 @@ impl<'a> Groups<'a> {
         // The group each copy went into. Copies come before the copies
         // inlined into them, so a copy's parent is always grouped first.
         let mut group_of: HashMap<usize, usize> = HashMap::new();
+        // The group of each function in each place: inlined into a group,
+        // or into the function itself.
+        let mut named: HashMap<(Option<usize>, &str), usize> = HashMap::new();
         for (index, copy) in copies.iter().enumerate() {
             if copy.into != into {
                 continue;
@@ -273,16 +272,11 @@ impl<'a> Groups<'a> {
             let parent = copy
                 .parent
                 .and_then(|parent| group_of.get(&parent).copied());
-            let siblings = match parent {
-                Some(parent) => &groups.list[parent].children,
-                None => &groups.top,
-            };
-            let same = siblings
-                .iter()
-                .copied()
-                .find(|&group| groups.list[group].name == copy.name);
-            let group = same.unwrap_or_else(|| groups.add(&copy.name, parent));
-            groups.list[group].bytes += copy.size;
+            let group = *named
+                .entry((parent, &copy.name))
+                .or_insert_with(|| groups.add(&copy.name, parent));
+            let bytes = &mut groups.list[group].bytes;
+            *bytes = bytes.saturating_add(copy.size);
             groups.list[group].copies += 1;
             group_of.insert(index, group);
         }
@@ -388,14 +382,18 @@ impl<'a> Groups<'a> {
         TreeRow::new(cells, row.name, self.rows(shown, &row.children))
     }
 
-    /// The groups in `groups` and all the groups inlined into them.
+    /// The groups in `groups` and all the groups inlined into them, each
+    /// before the groups inlined into it.
     fn with_inlined(&self, groups: &[usize]) -> Vec<usize> {
-        groups
-            .iter()
-            .flat_map(|&group| {
-                std::iter::once(group).chain(self.with_inlined(&self.list[group].children))
-            })
-            .collect()
+        let mut all = Vec::new();
+        // The groups still to list, the next one last. A loop rather than
+        // recursion, since copies can nest deeper than the stack would hold.
+        let mut next: Vec<usize> = groups.iter().rev().copied().collect();
+        while let Some(group) = next.pop() {
+            all.push(group);
+            next.extend(self.list[group].children.iter().rev());
+        }
+        all
     }
 
     /// The row that sums up `hidden` groups and the groups inlined into
@@ -406,7 +404,7 @@ impl<'a> Groups<'a> {
         }
         // A group's bytes include those inlined into it, but its copies
         // don't.
-        let bytes: u64 = hidden.iter().map(|&group| self.list[group].bytes).sum();
+        let bytes = super::total(hidden.iter().map(|&group| self.list[group].bytes));
         let all = self.with_inlined(hidden);
         let copies: usize = all.iter().map(|&group| self.list[group].copies).sum();
         let cells = vec![bytes.to_string(), copies.to_string()];
@@ -465,5 +463,19 @@ mod tests {
             lines(&rows, 0),
             ["big 200 1", "parent 100 1", "  2 more 90 3", "leaf 5 1"]
         );
+    }
+
+    #[test]
+    fn a_summary_of_copies_nested_deeply_takes_one_pass() {
+        // Each copy inlined into the one before, 100,000 deep: summing them
+        // up takes neither a frame of the stack for each level nor time
+        // that grows with its square.
+        let depth: usize = 100_000;
+        let copies: Vec<InlinedCopy> = (0..depth)
+            .map(|index| copy("f", 1, index.checked_sub(1)))
+            .collect();
+        let groups = Groups::new(&copies, 0);
+        let row = groups.more(&groups.top).unwrap();
+        assert_eq!(lines(&[row], 0), [format!("{depth} more 1 {depth}")]);
     }
 }

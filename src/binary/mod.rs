@@ -35,7 +35,7 @@ mod unnamed_functions;
 mod vector_table;
 
 pub use names::{demangle, short_names};
-pub use range::{AddressRange, MemoryBlock, memory_blocks};
+pub use range::{AddressRange, MemoryBlock, hex_number, memory_blocks};
 pub use vector_table::VectorTable;
 
 use std::collections::HashSet;
@@ -120,7 +120,8 @@ pub enum FileKind {
     SharedLibrary,
 }
 
-/// A section of the file, such as `.text` or `.rodata`.
+/// A section of the file, such as `.text` or `.rodata`. An allocated
+/// section's end, `address + size`, always fits in a `u64`.
 #[derive(Debug, Clone)]
 pub struct Section {
     pub name: String,
@@ -148,7 +149,8 @@ pub struct Item {
     pub aliases: Vec<String>,
     pub kind: ItemKind,
     pub address: u64,
-    /// Size in bytes, or 0 when it is unknown.
+    /// Size in bytes, or 0 when it is unknown. The item's end,
+    /// `address + size`, always fits in a `u64`.
     pub size: u64,
     /// Whether `size` is a guess, made when the file doesn't record the
     /// size: the distance to the next item, or for unnamed data, to the next
@@ -264,12 +266,14 @@ impl Binary {
         };
 
         let architecture = file.architecture();
+        let mut warnings = Vec::new();
         let mut binary = Binary {
             architecture,
             pointer_size: if file.is_64() { 8 } else { 4 },
             kind,
             entry: code_address(architecture, file.entry()),
-            thumb: architecture == Architecture::Arm && is_thumb(&file),
+            // Only a damaged header puts 32-bit Arm code in a 64-bit file.
+            thumb: architecture == Architecture::Arm && !file.is_64() && is_thumb(&file),
             endianness: if file.is_little_endian() {
                 Endianness::Little
             } else {
@@ -277,14 +281,14 @@ impl Binary {
             },
             has_symbols: file.symbol_table().is_some(),
             has_dwarf: file.section_by_name(".debug_info").is_some(),
-            sections: read_sections(&file),
+            sections: read_sections(&file, data.len() as u64, &mut warnings),
             items: Vec::new(),
             imports: Vec::new(),
             relocations: Vec::new(),
             used_by_unwinder: Vec::new(),
             merged_variables: Vec::new(),
             vector_table: None,
-            warnings: Vec::new(),
+            warnings,
             data: data.to_vec(),
         };
         (binary.imports, binary.relocations) = relocations::read(&file, architecture);
@@ -335,40 +339,96 @@ impl Binary {
     /// of them. `.bss`, for example, takes no space in the file.
     pub fn bytes(&self, address: u64, size: u64) -> Option<&[u8]> {
         let section = &self.sections[self.section_at(address)?];
-        let (offset, file_size) = section.file_range?;
-        let start = address - section.address;
-        let end = start.checked_add(size)?;
-        if end > file_size {
-            return None;
-        }
-        self.data
-            .get(usize::try_from(offset + start).ok()?..usize::try_from(offset + end).ok()?)
+        let bytes = self.section_bytes(section, address, size)?;
+        (bytes.len() as u64 == size).then_some(bytes)
     }
 
     /// The pointer stored at `address`, as the file holds it before the
     /// program runs.
     pub fn pointer_at(&self, address: u64) -> Option<u64> {
         let bytes = self.bytes(address, self.pointer_size)?;
-        let mut word = [0; 8];
-        if self.endianness == Endianness::Big {
-            word[8 - bytes.len()..].copy_from_slice(bytes);
-            Some(u64::from_be_bytes(word))
-        } else {
-            word[..bytes.len()].copy_from_slice(bytes);
-            Some(u64::from_le_bytes(word))
+        Some(word(bytes, self.endianness))
+    }
+
+    /// The pointer-sized words stored one after another from `start` up to
+    /// `end`, as `(address, value)`: each one [`Binary::pointer_at`] reads,
+    /// from the section that holds it. Words whose bytes the file doesn't
+    /// hold are left out, so `.bss`, which takes no space in the file, has
+    /// none, however large it is.
+    pub fn words(&self, start: u64, end: u64) -> impl Iterator<Item = (u64, u64)> + '_ {
+        let size = self.pointer_size;
+        let mut next = Some(start);
+        // A run of words at a time, all from one section: they are read in
+        // one go, and a stretch the file holds no bytes for is skipped in
+        // one step.
+        let runs = std::iter::from_fn(move || {
+            let slot = next.filter(|&slot| slot < end)?;
+            let (stop, bytes) = self.run(slot, end);
+            let count = (stop - slot).div_ceil(size);
+            next = count
+                .checked_mul(size)
+                .and_then(|length| slot.checked_add(length));
+            let words = bytes.chunks_exact(size as usize).take(count as usize);
+            Some((slot..stop).step_by(size as usize).zip(words))
+        });
+        runs.flatten()
+            .map(|(address, bytes)| (address, word(bytes, self.endianness)))
+    }
+
+    /// The words that [`Binary::words`] reads, but only at addresses that
+    /// are multiples of their size, where compilers put pointers in data.
+    pub fn aligned_words(&self, start: u64, end: u64) -> impl Iterator<Item = (u64, u64)> + '_ {
+        let first = start.checked_next_multiple_of(self.pointer_size);
+        self.words(first.unwrap_or(end), end)
+    }
+
+    /// Where the words from `slot` up to `end` stop coming from the section
+    /// that holds `slot`, and the bytes the file holds for them: none when
+    /// no section holds `slot`, or the file holds none of its bytes.
+    fn run(&self, slot: u64, end: u64) -> (u64, &[u8]) {
+        // Sections can overlap, as GNU ld's OVERLAY makes them, and the
+        // first that holds an address is the one that counts, so the run
+        // ends where any other one starts too.
+        let next_start = self
+            .sections
+            .iter()
+            .filter(|section| section.in_memory() && section.address > slot)
+            .map(|section| section.address)
+            .min();
+        let stop = next_start.map_or(end, |next_start| next_start.min(end));
+        match self.section_at(slot) {
+            Some(index) => {
+                let section = &self.sections[index];
+                let stop = stop.min(section.address + section.size);
+                (
+                    stop,
+                    self.section_bytes(section, slot, end - slot)
+                        .unwrap_or_default(),
+                )
+            }
+            None => (stop, &[]),
         }
+    }
+
+    /// Up to `len` of the bytes the file holds for `section` from
+    /// `address`, which the section holds: fewer when the section's bytes,
+    /// or the file itself, end first.
+    fn section_bytes(&self, section: &Section, address: u64, len: u64) -> Option<&[u8]> {
+        let (offset, file_size) = section.file_range?;
+        let start = address - section.address;
+        let len = len.min(file_size.saturating_sub(start));
+        let rest = self
+            .data
+            .get(usize::try_from(offset.checked_add(start)?).ok()?..)?;
+        Some(&rest[..rest.len().min(usize::try_from(len).unwrap_or(usize::MAX))])
     }
 
     /// The section that holds `address` when the program runs, as an index
     /// into [`Binary::sections`].
     pub fn section_at(&self, address: u64) -> Option<usize> {
-        self.sections.iter().position(|section| {
-            // `.tbss` only describes each thread's copy of its variables,
-            // so other sections share its addresses.
-            section.allocated
-                && section.kind != SectionKind::UninitializedTls
-                && section.contains(address)
-        })
+        self.sections
+            .iter()
+            .position(|section| section.in_memory() && section.contains(address))
     }
 
     /// The item whose bytes include `address`, as an index into
@@ -426,6 +486,13 @@ impl Section {
     /// Whether `address` falls inside the section.
     pub fn contains(&self, address: u64) -> bool {
         address >= self.address && address - self.address < self.size
+    }
+
+    /// Whether the section is in the program's memory at its addresses.
+    /// `.tbss` isn't: it only describes each thread's copy of its
+    /// variables, so other sections share its addresses.
+    fn in_memory(&self) -> bool {
+        self.allocated && self.kind != SectionKind::UninitializedTls
     }
 }
 
@@ -488,27 +555,82 @@ fn code_address(architecture: Architecture, address: u64) -> u64 {
     }
 }
 
-fn read_sections(file: &object::File) -> Vec<Section> {
+/// The number in `bytes`, a pointer of up to 8 bytes.
+fn word(bytes: &[u8], endianness: Endianness) -> u64 {
+    let mut word = [0; 8];
+    if endianness == Endianness::Big {
+        word[8 - bytes.len()..].copy_from_slice(bytes);
+        u64::from_be_bytes(word)
+    } else {
+        word[..bytes.len()].copy_from_slice(bytes);
+        u64::from_le_bytes(word)
+    }
+}
+
+/// The file's sections. An allocated section, whose addresses and bytes
+/// elfq reads, is ignored if it would run past the last address, which only
+/// a damaged header can make it do, and read as far as the file goes if it
+/// runs past the end of the file, each with a warning.
+fn read_sections(file: &object::File, file_size: u64, warnings: &mut Vec<String>) -> Vec<Section> {
     let mut sections = Vec::new();
     for section in file.sections() {
         let index = section.index().0;
         if sections.len() <= index {
             sections.resize_with(index + 1, null_section);
         }
+        let name = String::from_utf8_lossy(section.name_bytes().unwrap_or_default()).into_owned();
+        // A section without a name is shown by its number, as readelf does.
+        let shown = if name.is_empty() {
+            format!("[{index}]")
+        } else {
+            name.clone()
+        };
         let allocated = match section.flags() {
             SectionFlags::Elf { sh_flags, .. } => sh_flags.contains(object::elf::SHF_ALLOC),
             _ => false,
         };
+        let mut size = section.size();
+        if allocated {
+            let Some(fitting) = fitting_size(section.address(), size) else {
+                warnings.push(format!(
+                    "ignoring section {shown}: it runs past the last address"
+                ));
+                sections[index] = Section {
+                    name,
+                    ..null_section()
+                };
+                continue;
+            };
+            size = fitting;
+        }
+        let file_range = section.file_range();
+        let past_the_end = file_range.is_some_and(|(offset, size)| {
+            size > 0 && offset.checked_add(size).is_none_or(|end| end > file_size)
+        });
+        if allocated && past_the_end {
+            warnings.push(format!("section {shown} runs past the end of the file"));
+        }
         sections[index] = Section {
-            name: String::from_utf8_lossy(section.name_bytes().unwrap_or_default()).into_owned(),
+            name,
             address: section.address(),
-            size: section.size(),
+            size,
             kind: section.kind(),
             allocated,
-            file_range: section.file_range(),
+            file_range,
         };
     }
     sections
+}
+
+/// `size`, for something that starts at `address`, made to fit: one byte
+/// less when it ends at the very last address, so that its end,
+/// `address + size`, fits in a `u64`. `None` when it would end past the
+/// last address, which only a damaged header can make it do.
+fn fitting_size(address: u64, size: u64) -> Option<u64> {
+    if size > 0 && address.checked_add(size - 1).is_none() {
+        return None;
+    }
+    Some(size.min(u64::MAX - address))
 }
 
 fn null_section() -> Section {
@@ -578,6 +700,10 @@ fn add_unwind_items(items: &mut Vec<Item>, ranges: &[(u64, u64)], sections: &[Se
         if start == 0 || length == 0 {
             continue;
         }
+        // A range that would end past the last address is damaged.
+        let Some(length) = fitting_size(start, length) else {
+            continue;
+        };
         let before = known.partition_point(|&(address, _, _)| address <= start);
         if let Some(&(address, size, index)) = before.checked_sub(1).map(|i| &known[i]) {
             if address == start {
@@ -610,10 +736,9 @@ fn add_unwind_items(items: &mut Vec<Item>, ranges: &[(u64, u64)], sections: &[Se
 /// Adds the entry point as a function when nothing else covers it, as in
 /// stripped firmware.
 fn add_entry_item(items: &mut Vec<Item>, entry: u64, sections: &[Section]) {
-    let covered = items.iter().any(|item| {
-        item.kind == ItemKind::Function
-            && (item.address == entry || (item.address < entry && entry < item.address + item.size))
-    });
+    let covered = items
+        .iter()
+        .any(|item| item.kind == ItemKind::Function && item.contains(entry));
     if covered {
         return;
     }
@@ -688,11 +813,12 @@ mod tests {
             function("unsized", 0x1100, 0),
         ];
         let ranges = [
-            (0x1000, 0x30), // same start as a symbol: the symbol's size wins
-            (0x1010, 0x08), // inside a symbol, such as a split-off cold part
-            (0x1100, 0x40), // the symbol has no size: take the table's
-            (0x1200, 0x10), // no symbol at all: a new, unnamed function
-            (0x9000, 0x10), // outside any code section: ignored
+            (0x1000, 0x30),     // same start as a symbol: the symbol's size wins
+            (0x1010, 0x08),     // inside a symbol, such as a split-off cold part
+            (0x1100, 0x40),     // the symbol has no size: take the table's
+            (0x1200, 0x10),     // no symbol at all: a new, unnamed function
+            (0x9000, 0x10),     // outside any code section: ignored
+            (0x1300, u64::MAX), // would end past the last address: ignored
         ];
         add_unwind_items(&mut items, &ranges, &sections);
         let found: Vec<(&str, u64, u64, Source)> = items

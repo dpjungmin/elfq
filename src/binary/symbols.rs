@@ -66,18 +66,24 @@ fn candidate(
     if !sections.get(index.0)?.allocated {
         return None;
     }
+    let address = match kind {
+        ItemKind::Function => code_address(file.architecture(), symbol.address()),
+        ItemKind::Data => symbol.address(),
+    };
+    // A size that would end the symbol past the last address is damaged,
+    // and so unknown: a function then gets its size later, from the unwind
+    // table or an estimate, as one without a size does, and a data object
+    // without a size is dropped below, and becomes unnamed data where
+    // something refers to it.
+    let size = super::fitting_size(address, symbol.size()).unwrap_or(0);
     // Zero-size data symbols mark positions, like `_edata`; they hold nothing.
-    if kind == ItemKind::Data && symbol.size() == 0 {
+    if kind == ItemKind::Data && size == 0 {
         return None;
     }
     let symbol_name = String::from_utf8_lossy(symbol.name_bytes().ok()?).into_owned();
     if symbol_name.is_empty() {
         return None;
     }
-    let address = match kind {
-        ItemKind::Function => code_address(file.architecture(), symbol.address()),
-        ItemKind::Data => symbol.address(),
-    };
     let binding = if symbol.is_weak() {
         Binding::Weak
     } else if symbol.is_global() {
@@ -90,7 +96,7 @@ fn candidate(
         symbol: symbol_name,
         kind,
         address,
-        size: symbol.size(),
+        size,
         section: index.0,
         binding,
         source,

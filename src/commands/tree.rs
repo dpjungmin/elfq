@@ -80,20 +80,14 @@ impl<'a> RetainedTree<'a> {
     /// The bytes of the file that sizes count: all of them, or those in
     /// the range.
     pub fn bytes(&self) -> u64 {
-        (0..self.binary.items.len())
-            .map(|index| self.own(index))
-            .sum()
+        super::total((0..self.binary.items.len()).map(|index| self.own(index)))
     }
 
     /// The bytes that the items where the program starts keep, and so
     /// everything reachable: all the bytes that sizes count, but those of
     /// items that nothing reaches.
     pub fn kept(&self) -> u64 {
-        self.tree
-            .top()
-            .iter()
-            .map(|&node| self.tree.retained(node))
-            .sum()
+        super::total(self.tree.top().iter().map(|&node| self.tree.retained(node)))
     }
 
     /// The item's own bytes that sizes count: all of them, or those in the
@@ -229,7 +223,7 @@ impl<'a> RetainedTree<'a> {
         if hidden.is_empty() {
             return None;
         }
-        let bytes: u64 = hidden.iter().map(|&index| self.retained(index)).sum();
+        let bytes = super::total(hidden.iter().map(|&index| self.retained(index)));
         let items: usize = hidden.iter().map(|&index| 1 + self.kept_items(index)).sum();
         let cells = vec![bytes.to_string(), String::new()];
         Some(TreeRow::new(cells, format!("{items} more"), Vec::new()))

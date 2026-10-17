@@ -23,6 +23,7 @@ fn names_addresses_and_imports() {
     assert_eq!(found(&binary, "process_frame"), "process_frame");
     assert_eq!(found(&binary, "0x1700"), "process_frame");
     assert_eq!(found(&binary, "0x1705"), "process_frame");
+    assert_eq!(found(&binary, "0X1705"), "process_frame");
     // An imported function means its stub, which is what code calls.
     assert_eq!(found(&binary, "write"), "write@plt");
     assert_eq!(found(&binary, "__libc_start_main"), "__libc_start_main");
