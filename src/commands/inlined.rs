@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::Write;
 use std::path::Path;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use serde::Serialize;
 
 use super::json;
@@ -35,7 +35,8 @@ pub fn run(
             path.display()
         );
     }
-    let copies = debuginfo::inlined_copies(binary)?;
+    let copies = debuginfo::inlined_copies(binary)
+        .with_context(|| format!("cannot read the DWARF debug info in {}", path.display()))?;
     match symbol {
         None => write_list(binary, &copies, all, format, out),
         Some(symbol) => write_tree(binary, &copies, symbol, all, format, out),

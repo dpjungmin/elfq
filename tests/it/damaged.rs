@@ -503,6 +503,19 @@ fn dwarf_that_nests_deeply_is_read() {
 }
 
 #[test]
+fn dwarf_that_cant_be_read_says_so() {
+    let mut data = sample("c-x86_64.elf");
+    set_section_field(&mut data, ".debug_info", SIZE, 0x10);
+    let path = save("short-dwarf.elf", &data);
+    let output = elfq(&[&path, "inlined"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert_output(
+        &String::from_utf8(output.stderr).unwrap(),
+        &format!("error: cannot read the DWARF debug info in {path}: unexpected end of input\n"),
+    );
+}
+
+#[test]
 fn inlined_copies_that_nest_deeply_are_summed_up() {
     // Copies inlined into main, each into the one before, 100,000 deep:
     // all but the first few are summed up in one row.
