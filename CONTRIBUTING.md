@@ -33,6 +33,29 @@ Most tests in `tests/it/cli.rs` check a command's whole output with
 that fails shows the first line that differs, then the new output in full,
 ready to paste into the test once you have checked it.
 
+## Checking performance
+
+The samples are too small to show how fast elfq is. Before changing how it
+loads a file, builds the graph, looks up a SYMBOL or groups rows, build a
+release binary of `main` and of your branch, and run both on large files
+such as these:
+
+- a big Rust program, such as `cargo` (40 MB), for the overview and
+  SYMBOL lookups;
+- a big shared library, such as `libLLVM.so` (120 MB, in
+  `/usr/lib/llvm-*/lib`), for `debug items`, which lists hundreds of
+  thousands of items;
+- a big Go program, such as `docker` (45 MB), for `callers` of a range,
+  such as `callers 0x400000+1M`;
+- a program of 200 MB, such as `pandoc`, for peak memory;
+- `target/debug/elfq`, a 45 MB file that is mostly DWARF, for `inlined`;
+- stripped Cortex-M firmware, for finding functions without symbols.
+
+Compare the time, the peak memory (`/usr/bin/time -v` on Linux, `-l` on
+macOS) and the output, which should not change unless you mean it to. When
+you fix a file that took far too long, a test in `tests/it/damaged.rs`
+that uses `parse_quickly` keeps it fixed.
+
 ## Where things live
 
 [docs/design.md](docs/design.md) explains how elfq works and why. In short:
