@@ -350,6 +350,8 @@ than through a general disassembler's API.
   plus the linker's veneers on Cortex-M7.
 - **Snapshot tests** pin the human-readable output so format changes are
   reviewed on purpose.
+- **The `$ elfq` examples in this document** are run by a test, which
+  fails when elfq prints something else.
 - **CI** runs the checks that [CONTRIBUTING.md](../CONTRIBUTING.md) lists,
   and checks that elfq builds with Rust 1.88, the oldest version it
   supports. The sample binaries are committed, so CI needs no cross

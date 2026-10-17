@@ -3,6 +3,7 @@
 //! binaries in testdata/bin, except `support`, which holds what they share.
 
 mod cli;
+mod docs;
 mod graph;
 mod inlined;
 mod items;
