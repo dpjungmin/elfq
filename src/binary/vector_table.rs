@@ -49,27 +49,24 @@ pub(super) fn find(binary: &Binary) -> Option<VectorTable> {
         if section.kind == SectionKind::Text {
             end = end.min(first + size);
         }
-        let mut slot = first;
-        while slot + size <= end {
-            if binary.pointer_at(slot) == Some(binary.entry | 1) {
-                return Some((section, slot));
-            }
-            slot += size;
-        }
-        None
+        let (slot, _) = binary
+            .words(first, end)
+            .find(|&(_, value)| value == binary.entry | 1)?;
+        Some((section, slot))
     })?;
 
     let address = reset - size;
     let section_end = section.address + section.size;
     let mut handlers = Vec::new();
-    let mut slot = reset;
-    let mut end = slot;
-    while slot + size <= section_end {
-        let Some(value) = binary.pointer_at(slot) else {
+    let mut end = reset;
+    let mut next = reset;
+    for (slot, value) in binary.words(reset, section_end) {
+        // The table ends at the first entry the file holds no bytes for.
+        if slot != next {
             break;
-        };
+        }
+        next = slot + size;
         let index = (slot - address) / size;
-        slot += size;
         if value & 1 == 1 && code_section(&binary.sections, value & !1).is_some() {
             handlers.push(value & !1);
         } else if value != 0 {
@@ -78,7 +75,7 @@ pub(super) fn find(binary: &Binary) -> Option<VectorTable> {
             }
             break;
         }
-        end = slot;
+        end = slot + size;
     }
     Some(VectorTable {
         address,

@@ -75,15 +75,15 @@ pub(super) fn find(binary: &Binary) -> Vec<Root> {
             add(items_in_section(binary, index), RootKind::InSection(index));
         }
         if STARTUP_ARRAYS.contains(&name) {
-            let end = section.address + section.size;
-            let mut slot = section.address;
-            while slot + binary.pointer_size <= end {
-                add(
-                    stored_pointer(binary, slot).into_iter().collect(),
-                    RootKind::ListedIn(index),
-                );
-                slot += binary.pointer_size;
-            }
+            // From the array's first byte, aligned or not, as the program
+            // reads it.
+            let slots = binary.words(section.address, section.address + section.size);
+            add(
+                slots
+                    .filter_map(|(slot, value)| stored_pointer(binary, slot, value))
+                    .collect(),
+                RootKind::ListedIn(index),
+            );
         }
     }
     // PLT headers are named after their section; the stubs after imports.
@@ -117,15 +117,16 @@ fn items_in_section(binary: &Binary, section: usize) -> Vec<Node> {
 }
 
 /// What the pointer stored at `slot` points to: the dynamic relocation
-/// says, or in a file linked to run at one address, the pointer itself.
-fn stored_pointer(binary: &Binary, slot: u64) -> Option<Node> {
+/// says, or in a file linked to run at one address, the `value` the file
+/// holds there.
+fn stored_pointer(binary: &Binary, slot: u64, value: u64) -> Option<Node> {
     if let Some(node) = pointer_target(binary, slot) {
         return Some(node);
     }
     if binary.kind != FileKind::Executable {
         return None;
     }
-    item_starting_at(binary, binary.pointer_at(slot)?).map(Node::Item)
+    item_starting_at(binary, value).map(Node::Item)
 }
 
 /// The items holding the Cortex-M vector table, and the handlers it lists.

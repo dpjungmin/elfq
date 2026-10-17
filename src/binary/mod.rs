@@ -335,40 +335,98 @@ impl Binary {
     /// of them. `.bss`, for example, takes no space in the file.
     pub fn bytes(&self, address: u64, size: u64) -> Option<&[u8]> {
         let section = &self.sections[self.section_at(address)?];
-        let (offset, file_size) = section.file_range?;
-        let start = address - section.address;
-        let end = start.checked_add(size)?;
-        if end > file_size {
-            return None;
-        }
-        self.data
-            .get(usize::try_from(offset + start).ok()?..usize::try_from(offset + end).ok()?)
+        let bytes = self.section_bytes(section, address, size)?;
+        (bytes.len() as u64 == size).then_some(bytes)
     }
 
     /// The pointer stored at `address`, as the file holds it before the
     /// program runs.
     pub fn pointer_at(&self, address: u64) -> Option<u64> {
         let bytes = self.bytes(address, self.pointer_size)?;
-        let mut word = [0; 8];
-        if self.endianness == Endianness::Big {
-            word[8 - bytes.len()..].copy_from_slice(bytes);
-            Some(u64::from_be_bytes(word))
-        } else {
-            word[..bytes.len()].copy_from_slice(bytes);
-            Some(u64::from_le_bytes(word))
+        Some(word(bytes, self.endianness))
+    }
+
+    /// The pointer-sized words stored one after another from `start` up to
+    /// `end`, as `(address, value)`: each one [`Binary::pointer_at`] reads,
+    /// from the section that holds it. Words whose bytes the file doesn't
+    /// hold are left out, so `.bss`, which takes no space in the file, has
+    /// none, however large it is.
+    pub fn words(&self, start: u64, end: u64) -> impl Iterator<Item = (u64, u64)> + '_ {
+        let size = self.pointer_size;
+        let mut next = Some(start);
+        // A run of words at a time, all from one section: they are read in
+        // one go, and a stretch the file holds no bytes for is skipped in
+        // one step.
+        let runs = std::iter::from_fn(move || {
+            let slot = next.filter(|&slot| slot < end)?;
+            let (stop, bytes) = self.run(slot, end);
+            let count = (stop - slot).div_ceil(size);
+            next = count
+                .checked_mul(size)
+                .and_then(|length| slot.checked_add(length));
+            let words = bytes.chunks_exact(size as usize).take(count as usize);
+            Some((slot..stop).step_by(size as usize).zip(words))
+        });
+        runs.flatten()
+            .map(|(address, bytes)| (address, word(bytes, self.endianness)))
+    }
+
+    /// The words that [`Binary::words`] reads, but only at addresses that
+    /// are multiples of their size, where compilers put pointers in data.
+    pub fn aligned_words(&self, start: u64, end: u64) -> impl Iterator<Item = (u64, u64)> + '_ {
+        let first = start.checked_next_multiple_of(self.pointer_size);
+        self.words(first.unwrap_or(end), end)
+    }
+
+    /// Where the words from `slot` up to `end` stop coming from the section
+    /// that holds `slot`, and the bytes the file holds for them: none when
+    /// no section holds `slot`, or the file holds none of its bytes.
+    fn run(&self, slot: u64, end: u64) -> (u64, &[u8]) {
+        // Sections can overlap, as GNU ld's OVERLAY makes them, and the
+        // first that holds an address is the one that counts, so the run
+        // ends where any other one starts too.
+        let next_start = self
+            .sections
+            .iter()
+            .filter(|section| section.in_memory() && section.address > slot)
+            .map(|section| section.address)
+            .min();
+        let stop = next_start.map_or(end, |next_start| next_start.min(end));
+        match self.section_at(slot) {
+            Some(index) => {
+                let section = &self.sections[index];
+                // A damaged header can give a section an end past the
+                // last address.
+                let stop = stop.min(section.address.saturating_add(section.size));
+                (
+                    stop,
+                    self.section_bytes(section, slot, end - slot)
+                        .unwrap_or_default(),
+                )
+            }
+            None => (stop, &[]),
         }
+    }
+
+    /// Up to `len` of the bytes the file holds for `section` from
+    /// `address`, which the section holds: fewer when the section's bytes,
+    /// or the file itself, end first.
+    fn section_bytes(&self, section: &Section, address: u64, len: u64) -> Option<&[u8]> {
+        let (offset, file_size) = section.file_range?;
+        let start = address - section.address;
+        let len = len.min(file_size.saturating_sub(start));
+        let rest = self
+            .data
+            .get(usize::try_from(offset.checked_add(start)?).ok()?..)?;
+        Some(&rest[..rest.len().min(usize::try_from(len).unwrap_or(usize::MAX))])
     }
 
     /// The section that holds `address` when the program runs, as an index
     /// into [`Binary::sections`].
     pub fn section_at(&self, address: u64) -> Option<usize> {
-        self.sections.iter().position(|section| {
-            // `.tbss` only describes each thread's copy of its variables,
-            // so other sections share its addresses.
-            section.allocated
-                && section.kind != SectionKind::UninitializedTls
-                && section.contains(address)
-        })
+        self.sections
+            .iter()
+            .position(|section| section.in_memory() && section.contains(address))
     }
 
     /// The item whose bytes include `address`, as an index into
@@ -426,6 +484,13 @@ impl Section {
     /// Whether `address` falls inside the section.
     pub fn contains(&self, address: u64) -> bool {
         address >= self.address && address - self.address < self.size
+    }
+
+    /// Whether the section is in the program's memory at its addresses.
+    /// `.tbss` isn't: it only describes each thread's copy of its
+    /// variables, so other sections share its addresses.
+    fn in_memory(&self) -> bool {
+        self.allocated && self.kind != SectionKind::UninitializedTls
     }
 }
 
@@ -485,6 +550,18 @@ fn code_address(architecture: Architecture, address: u64) -> u64 {
         address & !1
     } else {
         address
+    }
+}
+
+/// The number in `bytes`, a pointer of up to 8 bytes.
+fn word(bytes: &[u8], endianness: Endianness) -> u64 {
+    let mut word = [0; 8];
+    if endianness == Endianness::Big {
+        word[8 - bytes.len()..].copy_from_slice(bytes);
+        u64::from_be_bytes(word)
+    } else {
+        word[..bytes.len()].copy_from_slice(bytes);
+        u64::from_le_bytes(word)
     }
 }
 

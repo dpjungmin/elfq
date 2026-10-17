@@ -266,19 +266,12 @@ fn stored_addresses(binary: &Binary) -> BTreeSet<u64> {
 /// The Thumb code addresses stored from `start` to `end`, word by word,
 /// without their Thumb bit.
 fn thumb_addresses(binary: &Binary, start: u64, end: u64) -> Vec<u64> {
-    let size = binary.pointer_size;
-    let mut addresses = Vec::new();
-    let mut slot = start.next_multiple_of(size);
-    while slot + size <= end {
-        if let Some(value) = binary.pointer_at(slot)
-            && value & 1 == 1
-            && code_section(&binary.sections, value & !1).is_some()
-        {
-            addresses.push(value & !1);
-        }
-        slot += size;
-    }
-    addresses
+    binary
+        .aligned_words(start, end)
+        .filter(|&(_, value)| value & 1 == 1)
+        .map(|(_, value)| value & !1)
+        .filter(|&address| code_section(&binary.sections, address).is_some())
+        .collect()
 }
 
 /// Where the code in `section` starts: after the vector table, when a

@@ -275,17 +275,13 @@ impl Graph {
     /// requiring the exact start of an item keeps it rarer.
     fn add_pointers_in_data(&mut self, binary: &Binary, from: usize) {
         let item = &binary.items[from];
-        let size = binary.pointer_size;
-        // Pointers are aligned to their size.
-        let mut site = item.address.next_multiple_of(size);
-        while site + size <= item.address + item.size {
-            if let Some(value) = binary.pointer_at(site)
-                && let Some(to) = item_starting_at(binary, value)
+        let words = binary.aligned_words(item.address, item.address + item.size);
+        for (site, value) in words {
+            if let Some(to) = item_starting_at(binary, value)
                 && to != from
             {
                 self.add(from, Node::Item(to), ReferenceKind::Pointer, site);
             }
-            site += size;
         }
     }
 
