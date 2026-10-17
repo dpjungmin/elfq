@@ -215,8 +215,8 @@ pub struct UsesArgs {
     /// (process_frame for app::process_frame), or an address such as 0x1700.
     /// Or one or more ranges of memory, START..END or START+SIZE, to list
     /// only what crosses their edge
-    // Not required here: commands::run says what is missing, and with
-    // --range, to give the range here instead.
+    // Not required here: commands::check_arguments says what is missing,
+    // and with --range, to give the range here instead.
     #[arg(value_name = "SYMBOL|RANGE")]
     pub symbols: Vec<String>,
 }

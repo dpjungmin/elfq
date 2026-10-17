@@ -1304,6 +1304,33 @@ fn ranges_in_place_of_symbol_must_be_ranges_with_something_in_them() {
 }
 
 #[test]
+fn arguments_that_dont_go_together_are_refused_before_the_file_is_read() {
+    // So that a mistake costs no time on a large file. This file doesn't
+    // exist.
+    for (args, error) in [
+        (
+            &["missing.elf", "why", "main", "--range", "0+1K"][..],
+            "error: --range limits sizes, so only the overview, top and retained take it\n",
+        ),
+        (
+            &["missing.elf", "callees", "--range", "0+1K"],
+            "error: callees takes ranges in place of SYMBOL, not with --range: \
+             elfq missing.elf callees 0x00000000..0x00000400\n",
+        ),
+        (
+            &["missing.elf", "callers"],
+            "error: callers needs a SYMBOL, or ranges such as 0x0+256K\n",
+        ),
+        (
+            &["missing.elf", "debug", "items", "--json"],
+            "error: the debug commands print only text\n",
+        ),
+    ] {
+        assert_output(&stderr(args, 2), error);
+    }
+}
+
+#[test]
 fn debug_items_lists_each_item() {
     let output = stdout(&[SAMPLE, "debug", "items"]);
     let line = output
