@@ -5,6 +5,7 @@
 //! works without DWARF.
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 
 use anyhow::{Context, Result};
 use gimli::{AttributeValue, DebuggingInformationEntry, EndianSlice, RunTimeEndian, Unit};
@@ -64,6 +65,7 @@ pub fn inlined_copies(binary: &Binary) -> Result<Vec<InlinedCopy>> {
         dwarf: &dwarf,
         units: &units,
         copies: Vec::new(),
+        names: HashMap::new(),
     };
     for unit in &units {
         walk.unit(unit)?;
@@ -83,6 +85,10 @@ struct Walk<'a, 'd> {
     dwarf: &'a gimli::Dwarf<Reader<'d>>,
     units: &'a [Unit<Reader<'d>>],
     copies: Vec<InlinedCopy>,
+    /// The names found for the entries that copies take their names from,
+    /// by where those entries are in `.debug_info`: thousands of copies of
+    /// one function share an entry.
+    names: HashMap<usize, Option<String>>,
 }
 
 impl<'a, 'd> Walk<'a, 'd> {
@@ -127,7 +133,7 @@ impl<'a, 'd> Walk<'a, 'd> {
     /// its code isn't in the file: the linker drops unused functions but
     /// leaves their DWARF.
     fn copy(
-        &self,
+        &mut self,
         unit: &'a Unit<Reader<'d>>,
         entry: &DebuggingInformationEntry<Reader<'d>>,
         parent: Option<usize>,
@@ -156,9 +162,18 @@ impl<'a, 'd> Walk<'a, 'd> {
         let Some(into) = start.and_then(|start| self.binary.item_at(start)) else {
             return Ok(None);
         };
-        let name = self
-            .name(unit, entry)?
-            .unwrap_or_else(|| "(unnamed)".to_string());
+        let name = match self.origin(unit, entry) {
+            Some(origin) => match self.names.get(&origin) {
+                Some(name) => name.clone(),
+                None => {
+                    let name = self.name(unit, entry)?;
+                    self.names.insert(origin, name.clone());
+                    name
+                }
+            },
+            None => self.name(unit, entry)?,
+        };
+        let name = name.unwrap_or_else(|| "(unnamed)".to_string());
         Ok(Some(InlinedCopy {
             name,
             into,
@@ -211,6 +226,39 @@ impl<'a, 'd> Walk<'a, 'd> {
             entry = next_entry;
         }
         Ok(None)
+    }
+
+    /// Where in `.debug_info` the entry is that a copy takes its name from,
+    /// when the copy has no name of its own: [`Walk::name`] then gives the
+    /// same name for every copy that links to that entry.
+    fn origin(
+        &self,
+        unit: &Unit<Reader<'d>>,
+        entry: &DebuggingInformationEntry<Reader<'d>>,
+    ) -> Option<usize> {
+        let names = [
+            gimli::DW_AT_linkage_name,
+            gimli::DW_AT_MIPS_linkage_name,
+            gimli::DW_AT_name,
+        ];
+        if names.iter().any(|&name| entry.attr_value(name).is_some()) {
+            return None;
+        }
+        match entry.attr_value(gimli::DW_AT_abstract_origin)? {
+            AttributeValue::UnitRef(offset) => {
+                // gimli adds the unit's offset without a check, so an
+                // offset outside the unit, in damaged debug info, could
+                // come out as another entry's.
+                if !offset.is_in_bounds(&unit.header) {
+                    return None;
+                }
+                offset
+                    .to_debug_info_offset(&unit.header)
+                    .map(|offset| offset.0)
+            }
+            AttributeValue::DebugInfoRef(offset) => Some(offset.0),
+            _ => None,
+        }
     }
 
     /// The entry that a reference attribute points to, and its unit.

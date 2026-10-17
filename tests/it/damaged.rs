@@ -92,8 +92,8 @@ fn parse(data: &[u8]) -> (Binary, Graph) {
     (binary, graph)
 }
 
-/// [`parse`], failing after 10 seconds: reading a huge section one word at
-/// a time took minutes in a debug build, with the same answer in the end.
+/// [`parse`], failing after 10 seconds, for files that once took minutes in
+/// a debug build, such as a huge section read one word at a time.
 fn parse_quickly(data: Vec<u8>) -> (Binary, Graph) {
     let (send, receive) = mpsc::channel();
     std::thread::spawn(move || {
@@ -549,30 +549,47 @@ fn inlined_copies_that_nest_deeply_are_summed_up() {
     assert!(stdout.contains("└─ 99970 more\n"), "{stdout}");
 }
 
-#[test]
-fn a_long_chain_of_calls_is_read() {
-    // Thumb functions that each call the next, 10,000 of them, in place of
-    // `.text`. The retained tree is as deep as the chain: deeper than the
-    // main thread's stack holds in a debug build.
-    let count = 10_000;
-    let mut code: Vec<u16> = Vec::new();
+/// Stripped firmware whose code is `count` Thumb functions, in place of
+/// `.text`, that each call the one before. It starts at the last. The first
+/// function takes 2 bytes and the others 8, since elfq leaves out the
+/// padding after the first.
+fn chain_of_calls(count: usize) -> Vec<u8> {
+    // bx lr, then three nops as padding.
+    let mut code: Vec<u16> = vec![0x4770, 0xbf00, 0xbf00, 0xbf00];
     for _ in 1..count {
-        // push {lr}; bl to the next function; pop {pc}
-        code.extend([0xb500, 0xf000, 0xf801, 0xbd00]);
+        // push {lr}; bl to the function before; pop {pc}
+        code.extend([0xb500, 0xf7ff, 0xfff9, 0xbd00]);
     }
-    // bx lr, then three nops as padding, which elfq leaves out: the last
-    // function takes 2 bytes, so the functions take 9,999 × 8 + 2.
-    code.extend([0x4770, 0xbf00, 0xbf00, 0xbf00]);
     let code: Vec<u8> = code.iter().flat_map(|half| half.to_le_bytes()).collect();
 
     let mut data = sample("c-cortex-m4-stripped.elf");
     let address = 0x0810_0000;
     replace_section(&mut data, ".text", &code);
     set_section_field(&mut data, ".text", ADDRESS, address);
-    // `e_entry`, in the file's header: the first function, as Thumb code.
-    write(&mut data, 0x18, 4, address | 1);
+    // `e_entry`, in the file's header: the last function, as Thumb code.
+    let last = address + 8 * (count as u64 - 1);
+    write(&mut data, 0x18, 4, last | 1);
+    data
+}
+
+#[test]
+fn a_long_chain_of_calls_is_read() {
+    // The retained tree is as deep as the chain: deeper than the main
+    // thread's stack holds in a debug build.
+    let data = chain_of_calls(10_000);
     let (stdout, _) = run("long-chain.elf", &data, &[]);
     let total = stdout.lines().nth(1).unwrap();
     assert_eq!(total, "10000 functions, 79994 bytes of code and data");
     run("long-chain.elf", &data, &["top", "--all"]);
+}
+
+#[test]
+fn the_functions_of_a_long_chain_are_found_quickly() {
+    // A function is found only by scanning the one after it, so there is a
+    // round per function. Looking at every function again each round took
+    // 20 seconds for 20,000 of them in a release build, and looking through
+    // every item for each function 12 seconds for 100,000.
+    let (binary, _) = parse_quickly(chain_of_calls(100_000));
+    let functions = binary.items.iter().filter(|item| item.size == 8).count();
+    assert_eq!(functions, 99_999);
 }

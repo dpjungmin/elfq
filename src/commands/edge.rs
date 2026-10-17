@@ -2,6 +2,7 @@
 //! crosses the edge of some ranges of memory, such as code in ITCM that
 //! calls a function in flash.
 
+use std::collections::HashMap;
 use std::io::Write;
 
 use anyhow::{Result, bail};
@@ -361,35 +362,36 @@ fn groups(
     how: impl Fn(&Crossing) -> &'static str,
 ) -> Vec<Group> {
     let mut groups: Vec<Group> = Vec::new();
+    // Where each group is in `groups`, and each row in its group's rows,
+    // since a large range has thousands.
+    let mut group_index: HashMap<Node, usize> = HashMap::new();
+    let mut row_index: HashMap<(Node, Node, &'static str, Option<usize>), usize> = HashMap::new();
     for crossing in crossings {
         let (outside, inside) = match direction {
             Direction::Out => (crossing.to, Node::Item(crossing.from)),
             Direction::In => (Node::Item(crossing.from), crossing.to),
         };
         let how = how(crossing);
-        let group = match groups.iter().position(|group| group.outside == outside) {
-            Some(index) => &mut groups[index],
-            None => {
-                groups.push(Group {
-                    outside,
-                    rows: Vec::new(),
+        let group = *group_index.entry(outside).or_insert_with(|| {
+            groups.push(Group {
+                outside,
+                rows: Vec::new(),
+            });
+            groups.len() - 1
+        });
+        let rows = &mut groups[group].rows;
+        let row = *row_index
+            .entry((outside, inside, how, crossing.veneer))
+            .or_insert_with(|| {
+                rows.push(CrossingRow {
+                    inside,
+                    how,
+                    veneer: crossing.veneer,
+                    sites: Vec::new(),
                 });
-                groups.last_mut().unwrap()
-            }
-        };
-        match group
-            .rows
-            .iter_mut()
-            .find(|row| (row.inside, row.how, row.veneer) == (inside, how, crossing.veneer))
-        {
-            Some(row) => row.sites.push(crossing.site),
-            None => group.rows.push(CrossingRow {
-                inside,
-                how,
-                veneer: crossing.veneer,
-                sites: vec![crossing.site],
-            }),
-        }
+                rows.len() - 1
+            });
+        rows[row].sites.push(crossing.site);
     }
     let size = |node: Node| match node {
         Node::Item(index) => binary.items[index].size,
@@ -452,15 +454,15 @@ fn write_groups(binary: &Binary, groups: &[Group], table: &mut Table) {
 /// call and target, with their sites.
 fn group_unfollowed(unfollowed: &[Unresolved]) -> Vec<(Unresolved, Vec<u64>)> {
     let mut groups: Vec<(Unresolved, Vec<u64>)> = Vec::new();
+    // Where each group is in `groups`.
+    let mut index: HashMap<(usize, bool, Option<u64>), usize> = HashMap::new();
     for unresolved in unfollowed {
-        let key = |u: &Unresolved| (u.from, u.is_call, u.target);
-        match groups
-            .iter_mut()
-            .find(|(first, _)| key(first) == key(unresolved))
-        {
-            Some((_, sites)) => sites.push(unresolved.site),
-            None => groups.push((*unresolved, vec![unresolved.site])),
-        }
+        let key = (unresolved.from, unresolved.is_call, unresolved.target);
+        let group = *index.entry(key).or_insert_with(|| {
+            groups.push((*unresolved, Vec::new()));
+            groups.len() - 1
+        });
+        groups[group].1.push(unresolved.site);
     }
     groups
 }

@@ -14,6 +14,7 @@ mod top;
 mod tree;
 mod why;
 
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 
 use anyhow::{Result, bail};
@@ -284,33 +285,31 @@ fn rows<'a>(
     how: impl Fn(&Reference) -> &'static str,
 ) -> Vec<Row> {
     let mut rows: Vec<Row> = Vec::new();
+    // Where each row is in `rows`, since a function can have thousands.
+    let mut index: HashMap<(Node, &'static str), usize> = HashMap::new();
     for reference in references {
         let node = other_end(reference);
         let how = how(reference);
-        match rows
-            .iter_mut()
-            .find(|row| row.node == node && row.how == how)
-        {
-            Some(row) => row.sites.push(reference.site),
-            None => rows.push(Row {
+        let row = *index.entry((node, how)).or_insert_with(|| {
+            rows.push(Row {
                 node,
                 how,
-                sites: vec![reference.site],
-            }),
-        }
+                sites: Vec::new(),
+            });
+            rows.len() - 1
+        });
+        rows[row].sites.push(reference.site);
     }
     rows
 }
 
 /// The distinct nodes in `rows`, in order.
 fn distinct_nodes(rows: &[Row]) -> Vec<Node> {
-    let mut nodes: Vec<Node> = Vec::new();
-    for row in rows {
-        if !nodes.contains(&row.node) {
-            nodes.push(row.node);
-        }
-    }
-    nodes
+    let mut seen = HashSet::new();
+    rows.iter()
+        .map(|row| row.node)
+        .filter(|&node| seen.insert(node))
+        .collect()
 }
 
 /// How a reference of `kind` uses `to`, for the HOW column. Code that
