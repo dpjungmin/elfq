@@ -328,6 +328,14 @@ Rules that keep it approachable:
   `commands/`, and tests that run it on `testdata/bin`.
 - **Library code returns errors, it does not exit or panic** on bad input;
   `main.rs` adds context and prints them.
+- **A damaged file is read as far as it makes sense.** As elfq loads a
+  file, it ignores an allocated section that would end past the last
+  address, with a warning, and reads a symbol whose size would take it
+  past the last address as if it had no size. One whose last byte is the
+  very last address is read one byte shorter. So the rest of the code can
+  add a size to an address without checking. Stored pointers are read only
+  where the file holds bytes, however large a section claims to be, and
+  sums of sizes stop at the largest number rather than overflow.
 
 ## Dependencies
 
@@ -352,6 +360,10 @@ than through a general disassembler's API.
   reviewed on purpose.
 - **The `$ elfq` examples in this document** are run by a test, which
   fails when elfq prints something else.
+- **Damaged and unusual files**, such as a section larger than the file or
+  DWARF nested a million deep, are made by the tests from the bytes of a
+  sample (`tests/it/damaged.rs`), so that the hangs and crashes they once
+  caused stay fixed.
 - **CI** runs the checks that [CONTRIBUTING.md](../CONTRIBUTING.md) lists,
   and checks that elfq builds with Rust 1.88, the oldest version it
   supports. The sample binaries are committed, so CI needs no cross
