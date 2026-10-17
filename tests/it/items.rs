@@ -5,12 +5,10 @@ use std::path::{Path, PathBuf};
 
 use elfq::binary::{Binary, Item, ItemKind, RelocationTarget, Source};
 
+use crate::support::load_sample;
+
 fn path(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(name)
-}
-
-fn load(name: &str) -> Binary {
-    Binary::load(&path(&format!("testdata/bin/{name}"))).unwrap()
 }
 
 /// The item that has `name` as its name or as an alias.
@@ -32,7 +30,7 @@ fn functions(binary: &Binary) -> Vec<&Item> {
 
 #[test]
 fn symbols_give_names_addresses_and_sizes() {
-    let binary = load("c-x86_64.elf");
+    let binary = load_sample("c-x86_64.elf");
     let function = item(&binary, "process_frame");
     assert_eq!(function.kind, ItemKind::Function);
     assert_eq!((function.address, function.size), (0x1700, 532));
@@ -45,8 +43,8 @@ fn symbols_give_names_addresses_and_sizes() {
 #[test]
 fn debug_info_does_not_change_the_items() {
     for sample in ["c-x86_64", "c-cortex-m4", "c-cortex-m7", "rust-cortex-m4"] {
-        let full = load(&format!("{sample}.elf"));
-        let nodebug = load(&format!("{sample}-nodebug.elf"));
+        let full = load_sample(&format!("{sample}.elf"));
+        let nodebug = load_sample(&format!("{sample}-nodebug.elf"));
         assert_eq!(full.items, nodebug.items, "{sample}");
     }
 }
@@ -54,8 +52,8 @@ fn debug_info_does_not_change_the_items() {
 #[test]
 fn stripped_x86_64_files_get_functions_from_the_unwind_table() {
     for (sample, expected) in [("c-x86_64", 21), ("rust-x86_64", 531)] {
-        let named = load(&format!("{sample}-nodebug.elf"));
-        let stripped = load(&format!("{sample}-stripped.elf"));
+        let named = load_sample(&format!("{sample}-nodebug.elf"));
+        let stripped = load_sample(&format!("{sample}-stripped.elf"));
         let found: Vec<&Item> = functions(&stripped)
             .into_iter()
             .filter(|function| function.source == Source::EhFrame)
@@ -72,7 +70,7 @@ fn stripped_x86_64_files_get_functions_from_the_unwind_table() {
             );
         }
     }
-    let stripped = load("c-x86_64-stripped.elf");
+    let stripped = load_sample("c-x86_64-stripped.elf");
     let process_frame = item(&stripped, "fn_0x1700");
     assert_eq!(process_frame.size, 532);
 }
@@ -82,7 +80,7 @@ fn plt_stubs_are_named_after_the_imports_they_call() {
     // Both PLT layouts: GCC's, with `.plt.sec` and `.plt.got`, and lld's
     // single `.plt` (Rust).
     for sample in ["c-x86_64.elf", "c-x86_64-stripped.elf"] {
-        let binary = load(sample);
+        let binary = load_sample(sample);
         let stubs: Vec<(&str, u64, u64)> = binary
             .items
             .iter()
@@ -101,13 +99,13 @@ fn plt_stubs_are_named_after_the_imports_they_call() {
             "{sample}"
         );
     }
-    let binary = load("rust-x86_64-stripped.elf");
+    let binary = load_sample("rust-x86_64-stripped.elf");
     assert_eq!(item(&binary, "_Unwind_Resume@plt").address, 0x51cb0);
 }
 
 #[test]
 fn startup_and_exit_arrays_are_data_items() {
-    let binary = load("c-x86_64-stripped.elf");
+    let binary = load_sample("c-x86_64-stripped.elf");
     let init = item(&binary, ".init_array");
     assert_eq!(
         (init.kind, init.address, init.size),
@@ -118,7 +116,7 @@ fn startup_and_exit_arrays_are_data_items() {
 
 #[test]
 fn dynamic_relocations_give_stored_pointers_and_imports() {
-    let binary = load("c-x86_64.elf");
+    let binary = load_sample("c-x86_64.elf");
     // `.init_array` holds a pointer to `frame_dummy`.
     let relocation = binary.relocation_at(0x3d80).unwrap();
     assert_eq!(
@@ -157,8 +155,8 @@ fn stripped_firmware_functions_are_found_by_following_the_code() {
         ("c-cortex-m7", 29),
         ("rust-cortex-m4", 34),
     ] {
-        let named = load(&format!("{sample}-nodebug.elf"));
-        let stripped = load(&format!("{sample}-stripped.elf"));
+        let named = load_sample(&format!("{sample}-nodebug.elf"));
+        let stripped = load_sample(&format!("{sample}-stripped.elf"));
         assert_eq!(functions(&stripped).len(), found, "{sample}");
         for function in functions(&stripped) {
             let twin = functions(&named)
@@ -173,7 +171,7 @@ fn stripped_firmware_functions_are_found_by_following_the_code() {
             }
         }
     }
-    let binary = load("c-cortex-m4-stripped.elf");
+    let binary = load_sample("c-cortex-m4-stripped.elf");
     let entry = item(&binary, "entry");
     assert_eq!((entry.address, entry.size), (0x0800_05a0, 76));
     assert_eq!(entry.source, Source::EntryPoint);
@@ -189,8 +187,8 @@ fn the_vector_table_is_found_by_its_shape() {
         ("c-cortex-m7", 0x3000_0000),
         ("rust-cortex-m4", 0x0800_0000),
     ] {
-        let named = load(&format!("{sample}-nodebug.elf"));
-        let stripped = load(&format!("{sample}-stripped.elf"));
+        let named = load_sample(&format!("{sample}-nodebug.elf"));
+        let stripped = load_sample(&format!("{sample}-stripped.elf"));
         let table = stripped.vector_table.as_ref().unwrap();
         // 16 words: the stack pointer and the Cortex-M exceptions. The walk
         // stops at the end of the table's section, before the code, or in
@@ -207,9 +205,9 @@ fn the_vector_table_is_found_by_its_shape() {
         assert_eq!(named.vector_table.as_ref(), Some(table), "{sample}");
     }
     // The Cortex-M7 sample's SysTick handler is in ITCM, at address 0.
-    let m7 = load("c-cortex-m7-stripped.elf");
+    let m7 = load_sample("c-cortex-m7-stripped.elf");
     assert_eq!(m7.vector_table.unwrap().handlers.last(), Some(&0));
-    assert_eq!(load("c-x86_64.elf").vector_table, None);
+    assert_eq!(load_sample("c-x86_64.elf").vector_table, None);
 }
 
 #[test]
@@ -217,7 +215,7 @@ fn reserved_vector_table_entries_can_hold_other_words() {
     // NXP's LPC parts want the checksum of the first seven words in entry
     // 7, which the architecture reserves. The table goes on past it.
     let sample = "c-cortex-m4-stripped.elf";
-    let binary = load(sample);
+    let binary = load_sample(sample);
     let table = binary.vector_table.clone().unwrap();
     let words: Vec<u32> = (0..7)
         .map(|index| binary.pointer_at(table.address + index * 4).unwrap() as u32)
@@ -244,7 +242,7 @@ fn a_vector_table_without_symbols_is_named_after_its_section() {
         ("c-cortex-m4-cmsis", ".text@0x8000000"),
         ("rust-cortex-m4", ".vector_table"),
     ] {
-        let stripped = load(&format!("{sample}-stripped.elf"));
+        let stripped = load_sample(&format!("{sample}-stripped.elf"));
         let table = item(&stripped, section);
         assert_eq!(
             (table.kind, table.address, table.size),
@@ -253,7 +251,7 @@ fn a_vector_table_without_symbols_is_named_after_its_section() {
         assert_eq!(table.source, Source::Section);
         // With symbols, they cover the table instead, even if only in part:
         // the Rust sample has none for the stack pointer's word.
-        let named = load(&format!("{sample}-nodebug.elf"));
+        let named = load_sample(&format!("{sample}-nodebug.elf"));
         assert!(
             named.items.iter().all(|item| item.name != section),
             "{sample}"
@@ -265,8 +263,8 @@ fn a_vector_table_without_symbols_is_named_after_its_section() {
 fn constants_among_the_code_of_stripped_firmware_are_data() {
     // In the CMSIS layout, `.rodata` is part of `.text`, and `crc_table` has
     // only its address there.
-    let named = load("c-cortex-m4-cmsis-nodebug.elf");
-    let stripped = load("c-cortex-m4-cmsis-stripped.elf");
+    let named = load_sample("c-cortex-m4-cmsis-nodebug.elf");
+    let stripped = load_sample("c-cortex-m4-cmsis-stripped.elf");
     let crc_table = item(&named, "crc_table");
     let constants = item(&stripped, &format!(".text@{:#x}", crc_table.address));
     assert_eq!(
@@ -277,7 +275,7 @@ fn constants_among_the_code_of_stripped_firmware_are_data() {
 
 #[test]
 fn data_without_symbols_starts_where_something_refers_to_it() {
-    let binary = load("c-x86_64.elf");
+    let binary = load_sample("c-x86_64.elf");
     // A string literal, which runs to the next one: "bad header\n" and its
     // terminating NUL.
     let string = item(&binary, ".rodata@0x2012");
@@ -301,7 +299,7 @@ fn data_without_symbols_starts_where_something_refers_to_it() {
 #[test]
 fn thumb_addresses_are_even() {
     // Arm sets bit 0 in Thumb function symbols and in the entry point.
-    let binary = load("c-cortex-m4.elf");
+    let binary = load_sample("c-cortex-m4.elf");
     assert!(binary.thumb);
     assert_eq!(item(&binary, "process_frame").address, 0x0800_02c8);
     assert_eq!(binary.entry, 0x0800_05a0);
@@ -310,7 +308,7 @@ fn thumb_addresses_are_even() {
 
 #[test]
 fn symbols_at_one_address_are_aliases_of_one_item() {
-    let binary = load("c-cortex-m4.elf");
+    let binary = load_sample("c-cortex-m4.elf");
     let handler = item(&binary, "NMI_Handler");
     // The strong symbol names the item; the weak aliases point at it.
     assert_eq!(handler.name, "Default_Handler");
@@ -319,7 +317,7 @@ fn symbols_at_one_address_are_aliases_of_one_item() {
 
     // Identical code folding: two Display impls share one function. Each
     // one's mangled symbol is an alias too.
-    let binary = load("rust-cortex-m4.elf");
+    let binary = load_sample("rust-cortex-m4.elf");
     let fmt = binary
         .items
         .iter()
@@ -336,7 +334,7 @@ fn symbols_at_one_address_are_aliases_of_one_item() {
 
 #[test]
 fn rust_names_are_demangled() {
-    let binary = load("rust-x86_64-nodebug.elf");
+    let binary = load_sample("rust-x86_64-nodebug.elf");
     let process_frame = item(&binary, "elfq_sample::process_frame");
     assert_eq!(
         process_frame.aliases,
@@ -353,7 +351,7 @@ fn rust_names_are_demangled() {
 #[test]
 fn merged_globals_become_separate_items() {
     // LLVM places several statics in one `.L_MergedGlobals` block.
-    let binary = load("rust-cortex-m4.elf");
+    let binary = load_sample("rust-cortex-m4.elf");
     assert!(binary.items.iter().all(|i| i.name != ".L_MergedGlobals"));
     let frames_bad = binary
         .items
@@ -365,7 +363,7 @@ fn merged_globals_become_separate_items() {
 
 #[test]
 fn sizes_missing_from_the_symbol_table_are_estimated() {
-    let binary = load("c-x86_64.elf");
+    let binary = load_sample("c-x86_64.elf");
     let function = item(&binary, "deregister_tm_clones");
     assert_eq!((function.size, function.size_estimated), (48, true));
 }

@@ -28,6 +28,11 @@ cargo test --locked
 CI also checks that elfq builds with Rust 1.88, the oldest version it
 supports (`rust-version` in `Cargo.toml`).
 
+Most tests in `tests/it/cli.rs` check a command's whole output with
+`assert_output`. When you change what elfq prints on purpose, the test
+that fails shows the first line that differs, then the new output in full,
+ready to paste into the test once you have checked it.
+
 ## Where things live
 
 [docs/design.md](docs/design.md) explains how elfq works and why. In short:
@@ -42,7 +47,7 @@ supports (`rust-version` in `Cargo.toml`).
 | `src/graph/` | The reference graph that connects items, the roots where the program starts, the dominator tree that says what is exclusive to what, the shortest paths that `why` shows, and the references that cross the edge of ranges of memory. |
 | `src/debuginfo/` | Reading DWARF, when the file has it: the copies of functions that the compiler inlined, for `inlined`. |
 | `src/render/` | Text output: tables, and the trees drawn in their last column (`tree.rs`), which every command draws the same way. |
-| `tests/` | Integration tests that run on the sample binaries. |
+| `tests/it/` | Integration tests that run on the sample binaries, built as one test program (`main.rs` lists its modules). |
 | `testdata/` | The sample programs and the ELF files built from them. |
 
 Analysis flows one way: `arch`, then `binary`, then `graph`, each importing
@@ -62,7 +67,8 @@ Commands take the form `elfq FILE <command> [ARGS]`.
 3. Work out the answer first, then write it as text or, for `--json`, as a
    struct that derives `Serialize`, using the shapes in
    `src/commands/json.rs` for items. `callers.rs` is a short example.
-4. Add tests under `tests/` that run it on files in `testdata/bin`.
+4. Add tests under `tests/it/` that run it on files in `testdata/bin`. A new
+   file there runs only once `tests/it/main.rs` lists it with a `mod` line.
 
 ## Adding an instruction set
 

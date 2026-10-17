@@ -1,23 +1,15 @@
 //! The shortest chains from the roots that `why` shows, checked against the
 //! samples' call graphs in testdata/README.md.
 
-use std::path::Path;
-
 use elfq::binary::Binary;
-use elfq::commands::symbol;
-use elfq::graph::{Graph, Node, ShortestPaths};
+use elfq::graph::{Graph, ShortestPaths};
+
+use crate::support::{load_sample, node};
 
 fn load(name: &str) -> (Binary, Graph) {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("testdata/bin")
-        .join(name);
-    let binary = Binary::load(&path).unwrap();
+    let binary = load_sample(name);
     let graph = Graph::build(&binary);
     (binary, graph)
-}
-
-fn node(binary: &Binary, name: &str) -> Node {
-    symbol::find(binary, name).unwrap_or_else(|err| panic!("{name}: {err}"))
 }
 
 /// The names along the shortest path to `to` that doesn't pass through

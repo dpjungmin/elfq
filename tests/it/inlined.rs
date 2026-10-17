@@ -1,24 +1,20 @@
 //! The inlined copies that DWARF lists in the samples, checked against
 //! testdata/README.md and against ddbug's view of the same files.
 
-use std::path::Path;
-
 use elfq::binary::Binary;
-use elfq::commands::symbol;
 use elfq::debuginfo::{InlinedCopy, inlined_copies};
 use elfq::graph::Node;
 
+use crate::support::{load_sample, node};
+
 fn load(name: &str) -> (Binary, Vec<InlinedCopy>) {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("testdata/bin")
-        .join(name);
-    let binary = Binary::load(&path).unwrap();
+    let binary = load_sample(name);
     let copies = inlined_copies(&binary).unwrap();
     (binary, copies)
 }
 
 fn item(binary: &Binary, name: &str) -> usize {
-    match symbol::find(binary, name).unwrap_or_else(|err| panic!("{name}: {err}")) {
+    match node(binary, name) {
         Node::Item(index) => index,
         Node::Import(_) => panic!("{name} is an import"),
     }
