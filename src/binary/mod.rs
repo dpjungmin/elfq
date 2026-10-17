@@ -234,7 +234,7 @@ impl Binary {
     pub fn load(path: &Path) -> Result<Binary> {
         let data =
             std::fs::read(path).with_context(|| format!("cannot read {}", path.display()))?;
-        Binary::parse(&data).with_context(|| format!("cannot load {}", path.display()))
+        Binary::from_vec(data).with_context(|| format!("cannot load {}", path.display()))
     }
 
     /// The whole file, for reading parts of it that elfq doesn't keep, such
@@ -245,10 +245,16 @@ impl Binary {
 
     /// Parses an ELF file that is already in memory.
     pub fn parse(data: &[u8]) -> Result<Binary> {
+        Binary::from_vec(data.to_vec())
+    }
+
+    /// Parses an ELF file, keeping `data` as the file's bytes rather than a
+    /// copy of them, since a large file takes hundreds of megabytes.
+    fn from_vec(data: Vec<u8>) -> Result<Binary> {
         if !data.starts_with(b"\x7fELF") {
             bail!("not an ELF file");
         }
-        let file = object::File::parse(data).context("malformed ELF file")?;
+        let file = object::File::parse(data.as_slice()).context("malformed ELF file")?;
         let kind = match file.kind() {
             ObjectKind::Executable => FileKind::Executable,
             // Both are position-independent; only executables name the
@@ -289,8 +295,11 @@ impl Binary {
             merged_variables: Vec::new(),
             vector_table: None,
             warnings,
-            data: data.to_vec(),
+            data,
         };
+        // The bytes have moved into `binary`, so read them there. This
+        // reads only the headers again.
+        let file = object::File::parse(binary.data.as_slice()).context("malformed ELF file")?;
         (binary.imports, binary.relocations) = relocations::read(&file, architecture);
         if binary.thumb {
             binary.vector_table = vector_table::find(&binary);
