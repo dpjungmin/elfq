@@ -105,6 +105,9 @@ pub(super) fn add(binary: &Binary, items: &mut Vec<Item>) {
         );
     };
 
+    // Each start comes once, so a function added below never matches
+    // another: only the items there before need searching.
+    let known = items.len();
     for (start, end) in functions(binary, &starts) {
         // Without the padding that aligns the next function.
         let size = binary
@@ -112,7 +115,7 @@ pub(super) fn add(binary: &Binary, items: &mut Vec<Item>) {
             .map_or(end - start, |code| {
                 arch::code_size(binary.architecture, binary.endianness, code, start)
             });
-        if let Some(item) = items
+        if let Some(item) = items[..known]
             .iter_mut()
             .find(|item| item.kind == ItemKind::Function && item.address == start)
         {
@@ -150,11 +153,16 @@ fn follow(
     let mut numbers = stored.clone();
     let mut constants = BTreeSet::new();
     // A function's code is scanned again only when a new start ends it
-    // sooner.
+    // sooner. Only a new function, and the one just before it, can end
+    // somewhere new, so only they are looked at again.
     let mut scanned = BTreeSet::new();
+    let mut to_scan: Vec<u64> = functions(binary, &starts).map(|(start, _)| start).collect();
     loop {
         let mut found = BTreeSet::new();
-        for (start, end) in functions(binary, &starts) {
+        for start in to_scan.drain(..) {
+            let Some(end) = end(binary, &starts, start) else {
+                continue;
+            };
             if scanned.insert((start, end)) {
                 let leads = leads(binary, start, end);
                 found.extend(leads.functions);
@@ -184,7 +192,13 @@ fn follow(
         if found.is_empty() {
             return (starts, constants);
         }
-        starts.extend(found.into_iter().map(|address| (address, Start::Function)));
+        starts.extend(found.iter().map(|&address| (address, Start::Function)));
+        for address in found {
+            to_scan.push(address);
+            if let Some((&before, Start::Function)) = starts.range(..address).next_back() {
+                to_scan.push(before);
+            }
+        }
     }
 }
 
