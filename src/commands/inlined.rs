@@ -261,6 +261,9 @@ impl<'a> Groups<'a> {
         // The group each copy went into. Copies come before the copies
         // inlined into them, so a copy's parent is always grouped first.
         let mut group_of: HashMap<usize, usize> = HashMap::new();
+        // The group of each function in each place: inlined into a group,
+        // or into the function itself.
+        let mut named: HashMap<(Option<usize>, &str), usize> = HashMap::new();
         for (index, copy) in copies.iter().enumerate() {
             if copy.into != into {
                 continue;
@@ -268,15 +271,9 @@ impl<'a> Groups<'a> {
             let parent = copy
                 .parent
                 .and_then(|parent| group_of.get(&parent).copied());
-            let siblings = match parent {
-                Some(parent) => &groups.list[parent].children,
-                None => &groups.top,
-            };
-            let same = siblings
-                .iter()
-                .copied()
-                .find(|&group| groups.list[group].name == copy.name);
-            let group = same.unwrap_or_else(|| groups.add(&copy.name, parent));
+            let group = *named
+                .entry((parent, &copy.name))
+                .or_insert_with(|| groups.add(&copy.name, parent));
             let bytes = &mut groups.list[group].bytes;
             *bytes = bytes.saturating_add(copy.size);
             groups.list[group].copies += 1;
@@ -384,14 +381,18 @@ impl<'a> Groups<'a> {
         TreeRow::new(cells, row.name, self.rows(shown, &row.children))
     }
 
-    /// The groups in `groups` and all the groups inlined into them.
+    /// The groups in `groups` and all the groups inlined into them, each
+    /// before the groups inlined into it.
     fn with_inlined(&self, groups: &[usize]) -> Vec<usize> {
-        groups
-            .iter()
-            .flat_map(|&group| {
-                std::iter::once(group).chain(self.with_inlined(&self.list[group].children))
-            })
-            .collect()
+        let mut all = Vec::new();
+        // The groups still to list, the next one last. A loop rather than
+        // recursion, since copies can nest deeper than the stack would hold.
+        let mut next: Vec<usize> = groups.iter().rev().copied().collect();
+        while let Some(group) = next.pop() {
+            all.push(group);
+            next.extend(self.list[group].children.iter().rev());
+        }
+        all
     }
 
     /// The row that sums up `hidden` groups and the groups inlined into
@@ -461,5 +462,19 @@ mod tests {
             lines(&rows, 0),
             ["big 200 1", "parent 100 1", "  2 more 90 3", "leaf 5 1"]
         );
+    }
+
+    #[test]
+    fn a_summary_of_copies_nested_deeply_takes_one_pass() {
+        // Each copy inlined into the one before, 100,000 deep: summing them
+        // up takes neither a frame of the stack for each level nor time
+        // that grows with its square.
+        let depth: usize = 100_000;
+        let copies: Vec<InlinedCopy> = (0..depth)
+            .map(|index| copy("f", 1, index.checked_sub(1)))
+            .collect();
+        let groups = Groups::new(&copies, 0);
+        let row = groups.more(&groups.top).unwrap();
+        assert_eq!(lines(&[row], 0), [format!("{depth} more 1 {depth}")]);
     }
 }

@@ -501,3 +501,30 @@ fn dwarf_that_nests_deeply_is_read() {
     let (stdout, _) = run("deep-dwarf.elf", &data, &["inlined"]);
     assert_output(&stdout, "The debug info lists no inlined code.\n");
 }
+
+#[test]
+fn inlined_copies_that_nest_deeply_are_summed_up() {
+    // Copies inlined into main, each into the one before, 100,000 deep:
+    // all but the first few are summed up in one row.
+    let depth = 100_000;
+    let items = load_sample("c-x86_64.elf").items;
+    let main = items.iter().find(|item| item.name == "main").unwrap();
+    // Abbreviation 1 is an inlined copy with children, at the address its
+    // DW_AT_low_pc gives, and 2 a compile unit with children and no
+    // attributes.
+    let abbrev = [1, 0x1d, 1, 0x11, 0x01, 0, 0, 2, 0x11, 1, 0, 0, 0];
+    // DWARF 4, abbreviations at offset 0, 8-byte addresses. Then the
+    // compile unit, the copies, and the end of each one's children.
+    let mut unit = vec![4, 0, 0, 0, 0, 0, 8, 2];
+    for _ in 0..depth {
+        unit.push(1);
+        unit.extend(main.address.to_le_bytes());
+    }
+    unit.extend(std::iter::repeat_n(0, depth + 1));
+
+    let mut data = sample("c-x86_64.elf");
+    replace_section(&mut data, ".debug_info", &with_length(&unit));
+    replace_section(&mut data, ".debug_abbrev", &abbrev);
+    let (stdout, _) = run("deep-inlined-copies.elf", &data, &["inlined", "main"]);
+    assert!(stdout.contains("└─ 99970 more\n"), "{stdout}");
+}
