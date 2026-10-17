@@ -1,20 +1,8 @@
 //! Runs the elfq program the way a user would.
 
-use std::process::{Command, Output, Stdio};
+use std::process::Stdio;
 
-const SAMPLE: &str = "testdata/bin/c-x86_64.elf";
-/// Firmware with code and data in several kinds of memory.
-const TCM_SAMPLE: &str = "testdata/bin/c-cortex-m7.elf";
-/// Calls and inlined code nested 20 deep.
-const DEEP_SAMPLE: &str = "testdata/bin/c-deep.elf";
-
-fn elfq(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_elfq"))
-        .args(args)
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output()
-        .unwrap()
-}
+use crate::support::{DEEP_SAMPLE, SAMPLE, TCM_SAMPLE, command, elfq};
 
 /// Runs elfq, expecting success, and returns what it printed.
 fn stdout(args: &[&str]) -> String {
@@ -1196,10 +1184,9 @@ fn a_reader_that_stops_early_keeps_the_exit_status() {
         (&["callees", "0x1000+0x40000", "--json"], 1),
         (&["top", "--all"], 0),
     ] {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_elfq"))
+        let mut child = command()
             .arg("testdata/bin/rust-x86_64-nodebug.elf")
             .args(args)
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -1326,10 +1313,9 @@ fn an_argument_that_is_not_utf8_is_an_error() {
     use std::os::unix::ffi::OsStrExt;
 
     for args in [[SAMPLE, "retained"], ["retained", SAMPLE]] {
-        let output = Command::new(env!("CARGO_BIN_EXE_elfq"))
+        let output = command()
             .args(args)
             .arg(OsStr::from_bytes(b"\xff"))
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
             .output()
             .unwrap();
         assert_eq!(output.status.code(), Some(2), "{output:?}");

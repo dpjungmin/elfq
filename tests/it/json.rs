@@ -1,19 +1,12 @@
 //! `--json`: the same answers as the text, in a shape scripts can read.
 
-use std::process::Command;
-
 use serde_json::{Value, json};
 
-const SAMPLE: &str = "testdata/bin/c-x86_64.elf";
+use crate::support::{DEEP_SAMPLE, SAMPLE, TCM_SAMPLE, command, elfq};
 
 /// Runs elfq with `--json`, expecting success, and parses what it printed.
 fn elfq_json(args: &[&str]) -> Value {
-    let output = Command::new(env!("CARGO_BIN_EXE_elfq"))
-        .args(args)
-        .arg("--json")
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output()
-        .unwrap();
+    let output = command().args(args).arg("--json").output().unwrap();
     assert!(output.status.success(), "{output:?}");
     serde_json::from_slice(&output.stdout).unwrap()
 }
@@ -108,16 +101,7 @@ fn callers_and_callees_list_every_use() {
 
 #[test]
 fn ranges_list_what_crosses_their_edge() {
-    let output = Command::new(env!("CARGO_BIN_EXE_elfq"))
-        .args([
-            "testdata/bin/c-cortex-m7.elf",
-            "callees",
-            "0x0+256K",
-            "--json",
-        ])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output()
-        .unwrap();
+    let output = elfq(&[TCM_SAMPLE, "callees", "0x0+256K", "--json"]);
     // Something leaves the range.
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let callees: Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -147,15 +131,11 @@ fn ranges_list_what_crosses_their_edge() {
     assert_eq!(callees["complete"], true);
 
     // Data that holds no pointers: nothing leaves, exit status 0.
-    let dtcm = elfq_json(&["testdata/bin/c-cortex-m7.elf", "callees", "0x20000000+256K"]);
+    let dtcm = elfq_json(&[TCM_SAMPLE, "callees", "0x20000000+256K"]);
     assert_eq!(dtcm["callees"], json!([]));
     assert_eq!(dtcm["complete"], true);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_elfq"))
-        .args([SAMPLE, "callers", "0x1260+0x20", "--json"])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output()
-        .unwrap();
+    let output = elfq(&[SAMPLE, "callers", "0x1260+0x20", "--json"]);
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let callers: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(names(&callers["callers"]), ["main", "main"]);
@@ -222,8 +202,7 @@ fn the_overview_says_what_the_file_is() {
 
 #[test]
 fn a_range_limits_the_counts_to_it() {
-    let tcm_sample = "testdata/bin/c-cortex-m7.elf";
-    let overview = elfq_json(&[tcm_sample, "--range", "0x0..0xe0"]);
+    let overview = elfq_json(&[TCM_SAMPLE, "--range", "0x0..0xe0"]);
     assert_eq!(overview["range"], json!({"start": "0x0", "end": "0xe0"}));
     assert_eq!(overview["functions"], 6);
     assert_eq!(overview["data_objects"], 0);
@@ -232,7 +211,7 @@ fn a_range_limits_the_counts_to_it() {
     assert_eq!(overview["references"], Value::Null);
     assert_eq!(overview["memory"].as_array().unwrap().len(), 4);
 
-    let top = elfq_json(&[tcm_sample, "top", "--range", "0x0..0xe0"]);
+    let top = elfq_json(&[TCM_SAMPLE, "top", "--range", "0x0..0xe0"]);
     assert_eq!(top["range"], json!({"start": "0x0", "end": "0xe0"}));
     assert_eq!(top["bytes"], 224);
     // Only items that keep some of the range's bytes.
@@ -255,7 +234,7 @@ fn a_range_limits_the_counts_to_it() {
     assert_eq!(top["items"][0]["retained"], 200);
 
     let retained = elfq_json(&[
-        tcm_sample,
+        TCM_SAMPLE,
         "retained",
         "crc32",
         "--range",
@@ -268,7 +247,7 @@ fn a_range_limits_the_counts_to_it() {
     assert_eq!(retained["retained"], 1024);
     assert_eq!(tree_names(&retained["keeps"]), ["crc_table"]);
 
-    let retained = elfq_json(&[tcm_sample, "retained", "process_frame", "--range", "0+224"]);
+    let retained = elfq_json(&[TCM_SAMPLE, "retained", "process_frame", "--range", "0+224"]);
     assert_eq!(retained["retained"], 200);
     assert_eq!(
         tree_names(&retained["keeps"]),
@@ -378,7 +357,7 @@ fn retained_has_what_symbol_keeps_as_a_tree() {
 fn deep_trees_are_whole() {
     // The text continues a tree deeper than 9 levels below it; JSON nests
     // all of it.
-    let answer = elfq_json(&["testdata/bin/c-deep.elf", "retained", "chain1"]);
+    let answer = elfq_json(&[DEEP_SAMPLE, "retained", "chain1"]);
     let mut chain = Vec::new();
     let mut keeps = &answer["keeps"];
     while let [item] = &keeps.as_array().unwrap()[..] {
@@ -449,11 +428,7 @@ fn why_has_the_chain_through_every_user() {
 
 #[test]
 fn debug_commands_print_only_text() {
-    let output = Command::new(env!("CARGO_BIN_EXE_elfq"))
-        .args([SAMPLE, "debug", "items", "--json"])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output()
-        .unwrap();
+    let output = elfq(&[SAMPLE, "debug", "items", "--json"]);
     assert_eq!(output.status.code(), Some(2));
     assert_eq!(
         String::from_utf8(output.stderr).unwrap(),

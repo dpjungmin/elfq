@@ -1,24 +1,16 @@
 //! Roots, dominators and what is exclusive to what, checked against the
 //! answers in testdata/README.md.
 
-use std::path::Path;
-
 use elfq::binary::{Binary, ItemKind, Source};
-use elfq::commands::symbol;
 use elfq::graph::{DominatorTree, Graph, Node, RootKind};
 
+use crate::support::{load_sample, node};
+
 fn load(name: &str) -> (Binary, Graph, DominatorTree) {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("testdata/bin")
-        .join(name);
-    let binary = Binary::load(&path).unwrap();
+    let binary = load_sample(name);
     let graph = Graph::build(&binary);
     let tree = DominatorTree::build(&binary, &graph, None);
     (binary, graph, tree)
-}
-
-fn node(binary: &Binary, name: &str) -> Node {
-    symbol::find(binary, name).unwrap_or_else(|err| panic!("{name}: {err}"))
 }
 
 /// An item's name, or for a string literal without a symbol, the string

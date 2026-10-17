@@ -1,16 +1,9 @@
 //! Finding what the user means by SYMBOL.
 
-use std::path::Path;
-
 use elfq::binary::Binary;
 use elfq::commands::symbol;
 
-fn load(name: &str) -> Binary {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("testdata/bin")
-        .join(name);
-    Binary::load(&path).unwrap()
-}
+use crate::support::load_sample;
 
 /// The name of what `query` finds.
 fn found(binary: &Binary, query: &str) -> String {
@@ -26,7 +19,7 @@ fn error(binary: &Binary, query: &str) -> String {
 
 #[test]
 fn names_addresses_and_imports() {
-    let binary = load("c-x86_64.elf");
+    let binary = load_sample("c-x86_64.elf");
     assert_eq!(found(&binary, "process_frame"), "process_frame");
     assert_eq!(found(&binary, "0x1700"), "process_frame");
     assert_eq!(found(&binary, "0x1705"), "process_frame");
@@ -42,7 +35,7 @@ fn names_addresses_and_imports() {
 
 #[test]
 fn the_end_of_a_rust_path_is_enough() {
-    let binary = load("rust-x86_64-nodebug.elf");
+    let binary = load_sample("rust-x86_64-nodebug.elf");
     assert_eq!(
         found(&binary, "process_frame"),
         "elfq_sample::process_frame"
@@ -69,7 +62,7 @@ fn the_end_of_a_rust_path_is_enough() {
 
 #[test]
 fn an_exact_name_beats_the_end_of_a_path() {
-    let binary = load("rust-x86_64-nodebug.elf");
+    let binary = load_sample("rust-x86_64-nodebug.elf");
     // The C `main` that the Rust runtime provides, not `elfq_sample::main`.
     assert_eq!(found(&binary, "main"), "main");
     // The `write` imported from the C library, not `core::fmt::write`.
@@ -78,7 +71,7 @@ fn an_exact_name_beats_the_end_of_a_path() {
 
 #[test]
 fn a_name_that_could_mean_several_items_lists_them() {
-    let binary = load("rust-x86_64-nodebug.elf");
+    let binary = load_sample("rust-x86_64-nodebug.elf");
     assert_eq!(
         error(&binary, "checksum"),
         "`checksum` could mean 3 functions; use one of the names on the left instead:
@@ -108,7 +101,7 @@ fn a_name_that_could_mean_several_items_lists_them() {
 
 #[test]
 fn typos_get_suggestions() {
-    let binary = load("c-x86_64.elf");
+    let binary = load_sample("c-x86_64.elf");
     assert_eq!(
         error(&binary, "proces_frame"),
         "no function or data object is named `proces_frame`; did you mean process_frame?"
@@ -119,7 +112,7 @@ fn typos_get_suggestions() {
     );
 
     // Suggestions are what to type, not the full name.
-    let binary = load("rust-x86_64-nodebug.elf");
+    let binary = load_sample("rust-x86_64-nodebug.elf");
     assert_eq!(
         error(&binary, "proces_frame"),
         "no function or data object is named `proces_frame`; did you mean process_frame?"

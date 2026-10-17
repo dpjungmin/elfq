@@ -1,25 +1,21 @@
 //! The reference graph, checked against the answers in testdata/README.md.
 
-use std::path::Path;
-
 use elfq::binary::{Binary, ItemKind, Source};
-use elfq::commands::symbol;
 use elfq::graph::{Graph, Node, ReferenceKind};
+
+use crate::support::{load_sample, node};
 
 use ReferenceKind::*;
 
 fn load(name: &str) -> (Binary, Graph) {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("testdata/bin")
-        .join(name);
-    let binary = Binary::load(&path).unwrap();
+    let binary = load_sample(name);
     let graph = Graph::build(&binary);
     (binary, graph)
 }
 
 /// What uses `name`, and how: one entry per caller and kind, sorted.
 fn callers(binary: &Binary, graph: &Graph, name: &str) -> Vec<(String, ReferenceKind)> {
-    let node = symbol::find(binary, name).unwrap();
+    let node = node(binary, name);
     let mut callers: Vec<(String, ReferenceKind)> = graph
         .references_to(node)
         .map(|r| (binary.items[r.from].name.clone(), r.kind))
@@ -31,7 +27,7 @@ fn callers(binary: &Binary, graph: &Graph, name: &str) -> Vec<(String, Reference
 
 /// What `name` uses, and how: one entry per callee and kind, sorted.
 fn callees(binary: &Binary, graph: &Graph, name: &str) -> Vec<(String, ReferenceKind)> {
-    let Node::Item(item) = symbol::find(binary, name).unwrap() else {
+    let Node::Item(item) = node(binary, name) else {
         panic!("{name} is an import");
     };
     let mut callees: Vec<(String, ReferenceKind)> = graph
@@ -47,7 +43,7 @@ fn callees(binary: &Binary, graph: &Graph, name: &str) -> Vec<(String, Reference
 /// The text of a C string: the bytes of the item named `name`, up to the
 /// first NUL.
 fn text(binary: &Binary, name: &str) -> String {
-    let Node::Item(index) = symbol::find(binary, name).unwrap() else {
+    let Node::Item(index) = node(binary, name) else {
         panic!("{name} is an import");
     };
     let item = &binary.items[index];
@@ -166,7 +162,7 @@ fn functions_called_through_pointers_have_their_address_taken() {
         }
         // The call through the table is a tail jump whose target elfq
         // can't know: `jmp rax` on x86-64, `bx r3` on Cortex-M.
-        let Node::Item(dispatch) = symbol::find(&binary, "dispatch_event").unwrap() else {
+        let Node::Item(dispatch) = node(&binary, "dispatch_event") else {
             unreachable!()
         };
         let unresolved = graph.unresolved_in(dispatch);
@@ -418,7 +414,7 @@ fn stripped_files_still_show_which_variables_code_uses() {
         users
     };
     for name in ["crc_table", "fir_coeffs", "frames_ok", "handlers", "inner"] {
-        let Node::Item(variable) = symbol::find(&named, name).unwrap() else {
+        let Node::Item(variable) = node(&named, name) else {
             unreachable!()
         };
         let address = named.items[variable].address;
@@ -437,7 +433,7 @@ fn stripped_files_still_show_which_variables_code_uses() {
 fn calls_through_trait_objects_are_indirect() {
     for sample in ["rust-x86_64-nodebug.elf", "rust-cortex-m4.elf"] {
         let (binary, graph) = load(sample);
-        let Node::Item(process_frame) = symbol::find(&binary, "process_frame").unwrap() else {
+        let Node::Item(process_frame) = node(&binary, "process_frame") else {
             panic!("process_frame is an import");
         };
         let unresolved = graph.unresolved_in(process_frame);
