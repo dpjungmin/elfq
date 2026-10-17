@@ -3,7 +3,9 @@
 use std::path::Path;
 use std::process::Stdio;
 
-use crate::support::{DEEP_SAMPLE, SAMPLE, TCM_SAMPLE, assert_output, command, elfq};
+use crate::support::{
+    DEEP_SAMPLE, LIBRARY_SAMPLE, SAMPLE, TCM_SAMPLE, assert_output, command, elfq,
+};
 
 /// Runs elfq, expecting success, and returns what it printed.
 fn stdout(args: &[&str]) -> String {
@@ -18,7 +20,7 @@ fn samples() -> Vec<String> {
     let mut samples: Vec<String> = std::fs::read_dir(bin)
         .unwrap()
         .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-        .filter(|name| name.ends_with(".elf"))
+        .filter(|name| name.ends_with(".elf") || name.ends_with(".so"))
         .map(|name| format!("testdata/bin/{name}"))
         .collect();
     samples.sort();
@@ -140,6 +142,45 @@ Try:
   elfq testdata/bin/c-cortex-m4-stripped.elf why .rodata@0x80009e4
 ",
     );
+}
+
+#[test]
+fn a_shared_library_gets_an_overview() {
+    // elfq doesn't know yet which functions a library offers to other files,
+    // so it shows no tree of what keeps what.
+    assert_output(
+        &stdout(&[LIBRARY_SAMPLE]),
+        "\
+testdata/bin/c-x86_64.so: x86-64 shared library, with symbols and DWARF debug info
+31 functions and 34 data objects, 4085 bytes of code and data, plus 7 imports
+
+Try:
+  elfq testdata/bin/c-x86_64.so callers parse_value
+  elfq testdata/bin/c-x86_64.so callees main
+  elfq testdata/bin/c-x86_64.so inlined
+",
+    );
+}
+
+#[test]
+fn commands_that_need_roots_refuse_a_shared_library() {
+    for (args, what) in [
+        (&["top"][..], "what keeps the most bytes in it"),
+        (
+            &["retained", "process_frame"],
+            "what only process_frame leads to",
+        ),
+        (&["why", "log_msg"], "why log_msg is in it"),
+    ] {
+        let args = [&[LIBRARY_SAMPLE][..], args].concat();
+        assert_output(
+            &stderr(&args, 2),
+            &format!(
+                "error: elfq doesn't know yet which functions a shared library offers to \
+                 other files, so it can't tell {what}\n"
+            ),
+        );
+    }
 }
 
 #[test]
@@ -471,7 +512,11 @@ fn no_line_sums_up_a_single_item() {
     // lists of names.
     for sample in &samples() {
         let overview = stdout(&[sample]);
-        let mut runs = vec![vec![sample.as_str()], vec![sample, "top"]];
+        let mut runs = vec![vec![sample.as_str()]];
+        // `top` refuses shared libraries.
+        if !sample.ends_with(".so") {
+            runs.push(vec![sample, "top"]);
+        }
         // The ranges in the overview's Try list.
         for (_, range) in overview
             .lines()

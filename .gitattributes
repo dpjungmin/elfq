@@ -1,1 +1,2 @@
 testdata/bin/*.elf binary
+testdata/bin/*.so binary

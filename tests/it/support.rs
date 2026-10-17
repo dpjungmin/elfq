@@ -14,6 +14,8 @@ pub const SAMPLE: &str = "testdata/bin/c-x86_64.elf";
 pub const TCM_SAMPLE: &str = "testdata/bin/c-cortex-m7.elf";
 /// Calls and inlined code nested 20 deep.
 pub const DEEP_SAMPLE: &str = "testdata/bin/c-deep.elf";
+/// The C sample for x86-64 Linux, built as a shared library.
+pub const LIBRARY_SAMPLE: &str = "testdata/bin/c-x86_64.so";
 
 /// The path of the sample `name` in testdata/bin.
 pub fn sample_path(name: &str) -> PathBuf {

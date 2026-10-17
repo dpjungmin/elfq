@@ -32,6 +32,11 @@ echo "C, x86-64 Linux"
 gcc $cflags -o "$out/c-x86_64.elf" c/app.c c/platform_host.c
 variants strip c-x86_64
 
+# Only the full build: one variant is enough to cover how calls go through
+# the PLT to the library's own functions.
+echo "C, x86-64 Linux shared library"
+gcc $cflags -shared -fPIC -o "$out/c-x86_64.so" c/app.c c/platform_host.c
+
 echo "C, Cortex-M4"
 arm-none-eabi-gcc $cflags \
     -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 \
@@ -70,6 +75,11 @@ gcc $cflags -o "$out/c-deep.elf" c/deep.c
 echo "C++, x86-64 Linux"
 g++ $cflags -o "$out/cpp-x86_64.elf" cpp/app.cpp
 variants strip cpp-x86_64
+
+# Only the full build, for the C++ names of the PLT stubs that the library
+# calls its own functions through.
+echo "C++, x86-64 Linux shared library"
+g++ $cflags -shared -fPIC -o "$out/cpp-x86_64.so" cpp/app.cpp
 
 rustflags="--remap-path-prefix=$here=."
 # Build where the copies below look, even if CARGO_TARGET_DIR or a cargo

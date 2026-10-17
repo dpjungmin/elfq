@@ -19,17 +19,19 @@ testdata/
 | File | Language | Target |
 |---|---|---|
 | `c-x86_64*.elf` | C | x86-64 Linux, PIE, dynamically linked against glibc |
+| `c-x86_64.so` | C | x86-64 Linux, the same code as a shared library |
 | `c-cortex-m4*.elf` | C | Cortex-M4 bare metal, newlib-nano, `--gc-sections` |
 | `c-cortex-m4-cmsis*.elf` | C | The same, laid out as CMSIS's linker script template does |
 | `c-cortex-m7*.elf` | C | Cortex-M7 bare metal, with code and data in TCM, OCRAM and flash |
 | `c-deep.elf` | C | x86-64 Linux, PIE, with calls and inlined code nested 20 deep |
 | `cpp-x86_64*.elf` | C++ | x86-64 Linux, PIE, dynamically linked against glibc and libstdc++ |
+| `cpp-x86_64.so` | C++ | x86-64 Linux, the same code as a shared library |
 | `rust-x86_64*.elf` | Rust | x86-64 Linux, std |
 | `rust-cortex-m4*.elf` | Rust | Cortex-M4 bare metal, `no_std` |
 
 Each comes in up to three variants, matching what people usually have
-(`c-deep.elf` only in the first, `c-cortex-m4-cmsis` only in the last
-two):
+(`c-deep.elf`, `c-x86_64.so` and `cpp-x86_64.so` only in the first,
+`c-cortex-m4-cmsis` only in the last two):
 
 | Suffix | Symbols | DWARF | Typical of |
 |---|---|---|---|
@@ -66,6 +68,24 @@ On Cortex-M ([c/platform_cortexm.c](c/platform_cortexm.c)), `Reset_Handler`
 is the entry point and `SysTick_Handler` is reached only through
 `vector_table`, which is data. The compiler turned `Reset_Handler`'s copy and
 clear loops into calls to `memcpy` and `memset`.
+
+### Shared library sample
+
+The C sample for x86-64 Linux again, built with `-shared -fPIC` as a
+library. Another library loaded first may replace any function this one
+exports, so its code calls its own exported functions through PLT stubs,
+as it calls imports: `process_frame` calls `log_msg@plt`, which jumps to
+`log_msg`. Only `static` functions, such as `crc32`, are called directly.
+
+| Item | Expected answer |
+|---|---|
+| `log_msg` | The same callers as in `c-x86_64.elf`, all through `log_msg@plt`. |
+| `log_msg@plt` | A 16-byte stub that jumps to `log_msg`. |
+| `main` | Calls `app_tick`, `dispatch_event`, `process_frame`, `register_handler` and `report`, each through its stub. |
+
+`cpp-x86_64.so` is the C++ sample built the same way, for the names of
+these stubs in C++: `main` calls `app::log(unsigned int)@plt`, which jumps
+to `app::log(unsigned int)`.
 
 ### Cortex-M7 sample ([c/platform_cortexm7.c](c/platform_cortexm7.c))
 
