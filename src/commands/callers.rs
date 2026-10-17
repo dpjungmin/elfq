@@ -30,8 +30,10 @@ pub fn run(
     format: Format,
     out: &mut dyn Write,
 ) -> Result<Outcome> {
-    let graph = super::reference_graph(binary)?;
-    match symbol::subject(binary, symbols)? {
+    super::check_code_is_readable(binary)?;
+    let subject = symbol::subject(binary, symbols)?;
+    let graph = Graph::build(binary);
+    match subject {
         Subject::Node(node) => {
             callers(binary, &graph, node, format, out)?;
             Ok(Outcome::Answered)

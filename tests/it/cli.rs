@@ -1364,10 +1364,19 @@ elfq can't read Aarch64 code yet, so it can't tell what calls what.
 "
         ),
     );
-    assert_output(
-        &stderr(&[path, "top"], 2),
-        "error: elfq can't read Aarch64 code yet, so it can't tell what calls what\n",
-    );
+    // Even when SYMBOL names nothing, since no SYMBOL would help.
+    for args in [
+        &[path, "top"][..],
+        &[path, "retained", "no_such_function"],
+        &[path, "why", "no_such_function"],
+        &[path, "callers", "no_such_function"],
+        &[path, "callees", "no_such_function"],
+    ] {
+        assert_output(
+            &stderr(args, 2),
+            "error: elfq can't read Aarch64 code yet, so it can't tell what calls what\n",
+        );
+    }
 }
 
 #[test]
