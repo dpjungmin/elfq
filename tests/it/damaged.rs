@@ -4,14 +4,15 @@
 //! with what the file does hold. The tests run in a debug build, so
 //! arithmetic that overflows fails them too.
 
+use std::path::Path;
 use std::sync::mpsc;
 use std::time::Duration;
 
 use elfq::binary::Binary;
 use elfq::graph::{Graph, ReferenceKind};
-use object::{Object, ObjectSection};
+use object::{Object, ObjectSection, ObjectSymbol};
 
-use crate::support::{load_sample, sample_path};
+use crate::support::{assert_output, elfq, load_sample, sample_path};
 
 /// Where a field is in a section header: in a 64-bit file, and in a
 /// 32-bit one.
@@ -56,6 +57,19 @@ fn set_section_field(data: &mut [u8], section: &str, field: Field, value: u64) {
     write(data, headers + index * header_size + at, width, value);
 }
 
+/// Sets the size that `.symtab` gives `symbol` to `size`, in a 64-bit file.
+fn set_symbol_size(data: &mut [u8], symbol: &str, size: u64) {
+    let file = object::File::parse(&*data).unwrap();
+    let index = file.symbol_by_name(symbol).unwrap().index().0;
+    let (table, _) = file
+        .section_by_name(".symtab")
+        .unwrap()
+        .file_range()
+        .unwrap();
+    // Each symbol takes 24 bytes, and `st_size` is the last 8.
+    write(data, table as usize + index * 24 + 16, 8, size);
+}
+
 fn parse(data: &[u8]) -> (Binary, Graph) {
     let binary = Binary::parse(data).unwrap_or_else(|err| panic!("{err:#}"));
     let graph = Graph::build(&binary);
@@ -73,6 +87,24 @@ fn parse_quickly(data: Vec<u8>) -> (Binary, Graph) {
     receive
         .recv_timeout(Duration::from_secs(10))
         .expect("no answer within 10 seconds")
+}
+
+/// Saves `data` as `name` in a folder for the tests' files, and returns its
+/// path.
+fn save(name: &str, data: &[u8]) -> String {
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
+    std::fs::write(&path, data).unwrap();
+    path.to_str().unwrap().to_string()
+}
+
+/// Runs elfq with `args` on `data`, saved as `name`, and returns what it
+/// printed to stdout and stderr. It must have answered, with exit status 0.
+fn run(name: &str, data: &[u8], args: &[&str]) -> (String, String) {
+    let output = elfq(&[&[save(name, data).as_str()], args].concat());
+    let text = |bytes: Vec<u8>| String::from_utf8(bytes).unwrap();
+    let (stdout, stderr) = (text(output.stdout), text(output.stderr));
+    assert!(output.status.success(), "{name}: {stderr}");
+    (stdout, stderr)
 }
 
 #[test]
@@ -188,4 +220,118 @@ fn the_search_for_the_vector_table_skips_a_huge_bss() {
     set_section_field(&mut data, ".bss", SIZE, 0xffff_0000);
     let (binary, _) = parse_quickly(data);
     assert_eq!(binary.vector_table, None);
+}
+
+#[test]
+fn a_section_that_would_end_past_the_last_address_is_ignored() {
+    let mut data = sample("c-x86_64.elf");
+    set_section_field(&mut data, ".fini_array", SIZE, u64::MAX - 15);
+    let (_, stderr) = run("fini-array-size.elf", &data, &["top", "--all"]);
+    assert_output(
+        &stderr,
+        "warning: ignoring section .fini_array: it runs past the last address\n",
+    );
+}
+
+#[test]
+fn a_section_that_ends_at_the_last_address_is_kept() {
+    // Its last byte is at the last address, so its end is one past it,
+    // which a u64 can't hold: the section loses that byte instead.
+    let mut data = sample("c-x86_64.elf");
+    set_section_field(&mut data, ".fini_array", ADDRESS, u64::MAX - 7);
+    let (_, stderr) = run("fini-array-at-the-top.elf", &data, &["top", "--all"]);
+    assert_output(&stderr, "");
+    let (binary, _) = parse(&data);
+    let fini = binary.sections.iter().find(|s| s.name == ".fini_array");
+    let fini = fini.unwrap();
+    assert!(fini.allocated && fini.size == 7);
+}
+
+#[test]
+fn a_section_that_isnt_allocated_keeps_its_addresses() {
+    // elfq uses no addresses from it, so they can't be damaged, and the
+    // inlined copies its debug info lists are still found.
+    let mut data = sample("c-x86_64.elf");
+    set_section_field(&mut data, ".debug_info", ADDRESS, u64::MAX - 15);
+    let (stdout, stderr) = run("debug-info-address.elf", &data, &["inlined"]);
+    assert_output(&stderr, "");
+    let (expected, _) = run("c-x86_64.elf", &sample("c-x86_64.elf"), &["inlined"]);
+    assert_output(&stdout, &expected);
+}
+
+#[test]
+fn a_section_that_runs_past_the_end_of_the_file_keeps_its_addresses() {
+    // Only where its bytes are is damaged, so the section is still there,
+    // and the file holds none of its bytes.
+    let mut data = sample("c-x86_64.elf");
+    set_section_field(&mut data, ".plt", OFFSET, u64::MAX - 15);
+    let (_, stderr) = run("plt-offset.elf", &data, &["top", "--all"]);
+    assert_output(
+        &stderr,
+        "warning: section .plt runs past the end of the file\n",
+    );
+    let (binary, _) = parse(&data);
+    let plt = binary.sections.iter().find(|s| s.name == ".plt").unwrap();
+    assert!(plt.allocated && plt.size > 0);
+    assert_eq!(binary.bytes(plt.address, 1), None);
+}
+
+#[test]
+fn a_function_whose_size_would_end_past_the_last_address_gets_another() {
+    let mut data = sample("c-x86_64.elf");
+    set_symbol_size(&mut data, "main", u64::MAX);
+    let (binary, _) = parse(&data);
+    let main = binary
+        .items
+        .iter()
+        .find(|item| item.name == "main")
+        .unwrap();
+    // The unwind table gives it, as it does when a symbol has no size.
+    assert_eq!((main.size, main.size_estimated), (195, false));
+}
+
+#[test]
+fn a_data_object_whose_size_would_end_past_the_last_address_is_dropped() {
+    // As one without a size is: what code refers to there becomes unnamed
+    // data, sized up to the next item.
+    let mut data = sample("c-x86_64.elf");
+    set_symbol_size(&mut data, "handlers", u64::MAX);
+    let (binary, _) = parse(&data);
+    assert!(binary.items.iter().all(|item| item.name != "handlers"));
+    let unnamed = binary.items.iter().find(|item| item.address == 0x4070);
+    let unnamed = unnamed.unwrap();
+    assert_eq!(
+        (unnamed.name.as_str(), unnamed.size, unnamed.size_estimated),
+        (".bss@0x4070", 24, true)
+    );
+}
+
+#[test]
+fn sizes_that_add_up_past_the_largest_number_stop_there() {
+    // Functions that overlap, each half as large as the address space.
+    let mut data = sample("c-x86_64.elf");
+    for function in ["on_timer", "on_data", "crc32"] {
+        set_symbol_size(&mut data, function, 1 << 63);
+    }
+    let (stdout, _) = run("huge-functions.elf", &data, &[]);
+    let total = stdout.lines().nth(1).unwrap();
+    assert!(
+        total.contains(&format!(", {} bytes of", u64::MAX)),
+        "{total}"
+    );
+    run("huge-functions.elf", &data, &["top", "--all"]);
+    run("huge-functions.elf", &data, &["inlined"]);
+}
+
+#[test]
+fn a_64_bit_file_marked_as_arm_is_not_read_as_thumb() {
+    // Thumb code only comes in 32-bit files, whatever the entry point says.
+    let mut data = sample("c-x86_64.elf");
+    // `e_machine` and `e_entry`, in the file's header: EM_ARM, and an odd
+    // entry point, as Thumb code has.
+    write(&mut data, 0x12, 2, 40);
+    let entry = load_sample("c-x86_64.elf").entry;
+    write(&mut data, 0x18, 8, entry | 1);
+    let (binary, _) = parse(&data);
+    assert!(!binary.thumb);
 }

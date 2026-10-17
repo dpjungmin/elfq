@@ -150,7 +150,7 @@ fn unreachable_text(retained: &RetainedTree) -> Option<String> {
     if unreachable.is_empty() {
         return None;
     }
-    let bytes: u64 = unreachable.iter().map(|&index| retained.own(index)).sum();
+    let bytes = super::total(unreachable.iter().map(|&index| retained.own(index)));
     let names: Vec<&str> = unreachable
         .iter()
         .map(|&index| binary.items[index].name.as_str())

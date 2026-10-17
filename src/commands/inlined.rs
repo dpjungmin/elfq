@@ -84,12 +84,11 @@ fn write_list(
     totals.sort_by_key(|total| (Reverse(total.bytes), Reverse(total.copies), total.name));
 
     let inlined: u64 = copies.iter().map(|copy| copy.own).sum();
-    let code: u64 = binary
+    let functions = binary
         .items
         .iter()
-        .filter(|item| item.kind == ItemKind::Function)
-        .map(|item| item.size)
-        .sum();
+        .filter(|item| item.kind == ItemKind::Function);
+    let code = super::total(functions.map(|item| item.size));
     if format == Format::Json {
         let list = ListJson {
             inlined_bytes: inlined,

@@ -167,14 +167,17 @@ impl DominatorTree {
             stack.extend_from_slice(self.children(node));
         }
         for &node in order.iter().rev() {
+            // Sizes stop at the largest `u64` rather than overflow: in a
+            // damaged file, items can overlap, and their sizes add up to
+            // more than a `u64` holds.
             let own = sizes[self.index(node)];
-            let below: u64 = self
+            let below = self
                 .children(node)
                 .iter()
                 .map(|&child| self.retained(child))
-                .sum();
+                .fold(0, u64::saturating_add);
             let i = self.index(node);
-            self.retained[i] = own + below;
+            self.retained[i] = own.saturating_add(below);
         }
         let retained = &self.retained;
         let items = self.items;
