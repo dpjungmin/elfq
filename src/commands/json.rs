@@ -1,7 +1,7 @@
 //! The shapes of the JSON that commands write for `--json`.
 //!
 //! A command builds one value from these and its own shapes, and writes it
-//! with [`write`]. Every key is always there, `null` when it has no value,
+//! with [`write()`]. Every key is always there, `null` when it has no value,
 //! so that scripts can count on the shape. Addresses are hex strings, as
 //! elfq prints them and SYMBOL takes them; sizes are numbers.
 

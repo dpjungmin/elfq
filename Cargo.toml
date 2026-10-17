@@ -2,8 +2,10 @@
 name = "elfq"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
 description = "Query ELF binaries: call graphs, exclusive code and retained size"
 license = "MIT"
+repository = "https://github.com/dpjungmin/elfq"
 exclude = ["/testdata"]
 
 [dependencies]
@@ -17,3 +19,6 @@ petgraph = { version = "0.8.3", default-features = false, features = ["std"] }
 rustc-demangle = "0.1.28"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+
+[lints.rust]
+unsafe_code = "forbid"

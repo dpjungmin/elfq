@@ -37,6 +37,14 @@ flash. elfq's exit status is then 1 if anything does or might, so a CI job
 can check that time-critical code stays in fast memory, or that code run
 from RAM never touches flash. Errors exit with status 2.
 
+**Install** with Rust 1.88 or later:
+
+```sh
+cargo install --locked --git https://github.com/dpjungmin/elfq elfq
+```
+
+The `elfq` crate on crates.io is only a placeholder for now.
+
 **Status:** early development. The overview, `top`, `retained`, `why`,
 `callers` and `callees` work on x86-64 and Cortex-M executables, with
 readable Rust and C++ names, and `inlined` works on any file with DWARF debug

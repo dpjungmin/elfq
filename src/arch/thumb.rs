@@ -446,8 +446,8 @@ impl<'a> Scanner<'a> {
     }
 }
 
-/// bl, b.w or b<cond>.w, all of which spread their offset over both
-/// halves.
+/// `bl`, `b.w` or `b<cond>.w`, all of which spread their offset over
+/// both halves.
 fn branch(pc: u64, first: u16, second: u16) -> Option<CodeReferenceKind> {
     let s = u32::from((first >> 10) & 1);
     let j1 = u32::from((second >> 13) & 1);

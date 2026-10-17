@@ -2,6 +2,8 @@
 
 ## Build and test
 
+elfq needs Rust 1.88 or later.
+
 ```sh
 cargo build
 cargo test
@@ -18,9 +20,13 @@ cross compilers. Before opening a pull request, run what CI runs:
 
 ```sh
 cargo fmt --all --check
-cargo clippy --all-targets -- -D warnings
-cargo test
+cargo clippy --all-targets --locked -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items --locked
+cargo test --locked
 ```
+
+CI also checks that elfq builds with Rust 1.88, the oldest version it
+supports (`rust-version` in `Cargo.toml`).
 
 ## Where things live
 
