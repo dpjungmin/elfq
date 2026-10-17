@@ -513,6 +513,13 @@ fn dwarf_that_cant_be_read_says_so() {
         &String::from_utf8(output.stderr).unwrap(),
         &format!("error: cannot read the DWARF debug info in {path}: unexpected end of input\n"),
     );
+    // SYMBOL is looked up before the DWARF is read, which can take a while.
+    let output = elfq(&[&path, "inlined", "mian"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert_output(
+        &String::from_utf8(output.stderr).unwrap(),
+        "error: no function or data object is named `mian`; did you mean main?\n",
+    );
 }
 
 #[test]

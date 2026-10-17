@@ -9,7 +9,7 @@ use std::path::Path;
 use anyhow::{Result, bail};
 use serde::Serialize;
 
-use super::symbol::{self, Names};
+use super::symbol::Names;
 use super::tree::RetainedTree;
 use super::{json, top};
 use crate::arch;
@@ -138,7 +138,7 @@ pub fn run(
     if binary.kind == FileKind::SharedLibrary {
         let examples: Vec<String> = [
             most_used(binary, &graph).map(|item| about("callers", item)),
-            starting_point(binary).map(|item| about("callees", item)),
+            starting_point(binary, &queries).map(|item| about("callees", item)),
             inlined(binary),
         ]
         .into_iter()
@@ -159,7 +159,7 @@ pub fn run(
         .chain(
             [
                 (kept > 0).then(|| "top".to_string()),
-                starting_point(binary).map(|item| about("retained", item)),
+                starting_point(binary, &queries).map(|item| about("retained", item)),
                 largest_kept(&retained).map(|item| about("why", item)),
                 inlined(binary),
             ]
@@ -395,10 +395,10 @@ fn most_used(binary: &Binary, graph: &Graph) -> Option<usize> {
 /// `main` if there is one, or else the function where the program starts,
 /// such as firmware's reset handler, since every reader knows where those
 /// fit; otherwise the largest function.
-fn starting_point(binary: &Binary) -> Option<usize> {
+fn starting_point(binary: &Binary, names: &Names) -> Option<usize> {
     // `main` as SYMBOL would find it, so also `app::main` in Rust.
-    let main = match symbol::find(binary, "main") {
-        Ok(Node::Item(index)) => Some(index),
+    let main = match names.nodes("main") {
+        [Node::Item(index)] => Some(*index),
         _ => None,
     };
     let entry = binary.item_at(binary.entry);

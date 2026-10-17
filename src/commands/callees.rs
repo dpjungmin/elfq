@@ -42,24 +42,25 @@ pub fn run(
     format: Format,
     out: &mut dyn Write,
 ) -> Result<Outcome> {
-    let graph = super::reference_graph(binary)?;
+    super::check_code_is_readable(binary)?;
     match symbol::subject(binary, symbols)? {
         Subject::Node(node) => {
-            callees(binary, &graph, node, format, out)?;
+            let index = readable_item(binary, node)?;
+            let graph = Graph::build(binary);
+            callees(binary, &graph, index, format, out)?;
             Ok(Outcome::Answered)
         }
-        Subject::Ranges(ranges) => edge::run(binary, &graph, &ranges, Direction::Out, format, out),
+        Subject::Ranges(ranges) => {
+            let graph = Graph::build(binary);
+            edge::run(binary, &graph, &ranges, Direction::Out, format, out)
+        }
     }
 }
 
-/// What `node` calls or uses.
-fn callees(
-    binary: &Binary,
-    graph: &Graph,
-    node: Node,
-    format: Format,
-    out: &mut dyn Write,
-) -> Result<()> {
+/// The index of `node`'s item, or why elfq can't read what it uses: it is
+/// an import, whose code is in another file, or a function whose end elfq
+/// doesn't know.
+fn readable_item(binary: &Binary, node: Node) -> Result<usize> {
     let name = node.name(binary);
     let Node::Item(index) = node else {
         bail!("{name} is imported from a shared library, so its code isn't in this file");
@@ -68,6 +69,19 @@ fn callees(
     if item.kind == ItemKind::Function && item.size == 0 {
         bail!("elfq doesn't know where {name} ends, so it can't read its code");
     }
+    Ok(index)
+}
+
+/// What the item at `index` calls or uses.
+fn callees(
+    binary: &Binary,
+    graph: &Graph,
+    index: usize,
+    format: Format,
+    out: &mut dyn Write,
+) -> Result<()> {
+    let node = Node::Item(index);
+    let name = node.name(binary);
 
     // The text and JSON word some uses differently ("uses" for both
     // "access" and "address taken" on data), so each gets its own rows.

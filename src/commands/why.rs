@@ -51,7 +51,7 @@ struct Step<'a> {
 }
 
 pub fn run(binary: &Binary, symbol: &str, format: Format, out: &mut dyn Write) -> Result<()> {
-    let graph = super::reference_graph(binary)?;
+    super::check_code_is_readable(binary)?;
     let node = super::symbol::find(binary, symbol)?;
     let name = node.name(binary);
     if binary.kind == FileKind::SharedLibrary {
@@ -60,6 +60,7 @@ pub fn run(binary: &Binary, symbol: &str, format: Format, out: &mut dyn Write) -
              so it can't tell why {name} is in it"
         );
     }
+    let graph = Graph::build(binary);
     if let Some(root) = graph.roots.iter().find(|root| root.node == node) {
         if format == Format::Json {
             let answer = WhyJson {

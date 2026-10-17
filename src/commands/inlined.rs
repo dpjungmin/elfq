@@ -35,12 +35,31 @@ pub fn run(
             path.display()
         );
     }
+    // SYMBOL first, since reading the DWARF takes a while in a large file.
+    let function = match symbol {
+        Some(symbol) => Some(find_function(binary, symbol)?),
+        None => None,
+    };
     let copies = debuginfo::inlined_copies(binary)
         .with_context(|| format!("cannot read the DWARF debug info in {}", path.display()))?;
-    match symbol {
+    match function {
         None => write_list(binary, &copies, all, format, out),
-        Some(symbol) => write_tree(binary, &copies, symbol, all, format, out),
+        Some(index) => write_tree(binary, &copies, index, all, format, out),
     }
+}
+
+/// The index of the function that `symbol` names, or why nothing is
+/// inlined into it.
+fn find_function(binary: &Binary, symbol: &str) -> Result<usize> {
+    let node = super::symbol::find(binary, symbol)?;
+    let name = node.name(binary);
+    let Node::Item(index) = node else {
+        bail!("{name} is imported from a shared library, so its code isn't in this file");
+    };
+    if binary.items[index].kind != ItemKind::Function {
+        bail!("{name} is a data object, not a function, so nothing is inlined into it");
+    }
+    Ok(index)
 }
 
 /// The list as JSON: every inlined function, not only the largest.
@@ -138,24 +157,19 @@ fn write_list(
     Ok(())
 }
 
-/// Writes the tree of the inlined code in SYMBOL's function.
+/// Writes the tree of the inlined code in SYMBOL's function, the item at
+/// `index`.
 fn write_tree(
     binary: &Binary,
     copies: &[InlinedCopy],
-    symbol: &str,
+    index: usize,
     all: bool,
     format: Format,
     out: &mut dyn Write,
 ) -> Result<()> {
-    let node = super::symbol::find(binary, symbol)?;
+    let node = Node::Item(index);
     let name = node.name(binary);
-    let Node::Item(index) = node else {
-        bail!("{name} is imported from a shared library, so its code isn't in this file");
-    };
     let item = &binary.items[index];
-    if item.kind != ItemKind::Function {
-        bail!("{name} is a data object, not a function, so nothing is inlined into it");
-    }
     let groups = Groups::new(copies, index);
     let bytes = super::total(groups.top.iter().map(|&group| groups.list[group].bytes));
     if format == Format::Json {

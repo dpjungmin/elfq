@@ -13,6 +13,7 @@
 //! For `callers` and `callees`, SYMBOL can also be one or more ranges of
 //! memory instead (see [`subject`]).
 
+use std::cell::OnceCell;
 use std::collections::HashMap;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -91,29 +92,22 @@ pub fn find(binary: &Binary, query: &str) -> Result<Node> {
 }
 
 /// Every name that finds an item or import, and what each one finds.
+/// Building it walks every name in the file, which takes a while in a large
+/// one, so build one and ask it everything.
 pub(super) struct Names<'a> {
     binary: &'a Binary,
     /// Names of items and imports, and aliases of items.
     full: HashMap<&'a str, Vec<Node>>,
-    /// Short names of items.
-    short: HashMap<String, Vec<Node>>,
+    /// Short names of items, built the first time a query isn't a full name.
+    short: OnceCell<HashMap<String, Vec<Node>>>,
 }
 
 impl<'a> Names<'a> {
     pub(super) fn new(binary: &'a Binary) -> Names<'a> {
         let mut full: HashMap<&str, Vec<Node>> = HashMap::new();
-        let mut short: HashMap<String, Vec<Node>> = HashMap::new();
-        let add = |nodes: &mut Vec<Node>, node| {
-            if !nodes.contains(&node) {
-                nodes.push(node);
-            }
-        };
         for (index, item) in binary.items.iter().enumerate() {
             for name in item.names() {
                 add(full.entry(name).or_default(), Node::Item(index));
-                for short_name in short_names(name) {
-                    add(short.entry(short_name).or_default(), Node::Item(index));
-                }
             }
         }
         for (index, import) in binary.imports.iter().enumerate() {
@@ -126,17 +120,32 @@ impl<'a> Names<'a> {
         Names {
             binary,
             full,
-            short,
+            short: OnceCell::new(),
         }
     }
 
     /// What `query` finds: the items and imports with that name, or if
     /// there are none, the items with that short name.
-    fn nodes(&self, query: &str) -> &[Node] {
+    pub(super) fn nodes(&self, query: &str) -> &[Node] {
         self.full
             .get(query)
-            .or_else(|| self.short.get(query))
+            .or_else(|| self.short().get(query))
             .map_or(&[], Vec::as_slice)
+    }
+
+    /// The short names of items, and what each one finds.
+    fn short(&self) -> &HashMap<String, Vec<Node>> {
+        self.short.get_or_init(|| {
+            let mut short: HashMap<String, Vec<Node>> = HashMap::new();
+            for (index, item) in self.binary.items.iter().enumerate() {
+                for name in item.names() {
+                    for short_name in short_names(name) {
+                        add(short.entry(short_name).or_default(), Node::Item(index));
+                    }
+                }
+            }
+            short
+        })
     }
 
     /// The shortest thing to type that finds only `node`: a short name, a
@@ -259,6 +268,13 @@ impl<'a> Names<'a> {
             }
         }
         suggestions
+    }
+}
+
+/// Adds `node` to what a name finds, unless it is there already.
+fn add(nodes: &mut Vec<Node>, node: Node) {
+    if !nodes.contains(&node) {
+        nodes.push(node);
     }
 }
 

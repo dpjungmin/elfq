@@ -37,6 +37,7 @@ pub enum Outcome {
 
 /// Runs the command in `cli`, writing its answer to `out`.
 pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<Outcome> {
+    check_arguments(cli)?;
     let binary = Binary::load(&cli.file)?;
     for warning in &binary.warnings {
         eprintln!("warning: {warning}");
@@ -55,22 +56,6 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<Outcome> {
             format,
             out,
         )),
-        Some(command @ (Command::Callers(args) | Command::Callees(args)))
-            if range.is_some() && args.symbols.iter().all(|query| symbol::is_range(query)) =>
-        {
-            bail!("{}", range_in_place_of_symbol(cli, command, &args.symbols))
-        }
-        Some(command @ (Command::Callers(args) | Command::Callees(args)))
-            if args.symbols.is_empty() =>
-        {
-            bail!(
-                "{} needs a SYMBOL, or ranges such as 0x0+256K",
-                command_name(command)
-            )
-        }
-        Some(_) if range.is_some() => {
-            bail!("--range limits sizes, so only the overview, top and retained take it")
-        }
         Some(Command::Why(args)) => answered(why::run(&binary, &args.symbol, format, out)),
         Some(Command::Inlined(args)) => answered(inlined::run(
             &cli.file,
@@ -82,10 +67,35 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<Outcome> {
         )),
         Some(Command::Callers(args)) => callers::run(&binary, &args.symbols, format, out),
         Some(Command::Callees(args)) => callees::run(&binary, &args.symbols, format, out),
-        Some(Command::Debug(_)) if format == Format::Json => {
+        Some(Command::Debug(DebugCommand::Items)) => answered(debug_items::run(&binary, out)),
+    }
+}
+
+/// Refuses arguments that don't go together, before the file is loaded, so
+/// that a mistake is reported at once, even for a large file.
+fn check_arguments(cli: &Cli) -> Result<()> {
+    match &cli.command {
+        None | Some(Command::Top(_) | Command::Retained(_)) => Ok(()),
+        Some(command @ (Command::Callers(args) | Command::Callees(args)))
+            if cli.range.is_some() && args.symbols.iter().all(|query| symbol::is_range(query)) =>
+        {
+            bail!("{}", range_in_place_of_symbol(cli, command, &args.symbols))
+        }
+        Some(command @ (Command::Callers(args) | Command::Callees(args)))
+            if args.symbols.is_empty() =>
+        {
+            bail!(
+                "{} needs a SYMBOL, or ranges such as 0x0+256K",
+                command_name(command)
+            )
+        }
+        Some(_) if cli.range.is_some() => {
+            bail!("--range limits sizes, so only the overview, top and retained take it")
+        }
+        Some(Command::Debug(_)) if cli.format() == Format::Json => {
             bail!("the debug commands print only text")
         }
-        Some(Command::Debug(DebugCommand::Items)) => answered(debug_items::run(&binary, out)),
+        Some(_) => Ok(()),
     }
 }
 

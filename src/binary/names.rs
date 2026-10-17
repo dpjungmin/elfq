@@ -88,6 +88,12 @@ pub fn short_names(name: &str) -> Vec<String> {
         short.sort();
         return short;
     }
+    // Only these make a name shorter: `::` in a path, `@plt`, `(` for
+    // parameters, `<` for generic arguments and `[` for a clone suffix. Most
+    // names, as in C, have none of them, and nothing to try.
+    if !name.contains([':', '(', '<', '[']) && !name.ends_with("@plt") {
+        return Vec::new();
+    }
 
     // Each path adds the shorter paths that mean the same thing, until none
     // is left to add.
