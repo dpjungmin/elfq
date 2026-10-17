@@ -152,10 +152,11 @@ symbolizer; that is a good case for `top`, `why` and `retained`.
 ./testdata/build.sh
 ```
 
-This needs `gcc` and `g++`, `arm-none-eabi-gcc` with newlib, and Rust with the
-`thumbv7em-none-eabihf` target (`rustup target add thumbv7em-none-eabihf`).
-The committed files were built with GCC 13.3.0 (Ubuntu 24.04),
-arm-none-eabi-gcc 13.2.1 with newlib 4.4.0, and rustc 1.97.0.
+This needs `gcc` and `g++`, `arm-none-eabi-gcc` with newlib, and `rustup`,
+which installs the Rust version that `rust/rust-toolchain.toml` names, with
+the `thumbv7em-none-eabihf` target. The committed files were built with
+GCC 13.3.0 (Ubuntu 24.04), arm-none-eabi-gcc 13.2.1 with newlib 4.4.0, and
+rustc 1.97.0.
 
 Builds are reproducible: the same toolchains give byte-identical files from
 any checkout path. Other toolchain versions produce different addresses and

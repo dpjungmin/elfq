@@ -6,8 +6,8 @@
 # toolchains, and so that their bytes stay stable across machines. Only run
 # this when a sample's source changes, and commit the results together.
 #
-# Needs: gcc and g++, arm-none-eabi-gcc with newlib, cargo with the
-# thumbv7em-none-eabihf target (rustup target add thumbv7em-none-eabihf).
+# Needs: gcc and g++, arm-none-eabi-gcc with newlib, and rustup, which
+# installs the Rust version that rust/rust-toolchain.toml names.
 set -eu
 
 cd "$(dirname "$0")"
@@ -72,6 +72,9 @@ g++ $cflags -o "$out/cpp-x86_64.elf" cpp/app.cpp
 variants strip cpp-x86_64
 
 rustflags="--remap-path-prefix=$here=."
+# Build where the copies below look, even if CARGO_TARGET_DIR or a cargo
+# config points elsewhere.
+export CARGO_TARGET_DIR="$here/rust/target"
 
 echo "Rust, x86-64 Linux"
 (cd rust && RUSTFLAGS="$rustflags" cargo build --release --locked --quiet)
