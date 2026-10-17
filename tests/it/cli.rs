@@ -1,5 +1,6 @@
 //! Runs the elfq program the way a user would.
 
+use std::path::Path;
 use std::process::Stdio;
 
 use crate::support::{DEEP_SAMPLE, SAMPLE, TCM_SAMPLE, assert_output, command, elfq};
@@ -753,20 +754,69 @@ Removing any single item wouldn't remove app_tick.
 
 #[test]
 fn why_explains_where_the_program_starts() {
-    let why = |file, symbol| stdout(&[file, "why", symbol]);
-    assert_eq!(
-        why(SAMPLE, "_start"),
-        "_start is the entry point, where the program starts.\n"
-    );
-    assert_eq!(
-        why(SAMPLE, "frame_dummy"),
-        "frame_dummy is listed in .init_array, so the program runs it when it starts.\n"
-    );
-    assert_eq!(
-        why("testdata/bin/c-cortex-m4.elf", "SysTick_Handler"),
-        "SysTick_Handler is in the vector table: the processor runs it on an interrupt or \
-         exception.\n"
-    );
+    // A root of each kind, and for startup code, when the program runs it.
+    let rust = "testdata/bin/rust-x86_64-nodebug.elf";
+    let firmware = "testdata/bin/c-cortex-m4.elf";
+    for (file, symbol, sentence) in [
+        (
+            SAMPLE,
+            "_start",
+            "_start is the entry point, where the program starts.",
+        ),
+        (
+            SAMPLE,
+            "_init",
+            "_init is in .init, which the program uses when it starts.",
+        ),
+        (
+            SAMPLE,
+            "_fini",
+            "_fini is in .fini, which the program uses when it exits.",
+        ),
+        (
+            SAMPLE,
+            "frame_dummy",
+            "frame_dummy is listed in .init_array, so the program runs it when it starts.",
+        ),
+        (
+            SAMPLE,
+            "__do_global_dtors_aux",
+            "__do_global_dtors_aux is listed in .fini_array, so the program runs it when it \
+             exits.",
+        ),
+        (
+            SAMPLE,
+            "__abi_tag",
+            "__abi_tag is a note in .note.ABI-tag, which the system reads when it loads the \
+             program.",
+        ),
+        (
+            SAMPLE,
+            ".plt",
+            ".plt is the header of the procedure linkage table, which the dynamic loader uses to \
+             find imported functions.",
+        ),
+        (
+            rust,
+            "rust_eh_personality",
+            "rust_eh_personality is a personality routine, which the unwinder calls while it \
+             handles a panic or an exception.",
+        ),
+        (
+            firmware,
+            "vector_table",
+            "vector_table holds the vector table, from which the processor takes the addresses \
+             of its handlers.",
+        ),
+        (
+            firmware,
+            "SysTick_Handler",
+            "SysTick_Handler is in the vector table: the processor runs it on an interrupt or \
+             exception.",
+        ),
+    ] {
+        assert_output(&stdout(&[file, "why", symbol]), &format!("{sentence}\n"));
+    }
 }
 
 #[test]
@@ -1264,6 +1314,32 @@ fn debug_items_lists_each_item() {
     assert_eq!(
         fields,
         ["0x1700", "532", "function", "symtab", "process_frame"]
+    );
+}
+
+#[test]
+fn a_file_whose_code_elfq_cant_read_says_so() {
+    // The x86-64 sample, marked as AArch64 code, which elfq can't read yet.
+    let mut data = std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join(SAMPLE)).unwrap();
+    // e_machine, in the ELF header: EM_AARCH64.
+    data[18..20].copy_from_slice(&183u16.to_le_bytes());
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("aarch64.elf");
+    std::fs::write(&path, data).unwrap();
+    let path = path.to_str().unwrap();
+
+    assert_output(
+        &stdout(&[path]),
+        &format!(
+            "\
+{path}: Aarch64 position-independent executable, with symbols and DWARF debug info
+30 functions and 23 data objects, 3873 bytes of code and data
+elfq can't read Aarch64 code yet, so it can't tell what calls what.
+"
+        ),
+    );
+    assert_output(
+        &stderr(&[path, "top"], 2),
+        "error: elfq can't read Aarch64 code yet, so it can't tell what calls what\n",
     );
 }
 
