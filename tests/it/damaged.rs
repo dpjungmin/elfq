@@ -443,3 +443,61 @@ A copy of 0 bytes is one the compiler merged into the code around it, so the deb
 ",
     );
 }
+
+#[test]
+fn each_dwarf_unit_is_read_to_the_end_of_its_root() {
+    // A unit holds its root entry, the entries below it, and here a byte
+    // after them that names no abbreviation. Abbreviation 1 is an inlined
+    // copy without children, at the address its DW_AT_low_pc gives, and 2 a
+    // compile unit with children and no attributes.
+    let abbrev = [1, 0x1d, 0, 0x11, 0x01, 0, 0, 2, 0x11, 1, 0, 0, 0];
+    let items = load_sample("c-x86_64.elf").items;
+    let main = items.iter().find(|item| item.name == "main").unwrap();
+    // The compile unit, a copy in main, and the end of the unit's children.
+    let mut entries = vec![2, 1];
+    entries.extend(main.address.to_le_bytes());
+    entries.push(0);
+    let expected = "\
+Inlined copies of 1 function take 0 of the 2557 bytes of code:
+
+BYTES  COPIES  FUNCTION
+    0       1  (unnamed)
+
+A copy of 0 bytes is one the compiler merged into the code around it, so the debug info gives it no bytes of its own.
+";
+    // DWARF 4, abbreviations at offset 0, 8-byte addresses, then the
+    // entries, with the byte after them, or, as gimli also reads it, with a
+    // null entry before the root.
+    for (name, entries) in [
+        ("dwarf-trailing-byte.elf", [&entries[..], &[7]].concat()),
+        ("dwarf-leading-null.elf", [&[0], &entries[..]].concat()),
+    ] {
+        let unit = [&[4, 0, 0, 0, 0, 0, 8], &entries[..]].concat();
+        let mut data = sample("c-x86_64.elf");
+        replace_section(&mut data, ".debug_info", &with_length(&unit));
+        replace_section(&mut data, ".debug_abbrev", &abbrev);
+        let (stdout, _) = run(name, &data, &["inlined"]);
+        assert_output(&stdout, expected);
+    }
+}
+
+#[test]
+fn dwarf_that_nests_deeply_is_read() {
+    // One compile unit, with lexical blocks nested a million deep: far
+    // deeper than a walk that recursed would have stack for.
+    let depth = 1_000_000;
+    // Abbreviation 1 is a lexical block and 2 a compile unit, each with
+    // children and no attributes.
+    let abbrev = [1, 0x0b, 1, 0, 0, 2, 0x11, 1, 0, 0, 0];
+    // DWARF 4, abbreviations at offset 0, 8-byte addresses. Then the
+    // compile unit, the blocks, and the end of each one's children.
+    let mut unit = vec![4, 0, 0, 0, 0, 0, 8, 2];
+    unit.extend(std::iter::repeat_n(1, depth));
+    unit.extend(std::iter::repeat_n(0, depth + 1));
+
+    let mut data = sample("c-x86_64.elf");
+    replace_section(&mut data, ".debug_info", &with_length(&unit));
+    replace_section(&mut data, ".debug_abbrev", &abbrev);
+    let (stdout, _) = run("deep-dwarf.elf", &data, &["inlined"]);
+    assert_output(&stdout, "The debug info lists no inlined code.\n");
+}

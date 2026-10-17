@@ -66,8 +66,7 @@ pub fn inlined_copies(binary: &Binary) -> Result<Vec<InlinedCopy>> {
         copies: Vec::new(),
     };
     for unit in &units {
-        let mut tree = unit.entries_tree(None)?;
-        walk.visit(unit, tree.root()?, None)?;
+        walk.unit(unit)?;
     }
     let mut copies = walk.copies;
     for index in 0..copies.len() {
@@ -87,24 +86,39 @@ struct Walk<'a, 'd> {
 }
 
 impl<'a, 'd> Walk<'a, 'd> {
-    /// Visits `node` and everything below it. `parent` is the copy that
-    /// encloses `node`, if any.
-    fn visit(
-        &mut self,
-        unit: &'a Unit<Reader<'d>>,
-        node: gimli::EntriesTreeNode<Reader<'d>>,
-        mut parent: Option<usize>,
-    ) -> Result<()> {
-        let entry = node.entry();
-        if entry.tag() == gimli::DW_TAG_inlined_subroutine
-            && let Some(copy) = self.copy(unit, entry, parent)?
-        {
-            self.copies.push(copy);
-            parent = Some(self.copies.len() - 1);
-        }
-        let mut children = node.children();
-        while let Some(child) = children.next()? {
-            self.visit(unit, child, parent)?;
+    /// Visits the unit's root entry and every entry below it, in the order
+    /// DWARF lists them. A loop rather than recursion, since entries can
+    /// nest deeper than the stack would hold.
+    fn unit(&mut self, unit: &'a Unit<Reader<'d>>) -> Result<()> {
+        // The copies that enclose the current entry, innermost last, each
+        // with its depth.
+        let mut enclosing: Vec<(isize, usize)> = Vec::new();
+        let mut entries = unit.entries();
+        // The root's depth, once it is read. The walk stops where the
+        // root's children end, before reading what a damaged unit holds
+        // after them.
+        let mut root = None;
+        while root.is_none_or(|root| entries.next_depth() > root) {
+            if !entries.next_entry()? {
+                break;
+            }
+            // A null entry ends a list of children. As in gimli, the first
+            // entry that isn't null is the root.
+            let Some(entry) = entries.current() else {
+                continue;
+            };
+            let depth = entry.depth();
+            root.get_or_insert(depth);
+            while enclosing.last().is_some_and(|&(at, _)| at >= depth) {
+                enclosing.pop();
+            }
+            let parent = enclosing.last().map(|&(_, copy)| copy);
+            if entry.tag() == gimli::DW_TAG_inlined_subroutine
+                && let Some(copy) = self.copy(unit, entry, parent)?
+            {
+                self.copies.push(copy);
+                enclosing.push((depth, self.copies.len() - 1));
+            }
         }
         Ok(())
     }
