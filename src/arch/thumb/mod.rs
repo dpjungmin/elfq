@@ -40,8 +40,21 @@ pub(super) fn scan(code: &[u8], address: u64, endianness: Endianness) -> Vec<Cod
     let mut scanner = Scanner::new(code, address, endianness);
     // Instructions take 2 bytes or more.
     scanner.instructions = Some(Vec::with_capacity(code.len() / 2));
-    let scanner = sweep(scanner);
-    let instructions = scanner.instructions.unwrap_or_default();
+    let mut scanner = sweep(scanner);
+    let mut instructions = scanner.instructions.take().unwrap_or_default();
+    // The sweep decodes a constant that only a later instruction loads, as
+    // in Clang's islands of constants, before it knows the constant is
+    // data. Both lists are in order, so one pass over each drops those
+    // instructions.
+    let mut data = scanner.data.iter().peekable();
+    instructions.retain(|instruction| {
+        while data
+            .next_if(|&(_, &end)| end <= instruction.offset)
+            .is_some()
+        {}
+        data.peek()
+            .is_none_or(|&(&start, _)| start >= instruction.offset + instruction.size())
+    });
     values::follow(code, address, endianness, &instructions, scanner.references)
 }
 
@@ -135,8 +148,9 @@ pub(super) fn ending(code: &[u8], address: u64, endianness: Endianness) -> Endin
 }
 
 /// Whether `code` is one of the veneers that GNU ld and LLD add for
-/// Cortex-M. Each puts the target, or its offset from pc, in a register,
-/// or on the stack where it pops pc from, and jumps there:
+/// Cortex-M. Each jumps to the target; all but LLD's lone `b.w` put the
+/// target, or its offset from pc, in a register, or on the stack where
+/// they pop pc from:
 ///
 /// ```text
 /// GNU ld, Cortex-M3 and up:  ldr.w pc, [pc]; .word target
@@ -372,10 +386,17 @@ pub(super) fn leading_padding(code: &[u8]) -> usize {
 }
 
 /// Whether the instruction that starts with `first`, followed by `second`,
-/// is padding that compilers and linkers put between functions: `nop`,
-/// `nop.w`, zeros, or lld's `0xd4d4`.
+/// is padding that compilers and linkers put between functions: a `nop`,
+/// zeros, or lld's `0xd4d4`.
 fn is_padding(first: u16, second: Option<u16>) -> bool {
-    matches!(first, 0xbf00 | 0x46c0 | 0x0000 | 0xd4d4) || (first, second) == (0xf3af, Some(0x8000))
+    is_nop(first, second) || matches!(first, 0x0000 | 0xd4d4)
+}
+
+/// Whether the instruction that starts with `first`, followed by `second`,
+/// is a `nop`, `mov r8, r8` or `nop.w`, the padding that compilers put
+/// inside a function to align a loop.
+fn is_nop(first: u16, second: Option<u16>) -> bool {
+    matches!(first, 0xbf00 | 0x46c0) || (first, second) == (0xf3af, Some(0x8000))
 }
 
 /// Where the processor goes after the instruction made of `first` and, if
@@ -593,9 +614,18 @@ impl<'a> Scanner<'a> {
             self.constant(literal(pc, first, u64::from(second & 0xff) * 4), 8);
             return None;
         }
-        if first & 0xff3f == 0xed1f && second & 0x0e00 == 0x0a00 {
-            let size = if second & 0x100 == 0 { 4 } else { 8 };
-            self.constant(literal(pc, first, u64::from(second & 0xff) * 4), size);
+        // vldr of a half, a single or a double: its size, and what its
+        // offset counts in.
+        let vldr = match (second >> 8) & 0xf {
+            0b1001 => Some((2, 2)),
+            0b1010 => Some((4, 4)),
+            0b1011 => Some((8, 4)),
+            _ => None,
+        };
+        if first & 0xff3f == 0xed1f
+            && let Some((size, scale)) = vldr
+        {
+            self.constant(literal(pc, first, u64::from(second & 0xff) * scale), size);
             return None;
         }
         // ldr pc, [register, ...]: a jump through memory, or a return when
@@ -918,6 +948,15 @@ mod tests {
             kinds(&code, 0x0800_0040),
             [(0x0800_0040, Address(0x2000_0024))]
         );
+    }
+
+    #[test]
+    fn half_precision_constants_are_skipped() {
+        // vldr.16 s2, [pc, #2]; bx lr; then two halves that vldr.16 loads,
+        // which would otherwise decode as a bl.
+        let code = [0x9f, 0xed, 0x01, 0x19, 0x70, 0x47, 0x00, 0xf0, 0x01, 0xf8];
+        assert_eq!(kinds(&code, 0), []);
+        assert_eq!(code_size(&code, 0, Little), 10);
     }
 
     #[test]

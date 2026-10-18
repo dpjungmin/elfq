@@ -78,11 +78,20 @@ impl Values {
         items: [Value::number(0); LIMIT],
     };
 
-    /// Adds `value`. Returns whether it is new, or `None` when it is new
-    /// and there's no room for it.
+    /// Adds `value`. A number that is stale on one path and not on
+    /// another is one the code may use, so it is not stale. Returns whether
+    /// it is new or no longer stale, or `None` when it is new and there's
+    /// no room for it.
     pub fn insert(&mut self, value: Value) -> Option<bool> {
         let len = usize::from(self.len);
-        match self.binary_search(&value) {
+        // Values sort by these first, and no two share them, so this finds
+        // the number whether or not it is stale.
+        let key = |value: &Value| (value.number, value.kind, value.source);
+        match self.binary_search_by(|item| key(item).cmp(&key(&value))) {
+            Ok(at) if self.items[at].stale && !value.stale => {
+                self.items[at].stale = false;
+                Some(true)
+            }
             Ok(_) => Some(false),
             Err(_) if len == LIMIT => None,
             Err(at) => {
@@ -353,9 +362,8 @@ impl State {
     }
 
     /// What `register` holds, where reading pc gives `pc`, taking what it
-    /// held before a call to be there still, as code that reads it after
-    /// the call counts on.
-    pub fn kept(&self, register: u16, pc: u32) -> Contents {
+    /// held before a call to be there still.
+    fn kept(&self, register: u16, pc: u32) -> Contents {
         let contents = self.registers[usize::from(register)];
         if register == PC {
             return Contents::holding(Value {

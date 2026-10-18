@@ -1095,9 +1095,28 @@ fn coprocessor(first: u16, second: u16) -> Option<Effect> {
                 Effect::new(pair, 0)
             })
         }
+        // Armv8-M's vlstm and vlldm, which save the floating-point
+        // registers to the 0x88 bytes at Rn and load them back, and leave
+        // Rn as it is.
+        0xec00 if first & 0xffe0 == 0xec20 && second & 0xff7f == 0x0a00 => {
+            let effect = Effect::new(bit(rn), 0);
+            Some(if loads {
+                effect.operation(Operation::Load {
+                    register: None,
+                    base: rn,
+                    offset: Some(0),
+                })
+            } else {
+                effect.operation(Operation::Store {
+                    register: None,
+                    base: rn,
+                    offset: Some(0),
+                    size: 0x88,
+                })
+            })
+        }
         // The floating-point loads and stores: vldr, vstr, vldm, vstm,
-        // vpush and vpop, and Armv8-M's vlldm and vlstm. P, U and W are
-        // bits 8, 7 and 5.
+        // vpush and vpop. P, U and W are bits 8, 7 and 5.
         0xec00 | 0xed00 => {
             let (p, u, w) = (first & 0x100 != 0, first & 0x80 != 0, first & 0x20 != 0);
             let writeback = w && !p || p && !u && w;
@@ -1113,6 +1132,15 @@ fn coprocessor(first: u16, second: u16) -> Option<Effect> {
                 }
                 (false, true) if stack && !u => {
                     effect.operation(Operation::Push { registers: 0, size })
+                }
+                // vldr of a half or a single, from one word.
+                (true, true) if !w && field != 0b1011 => {
+                    let offset = size as i32;
+                    effect.operation(Operation::Load {
+                        register: None,
+                        base: rn,
+                        offset: Some(if u { offset } else { -offset }),
+                    })
                 }
                 (true, _) => effect.operation(Operation::Load {
                     register: None,
@@ -1633,6 +1661,37 @@ mod tests {
                 base: SP,
                 offset: Some(4),
                 size: 2
+            }
+        );
+        // vldr s15, [r7, #4] and vldr.16 s15, [r7, #6] load from one word.
+        let vldr = |offset| Operation::Load {
+            register: None,
+            base: 7,
+            offset: Some(offset),
+        };
+        assert_eq!(operation(&[0xd7, 0xed, 0x01, 0x7a]), vldr(4));
+        assert_eq!(operation(&[0xd7, 0xed, 0x03, 0x79]), vldr(6));
+        // vlstm sp and vlldm sp save the registers to the stack and load
+        // them back, and leave sp as it is.
+        let vlstm = effect(0, &[0x2d, 0xec, 0x00, 0x0a]);
+        assert_eq!((vlstm.reads, vlstm.writes), (bit(SP), 0));
+        assert_eq!(
+            vlstm.operation,
+            Operation::Store {
+                register: None,
+                base: SP,
+                offset: Some(0),
+                size: 0x88
+            }
+        );
+        let vlldm = effect(0, &[0x3d, 0xec, 0x00, 0x0a]);
+        assert_eq!((vlldm.reads, vlldm.writes), (bit(SP), 0));
+        assert_eq!(
+            vlldm.operation,
+            Operation::Load {
+                register: None,
+                base: SP,
+                offset: Some(0)
             }
         );
         // Armv8.1-M's system registers: vstr FPCXTNS, [sp, #-4]! and vldr

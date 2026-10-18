@@ -58,7 +58,7 @@ use object::{Endian, Endianness};
 
 use self::state::{Contents, Kind, RESULT, State, Value, Values};
 use super::decode::{self, Effect, Flow, LowBit, Operation, Registers, When};
-use super::{Instruction, PC, SP, is_padding};
+use super::{Instruction, PC, SP, is_nop, is_padding};
 use crate::arch::CodeReference;
 use crate::arch::CodeReferenceKind::{self, *};
 
@@ -218,8 +218,19 @@ impl<'a> Function<'a> {
         instructions: &'a [Instruction],
         references: &[CodeReference],
     ) -> Option<Function<'a>> {
+        // Most functions show that on their own instructions, which is
+        // quicker to find than which of those the code reaches.
+        let each = instructions.iter().map(|instruction| {
+            let site = address + instruction.offset as u64;
+            decode::decode(site, instruction.first, instruction.second)
+        });
+        if !may_find_more(each) {
+            return None;
+        }
         let effects = decode_reached(address, instructions, references)?;
-        if !may_find_more(&effects) || enters_reached(address, instructions, &effects) {
+        if !may_find_more(effects.iter().copied())
+            || enters_reached(address, instructions, &effects)
+        {
             return None;
         }
         // The code may run on into code that it never reaches, as the code
@@ -643,9 +654,7 @@ impl<'a> Function<'a> {
                 Some((register, Contents::holding(address(value))))
             }
             Operation::HighHalf { register, high } => {
-                // Code completes a number it built before a call only when
-                // it knows the call kept it, even in r0.
-                let low = state.kept(register, pc);
+                let low = state.get(register, pc);
                 leaks = low.may_be_stack();
                 let contents = low.map(|low| {
                     (low.kind == Kind::Number).then(|| address(low.number & 0xffff | high << 16))
@@ -950,7 +959,7 @@ impl<'a> Function<'a> {
                 register, source, ..
             } if register != PC => other &= !bit(source),
             Operation::HighHalf { register, .. } => {
-                for value in state.kept(register, 0).values.iter() {
+                for value in state.get(register, 0).values.iter() {
                     use_value(&mut self.uses, value, Use::Part);
                 }
                 other &= !bit(register);
@@ -1382,15 +1391,15 @@ fn index_of(address: u64, instructions: &[Instruction], target: u64) -> Option<u
 
 /// Whether code that the first instruction doesn't lead to may go on into
 /// code it does, as the cases of a `switch` do when elfq can't read the
-/// table of addresses that the code jumps through to them: `mov pc,
-/// register`, `ldr pc, [...]`, or a call to `__gnu_thumb1_case_uqi` and
-/// the like. What the registers hold where they join would then miss what
-/// those cases put there. Padding before a loop doesn't count, but code
-/// that runs on through it does. A jump to the first instruction doesn't
-/// count either: it is a call, as from the next function in stripped
-/// firmware, which elfq may have taken to be part of this one. `effects`
-/// holds `None` for the instructions the code can't reach, up to the last
-/// it can.
+/// table of addresses that the code jumps through to them:
+/// `mov pc, register`, `ldr pc, [...]`, or a call to
+/// `__gnu_thumb1_case_uqi` and the like. What the registers hold where they
+/// join would then miss what those cases put there. Padding before a loop
+/// doesn't count, but code that runs on through its `nop`s does. A jump to
+/// the first instruction doesn't count either: it is a call, as from the
+/// next function in stripped firmware, which elfq may have taken to be part
+/// of this one. `effects` holds `None` for the instructions the code can't
+/// reach, up to the last it can.
 fn enters_reached(address: u64, instructions: &[Instruction], effects: &[Option<Effect>]) -> bool {
     let reached = |index: usize| effects.get(index).is_some_and(Option::is_some);
     let runs_on = |index: usize| {
@@ -1400,12 +1409,13 @@ fn enters_reached(address: u64, instructions: &[Instruction], effects: &[Option<
             .is_some_and(|next| next.offset == instruction.offset + instruction.size())
     };
     // Whether the code runs on from the instruction at `index` into code
-    // the first one leads to, through any padding.
+    // the first one leads to, through any `nop`s. Zeros there are the high
+    // half of a constant, not padding.
     let runs_into_reached = |mut index: usize| {
         while runs_on(index) {
             index += 1;
             let next = instructions[index];
-            if reached(index) || !is_padding(next.first, Some(next.second)) {
+            if reached(index) || !is_nop(next.first, Some(next.second)) {
                 return reached(index);
             }
         }
@@ -1442,8 +1452,9 @@ fn enters_reached(address: u64, instructions: &[Instruction], effects: &[Option<
 /// pc, as the stubs that linkers add for Cortex-M0 do. Most functions
 /// only call with `bl`, return with `bx lr` or by popping the lr they
 /// pushed, and load addresses that the sweep finds as well. `effects`
-/// holds `None` for the instructions the code can't reach.
-fn may_find_more(effects: &[Option<Effect>]) -> bool {
+/// holds the instructions in order, with `None` for those that it leaves
+/// out.
+fn may_find_more(effects: impl IntoIterator<Item = Option<Effect>>) -> bool {
     let branches_or_builds = |effect: &Effect| {
         matches!(
             effect.flow,
@@ -1457,21 +1468,26 @@ fn may_find_more(effects: &[Option<Effect>]) -> bool {
     };
     // Compilers pop pc only to return. The stubs store the address just
     // before they pop it.
-    let pops_stored = |store: &Effect, pop: &Effect| {
+    let stores = |effect: &Effect| {
         matches!(
-            store.operation,
+            effect.operation,
             Operation::Store {
                 register: Some(_),
                 base: SP,
                 ..
             }
-        ) && pop.flow == Flow::Pop
+        )
     };
-    effects.iter().flatten().any(branches_or_builds)
-        || effects.windows(2).any(|pair| match pair {
-            [Some(store), Some(pop)] => pops_stored(store, pop),
-            _ => false,
-        })
+    let mut stored = false;
+    for effect in effects {
+        match effect {
+            Some(effect) if branches_or_builds(&effect) => return true,
+            Some(effect) if stored && effect.flow == Flow::Pop => return true,
+            Some(effect) => stored = stores(&effect),
+            None => stored = false,
+        }
+    }
+    false
 }
 
 /// Where a branch through a register goes with `number` in it: to
@@ -1835,24 +1851,69 @@ mod tests {
                 (0x0800_0106, IndirectCall),
             ]
         );
-        // Code may also complete in r0 an address it began before a call.
-        // The call may have changed the low half, so the jump is also one
-        // through a pointer, as for any register a call may change:
-        //   8000100: b508       push    {r3, lr}
-        //   8000102: f240 1001  movw    r0, #0x101
-        //   8000106: f7ff fffb  bl      8000100
-        //   800010a: f2c3 0000  movt    r0, #0x3000
-        //   800010e: e8bd 4008  ldmia.w sp!, {r3, lr}
-        //   8000112: 4700       bx      r0
+        // Code that sets the high half of what a call returned, as Clang
+        // makes for `(read(4) & 0xffff) | 0x20010000`, completes a number
+        // elfq can't tell, not the 4 that r0 held before the call:
+        //   8000100: b580       push  {r7, lr}
+        //   8000102: 2004       movs  r0, #4
+        //   8000104: f7ff fffc  bl    8000100
+        //   8000108: f2c2 0001  movt  r0, #0x2001
+        //   800010c: bd80       pop   {r7, pc}
+        let code = halfwords(&[0xb580, 0x2004, 0xf7ff, 0xfffc, 0xf2c2, 0x0001, 0xbd80]);
+        assert_eq!(kinds(&code), [(0x0800_0104, Call(0x0800_0100))]);
+    }
+
+    #[test]
+    fn a_call_on_one_path_leaves_the_other_path_s_addresses() {
+        // GCC -Os with -fipa-ra for `switch (event) { ... handler = on_x;
+        // ... } if (verbose) log_event(); handler();`, where log_event
+        // keeps r0. Where cbz skips the call, r0 still holds one of the
+        // five addresses; where it doesn't, it may hold anything.
+        //   8000100: b510       push    {r4, lr}
+        //   8000102: 2803       cmp     r0, #3
+        //   8000104: d814       bhi.n   8000130
+        //   8000106: e8df f000  tbb     [pc, r0]
+        //   800010a: 0902 0e15  .bytes  2, 9, 21, 14
+        //   800010e: 480a       ldr     r0, [pc, #40]
+        //   8000110: b109       cbz     r1, 8000116
+        //   8000112: f7ff ffed  bl      80000f0
+        //   8000116: e8bd 4010  ldmia.w sp!, {r4, lr}
+        //   800011a: 4700       bx      r0
+        //   800011c: 4b07       ldr     r3, [pc, #28]
+        //   800011e: 4808       ldr     r0, [pc, #32]
+        //   8000120: 2201       movs    r2, #1
+        //   8000122: 605a       str     r2, [r3, #4]
+        //   8000124: e7f4       b.n     8000110
+        //   8000126: 4b05       ldr     r3, [pc, #20]
+        //   8000128: 4806       ldr     r0, [pc, #24]
+        //   800012a: 2203       movs    r2, #3
+        //   800012c: 605a       str     r2, [r3, #4]
+        //   800012e: e7ef       b.n     8000110
+        //   8000130: 4805       ldr     r0, [pc, #20]
+        //   8000132: e7ed       b.n     8000110
+        //   8000134: 4805       ldr     r0, [pc, #20]
+        //   8000136: e7eb       b.n     8000110
+        //   8000138: .word 0x30000069, 0x20000000, 0x30000079, 0x30000099,
+        //                  0x300000a9, 0x30000089
         let code = halfwords(&[
-            0xb508, 0xf240, 0x1001, 0xf7ff, 0xfffb, 0xf2c3, 0x0000, 0xe8bd, 0x4008, 0x4700,
+            0xb510, 0x2803, 0xd814, 0xe8df, 0xf000, 0x0902, 0x0e15, 0x480a, 0xb109, 0xf7ff, 0xffed,
+            0xe8bd, 0x4010, 0x4700, 0x4b07, 0x4808, 0x2201, 0x605a, 0xe7f4, 0x4b05, 0x4806, 0x2203,
+            0x605a, 0xe7ef, 0x4805, 0xe7ed, 0x4805, 0xe7eb, 0x0069, 0x3000, 0x0000, 0x2000, 0x0079,
+            0x3000, 0x0099, 0x3000, 0x00a9, 0x3000, 0x0089, 0x3000,
         ]);
+        let at_bx = kinds(&code)
+            .into_iter()
+            .filter(|&(site, _)| site == 0x0800_011a)
+            .collect::<Vec<_>>();
         assert_eq!(
-            kinds(&code),
+            at_bx,
             [
-                (0x0800_0106, Call(0x0800_0100)),
-                (0x0800_0112, TailJump(0x3000_0100)),
-                (0x0800_0112, IndirectJump),
+                (0x0800_011a, TailJump(0x3000_0068)),
+                (0x0800_011a, TailJump(0x3000_0078)),
+                (0x0800_011a, TailJump(0x3000_0088)),
+                (0x0800_011a, TailJump(0x3000_0098)),
+                (0x0800_011a, TailJump(0x3000_00a8)),
+                (0x0800_011a, IndirectJump),
             ]
         );
     }
@@ -1998,6 +2059,83 @@ mod tests {
     }
 
     #[test]
+    fn constants_between_instructions_are_not_cases() {
+        // A constant that only a later instruction loads, as in Clang's
+        // islands of constants, isn't code that runs on into the blx:
+        //   8000100: b510       push  {r4, lr}
+        //   8000102: 4c04       ldr   r4, [pc, #16]
+        //   8000104: b910       cbnz  r0, 800010c
+        //   8000106: e004       b.n   8000112
+        //   8000108: 12345678   .word 0x12345678
+        //   800010c: f85f 0008  ldr.w r0, [pc, #-8]
+        //   8000110: 47a0       blx   r4
+        //   8000112: bd10       pop   {r4, pc}
+        //   8000114: 30000101   .word 0x30000101
+        let code = halfwords(&[
+            0xb510, 0x4c04, 0xb910, 0xe004, 0x5678, 0x1234, 0xf85f, 0x0008, 0x47a0, 0xbd10, 0x0101,
+            0x3000,
+        ]);
+        let found = kinds(&code);
+        assert!(
+            found.contains(&(0x0800_0110, Call(0x3000_0100))),
+            "{found:x?}"
+        );
+        assert!(!found.contains(&(0x0800_0110, IndirectCall)));
+        // Nor is the end of a table of small numbers that an adr points
+        // at, whose high halves are zeros:
+        //   8000100: b510       push  {r4, lr}
+        //   8000102: 4c07       ldr   r4, [pc, #28]
+        //   8000104: a101       adr   r1, 800010c
+        //   8000106: f851 0020  ldr.w r0, [r1, r0, lsl #2]
+        //   800010a: e007       b.n   800011c
+        //   800010c: 00000001   .word 1, 2, 3, 4
+        //   800011c: 47a0       blx   r4
+        //   800011e: bd10       pop   {r4, pc}
+        //   8000120: 30000101   .word 0x30000101
+        let code = halfwords(&[
+            0xb510, 0x4c07, 0xa101, 0xf851, 0x0020, 0xe007, 0x0001, 0x0000, 0x0002, 0x0000, 0x0003,
+            0x0000, 0x0004, 0x0000, 0x47a0, 0xbd10, 0x0101, 0x3000,
+        ]);
+        let found = kinds(&code);
+        assert!(
+            found.contains(&(0x0800_011c, Call(0x3000_0100))),
+            "{found:x?}"
+        );
+        assert!(!found.contains(&(0x0800_011c, IndirectCall)));
+    }
+
+    #[test]
+    fn a_non_secure_call_keeps_the_stack() {
+        // Clang's call to Non-secure code, which saves the floating-point
+        // registers on the stack with vlstm and loads them back with
+        // vlldm, around a long call:
+        //   8000100: b590       push    {r4, r7, lr}
+        //   8000102: 4f07       ldr     r7, [pc, #28]
+        //   8000104: e92d 0ff0  push.w  {r4-r11}
+        //   8000108: b0a2       sub     sp, #136
+        //   800010a: ec2d 0a00  vlstm   sp
+        //   800010e: 47a4       blxns   r4
+        //   8000110: ec3d 0a00  vlldm   sp
+        //   8000114: b022       add     sp, #136
+        //   8000116: e8bd 0ff0  pop.w   {r4-r11}
+        //   800011a: 47b8       blx     r7
+        //   800011c: bd90       pop     {r4, r7, pc}
+        //   800011e: bf00       nop
+        //   8000120: 30000101   .word   0x30000101
+        let code = halfwords(&[
+            0xb590, 0x4f07, 0xe92d, 0x0ff0, 0xb0a2, 0xec2d, 0x0a00, 0x47a4, 0xec3d, 0x0a00, 0xb022,
+            0xe8bd, 0x0ff0, 0x47b8, 0xbd90, 0xbf00, 0x0101, 0x3000,
+        ]);
+        assert_eq!(
+            kinds(&code),
+            [
+                (0x0800_010e, IndirectCall),
+                (0x0800_011a, Call(0x3000_0100)),
+            ]
+        );
+    }
+
+    #[test]
     fn an_address_passed_on_the_stack_is_used() {
         // The fifth argument to the bl goes on the stack:
         //   8000100: b510       push  {r4, lr}
@@ -2077,6 +2215,29 @@ mod tests {
                 (0x0800_0114, TailJump(0x0800_0200)),
             ]
         );
+    }
+
+    #[test]
+    fn a_float_load_from_the_stack_reads_one_word() {
+        // GCC -O0 keeps the address and a float on the stack; the vldr
+        // reads only the float:
+        //   8000100: b580       push  {r7, lr}
+        //   8000102: b084       sub   sp, #16
+        //   8000104: af00       add   r7, sp, #0
+        //   8000106: 4b04       ldr   r3, [pc, #16]
+        //   8000108: 60fb       str   r3, [r7, #12]
+        //   800010a: edd7 7a01  vldr  s15, [r7, #4]
+        //   800010e: 68fb       ldr   r3, [r7, #12]
+        //   8000110: 4798       blx   r3
+        //   8000112: b004       add   sp, #16
+        //   8000114: bd80       pop   {r7, pc}
+        //   8000116: bf00       nop
+        //   8000118: 30000101   .word 0x30000101
+        let code = halfwords(&[
+            0xb580, 0xb084, 0xaf00, 0x4b04, 0x60fb, 0xedd7, 0x7a01, 0x68fb, 0x4798, 0xb004, 0xbd80,
+            0xbf00, 0x0101, 0x3000,
+        ]);
+        assert_eq!(kinds(&code), [(0x0800_0110, Call(0x3000_0100))]);
     }
 
     #[test]

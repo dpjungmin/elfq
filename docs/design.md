@@ -401,11 +401,14 @@ that do this.
    returns, and r1 to r3 and ip may still hold what they held, as code
    built with GCC's `-fipa-ra` counts on, so a branch through one of them
    goes there or anywhere. An address that the code only branches to isn't
-   also reported as used. Code that only a jump elfq doesn't follow leads
-   to, such as the cases of a switch that jumps through a table of
-   addresses, keeps what reading each instruction on its own finds; when
-   that code joins code elfq follows, the whole function does. elfq scans
-   each function once, as it loads the file (`Binary::code_references`).
+   also reported as used, unless it branches through r0 after a call: r0
+   then holds what the call returned, but `-fipa-ra` code may have kept
+   the address there, so it counts as taken. Code that only a jump elfq
+   doesn't follow leads to, such as the cases of a switch that jumps
+   through a table of addresses, keeps what reading each instruction on
+   its own finds; when that code joins code elfq follows, the whole
+   function does. elfq scans each function once, as it loads the file
+   (`Binary::code_references`).
    The entry point's code is a special case: startup code copies or clears
    whole sections such as `.data` and `.bss`, loading where each starts and
    ends through symbols that the linker script defines, such as `_sdata`
@@ -589,28 +592,32 @@ function's stack frame), and a query language.
    addresses a byte at a time, and elfq follows them only to a branch, so
    the variables such code uses are missing, and so are its long calls in
    a function that switches through a table of addresses, since such a
-   function keeps the sweep's references. `callers SYMBOL` and
-   `callees SYMBOL` name a veneer as the caller of its target, where the
-   range forms name the function that calls the veneer. In a file stripped
-   of local symbols only (`strip -x`), the veneers are in no item:
-   `callees` with ranges lists the calls to them as calls elfq can't
-   follow, and `callers` with ranges misses them. Code built with GCC's
-   `-fipa-ra` may keep an address in r0 to r3 across a call; when it then
-   passes the address to a function or back to its caller without naming
-   the register, or reads it from r0 other than to branch there, elfq
-   doesn't list it as taken, since it takes r0 to hold what the call
-   returned. Calls through a register on x86-64 aren't followed. A routine
-   in ROM that only the linker script names shows as its address, since
-   the symbol has no section. An assembly function whose symbol has no
-   size, last in its section, counts as empty, so its calls are missing;
-   the same file without symbols has them. Startup code that copies
-   sections outside the entry function, or reads a table of them as CMSIS
-   does, adds rows to `callers`.
+   function keeps the sweep's references. Code that a switch jumps to
+   through a table of addresses, and that other code also branches to,
+   gets what the registers hold only from those branches, so it misses
+   what the switch put there. `callers SYMBOL` and `callees SYMBOL` name a
+   veneer as the caller of its target, where the range forms name the
+   function that calls the veneer. In a file stripped of local symbols
+   only (`strip -x`), the veneers are in no item: `callees` with ranges
+   lists the calls to them as calls elfq can't follow, and `callers` with
+   ranges misses them. In a file without symbols, LLD's veneer that is a
+   lone `b.w` looks like any tail call, so the range forms name it as the
+   caller. Code built with GCC's `-fipa-ra` may keep an address in r0 to
+   r3 across a call; when it then passes the address to a function or back
+   to its caller without naming the register, or reads it from r0 other
+   than to branch there, elfq doesn't list it as taken, since it takes r0
+   to hold what the call returned. Calls through a register on x86-64
+   aren't followed. A routine in ROM that only the linker script names
+   shows as its address, since the symbol has no section. An assembly
+   function whose symbol has no size, last in its section, counts as
+   empty, so its calls are missing; the same file without symbols has
+   them. Startup code that copies sections outside the entry function, or
+   reads a table of them as CMSIS does, adds rows to `callers`.
 4. **Shared libraries.** The functions that a library exports aren't roots
    yet, so `top`, `retained` and `why` refuse libraries, and also programs
    linked with `-static-pie`, which elfq takes for libraries. elfq finds
    the functions of stripped firmware by following its code only in files
    linked to run at one address, so in Arm firmware linked with `-pie` and
-   stripped it finds none.
+   stripped it finds only the entry point.
 5. **Compressed DWARF.** `inlined` can't read debug info that the linker
    compressed (`--compress-debug-sections`).
