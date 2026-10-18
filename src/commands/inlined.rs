@@ -13,7 +13,7 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
 
-use super::json;
+use super::{json, text};
 use crate::binary::{Binary, ItemKind};
 use crate::cli::Format;
 use crate::debuginfo::{self, InlinedCopy};
@@ -124,8 +124,8 @@ fn write_list(
     writeln!(
         out,
         "Inlined copies of {} take {inlined} of the {} of code:",
-        super::plural(totals.len(), "function", "functions"),
-        super::bytes_text(code)
+        text::plural(totals.len(), "function", "functions"),
+        text::bytes_text(code)
     )?;
     writeln!(out)?;
     let mut table = Table::new(&[
@@ -133,7 +133,7 @@ fn write_list(
         ("COPIES", Align::Right),
         ("FUNCTION", Align::Left),
     ]);
-    let (shown, hidden) = totals.split_at(super::shown_count(totals.len(), super::shown(all)));
+    let (shown, hidden) = totals.split_at(text::shown_count(totals.len(), text::shown(all)));
     for total in shown {
         table.row(vec![
             total.bytes.to_string(),
@@ -186,7 +186,7 @@ fn write_tree(
     }
 
     let functions: BTreeSet<&str> = groups.list.iter().map(|group| group.name).collect();
-    let functions = super::plural(functions.len(), "function", "functions");
+    let functions = text::plural(functions.len(), "function", "functions");
     let are = if bytes == 1 { "is" } else { "are" };
     // The copies' code can reach past the function's symbol, into a part
     // that the compiler moved away from the rest, such as `name.cold`.
@@ -194,17 +194,17 @@ fn write_tree(
         writeln!(
             out,
             "Of {name}'s {}, {bytes} {are} inlined copies of {functions}:",
-            super::bytes_text(item.size)
+            text::bytes_text(item.size)
         )?;
     } else {
         writeln!(
             out,
             "{} of {name}'s code {are} inlined copies of {functions}:",
-            super::bytes_text(bytes)
+            text::bytes_text(bytes)
         )?;
     }
     writeln!(out)?;
-    let shown = groups.largest(super::shown(all));
+    let shown = groups.largest(text::shown(all));
     let mut table = Table::new(&[
         ("BYTES", Align::Right),
         ("COPIES", Align::Right),

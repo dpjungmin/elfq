@@ -1,0 +1,324 @@
+//! How elfq words things: the counts, lists, columns and sentences that
+//! more than one command writes, so that every command says them the same
+//! way.
+
+use object::Architecture;
+
+use super::json;
+use crate::binary::{AddressRange, Binary, Item, ItemKind};
+use crate::graph::{Node, ReferenceKind, Root, RootKind, Unresolved};
+
+/// "1 function", "2 functions".
+pub(super) fn plural(n: usize, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
+/// "1 byte", "2 bytes".
+pub(super) fn bytes_text(n: u64) -> String {
+    format!("{n} {}", if n == 1 { "byte" } else { "bytes" })
+}
+
+/// An item's size, `~N` when it is an estimate, or `?` when it is unknown.
+pub(super) fn size_text(item: &Item) -> String {
+    match (item.size, item.size_estimated) {
+        (0, _) => "?".to_string(),
+        (size, true) => format!("~{size}"),
+        (size, false) => size.to_string(),
+    }
+}
+
+/// "3 functions", "2 data objects" or "4 items", whichever fits `nodes`.
+pub(super) fn count_text(binary: &Binary, nodes: &[Node]) -> String {
+    let kind = |node: &Node| match node {
+        Node::Item(index) => Some(binary.items[*index].kind),
+        Node::Import(_) => None,
+    };
+    match nodes.first().map(kind) {
+        Some(first) if nodes.iter().all(|node| kind(node) == first) => match first {
+            Some(ItemKind::Function) => plural(nodes.len(), "function", "functions"),
+            Some(ItemKind::Data) => plural(nodes.len(), "data object", "data objects"),
+            None => plural(nodes.len(), "import", "imports"),
+        },
+        _ => plural(nodes.len(), "item", "items"),
+    }
+}
+
+/// How many of the largest items the trees of `top` and `retained`, and
+/// the list and tree of `inlined`, show. Lines such as "└─ 6 more" sum up
+/// the rest, and an item that would be left out on its own is shown too.
+const SHOWN: usize = 30;
+
+/// How many of the largest items to show: [`SHOWN`], or with `--all`, every
+/// one.
+pub(super) fn shown(all: bool) -> usize {
+    if all { usize::MAX } else { SHOWN }
+}
+
+/// How many of `count` things to show where `room` fit: all of them, or
+/// `room` and a summary of the rest, such as "and 5 more". A summary never
+/// stands for one thing, since naming the thing takes no more room.
+pub(super) fn shown_count(count: usize, room: usize) -> usize {
+    if count > room.saturating_add(1) {
+        room
+    } else {
+        count
+    }
+}
+
+/// Words joined into a phrase: "a", "a and b", "a, b and c", or for more
+/// than `room` and one, the first `room` of them and "and 5 more".
+pub(super) fn phrase(words: &[&str], room: usize) -> String {
+    let shown = shown_count(words.len(), room);
+    match words {
+        _ if shown < words.len() => format!(
+            "{} and {} more",
+            words[..shown].join(", "),
+            words.len() - shown
+        ),
+        [] => String::new(),
+        [one] => one.to_string(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+/// Names joined into a phrase: "a", "a and b", "a, b and c", or for more
+/// than eleven, "a, b, … and 5 more".
+pub(super) fn names_text(names: &[&str]) -> String {
+    phrase(names, 10)
+}
+
+/// Addresses for a sentence: "0x1795", "0x1795 and 0x17d4", or for more
+/// than four, "0x1795, 0x17d4, 0x17e0 and 3 more".
+pub(super) fn addresses_text(sites: &[u64]) -> String {
+    let sites: Vec<String> = sites.iter().map(|site| format!("{site:#x}")).collect();
+    let sites: Vec<&str> = sites.iter().map(String::as_str).collect();
+    phrase(&sites, 3)
+}
+
+/// Addresses for the AT column, the first few of them: "0x1795, 0x17d4",
+/// or "0x1795, 0x17d4, 0x17e0 and 3 more".
+pub(super) fn at_column(sites: &[u64]) -> String {
+    let shown: Vec<String> = sites
+        .iter()
+        .take(shown_count(sites.len(), 3))
+        .map(|site| format!("{site:#x}"))
+        .collect();
+    match sites.len() - shown.len() {
+        0 => shown.join(", "),
+        more => format!("{} and {more} more", shown.join(", ")),
+    }
+}
+
+/// How a reference of `kind` uses `to`, for the HOW column. Code that
+/// reads, writes or loads the address of a data object "uses" it, on every
+/// architecture, while "address taken" means a pointer to a function. An
+/// import keeps "address taken", since elfq doesn't record yet whether it
+/// is a function or data.
+pub(super) fn how_column(binary: &Binary, to: Node, kind: ReferenceKind) -> &'static str {
+    let is_data = match to {
+        Node::Item(index) => binary.items[index].kind == ItemKind::Data,
+        Node::Import(_) => false,
+    };
+    match kind {
+        ReferenceKind::Access => "uses",
+        ReferenceKind::Address if is_data => "uses",
+        kind => json::how_field(kind),
+    }
+}
+
+/// "call" or "jump", for a call or jump that elfq can't follow.
+pub(super) fn call_or_jump(unresolved: &Unresolved) -> &'static str {
+    if unresolved.is_call { "call" } else { "jump" }
+}
+
+/// "1 call", "2 jumps" or "1 call and 2 jumps", for calls and jumps that
+/// elfq can't follow.
+pub(super) fn calls_and_jumps<'a>(unresolved: impl IntoIterator<Item = &'a Unresolved>) -> String {
+    let unresolved: Vec<&Unresolved> = unresolved.into_iter().collect();
+    let calls = unresolved.iter().filter(|u| u.is_call).count();
+    let jumps = unresolved.len() - calls;
+    match (calls, jumps) {
+        (_, 0) => plural(calls, "call", "calls"),
+        (0, _) => plural(jumps, "jump", "jumps"),
+        _ => format!(
+            "{} and {}",
+            plural(calls, "call", "calls"),
+            plural(jumps, "jump", "jumps")
+        ),
+    }
+}
+
+/// Says that nothing reaches the item called `name` from where the program
+/// starts.
+pub(super) fn nothing_reaches(name: &str) -> String {
+    format!(
+        "Nothing reaches {name} from where the program starts: it is dead code, or used in a \
+         way elfq can't see."
+    )
+}
+
+/// Why a root is one, as a sentence.
+pub(super) fn root_sentence(binary: &Binary, root: &Root) -> String {
+    let name = root.node.name(binary);
+    // Whether the program uses a startup section when it starts or exits.
+    let when = |section: usize| {
+        let section = &binary.sections[section].name;
+        if section.contains("fini") || section.contains("dtors") {
+            "exits"
+        } else {
+            "starts"
+        }
+    };
+    match root.kind {
+        RootKind::Entry => format!("{name} is the entry point, where the program starts."),
+        RootKind::InSection(section)
+            if binary.sections[section].kind == object::SectionKind::Note =>
+        {
+            format!(
+                "{name} is a note in {}, which the system reads when it loads the program.",
+                binary.sections[section].name
+            )
+        }
+        RootKind::InSection(section) => format!(
+            "{name} is in {}, which the program uses when it {}.",
+            binary.sections[section].name,
+            when(section)
+        ),
+        RootKind::ListedIn(section) => format!(
+            "{name} is listed in {}, so the program runs it when it {}.",
+            binary.sections[section].name,
+            when(section)
+        ),
+        RootKind::PltHeader => format!(
+            "{name} is the header of the procedure linkage table, which the dynamic loader uses \
+             to find imported functions."
+        ),
+        RootKind::Personality => format!(
+            "{name} is a personality routine, which the unwinder calls while it handles a panic \
+             or an exception."
+        ),
+        RootKind::VectorTable => format!(
+            "{name} holds the vector table, from which the processor takes the addresses of its \
+             handlers."
+        ),
+        RootKind::Handler => format!(
+            "{name} is in the vector table: the processor runs it on an interrupt or exception."
+        ),
+    }
+}
+
+/// Why a root is one, for the HOW column.
+pub(super) fn root_how(binary: &Binary, kind: RootKind) -> String {
+    match kind {
+        RootKind::Handler => "vector table".to_string(),
+        _ => root_json(binary, kind),
+    }
+}
+
+/// Why a root is one, as JSON says it, in the words the HOW column used
+/// before it was shortened, since scripts may count on them.
+pub(super) fn root_json(binary: &Binary, kind: RootKind) -> String {
+    match kind {
+        RootKind::Entry => "entry point".to_string(),
+        RootKind::InSection(section) => format!("in {}", binary.sections[section].name),
+        RootKind::ListedIn(section) => format!("listed in {}", binary.sections[section].name),
+        RootKind::PltHeader => "used by the dynamic loader".to_string(),
+        RootKind::Personality => "used by the unwinder".to_string(),
+        RootKind::VectorTable => "vector table".to_string(),
+        RootKind::Handler => "listed in the vector table".to_string(),
+    }
+}
+
+/// The name of an architecture, as the overview prints it: `x86-64` or
+/// `32-bit Arm`.
+pub(super) fn architecture_name(architecture: Architecture) -> String {
+    match architecture {
+        Architecture::X86_64 => "x86-64".to_string(),
+        Architecture::Arm => "32-bit Arm".to_string(),
+        other => format!("{other:?}"),
+    }
+}
+
+/// Says that elfq can't read the file's code yet, and so can't tell what
+/// calls what.
+pub(super) fn cannot_read_code(binary: &Binary) -> String {
+    let code = match binary.architecture {
+        // Thumb code is readable; this is the older instruction set.
+        Architecture::Arm => "32-bit Arm (A32)".to_string(),
+        other => architecture_name(other),
+    };
+    format!("elfq can't read {code} code yet, so it can't tell what calls what")
+}
+
+/// The names of the sections that have bytes in `range`.
+pub(super) fn sections_in(binary: &Binary, range: AddressRange) -> Vec<&str> {
+    binary
+        .sections
+        .iter()
+        .filter(|section| section.allocated && range.overlap(section.address, section.size) > 0)
+        .map(|section| section.name.as_str())
+        .collect()
+}
+
+/// A range as `--range` takes it, with the sections that have bytes in it,
+/// such as `0x00000000..0x000000e0 (.itcm)`.
+pub(super) fn range_text(binary: &Binary, range: AddressRange) -> String {
+    let sections = sections_in(binary, range);
+    match sections[..] {
+        [] => range_argument(range),
+        _ => format!("{} ({})", range_argument(range), names_text(&sections)),
+    }
+}
+
+/// A range as `--range` takes it, its addresses padded to 8 hex digits so
+/// that a column of ranges lines up, such as `0x00000000..0x000000e0`.
+pub(super) fn range_argument(range: AddressRange) -> String {
+    range.text(format!("{:x}", range.end).len().max(8))
+}
+
+/// `text` as one shell word: quoted when it holds anything but letters,
+/// digits and `_./@:+-`.
+pub(super) fn shell_quote(text: &str) -> String {
+    let plain = |c: char| c.is_ascii_alphanumeric() || "_./@:+-".contains(c);
+    if !text.is_empty() && text.chars().all(plain) {
+        text.to_string()
+    } else {
+        format!("'{}'", text.replace('\'', r"'\''"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_summary_never_stands_for_one_thing() {
+        let names: Vec<String> = (1..=12).map(|n| format!("f{n}")).collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        assert_eq!(
+            names_text(&names[..11]),
+            "f1, f2, f3, f4, f5, f6, f7, f8, f9, f10 and f11"
+        );
+        assert_eq!(
+            names_text(&names),
+            "f1, f2, f3, f4, f5, f6, f7, f8, f9, f10 and 2 more"
+        );
+        assert_eq!(at_column(&[1, 2, 3, 4]), "0x1, 0x2, 0x3, 0x4");
+        assert_eq!(at_column(&[1, 2, 3, 4, 5]), "0x1, 0x2, 0x3 and 2 more");
+        assert_eq!(addresses_text(&[1, 2, 3, 4]), "0x1, 0x2, 0x3 and 0x4");
+        assert_eq!(addresses_text(&[1, 2, 3, 4, 5]), "0x1, 0x2, 0x3 and 2 more");
+    }
+
+    #[test]
+    fn a_sentence_joins_its_last_two_words_with_and() {
+        assert_eq!(addresses_text(&[0x10]), "0x10");
+        assert_eq!(addresses_text(&[0x10, 0x20]), "0x10 and 0x20");
+    }
+
+    #[test]
+    fn one_byte_is_a_byte() {
+        assert_eq!(bytes_text(0), "0 bytes");
+        assert_eq!(bytes_text(1), "1 byte");
+        assert_eq!(bytes_text(2), "2 bytes");
+    }
+}

@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use anyhow::Result;
 use serde::Serialize;
 
-use super::json;
+use super::{json, text};
 use crate::binary::{AddressRange, Binary, ItemKind};
 use crate::graph::{DominatorTree, Graph, Node, ReferenceKind};
 use crate::render::TreeRow;
@@ -104,7 +104,7 @@ impl<'a> RetainedTree<'a> {
     pub fn own_text(&self, index: usize) -> String {
         let item = &self.binary.items[index];
         match (self.range, self.own(index)) {
-            (None, _) => super::size_text(item),
+            (None, _) => text::size_text(item),
             (Some(_), own) if item.size_estimated && own > 0 => format!("~{own}"),
             (Some(_), own) => own.to_string(),
         }

@@ -8,7 +8,7 @@ use serde::Serialize;
 
 use super::ranges::{self, Direction};
 use super::symbol::{self, Subject};
-use super::{Outcome, json};
+use super::{Outcome, json, text};
 use crate::binary::{Binary, ItemKind};
 use crate::cli::Format;
 use crate::graph::{Graph, Node, Reference, ReferenceKind};
@@ -88,7 +88,7 @@ fn callers(
         };
         return json::write(&callers, out);
     }
-    let rows = rows(&|reference| super::how_column(binary, reference.to, reference.kind));
+    let rows = rows(&|reference| text::how_column(binary, reference.to, reference.kind));
     let mut notes = Vec::new();
     // A function's stubs all have its name, as `log_msg@plt`: glibc's
     // `libc.so.6` has two for `wmemset`. Code that only takes a stub's
@@ -108,7 +108,7 @@ fn callers(
     // and those through a pointer.
     let root = graph.roots.iter().find(|root| root.node == node);
     match root {
-        Some(root) => notes.push(super::why::root_sentence(binary, root)),
+        Some(root) => notes.push(text::root_sentence(binary, root)),
         None if through_pointer => notes.push(format!(
             "Calls to {name} through a pointer aren't listed, since elfq can't see them."
         )),
@@ -126,7 +126,7 @@ fn callers(
     writeln!(
         out,
         "{name} is used by {}:",
-        super::count_text(binary, &callers)
+        text::count_text(binary, &callers)
     )?;
     writeln!(out)?;
     let mut table = Table::new(&[
@@ -138,7 +138,7 @@ fn callers(
         table.row(vec![
             row.node.name(binary).to_string(),
             row.how.to_string(),
-            super::addresses(&row.sites),
+            text::at_column(&row.sites),
         ]);
     }
     table.write(out)?;

@@ -6,6 +6,7 @@ use std::io::Write;
 
 use anyhow::Result;
 
+use super::text;
 use crate::binary::{Binary, Item, ItemKind};
 use crate::render::{Align, Table};
 
@@ -13,7 +14,7 @@ pub fn run(binary: &Binary, out: &mut dyn Write) -> Result<()> {
     writeln!(
         out,
         "{} {}, entry {:#x}: {}, {}",
-        super::architecture_name(binary.architecture),
+        text::architecture_name(binary.architecture),
         binary.kind,
         binary.entry,
         count(binary, ItemKind::Function, "function", "functions"),
@@ -31,7 +32,7 @@ pub fn run(binary: &Binary, out: &mut dyn Write) -> Result<()> {
     for item in &binary.items {
         table.row(vec![
             format!("{:#x}", item.address),
-            super::size_text(item),
+            text::size_text(item),
             item.kind.to_string(),
             item.source.to_string(),
             name_text(item),
@@ -43,7 +44,7 @@ pub fn run(binary: &Binary, out: &mut dyn Write) -> Result<()> {
 
 fn count(binary: &Binary, kind: ItemKind, one: &str, many: &str) -> String {
     let n = binary.items.iter().filter(|item| item.kind == kind).count();
-    super::plural(n, one, many)
+    text::plural(n, one, many)
 }
 
 fn name_text(item: &Item) -> String {

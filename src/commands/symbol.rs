@@ -18,6 +18,7 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context, Result, anyhow, bail};
 
+use super::text;
 use crate::binary::{AddressRange, Binary, demangle, hex_number, short_names};
 use crate::graph::Node;
 
@@ -197,11 +198,11 @@ impl<'a> Names<'a> {
     /// each, next to its full name.
     fn choices(&self, query: &str, nodes: &[Node]) -> String {
         const SHOWN: usize = 10;
-        let shown = super::shown_count(nodes.len(), SHOWN);
+        let shown = text::shown_count(nodes.len(), SHOWN);
         let rows: Vec<(String, &str)> = nodes[..shown]
             .iter()
             .map(|&node| {
-                let query = super::shell_quote(&self.query_for(node));
+                let query = text::shell_quote(&self.query_for(node));
                 (query, node.name(self.binary))
             })
             .collect();
@@ -213,7 +214,7 @@ impl<'a> Names<'a> {
 
         let mut message = format!(
             "`{query}` could mean {}; use one of the names on the left instead:",
-            super::count_text(self.binary, nodes)
+            text::count_text(self.binary, nodes)
         );
         for (query, name) in rows {
             if query == name {
@@ -282,7 +283,7 @@ impl<'a> Names<'a> {
             if distance == 0 && !suggestion.to_lowercase().contains(&query) {
                 continue;
             }
-            let suggestion = super::shell_quote(&suggestion);
+            let suggestion = text::shell_quote(&suggestion);
             if !suggestions.contains(&suggestion) {
                 suggestions.push(suggestion);
             }

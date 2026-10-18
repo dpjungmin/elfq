@@ -12,8 +12,8 @@ use std::io::Write;
 use anyhow::{Result, bail};
 use serde::Serialize;
 
-use super::json;
 use super::retained_tree::{KeptItem, RetainedTree};
+use super::{json, text};
 use crate::binary::{AddressRange, Binary, FileKind, Item};
 use crate::cli::Format;
 use crate::graph::Node;
@@ -64,17 +64,17 @@ pub fn run(
     // reaches is the whole answer.
     let kept = retained.kept() > 0;
     if kept {
-        let total = super::bytes_text(retained.bytes());
+        let total = text::bytes_text(retained.bytes());
         match range {
             Some(range) => writeln!(
                 out,
                 "{total} of code and data in {}, by what keeps them:",
-                super::range_text(binary, range)
+                text::range_text(binary, range)
             )?,
             None => writeln!(out, "{total} of code and data, by what keeps them:")?,
         }
         writeln!(out)?;
-        write_largest(&retained, super::shown(all), out)?;
+        write_largest(&retained, text::shown(all), out)?;
     }
     if let Some(unreachable) = unreachable_text(&retained) {
         if kept {
@@ -158,14 +158,14 @@ fn unreachable_text(retained: &RetainedTree) -> Option<String> {
     if let [name] = names[..] {
         return Some(format!(
             "Nothing reaches {name}, {}: it is dead code, or used in a way elfq can't see.",
-            super::bytes_text(bytes)
+            text::bytes_text(bytes)
         ));
     }
     let nodes: Vec<Node> = unreachable.iter().map(|&index| Node::Item(index)).collect();
     Some(format!(
         "Nothing reaches {}, {} in all: {}. They are dead code, or used in a way elfq can't see.",
-        super::count_text(binary, &nodes),
-        super::bytes_text(bytes),
-        super::names_text(&names)
+        text::count_text(binary, &nodes),
+        text::bytes_text(bytes),
+        text::names_text(&names)
     ))
 }

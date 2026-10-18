@@ -11,8 +11,8 @@ use std::io::Write;
 use anyhow::{Result, bail};
 use serde::Serialize;
 
-use super::json;
 use super::retained_tree::{KeptItem, RetainedTree};
+use super::{json, text};
 use crate::binary::{AddressRange, Binary, FileKind, ItemKind};
 use crate::cli::Format;
 use crate::graph::{Node, Unresolved};
@@ -64,8 +64,8 @@ pub fn run(
     let retained = &symbol.retained;
     let items = symbol.counted_items();
     let own = retained.own(index);
-    let own_bytes = super::bytes_text(own);
-    let range = range.map(|range| super::range_text(binary, range));
+    let own_bytes = text::bytes_text(own);
+    let range = range.map(|range| text::range_text(binary, range));
     if items.is_empty() {
         match &range {
             Some(range) if own == 0 => writeln!(
@@ -90,10 +90,10 @@ pub fn run(
     writeln!(
         out,
         "Removing {name} would save {}{in_range}:",
-        super::bytes_text(retained.retained(index))
+        text::bytes_text(retained.retained(index))
     )?;
     writeln!(out)?;
-    let shown = retained.largest(&[node], &items, super::shown(all));
+    let shown = retained.largest(&[node], &items, text::shown(all));
     let mut table = Table::new(&[
         ("RETAINED", Align::Right),
         ("OWN", Align::Right),
@@ -172,7 +172,7 @@ fn write_shared(symbol: &SymbolInTree, out: &mut dyn Write) -> Result<()> {
     if shared.is_empty() {
         return Ok(());
     }
-    let named = super::shown_count(shared.len(), NAMED);
+    let named = text::shown_count(shared.len(), NAMED);
     let mut names = shared[..named].join(", ");
     if named < shared.len() {
         names += &format!(" and {} more", shared.len() - named);
@@ -229,7 +229,7 @@ impl<'a> SymbolInTree<'a> {
         writeln!(
             out,
             "{}",
-            super::nothing_reaches(self.node.name(self.retained.binary))
+            text::nothing_reaches(self.node.name(self.retained.binary))
         )?;
         Ok(())
     }

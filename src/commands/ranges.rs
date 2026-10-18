@@ -8,7 +8,7 @@ use std::io::Write;
 use anyhow::{Result, bail};
 use serde::Serialize;
 
-use super::{Outcome, json};
+use super::{Outcome, json, text};
 use crate::binary::{AddressRange, Binary};
 use crate::cli::Format;
 use crate::graph::{Boundary, Crossing, Graph, Node, Unresolved};
@@ -148,7 +148,7 @@ fn leaving(
                 .map(|unresolved| UnresolvedJson {
                     caller: json::Item::new(binary, Node::Item(unresolved.from)),
                     site: json::address(unresolved.site),
-                    how: super::call_or_jump(unresolved),
+                    how: text::call_or_jump(unresolved),
                     target: unresolved.target.map(json::address),
                 })
                 .collect(),
@@ -166,10 +166,10 @@ fn leaving(
     let it = if ranges.len() == 1 { "it" } else { "them" };
     let verb = |one: &str, many: &str| if ranges.len() == 1 { one } else { many }.to_string();
     let groups = groups(binary, &crossings, Direction::Out, |crossing| {
-        super::how_column(binary, crossing.to, crossing.kind)
+        text::how_column(binary, crossing.to, crossing.kind)
     });
-    let used = super::count_text(binary, &outside_nodes(&groups));
-    let unknown = super::calls_and_jumps(&unfollowed);
+    let used = text::count_text(binary, &outside_nodes(&groups));
+    let unknown = text::calls_and_jumps(&unfollowed);
     let lead = match (groups.is_empty(), unfollowed.is_empty()) {
         (true, true) if unreadable.is_empty() => {
             format!("{subject} {} nothing outside {it}.", verb("uses", "use"))
@@ -213,8 +213,8 @@ fn leaving(
                 address,
                 String::new(),
                 binary.items[unresolved.from].name.clone(),
-                super::call_or_jump(&unresolved).to_string(),
-                super::addresses(&sites),
+                text::call_or_jump(&unresolved).to_string(),
+                text::at_column(&sites),
             ]);
         }
         write_groups(binary, &groups, &mut table);
@@ -232,7 +232,7 @@ fn leaving(
         writeln!(
             out,
             "elfq doesn't know where {} {}, so it can't read {} code.",
-            super::names_text(&names),
+            text::names_text(&names),
             if names.len() == 1 { "ends" } else { "end" },
             if names.len() == 1 { "its" } else { "their" }
         )?;
@@ -286,7 +286,7 @@ fn entering(
     let subject = ranges_text(binary, ranges);
     let it = if ranges.len() == 1 { "it" } else { "them" };
     let groups = groups(binary, &crossings, Direction::In, |crossing| {
-        super::how_column(binary, crossing.to, crossing.kind)
+        text::how_column(binary, crossing.to, crossing.kind)
     });
     if groups.is_empty() && through_pointer.is_empty() {
         writeln!(out, "Nothing outside {subject} uses {it}.")?;
@@ -297,7 +297,7 @@ fn entering(
             out,
             "{subject} {} used by {} outside {it}:",
             if ranges.len() == 1 { "is" } else { "are" },
-            super::count_text(binary, &outside_nodes(&groups))
+            text::count_text(binary, &outside_nodes(&groups))
         )?;
         writeln!(out)?;
         let mut table = Table::new(&[
@@ -322,7 +322,7 @@ fn entering(
         writeln!(
             out,
             "Calls through a pointer to {} aren't listed, since elfq can't see them.",
-            super::names_text(&names)
+            text::names_text(&names)
         )?;
     }
     Ok(outcome)
@@ -427,7 +427,7 @@ fn write_groups(binary: &Binary, groups: &[Group], table: &mut Table) {
                     (
                         item.name.clone(),
                         format!("{:#x}", item.address),
-                        super::size_text(item),
+                        text::size_text(item),
                     )
                 }
                 (0, node) => (node.name(binary).to_string(), String::new(), String::new()),
@@ -444,7 +444,7 @@ fn write_groups(binary: &Binary, groups: &[Group], table: &mut Table) {
                 size,
                 row.inside.name(binary).to_string(),
                 how.to_string(),
-                super::addresses(&row.sites),
+                text::at_column(&row.sites),
             ]);
         }
     }
@@ -472,10 +472,10 @@ fn group_unfollowed(unfollowed: &[Unresolved]) -> Vec<(Unresolved, Vec<u64>)> {
 fn ranges_text(binary: &Binary, ranges: &[AddressRange]) -> String {
     let texts: Vec<String> = ranges
         .iter()
-        .map(|&range| super::range_text(binary, range))
+        .map(|&range| text::range_text(binary, range))
         .collect();
     let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
-    super::names_text(&texts)
+    text::names_text(&texts)
 }
 
 #[cfg(test)]

@@ -8,7 +8,7 @@ use serde::Serialize;
 
 use super::ranges::{self, Direction};
 use super::symbol::{self, Subject};
-use super::{Outcome, json};
+use super::{Outcome, json, text};
 use crate::binary::{Binary, ItemKind};
 use crate::cli::Format;
 use crate::graph::{Graph, Node, Reference, Unresolved};
@@ -97,7 +97,7 @@ fn callees(
                 .iter()
                 .map(|u| UnresolvedJson {
                     site: json::address(u.site),
-                    how: super::call_or_jump(u),
+                    how: text::call_or_jump(u),
                     target: u.target.map(json::address),
                 })
                 .collect(),
@@ -105,7 +105,7 @@ fn callees(
         };
         return json::write(&callees, out);
     }
-    let rows = rows(&|reference| super::how_column(binary, reference.to, reference.kind));
+    let rows = rows(&|reference| text::how_column(binary, reference.to, reference.kind));
     if rows.is_empty() && unresolved.is_empty() {
         writeln!(out, "{name} doesn't call or use anything.")?;
         return Ok(());
@@ -113,7 +113,7 @@ fn callees(
 
     if !rows.is_empty() {
         let callees = super::distinct_nodes(&rows);
-        writeln!(out, "{name} uses {}:", super::count_text(binary, &callees))?;
+        writeln!(out, "{name} uses {}:", text::count_text(binary, &callees))?;
         writeln!(out)?;
         let mut table = Table::new(&[
             ("CALLEE", Align::Left),
@@ -124,7 +124,7 @@ fn callees(
             table.row(vec![
                 row.node.name(binary).to_string(),
                 row.how.to_string(),
-                super::addresses(&row.sites),
+                text::at_column(&row.sites),
             ]);
         }
         table.write(out)?;
@@ -157,7 +157,7 @@ fn unresolved_lines(name: &str, unresolved: &[Unresolved], listed: bool) -> Vec<
         if these.is_empty() {
             continue;
         }
-        let what = super::calls_and_jumps(these.iter().copied());
+        let what = text::calls_and_jumps(these.iter().copied());
         let through = match (known_target, these.len()) {
             (true, _) => "",
             (false, 1) => " through a pointer",
@@ -171,7 +171,7 @@ fn unresolved_lines(name: &str, unresolved: &[Unresolved], listed: bool) -> Vec<
         };
         lines.push(format!(
             "{start} {what}{through}, at {}, {end}.",
-            super::addresses_text(&sites)
+            text::addresses_text(&sites)
         ));
     }
     lines
