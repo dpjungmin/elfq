@@ -9,6 +9,118 @@ DWARF, even stripped) without rebuilding them.
 [survey.md](survey.md) explains why these questions were chosen: it records
 what existing tools do on the same sample binaries.
 
+## Concepts
+
+These words mean the same in elfq's output, in these docs and in the code.
+Each ends with the type that holds it.
+
+**Item.** A function or a data object in the file, with a name, an address
+and a size in bytes. Most items come from the symbol table, but elfq also
+finds those that no symbol names, such as string literals and the
+functions of stripped files, and names them after where they are:
+`fn_0x1690`, `.rodata@0x2004`. `elfq FILE debug items` lists every item and
+where elfq found it. (`binary::Item`)
+
+**Import.** A function or variable that the file takes from a shared
+library, such as `write`. Its code isn't in the file, so it has a name but
+no address or size. On x86-64, code calls an import through a **PLT stub**,
+a few instructions in the procedure linkage table that jump to it; elfq
+makes an item of each stub and names it after where it jumps, as in
+`write@plt`. A shared library calls its own exported functions through
+stubs too, such as `log_msg@plt`. (`graph::Node::Import`)
+
+**Reference.** One item's direct use of another item or of an import, at a
+**site**: the address of an instruction, or of a pointer stored in data.
+Items and imports are the nodes of elfq's **reference graph**, and
+references are its edges. (`graph::Reference`, `graph::Graph`) The HOW
+column of `callers`, `callees` and `why` says what kind of reference each
+is (`graph::ReferenceKind`):
+
+| HOW | JSON `how` | Meaning |
+|---|---|---|
+| `call` | `call` | a direct call |
+| `tail call` | `tail call` | a jump into another function, which then returns to the caller's caller |
+| `uses` | `access` or `address taken` | code reads or writes data, or loads its address |
+| `address taken` | `address taken` | code loads the address of a function or an import, as when passing a function pointer |
+| `pointer` | `pointer` | data holds a pointer to it, as a table of functions does |
+
+**Root.** A place where the program starts running: the entry point, the
+functions that the C runtime runs at startup and exit, such as those in
+`.init_array`, the PLT's header, which the dynamic loader uses,
+personality routines, which the unwinder calls, notes that the system
+reads, and on Cortex-M the vector table and each handler it lists. An item
+that no chain of references from a root reaches is **unreachable**: dead
+code, or used in a way elfq can't see. The functions that a shared library
+exports aren't roots yet, so `top`, `retained` and `why` don't answer for
+libraries. (`graph::Root`)
+
+**Exclusive and retained size.** An item is **exclusive** to X when every
+chain of references from the roots to it passes through X, so that it is
+in the file only because X is: X **dominates** it. In the **dominator
+tree**, each item hangs under the closest item that dominates it, and the
+roots, with whatever several roots reach, hang from the top. An item's
+**own size** is its own bytes, and its **retained size** is its own size
+plus the own sizes of everything below it in the tree: the bytes that would
+go away if it did. (`graph::DominatorTree`)
+
+Every kind of reference counts. elfq can't tell which call through a
+pointer reaches a function, so a function that only pointers lead to counts
+for the code or data that holds its address, which is the same rule that
+the linker's `--gc-sections` follows. Trees mark such a function "(through a
+pointer)", since nothing calls it directly.
+
+**Unresolved call.** A call or jump that elfq finds in code but can't turn
+into a reference: one through a pointer set at run time, as in a call
+through a function pointer or a C++ virtual call, or one to an address
+where elfq knows no item, such as code in ROM. Where they could change an
+answer, elfq says so. (`graph::Unresolved`)
+
+**Estimated size.** When the file doesn't record an item's size, elfq
+estimates it, mostly as the distance to the next item, and marks it `~`,
+as in `~12`, or `size_estimated` in JSON. A function with nothing after it
+in its section can't be estimated: its size shows as `?`, and elfq can't
+read its code. (`binary::Item::size_estimated`)
+
+**Range and memory block.** A range is the addresses from START up to END,
+written `START..END` or `START+SIZE`. With `--range`, the overview, `top`
+and `retained` count only the bytes inside one range, and `callers` and
+`callees` take ranges in place of SYMBOL. A memory block is a run of
+sections less than 64 KiB apart, which stands for one memory, such as flash
+or a RAM; the overview lists the blocks when there are several.
+(`binary::AddressRange`, `binary::MemoryBlock`)
+
+**Boundary and crossing.** For `callers` and `callees` with ranges, an item
+is inside when any of its bytes is in one of the ranges, and a reference
+**crosses** the boundary when one end is inside and the other isn't. The
+help calls the boundary the ranges' edge. (`graph::Boundary`,
+`graph::Crossing`)
+
+**Thumb.** The instruction set of Cortex-M processors, with 16- and 32-bit
+instructions. Arm sets bit 0 of a Thumb function's address wherever the
+address is stored: in symbols, the entry point, pointers and the vector
+table. elfq clears it, so the addresses it prints are even. elfq reads
+Thumb code, but not the older 32-bit Arm (A32) code. (`binary::Binary::thumb`)
+
+**Vector table.** On Cortex-M, the list of addresses that the processor
+reads at reset and on each interrupt or exception: the initial stack
+pointer, then the reset handler, which is the entry point, then the other
+handlers. elfq finds it by its shape rather than its section's name.
+(`binary::VectorTable`)
+
+**Veneer.** A few instructions that a linker adds when a call's target is
+too far away for the call instruction, as between flash and ITCM: the code
+calls the veneer, which jumps on to the target. The range forms of
+`callers` and `callees` list a call through a veneer as a call to its
+target, "via veneer"; elsewhere a veneer is a function that tail-calls its
+target. elfq knows only the veneers that GNU ld adds for Thumb-2 so far.
+(`arch::is_veneer`)
+
+**TCM, ITCM and DTCM.** Tightly coupled memory: small, fast RAM wired to a
+core such as the Cortex-M7, ITCM for instructions and DTCM for data. elfq
+knows nothing about any chip, but TCM is what `--range` and the range forms
+of `callers` and `callees` are for: counting what sits in one memory, and
+checking that code in ITCM doesn't call into slow flash.
+
 ## Non-goals
 
 - **Re-implementing readelf, objdump, nm or bloaty.** elfq does not print
@@ -31,7 +143,7 @@ except `inlined`, which reads DWARF instead of machine code.
 | `elfq FILE retained SYMBOL` | What does SYMBOL keep alive, as a tree, and how many bytes is that? |
 | `elfq FILE why SYMBOL` | Which chains of calls and references from the roots keep SYMBOL in the binary? |
 | `elfq FILE top` | Which items keep the most bytes, as a tree? |
-| `elfq FILE callers SYMBOL` | What calls or uses SYMBOL directly, and how (call, tail call, uses, address taken, pointer in data)? |
+| `elfq FILE callers SYMBOL` | What calls or uses SYMBOL directly, and how (call, tail call, uses, address taken, pointer)? |
 | `elfq FILE callees SYMBOL` | What does SYMBOL call or use directly? |
 | `elfq FILE callees RANGE...` | What do the code and data in these ranges of memory use outside them, such as code in ITCM that calls a function in flash? `callers RANGE...` asks the reverse. |
 | `elfq FILE inlined [SYMBOL]` | Which inlined functions cost the most bytes across the binary, or inside SYMBOL? Needs DWARF. |
@@ -88,11 +200,9 @@ and sizes are numbers. An item looks like this:
 `kind` is `function`, `data` or `import`; an import has no address or size
 in the file. In the trees of `top` and `retained`, each item also has its
 `retained` size and `keeps`, the items under it. `why` gives each chain as a
-list of steps, each an item and how the one before uses it. Where the HOW
-column says `uses` for data, JSON keeps `access` (code reads or writes it)
-apart from `address taken` (code loads its address). The overview's
-JSON says what the file is and what elfq found in it; the largest items are
-in `top`'s.
+list of steps, each an item and how the one before uses it, in the words of
+the JSON column in [Concepts](#concepts). The overview's JSON says what the
+file is and what elfq found in it; the largest items are in `top`'s.
 
 For example:
 
@@ -188,24 +298,9 @@ the range needn't come from the chip's reference manual. Sizes can take a
 unit, in any case: `0x20000000+256K`. Units are powers of 1024, as memory
 sizes usually are.
 
-### What "exclusive" and "retained" mean
+### Calls elfq can't follow
 
-elfq builds a graph whose nodes are **items** (functions and data objects) and
-whose edges are **references**: a call, a tail call (a jump into another
-function), or an address being taken, for example a function pointer stored in
-a table or loaded into a register. An item is **exclusive** to X when every
-path from the binary's roots to it passes through X, which is to say X
-dominates it. **Retained size** is the size of X plus everything exclusive to
-X: the bytes that would disappear if X did.
-
-For direct calls this is exactly "only called from X". For functions reached
-through pointers, static analysis cannot know which indirect call reaches
-them, so elfq attributes them to the code that takes their address (and the
-table that stores it). That is the same rule the linker's `--gc-sections`
-uses, so retained sizes match what removing code would save. Output marks such
-functions "(through a pointer)" so the reader knows.
-
-Calls through pointers also leave some answers incomplete, and elfq says so
+Calls through pointers leave some answers incomplete, and elfq says so
 where they do. `callers` notes that it leaves out calls through a pointer to
 a function whose address is taken or stored, and `callees` lists the calls
 and jumps it can't follow. `retained` notes when SYMBOL's code calls
