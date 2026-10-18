@@ -1273,6 +1273,49 @@ systick_count  0x20000444     4  SysTick_Handler  uses                  0x0
 }
 
 #[test]
+fn callees_of_ranges_names_who_calls_through_a_veneer() {
+    // Code in RAM calls flash and a routine in the chip's ROM, through
+    // veneers that GNU ld adds, and through a register for a long call.
+    // elfq can't tell whether the ROM has a function where the tail call
+    // goes, so it is a jump.
+    assert_output(
+        &crossing(&["testdata/bin/far-gnu-m4-nodebug.elf", "callees", "0x0+64K"]),
+        "\
+0x00000000..0x00010000 (.ram) uses 4 items outside it, and makes 1 call and 1 jump that elfq can't follow:
+
+CALLEE                  ADDRESS     SIZE  CALLER                HOW                   AT
+(outside any function)  0x1fff0000        ram_calls_rom         call via veneer       0x46
+(outside any function)  0x1fff0000        ram_tails_rom         jump via veneer       0x60
+flash_far               0x30000100    16  ram_long_calls_flash  call                  0x74
+flash_tail              0x300000b8    16  ram_tails_flash       tail call via veneer  0x34
+flash_work              0x300000a8    16  ram_calls_flash       call via veneer       0x1a
+counter                 0x20000000     4  ram_leaf              uses                  0x0
+                                          ram_calls_flash       uses                  0x10
+                                          ram_tails_flash       uses                  0x2c
+                                          ram_calls_rom         uses                  0x3e
+                                          ram_tails_rom         uses                  0x58
+                                          ram_long_calls_flash  uses                  0x68
+",
+    );
+    // From flash, through the veneers that LLD adds for Cortex-M0, which
+    // jump through the stack.
+    assert_output(
+        &crossing(&["testdata/bin/far-lld-m0-nodebug.elf", "callers", "0x0+64K"]),
+        "\
+0x00000000..0x00010000 (.ram) is used by 2 functions outside it:
+
+CALLER           ADDRESS     SIZE  CALLEE                HOW              AT
+Reset_Handler    0x30000124    32  ram_calls_flash       call via veneer  0x30000126
+                                   ram_tails_flash       call via veneer  0x3000012a
+                                   ram_calls_rom         call via veneer  0x3000012e
+                                   ram_tails_rom         call via veneer  0x30000132
+                                   ram_long_calls_flash  call via veneer  0x30000136
+flash_calls_ram  0x300000dc    28  ram_leaf              call via veneer  0x300000e6
+",
+    );
+}
+
+#[test]
 fn callees_of_ranges_lists_first_what_elfq_cannot_follow() {
     let flash = crossing(&[TCM_SAMPLE, "callees", "0x30000000+16M"]);
     let lines: Vec<&str> = flash.lines().take(6).collect();

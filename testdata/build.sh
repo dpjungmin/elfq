@@ -6,8 +6,8 @@
 # toolchains, and so that their bytes stay stable across machines. Only run
 # this when a sample's source changes, and commit the results together.
 #
-# Needs: gcc and g++, arm-none-eabi-gcc with newlib, and rustup, which
-# installs the Rust version that rust/rust-toolchain.toml names.
+# Needs: gcc and g++, arm-none-eabi-gcc with newlib, ld.lld, and rustup,
+# which installs the Rust version that rust/rust-toolchain.toml names.
 set -eu
 
 cd "$(dirname "$0")"
@@ -71,6 +71,42 @@ arm-none-eabi-gcc $cflags \
     -T c/cortex-m7.ld -Wl,--gc-sections \
     -o "$out/c-cortex-m7.elf" c/app.c c/platform_cortexm7.c
 variants arm-none-eabi-strip c-cortex-m7
+
+# Calls too far for one branch instruction, through the veneers that GNU ld
+# and LLD add for Cortex-M, all but two of LLD's (see README.md), and through a
+# register (see c/far.c). Only the variants without DWARF, which has nothing to add here.
+# far_gnu NAME FLAGS... links with GNU ld.
+far_gnu() {
+    name=far-$1
+    shift
+    echo "C, far calls, $name"
+    arm-none-eabi-gcc $cflags -mthumb -ffunction-sections "$@" -nostdlib \
+        -T c/far.ld -o "$out/$name.elf" c/far.c
+    variants arm-none-eabi-strip "$name"
+    rm "$out/$name.elf"
+}
+
+# far_lld NAME COMPILER-FLAGS LINKER-FLAGS links with LLD.
+far_lld() {
+    name=far-$1
+    echo "C, far calls, $name"
+    arm-none-eabi-gcc $cflags -mthumb -ffunction-sections $2 -c -o "$out/$name.o" c/far.c
+    # LLD puts segments 64 KiB apart in the file by default, which would
+    # make each file mostly zeros.
+    ld.lld -T c/far.ld -z max-page-size=4 $3 -o "$out/$name.elf" "$out/$name.o"
+    rm "$out/$name.o"
+    variants arm-none-eabi-strip "$name"
+    rm "$out/$name.elf"
+}
+
+far_gnu gnu-m4 -mcpu=cortex-m4
+far_gnu gnu-m4-pure -mcpu=cortex-m4 -mpure-code
+far_gnu gnu-m4-pic -mcpu=cortex-m4 -Wl,--pic-veneer
+far_gnu gnu-m0 -mcpu=cortex-m0
+far_lld lld-m4 -mcpu=cortex-m4 ""
+far_lld lld-m4-pic -mcpu=cortex-m4 --pic-veneer
+far_lld lld-m0 -mcpu=cortex-m0 ""
+far_lld lld-m0-pure "-mcpu=cortex-m0 -mpure-code" ""
 
 # Only the full build: this sample is for looking at trees deeper than elfq
 # draws in one piece.

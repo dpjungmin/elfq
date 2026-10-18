@@ -26,7 +26,7 @@ mod dominators;
 mod paths;
 mod roots;
 
-pub use boundary::{Boundary, Crossing};
+pub use boundary::{Boundary, Crossing, Unfollowed};
 pub use dominators::DominatorTree;
 pub use paths::ShortestPaths;
 pub use roots::{Root, RootKind};
@@ -63,8 +63,10 @@ pub struct Reference {
 /// through a pointer, which elfq can't follow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ReferenceKind {
-    /// A direct call, or a call through a pointer that the loader fills in,
-    /// such as a global offset table entry, whose target is known.
+    /// A direct call, a call through a pointer that the loader fills in,
+    /// such as a global offset table entry, whose target is known, or on
+    /// Thumb, a call through a register that the code put the target's
+    /// address in, as a long call does.
     Call,
     /// A jump to another function, directly or through such a pointer,
     /// which then returns straight to the caller's caller.
@@ -183,16 +185,13 @@ impl Graph {
 
     fn add_code_references(&mut self, binary: &Binary, function: usize) {
         let item = &binary.items[function];
-        let Some(code) = binary.bytes(item.address, item.size) else {
-            return;
-        };
-        let references = arch::scan(binary.architecture, binary.endianness, code, item.address);
+        let references = binary.code_references(item);
         let bounds = if item.contains(binary.entry) {
-            section_bounds(binary, &references)
+            section_bounds(binary, references)
         } else {
             HashSet::new()
         };
-        for reference in references {
+        for &reference in references {
             if let CodeReferenceKind::Address(address) = reference.kind
                 && bounds.contains(&address)
             {

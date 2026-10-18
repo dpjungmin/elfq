@@ -15,7 +15,7 @@
 use object::SectionKind;
 
 use super::{Binary, Item, ItemKind, RelocationTarget, Section, Source};
-use crate::arch::{self, CodeReferenceKind};
+use crate::arch::CodeReferenceKind;
 
 /// Returns an item for each unnamed data object, sorted by address.
 pub(super) fn items(binary: &Binary) -> Vec<Item> {
@@ -67,23 +67,18 @@ pub(super) fn items(binary: &Binary) -> Vec<Item> {
 /// with repeats.
 fn referenced_addresses(binary: &Binary) -> Vec<u64> {
     let mut addresses = Vec::new();
-    if arch::is_supported(binary.architecture, binary.thumb) {
-        for item in &binary.items {
-            if item.kind != ItemKind::Function {
-                continue;
-            }
-            let Some(code) = binary.bytes(item.address, item.size) else {
-                continue;
-            };
-            for reference in arch::scan(binary.architecture, binary.endianness, code, item.address)
-            {
-                match reference.kind {
-                    CodeReferenceKind::Address(address)
-                    | CodeReferenceKind::Memory(address)
-                    | CodeReferenceKind::CallThrough(address)
-                    | CodeReferenceKind::JumpThrough(address) => addresses.push(address),
-                    _ => {}
-                }
+    for function in binary
+        .items
+        .iter()
+        .filter(|item| item.kind == ItemKind::Function)
+    {
+        for reference in binary.code_references(function) {
+            match reference.kind {
+                CodeReferenceKind::Address(address)
+                | CodeReferenceKind::Memory(address)
+                | CodeReferenceKind::CallThrough(address)
+                | CodeReferenceKind::JumpThrough(address) => addresses.push(address),
+                _ => {}
             }
         }
     }

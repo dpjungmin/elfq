@@ -9,7 +9,7 @@ known answers.
 testdata/
 ├── build.sh     Rebuilds everything in bin/ from the sources.
 ├── bin/         The built files (committed).
-├── c/           C samples: app.c plus a platform file per target, deep.c and plt.c.
+├── c/           C samples: app.c plus a platform file per target, deep.c, plt.c and far.c.
 ├── cpp/         C++ sample: the kinds of names C++ compilers make.
 └── rust/        Rust sample: the same program, plus Rust-only patterns.
 ```
@@ -25,6 +25,7 @@ testdata/
 | `c-cortex-m4-cmsis*.elf` | C | The same, laid out as CMSIS's linker script template does |
 | `c-cortex-m7*.elf` | C | Cortex-M7 bare metal, with code and data in TCM, OCRAM and flash |
 | `c-deep.elf` | C | x86-64 Linux, PIE, with calls and inlined code nested 20 deep |
+| `far-*.elf` | C | Cortex-M0 and M4 bare metal, with calls too far for one branch instruction, linked by GNU ld or LLD |
 | `cpp-x86_64*.elf` | C++ | x86-64 Linux, PIE, dynamically linked against glibc and libstdc++ |
 | `cpp-x86_64.so` | C++ | x86-64 Linux, the same code as a shared library |
 | `rust-x86_64*.elf` | Rust | x86-64 Linux, std |
@@ -32,7 +33,7 @@ testdata/
 
 Each comes in up to three variants, matching what people usually have
 (`c-deep.elf`, `c-x86_64.so`, `cpp-x86_64.so` and `c-plt.so` only in the
-first, `c-cortex-m4-cmsis` only in the last two):
+first, `c-cortex-m4-cmsis` and `far-*` only in the last two):
 
 | Suffix | Symbols | DWARF | Typical of |
 |---|---|---|---|
@@ -138,6 +139,46 @@ are in `.text`, with the code between them. In the stripped file, elfq
 finds the vector table at the start of `.text` and the constants after the
 last function, and names the table `.text@0x8000000`.
 
+### Far-call samples ([c/far.c](c/far.c))
+
+Code in RAM at 0x0, as in a Cortex-M7's ITCM, calls code in flash at
+0x30000000 and a routine in the chip's ROM at 0x1fff0000, which only the
+linker script ([c/far.ld](c/far.ld)) names, and the other way. These are
+further apart than one `bl` reaches, so the linker adds a veneer next to
+each such call, except for `flash_far`, which GCC calls through a register
+since it is declared `long_call`. The files differ in linker, core and
+flags, which give these veneers. Two of LLD's have only unit tests: the one
+for Cortex-M0 `-pie` files, and a lone `b.w` where the veneer is in reach
+of the target:
+
+| File | Linker and core | Veneer |
+|---|---|---|
+| `far-gnu-m4` | GNU ld, Cortex-M4 | `ldr.w pc, [pc]` and the target |
+| `far-gnu-m4-pure` | GNU ld, Cortex-M4, `-mpure-code` | `movw ip`, `movt ip`, `bx ip` |
+| `far-gnu-m4-pic` | GNU ld, Cortex-M4, `--pic-veneer` | adds pc to an offset in ip |
+| `far-gnu-m0` | GNU ld, Cortex-M0 | loads the target into ip, `bx ip` |
+| `far-lld-m4` | LLD, Cortex-M4 | `movw ip`, `movt ip`, `bx ip` |
+| `far-lld-m4-pic` | LLD, Cortex-M4, `--pic-veneer` | adds pc to `movw`/`movt` in ip, as for `-pie` |
+| `far-lld-m0` | LLD, Cortex-M0 | stores the target on the stack and pops it into pc |
+| `far-lld-m0-pure` | LLD, Cortex-M0, `-mpure-code` | the same, with the target made a byte at a time |
+
+GCC compiles all of them; LLD only links four. In each,
+`callees 0x0+64K` lists the same calls out of RAM, each from the function
+that makes it:
+
+| Function in RAM | Expected answer |
+|---|---|
+| `ram_calls_flash` | Calls `flash_work`, via a veneer. |
+| `ram_tails_flash` | Tail-calls `flash_tail`, via a veneer; calls it on Cortex-M0, which has no tail call this far. |
+| `ram_calls_rom` | Calls 0x1fff0000, via a veneer: a call elfq can't follow, since the file has nothing there. |
+| `ram_tails_rom` | Jumps to 0x1fff0000, via a veneer, since elfq can't tell whether a function starts there; calls it on Cortex-M0. |
+| `ram_long_calls_flash` | Calls `flash_far`, through a register, with no veneer. |
+| all of them | Use `counter`, except in `far-lld-m0-pure`, whose code makes its address a byte at a time, which elfq doesn't follow. |
+
+`callers 0x0+64K` lists `Reset_Handler` and `flash_calls_ram`, which call
+into RAM through veneers. The stripped files give the same rows, under
+names like `fn_0x10`.
+
 ### Deep sample ([c/deep.c](c/deep.c))
 
 Calls and inlined code nested deeper than elfq draws a tree in one piece,
@@ -189,11 +230,11 @@ symbolizer; that is a good case for `top`, `why` and `retained`.
 ./testdata/build.sh
 ```
 
-This needs `gcc` and `g++`, `arm-none-eabi-gcc` with newlib, and `rustup`,
-which installs the Rust version that `rust/rust-toolchain.toml` names, with
-the `thumbv7em-none-eabihf` target. The committed files were built with
-GCC 13.3.0 (Ubuntu 24.04), arm-none-eabi-gcc 13.2.1 with newlib 4.4.0, and
-rustc 1.97.0.
+This needs `gcc` and `g++`, `arm-none-eabi-gcc` with newlib, `ld.lld`, and
+`rustup`, which installs the Rust version that `rust/rust-toolchain.toml`
+names, with the `thumbv7em-none-eabihf` target. The committed files were
+built with GCC 13.3.0 (Ubuntu 24.04), arm-none-eabi-gcc 13.2.1 with newlib
+4.4.0, LLD 18.1.3, and rustc 1.97.0.
 
 Builds are reproducible: the same toolchains give byte-identical files from
 any checkout path. Other toolchain versions produce different addresses and

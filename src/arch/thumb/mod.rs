@@ -11,6 +11,14 @@
 //! the constant as data, so that it doesn't decode it as an instruction when
 //! it gets there. It does the same for the jump tables of `tbb` and `tbh`,
 //! and reports a jump to each of their targets.
+//!
+//! This sweep reads each instruction on its own. Then the `values` module
+//! follows the addresses that code puts in registers, using what `decode`
+//! says each instruction does with them, to find where a branch through a
+//! register goes.
+
+mod decode;
+mod values;
 
 use std::collections::BTreeMap;
 
@@ -26,9 +34,44 @@ const PC: u16 = 15;
 
 /// The references in the Thumb code `code`, which starts at `address`, in
 /// the order of their instructions. The constants and jump tables that the
-/// code reads are skipped, not decoded.
+/// code reads are skipped, not decoded. A branch through a register goes
+/// where the code before it put an address there, if it did.
 pub(super) fn scan(code: &[u8], address: u64, endianness: Endianness) -> Vec<CodeReference> {
     let mut scanner = Scanner::new(code, address, endianness);
+    // Instructions take 2 bytes or more.
+    scanner.instructions = Some(Vec::with_capacity(code.len() / 2));
+    let mut scanner = sweep(scanner);
+    let mut instructions = scanner.instructions.take().unwrap_or_default();
+    // The sweep decodes a constant that only a later instruction loads, as
+    // in Clang's islands of constants, before it knows the constant is
+    // data. Both lists are in order, so one pass over each drops those
+    // instructions.
+    let mut data = scanner.data.iter().peekable();
+    instructions.retain(|instruction| {
+        while data
+            .next_if(|&(_, &end)| end <= instruction.offset)
+            .is_some()
+        {}
+        data.peek()
+            .is_none_or(|&(&start, _)| start >= instruction.offset + instruction.size())
+    });
+    values::follow(code, address, endianness, &instructions, scanner.references)
+}
+
+/// The references that each instruction in `code` makes on its own: like
+/// [`scan`], but without following addresses from one instruction to the
+/// next, so a branch through a register is always through a pointer.
+pub(super) fn scan_instructions(
+    code: &[u8],
+    address: u64,
+    endianness: Endianness,
+) -> Vec<CodeReference> {
+    sweep(Scanner::new(code, address, endianness)).references
+}
+
+/// Decodes the instructions in the scanner's code, skipping the constants
+/// and jump tables they read.
+fn sweep(mut scanner: Scanner) -> Scanner {
     let mut offset = 0;
     while let Some(first) = scanner.halfword(offset) {
         if let Some(end) = scanner.data_end(offset) {
@@ -40,7 +83,7 @@ pub(super) fn scan(code: &[u8], address: u64, endianness: Endianness) -> Vec<Cod
         };
         offset += size;
     }
-    scanner.references
+    scanner
 }
 
 /// How many bytes of `code` its instructions and constants take, leaving
@@ -104,16 +147,228 @@ pub(super) fn ending(code: &[u8], address: u64, endianness: Endianness) -> Endin
     ending
 }
 
-/// Whether `code` is a veneer that GNU ld adds for Thumb-2, from the
-/// Cortex-M7 sample:
+/// Whether `code` is one of the veneers that GNU ld and LLD add for
+/// Cortex-M. Each jumps to the target; all but LLD's lone `b.w` put the
+/// target, or its offset from pc, in a register, or on the stack where
+/// they pop pc from:
 ///
 /// ```text
-/// 000000d8: f85f f000  ldr.w pc, [pc]
-/// 000000dc: 3000087d   .word 0x3000087d <memcpy + 1>
+/// GNU ld, Cortex-M3 and up:  ldr.w pc, [pc]; .word target
+/// GNU ld, Cortex-M0 and M23: push {r0}; ldr r0, [pc, #8]; mov ip, r0;
+///                            pop {r0}; bx ip; nop; .word target
+/// GNU ld, --pic-veneer:      push {r0}; ldr r0, [pc, #8]; mov ip, pc;
+///                            add ip, r0; pop {r0}; bx ip; .word offset
+/// GNU ld, -mpure-code, and LLD, Cortex-M3 and up and M23:
+///                            movw ip, #lo; movt ip, #hi; bx ip
+/// LLD, --pic-veneer:         movw ip, #lo; movt ip, #hi; add ip, pc; bx ip
+/// LLD, Cortex-M0:            push {r0, r1}; ldr r0, [pc, #4];
+///                            str r0, [sp, #4]; pop {r0, pc}; .word target
+/// LLD, Cortex-M0, execute-only code:
+///                            push {r0, r1}; movs r0, #b3; lsls r0, #8;
+///                            adds r0, #b2; lsls r0, #8; adds r0, #b1;
+///                            lsls r0, #8; adds r0, #b0; str r0, [sp, #4];
+///                            pop {r0, pc}
+/// LLD, Cortex-M0, -pie:      push {r0}; ldr r0, [pc, #8]; mov ip, r0;
+///                            pop {r0}; add pc, ip; nop; .word offset
+/// LLD, when the veneer is in reach of the target, though the call isn't:
+///                            b.w target
 /// ```
-pub(super) fn is_veneer(code: &[u8]) -> bool {
-    code.len() == 8 && code[..4] == [0x5f, 0xf8, 0x00, 0xf0]
+///
+/// Code that a compiler made, such as `ldr r3, [pc, #0]; bx r3`, is not a
+/// veneer: it is a function someone wrote. Clang makes the same code as
+/// the `movw` and `movt` veneers for a function that only calls on with
+/// `-mexecute-only` and `-mlong-calls`, when its arguments fill r0 to r3,
+/// so code like theirs is a veneer only without a `name` from the symbol
+/// table, or under one that a linker gives veneers (see
+/// [`is_linker_name`]). Compilers make a lone `b.w` all the time, as a
+/// tail call, so it is a veneer only under such a name.
+pub(super) fn is_veneer(code: &[u8], name: Option<&str>) -> bool {
+    VENEERS.iter().any(|veneer| {
+        let size = 2 * veneer.instructions.len() + if veneer.word { 4 } else { 0 };
+        code.len() == size
+            && veneer
+                .instructions
+                .iter()
+                .enumerate()
+                .all(|(index, halfword)| {
+                    let bits = u16::from_le_bytes([code[2 * index], code[2 * index + 1]]);
+                    bits & halfword.mask == halfword.bits
+                })
+            && match veneer.names {
+                Names::Any => true,
+                Names::NoneOrLinkers => name.is_none_or(is_linker_name),
+                Names::Linkers => name.is_some_and(is_linker_name),
+            }
+    })
 }
+
+/// Whether `name` is one that GNU ld or LLD gives a veneer, such as
+/// `__flash_work_veneer` or `__Thumbv7ABSLongThunk_flash_work`.
+fn is_linker_name(name: &str) -> bool {
+    name.starts_with("__") && (name.ends_with("_veneer") || name.contains("LongThunk_"))
+}
+
+/// A veneer that [`is_veneer`] recognizes.
+struct Veneer {
+    instructions: &'static [Halfword],
+    /// Whether a word, the target or its offset from pc, follows them.
+    word: bool,
+    /// The names that code like it may have and be a veneer.
+    names: Names,
+}
+
+/// The names a [`Veneer`] may have, from the symbol table.
+enum Names {
+    /// Any: compilers don't make such code.
+    Any,
+    /// None, or one that a linker gives veneers: compilers make the same
+    /// code for some functions someone wrote.
+    NoneOrLinkers,
+    /// Only one that a linker gives veneers: compilers make such code all
+    /// the time.
+    Linkers,
+}
+
+/// The veneers that [`is_veneer`] recognizes, in the order of its list.
+const VENEERS: [Veneer; 9] = [
+    Veneer {
+        instructions: &[exactly(0xf85f), exactly(0xf000)],
+        word: true,
+        names: Names::Any,
+    },
+    Veneer {
+        instructions: &[
+            exactly(0xb401),
+            exactly(0x4802),
+            exactly(0x4684),
+            exactly(0xbc01),
+            exactly(0x4760),
+            exactly(0xbf00),
+        ],
+        word: true,
+        names: Names::Any,
+    },
+    Veneer {
+        instructions: &[
+            exactly(0xb401),
+            exactly(0x4802),
+            exactly(0x46fc),
+            exactly(0x4484),
+            exactly(0xbc01),
+            exactly(0x4760),
+        ],
+        word: true,
+        names: Names::Any,
+    },
+    Veneer {
+        instructions: &[MOVW_IP, TO_IP, MOVT_IP, TO_IP, exactly(0x4760)],
+        word: false,
+        names: Names::NoneOrLinkers,
+    },
+    Veneer {
+        instructions: &[
+            MOVW_IP,
+            TO_IP,
+            MOVT_IP,
+            TO_IP,
+            exactly(0x44fc),
+            exactly(0x4760),
+        ],
+        word: false,
+        names: Names::NoneOrLinkers,
+    },
+    Veneer {
+        instructions: &[
+            exactly(0xb403),
+            exactly(0x4801),
+            exactly(0x9001),
+            exactly(0xbd01),
+        ],
+        word: true,
+        names: Names::Any,
+    },
+    Veneer {
+        instructions: &[
+            exactly(0xb403),
+            MOVS_R0,
+            exactly(0x0200),
+            ADDS_R0,
+            exactly(0x0200),
+            ADDS_R0,
+            exactly(0x0200),
+            ADDS_R0,
+            exactly(0x9001),
+            exactly(0xbd01),
+        ],
+        word: false,
+        names: Names::Any,
+    },
+    Veneer {
+        instructions: &[
+            exactly(0xb401),
+            exactly(0x4802),
+            exactly(0x4684),
+            exactly(0xbc01),
+            exactly(0x44e7),
+            exactly(0x46c0),
+        ],
+        word: true,
+        names: Names::Any,
+    },
+    Veneer {
+        instructions: &[
+            Halfword {
+                bits: 0xf000,
+                mask: 0xf800,
+            },
+            Halfword {
+                bits: 0x9000,
+                mask: 0xd000,
+            },
+        ],
+        word: false,
+        names: Names::Linkers,
+    },
+];
+
+/// 16 bits of a veneer's instructions: the bits under `mask` are `bits`.
+/// The others hold part of the target, which differs from one veneer to
+/// the next.
+#[derive(Debug, Clone, Copy)]
+struct Halfword {
+    bits: u16,
+    mask: u16,
+}
+
+/// 16 bits that are the same in every veneer.
+const fn exactly(bits: u16) -> Halfword {
+    Halfword { bits, mask: 0xffff }
+}
+
+/// The first 16 bits of `movw` and `movt`, and their second 16 bits when
+/// they write ip.
+const MOVW_IP: Halfword = Halfword {
+    bits: 0xf240,
+    mask: 0xfbf0,
+};
+const MOVT_IP: Halfword = Halfword {
+    bits: 0xf2c0,
+    mask: 0xfbf0,
+};
+const TO_IP: Halfword = Halfword {
+    bits: 0x0c00,
+    mask: 0x8f00,
+};
+
+/// `movs r0, #imm8` and `adds r0, #imm8`.
+const MOVS_R0: Halfword = Halfword {
+    bits: 0x2000,
+    mask: 0xff00,
+};
+const ADDS_R0: Halfword = Halfword {
+    bits: 0x3000,
+    mask: 0xff00,
+};
 
 /// How many bytes of padding `code` starts with.
 pub(super) fn leading_padding(code: &[u8]) -> usize {
@@ -131,24 +386,32 @@ pub(super) fn leading_padding(code: &[u8]) -> usize {
 }
 
 /// Whether the instruction that starts with `first`, followed by `second`,
-/// is padding that compilers and linkers put between functions: `nop`,
-/// `nop.w`, zeros, or lld's `0xd4d4`.
+/// is padding that compilers and linkers put between functions: a `nop`,
+/// zeros, or lld's `0xd4d4`.
 fn is_padding(first: u16, second: Option<u16>) -> bool {
-    matches!(first, 0xbf00 | 0x46c0 | 0x0000 | 0xd4d4) || (first, second) == (0xf3af, Some(0x8000))
+    is_nop(first, second) || matches!(first, 0x0000 | 0xd4d4)
+}
+
+/// Whether the instruction that starts with `first`, followed by `second`,
+/// is a `nop`, `mov r8, r8` or `nop.w`, the padding that compilers put
+/// inside a function to align a loop.
+fn is_nop(first: u16, second: Option<u16>) -> bool {
+    matches!(first, 0xbf00 | 0x46c0) || (first, second) == (0xf3af, Some(0x8000))
 }
 
 /// Where the processor goes after the instruction made of `first` and, if
 /// it is 32 bits long, `second`.
 fn exit(first: u16, second: u16) -> Ending {
-    let stops = if first >> 11 < 0b11101 {
+    let stops = if !is_wide(first) {
         // blx register
         if first & 0xff80 == 0x4780 {
             return Ending::Call;
         }
-        // b, bx register, mov pc, pop {..., pc} and udf
+        // b, bx register, mov pc, add pc, pop {..., pc} and udf
         first & 0xf800 == 0xe000
             || first & 0xff80 == 0x4700
             || first & 0xff87 == 0x4687
+            || first & 0xff87 == 0x4487
             || first & 0xff00 == 0xbd00
             || first & 0xff00 == 0xde00
     } else {
@@ -165,6 +428,30 @@ fn exit(first: u16, second: u16) -> Ending {
             || (first & 0xfff0 == 0xf7f0 && second & 0xf000 == 0xa000)
     };
     if stops { Ending::Stops } else { Ending::RunsOn }
+}
+
+/// One instruction that the sweep decoded.
+#[derive(Debug, Clone, Copy)]
+struct Instruction {
+    /// Where it is, as an offset into the code.
+    offset: usize,
+    /// Its first 16 bits.
+    first: u16,
+    /// Its second 16 bits, if it is 32 bits long, or 0.
+    second: u16,
+}
+
+impl Instruction {
+    /// Its size in bytes.
+    fn size(&self) -> usize {
+        if is_wide(self.first) { 4 } else { 2 }
+    }
+}
+
+/// Whether the instruction that starts with `first` is 32 bits long: those
+/// start with 0b11101, 0b11110 or 0b11111.
+fn is_wide(first: u16) -> bool {
+    first >> 11 >= 0b11101
 }
 
 struct Scanner<'a> {
@@ -184,6 +471,9 @@ struct Scanner<'a> {
     /// The last two instructions decoded, as (offset, first halfword,
     /// second halfword or 0), which can say how long a jump table is.
     previous: [Option<(usize, u16, u16)>; 2],
+    /// The instructions decoded so far, when they are kept, for following
+    /// the registers through them.
+    instructions: Option<Vec<Instruction>>,
 }
 
 impl<'a> Scanner<'a> {
@@ -196,20 +486,27 @@ impl<'a> Scanner<'a> {
             data: BTreeMap::new(),
             low_halves: [None; 16],
             previous: [None; 2],
+            instructions: None,
         }
     }
 
     /// Decodes the instruction at `offset` and reports its reference, if
     /// any. Returns the instruction's size.
     fn step(&mut self, offset: usize, first: u16) -> Option<usize> {
-        // 32-bit instructions start with 0b11101, 0b11110 or 0b11111.
-        let (kind, size, second) = if first >> 11 >= 0b11101 {
+        let (kind, size, second) = if is_wide(first) {
             let second = self.halfword(offset + 2)?;
             (self.wide(offset, first, second), 4, second)
         } else {
             (self.narrow(offset, first), 2, 0)
         };
         self.previous = [self.previous[1], Some((offset, first, second))];
+        if let Some(instructions) = &mut self.instructions {
+            instructions.push(Instruction {
+                offset,
+                first,
+                second,
+            });
+        }
         if let Some(kind) = kind {
             self.references.push(CodeReference {
                 site: self.address + offset as u64,
@@ -289,9 +586,8 @@ impl<'a> Scanner<'a> {
         }
         // adr.w register, label, before or after the instruction.
         if first & 0xfbff == 0xf2af && second & 0x8000 == 0 {
-            return Some(Address(
-                self.pointed_at(align(pc).wrapping_sub(u64::from(imm12))),
-            ));
+            let address = align(pc).wrapping_sub(u64::from(imm12)) & 0xffff_ffff;
+            return Some(Address(self.pointed_at(address)));
         }
         if first & 0xfbff == 0xf20f && second & 0x8000 == 0 {
             return Some(Address(self.pointed_at(align(pc) + u64::from(imm12))));
@@ -318,9 +614,18 @@ impl<'a> Scanner<'a> {
             self.constant(literal(pc, first, u64::from(second & 0xff) * 4), 8);
             return None;
         }
-        if first & 0xff3f == 0xed1f && second & 0x0e00 == 0x0a00 {
-            let size = if second & 0x100 == 0 { 4 } else { 8 };
-            self.constant(literal(pc, first, u64::from(second & 0xff) * 4), size);
+        // vldr of a half, a single or a double: its size, and what its
+        // offset counts in.
+        let vldr = match (second >> 8) & 0xf {
+            0b1001 => Some((2, 2)),
+            0b1010 => Some((4, 4)),
+            0b1011 => Some((8, 4)),
+            _ => None,
+        };
+        if first & 0xff3f == 0xed1f
+            && let Some((size, scale)) = vldr
+        {
+            self.constant(literal(pc, first, u64::from(second & 0xff) * scale), size);
             return None;
         }
         // ldr pc, [register, ...]: a jump through memory, or a return when
@@ -556,12 +861,82 @@ mod tests {
     }
 
     #[test]
-    fn a_veneer_is_a_load_into_pc_and_its_constant() {
-        let veneer = [0x5f, 0xf8, 0x00, 0xf0, 0x7d, 0x08, 0x00, 0x30];
-        assert!(is_veneer(&veneer));
-        // Not the same load in a longer function, nor a b.w.
-        assert!(!is_veneer(&[&veneer[..], &[0x70, 0x47]].concat()));
-        assert!(!is_veneer(&[0x00, 0xf0, 0x00, 0xb8]));
+    fn veneers_are_recognized_by_their_instructions() {
+        // One of each, from the far-call fixtures.
+        let veneers: [&[u8]; 9] = [
+            // GNU ld for Cortex-M7: ldr.w pc, [pc]; .word 0x3000087d
+            &[0x5f, 0xf8, 0x00, 0xf0, 0x7d, 0x08, 0x00, 0x30],
+            // GNU ld for Cortex-M0: push {r0}; ldr r0, [pc, #8];
+            // mov ip, r0; pop {r0}; bx ip; nop; .word 0x30000069
+            &[
+                0x01, 0xb4, 0x02, 0x48, 0x84, 0x46, 0x01, 0xbc, 0x60, 0x47, 0x00, 0xbf, 0x69, 0x00,
+                0x00, 0x30,
+            ],
+            // GNU ld --pic-veneer: push {r0}; ldr r0, [pc, #8]; mov ip, pc;
+            // add ip, r0; pop {r0}; bx ip; .word 0x30000021
+            &[
+                0x01, 0xb4, 0x02, 0x48, 0xfc, 0x46, 0x84, 0x44, 0x01, 0xbc, 0x60, 0x47, 0x21, 0x00,
+                0x00, 0x30,
+            ],
+            // GNU ld -mpure-code: movw ip, #0x61; movt ip, #0x3000; bx ip
+            &[0x40, 0xf2, 0x61, 0x0c, 0xc3, 0xf2, 0x00, 0x0c, 0x60, 0x47],
+            // The same to the ROM: movw ip, #0x1; movt ip, #0x1fff; bx ip
+            &[0x40, 0xf2, 0x01, 0x0c, 0xc1, 0xf6, 0xff, 0x7c, 0x60, 0x47],
+            // LLD --pic-veneer: movw ip, #0x59; movt ip, #0x3000;
+            // add ip, pc; bx ip
+            &[
+                0x40, 0xf2, 0x59, 0x0c, 0xc3, 0xf2, 0x00, 0x0c, 0xfc, 0x44, 0x60, 0x47,
+            ],
+            // LLD for Cortex-M0: push {r0, r1}; ldr r0, [pc, #4];
+            // str r0, [sp, #4]; pop {r0, pc}; .word 0x300000f9
+            &[
+                0x03, 0xb4, 0x01, 0x48, 0x01, 0x90, 0x01, 0xbd, 0xf9, 0x00, 0x00, 0x30,
+            ],
+            // LLD for Cortex-M0 execute-only code: push {r0, r1};
+            // movs r0, #0x30; lsls r0, #8; adds r0, #0; lsls r0, #8;
+            // adds r0, #1; lsls r0, #8; adds r0, #0x3d; str r0, [sp, #4];
+            // pop {r0, pc}
+            &[
+                0x03, 0xb4, 0x30, 0x20, 0x00, 0x02, 0x00, 0x30, 0x00, 0x02, 0x01, 0x30, 0x00, 0x02,
+                0x3d, 0x30, 0x01, 0x90, 0x01, 0xbd,
+            ],
+            // LLD -pie for Cortex-M0: push {r0}; ldr r0, [pc, #8];
+            // mov ip, r0; pop {r0}; add pc, ip; nop; .word 0x300000a5
+            &[
+                0x01, 0xb4, 0x02, 0x48, 0x84, 0x46, 0x01, 0xbc, 0xe7, 0x44, 0xc0, 0x46, 0xa5, 0x00,
+                0x00, 0x30,
+            ],
+        ];
+        for veneer in veneers {
+            assert!(is_veneer(veneer, None), "{veneer:02x?}");
+            assert!(is_veneer(veneer, Some("__flash_work_veneer")));
+            assert!(is_veneer(veneer, Some("__Thumbv7ABSLongThunk_flash_work")));
+            // Not the same code in a longer function.
+            assert!(!is_veneer(&[veneer, &[0x70, 0x47]].concat(), None));
+        }
+        // A b.w is one only under a linker's name, as LLD gives it when
+        // the veneer is in reach of the target.
+        let branch = [0x00, 0xf1, 0x00, 0xb0];
+        assert!(is_veneer(&branch, Some("__Thumbv7ABSLongThunk_far_target")));
+        assert!(!is_veneer(&branch, Some("ram_forward")));
+        assert!(!is_veneer(&branch, None));
+        // Nor is a function that a compiler made:
+        // ldr r3, [pc, #0]; bx r3; .word 0x30000069
+        assert!(!is_veneer(
+            &[0x00, 0x4b, 0x18, 0x47, 0x69, 0x00, 0x00, 0x30],
+            None
+        ));
+        // Nor movw and movt of another register: r3, then bx r3.
+        assert!(!is_veneer(
+            &[0x40, 0xf2, 0x61, 0x03, 0xc3, 0xf2, 0x00, 0x03, 0x18, 0x47],
+            None
+        ));
+        // Clang makes movw ip, #0x59; movt ip, #0x3000; bx ip for a
+        // function that only calls on, which is a veneer only under a
+        // linker's name. A linker's other veneers are veneers under any.
+        let movw = [0x40, 0xf2, 0x59, 0x0c, 0xc3, 0xf2, 0x00, 0x0c, 0x60, 0x47];
+        assert!(!is_veneer(&movw, Some("ram_forward")));
+        assert!(is_veneer(veneers[0], Some("ram_forward")));
     }
 
     #[test]
@@ -573,6 +948,15 @@ mod tests {
             kinds(&code, 0x0800_0040),
             [(0x0800_0040, Address(0x2000_0024))]
         );
+    }
+
+    #[test]
+    fn half_precision_constants_are_skipped() {
+        // vldr.16 s2, [pc, #2]; bx lr; then two halves that vldr.16 loads,
+        // which would otherwise decode as a bl.
+        let code = [0x9f, 0xed, 0x01, 0x19, 0x70, 0x47, 0x00, 0xf0, 0x01, 0xf8];
+        assert_eq!(kinds(&code, 0), []);
+        assert_eq!(code_size(&code, 0, Little), 10);
     }
 
     #[test]
@@ -691,9 +1075,9 @@ mod tests {
     #[test]
     fn addresses_before_0_are_not_an_error() {
         // adr.w r0 and ldr.w r0 eight bytes before the program counter, in
-        // code at address 0.
+        // code at address 0. Addresses are 32 bits long, so adr.w wraps.
         let adr = [0xaf, 0xf2, 0x08, 0x00];
-        assert_eq!(kinds(&adr, 0), [(0, Address(4u64.wrapping_sub(8)))]);
+        assert_eq!(kinds(&adr, 0), [(0, Address(0xffff_fffc))]);
         assert_eq!(kinds(&[0x5f, 0xf8, 0x08, 0x00], 0), []);
     }
 }

@@ -2,8 +2,10 @@
 //!
 //! Each instruction set has a module with a function `scan`: given a
 //! function's bytes and address, it reports every address the code calls,
-//! jumps to or otherwise uses. It doesn't need to understand anything else
-//! about the instructions. The graph module then works out which item each
+//! jumps to or otherwise uses. x86-64 needs nothing else about the
+//! instructions; Thumb also needs what each one does with the registers and
+//! the stack (`thumb/decode.rs`), to follow an address into a branch
+//! through a register. The graph module then works out which item each
 //! address belongs to.
 //!
 //! In stripped Cortex-M firmware, elfq also has to work out where functions
@@ -31,7 +33,8 @@ pub struct CodeReference {
 /// loader stores a pointer there, as in a global offset table entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodeReferenceKind {
-    /// A direct call: `call target`.
+    /// A direct call: `call target`, or on Thumb, a call through a
+    /// register that the code put `target` in, as a long call does.
     Call(u64),
     /// A direct jump, conditional or not: `jmp target`, or to a case of a
     /// jump table. Usually to another place in the same function; otherwise
@@ -40,8 +43,9 @@ pub enum CodeReferenceKind {
     /// A direct jump of the kind that compilers and linkers use to carry on
     /// in another function. Only Thumb tells these apart, and only as a
     /// hint: an unconditional `b.w`, which long functions also use inside
-    /// themselves, and the `ldr.w pc` of a linker's veneer. The graph treats
-    /// it as a `Jump`.
+    /// themselves, the jump of a linker's veneer, and a jump through a
+    /// register that the code put the target in. The graph treats it as a
+    /// `Jump`.
     TailJump(u64),
     /// A call through the pointer stored at an address: `call [pointer]`.
     CallThrough(u64),
@@ -54,7 +58,8 @@ pub enum CodeReferenceKind {
     /// An address that code computes or loads as a number, without touching
     /// memory there: `lea` on x86-64, or on Arm a constant from a literal
     /// pool or a `movw`/`movt` pair. Code does this to pass a pointer, and
-    /// on Arm also before reading or writing a variable.
+    /// on Arm also before reading or writing a variable. On Thumb, an
+    /// address that the code only branches to is a call or jump instead.
     Address(u64),
     /// Reading or writing memory at an address, as when using a variable.
     Memory(u64),
@@ -103,6 +108,25 @@ pub fn scan(
     }
 }
 
+/// The references that each instruction in one function's code makes on
+/// its own: like [`scan`], but without following an address from the
+/// instruction that puts it in a register to one that branches through
+/// it, so such a branch is always through a pointer. Code split in two
+/// finds the same references this way as the code together, unless an
+/// instruction or the constants it loads are cut in two.
+pub fn scan_instructions(
+    architecture: Architecture,
+    endianness: Endianness,
+    code: &[u8],
+    address: u64,
+) -> Vec<CodeReference> {
+    match architecture {
+        Architecture::X86_64 => x86_64::scan(code, address),
+        Architecture::Arm => thumb::scan_instructions(code, address, endianness),
+        _ => Vec::new(),
+    }
+}
+
 /// How many bytes at the start of `code` a function's instructions and
 /// constants take, when `code` may run on past its end to the next
 /// function. Only Thumb tells the padding between functions apart; for
@@ -122,11 +146,12 @@ pub fn code_size(
 
 /// Whether `code` is all of a veneer: a stub that a linker puts near a call
 /// whose target is too far away for the call instruction, and that only
-/// jumps on to the target. Only the one GNU ld adds for Thumb-2 is
-/// recognized yet.
-pub fn is_veneer(architecture: Architecture, code: &[u8]) -> bool {
+/// jumps on to the target. Only Thumb has them: those that GNU ld and LLD
+/// add for Cortex-M. `name` is the code's symbol, when it has one: code
+/// that a compiler may also make is a veneer only under a linker's name.
+pub fn is_veneer(architecture: Architecture, code: &[u8], name: Option<&str>) -> bool {
     match architecture {
-        Architecture::Arm => thumb::is_veneer(code),
+        Architecture::Arm => thumb::is_veneer(code, name),
         _ => false,
     }
 }

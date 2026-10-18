@@ -50,6 +50,8 @@ use object::{
     SectionIndex, SectionKind, SymbolKind,
 };
 
+use crate::arch::{self, CodeReference};
+
 /// Arrays of pointers to the functions that the C runtime calls at startup
 /// and exit.
 pub(crate) const STARTUP_ARRAYS: [&str; 5] = [
@@ -110,6 +112,9 @@ pub struct Binary {
     pub vector_table: Option<VectorTable>,
     /// Problems that did not stop loading but may make answers incomplete.
     pub warnings: Vec<String>,
+    /// The references in each function's code, by its address and size;
+    /// see [`Binary::code_references`].
+    code_references: HashMap<(u64, u64), Vec<CodeReference>>,
     /// The whole file.
     data: Vec<u8>,
 }
@@ -316,6 +321,7 @@ impl Binary {
             merged_variables: Vec::new(),
             vector_table: None,
             warnings,
+            code_references: HashMap::new(),
             data,
         };
         // The bytes have moved into `binary`, so read them there. This
@@ -359,11 +365,22 @@ impl Binary {
         sort_items(&mut items);
         estimate_missing_sizes(&mut items, &binary.sections);
         binary.items = items;
+        binary.code_references = scan_functions(&binary);
         // Last, since finding unnamed data needs all the other items.
         let unnamed = unnamed_data::items(&binary);
         binary.items.extend(unnamed);
         sort_items(&mut binary.items);
         Ok(binary)
+    }
+
+    /// The references that the code of `function` makes, as `arch::scan`
+    /// finds them: none when elfq can't read the code. Scanning code is
+    /// much of what elfq does, so it scans each function once, as it loads
+    /// the file.
+    pub fn code_references(&self, function: &Item) -> &[CodeReference] {
+        self.code_references
+            .get(&(function.address, function.size))
+            .map_or(&[], Vec::as_slice)
     }
 
     /// The bytes at `address`, or `None` if the file doesn't hold all `size`
@@ -810,6 +827,30 @@ fn add_entry_item(items: &mut Vec<Item>, entry: u64, sections: &[Section]) {
             source: Source::EntryPoint,
         });
     }
+}
+
+/// The references in the code of each function in `binary.items`, by the
+/// function's address and size; see [`Binary::code_references`].
+fn scan_functions(binary: &Binary) -> HashMap<(u64, u64), Vec<CodeReference>> {
+    if !arch::is_supported(binary.architecture, binary.thumb) {
+        return HashMap::new();
+    }
+    let functions = binary
+        .items
+        .iter()
+        .filter(|item| item.kind == ItemKind::Function);
+    functions
+        .filter_map(|function| {
+            let code = binary.bytes(function.address, function.size)?;
+            let references = arch::scan(
+                binary.architecture,
+                binary.endianness,
+                code,
+                function.address,
+            );
+            Some(((function.address, function.size), references))
+        })
+        .collect()
 }
 
 /// Gives each function of unknown size the distance to the next item in its

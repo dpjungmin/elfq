@@ -8,8 +8,9 @@
 //! in code:
 //!
 //! 1. what the code calls;
-//! 2. where a Thumb `b.w` or a linker's veneer jumps, as code does to carry
-//!    on in another function. Loops and long functions use `b.w` inside
+//! 2. where a Thumb `b.w`, a linker's veneer, or a jump through a register
+//!    that the code put an address in goes, as code does to carry on in
+//!    another function. Loops and long functions use `b.w` inside
 //!    themselves too, so such a jump starts nothing where it lands:
 //!    - between the function's start and the jump itself;
 //!    - or no further into the function than its other jumps reach so far.
@@ -379,8 +380,12 @@ fn splits_cleanly(
     let end = starts.range(address..section_end).next();
     let end = end.map_or(section_end, |(&end, _)| end);
     let bytes = |from: u64, to: u64| binary.bytes(from, to - from).unwrap_or_default();
+    // Each instruction on its own: when code that ends with a call to a
+    // function that never returns runs on into the next function, as far
+    // as elfq can tell, an address it left in a register would make the
+    // next function's references differ when scanned with it.
     let scan = |from: u64, to: u64| {
-        arch::scan(
+        arch::scan_instructions(
             binary.architecture,
             binary.endianness,
             bytes(from, to),
@@ -498,6 +503,7 @@ mod tests {
             merged_variables: Vec::new(),
             vector_table: None,
             warnings: Vec::new(),
+            code_references: std::collections::HashMap::new(),
             data: [text, data].concat(),
         };
         let mut items = vec![Item {
