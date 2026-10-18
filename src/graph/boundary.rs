@@ -178,7 +178,7 @@ impl<'a> Boundary<'a> {
                 for call in calls {
                     crossings.push(crossing(call, Some(reference.from), reference.to));
                 }
-            } else if is_call(reference)
+            } else if reference.kind.is_call()
                 && let Node::Item(veneer) = reference.to
                 && let Some(target) = self.veneer_target(veneer)
                 && self.contains(target) != from_inside
@@ -203,7 +203,7 @@ impl<'a> Boundary<'a> {
         let side = self.inside[item];
         self.graph
             .references_to(Node::Item(item))
-            .filter(|reference| is_call(reference) && self.inside[reference.from] == side)
+            .filter(|reference| reference.kind.is_call() && self.inside[reference.from] == side)
             .collect()
     }
 
@@ -220,13 +220,6 @@ impl<'a> Boundary<'a> {
             _ => None,
         }
     }
-}
-
-fn is_call(reference: &Reference) -> bool {
-    matches!(
-        reference.kind,
-        ReferenceKind::Call | ReferenceKind::TailCall
-    )
 }
 
 #[cfg(test)]

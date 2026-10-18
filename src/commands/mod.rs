@@ -23,7 +23,7 @@ use std::io::Write;
 use anyhow::{Result, bail};
 
 use crate::arch;
-use crate::binary::{AddressRange, Binary, Source};
+use crate::binary::{AddressRange, Binary, ItemKind, Source};
 use crate::cli::{Cli, Command, DebugCommand, Format};
 use crate::graph::{Graph, Node, Reference};
 
@@ -145,6 +145,32 @@ fn check_code_is_readable(binary: &Binary) -> Result<()> {
         bail!("{}", text::cannot_read_code(binary));
     }
     Ok(())
+}
+
+/// The index of `node`'s item, or an error that says it is an import,
+/// whose code is in another file.
+fn item_in_file(binary: &Binary, node: Node) -> Result<usize> {
+    match node {
+        Node::Item(index) => Ok(index),
+        Node::Import(_) => bail!(
+            "{} is imported from a shared library, so its code isn't in this file",
+            node.name(binary)
+        ),
+    }
+}
+
+/// The index of `node`'s item, or why elfq can't read its code: it is an
+/// import, or a function whose end elfq doesn't know.
+fn readable_item(binary: &Binary, node: Node) -> Result<usize> {
+    let index = item_in_file(binary, node)?;
+    let item = &binary.items[index];
+    if item.kind == ItemKind::Function && item.size == 0 {
+        bail!(
+            "elfq doesn't know where {} ends, so it can't read its code",
+            item.name
+        );
+    }
+    Ok(index)
 }
 
 /// Where an answer that found nothing looked, for its error: `range`, such

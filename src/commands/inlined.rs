@@ -52,12 +52,12 @@ pub fn run(
 /// inlined into it.
 fn find_function(binary: &Binary, symbol: &str) -> Result<usize> {
     let node = super::symbol::find(binary, symbol)?;
-    let name = node.name(binary);
-    let Node::Item(index) = node else {
-        bail!("{name} is imported from a shared library, so its code isn't in this file");
-    };
+    let index = super::item_in_file(binary, node)?;
     if binary.items[index].kind != ItemKind::Function {
-        bail!("{name} is a data object, not a function, so nothing is inlined into it");
+        bail!(
+            "{} is a data object, not a function, so nothing is inlined into it",
+            node.name(binary)
+        );
     }
     Ok(index)
 }

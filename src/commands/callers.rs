@@ -93,11 +93,9 @@ fn callers(
     // A function's stubs all have its name, as `log_msg@plt`: glibc's
     // `libc.so.6` has two for `wmemset`. Code that only takes a stub's
     // address, as for an ifunc, takes the function's, so that needs no note.
-    let called_stub = stubs.iter().find(|&&stub| {
-        references.iter().any(|r| {
-            r.to == stub && matches!(r.kind, ReferenceKind::Call | ReferenceKind::TailCall)
-        })
-    });
+    let called_stub = stubs
+        .iter()
+        .find(|&&stub| references.iter().any(|r| r.to == stub && r.kind.is_call()));
     if let Some(stub) = called_stub {
         notes.push(format!(
             "This includes calls through {}.",
@@ -106,8 +104,7 @@ fn callers(
     }
     // Some calls can't be listed: the system's, to where the program starts,
     // and those through a pointer.
-    let root = graph.roots.iter().find(|root| root.node == node);
-    match root {
+    match graph.root(node) {
         Some(root) => notes.push(text::root_sentence(binary, root)),
         None if through_pointer => notes.push(format!(
             "Calls to {name} through a pointer aren't listed, since elfq can't see them."

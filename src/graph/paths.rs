@@ -14,7 +14,7 @@
 
 use std::collections::VecDeque;
 
-use super::{Graph, Node, Reference, ReferenceKind, index};
+use super::{Graph, Node, Reference, index};
 use crate::binary::Binary;
 
 /// How a search from the roots first reached each node.
@@ -67,11 +67,7 @@ impl ShortestPaths {
                     continue;
                 }
                 let to = index(items, reference.to);
-                let is_call = matches!(
-                    reference.kind,
-                    ReferenceKind::Call | ReferenceKind::TailCall
-                );
-                let not_calls = paths.not_calls[from] + usize::from(!is_call);
+                let not_calls = paths.not_calls[from] + usize::from(!reference.kind.is_call());
                 let first = paths.distance[to].is_none();
                 // Paths of the same length are all seen before any node
                 // they reach leaves the queue, so the choice can change
@@ -122,7 +118,7 @@ impl ShortestPaths {
 mod tests {
     use super::*;
 
-    use crate::graph::{Root, RootKind};
+    use crate::graph::{ReferenceKind, Root, RootKind};
 
     /// A graph of calls between items, where item 0 is the only root.
     fn graph(calls: &[(usize, usize)]) -> Graph {

@@ -3,13 +3,13 @@
 
 use std::io::Write;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use serde::Serialize;
 
 use super::ranges::{self, Direction};
 use super::symbol::{self, Subject};
 use super::{Outcome, json, text};
-use crate::binary::{Binary, ItemKind};
+use crate::binary::Binary;
 use crate::cli::Format;
 use crate::graph::{Graph, Node, Reference, Unresolved};
 use crate::render::{Align, Table};
@@ -45,7 +45,7 @@ pub fn run(
     super::check_code_is_readable(binary)?;
     match symbol::subject(binary, symbols)? {
         Subject::Node(node) => {
-            let index = readable_item(binary, node)?;
+            let index = super::readable_item(binary, node)?;
             let graph = Graph::build(binary);
             callees(binary, &graph, index, format, out)?;
             Ok(Outcome::Answered)
@@ -55,21 +55,6 @@ pub fn run(
             ranges::run(binary, &graph, &ranges, Direction::Out, format, out)
         }
     }
-}
-
-/// The index of `node`'s item, or why elfq can't read what it uses: it is
-/// an import, whose code is in another file, or a function whose end elfq
-/// doesn't know.
-fn readable_item(binary: &Binary, node: Node) -> Result<usize> {
-    let name = node.name(binary);
-    let Node::Item(index) = node else {
-        bail!("{name} is imported from a shared library, so its code isn't in this file");
-    };
-    let item = &binary.items[index];
-    if item.kind == ItemKind::Function && item.size == 0 {
-        bail!("elfq doesn't know where {name} ends, so it can't read its code");
-    }
-    Ok(index)
 }
 
 /// What the item at `index` calls or uses.

@@ -357,13 +357,7 @@ fn inlined(binary: &Binary) -> Option<String> {
 /// where the program starts: a good question for `why`.
 fn largest_kept(retained: &RetainedTree) -> Option<usize> {
     let binary = retained.binary;
-    let is_root = |index| {
-        retained
-            .graph
-            .roots
-            .iter()
-            .any(|root| root.node == Node::Item(index))
-    };
+    let is_root = |index| retained.graph.root(Node::Item(index)).is_some();
     (0..binary.items.len())
         .filter(|&index| retained.tree.is_reachable(Node::Item(index)) && !is_root(index))
         .filter(|&index| retained.own(index) > 0)

@@ -61,7 +61,7 @@ pub fn run(binary: &Binary, symbol: &str, format: Format, out: &mut dyn Write) -
         );
     }
     let graph = Graph::build(binary);
-    if let Some(root) = graph.roots.iter().find(|root| root.node == node) {
+    if let Some(root) = graph.root(node) {
         if format == Format::Json {
             let answer = WhyJson {
                 symbol: json::Item::new(binary, node),
@@ -187,7 +187,7 @@ fn chain(
 ) -> Vec<(Node, String)> {
     let path = paths.path_to(user).unwrap_or_default();
     let start = path.first().map_or(user, |r| Node::Item(r.from));
-    let root = graph.roots.iter().find(|root| root.node == start);
+    let root = graph.root(start);
     let mut chain = vec![(
         start,
         root.map_or(String::new(), |root| text::root_json(binary, root.kind)),
@@ -266,7 +266,7 @@ impl<'a> Chains<'a> {
             let user = Node::Item(user);
             let path = paths.path_to(user).unwrap_or_default();
             let start = path.first().map_or(user, |r| Node::Item(r.from));
-            if let Some(&root) = graph.roots.iter().find(|root| root.node == start)
+            if let Some(&root) = graph.root(start)
                 && !chains.roots.contains(&root)
             {
                 chains.roots.push(root);

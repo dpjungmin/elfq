@@ -72,6 +72,14 @@ pub enum ReferenceKind {
     Pointer,
 }
 
+impl ReferenceKind {
+    /// Whether it is a call or a tail call, rather than a use of an item's
+    /// address or bytes.
+    pub fn is_call(self) -> bool {
+        matches!(self, ReferenceKind::Call | ReferenceKind::TailCall)
+    }
+}
+
 /// A call or jump that the graph can't follow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Unresolved {
@@ -144,6 +152,15 @@ impl Graph {
     /// The references to `node`, sorted by the item that makes them.
     pub fn references_to(&self, node: Node) -> impl Iterator<Item = &Reference> {
         self.references.iter().filter(move |r| r.to == node)
+    }
+
+    /// Why the program starts at `node`, if it is one of the roots.
+    pub fn root(&self, node: Node) -> Option<&Root> {
+        let index = self
+            .roots
+            .binary_search_by_key(&node, |root| root.node)
+            .ok()?;
+        Some(&self.roots[index])
     }
 
     /// The calls and jumps in `item` that the graph can't follow.

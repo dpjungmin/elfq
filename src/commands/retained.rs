@@ -13,7 +13,7 @@ use serde::Serialize;
 
 use super::retained_tree::{KeptItem, RetainedTree};
 use super::{json, text};
-use crate::binary::{AddressRange, Binary, FileKind, ItemKind};
+use crate::binary::{AddressRange, Binary, FileKind};
 use crate::cli::Format;
 use crate::graph::{Node, Unresolved};
 use crate::render::{Align, Table};
@@ -200,14 +200,8 @@ impl<'a> SymbolInTree<'a> {
     ) -> Result<SymbolInTree<'a>> {
         super::check_code_is_readable(binary)?;
         let node = super::symbol::find(binary, symbol)?;
+        super::readable_item(binary, node)?;
         let name = node.name(binary);
-        let Node::Item(index) = node else {
-            bail!("{name} is imported from a shared library, so its code isn't in this file");
-        };
-        let item = &binary.items[index];
-        if item.kind == ItemKind::Function && item.size == 0 {
-            bail!("elfq doesn't know where {name} ends, so it can't read its code");
-        }
         if binary.kind == FileKind::SharedLibrary {
             bail!(
                 "elfq doesn't know yet which functions a shared library offers to other files, \

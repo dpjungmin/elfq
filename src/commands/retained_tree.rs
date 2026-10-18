@@ -12,7 +12,7 @@ use serde::Serialize;
 
 use super::{json, text};
 use crate::binary::{AddressRange, Binary, Item, ItemKind};
-use crate::graph::{DominatorTree, Graph, Node, ReferenceKind};
+use crate::graph::{DominatorTree, Graph, Node};
 use crate::render::{Align, Table, TreeRow};
 
 /// An item and everything it keeps, for `--json`.
@@ -63,7 +63,7 @@ impl<'a> RetainedTree<'a> {
         let called = graph
             .references
             .iter()
-            .filter(|r| matches!(r.kind, ReferenceKind::Call | ReferenceKind::TailCall))
+            .filter(|r| r.kind.is_call())
             .filter_map(|r| match r.to {
                 Node::Item(index) => Some(index),
                 Node::Import(_) => None,

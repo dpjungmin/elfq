@@ -11,7 +11,7 @@ use serde::Serialize;
 use super::{Outcome, json, text};
 use crate::binary::{AddressRange, Binary};
 use crate::cli::Format;
-use crate::graph::{Boundary, Crossing, Graph, Node, Unresolved};
+use crate::graph::{Boundary, Crossing, Graph, Node, ReferenceKind, Unresolved};
 use crate::render::{Align, Table};
 
 /// Which way the references cross the boundary.
@@ -166,7 +166,7 @@ fn leaving(
     let it = if ranges.len() == 1 { "it" } else { "them" };
     let verb = |one: &str, many: &str| if ranges.len() == 1 { one } else { many }.to_string();
     let groups = groups(binary, &crossings, Direction::Out, |crossing| {
-        text::how_column(binary, crossing.to, crossing.kind)
+        how_column(binary, crossing)
     });
     let used = text::count_text(binary, &outside_nodes(&groups));
     let unknown = text::calls_and_jumps(&unfollowed);
@@ -286,7 +286,7 @@ fn entering(
     let subject = ranges_text(binary, ranges);
     let it = if ranges.len() == 1 { "it" } else { "them" };
     let groups = groups(binary, &crossings, Direction::In, |crossing| {
-        text::how_column(binary, crossing.to, crossing.kind)
+        how_column(binary, crossing)
     });
     if groups.is_empty() && through_pointer.is_empty() {
         writeln!(out, "Nothing outside {subject} uses {it}.")?;
@@ -416,8 +416,7 @@ fn outside_nodes(groups: &[Group]) -> Vec<Node> {
 }
 
 /// Adds a line to `table` for each row of `groups`, naming the item
-/// outside the ranges only on the first line of its group, and saying "via
-/// veneer" after a call through one.
+/// outside the ranges only on the first line of its group.
 fn write_groups(binary: &Binary, groups: &[Group], table: &mut Table) {
     for group in groups {
         for (index, row) in group.rows.iter().enumerate() {
@@ -433,20 +432,25 @@ fn write_groups(binary: &Binary, groups: &[Group], table: &mut Table) {
                 (0, node) => (node.name(binary).to_string(), String::new(), String::new()),
                 _ => (String::new(), String::new(), String::new()),
             };
-            let how = match (row.veneer, row.how) {
-                (Some(_), "call") => "call via veneer",
-                (Some(_), "tail call") => "tail call via veneer",
-                (_, how) => how,
-            };
             table.row(vec![
                 name,
                 address,
                 size,
                 row.inside.name(binary).to_string(),
-                how.to_string(),
+                row.how.to_string(),
                 text::at_column(&row.sites),
             ]);
         }
+    }
+}
+
+/// How a crossing uses what is on the other side, for the HOW column, with
+/// "via veneer" after a call through one.
+fn how_column(binary: &Binary, crossing: &Crossing) -> &'static str {
+    match (crossing.kind, crossing.veneer) {
+        (ReferenceKind::Call, Some(_)) => "call via veneer",
+        (ReferenceKind::TailCall, Some(_)) => "tail call via veneer",
+        (kind, _) => text::how_column(binary, crossing.to, kind),
     }
 }
 
