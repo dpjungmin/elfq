@@ -31,7 +31,8 @@ pub struct CodeReference {
 /// loader stores a pointer there, as in a global offset table entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodeReferenceKind {
-    /// A direct call: `call target`.
+    /// A direct call: `call target`, or on Thumb, a call through a
+    /// register that the code put `target` in, as a long call does.
     Call(u64),
     /// A direct jump, conditional or not: `jmp target`, or to a case of a
     /// jump table. Usually to another place in the same function; otherwise
@@ -40,8 +41,9 @@ pub enum CodeReferenceKind {
     /// A direct jump of the kind that compilers and linkers use to carry on
     /// in another function. Only Thumb tells these apart, and only as a
     /// hint: an unconditional `b.w`, which long functions also use inside
-    /// themselves, and the `ldr.w pc` of a linker's veneer. The graph treats
-    /// it as a `Jump`.
+    /// themselves, the jump of a linker's veneer, and a jump through a
+    /// register that the code put the target in. The graph treats it as a
+    /// `Jump`.
     TailJump(u64),
     /// A call through the pointer stored at an address: `call [pointer]`.
     CallThrough(u64),
@@ -54,7 +56,8 @@ pub enum CodeReferenceKind {
     /// An address that code computes or loads as a number, without touching
     /// memory there: `lea` on x86-64, or on Arm a constant from a literal
     /// pool or a `movw`/`movt` pair. Code does this to pass a pointer, and
-    /// on Arm also before reading or writing a variable.
+    /// on Arm also before reading or writing a variable. On Thumb, an
+    /// address that the code only branches to is a call or jump instead.
     Address(u64),
     /// Reading or writing memory at an address, as when using a variable.
     Memory(u64),
@@ -99,6 +102,25 @@ pub fn scan(
     match architecture {
         Architecture::X86_64 => x86_64::scan(code, address),
         Architecture::Arm => thumb::scan(code, address, endianness),
+        _ => Vec::new(),
+    }
+}
+
+/// The references that each instruction in one function's code makes on
+/// its own: like [`scan`], but without following an address from the
+/// instruction that puts it in a register to one that branches through
+/// it, so such a branch is always through a pointer. Code split in two
+/// finds the same references this way as the code together, unless an
+/// instruction or the constants it loads are cut in two.
+pub fn scan_instructions(
+    architecture: Architecture,
+    endianness: Endianness,
+    code: &[u8],
+    address: u64,
+) -> Vec<CodeReference> {
+    match architecture {
+        Architecture::X86_64 => x86_64::scan(code, address),
+        Architecture::Arm => thumb::scan_instructions(code, address, endianness),
         _ => Vec::new(),
     }
 }

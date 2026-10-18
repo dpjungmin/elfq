@@ -11,6 +11,14 @@
 //! the constant as data, so that it doesn't decode it as an instruction when
 //! it gets there. It does the same for the jump tables of `tbb` and `tbh`,
 //! and reports a jump to each of their targets.
+//!
+//! This sweep reads each instruction on its own. Then the `values` module
+//! follows the addresses that code puts in registers, using what `decode`
+//! says each instruction does with them, to find where a branch through a
+//! register goes.
+
+mod decode;
+mod values;
 
 use std::collections::BTreeMap;
 
@@ -26,9 +34,31 @@ const PC: u16 = 15;
 
 /// The references in the Thumb code `code`, which starts at `address`, in
 /// the order of their instructions. The constants and jump tables that the
-/// code reads are skipped, not decoded.
+/// code reads are skipped, not decoded. A branch through a register goes
+/// where the code before it put an address there, if it did.
 pub(super) fn scan(code: &[u8], address: u64, endianness: Endianness) -> Vec<CodeReference> {
     let mut scanner = Scanner::new(code, address, endianness);
+    // Instructions take 2 bytes or more.
+    scanner.instructions = Some(Vec::with_capacity(code.len() / 2));
+    let scanner = sweep(scanner);
+    let instructions = scanner.instructions.unwrap_or_default();
+    values::follow(code, address, endianness, &instructions, scanner.references)
+}
+
+/// The references that each instruction in `code` makes on its own: like
+/// [`scan`], but without following addresses from one instruction to the
+/// next, so a branch through a register is always through a pointer.
+pub(super) fn scan_instructions(
+    code: &[u8],
+    address: u64,
+    endianness: Endianness,
+) -> Vec<CodeReference> {
+    sweep(Scanner::new(code, address, endianness)).references
+}
+
+/// Decodes the instructions in the scanner's code, skipping the constants
+/// and jump tables they read.
+fn sweep(mut scanner: Scanner) -> Scanner {
     let mut offset = 0;
     while let Some(first) = scanner.halfword(offset) {
         if let Some(end) = scanner.data_end(offset) {
@@ -40,7 +70,7 @@ pub(super) fn scan(code: &[u8], address: u64, endianness: Endianness) -> Vec<Cod
         };
         offset += size;
     }
-    scanner.references
+    scanner
 }
 
 /// How many bytes of `code` its instructions and constants take, leaving
@@ -140,15 +170,16 @@ fn is_padding(first: u16, second: Option<u16>) -> bool {
 /// Where the processor goes after the instruction made of `first` and, if
 /// it is 32 bits long, `second`.
 fn exit(first: u16, second: u16) -> Ending {
-    let stops = if first >> 11 < 0b11101 {
+    let stops = if !is_wide(first) {
         // blx register
         if first & 0xff80 == 0x4780 {
             return Ending::Call;
         }
-        // b, bx register, mov pc, pop {..., pc} and udf
+        // b, bx register, mov pc, add pc, pop {..., pc} and udf
         first & 0xf800 == 0xe000
             || first & 0xff80 == 0x4700
             || first & 0xff87 == 0x4687
+            || first & 0xff87 == 0x4487
             || first & 0xff00 == 0xbd00
             || first & 0xff00 == 0xde00
     } else {
@@ -165,6 +196,30 @@ fn exit(first: u16, second: u16) -> Ending {
             || (first & 0xfff0 == 0xf7f0 && second & 0xf000 == 0xa000)
     };
     if stops { Ending::Stops } else { Ending::RunsOn }
+}
+
+/// One instruction that the sweep decoded.
+#[derive(Debug, Clone, Copy)]
+struct Instruction {
+    /// Where it is, as an offset into the code.
+    offset: usize,
+    /// Its first 16 bits.
+    first: u16,
+    /// Its second 16 bits, if it is 32 bits long, or 0.
+    second: u16,
+}
+
+impl Instruction {
+    /// Its size in bytes.
+    fn size(&self) -> usize {
+        if is_wide(self.first) { 4 } else { 2 }
+    }
+}
+
+/// Whether the instruction that starts with `first` is 32 bits long: those
+/// start with 0b11101, 0b11110 or 0b11111.
+fn is_wide(first: u16) -> bool {
+    first >> 11 >= 0b11101
 }
 
 struct Scanner<'a> {
@@ -184,6 +239,9 @@ struct Scanner<'a> {
     /// The last two instructions decoded, as (offset, first halfword,
     /// second halfword or 0), which can say how long a jump table is.
     previous: [Option<(usize, u16, u16)>; 2],
+    /// The instructions decoded so far, when they are kept, for following
+    /// the registers through them.
+    instructions: Option<Vec<Instruction>>,
 }
 
 impl<'a> Scanner<'a> {
@@ -196,20 +254,27 @@ impl<'a> Scanner<'a> {
             data: BTreeMap::new(),
             low_halves: [None; 16],
             previous: [None; 2],
+            instructions: None,
         }
     }
 
     /// Decodes the instruction at `offset` and reports its reference, if
     /// any. Returns the instruction's size.
     fn step(&mut self, offset: usize, first: u16) -> Option<usize> {
-        // 32-bit instructions start with 0b11101, 0b11110 or 0b11111.
-        let (kind, size, second) = if first >> 11 >= 0b11101 {
+        let (kind, size, second) = if is_wide(first) {
             let second = self.halfword(offset + 2)?;
             (self.wide(offset, first, second), 4, second)
         } else {
             (self.narrow(offset, first), 2, 0)
         };
         self.previous = [self.previous[1], Some((offset, first, second))];
+        if let Some(instructions) = &mut self.instructions {
+            instructions.push(Instruction {
+                offset,
+                first,
+                second,
+            });
+        }
         if let Some(kind) = kind {
             self.references.push(CodeReference {
                 site: self.address + offset as u64,
@@ -289,9 +354,8 @@ impl<'a> Scanner<'a> {
         }
         // adr.w register, label, before or after the instruction.
         if first & 0xfbff == 0xf2af && second & 0x8000 == 0 {
-            return Some(Address(
-                self.pointed_at(align(pc).wrapping_sub(u64::from(imm12))),
-            ));
+            let address = align(pc).wrapping_sub(u64::from(imm12)) & 0xffff_ffff;
+            return Some(Address(self.pointed_at(address)));
         }
         if first & 0xfbff == 0xf20f && second & 0x8000 == 0 {
             return Some(Address(self.pointed_at(align(pc) + u64::from(imm12))));
@@ -691,9 +755,9 @@ mod tests {
     #[test]
     fn addresses_before_0_are_not_an_error() {
         // adr.w r0 and ldr.w r0 eight bytes before the program counter, in
-        // code at address 0.
+        // code at address 0. Addresses are 32 bits long, so adr.w wraps.
         let adr = [0xaf, 0xf2, 0x08, 0x00];
-        assert_eq!(kinds(&adr, 0), [(0, Address(4u64.wrapping_sub(8)))]);
+        assert_eq!(kinds(&adr, 0), [(0, Address(0xffff_fffc))]);
         assert_eq!(kinds(&[0x5f, 0xf8, 0x08, 0x00], 0), []);
     }
 }
