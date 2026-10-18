@@ -104,6 +104,25 @@ fn plt_stubs_are_named_after_the_imports_they_call() {
 }
 
 #[test]
+fn stubs_in_a_plt_got_without_cet_are_8_bytes_long() {
+    let binary = load_sample("c-plt.so");
+    let stubs: Vec<(&str, u64, u64)> = binary
+        .items
+        .iter()
+        .filter(|item| item.source == Source::Plt)
+        .map(|item| (item.name.as_str(), item.address, item.size))
+        .collect();
+    assert_eq!(
+        stubs,
+        [
+            (".plt", 0x1020, 80),
+            (".plt.got", 0x1070, 8),
+            ("__cxa_finalize@plt", 0x1078, 8),
+        ]
+    );
+}
+
+#[test]
 fn startup_and_exit_arrays_are_data_items() {
     let binary = load_sample("c-x86_64-stripped.elf");
     let init = item(&binary, ".init_array");

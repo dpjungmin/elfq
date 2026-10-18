@@ -150,6 +150,7 @@ mod tests {
                 kind: SectionKind::Text,
                 allocated: true,
                 file_range: Some((0, text.len() as u64)),
+                entry_size: 0,
             }],
             items: Vec::new(),
             imports: Vec::new(),

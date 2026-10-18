@@ -236,6 +236,7 @@ mod tests {
             kind: object::SectionKind::Data,
             allocated,
             file_range: None,
+            entry_size: 0,
         };
         let sections = [
             section("", 0, 0, false),

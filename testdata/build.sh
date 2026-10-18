@@ -37,6 +37,11 @@ variants strip c-x86_64
 echo "C, x86-64 Linux shared library"
 gcc $cflags -shared -fPIC -o "$out/c-x86_64.so" c/app.c c/platform_host.c
 
+# Without Intel CET, GNU ld lays out the PLT the older way, with 8-byte
+# entries in .plt.got.
+echo "C, x86-64 Linux shared library without CET"
+gcc $cflags -shared -fPIC -fcf-protection=none -o "$out/c-plt.so" c/plt.c
+
 echo "C, Cortex-M4"
 arm-none-eabi-gcc $cflags \
     -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 \

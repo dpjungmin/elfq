@@ -425,6 +425,7 @@ mod tests {
             kind,
             allocated: true,
             file_range: Some((offset, bytes.len() as u64)),
+            entry_size: 0,
         };
         let binary = Binary {
             architecture: Architecture::Arm,

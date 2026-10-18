@@ -43,9 +43,10 @@ use std::fmt;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
+use object::read::elf::SectionHeader;
 use object::{
     Architecture, Endianness, Object, ObjectKind, ObjectSection, ObjectSymbol, SectionFlags,
-    SectionKind, SymbolKind,
+    SectionIndex, SectionKind, SymbolKind,
 };
 
 /// Arrays of pointers to the functions that the C runtime calls at startup
@@ -134,6 +135,10 @@ pub struct Section {
     /// Where the section's bytes are in the file, as (offset, size). `None`
     /// for sections such as `.bss` that take no space in the file.
     pub file_range: Option<(u64, u64)>,
+    /// The size of each entry, for a section that holds a table of them,
+    /// such as `.plt.got`, as the section's header gives it; 0 when it
+    /// gives none.
+    pub entry_size: u64,
 }
 
 /// A function or data object.
@@ -626,9 +631,23 @@ fn read_sections(file: &object::File, file_size: u64, warnings: &mut Vec<String>
             kind: section.kind(),
             allocated,
             file_range,
+            entry_size: entry_size(file, section.index()),
         };
     }
     sections
+}
+
+/// The size of each entry that the header of the section at `index` gives.
+fn entry_size(file: &object::File, index: SectionIndex) -> u64 {
+    match file {
+        object::File::Elf32(elf) => elf.section_by_index(index).map_or(0, |section| {
+            section.elf_section_header().sh_entsize(elf.endian()).into()
+        }),
+        object::File::Elf64(elf) => elf.section_by_index(index).map_or(0, |section| {
+            section.elf_section_header().sh_entsize(elf.endian())
+        }),
+        _ => 0,
+    }
 }
 
 /// `size`, for something that starts at `address`, made to fit: one byte
@@ -650,6 +669,7 @@ fn null_section() -> Section {
         kind: SectionKind::Unknown,
         allocated: false,
         file_range: None,
+        entry_size: 0,
     }
 }
 
@@ -798,6 +818,7 @@ mod tests {
             kind: SectionKind::Text,
             allocated: true,
             file_range: None,
+            entry_size: 0,
         }
     }
 

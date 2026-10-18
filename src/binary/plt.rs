@@ -8,10 +8,7 @@
 
 use object::Architecture;
 
-use super::{Binary, Item, ItemKind, RelocationTarget, Source};
-
-/// Every x86-64 PLT entry is 16 bytes long.
-const ENTRY_SIZE: u64 = 16;
+use super::{Binary, Item, ItemKind, RelocationTarget, Section, Source};
 
 /// Returns a function for each stub, and one for the rest of each table
 /// before its first stub: the header that lazy binding uses, named after its
@@ -28,9 +25,10 @@ pub(super) fn stubs(binary: &Binary) -> Vec<Item> {
         let Some(code) = binary.bytes(section.address, section.size) else {
             continue;
         };
+        let entry_size = entry_size(section);
         let mut first_stub = None;
-        for (number, entry) in code.chunks(ENTRY_SIZE as usize).enumerate() {
-            let address = section.address + number as u64 * ENTRY_SIZE;
+        for (number, entry) in code.chunks(entry_size as usize).enumerate() {
+            let address = section.address + number as u64 * entry_size;
             let import = jump_slot(entry, address)
                 .and_then(|slot| binary.relocation_at(slot))
                 .and_then(|relocation| match relocation.target {
@@ -59,6 +57,13 @@ pub(super) fn stubs(binary: &Binary) -> Vec<Item> {
         }
     }
     items
+}
+
+/// How long each entry in a PLT section is: 16 bytes, except in a
+/// `.plt.got` that GNU ld makes without Intel CET, whose entries are 8 bytes
+/// long, as its header says.
+fn entry_size(section: &Section) -> u64 {
+    if section.entry_size == 8 { 8 } else { 16 }
 }
 
 /// The address of the pointer that an x86-64 PLT entry jumps through, from
