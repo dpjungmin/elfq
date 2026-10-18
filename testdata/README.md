@@ -147,8 +147,9 @@ linker script ([c/far.ld](c/far.ld)) names, and the other way. These are
 further apart than one `bl` reaches, so the linker adds a veneer next to
 each such call, except for `flash_far`, which GCC calls through a register
 since it is declared `long_call`. The files differ in linker, core and
-flags, which give these veneers; LLD's for `-pie` files has only a unit
-test:
+flags, which give these veneers. Two of LLD's have only unit tests: the one
+for Cortex-M0 `-pie` files, and a lone `b.w` where the veneer is in reach
+of the target:
 
 | File | Linker and core | Veneer |
 |---|---|---|
@@ -157,7 +158,7 @@ test:
 | `far-gnu-m4-pic` | GNU ld, Cortex-M4, `--pic-veneer` | adds pc to an offset in ip |
 | `far-gnu-m0` | GNU ld, Cortex-M0 | loads the target into ip, `bx ip` |
 | `far-lld-m4` | LLD, Cortex-M4 | `movw ip`, `movt ip`, `bx ip` |
-| `far-lld-m4-pic` | LLD, Cortex-M4, `--pic-veneer` | adds pc to `movw`/`movt` in ip |
+| `far-lld-m4-pic` | LLD, Cortex-M4, `--pic-veneer` | adds pc to `movw`/`movt` in ip, as for `-pie` |
 | `far-lld-m0` | LLD, Cortex-M0 | stores the target on the stack and pops it into pc |
 | `far-lld-m0-pure` | LLD, Cortex-M0, `-mpure-code` | the same, with the target made a byte at a time |
 

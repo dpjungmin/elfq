@@ -1058,14 +1058,22 @@ fn load(pc: u64, first: u16, second: u16) -> Option<Effect> {
     Some(Effect::new(reads, bit(rt) | writeback).operation(load(word.then_some(rt))))
 }
 
-/// The floating-point instructions. Only those that move values to or
-/// from the core registers, and loads and stores that update their base
-/// register, touch the registers elfq follows. Those of other
-/// coprocessors, and Armv8.1-M's vector instructions, which share their
-/// encodings, aren't followed.
+/// The floating-point instructions, with Armv8.1-M's loads and stores of
+/// its system registers. Only those that move values to or from the core
+/// registers, and loads and stores that update their base register, touch
+/// the registers elfq follows. Those of other coprocessors, and
+/// Armv8.1-M's vector instructions, which share their encodings, aren't
+/// followed.
 fn coprocessor(first: u16, second: u16) -> Option<Effect> {
-    // The floating-point instructions are those of coprocessors 10 and 11.
-    if (second >> 9) & 7 != 0b101 {
+    // Coprocessor field 15, as some vector instructions have too, with P
+    // or W set.
+    if first & 0xfe00 == 0xec00 && second & 0x1f80 == 0x0f80 && first & 0x120 != 0 {
+        return system_register(first, second);
+    }
+    // The floating-point instructions use coprocessor fields 9, for half
+    // precision, 10 and 11.
+    let field = (second >> 8) & 0xf;
+    if !matches!(field, 0b1001..=0b1011) {
         return None;
     }
     let rn = first & 0xf;
@@ -1095,9 +1103,9 @@ fn coprocessor(first: u16, second: u16) -> Option<Effect> {
             let writeback = w && !p || p && !u && w;
             let writes = if writeback && rn != PC { bit(rn) } else { 0 };
             let effect = Effect::new(reads(&[rn]), writes);
-            let floating_point = matches!((second >> 8) & 0xf, 0b1010 | 0b1011);
-            let size = u32::from(second & 0xff) * 4;
-            let stack = floating_point && rn == SP && writeback;
+            let half = field == 0b1001;
+            let size = u32::from(second & 0xff) * if half { 2 } else { 4 };
+            let stack = !half && rn == SP && writeback;
             Some(match (loads, p) {
                 // vpop and vpush
                 (true, false) if stack && u => {
@@ -1111,14 +1119,18 @@ fn coprocessor(first: u16, second: u16) -> Option<Effect> {
                     base: rn,
                     offset: None,
                 }),
-                // vstr, which stores a single or a double.
-                (false, true) if floating_point && !w => {
+                // vstr, which stores a half, a single or a double.
+                (false, true) if !w => {
                     let offset = size as i32;
                     effect.operation(Operation::Store {
                         register: None,
                         base: rn,
                         offset: Some(if u { offset } else { -offset }),
-                        size: if second & 0x100 == 0 { 4 } else { 8 },
+                        size: match field {
+                            0b1001 => 2,
+                            0b1010 => 4,
+                            _ => 8,
+                        },
                     })
                 }
                 (false, _) => effect.operation(Operation::Store {
@@ -1151,6 +1163,42 @@ fn coprocessor(first: u16, second: u16) -> Option<Effect> {
             Some(Effect::new(reads(&[rt]), 0))
         }
     }
+}
+
+/// Armv8.1-M's vldr and vstr of a floating-point system register, such as
+/// the FPCXTNS that a function called from Non-secure code saves: one word
+/// at Rn plus or minus `imm7` * 4, or at Rn, which it then changes by that.
+fn system_register(first: u16, second: u16) -> Option<Effect> {
+    let rn = first & 0xf;
+    let (p, u, w) = (first & 0x100 != 0, first & 0x80 != 0, first & 0x20 != 0);
+    if rn == PC {
+        return None;
+    }
+    let amount = i32::from(second & 0x7f) * 4;
+    let amount = if u { amount } else { -amount };
+    let offset = Some(if p { amount } else { 0 });
+    let effect = Effect::new(bit(rn), if w { bit(rn) } else { 0 });
+    Some(match (first & 0x10 != 0, rn == SP && w) {
+        (true, true) if !p && u => effect.operation(Operation::Pop {
+            registers: 0,
+            size: amount as u32,
+        }),
+        (false, true) if p && !u => effect.operation(Operation::Push {
+            registers: 0,
+            size: amount.unsigned_abs(),
+        }),
+        (true, _) => effect.operation(Operation::Load {
+            register: None,
+            base: rn,
+            offset,
+        }),
+        (false, _) => effect.operation(Operation::Store {
+            register: None,
+            base: rn,
+            offset,
+            size: 4,
+        }),
+    })
 }
 
 #[cfg(test)]
@@ -1574,6 +1622,45 @@ mod tests {
         assert!(effect(0, &[0xf1, 0xee, 0x10, 0xfa]).sets_flags);
         // vpush {d8}: writes sp.
         assert_eq!(effect(0, &[0x2d, 0xed, 0x02, 0x8b]).writes, bit(SP));
+        // Half precision: vmov.f16 r0, s0 writes r0, vmul.f16 s0, s16, s0
+        // nothing, and vstr.16 s0, [sp, #4] stores two bytes there.
+        assert_eq!(effect(0, &[0x10, 0xee, 0x10, 0x09]).writes, bit(0));
+        assert_eq!(effect(0, &[0x28, 0xee, 0x00, 0x09]).writes, 0);
+        assert_eq!(
+            operation(&[0x8d, 0xed, 0x02, 0x09]),
+            Operation::Store {
+                register: None,
+                base: SP,
+                offset: Some(4),
+                size: 2
+            }
+        );
+        // Armv8.1-M's system registers: vstr FPCXTNS, [sp, #-4]! and vldr
+        // FPCXTNS, [sp], #4 push and pop a word, and vstr FPSCR, [r0]
+        // stores one.
+        assert_eq!(
+            operation(&[0x6d, 0xed, 0x81, 0xcf]),
+            Operation::Push {
+                registers: 0,
+                size: 4
+            }
+        );
+        assert_eq!(
+            operation(&[0xfd, 0xec, 0x81, 0xcf]),
+            Operation::Pop {
+                registers: 0,
+                size: 4
+            }
+        );
+        assert_eq!(
+            operation(&[0x80, 0xed, 0x80, 0x2f]),
+            Operation::Store {
+                register: None,
+                base: 0,
+                offset: Some(0),
+                size: 4
+            }
+        );
     }
 
     #[test]

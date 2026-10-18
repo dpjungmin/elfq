@@ -217,7 +217,7 @@ fn rows_by_address(answer: &Value) -> Vec<[String; 5]> {
 #[test]
 fn ranges_follow_calls_through_veneers() {
     // c/far.c, built with the veneers that GNU ld and LLD add, all but
-    // LLD's for -pie files.
+    // two of LLD's (see testdata/README.md).
     // Cortex-M0 has no tail call this far, and code built for it with
     // -mpure-code makes counter's address a byte at a time, which elfq
     // doesn't follow.

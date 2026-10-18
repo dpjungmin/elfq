@@ -117,16 +117,14 @@ impl<'a> Boundary<'a> {
     }
 
     /// The calls and jumps in the ranges that elfq can't follow, and that
-    /// may leave them: through a pointer, or to code outside every item and
-    /// outside the ranges, directly or through a veneer.
+    /// may leave them: through a pointer, or to code outside every item,
+    /// directly or through a veneer. Code outside every item may leave the
+    /// ranges even when it is in them, since elfq doesn't read it: it may be
+    /// a veneer whose symbol was stripped.
     pub fn unfollowed(&self) -> Vec<Unfollowed> {
         let mut unfollowed = Vec::new();
         for unresolved in &self.graph.unresolved {
-            if !self.inside[unresolved.from]
-                || unresolved
-                    .target
-                    .is_some_and(|target| self.in_ranges(target))
-            {
+            if !self.inside[unresolved.from] {
                 continue;
             }
             let calls = self.calls_from_its_side(unresolved.from);
@@ -458,7 +456,7 @@ mod tests {
     }
 
     #[test]
-    fn only_calls_that_may_leave_the_ranges_are_unfollowed() {
+    fn calls_that_may_leave_the_ranges_are_unfollowed() {
         let (binary, mut graph) = sample();
         let from = index(&binary, "crc32");
         let unresolved = |target| Unresolved {
@@ -472,6 +470,8 @@ mod tests {
             unresolved(Some(0x100)),
             unresolved(Some(0x1fff_0000)),
         ];
+        // Each may leave: code outside every item, even in the range, may
+        // be a veneer whose symbol was stripped.
         let ranges = [range("0x0+256K")];
         let boundary = Boundary::new(&binary, &graph, &ranges);
         let targets: Vec<Option<u64>> = boundary
@@ -479,10 +479,11 @@ mod tests {
             .iter()
             .map(|u| u.unresolved.target)
             .collect();
-        assert_eq!(targets, [None, Some(0x1fff_0000)]);
-        // A call through a pointer from flash, outside the range, isn't
-        // one.
-        graph.unresolved[0].from = index(&binary, "process_frame");
+        assert_eq!(targets, [None, Some(0x100), Some(0x1fff_0000)]);
+        // A call from flash, outside the range, isn't one.
+        for unresolved in &mut graph.unresolved[..2] {
+            unresolved.from = index(&binary, "process_frame");
+        }
         let boundary = Boundary::new(&binary, &graph, &ranges);
         let targets: Vec<Option<u64>> = boundary
             .unfollowed()

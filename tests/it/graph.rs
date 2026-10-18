@@ -297,7 +297,7 @@ fn calls_between_flash_and_itcm_go_through_veneers() {
 }
 
 /// c/far.c, built with the veneers that GNU ld and LLD add for Cortex-M,
-/// all but LLD's for `-pie` files.
+/// all but two of LLD's (see `testdata/README.md`).
 const FAR_SAMPLES: [&str; 8] = [
     "far-gnu-m4-nodebug.elf",
     "far-gnu-m4-pure-nodebug.elf",

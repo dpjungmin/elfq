@@ -397,19 +397,20 @@ that do this.
    except an even one for `bx` and `blx`, since Cortex-M cores fault on a
    branch to it, as to the address 0 of a weak function that the program
    doesn't have; `bxns` and `blxns` go to Non-secure code there, and `mov
-   pc` ignores the low bit. A register that a call may change may still
-   hold what it held, as code built with GCC's `-fipa-ra` counts on, so a
-   branch through it after a call goes there or anywhere. An address that
-   the code only branches to isn't also reported as used. A function with
-   code that only a jump elfq doesn't follow leads to, such as the cases
-   of a switch that jumps through a table of addresses, keeps what reading
-   each instruction on its own finds. elfq scans each function once, as it
-   loads the file (`Binary::code_references`). The entry point's code is a
-   special case: startup code copies or clears whole sections such as
-   `.data` and `.bss`, loading where each starts and ends through symbols
-   that the linker script defines, such as `_sdata` and `_edata`. When the
-   entry point loads both ends of a section, those addresses aren't uses of
-   the items that start there.
+   pc` ignores the low bit. After a call, r0 holds what the function
+   returns, and r1 to r3 and ip may still hold what they held, as code
+   built with GCC's `-fipa-ra` counts on, so a branch through one of them
+   goes there or anywhere. An address that the code only branches to isn't
+   also reported as used. Code that only a jump elfq doesn't follow leads
+   to, such as the cases of a switch that jumps through a table of
+   addresses, keeps what reading each instruction on its own finds; when
+   that code joins code elfq follows, the whole function does. elfq scans
+   each function once, as it loads the file (`Binary::code_references`).
+   The entry point's code is a special case: startup code copies or clears
+   whole sections such as `.data` and `.bss`, loading where each starts and
+   ends through symbols that the linker script defines, such as `_sdata`
+   and `_edata`. When the entry point loads both ends of a section, those
+   addresses aren't uses of the items that start there.
    LLVM may merge small variables into one block (`.L_MergedGlobals`),
    which code uses through the block's address; that address counts as a
    use of each variable in the block.
@@ -579,29 +580,37 @@ function's stack frame), and a query language.
    at address 0, start a function where there is none. The bytes still
    all count, under a neighbouring function. Worth improving if it makes
    answers on real firmware confusing.
-3. **Calls through a register that elfq doesn't follow.** A register
-   that may hold more than 8 addresses at a branch, as when GCC merges
-   many long calls into one `blx`, an address kept in memory other than
-   the function's own stack, and one on a stack whose address the function
+3. **Calls through a register that elfq doesn't follow.** A register that
+   may hold more than 8 addresses at a branch, as when GCC merges many
+   long calls into one `blx`, an address kept in memory other than the
+   function's own stack, and one on a stack whose address the function
    passes to another, leave a call through a pointer; elfq lists each
    address as taken. Cortex-M0 code built with `-mpure-code` makes
    addresses a byte at a time, and elfq follows them only to a branch, so
-   the variables such code uses are missing. `callers SYMBOL` and
+   the variables such code uses are missing, and so are its long calls in
+   a function that switches through a table of addresses, since such a
+   function keeps the sweep's references. `callers SYMBOL` and
    `callees SYMBOL` name a veneer as the caller of its target, where the
-   range forms name the function that calls the veneer. An address that
-   code built with GCC's `-fipa-ra` keeps in r0 to r3 across a call and
-   then passes to a function isn't listed as taken. Calls through a
-   register on x86-64 aren't followed. A routine in ROM
-   that only the linker script names shows as its address, since the
-   symbol has no section. An assembly function whose symbol has no size,
-   last in its section, counts as empty, so its calls are missing; the
-   same file without symbols has them. Startup code that copies sections
-   outside the entry function, or reads a table of them as CMSIS does,
-   adds rows to `callers`.
+   range forms name the function that calls the veneer. In a file stripped
+   of local symbols only (`strip -x`), the veneers are in no item:
+   `callees` with ranges lists the calls to them as calls elfq can't
+   follow, and `callers` with ranges misses them. Code built with GCC's
+   `-fipa-ra` may keep an address in r0 to r3 across a call; when it then
+   passes the address to a function or back to its caller without naming
+   the register, or reads it from r0 other than to branch there, elfq
+   doesn't list it as taken, since it takes r0 to hold what the call
+   returned. Calls through a register on x86-64 aren't followed. A routine
+   in ROM that only the linker script names shows as its address, since
+   the symbol has no section. An assembly function whose symbol has no
+   size, last in its section, counts as empty, so its calls are missing;
+   the same file without symbols has them. Startup code that copies
+   sections outside the entry function, or reads a table of them as CMSIS
+   does, adds rows to `callers`.
 4. **Shared libraries.** The functions that a library exports aren't roots
    yet, so `top`, `retained` and `why` refuse libraries, and also programs
-   linked with `-static-pie`, which elfq takes for libraries. Arm firmware
-   linked with `-pie` and stripped has neither symbols nor an unwind
-   table, so elfq finds no functions in it.
+   linked with `-static-pie`, which elfq takes for libraries. elfq finds
+   the functions of stripped firmware by following its code only in files
+   linked to run at one address, so in Arm firmware linked with `-pie` and
+   stripped it finds none.
 5. **Compressed DWARF.** `inlined` can't read debug info that the linker
    compressed (`--compress-debug-sections`).

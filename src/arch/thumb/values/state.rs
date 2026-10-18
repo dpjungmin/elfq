@@ -10,6 +10,9 @@ use crate::arch::thumb::{PC, SP};
 /// Past that, it stops following it until code writes it again.
 pub(super) const LIMIT: usize = 8;
 
+/// The register that a function returns its result in: r0.
+pub(super) const RESULT: u16 = 0;
+
 /// What a number is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Kind {
@@ -32,6 +35,9 @@ pub(super) struct Value {
     /// an index into the function's instructions. A number made from it,
     /// as by adding to it, keeps it.
     pub source: Option<u32>,
+    /// Whether it is what a register held before a call that may have
+    /// changed it; see [`Contents::after_call`].
+    pub stale: bool,
 }
 
 impl Value {
@@ -41,6 +47,7 @@ impl Value {
             number,
             kind: Kind::Number,
             source: None,
+            stale: false,
         }
     }
 
@@ -51,6 +58,7 @@ impl Value {
             number: offset as u32,
             kind: Kind::Stack,
             source: None,
+            stale: false,
         }
     }
 }
@@ -125,10 +133,8 @@ pub(super) struct Contents {
     /// Whether it may hold more than [`LIMIT`] numbers. It then holds no
     /// values, and gains none where paths join, until code writes it.
     pub saturated: bool,
-    /// Whether `values` are what a register held before a call that may
-    /// have changed it. It then also holds something elfq can't tell. See
-    /// [`Contents::after_call`]. When `saturated`, whether some of the
-    /// numbers elfq stopped following were.
+    /// When `saturated`, whether some of the numbers elfq stopped following
+    /// were stale; see [`Value::stale`].
     pub stale: bool,
 }
 
@@ -166,20 +172,31 @@ impl Contents {
     }
 
     /// What a register that a call may change holds after it: something
-    /// elfq can't tell, or what it held before. Code compiled with GCC's
-    /// `-fipa-ra` counts on the second when it knows that the function it
-    /// calls keeps r0 to r3 or ip.
+    /// elfq can't tell, or what it held before, which is then stale. Code
+    /// compiled with GCC's `-fipa-ra` counts on the second when it knows
+    /// that the function it calls keeps r0 to r3 or ip. For r0, the first
+    /// is the result; see [`State::get`].
     pub fn after_call(&self) -> Contents {
         match (self.saturated, self.stale) {
             (true, true) => *self,
             (true, false) => Contents::unknown(),
-            (false, _) => Contents {
-                values: self.values,
-                unknown: true,
-                saturated: false,
-                stale: !self.values.is_empty(),
-            },
+            (false, _) => {
+                let mut contents = Contents::unknown();
+                for &value in self.values.iter() {
+                    contents.values.insert(Value {
+                        stale: true,
+                        ..value
+                    });
+                }
+                contents
+            }
         }
+    }
+
+    /// Whether some of the numbers these contents may hold, or that elfq
+    /// stopped following, are stale.
+    fn has_stale(&self) -> bool {
+        self.stale || self.values.iter().any(|value| value.stale)
     }
 
     /// `f` of each number these contents may hold, where `f` returns
@@ -222,11 +239,10 @@ impl Contents {
     /// elfq can't tell is 0 where it is 0. Contents left with nothing can't
     /// be what they are where code tests them this way, so the code there
     /// never runs.
-    pub fn narrow(&mut self, zero: bool) {
+    fn narrow(&mut self, zero: bool) {
         if self.saturated {
             return;
         }
-        self.stale = false;
         self.values.retain(|value| (value.number == 0) == zero);
         if zero && self.unknown {
             // There is room: it holds only 0s.
@@ -237,24 +253,18 @@ impl Contents {
 
     /// Adds what `other` may hold, where two paths through the code join.
     /// Returns whether these contents changed. Past [`LIMIT`] numbers they
-    /// are saturated, and each number they lose goes to `lost`, with
-    /// whether it was stale. They are stale only when both are, or one
-    /// holds no numbers.
-    pub fn join(&mut self, other: &Contents, lost: &mut impl FnMut(&Value, bool)) -> bool {
+    /// are saturated, and each number they lose goes to `lost`.
+    pub fn join(&mut self, other: &Contents, lost: &mut impl FnMut(&Value)) -> bool {
         if self.saturated {
-            other
-                .values
-                .iter()
-                .for_each(|value| lost(value, other.stale));
-            let changed = other.stale && !self.stale;
-            self.stale |= other.stale;
+            other.values.iter().for_each(&mut *lost);
+            let changed = other.has_stale() && !self.stale;
+            self.stale |= other.has_stale();
             return changed;
         }
         if other.saturated {
-            self.values.iter().for_each(|value| lost(value, self.stale));
-            self.stale |= other.stale;
+            self.values.iter().for_each(&mut *lost);
             *self = Contents {
-                stale: self.stale,
+                stale: self.has_stale() || other.stale,
                 ..Contents::saturated()
             };
             return true;
@@ -265,15 +275,6 @@ impl Contents {
             self.unknown = true;
             changed = true;
         }
-        let stale = match (self.values.is_empty(), other.values.is_empty()) {
-            (true, _) => other.stale,
-            (false, true) => self.stale,
-            (false, false) => self.stale && other.stale,
-        };
-        if stale != self.stale {
-            self.stale = stale;
-            changed = true;
-        }
         for value in other.values.iter() {
             match self.values.insert(*value) {
                 Some(new) => changed |= new,
@@ -281,13 +282,10 @@ impl Contents {
                     before
                         .values
                         .iter()
-                        .for_each(|value| lost(value, before.stale));
-                    other
-                        .values
-                        .iter()
-                        .for_each(|value| lost(value, other.stale));
+                        .chain(other.values.iter())
+                        .for_each(&mut *lost);
                     *self = Contents {
-                        stale: before.stale || other.stale,
+                        stale: before.has_stale() || other.has_stale(),
                         ..Contents::saturated()
                     };
                     return true;
@@ -337,21 +335,60 @@ impl State {
     }
 
     /// What `register` holds for an instruction that reads it, where
-    /// reading pc gives `pc`. Code reads a register that a call may have
-    /// changed only when it knows the call didn't, so what it held before
-    /// is no longer stale.
+    /// reading pc gives `pc`. After a call, r0 holds what the function
+    /// returns, which elfq can't tell. Code reads r1 to r3 or ip after a
+    /// call only when it knows the call kept them, so what they held is no
+    /// longer stale.
     pub fn get(&self, register: u16, pc: u32) -> Contents {
-        match register {
-            PC => Contents::holding(Value {
+        let mut contents = self.registers[usize::from(register)];
+        if register != RESULT || !contents.has_stale() {
+            return self.kept(register, pc);
+        }
+        if contents.saturated {
+            return Contents::unknown();
+        }
+        contents.values.retain(|value| !value.stale);
+        contents.unknown = true;
+        contents
+    }
+
+    /// What `register` holds, where reading pc gives `pc`, taking what it
+    /// held before a call to be there still, as code that reads it after
+    /// the call counts on.
+    pub fn kept(&self, register: u16, pc: u32) -> Contents {
+        let contents = self.registers[usize::from(register)];
+        if register == PC {
+            return Contents::holding(Value {
                 number: pc,
                 kind: Kind::ProgramCounter,
                 source: None,
-            }),
-            _ => Contents {
                 stale: false,
-                ..self.registers[usize::from(register)]
-            },
+            });
         }
+        if !contents.has_stale() {
+            return contents;
+        }
+        let mut kept = Contents {
+            values: Values::NONE,
+            stale: false,
+            ..contents
+        };
+        for &value in contents.values.iter() {
+            // As many as there were, at most.
+            kept.values.insert(Value {
+                stale: false,
+                ..value
+            });
+        }
+        kept
+    }
+
+    /// Leaves in `register` the numbers that are 0 if `zero`, or those that
+    /// aren't, where code tests whether it is 0; see [`Contents::narrow`].
+    pub fn narrow(&mut self, register: u16, zero: bool) {
+        let mut contents = self.get(register, 0);
+        contents.narrow(zero);
+        self.registers[usize::from(register)] = contents;
     }
 
     /// Where sp points, as an offset from where it pointed when the
@@ -378,27 +415,27 @@ impl State {
     }
 
     /// Forgets every word on the stack, giving each number it held to
-    /// `lost`. None of them is stale.
-    pub fn forget_stack(&mut self, lost: &mut impl FnMut(&Value, bool)) {
+    /// `lost`.
+    pub fn forget_stack(&mut self, lost: &mut impl FnMut(&Value)) {
         for value in self
             .stack
             .values()
             .flat_map(|contents| contents.values.iter())
         {
             self.escaped |= value.kind == Kind::Stack;
-            lost(value, false);
+            lost(value);
         }
         self.stack.clear();
     }
 
     /// Adds what `other` may hold, where two paths through the code join.
     /// Returns whether this state changed.
-    pub fn join(&mut self, other: &State, lost: &mut impl FnMut(&Value, bool)) -> bool {
+    pub fn join(&mut self, other: &State, lost: &mut impl FnMut(&Value)) -> bool {
         let mut changed = false;
         let mut escaped = other.escaped;
-        let mut lose = |value: &Value, stale| {
+        let mut lose = |value: &Value| {
             escaped |= value.kind == Kind::Stack;
-            lost(value, stale);
+            lost(value);
         };
         for (contents, other) in self.registers.iter_mut().zip(&other.registers) {
             changed |= contents.join(other, &mut lose);

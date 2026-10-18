@@ -35,13 +35,17 @@
 //!
 //! It assumes the code follows the procedure call standard for Arm: a call
 //! keeps r4 to r11, sp and the caller's stack as they were, unless the
-//! caller passes the function an address on its stack. A call may also
-//! keep r0 to r3 and ip, and code built with GCC's `-fipa-ra` counts on
-//! that when it knows the function, so a branch through one of them after
-//! a call may go to the address it held, or anywhere. When such code
-//! passes the address on to another function in the register, without
-//! naming it again, elfq misses that use: what other code leaves in those
-//! registers after a call is nothing a function could take.
+//! caller passes the function an address on its stack, and returns its
+//! result in r0. A call may also keep r1 to r3 and ip, and code built with
+//! GCC's `-fipa-ra` counts on that when it knows the function, so a branch
+//! through one of them after a call may go to the address it held, or
+//! anywhere. Such code may keep r0 too, but code reads r0 after a call
+//! for the result far more often, so elfq takes r0 to hold the result,
+//! and only counts the address it held as used where code branches
+//! through r0. When such code passes the address on without naming it
+//! again, to another function or back to the caller, elfq misses that
+//! use: what other code leaves in those registers after a call is nothing
+//! a function could take.
 //!
 //! Most functions only call with `bl` and return, so it follows only those
 //! where it may find more than the sweep (see `may_find_more`).
@@ -52,7 +56,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use object::{Endian, Endianness};
 
-use self::state::{Contents, Kind, State, Value, Values};
+use self::state::{Contents, Kind, RESULT, State, Value, Values};
 use super::decode::{self, Effect, Flow, LowBit, Operation, Registers, When};
 use super::{Instruction, PC, SP, is_padding};
 use crate::arch::CodeReference;
@@ -70,9 +74,10 @@ const CALL_CLOBBERS: Registers = 0x500f;
 /// branch through a register, and each address loaded or built, replaced
 /// by what following the registers finds. When the function has an
 /// instruction that `decode` doesn't know, or code that elfq doesn't
-/// understand, such as a branch into the middle of an instruction or code
-/// that only a jump it doesn't follow leads to, the sweep's references are
-/// returned as they are.
+/// understand, such as a branch into the middle of an instruction, or code
+/// that only a jump it doesn't follow leads to and that then joins code it
+/// follows, the sweep's references are returned as they are. Other code
+/// that only such a jump leads to keeps the sweep's references.
 pub(super) fn follow(
     code: &[u8],
     address: u64,
@@ -181,9 +186,10 @@ struct Function<'a> {
     /// For each instruction that loads or builds an address, how the code
     /// uses it.
     uses: Vec<Uses>,
-    /// The words on the stack that the code loads into a register, by
-    /// their offset as in [`State::stack`].
-    loaded: BTreeSet<i32>,
+    /// The addresses that the code loads back from the stack: the offset
+    /// of each word, as in [`State::stack`], with the instruction that
+    /// loaded or built an address the code loads from there.
+    loaded: BTreeSet<(i32, u32)>,
     /// The instructions that loaded or built an address that a register
     /// held, stale, where elfq stopped following it. They count as used
     /// as addresses if the code reads such a register.
@@ -524,17 +530,26 @@ impl<'a> Function<'a> {
     /// whether it can go on to the next one.
     fn step(&mut self, index: usize, state: &mut State) -> bool {
         let effect = self.effects[index];
+        // Before it runs, since it may store through the address it lets
+        // out, as `str r1, [r0, r3]` does with sp in r3, or load from it.
+        state.escaped |= self.escapes(index, state);
         if self.reporting {
             self.report(index, state);
         }
         let calls = matches!(effect.flow, Flow::Call | Flow::CallRegister(..));
-        self.reads_stale_lost |= registers(effect.reads).any(|register| {
+        // What it reads in r0 after a call is the result, unless it
+        // branches through r0; see `use_kept_result`.
+        let branches_through = match effect.flow {
+            Flow::CallRegister(register, _)
+            | Flow::JumpRegister(register, _)
+            | Flow::JumpRelative(register) => bit(register),
+            _ => 0,
+        };
+        let reads = effect.reads & !bit(RESULT) | branches_through;
+        self.reads_stale_lost |= registers(reads).any(|register| {
             let contents = state.registers[usize::from(register)];
             contents.saturated && contents.stale
         });
-        // Before it runs, since it may store through the address it lets
-        // out, as `str r1, [r0, r3]` does with sp in r3.
-        state.escaped |= self.escapes(index, state);
         state.escaped |= self.execute(index, state);
         if calls {
             for register in registers(CALL_CLOBBERS) {
@@ -558,7 +573,7 @@ impl<'a> Function<'a> {
                     match test {
                         Some((register, zero)) => {
                             let mut taken = state.clone();
-                            taken.registers[usize::from(register)].narrow(zero);
+                            taken.narrow(register, zero);
                             self.reach(target, &taken);
                         }
                         None => self.reach(target, state),
@@ -568,7 +583,7 @@ impl<'a> Function<'a> {
                     return false;
                 }
                 if let Some((register, zero)) = test {
-                    state.registers[usize::from(register)].narrow(!zero);
+                    state.narrow(register, !zero);
                 }
                 true
             }
@@ -600,6 +615,7 @@ impl<'a> Function<'a> {
             number,
             kind: Kind::Number,
             source,
+            stale: false,
         };
         let builds_address = self.reporting && self.builds_address(index, state);
         let sp = state.sp();
@@ -627,7 +643,9 @@ impl<'a> Function<'a> {
                 Some((register, Contents::holding(address(value))))
             }
             Operation::HighHalf { register, high } => {
-                let low = state.get(register, pc);
+                // Code completes a number it built before a call only when
+                // it knows the call kept it, even in r0.
+                let low = state.kept(register, pc);
                 leaks = low.may_be_stack();
                 let contents = low.map(|low| {
                     (low.kind == Kind::Number).then(|| address(low.number & 0xffff | high << 16))
@@ -682,7 +700,7 @@ impl<'a> Function<'a> {
                     .stack_offset()
                     .map(|at| at.wrapping_add(offset));
                 if let Some(at) = at {
-                    self.loaded.insert(at.div_euclid(4) * 4);
+                    self.loads_back(state, at.div_euclid(4) * 4);
                 }
                 match (register, at) {
                     (Some(register), Some(at)) if at % 4 == 0 => Some((register, state.word(at))),
@@ -696,7 +714,8 @@ impl<'a> Function<'a> {
                 offset,
                 size,
             } => {
-                self.store(state, register, state.get(base, pc), offset, size);
+                let value = register.map(|register| state.get(register, pc));
+                self.store(state, value, state.get(base, pc), offset, size);
                 None
             }
         };
@@ -721,7 +740,7 @@ impl<'a> Function<'a> {
             (Operation::Pop { registers, size }, Some(sp)) => {
                 for (n, register) in self::registers(registers).enumerate() {
                     let at = sp + 4 * n as i32;
-                    self.loaded.insert(at);
+                    self.loads_back(state, at);
                     if register != PC {
                         state.registers[usize::from(register)] = state.word(at);
                     }
@@ -750,12 +769,23 @@ impl<'a> Function<'a> {
         leaks
     }
 
+    /// Records that the code loads back what the word on the stack at
+    /// `offset` holds; see [`Function::loaded`].
+    fn loads_back(&mut self, state: &State, offset: i32) {
+        for value in state.word(offset).values.iter() {
+            if let Some(source) = value.source {
+                self.loaded.insert((offset, source));
+            }
+        }
+    }
+
     /// Changes the words on the stack as storing `size` bytes at `base` +
-    /// `offset` does, from `register` when it stores a whole register.
+    /// `offset` does, with `value` what a register held when it stores a
+    /// whole register.
     fn store(
         &mut self,
         state: &mut State,
-        register: Option<u16>,
+        value: Option<Contents>,
         base: Contents,
         offset: Option<i32>,
         size: u32,
@@ -771,10 +801,8 @@ impl<'a> Function<'a> {
                 return;
             }
         };
-        match register {
-            Some(register) if size == 4 && start % 4 == 0 => {
-                state.set_word(start, state.registers[usize::from(register)]);
-            }
+        match value {
+            Some(value) if size == 4 && start % 4 == 0 => state.set_word(start, value),
             // Part of a word, or more than one.
             _ => {
                 let end = start.wrapping_add(size.max(1) as i32);
@@ -815,6 +843,7 @@ impl<'a> Function<'a> {
                     number,
                     kind,
                     source,
+                    stale: false,
                 };
                 if sum.values.insert(value).is_none() {
                     // More than elfq follows.
@@ -921,7 +950,9 @@ impl<'a> Function<'a> {
                 register, source, ..
             } if register != PC => other &= !bit(source),
             Operation::HighHalf { register, .. } => {
-                self.use_registers(state, bit(register), Use::Part);
+                for value in state.kept(register, 0).values.iter() {
+                    use_value(&mut self.uses, value, Use::Part);
+                }
                 other &= !bit(register);
             }
             Operation::Add { register, a, b } if register != PC && adds_pc(a, b, state) => {
@@ -949,6 +980,10 @@ impl<'a> Function<'a> {
                 offset,
             } => {
                 let base = state.get(base, 0);
+                // Through a register it reads that may hold an address on
+                // the stack, as its base or what it adds to the base.
+                let may_be_stack = registers(effect.reads)
+                    .any(|register| state.registers[usize::from(register)].may_be_stack());
                 match (base.stack_offset(), offset) {
                     (Some(at), Some(offset)) => {
                         let at = at.wrapping_add(offset);
@@ -956,9 +991,7 @@ impl<'a> Function<'a> {
                             self.use_word(state, at.div_euclid(4) * 4);
                         }
                     }
-                    _ if base.may_be_stack() || state.escaped && base.unknown => {
-                        self.use_stack(state);
-                    }
+                    _ if may_be_stack || state.escaped && base.unknown => self.use_stack(state),
                     _ => {}
                 }
             }
@@ -969,6 +1002,7 @@ impl<'a> Function<'a> {
             Flow::CallRegister(register, low_bit) | Flow::JumpRegister(register, low_bit) => {
                 let contents = state.get(register, 0);
                 self.branch(index, &contents, |number| target(number, low_bit));
+                self.use_kept_result(state, register);
                 // A call or a tail call passes the arguments on.
                 other &= !bit(register);
                 passed |= ARGUMENTS & !bit(register);
@@ -980,6 +1014,7 @@ impl<'a> Function<'a> {
                 self.branch(index, &contents, |offset| {
                     Some(pc.wrapping_add(offset) & !1)
                 });
+                self.use_kept_result(state, register);
                 other &= !bit(register);
                 passed |= ARGUMENTS & !bit(register);
             }
@@ -1060,6 +1095,21 @@ impl<'a> Function<'a> {
                 .any(|value| value.kind != Kind::Number);
     }
 
+    /// Records that a branch through `register` uses what r0 held before a
+    /// call, when that is the register: elfq takes r0 to hold the call's
+    /// result (see [`State::get`]), but code that knows the call kept r0
+    /// may branch to what it held.
+    fn use_kept_result(&mut self, state: &State, register: u16) {
+        if register != RESULT {
+            return;
+        }
+        for value in state.registers[usize::from(register)].values.iter() {
+            if value.stale {
+                use_value(&mut self.uses, value, Use::Other);
+            }
+        }
+    }
+
     /// Records that code reads the numbers in the word on the stack at
     /// `offset` where elfq can't follow them.
     fn use_word(&mut self, state: &State, offset: i32) {
@@ -1080,15 +1130,20 @@ impl<'a> Function<'a> {
 
     /// Records that a call, or a jump to another function, may take the
     /// numbers in the words on the stack from sp up as arguments: those
-    /// that the code doesn't load back itself.
+    /// that the code doesn't load back from there itself.
     fn pass_stack(&mut self, state: &State) {
         let sp = state.sp();
-        for (offset, contents) in &state.stack {
-            if sp.is_some_and(|sp| *offset < sp) || self.loaded.contains(offset) {
+        for (&offset, contents) in &state.stack {
+            if sp.is_some_and(|sp| offset < sp) {
                 continue;
             }
             for value in contents.values.iter() {
-                use_value(&mut self.uses, value, Use::Other);
+                let loaded_back = value
+                    .source
+                    .is_some_and(|source| self.loaded.contains(&(offset, source)));
+                if !loaded_back {
+                    use_value(&mut self.uses, value, Use::Other);
+                }
             }
         }
     }
@@ -1100,19 +1155,19 @@ impl<'a> Function<'a> {
     /// may have changed.
     fn pass_registers(&mut self, state: &State, registers: Registers) {
         for register in self::registers(registers).filter(|&register| register != PC) {
-            let contents = state.registers[usize::from(register)];
-            if !contents.stale {
-                for value in contents.values.iter() {
+            for value in state.registers[usize::from(register)].values.iter() {
+                if !value.stale {
                     use_value(&mut self.uses, value, Use::Other);
                 }
             }
         }
     }
 
-    /// Records a use of the values in each register of `registers`.
+    /// Records a use of the values in each register of `registers`, as the
+    /// code reads them.
     fn use_registers(&mut self, state: &State, registers: Registers, how: Use) {
         for register in self::registers(registers).filter(|&register| register != PC) {
-            for value in state.registers[usize::from(register)].values.iter() {
+            for value in state.get(register, 0).values.iter() {
                 use_value(&mut self.uses, value, how);
             }
         }
@@ -1330,11 +1385,33 @@ fn index_of(address: u64, instructions: &[Instruction], target: u64) -> Option<u
 /// table of addresses that the code jumps through to them: `mov pc,
 /// register`, `ldr pc, [...]`, or a call to `__gnu_thumb1_case_uqi` and
 /// the like. What the registers hold where they join would then miss what
-/// those cases put there. Padding before a loop doesn't count. `effects`
-/// holds `None` for the instructions the code can't reach.
+/// those cases put there. Padding before a loop doesn't count, but code
+/// that runs on through it does. A jump to the first instruction doesn't
+/// count either: it is a call, as from the next function in stripped
+/// firmware, which elfq may have taken to be part of this one. `effects`
+/// holds `None` for the instructions the code can't reach, up to the last
+/// it can.
 fn enters_reached(address: u64, instructions: &[Instruction], effects: &[Option<Effect>]) -> bool {
     let reached = |index: usize| effects.get(index).is_some_and(Option::is_some);
-    (0..effects.len()).any(|index| {
+    let runs_on = |index: usize| {
+        let instruction: Instruction = instructions[index];
+        instructions
+            .get(index + 1)
+            .is_some_and(|next| next.offset == instruction.offset + instruction.size())
+    };
+    // Whether the code runs on from the instruction at `index` into code
+    // the first one leads to, through any padding.
+    let runs_into_reached = |mut index: usize| {
+        while runs_on(index) {
+            index += 1;
+            let next = instructions[index];
+            if reached(index) || !is_padding(next.first, Some(next.second)) {
+                return reached(index);
+            }
+        }
+        false
+    };
+    (0..instructions.len()).any(|index| {
         let instruction = instructions[index];
         if reached(index) || is_padding(instruction.first, Some(instruction.second)) {
             return false;
@@ -1346,7 +1423,8 @@ fn enters_reached(address: u64, instructions: &[Instruction], effects: &[Option<
         };
         let goes_on = match effect.flow {
             Flow::Branch { target, when } => {
-                if index_of(address, instructions, target).is_some_and(reached) {
+                let target = index_of(address, instructions, target);
+                if target.is_some_and(|target| target != 0 && reached(target)) {
                     return true;
                 }
                 when != When::Always
@@ -1354,10 +1432,7 @@ fn enters_reached(address: u64, instructions: &[Instruction], effects: &[Option<
             Flow::Next | Flow::Call | Flow::CallRegister(..) | Flow::It { .. } => true,
             _ => false,
         };
-        let runs_on = instructions
-            .get(index + 1)
-            .is_some_and(|next| next.offset == instruction.offset + instruction.size());
-        goes_on && runs_on && reached(index + 1)
+        goes_on && runs_into_reached(index)
     })
 }
 
@@ -1440,11 +1515,8 @@ fn use_value(uses: &mut [Uses], value: &Value, how: Use) {
 /// holds too many: count it as used, since elfq can't tell how. A stale
 /// one counts only if the code reads the register; see
 /// [`Function::stale_lost`].
-fn lost<'a>(
-    uses: &'a mut [Uses],
-    stale_lost: &'a mut BTreeSet<u32>,
-) -> impl FnMut(&Value, bool) + 'a {
-    |value, stale| match (stale, value.source) {
+fn lost<'a>(uses: &'a mut [Uses], stale_lost: &'a mut BTreeSet<u32>) -> impl FnMut(&Value) + 'a {
+    |value| match (value.stale, value.source) {
         (true, Some(source)) => _ = stale_lost.insert(source),
         _ => use_value(uses, value, Use::Other),
     }
@@ -1706,6 +1778,86 @@ mod tests {
     }
 
     #[test]
+    fn r0_holds_what_a_call_returns() {
+        // Clang for `int x = f(); return x ? x : 5;`, with f far away:
+        // what the function returns is f's result, not its address.
+        //   8000100: b580       push  {r7, lr}
+        //   8000102: 4803       ldr   r0, [pc, #12]
+        //   8000104: 4780       blx   r0
+        //   8000106: 2800       cmp   r0, #0
+        //   8000108: bf08       it    eq
+        //   800010a: 2005       moveq r0, #5
+        //   800010c: bd80       pop   {r7, pc}
+        //   800010e: 0000       .short 0x0000
+        //   8000110: 30000101   .word 0x30000101
+        let code = halfwords(&[
+            0xb580, 0x4803, 0x4780, 0x2800, 0xbf08, 0x2005, 0xbd80, 0x0000, 0x0101, 0x3000,
+        ]);
+        assert_eq!(kinds(&code), [(0x0800_0104, Call(0x3000_0100))]);
+        // `old = swap(h); old()`: what the blx calls is what the bl
+        // returned, not h.
+        //   8000100: b510       push  {r4, lr}
+        //   8000102: 4803       ldr   r0, [pc, #12]
+        //   8000104: f7ff fffc  bl    8000100
+        //   8000108: 4603       mov   r3, r0
+        //   800010a: 4798       blx   r3
+        //   800010c: bd10       pop   {r4, pc}
+        //   800010e: 0000       .short 0x0000
+        //   8000110: 30000101   .word 0x30000101
+        let code = halfwords(&[
+            0xb510, 0x4803, 0xf7ff, 0xfffc, 0x4603, 0x4798, 0xbd10, 0x0000, 0x0101, 0x3000,
+        ]);
+        assert_eq!(
+            kinds(&code),
+            [
+                (0x0800_0102, Address(0x3000_0101)),
+                (0x0800_0104, Call(0x0800_0100)),
+                (0x0800_010a, IndirectCall),
+            ]
+        );
+        // GCC's -fipa-ra may keep r0 too, so a branch through it after a
+        // call uses what it held:
+        //   8000100: b508       push  {r3, lr}
+        //   8000102: 4802       ldr   r0, [pc, #8]
+        //   8000104: 4780       blx   r0
+        //   8000106: 4780       blx   r0
+        //   8000108: bd08       pop   {r3, pc}
+        //   800010a: 0000       .short 0x0000
+        //   800010c: 30000101   .word 0x30000101
+        let code = halfwords(&[
+            0xb508, 0x4802, 0x4780, 0x4780, 0xbd08, 0x0000, 0x0101, 0x3000,
+        ]);
+        assert_eq!(
+            kinds(&code),
+            [
+                (0x0800_0102, Address(0x3000_0101)),
+                (0x0800_0104, Call(0x3000_0100)),
+                (0x0800_0106, IndirectCall),
+            ]
+        );
+        // Code may also complete in r0 an address it began before a call.
+        // The call may have changed the low half, so the jump is also one
+        // through a pointer, as for any register a call may change:
+        //   8000100: b508       push    {r3, lr}
+        //   8000102: f240 1001  movw    r0, #0x101
+        //   8000106: f7ff fffb  bl      8000100
+        //   800010a: f2c3 0000  movt    r0, #0x3000
+        //   800010e: e8bd 4008  ldmia.w sp!, {r3, lr}
+        //   8000112: 4700       bx      r0
+        let code = halfwords(&[
+            0xb508, 0xf240, 0x1001, 0xf7ff, 0xfffb, 0xf2c3, 0x0000, 0xe8bd, 0x4008, 0x4700,
+        ]);
+        assert_eq!(
+            kinds(&code),
+            [
+                (0x0800_0106, Call(0x0800_0100)),
+                (0x0800_0112, TailJump(0x3000_0100)),
+                (0x0800_0112, IndirectJump),
+            ]
+        );
+    }
+
+    #[test]
     fn a_register_kept_across_a_call_is_followed() {
         // GCC -O2 with -fipa-ra, which knows that the function keeps r2:
         //   8000100: b508       push  {r3, lr}
@@ -1802,6 +1954,47 @@ mod tests {
         assert!(found.contains(&(0x0800_0118, IndirectCall)), "{found:x?}");
         assert!(found.contains(&(0x0800_010e, Address(0x3000_0101))));
         assert!(!found.contains(&(0x0800_0118, Call(0x3000_0300))));
+        // The same with a case laid out after the code that ends the
+        // function:
+        //   8000100: b510       push  {r4, lr}
+        //   8000102: 4c04       ldr   r4, [pc, #16]
+        //   8000104: 2800       cmp   r0, #0
+        //   8000106: d001       beq.n 800010c
+        //   8000108: 680b       ldr   r3, [r1, #0]
+        //   800010a: 469f       mov   pc, r3
+        //   800010c: 47a0       blx   r4
+        //   800010e: bd10       pop   {r4, pc}
+        //   8000110: 4c01       ldr   r4, [pc, #4]
+        //   8000112: e7fb       b.n   800010c
+        //   8000114: 30000101   .word 0x30000101
+        //   8000118: 30000201   .word 0x30000201
+        let code = halfwords(&[
+            0xb510, 0x4c04, 0x2800, 0xd001, 0x680b, 0x469f, 0x47a0, 0xbd10, 0x4c01, 0xe7fb, 0x0101,
+            0x3000, 0x0201, 0x3000,
+        ]);
+        let found = kinds(&code);
+        assert!(found.contains(&(0x0800_010c, IndirectCall)), "{found:x?}");
+        assert!(!found.contains(&(0x0800_010c, Call(0x3000_0100))));
+        // And with one that runs on into the blx through padding:
+        //   8000100: b510       push  {r4, lr}
+        //   8000102: 4c04       ldr   r4, [pc, #16]
+        //   8000104: 2800       cmp   r0, #0
+        //   8000106: d003       beq.n 8000110
+        //   8000108: 680b       ldr   r3, [r1, #0]
+        //   800010a: 469f       mov   pc, r3
+        //   800010c: 4c02       ldr   r4, [pc, #8]
+        //   800010e: bf00       nop
+        //   8000110: 47a0       blx   r4
+        //   8000112: bd10       pop   {r4, pc}
+        //   8000114: 30000101   .word 0x30000101
+        //   8000118: 30000201   .word 0x30000201
+        let code = halfwords(&[
+            0xb510, 0x4c04, 0x2800, 0xd003, 0x680b, 0x469f, 0x4c02, 0xbf00, 0x47a0, 0xbd10, 0x0101,
+            0x3000, 0x0201, 0x3000,
+        ]);
+        let found = kinds(&code);
+        assert!(found.contains(&(0x0800_0110, IndirectCall)), "{found:x?}");
+        assert!(!found.contains(&(0x0800_0110, Call(0x3000_0100))));
     }
 
     #[test]
@@ -1831,6 +2024,87 @@ mod tests {
                 (0x0800_0104, Address(0x3000_0101)),
                 (0x0800_0106, Call(0x3000_0100)),
                 (0x0800_0112, Call(0x0800_0100)),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_address_stored_on_the_stack_is_passed_on_from_there() {
+        // GCC -O2 with -fipa-ra keeps r3 across the call, then passes the
+        // address to the next function through a volatile variable:
+        //   8000100: b510       push  {r4, lr}
+        //   8000102: b082       sub   sp, #8
+        //   8000104: 4b04       ldr   r3, [pc, #16]
+        //   8000106: 4798       blx   r3
+        //   8000108: 9301       str   r3, [sp, #4]
+        //   800010a: 9801       ldr   r0, [sp, #4]
+        //   800010c: b002       add   sp, #8
+        //   800010e: e8bd 4010  ldmia.w sp!, {r4, lr}
+        //   8000112: f000 b875  b.w   8000200
+        //   8000116: 0000       .short 0x0000
+        //   8000118: 30000101   .word 0x30000101
+        let code = halfwords(&[
+            0xb510, 0xb082, 0x4b04, 0x4798, 0x9301, 0x9801, 0xb002, 0xe8bd, 0x4010, 0xf000, 0xb875,
+            0x0000, 0x0101, 0x3000,
+        ]);
+        assert_eq!(
+            kinds(&code),
+            [
+                (0x0800_0104, Address(0x3000_0101)),
+                (0x0800_0106, Call(0x3000_0100)),
+                (0x0800_0112, TailJump(0x0800_0200)),
+            ]
+        );
+        // A tail call that passes the address in the word where its own
+        // caller passed an argument, which it read before:
+        //   8000100: e92d 4110  stmdb sp!, {r4, r8, lr}
+        //   8000104: f8df 8010  ldr.w r8, [pc, #16]
+        //   8000108: 9a03       ldr   r2, [sp, #12]
+        //   800010a: 47c0       blx   r8
+        //   800010c: f8cd 800c  str.w r8, [sp, #12]
+        //   8000110: e8bd 4110  ldmia.w sp!, {r4, r8, lr}
+        //   8000114: f000 b874  b.w   8000200
+        //   8000118: 30000101   .word 0x30000101
+        let code = halfwords(&[
+            0xe92d, 0x4110, 0xf8df, 0x8010, 0x9a03, 0x47c0, 0xf8cd, 0x800c, 0xe8bd, 0x4110, 0xf000,
+            0xb874, 0x0101, 0x3000,
+        ]);
+        assert_eq!(
+            kinds(&code),
+            [
+                (0x0800_0104, Address(0x3000_0101)),
+                (0x0800_010a, Call(0x3000_0100)),
+                (0x0800_0114, TailJump(0x0800_0200)),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_load_through_an_index_into_the_stack_reads_it() {
+        // GCC for Cortex-M0, for `return table[i]` on a table on the
+        // stack, with sp in the second register:
+        //   8000100: b510       push  {r4, lr}
+        //   8000102: b082       sub   sp, #8
+        //   8000104: 4b04       ldr   r3, [pc, #16]
+        //   8000106: 9300       str   r3, [sp, #0]
+        //   8000108: 9b00       ldr   r3, [sp, #0]
+        //   800010a: 4798       blx   r3
+        //   800010c: 466b       mov   r3, sp
+        //   800010e: 00a4       lsls  r4, r4, #2
+        //   8000110: 58e0       ldr   r0, [r4, r3]
+        //   8000112: b002       add   sp, #8
+        //   8000114: bd10       pop   {r4, pc}
+        //   8000116: 0000       .short 0x0000
+        //   8000118: 30000101   .word 0x30000101
+        let code = halfwords(&[
+            0xb510, 0xb082, 0x4b04, 0x9300, 0x9b00, 0x4798, 0x466b, 0x00a4, 0x58e0, 0xb002, 0xbd10,
+            0x0000, 0x0101, 0x3000,
+        ]);
+        assert_eq!(
+            kinds(&code),
+            [
+                (0x0800_0104, Address(0x3000_0101)),
+                (0x0800_010a, Call(0x3000_0100)),
             ]
         );
     }

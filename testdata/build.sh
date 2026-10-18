@@ -73,7 +73,7 @@ arm-none-eabi-gcc $cflags \
 variants arm-none-eabi-strip c-cortex-m7
 
 # Calls too far for one branch instruction, through the veneers that GNU ld
-# and LLD add for Cortex-M, all but LLD's for -pie files, and through a
+# and LLD add for Cortex-M, all but two of LLD's (see README.md), and through a
 # register (see c/far.c). Only the variants without DWARF, which has nothing to add here.
 # far_gnu NAME FLAGS... links with GNU ld.
 far_gnu() {

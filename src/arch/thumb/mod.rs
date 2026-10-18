@@ -156,6 +156,8 @@ pub(super) fn ending(code: &[u8], address: u64, endianness: Endianness) -> Endin
 ///                            pop {r0, pc}
 /// LLD, Cortex-M0, -pie:      push {r0}; ldr r0, [pc, #8]; mov ip, r0;
 ///                            pop {r0}; add pc, ip; nop; .word offset
+/// LLD, when the veneer is in reach of the target, though the call isn't:
+///                            b.w target
 /// ```
 ///
 /// Code that a compiler made, such as `ldr r3, [pc, #0]; bx r3`, is not a
@@ -164,7 +166,8 @@ pub(super) fn ending(code: &[u8], address: u64, endianness: Endianness) -> Endin
 /// `-mexecute-only` and `-mlong-calls`, when its arguments fill r0 to r3,
 /// so code like theirs is a veneer only without a `name` from the symbol
 /// table, or under one that a linker gives veneers (see
-/// [`is_linker_name`]).
+/// [`is_linker_name`]). Compilers make a lone `b.w` all the time, as a
+/// tail call, so it is a veneer only under such a name.
 pub(super) fn is_veneer(code: &[u8], name: Option<&str>) -> bool {
     VENEERS.iter().any(|veneer| {
         let size = 2 * veneer.instructions.len() + if veneer.word { 4 } else { 0 };
@@ -177,7 +180,11 @@ pub(super) fn is_veneer(code: &[u8], name: Option<&str>) -> bool {
                     let bits = u16::from_le_bytes([code[2 * index], code[2 * index + 1]]);
                     bits & halfword.mask == halfword.bits
                 })
-            && !(veneer.compilers_make_it && name.is_some_and(|name| !is_linker_name(name)))
+            && match veneer.names {
+                Names::Any => true,
+                Names::NoneOrLinkers => name.is_none_or(is_linker_name),
+                Names::Linkers => name.is_some_and(is_linker_name),
+            }
     })
 }
 
@@ -192,17 +199,28 @@ struct Veneer {
     instructions: &'static [Halfword],
     /// Whether a word, the target or its offset from pc, follows them.
     word: bool,
-    /// Whether a compiler makes the same code for a function someone
-    /// wrote.
-    compilers_make_it: bool,
+    /// The names that code like it may have and be a veneer.
+    names: Names,
+}
+
+/// The names a [`Veneer`] may have, from the symbol table.
+enum Names {
+    /// Any: compilers don't make such code.
+    Any,
+    /// None, or one that a linker gives veneers: compilers make the same
+    /// code for some functions someone wrote.
+    NoneOrLinkers,
+    /// Only one that a linker gives veneers: compilers make such code all
+    /// the time.
+    Linkers,
 }
 
 /// The veneers that [`is_veneer`] recognizes, in the order of its list.
-const VENEERS: [Veneer; 8] = [
+const VENEERS: [Veneer; 9] = [
     Veneer {
         instructions: &[exactly(0xf85f), exactly(0xf000)],
         word: true,
-        compilers_make_it: false,
+        names: Names::Any,
     },
     Veneer {
         instructions: &[
@@ -214,7 +232,7 @@ const VENEERS: [Veneer; 8] = [
             exactly(0xbf00),
         ],
         word: true,
-        compilers_make_it: false,
+        names: Names::Any,
     },
     Veneer {
         instructions: &[
@@ -226,12 +244,12 @@ const VENEERS: [Veneer; 8] = [
             exactly(0x4760),
         ],
         word: true,
-        compilers_make_it: false,
+        names: Names::Any,
     },
     Veneer {
         instructions: &[MOVW_IP, TO_IP, MOVT_IP, TO_IP, exactly(0x4760)],
         word: false,
-        compilers_make_it: true,
+        names: Names::NoneOrLinkers,
     },
     Veneer {
         instructions: &[
@@ -243,7 +261,7 @@ const VENEERS: [Veneer; 8] = [
             exactly(0x4760),
         ],
         word: false,
-        compilers_make_it: true,
+        names: Names::NoneOrLinkers,
     },
     Veneer {
         instructions: &[
@@ -253,7 +271,7 @@ const VENEERS: [Veneer; 8] = [
             exactly(0xbd01),
         ],
         word: true,
-        compilers_make_it: false,
+        names: Names::Any,
     },
     Veneer {
         instructions: &[
@@ -269,7 +287,7 @@ const VENEERS: [Veneer; 8] = [
             exactly(0xbd01),
         ],
         word: false,
-        compilers_make_it: false,
+        names: Names::Any,
     },
     Veneer {
         instructions: &[
@@ -281,7 +299,21 @@ const VENEERS: [Veneer; 8] = [
             exactly(0x46c0),
         ],
         word: true,
-        compilers_make_it: false,
+        names: Names::Any,
+    },
+    Veneer {
+        instructions: &[
+            Halfword {
+                bits: 0xf000,
+                mask: 0xf800,
+            },
+            Halfword {
+                bits: 0x9000,
+                mask: 0xd000,
+            },
+        ],
+        word: false,
+        names: Names::Linkers,
     },
 ];
 
@@ -852,9 +884,14 @@ mod tests {
             // Not the same code in a longer function.
             assert!(!is_veneer(&[veneer, &[0x70, 0x47]].concat(), None));
         }
-        // Nor a b.w, nor a function that a compiler made:
+        // A b.w is one only under a linker's name, as LLD gives it when
+        // the veneer is in reach of the target.
+        let branch = [0x00, 0xf1, 0x00, 0xb0];
+        assert!(is_veneer(&branch, Some("__Thumbv7ABSLongThunk_far_target")));
+        assert!(!is_veneer(&branch, Some("ram_forward")));
+        assert!(!is_veneer(&branch, None));
+        // Nor is a function that a compiler made:
         // ldr r3, [pc, #0]; bx r3; .word 0x30000069
-        assert!(!is_veneer(&[0x00, 0xf0, 0x00, 0xb8], None));
         assert!(!is_veneer(
             &[0x00, 0x4b, 0x18, 0x47, 0x69, 0x00, 0x00, 0x30],
             None
