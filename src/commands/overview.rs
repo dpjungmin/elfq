@@ -11,7 +11,7 @@ use serde::Serialize;
 
 use super::retained_tree::RetainedTree;
 use super::symbol::Names;
-use super::{json, text, top};
+use super::{json, text};
 use crate::arch;
 use crate::binary::{
     AddressRange, Binary, FileKind, Item, ItemKind, MemoryBlock, Source, memory_blocks,
@@ -152,7 +152,7 @@ pub fn run(
     let kept = retained.kept();
     if kept > 0 {
         writeln!(out)?;
-        top::write_largest(&retained, SHOWN, out)?;
+        retained.write_largest(SHOWN, out)?;
     }
     let examples: Vec<String> = ranges
         .into_iter()
@@ -185,7 +185,7 @@ fn write_range(
         );
     }
     let retained = RetainedTree::build(binary, Some(range))?;
-    top::check_has_bytes(&retained)?;
+    retained.check_has_bytes()?;
     write_file(path, binary, out)?;
     writeln!(
         out,
@@ -197,7 +197,7 @@ fn write_range(
     // When nothing reaches the items in the range, there is nothing to rank.
     if retained.kept() > 0 {
         writeln!(out)?;
-        top::write_largest(&retained, SHOWN, out)?;
+        retained.write_largest(SHOWN, out)?;
     }
     let queries = Names::new(binary);
     let examples: Vec<String> = [

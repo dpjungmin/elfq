@@ -14,10 +14,9 @@ use serde::Serialize;
 
 use super::retained_tree::{KeptItem, RetainedTree};
 use super::{json, text};
-use crate::binary::{AddressRange, Binary, FileKind, Item};
+use crate::binary::{AddressRange, Binary, FileKind};
 use crate::cli::Format;
 use crate::graph::Node;
-use crate::render::{Align, Table};
 
 #[derive(Serialize)]
 struct TopJson<'a> {
@@ -47,7 +46,7 @@ pub fn run(
         );
     }
     let retained = RetainedTree::build(binary, range)?;
-    check_has_bytes(&retained)?;
+    retained.check_has_bytes()?;
     if format == Format::Json {
         let answer = TopJson {
             range: range.map(json::Range::new),
@@ -74,7 +73,7 @@ pub fn run(
             None => writeln!(out, "{total} of code and data, by what keeps them:")?,
         }
         writeln!(out)?;
-        write_largest(&retained, text::shown(all), out)?;
+        retained.write_largest(text::shown(all), out)?;
     }
     if let Some(unreachable) = unreachable_text(&retained) {
         if kept {
@@ -82,52 +81,6 @@ pub fn run(
         }
         writeln!(out, "{unreachable}")?;
     }
-    Ok(())
-}
-
-/// Explains why there are no bytes to count, if there aren't: a range that
-/// no section is in is most likely mistyped, in some stripped files elfq
-/// can't find the functions yet, and hand-written assembly often leaves out
-/// the sizes.
-pub(super) fn check_has_bytes(retained: &RetainedTree) -> Result<()> {
-    let binary = retained.binary;
-    if retained.bytes() > 0 {
-        return Ok(());
-    }
-    let place = super::empty_place(binary, retained.range)?;
-    let starts_in_place = |item: &&Item| {
-        retained
-            .range
-            .is_none_or(|range| range.overlap(item.address, 1) > 0)
-    };
-    if let Some(item) = binary.items.iter().find(starts_in_place) {
-        bail!(
-            "elfq doesn't know where {} ends, so it can't count the bytes in {place}",
-            item.name
-        );
-    }
-    bail!("elfq found no functions or data in {place}")
-}
-
-/// Writes the tree of the `count` items that keep the most bytes.
-pub(super) fn write_largest(
-    retained: &RetainedTree,
-    count: usize,
-    out: &mut dyn Write,
-) -> Result<()> {
-    let binary = retained.binary;
-    let tree = &retained.tree;
-    let reachable: Vec<usize> = (0..binary.items.len())
-        .filter(|&index| tree.is_reachable(Node::Item(index)))
-        .collect();
-    let shown = retained.largest(tree.top(), &reachable, count);
-    let mut table = Table::new(&[
-        ("RETAINED", Align::Right),
-        ("OWN", Align::Right),
-        ("ITEM", Align::Left),
-    ]);
-    table.tree(&retained.rows(&shown, tree.top()));
-    table.write(out)?;
     Ok(())
 }
 

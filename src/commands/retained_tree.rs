@@ -5,14 +5,15 @@
 //! out.
 
 use std::collections::HashSet;
+use std::io::Write;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use serde::Serialize;
 
 use super::{json, text};
-use crate::binary::{AddressRange, Binary, ItemKind};
+use crate::binary::{AddressRange, Binary, Item, ItemKind};
 use crate::graph::{DominatorTree, Graph, Node, ReferenceKind};
-use crate::render::TreeRow;
+use crate::render::{Align, Table, TreeRow};
 
 /// An item and everything it keeps, for `--json`.
 #[derive(Serialize)]
@@ -90,6 +91,29 @@ impl<'a> RetainedTree<'a> {
         super::total(self.tree.top().iter().map(|&node| self.tree.retained(node)))
     }
 
+    /// Explains why there are no bytes to count, if there aren't: a range
+    /// that no section is in is most likely mistyped, in some stripped files
+    /// elfq can't find the functions yet, and hand-written assembly often
+    /// leaves out the sizes.
+    pub fn check_has_bytes(&self) -> Result<()> {
+        let binary = self.binary;
+        if self.bytes() > 0 {
+            return Ok(());
+        }
+        let place = super::empty_place(binary, self.range)?;
+        let starts_in_place = |item: &&Item| {
+            self.range
+                .is_none_or(|range| range.overlap(item.address, 1) > 0)
+        };
+        if let Some(item) = binary.items.iter().find(starts_in_place) {
+            bail!(
+                "elfq doesn't know where {} ends, so it can't count the bytes in {place}",
+                item.name
+            );
+        }
+        bail!("elfq found no functions or data in {place}")
+    }
+
     /// The item's own bytes that sizes count: all of them, or those in the
     /// range.
     pub fn own(&self, index: usize) -> u64 {
@@ -128,6 +152,24 @@ impl<'a> RetainedTree<'a> {
         self.binary.items[index].kind == ItemKind::Function
             && !self.called.contains(&index)
             && self.tree.parent(Node::Item(index)).is_some()
+    }
+
+    /// Writes the tree of the `count` items that keep the most bytes, as
+    /// `top` and the overview show it.
+    pub fn write_largest(&self, count: usize, out: &mut dyn Write) -> Result<()> {
+        let tree = &self.tree;
+        let reachable: Vec<usize> = (0..self.binary.items.len())
+            .filter(|&index| tree.is_reachable(Node::Item(index)))
+            .collect();
+        let shown = self.largest(tree.top(), &reachable, count);
+        let mut table = Table::new(&[
+            ("RETAINED", Align::Right),
+            ("OWN", Align::Right),
+            ("ITEM", Align::Left),
+        ]);
+        table.tree(&self.rows(&shown, tree.top()));
+        table.write(out)?;
+        Ok(())
     }
 
     /// The items to show of a large tree drawn from `roots`: the `count`
