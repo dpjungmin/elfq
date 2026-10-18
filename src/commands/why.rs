@@ -26,7 +26,7 @@ struct WhyJson<'a> {
     /// Whether anything reaches SYMBOL from where the program starts.
     reachable: bool,
     /// Why SYMBOL is itself where the program starts, in the words of
-    /// [`text::root_json`], such as `entry point` or `listed in the vector
+    /// [`json::root_field`], such as `entry point` or `listed in the vector
     /// table`, or `null` when it isn't. When it is, nothing else needs to
     /// keep it, and `chains` is empty.
     root: Option<String>,
@@ -66,7 +66,7 @@ pub fn run(binary: &Binary, symbol: &str, format: Format, out: &mut dyn Write) -
             let answer = WhyJson {
                 symbol: json::Item::new(binary, node),
                 reachable: true,
-                root: Some(text::root_json(binary, root.kind)),
+                root: Some(json::root_field(binary, root.kind)),
                 chains: Vec::new(),
                 unreachable_users: Vec::new(),
                 on_every_chain: None,
@@ -177,7 +177,7 @@ pub fn run(binary: &Binary, symbol: &str, format: Format, out: &mut dyn Write) -
 /// The shortest chain from where the program starts, through `user`, to
 /// SYMBOL, for `--json`: each item on it, with how the one before uses it,
 /// or for the first, why the program starts there, in JSON's words
-/// ([`json::how_field`] and [`text::root_json`]).
+/// ([`json::how_field`] and [`json::root_field`]).
 fn chain(
     binary: &Binary,
     graph: &Graph,
@@ -190,7 +190,7 @@ fn chain(
     let root = graph.root(start);
     let mut chain = vec![(
         start,
-        root.map_or(String::new(), |root| text::root_json(binary, root.kind)),
+        root.map_or(String::new(), |root| json::root_field(binary, root.kind)),
     )];
     let json_how =
         |from: Node, to: Node| hows_between(graph, from, to, |r| json::how_field(r.kind));
@@ -301,7 +301,7 @@ impl<'a> Chains<'a> {
             .iter()
             .map(|root| {
                 TreeRow::new(
-                    vec![text::root_how(self.binary, root.kind)],
+                    vec![text::root_column(self.binary, root.kind)],
                     root.node.name(self.binary),
                     self.children_rows(root.node),
                 )

@@ -56,10 +56,8 @@ pub fn run(
     if !symbol.is_reachable() {
         return symbol.write_unreachable(out);
     }
-    let node = symbol.node;
-    let Node::Item(index) = node else {
-        unreachable!("SymbolInTree::find rejects imports");
-    };
+    let node = symbol.node();
+    let index = symbol.index;
     let name = node.name(binary);
     let retained = &symbol.retained;
     let items = symbol.counted_items();
@@ -108,7 +106,7 @@ pub fn run(
 fn write_json(symbol: &SymbolInTree, out: &mut dyn Write) -> Result<()> {
     let retained = &symbol.retained;
     let binary = retained.binary;
-    let node = symbol.node;
+    let node = symbol.node();
     let reachable = symbol.is_reachable();
     let shares = if reachable {
         shared(symbol)
@@ -137,10 +135,10 @@ fn shared(symbol: &SymbolInTree) -> Vec<Node> {
     let mut kept: HashSet<Node> = symbol
         .retained
         .tree
-        .exclusive(symbol.node)
+        .exclusive(symbol.node())
         .into_iter()
         .collect();
-    kept.insert(symbol.node);
+    kept.insert(symbol.node());
     let mut shared: Vec<Node> = symbol
         .retained
         .graph
@@ -186,8 +184,8 @@ fn write_shared(symbol: &SymbolInTree, out: &mut dyn Write) -> Result<()> {
 /// leads to.
 struct SymbolInTree<'a> {
     retained: RetainedTree<'a>,
-    /// SYMBOL's item.
-    node: Node,
+    /// SYMBOL's item, as an index into [`Binary::items`].
+    index: usize,
 }
 
 impl<'a> SymbolInTree<'a> {
@@ -200,7 +198,7 @@ impl<'a> SymbolInTree<'a> {
     ) -> Result<SymbolInTree<'a>> {
         super::check_code_is_readable(binary)?;
         let node = super::symbol::find(binary, symbol)?;
-        super::readable_item(binary, node)?;
+        let index = super::readable_item(binary, node)?;
         let name = node.name(binary);
         if binary.kind == FileKind::SharedLibrary {
             bail!(
@@ -209,12 +207,17 @@ impl<'a> SymbolInTree<'a> {
             );
         }
         let retained = RetainedTree::build(binary, range)?;
-        Ok(SymbolInTree { retained, node })
+        Ok(SymbolInTree { retained, index })
+    }
+
+    /// SYMBOL's item, as a node of the graph.
+    fn node(&self) -> Node {
+        Node::Item(self.index)
     }
 
     /// Whether anything reaches SYMBOL from where the program starts.
     fn is_reachable(&self) -> bool {
-        self.retained.tree.is_reachable(self.node)
+        self.retained.tree.is_reachable(self.node())
     }
 
     /// Says that nothing reaches SYMBOL, so it is dead code, or used in a way
@@ -223,7 +226,7 @@ impl<'a> SymbolInTree<'a> {
         writeln!(
             out,
             "{}",
-            text::nothing_reaches(self.node.name(self.retained.binary))
+            text::nothing_reaches(self.node().name(self.retained.binary))
         )?;
         Ok(())
     }
@@ -231,11 +234,8 @@ impl<'a> SymbolInTree<'a> {
     /// The calls and jumps through pointers set at run time in SYMBOL and
     /// the items exclusive to it.
     fn indirect_calls(&self) -> Vec<Unresolved> {
-        let Node::Item(index) = self.node else {
-            return Vec::new();
-        };
         let graph = &self.retained.graph;
-        std::iter::once(index)
+        std::iter::once(self.index)
             .chain(self.items())
             .flat_map(|item| graph.unresolved_in(item))
             .filter(|unresolved| unresolved.is_indirect())
@@ -250,9 +250,9 @@ impl<'a> SymbolInTree<'a> {
         if indirect.is_empty() {
             return Ok(());
         }
-        let name = self.node.name(self.retained.binary);
-        let in_symbol = indirect.iter().any(|u| Node::Item(u.from) == self.node);
-        let in_items = indirect.iter().any(|u| Node::Item(u.from) != self.node);
+        let name = self.node().name(self.retained.binary);
+        let in_symbol = indirect.iter().any(|u| u.from == self.index);
+        let in_items = indirect.iter().any(|u| u.from != self.index);
         let calls = indirect.iter().any(|u| u.is_call);
         let jumps = indirect.iter().any(|u| !u.is_call);
         // The verb after one subject, and after two.
@@ -295,7 +295,7 @@ impl<'a> SymbolInTree<'a> {
     fn items(&self) -> Vec<usize> {
         self.retained
             .tree
-            .exclusive(self.node)
+            .exclusive(self.node())
             .into_iter()
             .filter_map(|node| match node {
                 Node::Item(index) => Some(index),

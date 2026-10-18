@@ -66,7 +66,7 @@ test to `tests/it/damaged.rs` that uses `parse_quickly`, which fails after
 |---|---|
 | `src/main.rs` | The program: parses arguments, runs one command on a thread with a large stack, prints errors. |
 | `src/cli.rs` | Command-line arguments, one struct per subcommand. |
-| `src/commands/` | One file per subcommand, plus `symbol.rs`, which works out what a user means by SYMBOL, `retained_tree.rs`, which builds the trees of retained sizes that `top` and `retained` show and writes them as JSON, `json.rs` and `text.rs`, the JSON shapes and the wording that commands share, and `ranges.rs`, which `callers` and `callees` use for ranges of memory. Commands connect a question to output; they do no analysis. |
+| `src/commands/` | One file per subcommand, plus `symbol.rs`, which works out what a user means by SYMBOL, `retained_tree.rs`, which builds the trees of retained sizes that the overview, `top` and `retained` show, as a table or as JSON, `json.rs` and `text.rs`, the JSON shapes and the wording that commands share, and `ranges.rs`, which `callers` and `callees` use for ranges of memory. Commands connect a question to output; they do no analysis. |
 | `src/arch/` | Finding the addresses that machine code calls or uses, one file per instruction set (x86-64 and Thumb). |
 | `src/binary/` | Reading an ELF file: its functions and data objects ("items"), their names, imports and stored pointers. Unnamed data, such as string literals, is found from what code and pointers refer to. |
 | `src/graph/` | The reference graph that connects items, the roots where the program starts, the dominator tree that says what is exclusive to what, the shortest paths that `why` shows, and the references that cross the boundary of ranges of memory. |

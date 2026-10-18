@@ -1,8 +1,8 @@
-//! The dominator tree as `retained` and `top` show it: items with their
-//! retained sizes, functions marked when only pointers lead to them, and
-//! large trees cut down to their largest items. With `--range`, sizes count
-//! only the bytes in the range, and items that keep none of them are left
-//! out.
+//! The dominator tree as the overview, `top` and `retained` show it: items
+//! with their retained sizes, functions marked when only pointers lead to
+//! them, and large trees cut down to their largest items. With `--range`,
+//! sizes count only the bytes in the range, and items that keep none of
+//! them are left out.
 
 use std::collections::HashSet;
 use std::io::Write;
@@ -125,7 +125,7 @@ impl<'a> RetainedTree<'a> {
     }
 
     /// The OWN column for an item. Outside the range it is 0.
-    pub fn own_text(&self, index: usize) -> String {
+    fn own_text(&self, index: usize) -> String {
         let item = &self.binary.items[index];
         match (self.range, self.own(index)) {
             (None, _) => text::size_text(item),
@@ -148,7 +148,7 @@ impl<'a> RetainedTree<'a> {
 
     /// Whether `index` is a function that nothing calls directly, and so
     /// counts for whatever holds its address.
-    pub fn through_pointer(&self, index: usize) -> bool {
+    fn through_pointer(&self, index: usize) -> bool {
         self.binary.items[index].kind == ItemKind::Function
             && !self.called.contains(&index)
             && self.tree.parent(Node::Item(index)).is_some()
@@ -221,7 +221,7 @@ impl<'a> RetainedTree<'a> {
     /// The rows of the shown items in `nodes`, each with the rows of its
     /// shown children under it, and one row that sums up those not shown
     /// and what they keep.
-    pub fn rows(&self, shown: &HashSet<usize>, nodes: &[Node]) -> Vec<TreeRow> {
+    fn rows(&self, shown: &HashSet<usize>, nodes: &[Node]) -> Vec<TreeRow> {
         let (visible, hidden): (Vec<usize>, Vec<usize>) =
             self.counted(nodes).partition(|index| shown.contains(index));
         let mut rows: Vec<TreeRow> = visible

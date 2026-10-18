@@ -1,6 +1,6 @@
 //! How elfq words things: the counts, lists, columns and sentences that
-//! more than one command writes, so that every command says them the same
-//! way.
+//! commands write, kept in one place so that every command says them the
+//! same way.
 
 use object::Architecture;
 
@@ -67,7 +67,7 @@ pub(super) fn shown_count(count: usize, room: usize) -> usize {
 
 /// Words joined into a phrase: "a", "a and b", "a, b and c", or for more
 /// than `room` and one, the first `room` of them and "and 5 more".
-pub(super) fn phrase(words: &[&str], room: usize) -> String {
+fn phrase(words: &[&str], room: usize) -> String {
     let shown = shown_count(words.len(), room);
     match words {
         _ if shown < words.len() => format!(
@@ -207,30 +207,17 @@ pub(super) fn root_sentence(binary: &Binary, root: &Root) -> String {
     }
 }
 
-/// Why a root is one, for the HOW column.
-pub(super) fn root_how(binary: &Binary, kind: RootKind) -> String {
+/// Why a root is one, for the HOW column: as [`json::root_field`] says
+/// it, but shorter for a handler.
+pub(super) fn root_column(binary: &Binary, kind: RootKind) -> String {
     match kind {
         RootKind::Handler => "vector table".to_string(),
-        _ => root_json(binary, kind),
+        _ => json::root_field(binary, kind),
     }
 }
 
-/// Why a root is one, as JSON says it, in the words the HOW column used
-/// before it was shortened, since scripts may count on them.
-pub(super) fn root_json(binary: &Binary, kind: RootKind) -> String {
-    match kind {
-        RootKind::Entry => "entry point".to_string(),
-        RootKind::InSection(section) => format!("in {}", binary.sections[section].name),
-        RootKind::ListedIn(section) => format!("listed in {}", binary.sections[section].name),
-        RootKind::PltHeader => "used by the dynamic loader".to_string(),
-        RootKind::Personality => "used by the unwinder".to_string(),
-        RootKind::VectorTable => "vector table".to_string(),
-        RootKind::Handler => "listed in the vector table".to_string(),
-    }
-}
-
-/// The name of an architecture, as the overview prints it: `x86-64` or
-/// `32-bit Arm`.
+/// The name of an architecture as elfq prints it: `x86-64`, `32-bit Arm`,
+/// or for any other, the `object` crate's name for it, such as `Aarch64`.
 pub(super) fn architecture_name(architecture: Architecture) -> String {
     match architecture {
         Architecture::X86_64 => "x86-64".to_string(),
