@@ -183,16 +183,13 @@ impl Graph {
 
     fn add_code_references(&mut self, binary: &Binary, function: usize) {
         let item = &binary.items[function];
-        let Some(code) = binary.bytes(item.address, item.size) else {
-            return;
-        };
-        let references = arch::scan(binary.architecture, binary.endianness, code, item.address);
+        let references = binary.code_references(item);
         let bounds = if item.contains(binary.entry) {
-            section_bounds(binary, &references)
+            section_bounds(binary, references)
         } else {
             HashSet::new()
         };
-        for reference in references {
+        for &reference in references {
             if let CodeReferenceKind::Address(address) = reference.kind
                 && bounds.contains(&address)
             {

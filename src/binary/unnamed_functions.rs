@@ -498,6 +498,7 @@ mod tests {
             merged_variables: Vec::new(),
             vector_table: None,
             warnings: Vec::new(),
+            code_references: std::collections::HashMap::new(),
             data: [text, data].concat(),
         };
         let mut items = vec![Item {
