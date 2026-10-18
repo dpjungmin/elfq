@@ -5,18 +5,19 @@
 //! places, each one only adding what the earlier ones missed:
 //!
 //! 1. the symbol tables, `.symtab` and `.dynsym` (see `symbols.rs`);
-//! 2. the stubs that call shared libraries, such as `write@plt` (see
-//!    `plt.rs`), and arrays of startup and shutdown functions such as
-//!    `.init_array`, which have no symbols;
-//! 3. the unwind table, `.eh_frame`, which still describes most functions in
+//! 2. in x86-64 files, the PLT stubs that call imported functions, such as
+//!    `write@plt`, or the file's own (see `plt.rs`);
+//! 3. the arrays of startup and shutdown functions, such as `.init_array`,
+//!    which have no symbols;
+//! 4. the unwind table, `.eh_frame`, which still describes most functions in
 //!    stripped x86-64 files (see `eh_frame.rs`);
-//! 4. the entry point, and in firmware the vector table, when no symbol
-//!    covers it;
-//! 5. in firmware that nothing lists functions for, the code itself,
-//!    followed from the entry point, the vector table's handlers and the
-//!    Thumb addresses that code loads or data holds (see
-//!    `unnamed_functions.rs`);
-//! 6. references to data that has no symbol, such as vtables and string
+//! 5. the entry point, when no function covers it, and in firmware the
+//!    vector table, when no item covers any of it;
+//! 6. in firmware that nothing lists functions for, the code itself,
+//!    followed from the entry point, the vector table's handlers, the
+//!    functions in arrays such as `.init_array`, and the Thumb addresses
+//!    that code loads or data holds (see `unnamed_functions.rs`);
+//! 7. references to data that has no symbol, such as vtables and string
 //!    literals (see `unnamed_data.rs`).
 //!
 //! Loading also reads the dynamic relocations (see `relocations.rs`), which
@@ -66,6 +67,9 @@ pub struct Binary {
     pub architecture: Architecture,
     /// The size of a pointer in bytes: 4 or 8.
     pub pointer_size: u64,
+    /// What kind of program the file holds. Only in an `Executable`, linked
+    /// to run at one address, does elfq read pointers from the words in
+    /// data; the others list them in their dynamic relocations.
     pub kind: FileKind,
     /// The address where execution starts.
     pub entry: u64,
@@ -128,6 +132,8 @@ pub struct Section {
     pub name: String,
     pub address: u64,
     pub size: u64,
+    /// What the section holds, as the `object` crate tells from its type and
+    /// flags, such as `Text` for code or `UninitializedData` for `.bss`.
     pub kind: SectionKind,
     /// Whether the section is loaded into memory when the program runs.
     /// Only allocated sections hold items.
@@ -144,15 +150,17 @@ pub struct Section {
 /// A function or data object.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Item {
-    /// The item's symbol name, demangled if it is a Rust symbol. Without a
-    /// symbol, a name made from where it is, such as `fn_0x1690` or
-    /// `.rodata@0x2004`.
+    /// The item's symbol name, demangled if it is a mangled Rust or C++
+    /// symbol. Without a symbol, a name made from where it is, such as
+    /// `fn_0x1690` or `.rodata@0x2004`.
     pub name: String,
     /// Other names for the item: the symbol as the file has it when `name`
     /// is demangled, and other symbols at the same address, such as weak
     /// aliases.
     pub aliases: Vec<String>,
     pub kind: ItemKind,
+    /// Where the item starts. On Arm, without the Thumb bit that symbols
+    /// and pointers set on a Thumb function's address (see `code_address`).
     pub address: u64,
     /// Size in bytes, or 0 when it is unknown. The item's end,
     /// `address + size`, always fits in a `u64`.
@@ -168,9 +176,14 @@ pub struct Item {
     pub source: Source,
 }
 
+/// Whether an item is code or data. elfq reads the references in a
+/// function's code, and the pointers stored in a data item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ItemKind {
+    /// Code.
     Function,
+    /// Anything that isn't code: a variable, a constant, a table or a
+    /// string.
     Data,
 }
 
@@ -194,9 +207,10 @@ pub enum Source {
     /// the vector table is only part of it, after the section and the
     /// table's address, such as `.text@0x8000000`.
     Section,
-    /// Following the code from the entry point and the vector table's
-    /// handlers, or from a Thumb address that code loads or data holds,
-    /// leads to the address, in firmware that nothing lists functions for
+    /// Following the code from the entry point, the vector table's handlers
+    /// or the startup and shutdown arrays, or from a Thumb address that code
+    /// loads or data holds, leads to the address, in firmware that nothing
+    /// lists functions for
     /// (see `unnamed_functions.rs`). The item is a function named after its
     /// address, such as `fn_0x8000040`.
     Reached,
@@ -227,6 +241,7 @@ pub struct Relocation {
     pub target: RelocationTarget,
 }
 
+/// What the dynamic loader stores at a relocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelocationTarget {
     /// An address in this file.
@@ -724,10 +739,11 @@ fn section_items(sections: &[Section]) -> Vec<Item> {
         .collect()
 }
 
-/// Adds a function for each unwind-table range that the symbols missed, and
-/// fills in sizes that the symbol table left as 0.
+/// Adds a function for each unwind-table range that the items found so far,
+/// from symbols and PLT stubs, missed, and fills in sizes that the symbol
+/// table left as 0.
 fn add_unwind_items(items: &mut Vec<Item>, ranges: &[(u64, u64)], sections: &[Section]) {
-    // Functions known from symbols, as (address, size, index into items).
+    // The functions found so far, as (address, size, index into items).
     let mut known: Vec<(u64, u64, usize)> = items
         .iter()
         .enumerate()

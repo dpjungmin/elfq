@@ -2,8 +2,10 @@
 //! starts, that keep SYMBOL in the file.
 //!
 //! Every item that uses SYMBOL keeps it there, unless nothing reaches that
-//! item or it is there only because of SYMBOL. The answer shows the
-//! shortest chain to each item that keeps SYMBOL, merged into one tree.
+//! item or it is there only because of SYMBOL. The text shows the shortest
+//! chain to each of the nearest ten items that keep SYMBOL, merged into one
+//! tree. The JSON lists the shortest chain to every item that keeps SYMBOL,
+//! one by one.
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -50,6 +52,8 @@ struct Step<'a> {
     how: String,
 }
 
+/// Answers `elfq FILE why SYMBOL`: the shortest chains from where the
+/// program starts through each item that keeps SYMBOL.
 pub fn run(binary: &Binary, symbol: &str, format: Format, out: &mut dyn Write) -> Result<()> {
     super::check_code_is_readable(binary)?;
     let node = super::symbol::find(binary, symbol)?;

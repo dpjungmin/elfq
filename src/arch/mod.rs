@@ -20,9 +20,15 @@ use object::{Architecture, Endianness};
 pub struct CodeReference {
     /// The instruction's address.
     pub site: u64,
+    /// What the instruction does with the address.
     pub kind: CodeReferenceKind,
 }
 
+/// What one instruction does with an address. `Graph::build` turns most into
+/// a reference to the item there, or into a call or jump it can't follow.
+/// It drops a jump that stays inside its function, as most do, a call into
+/// its function's middle, and an address where no item is, unless the
+/// loader stores a pointer there, as in a global offset table entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodeReferenceKind {
     /// A direct call: `call target`.
@@ -82,8 +88,8 @@ pub fn is_supported(architecture: Architecture, thumb: bool) -> bool {
 
 /// The references in one function's code, which starts at `address`.
 /// `endianness` is the file's, for reading the constants in Thumb code.
-/// Returns nothing for instruction sets elfq can't read yet; check
-/// [`is_supported`] first.
+/// Returns nothing for instruction sets other than x86-64 and 32-bit Arm,
+/// and reads any 32-bit Arm code as Thumb, so check [`is_supported`] first.
 pub fn scan(
     architecture: Architecture,
     endianness: Endianness,

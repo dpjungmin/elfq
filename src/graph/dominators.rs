@@ -20,16 +20,21 @@ use crate::binary::{AddressRange, Binary};
 #[derive(Debug)]
 pub struct DominatorTree {
     /// Each node's closest dominator, indexed by `graph::index`.
-    /// `None` for nodes that no root reaches, and for the roots, which hang
-    /// directly under the tree's top.
+    /// `None` for nodes that no root reaches, and for the nodes directly
+    /// under the tree's top: the roots, and nodes that several roots reach.
     parent: Vec<Option<Node>>,
     /// The nodes each node dominates directly, largest retained size first.
     children: Vec<Vec<Node>>,
     /// The nodes directly under the tree's top: the roots, and anything
     /// that several roots reach.
     top: Vec<Node>,
+    /// Whether a path from the roots reaches each node.
     reachable: Vec<bool>,
+    /// Each node's retained size: its own size, counting only its bytes in
+    /// the range when the tree is built with one, plus its children's.
     retained: Vec<u64>,
+    /// How many items the binary has. The lists above are indexed by
+    /// `graph::index`, which puts the imports after the items.
     items: usize,
 }
 

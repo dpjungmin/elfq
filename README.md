@@ -5,7 +5,7 @@ can't, such as:
 
 - Which functions are reached only through `process_frame`?
 - How many bytes would go away if `process_frame` did?
-- Why is `core::fmt` in my firmware at all?
+- Why is `core::fmt::write` in my firmware at all?
 
 It is meant for x86-64 Linux programs and Cortex-M firmware alike, and for
 binaries as they are shipped: with or without DWARF, even stripped.
@@ -26,10 +26,11 @@ elfq app.elf callees main               # what main calls or uses
 elfq app.elf callees 0x0+256K           # what the first 256 KiB uses outside it
 ```
 
-Every command also prints JSON for scripts with `--json`. The commands that
-count bytes can count only one range of memory, such as a microcontroller's
-ITCM, with `--range START..END` or `--range START+SIZE`; for firmware, the
-overview lists the ranges its sections occupy.
+Every command also prints JSON for scripts with `--json`. The overview,
+`top` and `retained` can count only the bytes in one range of memory, such
+as a microcontroller's ITCM, with `--range START..END` or
+`--range START+SIZE`; for firmware, the overview lists the ranges its
+sections occupy.
 
 `callers` and `callees` take ranges in place of a symbol, and then list
 only what crosses their edge, such as code in ITCM that calls a function in
@@ -43,13 +44,15 @@ from RAM never touches flash. Errors exit with status 2.
 cargo install --locked --git https://github.com/dpjungmin/elfq elfq
 ```
 
-The `elfq` crate on crates.io is only a placeholder for now.
+The `elfq` at the end is needed: the repository holds a second program, the
+Rust sample in `testdata`. The `elfq` crate on crates.io is only a
+placeholder for now.
 
 **Status:** early development. The overview, `top`, `retained`, `why`,
 `callers` and `callees` work on x86-64 and Cortex-M executables, with
 readable Rust and C++ names, and `inlined` works on any file with DWARF debug
-info. The overview, `callers` and `callees` also work on x86-64 shared
-libraries.
-See [docs/design.md](docs/design.md) for the plan,
+info that isn't compressed. The overview, `callers` and `callees` also work
+on x86-64 shared libraries.
+See [docs/design.md](docs/design.md) for how elfq works and what comes next,
 [docs/survey.md](docs/survey.md) for how existing tools compare, and
 [CONTRIBUTING.md](CONTRIBUTING.md) to build it.

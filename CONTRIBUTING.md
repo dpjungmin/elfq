@@ -1,5 +1,10 @@
 # Contributing to elfq
 
+[docs/design.md](docs/design.md) explains what elfq answers and how: start
+with its Concepts and its Life of a command. This file says where the code
+is, the rules it keeps, how it is tested, and how to add a command or an
+instruction set.
+
 ## Build and test
 
 elfq needs Rust 1.88 or later.
@@ -23,15 +28,223 @@ cargo fmt --all --check
 cargo clippy --all-targets --locked -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items --locked
 cargo test --locked
+cargo +1.88 check --all-targets --locked
 ```
 
-CI also checks that elfq builds with Rust 1.88, the oldest version it
-supports (`rust-version` in `Cargo.toml`).
+The last line checks that elfq still compiles with Rust 1.88, the oldest
+version it supports (`rust-version` in `Cargo.toml`); `rustup toolchain
+install 1.88` gets it.
 
-Most tests in `tests/it/cli.rs` check a command's whole output with
-`assert_output`. When you change what elfq prints on purpose, the test
-that fails shows the first line that differs, then the new output in full,
-ready to paste into the test once you have checked it.
+## Where things live
+
+| Path | What it holds |
+|---|---|
+| `src/main.rs` | The program: parses arguments, runs one command on a thread with a large stack, prints errors and sets the exit status. It also turns `elfq help COMMAND` into `--help`, and suggests the right order when the command comes before the file. |
+| `src/lib.rs` | Declares the modules below. elfq is a library plus that small program; the library exists for the program and its tests. |
+| `src/cli.rs` | Command-line arguments, with clap: a `Command` variant for each command, the structs that hold their arguments, and the text of `--help`. |
+| `src/commands/` | One file per command, which looks up SYMBOL, asks `graph` or `debuginfo` and decides what the answer shows. `mod.rs` runs the command the arguments name, after checking arguments that don't go together. The rest are shared: `symbol.rs` works out what a user means by SYMBOL, `retained_tree.rs` builds the trees of retained sizes that the overview, `top` and `retained` show, `ranges.rs` answers `callers` and `callees` for ranges of memory, `text.rs` holds the wording that commands share and `json.rs` the JSON shapes. |
+| `src/arch/` | Finding the addresses that machine code calls or uses, one file per instruction set (x86-64 and Thumb). |
+| `src/binary/` | Reading an ELF file: its functions and data objects ("items") and where they were found, their names, imports, stored pointers and memory blocks. Unnamed data, such as string literals, is found from what code and pointers refer to. |
+| `src/graph/` | The reference graph that connects items, the roots where the program starts, the dominator tree that says what is exclusive to what, the shortest paths that `why` shows, and the references that cross the boundary of ranges of memory. |
+| `src/debuginfo/` | Reading DWARF, when the file has it: the copies of functions that the compiler inlined, for `inlined`. |
+| `src/render/` | Text output: tables, and the trees drawn in their last column (`tree.rs`), which every command draws the same way. |
+| `tests/it/` | Integration tests, built as one test program (`main.rs` lists its modules). See [Tests](#tests). |
+| `testdata/` | The sample programs and the ELF files built from them. See [Sample binaries](#sample-binaries). |
+| `docs/` | `design.md`, how elfq works and what comes next, and `survey.md`, how existing tools compare, written before elfq existed. |
+
+## Rules that keep it approachable
+
+Each module uses only the ones below it in this list:
+
+```
+main.rs      the program
+commands/    one module per command
+cli.rs       arguments
+render/      tables and trees
+debuginfo/   DWARF
+graph/       references, roots, the dominator tree, paths, crossings
+binary/      items
+arch/        machine code
+```
+
+So `arch` knows nothing about items, `binary` nothing about the graph, and
+`render` nothing about ELF files. No tool checks this; a `use crate::` line
+that reaches up the list is a sign that the code belongs lower down.
+
+- **Analysis never prints.** `arch`, `binary`, `graph` and `debuginfo`
+  return what they find. Problems found while loading a file go into
+  `Binary::warnings`, which `commands::run` prints. Only the commands and
+  `main.rs` write output.
+- **Commands decide what an answer shows.** A command looks up SYMBOL, asks
+  `graph` or `debuginfo` for the facts, and picks, groups, sorts and words
+  what to show. Scanning code, dominators, shortest paths and crossings
+  live in the modules below. A small query that only one command needs can
+  stay in its file, as `retained`'s list of what SYMBOL shares does; one
+  that another command could use belongs in `graph`.
+- **Library code returns errors; it doesn't panic or exit on bad input.**
+  Add context where the error happens, with anyhow's `context`, as
+  `Binary::load` adds "cannot load FILE". `main.rs` prints `error: ` and
+  the whole chain, and exits with status 2. `unwrap`, `expect` and `panic!`
+  are for tests; an assertion outside them, such as the one in
+  `Table::row`, catches only elfq's own mistakes. `unsafe` code is
+  forbidden (`Cargo.toml`).
+- **A damaged file is read as far as it makes sense.** As elfq loads a
+  file, it ignores an allocated section that would end past the last
+  address, with a warning, and reads a symbol whose size would take it
+  past the last address as if it had no size. One whose last byte is the
+  very last address is read one byte shorter. So the rest of the code can
+  add a size to an address without checking. Stored pointers are read only
+  where the file holds bytes, however large a section claims to be, and
+  sums of sizes stop at the largest number rather than overflow.
+
+## Tests
+
+`cargo test` runs two kinds of tests:
+
+- **Unit tests** sit beside the code, in a `tests` module at the end of a
+  file. They check one function: a decoder on bytes from a sample's
+  disassembly, or an algorithm on a small graph built by hand
+  (`graph/dominators.rs`, `graph/paths.rs`).
+- **Integration tests** in `tests/it/` use the samples in `testdata/bin`.
+  `cli.rs`, `json.rs` and `docs.rs` run the elfq program, the way a user
+  would. The others call the library, as `Binary::load` and
+  `Graph::build`. `damaged.rs` does both, and so does one test in
+  `json.rs`. The answers they expect are
+  those in [testdata/README.md](testdata/README.md), which says, for
+  example, what calls `log_msg` in each sample.
+
+| File in `tests/it/` | What it tests |
+|---|---|
+| `support.rs` | No tests: the samples' paths (`SAMPLE` and others), `elfq`, which runs the program, and `assert_output` |
+| `cli.rs` | Each command's whole text output, errors, exit statuses and help |
+| `json.rs` | `--json` output |
+| `items.rs` | Finding items: symbols, PLT stubs, unwind tables, functions in stripped firmware, unnamed data |
+| `graph.rs` | The reference graph: callers, callees, pointers in data, veneers |
+| `retained.rs` | Roots, and what is exclusive to what |
+| `why.rs` | The shortest chains |
+| `symbol.rs` | Looking up SYMBOL |
+| `inlined.rs` | Inlined copies, from DWARF |
+| `damaged.rs` | Damaged and unusual files, made by changing a sample's bytes |
+| `docs.rs` | The `$ elfq` examples in README.md and docs/design.md |
+
+Two tests in `cli.rs` run the overview and every command it suggests on
+each `.elf` and `.so` file in `testdata/bin`, and `top` on each `.elf`
+file, so a new sample is tested as soon as it is committed.
+
+To run one test, one file, or the unit tests of one module:
+
+```sh
+cargo test --test it cli::top_shows_what_keeps_the_most_bytes
+cargo test --test it damaged::
+cargo test --lib arch::thumb
+```
+
+**When output changes.** Most tests in `cli.rs` check a command's whole
+output with `assert_output`. When you change what elfq prints on purpose,
+the test that fails shows the first line that differs, then the new output
+in full, after "The whole output:". Check it, then paste it over the
+expected text, which starts at the beginning of the line after `"\`. Some
+expected texts are `format!` templates, with placeholders such as `{path}`;
+put those back. A test that checks several outputs stops at the first that
+differs, so run it again until it passes.
+
+**The examples in the docs.** A code block in README.md or docs/design.md
+whose first line starts with `$ elfq ` is run by `docs.rs`, which checks
+that elfq prints the rest of the block and nothing on stderr. The command
+is split at spaces, with no shell quoting, and its exit status isn't
+checked.
+
+**Damaged files.** `damaged.rs` makes its files from a sample's bytes, so
+that the hangs and crashes they once caused stay fixed. Tests run in a
+debug build, so arithmetic that overflows fails them too. A test that uses
+`parse_quickly` fails if loading the file takes more than 10 seconds: add
+one when you make elfq quick to load a file that took far too long.
+
+## Adding a command
+
+Commands take the form `elfq FILE <command> [ARGS]`. `src/commands/top.rs`
+is a short one to copy.
+
+1. **Arguments, in `src/cli.rs`.** Add a variant to `Command`, before the
+   hidden `Debug`. Its name, in lowercase with `-` between words (`SizeOf`
+   is typed `size-of`), is the command's name, and its `///` line is what
+   `elfq --help` lists. Give it an `after_help` with a longer explanation,
+   as the others have, and a line in `EXAMPLES`. Its
+   arguments go in a struct of their own, or in `SymbolArgs` if SYMBOL is
+   all it takes. `--json` and `--range` are global, so don't declare them
+   again. `elfq help COMMAND` and the hint for a command typed before the
+   file find the new command by themselves.
+2. **The command, in `src/commands/<name>.rs`.** Start with a `//!` line
+   that shows how to type it, then a `run` function that takes the
+   `Binary`, the arguments, the `Format` and the output. It returns
+   `Result<()>`, or `Result<Outcome>` when the exit status can be 1, as
+   `callers` and `callees` do for ranges.
+3. **Wiring, in `src/commands/mod.rs`.** Add `mod <name>;`, an arm in `run`
+   and an arm in `command_name`; the compiler asks for the last two. It
+   won't ask about `check_arguments`, which refuses `--range` for every
+   command but the overview, `top` and `retained`. A command that takes
+   `--range` goes in its first arm, and its arm in `run` passes it
+   `range`. Then name it in the error further down that lists the
+   commands that take `--range`, in the tests in `tests/it/cli.rs` that
+   check that error, and in the `--range` help in `cli.rs`, README.md and
+   docs/design.md. A command that can't print JSON needs an arm like the
+   one for the debug commands.
+4. **SYMBOL.** If the command reads code, call `check_code_is_readable`
+   first, so that a file whose code elfq can't read says so even when
+   SYMBOL names nothing. `symbol::find` turns SYMBOL into a `Node`, which
+   may be an import; `item_in_file` or `readable_item` gives its item, or
+   an error that says why there is none. A command that needs the roots
+   refuses shared libraries, as `top`, `retained` and `why` do.
+5. **The answer.** Work it out first, then write it. Text uses
+   `render::Table`, `TreeRow` for trees, and the shared wording in
+   `text.rs`. JSON is a struct that derives `Serialize`, made of the shapes
+   in `json.rs`, such as `json::Item` for each item, and written with
+   `json::write`. Every key is always there, `null` when it has no value.
+6. **Tests.** Pin the text output with `assert_output` in
+   `tests/it/cli.rs`, and test the JSON in `tests/it/json.rs`. Add the
+   command to the tests in `cli.rs` that go through commands one by one:
+   `arguments_that_dont_go_together_are_refused_before_the_file_is_read`,
+   `a_file_whose_code_elfq_cant_read_says_so` if it reads code, and
+   `commands_that_need_roots_refuse_a_shared_library` if it needs the roots.
+7. **Docs.** List it in README.md and in the Commands table in
+   docs/design.md.
+
+## Adding an instruction set
+
+1. **The scanner, in `src/arch/<name>.rs`.** Its `scan` function takes one
+   function's bytes and address and returns a `CodeReference` for each
+   address the code calls, jumps to or uses; `CodeReferenceKind` in
+   `src/arch/mod.rs` lists the kinds. It must not panic on any bytes: a
+   truncated instruction ends the scan. Unit tests beside it check it on
+   bytes from a sample's disassembly.
+2. **Wiring, in `src/arch/mod.rs`.** Add `mod <name>;`, an arm in `scan`
+   and an arm in `is_supported`: until `is_supported` says yes, elfq never
+   scans the code and says it can't read it. An arm in `is_veneer` lets
+   `callers` and `callees` of ranges see through a linker's veneers.
+   `code_size`, `leading_padding` and `ending` matter only for finding the
+   functions in stripped firmware, which elfq does only for Thumb.
+3. **Its name.** Add it to `text::architecture_name`, which the overview
+   prints.
+4. **Linux programs.** Dynamic relocations (`binary/relocations.rs`) and
+   PLT stubs (`binary/plt.rs`) are read only for x86-64. Without them, a
+   position-independent program or a shared library has no imports and no
+   pointers stored in data.
+5. **Samples.** Build the C sample for it in `testdata/build.sh`, with
+   `variants` for the copies without DWARF and without symbols, and say
+   what it holds in testdata/README.md. Add it to `C_SAMPLES` in
+   `tests/it/graph.rs` and `tests/it/retained.rs`, which check its answers
+   against testdata/README.md.
+6. **Tests that need code elfq can't read.**
+   `a_file_whose_code_elfq_cant_read_says_so` in `tests/it/cli.rs` marks a
+   file as AArch64; when that is the one you add, pick another machine.
+7. **Docs.** README.md and docs/design.md say which instruction sets elfq
+   reads.
+
+## Sample binaries
+
+[testdata/README.md](testdata/README.md) lists what each sample contains and
+the answers tests should expect. If you change a sample's source, rebuild with
+`testdata/build.sh` and commit the new files with the source change.
 
 ## Checking performance
 
@@ -54,62 +267,9 @@ files):
 
 Compare the time, the peak memory (`/usr/bin/time -v` on Linux, `-l` on
 macOS) and the output, which should not change unless you mean it to.
-When you make elfq quick to load a file that took far too long, add a
-test to `tests/it/damaged.rs` that uses `parse_quickly`, which fails after
-10 seconds.
-
-## Where things live
-
-[docs/design.md](docs/design.md) explains how elfq works and why. In short:
-
-| Path | What it holds |
-|---|---|
-| `src/main.rs` | The program: parses arguments, runs one command on a thread with a large stack, prints errors. |
-| `src/cli.rs` | Command-line arguments, one struct per subcommand. |
-| `src/commands/` | One file per subcommand, plus `symbol.rs`, which works out what a user means by SYMBOL, `retained_tree.rs`, which builds the trees of retained sizes that the overview, `top` and `retained` show, as a table or as JSON, `json.rs` and `text.rs`, the JSON shapes and the wording that commands share, and `ranges.rs`, which `callers` and `callees` use for ranges of memory. Commands connect a question to output; they do no analysis. |
-| `src/arch/` | Finding the addresses that machine code calls or uses, one file per instruction set (x86-64 and Thumb). |
-| `src/binary/` | Reading an ELF file: its functions and data objects ("items"), their names, imports and stored pointers. Unnamed data, such as string literals, is found from what code and pointers refer to. |
-| `src/graph/` | The reference graph that connects items, the roots where the program starts, the dominator tree that says what is exclusive to what, the shortest paths that `why` shows, and the references that cross the boundary of ranges of memory. |
-| `src/debuginfo/` | Reading DWARF, when the file has it: the copies of functions that the compiler inlined, for `inlined`. |
-| `src/render/` | Text output: tables, and the trees drawn in their last column (`tree.rs`), which every command draws the same way. |
-| `tests/it/` | Integration tests that run on the sample binaries, built as one test program (`main.rs` lists its modules). |
-| `testdata/` | The sample programs and the ELF files built from them. |
-
-Analysis flows one way: `arch`, then `binary`, then `graph`, each importing
-only from the ones before it; `debuginfo` imports only `binary`. `render` knows nothing about ELF files, and
-`commands` connect the two. A command does no analysis of its own and the
-analysis modules never print.
-
-## Adding a subcommand
-
-Commands take the form `elfq FILE <command> [ARGS]`.
-
-1. Add its arguments to `src/cli.rs`.
-2. Add `src/commands/<name>.rs` with a `run` function, and call it from
-   `src/commands/mod.rs`. A command that takes a SYMBOL turns it into an
-   item with `symbol::find`. Its answer gives exit status 0, unless it
-   returns an `Outcome` that says otherwise, as `callers` does for ranges.
-3. Work out the answer first, then write it as text or, for `--json`, as a
-   struct that derives `Serialize`, using the shapes in
-   `src/commands/json.rs` for items. `callers.rs` is a short example.
-4. Add tests under `tests/it/` that run it on files in `testdata/bin`. A new
-   file there runs only once `tests/it/main.rs` lists it with a `mod` line.
-
-## Adding an instruction set
-
-1. Add `src/arch/<name>.rs` with a `scan` function that reports the calls,
-   jumps and addresses in one function's code, and call it from
-   `src/arch/mod.rs`.
-2. Add sample binaries for it, and tests that check `callers` and `callees`
-   against the answers in [testdata/README.md](testdata/README.md).
-
-## Sample binaries
-
-[testdata/README.md](testdata/README.md) lists what each sample contains and
-the answers tests should expect. If you change a sample's source, rebuild with
-`testdata/build.sh` and commit the new files with the source change.
 
 ## Pull requests
 
-Keep them small and focused, ideally one step of the delivery plan in
-[docs/design.md](docs/design.md) at a time.
+Keep them small and focused: one change at a time, each merged before the
+next. [docs/design.md](docs/design.md#status-and-roadmap) says what comes
+next.

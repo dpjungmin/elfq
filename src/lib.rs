@@ -1,19 +1,23 @@
 //! elfq answers questions about an ELF binary's call graph and size.
 //!
-//! The code is organized as a pipeline; docs/design.md describes all of it.
-//! The library exists for the elfq program and its tests, so its API may
-//! change in any release, and `arch` and `render` are private to it. So far
-//! it has:
+//! docs/design.md explains how elfq works, and CONTRIBUTING.md says where
+//! things live and the rules the code keeps. The library exists for the
+//! elfq program and its tests, so its API may change in any release, and
+//! `arch` and `render` are private to it. Each module uses only the ones
+//! after it in this list:
 //!
-//! - `arch`: finds the addresses that machine code calls or uses.
-//! - [`binary`]: reads an ELF file and finds its functions and data objects.
-//! - [`graph`]: connects items by the references between them, and works
-//!   out what is exclusive to what and the shortest chains to each item.
+//! - [`commands`]: one module per command, plus the ones they share. A
+//!   command looks up what the user asks about, asks `graph` or
+//!   `debuginfo`, and writes the answer.
+//! - [`cli`]: command-line arguments.
+//! - `render`: tables and trees, for text output.
 //! - [`debuginfo`]: reads DWARF, when the file has it, for what the compiler
 //!   inlined.
-//! - [`commands`]: one module per subcommand, connecting a question to output.
-//! - `render`: text output.
-//! - [`cli`]: command-line arguments.
+//! - [`graph`]: connects items by the references between them, and works
+//!   out the roots, what is exclusive to what, the shortest chains to each
+//!   item and the references that cross the boundary of ranges of memory.
+//! - [`binary`]: reads an ELF file and finds its functions and data objects.
+//! - `arch`: finds the addresses that machine code calls or uses.
 
 pub(crate) mod arch;
 pub mod binary;

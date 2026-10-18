@@ -32,6 +32,8 @@ struct TopJson<'a> {
     unreachable: Vec<json::Item<'a>>,
 }
 
+/// Answers `elfq FILE top`: the largest items, or every item with `all`, as
+/// a tree.
 pub fn run(
     binary: &Binary,
     range: Option<AddressRange>,

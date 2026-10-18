@@ -1,5 +1,6 @@
 //! Roots: the places where the program starts running. Every path through
-//! the graph begins at one, and an item that no path reaches is dead code.
+//! the graph begins at one, and an item that no path reaches is dead code,
+//! or used in a way elfq can't see.
 //!
 //! - the entry point;
 //! - the functions in the startup and exit arrays, such as `.init_array`,
@@ -25,7 +26,11 @@ use super::{Node, item_starting_at, pointer_target};
 /// A place where the program starts running.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Root {
+    /// The item where the program starts, or an import that a startup or
+    /// exit array's relocation names.
     pub node: Node,
+    /// Why it is a root: the first reason `find` comes to, when there are
+    /// several.
     pub kind: RootKind,
 }
 

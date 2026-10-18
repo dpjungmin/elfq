@@ -20,7 +20,8 @@ use crate::cli::Format;
 use crate::graph::{Graph, Node};
 use crate::render::{Align, Table};
 
-/// How many of the largest items the tree shows, as `top`'s tree does.
+/// How many of the largest items the overview's tree shows. It is drawn as
+/// `top`'s is, which shows 30.
 const SHOWN: usize = 5;
 
 /// What the file is and what elfq found in it. The largest items are in
@@ -56,6 +57,7 @@ struct OverviewJson<'a> {
     indirect_calls: Option<usize>,
 }
 
+/// Answers `elfq FILE`, for the whole file or only the bytes in `range`.
 pub fn run(
     path: &Path,
     binary: &Binary,
@@ -128,8 +130,9 @@ pub fn run(
         .map(|block| format!("--range {}", text::range_argument(block.range)))
         .collect();
 
-    // `retained` and `why` need roots, which a shared library doesn't have
-    // yet.
+    // elfq doesn't treat a shared library's exported functions as roots
+    // yet, so most of its graph is unreachable: there is no tree, and no
+    // `top`, `retained` or `why` to suggest.
     let queries = Names::new(binary);
     let about = |command: &str, item: usize| {
         let symbol = queries.query_for(Node::Item(item));

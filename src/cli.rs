@@ -10,6 +10,9 @@ use clap::{Args, Parser, Subcommand};
 
 use crate::binary::AddressRange;
 
+// The whole command line. No `///` comment here: clap would show one of more
+// than one paragraph at the top of `elfq --help`, in place of the
+// description that `about` takes from Cargo.toml.
 #[derive(Debug, Parser)]
 #[command(
     name = "elfq",
@@ -71,6 +74,8 @@ Examples:
 The overview's tree is the start of the one top shows; elfq help top
 explains it.";
 
+// One variant per command. Each variant's `///` line is its line in
+// `elfq --help`.
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Show the items that keep the most bytes in the file, as a tree
@@ -237,7 +242,8 @@ pub enum DebugCommand {
     Items,
 }
 
-/// The names of the commands, for spotting a command typed before the file.
+/// The names of the commands, for reading `elfq help COMMAND` and for
+/// spotting a command typed before the file.
 pub fn command_names() -> Vec<String> {
     use clap::CommandFactory;
     Cli::command()

@@ -24,6 +24,8 @@ struct Callers<'a> {
     complete: bool,
 }
 
+/// Answers `elfq FILE callers SYMBOL`, or with ranges in place of SYMBOL,
+/// `callers RANGE...`.
 pub fn run(
     binary: &Binary,
     symbols: &[String],

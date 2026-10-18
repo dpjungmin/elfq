@@ -11,7 +11,9 @@ use super::Section;
 /// The addresses from `start` up to, but not including, `end`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AddressRange {
+    /// The first address in the range.
     pub start: u64,
+    /// The address just past the range.
     pub end: u64,
 }
 
@@ -115,6 +117,8 @@ const LARGEST_GAP: u64 = 64 * 1024;
 /// flash or one of its RAMs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryBlock {
+    /// From the start of its first section to the furthest end of any of
+    /// its sections, gaps included.
     pub range: AddressRange,
     /// The sections in it, by index into the binary's sections, in address
     /// order.

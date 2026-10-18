@@ -50,23 +50,31 @@ pub enum Node {
 pub struct Reference {
     /// The item that makes the reference, as an index into [`Binary::items`].
     pub from: usize,
+    /// The item or import that `from` uses.
     pub to: Node,
+    /// How `from` uses it.
     pub kind: ReferenceKind,
     /// Where it is: the address of the instruction, or of the stored pointer.
     pub site: u64,
 }
 
+/// How one item uses another. Only `Call` and `TailCall` are calls; an
+/// `Address` or a `Pointer` to a function means that code may call it
+/// through a pointer, which elfq can't follow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ReferenceKind {
-    /// A direct call.
+    /// A direct call, or a call through a pointer that the loader fills in,
+    /// such as a global offset table entry, whose target is known.
     Call,
-    /// A jump to another function, which then returns straight to the
-    /// caller's caller.
+    /// A jump to another function, directly or through such a pointer,
+    /// which then returns straight to the caller's caller.
     TailCall,
     /// Code taking an item's address, as when passing a function or a
-    /// buffer to another function.
+    /// buffer to another function, or loading it from a global offset table
+    /// entry.
     Address,
-    /// Code reading or writing an item's bytes, such as a global variable.
+    /// Code reading or writing an item's bytes, such as a global variable,
+    /// or a function pointer variable that it calls through.
     Access,
     /// A pointer stored in data, such as an entry in a table of functions.
     Pointer,
@@ -103,6 +111,9 @@ impl Unresolved {
     }
 }
 
+/// The reference graph of a binary: its references, the calls and jumps it
+/// can't follow, and its roots. Its nodes are indices into the binary's
+/// items and imports, so it goes with the [`Binary`] it was built from.
 #[derive(Debug, Default)]
 pub struct Graph {
     /// Every reference, sorted by the item that makes it, then by site.
@@ -313,6 +324,7 @@ impl Graph {
 }
 
 impl Node {
+    /// The item's name, or the import's, as the output shows it.
     pub fn name(self, binary: &Binary) -> &str {
         match self {
             Node::Item(index) => &binary.items[index].name,
