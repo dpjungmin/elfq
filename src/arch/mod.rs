@@ -24,8 +24,11 @@ pub struct CodeReference {
     pub kind: CodeReferenceKind,
 }
 
-/// What one instruction does with an address. `Graph::build` turns each into
+/// What one instruction does with an address. `Graph::build` turns most into
 /// a reference to the item there, or into a call or jump it can't follow.
+/// It drops a jump that stays inside its function, as most do, a call into
+/// its function's middle, and an address where no item is, unless the
+/// loader stores a pointer there, as in a global offset table entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodeReferenceKind {
     /// A direct call: `call target`.

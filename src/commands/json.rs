@@ -32,8 +32,10 @@ pub(super) struct Item<'a> {
     /// Its size in bytes, or `null` when elfq doesn't know it.
     pub size: Option<u64>,
     /// Whether elfq estimated the size, as it does when the file doesn't
-    /// record it: for data without a symbol, and for functions whose symbol
-    /// has no size or that elfq found without one.
+    /// record it: for data that elfq finds only because something refers to
+    /// it, and for functions whose size no symbol, unwind table or PLT
+    /// gives, such as those elfq finds by following the code in stripped
+    /// firmware.
     pub size_estimated: bool,
 }
 

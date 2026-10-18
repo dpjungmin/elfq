@@ -10,8 +10,9 @@ use clap::{Args, Parser, Subcommand};
 
 use crate::binary::AddressRange;
 
-// The whole command line. No `///` comment here: clap would take it for the
-// text at the top of `elfq --help`, which comes from Cargo.toml.
+// The whole command line. No `///` comment here: clap would show one of more
+// than one paragraph at the top of `elfq --help`, in place of the
+// description that `about` takes from Cargo.toml.
 #[derive(Debug, Parser)]
 #[command(
     name = "elfq",

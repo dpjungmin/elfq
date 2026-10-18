@@ -8,11 +8,11 @@
 //! in code:
 //!
 //! 1. what the code calls;
-//! 2. where it jumps in the way that carries on in another function, with
-//!    a Thumb `b.w` or a linker's veneer, unless it lands between the
-//!    function's start and the jump itself, or no further into the function
-//!    than its other jumps so far reach, since loops and long functions use
-//!    `b.w` inside themselves too.
+//! 2. where a Thumb `b.w` or a linker's veneer jumps, as code does to carry
+//!    on in another function. Loops and long functions use `b.w` inside
+//!    themselves too, so such a jump starts nothing where it lands:
+//!    - between the function's start and the jump itself;
+//!    - or no further into the function than its other jumps reach so far.
 //!
 //! Scanning repeats until nothing new turns up. Then the Thumb addresses
 //! that the code loads or data holds start functions too, as for a handler
@@ -23,7 +23,8 @@
 //!
 //! 1. it is in code, after the vector table, and not inside constants;
 //! 2. the code before it, if a function starts before it, ends there with
-//!    a return, a jump or a call that may never return;
+//!    a return, a jump, data such as a literal pool, or a call that may
+//!    never return;
 //! 3. it is outside the padding between functions;
 //! 4. the code on either side still finds the constants it loads;
 //! 5. no jump crosses it, and none but a `b.w` lands on it.

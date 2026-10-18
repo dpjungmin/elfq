@@ -51,8 +51,8 @@ placeholder for now.
 **Status:** early development. The overview, `top`, `retained`, `why`,
 `callers` and `callees` work on x86-64 and Cortex-M executables, with
 readable Rust and C++ names, and `inlined` works on any file with DWARF debug
-info. The overview, `callers` and `callees` also work on x86-64 shared
-libraries.
+info that isn't compressed. The overview, `callers` and `callees` also work
+on x86-64 shared libraries.
 See [docs/design.md](docs/design.md) for how elfq works and what comes next,
 [docs/survey.md](docs/survey.md) for how existing tools compare, and
 [CONTRIBUTING.md](CONTRIBUTING.md) to build it.

@@ -44,12 +44,16 @@ is (`graph::ReferenceKind`):
 | `address taken` | `address taken` | code loads the address of a function or an import, as when passing a function pointer |
 | `pointer` | `pointer` | data holds a pointer to it, as a table of functions does |
 
-**Root.** A place where the program starts running: the entry point, the
-functions that the C runtime runs at startup and exit, such as those in
-`.init_array`, the PLT's header, which the dynamic loader uses,
-personality routines, which the unwinder calls, notes that the system
-reads, and on Cortex-M the vector table and each handler it lists. An item
-that no chain of references from a root reaches is **unreachable**: dead
+`callers` and `callees` give each way that one item uses another a row of
+its own. `why` joins them with commas, as in `call, address taken`, and the
+first row of each chain is a root, whose HOW says why the program starts
+there instead, such as `entry point` or `vector table`.
+
+**Root.** A place where the program starts running, such as the entry
+point, a function that `.init_array` lists, or on Cortex-M a handler that
+the vector table lists. Step 5 of [How it works](#how-it-works) lists every
+kind. An item that no chain of references from a root reaches is
+**unreachable**: dead
 code, or used in a way elfq can't see. The functions that a shared library
 exports aren't roots yet, so `top`, `retained` and `why` don't answer for
 libraries. (`graph::Root`)
@@ -78,8 +82,10 @@ answer, elfq says so. (`graph::Unresolved`)
 **Estimated size.** When the file doesn't record an item's size, elfq
 estimates it, mostly as the distance to the next item, and marks it `~`,
 as in `~12`, or `size_estimated` in JSON. A function with nothing after it
-in its section can't be estimated: its size shows as `?`, and elfq can't
-read its code. (`binary::Item::size_estimated`)
+in its section can't be estimated, unless elfq found it by following the
+code of stripped firmware: then it runs to the section's end. Otherwise
+its size shows as `?`, and elfq can't read its code.
+(`binary::Item::size_estimated`)
 
 **Range and memory block.** A range is the addresses from START up to END,
 written `START..END` or `START+SIZE`. With `--range`, the overview, `top`
@@ -98,7 +104,8 @@ help calls the boundary the ranges' edge. (`graph::Boundary`,
 **Thumb.** The instruction set of Cortex-M processors, with 16- and 32-bit
 instructions. Arm sets bit 0 of a Thumb function's address wherever the
 address is stored: in symbols, the entry point, pointers and the vector
-table. elfq clears it, so the addresses it prints are even. elfq reads
+table. elfq clears it, so the addresses it prints for functions are even.
+elfq reads
 Thumb code, but not the older 32-bit Arm (A32) code. (`binary::Binary::thumb`)
 
 **Vector table.** On Cortex-M, the list of addresses that the processor
@@ -159,10 +166,11 @@ gets suggestions. Typing the command first, as in
 SYMBOL, written as `--range` takes them: `0x0+256K`, or `0x0..0x40000`.
 Names don't start with a digit, so an argument that does and has `..` or
 `+` in it is a range. Then they list only the references that cross the
-edge of the ranges, one row per pair of items, grouped by the item outside,
-largest first. A call that goes through a linker's veneer is listed as a
-call to the veneer's target, at the call to the veneer, which is in code
-someone wrote, with "via veneer" after how it calls. For now, elfq only
+edge of the ranges, one row for each pair of items and way of use, grouped
+by the item outside, largest first. A call that goes through a linker's
+veneer is listed as a call to the veneer's target, at the call to the
+veneer, which is in code someone wrote, with "via veneer" after how it
+calls. For now, elfq only
 recognizes the veneers GNU ld adds for Thumb-2 (`ldr.w pc, [pc]` and the
 target's address); other veneers are listed as functions of their own.
 elfq's exit status is then 1 when anything crosses, or might: through a
@@ -192,8 +200,12 @@ and sizes are numbers. An item looks like this:
 `kind` is `function`, `data` or `import`; an import has no address or size
 in the file. In the trees of `top` and `retained`, each item also has its
 `retained` size and `keeps`, the items under it. `why` gives each chain as a
-list of steps, each an item and how the one before uses it, in the words of
-the JSON column in [Concepts](#concepts). The overview's JSON says what the
+list of steps, each an item and a `how`. The first step is a root, and its
+`how` says why the program starts there, such as `entry point` or
+`listed in .init_array`. In the others, it says how the item before uses
+this one, in the words of the JSON column in [Concepts](#concepts), joined
+with commas when there are several. The
+overview's JSON says what the
 file is and what elfq found in it; the largest items are in `top`'s.
 
 For example:
@@ -266,9 +278,10 @@ Removing main would remove log_msg too.
 `inlined` ranks the functions that the compiler copied into their callers by
 the bytes all their copies take, which ddbug shows only one function at a
 time. Each copy's bytes leave out the copies inlined into it, so the rows add
-up to the file's inlined code. On the Rust x86-64 sample with DWARF, which
-`testdata/build.sh` builds but which is too large to commit,
-`EndianSlice::read_slice` tops the list: 302 copies in 6,388 bytes. With
+up to the file's inlined code. On the Rust x86-64 sample with DWARF,
+`EndianSlice::read_slice` tops the list: 302 copies in 6,388 bytes. That
+file is too large to commit; `testdata/build.sh` leaves it at
+`testdata/rust/target/release/elfq-sample`. With
 SYMBOL it shows the copies in one function as a tree, merging the copies of
 one function in one place:
 
@@ -503,24 +516,22 @@ than through a general disassembler's API.
 
 The overview, `top`, `retained`, `why`, `callers` and `callees` work on
 x86-64 and Cortex-M executables, with or without symbols and DWARF, and
-`inlined` works on any file with DWARF. The overview, `callers` and
+`inlined` works on any file with DWARF that isn't compressed. The overview,
+`callers` and
 `callees` also work on x86-64 shared libraries. The pull requests and the
 git log record how elfq got here.
 
-Next:
+Next: **long calls and veneers**, so that the range checks see the calls
+that load the target's address into a register and branch through it, as
+in `ldr r3, =f; bx r3`, and the veneers that elfq doesn't follow yet (see
+[Known limitations](#known-limitations), 3).
 
-1. **Long calls**: calls that load the target's address into a register
-   and branch through it, as in `ldr r3, =f; bx r3`, and the veneers that
-   work that way, so that the range checks see them (see
-   [Known limitations](#known-limitations), 3).
-2. **Output fixes** that a review of elfq for scripts and AI agents turned
-   up.
-
-Ideas for later, not yet planned: what one function can reach in each
-memory block, a check of what startup code copies into RAM, the retained
-size of a set of items, comparing two builds, the functions that shared
-libraries export as roots, `--root SYMBOL`, worst-case stack depth (the call
-graph plus each function's stack frame), and a query language.
+Ideas for later, not yet planned: output that scripts and AI agents can
+read more easily, what one function can reach in each memory block, a
+check of what startup code copies into RAM, the retained size of a set of
+items, comparing two builds, the functions that shared libraries export as
+roots, `--root SYMBOL`, worst-case stack depth (the call graph plus each
+function's stack frame), and a query language.
 
 ## Non-goals
 
@@ -561,8 +572,8 @@ graph plus each function's stack frame), and a query language.
    and `callers` misses the call and can exit 0. A veneer to code outside
    every item, such as a routine in ROM, is listed under the veneer's
    name. Startup code that copies sections outside the entry function, or
-   reads a table of them as CMSIS does, adds rows to `callers`. Long
-   calls, next on the roadmap, cover the veneers.
+   reads a table of them as CMSIS does, adds rows to `callers`. The
+   roadmap's next step covers the long calls and veneers above.
 4. **Shared libraries.** The functions that a library exports aren't roots
    yet, so `top`, `retained` and `why` refuse libraries, and also programs
    linked with `-static-pie`, which elfq takes for libraries.

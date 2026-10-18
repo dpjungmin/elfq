@@ -105,11 +105,13 @@ that reaches up the list is a sign that the code belongs lower down.
   file. They check one function: a decoder on bytes from a sample's
   disassembly, or an algorithm on a small graph built by hand
   (`graph/dominators.rs`, `graph/paths.rs`).
-- **Integration tests** in `tests/it/` mostly run the elfq program on the
-  samples in `testdata/bin`, the way a user would; some call the library,
-  as `Graph::build`. The answers they expect are those in
-  [testdata/README.md](testdata/README.md), which says, for example, what
-  calls `log_msg` in each sample.
+- **Integration tests** in `tests/it/` use the samples in `testdata/bin`.
+  `cli.rs`, `json.rs` and `docs.rs` run the elfq program, the way a user
+  would. The others call the library, as `Binary::load` and
+  `Graph::build`. `damaged.rs` does both, and so does one test in
+  `json.rs`. The answers they expect are
+  those in [testdata/README.md](testdata/README.md), which says, for
+  example, what calls `log_msg` in each sample.
 
 | File in `tests/it/` | What it tests |
 |---|---|
@@ -164,9 +166,10 @@ Commands take the form `elfq FILE <command> [ARGS]`. `src/commands/top.rs`
 is a short one to copy.
 
 1. **Arguments, in `src/cli.rs`.** Add a variant to `Command`, before the
-   hidden `Debug`. Its name, in lowercase, is the command's name, and its
-   `///` line is what `elfq --help` lists. Give it an `after_help` with a
-   longer explanation, as the others have, and a line in `EXAMPLES`. Its
+   hidden `Debug`. Its name, in lowercase with `-` between words (`SizeOf`
+   is typed `size-of`), is the command's name, and its `///` line is what
+   `elfq --help` lists. Give it an `after_help` with a longer explanation,
+   as the others have, and a line in `EXAMPLES`. Its
    arguments go in a struct of their own, or in `SymbolArgs` if SYMBOL is
    all it takes. `--json` and `--range` are global, so don't declare them
    again. `elfq help COMMAND` and the hint for a command typed before the
@@ -180,9 +183,12 @@ is a short one to copy.
    and an arm in `command_name`; the compiler asks for the last two. It
    won't ask about `check_arguments`, which refuses `--range` for every
    command but the overview, `top` and `retained`. A command that takes
-   `--range` goes in its first arm, and the `--range` help in `cli.rs`,
-   README.md and docs/design.md then name it too. A command that can't
-   print JSON needs an arm like the one for the debug commands.
+   `--range` goes in its first arm, and its arm in `run` passes it
+   `range`. Then name it in the error further down that lists the
+   commands that take `--range`, in the tests in `tests/it/cli.rs` that
+   check that error, and in the `--range` help in `cli.rs`, README.md and
+   docs/design.md. A command that can't print JSON needs an arm like the
+   one for the debug commands.
 4. **SYMBOL.** If the command reads code, call `check_code_is_readable`
    first, so that a file whose code elfq can't read says so even when
    SYMBOL names nothing. `symbol::find` turns SYMBOL into a `Node`, which

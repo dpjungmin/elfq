@@ -6,17 +6,18 @@
 //!
 //! 1. the symbol tables, `.symtab` and `.dynsym` (see `symbols.rs`);
 //! 2. in x86-64 files, the PLT stubs that call imported functions, such as
-//!    `write@plt`, or the file's own (see `plt.rs`), and arrays of startup
-//!    and shutdown functions such as `.init_array`, which have no symbols;
-//! 3. the unwind table, `.eh_frame`, which still describes most functions in
+//!    `write@plt`, or the file's own (see `plt.rs`);
+//! 3. the arrays of startup and shutdown functions, such as `.init_array`,
+//!    which have no symbols;
+//! 4. the unwind table, `.eh_frame`, which still describes most functions in
 //!    stripped x86-64 files (see `eh_frame.rs`);
-//! 4. the entry point, when no function covers it, and in firmware the
+//! 5. the entry point, when no function covers it, and in firmware the
 //!    vector table, when no item covers any of it;
-//! 5. in firmware that nothing lists functions for, the code itself,
+//! 6. in firmware that nothing lists functions for, the code itself,
 //!    followed from the entry point, the vector table's handlers, the
 //!    functions in arrays such as `.init_array`, and the Thumb addresses
 //!    that code loads or data holds (see `unnamed_functions.rs`);
-//! 6. references to data that has no symbol, such as vtables and string
+//! 7. references to data that has no symbol, such as vtables and string
 //!    literals (see `unnamed_data.rs`).
 //!
 //! Loading also reads the dynamic relocations (see `relocations.rs`), which
