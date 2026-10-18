@@ -134,16 +134,156 @@ pub(super) fn ending(code: &[u8], address: u64, endianness: Endianness) -> Endin
     ending
 }
 
-/// Whether `code` is a veneer that GNU ld adds for Thumb-2, from the
-/// Cortex-M7 sample:
+/// Whether `code` is one of the veneers that GNU ld and LLD add for
+/// Cortex-M. Each puts the target, or its offset from pc, in a register,
+/// or on the stack where it pops pc from, and jumps there:
 ///
 /// ```text
-/// 000000d8: f85f f000  ldr.w pc, [pc]
-/// 000000dc: 3000087d   .word 0x3000087d <memcpy + 1>
+/// GNU ld, Cortex-M3 and up:  ldr.w pc, [pc]; .word target
+/// GNU ld, Cortex-M0 and M23: push {r0}; ldr r0, [pc, #8]; mov ip, r0;
+///                            pop {r0}; bx ip; nop; .word target
+/// GNU ld, --pic-veneer:      push {r0}; ldr r0, [pc, #8]; mov ip, pc;
+///                            add ip, r0; pop {r0}; bx ip; .word offset
+/// GNU ld, -mpure-code, and LLD, Cortex-M3 and up and M23:
+///                            movw ip, #lo; movt ip, #hi; bx ip
+/// LLD, --pic-veneer:         movw ip, #lo; movt ip, #hi; add ip, pc; bx ip
+/// LLD, Cortex-M0:            push {r0, r1}; ldr r0, [pc, #4];
+///                            str r0, [sp, #4]; pop {r0, pc}; .word target
+/// LLD, Cortex-M0, execute-only code:
+///                            push {r0, r1}; movs r0, #b3; lsls r0, #8;
+///                            adds r0, #b2; lsls r0, #8; adds r0, #b1;
+///                            lsls r0, #8; adds r0, #b0; str r0, [sp, #4];
+///                            pop {r0, pc}
+/// LLD, Cortex-M0, -pie:      push {r0}; ldr r0, [pc, #8]; mov ip, r0;
+///                            pop {r0}; add pc, ip; nop; .word offset
 /// ```
+///
+/// Code that a compiler made, such as `ldr r3, [pc, #0]; bx r3`, is not a
+/// veneer: it is a function someone wrote.
 pub(super) fn is_veneer(code: &[u8]) -> bool {
-    code.len() == 8 && code[..4] == [0x5f, 0xf8, 0x00, 0xf0]
+    VENEERS.iter().any(|&(instructions, word)| {
+        let size = 2 * instructions.len() + if word { 4 } else { 0 };
+        code.len() == size
+            && instructions.iter().enumerate().all(|(index, halfword)| {
+                let bits = u16::from_le_bytes([code[2 * index], code[2 * index + 1]]);
+                bits & halfword.mask == halfword.bits
+            })
+    })
 }
+
+/// The veneers that [`is_veneer`] recognizes, as their instructions, and
+/// whether a word follows them.
+const VENEERS: [(&[Halfword], bool); 8] = [
+    (&[exactly(0xf85f), exactly(0xf000)], true),
+    (
+        &[
+            exactly(0xb401),
+            exactly(0x4802),
+            exactly(0x4684),
+            exactly(0xbc01),
+            exactly(0x4760),
+            exactly(0xbf00),
+        ],
+        true,
+    ),
+    (
+        &[
+            exactly(0xb401),
+            exactly(0x4802),
+            exactly(0x46fc),
+            exactly(0x4484),
+            exactly(0xbc01),
+            exactly(0x4760),
+        ],
+        true,
+    ),
+    (&[MOVW_IP, TO_IP, MOVT_IP, TO_IP, exactly(0x4760)], false),
+    (
+        &[
+            MOVW_IP,
+            TO_IP,
+            MOVT_IP,
+            TO_IP,
+            exactly(0x44fc),
+            exactly(0x4760),
+        ],
+        false,
+    ),
+    (
+        &[
+            exactly(0xb403),
+            exactly(0x4801),
+            exactly(0x9001),
+            exactly(0xbd01),
+        ],
+        true,
+    ),
+    (
+        &[
+            exactly(0xb403),
+            MOVS_R0,
+            exactly(0x0200),
+            ADDS_R0,
+            exactly(0x0200),
+            ADDS_R0,
+            exactly(0x0200),
+            ADDS_R0,
+            exactly(0x9001),
+            exactly(0xbd01),
+        ],
+        false,
+    ),
+    (
+        &[
+            exactly(0xb401),
+            exactly(0x4802),
+            exactly(0x4684),
+            exactly(0xbc01),
+            exactly(0x44e7),
+            exactly(0x46c0),
+        ],
+        true,
+    ),
+];
+
+/// 16 bits of a veneer's instructions: the bits under `mask` are `bits`.
+/// The others hold part of the target, which differs from one veneer to
+/// the next.
+#[derive(Debug, Clone, Copy)]
+struct Halfword {
+    bits: u16,
+    mask: u16,
+}
+
+/// 16 bits that are the same in every veneer.
+const fn exactly(bits: u16) -> Halfword {
+    Halfword { bits, mask: 0xffff }
+}
+
+/// The first 16 bits of `movw` and `movt`, and their second 16 bits when
+/// they write ip.
+const MOVW_IP: Halfword = Halfword {
+    bits: 0xf240,
+    mask: 0xfbf0,
+};
+const MOVT_IP: Halfword = Halfword {
+    bits: 0xf2c0,
+    mask: 0xfbf0,
+};
+const TO_IP: Halfword = Halfword {
+    bits: 0x0c00,
+    mask: 0x8f00,
+};
+
+/// `movs r0, #imm8` and `adds r0, #imm8`.
+const MOVS_R0: Halfword = Halfword {
+    bits: 0x2000,
+    mask: 0xff00,
+};
+const ADDS_R0: Halfword = Halfword {
+    bits: 0x3000,
+    mask: 0xff00,
+};
 
 /// How many bytes of padding `code` starts with.
 pub(super) fn leading_padding(code: &[u8]) -> usize {
@@ -620,12 +760,67 @@ mod tests {
     }
 
     #[test]
-    fn a_veneer_is_a_load_into_pc_and_its_constant() {
-        let veneer = [0x5f, 0xf8, 0x00, 0xf0, 0x7d, 0x08, 0x00, 0x30];
-        assert!(is_veneer(&veneer));
-        // Not the same load in a longer function, nor a b.w.
-        assert!(!is_veneer(&[&veneer[..], &[0x70, 0x47]].concat()));
+    fn veneers_are_recognized_by_their_instructions() {
+        // One of each, from the far-call fixtures.
+        let veneers: [&[u8]; 9] = [
+            // GNU ld for Cortex-M7: ldr.w pc, [pc]; .word 0x3000087d
+            &[0x5f, 0xf8, 0x00, 0xf0, 0x7d, 0x08, 0x00, 0x30],
+            // GNU ld for Cortex-M0: push {r0}; ldr r0, [pc, #8];
+            // mov ip, r0; pop {r0}; bx ip; nop; .word 0x30000069
+            &[
+                0x01, 0xb4, 0x02, 0x48, 0x84, 0x46, 0x01, 0xbc, 0x60, 0x47, 0x00, 0xbf, 0x69, 0x00,
+                0x00, 0x30,
+            ],
+            // GNU ld --pic-veneer: push {r0}; ldr r0, [pc, #8]; mov ip, pc;
+            // add ip, r0; pop {r0}; bx ip; .word 0x30000021
+            &[
+                0x01, 0xb4, 0x02, 0x48, 0xfc, 0x46, 0x84, 0x44, 0x01, 0xbc, 0x60, 0x47, 0x21, 0x00,
+                0x00, 0x30,
+            ],
+            // GNU ld -mpure-code: movw ip, #0x61; movt ip, #0x3000; bx ip
+            &[0x40, 0xf2, 0x61, 0x0c, 0xc3, 0xf2, 0x00, 0x0c, 0x60, 0x47],
+            // The same to the ROM: movw ip, #0x1; movt ip, #0x1fff; bx ip
+            &[0x40, 0xf2, 0x01, 0x0c, 0xc1, 0xf6, 0xff, 0x7c, 0x60, 0x47],
+            // LLD --pic-veneer: movw ip, #0x59; movt ip, #0x3000;
+            // add ip, pc; bx ip
+            &[
+                0x40, 0xf2, 0x59, 0x0c, 0xc3, 0xf2, 0x00, 0x0c, 0xfc, 0x44, 0x60, 0x47,
+            ],
+            // LLD for Cortex-M0: push {r0, r1}; ldr r0, [pc, #4];
+            // str r0, [sp, #4]; pop {r0, pc}; .word 0x300000f9
+            &[
+                0x03, 0xb4, 0x01, 0x48, 0x01, 0x90, 0x01, 0xbd, 0xf9, 0x00, 0x00, 0x30,
+            ],
+            // LLD for Cortex-M0 execute-only code: push {r0, r1};
+            // movs r0, #0x30; lsls r0, #8; adds r0, #0; lsls r0, #8;
+            // adds r0, #1; lsls r0, #8; adds r0, #0x3d; str r0, [sp, #4];
+            // pop {r0, pc}
+            &[
+                0x03, 0xb4, 0x30, 0x20, 0x00, 0x02, 0x00, 0x30, 0x00, 0x02, 0x01, 0x30, 0x00, 0x02,
+                0x3d, 0x30, 0x01, 0x90, 0x01, 0xbd,
+            ],
+            // LLD -pie for Cortex-M0: push {r0}; ldr r0, [pc, #8];
+            // mov ip, r0; pop {r0}; add pc, ip; nop; .word 0x300000a5
+            &[
+                0x01, 0xb4, 0x02, 0x48, 0x84, 0x46, 0x01, 0xbc, 0xe7, 0x44, 0xc0, 0x46, 0xa5, 0x00,
+                0x00, 0x30,
+            ],
+        ];
+        for veneer in veneers {
+            assert!(is_veneer(veneer), "{veneer:02x?}");
+            // Not the same code in a longer function.
+            assert!(!is_veneer(&[veneer, &[0x70, 0x47]].concat()));
+        }
+        // Nor a b.w, nor a function that a compiler made:
+        // ldr r3, [pc, #0]; bx r3; .word 0x30000069
         assert!(!is_veneer(&[0x00, 0xf0, 0x00, 0xb8]));
+        assert!(!is_veneer(&[
+            0x00, 0x4b, 0x18, 0x47, 0x69, 0x00, 0x00, 0x30
+        ]));
+        // Nor movw and movt of another register: r3, then bx r3.
+        assert!(!is_veneer(&[
+            0x40, 0xf2, 0x61, 0x03, 0xc3, 0xf2, 0x00, 0x03, 0x18, 0x47
+        ]));
     }
 
     #[test]

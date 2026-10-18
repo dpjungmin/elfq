@@ -144,8 +144,8 @@ pub fn code_size(
 
 /// Whether `code` is all of a veneer: a stub that a linker puts near a call
 /// whose target is too far away for the call instruction, and that only
-/// jumps on to the target. Only the one GNU ld adds for Thumb-2 is
-/// recognized yet.
+/// jumps on to the target. Only Thumb has them: those that GNU ld and LLD
+/// add for Cortex-M.
 pub fn is_veneer(architecture: Architecture, code: &[u8]) -> bool {
     match architecture {
         Architecture::Arm => thumb::is_veneer(code),
