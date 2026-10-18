@@ -1,18 +1,19 @@
-//! The dominator tree as `retained` and `top` show it: items with their
-//! retained sizes, functions marked when only pointers lead to them, and
-//! large trees cut down to their largest items. With `--range`, sizes count
-//! only the bytes in the range, and items that keep none of them are left
-//! out.
+//! The dominator tree as the overview, `top` and `retained` show it: items
+//! with their retained sizes, functions marked when only pointers lead to
+//! them, and large trees cut down to their largest items. With `--range`,
+//! sizes count only the bytes in the range, and items that keep none of
+//! them are left out.
 
 use std::collections::HashSet;
+use std::io::Write;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use serde::Serialize;
 
-use super::json;
-use crate::binary::{AddressRange, Binary, ItemKind};
-use crate::graph::{DominatorTree, Graph, Node, ReferenceKind};
-use crate::render::TreeRow;
+use super::{json, text};
+use crate::binary::{AddressRange, Binary, Item, ItemKind};
+use crate::graph::{DominatorTree, Graph, Node};
+use crate::render::{Align, Table, TreeRow};
 
 /// An item and everything it keeps, for `--json`.
 #[derive(Serialize)]
@@ -62,7 +63,7 @@ impl<'a> RetainedTree<'a> {
         let called = graph
             .references
             .iter()
-            .filter(|r| matches!(r.kind, ReferenceKind::Call | ReferenceKind::TailCall))
+            .filter(|r| r.kind.is_call())
             .filter_map(|r| match r.to {
                 Node::Item(index) => Some(index),
                 Node::Import(_) => None,
@@ -90,6 +91,29 @@ impl<'a> RetainedTree<'a> {
         super::total(self.tree.top().iter().map(|&node| self.tree.retained(node)))
     }
 
+    /// Explains why there are no bytes to count, if there aren't: a range
+    /// that no section is in is most likely mistyped, in some stripped files
+    /// elfq can't find the functions yet, and hand-written assembly often
+    /// leaves out the sizes.
+    pub fn check_has_bytes(&self) -> Result<()> {
+        let binary = self.binary;
+        if self.bytes() > 0 {
+            return Ok(());
+        }
+        let place = super::empty_place(binary, self.range)?;
+        let starts_in_place = |item: &&Item| {
+            self.range
+                .is_none_or(|range| range.overlap(item.address, 1) > 0)
+        };
+        if let Some(item) = binary.items.iter().find(starts_in_place) {
+            bail!(
+                "elfq doesn't know where {} ends, so it can't count the bytes in {place}",
+                item.name
+            );
+        }
+        bail!("elfq found no functions or data in {place}")
+    }
+
     /// The item's own bytes that sizes count: all of them, or those in the
     /// range.
     pub fn own(&self, index: usize) -> u64 {
@@ -101,10 +125,10 @@ impl<'a> RetainedTree<'a> {
     }
 
     /// The OWN column for an item. Outside the range it is 0.
-    pub fn own_text(&self, index: usize) -> String {
+    fn own_text(&self, index: usize) -> String {
         let item = &self.binary.items[index];
         match (self.range, self.own(index)) {
-            (None, _) => super::size_text(item),
+            (None, _) => text::size_text(item),
             (Some(_), own) if item.size_estimated && own > 0 => format!("~{own}"),
             (Some(_), own) => own.to_string(),
         }
@@ -124,10 +148,28 @@ impl<'a> RetainedTree<'a> {
 
     /// Whether `index` is a function that nothing calls directly, and so
     /// counts for whatever holds its address.
-    pub fn through_pointer(&self, index: usize) -> bool {
+    fn through_pointer(&self, index: usize) -> bool {
         self.binary.items[index].kind == ItemKind::Function
             && !self.called.contains(&index)
             && self.tree.parent(Node::Item(index)).is_some()
+    }
+
+    /// Writes the tree of the `count` items that keep the most bytes, as
+    /// `top` and the overview show it.
+    pub fn write_largest(&self, count: usize, out: &mut dyn Write) -> Result<()> {
+        let tree = &self.tree;
+        let reachable: Vec<usize> = (0..self.binary.items.len())
+            .filter(|&index| tree.is_reachable(Node::Item(index)))
+            .collect();
+        let shown = self.largest(tree.top(), &reachable, count);
+        let mut table = Table::new(&[
+            ("RETAINED", Align::Right),
+            ("OWN", Align::Right),
+            ("ITEM", Align::Left),
+        ]);
+        table.tree(&self.rows(&shown, tree.top()));
+        table.write(out)?;
+        Ok(())
     }
 
     /// The items to show of a large tree drawn from `roots`: the `count`
@@ -179,7 +221,7 @@ impl<'a> RetainedTree<'a> {
     /// The rows of the shown items in `nodes`, each with the rows of its
     /// shown children under it, and one row that sums up those not shown
     /// and what they keep.
-    pub fn rows(&self, shown: &HashSet<usize>, nodes: &[Node]) -> Vec<TreeRow> {
+    fn rows(&self, shown: &HashSet<usize>, nodes: &[Node]) -> Vec<TreeRow> {
         let (visible, hidden): (Vec<usize>, Vec<usize>) =
             self.counted(nodes).partition(|index| shown.contains(index));
         let mut rows: Vec<TreeRow> = visible

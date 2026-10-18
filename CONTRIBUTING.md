@@ -66,10 +66,10 @@ test to `tests/it/damaged.rs` that uses `parse_quickly`, which fails after
 |---|---|
 | `src/main.rs` | The program: parses arguments, runs one command on a thread with a large stack, prints errors. |
 | `src/cli.rs` | Command-line arguments, one struct per subcommand. |
-| `src/commands/` | One file per subcommand, plus `symbol.rs`, which works out what a user means by SYMBOL, `tree.rs`, which builds the trees of retained sizes that `top` and `retained` show and writes them as JSON, `json.rs`, the JSON shapes that commands share, and `edge.rs`, which `callers` and `callees` use for ranges of memory. Commands connect a question to output; they do no analysis. |
+| `src/commands/` | One file per subcommand, plus `symbol.rs`, which works out what a user means by SYMBOL, `retained_tree.rs`, which builds the trees of retained sizes that the overview, `top` and `retained` show, as a table or as JSON, `json.rs` and `text.rs`, the JSON shapes and the wording that commands share, and `ranges.rs`, which `callers` and `callees` use for ranges of memory. Commands connect a question to output; they do no analysis. |
 | `src/arch/` | Finding the addresses that machine code calls or uses, one file per instruction set (x86-64 and Thumb). |
 | `src/binary/` | Reading an ELF file: its functions and data objects ("items"), their names, imports and stored pointers. Unnamed data, such as string literals, is found from what code and pointers refer to. |
-| `src/graph/` | The reference graph that connects items, the roots where the program starts, the dominator tree that says what is exclusive to what, the shortest paths that `why` shows, and the references that cross the edge of ranges of memory. |
+| `src/graph/` | The reference graph that connects items, the roots where the program starts, the dominator tree that says what is exclusive to what, the shortest paths that `why` shows, and the references that cross the boundary of ranges of memory. |
 | `src/debuginfo/` | Reading DWARF, when the file has it: the copies of functions that the compiler inlined, for `inlined`. |
 | `src/render/` | Text output: tables, and the trees drawn in their last column (`tree.rs`), which every command draws the same way. |
 | `tests/it/` | Integration tests that run on the sample binaries, built as one test program (`main.rs` lists its modules). |

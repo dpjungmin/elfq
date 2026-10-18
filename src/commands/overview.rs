@@ -9,9 +9,9 @@ use std::path::Path;
 use anyhow::{Result, bail};
 use serde::Serialize;
 
+use super::retained_tree::RetainedTree;
 use super::symbol::Names;
-use super::tree::RetainedTree;
-use super::{json, top};
+use super::{json, text};
 use crate::arch;
 use crate::binary::{
     AddressRange, Binary, FileKind, Item, ItemKind, MemoryBlock, Source, memory_blocks,
@@ -75,17 +75,17 @@ pub fn run(
     // A stripped file may have only its entry point, of unknown size.
     let bytes = total_bytes(binary, None);
     if bytes > 0 {
-        found += &format!(", {} of code and data", super::bytes_text(bytes));
+        found += &format!(", {} of code and data", text::bytes_text(bytes));
     }
     if !binary.imports.is_empty() {
         found += &format!(
             ", plus {}",
-            super::plural(binary.imports.len(), "import", "imports")
+            text::plural(binary.imports.len(), "import", "imports")
         );
     }
     writeln!(out, "{found}")?;
     if !arch::is_supported(binary.architecture, binary.thumb) {
-        writeln!(out, "{}.", super::cannot_read_code(binary))?;
+        writeln!(out, "{}.", text::cannot_read_code(binary))?;
         return Ok(());
     }
     let graph = Graph::build(binary);
@@ -125,7 +125,7 @@ pub fn run(
     let ranges: Vec<String> = blocks
         .iter()
         .filter(|block| total_bytes(binary, Some(block.range)) > 0)
-        .map(|block| format!("--range {}", super::range_argument(block.range)))
+        .map(|block| format!("--range {}", text::range_argument(block.range)))
         .collect();
 
     // `retained` and `why` need roots, which a shared library doesn't have
@@ -133,7 +133,7 @@ pub fn run(
     let queries = Names::new(binary);
     let about = |command: &str, item: usize| {
         let symbol = queries.query_for(Node::Item(item));
-        format!("{command} {}", super::shell_quote(&symbol))
+        format!("{command} {}", text::shell_quote(&symbol))
     };
     if binary.kind == FileKind::SharedLibrary {
         let examples: Vec<String> = [
@@ -152,7 +152,7 @@ pub fn run(
     let kept = retained.kept();
     if kept > 0 {
         writeln!(out)?;
-        top::write_largest(&retained, SHOWN, out)?;
+        retained.write_largest(SHOWN, out)?;
     }
     let examples: Vec<String> = ranges
         .into_iter()
@@ -185,26 +185,26 @@ fn write_range(
         );
     }
     let retained = RetainedTree::build(binary, Some(range))?;
-    top::check_has_bytes(&retained)?;
+    retained.check_has_bytes()?;
     write_file(path, binary, out)?;
     writeln!(
         out,
         "{} in {}, {} of code and data",
         items_text(binary, Some(range)),
-        super::range_text(binary, range),
-        super::bytes_text(total_bytes(binary, Some(range)))
+        text::range_text(binary, range),
+        text::bytes_text(total_bytes(binary, Some(range)))
     )?;
     // When nothing reaches the items in the range, there is nothing to rank.
     if retained.kept() > 0 {
         writeln!(out)?;
-        top::write_largest(&retained, SHOWN, out)?;
+        retained.write_largest(SHOWN, out)?;
     }
     let queries = Names::new(binary);
     let examples: Vec<String> = [
-        Some(format!("top --range {}", super::range_argument(range))),
+        Some(format!("top --range {}", text::range_argument(range))),
         largest_kept(&retained).map(|item| {
             let symbol = queries.query_for(Node::Item(item));
-            format!("why {}", super::shell_quote(&symbol))
+            format!("why {}", text::shell_quote(&symbol))
         }),
     ]
     .into_iter()
@@ -225,7 +225,7 @@ fn write_file(path: &Path, binary: &Binary, out: &mut dyn Write) -> Result<()> {
         out,
         "{}: {} {}, {names}",
         path.display(),
-        super::architecture_name(binary.architecture),
+        text::architecture_name(binary.architecture),
         binary.kind
     )?;
     Ok(())
@@ -250,7 +250,7 @@ fn write_memory(binary: &Binary, out: &mut dyn Write) -> Result<Vec<MemoryBlock>
             .map(|&index| binary.sections[index].name.as_str())
             .collect();
         table.row(vec![
-            super::range_argument(block.range),
+            text::range_argument(block.range),
             (block.range.end - block.range.start).to_string(),
             sections.join(" "),
         ]);
@@ -270,7 +270,7 @@ fn write_json(
     let graph = (readable && range.is_none()).then(|| Graph::build(binary));
     let answer = OverviewJson {
         file: path.display().to_string(),
-        architecture: super::architecture_name(binary.architecture),
+        architecture: text::architecture_name(binary.architecture),
         kind: binary.kind.to_string(),
         has_symbols: binary.has_symbols,
         has_dwarf: binary.has_dwarf,
@@ -317,10 +317,10 @@ fn items_text(binary: &Binary, range: Option<AddressRange>) -> String {
     let data = count(binary, ItemKind::Data, range);
     let mut counts = Vec::new();
     if functions > 0 || data == 0 {
-        counts.push(super::plural(functions, "function", "functions"));
+        counts.push(text::plural(functions, "function", "functions"));
     }
     if data > 0 || functions == 0 {
-        counts.push(super::plural(data, "data object", "data objects"));
+        counts.push(text::plural(data, "data object", "data objects"));
     }
     counts.join(" and ")
 }
@@ -339,7 +339,7 @@ fn write_try(path: &Path, commands: &[String], out: &mut dyn Write) -> Result<()
     if commands.is_empty() {
         return Ok(());
     }
-    let file = super::shell_quote(&path.display().to_string());
+    let file = text::shell_quote(&path.display().to_string());
     writeln!(out)?;
     writeln!(out, "Try:")?;
     for command in commands {
@@ -357,13 +357,7 @@ fn inlined(binary: &Binary) -> Option<String> {
 /// where the program starts: a good question for `why`.
 fn largest_kept(retained: &RetainedTree) -> Option<usize> {
     let binary = retained.binary;
-    let is_root = |index| {
-        retained
-            .graph
-            .roots
-            .iter()
-            .any(|root| root.node == Node::Item(index))
-    };
+    let is_root = |index| retained.graph.root(Node::Item(index)).is_some();
     (0..binary.items.len())
         .filter(|&index| retained.tree.is_reachable(Node::Item(index)) && !is_root(index))
         .filter(|&index| retained.own(index) > 0)

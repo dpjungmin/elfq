@@ -13,21 +13,21 @@
 //! jumps it can't follow, such as a call through a function pointer, are kept
 //! in [`Graph::unresolved`] so that answers can say what they don't know.
 //!
-//! [`Edge`] tells which references cross the edge of some ranges of
-//! memory (see `edge.rs`).
+//! [`Boundary`] tells which references cross the boundary of some ranges
+//! of memory (see `boundary.rs`).
 //!
 //! [`Graph::roots`] are where the program starts running (see `roots.rs`).
 //! From them, [`DominatorTree`] works out which items are reachable only
 //! through which (see `dominators.rs`), and [`ShortestPaths`] finds the
 //! shortest chain of references to each item (see `paths.rs`).
 
+mod boundary;
 mod dominators;
-mod edge;
 mod paths;
 mod roots;
 
+pub use boundary::{Boundary, Crossing};
 pub use dominators::DominatorTree;
-pub use edge::{Crossing, Edge};
 pub use paths::ShortestPaths;
 pub use roots::{Root, RootKind};
 
@@ -70,6 +70,14 @@ pub enum ReferenceKind {
     Access,
     /// A pointer stored in data, such as an entry in a table of functions.
     Pointer,
+}
+
+impl ReferenceKind {
+    /// Whether it is a call or a tail call, rather than a use of an item's
+    /// address or bytes.
+    pub fn is_call(self) -> bool {
+        matches!(self, ReferenceKind::Call | ReferenceKind::TailCall)
+    }
 }
 
 /// A call or jump that the graph can't follow.
@@ -144,6 +152,15 @@ impl Graph {
     /// The references to `node`, sorted by the item that makes them.
     pub fn references_to(&self, node: Node) -> impl Iterator<Item = &Reference> {
         self.references.iter().filter(move |r| r.to == node)
+    }
+
+    /// Why the program starts at `node`, if it is one of the roots.
+    pub fn root(&self, node: Node) -> Option<&Root> {
+        let index = self
+            .roots
+            .binary_search_by_key(&node, |root| root.node)
+            .ok()?;
+        Some(&self.roots[index])
     }
 
     /// The calls and jumps in `item` that the graph can't follow.

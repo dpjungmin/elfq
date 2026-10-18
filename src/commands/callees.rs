@@ -1,15 +1,15 @@
 //! `elfq FILE callees SYMBOL`: what SYMBOL calls or uses. For ranges of
-//! memory in place of SYMBOL, see `edge.rs`.
+//! memory in place of SYMBOL, see `ranges.rs`.
 
 use std::io::Write;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use serde::Serialize;
 
-use super::edge::{self, Direction};
+use super::ranges::{self, Direction};
 use super::symbol::{self, Subject};
-use super::{Outcome, json};
-use crate::binary::{Binary, ItemKind};
+use super::{Outcome, json, text};
+use crate::binary::Binary;
 use crate::cli::Format;
 use crate::graph::{Graph, Node, Reference, Unresolved};
 use crate::render::{Align, Table};
@@ -45,31 +45,16 @@ pub fn run(
     super::check_code_is_readable(binary)?;
     match symbol::subject(binary, symbols)? {
         Subject::Node(node) => {
-            let index = readable_item(binary, node)?;
+            let index = super::readable_item(binary, node)?;
             let graph = Graph::build(binary);
             callees(binary, &graph, index, format, out)?;
             Ok(Outcome::Answered)
         }
         Subject::Ranges(ranges) => {
             let graph = Graph::build(binary);
-            edge::run(binary, &graph, &ranges, Direction::Out, format, out)
+            ranges::run(binary, &graph, &ranges, Direction::Out, format, out)
         }
     }
-}
-
-/// The index of `node`'s item, or why elfq can't read what it uses: it is
-/// an import, whose code is in another file, or a function whose end elfq
-/// doesn't know.
-fn readable_item(binary: &Binary, node: Node) -> Result<usize> {
-    let name = node.name(binary);
-    let Node::Item(index) = node else {
-        bail!("{name} is imported from a shared library, so its code isn't in this file");
-    };
-    let item = &binary.items[index];
-    if item.kind == ItemKind::Function && item.size == 0 {
-        bail!("elfq doesn't know where {name} ends, so it can't read its code");
-    }
-    Ok(index)
 }
 
 /// What the item at `index` calls or uses.
@@ -92,12 +77,12 @@ fn callees(
     if format == Format::Json {
         let callees = Callees {
             symbol: json::Item::new(binary, node),
-            callees: json::uses(binary, &rows(&|reference| json::how(reference.kind))),
+            callees: json::uses(binary, &rows(&|reference| json::how_field(reference.kind))),
             unresolved: unresolved
                 .iter()
                 .map(|u| UnresolvedJson {
                     site: json::address(u.site),
-                    how: super::call_or_jump(u),
+                    how: text::call_or_jump(u),
                     target: u.target.map(json::address),
                 })
                 .collect(),
@@ -105,7 +90,7 @@ fn callees(
         };
         return json::write(&callees, out);
     }
-    let rows = rows(&|reference| super::how(binary, reference.to, reference.kind));
+    let rows = rows(&|reference| text::how_column(binary, reference.to, reference.kind));
     if rows.is_empty() && unresolved.is_empty() {
         writeln!(out, "{name} doesn't call or use anything.")?;
         return Ok(());
@@ -113,7 +98,7 @@ fn callees(
 
     if !rows.is_empty() {
         let callees = super::distinct_nodes(&rows);
-        writeln!(out, "{name} uses {}:", super::count_text(binary, &callees))?;
+        writeln!(out, "{name} uses {}:", text::count_text(binary, &callees))?;
         writeln!(out)?;
         let mut table = Table::new(&[
             ("CALLEE", Align::Left),
@@ -124,7 +109,7 @@ fn callees(
             table.row(vec![
                 row.node.name(binary).to_string(),
                 row.how.to_string(),
-                super::addresses(&row.sites),
+                text::at_column(&row.sites),
             ]);
         }
         table.write(out)?;
@@ -157,7 +142,7 @@ fn unresolved_lines(name: &str, unresolved: &[Unresolved], listed: bool) -> Vec<
         if these.is_empty() {
             continue;
         }
-        let what = super::calls_and_jumps(these.iter().copied());
+        let what = text::calls_and_jumps(these.iter().copied());
         let through = match (known_target, these.len()) {
             (true, _) => "",
             (false, 1) => " through a pointer",
@@ -171,7 +156,7 @@ fn unresolved_lines(name: &str, unresolved: &[Unresolved], listed: bool) -> Vec<
         };
         lines.push(format!(
             "{start} {what}{through}, at {}, {end}.",
-            super::addresses_text(&sites)
+            text::addresses_text(&sites)
         ));
     }
     lines

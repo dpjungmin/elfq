@@ -1,25 +1,26 @@
-//! The edge of some ranges of memory, such as a microcontroller's ITCM:
-//! the references that cross it, from the items in the ranges to the rest
-//! of the file, or back.
+//! The boundary of some ranges of memory, such as a microcontroller's
+//! ITCM: the references that cross it, from the items in the ranges to the
+//! rest of the file, or back. Help for `callers` and `callees` calls it the
+//! ranges' edge, but in a graph an edge is a reference.
 //!
 //! An item is in the ranges when any of its bytes are, and an import never
-//! is. A reference crosses the edge when one end is in the ranges and the
-//! other isn't, such as a function in ITCM that calls one in flash.
+//! is. A reference crosses the boundary when one end is in the ranges and
+//! the other isn't, such as a function in ITCM that calls one in flash.
 //!
 //! When a call is too far for the call instruction, the linker adds a
 //! veneer, which jumps on to the target. A call through a veneer crosses
-//! the edge either at the call or at the veneer's jump, and either way it
-//! is reported as a call to the target from the code someone wrote, at the
-//! call to the veneer, with the veneer beside it. Only when the caller and
-//! the target are on one side and the veneer is on the other do both hops
-//! cross; then each is reported as it is.
+//! the boundary either at the call or at the veneer's jump, and either way
+//! it is reported as a call to the target from the code someone wrote, at
+//! the call to the veneer, with the veneer beside it. Only when the caller
+//! and the target are on one side and the veneer is on the other do both
+//! hops cross; then each is reported as it is.
 
 use crate::arch;
 use crate::binary::{AddressRange, Binary, ItemKind};
 
 use super::{Graph, Node, Reference, ReferenceKind, RootKind, Unresolved};
 
-/// One use across the edge: `from` uses `to`, directly or through a
+/// One use across the boundary: `from` uses `to`, directly or through a
 /// veneer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Crossing {
@@ -38,8 +39,8 @@ pub struct Crossing {
     pub veneer: Option<usize>,
 }
 
-/// The edge of some ranges of memory.
-pub struct Edge<'a> {
+/// The boundary of some ranges of memory.
+pub struct Boundary<'a> {
     binary: &'a Binary,
     graph: &'a Graph,
     ranges: &'a [AddressRange],
@@ -47,8 +48,8 @@ pub struct Edge<'a> {
     inside: Vec<bool>,
 }
 
-impl<'a> Edge<'a> {
-    pub fn new(binary: &'a Binary, graph: &'a Graph, ranges: &'a [AddressRange]) -> Edge<'a> {
+impl<'a> Boundary<'a> {
+    pub fn new(binary: &'a Binary, graph: &'a Graph, ranges: &'a [AddressRange]) -> Boundary<'a> {
         let inside = binary
             .items
             .iter()
@@ -58,7 +59,7 @@ impl<'a> Edge<'a> {
                     .any(|range| range.overlap(item.address, item.size.max(1)) > 0)
             })
             .collect();
-        Edge {
+        Boundary {
             binary,
             graph,
             ranges,
@@ -153,7 +154,7 @@ impl<'a> Edge<'a> {
         }
     }
 
-    /// The uses across the edge by the items on one side of it: the items
+    /// The uses across the boundary by the items on one side of it: the items
     /// in the ranges when `from_inside`, or else the rest.
     fn crossings(&self, from_inside: bool) -> Vec<Crossing> {
         let mut crossings = Vec::new();
@@ -177,7 +178,7 @@ impl<'a> Edge<'a> {
                 for call in calls {
                     crossings.push(crossing(call, Some(reference.from), reference.to));
                 }
-            } else if is_call(reference)
+            } else if reference.kind.is_call()
                 && let Node::Item(veneer) = reference.to
                 && let Some(target) = self.veneer_target(veneer)
                 && self.contains(target) != from_inside
@@ -193,7 +194,7 @@ impl<'a> Edge<'a> {
     }
 
     /// When `item` is a veneer, the calls to it from its own side of the
-    /// edge, which take the place of its jump to the other side. Otherwise,
+    /// boundary, which take the place of its jump to the other side. Otherwise,
     /// or when nothing on its side calls it, nothing.
     fn calls_from_its_side(&self, item: usize) -> Vec<&'a Reference> {
         if self.veneer_target(item).is_none() {
@@ -202,7 +203,7 @@ impl<'a> Edge<'a> {
         let side = self.inside[item];
         self.graph
             .references_to(Node::Item(item))
-            .filter(|reference| is_call(reference) && self.inside[reference.from] == side)
+            .filter(|reference| reference.kind.is_call() && self.inside[reference.from] == side)
             .collect()
     }
 
@@ -219,13 +220,6 @@ impl<'a> Edge<'a> {
             _ => None,
         }
     }
-}
-
-fn is_call(reference: &Reference) -> bool {
-    matches!(
-        reference.kind,
-        ReferenceKind::Call | ReferenceKind::TailCall
-    )
 }
 
 #[cfg(test)]
@@ -282,9 +276,9 @@ mod tests {
         let (binary, graph) = sample();
         // The veneers are in ITCM, so the call crosses at their jumps.
         let ranges = [range("0x0+256K"), range("0x20000000+256K")];
-        let edge = Edge::new(&binary, &graph, &ranges);
+        let boundary = Boundary::new(&binary, &graph, &ranges);
         assert_eq!(
-            names(&binary, &edge.leaving()),
+            names(&binary, &boundary.leaving()),
             [
                 crossing("SysTick_Handler", "app_tick", "__app_tick_veneer"),
                 crossing("apply_filter", "memcpy", "__memcpy_veneer"),
@@ -293,9 +287,9 @@ mod tests {
         );
         // Without them, the call crosses at the call to the veneer.
         let ranges = [range("0x0..0xd0"), range("0x20000000+256K")];
-        let edge = Edge::new(&binary, &graph, &ranges);
+        let boundary = Boundary::new(&binary, &graph, &ranges);
         assert_eq!(
-            names(&binary, &edge.leaving()),
+            names(&binary, &boundary.leaving()),
             [
                 crossing("SysTick_Handler", "app_tick", "__app_tick_veneer"),
                 crossing("apply_filter", "memcpy", "__memcpy_veneer"),
@@ -305,16 +299,16 @@ mod tests {
         // The veneers alone: the caller and the target are both outside,
         // so both hops cross.
         let ranges = [range("0xd0..0xe0")];
-        let edge = Edge::new(&binary, &graph, &ranges);
+        let boundary = Boundary::new(&binary, &graph, &ranges);
         assert_eq!(
-            names(&binary, &edge.leaving()),
+            names(&binary, &boundary.leaving()),
             [
                 crossing("__app_tick_veneer", "app_tick", ""),
                 crossing("__memcpy_veneer", "memcpy", ""),
             ]
         );
         assert_eq!(
-            names(&binary, &edge.entering()),
+            names(&binary, &boundary.entering()),
             [
                 crossing("SysTick_Handler", "__app_tick_veneer", ""),
                 crossing("apply_filter", "__memcpy_veneer", ""),
@@ -330,11 +324,15 @@ mod tests {
         let start = graph.references.partition_point(|r| r.from < veneer);
         graph.references[start].kind = ReferenceKind::Call;
         let ranges = [range("0x0+256K"), range("0x20000000+256K")];
-        let edge = Edge::new(&binary, &graph, &ranges);
+        let boundary = Boundary::new(&binary, &graph, &ranges);
         assert!(
-            names(&binary, &edge.leaving()).contains(&crossing("__memcpy_veneer", "memcpy", "")),
+            names(&binary, &boundary.leaving()).contains(&crossing(
+                "__memcpy_veneer",
+                "memcpy",
+                ""
+            )),
             "{:?}",
-            edge.leaving()
+            boundary.leaving()
         );
         // Nor is a function a veneer when it only makes one tail call, but
         // its code isn't a veneer's.
@@ -342,9 +340,9 @@ mod tests {
         graph
             .references
             .retain(|r| r.from != handler || r.kind == ReferenceKind::TailCall);
-        let edge = Edge::new(&binary, &graph, &ranges);
+        let boundary = Boundary::new(&binary, &graph, &ranges);
         assert_eq!(graph.references_from(handler).len(), 1);
-        assert_eq!(edge.veneer_target(handler), None);
+        assert_eq!(boundary.veneer_target(handler), None);
     }
 
     #[test]
@@ -363,14 +361,14 @@ mod tests {
             unresolved(Some(0x1fff_0000)),
         ];
         let ranges = [range("0x0+256K")];
-        let edge = Edge::new(&binary, &graph, &ranges);
-        let targets: Vec<Option<u64>> = edge.unfollowed().iter().map(|u| u.target).collect();
+        let boundary = Boundary::new(&binary, &graph, &ranges);
+        let targets: Vec<Option<u64>> = boundary.unfollowed().iter().map(|u| u.target).collect();
         assert_eq!(targets, [None, Some(0x1fff_0000)]);
         // A call through a pointer from flash, outside the range, isn't
         // one.
         graph.unresolved[0].from = index(&binary, "process_frame");
-        let edge = Edge::new(&binary, &graph, &ranges);
-        let targets: Vec<Option<u64>> = edge.unfollowed().iter().map(|u| u.target).collect();
+        let boundary = Boundary::new(&binary, &graph, &ranges);
+        let targets: Vec<Option<u64>> = boundary.unfollowed().iter().map(|u| u.target).collect();
         assert_eq!(targets, [Some(0x1fff_0000)]);
     }
 
@@ -380,8 +378,8 @@ mod tests {
         // SysTick_Handler is at 0x0, and only the vector table holds its
         // address.
         let ranges = [range("0x0+0x10")];
-        let edge = Edge::new(&binary, &graph, &ranges);
-        assert!(edge.callable_through_pointer().is_empty());
+        let boundary = Boundary::new(&binary, &graph, &ranges);
+        assert!(boundary.callable_through_pointer().is_empty());
         // Code that takes its address can pass it on.
         let handler = index(&binary, "SysTick_Handler");
         let start = graph
@@ -393,8 +391,8 @@ mod tests {
             kind: ReferenceKind::Address,
             site: graph.references[start].site,
         };
-        let edge = Edge::new(&binary, &graph, &ranges);
-        assert_eq!(edge.callable_through_pointer(), [handler]);
+        let boundary = Boundary::new(&binary, &graph, &ranges);
+        assert_eq!(boundary.callable_through_pointer(), [handler]);
         // So can data that holds it, other than the vector table.
         let (binary, mut graph) = sample();
         let handlers = index(&binary, "handlers");
@@ -405,7 +403,7 @@ mod tests {
             site: binary.items[handlers].address,
         });
         graph.references.sort_by_key(|r| (r.from, r.site));
-        let edge = Edge::new(&binary, &graph, &ranges);
-        assert_eq!(edge.callable_through_pointer(), [handler]);
+        let boundary = Boundary::new(&binary, &graph, &ranges);
+        assert_eq!(boundary.callable_through_pointer(), [handler]);
     }
 }

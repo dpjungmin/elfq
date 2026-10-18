@@ -12,12 +12,11 @@ use std::io::Write;
 use anyhow::{Result, bail};
 use serde::Serialize;
 
-use super::json;
-use super::tree::{KeptItem, RetainedTree};
-use crate::binary::{AddressRange, Binary, FileKind, Item};
+use super::retained_tree::{KeptItem, RetainedTree};
+use super::{json, text};
+use crate::binary::{AddressRange, Binary, FileKind};
 use crate::cli::Format;
 use crate::graph::Node;
-use crate::render::{Align, Table};
 
 #[derive(Serialize)]
 struct TopJson<'a> {
@@ -47,7 +46,7 @@ pub fn run(
         );
     }
     let retained = RetainedTree::build(binary, range)?;
-    check_has_bytes(&retained)?;
+    retained.check_has_bytes()?;
     if format == Format::Json {
         let answer = TopJson {
             range: range.map(json::Range::new),
@@ -64,17 +63,17 @@ pub fn run(
     // reaches is the whole answer.
     let kept = retained.kept() > 0;
     if kept {
-        let total = super::bytes_text(retained.bytes());
+        let total = text::bytes_text(retained.bytes());
         match range {
             Some(range) => writeln!(
                 out,
                 "{total} of code and data in {}, by what keeps them:",
-                super::range_text(binary, range)
+                text::range_text(binary, range)
             )?,
             None => writeln!(out, "{total} of code and data, by what keeps them:")?,
         }
         writeln!(out)?;
-        write_largest(&retained, super::shown(all), out)?;
+        retained.write_largest(text::shown(all), out)?;
     }
     if let Some(unreachable) = unreachable_text(&retained) {
         if kept {
@@ -82,52 +81,6 @@ pub fn run(
         }
         writeln!(out, "{unreachable}")?;
     }
-    Ok(())
-}
-
-/// Explains why there are no bytes to count, if there aren't: a range that
-/// no section is in is most likely mistyped, in some stripped files elfq
-/// can't find the functions yet, and hand-written assembly often leaves out
-/// the sizes.
-pub(super) fn check_has_bytes(retained: &RetainedTree) -> Result<()> {
-    let binary = retained.binary;
-    if retained.bytes() > 0 {
-        return Ok(());
-    }
-    let place = super::empty_place(binary, retained.range)?;
-    let starts_in_place = |item: &&Item| {
-        retained
-            .range
-            .is_none_or(|range| range.overlap(item.address, 1) > 0)
-    };
-    if let Some(item) = binary.items.iter().find(starts_in_place) {
-        bail!(
-            "elfq doesn't know where {} ends, so it can't count the bytes in {place}",
-            item.name
-        );
-    }
-    bail!("elfq found no functions or data in {place}")
-}
-
-/// Writes the tree of the `count` items that keep the most bytes.
-pub(super) fn write_largest(
-    retained: &RetainedTree,
-    count: usize,
-    out: &mut dyn Write,
-) -> Result<()> {
-    let binary = retained.binary;
-    let tree = &retained.tree;
-    let reachable: Vec<usize> = (0..binary.items.len())
-        .filter(|&index| tree.is_reachable(Node::Item(index)))
-        .collect();
-    let shown = retained.largest(tree.top(), &reachable, count);
-    let mut table = Table::new(&[
-        ("RETAINED", Align::Right),
-        ("OWN", Align::Right),
-        ("ITEM", Align::Left),
-    ]);
-    table.tree(&retained.rows(&shown, tree.top()));
-    table.write(out)?;
     Ok(())
 }
 
@@ -158,14 +111,14 @@ fn unreachable_text(retained: &RetainedTree) -> Option<String> {
     if let [name] = names[..] {
         return Some(format!(
             "Nothing reaches {name}, {}: it is dead code, or used in a way elfq can't see.",
-            super::bytes_text(bytes)
+            text::bytes_text(bytes)
         ));
     }
     let nodes: Vec<Node> = unreachable.iter().map(|&index| Node::Item(index)).collect();
     Some(format!(
         "Nothing reaches {}, {} in all: {}. They are dead code, or used in a way elfq can't see.",
-        super::count_text(binary, &nodes),
-        super::bytes_text(bytes),
-        super::names_text(&names)
+        text::count_text(binary, &nodes),
+        text::bytes_text(bytes),
+        text::names_text(&names)
     ))
 }

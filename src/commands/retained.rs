@@ -11,9 +11,9 @@ use std::io::Write;
 use anyhow::{Result, bail};
 use serde::Serialize;
 
-use super::json;
-use super::tree::{KeptItem, RetainedTree};
-use crate::binary::{AddressRange, Binary, FileKind, ItemKind};
+use super::retained_tree::{KeptItem, RetainedTree};
+use super::{json, text};
+use crate::binary::{AddressRange, Binary, FileKind};
 use crate::cli::Format;
 use crate::graph::{Node, Unresolved};
 use crate::render::{Align, Table};
@@ -49,23 +49,21 @@ pub fn run(
     format: Format,
     out: &mut dyn Write,
 ) -> Result<()> {
-    let exclusive = Exclusive::find(binary, symbol, range)?;
+    let symbol = SymbolInTree::find(binary, symbol, range)?;
     if format == Format::Json {
-        return write_json(&exclusive, out);
+        return write_json(&symbol, out);
     }
-    if !exclusive.is_reachable() {
-        return exclusive.write_unreachable(out);
+    if !symbol.is_reachable() {
+        return symbol.write_unreachable(out);
     }
-    let node = exclusive.node;
-    let Node::Item(index) = node else {
-        unreachable!("Exclusive::find rejects imports");
-    };
+    let node = symbol.node();
+    let index = symbol.index;
     let name = node.name(binary);
-    let retained = &exclusive.retained;
-    let items = exclusive.counted_items();
+    let retained = &symbol.retained;
+    let items = symbol.counted_items();
     let own = retained.own(index);
-    let own_bytes = super::bytes_text(own);
-    let range = range.map(|range| super::range_text(binary, range));
+    let own_bytes = text::bytes_text(own);
+    let range = range.map(|range| text::range_text(binary, range));
     if items.is_empty() {
         match &range {
             Some(range) if own == 0 => writeln!(
@@ -81,8 +79,8 @@ pub fn run(
                 "Removing {name} would save its own {own_bytes}, and nothing else."
             )?,
         }
-        write_shared(&exclusive, out)?;
-        return exclusive.write_indirect_note(out);
+        write_shared(&symbol, out)?;
+        return symbol.write_indirect_note(out);
     }
     let in_range = range
         .map(|range| format!(" in {range}"))
@@ -90,10 +88,10 @@ pub fn run(
     writeln!(
         out,
         "Removing {name} would save {}{in_range}:",
-        super::bytes_text(retained.retained(index))
+        text::bytes_text(retained.retained(index))
     )?;
     writeln!(out)?;
-    let shown = retained.largest(&[node], &items, super::shown(all));
+    let shown = retained.largest(&[node], &items, text::shown(all));
     let mut table = Table::new(&[
         ("RETAINED", Align::Right),
         ("OWN", Align::Right),
@@ -101,17 +99,17 @@ pub fn run(
     ]);
     table.tree(&[retained.tree_row(&shown, index)]);
     table.write(out)?;
-    write_shared(&exclusive, out)?;
-    exclusive.write_indirect_note(out)
+    write_shared(&symbol, out)?;
+    symbol.write_indirect_note(out)
 }
 
-fn write_json(exclusive: &Exclusive, out: &mut dyn Write) -> Result<()> {
-    let retained = &exclusive.retained;
+fn write_json(symbol: &SymbolInTree, out: &mut dyn Write) -> Result<()> {
+    let retained = &symbol.retained;
     let binary = retained.binary;
-    let node = exclusive.node;
-    let reachable = exclusive.is_reachable();
+    let node = symbol.node();
+    let reachable = symbol.is_reachable();
     let shares = if reachable {
-        shared(exclusive)
+        shared(symbol)
     } else {
         Vec::new()
     };
@@ -125,32 +123,32 @@ fn write_json(exclusive: &Exclusive, out: &mut dyn Write) -> Result<()> {
             .into_iter()
             .map(|node| json::Item::new(binary, node))
             .collect(),
-        indirect_calls: exclusive.indirect_calls().len(),
+        indirect_calls: symbol.indirect_calls().len(),
     };
     json::write(&answer, out)
 }
 
 /// What SYMBOL's code uses that other code uses too, and so isn't counted,
 /// sorted by name. With a range, only items with bytes in it.
-fn shared(exclusive: &Exclusive) -> Vec<Node> {
-    let binary = exclusive.retained.binary;
-    let mut kept: HashSet<Node> = exclusive
+fn shared(symbol: &SymbolInTree) -> Vec<Node> {
+    let binary = symbol.retained.binary;
+    let mut kept: HashSet<Node> = symbol
         .retained
         .tree
-        .exclusive(exclusive.node)
+        .exclusive(symbol.node())
         .into_iter()
         .collect();
-    kept.insert(exclusive.node);
-    let mut shared: Vec<Node> = exclusive
+    kept.insert(symbol.node());
+    let mut shared: Vec<Node> = symbol
         .retained
         .graph
         .references
         .iter()
         .filter(|r| kept.contains(&Node::Item(r.from)) && !kept.contains(&r.to))
         .map(|r| r.to)
-        .filter(|&node| match (exclusive.retained.range, node) {
+        .filter(|&node| match (symbol.retained.range, node) {
             (None, _) => true,
-            (Some(_), Node::Item(index)) => exclusive.retained.own(index) > 0,
+            (Some(_), Node::Item(index)) => symbol.retained.own(index) > 0,
             (Some(_), Node::Import(_)) => false,
         })
         .collect();
@@ -161,10 +159,10 @@ fn shared(exclusive: &Exclusive) -> Vec<Node> {
 
 /// Names what SYMBOL's code uses that other code uses too, and so isn't
 /// counted.
-fn write_shared(exclusive: &Exclusive, out: &mut dyn Write) -> Result<()> {
+fn write_shared(symbol: &SymbolInTree, out: &mut dyn Write) -> Result<()> {
     const NAMED: usize = 10;
-    let binary = exclusive.retained.binary;
-    let mut shared: Vec<&str> = shared(exclusive)
+    let binary = symbol.retained.binary;
+    let mut shared: Vec<&str> = shared(symbol)
         .into_iter()
         .map(|node| node.name(binary))
         .collect();
@@ -172,7 +170,7 @@ fn write_shared(exclusive: &Exclusive, out: &mut dyn Write) -> Result<()> {
     if shared.is_empty() {
         return Ok(());
     }
-    let named = super::shown_count(shared.len(), NAMED);
+    let named = text::shown_count(shared.len(), NAMED);
     let mut names = shared[..named].join(", ");
     if named < shared.len() {
         names += &format!(" and {} more", shared.len() - named);
@@ -182,31 +180,26 @@ fn write_shared(exclusive: &Exclusive, out: &mut dyn Write) -> Result<()> {
     Ok(())
 }
 
-/// SYMBOL's item, in the dominator tree that says what is exclusive to it.
-struct Exclusive<'a> {
+/// SYMBOL's item, in the tree of retained sizes that says what only it
+/// leads to.
+struct SymbolInTree<'a> {
     retained: RetainedTree<'a>,
-    /// SYMBOL's item.
-    node: Node,
+    /// SYMBOL's item, as an index into [`Binary::items`].
+    index: usize,
 }
 
-impl<'a> Exclusive<'a> {
+impl<'a> SymbolInTree<'a> {
     /// Finds SYMBOL's item and what is exclusive to it, counting only the
     /// bytes in `range`, if there is one.
     fn find(
         binary: &'a Binary,
         symbol: &str,
         range: Option<AddressRange>,
-    ) -> Result<Exclusive<'a>> {
+    ) -> Result<SymbolInTree<'a>> {
         super::check_code_is_readable(binary)?;
         let node = super::symbol::find(binary, symbol)?;
+        let index = super::readable_item(binary, node)?;
         let name = node.name(binary);
-        let Node::Item(index) = node else {
-            bail!("{name} is imported from a shared library, so its code isn't in this file");
-        };
-        let item = &binary.items[index];
-        if item.kind == ItemKind::Function && item.size == 0 {
-            bail!("elfq doesn't know where {name} ends, so it can't read its code");
-        }
         if binary.kind == FileKind::SharedLibrary {
             bail!(
                 "elfq doesn't know yet which functions a shared library offers to other files, \
@@ -214,12 +207,17 @@ impl<'a> Exclusive<'a> {
             );
         }
         let retained = RetainedTree::build(binary, range)?;
-        Ok(Exclusive { retained, node })
+        Ok(SymbolInTree { retained, index })
+    }
+
+    /// SYMBOL's item, as a node of the graph.
+    fn node(&self) -> Node {
+        Node::Item(self.index)
     }
 
     /// Whether anything reaches SYMBOL from where the program starts.
     fn is_reachable(&self) -> bool {
-        self.retained.tree.is_reachable(self.node)
+        self.retained.tree.is_reachable(self.node())
     }
 
     /// Says that nothing reaches SYMBOL, so it is dead code, or used in a way
@@ -228,7 +226,7 @@ impl<'a> Exclusive<'a> {
         writeln!(
             out,
             "{}",
-            super::nothing_reaches(self.node.name(self.retained.binary))
+            text::nothing_reaches(self.node().name(self.retained.binary))
         )?;
         Ok(())
     }
@@ -236,11 +234,8 @@ impl<'a> Exclusive<'a> {
     /// The calls and jumps through pointers set at run time in SYMBOL and
     /// the items exclusive to it.
     fn indirect_calls(&self) -> Vec<Unresolved> {
-        let Node::Item(index) = self.node else {
-            return Vec::new();
-        };
         let graph = &self.retained.graph;
-        std::iter::once(index)
+        std::iter::once(self.index)
             .chain(self.items())
             .flat_map(|item| graph.unresolved_in(item))
             .filter(|unresolved| unresolved.is_indirect())
@@ -255,9 +250,9 @@ impl<'a> Exclusive<'a> {
         if indirect.is_empty() {
             return Ok(());
         }
-        let name = self.node.name(self.retained.binary);
-        let in_symbol = indirect.iter().any(|u| Node::Item(u.from) == self.node);
-        let in_items = indirect.iter().any(|u| Node::Item(u.from) != self.node);
+        let name = self.node().name(self.retained.binary);
+        let in_symbol = indirect.iter().any(|u| u.from == self.index);
+        let in_items = indirect.iter().any(|u| u.from != self.index);
         let calls = indirect.iter().any(|u| u.is_call);
         let jumps = indirect.iter().any(|u| !u.is_call);
         // The verb after one subject, and after two.
@@ -300,7 +295,7 @@ impl<'a> Exclusive<'a> {
     fn items(&self) -> Vec<usize> {
         self.retained
             .tree
-            .exclusive(self.node)
+            .exclusive(self.node())
             .into_iter()
             .filter_map(|node| match node {
                 Node::Item(index) => Some(index),

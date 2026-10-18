@@ -11,7 +11,7 @@ use anyhow::Result;
 use serde::Serialize;
 
 use crate::binary::{AddressRange, Binary, MemoryBlock};
-use crate::graph::{Node, ReferenceKind};
+use crate::graph::{Node, ReferenceKind, RootKind};
 
 /// Writes `value` as indented JSON.
 pub(super) fn write(value: &impl Serialize, out: &mut dyn Write) -> Result<()> {
@@ -65,7 +65,7 @@ impl<'a> Item<'a> {
 pub(super) struct Use<'a> {
     /// The item on the other end: the caller, or the callee.
     pub item: Item<'a>,
-    /// The [kind of reference](how).
+    /// The [kind of reference](how_field).
     pub how: &'static str,
     /// The addresses of the instructions or pointers.
     pub sites: Vec<String>,
@@ -76,21 +76,37 @@ pub(super) fn uses<'a>(binary: &'a Binary, rows: &[super::Row]) -> Vec<Use<'a>> 
         .map(|row| Use {
             item: Item::new(binary, row.node),
             how: row.how,
-            sites: row.sites.iter().map(|&site| address(site)).collect(),
+            sites: addresses(&row.sites),
         })
         .collect()
 }
 
-/// A kind of reference in words: `call`, `tail call`, `address taken`,
-/// `access` or `pointer`. Unlike the HOW column, which says "uses" for
-/// both, JSON tells reading or writing data from loading its address.
-pub(super) fn how(kind: ReferenceKind) -> &'static str {
+/// A kind of reference in words, for the `how` fields of JSON: `call`,
+/// `tail call`, `address taken`, `access` or `pointer`. Unlike the HOW
+/// column, which says "uses" for both, JSON tells reading or writing data
+/// from loading its address.
+pub(super) fn how_field(kind: ReferenceKind) -> &'static str {
     match kind {
         ReferenceKind::Call => "call",
         ReferenceKind::TailCall => "tail call",
         ReferenceKind::Address => "address taken",
         ReferenceKind::Access => "access",
         ReferenceKind::Pointer => "pointer",
+    }
+}
+
+/// Why a root is one, for the `root` field of `why`'s JSON and the first
+/// step of each chain, in the words the HOW column used before it was
+/// shortened, since scripts may count on them.
+pub(super) fn root_field(binary: &Binary, kind: RootKind) -> String {
+    match kind {
+        RootKind::Entry => "entry point".to_string(),
+        RootKind::InSection(section) => format!("in {}", binary.sections[section].name),
+        RootKind::ListedIn(section) => format!("listed in {}", binary.sections[section].name),
+        RootKind::PltHeader => "used by the dynamic loader".to_string(),
+        RootKind::Personality => "used by the unwinder".to_string(),
+        RootKind::VectorTable => "vector table".to_string(),
+        RootKind::Handler => "listed in the vector table".to_string(),
     }
 }
 
@@ -136,4 +152,8 @@ impl<'a> Block<'a> {
 
 pub(super) fn address(address: u64) -> String {
     format!("{address:#x}")
+}
+
+pub(super) fn addresses(addresses: &[u64]) -> Vec<String> {
+    addresses.iter().map(|&a| address(a)).collect()
 }

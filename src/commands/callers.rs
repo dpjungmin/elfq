@@ -1,14 +1,14 @@
 //! `elfq FILE callers SYMBOL`: what calls or uses SYMBOL. For ranges of
-//! memory in place of SYMBOL, see `edge.rs`.
+//! memory in place of SYMBOL, see `ranges.rs`.
 
 use std::io::Write;
 
 use anyhow::Result;
 use serde::Serialize;
 
-use super::edge::{self, Direction};
+use super::ranges::{self, Direction};
 use super::symbol::{self, Subject};
-use super::{Outcome, json};
+use super::{Outcome, json, text};
 use crate::binary::{Binary, ItemKind};
 use crate::cli::Format;
 use crate::graph::{Graph, Node, Reference, ReferenceKind};
@@ -38,7 +38,7 @@ pub fn run(
             callers(binary, &graph, node, format, out)?;
             Ok(Outcome::Answered)
         }
-        Subject::Ranges(ranges) => edge::run(binary, &graph, &ranges, Direction::In, format, out),
+        Subject::Ranges(ranges) => ranges::run(binary, &graph, &ranges, Direction::In, format, out),
     }
 }
 
@@ -83,21 +83,19 @@ fn callers(
     if format == Format::Json {
         let callers = Callers {
             symbol: json::Item::new(binary, node),
-            callers: json::uses(binary, &rows(&|reference| json::how(reference.kind))),
+            callers: json::uses(binary, &rows(&|reference| json::how_field(reference.kind))),
             complete: !through_pointer,
         };
         return json::write(&callers, out);
     }
-    let rows = rows(&|reference| super::how(binary, reference.to, reference.kind));
+    let rows = rows(&|reference| text::how_column(binary, reference.to, reference.kind));
     let mut notes = Vec::new();
     // A function's stubs all have its name, as `log_msg@plt`: glibc's
     // `libc.so.6` has two for `wmemset`. Code that only takes a stub's
     // address, as for an ifunc, takes the function's, so that needs no note.
-    let called_stub = stubs.iter().find(|&&stub| {
-        references.iter().any(|r| {
-            r.to == stub && matches!(r.kind, ReferenceKind::Call | ReferenceKind::TailCall)
-        })
-    });
+    let called_stub = stubs
+        .iter()
+        .find(|&&stub| references.iter().any(|r| r.to == stub && r.kind.is_call()));
     if let Some(stub) = called_stub {
         notes.push(format!(
             "This includes calls through {}.",
@@ -106,9 +104,8 @@ fn callers(
     }
     // Some calls can't be listed: the system's, to where the program starts,
     // and those through a pointer.
-    let root = graph.roots.iter().find(|root| root.node == node);
-    match root {
-        Some(root) => notes.push(super::why::root_sentence(binary, root)),
+    match graph.root(node) {
+        Some(root) => notes.push(text::root_sentence(binary, root)),
         None if through_pointer => notes.push(format!(
             "Calls to {name} through a pointer aren't listed, since elfq can't see them."
         )),
@@ -126,7 +123,7 @@ fn callers(
     writeln!(
         out,
         "{name} is used by {}:",
-        super::count_text(binary, &callers)
+        text::count_text(binary, &callers)
     )?;
     writeln!(out)?;
     let mut table = Table::new(&[
@@ -138,7 +135,7 @@ fn callers(
         table.row(vec![
             row.node.name(binary).to_string(),
             row.how.to_string(),
-            super::addresses(&row.sites),
+            text::at_column(&row.sites),
         ]);
     }
     table.write(out)?;

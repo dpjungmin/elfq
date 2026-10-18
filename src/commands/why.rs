@@ -11,10 +11,10 @@ use std::io::Write;
 use anyhow::{Result, bail};
 use serde::Serialize;
 
-use super::json;
+use super::{json, text};
 use crate::binary::{Binary, FileKind};
 use crate::cli::Format;
-use crate::graph::{DominatorTree, Graph, Node, Reference, Root, RootKind, ShortestPaths};
+use crate::graph::{DominatorTree, Graph, Node, Reference, Root, ShortestPaths};
 use crate::render::{Align, Table, TreeRow};
 
 /// How many items that keep SYMBOL get their chain shown, at most.
@@ -26,7 +26,7 @@ struct WhyJson<'a> {
     /// Whether anything reaches SYMBOL from where the program starts.
     reachable: bool,
     /// Why SYMBOL is itself where the program starts, in the words of
-    /// [`root_json`], such as `entry point` or `listed in the vector
+    /// [`json::root_field`], such as `entry point` or `listed in the vector
     /// table`, or `null` when it isn't. When it is, nothing else needs to
     /// keep it, and `chains` is empty.
     root: Option<String>,
@@ -46,7 +46,7 @@ struct Step<'a> {
     item: json::Item<'a>,
     /// For the first item, why the program starts there, such as `entry
     /// point`; for the others, how the item before uses this one, in the
-    /// words of [`json::how`], such as `call` or `call, address taken`.
+    /// words of [`json::how_field`], such as `call` or `call, address taken`.
     how: String,
 }
 
@@ -61,19 +61,19 @@ pub fn run(binary: &Binary, symbol: &str, format: Format, out: &mut dyn Write) -
         );
     }
     let graph = Graph::build(binary);
-    if let Some(root) = graph.roots.iter().find(|root| root.node == node) {
+    if let Some(root) = graph.root(node) {
         if format == Format::Json {
             let answer = WhyJson {
                 symbol: json::Item::new(binary, node),
                 reachable: true,
-                root: Some(root_json(binary, root.kind)),
+                root: Some(json::root_field(binary, root.kind)),
                 chains: Vec::new(),
                 unreachable_users: Vec::new(),
                 on_every_chain: None,
             };
             return json::write(&answer, out);
         }
-        writeln!(out, "{}", root_sentence(binary, root))?;
+        writeln!(out, "{}", text::root_sentence(binary, root))?;
         return Ok(());
     }
 
@@ -150,7 +150,7 @@ pub fn run(binary: &Binary, symbol: &str, format: Format, out: &mut dyn Write) -
         writeln!(
             out,
             "{} {verb} {name} too, but nothing reaches {pronoun}.",
-            super::names_text(&unreachable),
+            text::names_text(&unreachable),
         )?;
     }
     if !behind.is_empty() {
@@ -159,7 +159,7 @@ pub fn run(binary: &Binary, symbol: &str, format: Format, out: &mut dyn Write) -
         writeln!(
             out,
             "{} {verb} {name} too, but only {name} leads to {pronoun}.",
-            super::names_text(&behind),
+            text::names_text(&behind),
         )?;
     }
     writeln!(out)?;
@@ -177,7 +177,7 @@ pub fn run(binary: &Binary, symbol: &str, format: Format, out: &mut dyn Write) -
 /// The shortest chain from where the program starts, through `user`, to
 /// SYMBOL, for `--json`: each item on it, with how the one before uses it,
 /// or for the first, why the program starts there, in JSON's words
-/// ([`json::how`] and [`root_json`]).
+/// ([`json::how_field`] and [`json::root_field`]).
 fn chain(
     binary: &Binary,
     graph: &Graph,
@@ -187,12 +187,13 @@ fn chain(
 ) -> Vec<(Node, String)> {
     let path = paths.path_to(user).unwrap_or_default();
     let start = path.first().map_or(user, |r| Node::Item(r.from));
-    let root = graph.roots.iter().find(|root| root.node == start);
+    let root = graph.root(start);
     let mut chain = vec![(
         start,
-        root.map_or(String::new(), |root| root_json(binary, root.kind)),
+        root.map_or(String::new(), |root| json::root_field(binary, root.kind)),
     )];
-    let json_how = |from: Node, to: Node| how(graph, from, to, |r| json::how(r.kind));
+    let json_how =
+        |from: Node, to: Node| hows_between(graph, from, to, |r| json::how_field(r.kind));
     for reference in &path {
         chain.push((
             reference.to,
@@ -205,13 +206,13 @@ fn chain(
 
 /// Says that nothing reaches SYMBOL, nor the items that use it.
 fn write_unreachable(name: &str, users: &[&str], out: &mut dyn Write) -> Result<()> {
-    writeln!(out, "{}", super::nothing_reaches(name))?;
+    writeln!(out, "{}", text::nothing_reaches(name))?;
     if !users.is_empty() {
         let (verb, pronoun) = verb_and_pronoun(users);
         writeln!(
             out,
             "{} {verb} it, but nothing reaches {pronoun} either.",
-            super::names_text(users),
+            text::names_text(users),
         )?;
     }
     Ok(())
@@ -227,7 +228,7 @@ fn lead(binary: &Binary, symbol: Node, keeping: &[usize]) -> String {
         );
     }
     let nodes: Vec<Node> = keeping.iter().map(|&user| Node::Item(user)).collect();
-    let users = super::count_text(binary, &nodes);
+    let users = text::count_text(binary, &nodes);
     if keeping.len() <= SHOWN {
         format!("{name} is used by {users}, through these chains:")
     } else {
@@ -265,7 +266,7 @@ impl<'a> Chains<'a> {
             let user = Node::Item(user);
             let path = paths.path_to(user).unwrap_or_default();
             let start = path.first().map_or(user, |r| Node::Item(r.from));
-            if let Some(&root) = graph.roots.iter().find(|root| root.node == start)
+            if let Some(&root) = graph.root(start)
                 && !chains.roots.contains(&root)
             {
                 chains.roots.push(root);
@@ -300,7 +301,7 @@ impl<'a> Chains<'a> {
             .iter()
             .map(|root| {
                 TreeRow::new(
-                    vec![root_how(self.binary, root.kind)],
+                    vec![text::root_column(self.binary, root.kind)],
                     root.node.name(self.binary),
                     self.children_rows(root.node),
                 )
@@ -317,8 +318,8 @@ impl<'a> Chains<'a> {
             .iter()
             .map(|&child| {
                 TreeRow::new(
-                    vec![how(self.graph, node, child, |r| {
-                        super::how(self.binary, r.to, r.kind)
+                    vec![hows_between(self.graph, node, child, |r| {
+                        text::how_column(self.binary, r.to, r.kind)
                     })],
                     child.name(self.binary),
                     self.children_rows(child),
@@ -330,7 +331,12 @@ impl<'a> Chains<'a> {
 
 /// How `from` uses `to`, in words such as "call", or "call, address
 /// taken", with `word` saying how each reference uses it.
-fn how(graph: &Graph, from: Node, to: Node, word: impl Fn(&Reference) -> &'static str) -> String {
+fn hows_between(
+    graph: &Graph,
+    from: Node,
+    to: Node,
+    word: impl Fn(&Reference) -> &'static str,
+) -> String {
     let Node::Item(from) = from else {
         return String::new();
     };
@@ -342,78 +348,6 @@ fn how(graph: &Graph, from: Node, to: Node, word: impl Fn(&Reference) -> &'stati
         }
     }
     hows.join(", ")
-}
-
-/// Why a root is one, for the HOW column.
-fn root_how(binary: &Binary, kind: RootKind) -> String {
-    match kind {
-        RootKind::Handler => "vector table".to_string(),
-        _ => root_json(binary, kind),
-    }
-}
-
-/// Why a root is one, as JSON says it, in the words the HOW column used
-/// before it was shortened, since scripts may count on them.
-fn root_json(binary: &Binary, kind: RootKind) -> String {
-    match kind {
-        RootKind::Entry => "entry point".to_string(),
-        RootKind::InSection(section) => format!("in {}", binary.sections[section].name),
-        RootKind::ListedIn(section) => format!("listed in {}", binary.sections[section].name),
-        RootKind::PltHeader => "used by the dynamic loader".to_string(),
-        RootKind::Personality => "used by the unwinder".to_string(),
-        RootKind::VectorTable => "vector table".to_string(),
-        RootKind::Handler => "listed in the vector table".to_string(),
-    }
-}
-
-/// Why a root is one, as a sentence.
-pub(super) fn root_sentence(binary: &Binary, root: &Root) -> String {
-    let name = root.node.name(binary);
-    // Whether the program uses a startup section when it starts or exits.
-    let when = |section: usize| {
-        let section = &binary.sections[section].name;
-        if section.contains("fini") || section.contains("dtors") {
-            "exits"
-        } else {
-            "starts"
-        }
-    };
-    match root.kind {
-        RootKind::Entry => format!("{name} is the entry point, where the program starts."),
-        RootKind::InSection(section)
-            if binary.sections[section].kind == object::SectionKind::Note =>
-        {
-            format!(
-                "{name} is a note in {}, which the system reads when it loads the program.",
-                binary.sections[section].name
-            )
-        }
-        RootKind::InSection(section) => format!(
-            "{name} is in {}, which the program uses when it {}.",
-            binary.sections[section].name,
-            when(section)
-        ),
-        RootKind::ListedIn(section) => format!(
-            "{name} is listed in {}, so the program runs it when it {}.",
-            binary.sections[section].name,
-            when(section)
-        ),
-        RootKind::PltHeader => format!(
-            "{name} is the header of the procedure linkage table, which the dynamic loader uses \
-             to find imported functions."
-        ),
-        RootKind::Personality => format!(
-            "{name} is a personality routine, which the unwinder calls while it handles a panic \
-             or an exception."
-        ),
-        RootKind::VectorTable => format!(
-            "{name} holds the vector table, from which the processor takes the addresses of its \
-             handlers."
-        ),
-        RootKind::Handler => format!(
-            "{name} is in the vector table: the processor runs it on an interrupt or exception."
-        ),
-    }
 }
 
 /// "uses" and the item's name for one item, or "use" and "them" for several.
