@@ -76,7 +76,7 @@ pub(super) fn uses<'a>(binary: &'a Binary, rows: &[super::Row]) -> Vec<Use<'a>> 
         .map(|row| Use {
             item: Item::new(binary, row.node),
             how: row.how,
-            sites: row.sites.iter().map(|&site| address(site)).collect(),
+            sites: addresses(&row.sites),
         })
         .collect()
 }
@@ -137,4 +137,8 @@ impl<'a> Block<'a> {
 
 pub(super) fn address(address: u64) -> String {
     format!("{address:#x}")
+}
+
+pub(super) fn addresses(addresses: &[u64]) -> Vec<String> {
+    addresses.iter().map(|&a| address(a)).collect()
 }
