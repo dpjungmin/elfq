@@ -321,28 +321,47 @@ follows one command through the functions that do this.
 
 1. **Load** the file with the `object` crate: sections, symbols, entry point,
    dynamic relocations.
-2. **Discover items**, each with an address, size and a record of how it was
-   found. Sources, best first: the symbol table; the dynamic symbol table;
-   PLT stubs, named after the import they jump to (`write@plt`) or the
-   file's own function (`log_msg@plt`), and arrays of startup functions
-   such as `.init_array`, named after their section;
-   `.eh_frame` entries (on x86-64 they cover almost every function, even in
-   stripped files); the entry point, and the Cortex-M vector table when no
-   item covers any of it, named after its section, or after the section and
-   address (`.text@0x8000000`) when it shares it; in firmware that nothing
-   lists functions for, the functions that the code leads to from the entry
-   point, the vector table's handlers and the startup arrays, and those
-   whose Thumb addresses code loads or data holds, where the code before
-   them ends (see `unnamed_functions.rs`); and data that code or a stored
-   pointer refers to but no symbol names, such as vtables, string literals
-   and, in stripped files, variables and the constants that some linker
-   scripts put in `.text`. Such data starts at each address something refers
-   to and runs to the next one, the next item or the end of its section;
-   elfq never guesses which function it belongs to. Items without a symbol
-   get names like `fn_0x1690`, `.rodata@0x2004` (section and address) or
-   `entry`. Rust and C++ symbols are demangled, and the mangled symbol stays
-   as an alias. `elfq FILE debug items` lists what was found, for checking
-   this step.
+2. **Discover items**, each with an address, size and a record of how it
+   was found. Each source adds only what the ones before it missed:
+   1. The symbol tables, `.symtab` and `.dynsym`: one item for each kind
+      and address that has function or data symbols in an allocated
+      section, named by the symbol with the strongest binding, with the
+      others as aliases. Data symbols of size 0, which mark positions such
+      as `_edata`, are left out, and so are those that only enclose other
+      data symbols, such as `.L_MergedGlobals`.
+   2. On x86-64, PLT stubs, named after the import they jump to
+      (`write@plt`) or the file's own function (`log_msg@plt`), and the
+      header before a table's first stub, named after its section.
+   3. The startup and exit arrays, `.preinit_array`, `.init_array`,
+      `.fini_array`, `.ctors` and `.dtors`, named after their section.
+   4. `.eh_frame` entries, which on x86-64 cover almost every function,
+      even in stripped files. One that starts where a function does gives
+      it a size if it has none; one that starts inside a function, at 0 or
+      is empty adds nothing; any other in code is a new function.
+   5. The entry point, as a function named `entry`, when it is in code and
+      no function covers it.
+   6. The Cortex-M vector table, when no item covers any of it, named after
+      its section, or after the section and address (`.text@0x8000000`)
+      when it is only part of it.
+   7. In Thumb executables where neither the symbol tables nor `.eh_frame`
+      list a function, the functions that the code leads to from the entry
+      point, the vector table's handlers and the startup arrays, and those
+      whose Thumb addresses code loads or data holds, where the code before
+      them ends (see `unnamed_functions.rs`).
+   8. Data that code or a stored pointer refers to where there is no item,
+      in a data section other than the global offset table or, in Thumb
+      files, in code: vtables, string literals and, in stripped files,
+      variables and the constants that some linker scripts put in `.text`.
+      Such data starts at each address other than 0 that something refers
+      to and runs to the next one, the next item or the end of its section;
+      elfq never guesses which function it belongs to.
+
+   Before 8, each function still of unknown size runs to the next item in
+   its section, as an estimate; one with nothing after it there keeps an
+   unknown size. Items without a symbol get names like `fn_0x1690`,
+   `.rodata@0x2004` (section and address) or `entry`. Rust and C++ symbols
+   are demangled, and the mangled symbol stays as an alias.
+   `elfq FILE debug items` lists what was found, for checking this step.
 3. **Scan code** with an architecture backend. For each function it decodes
    the instructions and reports direct calls, tail jumps to other items,
    indirect call sites (target unknown), and PC-relative references to items
@@ -355,6 +374,9 @@ follows one command through the functions that do this.
    each starts and ends through symbols that the linker script defines, such
    as `_sdata` and `_edata`. When the entry point loads both ends of a
    section, those addresses aren't uses of the items that start there.
+   LLVM may merge small variables into one block (`.L_MergedGlobals`),
+   which code uses through the block's address; that address counts as a
+   use of each variable in the block.
 4. **Scan data** for references from data items to other items. When the file
    is position-independent (most Linux executables are), its dynamic
    relocations give every stored pointer exactly. Otherwise, as in firmware,
@@ -362,24 +384,25 @@ follows one command through the functions that do this.
    of an item (plus 1 for a Thumb function) for a pointer to it. A number
    that happens to equal an address is mistaken for a pointer, which is rare
    because addresses are large numbers.
-5. **Find roots**, where the program starts running: the ELF entry point;
-   the functions in `.preinit_array`, `.init_array` and `.fini_array`, and
-   the code in `.init` and `.fini`; the PLT header, which the dynamic loader
-   uses; personality routines that `.eh_frame` names, which the unwinder
-   calls; notes such as `__abi_tag`; and the Cortex-M vector table,
-   recognized by its shape rather than its section name: a word in data
-   holding the entry point's Thumb address, or the second word of a code
-   section, where a linker script may put the table; then handlers until an
-   entry other than a reserved one is neither 0 nor the address of Thumb
-   code, or the table's section ends, less the reserved entries at its end
-   that hold other words, which are code after a short table. Not yet:
-   the functions that shared libraries export, and `--root SYMBOL`.
-   Non-allocated sections and unwind tables
-   (`.eh_frame`, `.ARM.exidx`) are never sources of references; otherwise
-   everything would look reachable. One more source is only on Arm: LLVM
-   merges small variables into one block (`.L_MergedGlobals`) and code uses
-   them through the block's address, so that address counts as a use of each
-   variable in the block.
+5. **Find roots**, where the program starts running. An item is a root
+   when:
+   1. it holds the ELF entry point;
+   2. it is in `.init` or `.fini`, which the dynamic loader runs, in a
+      startup or exit array, or in a note section, such as `__abi_tag`,
+      which the system reads;
+   3. a startup or exit array points to it, through the dynamic relocation
+      stored there or, in a file linked to run at one address, by holding
+      its address (plus 1 for a Thumb function);
+   4. it is the PLT header, which the dynamic loader uses;
+   5. it is a personality routine that `.eh_frame` names, which the
+      unwinder calls, or holds a pointer to one that the table points to;
+   6. it holds part of the Cortex-M vector table, or starts where a handler
+      that the table lists does.
+
+   Each root is listed once, for the first of these reasons. The vector
+   table is found by its shape, not its section's name, as
+   `binary/vector_table.rs` describes. Not yet: the functions that shared
+   libraries export, and `--root SYMBOL`.
 6. **Analyze**: compute the dominator tree once from a virtual node that
    points at every root. `retained` and `top` read it. `why` searches from
    the roots for the shortest chain to each item that uses SYMBOL, going

@@ -4,31 +4,44 @@
 //! elfq follows the code from where the processor or the C runtime starts
 //! running it: the entry point, the handlers in the vector table, and the
 //! functions in arrays such as `.init_array`. It scans each function up to
-//! the next start it knows, and these start more functions:
+//! the next start it knows, and these start more functions, when they are
+//! in code:
 //!
-//! - what the code calls;
-//! - where it jumps in the way that carries on in another function: a
-//!   Thumb `b.w`, unless it lands where the function has been or where its
-//!   other jumps so far reach, since loops and long functions use `b.w`
-//!   inside themselves too; and a linker's veneer.
+//! 1. what the code calls;
+//! 2. where it jumps in the way that carries on in another function, with
+//!    a Thumb `b.w` or a linker's veneer, unless it lands between the
+//!    function's start and the jump itself, or no further into the function
+//!    than its other jumps so far reach, since loops and long functions use
+//!    `b.w` inside themselves too.
 //!
 //! Scanning repeats until nothing new turns up. Then the Thumb addresses
 //! that the code loads or data holds start functions too, as for a handler
-//! passed to another function, a table of handlers or a vtable, and their
-//! code is followed in turn. Such a word can also be a number that only
-//! looks like an address, so it starts a function only where the code
-//! before it ends, with a return, a jump or a call that may never return,
-//! outside the padding between functions; where no jump crosses it, and
-//! none but a `b.w` lands on it; and where the code on either side still
-//! finds the constants it loads.
+//! passed to another function, a table of handlers or a vtable, and so do
+//! those in tables among the constants in code; their code is followed in
+//! turn. Such a word can also be a number that only looks like an address,
+//! so it starts a function only where (`splits_cleanly` has the details):
+//!
+//! 1. it is in code, after the vector table, and not inside constants;
+//! 2. the code before it, if a function starts before it, ends there with
+//!    a return, a jump or a call that may never return;
+//! 3. it is outside the padding between functions;
+//! 4. the code on either side still finds the constants it loads;
+//! 5. no jump crosses it, and none but a `b.w` lands on it.
 //!
 //! Some linker scripts put constants in `.text` after the code, as CMSIS's
 //! template does. Code loads their addresses from outside the function they
-//! follow, and such an address ends that function where the code before it
-//! ends with a return or a jump, doesn't jump to it or past it, and still
-//! finds what it did when scanned alone. Unlike a function, constants may
-//! start with zeros, which look like padding. Code followed before may have
-//! read the constants as code, so it is followed again.
+//! follow, and such an address ends that function where:
+//!
+//! 1. it is in code, after the vector table;
+//! 2. the last thing that starts before it is a function, not constants;
+//! 3. the code of that function ends there with a return, a jump or data,
+//!    not a call;
+//! 4. scanned alone, that code still finds what it did;
+//! 5. that code doesn't jump to it or past it, short of the next start.
+//!
+//! Unlike a function, constants may start with zeros, which look like
+//! padding. Code followed before may have read the constants as code, so
+//! it is followed again.
 //!
 //! Each function runs to the next start, or the end of its section, less
 //! the padding after it, so its size is an estimate. It is named after its
@@ -298,34 +311,67 @@ fn code_start(binary: &Binary, section: &Section) -> u64 {
 }
 
 /// Whether a function, or constants, can start at `address` without
-/// cutting the code before it in two, as far as `starts` tell: that code
-/// ends there, with an instruction that doesn't run on into it, such as a
-/// return or, before a function, a call that may never return; and no jump
-/// crosses into it, except to where a function starts, or lands on it,
-/// except a `b.w`, which may be a tail call. Scanning the code before it
-/// must also find what it does with what follows, such as each constant it
-/// loads, and so must scanning a function after it.
+/// cutting the code before it in two, as far as `starts` tell. Nothing
+/// starts at `address` yet. The code before it runs from the last start
+/// before it in the section's code; the code after it runs to the next
+/// start, or the end of the section. They can start there when:
+///
+/// 1. `address` is in a code section.
+/// 2. It isn't before the section's code, which starts after the vector
+///    table when the table is in the section.
+/// 3. If something starts before `address`, it is a function: inside
+///    constants, nothing is cut.
+/// 4. Constants need a function before them: they matter only where they
+///    end one.
+/// 5. If something starts before `address`, its code doesn't run on into
+///    `address` (see [`Ending`]), and before constants it doesn't end with
+///    a call either. Before the first start in a section there may be
+///    data, so this isn't checked there.
+///
+/// For constants, also:
+///
+/// 6. Scanning the code before them alone finds exactly what scanning on
+///    to the next start finds before `address`, such as each constant it
+///    loads.
+/// 7. No jump in the code before them, not even a `b.w`, lands on
+///    `address` or after it, short of the next start.
+///
+/// For a function, with the code after it cut where the padding before the
+/// next start begins, also:
+///
+/// 8. `address` is before that padding, and the code there doesn't start
+///    with padding: a function starts after the padding before it.
+/// 9. Scanning the code before `address` and the code after it apart finds
+///    exactly what scanning them together finds: no instruction spans
+///    `address`, and each side still finds the constants it loads.
+/// 10. No jump before `address` lands on it, except a `TailJump` such as a
+///     `b.w`, which may be a tail call; and none lands after it, short of
+///     that padding.
+/// 11. No jump after `address` lands in the code before it, except on the
+///     start of the function there, if there is one.
 fn splits_cleanly(
     binary: &Binary,
     starts: &BTreeMap<u64, Start>,
     address: u64,
     kind: Start,
 ) -> bool {
+    // 1.
     let Some(index) = code_section(&binary.sections, address) else {
         return false;
     };
     let section = &binary.sections[index];
     let section_end = section.address + section.size;
     let code_start = code_start(binary, section);
+    // 2.
     if address < code_start {
         return false;
     }
     let before = starts.range(code_start..address).next_back();
     let start = match (before, kind) {
-        // Inside constants, nothing is cut.
+        // 3.
         (Some((_, Start::Constants)), _) => return false,
         (Some((&start, _)), _) => start,
-        // Constants matter only where they end a function.
+        // 4.
         (None, Start::Constants) => return false,
         (None, Start::Function) => code_start,
     };
@@ -340,7 +386,7 @@ fn splits_cleanly(
             from,
         )
     };
-    // Before the first function known in a section, there may be data.
+    // 5.
     if before.is_some() {
         match arch::ending(
             binary.architecture,
@@ -363,10 +409,12 @@ fn splits_cleanly(
         let whole = scan(start, end);
         let alone = scan(start, address);
         let before = &whole[..alone.len().min(whole.len())];
+        // 6.
         return before == alone
             && whole
                 .get(alone.len())
                 .is_none_or(|next| next.site >= address)
+            // 7.
             && !alone
                 .iter()
                 .any(|reference| jumps_into(reference, address, end));
@@ -379,20 +427,22 @@ fn splits_cleanly(
             bytes(start, end),
             start,
         );
-    // A function starts after the padding before it.
+    // 8.
     if address >= end || arch::leading_padding(binary.architecture, bytes(address, end)) > 0 {
         return false;
     }
+    // 9.
     let whole = scan(start, end);
     let mut halves = scan(start, address);
     halves.extend(scan(address, end));
-    // A `b.w` from before may be a tail call to a function there, but other
-    // jumps to it stay inside one function.
     let crosses = whole.iter().any(|reference| {
         if reference.site < address {
+            // 10. A `b.w` from before may be a tail call to a function
+            // there, but other jumps to it stay inside one function.
             reference.kind == CodeReferenceKind::Jump(address)
                 || jumps_into(reference, address + 1, end)
         } else {
+            // 11.
             jumps_into(reference, start, address)
         }
     });

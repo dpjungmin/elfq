@@ -7,9 +7,8 @@
 //! Thumb), then the other handlers. Reserved entries are 0, or on some parts
 //! another word, such as the checksum that NXP's LPC boot ROM checks in
 //! entry 7. Linker scripts name its section differently (`.isr_vector`,
-//! `.vector_table`) or put it first in `.text`, so it is found by its shape:
-//! the first word in data that holds the entry point's Thumb address, or
-//! the second word of code, is taken for the reset entry.
+//! `.vector_table`) or put it first in `.text`, so `find` finds it by its
+//! shape, and its entries tell where it ends (see `VectorTable::size`).
 
 use object::SectionKind;
 
@@ -20,10 +19,20 @@ use super::{Binary, Item, ItemKind, Source, code_section};
 pub struct VectorTable {
     /// The address of its first word, the initial stack pointer.
     pub address: u64,
-    /// Its size in bytes: up to the first entry outside the reserved ones
-    /// that is neither 0 nor the address of Thumb code, or the end of its
-    /// section, and without the reserved entries before it that hold other
-    /// words, which are code after a short table.
+    /// Its size in bytes. From the reset entry on, the entries are read in
+    /// turn, counting the stack pointer's as entry 0:
+    ///
+    /// 1. An entry that holds the address of Thumb code, an odd address in a
+    ///    code section once bit 0 is cleared, is a handler, and the table
+    ///    runs past it.
+    /// 2. So does an entry that holds 0.
+    /// 3. A reserved entry (7, 8, 9, 10 or 13) that holds another word is
+    ///    skipped: the table runs past it only if a later entry does, so
+    ///    such entries at its end, which are code after a short table, are
+    ///    left out.
+    /// 4. Any other entry ends the table before it, and so do the first
+    ///    entry that the file holds no bytes for and the end of the reset
+    ///    entry's section.
     pub size: u64,
     /// Where each handler's code starts, without the Thumb bit, in the
     /// table's order: first the reset handler, which is the entry point. A
@@ -34,7 +43,17 @@ pub struct VectorTable {
 /// The entries the architecture reserves, counted from the stack pointer's.
 const RESERVED: [u64; 5] = [7, 8, 9, 10, 13];
 
-/// Finds the vector table in a Thumb file, if it has one.
+/// Finds the vector table in a Thumb file, if it has one, by its shape:
+///
+/// 1. Allocated sections are tried in the order the file lists them.
+/// 2. In each, the words at multiples of the pointer size are read from the
+///    second one on, since the stack pointer comes first. In a code section,
+///    only that second word is read, so that no constant in a function is
+///    taken for the reset entry.
+/// 3. The first word that holds the entry point's Thumb address, the entry
+///    point plus 1, is the reset entry, and the table starts one word
+///    before it.
+/// 4. The entries from there tell where it ends (see `VectorTable::size`).
 pub(super) fn find(binary: &Binary) -> Option<VectorTable> {
     let size = binary.pointer_size;
     let (section, reset) = binary.sections.iter().find_map(|section| {
