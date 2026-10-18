@@ -49,20 +49,20 @@ pub fn run(
     format: Format,
     out: &mut dyn Write,
 ) -> Result<()> {
-    let exclusive = Exclusive::find(binary, symbol, range)?;
+    let symbol = SymbolInTree::find(binary, symbol, range)?;
     if format == Format::Json {
-        return write_json(&exclusive, out);
+        return write_json(&symbol, out);
     }
-    if !exclusive.is_reachable() {
-        return exclusive.write_unreachable(out);
+    if !symbol.is_reachable() {
+        return symbol.write_unreachable(out);
     }
-    let node = exclusive.node;
+    let node = symbol.node;
     let Node::Item(index) = node else {
-        unreachable!("Exclusive::find rejects imports");
+        unreachable!("SymbolInTree::find rejects imports");
     };
     let name = node.name(binary);
-    let retained = &exclusive.retained;
-    let items = exclusive.counted_items();
+    let retained = &symbol.retained;
+    let items = symbol.counted_items();
     let own = retained.own(index);
     let own_bytes = super::bytes_text(own);
     let range = range.map(|range| super::range_text(binary, range));
@@ -81,8 +81,8 @@ pub fn run(
                 "Removing {name} would save its own {own_bytes}, and nothing else."
             )?,
         }
-        write_shared(&exclusive, out)?;
-        return exclusive.write_indirect_note(out);
+        write_shared(&symbol, out)?;
+        return symbol.write_indirect_note(out);
     }
     let in_range = range
         .map(|range| format!(" in {range}"))
@@ -101,17 +101,17 @@ pub fn run(
     ]);
     table.tree(&[retained.tree_row(&shown, index)]);
     table.write(out)?;
-    write_shared(&exclusive, out)?;
-    exclusive.write_indirect_note(out)
+    write_shared(&symbol, out)?;
+    symbol.write_indirect_note(out)
 }
 
-fn write_json(exclusive: &Exclusive, out: &mut dyn Write) -> Result<()> {
-    let retained = &exclusive.retained;
+fn write_json(symbol: &SymbolInTree, out: &mut dyn Write) -> Result<()> {
+    let retained = &symbol.retained;
     let binary = retained.binary;
-    let node = exclusive.node;
-    let reachable = exclusive.is_reachable();
+    let node = symbol.node;
+    let reachable = symbol.is_reachable();
     let shares = if reachable {
-        shared(exclusive)
+        shared(symbol)
     } else {
         Vec::new()
     };
@@ -125,32 +125,32 @@ fn write_json(exclusive: &Exclusive, out: &mut dyn Write) -> Result<()> {
             .into_iter()
             .map(|node| json::Item::new(binary, node))
             .collect(),
-        indirect_calls: exclusive.indirect_calls().len(),
+        indirect_calls: symbol.indirect_calls().len(),
     };
     json::write(&answer, out)
 }
 
 /// What SYMBOL's code uses that other code uses too, and so isn't counted,
 /// sorted by name. With a range, only items with bytes in it.
-fn shared(exclusive: &Exclusive) -> Vec<Node> {
-    let binary = exclusive.retained.binary;
-    let mut kept: HashSet<Node> = exclusive
+fn shared(symbol: &SymbolInTree) -> Vec<Node> {
+    let binary = symbol.retained.binary;
+    let mut kept: HashSet<Node> = symbol
         .retained
         .tree
-        .exclusive(exclusive.node)
+        .exclusive(symbol.node)
         .into_iter()
         .collect();
-    kept.insert(exclusive.node);
-    let mut shared: Vec<Node> = exclusive
+    kept.insert(symbol.node);
+    let mut shared: Vec<Node> = symbol
         .retained
         .graph
         .references
         .iter()
         .filter(|r| kept.contains(&Node::Item(r.from)) && !kept.contains(&r.to))
         .map(|r| r.to)
-        .filter(|&node| match (exclusive.retained.range, node) {
+        .filter(|&node| match (symbol.retained.range, node) {
             (None, _) => true,
-            (Some(_), Node::Item(index)) => exclusive.retained.own(index) > 0,
+            (Some(_), Node::Item(index)) => symbol.retained.own(index) > 0,
             (Some(_), Node::Import(_)) => false,
         })
         .collect();
@@ -161,10 +161,10 @@ fn shared(exclusive: &Exclusive) -> Vec<Node> {
 
 /// Names what SYMBOL's code uses that other code uses too, and so isn't
 /// counted.
-fn write_shared(exclusive: &Exclusive, out: &mut dyn Write) -> Result<()> {
+fn write_shared(symbol: &SymbolInTree, out: &mut dyn Write) -> Result<()> {
     const NAMED: usize = 10;
-    let binary = exclusive.retained.binary;
-    let mut shared: Vec<&str> = shared(exclusive)
+    let binary = symbol.retained.binary;
+    let mut shared: Vec<&str> = shared(symbol)
         .into_iter()
         .map(|node| node.name(binary))
         .collect();
@@ -182,21 +182,22 @@ fn write_shared(exclusive: &Exclusive, out: &mut dyn Write) -> Result<()> {
     Ok(())
 }
 
-/// SYMBOL's item, in the dominator tree that says what is exclusive to it.
-struct Exclusive<'a> {
+/// SYMBOL's item, in the tree of retained sizes that says what only it
+/// leads to.
+struct SymbolInTree<'a> {
     retained: RetainedTree<'a>,
     /// SYMBOL's item.
     node: Node,
 }
 
-impl<'a> Exclusive<'a> {
+impl<'a> SymbolInTree<'a> {
     /// Finds SYMBOL's item and what is exclusive to it, counting only the
     /// bytes in `range`, if there is one.
     fn find(
         binary: &'a Binary,
         symbol: &str,
         range: Option<AddressRange>,
-    ) -> Result<Exclusive<'a>> {
+    ) -> Result<SymbolInTree<'a>> {
         super::check_code_is_readable(binary)?;
         let node = super::symbol::find(binary, symbol)?;
         let name = node.name(binary);
@@ -214,7 +215,7 @@ impl<'a> Exclusive<'a> {
             );
         }
         let retained = RetainedTree::build(binary, range)?;
-        Ok(Exclusive { retained, node })
+        Ok(SymbolInTree { retained, node })
     }
 
     /// Whether anything reaches SYMBOL from where the program starts.

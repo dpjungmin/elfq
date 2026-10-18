@@ -46,7 +46,7 @@ struct Step<'a> {
     item: json::Item<'a>,
     /// For the first item, why the program starts there, such as `entry
     /// point`; for the others, how the item before uses this one, in the
-    /// words of [`json::how`], such as `call` or `call, address taken`.
+    /// words of [`json::how_field`], such as `call` or `call, address taken`.
     how: String,
 }
 
@@ -177,7 +177,7 @@ pub fn run(binary: &Binary, symbol: &str, format: Format, out: &mut dyn Write) -
 /// The shortest chain from where the program starts, through `user`, to
 /// SYMBOL, for `--json`: each item on it, with how the one before uses it,
 /// or for the first, why the program starts there, in JSON's words
-/// ([`json::how`] and [`root_json`]).
+/// ([`json::how_field`] and [`root_json`]).
 fn chain(
     binary: &Binary,
     graph: &Graph,
@@ -192,7 +192,8 @@ fn chain(
         start,
         root.map_or(String::new(), |root| root_json(binary, root.kind)),
     )];
-    let json_how = |from: Node, to: Node| how(graph, from, to, |r| json::how(r.kind));
+    let json_how =
+        |from: Node, to: Node| hows_between(graph, from, to, |r| json::how_field(r.kind));
     for reference in &path {
         chain.push((
             reference.to,
@@ -317,8 +318,8 @@ impl<'a> Chains<'a> {
             .iter()
             .map(|&child| {
                 TreeRow::new(
-                    vec![how(self.graph, node, child, |r| {
-                        super::how(self.binary, r.to, r.kind)
+                    vec![hows_between(self.graph, node, child, |r| {
+                        super::how_column(self.binary, r.to, r.kind)
                     })],
                     child.name(self.binary),
                     self.children_rows(child),
@@ -330,7 +331,12 @@ impl<'a> Chains<'a> {
 
 /// How `from` uses `to`, in words such as "call", or "call, address
 /// taken", with `word` saying how each reference uses it.
-fn how(graph: &Graph, from: Node, to: Node, word: impl Fn(&Reference) -> &'static str) -> String {
+fn hows_between(
+    graph: &Graph,
+    from: Node,
+    to: Node,
+    word: impl Fn(&Reference) -> &'static str,
+) -> String {
     let Node::Item(from) = from else {
         return String::new();
     };

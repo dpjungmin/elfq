@@ -122,7 +122,7 @@ fn leaving(
     let outcome = outcome(crossings.is_empty() && unfollowed.is_empty() && unreadable.is_empty());
     if format == Format::Json {
         let callees = groups(binary, &crossings, Direction::Out, |crossing| {
-            json::how(crossing.kind)
+            json::how_field(crossing.kind)
         })
         .into_iter()
         .flat_map(|group| {
@@ -166,7 +166,7 @@ fn leaving(
     let it = if ranges.len() == 1 { "it" } else { "them" };
     let verb = |one: &str, many: &str| if ranges.len() == 1 { one } else { many }.to_string();
     let groups = groups(binary, &crossings, Direction::Out, |crossing| {
-        super::how(binary, crossing.to, crossing.kind)
+        super::how_column(binary, crossing.to, crossing.kind)
     });
     let used = super::count_text(binary, &outside_nodes(&groups));
     let unknown = super::calls_and_jumps(&unfollowed);
@@ -252,7 +252,7 @@ fn entering(
     let outcome = outcome(crossings.is_empty() && through_pointer.is_empty());
     if format == Format::Json {
         let callers = groups(binary, &crossings, Direction::In, |crossing| {
-            json::how(crossing.kind)
+            json::how_field(crossing.kind)
         })
         .into_iter()
         .flat_map(|group| {
@@ -286,7 +286,7 @@ fn entering(
     let subject = ranges_text(binary, ranges);
     let it = if ranges.len() == 1 { "it" } else { "them" };
     let groups = groups(binary, &crossings, Direction::In, |crossing| {
-        super::how(binary, crossing.to, crossing.kind)
+        super::how_column(binary, crossing.to, crossing.kind)
     });
     if groups.is_empty() && through_pointer.is_empty() {
         writeln!(out, "Nothing outside {subject} uses {it}.")?;

@@ -317,7 +317,7 @@ fn distinct_nodes(rows: &[Row]) -> Vec<Node> {
 /// architecture, while "address taken" means a pointer to a function. An
 /// import keeps "address taken", since elfq doesn't record yet whether it
 /// is a function or data.
-fn how(binary: &Binary, to: Node, kind: ReferenceKind) -> &'static str {
+fn how_column(binary: &Binary, to: Node, kind: ReferenceKind) -> &'static str {
     let is_data = match to {
         Node::Item(index) => binary.items[index].kind == ItemKind::Data,
         Node::Import(_) => false,
@@ -325,7 +325,7 @@ fn how(binary: &Binary, to: Node, kind: ReferenceKind) -> &'static str {
     match kind {
         ReferenceKind::Access => "uses",
         ReferenceKind::Address if is_data => "uses",
-        kind => json::how(kind),
+        kind => json::how_field(kind),
     }
 }
 

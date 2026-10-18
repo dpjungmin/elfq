@@ -83,12 +83,12 @@ fn callers(
     if format == Format::Json {
         let callers = Callers {
             symbol: json::Item::new(binary, node),
-            callers: json::uses(binary, &rows(&|reference| json::how(reference.kind))),
+            callers: json::uses(binary, &rows(&|reference| json::how_field(reference.kind))),
             complete: !through_pointer,
         };
         return json::write(&callers, out);
     }
-    let rows = rows(&|reference| super::how(binary, reference.to, reference.kind));
+    let rows = rows(&|reference| super::how_column(binary, reference.to, reference.kind));
     let mut notes = Vec::new();
     // A function's stubs all have its name, as `log_msg@plt`: glibc's
     // `libc.so.6` has two for `wmemset`. Code that only takes a stub's

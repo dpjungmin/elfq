@@ -92,7 +92,7 @@ fn callees(
     if format == Format::Json {
         let callees = Callees {
             symbol: json::Item::new(binary, node),
-            callees: json::uses(binary, &rows(&|reference| json::how(reference.kind))),
+            callees: json::uses(binary, &rows(&|reference| json::how_field(reference.kind))),
             unresolved: unresolved
                 .iter()
                 .map(|u| UnresolvedJson {
@@ -105,7 +105,7 @@ fn callees(
         };
         return json::write(&callees, out);
     }
-    let rows = rows(&|reference| super::how(binary, reference.to, reference.kind));
+    let rows = rows(&|reference| super::how_column(binary, reference.to, reference.kind));
     if rows.is_empty() && unresolved.is_empty() {
         writeln!(out, "{name} doesn't call or use anything.")?;
         return Ok(());

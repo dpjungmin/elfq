@@ -65,7 +65,7 @@ impl<'a> Item<'a> {
 pub(super) struct Use<'a> {
     /// The item on the other end: the caller, or the callee.
     pub item: Item<'a>,
-    /// The [kind of reference](how).
+    /// The [kind of reference](how_field).
     pub how: &'static str,
     /// The addresses of the instructions or pointers.
     pub sites: Vec<String>,
@@ -81,10 +81,11 @@ pub(super) fn uses<'a>(binary: &'a Binary, rows: &[super::Row]) -> Vec<Use<'a>> 
         .collect()
 }
 
-/// A kind of reference in words: `call`, `tail call`, `address taken`,
-/// `access` or `pointer`. Unlike the HOW column, which says "uses" for
-/// both, JSON tells reading or writing data from loading its address.
-pub(super) fn how(kind: ReferenceKind) -> &'static str {
+/// A kind of reference in words, for the `how` fields of JSON: `call`,
+/// `tail call`, `address taken`, `access` or `pointer`. Unlike the HOW
+/// column, which says "uses" for both, JSON tells reading or writing data
+/// from loading its address.
+pub(super) fn how_field(kind: ReferenceKind) -> &'static str {
     match kind {
         ReferenceKind::Call => "call",
         ReferenceKind::TailCall => "tail call",
