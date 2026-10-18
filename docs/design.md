@@ -316,11 +316,13 @@ assembly without a `.size`, but C runtimes have such code (`_init`,
 
 ## How it works
 
-Data moves through five modules in order: `arch` finds the addresses that
-machine code uses, `binary` finds the items, `graph` connects them by those
-references and computes dominators and paths, `commands` run queries, and
-`render` prints text. `debuginfo` reads DWARF beside the graph, for
-`inlined`.
+elfq reads the file, then answers one question. `binary` reads the file and
+finds its items; `graph` has `arch` read each function's code, connects the
+items by the references it finds, and works out the roots, the dominator
+tree and the shortest chains; and the command picks what to show and writes
+it, as a table that `render` lays out, or as JSON. `debuginfo` reads DWARF
+beside the graph, for `inlined`. [Life of a command](#life-of-a-command)
+follows one command through the functions that do this.
 
 1. **Load** the file with the `object` crate: sections, symbols, entry point,
    dynamic relocations.
@@ -396,6 +398,73 @@ references and computes dominators and paths, `commands` run queries, and
    linker dropped still have entries, so elfq skips those that don't start
    inside an item. Nothing above depends on DWARF; source locations could
    make output easier to follow later.
+
+## Life of a command
+
+These are the functions that run for `elfq app.elf retained process_frame`,
+in order. Its output is the first example under [Commands](#commands).
+
+1. **Arguments.** `main`, in main.rs, runs `run` on a thread with a large
+   stack, since elfq builds its trees recursively. `run` reads
+   `elfq help top` as `elfq top --help`, then clap parses the arguments
+   into a `cli::Cli`: the file, `--json`, `--range`, and here
+   `Command::Retained` with its SYMBOL.
+2. **Dispatch.** `commands::run` checks that the arguments go together
+   (`check_arguments`), before it reads the file, then loads the file,
+   prints any warnings about it, and calls `retained::run`.
+3. **Loading.** `binary::Binary::load` reads the file with the `object`
+   crate: its sections, the dynamic relocations, which name the imports and
+   the pointers the loader stores, and in Thumb files the vector table
+   (`vector_table::find`). Then it finds the items: `symbols::items`,
+   `plt::stubs`, the startup arrays, `eh_frame::read`, the entry point, the
+   vector table, in stripped firmware `unnamed_functions::add`, and last
+   `unnamed_data::items`, which has `arch::scan` read the code for the
+   addresses of data that no symbol names.
+4. **SYMBOL.** `retained::run` calls `SymbolInTree::find`, which checks
+   that elfq can read the file's code (`check_code_is_readable`) and turns
+   `process_frame` into an item with `symbol::find`: by address, by full
+   name, or by the end of a name. `readable_item` refuses an import, and a
+   function whose end elfq doesn't know.
+5. **The graph.** `RetainedTree::build` has `graph::Graph::build` run
+   `arch::scan` on each function's code and turn what it finds into
+   references, or into unresolved calls. `Graph::build` then adds the
+   pointers stored in data, from the dynamic relocations or, in a file that
+   runs at a fixed address, from the words that hold an item's address, and
+   finds the roots with `roots::find`.
+6. **The dominator tree.** `graph::DominatorTree::build` has `petgraph`
+   find each node's closest dominator, starting from one node above every
+   root, and adds up the retained sizes from the bottom of the tree up.
+   `RetainedTree` also notes which functions something calls directly, for
+   the "(through a pointer)" mark.
+7. **The answer.** `retained::run` writes the lead line, then
+   `RetainedTree::largest` picks the 30 largest items under
+   `process_frame`, and the items between them and it, and
+   `RetainedTree::tree_row` makes a `render::TreeRow` of each.
+   `render::Table` draws them as a tree in its last column (`Table::tree`)
+   and writes the table (`Table::write`). Then `write_shared` names what
+   `process_frame` uses that other code uses too, and `write_indirect_note`
+   notes any calls through pointers in `process_frame` or the items it
+   keeps. With `--json`, `retained::write_json` writes the whole tree
+   instead, through `json::write`.
+8. **Exit.** `run`, in main.rs, flushes the output and turns the answer into
+   the exit status: 0 for an answer, 1 when `callers` or `callees` finds
+   something that crosses its ranges, or may, and 2 for an error, which it
+   prints after `error:`.
+
+Each module uses only the ones below it. Beside each are the steps above
+that run in it:
+
+```
+main.rs      1 main, run                                  8 exit status
+commands/    2 commands::run   4 retained::run, symbol::find
+             7 RetainedTree::largest, tree_row, write_shared
+cli.rs       1 Cli, Command
+render/      7 Table::tree, Table::write
+debuginfo/   (only for inlined)
+graph/       5 Graph::build, roots::find   6 DominatorTree::build
+binary/      3 Binary::load, unnamed_data::items
+arch/        3, 5 arch::scan
+```
 
 ## Code layout
 
