@@ -18,7 +18,7 @@
 //! cross; then each is reported as it is.
 
 use crate::arch;
-use crate::binary::{AddressRange, Binary, ItemKind};
+use crate::binary::{AddressRange, Binary, ItemKind, Source};
 
 use super::{Graph, Node, Reference, ReferenceKind, RootKind, Unresolved};
 
@@ -288,7 +288,14 @@ impl<'a> Boundary<'a> {
     fn veneer_target(&self, item: usize) -> Option<VeneerTarget> {
         let function = &self.binary.items[item];
         let code = self.binary.bytes(function.address, function.size)?;
-        if function.kind != ItemKind::Function || !arch::is_veneer(self.binary.architecture, code) {
+        let symbol = matches!(
+            function.source,
+            Source::SymbolTable | Source::DynamicSymbolTable
+        )
+        .then_some(function.name.as_str());
+        if function.kind != ItemKind::Function
+            || !arch::is_veneer(self.binary.architecture, code, symbol)
+        {
             return None;
         }
         match (

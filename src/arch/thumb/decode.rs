@@ -123,12 +123,12 @@ pub(super) enum Flow {
     /// `values` assumes it follows the procedure call standard.
     Call,
     /// A call through a register: `blx register`.
-    CallRegister(u16),
+    CallRegister(u16, LowBit),
     /// A branch to `target`, or on to the next instruction when it isn't
     /// taken: `b`, `b<cond>`, `cbz`, `cbnz`, `b.w` and `b<cond>.w`.
     Branch { target: u64, when: When },
     /// A jump through a register: `bx register` and `mov pc, register`.
-    JumpRegister(u16),
+    JumpRegister(u16, LowBit),
     /// A jump `register` bytes past the program counter: `add pc,
     /// register`.
     JumpRelative(u16),
@@ -148,6 +148,20 @@ pub(super) enum Flow {
     It { firstcond: u16, mask: u16 },
     /// Never goes on: `udf`.
     Stop,
+}
+
+/// What the low bit of the number in the register does, for a branch
+/// through one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum LowBit {
+    /// It says which instruction set the code is in: 1 for Thumb, the only
+    /// one that Cortex-M cores run, so they fault on 0. `bx` and `blx`.
+    Thumb,
+    /// 1 for Secure Thumb code, and 0 for Non-secure code: Armv8-M's `bxns`
+    /// and `blxns`.
+    Security,
+    /// The branch ignores it: `mov pc, register`.
+    Ignored,
 }
 
 impl Effect {
@@ -404,15 +418,23 @@ fn special(op: u16) -> Effect {
         // mov register, source: into pc it jumps.
         0b10 if register == PC => match source {
             LR => Effect::new(bit(LR), 0).flow(Flow::Return),
-            _ => Effect::new(bit(source), 0).flow(Flow::JumpRegister(source)),
+            _ => Effect::new(bit(source), 0).flow(Flow::JumpRegister(source, LowBit::Ignored)),
         },
         0b10 => {
             Effect::new(bit(source), bit(register)).operation(Operation::Copy { register, source })
         }
-        // bx and blx, and Armv8-M's bxns and blxns.
-        _ if op & 0x80 != 0 => Effect::new(bit(source), bit(LR)).flow(Flow::CallRegister(source)),
-        _ if source == LR => Effect::new(bit(LR), 0).flow(Flow::Return),
-        _ => Effect::new(bit(source), 0).flow(Flow::JumpRegister(source)),
+        // bx and blx, and Armv8-M's bxns and blxns, which set bit 2.
+        _ => {
+            let low_bit = match op & 4 {
+                0 => LowBit::Thumb,
+                _ => LowBit::Security,
+            };
+            match op & 0x80 {
+                0 if source == LR => Effect::new(bit(LR), 0).flow(Flow::Return),
+                0 => Effect::new(bit(source), 0).flow(Flow::JumpRegister(source, low_bit)),
+                _ => Effect::new(bit(source), bit(LR)).flow(Flow::CallRegister(source, low_bit)),
+            }
+        }
     }
 }
 
@@ -544,8 +566,14 @@ fn reads(registers: &[u16]) -> Registers {
         .fold(0, |set, &register| set | bit(register))
 }
 
-/// `ldm`, `ldmdb`, `stm` and `stmdb` (`push.w` and `pop.w`).
+/// `ldm`, `ldmdb`, `stm` and `stmdb` (`push.w` and `pop.w`), and
+/// Armv8.1-M's `clrm`.
 fn load_store_multiple(first: u16, second: u16) -> Option<Effect> {
+    // clrm {registers}, which zeroes them, and the flags with bit 15. It
+    // takes the place of an `ldm` from pc, which Armv7-M doesn't allow.
+    if first == 0xe89f {
+        return Some(Effect::new(0, second & !bit(PC)).sets_flags(second & bit(PC) != 0));
+    }
     let rn = first & 0xf;
     let writeback = if first & 0x20 != 0 { bit(rn) } else { 0 };
     let increments = match (first >> 7) & 3 {
@@ -639,15 +667,20 @@ fn load_store_dual(first: u16, second: u16) -> Option<Effect> {
             };
             Effect::new(bit(rn), bit(rt) | pair).operation(load(None))
         }
-        // strexb, strexh, stl, stlb, stlh and the exclusive stores with
-        // release, which write their status to the low register.
+        // strexb, strexh, stlb, stlh, stl, stlexb, stlexh and stlex. The
+        // exclusive ones write their status to the low register.
         (0b01, 0b00) => {
-            let status = if (second >> 4) & 0xf >= 0b0100 && (second >> 4) & 0xf != 0b1000 {
-                bit(low)
-            } else {
-                0
+            let op = (second >> 4) & 0xf;
+            let status = match op {
+                0b0100 | 0b0101 | 0b1100 | 0b1101 | 0b1110 => bit(low),
+                _ => 0,
             };
-            Effect::new(reads(&[rn, rt]), status).operation(store(None, 4))
+            let size = match op & 3 {
+                0b00 => 1,
+                0b01 => 2,
+                _ => 4,
+            };
+            Effect::new(reads(&[rn, rt]), status).operation(store(None, size))
         }
         // strd, at an offset when it doesn't write back.
         (_, 0b00) | (_, 0b10) => {
@@ -1025,15 +1058,21 @@ fn load(pc: u64, first: u16, second: u16) -> Option<Effect> {
     Some(Effect::new(reads, bit(rt) | writeback).operation(load(word.then_some(rt))))
 }
 
-/// The coprocessor and floating-point instructions. Only those that move
-/// values to or from the core registers, and loads and stores that update
-/// their base register, touch the registers elfq follows.
+/// The floating-point instructions. Only those that move values to or
+/// from the core registers, and loads and stores that update their base
+/// register, touch the registers elfq follows. Those of other
+/// coprocessors, and Armv8.1-M's vector instructions, which share their
+/// encodings, aren't followed.
 fn coprocessor(first: u16, second: u16) -> Option<Effect> {
+    // The floating-point instructions are those of coprocessors 10 and 11.
+    if (second >> 9) & 7 != 0b101 {
+        return None;
+    }
     let rn = first & 0xf;
     let rt = second >> 12;
     let loads = first & 0x10 != 0;
     match first & 0xef00 {
-        // Advanced SIMD and Armv8.1-M's vector instructions: not followed.
+        // Advanced SIMD and the rest of Armv8.1-M's vector instructions.
         0xef00 => None,
         // mcrr, mrrc and vmov between two core registers and floating-point
         // ones.
@@ -1048,9 +1087,9 @@ fn coprocessor(first: u16, second: u16) -> Option<Effect> {
                 Effect::new(pair, 0)
             })
         }
-        // ldc, stc, and the floating-point loads and stores: vldr, vstr,
-        // vldm, vstm, vpush and vpop, and Armv8-M's vlldm and vlstm. P, U
-        // and W are bits 8, 7 and 5.
+        // The floating-point loads and stores: vldr, vstr, vldm, vstm,
+        // vpush and vpop, and Armv8-M's vlldm and vlstm. P, U and W are
+        // bits 8, 7 and 5.
         0xec00 | 0xed00 => {
             let (p, u, w) = (first & 0x100 != 0, first & 0x80 != 0, first & 0x20 != 0);
             let writeback = w && !p || p && !u && w;
@@ -1090,8 +1129,8 @@ fn coprocessor(first: u16, second: u16) -> Option<Effect> {
                 }),
             })
         }
-        // cdp, mcr, mrc, vmov between a core register and a floating-point
-        // one, vmrs and vmsr, and the floating-point data processing.
+        // vmov between a core register and a floating-point one, vmrs and
+        // vmsr, and the floating-point data processing.
         _ => {
             if second & 0x10 == 0 {
                 // Data processing, which uses only floating-point
@@ -1099,8 +1138,8 @@ fn coprocessor(first: u16, second: u16) -> Option<Effect> {
                 return Some(Effect::new(0, 0));
             }
             if loads {
-                // mrc, vmov to a core register, and vmrs, which into pc
-                // sets the flags.
+                // vmov to a core register, and vmrs, which into pc sets the
+                // flags.
                 return Some(if rt == PC {
                     Effect::new(0, 0).sets_flags(true)
                 } else if rt == SP {
@@ -1299,11 +1338,25 @@ mod tests {
     #[test]
     fn branches_through_registers() {
         // blx r3; bx r3; bx lr; mov pc, r3; add pc, ip
-        assert_eq!(effect(0, &[0x98, 0x47]).flow, Flow::CallRegister(3));
-        assert_eq!(effect(0, &[0x18, 0x47]).flow, Flow::JumpRegister(3));
+        let thumb = LowBit::Thumb;
+        assert_eq!(effect(0, &[0x98, 0x47]).flow, Flow::CallRegister(3, thumb));
+        assert_eq!(effect(0, &[0x18, 0x47]).flow, Flow::JumpRegister(3, thumb));
         assert_eq!(effect(0, &[0x70, 0x47]).flow, Flow::Return);
-        assert_eq!(effect(0, &[0x9f, 0x46]).flow, Flow::JumpRegister(3));
+        assert_eq!(
+            effect(0, &[0x9f, 0x46]).flow,
+            Flow::JumpRegister(3, LowBit::Ignored)
+        );
         assert_eq!(effect(0, &[0xe7, 0x44]).flow, Flow::JumpRelative(12));
+        // blxns r4 and bxns r4
+        let security = LowBit::Security;
+        assert_eq!(
+            effect(0, &[0xa4, 0x47]).flow,
+            Flow::CallRegister(4, security)
+        );
+        assert_eq!(
+            effect(0, &[0x24, 0x47]).flow,
+            Flow::JumpRegister(4, security)
+        );
         // pop {r0, pc}, pop.w {r4, r5, r6, r7, r8, pc} and ldr.w pc, [sp],
         // #4 load pc from the stack; ldr.w pc, [r3, #4] from elsewhere.
         assert_eq!(effect(0, &[0x01, 0xbd]).flow, Flow::Pop);
@@ -1334,7 +1387,10 @@ mod tests {
         let call = effect(0, &[0xff, 0xf7, 0xd3, 0xff]);
         assert_eq!((call.writes, call.flow), (bit(LR), Flow::Call));
         let call = effect(0, &[0xa8, 0x47]);
-        assert_eq!((call.writes, call.flow), (bit(LR), Flow::CallRegister(5)));
+        assert_eq!(
+            (call.writes, call.flow),
+            (bit(LR), Flow::CallRegister(5, LowBit::Thumb))
+        );
     }
 
     #[test]
@@ -1460,6 +1516,18 @@ mod tests {
         // ldrd r0, r1, [sp], #8
         let pair = effect(0, &[0xfd, 0xe8, 0x02, 0x01]);
         assert_eq!(pair.writes, bit(0) | bit(1) | bit(SP));
+        // stl r2, [r3] and stlh r2, [r3] write nothing; strexb r1, r2,
+        // [r3] and stlex r1, r2, [r3] write their status to r1.
+        assert_eq!(effect(0, &[0xc3, 0xe8, 0xaf, 0x2f]).writes, 0);
+        assert_eq!(effect(0, &[0xc3, 0xe8, 0x9f, 0x2f]).writes, 0);
+        assert_eq!(effect(0, &[0xc3, 0xe8, 0x41, 0x2f]).writes, bit(1));
+        assert_eq!(effect(0, &[0xc3, 0xe8, 0xe1, 0x2f]).writes, bit(1));
+        // Armv8.1-M's clrm {r0, r1, r2, r4-fp, ip, APSR} zeroes them and
+        // the flags, and goes on.
+        let clear = effect(0, &[0x9f, 0xe8, 0xf7, 0x9f]);
+        assert_eq!(clear.writes, 0x1ff7);
+        assert!(clear.sets_flags);
+        assert_eq!(clear.flow, Flow::Next);
     }
 
     #[test]
@@ -1518,5 +1586,14 @@ mod tests {
         assert_eq!(decode(0, 0xea5f, 0x900f), None);
         assert_eq!(decode(0, 0xea50, 0x01cf), None);
         assert_eq!(decode(0, 0xea52, 0x432d), None);
+        // Armv8.1-M's vector instructions, which use coprocessor encodings:
+        // vaddv.u32 r4, q0, vmov r0, r1, q0[2], q0[0], vidup.u32 q0, r0, #4
+        // and vldrw.32 q0, [r0, #16]!. And the custom instruction cx1 p0,
+        // r0, #0.
+        assert_eq!(decode(0, 0xfef9, 0x4f00), None);
+        assert_eq!(decode(0, 0xec01, 0x0f00), None);
+        assert_eq!(decode(0, 0xee21, 0x0fee), None);
+        assert_eq!(decode(0, 0xedb0, 0x1f04), None);
+        assert_eq!(decode(0, 0xee00, 0x0000), None);
     }
 }

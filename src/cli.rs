@@ -111,7 +111,8 @@ pub enum Command {
 
 const HOW: &str = "\
 The HOW column says how one item uses the other:
-  call           a direct call
+  call           a direct call, or a call through a register that the
+                 code loaded with the target's address, as a long call does
   tail call      a jump to the start of a function, which then returns to
                  the caller's caller
   uses           code reads or writes data, or loads its address

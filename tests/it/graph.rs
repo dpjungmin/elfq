@@ -296,8 +296,8 @@ fn calls_between_flash_and_itcm_go_through_veneers() {
     );
 }
 
-/// c/far.c, built with each kind of veneer that GNU ld and LLD add for
-/// Cortex-M.
+/// c/far.c, built with the veneers that GNU ld and LLD add for Cortex-M,
+/// all but LLD's for `-pie` files.
 const FAR_SAMPLES: [&str; 8] = [
     "far-gnu-m4-nodebug.elf",
     "far-gnu-m4-pure-nodebug.elf",
@@ -310,7 +310,7 @@ const FAR_SAMPLES: [&str; 8] = [
 ];
 
 #[test]
-fn every_kind_of_veneer_jumps_to_its_target() {
+fn each_veneer_jumps_to_its_target() {
     for sample in FAR_SAMPLES {
         let (binary, graph) = load(sample);
         // GNU ld names them like __flash_work_veneer, and LLD like

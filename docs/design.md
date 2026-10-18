@@ -38,7 +38,7 @@ is (`graph::ReferenceKind`):
 
 | HOW | JSON `how` | Meaning |
 |---|---|---|
-| `call` | `call` | a direct call |
+| `call` | `call` | a direct call, or a call through a register that the code loaded with the target's address, as a long call does |
 | `tail call` | `tail call` | a jump into another function, which then returns to the caller's caller |
 | `uses` | `access` or `address taken` | code reads or writes data, or loads its address |
 | `address taken` | `address taken` | code loads the address of a function or an import, as when passing a function pointer |
@@ -176,12 +176,11 @@ edge of the ranges, one row for each pair of items and way of use, grouped
 by the item outside, largest first. A call that goes through a linker's
 veneer is listed as a call to the veneer's target, at the call to the
 veneer, which is in code someone wrote, with "via veneer" after how it
-calls. For now, elfq only
-recognizes the veneers GNU ld adds for Thumb-2 (`ldr.w pc, [pc]` and the
-target's address); other veneers are listed as functions of their own.
-elfq's exit status is then 1 when anything crosses, or might: through a
-call elfq can't follow, through a pointer to a function in the ranges, or
-in a function in them whose end elfq doesn't know. A CI job can then check
+calls. elfq knows the veneers that GNU ld and LLD add for Cortex-M
+(`arch::is_veneer`). elfq's exit status is then 1 when anything crosses,
+or might: through a call elfq can't follow, through a pointer to a
+function in the ranges, or in a function in them whose end elfq doesn't
+know. A CI job can then check
 that code in ITCM stays there, or that code run from RAM never touches
 flash. As with `diff`, the exit status is 0 otherwise, and 2 for any
 error, with or without ranges. When the reader stops early, as `head`
@@ -330,13 +329,14 @@ assembly without a `.size`, but C runtimes have such code (`_init`,
 
 ## How it works
 
-elfq reads the file, then answers one question. `binary` reads the file and
-finds its items; `graph` has `arch` read each function's code, connects the
-items by the references it finds, and works out the roots, the dominator
-tree and the shortest chains; and the command picks what to show and writes
-it, as a table that `render` lays out, or as JSON. `debuginfo` reads DWARF
-beside the graph, for `inlined`. [Life of a command](#life-of-a-command)
-follows one command through the functions that do this.
+elfq reads the file, then answers one question. `binary` reads the file,
+finds its items and has `arch` read each function's code once; `graph`
+connects the items by the references found there, and works out the roots,
+the dominator tree and the shortest chains; and the command picks what to
+show and writes it, as a table that `render` lays out, or as JSON.
+`debuginfo` reads DWARF beside the graph, for `inlined`. [Life of a
+command](#life-of-a-command) follows one command through the functions
+that do this.
 
 1. **Load** the file with the `object` crate: sections, symbols, entry point,
    dynamic relocations.
@@ -385,7 +385,7 @@ follows one command through the functions that do this.
    the instructions and reports direct calls, tail jumps to other items,
    indirect call sites (target unknown), and PC-relative references to items
    (`lea rip+...` on x86-64; `adr`, literal-pool `ldr` and `movw`/`movt` on
-   Thumb). It does not need a full disassembler, only these instructions. On
+   Thumb). On x86-64 it needs only these instructions. On
    Thumb it also skips the literal pools, jump tables and constants that
    `adr` points at inside functions, which would otherwise decode as
    instructions. A Thumb branch through a register goes where the code put
@@ -394,15 +394,22 @@ follows one command through the functions that do this.
    register and each word of the function's stack may hold, along every
    path through its code, using what `decode.rs` says each instruction
    does. Each address the register may hold there is a call or a tail jump,
-   except an even one, since Cortex-M cores fault on a branch to it, as to
-   the address 0 of a weak function that the program doesn't have. An
-   address that the code only branches to isn't also reported as used. elfq scans each function once, as it loads the file
-   (`Binary::code_references`). The entry point's code is a special case:
-   startup code copies or clears whole sections such as `.data` and
-   `.bss`, loading where each starts and ends through symbols that the
-   linker script defines, such as `_sdata` and `_edata`. When the entry
-   point loads both ends of a section, those addresses aren't uses of the
-   items that start there.
+   except an even one for `bx` and `blx`, since Cortex-M cores fault on a
+   branch to it, as to the address 0 of a weak function that the program
+   doesn't have; `bxns` and `blxns` go to Non-secure code there, and `mov
+   pc` ignores the low bit. A register that a call may change may still
+   hold what it held, as code built with GCC's `-fipa-ra` counts on, so a
+   branch through it after a call goes there or anywhere. An address that
+   the code only branches to isn't also reported as used. A function with
+   code that only a jump elfq doesn't follow leads to, such as the cases
+   of a switch that jumps through a table of addresses, keeps what reading
+   each instruction on its own finds. elfq scans each function once, as it
+   loads the file (`Binary::code_references`). The entry point's code is a
+   special case: startup code copies or clears whole sections such as
+   `.data` and `.bss`, loading where each starts and ends through symbols
+   that the linker script defines, such as `_sdata` and `_edata`. When the
+   entry point loads both ends of a section, those addresses aren't uses of
+   the items that start there.
    LLVM may merge small variables into one block (`.L_MergedGlobals`),
    which code uses through the block's address; that address counts as a
    use of each variable in the block.
@@ -510,8 +517,8 @@ cli.rs       1 Cli, Command
 render/      7 Table::tree, Table::write
 debuginfo/   (only for inlined)
 graph/       5 Graph::build, roots::find   6 DominatorTree::build
-binary/      3 Binary::load, unnamed_data::items
-arch/        3, 5 arch::scan
+binary/      3 Binary::load, scan_functions, unnamed_data::items
+arch/        3 arch::scan
 ```
 
 [CONTRIBUTING.md](../CONTRIBUTING.md#where-things-live) says what each
@@ -581,9 +588,10 @@ function's stack frame), and a query language.
    addresses a byte at a time, and elfq follows them only to a branch, so
    the variables such code uses are missing. `callers SYMBOL` and
    `callees SYMBOL` name a veneer as the caller of its target, where the
-   range forms name the function that calls the veneer. LLD's veneers for
-   Cortex-M0 in `-pie` files, which elfq takes for shared libraries, and
-   calls through a register on x86-64 aren't followed. A routine in ROM
+   range forms name the function that calls the veneer. An address that
+   code built with GCC's `-fipa-ra` keeps in r0 to r3 across a call and
+   then passes to a function isn't listed as taken. Calls through a
+   register on x86-64 aren't followed. A routine in ROM
    that only the linker script names shows as its address, since the
    symbol has no section. An assembly function whose symbol has no size,
    last in its section, counts as empty, so its calls are missing; the
@@ -592,6 +600,8 @@ function's stack frame), and a query language.
    adds rows to `callers`.
 4. **Shared libraries.** The functions that a library exports aren't roots
    yet, so `top`, `retained` and `why` refuse libraries, and also programs
-   linked with `-static-pie`, which elfq takes for libraries.
+   linked with `-static-pie`, which elfq takes for libraries. Arm firmware
+   linked with `-pie` and stripped has neither symbols nor an unwind
+   table, so elfq finds no functions in it.
 5. **Compressed DWARF.** `inlined` can't read debug info that the linker
    compressed (`--compress-debug-sections`).

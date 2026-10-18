@@ -146,7 +146,9 @@ Code in RAM at 0x0, as in a Cortex-M7's ITCM, calls code in flash at
 linker script ([c/far.ld](c/far.ld)) names, and the other way. These are
 further apart than one `bl` reaches, so the linker adds a veneer next to
 each such call, except for `flash_far`, which GCC calls through a register
-since it is declared `long_call`. Each file has another kind of veneer:
+since it is declared `long_call`. The files differ in linker, core and
+flags, which give these veneers; LLD's for `-pie` files has only a unit
+test:
 
 | File | Linker and core | Veneer |
 |---|---|---|

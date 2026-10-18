@@ -2,8 +2,10 @@
 //!
 //! Each instruction set has a module with a function `scan`: given a
 //! function's bytes and address, it reports every address the code calls,
-//! jumps to or otherwise uses. It doesn't need to understand anything else
-//! about the instructions. The graph module then works out which item each
+//! jumps to or otherwise uses. x86-64 needs nothing else about the
+//! instructions; Thumb also needs what each one does with the registers and
+//! the stack (`thumb/decode.rs`), to follow an address into a branch
+//! through a register. The graph module then works out which item each
 //! address belongs to.
 //!
 //! In stripped Cortex-M firmware, elfq also has to work out where functions
@@ -145,10 +147,11 @@ pub fn code_size(
 /// Whether `code` is all of a veneer: a stub that a linker puts near a call
 /// whose target is too far away for the call instruction, and that only
 /// jumps on to the target. Only Thumb has them: those that GNU ld and LLD
-/// add for Cortex-M.
-pub fn is_veneer(architecture: Architecture, code: &[u8]) -> bool {
+/// add for Cortex-M. `name` is the code's symbol, when it has one: code
+/// that a compiler may also make is a veneer only under a linker's name.
+pub fn is_veneer(architecture: Architecture, code: &[u8], name: Option<&str>) -> bool {
     match architecture {
-        Architecture::Arm => thumb::is_veneer(code),
+        Architecture::Arm => thumb::is_veneer(code, name),
         _ => false,
     }
 }

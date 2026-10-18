@@ -63,8 +63,10 @@ pub struct Reference {
 /// through a pointer, which elfq can't follow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ReferenceKind {
-    /// A direct call, or a call through a pointer that the loader fills in,
-    /// such as a global offset table entry, whose target is known.
+    /// A direct call, a call through a pointer that the loader fills in,
+    /// such as a global offset table entry, whose target is known, or on
+    /// Thumb, a call through a register that the code put the target's
+    /// address in, as a long call does.
     Call,
     /// A jump to another function, directly or through such a pointer,
     /// which then returns straight to the caller's caller.

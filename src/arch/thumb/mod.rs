@@ -159,24 +159,53 @@ pub(super) fn ending(code: &[u8], address: u64, endianness: Endianness) -> Endin
 /// ```
 ///
 /// Code that a compiler made, such as `ldr r3, [pc, #0]; bx r3`, is not a
-/// veneer: it is a function someone wrote.
-pub(super) fn is_veneer(code: &[u8]) -> bool {
-    VENEERS.iter().any(|&(instructions, word)| {
-        let size = 2 * instructions.len() + if word { 4 } else { 0 };
+/// veneer: it is a function someone wrote. Clang makes the same code as
+/// the `movw` and `movt` veneers for a function that only calls on with
+/// `-mexecute-only` and `-mlong-calls`, when its arguments fill r0 to r3,
+/// so code like theirs is a veneer only without a `name` from the symbol
+/// table, or under one that a linker gives veneers (see
+/// [`is_linker_name`]).
+pub(super) fn is_veneer(code: &[u8], name: Option<&str>) -> bool {
+    VENEERS.iter().any(|veneer| {
+        let size = 2 * veneer.instructions.len() + if veneer.word { 4 } else { 0 };
         code.len() == size
-            && instructions.iter().enumerate().all(|(index, halfword)| {
-                let bits = u16::from_le_bytes([code[2 * index], code[2 * index + 1]]);
-                bits & halfword.mask == halfword.bits
-            })
+            && veneer
+                .instructions
+                .iter()
+                .enumerate()
+                .all(|(index, halfword)| {
+                    let bits = u16::from_le_bytes([code[2 * index], code[2 * index + 1]]);
+                    bits & halfword.mask == halfword.bits
+                })
+            && !(veneer.compilers_make_it && name.is_some_and(|name| !is_linker_name(name)))
     })
 }
 
-/// The veneers that [`is_veneer`] recognizes, as their instructions, and
-/// whether a word follows them.
-const VENEERS: [(&[Halfword], bool); 8] = [
-    (&[exactly(0xf85f), exactly(0xf000)], true),
-    (
-        &[
+/// Whether `name` is one that GNU ld or LLD gives a veneer, such as
+/// `__flash_work_veneer` or `__Thumbv7ABSLongThunk_flash_work`.
+fn is_linker_name(name: &str) -> bool {
+    name.starts_with("__") && (name.ends_with("_veneer") || name.contains("LongThunk_"))
+}
+
+/// A veneer that [`is_veneer`] recognizes.
+struct Veneer {
+    instructions: &'static [Halfword],
+    /// Whether a word, the target or its offset from pc, follows them.
+    word: bool,
+    /// Whether a compiler makes the same code for a function someone
+    /// wrote.
+    compilers_make_it: bool,
+}
+
+/// The veneers that [`is_veneer`] recognizes, in the order of its list.
+const VENEERS: [Veneer; 8] = [
+    Veneer {
+        instructions: &[exactly(0xf85f), exactly(0xf000)],
+        word: true,
+        compilers_make_it: false,
+    },
+    Veneer {
+        instructions: &[
             exactly(0xb401),
             exactly(0x4802),
             exactly(0x4684),
@@ -184,10 +213,11 @@ const VENEERS: [(&[Halfword], bool); 8] = [
             exactly(0x4760),
             exactly(0xbf00),
         ],
-        true,
-    ),
-    (
-        &[
+        word: true,
+        compilers_make_it: false,
+    },
+    Veneer {
+        instructions: &[
             exactly(0xb401),
             exactly(0x4802),
             exactly(0x46fc),
@@ -195,11 +225,16 @@ const VENEERS: [(&[Halfword], bool); 8] = [
             exactly(0xbc01),
             exactly(0x4760),
         ],
-        true,
-    ),
-    (&[MOVW_IP, TO_IP, MOVT_IP, TO_IP, exactly(0x4760)], false),
-    (
-        &[
+        word: true,
+        compilers_make_it: false,
+    },
+    Veneer {
+        instructions: &[MOVW_IP, TO_IP, MOVT_IP, TO_IP, exactly(0x4760)],
+        word: false,
+        compilers_make_it: true,
+    },
+    Veneer {
+        instructions: &[
             MOVW_IP,
             TO_IP,
             MOVT_IP,
@@ -207,19 +242,21 @@ const VENEERS: [(&[Halfword], bool); 8] = [
             exactly(0x44fc),
             exactly(0x4760),
         ],
-        false,
-    ),
-    (
-        &[
+        word: false,
+        compilers_make_it: true,
+    },
+    Veneer {
+        instructions: &[
             exactly(0xb403),
             exactly(0x4801),
             exactly(0x9001),
             exactly(0xbd01),
         ],
-        true,
-    ),
-    (
-        &[
+        word: true,
+        compilers_make_it: false,
+    },
+    Veneer {
+        instructions: &[
             exactly(0xb403),
             MOVS_R0,
             exactly(0x0200),
@@ -231,10 +268,11 @@ const VENEERS: [(&[Halfword], bool); 8] = [
             exactly(0x9001),
             exactly(0xbd01),
         ],
-        false,
-    ),
-    (
-        &[
+        word: false,
+        compilers_make_it: false,
+    },
+    Veneer {
+        instructions: &[
             exactly(0xb401),
             exactly(0x4802),
             exactly(0x4684),
@@ -242,8 +280,9 @@ const VENEERS: [(&[Halfword], bool); 8] = [
             exactly(0x44e7),
             exactly(0x46c0),
         ],
-        true,
-    ),
+        word: true,
+        compilers_make_it: false,
+    },
 ];
 
 /// 16 bits of a veneer's instructions: the bits under `mask` are `bits`.
@@ -807,20 +846,30 @@ mod tests {
             ],
         ];
         for veneer in veneers {
-            assert!(is_veneer(veneer), "{veneer:02x?}");
+            assert!(is_veneer(veneer, None), "{veneer:02x?}");
+            assert!(is_veneer(veneer, Some("__flash_work_veneer")));
+            assert!(is_veneer(veneer, Some("__Thumbv7ABSLongThunk_flash_work")));
             // Not the same code in a longer function.
-            assert!(!is_veneer(&[veneer, &[0x70, 0x47]].concat()));
+            assert!(!is_veneer(&[veneer, &[0x70, 0x47]].concat(), None));
         }
         // Nor a b.w, nor a function that a compiler made:
         // ldr r3, [pc, #0]; bx r3; .word 0x30000069
-        assert!(!is_veneer(&[0x00, 0xf0, 0x00, 0xb8]));
-        assert!(!is_veneer(&[
-            0x00, 0x4b, 0x18, 0x47, 0x69, 0x00, 0x00, 0x30
-        ]));
+        assert!(!is_veneer(&[0x00, 0xf0, 0x00, 0xb8], None));
+        assert!(!is_veneer(
+            &[0x00, 0x4b, 0x18, 0x47, 0x69, 0x00, 0x00, 0x30],
+            None
+        ));
         // Nor movw and movt of another register: r3, then bx r3.
-        assert!(!is_veneer(&[
-            0x40, 0xf2, 0x61, 0x03, 0xc3, 0xf2, 0x00, 0x03, 0x18, 0x47
-        ]));
+        assert!(!is_veneer(
+            &[0x40, 0xf2, 0x61, 0x03, 0xc3, 0xf2, 0x00, 0x03, 0x18, 0x47],
+            None
+        ));
+        // Clang makes movw ip, #0x59; movt ip, #0x3000; bx ip for a
+        // function that only calls on, which is a veneer only under a
+        // linker's name. A linker's other veneers are veneers under any.
+        let movw = [0x40, 0xf2, 0x59, 0x0c, 0xc3, 0xf2, 0x00, 0x0c, 0x60, 0x47];
+        assert!(!is_veneer(&movw, Some("ram_forward")));
+        assert!(is_veneer(veneers[0], Some("ram_forward")));
     }
 
     #[test]
