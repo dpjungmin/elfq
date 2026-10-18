@@ -56,7 +56,12 @@ pub(super) fn read(
                     });
                     RelocationTarget::Import(index)
                 } else {
-                    let mut target = symbol.address().wrapping_add_signed(relocation.addend());
+                    let addend = if adds_addend(architecture, r_type) {
+                        relocation.addend()
+                    } else {
+                        0
+                    };
+                    let mut target = symbol.address().wrapping_add_signed(addend);
                     if symbol.kind() == SymbolKind::Text {
                         target = code_address(architecture, target);
                     }
@@ -69,6 +74,17 @@ pub(super) fn read(
     }
     relocations.sort_by_key(|relocation| relocation.address);
     (imports, relocations)
+}
+
+/// Whether a relocation type that stores a symbol's address adds the addend
+/// to it. x86-64's `GLOB_DAT` and `JUMP_SLOT` store the address alone,
+/// whatever their addend: glibc's `libc.so.6` gives each `JUMP_SLOT` an
+/// address in its stub as the addend.
+fn adds_addend(architecture: Architecture, r_type: elf::RelocationType) -> bool {
+    match architecture {
+        Architecture::X86_64 => !matches!(r_type, elf::R_X86_64_GLOB_DAT | elf::R_X86_64_JUMP_SLOT),
+        _ => true,
+    }
 }
 
 /// Whether a relocation type stores an address, as opposed to something like

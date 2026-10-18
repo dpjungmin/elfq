@@ -9,7 +9,7 @@ known answers.
 testdata/
 ├── build.sh     Rebuilds everything in bin/ from the sources.
 ├── bin/         The built files (committed).
-├── c/           C samples: app.c plus a platform file per target, and deep.c.
+├── c/           C samples: app.c plus a platform file per target, deep.c and plt.c.
 ├── cpp/         C++ sample: the kinds of names C++ compilers make.
 └── rust/        Rust sample: the same program, plus Rust-only patterns.
 ```
@@ -19,17 +19,20 @@ testdata/
 | File | Language | Target |
 |---|---|---|
 | `c-x86_64*.elf` | C | x86-64 Linux, PIE, dynamically linked against glibc |
+| `c-x86_64.so` | C | x86-64 Linux, the same code as a shared library |
+| `c-plt.so` | C | x86-64 Linux shared library built without Intel CET, whose code calls its own functions through each kind of PLT stub |
 | `c-cortex-m4*.elf` | C | Cortex-M4 bare metal, newlib-nano, `--gc-sections` |
 | `c-cortex-m4-cmsis*.elf` | C | The same, laid out as CMSIS's linker script template does |
 | `c-cortex-m7*.elf` | C | Cortex-M7 bare metal, with code and data in TCM, OCRAM and flash |
 | `c-deep.elf` | C | x86-64 Linux, PIE, with calls and inlined code nested 20 deep |
 | `cpp-x86_64*.elf` | C++ | x86-64 Linux, PIE, dynamically linked against glibc and libstdc++ |
+| `cpp-x86_64.so` | C++ | x86-64 Linux, the same code as a shared library |
 | `rust-x86_64*.elf` | Rust | x86-64 Linux, std |
 | `rust-cortex-m4*.elf` | Rust | Cortex-M4 bare metal, `no_std` |
 
 Each comes in up to three variants, matching what people usually have
-(`c-deep.elf` only in the first, `c-cortex-m4-cmsis` only in the last
-two):
+(`c-deep.elf`, `c-x86_64.so`, `cpp-x86_64.so` and `c-plt.so` only in the
+first, `c-cortex-m4-cmsis` only in the last two):
 
 | Suffix | Symbols | DWARF | Typical of |
 |---|---|---|---|
@@ -66,6 +69,40 @@ On Cortex-M ([c/platform_cortexm.c](c/platform_cortexm.c)), `Reset_Handler`
 is the entry point and `SysTick_Handler` is reached only through
 `vector_table`, which is data. The compiler turned `Reset_Handler`'s copy and
 clear loops into calls to `memcpy` and `memset`.
+
+### Shared library sample
+
+The C sample for x86-64 Linux again, built with `-shared -fPIC` as a
+library. Another library loaded first may replace any function this one
+exports, so its code calls its own exported functions through PLT stubs,
+as it calls imports: `process_frame` calls `log_msg@plt`, which jumps to
+`log_msg`. Only `static` functions, such as `crc32`, are called directly.
+
+| Item | Expected answer |
+|---|---|
+| `log_msg` | The same callers as in `c-x86_64.elf`, all through `log_msg@plt`. |
+| `log_msg@plt` | A 16-byte stub that jumps to `log_msg`. |
+| `main` | Calls `app_tick`, `dispatch_event`, `process_frame`, `register_handler` and `report`, each through its stub. |
+
+`cpp-x86_64.so` is the C++ sample built the same way, for the names of
+these stubs in C++: `main` calls `app::log(unsigned int)@plt`, which jumps
+to `app::log(unsigned int)`.
+
+### PLT sample ([c/plt.c](c/plt.c))
+
+A shared library built with `-fcf-protection=none`. Without Intel CET,
+GNU ld puts no `endbr64` in PLT stubs, so there is no `.plt.sec`: `.plt`
+holds a header and 16-byte stubs, and `.plt.got`, for functions whose
+address the code also takes, holds 8-byte stubs.
+
+| Item | Expected answer |
+|---|---|
+| `.plt` | A 16-byte header, then stubs for `twice`, `pick`, `square` and `sum_to`. |
+| `.plt.got` | 8-byte stubs for `negate`, `__cxa_finalize` and `thrice`, in that order. |
+| `run` | Calls `twice`, `thrice`, `negate`, `sum_to` and `pick`, each through its stub. |
+| `pick` | Takes the addresses of `thrice` and `negate`. |
+| `sum_to` | An ifunc. Its symbol shares an address with `sum_to_resolver`, which picks `sum_fast` or `sum_plain` when the library is loaded, and its stub's pointer has an `IRELATIVE` relocation to that address. |
+| `square` | An ifunc that nothing calls. `pick_square` takes its address, which is the address of its stub. |
 
 ### Cortex-M7 sample ([c/platform_cortexm7.c](c/platform_cortexm7.c))
 

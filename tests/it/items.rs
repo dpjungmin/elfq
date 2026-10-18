@@ -20,6 +20,33 @@ fn item<'a>(binary: &'a Binary, name: &str) -> &'a Item {
         .unwrap_or_else(|| panic!("no item named {name}"))
 }
 
+/// The PLT stubs, and the headers before them, as (name, address, size).
+fn plt_items(binary: &Binary) -> Vec<(&str, u64, u64)> {
+    binary
+        .items
+        .iter()
+        .filter(|item| item.source == Source::Plt)
+        .map(|item| (item.name.as_str(), item.address, item.size))
+        .collect()
+}
+
+/// The names of the stubs for the file's own functions, each with the
+/// function's name, sorted.
+fn own_function_stubs(binary: &Binary) -> Vec<(&str, &str)> {
+    let mut stubs: Vec<(&str, &str)> = binary
+        .own_function_stubs()
+        .into_iter()
+        .map(|(stub, function)| {
+            (
+                binary.items[stub].name.as_str(),
+                binary.items[function].name.as_str(),
+            )
+        })
+        .collect();
+    stubs.sort();
+    stubs
+}
+
 fn functions(binary: &Binary) -> Vec<&Item> {
     binary
         .items
@@ -80,15 +107,8 @@ fn plt_stubs_are_named_after_the_imports_they_call() {
     // Both PLT layouts: GCC's, with `.plt.sec` and `.plt.got`, and lld's
     // single `.plt` (Rust).
     for sample in ["c-x86_64.elf", "c-x86_64-stripped.elf"] {
-        let binary = load_sample(sample);
-        let stubs: Vec<(&str, u64, u64)> = binary
-            .items
-            .iter()
-            .filter(|item| item.source == Source::Plt)
-            .map(|item| (item.name.as_str(), item.address, item.size))
-            .collect();
         assert_eq!(
-            stubs,
+            plt_items(&load_sample(sample)),
             [
                 (".plt", 0x1020, 64),
                 ("__cxa_finalize@plt", 0x1060, 16),
@@ -101,6 +121,79 @@ fn plt_stubs_are_named_after_the_imports_they_call() {
     }
     let binary = load_sample("rust-x86_64-stripped.elf");
     assert_eq!(item(&binary, "_Unwind_Resume@plt").address, 0x51cb0);
+}
+
+#[test]
+fn stubs_in_a_plt_got_without_cet_are_8_bytes_long() {
+    let binary = load_sample("c-plt.so");
+    assert_eq!(
+        plt_items(&binary),
+        [
+            (".plt", 0x1020, 16),
+            ("twice@plt", 0x1030, 16),
+            ("pick@plt", 0x1040, 16),
+            ("square@plt", 0x1050, 16),
+            ("sum_to@plt", 0x1060, 16),
+            ("negate@plt", 0x1070, 8),
+            ("__cxa_finalize@plt", 0x1078, 8),
+            ("thrice@plt", 0x1080, 8),
+        ]
+    );
+}
+
+#[test]
+fn stubs_for_the_files_own_functions_are_named_after_them() {
+    // A shared library calls the functions it exports through stubs, so
+    // that another file can replace them.
+    let library = load_sample("c-x86_64.so");
+    let names: Vec<&str> = plt_items(&library)
+        .into_iter()
+        .map(|(name, _, _)| name)
+        .collect();
+    assert_eq!(
+        names,
+        [
+            ".plt",
+            "__cxa_finalize@plt",
+            "write@plt",
+            "strlen@plt",
+            "__stack_chk_fail@plt",
+            "dispatch_event@plt",
+            "app_tick@plt",
+            "process_frame@plt",
+            "log_msg@plt",
+            "platform_write@plt",
+            "register_handler@plt",
+            "report@plt",
+        ]
+    );
+    assert_eq!(
+        own_function_stubs(&library),
+        [
+            ("app_tick@plt", "app_tick"),
+            ("dispatch_event@plt", "dispatch_event"),
+            ("log_msg@plt", "log_msg"),
+            ("platform_write@plt", "platform_write"),
+            ("process_frame@plt", "process_frame"),
+            ("register_handler@plt", "register_handler"),
+            ("report@plt", "report"),
+        ]
+    );
+    // An ifunc's stub, such as `sum_to@plt`, leads to its resolver, which
+    // shares the ifunc's symbol.
+    assert_eq!(
+        own_function_stubs(&load_sample("c-plt.so")),
+        [
+            ("negate@plt", "negate"),
+            ("pick@plt", "pick"),
+            ("square@plt", "square"),
+            ("sum_to@plt", "sum_to"),
+            ("thrice@plt", "thrice"),
+            ("twice@plt", "twice"),
+        ]
+    );
+    // This program calls its own functions directly.
+    assert!(own_function_stubs(&load_sample("c-x86_64.elf")).is_empty());
 }
 
 #[test]

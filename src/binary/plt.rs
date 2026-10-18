@@ -5,18 +5,32 @@
 //! pointer that the dynamic loader fills in. No symbol names the stubs, so
 //! elfq names each one after the import its pointer leads to, as `objdump`
 //! does: `write@plt`.
+//!
+//! Code also calls some of the file's own functions through stubs, which
+//! elfq names after the function:
+//!
+//! - a shared library calls the functions it exports through stubs, so
+//!   that another file can replace them: `log_msg@plt` jumps to the
+//!   library's own `log_msg`, unless the program defines one too;
+//! - any file calls an ifunc, a function that picks its code when the file
+//!   is loaded, through a stub whose pointer the loader sets to the code
+//!   the ifunc's resolver picks. The ifunc's symbol is at the resolver, so
+//!   the stub is named after the function there: `strlen@plt` in glibc.
+//!   When no symbol is at the resolver, as in a stripped library, elfq
+//!   makes no item for the stub.
+
+use std::collections::HashMap;
 
 use object::Architecture;
 
-use super::{Binary, Item, ItemKind, RelocationTarget, Source};
-
-/// Every x86-64 PLT entry is 16 bytes long.
-const ENTRY_SIZE: u64 = 16;
+use super::{Binary, Item, ItemKind, RelocationTarget, Section, Source};
 
 /// Returns a function for each stub, and one for the rest of each table
 /// before its first stub: the header that lazy binding uses, named after its
-/// section (`.plt`).
-pub(super) fn stubs(binary: &Binary) -> Vec<Item> {
+/// section (`.plt`). `symbols` are the items from the symbol tables, sorted
+/// by kind, then by address, which name the stubs for the file's own
+/// functions.
+pub(super) fn stubs(binary: &Binary, symbols: &[Item]) -> Vec<Item> {
     if binary.architecture != Architecture::X86_64 {
         return Vec::new();
     }
@@ -28,25 +42,24 @@ pub(super) fn stubs(binary: &Binary) -> Vec<Item> {
         let Some(code) = binary.bytes(section.address, section.size) else {
             continue;
         };
+        let entry_size = entry_size(section);
         let mut first_stub = None;
-        for (number, entry) in code.chunks(ENTRY_SIZE as usize).enumerate() {
-            let address = section.address + number as u64 * ENTRY_SIZE;
-            let import = jump_slot(entry, address)
-                .and_then(|slot| binary.relocation_at(slot))
-                .and_then(|relocation| match relocation.target {
-                    RelocationTarget::Import(import) => Some(import),
-                    RelocationTarget::Address(_) => None,
-                });
-            let Some(import) = import else {
-                continue;
+        for (number, entry) in code.chunks(entry_size as usize).enumerate() {
+            let address = section.address + number as u64 * entry_size;
+            let (name, aliases) = match target(binary, entry, address) {
+                Some(RelocationTarget::Import(import)) => (&binary.imports[import], &[][..]),
+                Some(RelocationTarget::Address(target)) => match function_at(symbols, target) {
+                    Some(function) => (&function.name, &function.aliases[..]),
+                    None => continue,
+                },
+                None => continue,
             };
             first_stub.get_or_insert(address);
-            items.push(function(
-                format!("{}@plt", binary.imports[import]),
-                address,
-                entry.len() as u64,
-                index,
-            ));
+            let mut stub = function(format!("{name}@plt"), address, entry.len() as u64, index);
+            // So that `realloc@plt` finds glibc's stub for `__libc_realloc`,
+            // whose alias it is, as objdump names it.
+            stub.aliases = aliases.iter().map(|alias| format!("{alias}@plt")).collect();
+            items.push(stub);
         }
         let header_end = first_stub.unwrap_or(section.address + section.size);
         if header_end > section.address {
@@ -59,6 +72,64 @@ pub(super) fn stubs(binary: &Binary) -> Vec<Item> {
         }
     }
     items
+}
+
+/// The stubs for the file's own functions, each with that function, as
+/// indices into [`Binary::items`].
+pub(super) fn own_function_stubs(binary: &Binary) -> HashMap<usize, usize> {
+    let mut stubs = HashMap::new();
+    for (index, stub) in binary.items.iter().enumerate() {
+        // Headers are named after their section.
+        let Some(name) = stub.name.strip_suffix("@plt") else {
+            continue;
+        };
+        if stub.source != Source::Plt {
+            continue;
+        }
+        let Some(entry) = binary.bytes(stub.address, stub.size) else {
+            continue;
+        };
+        let Some(RelocationTarget::Address(target)) = target(binary, entry, stub.address) else {
+            continue;
+        };
+        // The function that `stubs` named the stub after.
+        let first = binary.items.partition_point(|item| item.address < target);
+        let function = binary.items[first..]
+            .iter()
+            .take_while(|item| item.address == target)
+            .position(|item| item.kind == ItemKind::Function && item.name == name);
+        if let Some(function) = function {
+            stubs.insert(index, first + function);
+        }
+    }
+    stubs
+}
+
+/// Where the PLT entry at `address` jumps: what the dynamic loader stores in
+/// the pointer it jumps through, as a relocation says. `None` when no
+/// relocation fills that pointer, as for the header, whose pointer leads to
+/// the loader's own code.
+fn target(binary: &Binary, entry: &[u8], address: u64) -> Option<RelocationTarget> {
+    let slot = jump_slot(entry, address)?;
+    Some(binary.relocation_at(slot)?.target)
+}
+
+/// The function among `symbols`, sorted by kind and then by address, that
+/// starts at `address`.
+fn function_at(symbols: &[Item], address: u64) -> Option<&Item> {
+    let index = symbols
+        .binary_search_by_key(&(ItemKind::Function, address), |item| {
+            (item.kind, item.address)
+        })
+        .ok()?;
+    Some(&symbols[index])
+}
+
+/// How long each entry in a PLT section is: 16 bytes, except in a
+/// `.plt.got` that GNU ld makes without Intel CET, whose entries are 8 bytes
+/// long, as its header says.
+fn entry_size(section: &Section) -> u64 {
+    if section.entry_size == 8 { 8 } else { 16 }
 }
 
 /// The address of the pointer that an x86-64 PLT entry jumps through, from

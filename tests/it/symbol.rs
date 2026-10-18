@@ -35,6 +35,40 @@ fn names_addresses_and_imports() {
 }
 
 #[test]
+fn a_shared_librarys_function_is_not_its_stub() {
+    let binary = load_sample("c-x86_64.so");
+    assert_eq!(found(&binary, "log_msg"), "log_msg");
+    assert_eq!(found(&binary, "log_msg@plt"), "log_msg@plt");
+    // A typo suggests only the function, not its stub.
+    assert_eq!(
+        error(&binary, "log_mgs"),
+        "no function or data object is named `log_mgs`; did you mean log_msg?"
+    );
+    assert_eq!(
+        error(&binary, "log_ms"),
+        "no function or data object is named `log_ms`; did you mean log_msg?"
+    );
+
+    // In C++ too, the end of a name means the function, while the end of
+    // its stub's name, with `@plt`, means the stub.
+    let binary = load_sample("cpp-x86_64.so");
+    assert_eq!(
+        found(&binary, "process_frame"),
+        "app::process_frame(app::Frame const&, app::Stage&)"
+    );
+    assert_eq!(
+        error(&binary, "log"),
+        "`log` could mean 2 functions; use one of the names on the left instead:
+  'log(char const*)'   app::log(char const*)
+  'log(unsigned int)'  app::log(unsigned int)"
+    );
+    assert_eq!(
+        found(&binary, "log(unsigned int)@plt"),
+        "app::log(unsigned int)@plt"
+    );
+}
+
+#[test]
 fn the_end_of_a_rust_path_is_enough() {
     let binary = load_sample("rust-x86_64-nodebug.elf");
     assert_eq!(
