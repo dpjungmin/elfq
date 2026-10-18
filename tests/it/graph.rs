@@ -313,6 +313,19 @@ fn imports_are_reached_through_stubs_and_the_global_offset_table() {
 }
 
 #[test]
+fn a_shared_library_reaches_its_own_functions_through_stubs() {
+    let (binary, graph) = load("c-x86_64.so");
+    let process_frame = callees(&binary, &graph, "process_frame");
+    for stub in ["dispatch_event@plt", "log_msg@plt"] {
+        assert!(process_frame.contains(&(stub.to_string(), Call)), "{stub}");
+    }
+    assert_eq!(
+        callees(&binary, &graph, "log_msg@plt"),
+        pairs(&[("log_msg", TailCall)])
+    );
+}
+
+#[test]
 fn stripping_keeps_the_calls_between_functions() {
     // Names differ, so compare by address. Stripped files lose their data
     // symbols, which changes how code reaches data, and the few functions

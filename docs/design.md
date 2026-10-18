@@ -231,8 +231,9 @@ references and computes dominators and paths, `commands` run queries, and
    dynamic relocations.
 2. **Discover items**, each with an address, size and a record of how it was
    found. Sources, best first: the symbol table; the dynamic symbol table;
-   PLT stubs, named after the import they jump to (`write@plt`), and arrays
-   of startup functions such as `.init_array`, named after their section;
+   PLT stubs, named after the import they jump to (`write@plt`) or the
+   file's own function (`log_msg@plt`), and arrays of startup functions
+   such as `.init_array`, named after their section;
    `.eh_frame` entries (on x86-64 they cover almost every function, even in
    stripped files); the entry point, and the Cortex-M vector table when no
    item covers any of it, named after its section, or after the section and
@@ -280,8 +281,8 @@ references and computes dominators and paths, `commands` run queries, and
    entry other than a reserved one is neither 0 nor the address of Thumb
    code, or the table's section ends, less the reserved entries at its end
    that hold other words, which are code after a short table. Not yet:
-   exported symbols of shared libraries, which need a shared-library sample,
-   and `--root SYMBOL`. Non-allocated sections and unwind tables
+   the functions that shared libraries export, and `--root SYMBOL`.
+   Non-allocated sections and unwind tables
    (`.eh_frame`, `.ARM.exidx`) are never sources of references; otherwise
    everything would look reachable. One more source is only on Arm: LLVM
    merges small variables into one block (`.L_MergedGlobals`) and code uses

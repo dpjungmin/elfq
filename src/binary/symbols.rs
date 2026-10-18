@@ -31,8 +31,9 @@ enum Binding {
     Global,
 }
 
-/// Returns one item per address that has function or data symbols, and the
-/// blocks of merged variables, as `(address, size)`.
+/// Returns one item per kind and address that has function or data symbols,
+/// sorted by kind, then by address, and the blocks of merged variables, as
+/// `(address, size)`.
 pub(super) fn items(file: &object::File, sections: &[Section]) -> (Vec<Item>, Vec<(u64, u64)>) {
     let mut candidates: Vec<Candidate> = file
         .symbols()

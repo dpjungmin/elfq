@@ -86,7 +86,8 @@ pub(super) fn find(binary: &Binary) -> Vec<Root> {
             );
         }
     }
-    // PLT headers are named after their section; the stubs after imports.
+    // PLT headers are named after their section; the stubs after what they
+    // jump to.
     let plt_headers = (0..binary.items.len()).filter(|&index| {
         let item = &binary.items[index];
         item.source == Source::Plt && item.name == binary.sections[item.section].name

@@ -14,7 +14,7 @@
 //! memory instead (see [`subject`]).
 
 use std::cell::OnceCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context, Result, anyhow, bail};
 
@@ -100,6 +100,11 @@ pub(super) struct Names<'a> {
     full: HashMap<&'a str, Vec<Node>>,
     /// Short names of items, built the first time a query isn't a full name.
     short: OnceCell<HashMap<String, Vec<Node>>>,
+    /// The PLT stubs that jump to the file's own functions. Only their short
+    /// names that end in `@plt` find them (see [`Names::short_names_of`]),
+    /// and they are never suggested, since a name like theirs means the
+    /// function.
+    own_function_stubs: HashSet<usize>,
 }
 
 impl<'a> Names<'a> {
@@ -121,6 +126,7 @@ impl<'a> Names<'a> {
             binary,
             full,
             short: OnceCell::new(),
+            own_function_stubs: binary.own_function_stubs().into_keys().collect(),
         }
     }
 
@@ -137,15 +143,26 @@ impl<'a> Names<'a> {
     fn short(&self) -> &HashMap<String, Vec<Node>> {
         self.short.get_or_init(|| {
             let mut short: HashMap<String, Vec<Node>> = HashMap::new();
-            for (index, item) in self.binary.items.iter().enumerate() {
-                for name in item.names() {
-                    for short_name in short_names(name) {
-                        add(short.entry(short_name).or_default(), Node::Item(index));
-                    }
+            for index in 0..self.binary.items.len() {
+                for short_name in self.short_names_of(index) {
+                    add(short.entry(short_name).or_default(), Node::Item(index));
                 }
             }
             short
         })
+    }
+
+    /// The short names of item `index` (see [`short_names`]). A stub for one
+    /// of the file's own functions keeps only those that end in `@plt`:
+    /// `app::log(unsigned int)@plt` is also `log(unsigned int)@plt`, but not
+    /// `log`, which means the function.
+    fn short_names_of(&self, index: usize) -> Vec<String> {
+        let own_function_stub = self.own_function_stubs.contains(&index);
+        self.binary.items[index]
+            .names()
+            .flat_map(short_names)
+            .filter(|short_name| !own_function_stub || short_name.ends_with("@plt"))
+            .collect()
     }
 
     /// The shortest thing to type that finds only `node`: a short name, a
@@ -162,9 +179,11 @@ impl<'a> Names<'a> {
                 (vec![import], import.clone())
             }
         };
+        // A stub for one of the file's own functions has the function's
+        // mangled names as aliases, with `@plt` added.
         let mut queries: Vec<String> = names
             .into_iter()
-            .filter(|name| demangle(name).is_none())
+            .filter(|name| demangle(name.strip_suffix("@plt").unwrap_or(name)).is_none())
             .flat_map(|name| short_names(name).into_iter().chain([name.to_string()]))
             .collect();
         queries.sort_by(|a, b| a.len().cmp(&b.len()).then(a.cmp(b)));
@@ -232,14 +251,18 @@ impl<'a> Names<'a> {
                 .min()
         };
 
-        let items = (0..self.binary.items.len()).map(|index| {
-            let item = &self.binary.items[index];
-            (
-                Node::Item(index),
-                item.name.as_str(),
-                item.names().collect(),
-            )
-        });
+        // A stub for one of the file's own functions is left out: its
+        // function is the one to suggest.
+        let items = (0..self.binary.items.len())
+            .filter(|index| !self.own_function_stubs.contains(index))
+            .map(|index| {
+                let item = &self.binary.items[index];
+                (
+                    Node::Item(index),
+                    item.name.as_str(),
+                    item.names().collect(),
+                )
+            });
         let imports = (0..self.binary.imports.len()).map(|index| {
             let import = self.binary.imports[index].as_str();
             (Node::Import(index), import, vec![import])

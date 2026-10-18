@@ -152,7 +152,7 @@ fn a_shared_library_gets_an_overview() {
         &stdout(&[LIBRARY_SAMPLE]),
         "\
 testdata/bin/c-x86_64.so: x86-64 shared library, with symbols and DWARF debug info
-31 functions and 34 data objects, 4085 bytes of code and data, plus 7 imports
+38 functions and 34 data objects, 4197 bytes of code and data, plus 7 imports
 
 Try:
   elfq testdata/bin/c-x86_64.so callers parse_value

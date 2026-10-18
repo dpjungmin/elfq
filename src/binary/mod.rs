@@ -38,7 +38,7 @@ pub use names::{demangle, short_names};
 pub use range::{AddressRange, MemoryBlock, hex_number, memory_blocks};
 pub use vector_table::VectorTable;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::Path;
 
@@ -185,8 +185,9 @@ pub enum Source {
     EhFrame,
     /// The ELF header's entry point. The item has no name of its own.
     EntryPoint,
-    /// The procedure linkage table. The item is a stub named after the
-    /// import it jumps to, or the table's header named after its section.
+    /// The procedure linkage table. The item is a stub named after what it
+    /// jumps to, an import (`write@plt`) or one of the file's own functions
+    /// (`log_msg@plt`), or the table's header named after its section.
     Plt,
     /// A section with a known purpose and no symbol, such as `.init_array`
     /// or the vector table's. The item is named after the section, or when
@@ -312,7 +313,8 @@ impl Binary {
 
         let (mut items, merged_variables) = symbols::items(&file, &binary.sections);
         binary.merged_variables = merged_variables;
-        add_new_items(&mut items, plt::stubs(&binary));
+        let stubs = plt::stubs(&binary, &items);
+        add_new_items(&mut items, stubs);
         add_new_items(&mut items, section_items(&binary.sections));
         match eh_frame::read(&file) {
             Ok(table) => {
@@ -481,6 +483,15 @@ impl Binary {
             .binary_search_by_key(&address, |relocation| relocation.address)
             .ok()?;
         Some(&self.relocations[index])
+    }
+
+    /// The PLT stubs for functions in this file, each with its function, as
+    /// indices into [`Binary::items`]. A shared library calls the functions
+    /// it exports through stubs such as `log_msg@plt`, and any file calls an
+    /// ifunc through one, whose function is the ifunc's resolver (see
+    /// `plt.rs`).
+    pub fn own_function_stubs(&self) -> HashMap<usize, usize> {
+        plt::own_function_stubs(self)
     }
 }
 
