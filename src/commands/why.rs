@@ -3,7 +3,8 @@
 //!
 //! Every item that uses SYMBOL keeps it there, unless nothing reaches that
 //! item or it is there only because of SYMBOL. The answer shows the
-//! shortest chain to each item that keeps SYMBOL, merged into one tree.
+//! shortest chain to each item that keeps SYMBOL, merged into one tree:
+//! through the nearest ten in text, and through all of them in JSON.
 
 use std::collections::BTreeMap;
 use std::io::Write;

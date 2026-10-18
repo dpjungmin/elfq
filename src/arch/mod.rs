@@ -82,8 +82,8 @@ pub fn is_supported(architecture: Architecture, thumb: bool) -> bool {
 
 /// The references in one function's code, which starts at `address`.
 /// `endianness` is the file's, for reading the constants in Thumb code.
-/// Returns nothing for instruction sets elfq can't read yet; check
-/// [`is_supported`] first.
+/// Returns nothing for instruction sets other than x86-64 and 32-bit Arm,
+/// and reads any 32-bit Arm code as Thumb, so check [`is_supported`] first.
 pub fn scan(
     architecture: Architecture,
     endianness: Endianness,

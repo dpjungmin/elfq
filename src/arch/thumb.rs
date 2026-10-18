@@ -19,7 +19,7 @@ use object::{Endian, Endianness};
 use super::CodeReferenceKind::{self, *};
 use super::{CodeReference, Ending};
 
-/// The stack pointer, link register and program counter.
+// The stack pointer, link register and program counter.
 const SP: u16 = 13;
 const LR: u16 = 14;
 const PC: u16 = 15;

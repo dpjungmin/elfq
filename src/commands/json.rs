@@ -31,8 +31,9 @@ pub(super) struct Item<'a> {
     pub address: Option<String>,
     /// Its size in bytes, or `null` when elfq doesn't know it.
     pub size: Option<u64>,
-    /// Whether elfq estimated the size, as it does for data without a
-    /// symbol.
+    /// Whether elfq estimated the size, as it does when the file doesn't
+    /// record it: for data without a symbol, and for functions whose symbol
+    /// has no size or that elfq found without one.
     pub size_estimated: bool,
 }
 

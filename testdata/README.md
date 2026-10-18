@@ -114,7 +114,7 @@ coupled memory (TCM), but elfq knows nothing about the chip itself:
 
 | Memory | Address | Holds |
 |---|---|---|
-| ITCM | `0x00000000` | `.itcm`: `SysTick_Handler`, `crc32`, `filter_tap`, `apply_filter`, copied from flash at startup |
+| ITCM | `0x00000000` | `.itcm`: `SysTick_Handler`, `crc32`, `filter_tap`, `apply_filter` and the linker's veneers `__app_tick_veneer` and `__memcpy_veneer`, copied from flash at startup |
 | DTCM | `0x20000000` | `.data`: `crc_table` and `stats`, copied from flash; `.bss`: the other variables |
 | OCRAM | `0x20240000` | `.ocram_bss`: `tx_buffer`, the UART's 4 KiB buffer |
 | Flash | `0x30000000` | `.isr_vector`, `.text`, `.rodata`, and the load images of `.itcm` and `.data` |

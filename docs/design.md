@@ -233,8 +233,9 @@ on `testdata/bin/c-deep.elf`, a chain of calls 20 deep, shows it.
 
 `top` shows the same kind of tree for the whole file, starting from the
 roots, and the overview starts with its five largest items. On the Rust
-x86-64 sample it shows that the standard library's backtrace printer keeps
-228,391 of the file's 282,384 bytes of code and data.
+x86-64 sample (`rust-x86_64-nodebug.elf`) it shows that the standard
+library's backtrace printer keeps 228,391 of the file's 282,384 bytes of
+code and data.
 
 `why` answers from the other end: each item that uses SYMBOL keeps it in the
 file, and the tree shows the shortest chain to each of them from where the
@@ -265,7 +266,8 @@ Removing main would remove log_msg too.
 `inlined` ranks the functions that the compiler copied into their callers by
 the bytes all their copies take, which ddbug shows only one function at a
 time. Each copy's bytes leave out the copies inlined into it, so the rows add
-up to the file's inlined code. On the Rust x86-64 sample, built with DWARF,
+up to the file's inlined code. On the Rust x86-64 sample with DWARF, which
+`testdata/build.sh` builds but which is too large to commit,
 `EndianSlice::read_slice` tops the list: 302 copies in 6,388 bytes. With
 SYMBOL it shows the copies in one function as a tree, merging the copies of
 one function in one place:
@@ -295,8 +297,9 @@ sizes usually are.
 Calls through pointers leave some answers incomplete, and elfq says so
 where they do. `callers` notes that it leaves out calls through a pointer to
 a function whose address is taken or stored, and `callees` lists the calls
-and jumps it can't follow. `retained` notes when SYMBOL's code calls
-through pointers, since what those calls reach may count for other items.
+and jumps it can't follow. `retained` notes when SYMBOL or the items it
+keeps call through pointers, since what those calls reach may count for
+other items.
 In JSON, `callers` and `callees` have `complete`, and `retained` has
 `indirect_calls`. For ranges, `complete` is `false` when `callees` finds a
 call it can't follow in them, or a function whose end it doesn't know, or
@@ -464,10 +467,11 @@ how to add a command or an instruction set.
 
 ## Dependencies
 
-Pure Rust only, so installing elfq needs no C toolchain:
+Pure Rust only, so building elfq compiles no C code. Ten crates:
 `object` (ELF), `gimli` (DWARF), `iced-x86` (x86-64 decoding), `petgraph`
-(graph and dominators), `clap` (arguments), `rustc-demangle` (Rust names)
-and `cpp_demangle` (C++ names). Thumb has its own small decoder in
+(the dominator tree), `clap` (arguments), `rustc-demangle` (Rust names),
+`cpp_demangle` (C++ names), `serde` and `serde_json` (`--json`) and
+`anyhow` (errors). Thumb has its own small decoder in
 `arch/thumb.rs`: the code scan needs about a dozen instructions, which are
 easier to read in one file, with the samples' disassembly as the reference,
 than through a general disassembler's API.

@@ -1,6 +1,6 @@
 //! DWARF debug info, when the file has it.
 //!
-//! So far elfq reads one thing from it: where the compiler inlined one
+//! elfq reads one thing from it: where the compiler inlined one
 //! function into another (see [`inlined_copies`]). Everything else in elfq
 //! works without DWARF.
 
@@ -202,8 +202,8 @@ impl<'a, 'd> Walk<'a, 'd> {
                 Some(value) => Some(self.string(unit, value)?),
                 None => None,
             };
-            // Rust names demangle to their whole path; DW_AT_name has only
-            // the last part.
+            // Rust and C++ linkage names demangle to their whole path;
+            // DW_AT_name has only the last part.
             if let Some(demangled) = linkage_name.as_deref().and_then(binary::demangle) {
                 return Ok(Some(demangled));
             }

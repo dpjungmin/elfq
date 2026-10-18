@@ -1,6 +1,6 @@
 //! The dominator tree as the overview, `top` and `retained` show it: items
 //! with their retained sizes, functions marked when only pointers lead to
-//! them, and large trees cut down to their largest items. With `--range`,
+//! them below the top, and large trees cut down to their largest items. With `--range`,
 //! sizes count only the bytes in the range, and items that keep none of
 //! them are left out.
 
@@ -22,8 +22,9 @@ pub(super) struct KeptItem<'a> {
     item: json::Item<'a>,
     /// Its own bytes and those of everything it keeps.
     retained: u64,
-    /// Whether nothing calls this function directly, so that it counts for
-    /// the code or data that holds its address.
+    /// Whether nothing calls this function directly, so that it hangs under,
+    /// and counts for, the code or data that holds its address. `false` at
+    /// the top of the tree, such as for a function listed in `.init_array`.
     through_pointer: bool,
     /// The items that only it leads to, each with what it keeps in turn,
     /// largest first.
@@ -140,14 +141,14 @@ impl<'a> RetainedTree<'a> {
         self.range.is_none() || self.retained(index) > 0
     }
 
-    /// The mark after the name of a function that only pointers lead to,
-    /// and so counts for whatever holds its address.
+    /// The mark after the name of a function below the top that only
+    /// pointers lead to, and so counts for whatever holds its address.
     fn mark(&self, index: usize) -> Option<&'static str> {
         self.through_pointer(index).then_some("(through a pointer)")
     }
 
-    /// Whether `index` is a function that nothing calls directly, and so
-    /// counts for whatever holds its address.
+    /// Whether `index` is a function below the top of the tree that nothing
+    /// calls directly, and so counts for whatever holds its address.
     fn through_pointer(&self, index: usize) -> bool {
         self.binary.items[index].kind == ItemKind::Function
             && !self.called.contains(&index)

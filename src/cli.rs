@@ -237,7 +237,8 @@ pub enum DebugCommand {
     Items,
 }
 
-/// The names of the commands, for spotting a command typed before the file.
+/// The names of the commands, for reading `elfq help COMMAND` and for
+/// spotting a command typed before the file.
 pub fn command_names() -> Vec<String> {
     use clap::CommandFactory;
     Cli::command()

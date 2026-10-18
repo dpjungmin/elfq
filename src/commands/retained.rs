@@ -32,8 +32,9 @@ struct RetainedJson<'a> {
     /// The items that only SYMBOL leads to, as a tree: each has what it
     /// keeps in turn, and the largest come first.
     keeps: Vec<KeptItem<'a>>,
-    /// What SYMBOL's code uses that other code uses too, and so isn't
-    /// counted, sorted by name. With a range, only items with bytes in it.
+    /// What SYMBOL and the items it keeps use that other code uses too, and
+    /// so isn't counted, sorted by name. With a range, only items with bytes
+    /// in it.
     shares: Vec<json::Item<'a>>,
     /// How many calls and jumps in SYMBOL and the items it keeps go through
     /// pointers set at run time, which elfq can't follow. A function called
@@ -128,8 +129,8 @@ fn write_json(symbol: &SymbolInTree, out: &mut dyn Write) -> Result<()> {
     json::write(&answer, out)
 }
 
-/// What SYMBOL's code uses that other code uses too, and so isn't counted,
-/// sorted by name. With a range, only items with bytes in it.
+/// What SYMBOL and the items it keeps use that other code uses too, and so
+/// isn't counted, sorted by name. With a range, only items with bytes in it.
 fn shared(symbol: &SymbolInTree) -> Vec<Node> {
     let binary = symbol.retained.binary;
     let mut kept: HashSet<Node> = symbol
@@ -157,8 +158,8 @@ fn shared(symbol: &SymbolInTree) -> Vec<Node> {
     shared
 }
 
-/// Names what SYMBOL's code uses that other code uses too, and so isn't
-/// counted.
+/// Names what SYMBOL and the items it keeps use that other code uses too,
+/// and so isn't counted.
 fn write_shared(symbol: &SymbolInTree, out: &mut dyn Write) -> Result<()> {
     const NAMED: usize = 10;
     let binary = symbol.retained.binary;

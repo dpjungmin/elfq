@@ -58,15 +58,18 @@ pub struct Reference {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ReferenceKind {
-    /// A direct call.
+    /// A direct call, or a call through a pointer that the loader fills in,
+    /// such as a global offset table entry, whose target is known.
     Call,
-    /// A jump to another function, which then returns straight to the
-    /// caller's caller.
+    /// A jump to another function, directly or through such a pointer,
+    /// which then returns straight to the caller's caller.
     TailCall,
     /// Code taking an item's address, as when passing a function or a
-    /// buffer to another function.
+    /// buffer to another function, or loading it from a global offset table
+    /// entry.
     Address,
-    /// Code reading or writing an item's bytes, such as a global variable.
+    /// Code reading or writing an item's bytes, such as a global variable,
+    /// or a function pointer variable that it calls through.
     Access,
     /// A pointer stored in data, such as an entry in a table of functions.
     Pointer,

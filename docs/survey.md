@@ -1,5 +1,12 @@
 # Existing tools, and where elfq fits
 
+> This survey was written before elfq existed, to choose what it should
+> answer, and isn't kept up to date. Since then, `retained` has taken the
+> place of the `exclusive` command it proposes, elfq doesn't yet treat
+> exported symbols as roots, and it also counts the string literals that
+> only `process_frame` uses. [README.md](../README.md) and
+> [design.md](design.md) describe elfq as it is.
+
 elfq should not reimplement tools people already have. Before writing any
 analysis code we ran the common ELF inspection tools against the sample
 binaries in [`testdata/`](../testdata/README.md) and asked each the questions

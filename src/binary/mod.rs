@@ -5,17 +5,17 @@
 //! places, each one only adding what the earlier ones missed:
 //!
 //! 1. the symbol tables, `.symtab` and `.dynsym` (see `symbols.rs`);
-//! 2. the stubs that call shared libraries, such as `write@plt` (see
-//!    `plt.rs`), and arrays of startup and shutdown functions such as
-//!    `.init_array`, which have no symbols;
+//! 2. in x86-64 files, the PLT stubs that call imported functions, such as
+//!    `write@plt`, or the file's own (see `plt.rs`), and arrays of startup
+//!    and shutdown functions such as `.init_array`, which have no symbols;
 //! 3. the unwind table, `.eh_frame`, which still describes most functions in
 //!    stripped x86-64 files (see `eh_frame.rs`);
-//! 4. the entry point, and in firmware the vector table, when no symbol
-//!    covers it;
+//! 4. the entry point, when no function covers it, and in firmware the
+//!    vector table, when no item covers any of it;
 //! 5. in firmware that nothing lists functions for, the code itself,
-//!    followed from the entry point, the vector table's handlers and the
-//!    Thumb addresses that code loads or data holds (see
-//!    `unnamed_functions.rs`);
+//!    followed from the entry point, the vector table's handlers, the
+//!    functions in arrays such as `.init_array`, and the Thumb addresses
+//!    that code loads or data holds (see `unnamed_functions.rs`);
 //! 6. references to data that has no symbol, such as vtables and string
 //!    literals (see `unnamed_data.rs`).
 //!
@@ -144,9 +144,9 @@ pub struct Section {
 /// A function or data object.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Item {
-    /// The item's symbol name, demangled if it is a Rust symbol. Without a
-    /// symbol, a name made from where it is, such as `fn_0x1690` or
-    /// `.rodata@0x2004`.
+    /// The item's symbol name, demangled if it is a mangled Rust or C++
+    /// symbol. Without a symbol, a name made from where it is, such as
+    /// `fn_0x1690` or `.rodata@0x2004`.
     pub name: String,
     /// Other names for the item: the symbol as the file has it when `name`
     /// is demangled, and other symbols at the same address, such as weak
@@ -194,9 +194,10 @@ pub enum Source {
     /// the vector table is only part of it, after the section and the
     /// table's address, such as `.text@0x8000000`.
     Section,
-    /// Following the code from the entry point and the vector table's
-    /// handlers, or from a Thumb address that code loads or data holds,
-    /// leads to the address, in firmware that nothing lists functions for
+    /// Following the code from the entry point, the vector table's handlers
+    /// or the startup and shutdown arrays, or from a Thumb address that code
+    /// loads or data holds, leads to the address, in firmware that nothing
+    /// lists functions for
     /// (see `unnamed_functions.rs`). The item is a function named after its
     /// address, such as `fn_0x8000040`.
     Reached,
@@ -724,10 +725,11 @@ fn section_items(sections: &[Section]) -> Vec<Item> {
         .collect()
 }
 
-/// Adds a function for each unwind-table range that the symbols missed, and
-/// fills in sizes that the symbol table left as 0.
+/// Adds a function for each unwind-table range that the items found so far,
+/// from symbols and PLT stubs, missed, and fills in sizes that the symbol
+/// table left as 0.
 fn add_unwind_items(items: &mut Vec<Item>, ranges: &[(u64, u64)], sections: &[Section]) {
-    // Functions known from symbols, as (address, size, index into items).
+    // The functions found so far, as (address, size, index into items).
     let mut known: Vec<(u64, u64, usize)> = items
         .iter()
         .enumerate()

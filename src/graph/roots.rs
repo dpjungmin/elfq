@@ -1,5 +1,6 @@
 //! Roots: the places where the program starts running. Every path through
-//! the graph begins at one, and an item that no path reaches is dead code.
+//! the graph begins at one, and an item that no path reaches is dead code,
+//! or used in a way elfq can't see.
 //!
 //! - the entry point;
 //! - the functions in the startup and exit arrays, such as `.init_array`,
