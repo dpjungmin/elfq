@@ -1,12 +1,12 @@
 //! `elfq FILE callees SYMBOL`: what SYMBOL calls or uses. For ranges of
-//! memory in place of SYMBOL, see `edge.rs`.
+//! memory in place of SYMBOL, see `ranges.rs`.
 
 use std::io::Write;
 
 use anyhow::{Result, bail};
 use serde::Serialize;
 
-use super::edge::{self, Direction};
+use super::ranges::{self, Direction};
 use super::symbol::{self, Subject};
 use super::{Outcome, json};
 use crate::binary::{Binary, ItemKind};
@@ -52,7 +52,7 @@ pub fn run(
         }
         Subject::Ranges(ranges) => {
             let graph = Graph::build(binary);
-            edge::run(binary, &graph, &ranges, Direction::Out, format, out)
+            ranges::run(binary, &graph, &ranges, Direction::Out, format, out)
         }
     }
 }

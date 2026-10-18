@@ -309,10 +309,10 @@ src/
 ├── main.rs        Parses arguments, runs one command on a thread with a large stack, prints errors. Nothing else.
 ├── lib.rs         Declares the modules below. elfq is a library plus a thin binary.
 ├── cli.rs         clap definitions, one struct per subcommand.
-├── commands/      One file per subcommand: find the symbol (symbol.rs), run a query, render (tree.rs builds the rows of retained sizes, json.rs has shared JSON shapes, edge.rs is callers and callees for ranges).
+├── commands/      One file per subcommand: find the symbol (symbol.rs), run a query, render (retained_tree.rs builds the rows of retained sizes, json.rs has shared JSON shapes, ranges.rs is callers and callees for ranges).
 ├── binary/        ELF loading, item discovery, names and address ranges.
 ├── arch/          One file per instruction set (x86_64.rs, thumb.rs), each with a `scan` function.
-├── graph/         The reference graph, its roots, dominator tree and shortest paths, and what crosses the edge of ranges of memory.
+├── graph/         The reference graph, its roots, dominator tree and shortest paths, and what crosses the boundary of ranges of memory.
 ├── debuginfo/     DWARF, when the file has it: what the compiler inlined.
 └── render/        Tables, and trees drawn in a table's last column (tree.rs).
 ```

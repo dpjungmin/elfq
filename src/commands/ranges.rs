@@ -1,5 +1,5 @@
 //! `elfq FILE callees RANGE...` and `elfq FILE callers RANGE...`: what
-//! crosses the edge of some ranges of memory, such as code in ITCM that
+//! crosses the boundary of some ranges of memory, such as code in ITCM that
 //! calls a function in flash.
 
 use std::collections::HashMap;
@@ -11,10 +11,10 @@ use serde::Serialize;
 use super::{Outcome, json};
 use crate::binary::{AddressRange, Binary};
 use crate::cli::Format;
-use crate::graph::{Crossing, Edge, Graph, Node, Unresolved};
+use crate::graph::{Boundary, Crossing, Graph, Node, Unresolved};
 use crate::render::{Align, Table};
 
-/// Which way the references cross the edge.
+/// Which way the references cross the boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
     /// Out of the ranges: what the items in them use outside them.
@@ -98,27 +98,27 @@ pub fn run(
     format: Format,
     out: &mut dyn Write,
 ) -> Result<Outcome> {
-    let edge = Edge::new(binary, graph, ranges);
-    if let Some(range) = edge.empty_range() {
+    let boundary = Boundary::new(binary, graph, ranges);
+    if let Some(range) = boundary.empty_range() {
         let place = super::empty_place(binary, Some(range))?;
         bail!("elfq found no functions or data in {place}");
     }
     match direction {
-        Direction::Out => leaving(binary, &edge, ranges, format, out),
-        Direction::In => entering(binary, &edge, ranges, format, out),
+        Direction::Out => leaving(binary, &boundary, ranges, format, out),
+        Direction::In => entering(binary, &boundary, ranges, format, out),
     }
 }
 
 fn leaving(
     binary: &Binary,
-    edge: &Edge,
+    boundary: &Boundary,
     ranges: &[AddressRange],
     format: Format,
     out: &mut dyn Write,
 ) -> Result<Outcome> {
-    let crossings = edge.leaving();
-    let unfollowed = edge.unfollowed();
-    let unreadable = edge.unreadable();
+    let crossings = boundary.leaving();
+    let unfollowed = boundary.unfollowed();
+    let unreadable = boundary.unreadable();
     let outcome = outcome(crossings.is_empty() && unfollowed.is_empty() && unreadable.is_empty());
     if format == Format::Json {
         let callees = groups(binary, &crossings, Direction::Out, |crossing| {
@@ -242,13 +242,13 @@ fn leaving(
 
 fn entering(
     binary: &Binary,
-    edge: &Edge,
+    boundary: &Boundary,
     ranges: &[AddressRange],
     format: Format,
     out: &mut dyn Write,
 ) -> Result<Outcome> {
-    let crossings = edge.entering();
-    let through_pointer = edge.callable_through_pointer();
+    let crossings = boundary.entering();
+    let through_pointer = boundary.callable_through_pointer();
     let outcome = outcome(crossings.is_empty() && through_pointer.is_empty());
     if format == Format::Json {
         let callers = groups(binary, &crossings, Direction::In, |crossing| {
@@ -328,7 +328,7 @@ fn entering(
     Ok(outcome)
 }
 
-/// [`Outcome::Crossed`] unless nothing crosses the edge, or may.
+/// [`Outcome::Crossed`] unless nothing crosses the boundary, or may.
 fn outcome(nothing_crosses: bool) -> Outcome {
     if nothing_crosses {
         Outcome::Answered

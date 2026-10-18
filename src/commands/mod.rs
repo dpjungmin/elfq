@@ -4,14 +4,14 @@
 mod callees;
 mod callers;
 mod debug_items;
-mod edge;
 mod inlined;
 mod json;
 mod overview;
+mod ranges;
 mod retained;
+mod retained_tree;
 pub mod symbol;
 mod top;
-mod tree;
 mod why;
 
 use std::collections::{HashMap, HashSet};
@@ -30,7 +30,7 @@ use crate::graph::{Graph, Node, Reference, ReferenceKind, Unresolved};
 pub enum Outcome {
     /// Exit status 0.
     Answered,
-    /// Something crosses the edge of the ranges that `callers` or
+    /// Something crosses the boundary of the ranges that `callers` or
     /// `callees` asked about, or may: exit status 1, so that a script can
     /// check that code in a range stays in it.
     Crossed,

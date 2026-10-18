@@ -13,7 +13,7 @@ use anyhow::{Result, bail};
 use serde::Serialize;
 
 use super::json;
-use super::tree::{KeptItem, RetainedTree};
+use super::retained_tree::{KeptItem, RetainedTree};
 use crate::binary::{AddressRange, Binary, FileKind, Item};
 use crate::cli::Format;
 use crate::graph::Node;

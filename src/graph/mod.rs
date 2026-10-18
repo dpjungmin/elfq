@@ -13,21 +13,21 @@
 //! jumps it can't follow, such as a call through a function pointer, are kept
 //! in [`Graph::unresolved`] so that answers can say what they don't know.
 //!
-//! [`Edge`] tells which references cross the edge of some ranges of
-//! memory (see `edge.rs`).
+//! [`Boundary`] tells which references cross the boundary of some ranges
+//! of memory (see `boundary.rs`).
 //!
 //! [`Graph::roots`] are where the program starts running (see `roots.rs`).
 //! From them, [`DominatorTree`] works out which items are reachable only
 //! through which (see `dominators.rs`), and [`ShortestPaths`] finds the
 //! shortest chain of references to each item (see `paths.rs`).
 
+mod boundary;
 mod dominators;
-mod edge;
 mod paths;
 mod roots;
 
+pub use boundary::{Boundary, Crossing};
 pub use dominators::DominatorTree;
-pub use edge::{Crossing, Edge};
 pub use paths::ShortestPaths;
 pub use roots::{Root, RootKind};
 

@@ -9,8 +9,8 @@ use std::path::Path;
 use anyhow::{Result, bail};
 use serde::Serialize;
 
+use super::retained_tree::RetainedTree;
 use super::symbol::Names;
-use super::tree::RetainedTree;
 use super::{json, top};
 use crate::arch;
 use crate::binary::{
