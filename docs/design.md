@@ -119,8 +119,14 @@ too far away for the call instruction, as between flash and ITCM: the code
 calls the veneer, which jumps on to the target. The range forms of
 `callers` and `callees` list a call through a veneer as a call to its
 target, "via veneer"; elsewhere a veneer is a function that tail-calls its
-target. elfq knows only the veneers that GNU ld adds for Thumb-2 so far.
+target. elfq knows the veneers that GNU ld and LLD add for Cortex-M.
 (`arch::is_veneer`)
+
+**Long call.** A call that puts the target's address in a register and
+branches through it, as `ldr r3, =f; blx r3`, so that it can reach any
+address. Compilers make one for a function declared `long_call`, and most
+veneers do the same. elfq follows the address to the branch and
+lists a call to `f`. (`arch::thumb::values`)
 
 **TCM, ITCM and DTCM.** Tightly coupled memory: small, fast RAM wired to a
 core such as the Cortex-M7, ITCM for instructions and DTCM for data. elfq
@@ -382,11 +388,21 @@ follows one command through the functions that do this.
    Thumb). It does not need a full disassembler, only these instructions. On
    Thumb it also skips the literal pools, jump tables and constants that
    `adr` points at inside functions, which would otherwise decode as
-   instructions. The entry point's code is a special case: startup code
-   copies or clears whole sections such as `.data` and `.bss`, loading where
-   each starts and ends through symbols that the linker script defines, such
-   as `_sdata` and `_edata`. When the entry point loads both ends of a
-   section, those addresses aren't uses of the items that start there.
+   instructions. A Thumb branch through a register goes where the code put
+   an address in the register, as for a long call: in each function that
+   branches through a register, `arch/thumb/values/` follows what each
+   register and each word of the function's stack may hold, along every
+   path through its code, using what `decode.rs` says each instruction
+   does. Each address the register may hold there is a call or a tail jump,
+   except an even one, since Cortex-M cores fault on a branch to it, as to
+   the address 0 of a weak function that the program doesn't have. An
+   address that the code only branches to isn't also reported as used. elfq scans each function once, as it loads the file
+   (`Binary::code_references`). The entry point's code is a special case:
+   startup code copies or clears whole sections such as `.data` and
+   `.bss`, loading where each starts and ends through symbols that the
+   linker script defines, such as `_sdata` and `_edata`. When the entry
+   point loads both ends of a section, those addresses aren't uses of the
+   items that start there.
    LLVM may merge small variables into one block (`.L_MergedGlobals`),
    which code uses through the block's address; that address counts as a
    use of each variable in the block.
@@ -448,17 +464,18 @@ in order. Its output is the first example under [Commands](#commands).
    the pointers the loader stores, and in Thumb files the vector table
    (`vector_table::find`). Then it finds the items: `symbols::items`,
    `plt::stubs`, the startup arrays, `eh_frame::read`, the entry point, the
-   vector table, in stripped firmware `unnamed_functions::add`, and last
-   `unnamed_data::items`, which has `arch::scan` read the code for the
-   addresses of data that no symbol names.
+   vector table, in stripped firmware `unnamed_functions::add`. Then it has
+   `arch::scan` read each function's code once (`scan_functions`), and
+   last `unnamed_data::items` finds there the addresses of data that no
+   symbol names.
 4. **SYMBOL.** `retained::run` calls `SymbolInTree::find`, which checks
    that elfq can read the file's code (`check_code_is_readable`) and turns
    `process_frame` into an item with `symbol::find`: by address, by full
    name, or by the end of a name. `readable_item` refuses an import, and a
    function whose end elfq doesn't know.
-5. **The graph.** `RetainedTree::build` has `graph::Graph::build` run
-   `arch::scan` on each function's code and turn what it finds into
-   references, or into unresolved calls. `Graph::build` then adds the
+5. **The graph.** `RetainedTree::build` has `graph::Graph::build` turn
+   what `arch::scan` found in each function's code into references, or
+   into unresolved calls. `Graph::build` then adds the
    pointers stored in data, from the dynamic relocations or, in a file that
    runs at a fixed address, from the words that hold an item's address, and
    finds the roots with `roots::find`.
@@ -507,10 +524,11 @@ Pure Rust only, so building elfq compiles no C code. Ten crates:
 `object` (ELF), `gimli` (DWARF), `iced-x86` (x86-64 decoding), `petgraph`
 (the dominator tree), `clap` (arguments), `rustc-demangle` (Rust names),
 `cpp_demangle` (C++ names), `serde` and `serde_json` (`--json`) and
-`anyhow` (errors). Thumb has its own small decoder in
-`arch/thumb.rs`: the code scan needs about a dozen instructions, which are
-easier to read in one file, with the samples' disassembly as the reference,
-than through a general disassembler's API.
+`anyhow` (errors). Thumb has its own decoder in `arch/thumb/`: elfq needs
+only what each instruction does with the registers, the stack and where
+the code goes next, which is easier to read in its own code, with the
+samples' disassembly as the reference, than through a general
+disassembler's API.
 
 ## Status and roadmap
 
@@ -520,11 +538,6 @@ x86-64 and Cortex-M executables, with or without symbols and DWARF, and
 `callers` and
 `callees` also work on x86-64 shared libraries. The pull requests and the
 git log record how elfq got here.
-
-Next: **long calls and veneers**, so that the range checks see the calls
-that load the target's address into a register and branch through it, as
-in `ldr r3, =f; bx r3`, and the veneers that elfq doesn't follow yet (see
-[Known limitations](#known-limitations), 3).
 
 Ideas for later, not yet planned: output that scripts and AI agents can
 read more easily, what one function can reach in each memory block, a
@@ -559,21 +572,24 @@ function's stack frame), and a query language.
    at address 0, start a function where there is none. The bytes still
    all count, under a neighbouring function. Worth improving if it makes
    answers on real firmware confusing.
-3. **What range checks don't see yet.** LLD's veneers, GNU ld's for
-   Cortex-M0 and M23, and long calls such as `ldr r3, =f; bx r3` load the
-   target's address and jump through a register, so the veneer or the
-   function that calls is listed as taking that address, and the jump as
-   one elfq can't follow; the exit status is still right. In stripped
-   firmware, elfq doesn't find the functions that only such veneers lead
-   to, so their calls are missing too, and a range that holds only them
-   is an error. GNU ld's veneers
-   with `--pic-veneer` add an offset to the program counter instead,
-   which elfq reads as an address: `callees` names the wrong function,
-   and `callers` misses the call and can exit 0. A veneer to code outside
-   every item, such as a routine in ROM, is listed under the veneer's
-   name. Startup code that copies sections outside the entry function, or
-   reads a table of them as CMSIS does, adds rows to `callers`. The
-   roadmap's next step covers the long calls and veneers above.
+3. **Calls through a register that elfq doesn't follow.** A register
+   that may hold more than 8 addresses at a branch, as when GCC merges
+   many long calls into one `blx`, an address kept in memory other than
+   the function's own stack, and one on a stack whose address the function
+   passes to another, leave a call through a pointer; elfq lists each
+   address as taken. Cortex-M0 code built with `-mpure-code` makes
+   addresses a byte at a time, and elfq follows them only to a branch, so
+   the variables such code uses are missing. `callers SYMBOL` and
+   `callees SYMBOL` name a veneer as the caller of its target, where the
+   range forms name the function that calls the veneer. LLD's veneers for
+   Cortex-M0 in `-pie` files, which elfq takes for shared libraries, and
+   calls through a register on x86-64 aren't followed. A routine in ROM
+   that only the linker script names shows as its address, since the
+   symbol has no section. An assembly function whose symbol has no size,
+   last in its section, counts as empty, so its calls are missing; the
+   same file without symbols has them. Startup code that copies sections
+   outside the entry function, or reads a table of them as CMSIS does,
+   adds rows to `callers`.
 4. **Shared libraries.** The functions that a library exports aren't roots
    yet, so `top`, `retained` and `why` refuse libraries, and also programs
    linked with `-static-pie`, which elfq takes for libraries.
