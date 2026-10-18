@@ -458,43 +458,9 @@ binary/      3 Binary::load, unnamed_data::items
 arch/        3, 5 arch::scan
 ```
 
-## Code layout
-
-```
-src/
-├── main.rs        Parses arguments, runs one command on a thread with a large stack, prints errors. Nothing else.
-├── lib.rs         Declares the modules below. elfq is a library plus a thin binary.
-├── cli.rs         clap definitions, one struct per subcommand.
-├── commands/      One file per subcommand: find the symbol (symbol.rs), run a query, render (retained_tree.rs builds the rows of retained sizes, json.rs has shared JSON shapes, text.rs shared wording, ranges.rs is callers and callees for ranges).
-├── binary/        ELF loading, item discovery, names and address ranges.
-├── arch/          One file per instruction set (x86_64.rs, thumb.rs), each with a `scan` function.
-├── graph/         The reference graph, its roots, dominator tree and shortest paths, and what crosses the boundary of ranges of memory.
-├── debuginfo/     DWARF, when the file has it: what the compiler inlined.
-└── render/        Tables, and trees drawn in a table's last column (tree.rs).
-```
-
-Rules that keep it approachable:
-
-- **Analysis flows one way**: arch, then binary, then graph, each importing
-  only from the ones before it. debuginfo imports only binary. `render` knows nothing about ELF files, and
-  `commands` connect the two.
-- **Analysis never prints and commands never analyze.** A command is a short
-  function that wires a query to a renderer.
-- **Adding an architecture** means writing one function ("given a
-  function's bytes and address, report its references") in a new file under
-  `arch/`, plus sample binaries.
-- **Adding a command** means one clap struct in `cli.rs`, one file in
-  `commands/`, and tests that run it on `testdata/bin`.
-- **Library code returns errors, it does not exit or panic** on bad input;
-  `main.rs` adds context and prints them.
-- **A damaged file is read as far as it makes sense.** As elfq loads a
-  file, it ignores an allocated section that would end past the last
-  address, with a warning, and reads a symbol whose size would take it
-  past the last address as if it had no size. One whose last byte is the
-  very last address is read one byte shorter. So the rest of the code can
-  add a size to an address without checking. Stored pointers are read only
-  where the file holds bytes, however large a section claims to be, and
-  sums of sizes stop at the largest number rather than overflow.
+[CONTRIBUTING.md](../CONTRIBUTING.md#where-things-live) says what each
+file holds, the rules that keep these layers apart, how elfq is tested, and
+how to add a command or an instruction set.
 
 ## Dependencies
 
@@ -505,28 +471,6 @@ and `cpp_demangle` (C++ names). Thumb has its own small decoder in
 `arch/thumb.rs`: the code scan needs about a dozen instructions, which are
 easier to read in one file, with the samples' disassembly as the reference,
 than through a general disassembler's API.
-
-## Testing
-
-- **Unit tests** beside the code for algorithms, using hand-built graphs.
-- **Integration tests** run each command on the committed files in
-  `testdata/bin`. [testdata/README.md](../testdata/README.md) lists the
-  expected answers, for example that what only `process_frame` leads to in
-  the C sample is `decode_header`, `crc32`, `crc_table`, `apply_filter`,
-  `filter_tap`, `fir_coeffs` and two message strings, with or without DWARF,
-  plus the linker's veneers on Cortex-M7.
-- **Snapshot tests** pin the human-readable output so format changes are
-  reviewed on purpose.
-- **The `$ elfq` examples in this document** are run by a test, which
-  fails when elfq prints something else.
-- **Damaged and unusual files**, such as a section larger than the file or
-  DWARF nested a million deep, are made by the tests from the bytes of a
-  sample (`tests/it/damaged.rs`), so that the hangs and crashes they once
-  caused stay fixed.
-- **CI** runs the checks that [CONTRIBUTING.md](../CONTRIBUTING.md) lists,
-  and checks that elfq builds with Rust 1.88, the oldest version it
-  supports. The sample binaries are committed, so CI needs no cross
-  toolchains.
 
 ## Status and roadmap
 
