@@ -26,7 +26,7 @@ mod dominators;
 mod paths;
 mod roots;
 
-pub use boundary::{Boundary, Crossing};
+pub use boundary::{Boundary, Crossing, Unfollowed};
 pub use dominators::DominatorTree;
 pub use paths::ShortestPaths;
 pub use roots::{Root, RootKind};

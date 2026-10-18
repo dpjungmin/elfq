@@ -11,7 +11,7 @@ use serde::Serialize;
 use super::{Outcome, json, text};
 use crate::binary::{AddressRange, Binary};
 use crate::cli::Format;
-use crate::graph::{Boundary, Crossing, Graph, Node, ReferenceKind, Unresolved};
+use crate::graph::{Boundary, Crossing, Graph, Node, ReferenceKind, Unfollowed};
 use crate::render::{Align, Table};
 
 /// Which way the references cross the boundary.
@@ -62,6 +62,8 @@ struct UnresolvedJson<'a> {
     /// Where it goes, when the code says so but no item is there, or
     /// `null` when only the running program knows.
     target: Option<String>,
+    /// The linker's veneer that the call goes through, or `null`.
+    veneer: Option<json::Item<'a>>,
 }
 
 #[derive(Serialize)]
@@ -150,7 +152,7 @@ struct Leaving<'a> {
     crossings: Vec<Crossing>,
     /// The calls and jumps in the ranges that elfq can't follow, and that
     /// may leave them.
-    unfollowed: Vec<Unresolved>,
+    unfollowed: Vec<Unfollowed>,
     /// The functions in the ranges whose code elfq can't read, since it
     /// doesn't know where they end.
     unreadable: Vec<usize>,
@@ -177,11 +179,15 @@ impl Leaving<'_> {
             unresolved: self
                 .unfollowed
                 .iter()
-                .map(|unresolved| UnresolvedJson {
-                    caller: item(Node::Item(unresolved.from)),
-                    site: json::address(unresolved.site),
-                    how: text::call_or_jump(unresolved),
-                    target: unresolved.target.map(json::address),
+                .map(|unfollowed| {
+                    let unresolved = &unfollowed.unresolved;
+                    UnresolvedJson {
+                        caller: item(Node::Item(unresolved.from)),
+                        site: json::address(unresolved.site),
+                        how: text::call_or_jump(unresolved),
+                        target: unresolved.target.map(json::address),
+                        veneer: unfollowed.veneer.map(|veneer| item(Node::Item(veneer))),
+                    }
                 })
                 .collect(),
             unreadable: self
@@ -204,7 +210,11 @@ impl Leaving<'_> {
             how_column(binary, crossing)
         });
         let used = text::count_text(binary, &outside_nodes(&groups));
-        let unknown = text::calls_and_jumps(&self.unfollowed);
+        let unknown = text::calls_and_jumps(
+            self.unfollowed
+                .iter()
+                .map(|unfollowed| &unfollowed.unresolved),
+        );
         let lead = match (groups.is_empty(), self.unfollowed.is_empty()) {
             (true, true) if self.unreadable.is_empty() => {
                 format!("{subject} {} nothing outside {it}.", verb("uses", "use"))
@@ -238,17 +248,23 @@ impl Leaving<'_> {
                 ("AT", Align::Left),
             ]);
             // What elfq can't follow comes first, since it may hide more.
-            for (unresolved, sites) in group_unfollowed(&self.unfollowed) {
+            for (unfollowed, sites) in group_unfollowed(&self.unfollowed) {
+                let unresolved = &unfollowed.unresolved;
                 let (callee, address) = match unresolved.target {
                     None => ("(through a pointer)", String::new()),
                     Some(target) => ("(outside any function)", format!("{target:#x}")),
+                };
+                let how = match (unfollowed.veneer, unresolved.is_call) {
+                    (Some(_), true) => "call via veneer",
+                    (Some(_), false) => "jump via veneer",
+                    (None, _) => text::call_or_jump(unresolved),
                 };
                 table.row(vec![
                     callee.to_string(),
                     address,
                     String::new(),
                     binary.items[unresolved.from].name.clone(),
-                    text::call_or_jump(&unresolved).to_string(),
+                    how.to_string(),
                     text::at_column(&sites),
                 ]);
             }
@@ -498,15 +514,21 @@ fn how_column(binary: &Binary, crossing: &Crossing) -> &'static str {
 }
 
 /// The calls and jumps that elfq can't follow, one per function, kind of
-/// call and target, with their sites.
-fn group_unfollowed(unfollowed: &[Unresolved]) -> Vec<(Unresolved, Vec<u64>)> {
-    let mut groups: Vec<(Unresolved, Vec<u64>)> = Vec::new();
+/// call, target and veneer, with their sites.
+fn group_unfollowed(unfollowed: &[Unfollowed]) -> Vec<(Unfollowed, Vec<u64>)> {
+    let mut groups: Vec<(Unfollowed, Vec<u64>)> = Vec::new();
     // Where each group is in `groups`.
-    let mut index: HashMap<(usize, bool, Option<u64>), usize> = HashMap::new();
-    for unresolved in unfollowed {
-        let key = (unresolved.from, unresolved.is_call, unresolved.target);
+    let mut index: HashMap<(usize, bool, Option<u64>, Option<usize>), usize> = HashMap::new();
+    for row in unfollowed {
+        let unresolved = &row.unresolved;
+        let key = (
+            unresolved.from,
+            unresolved.is_call,
+            unresolved.target,
+            row.veneer,
+        );
         let group = *index.entry(key).or_insert_with(|| {
-            groups.push((*unresolved, Vec::new()));
+            groups.push((*row, Vec::new()));
             groups.len() - 1
         });
         groups[group].1.push(unresolved.site);
@@ -530,6 +552,7 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+    use crate::graph::Unresolved;
 
     #[test]
     fn a_call_to_code_outside_every_function_has_a_row() {
