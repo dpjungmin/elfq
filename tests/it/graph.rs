@@ -296,6 +296,81 @@ fn calls_between_flash_and_itcm_go_through_veneers() {
     );
 }
 
+/// c/far.c, built with each kind of veneer that GNU ld and LLD add for
+/// Cortex-M.
+const FAR_SAMPLES: [&str; 8] = [
+    "far-gnu-m4-nodebug.elf",
+    "far-gnu-m4-pure-nodebug.elf",
+    "far-gnu-m4-pic-nodebug.elf",
+    "far-gnu-m0-nodebug.elf",
+    "far-lld-m4-nodebug.elf",
+    "far-lld-m4-pic-nodebug.elf",
+    "far-lld-m0-nodebug.elf",
+    "far-lld-m0-pure-nodebug.elf",
+];
+
+#[test]
+fn every_kind_of_veneer_jumps_to_its_target() {
+    for sample in FAR_SAMPLES {
+        let (binary, graph) = load(sample);
+        // GNU ld names them like __flash_work_veneer, and LLD like
+        // __Thumbv7ABSLongThunk_flash_work.
+        let veneers =
+            binary.items.iter().enumerate().filter(|(_, item)| {
+                item.name.ends_with("_veneer") || item.name.contains("LongThunk_")
+            });
+        let mut count = 0;
+        for (index, veneer) in veneers {
+            count += 1;
+            let target = veneer
+                .name
+                .trim_start_matches("__")
+                .trim_end_matches("_veneer")
+                .rsplit("LongThunk_")
+                .next()
+                .unwrap();
+            if target == "rom_routine" {
+                // The ROM has no item: a jump that the graph can't follow.
+                assert!(graph.references_from(index).is_empty(), "{sample}");
+                let jumps = graph.unresolved_in(index);
+                assert_eq!(jumps.len(), 1, "{sample}: {}", veneer.name);
+                assert_eq!(jumps[0].target, Some(0x1fff_0000), "{sample}");
+                assert!(!jumps[0].is_call, "{sample}");
+            } else {
+                assert_eq!(
+                    callees(&binary, &graph, &veneer.name),
+                    pairs(&[(target, TailCall)]),
+                    "{sample}"
+                );
+            }
+        }
+        // One for each target from each side: 3 in RAM and 7 in flash.
+        assert_eq!(count, 10, "{sample}");
+    }
+}
+
+#[test]
+fn a_long_call_through_a_register_is_a_call() {
+    // GCC loads flash_far's address, which it declares long_call, into a
+    // register: from a constant, with movw and movt, or a byte at a time.
+    for sample in FAR_SAMPLES {
+        let (binary, graph) = load(sample);
+        let calls = callees(&binary, &graph, "ram_long_calls_flash");
+        assert!(
+            calls.contains(&("flash_far".to_string(), Call)),
+            "{sample}: {calls:?}"
+        );
+        assert!(
+            !calls.contains(&("flash_far".to_string(), Address)),
+            "{sample}"
+        );
+        let Node::Item(caller) = node(&binary, "ram_long_calls_flash") else {
+            unreachable!()
+        };
+        assert!(graph.unresolved_in(caller).is_empty(), "{sample}");
+    }
+}
+
 #[test]
 fn imports_are_reached_through_stubs_and_the_global_offset_table() {
     let (binary, graph) = load("c-x86_64.elf");

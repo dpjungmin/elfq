@@ -182,6 +182,128 @@ fn ranges_list_what_crosses_their_edge() {
     assert_eq!(callers["complete"], false);
 }
 
+/// The rows of a range check's JSON, by address rather than by name, so
+/// that a stripped file gives the same: (item, caller, how, veneer, sites),
+/// and for what elfq can't follow (target, caller, how, veneer, site).
+fn rows_by_address(answer: &Value) -> Vec<[String; 5]> {
+    let address = |item: &Value| item["address"].as_str().unwrap_or("").to_string();
+    let mut rows: Vec<[String; 5]> = answer["callees"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            [
+                address(&row["item"]),
+                address(&row["caller"]),
+                row["how"].to_string(),
+                address(&row["veneer"]),
+                row["sites"].to_string(),
+            ]
+        })
+        .collect();
+    rows.extend(answer["unresolved"].as_array().unwrap().iter().map(|row| {
+        [
+            row["target"].to_string(),
+            address(&row["caller"]),
+            row["how"].to_string(),
+            address(&row["veneer"]),
+            row["site"].to_string(),
+        ]
+    }));
+    rows.sort();
+    rows
+}
+
+#[test]
+fn ranges_follow_calls_through_every_kind_of_veneer() {
+    // c/far.c, built with each kind of veneer that GNU ld and LLD add.
+    // Cortex-M0 has no tail call this far, and code built for it with
+    // -mpure-code makes counter's address a byte at a time, which elfq
+    // doesn't follow.
+    for name in [
+        "gnu-m4",
+        "gnu-m4-pure",
+        "gnu-m4-pic",
+        "gnu-m0",
+        "lld-m4",
+        "lld-m4-pic",
+        "lld-m0",
+        "lld-m0-pure",
+    ] {
+        let path = format!("testdata/bin/far-{name}-nodebug.elf");
+        let output = elfq(&[&path, "callees", "0x0+64K", "--json"]);
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        let callees: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let mut rows: Vec<(&str, &str, &str, bool)> = callees["callees"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| {
+                (
+                    row["item"]["name"].as_str().unwrap(),
+                    row["caller"]["name"].as_str().unwrap(),
+                    row["how"].as_str().unwrap(),
+                    !row["veneer"].is_null(),
+                )
+            })
+            .collect();
+        rows.retain(|row| row.0 != "counter");
+        let tail_call = if name.contains("m0") {
+            "call"
+        } else {
+            "tail call"
+        };
+        assert_eq!(
+            rows,
+            [
+                ("flash_far", "ram_long_calls_flash", "call", false),
+                ("flash_tail", "ram_tails_flash", tail_call, true),
+                ("flash_work", "ram_calls_flash", "call", true),
+            ],
+            "{name}"
+        );
+        // The ROM routine has no item, so elfq can't follow the calls, and
+        // can't tell whether the tail call goes to a function.
+        let jump = if name.contains("m0") { "call" } else { "jump" };
+        let unresolved: Vec<(&str, &str, &str, bool)> = callees["unresolved"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| {
+                (
+                    row["caller"]["name"].as_str().unwrap(),
+                    row["how"].as_str().unwrap(),
+                    row["target"].as_str().unwrap(),
+                    row["veneer"]["name"]
+                        .as_str()
+                        .unwrap()
+                        .contains("rom_routine"),
+                )
+            })
+            .collect();
+        assert_eq!(
+            unresolved,
+            [
+                ("ram_calls_rom", "call", "0x1fff0000", true),
+                ("ram_tails_rom", jump, "0x1fff0000", true),
+            ],
+            "{name}"
+        );
+        assert_eq!(callees["complete"], false);
+
+        // Without symbols, the veneers are known by their code, and the
+        // rows are the same.
+        let path = format!("testdata/bin/far-{name}-stripped.elf");
+        let output = elfq(&[&path, "callees", "0x0+64K", "--json"]);
+        let stripped: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            rows_by_address(&stripped),
+            rows_by_address(&callees),
+            "{name}"
+        );
+    }
+}
+
 #[test]
 fn inlined_lists_every_function_and_the_whole_tree() {
     let list = elfq_json(&[SAMPLE, "inlined"]);
