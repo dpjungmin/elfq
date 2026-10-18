@@ -50,12 +50,17 @@ pub enum Node {
 pub struct Reference {
     /// The item that makes the reference, as an index into [`Binary::items`].
     pub from: usize,
+    /// The item or import that `from` uses.
     pub to: Node,
+    /// How `from` uses it.
     pub kind: ReferenceKind,
     /// Where it is: the address of the instruction, or of the stored pointer.
     pub site: u64,
 }
 
+/// How one item uses another. Only `Call` and `TailCall` are calls; an
+/// `Address` or a `Pointer` to a function means that code may call it
+/// through a pointer, which elfq can't follow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ReferenceKind {
     /// A direct call, or a call through a pointer that the loader fills in,
@@ -106,6 +111,9 @@ impl Unresolved {
     }
 }
 
+/// The reference graph of a binary: its references, the calls and jumps it
+/// can't follow, and its roots. Its nodes are indices into the binary's
+/// items and imports, so it goes with the [`Binary`] it was built from.
 #[derive(Debug, Default)]
 pub struct Graph {
     /// Every reference, sorted by the item that makes it, then by site.
@@ -316,6 +324,7 @@ impl Graph {
 }
 
 impl Node {
+    /// The item's name, or the import's, as the output shows it.
     pub fn name(self, binary: &Binary) -> &str {
         match self {
             Node::Item(index) => &binary.items[index].name,

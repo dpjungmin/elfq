@@ -24,6 +24,9 @@ const SP: u16 = 13;
 const LR: u16 = 14;
 const PC: u16 = 15;
 
+/// The references in the Thumb code `code`, which starts at `address`, in
+/// the order of their instructions. The constants and jump tables that the
+/// code reads are skipped, not decoded.
 pub(super) fn scan(code: &[u8], address: u64, endianness: Endianness) -> Vec<CodeReference> {
     let mut scanner = Scanner::new(code, address, endianness);
     let mut offset = 0;

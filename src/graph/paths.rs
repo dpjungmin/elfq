@@ -86,6 +86,8 @@ impl ShortestPaths {
         paths
     }
 
+    /// Whether the search reached `node`: it is a root, or a reached item
+    /// uses it. Never true for the node that the search avoids.
     pub fn is_reached(&self, node: Node) -> bool {
         self.distance(node).is_some()
     }

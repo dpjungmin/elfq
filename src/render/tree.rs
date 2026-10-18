@@ -23,10 +23,12 @@ pub struct TreeRow {
     pub name: String,
     /// Words after the name, such as "(through a pointer)".
     pub mark: Option<&'static str>,
+    /// The rows under it, in the order they are drawn.
     pub children: Vec<TreeRow>,
 }
 
 impl TreeRow {
+    /// A row with no mark.
     pub fn new(cells: Vec<String>, name: impl Into<String>, children: Vec<TreeRow>) -> TreeRow {
         TreeRow {
             cells,

@@ -57,6 +57,7 @@ struct OverviewJson<'a> {
     indirect_calls: Option<usize>,
 }
 
+/// Answers `elfq FILE`, for the whole file or only the bytes in `range`.
 pub fn run(
     path: &Path,
     binary: &Binary,

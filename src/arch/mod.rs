@@ -20,9 +20,12 @@ use object::{Architecture, Endianness};
 pub struct CodeReference {
     /// The instruction's address.
     pub site: u64,
+    /// What the instruction does with the address.
     pub kind: CodeReferenceKind,
 }
 
+/// What one instruction does with an address. `Graph::build` turns each into
+/// a reference to the item there, or into a call or jump it can't follow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodeReferenceKind {
     /// A direct call: `call target`.

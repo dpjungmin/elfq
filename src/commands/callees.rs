@@ -36,6 +36,8 @@ struct UnresolvedJson {
     target: Option<String>,
 }
 
+/// Answers `elfq FILE callees SYMBOL`, or with ranges in place of SYMBOL,
+/// `callees RANGE...`.
 pub fn run(
     binary: &Binary,
     symbols: &[String],

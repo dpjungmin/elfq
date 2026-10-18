@@ -66,6 +66,9 @@ pub struct Binary {
     pub architecture: Architecture,
     /// The size of a pointer in bytes: 4 or 8.
     pub pointer_size: u64,
+    /// What kind of program the file holds. Only in an `Executable`, linked
+    /// to run at one address, does elfq read pointers from the words in
+    /// data; the others list them in their dynamic relocations.
     pub kind: FileKind,
     /// The address where execution starts.
     pub entry: u64,
@@ -128,6 +131,8 @@ pub struct Section {
     pub name: String,
     pub address: u64,
     pub size: u64,
+    /// What the section holds, as the `object` crate tells from its type and
+    /// flags, such as `Text` for code or `UninitializedData` for `.bss`.
     pub kind: SectionKind,
     /// Whether the section is loaded into memory when the program runs.
     /// Only allocated sections hold items.
@@ -153,6 +158,8 @@ pub struct Item {
     /// aliases.
     pub aliases: Vec<String>,
     pub kind: ItemKind,
+    /// Where the item starts. On Arm, without the Thumb bit that symbols
+    /// and pointers set on a Thumb function's address (see `code_address`).
     pub address: u64,
     /// Size in bytes, or 0 when it is unknown. The item's end,
     /// `address + size`, always fits in a `u64`.
@@ -168,9 +175,14 @@ pub struct Item {
     pub source: Source,
 }
 
+/// Whether an item is code or data. elfq reads the references in a
+/// function's code, and the pointers stored in a data item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ItemKind {
+    /// Code.
     Function,
+    /// Anything that isn't code: a variable, a constant, a table or a
+    /// string.
     Data,
 }
 
@@ -228,6 +240,7 @@ pub struct Relocation {
     pub target: RelocationTarget,
 }
 
+/// What the dynamic loader stores at a relocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelocationTarget {
     /// An address in this file.

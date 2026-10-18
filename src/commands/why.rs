@@ -51,6 +51,8 @@ struct Step<'a> {
     how: String,
 }
 
+/// Answers `elfq FILE why SYMBOL`: the shortest chains from where the
+/// program starts through each item that keeps SYMBOL.
 pub fn run(binary: &Binary, symbol: &str, format: Format, out: &mut dyn Write) -> Result<()> {
     super::check_code_is_readable(binary)?;
     let node = super::symbol::find(binary, symbol)?;

@@ -26,7 +26,11 @@ use super::{Node, item_starting_at, pointer_target};
 /// A place where the program starts running.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Root {
+    /// The item where the program starts, or an import that a startup or
+    /// exit array's relocation names.
     pub node: Node,
+    /// Why it is a root: the first reason `find` comes to, when there are
+    /// several.
     pub kind: RootKind,
 }
 

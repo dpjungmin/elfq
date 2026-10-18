@@ -42,13 +42,17 @@ pub struct Crossing {
 /// The boundary of some ranges of memory.
 pub struct Boundary<'a> {
     binary: &'a Binary,
+    /// `binary`'s graph, whose roots say where the vector table is.
     graph: &'a Graph,
+    /// The ranges as given: an item with any byte in one of them is inside.
     ranges: &'a [AddressRange],
     /// For each item, whether it is in the ranges.
     inside: Vec<bool>,
 }
 
 impl<'a> Boundary<'a> {
+    /// Works out which items are in `ranges`: those with any byte in one of
+    /// them, where an item of unknown size counts as its first byte.
     pub fn new(binary: &'a Binary, graph: &'a Graph, ranges: &'a [AddressRange]) -> Boundary<'a> {
         let inside = binary
             .items

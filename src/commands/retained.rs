@@ -42,6 +42,8 @@ struct RetainedJson<'a> {
     indirect_calls: usize,
 }
 
+/// Answers `elfq FILE retained SYMBOL`: what removing SYMBOL would save, as
+/// a tree.
 pub fn run(
     binary: &Binary,
     symbol: &str,

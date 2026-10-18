@@ -20,6 +20,8 @@ use crate::debuginfo::{self, InlinedCopy};
 use crate::graph::Node;
 use crate::render::{Align, Table, TreeRow};
 
+/// Answers `elfq FILE inlined`, or with `symbol`, `inlined SYMBOL`. Needs
+/// DWARF.
 pub fn run(
     path: &Path,
     binary: &Binary,

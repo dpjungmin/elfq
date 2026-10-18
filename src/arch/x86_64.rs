@@ -4,6 +4,8 @@ use iced_x86::{Decoder, DecoderOptions, FlowControl, Instruction, Mnemonic, OpKi
 
 use super::{CodeReference, CodeReferenceKind};
 
+/// The references in the x86-64 code `code`, which starts at `address`, in
+/// the order of their instructions.
 pub(super) fn scan(code: &[u8], address: u64) -> Vec<CodeReference> {
     let mut decoder = Decoder::with_ip(64, code, address, DecoderOptions::NONE);
     let mut instruction = Instruction::default();

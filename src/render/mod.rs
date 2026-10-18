@@ -21,11 +21,15 @@ pub enum Align {
 #[derive(Debug)]
 pub struct Table {
     headers: Vec<&'static str>,
+    /// How each column's cells line up.
     aligns: Vec<Align>,
+    /// The rows added so far, each with one cell per column.
     rows: Vec<Vec<String>>,
 }
 
 impl Table {
+    /// An empty table with these columns: each a header, and how its cells
+    /// line up.
     pub fn new(columns: &[(&'static str, Align)]) -> Table {
         Table {
             headers: columns.iter().map(|&(header, _)| header).collect(),
@@ -40,6 +44,8 @@ impl Table {
         self.rows.push(cells);
     }
 
+    /// Writes the header, then the rows, each column as wide as its widest
+    /// cell, with no spaces at the ends of lines.
     pub fn write(&self, out: &mut dyn Write) -> io::Result<()> {
         let mut widths: Vec<usize> = self.headers.iter().map(|h| h.chars().count()).collect();
         for row in &self.rows {
