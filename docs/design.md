@@ -121,14 +121,6 @@ knows nothing about any chip, but TCM is what `--range` and the range forms
 of `callers` and `callees` are for: counting what sits in one memory, and
 checking that code in ITCM doesn't call into slow flash.
 
-## Non-goals
-
-- **Re-implementing readelf, objdump, nm or bloaty.** elfq does not print
-  headers, section tables, disassembly listings or flat size breakdowns. When
-  one of those tools already answers a question well, the docs point to it.
-- **A reverse-engineering framework.** No decompiler, no interactive session.
-- **Runtime profiling.** elfq reads the file; it never runs the program.
-
 ## Commands
 
 Every command has the form `elfq <FILE> <command> [ARGS]`: the file first,
@@ -536,26 +528,38 @@ than through a general disassembler's API.
   supports. The sample binaries are committed, so CI needs no cross
   toolchains.
 
-## Delivery
+## Status and roadmap
 
-Each step lands as one or more small pull requests, merged before the next
-starts.
+The overview, `top`, `retained`, `why`, `callers` and `callees` work on
+x86-64 and Cortex-M executables, with or without symbols and DWARF, and
+`inlined` works on any file with DWARF. The overview, `callers` and
+`callees` also work on x86-64 shared libraries. The pull requests and the
+git log record how elfq got here.
 
-| Step | Pull requests |
-|---|---|
-| 1. Survey and samples | This document, survey.md, testdata/ |
-| 2. Core engine | 2a: crate skeleton, CLI, CI, ELF loading and item discovery. 2b: x86-64 scanning, PLT stub names, the reference graph, `callers`, `callees` and the overview. 2c: Rust demangling and short names for SYMBOL. 2d: Cortex-M Thumb scanning, and pointers in firmware data such as the vector table. 2e: items for unnamed data, such as vtables and string literals. |
-| 3. Headline queries | 3a: roots, dominators, `retained` and `exclusive`. 3b: `why`. 3c: `top`. 3d: `inlined`. |
-| 4. Polish | 4a: C++ demangling, with a C++ sample. 4b: JSON output for `callers`, `callees`, `exclusive` and `inlined`. 4c: JSON for `top`, `retained`, `why` and the overview. 4d: warnings where indirect calls make answers uncertain. |
-| 5. Memory ranges | 5a: a Cortex-M7 sample with code and data in ITCM, DTCM, OCRAM and flash, at the addresses an i.MX RT1176 uses; startup code no longer seems to use the first item of each section it copies. 5b: `--range START..END` or `--range START+SIZE` for the overview and `top`, and the overview lists the address blocks that the file's sections occupy. 5c: `--range` for `retained` and `exclusive`. |
-| 6. Clear output | 6a: trees deeper than 9 levels continue below them. 6b: shorter lead lines and notes for the overview, `top` and `retained`, which say what a size means. 6c: no line sums up a single item, and "1 byte". 6d: shorter lead lines and notes for `why`, `callers`, `callees` and `inlined`, and "uses" for data on every architecture. 6e: `exclusive` folds into `retained`, and `--all` shows every item; `inlined SYMBOL` instead of `inlined --in SYMBOL`; `--json` instead of `--format json`; `elfq help top` works. 6f: fixes for what step 6 turned up: no `--range` suggestions that fail on stripped firmware, no empty tree for a range that nothing reaches, and no crash on an argument that isn't UTF-8. |
-| 7. Stripped firmware | 7a: stripped and `-nodebug` copies of the Cortex-M7 sample. 7b: the vector table is found while loading the file. 7c: the Thumb decoder tells apart the jumps that can carry on in another function. 7d: functions in stripped firmware, found by following the code from the entry point and the vector table. 7e: functions that only data points to, such as Rust trait methods in vtables. 7f: an item for the vector table of stripped firmware, so that its bytes count. 7g: those functions leave out the padding after them, so their sizes match the symbols'. 7h: fixes for what a review and 91 other builds turned up: the startup arrays are followed too, a `b.w` that stays in its function starts nothing, and an address that code loads or data holds starts a function only where the code before it ends, so far fewer numbers that look like addresses start one. 7i: firmware whose linker script puts the vector table and the constants in `.text`, as CMSIS's template does, with a sample laid out that way. 7j: fixes for what a second review turned up: a jump that lands where a number points keeps it from starting a function, the jump tables of `tbb` and `tbh` end where the `cmp` before them says and jump to their cases, a short vector table in `.text` ends at its last handler, an `adr` to Thumb code marks no data, and a test for each rule. |
-| 8. Range checks | 8a: `callers` and `callees` take ranges of memory in place of SYMBOL and list what crosses their edge, at the call that goes through a linker's veneer; the exit status is 1 when something crosses or might, and 2 for errors; the constants in big-endian (BE8) firmware are read the right way round. |
+Next:
 
-Later: a query language, and worst-case stack depth (call graph plus each
-function's stack frame).
+1. **Long calls**: calls that load the target's address into a register
+   and branch through it, as in `ldr r3, =f; bx r3`, and the veneers that
+   work that way, so that the range checks see them (see
+   [Known limitations](#known-limitations), 3).
+2. **Output fixes** that a review of elfq for scripts and AI agents turned
+   up.
 
-## Open questions
+Ideas for later, not yet planned: what one function can reach in each
+memory block, a check of what startup code copies into RAM, the retained
+size of a set of items, comparing two builds, the functions that shared
+libraries export as roots, `--root SYMBOL`, worst-case stack depth (the call
+graph plus each function's stack frame), and a query language.
+
+## Non-goals
+
+- **Re-implementing readelf, objdump, nm or bloaty.** elfq does not print
+  headers, section tables, disassembly listings or flat size breakdowns. When
+  one of those tools already answers a question well, the docs point to it.
+- **A reverse-engineering framework.** No decompiler, no interactive session.
+- **Runtime profiling.** elfq reads the file; it never runs the program.
+
+## Known limitations
 
 1. **Where unnamed data ends.** Unnamed data starts wherever something
    refers to it, so a struct in a stripped file whose fields code uses one
@@ -586,5 +590,10 @@ function's stack frame).
    and `callers` misses the call and can exit 0. A veneer to code outside
    every item, such as a routine in ROM, is listed under the veneer's
    name. Startup code that copies sections outside the entry function, or
-   reads a table of them as CMSIS does, adds rows to `callers`. The next
-   step, which follows long calls, covers the veneers.
+   reads a table of them as CMSIS does, adds rows to `callers`. Long
+   calls, next on the roadmap, cover the veneers.
+4. **Shared libraries.** The functions that a library exports aren't roots
+   yet, so `top`, `retained` and `why` refuse libraries, and also programs
+   linked with `-static-pie`, which elfq takes for libraries.
+5. **Compressed DWARF.** `inlined` can't read debug info that the linker
+   compressed (`--compress-debug-sections`).

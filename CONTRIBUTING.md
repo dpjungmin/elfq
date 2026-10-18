@@ -111,5 +111,6 @@ the answers tests should expect. If you change a sample's source, rebuild with
 
 ## Pull requests
 
-Keep them small and focused, ideally one step of the delivery plan in
-[docs/design.md](docs/design.md) at a time.
+Keep them small and focused: one change at a time, each merged before the
+next. [docs/design.md](docs/design.md#status-and-roadmap) says what comes
+next.
