@@ -700,7 +700,12 @@ fn why_has_the_chain_through_every_user() {
     );
     assert_eq!(why["root"], Value::Null);
     assert_eq!(names(&why["unreachable_users"]), ["debug_dump"]);
+    assert_eq!(why["users_it_keeps"], json!([]));
     assert_eq!(why["on_every_chain"]["name"], "main");
+    // parse_list calls parse_value back, so it doesn't keep it.
+    let parse_value = elfq_json(&[SAMPLE, "why", "parse_value"]);
+    assert_eq!(names(&parse_value["users_it_keeps"]), ["parse_list"]);
+    assert_eq!(parse_value["unreachable_users"], json!([]));
     // JSON keeps its words where the HOW column shortened them: Arm code
     // takes the address of `stats` to use it, and a handler is listed in
     // the vector table.
@@ -722,6 +727,7 @@ fn why_has_the_chain_through_every_user() {
     let start = elfq_json(&[SAMPLE, "why", "_start"]);
     assert_eq!(start["root"], "entry point");
     assert_eq!(start["chains"], json!([]));
+    assert_eq!(start["users_it_keeps"], json!([]));
     assert_eq!(start["on_every_chain"], Value::Null);
 }
 

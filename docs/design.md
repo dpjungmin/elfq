@@ -368,8 +368,11 @@ first step is a root, and its `how` says why the program starts there,
 such as `entry point` or `listed in .init_array`. In the others, it says
 how the item before uses this one, in the words of the JSON column in
 [Concepts](#concepts), joined with commas when there are several. The
-overview's JSON says what the file is and what elfq found in it; the
-largest items are in `top`'s.
+items that use SYMBOL but don't keep it, which the text names below the
+chains, are in `unreachable_users` when nothing reaches them, and in
+`users_it_keeps` when only SYMBOL leads to them. The overview's JSON says
+what the file is and what elfq found in it; the largest items are in
+`top`'s.
 
 ### Calls elfq can't follow
 
