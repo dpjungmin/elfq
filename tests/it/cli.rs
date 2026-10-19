@@ -119,8 +119,8 @@ Try:
         "\
 SysTick_Handler is used by 1 data object:
 
-CALLER        HOW      AT
-vector_table  pointer  0x800003c
+HOW      AT         CALLER
+pointer  0x800003c  vector_table
 
 SysTick_Handler is in the vector table: the processor runs it on an interrupt or exception.
 ",
@@ -701,8 +701,8 @@ fn calls_through_pointers_are_pointed_out() {
         "\
 on_button is used by 1 function:
 
-CALLER  HOW            AT
-main    address taken  0x10b6
+HOW            AT      CALLER
+address taken  0x10b6  main
 
 Calls to on_button through a pointer aren't listed, since elfq can't see them.
 ",
@@ -980,12 +980,12 @@ fn callers_lists_each_caller_and_how_it_calls() {
         "\
 log_msg is used by 5 functions:
 
-CALLER         HOW        AT
-app_tick       call       0x16e7
-debug_dump     call       0x1aaf
-on_button      tail call  0x1661
-process_frame  call       0x18ee, 0x1908
-report         call       0x1a72
+HOW        AT              CALLER
+call       0x16e7          app_tick
+call       0x1aaf          debug_dump
+tail call  0x1661          on_button
+call       0x18ee, 0x1908  process_frame
+call       0x1a72          report
 ",
     );
 }
@@ -997,12 +997,12 @@ fn callers_in_a_shared_library_include_calls_through_its_stubs() {
         "\
 log_msg is used by 5 functions:
 
-CALLER         HOW        AT
-app_tick       call       0x179f
-debug_dump     call       0x1b5f
-on_button      tail call  0x1711
-process_frame  call       0x199e, 0x19b8
-report         call       0x1b22
+HOW        AT              CALLER
+call       0x179f          app_tick
+call       0x1b5f          debug_dump
+tail call  0x1711          on_button
+call       0x199e, 0x19b8  process_frame
+call       0x1b22          report
 
 This includes calls through log_msg@plt.
 ",
@@ -1013,8 +1013,8 @@ This includes calls through log_msg@plt.
         "\
 log_msg@plt uses 1 function:
 
-CALLEE   HOW        AT
-log_msg  tail call  0x1144
+HOW        AT      CALLEE
+tail call  0x1144  log_msg
 ",
     );
     // The same goes for an 8-byte stub in `.plt.got`, and for an ifunc's.
@@ -1024,9 +1024,9 @@ log_msg  tail call  0x1144
         "\
 negate is used by 2 functions:
 
-CALLER  HOW            AT
-pick    address taken  0x1210
-run     call           0x126a
+HOW            AT      CALLER
+address taken  0x1210  pick
+call           0x126a  run
 
 This includes calls through negate@plt.
 Calls to negate through a pointer aren't listed, since elfq can't see them.
@@ -1037,8 +1037,8 @@ Calls to negate through a pointer aren't listed, since elfq can't see them.
         "\
 sum_to is used by 1 function:
 
-CALLER  HOW   AT
-run     call  0x1273
+HOW   AT      CALLER
+call  0x1273  run
 
 This includes calls through sum_to@plt.
 ",
@@ -1050,8 +1050,8 @@ This includes calls through sum_to@plt.
         "\
 square is used by 1 function:
 
-CALLER       HOW            AT
-pick_square  address taken  0x1240
+HOW            AT      CALLER
+address taken  0x1240  pick_square
 
 Calls to square through a pointer aren't listed, since elfq can't see them.
 ",
@@ -1069,8 +1069,8 @@ fn rust_names_are_readable_and_short_ones_work() {
         "\
 elfq_sample::process_frame is used by 1 function:
 
-CALLER                 HOW   AT
-elfq_sample::app_main  call  0x14f12, 0x14f29, 0x14f40
+HOW   AT                  CALLER
+call  0x14f12 and 2 more  elfq_sample::app_main
 ",
     );
 }
@@ -1108,8 +1108,8 @@ error: `log` could mean 2 functions; use one of the names on the left instead:
         "\
 app::operator<(app::Reading const&, app::Reading const&) is used by 1 function:
 
-CALLER                                            HOW   AT
-app::sort_readings(app::Reading*, unsigned long)  call  0x156f
+HOW   AT      CALLER
+call  0x156f  app::sort_readings(app::Reading*, unsigned long)
 ",
     );
     assert_output(
@@ -1117,10 +1117,10 @@ app::sort_readings(app::Reading*, unsigned long)  call  0x156f
         "\
 typeinfo for app::Gain uses 3 items:
 
-CALLEE                                       HOW      AT
-vtable for __cxxabiv1::__si_class_type_info  pointer  0x3d78
-typeinfo name for app::Gain                  pointer  0x3d80
-typeinfo for app::Stage                      pointer  0x3d88
+HOW      AT      CALLEE
+pointer  0x3d78  vtable for __cxxabiv1::__si_class_type_info
+pointer  0x3d80  typeinfo name for app::Gain
+pointer  0x3d88  typeinfo for app::Stage
 ",
     );
 }
@@ -1137,8 +1137,8 @@ fn data_without_a_symbol_is_named_by_section_and_address() {
         "\
 <elfq_sample::Gain as elfq_sample::Stage>::run is used by 1 data object:
 
-CALLER                HOW      AT
-.data.rel.ro@0x52da8  pointer  0x52dc0
+HOW      AT       CALLER
+pointer  0x52dc0  .data.rel.ro@0x52da8
 
 Calls to <elfq_sample::Gain as elfq_sample::Stage>::run through a pointer aren't listed, since elfq can't see them.
 "
@@ -1160,8 +1160,8 @@ fn callees_also_reports_what_it_cannot_follow() {
         "\
 dispatch_event uses 1 data object:
 
-CALLEE    HOW   AT
-handlers  uses  0x169b
+HOW   AT      CALLEE
+uses  0x169b  handlers
 
 Also 1 jump through a pointer, at 0x16ad, which elfq can't follow.
 ",
@@ -1198,15 +1198,15 @@ fn code_uses_data_whether_it_reads_it_or_loads_its_address() {
         "\
 std::rt::cleanup::CLEANUP is used by 1 function:
 
-CALLER                        HOW   AT
-std::rt::lang_start_internal  uses  0x3a60a, 0x3a66d
+HOW   AT                CALLER
+uses  0x3a60a, 0x3a66d  std::rt::lang_start_internal
 ",
     );
     // Arm code loads a variable's address before it reads or writes it,
     // and that is "uses" too.
     let stats = stdout(&["testdata/bin/c-cortex-m4.elf", "callers", "stats"]);
     assert!(
-        stats.contains("\nprocess_frame  uses  0x8000332\n"),
+        stats.contains("\nuses  0x8000332  process_frame\n"),
         "{stats}"
     );
 }
@@ -1228,10 +1228,10 @@ fn callees_of_ranges_lists_what_leaves_them() {
         "\
 0x00000000..0x00040000 (.itcm) and 0x20000000..0x20040000 (.data and .bss) use 3 items outside them:
 
-CALLEE      ADDRESS     SIZE  CALLER           HOW                   AT
-memcpy      0x3000087c   308  apply_filter     call via veneer       0xbc
-app_tick    0x300002e4    60  SysTick_Handler  tail call via veneer  0x8
-fir_coeffs  0x30000eb4    32  filter_tap       uses                  0x56
+ADDRESS     SIZE  HOW                   AT    CALLEE
+0x3000087c   308  call via veneer       0xbc  memcpy, used by apply_filter
+0x300002e4    60  tail call via veneer  0x8   app_tick, used by SysTick_Handler
+0x30000eb4    32  uses                  0x56  fir_coeffs, used by filter_tap
 ",
     );
     // The same without symbols, where the veneers are known by their code.
@@ -1245,10 +1245,10 @@ fir_coeffs  0x30000eb4    32  filter_tap       uses                  0x56
         "\
 0x00000000..0x00040000 (.itcm) and 0x20000000..0x20040000 (.data and .bss) use 3 items outside them:
 
-CALLEE              ADDRESS     SIZE  CALLER   HOW                   AT
-fn_0x3000087c       0x3000087c  ~308  fn_0x74  call via veneer       0xbc
-fn_0x300002e4       0x300002e4   ~60  fn_0x0   tail call via veneer  0x8
-.rodata@0x30000eb4  0x30000eb4   ~32  fn_0x40  uses                  0x56
+ADDRESS     SIZE  HOW                   AT    CALLEE
+0x3000087c  ~308  call via veneer       0xbc  fn_0x3000087c, used by fn_0x74
+0x300002e4   ~60  tail call via veneer  0x8   fn_0x300002e4, used by fn_0x0
+0x30000eb4   ~32  uses                  0x56  .rodata@0x30000eb4, used by fn_0x40
 ",
     );
     // ITCM alone: DTCM is outside it too.
@@ -1257,12 +1257,12 @@ fn_0x300002e4       0x300002e4   ~60  fn_0x0   tail call via veneer  0x8
         "\
 0x00000000..0x00040000 (.itcm) uses 5 items outside it:
 
-CALLEE         ADDRESS     SIZE  CALLER           HOW                   AT
-crc_table      0x20000000  1024  crc32            uses                  0x18
-memcpy         0x3000087c   308  apply_filter     call via veneer       0xbc
-app_tick       0x300002e4    60  SysTick_Handler  tail call via veneer  0x8
-fir_coeffs     0x30000eb4    32  filter_tap       uses                  0x56
-systick_count  0x20000444     4  SysTick_Handler  uses                  0x0
+ADDRESS     SIZE  HOW                   AT    CALLEE
+0x20000000  1024  uses                  0x18  crc_table, used by crc32
+0x3000087c   308  call via veneer       0xbc  memcpy, used by apply_filter
+0x300002e4    60  tail call via veneer  0x8   app_tick, used by SysTick_Handler
+0x30000eb4    32  uses                  0x56  fir_coeffs, used by filter_tap
+0x20000444     4  uses                  0x0   systick_count, used by SysTick_Handler
 ",
     );
     // Data that holds no pointers uses nothing: exit status 0.
@@ -1283,18 +1283,18 @@ fn callees_of_ranges_names_who_calls_through_a_veneer() {
         "\
 0x00000000..0x00010000 (.ram) uses 4 items outside it, and makes 1 call and 1 jump that elfq can't follow:
 
-CALLEE                  ADDRESS     SIZE  CALLER                HOW                   AT
-(outside any function)  0x1fff0000        ram_calls_rom         call via veneer       0x46
-(outside any function)  0x1fff0000        ram_tails_rom         jump via veneer       0x60
-flash_far               0x30000100    16  ram_long_calls_flash  call                  0x74
-flash_tail              0x300000b8    16  ram_tails_flash       tail call via veneer  0x34
-flash_work              0x300000a8    16  ram_calls_flash       call via veneer       0x1a
-counter                 0x20000000     4  ram_leaf              uses                  0x0
-                                          ram_calls_flash       uses                  0x10
-                                          ram_tails_flash       uses                  0x2c
-                                          ram_calls_rom         uses                  0x3e
-                                          ram_tails_rom         uses                  0x58
-                                          ram_long_calls_flash  uses                  0x68
+ADDRESS     SIZE  HOW                   AT    CALLEE
+0x1fff0000        call via veneer       0x46  (outside any function), used by ram_calls_rom
+0x1fff0000        jump via veneer       0x60  (outside any function), used by ram_tails_rom
+0x30000100    16  call                  0x74  flash_far, used by ram_long_calls_flash
+0x300000b8    16  tail call via veneer  0x34  flash_tail, used by ram_tails_flash
+0x300000a8    16  call via veneer       0x1a  flash_work, used by ram_calls_flash
+0x20000000     4  uses                  0x0   counter, used by ram_leaf
+0x20000000     4  uses                  0x10  counter, used by ram_calls_flash
+0x20000000     4  uses                  0x2c  counter, used by ram_tails_flash
+0x20000000     4  uses                  0x3e  counter, used by ram_calls_rom
+0x20000000     4  uses                  0x58  counter, used by ram_tails_rom
+0x20000000     4  uses                  0x68  counter, used by ram_long_calls_flash
 ",
     );
     // From flash, through the veneers that LLD adds for Cortex-M0, which
@@ -1304,13 +1304,13 @@ counter                 0x20000000     4  ram_leaf              uses            
         "\
 0x00000000..0x00010000 (.ram) is used by 2 functions outside it:
 
-CALLER           ADDRESS     SIZE  CALLEE                HOW              AT
-Reset_Handler    0x30000124    32  ram_calls_flash       call via veneer  0x30000126
-                                   ram_tails_flash       call via veneer  0x3000012a
-                                   ram_calls_rom         call via veneer  0x3000012e
-                                   ram_tails_rom         call via veneer  0x30000132
-                                   ram_long_calls_flash  call via veneer  0x30000136
-flash_calls_ram  0x300000dc    28  ram_leaf              call via veneer  0x300000e6
+ADDRESS     SIZE  HOW              AT          CALLER
+0x30000124    32  call via veneer  0x30000126  Reset_Handler, uses ram_calls_flash
+0x30000124    32  call via veneer  0x3000012a  Reset_Handler, uses ram_tails_flash
+0x30000124    32  call via veneer  0x3000012e  Reset_Handler, uses ram_calls_rom
+0x30000124    32  call via veneer  0x30000132  Reset_Handler, uses ram_tails_rom
+0x30000124    32  call via veneer  0x30000136  Reset_Handler, uses ram_long_calls_flash
+0x300000dc    28  call via veneer  0x300000e6  flash_calls_ram, uses ram_leaf
 ",
     );
 }
@@ -1325,17 +1325,18 @@ fn callees_of_ranges_lists_first_what_elfq_cannot_follow() {
             "0x30000000..0x31000000 (.isr_vector, .text, .rodata and .ARM.exidx) uses 14 items \
              outside it, and makes 1 jump that elfq can't follow:",
             "",
-            "CALLEE               ADDRESS     SIZE  CALLER            HOW              AT",
-            "(through a pointer)                    dispatch_event    jump             0x300002da",
-            "tx_buffer            0x20240000  4096  platform_write    uses             0x30000674, 0x30000696",
-            "apply_filter         0x74          92  process_frame     call via veneer  0x30000386, 0x30000454",
+            "ADDRESS     SIZE  HOW              AT                      CALLEE",
+            "                  jump             0x300002da              (through a pointer), used by dispatch_event",
+            "0x20240000  4096  uses             0x30000674, 0x30000696  tx_buffer, used by platform_write",
+            "0x74          92  call via veneer  0x30000386, 0x30000454  apply_filter, used by process_frame",
         ]
     );
-    // An item used from several places is named once.
+    // An item that several items use has a row for each of them, and every
+    // row names both.
     assert!(
         flash.contains(
-            "\nstats                0x20000400    32  process_frame     uses             0x3000038a\n\
-             \x20                                      report            uses             0x300004de\n"
+            "\n0x20000400    32  uses             0x3000038a              stats, used by process_frame\n\
+             0x20000400    32  uses             0x300004de              stats, used by report\n"
         ),
         "{flash}"
     );
@@ -1356,10 +1357,10 @@ fn callers_of_ranges_lists_what_uses_them_from_outside() {
         "\
 0x00000000..0x00040000 (.itcm) is used by 2 items outside it:
 
-CALLER         ADDRESS     SIZE  CALLEE           HOW              AT
-process_frame  0x30000320   376  crc32            call via veneer  0x3000034c
-                                 apply_filter     call via veneer  0x30000386, 0x30000454
-vector_table   0x30000000    64  SysTick_Handler  pointer          0x3000003c
+ADDRESS     SIZE  HOW              AT                      CALLER
+0x30000320   376  call via veneer  0x3000034c              process_frame, uses crc32
+0x30000320   376  call via veneer  0x30000386, 0x30000454  process_frame, uses apply_filter
+0x30000000    64  pointer          0x3000003c              vector_table, uses SysTick_Handler
 ",
     );
     // Code outside may call a function through a pointer to it.
@@ -1368,9 +1369,9 @@ vector_table   0x30000000    64  SysTick_Handler  pointer          0x3000003c
         "\
 0x00001260..0x00001280 (.text) is used by 1 function outside it:
 
-CALLER  ADDRESS  SIZE  CALLEE    HOW            AT
-main    0x10a0    195  on_timer  address taken  0x10a8
-                       on_data   address taken  0x10c7
+ADDRESS  SIZE  HOW            AT      CALLER
+0x10a0    195  address taken  0x10a8  main, uses on_timer
+0x10a0    195  address taken  0x10c7  main, uses on_data
 
 Calls through a pointer to on_timer and on_data aren't listed, since elfq can't see them.
 ",

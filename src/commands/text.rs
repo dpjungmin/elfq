@@ -95,12 +95,13 @@ pub(super) fn addresses_text(sites: &[u64]) -> String {
     phrase(&sites, 3)
 }
 
-/// Addresses for the AT column, the first few of them: "0x1795, 0x17d4",
-/// or "0x1795, 0x17d4, 0x17e0 and 3 more".
+/// Addresses for the AT column: "0x1795", "0x1795, 0x17d4", or for more
+/// than two, "0x1795 and 2 more". The column comes before the name, so it
+/// stays short; the JSON has every site.
 pub(super) fn at_column(sites: &[u64]) -> String {
     let shown: Vec<String> = sites
         .iter()
-        .take(shown_count(sites.len(), 3))
+        .take(shown_count(sites.len(), 1))
         .map(|site| format!("{site:#x}"))
         .collect();
     match sites.len() - shown.len() {
@@ -290,8 +291,9 @@ mod tests {
             names_text(&names),
             "f1, f2, f3, f4, f5, f6, f7, f8, f9, f10 and 2 more"
         );
-        assert_eq!(at_column(&[1, 2, 3, 4]), "0x1, 0x2, 0x3, 0x4");
-        assert_eq!(at_column(&[1, 2, 3, 4, 5]), "0x1, 0x2, 0x3 and 2 more");
+        assert_eq!(at_column(&[1]), "0x1");
+        assert_eq!(at_column(&[1, 2]), "0x1, 0x2");
+        assert_eq!(at_column(&[1, 2, 3]), "0x1 and 2 more");
         assert_eq!(addresses_text(&[1, 2, 3, 4]), "0x1, 0x2, 0x3 and 0x4");
         assert_eq!(addresses_text(&[1, 2, 3, 4, 5]), "0x1, 0x2, 0x3 and 2 more");
     }
