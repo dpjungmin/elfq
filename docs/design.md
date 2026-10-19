@@ -192,24 +192,23 @@ does, elfq still finishes and exits with the answer's status.
 All commands print a table for people by default, with one row per line. A
 table puts its short cells, such as sizes, HOW and AT, first and the name
 last, so that a long name that the terminal wraps moves no column. Where an
-answer is a tree, as in the overview, `top`, `retained` and `why`, each row
-then names the row it hangs under, as in `crc_table, kept by crc32`, by the
-shortest form of its name that finds that item as SYMBOL, or by its whole
-name when only an address would, and a row that grep finds still says where
+answer is a tree, as in the overview, `top`, `retained`, `why` and `inlined
+SYMBOL`, each row then names the row it hangs under by a short name, as in
+`crc_table, kept by crc32`, so that a row that grep finds still says where
 it is; in `why`, only where chains branch. `--tree` draws such answers as
 trees instead. AT shows where an item is used: every site when there are
-one or two, else the first and how many more. `callers SYMBOL` and
-`callees SYMBOL` list the 30 items with the largest own sizes, callers in
-order of name and callees in the order SYMBOL first uses them, and a last
-row such as `70 more` counts the rest; with ranges, they list every
-crossing. `--all` lifts every such cut in an answer but AT's: it shows
-every item in a table or tree, every chain in `why`, and every name and
-address in a sentence, where a long list otherwise ends with "and 48 more".
-`--json` prints the same answer for scripts. The JSON has every item and
-every site, where the text shows only the largest items and the first
-sites; every key is always there, `null` when it has no value; addresses
-are hex strings, as elfq prints them and SYMBOL takes them, and sizes are
-numbers. An item looks like this:
+one or two, else the first and how many more. `callers SYMBOL` and `callees
+SYMBOL` list the 30 items with the largest own sizes, callers in order of
+name and callees in the order SYMBOL first uses them, and a last row such
+as `70 more` counts the rest; with ranges, they list every crossing.
+`--all` lifts every such cut in an answer but AT's: it shows every item in
+a table or tree, every chain in `why`, and every name and address in a
+sentence, where a long list otherwise ends with "and 48 more". `--json`
+prints the same answer for scripts. The JSON has every item and every site,
+where the text shows only the largest items and the first sites; every key
+is always there, `null` when it has no value; addresses are hex strings, as
+elfq prints them and SYMBOL takes them, and sizes are numbers. An item
+looks like this:
 
 ```json
 {
@@ -252,11 +251,14 @@ RETAINED   OWN  ITEM
 Shared with other code, so not counted: __stack_chk_fail@plt, dispatch_event, frames_bad, frames_ok, log_msg, stats.
 ```
 
-A tree shows its 30 largest items and sums up the rest under the items that
-keep them: `6 more, kept by main` stands for six items, and its RETAINED
-column adds up their bytes. A row never stands for a single item, since the
-item's own row takes no more room, and lists of names and addresses never
-end in "and 1 more" either. `--all` shows every item instead.
+Each row names the item that keeps it by the shortest form of its name that
+finds that item as SYMBOL, or by its whole name when only an address would.
+A tree shows its 30 largest items and sums up the rest
+under the items that keep them: `6 more, kept by main` stands for six
+items, and its RETAINED column adds up their bytes. A row never stands for
+a single item, since the item's own row takes no more room, and lists of
+names and addresses never end in "and 1 more" either. `--all` shows every
+item instead.
 
 With `--tree`, every tree, in every command, is drawn at most 9 levels
 below its top row, so names never start more than 27 columns into the tree
@@ -302,15 +304,14 @@ debug_dump uses log_msg too, but nothing reaches debug_dump.
 Removing main would remove log_msg too.
 ```
 
-`inlined` ranks the functions that the compiler copied into their callers by
-the bytes all their copies take, which ddbug shows only one function at a
-time. Each copy's bytes leave out the copies inlined into it, so the rows add
-up to the file's inlined code. On the Rust x86-64 sample with DWARF,
+`inlined` ranks the functions that the compiler copied into their callers
+by the bytes all their copies take, which ddbug shows only one function at
+a time. Each copy's bytes leave out the copies inlined into it, so the rows
+add up to the file's inlined code. On the Rust x86-64 sample with DWARF,
 `EndianSlice::read_slice` tops the list: 302 copies in 6,388 bytes. That
 file is too large to commit; `testdata/build.sh` leaves it at
-`testdata/rust/target/release/elfq-sample`. With
-SYMBOL it shows the copies in one function as a tree, merging the copies of
-one function in one place:
+`testdata/rust/target/release/elfq-sample`. With SYMBOL it shows the copies
+in one function, merging the copies of one function in one place:
 
 ```
 $ elfq testdata/bin/c-x86_64.elf inlined report
@@ -319,6 +320,18 @@ Of report's 370 bytes, 150 are inlined copies of 1 function:
 BYTES  COPIES  FUNCTION
   150       6  append
 ```
+
+A row under another names the copy it was inlined into by the shortest name
+that no other function there has. Where that function is inlined in several
+places, the name adds the nearest place above it that is inlined in one
+place only, or SYMBOL: `inlined process_frame` on
+`testdata/bin/rust-cortex-m4.elf` has rows that end in
+`inlined into fetch_add in update_stats`. Where that still leaves two
+copies with rows under them called the same, as when `spec_next` is
+inlined into both `next` and `step` in `padding`, each adds what the rows
+call the copy it sits in instead: `spec_next in next in padding`. So no
+two rows that others hang under are called the same, unless the debug info
+nests copies of a function in copies of it more than 16 deep.
 
 With `--range START..END` or `--range START+SIZE`, the overview, `top` and
 `retained` count only the bytes inside one range of memory, such as a

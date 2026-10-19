@@ -1254,14 +1254,44 @@ BYTES  COPIES  FUNCTION
 }
 
 #[test]
-fn inlined_shows_copies_inside_copies_as_a_tree() {
-    let tree = stdout(&["testdata/bin/rust-cortex-m4.elf", "inlined", "memcpy"]);
+fn inlined_shows_copies_inside_copies() {
+    let rows = stdout(&["testdata/bin/rust-cortex-m4.elf", "inlined", "memcpy"]);
     assert!(
-        tree.starts_with(
+        rows.starts_with(
             "\
 Of compiler_builtins::mem::memcpy's 730 bytes, 712 are inlined copies of 17 functions:
 
 BYTES  COPIES  FUNCTION
+  712       1  compiler_builtins::mem::impls::copy_forward
+  392       1  compiler_builtins::mem::impls::copy_forward::copy_forward_misaligned_words, inlined into copy_forward
+   74       1  compiler_builtins::mem::impls::load_aligned_partial, inlined into copy_forward_misaligned_words
+"
+        ),
+        "{rows}"
+    );
+    // A function inlined in several places names where its copies are.
+    let rows = stdout(&[
+        "testdata/bin/rust-cortex-m4.elf",
+        "inlined",
+        "process_frame",
+    ]);
+    for row in [
+        "   14       1  core::sync::atomic::atomic_add::<u32, u32>, inlined into fetch_add in \
+         update_stats\n",
+        "   42       3  core::sync::atomic::atomic_add::<u32, u32>, inlined into fetch_add in \
+         process_frame\n",
+    ] {
+        assert!(rows.contains(row), "{rows}");
+    }
+    let tree = stdout(&[
+        "testdata/bin/rust-cortex-m4.elf",
+        "inlined",
+        "memcpy",
+        "--tree",
+    ]);
+    assert!(
+        tree.contains(
+            "\
   712       1  compiler_builtins::mem::impls::copy_forward
   392       1  ├─ compiler_builtins::mem::impls::copy_forward::copy_forward_misaligned_words
    74       1  │  ├─ compiler_builtins::mem::impls::load_aligned_partial

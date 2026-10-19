@@ -573,7 +573,13 @@ fn inlined_copies_that_nest_deeply_are_summed_up() {
     replace_section(&mut data, ".debug_info", &with_length(&unit));
     replace_section(&mut data, ".debug_abbrev", &abbrev);
     let (stdout, _) = run("deep-inlined-copies.elf", &data, &["inlined", "main"]);
-    assert!(stdout.contains("└─ 99970 more\n"), "{stdout}");
+    // The copies all have one name, so the rows name each by where it is,
+    // in at most 16 names.
+    let place = "(unnamed) in ".repeat(15);
+    assert!(
+        stdout.contains(&format!("  99970 more, inlined into {place}main\n")),
+        "{stdout}"
+    );
 }
 
 /// Stripped firmware whose code is `count` Thumb functions, in place of
