@@ -50,7 +50,7 @@ use object::{
     SectionIndex, SectionKind, SymbolKind,
 };
 
-use crate::arch::{self, CodeReference};
+use crate::arch::{self, CodeReference, CodeReferenceKind};
 
 /// Arrays of pointers to the functions that the C runtime calls at startup
 /// and exit.
@@ -370,10 +370,11 @@ impl Binary {
             unnamed_functions::add(&binary, &mut items);
         }
 
+        let run_on = end_where_functions_start(&mut items);
         sort_items(&mut items);
         estimate_missing_sizes(&mut items, &binary.sections);
         binary.items = items;
-        binary.code_references = scan_functions(&binary);
+        binary.code_references = scan_functions(&binary, &run_on);
         // Last, since finding unnamed data needs all the other items.
         let unnamed = unnamed_data::items(&binary);
         binary.items.extend(unnamed);
@@ -382,9 +383,10 @@ impl Binary {
     }
 
     /// The references that the code of `function` makes, as `arch::scan`
-    /// finds them: none when elfq can't read the code. Scanning code is
-    /// much of what elfq does, so it scans each function once, as it loads
-    /// the file.
+    /// finds them, and a jump to the next function when the code runs on
+    /// into it (see `end_where_functions_start`): none when elfq can't read
+    /// the code. Scanning code is much of what elfq does, so it scans each
+    /// function once, as it loads the file.
     pub fn code_references(&self, function: &Item) -> &[CodeReference] {
         self.code_references
             .get(&(function.address, function.size))
@@ -953,9 +955,57 @@ fn add_entry_item(items: &mut Vec<Item>, entry: u64, sections: &[Section]) {
     }
 }
 
+/// Ends each function where the next one starts, when that is inside it
+/// and the functions that start inside it run to its end. Hand-written
+/// code can give a function several entry points that share its end, each
+/// with a symbol whose size runs to that end: libgcc's `__aeabi_dsub` flips
+/// the sign of its second argument and runs on into `__adddf3`. Ending each
+/// entry where the next starts counts each byte once. A function whose
+/// code goes on after the functions inside it stays whole. Returns the
+/// functions it ended, by address and size, as the code of each may run on
+/// into the next.
+fn end_where_functions_start(items: &mut [Item]) -> HashSet<(u64, u64)> {
+    // Each function's section, start and end, sorted.
+    let mut functions: Vec<(usize, u64, u64)> = items
+        .iter()
+        .filter(|item| item.kind == ItemKind::Function)
+        .map(|item| (item.section, item.address, item.address + item.size))
+        .collect();
+    functions.sort_unstable();
+    let mut ended = HashSet::new();
+    for item in items
+        .iter_mut()
+        .filter(|item| item.kind == ItemKind::Function)
+    {
+        let end = item.address + item.size;
+        let after = functions.partition_point(|&(section, address, _)| {
+            (section, address) <= (item.section, item.address)
+        });
+        let mut inside = functions[after..]
+            .iter()
+            .take_while(|&&(section, address, _)| section == item.section && address < end)
+            .peekable();
+        let Some(&&(_, next, _)) = inside.peek() else {
+            continue;
+        };
+        if inside.all(|&(_, _, inner_end)| inner_end < end) {
+            continue;
+        }
+        item.size = next - item.address;
+        ended.insert((item.address, item.size));
+    }
+    ended
+}
+
 /// The references in the code of each function in `binary.items`, by the
-/// function's address and size; see [`Binary::code_references`].
-fn scan_functions(binary: &Binary) -> HashMap<(u64, u64), Vec<CodeReference>> {
+/// function's address and size; see [`Binary::code_references`]. Each of
+/// `run_on`, the functions that `end_where_functions_start` ended, also
+/// jumps to the function after it if its code runs on into it, as a tail
+/// call does.
+fn scan_functions(
+    binary: &Binary,
+    run_on: &HashSet<(u64, u64)>,
+) -> HashMap<(u64, u64), Vec<CodeReference>> {
     if !arch::is_supported(binary.architecture, binary.thumb) {
         return HashMap::new();
     }
@@ -965,16 +1015,51 @@ fn scan_functions(binary: &Binary) -> HashMap<(u64, u64), Vec<CodeReference>> {
         .filter(|item| item.kind == ItemKind::Function);
     functions
         .filter_map(|function| {
+            let key = (function.address, function.size);
             let code = binary.bytes(function.address, function.size)?;
-            let references = arch::scan(
+            let mut references = arch::scan(
                 binary.architecture,
                 binary.endianness,
                 code,
                 function.address,
             );
-            Some(((function.address, function.size), references))
+            if run_on.contains(&key) {
+                references.extend(run_on_jump(binary, function, code, &references));
+            }
+            Some((key, references))
         })
         .collect()
+}
+
+/// The jump from the last instruction of `function`, whose `code` makes
+/// `references`, to the function that starts where it ends, when the code
+/// runs on into it (see `arch::runs_on`). `None` when it doesn't, or when
+/// that instruction is a conditional jump there, which `references`
+/// already has.
+fn run_on_jump(
+    binary: &Binary,
+    function: &Item,
+    code: &[u8],
+    references: &[CodeReference],
+) -> Option<CodeReference> {
+    let next = function.address + function.size;
+    let site = arch::runs_on(
+        binary.architecture,
+        binary.endianness,
+        code,
+        function.address,
+    )?;
+    let jumps_there = references.iter().any(|reference| {
+        reference.site == site
+            && matches!(
+                reference.kind,
+                CodeReferenceKind::Jump(to) | CodeReferenceKind::TailJump(to) if to == next
+            )
+    });
+    (!jumps_there).then_some(CodeReference {
+        site,
+        kind: CodeReferenceKind::TailJump(next),
+    })
 }
 
 /// Gives each function of unknown size the distance to the next item in its
@@ -1056,6 +1141,126 @@ mod tests {
                 ("fn_0x1200", 0x1200, 0x10, Source::EhFrame),
             ]
         );
+    }
+
+    #[test]
+    fn entry_points_end_where_the_next_starts() {
+        // As libgcc's __gedf2, __ledf2 and __cmpdf2: each symbol runs to
+        // the end they share.
+        let mut items = vec![
+            function("__cmpdf2", 0x1010, 0x70),
+            function("__gedf2", 0x1000, 0x80),
+            function("__ledf2", 0x1008, 0x78),
+            // A function of unknown size, a function at the same address,
+            // and data inside a function, change nothing.
+            function("unsized", 0x2000, 0),
+            function("whole", 0x3000, 0x20),
+            function("alias", 0x3000, 0x10),
+            Item {
+                kind: ItemKind::Data,
+                ..function("table", 0x3004, 4)
+            },
+            // Nor does a function in another section, at an address inside
+            // one.
+            Item {
+                section: 1,
+                ..function("elsewhere", 0x3010, 4)
+            },
+            // A function whose code goes on after the one inside it stays
+            // whole, as does one with a function of unknown size inside.
+            function("outer", 0x4000, 0x20),
+            function("inner", 0x4008, 8),
+            function("around", 0x5000, 0x20),
+            function("unknown", 0x5010, 0),
+        ];
+        let ended = end_where_functions_start(&mut items);
+        let sizes: Vec<(&str, u64)> = items
+            .iter()
+            .map(|item| (item.name.as_str(), item.size))
+            .collect();
+        assert_eq!(
+            sizes,
+            [
+                ("__cmpdf2", 0x70),
+                ("__gedf2", 8),
+                ("__ledf2", 8),
+                ("unsized", 0),
+                ("whole", 0x20),
+                ("alias", 0x10),
+                ("table", 4),
+                ("elsewhere", 4),
+                ("outer", 0x20),
+                ("inner", 8),
+                ("around", 0x20),
+                ("unknown", 0),
+            ]
+        );
+        assert_eq!(ended, HashSet::from([(0x1000, 8), (0x1008, 8)]));
+    }
+
+    /// An x86-64 file whose `.text` at 0x1000 is `code`, holding `items`.
+    fn x86_64_binary(code: Vec<u8>, items: Vec<Item>) -> Binary {
+        let text = Section {
+            size: code.len() as u64,
+            file_range: Some((0, code.len() as u64)),
+            ..text_section()
+        };
+        Binary {
+            architecture: Architecture::X86_64,
+            pointer_size: 8,
+            kind: FileKind::Executable,
+            entry: 0x1000,
+            thumb: false,
+            endianness: Endianness::Little,
+            has_symbols: true,
+            has_dwarf: false,
+            sections: vec![null_section(), text],
+            items: items
+                .into_iter()
+                .map(|item| Item { section: 1, ..item })
+                .collect(),
+            imports: Vec::new(),
+            relocations: Vec::new(),
+            used_by_unwinder: Vec::new(),
+            merged_variables: Vec::new(),
+            vector_table: None,
+            warnings: Vec::new(),
+            code_references: HashMap::new(),
+            data: code,
+        }
+    }
+
+    #[test]
+    fn an_entry_point_that_runs_on_tail_calls_the_next() {
+        // neg esi, which runs on into add's lea eax, [rdi + rsi]; ret.
+        let mut items = vec![function("subtract", 0x1000, 6), function("add", 0x1002, 4)];
+        let ended = end_where_functions_start(&mut items);
+        let binary = x86_64_binary(vec![0xf7, 0xde, 0x8d, 0x04, 0x37, 0xc3], items);
+        let references = scan_functions(&binary, &ended);
+        let run_on = CodeReference {
+            site: 0x1000,
+            kind: CodeReferenceKind::TailJump(0x1002),
+        };
+        assert_eq!(references[&(0x1000, 2)], [run_on]);
+        assert_eq!(references[&(0x1002, 4)], []);
+
+        // test esi, esi; jne 0x1004, a conditional jump to the next
+        // entry, is one reference to it, not two; and ret runs on nowhere.
+        let mut items = vec![
+            function("skip", 0x1000, 9),
+            function("add", 0x1004, 5),
+            function("done", 0x1008, 1),
+        ];
+        let ended = end_where_functions_start(&mut items);
+        let code = vec![0x85, 0xf6, 0x75, 0x00, 0x8d, 0x04, 0x37, 0xc3, 0xc3];
+        let binary = x86_64_binary(code, items);
+        let references = scan_functions(&binary, &ended);
+        let jump = CodeReference {
+            site: 0x1002,
+            kind: CodeReferenceKind::Jump(0x1004),
+        };
+        assert_eq!(references[&(0x1000, 4)], [jump]);
+        assert_eq!(references[&(0x1004, 4)], []);
     }
 
     #[test]

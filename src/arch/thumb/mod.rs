@@ -113,26 +113,39 @@ pub(super) fn code_size(code: &[u8], address: u64, endianness: Endianness) -> us
 /// instructions could run on past its end. Padding after them doesn't
 /// count.
 pub(super) fn ending(code: &[u8], address: u64, endianness: Endianness) -> Ending {
+    last_instruction(code, address, endianness).map_or(Ending::Stops, |(_, ending)| ending)
+}
+
+/// The last instruction of the code that starts at `address`, as an offset
+/// into `code`, and how the code ends after it (see [`ending`]). Padding
+/// after it doesn't count. `None` when the code ends with data, such as a
+/// literal pool, or is all padding: it stops before then.
+pub(super) fn last_instruction(
+    code: &[u8],
+    address: u64,
+    endianness: Endianness,
+) -> Option<(usize, Ending)> {
     let mut scanner = Scanner::new(code, address, endianness);
-    let mut ending = Ending::Stops;
+    let mut last = None;
     // How many of the next instructions an `it` makes conditional.
     let mut conditional = 0;
     let mut offset = 0;
     while let Some(first) = scanner.halfword(offset) {
         if let Some(end) = scanner.data_end(offset) {
-            (offset, ending, conditional) = (end, Ending::Stops, 0);
+            (offset, last, conditional) = (end, None, 0);
             continue;
         }
         let Some(step) = scanner.step(offset, first) else {
             // The code ends inside an instruction.
-            return Ending::RunsOn;
+            return Some((offset, Ending::RunsOn));
         };
         let second = scanner.halfword(offset + 2);
         if !is_padding(first, second) {
-            ending = match conditional {
+            let ending = match conditional {
                 0 => exit(first, second.unwrap_or(0)),
                 _ => Ending::RunsOn,
             };
+            last = Some((offset, ending));
         }
         conditional = match first {
             // it, with a mask that says how many instructions follow.
@@ -142,9 +155,9 @@ pub(super) fn ending(code: &[u8], address: u64, endianness: Endianness) -> Endin
         offset += step;
     }
     if conditional > 0 {
-        return Ending::RunsOn;
+        return last.map(|(offset, _)| (offset, Ending::RunsOn));
     }
-    ending
+    last
 }
 
 /// Whether `code` is one of the veneers that GNU ld and LLD add for
@@ -1008,6 +1021,31 @@ mod tests {
         // ldr r2, [pc, #0]; bx lr; then the constant 1 it loads.
         let code = [0x00, 0x4a, 0x70, 0x47, 0x01, 0x00, 0x00, 0x00];
         assert_eq!(ending(&code, 0, Little), Ending::Stops);
+    }
+
+    #[test]
+    fn the_last_instruction_is_before_the_padding() {
+        // movs r0, #1; eor.w r3, r3, #0x80000000, as libgcc's
+        // __aeabi_dsub runs on into __adddf3; then nop.
+        let code = [0x01, 0x20, 0x83, 0xf0, 0x00, 0x43, 0x00, 0xbf];
+        assert_eq!(
+            last_instruction(&code, 0, Little),
+            Some((2, Ending::RunsOn))
+        );
+        // movs r0, #1; bx lr.
+        let code = [0x01, 0x20, 0x70, 0x47];
+        assert_eq!(last_instruction(&code, 0, Little), Some((2, Ending::Stops)));
+        // movs r0, #1; then the first half of movw r0, #0x1234.
+        let code = [0x01, 0x20, 0x41, 0xf2];
+        assert_eq!(
+            last_instruction(&code, 0, Little),
+            Some((2, Ending::RunsOn))
+        );
+        // ldr r2, [pc, #0]; bx lr; then the constant it loads.
+        let code = [0x00, 0x4a, 0x70, 0x47, 0x01, 0x00, 0x00, 0x00];
+        assert_eq!(last_instruction(&code, 0, Little), None);
+        // Padding alone.
+        assert_eq!(last_instruction(&[0x00, 0xbf, 0x00, 0xbf], 0, Little), None);
     }
 
     #[test]

@@ -375,8 +375,10 @@ fn a_function_of_unknown_size_is_named_where_its_load_image_is() {
 #[test]
 fn sizes_that_add_up_past_the_largest_number_stop_there() {
     // Functions that overlap, each half as large as the address space.
+    // Each is the last in its section, since one that runs on past the
+    // start of another in its section would end there.
     let mut data = sample("c-x86_64.elf");
-    for function in ["on_timer", "on_data", "crc32"] {
+    for function in ["_init", "platform_write", "_fini"] {
         set_symbol_size(&mut data, function, 1 << 63);
     }
     let (stdout, _) = run("huge-functions.elf", &data, &[]);

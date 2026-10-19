@@ -742,6 +742,47 @@ Shared with other code, so not counted: __stack_chk_fail@plt, dispatch_event, fr
 }
 
 #[test]
+fn entry_points_that_share_code_count_it_once() {
+    // libgcc's __aeabi_dsub runs on into __adddf3, and __aeabi_ul2d jumps
+    // into __aeabi_l2d, each of whose symbols runs to the end they share.
+    let sample = "testdata/bin/c-softfloat-nodebug.elf";
+    assert_output(
+        &stdout(&[sample, "top"]),
+        "\
+1314 bytes of code and data, by what keeps them:
+
+RETAINED  OWN  ITEM
+    1064  116  Reset_Handler
+     630  630  __adddf3, kept by Reset_Handler
+     156   18  __aeabi_dcmplt, kept by Reset_Handler
+     138   16  __aeabi_cdcmpeq, kept by __aeabi_dcmplt
+     122  122  __cmpdf2, kept by __aeabi_cdcmpeq
+     106   16  __aeabi_ul2d, kept by Reset_Handler
+      90   90  __aeabi_l2d, kept by __aeabi_ul2d
+       8    8  count, kept by Reset_Handler
+       8    8  converted, kept by Reset_Handler
+       8    8  difference, kept by Reset_Handler
+       8    8  sum, kept by Reset_Handler
+       8    8  y, kept by Reset_Handler
+       8    8  x, kept by Reset_Handler
+       4    4  __aeabi_dsub, kept by Reset_Handler
+       4    4  less, kept by Reset_Handler
+       8    8  vector_table
+
+Nothing reaches 11 functions, 242 bytes in all: __aeabi_f2d, __aeabi_i2d, __aeabi_ui2d, __aeabi_dcmpeq, __aeabi_dcmple, __aeabi_dcmpge, __aeabi_dcmpgt, __aeabi_cdrcmple, __aeabi_drsub, __gedf2 and __ledf2. They are dead code, or used in a way elfq can't see.
+",
+    );
+    assert_output(
+        &stdout(&[sample, "retained", "__aeabi_dsub"]),
+        "\
+Removing __aeabi_dsub would save its own 4 bytes, and nothing else.
+
+Shared with other code, so not counted: __adddf3.
+",
+    );
+}
+
+#[test]
 fn a_large_tree_shows_its_largest_items() {
     let output = stdout(&[SAMPLE, "retained", "main"]);
     assert!(

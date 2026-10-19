@@ -19,7 +19,11 @@ and a size in bytes. Most items come from the symbol table, but elfq also
 finds those that no symbol names, such as string literals and the
 functions of stripped files, and names them after where they are:
 `fn_0x1690`, `.rodata@0x2004`. `elfq FILE debug items` lists every item and
-where elfq found it. (`binary::Item`)
+where elfq found it. When hand-written code gives a function several entry
+points, each with a symbol that runs to the end they share, as libgcc's
+`__aeabi_dsub` runs on into `__adddf3`, each entry ends where the next
+starts, so that their bytes count once, and runs on into it as a tail
+call. (`binary::Item`)
 
 **Import.** A function or variable that the file takes from a shared
 library, such as `write`. Its code isn't in the file, so it has a name but
@@ -458,8 +462,11 @@ that do this.
       to and runs to the next one, the next item or the end of its section;
       elfq never guesses which function it belongs to.
 
-   Before 8, each function still of unknown size runs to the next item in
-   its section, as an estimate; one with nothing after it there keeps an
+   Before 8, a function whose size runs past the start of another function
+   in its section ends there when the functions that start inside it run
+   to its end, as an entry point that shares its code with the next does;
+   and each function still of unknown size runs to the next item in its
+   section, as an estimate, while one with nothing after it there keeps an
    unknown size. Items without a symbol get names like `fn_0x1690`,
    `.rodata@0x2004` (section and address) or `entry`. Rust and C++ symbols
    are demangled, and the mangled symbol stays as an alias.
@@ -486,7 +493,10 @@ that do this.
    goes there or anywhere. An address that the code only branches to isn't
    also reported as used, unless it branches through r0 after a call: r0
    then holds what the call returned, but `-fipa-ra` code may have kept
-   the address there, so it counts as taken. Code that only a jump elfq
+   the address there, so it counts as taken. An entry point that step 2
+   ended where the next function starts also tail-jumps to it from its
+   last instruction, since its code runs on into it, unless that
+   instruction always jumps, returns or traps. Code that only a jump elfq
    doesn't follow leads to, such as the cases of a switch that jumps
    through a table of addresses, keeps what reading each instruction on
    its own finds; when that code joins code elfq follows, the whole

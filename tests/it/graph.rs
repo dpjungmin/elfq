@@ -549,3 +549,43 @@ fn calls_through_trait_objects_are_indirect() {
         }
     }
 }
+
+#[test]
+fn an_entry_point_runs_on_into_the_next_as_a_tail_call() {
+    let (binary, graph) = load("c-softfloat-nodebug.elf");
+    // __aeabi_dsub flips a sign and runs on into __adddf3, from its only
+    // instruction; the others jump to or into the entry after them.
+    let Node::Item(subtract) = node(&binary, "__aeabi_dsub") else {
+        panic!("__aeabi_dsub is an import");
+    };
+    let references: Vec<(&str, ReferenceKind, u64)> = graph
+        .references_from(subtract)
+        .iter()
+        .map(|r| (r.to.name(&binary), r.kind, r.site))
+        .collect();
+    assert_eq!(references, [("__adddf3", TailCall, 0x0800_0084)]);
+    for (entry, next) in [
+        ("__aeabi_ul2d", "__aeabi_l2d"),
+        ("__gedf2", "__cmpdf2"),
+        ("__ledf2", "__cmpdf2"),
+        ("__aeabi_cdrcmple", "__aeabi_cdcmpeq"),
+    ] {
+        assert_eq!(
+            callees(&binary, &graph, entry),
+            pairs(&[(next, TailCall)]),
+            "{entry}"
+        );
+    }
+    assert_eq!(
+        callers(&binary, &graph, "__adddf3"),
+        pairs(&[
+            ("Reset_Handler", Call),
+            ("__aeabi_drsub", TailCall),
+            ("__aeabi_dsub", TailCall),
+            ("__aeabi_f2d", TailCall),
+            ("__aeabi_i2d", TailCall),
+            ("__aeabi_l2d", TailCall),
+            ("__aeabi_ui2d", TailCall),
+        ])
+    );
+}

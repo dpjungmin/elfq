@@ -22,6 +22,34 @@ pub(super) fn scan(code: &[u8], address: u64) -> Vec<CodeReference> {
     references
 }
 
+/// The address of the last instruction in the x86-64 code `code`, which
+/// starts at `address`, when the processor can run on past the end of
+/// `code` after it: unless it always jumps, returns or traps, as a
+/// conditional jump or a call doesn't, or when `code` ends inside it. The
+/// padding that compilers put between functions, `nop`s and `int3`s,
+/// doesn't count.
+pub(super) fn runs_on(code: &[u8], address: u64) -> Option<u64> {
+    let mut decoder = Decoder::with_ip(64, code, address, DecoderOptions::NONE);
+    let mut instruction = Instruction::default();
+    let mut last = None;
+    while decoder.can_decode() {
+        decoder.decode_out(&mut instruction);
+        if !matches!(instruction.mnemonic(), Mnemonic::Nop | Mnemonic::Int3) {
+            last = Some(instruction);
+        }
+    }
+    let last = last?;
+    let stops = !last.is_invalid()
+        && matches!(
+            last.flow_control(),
+            FlowControl::UnconditionalBranch
+                | FlowControl::IndirectBranch
+                | FlowControl::Return
+                | FlowControl::Exception
+        );
+    (!stops).then(|| last.ip())
+}
+
 fn reference(instruction: &Instruction) -> Option<CodeReferenceKind> {
     // Addresses in x86-64 code are relative to the instruction pointer:
     // `call 0x1700`, `lea rdi, [rip + 0x2f3e]`.
@@ -99,6 +127,29 @@ mod tests {
             kinds(&[0xff, 0xd0, 0xff, 0xe0, 0xff, 0x50, 0x08]),
             [IndirectCall, IndirectJump, IndirectCall]
         );
+    }
+
+    #[test]
+    fn code_runs_on_unless_it_jumps_returns_or_traps() {
+        // mov eax, 1; then nop and int3 padding.
+        assert_eq!(
+            runs_on(&[0xb8, 0x01, 0x00, 0x00, 0x00, 0x90, 0xcc], 0x1000),
+            Some(0x1000)
+        );
+        // call 0x1700 returns to run on.
+        assert_eq!(
+            runs_on(&[0xe8, 0xfb, 0x06, 0x00, 0x00], 0x1000),
+            Some(0x1000)
+        );
+        // xor eax, eax; the first byte of mov eax, 1: the code ends inside it.
+        assert_eq!(runs_on(&[0x31, 0xc0, 0xb8], 0x1000), Some(0x1002));
+        // ret; jmp 0x1700; jmp rax; ud2; then padding.
+        assert_eq!(runs_on(&[0xc3, 0x90], 0x1000), None);
+        assert_eq!(runs_on(&[0xe9, 0xfb, 0x06, 0x00, 0x00], 0x1000), None);
+        assert_eq!(runs_on(&[0xff, 0xe0, 0xcc], 0x1000), None);
+        assert_eq!(runs_on(&[0x0f, 0x0b], 0x1000), None);
+        // Padding alone.
+        assert_eq!(runs_on(&[0x90, 0xcc], 0x1000), None);
     }
 
     #[test]

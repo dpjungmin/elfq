@@ -462,6 +462,49 @@ fn sizes_missing_from_the_symbol_table_are_estimated() {
 }
 
 #[test]
+fn entry_points_that_share_an_end_count_each_byte_once() {
+    let binary = load_sample("c-softfloat-nodebug.elf");
+    // Each symbol runs to the end of the code it shares with the next.
+    let sizes: Vec<(&str, u64)> = [
+        "__aeabi_dsub",
+        "__adddf3",
+        "__aeabi_ul2d",
+        "__aeabi_l2d",
+        "__gedf2",
+        "__ledf2",
+        "__cmpdf2",
+        "__aeabi_cdrcmple",
+        "__aeabi_cdcmpeq",
+    ]
+    .into_iter()
+    .map(|name| (name, item(&binary, name).size))
+    .collect();
+    assert_eq!(
+        sizes,
+        [
+            ("__aeabi_dsub", 4),
+            ("__adddf3", 630),
+            ("__aeabi_ul2d", 16),
+            ("__aeabi_l2d", 90),
+            ("__gedf2", 8),
+            ("__ledf2", 8),
+            ("__cmpdf2", 122),
+            ("__aeabi_cdrcmple", 16),
+            ("__aeabi_cdcmpeq", 16),
+        ]
+    );
+    let functions = functions(&binary);
+    for pair in functions.windows(2) {
+        assert!(
+            pair[0].address + pair[0].size <= pair[1].address,
+            "{} overlaps {}",
+            pair[0].name,
+            pair[1].name
+        );
+    }
+}
+
+#[test]
 fn rejects_files_that_are_not_elf() {
     let err = Binary::load(&path("Cargo.toml")).unwrap_err();
     assert!(format!("{err:#}").ends_with("not an ELF file"), "{err:#}");
