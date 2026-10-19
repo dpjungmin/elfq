@@ -121,7 +121,8 @@ pub fn run(
             };
             match format {
                 Format::Json => leaving.write_json(out)?,
-                Format::Text => leaving.write_text(out)?,
+                // `--tree` is refused: there is no tree.
+                Format::Text | Format::Tree => leaving.write_text(out)?,
             }
             leaving.crossings.is_empty()
                 && leaving.unfollowed.is_empty()
@@ -137,7 +138,7 @@ pub fn run(
             };
             match format {
                 Format::Json => entering.write_json(out)?,
-                Format::Text => entering.write_text(out)?,
+                Format::Text | Format::Tree => entering.write_text(out)?,
             }
             entering.crossings.is_empty() && entering.through_pointer.is_empty()
         }

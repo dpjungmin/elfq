@@ -31,6 +31,9 @@ pub struct Cli {
     /// Print the answer as JSON, for scripts
     #[arg(long, global = true)]
     pub json: bool,
+    /// Draw the overview, top, retained, why and inlined SYMBOL as trees
+    #[arg(long, global = true)]
+    pub tree: bool,
     /// Count only the bytes in one range of memory, such as ITCM: START..END
     /// or START+SIZE, like 0x20000000+256K. The overview lists the ranges
     /// that the file's sections occupy. For the overview, top and retained.
@@ -39,10 +42,13 @@ pub struct Cli {
 }
 
 impl Cli {
-    /// How to print the answer.
+    /// How to print the answer. `--json` and `--tree` don't go together,
+    /// which `commands::run` checks.
     pub fn format(&self) -> Format {
         if self.json {
             Format::Json
+        } else if self.tree {
+            Format::Tree
         } else {
             Format::Text
         }
@@ -52,8 +58,10 @@ impl Cli {
 /// How a command prints its answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
-    /// Tables and trees, for people
+    /// Tables of one row per line, for people and for tools such as grep
     Text,
+    /// The same, but with trees drawn with branches, with `--tree`
+    Tree,
     /// JSON, for scripts, with `--json`
     Json,
 }
@@ -62,6 +70,7 @@ const EXAMPLES: &str = "\
 Examples:
   elfq app.elf                            Overview of app.elf
   elfq app.elf top                        What keeps the most bytes in app.elf
+  elfq app.elf top --tree                 The same, drawn as a tree
   elfq app.elf top --range 0x0+256K       The same, counting only the first 256 KiB
   elfq app.elf retained process_frame     What removing process_frame would save
   elfq app.elf why crc_table              What keeps crc_table in the file
@@ -71,17 +80,17 @@ Examples:
   elfq app.elf callees main               What main calls or uses
   elfq app.elf callees 0x0+256K           What the first 256 KiB uses outside it
 
-The overview's tree is the start of the one top shows; elfq help top
+The overview's table is the start of the one top shows; elfq help top
 explains it.";
 
 // One variant per command. Each variant's `///` line is its line in
 // `elfq --help`.
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Show the items that keep the most bytes in the file, as a tree
+    /// Show the items that keep the most bytes in the file
     #[command(after_help = TOP)]
     Top(TopArgs),
-    /// Show what removing SYMBOL would save, as a tree
+    /// Show what removing SYMBOL would save
     #[command(after_help = RETAINED)]
     Retained(RetainedArgs),
     /// Show the chains of calls and references that keep SYMBOL in the file
@@ -174,11 +183,12 @@ there is one: SYMBOL counts toward that item's retained size.";
 const TOP: &str = "\
 An item's retained size is its own size plus the sizes of the items that
 only it leads to, from where the program starts: what removing it would
-save. Each item hangs under the closest item that every path to it goes
-through, and the items at the top are where the program starts, or are
-reached from more than one of those places. The tree shows the 30 largest
-items, or every item with --all; lines such as \"└─ 6 more\" sum up the
-rest.
+save. A row such as \"crc_table, kept by crc32\" names the closest item that
+every path to it goes through. The rows that name none are where the
+program starts, or are reached from more than one of those places. The
+table shows the 30 largest items, or every item with --all; rows such as
+\"6 more, kept by main\" sum up the rest, and --tree draws the rows as a
+tree.
 
 Nothing calls a function marked \"(through a pointer)\" directly, so it counts
 for the code or data that holds its address. Sizes marked ~ are estimates.";
@@ -195,10 +205,11 @@ the code around it.";
 
 const RETAINED: &str = "\
 SYMBOL's retained size is its own size plus the sizes of the items that only
-it leads to, from where the program starts: what removing it would save.
-Each item hangs under the closest item that every path to it goes through.
-The tree shows the 30 largest items, or every item with --all; lines such as
-\"└─ 6 more\" sum up the rest.
+it leads to, from where the program starts: what removing it would save. A
+row such as \"crc_table, kept by crc32\" names the closest item that every
+path to it goes through. The table shows the 30 largest items, or every
+item with --all; rows such as \"6 more, kept by crc32\" sum up the rest, and
+--tree draws the rows as a tree.
 
 Nothing calls a function marked \"(through a pointer)\" directly, so it counts
 for the code or data that holds its address. Sizes marked ~ are estimates.";

@@ -1,11 +1,11 @@
-//! `elfq FILE top`: the items that keep the most bytes in the file, as a
-//! tree.
+//! `elfq FILE top`: the items that keep the most bytes in the file.
 //!
-//! The tree is the top of the dominator tree, cut down to its largest
+//! The answer is the top of the dominator tree, cut down to its largest
 //! items unless `--all` asks for every one: each item hangs under the
-//! closest item that every path to it passes through, and the items at the
-//! top are where the program starts, or are reached from more than one of
-//! those places. With `--range`, only the bytes in the range count.
+//! closest item that every path to it passes through, and its row names
+//! that item, unless `--tree` draws the tree. The items at the top are
+//! where the program starts, or are reached from more than one of those
+//! places. With `--range`, only the bytes in the range count.
 
 use std::io::Write;
 
@@ -32,8 +32,7 @@ struct TopJson<'a> {
     unreachable: Vec<json::Item<'a>>,
 }
 
-/// Answers `elfq FILE top`: the largest items, or every item with `all`, as
-/// a tree.
+/// Answers `elfq FILE top`: the largest items, or every item with `all`.
 pub fn run(
     binary: &Binary,
     range: Option<AddressRange>,
@@ -75,7 +74,7 @@ pub fn run(
             None => writeln!(out, "{total} of code and data, by what keeps them:")?,
         }
         writeln!(out)?;
-        retained.write_largest(text::shown(all), out)?;
+        retained.write_largest(text::shown(all), format, out)?;
     }
     if let Some(unreachable) = unreachable_text(&retained, all) {
         if kept {

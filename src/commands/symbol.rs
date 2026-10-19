@@ -64,80 +64,100 @@ pub fn is_range(query: &str) -> bool {
     query.starts_with(|c: char| c.is_ascii_digit()) && (query.contains("..") || query.contains('+'))
 }
 
-/// Finds the item or import that `query` names. When it could mean several,
-/// or none, the error lists names to try instead.
+/// Finds the item or import that `query` names, as `Names::find` does.
 pub fn find(binary: &Binary, query: &str) -> Result<Node> {
-    if let Some(address) = hex_number(query) {
-        let address = address.with_context(|| format!("`{query}` is not a hexadecimal address"))?;
-        return match binary.item_at(address) {
-            Some(index) => Ok(Node::Item(index)),
-            None => bail!("no function or data object contains address {address:#x}"),
-        };
-    }
-
-    let names = Names::new(binary);
-    match names.nodes(query) {
-        [node] => Ok(*node),
-        [] => {
-            let similar = names.similar(query);
-            if similar.is_empty() {
-                bail!("no function or data object is named `{query}`");
-            }
-            bail!(
-                "no function or data object is named `{query}`; did you mean {}?",
-                similar.join(", ")
-            );
-        }
-        nodes => bail!("{}", names.choices(query, nodes)),
-    }
+    Names::new(binary).find(query)
 }
 
 /// Every name that finds an item or import, and what each one finds.
-/// Building it walks every name in the file, which takes a while in a large
-/// one, so build one and ask it everything.
+/// Working that out walks every name in the file, which takes a while in a
+/// large one, so it is done the first time a question needs it, and once:
+/// build one `Names` and ask it everything.
 pub(super) struct Names<'a> {
     binary: &'a Binary,
     /// Names of items and imports, and aliases of items.
-    full: HashMap<&'a str, Vec<Node>>,
+    full: OnceCell<HashMap<&'a str, Vec<Node>>>,
     /// Short names of items, built the first time a query isn't a full name.
     short: OnceCell<HashMap<String, Vec<Node>>>,
     /// The PLT stubs that jump to the file's own functions. Only their short
     /// names that end in `@plt` find them (see [`Names::short_names_of`]),
     /// and they are never suggested, since a name like theirs means the
     /// function.
-    own_function_stubs: HashSet<usize>,
+    own_function_stubs: OnceCell<HashSet<usize>>,
 }
 
 impl<'a> Names<'a> {
     pub(super) fn new(binary: &'a Binary) -> Names<'a> {
-        let mut full: HashMap<&str, Vec<Node>> = HashMap::new();
-        for (index, item) in binary.items.iter().enumerate() {
-            for name in item.names() {
-                add(full.entry(name).or_default(), Node::Item(index));
-            }
-        }
-        for (index, import) in binary.imports.iter().enumerate() {
-            let stub = full
-                .get(format!("{import}@plt").as_str())
-                .and_then(|nodes| nodes.first().copied());
-            let node = stub.unwrap_or(Node::Import(index));
-            add(full.entry(import).or_default(), node);
-        }
         Names {
             binary,
-            full,
+            full: OnceCell::new(),
             short: OnceCell::new(),
-            own_function_stubs: binary.own_function_stubs().into_keys().collect(),
+            own_function_stubs: OnceCell::new(),
+        }
+    }
+
+    /// Finds the item or import that `query` names. When it could mean
+    /// several, or none, the error lists names to try instead.
+    pub(super) fn find(&self, query: &str) -> Result<Node> {
+        if let Some(address) = hex_number(query) {
+            let address =
+                address.with_context(|| format!("`{query}` is not a hexadecimal address"))?;
+            return match self.binary.item_at(address) {
+                Some(index) => Ok(Node::Item(index)),
+                None => bail!("no function or data object contains address {address:#x}"),
+            };
+        }
+
+        match self.nodes(query) {
+            [node] => Ok(*node),
+            [] => {
+                let similar = self.similar(query);
+                if similar.is_empty() {
+                    bail!("no function or data object is named `{query}`");
+                }
+                bail!(
+                    "no function or data object is named `{query}`; did you mean {}?",
+                    similar.join(", ")
+                );
+            }
+            nodes => bail!("{}", self.choices(query, nodes)),
         }
     }
 
     /// What `query` finds: the items and imports with that name, or if
     /// there are none, the items with that short name.
     pub(super) fn nodes(&self, query: &str) -> &[Node] {
-        self.full
+        self.full()
             .get(query)
             .or_else(|| self.short().get(query))
             .map_or(&[], Vec::as_slice)
+    }
+
+    /// The names of items and imports, and aliases of items, and what each
+    /// one finds.
+    fn full(&self) -> &HashMap<&'a str, Vec<Node>> {
+        self.full.get_or_init(|| {
+            let mut full: HashMap<&str, Vec<Node>> = HashMap::new();
+            for (index, item) in self.binary.items.iter().enumerate() {
+                for name in item.names() {
+                    add(full.entry(name).or_default(), Node::Item(index));
+                }
+            }
+            for (index, import) in self.binary.imports.iter().enumerate() {
+                let stub = full
+                    .get(format!("{import}@plt").as_str())
+                    .and_then(|nodes| nodes.first().copied());
+                let node = stub.unwrap_or(Node::Import(index));
+                add(full.entry(import).or_default(), node);
+            }
+            full
+        })
+    }
+
+    /// The PLT stubs that jump to the file's own functions.
+    fn own_function_stubs(&self) -> &HashSet<usize> {
+        self.own_function_stubs
+            .get_or_init(|| self.binary.own_function_stubs().into_keys().collect())
     }
 
     /// The short names of items, and what each one finds.
@@ -158,7 +178,7 @@ impl<'a> Names<'a> {
     /// `app::log(unsigned int)@plt` is also `log(unsigned int)@plt`, but not
     /// `log`, which means the function.
     fn short_names_of(&self, index: usize) -> Vec<String> {
-        let own_function_stub = self.own_function_stubs.contains(&index);
+        let own_function_stub = self.own_function_stubs().contains(&index);
         self.binary.items[index]
             .names()
             .flat_map(short_names)
@@ -170,16 +190,31 @@ impl<'a> Names<'a> {
     /// name other than a mangled symbol, or failing those, an item's
     /// address.
     pub(super) fn query_for(&self, node: Node) -> String {
-        let (names, fallback): (Vec<&str>, String) = match node {
-            Node::Item(index) => {
-                let item = &self.binary.items[index];
-                (item.names().collect(), format!("{:#x}", item.address))
-            }
-            Node::Import(index) => {
-                let import = &self.binary.imports[index];
-                (vec![import], import.clone())
-            }
+        let names: Vec<&str> = match node {
+            Node::Item(index) => self.binary.items[index].names().collect(),
+            Node::Import(index) => vec![&self.binary.imports[index]],
         };
+        self.shortest_name(node, names)
+            .unwrap_or_else(|| match node {
+                Node::Item(index) => format!("{:#x}", self.binary.items[index].address),
+                Node::Import(_) => node.name(self.binary).to_string(),
+            })
+    }
+
+    /// The shortest form of the name that `node`'s row shows that finds
+    /// only `node`, or failing that, that whole name: what a row says to
+    /// name the row it hangs under, such as `crc32` in "crc_table, kept by
+    /// crc32". Unlike [`Names::query_for`], it never picks an alias, which
+    /// no row shows.
+    pub(super) fn short_name(&self, node: Node) -> String {
+        let name = node.name(self.binary);
+        self.shortest_name(node, vec![name])
+            .unwrap_or_else(|| name.to_string())
+    }
+
+    /// The shortest of `names` and their short names that finds only
+    /// `node`, leaving out mangled symbols, if one does.
+    fn shortest_name(&self, node: Node, names: Vec<&str>) -> Option<String> {
         // A stub for one of the file's own functions has the function's
         // mangled names as aliases, with `@plt` added.
         let mut queries: Vec<String> = names
@@ -191,7 +226,6 @@ impl<'a> Names<'a> {
         queries
             .into_iter()
             .find(|query| self.nodes(query) == [node])
-            .unwrap_or(fallback)
     }
 
     /// The message for a query that finds several things: what to type for
@@ -255,7 +289,7 @@ impl<'a> Names<'a> {
         // A stub for one of the file's own functions is left out: its
         // function is the one to suggest.
         let items = (0..self.binary.items.len())
-            .filter(|index| !self.own_function_stubs.contains(index))
+            .filter(|index| !self.own_function_stubs().contains(index))
             .map(|index| {
                 let item = &self.binary.items[index];
                 (

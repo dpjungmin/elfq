@@ -18,7 +18,7 @@ use crate::binary::{Binary, ItemKind};
 use crate::cli::Format;
 use crate::debuginfo::{self, InlinedCopy};
 use crate::graph::Node;
-use crate::render::{Align, Table, TreeRow};
+use crate::render::{Align, Table, TreeRow, TreeShape};
 
 /// Answers `elfq FILE inlined`, or with `symbol`, `inlined SYMBOL`. Needs
 /// DWARF.
@@ -212,7 +212,7 @@ fn write_tree(
         ("COPIES", Align::Right),
         ("FUNCTION", Align::Left),
     ]);
-    table.tree(&groups.rows(&shown, &groups.top));
+    table.tree(&groups.rows(&shown, &groups.top), TreeShape::Drawn);
     table.write(out)?;
     if shown.iter().any(|&group| groups.list[group].bytes == 0) {
         write_empty_copies_note(out)?;

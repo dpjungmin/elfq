@@ -81,6 +81,9 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<Outcome> {
 /// Refuses arguments that don't go together, before the file is loaded, so
 /// that a mistake is reported at once, even for a large file.
 fn check_arguments(cli: &Cli) -> Result<()> {
+    if cli.tree {
+        check_tree(cli)?;
+    }
     match &cli.command {
         None | Some(Command::Top(_) | Command::Retained(_)) => Ok(()),
         Some(command @ (Command::Callers(args) | Command::Callees(args)))
@@ -103,6 +106,22 @@ fn check_arguments(cli: &Cli) -> Result<()> {
             bail!("the debug commands print only text")
         }
         Some(_) => Ok(()),
+    }
+}
+
+/// Refuses `--tree` where there is no tree to draw: with `--json`, and for
+/// commands that print a list.
+fn check_tree(cli: &Cli) -> Result<()> {
+    if cli.json {
+        bail!("--tree draws trees in the text, so it doesn't go with --json");
+    }
+    match &cli.command {
+        None | Some(Command::Top(_) | Command::Retained(_) | Command::Why(_)) => Ok(()),
+        Some(Command::Inlined(args)) if args.symbol.is_some() => Ok(()),
+        Some(_) => bail!(
+            "--tree draws trees, so only the overview, top, retained, why and inlined SYMBOL \
+             take it"
+        ),
     }
 }
 

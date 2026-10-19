@@ -17,7 +17,7 @@ use super::{json, text};
 use crate::binary::{Binary, FileKind};
 use crate::cli::Format;
 use crate::graph::{DominatorTree, Graph, Node, Reference, Root, ShortestPaths};
-use crate::render::{Align, Table, TreeRow};
+use crate::render::{Align, Table, TreeRow, TreeShape};
 
 /// How many items that keep SYMBOL get their chain shown without `--all`.
 /// An item that would be left out on its own is shown too.
@@ -154,7 +154,7 @@ pub fn run(
     writeln!(out)?;
     let chains = Chains::new(binary, &graph, &paths, node, shown);
     let mut table = Table::new(&[("HOW", Align::Left), ("ITEM", Align::Left)]);
-    table.tree(&chains.rows());
+    table.tree(&chains.rows(), TreeShape::Drawn);
     table.write(out)?;
 
     if !unreachable.is_empty() {

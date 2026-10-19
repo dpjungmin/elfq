@@ -6,7 +6,7 @@ use std::io::{self, Write};
 
 mod tree;
 
-pub use tree::TreeRow;
+pub use tree::{TreeRow, TreeShape};
 
 /// How a column's cells line up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
