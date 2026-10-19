@@ -32,6 +32,7 @@ fn items_have_the_same_keys_everywhere() {
             "symbol": {
                 "name": "debug_dump",
                 "kind": "function",
+                "section": ".text",
                 "address": "0x1aa0",
                 "size": 29,
                 "size_estimated": false
@@ -44,17 +45,41 @@ fn items_have_the_same_keys_everywhere() {
             "indirect_calls": 0
         })
     );
-    // An import has no address or size in this file.
+    // An import has no section, address or size in this file.
     let callees = elfq_json(&[SAMPLE, "callees", "_start"]);
     assert_eq!(
         callees["callees"][1]["item"],
         json!({
             "name": "__libc_start_main",
             "kind": "import",
+            "section": null,
             "address": null,
             "size": null,
             "size_estimated": false
         })
+    );
+    // Each item names the section that holds it, so that scripts can tell
+    // data in .bss from data in .data.
+    let retained = elfq_json(&[SAMPLE, "retained", "process_frame"]);
+    let sections: Vec<(&str, &str)> = retained["shares"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| {
+            let name = item["name"].as_str().unwrap();
+            (name, item["section"].as_str().unwrap())
+        })
+        .collect();
+    assert_eq!(
+        sections,
+        [
+            ("__stack_chk_fail@plt", ".plt.sec"),
+            ("dispatch_event", ".text"),
+            ("frames_bad", ".bss"),
+            ("frames_ok", ".bss"),
+            ("log_msg", ".text"),
+            ("stats", ".data")
+        ]
     );
 }
 
@@ -72,9 +97,9 @@ fn each_row_is_a_line() {
     assert!(lines[0].ends_with(r#""callers":["#), "{text}");
     assert_eq!(
         lines[4],
-        r#"{"item":{"name":"process_frame","kind":"function","address":"0x1700","size":532,"#
-            .to_string()
-            + r#""size_estimated":false},"how":"call","sites":["0x18ee","0x1908"]},"#
+        r#"{"item":{"name":"process_frame","kind":"function","section":".text","#.to_string()
+            + r#""address":"0x1700","size":532,"size_estimated":false},"how":"call","#
+            + r#""sites":["0x18ee","0x1908"]},"#
     );
     for line in &lines[1..6] {
         let row: Value = serde_json::from_str(line.trim_end_matches(',')).unwrap();

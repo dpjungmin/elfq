@@ -333,14 +333,16 @@ on the text. An item looks like this, spread over lines here:
 {
   "name": "process_frame",
   "kind": "function",
+  "section": ".text",
   "address": "0x1700",
   "size": 532,
   "size_estimated": false
 }
 ```
 
-`kind` is `function`, `data` or `import`; an import has no address or size
-in the file. In the trees of `top` and `retained`, each item
+`kind` is `function`, `data` or `import`, and `section` names the section
+that holds the item, such as `.data` or `.bss`; an import has no section,
+address or size in the file. In the trees of `top` and `retained`, each item
 also has its `retained` size and `keeps`, the items under it.
 
 `why` gives each chain as a list of steps, each an item and a `how`. The

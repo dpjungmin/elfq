@@ -89,6 +89,9 @@ pub(super) struct Item<'a> {
     pub name: &'a str,
     /// `function`, `data` or `import`.
     pub kind: String,
+    /// The section that holds it, such as `.text` or `.bss`, or `null` for
+    /// an import.
+    pub section: Option<&'a str>,
     /// Where it starts, or `null` for an import, whose code is in another
     /// file.
     pub address: Option<String>,
@@ -110,6 +113,7 @@ impl<'a> Item<'a> {
                 Item {
                     name: &item.name,
                     kind: item.kind.to_string(),
+                    section: Some(&binary.sections[item.section].name),
                     address: Some(address(item.address)),
                     size: (item.size > 0).then_some(item.size),
                     size_estimated: item.size_estimated,
@@ -118,6 +122,7 @@ impl<'a> Item<'a> {
             Node::Import(_) => Item {
                 name: node.name(binary),
                 kind: "import".to_string(),
+                section: None,
                 address: None,
                 size: None,
                 size_estimated: false,
