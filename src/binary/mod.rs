@@ -487,6 +487,34 @@ impl Binary {
             .position(|section| section.in_memory() && section.contains(address))
     }
 
+    /// Where the load image of `item` starts, when its section has one
+    /// (see [`Section::load_address`]): where the file stores its bytes for
+    /// the program to copy to where it uses them.
+    pub fn load_address(&self, item: &Item) -> Option<u64> {
+        let section = &self.sections[item.section];
+        let offset = item.address.checked_sub(section.address)?;
+        section.load_address?.checked_add(offset)
+    }
+
+    /// The bytes of `item` that sizes count: all of them, or with a range,
+    /// those in it. A range counts the item's load image too, where the
+    /// file stores it, so a range that holds both copies counts both.
+    pub fn bytes_in(&self, item: &Item, range: Option<AddressRange>) -> u64 {
+        match range {
+            Some(range) => range
+                .overlap(item.address, item.size)
+                .saturating_add(self.load_image_bytes_in(item, range)),
+            None => item.size,
+        }
+    }
+
+    /// How many bytes of `item`'s load image `range` holds: 0 when it has
+    /// none.
+    pub fn load_image_bytes_in(&self, item: &Item, range: AddressRange) -> u64 {
+        self.load_address(item)
+            .map_or(0, |address| range.overlap(address, item.size))
+    }
+
     /// The item whose bytes include `address`, as an index into
     /// [`Binary::items`].
     pub fn item_at(&self, address: u64) -> Option<usize> {

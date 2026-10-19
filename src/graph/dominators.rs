@@ -40,16 +40,13 @@ pub struct DominatorTree {
 
 impl DominatorTree {
     /// Builds the tree of `binary`'s graph. With a `range`, sizes count only
-    /// the bytes inside it, so an item outside it retains what it alone
-    /// keeps there.
+    /// the bytes inside it, load images too (see [`Binary::bytes_in`]), so
+    /// an item outside it retains what it alone keeps there.
     pub fn build(binary: &Binary, graph: &Graph, range: Option<AddressRange>) -> DominatorTree {
         let mut sizes: Vec<u64> = binary
             .items
             .iter()
-            .map(|item| match range {
-                Some(range) => range.overlap(item.address, item.size),
-                None => item.size,
-            })
+            .map(|item| binary.bytes_in(item, range))
             .collect();
         // Imports have no bytes in the file.
         sizes.resize(binary.items.len() + binary.imports.len(), 0);

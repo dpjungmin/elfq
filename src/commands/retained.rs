@@ -28,12 +28,17 @@ struct RetainedJson<'a> {
     reachable: bool,
     /// The range of memory that sizes count, or `null` for all of it.
     range: Option<json::Range>,
+    /// SYMBOL's own bytes, or with a range, those in it, its load image's
+    /// too.
+    own: u64,
+    /// How many of `own` are in SYMBOL's load image: 0 without a range.
+    load_image: u64,
     /// SYMBOL's own bytes and those of everything it keeps: the bytes that
     /// would go away if it did. With a range, only those in it.
     retained: u64,
     /// The items that only SYMBOL leads to, as the rows of the tree in the
     /// text's order. Those with no `parent` are those that SYMBOL keeps
-    /// itself. `retained` is SYMBOL's own bytes and their `own` together.
+    /// itself. `retained` is `own` and their `own` together.
     items: Vec<KeptItem<'a>>,
     /// What SYMBOL and the items it keeps use that other code uses too, and
     /// so isn't counted, sorted by name. With a range, only items with bytes
@@ -70,6 +75,12 @@ pub fn run(
     let own_bytes = text::bytes_text(own);
     let range = range.map(|range| text::range_text(binary, range, all));
     if items.is_empty() {
+        // How many of them are in its load image, if any are.
+        let load_image = match retained.load_image(index) {
+            0 => String::new(),
+            bytes if bytes == own => ", all in its load image".to_string(),
+            bytes => format!(", {bytes} of them in its load image"),
+        };
         match &range {
             Some(range) if own == 0 => writeln!(
                 out,
@@ -77,7 +88,8 @@ pub fn run(
             )?,
             Some(range) => writeln!(
                 out,
-                "Removing {name} would save its own {own_bytes} in {range}, and nothing else."
+                "Removing {name} would save its own {own_bytes} in {range}{load_image}, and \
+                 nothing else."
             )?,
             None => writeln!(
                 out,
@@ -123,6 +135,8 @@ fn write_json(symbol: &SymbolInTree, out: &mut dyn Write) -> Result<()> {
         symbol: json::Item::new(binary, node),
         reachable,
         range: retained.range.map(json::Range::new),
+        own: retained.own(symbol.index),
+        load_image: retained.load_image(symbol.index),
         retained: retained.tree.retained(node),
         items: retained.to_json(retained.tree.children(node)),
         shares: shares

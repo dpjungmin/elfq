@@ -100,7 +100,8 @@ such as flash, for the program to copy to where it uses them, such as RAM:
 firmware stores the starting values of `.data` this way, and code that
 runs from RAM or ITCM, and its startup code copies them. The program
 headers say where each load image is. The overview's memory blocks list
-them, as in `load image of .data`. (`binary::Section::load_address`)
+them, as in `load image of .data`, and `--range` counts them where they
+are stored. (`binary::Section::load_address`)
 
 **Boundary and crossing.** For `callers` and `callees` with ranges, an item
 is inside when any of its bytes is in one of the ranges, and a reference
@@ -319,7 +320,14 @@ With `--range START..END` or `--range START+SIZE`, the overview, `top` and
 microcontroller's ITCM or DTCM. An item outside the range still shows when
 it alone keeps bytes inside it, with none of its own: on the Cortex-M7
 sample, which follows an i.MX RT1176's memory map, `process_frame` in flash
-keeps 200 of ITCM's 224 bytes. When the sections sit in several blocks of
+keeps 200 of ITCM's 224 bytes. A range counts the load images in it too,
+where the file stores them, and the row of an item whose bytes it counts
+there says "(load image)": in flash, `process_frame` keeps 1712 bytes, not
+488, since flash also holds the code it alone uses in ITCM and the data it
+alone uses in DTCM, for the startup code to copy. A range that holds both
+copies of an item counts both, and its row says "(with its load image)".
+The range forms of `callers` and `callees` look only where the program
+uses its code and data. When the sections sit in several blocks of
 addresses, as firmware's flash and RAMs do, the overview lists the blocks,
 and a `--range` command to try for each block that elfq counts bytes in, so
 the range needn't come from the chip's reference manual. Sizes can take a
@@ -352,17 +360,20 @@ that holds the item, such as `.data` or `.bss`; an import has no section,
 address or size in the file. `top` and `retained` list the items of their
 trees as rows, in the order of the text's rows. Each also has an `id`,
 which counts the rows from 0; `own`, its own bytes as in the OWN column, or
-with `--range` those in the range, and 0 where OWN shows `?`; its
-`retained` size; `through_pointer`, for a function marked "(through a
-pointer)"; and `parent`, the `id` of the row it hangs under, or `null` at
-the top, which in `retained` holds what SYMBOL keeps itself. So a script
-that adds up `retained` takes only the rows whose `parent` is `null`.
-`top`'s `unreachable` items have `own` too, and its `bytes` is the sum of
-every `own`. The first rows of `retained process_frame`, shown above:
+with `--range` those in the range, and 0 where OWN shows `?`;
+`load_image`, how many of `own` are its load image's, for a row marked
+"(load image)" or "(with its load image)"; its `retained` size;
+`through_pointer`, for a function marked "(through a pointer)"; and
+`parent`, the `id` of the row it hangs under, or `null` at the top, which
+in `retained` holds what SYMBOL keeps itself. So a script that adds up
+`retained` takes only the rows whose `parent` is `null`. The answer of
+`retained` also gives SYMBOL's own `own` and `load_image`, and `top`'s
+`unreachable` items have them too; `top`'s `bytes` is the sum of every
+`own`. The first rows of `retained process_frame`, shown above:
 
 ```json
-{"id":0,"name":"crc32","kind":"function","section":".text","address":"0x1280","size":59,"size_estimated":false,"own":59,"retained":1083,"through_pointer":false,"parent":null},
-{"id":1,"name":"crc_table","kind":"data","section":".rodata","address":"0x2120","size":1024,"size_estimated":false,"own":1024,"retained":1024,"through_pointer":false,"parent":0},
+{"id":0,"name":"crc32","kind":"function","section":".text","address":"0x1280","size":59,"size_estimated":false,"own":59,"load_image":0,"retained":1083,"through_pointer":false,"parent":null},
+{"id":1,"name":"crc_table","kind":"data","section":".rodata","address":"0x2120","size":1024,"size_estimated":false,"own":1024,"load_image":0,"retained":1024,"through_pointer":false,"parent":0},
 ```
 
 `inlined SYMBOL` lists the rows of its tree the same way, each the copies

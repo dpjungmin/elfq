@@ -41,6 +41,9 @@ struct Unreachable<'a> {
     /// Its bytes that sizes count: all of them, or with a range, those in
     /// it. 0 when elfq doesn't know its size.
     own: u64,
+    /// How many of `own` are bytes of its load image, as in the rows of
+    /// `items`.
+    load_image: u64,
 }
 
 /// Answers `elfq FILE top`: the largest items, or every item with `all`.
@@ -69,6 +72,7 @@ pub fn run(
                 .map(|index| Unreachable {
                     item: json::Item::new(binary, Node::Item(index)),
                     own: retained.own(index),
+                    load_image: retained.load_image(index),
                 })
                 .collect(),
         };
@@ -120,10 +124,18 @@ fn unreachable_text(retained: &RetainedTree, all: bool) -> Option<String> {
         return None;
     }
     let bytes = super::total(unreachable.iter().map(|&index| retained.own(index)));
-    let names: Vec<&str> = unreachable
+    // Marked as rows are, when the bytes counted are a load image's.
+    let names: Vec<String> = unreachable
         .iter()
-        .map(|&index| binary.items[index].name.as_str())
+        .map(|&index| {
+            let name = &binary.items[index].name;
+            match retained.mark(index) {
+                Some(mark) => format!("{name} {mark}"),
+                None => name.clone(),
+            }
+        })
         .collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
     if let [name] = names[..] {
         return Some(format!(
             "Nothing reaches {name}, {}: it is dead code, or used in a way elfq can't see.",
@@ -137,4 +149,36 @@ fn unreachable_text(retained: &RetainedTree, all: bool) -> Option<String> {
         text::bytes_text(bytes),
         text::names_text(&names, all)
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+    use crate::graph::Graph;
+
+    #[test]
+    fn an_item_that_nothing_reaches_is_marked_as_rows_are() {
+        // As if nothing used `stats`, a variable in .data: in flash, the
+        // range counts its load image.
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/bin/c-cortex-m7.elf");
+        let binary = Binary::load(&path).unwrap();
+        let stats = binary
+            .items
+            .iter()
+            .position(|item| item.name == "stats")
+            .unwrap();
+        let mut graph = Graph::build(&binary);
+        graph
+            .references
+            .retain(|reference| reference.to != Node::Item(stats));
+        let flash = "0x30000000..0x30000edc".parse().unwrap();
+        let retained = RetainedTree::from_graph(&binary, graph, Some(flash));
+        assert_eq!(
+            unreachable_text(&retained, false).unwrap(),
+            "Nothing reaches stats (load image), 32 bytes: it is dead code, or used in a way \
+             elfq can't see."
+        );
+    }
 }

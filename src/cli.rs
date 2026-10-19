@@ -36,7 +36,8 @@ pub struct Cli {
     pub tree: bool,
     /// Count only the bytes in one range of memory, such as ITCM: START..END
     /// or START+SIZE, like 0x20000000+256K. The overview lists the ranges
-    /// that the file's sections occupy. For the overview, top and retained.
+    /// that the file's sections and load images occupy. For the overview,
+    /// top and retained.
     #[arg(long, global = true, value_name = "RANGE")]
     pub range: Option<AddressRange>,
 }
@@ -193,7 +194,10 @@ table shows the 30 largest items, or every item with --all; rows such as
 tree.
 
 Nothing calls a function marked \"(through a pointer)\" directly, so it counts
-for the code or data that holds its address. Sizes marked ~ are estimates.";
+for the code or data that holds its address. With --range, a row marked
+\"(load image)\" counts the copy of an item that the file stores in the
+range for startup code to copy where the program uses it, and one marked
+\"(with its load image)\" counts both copies. Sizes marked ~ are estimates.";
 
 const INLINED: &str = "\
 The compiler inlines a function by putting a copy of its code into the
@@ -217,7 +221,10 @@ item with --all; rows such as \"6 more, kept by crc32\" sum up the rest, and
 --tree draws the rows as a tree.
 
 Nothing calls a function marked \"(through a pointer)\" directly, so it counts
-for the code or data that holds its address. Sizes marked ~ are estimates.";
+for the code or data that holds its address. With --range, a row marked
+\"(load image)\" counts the copy of an item that the file stores in the
+range for startup code to copy where the program uses it, and one marked
+\"(with its load image)\" counts both copies. Sizes marked ~ are estimates.";
 
 #[derive(Debug, Args)]
 pub struct TopArgs {

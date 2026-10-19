@@ -31,7 +31,7 @@ Every command also prints JSON for scripts with `--json`. The overview,
 `top` and `retained` can count only the bytes in one range of memory, such
 as a microcontroller's ITCM, with `--range START..END` or
 `--range START+SIZE`; for firmware, the overview lists the ranges its
-sections occupy.
+sections and their load images occupy.
 
 `callers` and `callees` take ranges in place of a symbol, and then list
 only what crosses their edge, such as code in ITCM that calls a function in

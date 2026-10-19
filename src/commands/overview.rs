@@ -13,9 +13,7 @@ use super::retained_tree::RetainedTree;
 use super::symbol::Names;
 use super::{json, text};
 use crate::arch;
-use crate::binary::{
-    AddressRange, Binary, FileKind, Item, ItemKind, MemoryBlock, Source, memory_blocks,
-};
+use crate::binary::{AddressRange, Binary, FileKind, ItemKind, MemoryBlock, Source, memory_blocks};
 use crate::cli::Format;
 use crate::graph::{Graph, Node};
 use crate::render::{Align, Table};
@@ -303,11 +301,6 @@ fn write_json(
     json::write(&answer, out)
 }
 
-/// The bytes of an item that are in `range`, or all of them without one.
-fn in_range(item: &Item, range: Option<AddressRange>) -> u64 {
-    range.map_or(item.size, |range| range.overlap(item.address, item.size))
-}
-
 /// How many items of `kind` the file has, or with a range, how many have
 /// bytes in it.
 fn count(binary: &Binary, kind: ItemKind, range: Option<AddressRange>) -> usize {
@@ -315,13 +308,13 @@ fn count(binary: &Binary, kind: ItemKind, range: Option<AddressRange>) -> usize 
         .items
         .iter()
         .filter(|item| item.kind == kind)
-        .filter(|item| range.is_none() || in_range(item, range) > 0)
+        .filter(|item| range.is_none() || binary.bytes_in(item, range) > 0)
         .count()
 }
 
 /// The bytes of all the items, or with a range, those in it.
 fn total_bytes(binary: &Binary, range: Option<AddressRange>) -> u64 {
-    super::total(binary.items.iter().map(|item| in_range(item, range)))
+    super::total(binary.items.iter().map(|item| binary.bytes_in(item, range)))
 }
 
 /// What elfq found, such as "25 functions and 31 data objects", leaving

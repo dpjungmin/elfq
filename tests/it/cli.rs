@@ -486,11 +486,11 @@ RETAINED  OWN  ITEM
 ",
     );
     // A row that sums up items counts only those with bytes in the range:
-    // under process_frame, crc32 and crc_table are in ITCM and DTCM, and
-    // so the row stands for two .rodata items and __crc32_veneer.
+    // under main, it stands for six items in flash, and leaves out
+    // config_sum, frames_bad and frames_ok, which are in .bss.
     let flash = stdout(&[TCM_SAMPLE, "top", "--range", "0x30000000..0x30000edc"]);
     assert!(
-        flash.contains("      32       3 more, kept by process_frame\n"),
+        flash.contains("      90        6 more, kept by main\n"),
         "{flash}"
     );
     // The same range as a start and a size, with a unit in any case.
@@ -513,6 +513,111 @@ Try:
   elfq testdata/bin/c-cortex-m7.elf top --range 0x20240000..0x20241000
   elfq testdata/bin/c-cortex-m7.elf why tx_buffer
 ",
+    );
+}
+
+#[test]
+fn a_range_counts_load_images_where_they_are_stored() {
+    // The startup code copies .itcm and .data from flash, so flash holds
+    // their load images: the code and data that process_frame alone uses
+    // there take 1712 bytes of flash, not 488.
+    assert_output(
+        &stdout(&[
+            TCM_SAMPLE,
+            "retained",
+            "process_frame",
+            "--range",
+            "0x30000000+16M",
+        ]),
+        "\
+Removing process_frame would save 1712 bytes in 0x30000000..0x31000000 (.isr_vector, .text, .rodata and .ARM.exidx, with the load images of .itcm and .data):
+
+RETAINED   OWN  ITEM
+    1712   376  process_frame
+    1080     8  __crc32_veneer, kept by process_frame
+    1072    48  crc32 (load image), kept by __crc32_veneer
+    1024  1024  crc_table (load image), kept by crc32
+     192     8  __apply_filter_veneer, kept by process_frame
+     184    92  apply_filter (load image), kept by __apply_filter_veneer
+      84    52  filter_tap (load image), kept by apply_filter
+      32    32  fir_coeffs, kept by filter_tap
+       8     8  __memcpy_veneer (load image), kept by apply_filter
+      40    40  decode_header, kept by process_frame
+      12   ~12  .rodata@0x30000df0, kept by process_frame
+      12   ~12  .rodata@0x30000dfc, kept by process_frame
+
+Shared with other code, so not counted: dispatch_event, log_msg, memcpy, stats.
+",
+    );
+    let flash = stdout(&[TCM_SAMPLE, "top", "--range", "0x30000000..0x30000edc"]);
+    assert!(
+        flash.starts_with(
+            "3691 bytes of code and data in 0x30000000..0x30000edc (.isr_vector, .text, .rodata \
+             and .ARM.exidx, with the load images of .itcm and .data), by what keeps them:\n"
+        ),
+        "{flash}"
+    );
+    // A range of only a load image.
+    assert_output(
+        &stdout(&[TCM_SAMPLE, "top", "--range", "0x30000040+224"]),
+        "\
+224 bytes of code and data in 0x30000040..0x30000120 (the load image of .itcm), by what keeps them:
+
+RETAINED  OWN  ITEM
+     200    0  Reset_Handler
+     200    0  main, kept by Reset_Handler
+     200    0  process_frame, kept by main
+     152    0  __apply_filter_veneer, kept by process_frame
+     152   92  apply_filter (load image), kept by __apply_filter_veneer
+      52   52  filter_tap (load image), kept by apply_filter
+       8    8  __memcpy_veneer (load image), kept by apply_filter
+      48    0  __crc32_veneer, kept by process_frame
+      48   48  crc32 (load image), kept by __crc32_veneer
+      24   16  SysTick_Handler (load image)
+       8    8  __app_tick_veneer (load image), kept by SysTick_Handler
+",
+    );
+    // A range that holds both copies counts both.
+    assert_output(
+        &stdout(&[TCM_SAMPLE, "retained", "crc32", "--range", "0x0..0x40000000"]),
+        "\
+Removing crc32 would save 2144 bytes in 0x00000000..0x40000000 (.isr_vector, .itcm, .text, .data, .rodata, .ARM.exidx, .bss and .ocram_bss, with the load images of .itcm and .data):
+
+RETAINED   OWN  ITEM
+    2144    96  crc32 (with its load image)
+    2048  2048  crc_table (with its load image), kept by crc32
+",
+    );
+    assert_output(
+        &stdout(&[
+            TCM_SAMPLE,
+            "retained",
+            "crc_table",
+            "--range",
+            "0x30000000+16M",
+        ]),
+        "Removing crc_table would save its own 1024 bytes in 0x30000000..0x31000000 \
+         (.isr_vector, .text, .rodata and .ARM.exidx, with the load images of .itcm and .data), \
+         all in its load image, and nothing else.\n",
+    );
+    // A range that holds both copies counts both.
+    assert_output(
+        &stdout(&[
+            TCM_SAMPLE,
+            "retained",
+            "crc_table",
+            "--range",
+            "0x0..0x40000000",
+        ]),
+        "Removing crc_table would save its own 2048 bytes in 0x00000000..0x40000000 \
+         (.isr_vector, .itcm, .text, .data, .rodata, .ARM.exidx, .bss and .ocram_bss, with the \
+         load images of .itcm and .data), 1024 of them in its load image, and nothing else.\n",
+    );
+    // Range checks look only where the program uses its code and data.
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "callers", "0x30000040+224"], 2),
+        "error: elfq found no functions or data in 0x30000040..0x30000120 (the load image of \
+         .itcm) where the program uses them: it uses .itcm at 0x00000000..0x000000e0\n",
     );
 }
 
@@ -575,13 +680,13 @@ fn a_range_must_hold_something() {
     assert_output(
         &stderr(&[TCM_SAMPLE, "top", "--range", "0x40000000+4K"], 2),
         "error: nothing in the file is in 0x40000000..0x40001000; the overview lists the ranges \
-         that the file's sections occupy\n",
+         that the file's sections and load images occupy\n",
     );
     // The range is written as the overview writes it, whatever its spelling.
     assert_output(
         &stderr(&[TCM_SAMPLE, "top", "--range", "0x4000000+16"], 2),
         "error: nothing in the file is in 0x04000000..0x04000010; the overview lists the ranges \
-         that the file's sections occupy\n",
+         that the file's sections and load images occupy\n",
     );
     // A section with no functions or data, such as the unwind table.
     assert_output(
@@ -1803,7 +1908,7 @@ fn ranges_in_place_of_symbol_must_be_ranges_with_something_in_them() {
     assert_output(
         &stderr(&[TCM_SAMPLE, "callees", "0x40000000+4K"], 2),
         "error: nothing in the file is in 0x40000000..0x40001000; the overview lists the ranges \
-         that the file's sections occupy\n",
+         that the file's sections and load images occupy\n",
     );
     assert_output(
         &stderr(&[TCM_SAMPLE, "callees", "0x0+256K", "main"], 2),
