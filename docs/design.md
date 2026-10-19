@@ -186,11 +186,15 @@ flash. As with `diff`, the exit status is 0 otherwise, and 2 for any
 error, with or without ranges. When the reader stops early, as `head`
 does, elfq still finishes and exits with the answer's status.
 
-All commands print a table or tree for people by default. `--json` prints
-the same answer for scripts. The JSON has every item, where the text
-shows only the largest; every key is always there, `null` when it has no
-value; addresses are hex strings, as elfq prints them and SYMBOL takes them,
-and sizes are numbers. An item looks like this:
+All commands print a table or tree for people by default. A table puts its
+short cells, such as sizes, HOW and AT, first and the name last, so that a
+long name that the terminal wraps moves no column. AT shows where an item
+is used: every site when there are one or two, else the first and how many
+more. `--json` prints the same answer for scripts. The JSON has every item
+and every site, where the text shows only the largest items and the first
+sites; every key is always there, `null` when it has no value; addresses
+are hex strings, as elfq prints them and SYMBOL takes them, and sizes are
+numbers. An item looks like this:
 
 ```json
 {

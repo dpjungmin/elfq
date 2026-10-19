@@ -119,8 +119,8 @@ Try:
         "\
 SysTick_Handler is used by 1 data object:
 
-CALLER        HOW      AT
-vector_table  pointer  0x800003c
+HOW      AT         CALLER
+pointer  0x800003c  vector_table
 
 SysTick_Handler is in the vector table: the processor runs it on an interrupt or exception.
 ",
@@ -701,8 +701,8 @@ fn calls_through_pointers_are_pointed_out() {
         "\
 on_button is used by 1 function:
 
-CALLER  HOW            AT
-main    address taken  0x10b6
+HOW            AT      CALLER
+address taken  0x10b6  main
 
 Calls to on_button through a pointer aren't listed, since elfq can't see them.
 ",
@@ -980,12 +980,12 @@ fn callers_lists_each_caller_and_how_it_calls() {
         "\
 log_msg is used by 5 functions:
 
-CALLER         HOW        AT
-app_tick       call       0x16e7
-debug_dump     call       0x1aaf
-on_button      tail call  0x1661
-process_frame  call       0x18ee, 0x1908
-report         call       0x1a72
+HOW        AT              CALLER
+call       0x16e7          app_tick
+call       0x1aaf          debug_dump
+tail call  0x1661          on_button
+call       0x18ee, 0x1908  process_frame
+call       0x1a72          report
 ",
     );
 }
@@ -997,12 +997,12 @@ fn callers_in_a_shared_library_include_calls_through_its_stubs() {
         "\
 log_msg is used by 5 functions:
 
-CALLER         HOW        AT
-app_tick       call       0x179f
-debug_dump     call       0x1b5f
-on_button      tail call  0x1711
-process_frame  call       0x199e, 0x19b8
-report         call       0x1b22
+HOW        AT              CALLER
+call       0x179f          app_tick
+call       0x1b5f          debug_dump
+tail call  0x1711          on_button
+call       0x199e, 0x19b8  process_frame
+call       0x1b22          report
 
 This includes calls through log_msg@plt.
 ",
@@ -1013,8 +1013,8 @@ This includes calls through log_msg@plt.
         "\
 log_msg@plt uses 1 function:
 
-CALLEE   HOW        AT
-log_msg  tail call  0x1144
+HOW        AT      CALLEE
+tail call  0x1144  log_msg
 ",
     );
     // The same goes for an 8-byte stub in `.plt.got`, and for an ifunc's.
@@ -1024,9 +1024,9 @@ log_msg  tail call  0x1144
         "\
 negate is used by 2 functions:
 
-CALLER  HOW            AT
-pick    address taken  0x1210
-run     call           0x126a
+HOW            AT      CALLER
+address taken  0x1210  pick
+call           0x126a  run
 
 This includes calls through negate@plt.
 Calls to negate through a pointer aren't listed, since elfq can't see them.
@@ -1037,8 +1037,8 @@ Calls to negate through a pointer aren't listed, since elfq can't see them.
         "\
 sum_to is used by 1 function:
 
-CALLER  HOW   AT
-run     call  0x1273
+HOW   AT      CALLER
+call  0x1273  run
 
 This includes calls through sum_to@plt.
 ",
@@ -1050,8 +1050,8 @@ This includes calls through sum_to@plt.
         "\
 square is used by 1 function:
 
-CALLER       HOW            AT
-pick_square  address taken  0x1240
+HOW            AT      CALLER
+address taken  0x1240  pick_square
 
 Calls to square through a pointer aren't listed, since elfq can't see them.
 ",
@@ -1069,8 +1069,8 @@ fn rust_names_are_readable_and_short_ones_work() {
         "\
 elfq_sample::process_frame is used by 1 function:
 
-CALLER                 HOW   AT
-elfq_sample::app_main  call  0x14f12, 0x14f29, 0x14f40
+HOW   AT                  CALLER
+call  0x14f12 and 2 more  elfq_sample::app_main
 ",
     );
 }
@@ -1108,8 +1108,8 @@ error: `log` could mean 2 functions; use one of the names on the left instead:
         "\
 app::operator<(app::Reading const&, app::Reading const&) is used by 1 function:
 
-CALLER                                            HOW   AT
-app::sort_readings(app::Reading*, unsigned long)  call  0x156f
+HOW   AT      CALLER
+call  0x156f  app::sort_readings(app::Reading*, unsigned long)
 ",
     );
     assert_output(
@@ -1117,10 +1117,10 @@ app::sort_readings(app::Reading*, unsigned long)  call  0x156f
         "\
 typeinfo for app::Gain uses 3 items:
 
-CALLEE                                       HOW      AT
-vtable for __cxxabiv1::__si_class_type_info  pointer  0x3d78
-typeinfo name for app::Gain                  pointer  0x3d80
-typeinfo for app::Stage                      pointer  0x3d88
+HOW      AT      CALLEE
+pointer  0x3d78  vtable for __cxxabiv1::__si_class_type_info
+pointer  0x3d80  typeinfo name for app::Gain
+pointer  0x3d88  typeinfo for app::Stage
 ",
     );
 }
@@ -1137,8 +1137,8 @@ fn data_without_a_symbol_is_named_by_section_and_address() {
         "\
 <elfq_sample::Gain as elfq_sample::Stage>::run is used by 1 data object:
 
-CALLER                HOW      AT
-.data.rel.ro@0x52da8  pointer  0x52dc0
+HOW      AT       CALLER
+pointer  0x52dc0  .data.rel.ro@0x52da8
 
 Calls to <elfq_sample::Gain as elfq_sample::Stage>::run through a pointer aren't listed, since elfq can't see them.
 "
@@ -1160,8 +1160,8 @@ fn callees_also_reports_what_it_cannot_follow() {
         "\
 dispatch_event uses 1 data object:
 
-CALLEE    HOW   AT
-handlers  uses  0x169b
+HOW   AT      CALLEE
+uses  0x169b  handlers
 
 Also 1 jump through a pointer, at 0x16ad, which elfq can't follow.
 ",
@@ -1198,15 +1198,15 @@ fn code_uses_data_whether_it_reads_it_or_loads_its_address() {
         "\
 std::rt::cleanup::CLEANUP is used by 1 function:
 
-CALLER                        HOW   AT
-std::rt::lang_start_internal  uses  0x3a60a, 0x3a66d
+HOW   AT                CALLER
+uses  0x3a60a, 0x3a66d  std::rt::lang_start_internal
 ",
     );
     // Arm code loads a variable's address before it reads or writes it,
     // and that is "uses" too.
     let stats = stdout(&["testdata/bin/c-cortex-m4.elf", "callers", "stats"]);
     assert!(
-        stats.contains("\nprocess_frame  uses  0x8000332\n"),
+        stats.contains("\nuses  0x8000332  process_frame\n"),
         "{stats}"
     );
 }

@@ -103,15 +103,15 @@ fn callees(
         writeln!(out, "{name} uses {}:", text::count_text(binary, &callees))?;
         writeln!(out)?;
         let mut table = Table::new(&[
-            ("CALLEE", Align::Left),
             ("HOW", Align::Left),
             ("AT", Align::Left),
+            ("CALLEE", Align::Left),
         ]);
         for row in &rows {
             table.row(vec![
-                row.node.name(binary).to_string(),
                 row.how.to_string(),
                 text::at_column(&row.sites),
+                row.node.name(binary).to_string(),
             ]);
         }
         table.write(out)?;
