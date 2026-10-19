@@ -31,9 +31,10 @@ struct RetainedJson<'a> {
     /// SYMBOL's own bytes and those of everything it keeps: the bytes that
     /// would go away if it did. With a range, only those in it.
     retained: u64,
-    /// The items that only SYMBOL leads to, as a tree: each has what it
-    /// keeps in turn, and the largest come first.
-    keeps: Vec<KeptItem<'a>>,
+    /// The items that only SYMBOL leads to, as the rows of the tree in the
+    /// text's order. Those with no `parent` are those that SYMBOL keeps
+    /// itself. `retained` is SYMBOL's own bytes and their `own` together.
+    items: Vec<KeptItem<'a>>,
     /// What SYMBOL and the items it keeps use that other code uses too, and
     /// so isn't counted, sorted by name. With a range, only items with bytes
     /// in it.
@@ -123,7 +124,7 @@ fn write_json(symbol: &SymbolInTree, out: &mut dyn Write) -> Result<()> {
         reachable,
         range: retained.range.map(json::Range::new),
         retained: retained.tree.retained(node),
-        keeps: retained.to_json(retained.tree.children(node)),
+        items: retained.to_json(retained.tree.children(node)),
         shares: shares
             .into_iter()
             .map(|node| json::Item::new(binary, node))

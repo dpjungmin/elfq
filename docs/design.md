@@ -325,9 +325,9 @@ sizes usually are.
 every site, where the text shows only the largest items and the first
 sites; every key is always there, `null` when it has no value; addresses
 are hex strings, as elfq prints them and SYMBOL takes them, and sizes are
-numbers. Each row of a list in the answer, such as a caller or a chain of
-`why`, is a line of its own, so that `grep` and `head` work on the JSON as
-on the text. An item looks like this, spread over lines here:
+numbers. Each row of a list in the answer, such as an item of `top` or a
+chain of `why`, is a line of its own, so that `grep` and `head` work on
+the JSON as on the text. An item looks like this, spread over lines here:
 
 ```json
 {
@@ -342,8 +342,21 @@ on the text. An item looks like this, spread over lines here:
 
 `kind` is `function`, `data` or `import`, and `section` names the section
 that holds the item, such as `.data` or `.bss`; an import has no section,
-address or size in the file. In the trees of `top` and `retained`, each item
-also has its `retained` size and `keeps`, the items under it.
+address or size in the file. `top` and `retained` list the items of their
+trees as rows, in the order of the text's rows. Each also has an `id`,
+which counts the rows from 0; `own`, its own bytes as in the OWN column, or
+with `--range` those in the range, and 0 where OWN shows `?`; its
+`retained` size; `through_pointer`, for a function marked "(through a
+pointer)"; and `parent`, the `id` of the row it hangs under, or `null` at
+the top, which in `retained` holds what SYMBOL keeps itself. So a script
+that adds up `retained` takes only the rows whose `parent` is `null`.
+`top`'s `unreachable` items have `own` too, and its `bytes` is the sum of
+every `own`. The first rows of `retained process_frame`, shown above:
+
+```json
+{"id":0,"name":"crc32","kind":"function","section":".text","address":"0x1280","size":59,"size_estimated":false,"own":59,"retained":1083,"through_pointer":false,"parent":null},
+{"id":1,"name":"crc_table","kind":"data","section":".rodata","address":"0x2120","size":1024,"size_estimated":false,"own":1024,"retained":1024,"through_pointer":false,"parent":0},
+```
 
 `why` gives each chain as a list of steps, each an item and a `how`. The
 first step is a root, and its `how` says why the program starts there,
@@ -548,8 +561,8 @@ in order. Its output is the first example under [Commands](#commands).
    and writes the table (`Table::write`). Then `write_shared` names what
    `process_frame` uses that other code uses too, and `write_indirect_note`
    notes any calls through pointers in `process_frame` or the items it
-   keeps. With `--json`, `retained::write_json` writes the whole tree
-   instead, through `json::write`.
+   keeps. With `--json`, `retained::write_json` lists every row of the tree
+   instead (`RetainedTree::to_json`), and writes them through `json::write`.
 8. **Exit.** `run`, in main.rs, flushes the output and turns the answer into
    the exit status: 0 for an answer, 1 when `callers` or `callees` finds
    something that crosses its ranges, or may, and 2 for an error, which it

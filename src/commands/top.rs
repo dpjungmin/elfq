@@ -22,14 +22,25 @@ use crate::graph::Node;
 struct TopJson<'a> {
     /// The range of memory that sizes count, or `null` for all of it.
     range: Option<json::Range>,
-    /// The bytes of every item in the file, or in the range.
+    /// The bytes of every item in the file, or in the range: the sum of
+    /// `own` in `items` and `unreachable`.
     bytes: u64,
-    /// The top of the tree: where the program starts, and the items that
-    /// several of those places reach. Each has the whole tree of what it
-    /// keeps, and the largest come first.
+    /// The items that something reaches, as the rows of the tree in the
+    /// text's order. Those at the top, with no `parent`, are where the
+    /// program starts and the items that several of those places reach.
     items: Vec<KeptItem<'a>>,
     /// The items that nothing reaches, largest first.
-    unreachable: Vec<json::Item<'a>>,
+    unreachable: Vec<Unreachable<'a>>,
+}
+
+/// An item that nothing reaches.
+#[derive(Serialize)]
+struct Unreachable<'a> {
+    #[serde(flatten)]
+    item: json::Item<'a>,
+    /// Its bytes that sizes count: all of them, or with a range, those in
+    /// it. 0 when elfq doesn't know its size.
+    own: u64,
 }
 
 /// Answers `elfq FILE top`: the largest items, or every item with `all`.
@@ -55,7 +66,10 @@ pub fn run(
             items: retained.to_json(retained.tree.top()),
             unreachable: unreachable(&retained)
                 .into_iter()
-                .map(|index| json::Item::new(binary, Node::Item(index)))
+                .map(|index| Unreachable {
+                    item: json::Item::new(binary, Node::Item(index)),
+                    own: retained.own(index),
+                })
                 .collect(),
         };
         return json::write(&answer, out);
