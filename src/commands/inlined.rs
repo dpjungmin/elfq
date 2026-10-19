@@ -244,17 +244,22 @@ struct TreeJson<'a> {
     function: json::Item<'a>,
     /// The bytes of the function's code that inlined copies take.
     inlined_bytes: u64,
+    /// The groups, as the rows of the tree in the text's order.
     inlined: Vec<GroupJson<'a>>,
 }
 
+/// One row of the tree: the copies of one function in one place.
 #[derive(Serialize)]
 struct GroupJson<'a> {
+    /// Which row this is, counting from 0.
+    id: usize,
     name: &'a str,
     /// The bytes the copies take, including the copies inlined into them.
     bytes: u64,
     copies: usize,
-    /// The functions inlined into these copies.
-    inlined: Vec<GroupJson<'a>>,
+    /// The id of the row of the copies that these were inlined into, or
+    /// `null` for copies inlined into the function itself.
+    parent: Option<usize>,
 }
 
 /// The inlined copies in one function, as a tree in which the copies of
@@ -370,19 +375,30 @@ impl<'a> Groups<'a> {
         }
     }
 
+    /// The rows of `groups` and of the groups inlined into them, in the
+    /// order of the text's rows: each group, largest first, followed by the
+    /// groups inlined into it.
     fn to_json(&self, groups: &[usize]) -> Vec<GroupJson<'a>> {
-        groups
-            .iter()
-            .map(|&group| {
-                let group = &self.list[group];
-                GroupJson {
-                    name: group.name,
-                    bytes: group.bytes,
-                    copies: group.copies,
-                    inlined: self.to_json(&group.children),
-                }
-            })
-            .collect()
+        let mut rows = Vec::new();
+        self.add_json(groups, None, &mut rows);
+        rows
+    }
+
+    /// Adds the rows of `groups`, which were inlined into the row `parent`,
+    /// each followed by the rows of the groups inlined into it in turn.
+    fn add_json(&self, groups: &[usize], parent: Option<usize>, rows: &mut Vec<GroupJson<'a>>) {
+        for &group in groups {
+            let group = &self.list[group];
+            let id = rows.len();
+            rows.push(GroupJson {
+                id,
+                name: group.name,
+                bytes: group.bytes,
+                copies: group.copies,
+                parent,
+            });
+            self.add_json(&group.children, Some(id), rows);
+        }
     }
 
     /// What the rows inlined into each group call it, when the tree is

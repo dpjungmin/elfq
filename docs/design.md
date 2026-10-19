@@ -358,6 +358,11 @@ every `own`. The first rows of `retained process_frame`, shown above:
 {"id":1,"name":"crc_table","kind":"data","section":".rodata","address":"0x2120","size":1024,"size_estimated":false,"own":1024,"retained":1024,"through_pointer":false,"parent":0},
 ```
 
+`inlined SYMBOL` lists the rows of its tree the same way, each the copies
+of one function in one place, with `id`, `name`, `bytes`, `copies` and
+`parent`, the `id` of the row of the copies they were inlined into, or
+`null` for those inlined into SYMBOL's function itself.
+
 `why` gives each chain as a list of steps, each an item and a `how`. The
 first step is a root, and its `how` says why the program starts there,
 such as `entry point` or `listed in .init_array`. In the others, it says

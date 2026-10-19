@@ -373,14 +373,36 @@ fn inlined_lists_every_function_and_the_whole_tree() {
     let tree = elfq_json(&["testdata/bin/rust-cortex-m4.elf", "inlined", "memcpy"]);
     assert_eq!(tree["function"]["name"], "compiler_builtins::mem::memcpy");
     assert_eq!(tree["inlined_bytes"], 712);
+    // The rows of the tree, each with the row it was inlined into.
     let copy_forward = &tree["inlined"][0];
     assert_eq!(
         copy_forward["name"],
         "compiler_builtins::mem::impls::copy_forward"
     );
+    assert_eq!(copy_forward["id"], 0);
+    assert_eq!(copy_forward["parent"], Value::Null);
+    let misaligned = &tree["inlined"][1];
     assert_eq!(
-        copy_forward["inlined"][0]["name"],
+        misaligned["name"],
         "compiler_builtins::mem::impls::copy_forward::copy_forward_misaligned_words"
+    );
+    assert_eq!(misaligned["parent"], 0);
+    let rows = tree["inlined"].as_array().unwrap();
+    for (id, row) in rows.iter().enumerate() {
+        assert_eq!(row["id"], id);
+        assert!(
+            row["parent"]
+                .as_u64()
+                .is_none_or(|parent| parent < id as u64)
+        );
+    }
+    // Only copy_forward was inlined into memcpy itself.
+    let top = rows.iter().filter(|row| row["parent"].is_null()).count();
+    assert_eq!(top, 1);
+    // The rows come in the order of the text's.
+    assert_eq!(
+        names(&tree["inlined"]),
+        text_rows(&["testdata/bin/rust-cortex-m4.elf", "inlined", "memcpy"])
     );
 }
 
@@ -524,6 +546,7 @@ fn text_rows(args: &[&str]) -> Vec<String> {
         .take_while(|line| !line.is_empty())
         .map(|line| {
             let name = line[start..].split(", kept by ").next().unwrap();
+            let name = name.split(", inlined into ").next().unwrap();
             name.trim_end_matches(" (through a pointer)").to_string()
         })
         .collect()
