@@ -70,8 +70,8 @@ go away if it did. (`graph::DominatorTree`)
 Every kind of reference counts. elfq can't tell which call through a
 pointer reaches a function, so a function that only pointers lead to counts
 for the code or data that holds its address, which is the same rule that
-the linker's `--gc-sections` follows. Trees mark such a function "(through a
-pointer)", since nothing calls it directly.
+the linker's `--gc-sections` follows. Rows mark such a function "(through
+a pointer)", since nothing calls it directly.
 
 **Unresolved call.** A call or jump that elfq finds in code but can't turn
 into a reference: one through a pointer set at run time, as in a call
@@ -145,9 +145,9 @@ except `inlined`, which reads DWARF instead of machine code.
 | Command | Answers |
 |---|---|
 | `elfq FILE` | What is this file, what did elfq find in it, which items keep the most bytes, and what can I ask next? |
-| `elfq FILE retained SYMBOL` | What does SYMBOL keep alive, as a tree, and how many bytes is that? |
+| `elfq FILE retained SYMBOL` | What does SYMBOL keep alive, and how many bytes is that? |
 | `elfq FILE why SYMBOL` | Which chains of calls and references from the roots keep SYMBOL in the binary? |
-| `elfq FILE top` | Which items keep the most bytes, as a tree? |
+| `elfq FILE top` | Which items keep the most bytes? |
 | `elfq FILE callers SYMBOL` | What calls or uses SYMBOL directly, and how (call, tail call, uses, address taken, pointer)? |
 | `elfq FILE callees SYMBOL` | What does SYMBOL call or use directly? |
 | `elfq FILE callees RANGE...` | What do the code and data in these ranges of memory use outside them, such as code in ITCM that calls a function in flash? `callers RANGE...` asks the reverse. |
@@ -189,21 +189,26 @@ flash. As with `diff`, the exit status is 0 otherwise, and 2 for any
 error, with or without ranges. When the reader stops early, as `head`
 does, elfq still finishes and exits with the answer's status.
 
-All commands print a table or tree for people by default. A table puts its
-short cells, such as sizes, HOW and AT, first and the name last, so that a
-long name that the terminal wraps moves no column. AT shows where an item
-is used: every site when there are one or two, else the first and how many
-more. `callers SYMBOL` and `callees SYMBOL` list the 30 items with the
-largest own sizes, callers in order of name and callees in the order SYMBOL
-first uses them, and a last row such as `70 more` counts the rest; with
-ranges, they list every crossing. `--all` lifts every such cut in an answer
-but AT's: it shows every item in a table or tree, every chain in `why`, and
-every name and address in a sentence, where a long list otherwise ends with
-"and 48 more". `--json` prints the same answer for scripts. The JSON has
-every item and every site, where the text shows only the largest items and
-the first sites; every key is always there, `null` when it has no value;
-addresses are hex strings, as elfq prints them and SYMBOL takes them, and
-sizes are numbers. An item looks like this:
+All commands print a table for people by default, with one row per line. A
+table puts its short cells, such as sizes, HOW and AT, first and the name
+last, so that a long name that the terminal wraps moves no column. Where an
+answer is a tree, as in the overview, `top`, `retained`, `why` and `inlined
+SYMBOL`, each row then names the row it hangs under by a short name, as in
+`crc_table, kept by crc32`, so that a row that grep finds still says where
+it is; in `why`, only where chains branch. `--tree` draws such answers as
+trees instead. AT shows where an item is used: every site when there are
+one or two, else the first and how many more. `callers SYMBOL` and `callees
+SYMBOL` list the 30 items with the largest own sizes, callers in order of
+name and callees in the order SYMBOL first uses them, and a last row such
+as `70 more` counts the rest; with ranges, they list every crossing.
+`--all` lifts every such cut in an answer but AT's: it shows every item in
+a table or tree, every chain in `why`, and every name and address in a
+sentence, where a long list otherwise ends with "and 48 more". `--json`
+prints the same answer for scripts. The JSON has every item and every site,
+where the text shows only the largest items and the first sites; every key
+is always there, `null` when it has no value; addresses are hex strings, as
+elfq prints them and SYMBOL takes them, and sizes are numbers. An item
+looks like this:
 
 ```json
 {
@@ -234,31 +239,35 @@ Removing process_frame would save 2068 bytes:
 
 RETAINED   OWN  ITEM
     2068   532  process_frame
-    1083    59  ├─ crc32
-    1024  1024  │  └─ crc_table
-     378   271  ├─ apply_filter
-     107    75  │  └─ filter_tap
-      32    32  │     └─ fir_coeffs
-      54    54  ├─ decode_header
-      12   ~12  ├─ .rodata@0x2012
-       9    ~9  └─ .rodata@0x201e
+    1083    59  crc32, kept by process_frame
+    1024  1024  crc_table, kept by crc32
+     378   271  apply_filter, kept by process_frame
+     107    75  filter_tap, kept by apply_filter
+      32    32  fir_coeffs, kept by filter_tap
+      54    54  decode_header, kept by process_frame
+      12   ~12  .rodata@0x2012, kept by process_frame
+       9    ~9  .rodata@0x201e, kept by process_frame
 
 Shared with other code, so not counted: __stack_chk_fail@plt, dispatch_event, frames_bad, frames_ok, log_msg, stats.
 ```
 
-A tree shows its 30 largest items and sums up the rest under their parents:
-`└─ 6 more` stands for six items, and its RETAINED column adds up their
-bytes. A line never stands for a single item, since the item's own line
-takes no more room, and lists of names and addresses never end in "and 1
-more" either. `--all` shows every item instead.
+Each row names the item that keeps it by the shortest form of its name that
+finds that item as SYMBOL, or by its whole name when only an address would.
+A tree shows its 30 largest items and sums up the rest
+under the items that keep them: `6 more, kept by main` stands for six
+items, and its RETAINED column adds up their bytes. A row never stands for
+a single item, since the item's own row takes no more room, and lists of
+names and addresses never end in "and 1 more" either. `--all` shows every
+item instead.
 
-Every tree, in every command, is drawn at most 9 levels below its top
-row, so names never start more than 27 columns into the tree and long names
-don't push it off the screen. Where a tree goes deeper, the row 8 levels
-down ends with `(continued below)`, and the rows under it come after the
-rest of the table, under a row `NAME (continued)`, by the same rule. Rows
-with nothing under them stay in place, 9 levels down. `retained chain1`
-on `testdata/bin/c-deep.elf`, a chain of calls 20 deep, shows it.
+With `--tree`, every tree, in every command, is drawn at most 9 levels
+below its top row, so names never start more than 27 columns into the tree
+and long names don't push it off the screen. Where a tree goes deeper, the
+row 8 levels down ends with `(continued below)`, and the rows under it come
+after the rest of the table, under a row `NAME (continued)`, by the same
+rule. Rows with nothing under them stay in place, 9 levels down.
+`retained chain1 --tree` on `testdata/bin/c-deep.elf`, a chain of calls 20
+deep, shows it.
 
 `top` shows the same kind of tree for the whole file, starting from the
 roots, and the overview starts with its five largest items. On the Rust
@@ -267,9 +276,12 @@ library's backtrace printer keeps 228,391 of the file's 282,384 bytes of
 code and data.
 
 `why` answers from the other end: each item that uses SYMBOL keeps it in the
-file, and the tree shows the shortest chain to each of them from where the
-program starts. Users that nothing reaches, or that are there only because
-of SYMBOL, don't keep it and are left out of the tree:
+file, and the rows show the shortest chain to each of them from where the
+program starts, merged into a tree. Each chain starts at a row whose HOW
+says why the program starts there, such as `entry point`. Below that, a row
+names its user only where chains branch, since HOW says how the row above
+uses it. Users that nothing reaches, or that are there only because of
+SYMBOL, don't keep it and are left out of the chains:
 
 ```
 $ elfq testdata/bin/c-x86_64.elf why log_msg
@@ -277,30 +289,29 @@ log_msg is used by 4 functions, through these chains:
 
 HOW            ITEM
 entry point    _start
-address taken  └─ main
-call              ├─ app_tick
-call              │  └─ log_msg
-address taken     ├─ on_button
-tail call         │  └─ log_msg
-call              ├─ process_frame
-call              │  └─ log_msg
-call              └─ report
-call                 └─ log_msg
+address taken  main
+call           app_tick
+call           log_msg
+address taken  on_button, used by main
+tail call      log_msg
+call           process_frame, used by main
+call           log_msg
+call           report, used by main
+call           log_msg
 
 debug_dump uses log_msg too, but nothing reaches debug_dump.
 
 Removing main would remove log_msg too.
 ```
 
-`inlined` ranks the functions that the compiler copied into their callers by
-the bytes all their copies take, which ddbug shows only one function at a
-time. Each copy's bytes leave out the copies inlined into it, so the rows add
-up to the file's inlined code. On the Rust x86-64 sample with DWARF,
+`inlined` ranks the functions that the compiler copied into their callers
+by the bytes all their copies take, which ddbug shows only one function at
+a time. Each copy's bytes leave out the copies inlined into it, so the rows
+add up to the file's inlined code. On the Rust x86-64 sample with DWARF,
 `EndianSlice::read_slice` tops the list: 302 copies in 6,388 bytes. That
 file is too large to commit; `testdata/build.sh` leaves it at
-`testdata/rust/target/release/elfq-sample`. With
-SYMBOL it shows the copies in one function as a tree, merging the copies of
-one function in one place:
+`testdata/rust/target/release/elfq-sample`. With SYMBOL it shows the copies
+in one function, merging the copies of one function in one place:
 
 ```
 $ elfq testdata/bin/c-x86_64.elf inlined report
@@ -309,6 +320,18 @@ Of report's 370 bytes, 150 are inlined copies of 1 function:
 BYTES  COPIES  FUNCTION
   150       6  append
 ```
+
+A row under another names the copy it was inlined into by the shortest name
+that no other function there has. Where that function is inlined in several
+places, the name adds the nearest place above it that is inlined in one
+place only, or SYMBOL: `inlined process_frame` on
+`testdata/bin/rust-cortex-m4.elf` has rows that end in
+`inlined into fetch_add in update_stats`. Where that still leaves two
+copies with rows under them called the same, as when `spec_next` is
+inlined into both `next` and `step` in `padding`, each adds what the rows
+call the copy it sits in instead: `spec_next in next in padding`. So no
+two rows that others hang under are called the same, unless the debug info
+nests copies of a function in copies of it more than 16 deep.
 
 With `--range START..END` or `--range START+SIZE`, the overview, `top` and
 `retained` count only the bytes inside one range of memory, such as a
@@ -477,7 +500,7 @@ in order. Its output is the first example under [Commands](#commands).
 1. **Arguments.** `main`, in main.rs, runs `run` on a thread with a large
    stack, since elfq builds its trees recursively. `run` reads
    `elfq help top` as `elfq top --help`, then clap parses the arguments
-   into a `cli::Cli`: the file, `--json`, `--range`, and here
+   into a `cli::Cli`: the file, `--json`, `--tree`, `--range`, and here
    `Command::Retained` with its SYMBOL.
 2. **Dispatch.** `commands::run` checks that the arguments go together
    (`check_arguments`), before it reads the file, then loads the file,
@@ -510,8 +533,10 @@ in order. Its output is the first example under [Commands](#commands).
 7. **The answer.** `retained::run` writes the lead line, then
    `RetainedTree::largest` picks the 30 largest items under
    `process_frame`, and the items between them and it, and
-   `RetainedTree::tree_row` makes a `render::TreeRow` of each.
-   `render::Table` draws them as a tree in its last column (`Table::tree`)
+   `RetainedTree::tree_row` makes a `render::TreeRow` of each, with the
+   short name that the rows under it call it by (`Names::short_name`).
+   `render::Table` puts them in its last column, as rows that each name the
+   row they hang under or, with `--tree`, drawn as a tree (`Table::tree`),
    and writes the table (`Table::write`). Then `write_shared` names what
    `process_frame` uses that other code uses too, and `write_indirect_note`
    notes any calls through pointers in `process_frame` or the items it

@@ -182,7 +182,10 @@ fn without_parameters(path: &str) -> Option<String> {
                 depth -= 1;
                 if depth == 0 {
                     let function = &inside[..at];
-                    return (!function.is_empty() && !function.ends_with("::"))
+                    // The `()` of C++'s call operator is part of its name:
+                    // `Op::operator()` has no shorter name.
+                    let call_operator = function == "operator" || function.ends_with("::operator");
+                    return (!function.is_empty() && !function.ends_with("::") && !call_operator)
                         .then(|| function.to_string());
                 }
             }
@@ -459,6 +462,12 @@ mod tests {
             short_names("app::Ptr::operator->() const").contains(&"Ptr::operator->".to_string())
         );
         assert!(short_names("app::Run::operator()(int)").contains(&"Run::operator()".to_string()));
+        let call = short_names("Op::operator()(unsigned int) const");
+        assert!(call.contains(&"Op::operator()".to_string()), "{call:?}");
+        assert!(
+            !call.iter().any(|name| name.ends_with("operator")),
+            "{call:?}"
+        );
     }
 
     #[test]

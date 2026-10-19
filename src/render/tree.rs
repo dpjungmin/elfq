@@ -1,14 +1,37 @@
-//! Trees drawn in the last column of a [`Table`], the same way in every
-//! command.
+//! Trees in the last column of a [`Table`], shown the same way in every
+//! command: as rows, or drawn with branches (see [`TreeShape`]).
 //!
-//! Each level of a tree moves a name 3 columns to the right, so the last
-//! name of a chain of calls 20 deep would start 60 columns in, and long
-//! names would wrap. So a tree is drawn at most [`DEEPEST`] levels deep.
-//! Where it goes deeper, the row on the level above ends with "(continued
-//! below)", and the rows under it are drawn after the rest of the table,
-//! under a row "NAME (continued)", by the same rule.
+//! As rows, a tree reads the same however a terminal wraps it. A row under
+//! another ends with its name, then says in words which row that is, as in
+//! "crc_table, kept by crc32", so a long name that wraps moves nothing else,
+//! and a row that grep finds still says where it is.
+//!
+//! Drawn, each level of a tree moves a name 3 columns to the right, so the
+//! last name of a chain of calls 20 deep would start 60 columns in, and
+//! long names would wrap. So a tree is drawn at most [`DEEPEST`] levels
+//! deep. Where it goes deeper, the row on the level above ends with
+//! "(continued below)", and the rows under it are drawn after the rest of
+//! the table, under a row "NAME (continued)", by the same rule.
 
 use super::Table;
+
+/// How a table shows a tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TreeShape {
+    /// One row per line, each row followed by the rows under it, with no
+    /// part moved below as a drawn tree moves them. A row under another
+    /// ends with `words` and that row's [`short_name`](TreeRow::short_name),
+    /// as in "crc_table, kept by crc32".
+    Rows { words: &'static str },
+    /// As [`TreeShape::Rows`], except that a row right after the row it
+    /// hangs under doesn't name it. The rows at the top name none either,
+    /// so the other cells must mark them, as HOW does in `why`; then a row
+    /// below the top that names none hangs under the row above. For
+    /// chains, which branch only now and then.
+    Chains { words: &'static str },
+    /// Drawn with branches, as `--tree` asks.
+    Drawn,
+}
 
 /// The deepest level a row is drawn at. The rows at the top of a tree, or
 /// of a part continued below, are on level 0, so no name starts more than
@@ -23,16 +46,22 @@ pub struct TreeRow {
     pub name: String,
     /// Words after the name, such as "(through a pointer)".
     pub mark: Option<&'static str>,
+    /// What the rows under it call it, when the tree is shown as rows: a
+    /// name often shorter than `name`, such as `process_frame` for
+    /// `app::process_frame`.
+    pub short_name: String,
     /// The rows under it, in the order they are drawn.
     pub children: Vec<TreeRow>,
 }
 
 impl TreeRow {
-    /// A row with no mark.
+    /// A row with no mark, which the rows under it call by its name.
     pub fn new(cells: Vec<String>, name: impl Into<String>, children: Vec<TreeRow>) -> TreeRow {
+        let name = name.into();
         TreeRow {
             cells,
-            name: name.into(),
+            short_name: name.clone(),
+            name,
             mark: None,
             children,
         }
@@ -47,9 +76,37 @@ impl TreeRow {
 }
 
 impl Table {
-    /// Adds the rows of a tree that starts with the rows in `top`, then the
-    /// parts of it continued below.
-    pub fn tree(&mut self, top: &[TreeRow]) {
+    /// Adds the rows of a tree that starts with the rows in `top`, in the
+    /// shape asked for.
+    pub fn tree(&mut self, top: &[TreeRow], shape: TreeShape) {
+        match shape {
+            TreeShape::Rows { words } => self.rows_of(top, None, words, true),
+            TreeShape::Chains { words } => self.rows_of(top, None, words, false),
+            TreeShape::Drawn => self.drawn(top),
+        }
+    }
+
+    /// Adds `rows` and the rows under each, one per line. Those under
+    /// `parent` end with `words` and its short name: every one, or unless
+    /// `every`, all but the first, which comes right after it.
+    fn rows_of(&mut self, rows: &[TreeRow], parent: Option<&TreeRow>, words: &str, every: bool) {
+        for (i, row) in rows.iter().enumerate() {
+            let mut label = row.label();
+            if let Some(parent) = parent
+                && (every || i > 0)
+            {
+                label = format!("{label}, {words} {}", parent.short_name);
+            }
+            let mut cells = row.cells.clone();
+            cells.push(label);
+            self.row(cells);
+            self.rows_of(&row.children, Some(row), words, every);
+        }
+    }
+
+    /// Adds the rows of a tree drawn from the rows in `top`, then the parts
+    /// of it continued below.
+    fn drawn(&mut self, top: &[TreeRow]) {
         let mut cut = Vec::new();
         for row in top {
             self.tree_row(row, "", "", 0, &mut cut);
@@ -143,17 +200,68 @@ mod tests {
         TreeRow::new(vec![first.to_string()], first.to_string(), children)
     }
 
-    fn text(top: &[TreeRow]) -> String {
+    fn text(top: &[TreeRow], shape: TreeShape) -> String {
         let mut table = Table::new(&[("N", Align::Right), ("ITEM", Align::Left)]);
-        table.tree(top);
+        table.tree(top, shape);
         let mut out = Vec::new();
         table.write(&mut out).unwrap();
         String::from_utf8(out).unwrap()
     }
 
+    /// Two rows, the first with two under it, and the first of those with
+    /// one under it. Each row is called by the end of its name.
+    fn branching() -> Vec<TreeRow> {
+        let row = |name: &str, children| TreeRow {
+            short_name: name.trim_start_matches("app::").to_string(),
+            ..TreeRow::new(vec![String::new()], name, children)
+        };
+        let leaf = |name| row(name, Vec::new());
+        vec![
+            row(
+                "app::main",
+                vec![
+                    row("app::run", vec![leaf("app::log")]),
+                    TreeRow {
+                        mark: Some("(through a pointer)"),
+                        ..leaf("app::tick")
+                    },
+                ],
+            ),
+            leaf("app::init"),
+        ]
+    }
+
+    #[test]
+    fn rows_name_the_row_they_hang_under() {
+        assert_eq!(
+            text(&branching(), TreeShape::Rows { words: "kept by" }),
+            "N  ITEM
+   app::main
+   app::run, kept by main
+   app::log, kept by run
+   app::tick (through a pointer), kept by main
+   app::init
+"
+        );
+    }
+
+    #[test]
+    fn chains_name_the_row_they_hang_under_only_where_they_branch() {
+        assert_eq!(
+            text(&branching(), TreeShape::Chains { words: "used by" }),
+            "N  ITEM
+   app::main
+   app::run
+   app::log
+   app::tick (through a pointer), used by main
+   app::init
+"
+        );
+    }
+
     #[test]
     fn rows_reach_the_deepest_level_in_place() {
-        let text = text(&[chain(0, DEEPEST + 1)]);
+        let text = text(&[chain(0, DEEPEST + 1)], TreeShape::Drawn);
         assert!(!text.contains("continued"), "{text}");
         assert!(
             text.ends_with(&format!("\n9  {}└─ 9\n", " ".repeat(24))),
@@ -175,7 +283,7 @@ mod tests {
         row.children
             .push(TreeRow::new(vec![String::new()], "leaf", Vec::new()));
         assert_eq!(
-            text(&[chain(0, 20), second]),
+            text(&[chain(0, 20), second], TreeShape::Drawn),
             "  N  ITEM
   0  0
   1  └─ 1

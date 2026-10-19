@@ -1,6 +1,7 @@
 //! `elfq FILE inlined`: the functions that the compiler inlined, ranked by
 //! the bytes their copies take across the file. `elfq FILE inlined SYMBOL`
-//! shows the inlined code in one function, as a tree.
+//! shows the inlined code in one function, as rows that name the copy they
+//! were inlined into.
 //!
 //! Only DWARF says what was inlined: in the machine code, an inlined copy is
 //! just part of the function that holds it.
@@ -14,11 +15,11 @@ use anyhow::{Context, Result, bail};
 use serde::Serialize;
 
 use super::{json, text};
-use crate::binary::{Binary, ItemKind};
+use crate::binary::{Binary, ItemKind, short_names};
 use crate::cli::Format;
 use crate::debuginfo::{self, InlinedCopy};
 use crate::graph::Node;
-use crate::render::{Align, Table, TreeRow};
+use crate::render::{Align, Table, TreeRow, TreeShape};
 
 /// Answers `elfq FILE inlined`, or with `symbol`, `inlined SYMBOL`. Needs
 /// DWARF.
@@ -207,12 +208,19 @@ fn write_tree(
     }
     writeln!(out)?;
     let shown = groups.largest(text::shown(all));
+    let short_names = groups.short_names(name);
     let mut table = Table::new(&[
         ("BYTES", Align::Right),
         ("COPIES", Align::Right),
         ("FUNCTION", Align::Left),
     ]);
-    table.tree(&groups.rows(&shown, &groups.top));
+    let shape = match format {
+        Format::Tree => TreeShape::Drawn,
+        _ => TreeShape::Rows {
+            words: "inlined into",
+        },
+    };
+    table.tree(&groups.rows(&shown, &groups.top, &short_names), shape);
     table.write(out)?;
     if shown.iter().any(|&group| groups.list[group].bytes == 0) {
         write_empty_copies_note(out)?;
@@ -377,25 +385,148 @@ impl<'a> Groups<'a> {
             .collect()
     }
 
+    /// What the rows inlined into each group call it, when the tree is
+    /// shown as rows: the shortest name of its function that no other
+    /// function in the answer has, `symbol` included (see [`short_names`]).
+    /// Where several groups are copies of that function, or `symbol` is that
+    /// function too, " in " and a place follow: the nearest group above it
+    /// whose function is inlined in one place only, or `symbol`, as in
+    /// "fetch_add in update_stats". Where that still leaves groups with rows
+    /// under them called the same, the place of each is what the rows call
+    /// the group it sits in instead, as in "spec_next in next in write".
+    fn short_names(&self, symbol: &str) -> Vec<String> {
+        // Damaged debug info can nest copies of a function in copies of it
+        // thousands deep, and names as long as that. Past this many names, a
+        // group's place is the nearest group above it again, and naming
+        // stops after as many rounds.
+        const MOST_NAMES: usize = 16;
+
+        let mut groups_named: HashMap<&str, usize> = HashMap::new();
+        for group in &self.list {
+            *groups_named.entry(group.name).or_default() += 1;
+        }
+        // The function itself is one more place its own copies can be.
+        *groups_named.entry(symbol).or_default() += 1;
+        // Each function's names, and how many functions have each name.
+        let names: HashMap<&str, Vec<String>> = groups_named
+            .keys()
+            .map(|&name| {
+                let mut names = short_names(name);
+                names.push(name.to_string());
+                names.sort_by(|a, b| a.len().cmp(&b.len()).then(a.cmp(b)));
+                (name, names)
+            })
+            .collect();
+        let mut functions_named: HashMap<&str, usize> = HashMap::new();
+        for name in names.values().flatten() {
+            *functions_named.entry(name).or_default() += 1;
+        }
+        let shortest: HashMap<&str, &str> = names
+            .iter()
+            .map(|(&function, names)| {
+                let unique = names
+                    .iter()
+                    .find(|name| functions_named[name.as_str()] == 1);
+                (function, unique.map_or(function, String::as_str))
+            })
+            .collect();
+
+        // The nearest group above each group whose function is inlined in
+        // one place only. A group comes after the group it sits in.
+        let mut nearest: Vec<Option<usize>> = Vec::with_capacity(self.list.len());
+        for group in &self.list {
+            let above = group.parent.and_then(|parent| {
+                if groups_named[self.list[parent].name] == 1 {
+                    Some(parent)
+                } else {
+                    nearest[parent]
+                }
+            });
+            nearest.push(above);
+        }
+
+        // Each group's name and how many names it strings together, named
+        // top down, so that the group it sits in is named first. Groups
+        // marked in `by_parent` take that group's name as their place, each
+        // round marking those still called the same as another.
+        let mut by_parent = vec![false; self.list.len()];
+        let mut labels: Vec<(String, usize)> = Vec::new();
+        for _ in 0..MOST_NAMES {
+            labels.clear();
+            for (index, group) in self.list.iter().enumerate() {
+                let name = shortest[group.name];
+                let label = if groups_named[group.name] == 1 {
+                    (name.to_string(), 1)
+                } else {
+                    let (place, names) = match (group.parent, nearest[index]) {
+                        (Some(parent), _) if by_parent[index] && labels[parent].1 < MOST_NAMES => {
+                            (labels[parent].0.as_str(), labels[parent].1)
+                        }
+                        (_, Some(above)) => (shortest[self.list[above].name], 1),
+                        (_, None) => (shortest[symbol], 1),
+                    };
+                    (format!("{name} in {place}"), names + 1)
+                };
+                labels.push(label);
+            }
+
+            // Only the names of groups with rows under them are shown.
+            let mut called: HashMap<&str, usize> = HashMap::new();
+            for (index, (label, _)) in labels.iter().enumerate() {
+                if !self.list[index].children.is_empty() {
+                    *called.entry(label).or_default() += 1;
+                }
+            }
+            let mut marked = false;
+            for (index, group) in self.list.iter().enumerate() {
+                if group.parent.is_some()
+                    && !group.children.is_empty()
+                    && !by_parent[index]
+                    && called[labels[index].0.as_str()] > 1
+                {
+                    by_parent[index] = true;
+                    marked = true;
+                }
+            }
+            if !marked {
+                break;
+            }
+        }
+        labels.into_iter().map(|(label, _)| label).collect()
+    }
+
     /// The rows of the shown groups in `groups`, each with the rows of its
     /// shown children under it, and one row that sums up those not shown
-    /// and the groups inlined into them.
-    fn rows(&self, shown: &HashSet<usize>, groups: &[usize]) -> Vec<TreeRow> {
+    /// and the groups inlined into them. `short_names` has what the rows
+    /// under each group call it (see [`Groups::short_names`]).
+    fn rows(
+        &self,
+        shown: &HashSet<usize>,
+        groups: &[usize],
+        short_names: &[String],
+    ) -> Vec<TreeRow> {
         let (visible, hidden): (Vec<usize>, Vec<usize>) =
             groups.iter().partition(|group| shown.contains(group));
         let mut rows: Vec<TreeRow> = visible
             .iter()
-            .map(|&group| self.tree_row(shown, group))
+            .map(|&group| self.tree_row(shown, group, short_names))
             .collect();
         rows.extend(self.more(&hidden));
         rows
     }
 
     /// The row of `group`, with the rows of its shown children under it.
-    fn tree_row(&self, shown: &HashSet<usize>, group: usize) -> TreeRow {
+    fn tree_row(&self, shown: &HashSet<usize>, group: usize, short_names: &[String]) -> TreeRow {
         let row = &self.list[group];
         let cells = vec![row.bytes.to_string(), row.copies.to_string()];
-        TreeRow::new(cells, row.name, self.rows(shown, &row.children))
+        TreeRow {
+            short_name: short_names[group].clone(),
+            ..TreeRow::new(
+                cells,
+                row.name,
+                self.rows(shown, &row.children, short_names),
+            )
+        }
     }
 
     /// The groups in `groups` and all the groups inlined into them, each
@@ -470,14 +601,107 @@ mod tests {
         // The last line stands for parent, the two groups inlined into it,
         // and leaf. Its bytes are parent's and leaf's, since parent's
         // include child_a's and child_b's, and its copies are all five.
-        let rows = groups.rows(&groups.largest(1), &groups.top);
+        let short_names = groups.short_names("f");
+        let rows = groups.rows(&groups.largest(1), &groups.top, &short_names);
         assert_eq!(lines(&rows, 0), ["big 200 1", "4 more 105 5"]);
         // With parent picked too, leaf would be left out on its own, so it
         // is shown instead of "1 more".
-        let rows = groups.rows(&groups.largest(2), &groups.top);
+        let rows = groups.rows(&groups.largest(2), &groups.top, &short_names);
         assert_eq!(
             lines(&rows, 0),
             ["big 200 1", "parent 100 1", "  2 more 90 3", "leaf 5 1"]
+        );
+    }
+
+    #[test]
+    fn a_function_inlined_in_several_places_says_where() {
+        let copies = [
+            copy("app::run", 10, None),
+            copy("core::Iter::next", 5, Some(0)),
+            copy("app::step", 10, None),
+            copy("core::Iter::next", 5, Some(2)),
+            copy("core::Zip::next", 1, Some(3)),
+            copy("core::Iter::next", 5, None),
+        ];
+        let groups = Groups::new(&copies, 0);
+        // Each by the shortest name that no other function has: `next`
+        // would be either `Iter::next` or `Zip::next`.
+        let short_names = groups.short_names("main");
+        let names: Vec<(&str, &str)> = groups
+            .list
+            .iter()
+            .map(|group| group.name)
+            .zip(short_names.iter().map(String::as_str))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ("app::run", "run"),
+                ("core::Iter::next", "Iter::next in run"),
+                ("app::step", "step"),
+                ("core::Iter::next", "Iter::next in step"),
+                ("core::Zip::next", "Zip::next"),
+                ("core::Iter::next", "Iter::next in main"),
+            ]
+        );
+    }
+
+    #[test]
+    fn each_copy_with_rows_under_it_has_a_name_of_its_own() {
+        let copies = [
+            copy("fmt::padding", 10, None),
+            copy("core::Range::next", 5, Some(0)),
+            copy("core::Range::spec_next", 4, Some(1)),
+            copy("core::lt", 1, Some(2)),
+            copy("core::Range::step", 5, Some(0)),
+            copy("core::Range::spec_next", 4, Some(4)),
+            copy("core::lt", 1, Some(5)),
+            copy("fmt::write", 10, None),
+            copy("core::Range::next", 5, Some(7)),
+            copy("core::Range::step", 5, Some(7)),
+            // The function inlined into itself.
+            copy("app::walk", 3, None),
+            copy("app::helper", 2, Some(10)),
+            copy("app::mix", 1, Some(11)),
+            copy("app::helper", 2, None),
+            copy("app::mix", 1, Some(13)),
+        ];
+        let groups = Groups::new(&copies, 0);
+        // Each place is the nearest group above whose function is inlined
+        // there only, unless that leaves two groups with rows under them
+        // called the same, as the two `spec_next` in `padding` would be.
+        // Rows under no group show no name, so theirs may repeat.
+        assert_eq!(
+            groups.short_names("app::walk"),
+            [
+                "padding",
+                "next in padding",
+                "spec_next in next in padding",
+                "lt in padding",
+                "step in padding",
+                "spec_next in step in padding",
+                "lt in padding",
+                "write",
+                "next in write",
+                "step in write",
+                "walk in walk",
+                "helper in walk in walk",
+                "mix in walk",
+                "helper in walk",
+                "mix in walk",
+            ]
+        );
+
+        // Another function's `run` is not the function's own.
+        let copies = [
+            copy("b::run", 10, None),
+            copy("x::f", 2, Some(0)),
+            copy("x::f", 2, None),
+        ];
+        let groups = Groups::new(&copies, 0);
+        assert_eq!(
+            groups.short_names("a::run"),
+            ["b::run", "f in b::run", "f in a::run"]
         );
     }
 

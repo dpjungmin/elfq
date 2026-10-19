@@ -16,11 +16,12 @@ by an AI (Claude).
 ```sh
 elfq app.elf                            # what's in app.elf, and what to ask next
 elfq app.elf top                        # what keeps the most bytes in app.elf
+elfq app.elf top --tree                 # the same, drawn as a tree
 elfq app.elf top --range 0x0+256K       # the same, counting only the first 256 KiB
 elfq app.elf retained process_frame     # what removing process_frame would save
 elfq app.elf why crc_table              # what keeps crc_table in the file
 elfq app.elf inlined                    # which inlined functions take the most bytes
-elfq app.elf inlined main               # the inlined code in main, as a tree
+elfq app.elf inlined main               # the inlined code in main
 elfq app.elf callers log_msg            # what calls or uses log_msg
 elfq app.elf callees main               # what main calls or uses
 elfq app.elf callees 0x0+256K           # what the first 256 KiB uses outside it

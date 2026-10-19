@@ -1,7 +1,8 @@
-//! `elfq FILE retained SYMBOL`: what SYMBOL keeps in the file, as a tree.
+//! `elfq FILE retained SYMBOL`: what SYMBOL keeps in the file.
 //!
-//! The tree is the part of the dominator tree under SYMBOL: each item hangs
-//! under the closest item that every path to it passes through. Large trees
+//! The answer is the part of the dominator tree under SYMBOL: each item
+//! hangs under the closest item that every path to it passes through, and
+//! its row names that item, unless `--tree` draws the tree. Large trees
 //! show only their largest items, unless `--all` asks for every one. With
 //! `--range`, only the bytes in the range count.
 
@@ -11,7 +12,8 @@ use std::io::Write;
 use anyhow::{Result, bail};
 use serde::Serialize;
 
-use super::retained_tree::{KeptItem, RetainedTree};
+use super::retained_tree::{self, KeptItem, RetainedTree};
+use super::symbol::Names;
 use super::{json, text};
 use crate::binary::{AddressRange, Binary, FileKind};
 use crate::cli::Format;
@@ -42,8 +44,7 @@ struct RetainedJson<'a> {
     indirect_calls: usize,
 }
 
-/// Answers `elfq FILE retained SYMBOL`: what removing SYMBOL would save, as
-/// a tree.
+/// Answers `elfq FILE retained SYMBOL`: what removing SYMBOL would save.
 pub fn run(
     binary: &Binary,
     symbol: &str,
@@ -100,7 +101,8 @@ pub fn run(
         ("OWN", Align::Right),
         ("ITEM", Align::Left),
     ]);
-    table.tree(&[retained.tree_row(&shown, index)]);
+    let shape = retained_tree::shape(format);
+    table.tree(&[retained.tree_row(&shown, index, shape)], shape);
     table.write(out)?;
     write_shared(&symbol, all, out)?;
     symbol.write_indirect_note(out)
@@ -200,7 +202,8 @@ impl<'a> SymbolInTree<'a> {
         range: Option<AddressRange>,
     ) -> Result<SymbolInTree<'a>> {
         super::check_code_is_readable(binary)?;
-        let node = super::symbol::find(binary, symbol)?;
+        let names = Names::new(binary);
+        let node = names.find(symbol)?;
         let index = super::readable_item(binary, node)?;
         let name = node.name(binary);
         if binary.kind == FileKind::SharedLibrary {
@@ -209,7 +212,7 @@ impl<'a> SymbolInTree<'a> {
                  so it can't tell what only {name} leads to"
             );
         }
-        let retained = RetainedTree::build(binary, range)?;
+        let retained = RetainedTree::build(binary, range)?.with_names(names);
         Ok(SymbolInTree { retained, index })
     }
 

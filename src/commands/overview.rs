@@ -20,7 +20,7 @@ use crate::cli::Format;
 use crate::graph::{Graph, Node};
 use crate::render::{Align, Table};
 
-/// How many of the largest items the overview's tree shows. It is drawn as
+/// How many of the largest items the overview's table shows. It is made as
 /// `top`'s is, which shows 30.
 const SHOWN: usize = 5;
 
@@ -69,7 +69,7 @@ pub fn run(
         return write_json(path, binary, range, out);
     }
     if let Some(range) = range {
-        return write_range(path, binary, range, out);
+        return write_range(path, binary, range, format, out);
     }
     write_file(path, binary, out)?;
 
@@ -133,15 +133,11 @@ pub fn run(
     // elfq doesn't treat a shared library's exported functions as roots
     // yet, so most of its graph is unreachable: there is no tree, and no
     // `top`, `retained` or `why` to suggest.
-    let queries = Names::new(binary);
-    let about = |command: &str, item: usize| {
-        let symbol = queries.query_for(Node::Item(item));
-        format!("{command} {}", text::shell_quote(&symbol))
-    };
     if binary.kind == FileKind::SharedLibrary {
+        let names = Names::new(binary);
         let examples: Vec<String> = [
-            most_used(binary, &graph).map(|item| about("callers", item)),
-            starting_point(binary, &queries).map(|item| about("callees", item)),
+            most_used(binary, &graph).map(|item| about(&names, "callers", item)),
+            starting_point(binary, &names).map(|item| about(&names, "callees", item)),
             inlined(binary),
         ]
         .into_iter()
@@ -150,20 +146,22 @@ pub fn run(
         return write_try(path, &examples, out);
     }
     let retained = RetainedTree::from_graph(binary, graph, None);
+    let names = retained.names();
     // Without functions, as in a stripped file whose functions elfq can't
     // find, there is nothing to rank.
     let kept = retained.kept();
     if kept > 0 {
         writeln!(out)?;
-        retained.write_largest(SHOWN, out)?;
+        retained.write_largest(SHOWN, format, out)?;
     }
     let examples: Vec<String> = ranges
         .into_iter()
         .chain(
             [
                 (kept > 0).then(|| "top".to_string()),
-                starting_point(binary, &queries).map(|item| about("retained", item)),
-                largest_kept(&retained).map(|item| about("why", item)),
+                (kept > 0).then(|| "top --tree".to_string()),
+                starting_point(binary, names).map(|item| about(names, "retained", item)),
+                largest_kept(&retained).map(|item| about(names, "why", item)),
                 inlined(binary),
             ]
             .into_iter()
@@ -179,6 +177,7 @@ fn write_range(
     path: &Path,
     binary: &Binary,
     range: AddressRange,
+    format: Format,
     out: &mut dyn Write,
 ) -> Result<()> {
     if binary.kind == FileKind::SharedLibrary {
@@ -200,15 +199,11 @@ fn write_range(
     // When nothing reaches the items in the range, there is nothing to rank.
     if retained.kept() > 0 {
         writeln!(out)?;
-        retained.write_largest(SHOWN, out)?;
+        retained.write_largest(SHOWN, format, out)?;
     }
-    let queries = Names::new(binary);
     let examples: Vec<String> = [
         Some(format!("top --range {}", text::range_argument(range))),
-        largest_kept(&retained).map(|item| {
-            let symbol = queries.query_for(Node::Item(item));
-            format!("why {}", text::shell_quote(&symbol))
-        }),
+        largest_kept(&retained).map(|item| about(retained.names(), "why", item)),
     ]
     .into_iter()
     .flatten()
@@ -349,6 +344,12 @@ fn write_try(path: &Path, commands: &[String], out: &mut dyn Write) -> Result<()
         writeln!(out, "  elfq {file} {command}")?;
     }
     Ok(())
+}
+
+/// `command` asked about `item`, by the shortest name that finds it.
+fn about(names: &Names, command: &str, item: usize) -> String {
+    let symbol = names.query_for(Node::Item(item));
+    format!("{command} {}", text::shell_quote(&symbol))
 }
 
 /// `inlined`, when the file has the debug info it needs.

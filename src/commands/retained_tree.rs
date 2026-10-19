@@ -1,8 +1,9 @@
 //! The dominator tree as the overview, `top` and `retained` show it: items
-//! with their retained sizes, functions marked when only pointers lead to
-//! them below the top, and large trees cut down to their largest items. With `--range`,
-//! sizes count only the bytes in the range, and items that keep none of
-//! them are left out.
+//! with their retained sizes, each row naming the item that keeps it,
+//! functions marked when only pointers lead to them below the top, and
+//! large trees cut down to their largest items. With `--range`, sizes count
+//! only the bytes in the range, and items that keep none of them are left
+//! out.
 
 use std::collections::HashSet;
 use std::io::Write;
@@ -10,10 +11,12 @@ use std::io::Write;
 use anyhow::{Result, bail};
 use serde::Serialize;
 
+use super::symbol::Names;
 use super::{json, text};
 use crate::binary::{AddressRange, Binary, Item, ItemKind};
+use crate::cli::Format;
 use crate::graph::{DominatorTree, Graph, Node};
-use crate::render::{Align, Table, TreeRow};
+use crate::render::{Align, Table, TreeRow, TreeShape};
 
 /// An item and everything it keeps, for `--json`.
 #[derive(Serialize)]
@@ -41,6 +44,9 @@ pub(super) struct RetainedTree<'a> {
     /// The items that something calls directly, rather than only through a
     /// pointer.
     called: HashSet<usize>,
+    /// The names that find each item, which rows use to name the item that
+    /// keeps them.
+    names: Names<'a>,
 }
 
 impl<'a> RetainedTree<'a> {
@@ -76,7 +82,19 @@ impl<'a> RetainedTree<'a> {
             tree,
             range,
             called,
+            names: Names::new(binary),
         }
+    }
+
+    /// The tree, with `names` to name items by: those that found SYMBOL, so
+    /// that the work of finding names is done only once.
+    pub fn with_names(self, names: Names<'a>) -> RetainedTree<'a> {
+        RetainedTree { names, ..self }
+    }
+
+    /// The names that find each item, as SYMBOL takes them.
+    pub fn names(&self) -> &Names<'a> {
+        &self.names
     }
 
     /// The bytes of the file that sizes count: all of them, or those in
@@ -157,7 +175,7 @@ impl<'a> RetainedTree<'a> {
 
     /// Writes the tree of the `count` items that keep the most bytes, as
     /// `top` and the overview show it.
-    pub fn write_largest(&self, count: usize, out: &mut dyn Write) -> Result<()> {
+    pub fn write_largest(&self, count: usize, format: Format, out: &mut dyn Write) -> Result<()> {
         let tree = &self.tree;
         let reachable: Vec<usize> = (0..self.binary.items.len())
             .filter(|&index| tree.is_reachable(Node::Item(index)))
@@ -168,7 +186,8 @@ impl<'a> RetainedTree<'a> {
             ("OWN", Align::Right),
             ("ITEM", Align::Left),
         ]);
-        table.tree(&self.rows(&shown, tree.top()));
+        let shape = shape(format);
+        table.tree(&self.rows(&shown, tree.top(), shape), shape);
         table.write(out)?;
         Ok(())
     }
@@ -221,26 +240,38 @@ impl<'a> RetainedTree<'a> {
 
     /// The rows of the shown items in `nodes`, each with the rows of its
     /// shown children under it, and one row that sums up those not shown
-    /// and what they keep.
-    fn rows(&self, shown: &HashSet<usize>, nodes: &[Node]) -> Vec<TreeRow> {
+    /// and what they keep, for a table that shows them in `shape`.
+    fn rows(&self, shown: &HashSet<usize>, nodes: &[Node], shape: TreeShape) -> Vec<TreeRow> {
         let (visible, hidden): (Vec<usize>, Vec<usize>) =
             self.counted(nodes).partition(|index| shown.contains(index));
         let mut rows: Vec<TreeRow> = visible
             .iter()
-            .map(|&index| self.tree_row(shown, index))
+            .map(|&index| self.tree_row(shown, index, shape))
             .collect();
         rows.extend(self.more(&hidden));
         rows
     }
 
     /// The row of the item at `index`, with the rows of its shown children
-    /// under it.
-    pub fn tree_row(&self, shown: &HashSet<usize>, index: usize) -> TreeRow {
+    /// under it, for a table that shows them in `shape`. As rows, those
+    /// call it by its short name.
+    pub fn tree_row(&self, shown: &HashSet<usize>, index: usize, shape: TreeShape) -> TreeRow {
         let cells = vec![self.retained(index).to_string(), self.own_text(index)];
-        let children = self.rows(shown, self.tree.children(Node::Item(index)));
+        let children = self.rows(shown, self.tree.children(Node::Item(index)), shape);
+        let name = &self.binary.items[index].name;
+        // Finding a short name takes a while, so only rows that show it
+        // find it.
+        let short_name = if children.is_empty() || shape == TreeShape::Drawn {
+            name.clone()
+        } else {
+            self.names.short_name(Node::Item(index))
+        };
         TreeRow {
+            cells,
+            name: name.clone(),
             mark: self.mark(index),
-            ..TreeRow::new(cells, &self.binary.items[index].name, children)
+            short_name,
+            children,
         }
     }
 
@@ -288,5 +319,15 @@ impl<'a> RetainedTree<'a> {
 
     pub fn retained(&self, index: usize) -> u64 {
         self.tree.retained(Node::Item(index))
+    }
+}
+
+/// How the overview, `top` and `retained` show their trees: drawn with
+/// `--tree`, or else as rows that each name the item that keeps them, as
+/// in "crc_table, kept by crc32".
+pub(super) fn shape(format: Format) -> TreeShape {
+    match format {
+        Format::Tree => TreeShape::Drawn,
+        _ => TreeShape::Rows { words: "kept by" },
     }
 }

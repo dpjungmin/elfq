@@ -65,16 +65,17 @@ testdata/bin/c-x86_64.elf: x86-64 position-independent executable, with symbols 
 
 RETAINED   OWN  ITEM
     3635    38  _start
-    3597   195  └─ main (through a pointer)
-    2068   532     ├─ process_frame
-    1083    59     │  ├─ crc32
-    1024  1024     │  │  └─ crc_table
-     453           │  └─ 6 more
-    1334           └─ 41 more
+    3597   195  main (through a pointer), kept by _start
+    2068   532  process_frame, kept by main
+    1083    59  crc32, kept by process_frame
+    1024  1024  crc_table, kept by crc32
+     453        6 more, kept by process_frame
+    1334        41 more, kept by main
      345        13 more
 
 Try:
   elfq testdata/bin/c-x86_64.elf top
+  elfq testdata/bin/c-x86_64.elf top --tree
   elfq testdata/bin/c-x86_64.elf retained main
   elfq testdata/bin/c-x86_64.elf why crc_table
   elfq testdata/bin/c-x86_64.elf inlined
@@ -96,19 +97,20 @@ MEMORY                  SIZE  SECTIONS
 
 RETAINED   OWN  ITEM
     3111    76  Reset_Handler
-    2565   132  ├─ main
-    1684   376  │  ├─ process_frame
-    1076    52  │  │  ├─ crc32
-    1024  1024  │  │  │  └─ crc_table
-     232        │  │  └─ 6 more
-     749        │  └─ 32 more
-     470        └─ 2 more
+    2565   132  main, kept by Reset_Handler
+    1684   376  process_frame, kept by main
+    1076    52  crc32, kept by process_frame
+    1024  1024  crc_table, kept by crc32
+     232        6 more, kept by process_frame
+     749        32 more, kept by main
+     470        2 more, kept by Reset_Handler
      466        11 more
 
 Try:
   elfq testdata/bin/c-cortex-m4.elf --range 0x08000000..0x08000dec
   elfq testdata/bin/c-cortex-m4.elf --range 0x20000000..0x20000048
   elfq testdata/bin/c-cortex-m4.elf top
+  elfq testdata/bin/c-cortex-m4.elf top --tree
   elfq testdata/bin/c-cortex-m4.elf retained main
   elfq testdata/bin/c-cortex-m4.elf why crc_table
   elfq testdata/bin/c-cortex-m4.elf inlined
@@ -144,19 +146,20 @@ MEMORY                  SIZE  SECTIONS
 
 RETAINED    OWN  ITEM
     3120    ~76  entry
-    2574   ~132  ├─ fn_0x8000518
-    1684   ~376  │  ├─ fn_0x80002c8
-    1076    ~52  │  │  ├─ fn_0x8000060
-    1024  ~1024  │  │  │  └─ .rodata@0x80009e4
-     232         │  │  └─ 6 more
-     758         │  └─ 28 more
-     470         └─ 2 more
+    2574   ~132  fn_0x8000518, kept by entry
+    1684   ~376  fn_0x80002c8, kept by fn_0x8000518
+    1076    ~52  fn_0x8000060, kept by fn_0x80002c8
+    1024  ~1024  .rodata@0x80009e4, kept by fn_0x8000060
+     232         6 more, kept by fn_0x80002c8
+     758         28 more, kept by fn_0x8000518
+     470         2 more, kept by entry
      466         11 more
 
 Try:
   elfq testdata/bin/c-cortex-m4-stripped.elf --range 0x08000000..0x08000dec
   elfq testdata/bin/c-cortex-m4-stripped.elf --range 0x20000000..0x20000048
   elfq testdata/bin/c-cortex-m4-stripped.elf top
+  elfq testdata/bin/c-cortex-m4-stripped.elf top --tree
   elfq testdata/bin/c-cortex-m4-stripped.elf retained entry
   elfq testdata/bin/c-cortex-m4-stripped.elf why .rodata@0x80009e4
 ",
@@ -229,6 +232,76 @@ fn top_shows_what_keeps_the_most_bytes() {
 
 RETAINED   OWN  ITEM
     3635    38  _start
+    3597   195  main (through a pointer), kept by _start
+    2068   532  process_frame, kept by main
+    1083    59  crc32, kept by process_frame
+    1024  1024  crc_table, kept by crc32
+     378   271  apply_filter, kept by process_frame
+     107    75  filter_tap, kept by apply_filter
+      32    32  fir_coeffs, kept by filter_tap
+      54    54  decode_header, kept by process_frame
+      21        2 more, kept by process_frame
+     705   370  report, kept by main
+     162   162  format_u32, kept by report
+      80    16  root, kept by report
+      48    16  inner, kept by root
+      32        2 more, kept by inner
+      16    16  leaf_a, kept by root
+      46    46  count_nodes, kept by report
+      47        6 more, kept by report
+     187    84  parse_value, kept by main
+     103   103  parse_list, kept by parse_value
+     103    51  log_msg, kept by main
+      36    20  platform_write, kept by log_msg
+      16    16  write@plt, kept by platform_write
+      16    16  strlen@plt, kept by log_msg
+      57    51  app_tick, kept by main
+       6    ~6  .rodata@0x200c, kept by app_tick
+      34   ~34  .rodata@0x205e, kept by main
+      33    33  dispatch_event, kept by main
+      32    32  stats, kept by main
+      31    19  on_button (through a pointer), kept by main
+      12        2 more, kept by on_button
+      25    25  frame_a, kept by main
+     127        12 more, kept by main
+     152   ~64  __do_global_dtors_aux
+      48   ~48  deregister_tm_clones, kept by __do_global_dtors_aux
+      40        2 more, kept by __do_global_dtors_aux
+      80   ~16  frame_dummy
+      64   ~64  register_tm_clones, kept by frame_dummy
+      64    64  .plt
+      32    32  __abi_tag
+      17        5 more
+
+Nothing reaches 3 items, 41 bytes in all: debug_dump, .rodata@0x2056 and _IO_stdin_used. They are dead code, or used in a way elfq can't see.
+"
+    );
+    // On Cortex-M the SysTick interrupt also reaches `log_msg`, so it isn't
+    // under `main` but at the top, with what only it leads to.
+    let firmware = stdout(&["testdata/bin/c-cortex-m4.elf", "top"]);
+    assert!(
+        firmware.contains("\n     276    26  log_msg\n     216   216  strlen, kept by log_msg\n"),
+        "{firmware}"
+    );
+    // One item that nothing reaches.
+    let cpp = stdout(&["testdata/bin/cpp-x86_64.elf", "top"]);
+    assert!(
+        cpp.ends_with(
+            "\n\nNothing reaches _IO_stdin_used, 4 bytes: it is dead code, or used in a way elfq \
+             can't see.\n"
+        ),
+        "{cpp}"
+    );
+}
+
+#[test]
+fn tree_draws_the_rows_as_a_tree() {
+    let tree = stdout(&[SAMPLE, "top", "--tree"]);
+    assert!(
+        tree.contains(
+            "\
+RETAINED   OWN  ITEM
+    3635    38  _start
     3597   195  └─ main (through a pointer)
     2068   532     ├─ process_frame
     1083    59     │  ├─ crc32
@@ -269,26 +342,92 @@ RETAINED   OWN  ITEM
       64    64  .plt
       32    32  __abi_tag
       17        5 more
-
-Nothing reaches 3 items, 41 bytes in all: debug_dump, .rodata@0x2056 and _IO_stdin_used. They are dead code, or used in a way elfq can't see.
 "
-    );
-    // On Cortex-M the SysTick interrupt also reaches `log_msg`, so it isn't
-    // under `main` but at the top, with what only it leads to.
-    let firmware = stdout(&["testdata/bin/c-cortex-m4.elf", "top"]);
-    assert!(
-        firmware.contains("\n     276    26  log_msg\n     216   216  ├─ strlen\n"),
-        "{firmware}"
-    );
-    // One item that nothing reaches.
-    let cpp = stdout(&["testdata/bin/cpp-x86_64.elf", "top"]);
-    assert!(
-        cpp.ends_with(
-            "\n\nNothing reaches _IO_stdin_used, 4 bytes: it is dead code, or used in a way elfq \
-             can't see.\n"
         ),
-        "{cpp}"
+        "{tree}"
     );
+    // The same rows in the same order, each named the same way.
+    let rows = stdout(&[SAMPLE, "top"]);
+    let names = |text: &str| -> Vec<String> {
+        text.lines()
+            .map(|line| {
+                let line = line.split(", kept by ").next().unwrap();
+                line.replace(['│', '├', '└', '─'], " ")
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect()
+    };
+    assert_eq!(names(&tree), names(&rows));
+
+    // The overview draws its largest items the same way, for the whole
+    // file and for a range.
+    let tree = stdout(&[SAMPLE, "--tree"]);
+    assert!(
+        tree.contains(
+            "\
+RETAINED   OWN  ITEM
+    3635    38  _start
+    3597   195  └─ main (through a pointer)
+    2068   532     ├─ process_frame
+    1083    59     │  ├─ crc32
+    1024  1024     │  │  └─ crc_table
+     453           │  └─ 6 more
+    1334           └─ 41 more
+     345        13 more
+"
+        ),
+        "{tree}"
+    );
+    let tree = stdout(&[TCM_SAMPLE, "--range", "0x0..0xe0", "--tree"]);
+    assert!(tree.contains("     200    0  └─ main\n"), "{tree}");
+
+    // why's chains too.
+    let tree = stdout(&[SAMPLE, "why", "log_msg", "--tree"]);
+    assert!(
+        tree.contains(
+            "\
+HOW            ITEM
+entry point    _start
+address taken  └─ main
+call              ├─ app_tick
+call              │  └─ log_msg
+address taken     ├─ on_button
+tail call         │  └─ log_msg
+call              ├─ process_frame
+call              │  └─ log_msg
+call              └─ report
+call                 └─ log_msg
+"
+        ),
+        "{tree}"
+    );
+}
+
+#[test]
+fn only_trees_are_drawn() {
+    for args in [
+        &[SAMPLE, "top", "--tree", "--json"][..],
+        &[SAMPLE, "--json", "--tree"],
+    ] {
+        assert_output(
+            &stderr(args, 2),
+            "error: --tree draws trees in the text, so it doesn't go with --json\n",
+        );
+    }
+    for args in [
+        &[SAMPLE, "callers", "log_msg", "--tree"][..],
+        &[SAMPLE, "callees", "--tree", "0x1000+4K"],
+        &[SAMPLE, "inlined", "--tree"],
+        &[SAMPLE, "debug", "items", "--tree"],
+    ] {
+        assert_output(
+            &stderr(args, 2),
+            "error: --tree draws trees, so only the overview, top, retained, why and inlined \
+             SYMBOL take it\n",
+        );
+    }
 }
 
 #[test]
@@ -334,24 +473,24 @@ fn a_range_counts_only_the_bytes_in_it() {
 
 RETAINED  OWN  ITEM
      200    0  Reset_Handler
-     200    0  └─ main
-     200    0     └─ process_frame
-     152    0        ├─ __apply_filter_veneer
-     152   92        │  └─ apply_filter
-      52   52        │     ├─ filter_tap
-       8    8        │     └─ __memcpy_veneer
-      48    0        └─ __crc32_veneer
-      48   48           └─ crc32
+     200    0  main, kept by Reset_Handler
+     200    0  process_frame, kept by main
+     152    0  __apply_filter_veneer, kept by process_frame
+     152   92  apply_filter, kept by __apply_filter_veneer
+      52   52  filter_tap, kept by apply_filter
+       8    8  __memcpy_veneer, kept by apply_filter
+      48    0  __crc32_veneer, kept by process_frame
+      48   48  crc32, kept by __crc32_veneer
       24   16  SysTick_Handler
-       8    8  └─ __app_tick_veneer
+       8    8  __app_tick_veneer, kept by SysTick_Handler
 ",
     );
-    // A line that sums up items counts only those with bytes in the range:
+    // A row that sums up items counts only those with bytes in the range:
     // under process_frame, crc32 and crc_table are in ITCM and DTCM, and
-    // so the line stands for two .rodata items and __crc32_veneer.
+    // so the row stands for two .rodata items and __crc32_veneer.
     let flash = stdout(&[TCM_SAMPLE, "top", "--range", "0x30000000..0x30000edc"]);
     assert!(
-        flash.contains("      32       │  │  └─ 3 more\n"),
+        flash.contains("      32       3 more, kept by process_frame\n"),
         "{flash}"
     );
     // The same range as a start and a size, with a unit in any case.
@@ -367,8 +506,8 @@ testdata/bin/c-cortex-m7.elf: 32-bit Arm executable, with symbols and DWARF debu
 
 RETAINED   OWN  ITEM
     4096     0  log_msg
-    4096     0  └─ platform_write
-    4096  4096     └─ tx_buffer
+    4096     0  platform_write, kept by log_msg
+    4096  4096  tx_buffer, kept by platform_write
 
 Try:
   elfq testdata/bin/c-cortex-m7.elf top --range 0x20240000..0x20241000
@@ -412,12 +551,12 @@ Removing process_frame would save 200 bytes in 0x00000000..0x000000e0 (.itcm):
 
 RETAINED  OWN  ITEM
      200    0  process_frame
-     152    0  ├─ __apply_filter_veneer
-     152   92  │  └─ apply_filter
-      52   52  │     ├─ filter_tap
-       8    8  │     └─ __memcpy_veneer
-      48    0  └─ __crc32_veneer
-      48   48     └─ crc32
+     152    0  __apply_filter_veneer, kept by process_frame
+     152   92  apply_filter, kept by __apply_filter_veneer
+      52   52  filter_tap, kept by apply_filter
+       8    8  __memcpy_veneer, kept by apply_filter
+      48    0  __crc32_veneer, kept by process_frame
+      48   48  crc32, kept by __crc32_veneer
 ",
     );
     assert_output(
@@ -467,7 +606,7 @@ fn a_range_must_hold_something() {
 }
 
 #[test]
-fn retained_shows_what_a_function_keeps_as_a_tree() {
+fn retained_shows_what_a_function_keeps() {
     assert_output(
         &stdout(&[SAMPLE, "retained", "process_frame"]),
         "\
@@ -475,14 +614,14 @@ Removing process_frame would save 2068 bytes:
 
 RETAINED   OWN  ITEM
     2068   532  process_frame
-    1083    59  ├─ crc32
-    1024  1024  │  └─ crc_table
-     378   271  ├─ apply_filter
-     107    75  │  └─ filter_tap
-      32    32  │     └─ fir_coeffs
-      54    54  ├─ decode_header
-      12   ~12  ├─ .rodata@0x2012
-       9    ~9  └─ .rodata@0x201e
+    1083    59  crc32, kept by process_frame
+    1024  1024  crc_table, kept by crc32
+     378   271  apply_filter, kept by process_frame
+     107    75  filter_tap, kept by apply_filter
+      32    32  fir_coeffs, kept by filter_tap
+      54    54  decode_header, kept by process_frame
+      12   ~12  .rodata@0x2012, kept by process_frame
+       9    ~9  .rodata@0x201e, kept by process_frame
 
 Shared with other code, so not counted: __stack_chk_fail@plt, dispatch_event, frames_bad, frames_ok, log_msg, stats.
 "
@@ -504,14 +643,14 @@ fn a_large_tree_shows_its_largest_items() {
         output.starts_with("Removing main would save 3597 bytes:\n"),
         "{output}"
     );
-    // Smaller items are summed up under their parent.
+    // Smaller items are summed up under the item that keeps them.
     assert!(
-        output.contains("      21        │  └─ 2 more\n"),
+        output.contains("\n      21        2 more, kept by process_frame\n"),
         "{output}"
     );
     // The handlers are only called through the `handlers` table.
     assert!(
-        output.contains("├─ on_button (through a pointer)\n"),
+        output.contains("  on_button (through a pointer), kept by main\n"),
         "{output}"
     );
     // The jump through the `handlers` table, in `dispatch_event`.
@@ -526,9 +665,9 @@ fn a_large_tree_shows_its_largest_items() {
 
 #[test]
 fn no_line_sums_up_a_single_item() {
-    // A line such as "└─ 12 more" counts every item it sums up, so one
-    // that would sum up a single item shows the item instead, and so do
-    // lists of names.
+    // A row such as "12 more, kept by main" counts every item it sums up,
+    // so one that would sum up a single item shows the item instead, and so
+    // do lists of names.
     for sample in &samples() {
         let overview = stdout(&[sample]);
         let mut runs = vec![vec![sample.as_str()]];
@@ -547,9 +686,7 @@ fn no_line_sums_up_a_single_item() {
         for args in &runs {
             let text = stdout(args);
             assert!(
-                !text
-                    .lines()
-                    .any(|line| line.ends_with(" 1 more") || line.contains(" and 1 more")),
+                !text.lines().any(|line| line.contains(" 1 more")),
                 "{args:?}\n{text}"
             );
         }
@@ -575,7 +712,7 @@ fn long_lists_name_the_first_few() {
 #[test]
 fn a_deep_tree_continues_below() {
     assert_output(
-        &stdout(&[DEEP_SAMPLE, "retained", "chain1"]),
+        &stdout(&[DEEP_SAMPLE, "retained", "chain1", "--tree"]),
         "\
 Removing chain1 would save 402 bytes:
 
@@ -611,16 +748,70 @@ Shared with other code, so not counted: chain_table.
 }
 
 #[test]
+fn a_deep_tree_shows_as_rows_in_place() {
+    assert_output(
+        &stdout(&[DEEP_SAMPLE, "retained", "chain1"]),
+        "\
+Removing chain1 would save 402 bytes:
+
+RETAINED  OWN  ITEM
+     402   16  chain1
+     386   17  chain2, kept by chain1
+     369   17  chain3, kept by chain2
+     352   20  chain4, kept by chain3
+     332   17  chain5, kept by chain4
+     315   20  chain6, kept by chain5
+     295   27  chain7, kept by chain6
+     268   20  chain8, kept by chain7
+     248   17  chain9, kept by chain8
+     231   20  chain10, kept by chain9
+     211   20  chain11, kept by chain10
+     191   23  chain12, kept by chain11
+     168   20  chain13, kept by chain12
+     148   19  chain14, kept by chain13
+     129   23  chain15, kept by chain14
+     106   19  chain16, kept by chain15
+      87   22  chain17, kept by chain16
+      65   20  chain18, kept by chain17
+      45   20  chain19, kept by chain18
+      25   25  chain20, kept by chain19
+
+Shared with other code, so not counted: chain_table.
+",
+    );
+}
+
+#[test]
 fn every_tree_is_at_most_nine_levels_deep() {
     // Each command, and the rows whose part of the tree is continued below.
     let trees = [
-        (&[DEEP_SAMPLE, "top"][..], &["stage7", "stage15"][..]),
-        (&[DEEP_SAMPLE, "retained", "stage1"], &["stage9", "stage17"]),
-        (&[DEEP_SAMPLE, "why", "chain_table"], &["chain7", "chain15"]),
-        (&[DEEP_SAMPLE, "why", "stage_table"], &["stage7", "stage15"]),
-        (&[DEEP_SAMPLE, "inlined", "run_steps"], &["step9", "step17"]),
         (
-            &["testdata/bin/rust-x86_64-nodebug.elf", "why", "memset"],
+            &[DEEP_SAMPLE, "top", "--tree"][..],
+            &["stage7", "stage15"][..],
+        ),
+        (
+            &[DEEP_SAMPLE, "retained", "stage1", "--tree"],
+            &["stage9", "stage17"],
+        ),
+        (
+            &[DEEP_SAMPLE, "why", "chain_table", "--tree"],
+            &["chain7", "chain15"],
+        ),
+        (
+            &[DEEP_SAMPLE, "why", "stage_table", "--tree"],
+            &["stage7", "stage15"],
+        ),
+        (
+            &[DEEP_SAMPLE, "inlined", "run_steps", "--tree"],
+            &["step9", "step17"],
+        ),
+        (
+            &[
+                "testdata/bin/rust-x86_64-nodebug.elf",
+                "why",
+                "memset",
+                "--tree",
+            ],
             &[
                 "std::panicking::default_hook",
                 "rustc_demangle::try_demangle",
@@ -717,9 +908,9 @@ _init is in .init, which the program uses when it starts.
     );
 }
 
-/// Whether `text` sums up what it leaves out: a row such as "└─ 6 more" or
-/// "70 more", or a list in a sentence such as "a, b and 48 more.". The AT
-/// column keeps its cut, as in "0x3a249 and 3 more  .rodata@0x6044".
+/// Whether `text` sums up what it leaves out: a row such as "6 more, kept by
+/// main" or "70 more", or a list in a sentence such as "a, b and 48 more.".
+/// The AT column keeps its cut, as in "0x3a249 and 3 more  .rodata@0x6044".
 fn sums_up(text: &str) -> bool {
     text.lines()
         .any(|line| line.contains(" more") && !line.contains(" more  "))
@@ -751,11 +942,7 @@ fn all_shows_every_item() {
     assert!(!sums_up(&all), "{all}");
     assert_eq!(all.lines().count(), largest.lines().count());
     // why draws the chains through the nearest 10 users, or every one.
-    let chains = |why: &str| {
-        why.lines()
-            .filter(|line| line.ends_with("─ memcpy"))
-            .count()
-    };
+    let chains = |why: &str| why.lines().filter(|line| line.ends_with(" memcpy")).count();
     let why = stdout(&[sample, "why", "memcpy"]);
     assert!(
         why.starts_with(
@@ -867,15 +1054,15 @@ log_msg is used by 4 functions, through these chains:
 
 HOW            ITEM
 entry point    _start
-address taken  └─ main
-call              ├─ app_tick
-call              │  └─ log_msg
-address taken     ├─ on_button
-tail call         │  └─ log_msg
-call              ├─ process_frame
-call              │  └─ log_msg
-call              └─ report
-call                 └─ log_msg
+address taken  main
+call           app_tick
+call           log_msg
+address taken  on_button, used by main
+tail call      log_msg
+call           process_frame, used by main
+call           log_msg
+call           report, used by main
+call           log_msg
 
 debug_dump uses log_msg too, but nothing reaches debug_dump.
 
@@ -890,8 +1077,8 @@ Removing main would remove log_msg too.
         ),
         "{why}"
     );
-    // With exactly 11 users, the tree shows every chain, since a summary
-    // never stands for a single item.
+    // With exactly 11 users, every chain is shown, since a summary never
+    // stands for a single item.
     let why = stdout(&["testdata/bin/far-gnu-m4-nodebug.elf", "why", "counter"]);
     assert!(
         why.starts_with("counter is used by 11 functions, through these chains:\n"),
@@ -899,7 +1086,7 @@ Removing main would remove log_msg too.
     );
     assert_eq!(
         why.lines()
-            .filter(|line| line.ends_with("─ counter"))
+            .filter(|line| line.ends_with(" counter"))
             .count(),
         11
     );
@@ -927,10 +1114,10 @@ app_tick is used by 2 functions, through these chains:
 
 HOW           ITEM
 entry point   Reset_Handler
-call          └─ main
-call             └─ app_tick
+call          main
+call          app_tick
 vector table  SysTick_Handler
-tail call     └─ app_tick
+tail call     app_tick
 
 Removing any single item wouldn't remove app_tick.
 ",
@@ -1067,14 +1254,44 @@ BYTES  COPIES  FUNCTION
 }
 
 #[test]
-fn inlined_shows_copies_inside_copies_as_a_tree() {
-    let tree = stdout(&["testdata/bin/rust-cortex-m4.elf", "inlined", "memcpy"]);
+fn inlined_shows_copies_inside_copies() {
+    let rows = stdout(&["testdata/bin/rust-cortex-m4.elf", "inlined", "memcpy"]);
     assert!(
-        tree.starts_with(
+        rows.starts_with(
             "\
 Of compiler_builtins::mem::memcpy's 730 bytes, 712 are inlined copies of 17 functions:
 
 BYTES  COPIES  FUNCTION
+  712       1  compiler_builtins::mem::impls::copy_forward
+  392       1  compiler_builtins::mem::impls::copy_forward::copy_forward_misaligned_words, inlined into copy_forward
+   74       1  compiler_builtins::mem::impls::load_aligned_partial, inlined into copy_forward_misaligned_words
+"
+        ),
+        "{rows}"
+    );
+    // A function inlined in several places names where its copies are.
+    let rows = stdout(&[
+        "testdata/bin/rust-cortex-m4.elf",
+        "inlined",
+        "process_frame",
+    ]);
+    for row in [
+        "   14       1  core::sync::atomic::atomic_add::<u32, u32>, inlined into fetch_add in \
+         update_stats\n",
+        "   42       3  core::sync::atomic::atomic_add::<u32, u32>, inlined into fetch_add in \
+         process_frame\n",
+    ] {
+        assert!(rows.contains(row), "{rows}");
+    }
+    let tree = stdout(&[
+        "testdata/bin/rust-cortex-m4.elf",
+        "inlined",
+        "memcpy",
+        "--tree",
+    ]);
+    assert!(
+        tree.contains(
+            "\
   712       1  compiler_builtins::mem::impls::copy_forward
   392       1  ├─ compiler_builtins::mem::impls::copy_forward::copy_forward_misaligned_words
    74       1  │  ├─ compiler_builtins::mem::impls::load_aligned_partial
@@ -1194,6 +1411,36 @@ HOW   AT                  CALLER
 call  0x14f12 and 2 more  elfq_sample::app_main
 ",
     );
+    // A row names the row it hangs under by the shortest form of its name
+    // that finds it.
+    let top = stdout(&["testdata/bin/rust-cortex-m4.elf", "top"]);
+    assert!(
+        top.contains("\n    5840   736  elfq_sample::process_frame, kept by app_main\n"),
+        "{top}"
+    );
+    let why = stdout(&["testdata/bin/rust-cortex-m4.elf", "why", "log_msg"]);
+    assert!(
+        why.contains("\ncall          elfq_sample::process_frame, used by app_main\n"),
+        "{why}"
+    );
+    // Two functions have this name, and only an address finds each one, so
+    // rows use the whole name.
+    let all = stdout(&["testdata/bin/rust-x86_64-nodebug.elf", "top", "--all"]);
+    assert!(
+        all.contains(", kept by core::ptr::drop_glue::<alloc::string::String>\n"),
+        "{all}"
+    );
+    // `DebugSet::entry` is an alias of this function, and shorter, but no
+    // row shows it.
+    let retained = stdout(&[
+        "testdata/bin/rust-x86_64-nodebug.elf",
+        "retained",
+        "DebugList::entry",
+    ]);
+    assert!(
+        retained.contains("  .rodata@0x963e, kept by DebugList::entry\n"),
+        "{retained}"
+    );
 }
 
 #[test]
@@ -1207,9 +1454,9 @@ app::Gain::run(short*, unsigned long) is used by vtable for app::Gain, through t
 
 HOW            ITEM
 entry point    _start
-address taken  └─ main
-uses              └─ vtable for app::Gain
-pointer              └─ app::Gain::run(short*, unsigned long)
+address taken  main
+uses           vtable for app::Gain
+pointer        app::Gain::run(short*, unsigned long)
 
 Removing vtable for app::Gain would remove app::Gain::run(short*, unsigned long) too.
 ",
@@ -1243,6 +1490,12 @@ pointer  0x3d78  vtable for __cxxabiv1::__si_class_type_info
 pointer  0x3d80  typeinfo name for app::Gain
 pointer  0x3d88  typeinfo for app::Stage
 ",
+    );
+    // Rows name the row they hang under by a short name, prefix and all.
+    let top = stdout(&[CPP, "top"]);
+    assert!(
+        top.contains(" (through a pointer), kept by vtable for DcBlock\n"),
+        "{top}"
     );
 }
 
@@ -1622,6 +1875,15 @@ fn arguments_that_dont_go_together_are_refused_before_the_file_is_read() {
             &["missing.elf", "debug", "items", "--json"],
             "error: the debug commands print only text\n",
         ),
+        (
+            &["missing.elf", "top", "--tree", "--json"],
+            "error: --tree draws trees in the text, so it doesn't go with --json\n",
+        ),
+        (
+            &["missing.elf", "inlined", "--tree"],
+            "error: --tree draws trees, so only the overview, top, retained, why and inlined \
+             SYMBOL take it\n",
+        ),
     ] {
         assert_output(&stderr(args, 2), error);
     }
@@ -1701,7 +1963,7 @@ fn a_command_typed_before_the_file_gets_a_hint() {
 fn help_comes_before_a_command_too() {
     let help = stdout(&["help", "top"]);
     assert!(
-        help.starts_with("Show the items that keep the most bytes in the file, as a tree\n"),
+        help.starts_with("Show the items that keep the most bytes in the file\n"),
         "{help}"
     );
     assert_output(&help, &stdout(&[SAMPLE, "top", "--help"]));

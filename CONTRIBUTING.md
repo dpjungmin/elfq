@@ -47,7 +47,7 @@ install 1.88` gets it.
 | `src/binary/` | Reading an ELF file: its functions and data objects ("items") and where they were found, their names, imports, stored pointers and memory blocks. Unnamed data, such as string literals, is found from what code and pointers refer to. Each function's code is scanned once, as the file loads (`Binary::code_references`). |
 | `src/graph/` | The reference graph that connects items, the roots where the program starts, the dominator tree that says what is exclusive to what, the shortest paths that `why` shows, and the references that cross the boundary of ranges of memory. |
 | `src/debuginfo/` | Reading DWARF, when the file has it: the copies of functions that the compiler inlined, for `inlined`. |
-| `src/render/` | Text output: tables, and the trees drawn in their last column (`tree.rs`), which every command draws the same way. |
+| `src/render/` | Text output: tables, and the trees in their last column (`tree.rs`), which every command shows the same way: as rows that name the row they hang under (in `why`, only where chains branch), or drawn with `--tree`. |
 | `tests/it/` | Integration tests, built as one test program (`main.rs` lists its modules). See [Tests](#tests). |
 | `testdata/` | The sample programs and the ELF files built from them. See [Sample binaries](#sample-binaries). |
 | `docs/` | `design.md`, how elfq works and what comes next, and `survey.md`, how existing tools compare, written before elfq existed. |
@@ -171,8 +171,8 @@ is a short one to copy.
    `elfq --help` lists. Give it an `after_help` with a longer explanation,
    as the others have, and a line in `EXAMPLES`. Its
    arguments go in a struct of their own, or in `SymbolArgs` if SYMBOL is
-   all it takes. `--json` and `--range` are global, so don't declare them
-   again. `elfq help COMMAND` and the hint for a command typed before the
+   all it takes. `--json`, `--tree` and `--range` are global, so don't
+   declare them again. `elfq help COMMAND` and the hint for a command typed before the
    file find the new command by themselves.
 2. **The command, in `src/commands/<name>.rs`.** Start with a `//!` line
    that shows how to type it, then a `run` function that takes the
@@ -183,12 +183,14 @@ is a short one to copy.
    and an arm in `command_name`; the compiler asks for the last two. It
    won't ask about `check_arguments`, which refuses `--range` for every
    command but the overview, `top` and `retained`. A command that takes
-   `--range` goes in its first arm, and its arm in `run` passes it
-   `range`. Then name it in the error further down that lists the
-   commands that take `--range`, in the tests in `tests/it/cli.rs` that
-   check that error, and in the `--range` help in `cli.rs`, README.md and
-   docs/design.md. A command that can't print JSON needs an arm like the
-   one for the debug commands.
+   `--range` goes in its first arm, and its arm in `run` passes it `range`.
+   Then name it in the error further down that lists the commands that take
+   `--range`, in the tests in `tests/it/cli.rs` that check that error, and
+   in the `--range` help in `cli.rs`, README.md and docs/design.md. A
+   command that can't print JSON needs an arm like the one for the debug
+   commands. `check_tree` likewise refuses `--tree` for every command that
+   shows no tree: a command that shows one goes in its first arm, and in
+   that error, its tests and the `--tree` help.
 4. **SYMBOL.** If the command reads code, call `check_code_is_readable`
    first, so that a file whose code elfq can't read says so even when
    SYMBOL names nothing. `symbol::find` turns SYMBOL into a `Node`, which
