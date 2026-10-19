@@ -1,7 +1,7 @@
 //! One module per command, and what they share. This file runs the command
 //! that the arguments name, and holds the checks that commands make before
-//! they answer and the rows that `callers` and `callees` list. How elfq
-//! words things is in `text.rs`, and the shapes of its JSON in `json.rs`.
+//! they answer, and the rows and the table of `callers` and `callees`. How
+//! elfq words things is in `text.rs`, and the shapes of its JSON in `json.rs`.
 
 mod callees;
 mod callers;
@@ -17,6 +17,7 @@ mod text;
 mod top;
 mod why;
 
+use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 
@@ -26,6 +27,7 @@ use crate::arch;
 use crate::binary::{AddressRange, Binary, ItemKind, Source};
 use crate::cli::{Cli, Command, DebugCommand, Format};
 use crate::graph::{Graph, Node, Reference};
+use crate::render::{Align, Table};
 
 /// What an answer means for elfq's exit status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,8 +70,8 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<Outcome> {
             format,
             out,
         )),
-        Some(Command::Callers(args)) => callers::run(&binary, &args.symbols, format, out),
-        Some(Command::Callees(args)) => callees::run(&binary, &args.symbols, format, out),
+        Some(Command::Callers(args)) => callers::run(&binary, &args.symbols, args.all, format, out),
+        Some(Command::Callees(args)) => callees::run(&binary, &args.symbols, args.all, format, out),
         Some(Command::Debug(DebugCommand::Items)) => answered(debug_items::run(&binary, out)),
     }
 }
@@ -251,6 +253,62 @@ fn distinct_nodes(rows: &[Row]) -> Vec<Node> {
         .collect()
 }
 
+/// Writes the table of `callers` or `callees`: HOW, AT, and the caller or
+/// callee under `column`. It lists the rows of the `count` largest nodes
+/// (see [`largest_rows`]), and a last row such as "70 more" counts the
+/// rest.
+fn write_uses_table(
+    binary: &Binary,
+    rows: Vec<Row>,
+    column: &'static str,
+    count: usize,
+    out: &mut dyn Write,
+) -> Result<()> {
+    let (rows, left_out) = largest_rows(binary, rows, count);
+    let mut table = Table::new(&[
+        ("HOW", Align::Left),
+        ("AT", Align::Left),
+        (column, Align::Left),
+    ]);
+    for row in &rows {
+        table.row(vec![
+            row.how.to_string(),
+            text::at_column(&row.sites),
+            row.node.name(binary).to_string(),
+        ]);
+    }
+    if left_out > 0 {
+        table.row(vec![
+            String::new(),
+            String::new(),
+            format!("{left_out} more"),
+        ]);
+    }
+    table.write(out)?;
+    Ok(())
+}
+
+/// The rows of the `count` nodes in `rows` with the largest own sizes
+/// ([`Node::size`]), in the order they come in, and how many nodes are left
+/// out. A node that would be left out on its own is kept too, since its rows
+/// take no more room than "1 more" would. Of nodes the same size, the name
+/// that sorts first is kept.
+fn largest_rows(binary: &Binary, rows: Vec<Row>, count: usize) -> (Vec<Row>, usize) {
+    let mut nodes = distinct_nodes(&rows);
+    let shown = text::shown_count(nodes.len(), count);
+    let left_out = nodes.len() - shown;
+    if left_out == 0 {
+        return (rows, 0);
+    }
+    nodes.sort_by_key(|&node| (Reverse(node.size(binary)), node.name(binary), node));
+    let kept: HashSet<Node> = nodes.into_iter().take(shown).collect();
+    let rows = rows
+        .into_iter()
+        .filter(|row| kept.contains(&row.node))
+        .collect();
+    (rows, left_out)
+}
+
 /// The sum of `sizes`, which stops at the largest `u64` rather than
 /// overflow: in a damaged file, items or inlined copies can overlap, and
 /// their sizes add up to more than a `u64` holds.
@@ -293,5 +351,55 @@ MEMORY                  SIZE  SECTIONS
             error.to_string(),
             "the file has no symbols or unwind table, so elfq can't find its functions yet"
         );
+    }
+
+    #[test]
+    fn a_long_table_keeps_the_rows_of_its_largest_items() {
+        let path = Path::new("testdata/bin/c-x86_64.elf");
+        let mut binary = Binary::load(&Path::new(env!("CARGO_MANIFEST_DIR")).join(path)).unwrap();
+        for (index, (name, size)) in [("d", 20), ("b", 10), ("a", 10), ("c", 5)]
+            .into_iter()
+            .enumerate()
+        {
+            binary.items[index].name = name.to_string();
+            binary.items[index].size = size;
+        }
+        let row = |node, how| Row {
+            node,
+            how,
+            sites: Vec::new(),
+        };
+        binary.imports.push("write".to_string());
+        let import = Node::Import(binary.imports.len() - 1);
+        let (d, b, a, c) = (Node::Item(0), Node::Item(1), Node::Item(2), Node::Item(3));
+        let rows = || {
+            vec![
+                row(c, "call"),
+                row(import, "call"),
+                row(a, "call"),
+                row(b, "call"),
+                row(d, "call"),
+                row(c, "pointer"),
+            ]
+        };
+        let kept = |count| {
+            let (rows, left_out) = largest_rows(&binary, rows(), count);
+            let rows: Vec<(&str, &str)> = rows
+                .iter()
+                .map(|row| (row.node.name(&binary), row.how))
+                .collect();
+            (rows, left_out)
+        };
+
+        // d and the first name of the two of size 10, in their order. The
+        // import counts as size 0, and c's two rows count as one item.
+        assert_eq!(kept(2), (vec![("a", "call"), ("d", "call")], 3));
+        assert_eq!(
+            kept(3),
+            (vec![("a", "call"), ("b", "call"), ("d", "call")], 2)
+        );
+        // With room for all but one, the last is kept too.
+        assert_eq!(kept(4).0.len(), 6);
+        assert_eq!(kept(4).1, 0);
     }
 }

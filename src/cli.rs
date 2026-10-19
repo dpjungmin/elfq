@@ -94,14 +94,14 @@ pub enum Command {
     #[command(
         override_usage = "elfq <FILE> callers [OPTIONS] <SYMBOL>\n       \
                           elfq <FILE> callers [OPTIONS] <RANGE>...",
-        after_help = format!("{HOW}\n\n{CALLERS_RANGES}")
+        after_help = format!("{HOW}\n\n{CALLERS}\n\n{CALLERS_RANGES}")
     )]
     Callers(UsesArgs),
     /// List what SYMBOL calls or uses
     #[command(
         override_usage = "elfq <FILE> callees [OPTIONS] <SYMBOL>\n       \
                           elfq <FILE> callees [OPTIONS] <RANGE>...",
-        after_help = format!("{HOW}\n\n{CALLEES_RANGES}")
+        after_help = format!("{HOW}\n\n{CALLEES}\n\n{CALLEES_RANGES}")
     )]
     Callees(UsesArgs),
     /// Show elfq's own view of the file (for developing elfq)
@@ -122,6 +122,15 @@ The HOW column says how one item uses the other:
 
 elfq can't tell where a call through a pointer set at run time goes; the
 address taken and pointer rows show where such pointers come from.";
+
+const CALLERS: &str = "\
+The table lists the 30 largest callers by their own size, in order of name,
+and a last row such as \"70 more\" counts the rest; --all lists every one.";
+
+const CALLEES: &str = "\
+The table lists the 30 largest callees by their own size, in the order
+SYMBOL first uses them, and a last row such as \"70 more\" counts the rest;
+--all lists every one.";
 
 const CALLEES_RANGES: &str = "\
 With ranges of memory in place of SYMBOL, such as 0x0+256K for an ITCM,
@@ -227,6 +236,9 @@ pub struct UsesArgs {
     // and with --range, to give the range here instead.
     #[arg(value_name = "SYMBOL|RANGE")]
     pub symbols: Vec<String>,
+    /// Show every item, not only the 30 largest
+    #[arg(long)]
+    pub all: bool,
 }
 
 #[derive(Debug, Args)]

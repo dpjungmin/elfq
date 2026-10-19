@@ -330,6 +330,15 @@ impl Node {
             Node::Import(index) => &binary.imports[index],
         }
     }
+
+    /// The item's own size, or 0 for an import, whose code is in another
+    /// file.
+    pub fn size(self, binary: &Binary) -> u64 {
+        match self {
+            Node::Item(index) => binary.items[index].size,
+            Node::Import(_) => 0,
+        }
+    }
 }
 
 /// The addresses where a section starts and ends, for each section whose

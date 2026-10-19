@@ -422,13 +422,10 @@ fn groups(
             });
         rows[row].sites.push(crossing.site);
     }
-    let size = |node: Node| match node {
-        Node::Item(index) => binary.items[index].size,
-        Node::Import(_) => 0,
-    };
     groups.sort_by(|a, b| {
-        size(b.outside)
-            .cmp(&size(a.outside))
+        b.outside
+            .size(binary)
+            .cmp(&a.outside.size(binary))
             .then_with(|| a.outside.name(binary).cmp(b.outside.name(binary)))
     });
     for group in &mut groups {

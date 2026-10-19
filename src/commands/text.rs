@@ -43,9 +43,10 @@ pub(super) fn count_text(binary: &Binary, nodes: &[Node]) -> String {
     }
 }
 
-/// How many of the largest items the trees of `top` and `retained`, and
-/// the list and tree of `inlined`, show. Lines such as "└─ 6 more" sum up
-/// the rest, and an item that would be left out on its own is shown too.
+/// How many of the largest items the trees of `top` and `retained`, the
+/// list and tree of `inlined`, and the tables of `callers SYMBOL` and
+/// `callees SYMBOL` show. Lines such as "└─ 6 more" sum up the rest, and an
+/// item that would be left out on its own is shown too.
 const SHOWN: usize = 30;
 
 /// How many of the largest items to show: [`SHOWN`], or with `--all`, every
