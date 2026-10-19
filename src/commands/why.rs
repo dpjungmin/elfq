@@ -3,9 +3,9 @@
 //!
 //! Every item that uses SYMBOL keeps it there, unless nothing reaches that
 //! item or it is there only because of SYMBOL. The text shows the shortest
-//! chain to each of the nearest ten items that keep SYMBOL, merged into one
-//! tree. The JSON lists the shortest chain to every item that keeps SYMBOL,
-//! one by one.
+//! chain to each of the nearest ten items that keep SYMBOL, or with `--all`
+//! to every one, merged into one tree. The JSON lists the shortest chain to
+//! every item that keeps SYMBOL, one by one.
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -19,7 +19,8 @@ use crate::cli::Format;
 use crate::graph::{DominatorTree, Graph, Node, Reference, Root, ShortestPaths};
 use crate::render::{Align, Table, TreeRow};
 
-/// How many items that keep SYMBOL get their chain shown, at most.
+/// How many items that keep SYMBOL get their chain shown without `--all`.
+/// An item that would be left out on its own is shown too.
 const SHOWN: usize = 10;
 
 #[derive(Serialize)]
@@ -53,8 +54,15 @@ struct Step<'a> {
 }
 
 /// Answers `elfq FILE why SYMBOL`: the shortest chains from where the
-/// program starts through each item that keeps SYMBOL.
-pub fn run(binary: &Binary, symbol: &str, format: Format, out: &mut dyn Write) -> Result<()> {
+/// program starts through each item that keeps SYMBOL. The text shows those
+/// through the nearest 10, or with `all`, through every one.
+pub fn run(
+    binary: &Binary,
+    symbol: &str,
+    all: bool,
+    format: Format,
+    out: &mut dyn Write,
+) -> Result<()> {
     super::check_code_is_readable(binary)?;
     let node = super::symbol::find(binary, symbol)?;
     let name = node.name(binary);
@@ -140,9 +148,10 @@ pub fn run(binary: &Binary, symbol: &str, format: Format, out: &mut dyn Write) -
     if keeping.is_empty() {
         return write_unreachable(name, &unreachable, out);
     }
-    writeln!(out, "{}", lead(binary, node, &keeping))?;
+    let room = if all { usize::MAX } else { SHOWN };
+    let shown = &keeping[..text::shown_count(keeping.len(), room)];
+    writeln!(out, "{}", lead(binary, node, &keeping, shown.len()))?;
     writeln!(out)?;
-    let shown = &keeping[..keeping.len().min(SHOWN)];
     let chains = Chains::new(binary, &graph, &paths, node, shown);
     let mut table = Table::new(&[("HOW", Align::Left), ("ITEM", Align::Left)]);
     table.tree(&chains.rows());
@@ -222,8 +231,9 @@ fn write_unreachable(name: &str, users: &[&str], out: &mut dyn Write) -> Result<
     Ok(())
 }
 
-/// The first line of the answer: what keeps SYMBOL.
-fn lead(binary: &Binary, symbol: Node, keeping: &[usize]) -> String {
+/// The first line of the answer: what keeps SYMBOL, through the chains to
+/// the nearest `shown` of the items that keep it.
+fn lead(binary: &Binary, symbol: Node, keeping: &[usize], shown: usize) -> String {
     let name = symbol.name(binary);
     if let [user] = keeping {
         return format!(
@@ -233,10 +243,10 @@ fn lead(binary: &Binary, symbol: Node, keeping: &[usize]) -> String {
     }
     let nodes: Vec<Node> = keeping.iter().map(|&user| Node::Item(user)).collect();
     let users = text::count_text(binary, &nodes);
-    if keeping.len() <= SHOWN {
+    if shown == keeping.len() {
         format!("{name} is used by {users}, through these chains:")
     } else {
-        format!("{name} is used by {users}; these are the chains through the nearest {SHOWN}:")
+        format!("{name} is used by {users}; these are the chains through the nearest {shown}:")
     }
 }
 

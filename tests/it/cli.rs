@@ -735,6 +735,26 @@ fn all_shows_every_item() {
         assert!(!sums_up(&all), "{args:?}\n{all}");
         assert!(all.lines().count() > largest.lines().count());
     }
+    // why draws the chains through the nearest 10 users, or every one.
+    let chains = |why: &str| {
+        why.lines()
+            .filter(|line| line.ends_with("─ memcpy"))
+            .count()
+    };
+    let why = stdout(&[sample, "why", "memcpy"]);
+    assert!(
+        why.starts_with(
+            "memcpy is used by 57 functions; these are the chains through the nearest 10:\n"
+        ),
+        "{why}"
+    );
+    assert_eq!(chains(&why), 10, "{why}");
+    let why = stdout(&[sample, "why", "memcpy", "--all"]);
+    assert!(
+        why.starts_with("memcpy is used by 57 functions, through these chains:\n"),
+        "{why}"
+    );
+    assert_eq!(chains(&why), 57, "{why}");
     // A tree of fewer than 30 items is the same either way.
     assert_output(
         &stdout(&[SAMPLE, "retained", "process_frame", "--all"]),
@@ -855,8 +875,20 @@ Removing main would remove log_msg too.
         ),
         "{why}"
     );
-    // With more than ten users, the tree shows the chains through the
-    // nearest ten.
+    // With exactly 11 users, the tree shows every chain, since a summary
+    // never stands for a single item.
+    let why = stdout(&["testdata/bin/far-gnu-m4-nodebug.elf", "why", "counter"]);
+    assert!(
+        why.starts_with("counter is used by 11 functions, through these chains:\n"),
+        "{why}"
+    );
+    assert_eq!(
+        why.lines()
+            .filter(|line| line.ends_with("─ counter"))
+            .count(),
+        11
+    );
+    // With more, it shows the chains through the nearest ten.
     let why = stdout(&[
         "testdata/bin/rust-x86_64-nodebug.elf",
         "why",

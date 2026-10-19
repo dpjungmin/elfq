@@ -61,7 +61,9 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<Outcome> {
             format,
             out,
         )),
-        Some(Command::Why(args)) => answered(why::run(&binary, &args.symbol, format, out)),
+        Some(Command::Why(args)) => {
+            answered(why::run(&binary, &args.symbol, args.all, format, out))
+        }
         Some(Command::Inlined(args)) => answered(inlined::run(
             &cli.file,
             &binary,

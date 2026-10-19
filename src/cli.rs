@@ -86,7 +86,7 @@ pub enum Command {
     Retained(RetainedArgs),
     /// Show the chains of calls and references that keep SYMBOL in the file
     #[command(after_help = format!("{WHY}\n\n{HOW}"))]
-    Why(SymbolArgs),
+    Why(WhyArgs),
     /// List the functions the compiler inlined, by the bytes their copies take
     #[command(after_help = INLINED)]
     Inlined(InlinedArgs),
@@ -163,9 +163,8 @@ The tree starts where the program does: at the entry point, a function the
 C runtime runs at startup, or a handler in the vector table. Each item in
 it is used by the one above it, and the chains end at SYMBOL. Only the
 shortest chain through each item that uses SYMBOL is shown, for the 10
-nearest at most; elfq FILE callers SYMBOL lists them all. Items that
-nothing reaches, or that only SYMBOL leads to, don't keep it, and are
-named below the tree.
+nearest, or for every one with --all. Items that nothing reaches, or that
+only SYMBOL leads to, don't keep it, and are named below the tree.
 
 The last line names the closest item that every chain goes through, if
 there is one: SYMBOL counts toward that item's retained size.";
@@ -220,10 +219,14 @@ pub struct RetainedArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct SymbolArgs {
+pub struct WhyArgs {
     /// A function or data object: its name, the end of its name
     /// (process_frame for app::process_frame), or an address such as 0x1700
     pub symbol: String,
+    /// Show the chains through every item that keeps SYMBOL, not only the
+    /// 10 nearest
+    #[arg(long)]
+    pub all: bool,
 }
 
 #[derive(Debug, Args)]
