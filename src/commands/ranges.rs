@@ -239,14 +239,7 @@ impl Leaving<'_> {
         let listed = !groups.is_empty() || !self.unfollowed.is_empty();
         if listed {
             writeln!(out)?;
-            let mut table = Table::new(&[
-                ("CALLEE", Align::Left),
-                ("ADDRESS", Align::Left),
-                ("SIZE", Align::Right),
-                ("CALLER", Align::Left),
-                ("HOW", Align::Left),
-                ("AT", Align::Left),
-            ]);
+            let mut table = crossings_table(Direction::Out);
             // What elfq can't follow comes first, since it may hide more.
             for (unfollowed, sites) in group_unfollowed(&self.unfollowed) {
                 let unresolved = &unfollowed.unresolved;
@@ -260,15 +253,14 @@ impl Leaving<'_> {
                     (None, _) => text::call_or_jump(unresolved),
                 };
                 table.row(vec![
-                    callee.to_string(),
                     address,
                     String::new(),
-                    binary.items[unresolved.from].name.clone(),
                     how.to_string(),
                     text::at_column(&sites),
+                    names_cell(callee, Direction::Out, &binary.items[unresolved.from].name),
                 ]);
             }
-            write_groups(binary, &groups, &mut table);
+            write_groups(binary, &groups, Direction::Out, &mut table);
             table.write(out)?;
         }
         if !self.unreadable.is_empty() {
@@ -351,15 +343,8 @@ impl Entering<'_> {
                 text::count_text(binary, &outside_nodes(&groups))
             )?;
             writeln!(out)?;
-            let mut table = Table::new(&[
-                ("CALLER", Align::Left),
-                ("ADDRESS", Align::Left),
-                ("SIZE", Align::Right),
-                ("CALLEE", Align::Left),
-                ("HOW", Align::Left),
-                ("AT", Align::Left),
-            ]);
-            write_groups(binary, &groups, &mut table);
+            let mut table = crossings_table(Direction::In);
+            write_groups(binary, &groups, Direction::In, &mut table);
             table.write(out)?;
         }
         if !self.through_pointer.is_empty() {
@@ -474,30 +459,54 @@ fn json_ranges(ranges: &[AddressRange]) -> Vec<json::Range> {
         .collect()
 }
 
-/// Adds a line to `table` for each row of `groups`, naming the item
-/// outside the ranges only on the first line of its group.
-fn write_groups(binary: &Binary, groups: &[Group], table: &mut Table) {
+/// The table for a range check's rows: the address and size of the item
+/// outside the ranges, how one item uses the other and where, then both
+/// names, as [`names_cell`] writes them. The names come last, so that a
+/// long one that wraps moves no column.
+fn crossings_table(direction: Direction) -> Table {
+    let names = match direction {
+        Direction::Out => "CALLEE",
+        Direction::In => "CALLER",
+    };
+    Table::new(&[
+        ("ADDRESS", Align::Left),
+        ("SIZE", Align::Right),
+        ("HOW", Align::Left),
+        ("AT", Align::Left),
+        (names, Align::Left),
+    ])
+}
+
+/// The last cell of a range check's row: the item outside the ranges, then
+/// the one in them, as "memcpy, used by apply_filter" for `callees
+/// RANGE...` or "process_frame, uses crc32" for `callers RANGE...`.
+fn names_cell(outside: &str, direction: Direction, inside: &str) -> String {
+    let relation = match direction {
+        Direction::Out => "used by",
+        Direction::In => "uses",
+    };
+    format!("{outside}, {relation} {inside}")
+}
+
+/// Adds a line to `table` for each row of `groups`. Every line names both
+/// items, so that each stands alone, as when `grep` picks it out.
+fn write_groups(binary: &Binary, groups: &[Group], direction: Direction, table: &mut Table) {
     for group in groups {
-        for (index, row) in group.rows.iter().enumerate() {
-            let (name, address, size) = match (index, group.outside) {
-                (0, Node::Item(item)) => {
-                    let item = &binary.items[item];
-                    (
-                        item.name.clone(),
-                        format!("{:#x}", item.address),
-                        text::size_text(item),
-                    )
-                }
-                (0, node) => (node.name(binary).to_string(), String::new(), String::new()),
-                _ => (String::new(), String::new(), String::new()),
-            };
+        let (address, size) = match group.outside {
+            Node::Item(item) => {
+                let item = &binary.items[item];
+                (format!("{:#x}", item.address), text::size_text(item))
+            }
+            Node::Import(_) => (String::new(), String::new()),
+        };
+        let outside = group.outside.name(binary);
+        for row in &group.rows {
             table.row(vec![
-                name,
-                address,
-                size,
-                row.inside.name(binary).to_string(),
+                address.clone(),
+                size.clone(),
                 row.how.to_string(),
                 text::at_column(&row.sites),
+                names_cell(outside, direction, row.inside.name(binary)),
             ]);
         }
     }
@@ -584,8 +593,9 @@ mod tests {
         );
         assert_eq!(outcome.unwrap(), Outcome::Crossed);
         let out = String::from_utf8(out).unwrap();
+        assert!(out.contains("\n0x1fff0100        call  "), "{out}");
         assert!(
-            out.contains("\n(outside any function)  0x1fff0100        crc32            call "),
+            out.contains("  0x20  (outside any function), used by crc32\n"),
             "{out}"
         );
     }
