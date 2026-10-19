@@ -363,7 +363,7 @@ testdata/bin/c-cortex-m4-stripped.elf: 32-bit Arm executable, stripped
 The file has no symbols or unwind table, so elfq can't find its functions yet.
 
 MEMORY                  SIZE  SECTIONS
-0x08000000..0x08000dec  3564  .isr_vector .text .rodata .ARM.exidx
+0x08000000..0x08000e0c  3596  .isr_vector .text .rodata .ARM.exidx, load image of .data
 0x20000000..0x20000048    72  .data .bss
 "
         );

@@ -1,6 +1,7 @@
 //! Address ranges: what `--range` reads, such as `0x20000000..0x20040000`
 //! or `0x20000000+256K`, and the blocks of addresses that a file's sections
-//! occupy, which the overview lists so that nobody has to look them up.
+//! and their load images occupy, which the overview lists so that nobody has
+//! to look them up.
 
 use std::fmt;
 use std::num::ParseIntError;
@@ -109,45 +110,65 @@ fn number(text: &str) -> Result<u64, String> {
 }
 
 /// Sections whose addresses are closer than this share a block. Linkers
-/// leave small gaps for alignment and for copies of sections that startup
-/// code moves to RAM; separate memories are much further apart.
+/// leave small gaps for alignment; separate memories are much further
+/// apart.
 const LARGEST_GAP: u64 = 64 * 1024;
 
-/// A run of sections with no large gap between them, such as a microcontroller's
-/// flash or one of its RAMs.
+/// A run of sections and load images with no large gap between them, such
+/// as a microcontroller's flash or one of its RAMs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryBlock {
-    /// From the start of its first section to the furthest end of any of
-    /// its sections, gaps included.
+    /// From the start of the first section or load image in it to the
+    /// furthest end of any of them, gaps included.
     pub range: AddressRange,
     /// The sections in it, by index into the binary's sections, in address
     /// order.
     pub sections: Vec<usize>,
+    /// The sections whose load images are in it (see
+    /// [`Section::load_address`]), in the order of those addresses.
+    pub load_images: Vec<usize>,
 }
 
-/// The blocks of addresses that the program's sections occupy when it runs,
-/// in address order.
+/// The blocks of addresses that the program's sections occupy, and the
+/// load images of those whose bytes are stored elsewhere, in address order.
 pub fn memory_blocks(sections: &[Section]) -> Vec<MemoryBlock> {
-    let mut indexes: Vec<usize> = (0..sections.len())
-        .filter(|&index| sections[index].allocated && sections[index].size > 0)
-        .collect();
-    indexes.sort_by_key(|&index| (sections[index].address, index));
+    // Where each section, or load image, is: (address, size, section, is
+    // a load image).
+    let mut places: Vec<(u64, u64, usize, bool)> = Vec::new();
+    for (index, section) in sections.iter().enumerate() {
+        if !section.allocated || section.size == 0 {
+            continue;
+        }
+        places.push((section.address, section.size, index, false));
+        if let Some(load_address) = section.load_address {
+            places.push((load_address, section.size, index, true));
+        }
+    }
+    places.sort_by_key(|&(address, _, index, load_image)| (address, load_image, index));
     let mut blocks: Vec<MemoryBlock> = Vec::new();
-    for index in indexes {
-        let section = &sections[index];
-        let end = section.address.saturating_add(section.size);
-        match blocks.last_mut() {
-            Some(block) if section.address < block.range.end.saturating_add(LARGEST_GAP) => {
+    for (address, size, index, load_image) in places {
+        let end = address.saturating_add(size);
+        let block = match blocks.last_mut() {
+            Some(block) if address < block.range.end.saturating_add(LARGEST_GAP) => {
                 block.range.end = block.range.end.max(end);
-                block.sections.push(index);
+                block
             }
-            _ => blocks.push(MemoryBlock {
-                range: AddressRange {
-                    start: section.address,
-                    end,
-                },
-                sections: vec![index],
-            }),
+            _ => {
+                blocks.push(MemoryBlock {
+                    range: AddressRange {
+                        start: address,
+                        end,
+                    },
+                    sections: Vec::new(),
+                    load_images: Vec::new(),
+                });
+                blocks.last_mut().expect("a block was just added")
+            }
+        };
+        if load_image {
+            block.load_images.push(index);
+        } else {
+            block.sections.push(index);
         }
     }
     blocks
@@ -241,28 +262,44 @@ mod tests {
             allocated,
             file_range: None,
             entry_size: 0,
+            load_address: None,
+        };
+        // Stored in flash, between .isr_vector and .text, and after .text,
+        // as the Cortex-M7 sample stores them.
+        let stored = |section: Section, load_address: u64| Section {
+            load_address: Some(load_address),
+            ..section
         };
         let sections = [
             section("", 0, 0, false),
             section(".text", 0x3000_0140, 0x880, true),
             section(".isr_vector", 0x3000_0000, 0x40, true),
-            section(".itcm", 0, 0xe0, true),
-            section(".data", 0x2000_0000, 0x420, true),
+            stored(section(".itcm", 0, 0xe0, true), 0x3000_0040),
+            stored(section(".data", 0x2000_0000, 0x420, true), 0x3000_09c0),
             section(".bss", 0x2000_0420, 0x30, true),
             section(".ocram_bss", 0x2024_0000, 0x1000, true),
             section(".comment", 0, 0x20, false),
+            // A load image after the last section makes the block longer.
+            stored(section(".ramfunc", 0x10, 0x8, true), 0x3000_09c0 + 0x420),
+            // One far from every section has a block of its own.
+            stored(section(".ocram_data", 0x2024_1000, 0x10, true), 0x6000_0000),
         ];
-        let blocks: Vec<(String, Vec<usize>)> = memory_blocks(&sections)
+        let blocks: Vec<(String, Vec<usize>, Vec<usize>)> = memory_blocks(&sections)
             .into_iter()
-            .map(|block| (block.range.to_string(), block.sections))
+            .map(|block| (block.range.to_string(), block.sections, block.load_images))
             .collect();
         assert_eq!(
             blocks,
             [
-                ("0x0..0xe0".to_string(), vec![3]),
-                ("0x20000000..0x20000450".to_string(), vec![4, 5]),
-                ("0x20240000..0x20241000".to_string(), vec![6]),
-                ("0x30000000..0x300009c0".to_string(), vec![2, 1]),
+                ("0x0..0xe0".to_string(), vec![3, 8], vec![]),
+                ("0x20000000..0x20000450".to_string(), vec![4, 5], vec![]),
+                ("0x20240000..0x20241010".to_string(), vec![6, 9], vec![]),
+                (
+                    "0x30000000..0x30000de8".to_string(),
+                    vec![2, 1],
+                    vec![3, 4, 8]
+                ),
+                ("0x60000000..0x60000010".to_string(), vec![], vec![9]),
             ]
         );
     }

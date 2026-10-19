@@ -91,9 +91,16 @@ its size shows as `?`, and elfq can't read its code.
 written `START..END` or `START+SIZE`. With `--range`, the overview, `top`
 and `retained` count only the bytes inside one range, and `callers` and
 `callees` take ranges in place of SYMBOL. A memory block is a run of
-sections less than 64 KiB apart, which stands for one memory, such as flash
-or a RAM; the overview lists the blocks when there are several.
-(`binary::AddressRange`, `binary::MemoryBlock`)
+sections and load images less than 64 KiB apart, which stands for one
+memory, such as flash or a RAM; the overview lists the blocks when there
+are several. (`binary::AddressRange`, `binary::MemoryBlock`)
+
+**Load image.** The bytes of a section that the file stores in one place,
+such as flash, for the program to copy to where it uses them, such as RAM:
+firmware stores the starting values of `.data` this way, and code that
+runs from RAM or ITCM, and its startup code copies them. The program
+headers say where each load image is. The overview's memory blocks list
+them, as in `load image of .data`. (`binary::Section::load_address`)
 
 **Boundary and crossing.** For `callers` and `callees` with ranges, an item
 is inside when any of its bytes is in one of the ranges, and a reference
@@ -402,8 +409,9 @@ show and writes it, as a table that `render` lays out, or as JSON.
 command](#life-of-a-command) follows one command through the functions
 that do this.
 
-1. **Load** the file with the `object` crate: sections, symbols, entry point,
-   dynamic relocations.
+1. **Load** the file with the `object` crate: sections, with where the
+   program headers store their load images, symbols, entry point, dynamic
+   relocations.
 2. **Discover items**, each with an address, size and a record of how it
    was found. Each source adds only what the ones before it missed:
    1. The symbol tables, `.symtab` and `.dynsym`: one item for each kind

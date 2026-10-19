@@ -417,6 +417,7 @@ fn the_overview_says_what_the_file_is() {
     assert_eq!(memory[0]["size"], 0x4088 - 0x318);
     assert_eq!(memory[0]["sections"][0], ".interp");
     assert_eq!(memory[0]["sections"][26], ".bss");
+    assert_eq!(memory[0]["load_images"], json!([]));
     assert_eq!(
         overview,
         json!({
@@ -435,6 +436,24 @@ fn the_overview_says_what_the_file_is() {
             "indirect_calls": 4
         })
     );
+}
+
+#[test]
+fn firmware_stores_load_images_in_flash() {
+    // The starting values of .data, and the code that runs from ITCM, are
+    // stored in flash, for the startup code to copy.
+    let memory = elfq_json(&[TCM_SAMPLE])["memory"].take();
+    assert_eq!(
+        memory[3],
+        json!({
+            "start": "0x30000000",
+            "end": "0x30000edc",
+            "size": 0xedc,
+            "sections": [".isr_vector", ".text", ".rodata", ".ARM.exidx"],
+            "load_images": [".itcm", ".data"]
+        })
+    );
+    assert_eq!(memory[0]["load_images"], json!([]));
 }
 
 #[test]

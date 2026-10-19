@@ -170,6 +170,7 @@ mod tests {
                 allocated: true,
                 file_range: Some((0, text.len() as u64)),
                 entry_size: 0,
+                load_address: None,
             }],
             items: Vec::new(),
             imports: Vec::new(),

@@ -92,7 +92,7 @@ testdata/bin/c-cortex-m4.elf: 32-bit Arm executable, with symbols and DWARF debu
 25 functions and 31 data objects, 3577 bytes of code and data
 
 MEMORY                  SIZE  SECTIONS
-0x08000000..0x08000dec  3564  .isr_vector .text .rodata .ARM.exidx
+0x08000000..0x08000e0c  3596  .isr_vector .text .rodata .ARM.exidx, load image of .data
 0x20000000..0x20000048    72  .data .bss
 
 RETAINED   OWN  ITEM
@@ -107,7 +107,7 @@ RETAINED   OWN  ITEM
      466        11 more
 
 Try:
-  elfq testdata/bin/c-cortex-m4.elf --range 0x08000000..0x08000dec
+  elfq testdata/bin/c-cortex-m4.elf --range 0x08000000..0x08000e0c
   elfq testdata/bin/c-cortex-m4.elf --range 0x20000000..0x20000048
   elfq testdata/bin/c-cortex-m4.elf top
   elfq testdata/bin/c-cortex-m4.elf top --tree
@@ -141,7 +141,7 @@ testdata/bin/c-cortex-m4-stripped.elf: 32-bit Arm executable, stripped
 Functions and data without symbols are named by address, like fn_0x8000040 and .rodata@0x80008f0.
 
 MEMORY                  SIZE  SECTIONS
-0x08000000..0x08000dec  3564  .isr_vector .text .rodata .ARM.exidx
+0x08000000..0x08000e0c  3596  .isr_vector .text .rodata .ARM.exidx, load image of .data
 0x20000000..0x20000048    72  .data .bss
 
 RETAINED    OWN  ITEM
@@ -156,7 +156,7 @@ RETAINED    OWN  ITEM
      466         11 more
 
 Try:
-  elfq testdata/bin/c-cortex-m4-stripped.elf --range 0x08000000..0x08000dec
+  elfq testdata/bin/c-cortex-m4-stripped.elf --range 0x08000000..0x08000e0c
   elfq testdata/bin/c-cortex-m4-stripped.elf --range 0x20000000..0x20000048
   elfq testdata/bin/c-cortex-m4-stripped.elf top
   elfq testdata/bin/c-cortex-m4-stripped.elf top --tree
@@ -440,7 +440,7 @@ MEMORY                  SIZE  SECTIONS
 0x00000000..0x000000e0   224  .itcm
 0x20000000..0x20000450  1104  .data .bss
 0x20240000..0x20241000  4096  .ocram_bss
-0x30000000..0x30000edc  3804  .isr_vector .text .rodata .ARM.exidx
+0x30000000..0x30000edc  3804  .isr_vector .text .rodata .ARM.exidx, load images of .itcm .data
 "
         ),
         "{overview}"

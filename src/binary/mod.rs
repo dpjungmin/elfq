@@ -44,7 +44,7 @@ use std::fmt;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use object::read::elf::SectionHeader;
+use object::read::elf::{ElfFile, FileHeader, ProgramHeader, SectionHeader};
 use object::{
     Architecture, Endianness, Object, ObjectKind, ObjectSection, ObjectSymbol, SectionFlags,
     SectionIndex, SectionKind, SymbolKind,
@@ -150,6 +150,14 @@ pub struct Section {
     /// such as `.plt.got`, as the section's header gives it; 0 when it
     /// gives none.
     pub entry_size: u64,
+    /// Where the file puts the section's bytes in memory, when that isn't
+    /// where the program uses them: the address of its load image, which
+    /// the program copies to `address` before it uses it. Firmware stores
+    /// the starting values of `.data`, and code that runs from RAM, in
+    /// flash this way, and its startup code copies them. `None` for most
+    /// sections, whose bytes are stored where the program uses them, and
+    /// for sections such as `.bss` that take no space in the file.
+    pub load_address: Option<u64>,
 }
 
 /// A function or data object.
@@ -629,6 +637,7 @@ fn word(bytes: &[u8], endianness: Endianness) -> u64 {
 /// a damaged header can make it do, and read as far as the file goes if it
 /// runs past the end of the file, each with a warning.
 fn read_sections(file: &object::File, file_size: u64, warnings: &mut Vec<String>) -> Vec<Section> {
+    let segments = load_segments(file);
     let mut sections = Vec::new();
     for section in file.sections() {
         let index = section.index().0;
@@ -667,6 +676,12 @@ fn read_sections(file: &object::File, file_size: u64, warnings: &mut Vec<String>
         if allocated && past_the_end {
             warnings.push(format!("section {shown} runs past the end of the file"));
         }
+        let load_address = match file_range {
+            Some((offset, _)) if allocated && size > 0 => {
+                load_address(&segments, section.address(), size, offset)
+            }
+            _ => None,
+        };
         sections[index] = Section {
             name,
             address: section.address(),
@@ -675,9 +690,89 @@ fn read_sections(file: &object::File, file_size: u64, warnings: &mut Vec<String>
             allocated,
             file_range,
             entry_size: entry_size(file, section.index()),
+            load_address,
         };
     }
     sections
+}
+
+/// A loadable segment, as the file's program headers describe it: the bytes
+/// of the file that are put in memory.
+struct Segment {
+    /// Where its bytes are in the file, as (offset, size).
+    file_range: (u64, u64),
+    /// Where the program uses it.
+    address: u64,
+    /// Where its bytes are put in memory, which the program copies them
+    /// from when that isn't `address`.
+    load_address: u64,
+    /// Its size in memory, which takes in any `.bss` after its bytes.
+    size: u64,
+}
+
+/// The file's loadable segments. When the program headers give several
+/// segments the load address 0 and the others none, as some linkers do,
+/// their load images would overlap, so those addresses say nothing, and
+/// each segment is taken to be stored where the program uses it, as GNU's
+/// `objdump` and `objcopy` take it. One segment's 0 can be true, as for a
+/// program that is stored at 0 and copied to RAM to run.
+fn load_segments(file: &object::File) -> Vec<Segment> {
+    fn read<Elf: FileHeader>(elf: &ElfFile<'_, Elf>) -> Vec<Segment> {
+        let endian = elf.endian();
+        elf.elf_program_headers()
+            .iter()
+            .filter(|header| header.p_type(endian) == object::elf::PT_LOAD)
+            .map(|header| Segment {
+                file_range: header.file_range(endian),
+                address: header.p_vaddr(endian).into(),
+                load_address: header.p_paddr(endian).into(),
+                size: header.p_memsz(endian).into(),
+            })
+            .collect()
+    }
+    let segments = match file {
+        object::File::Elf32(elf) => read(elf),
+        object::File::Elf64(elf) => read(elf),
+        _ => Vec::new(),
+    };
+    with_load_addresses(segments)
+}
+
+/// `segments`, each stored where the program uses it when the program
+/// headers give several the load address 0 and the others none (see
+/// [`load_segments`]).
+fn with_load_addresses(mut segments: Vec<Segment>) -> Vec<Segment> {
+    let several = segments.iter().filter(|segment| segment.size > 0).count() > 1;
+    if several && segments.iter().all(|segment| segment.load_address == 0) {
+        for segment in &mut segments {
+            segment.load_address = segment.address;
+        }
+    }
+    segments
+}
+
+/// Where the bytes of a section that the program uses at `address`, and
+/// that are at `offset` in the file, are put in memory, when that isn't
+/// `address`: the segment that holds them says, as GNU's tools read it.
+/// `None` when no segment holds all `size` of them where the program uses
+/// them, or when the load image would run past the last address, which only
+/// a damaged header can make it do.
+fn load_address(segments: &[Segment], address: u64, size: u64, offset: u64) -> Option<u64> {
+    let end = offset.checked_add(size)?;
+    let segment = segments.iter().find(|segment| {
+        let (start, length) = segment.file_range;
+        offset >= start
+            && start.checked_add(length).is_some_and(|stop| end <= stop)
+            && address >= segment.address
+            && address - segment.address < segment.size
+    })?;
+    let load_address = segment
+        .load_address
+        .checked_add(offset - segment.file_range.0)?;
+    if fitting_size(load_address, size) != Some(size) {
+        return None;
+    }
+    (load_address != address).then_some(load_address)
 }
 
 /// The size of each entry that the header of the section at `index` gives.
@@ -713,6 +808,7 @@ fn null_section() -> Section {
         allocated: false,
         file_range: None,
         entry_size: 0,
+        load_address: None,
     }
 }
 
@@ -887,6 +983,7 @@ mod tests {
             allocated: true,
             file_range: None,
             entry_size: 0,
+            load_address: None,
         }
     }
 
@@ -930,6 +1027,45 @@ mod tests {
                 ("unsized", 0x1100, 0x40, Source::SymbolTable),
                 ("fn_0x1200", 0x1200, 0x10, Source::EhFrame),
             ]
+        );
+    }
+
+    #[test]
+    fn a_segment_says_where_its_sections_are_stored() {
+        // As in firmware: code in flash, then .data and .bss in RAM, whose
+        // bytes the file stores in flash after the code.
+        let segment = |file_range, address, load_address, size| Segment {
+            file_range,
+            address,
+            load_address,
+            size,
+        };
+        let segments = [
+            segment((0x1000, 0x800), 0x0800_0000, 0x0800_0000, 0x800),
+            segment((0x2000, 0x20), 0x2000_0000, 0x0800_0800, 0x48),
+        ];
+        // .text is stored where it runs, and .data's bytes in flash.
+        assert_eq!(load_address(&segments, 0x0800_0000, 0x800, 0x1000), None);
+        assert_eq!(
+            load_address(&segments, 0x2000_0000, 0x20, 0x2000),
+            Some(0x0800_0800)
+        );
+        // Bytes that run past the segment's in the file, or that the
+        // program uses outside it, aren't in it.
+        assert_eq!(load_address(&segments, 0x2000_0000, 0x21, 0x2000), None);
+        assert_eq!(load_address(&segments, 0x2000_0048, 0x10, 0x2000), None);
+        // When every load address is 0, none of them says anything.
+        let unset = with_load_addresses(vec![
+            segment((0x1000, 0x800), 0x0800_0000, 0, 0x800),
+            segment((0x2000, 0x20), 0x2000_0000, 0, 0x48),
+        ]);
+        assert_eq!(load_address(&unset, 0x2000_0000, 0x20, 0x2000), None);
+        // Unless there is only one: a program stored at 0 that runs from
+        // RAM.
+        let stored_at_0 = with_load_addresses(vec![segment((0x1000, 0x84), 0x2000_0000, 0, 0xa4)]);
+        assert_eq!(
+            load_address(&stored_at_0, 0x2000_0044, 0x40, 0x1044),
+            Some(0x44)
         );
     }
 

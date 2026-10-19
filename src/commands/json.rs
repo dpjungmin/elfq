@@ -197,7 +197,8 @@ impl Range {
     }
 }
 
-/// A block of addresses that sections occupy, such as one memory.
+/// A block of addresses that sections and load images occupy, such as one
+/// memory.
 #[derive(Serialize)]
 pub(super) struct Block<'a> {
     #[serde(flatten)]
@@ -205,6 +206,11 @@ pub(super) struct Block<'a> {
     pub size: u64,
     /// The sections in it, in address order.
     pub sections: Vec<&'a str>,
+    /// The sections whose load images are in it, in the order of those
+    /// addresses: the bytes that the file stores there for the program to
+    /// copy to the section before it uses them, as firmware's startup code
+    /// copies `.data` from flash to RAM.
+    pub load_images: Vec<&'a str>,
 }
 
 impl<'a> Block<'a> {
@@ -212,13 +218,18 @@ impl<'a> Block<'a> {
         Block {
             range: Range::new(block.range),
             size: block.range.end - block.range.start,
-            sections: block
-                .sections
-                .iter()
-                .map(|&index| binary.sections[index].name.as_str())
-                .collect(),
+            sections: section_names(binary, &block.sections),
+            load_images: section_names(binary, &block.load_images),
         }
     }
+}
+
+/// The names of the sections at `indexes` in [`Binary::sections`].
+pub(super) fn section_names<'a>(binary: &'a Binary, indexes: &[usize]) -> Vec<&'a str> {
+    indexes
+        .iter()
+        .map(|&index| binary.sections[index].name.as_str())
+        .collect()
 }
 
 pub(super) fn address(address: u64) -> String {

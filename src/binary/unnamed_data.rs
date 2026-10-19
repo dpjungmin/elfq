@@ -118,6 +118,7 @@ mod tests {
             allocated: true,
             file_range: None,
             entry_size: 0,
+            load_address: None,
         };
         assert!(holds_data(&section(".rodata", SectionKind::ReadOnlyData)));
         assert!(holds_data(&section(".data.rel.ro", SectionKind::Data)));
