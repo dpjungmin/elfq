@@ -170,12 +170,14 @@ Exit status: 0 if nothing outside uses the ranges, 1 if something does or
 might through a pointer, and 2 for an error.";
 
 const WHY: &str = "\
-The tree starts where the program does: at the entry point, a function the
-C runtime runs at startup, or a handler in the vector table. Each item in
-it is used by the one above it, and the chains end at SYMBOL. Only the
-shortest chain through each item that uses SYMBOL is shown, for the 10
-nearest, or for every one with --all. Items that nothing reaches, or that
-only SYMBOL leads to, don't keep it, and are named below the tree.
+The chains start where the program does, as HOW says: at the entry point, a
+function the C runtime runs at startup, or a handler in the vector table.
+Every other row is used by the row above it, or where chains branch, by the
+item it names, as in \"process_frame, used by main\", and the chains end at
+SYMBOL. Only the shortest chain through each item that uses SYMBOL is
+shown, for the 10 nearest, or for every one with --all, and --tree draws
+the chains as a tree. Items that nothing reaches, or that only SYMBOL leads
+to, don't keep it, and are named below the chains.
 
 The last line names the closest item that every chain goes through, if
 there is one: SYMBOL counts toward that item's retained size.";

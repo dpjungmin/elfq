@@ -382,6 +382,27 @@ RETAINED   OWN  ITEM
     );
     let tree = stdout(&[TCM_SAMPLE, "--range", "0x0..0xe0", "--tree"]);
     assert!(tree.contains("     200    0  └─ main\n"), "{tree}");
+
+    // why's chains too.
+    let tree = stdout(&[SAMPLE, "why", "log_msg", "--tree"]);
+    assert!(
+        tree.contains(
+            "\
+HOW            ITEM
+entry point    _start
+address taken  └─ main
+call              ├─ app_tick
+call              │  └─ log_msg
+address taken     ├─ on_button
+tail call         │  └─ log_msg
+call              ├─ process_frame
+call              │  └─ log_msg
+call              └─ report
+call                 └─ log_msg
+"
+        ),
+        "{tree}"
+    );
 }
 
 #[test]
@@ -921,11 +942,7 @@ fn all_shows_every_item() {
     assert!(!sums_up(&all), "{all}");
     assert_eq!(all.lines().count(), largest.lines().count());
     // why draws the chains through the nearest 10 users, or every one.
-    let chains = |why: &str| {
-        why.lines()
-            .filter(|line| line.ends_with("─ memcpy"))
-            .count()
-    };
+    let chains = |why: &str| why.lines().filter(|line| line.ends_with(" memcpy")).count();
     let why = stdout(&[sample, "why", "memcpy"]);
     assert!(
         why.starts_with(
@@ -1037,15 +1054,15 @@ log_msg is used by 4 functions, through these chains:
 
 HOW            ITEM
 entry point    _start
-address taken  └─ main
-call              ├─ app_tick
-call              │  └─ log_msg
-address taken     ├─ on_button
-tail call         │  └─ log_msg
-call              ├─ process_frame
-call              │  └─ log_msg
-call              └─ report
-call                 └─ log_msg
+address taken  main
+call           app_tick
+call           log_msg
+address taken  on_button, used by main
+tail call      log_msg
+call           process_frame, used by main
+call           log_msg
+call           report, used by main
+call           log_msg
 
 debug_dump uses log_msg too, but nothing reaches debug_dump.
 
@@ -1060,8 +1077,8 @@ Removing main would remove log_msg too.
         ),
         "{why}"
     );
-    // With exactly 11 users, the tree shows every chain, since a summary
-    // never stands for a single item.
+    // With exactly 11 users, every chain is shown, since a summary never
+    // stands for a single item.
     let why = stdout(&["testdata/bin/far-gnu-m4-nodebug.elf", "why", "counter"]);
     assert!(
         why.starts_with("counter is used by 11 functions, through these chains:\n"),
@@ -1069,7 +1086,7 @@ Removing main would remove log_msg too.
     );
     assert_eq!(
         why.lines()
-            .filter(|line| line.ends_with("─ counter"))
+            .filter(|line| line.ends_with(" counter"))
             .count(),
         11
     );
@@ -1097,10 +1114,10 @@ app_tick is used by 2 functions, through these chains:
 
 HOW           ITEM
 entry point   Reset_Handler
-call          └─ main
-call             └─ app_tick
+call          main
+call          app_tick
 vector table  SysTick_Handler
-tail call     └─ app_tick
+tail call     app_tick
 
 Removing any single item wouldn't remove app_tick.
 ",
@@ -1371,6 +1388,11 @@ call  0x14f12 and 2 more  elfq_sample::app_main
         top.contains("\n    5840   736  elfq_sample::process_frame, kept by app_main\n"),
         "{top}"
     );
+    let why = stdout(&["testdata/bin/rust-cortex-m4.elf", "why", "log_msg"]);
+    assert!(
+        why.contains("\ncall          elfq_sample::process_frame, used by app_main\n"),
+        "{why}"
+    );
     // Two functions have this name, and only an address finds each one, so
     // rows use the whole name.
     let all = stdout(&["testdata/bin/rust-x86_64-nodebug.elf", "top", "--all"]);
@@ -1402,9 +1424,9 @@ app::Gain::run(short*, unsigned long) is used by vtable for app::Gain, through t
 
 HOW            ITEM
 entry point    _start
-address taken  └─ main
-uses              └─ vtable for app::Gain
-pointer              └─ app::Gain::run(short*, unsigned long)
+address taken  main
+uses           vtable for app::Gain
+pointer        app::Gain::run(short*, unsigned long)
 
 Removing vtable for app::Gain would remove app::Gain::run(short*, unsigned long) too.
 ",

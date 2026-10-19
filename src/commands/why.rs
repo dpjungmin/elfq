@@ -4,8 +4,9 @@
 //! Every item that uses SYMBOL keeps it there, unless nothing reaches that
 //! item or it is there only because of SYMBOL. The text shows the shortest
 //! chain to each of the nearest ten items that keep SYMBOL, or with `--all`
-//! to every one, merged into one tree. The JSON lists the shortest chain to
-//! every item that keeps SYMBOL, one by one.
+//! to every one, merged into one tree, whose rows name their user where
+//! chains branch. The JSON lists the shortest chain to every item that
+//! keeps SYMBOL, one by one.
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -13,6 +14,7 @@ use std::io::Write;
 use anyhow::{Result, bail};
 use serde::Serialize;
 
+use super::symbol::Names;
 use super::{json, text};
 use crate::binary::{Binary, FileKind};
 use crate::cli::Format;
@@ -64,7 +66,8 @@ pub fn run(
     out: &mut dyn Write,
 ) -> Result<()> {
     super::check_code_is_readable(binary)?;
-    let node = super::symbol::find(binary, symbol)?;
+    let names = Names::new(binary);
+    let node = names.find(symbol)?;
     let name = node.name(binary);
     if binary.kind == FileKind::SharedLibrary {
         bail!(
@@ -137,14 +140,14 @@ pub fn run(
         return json::write(&answer, out);
     }
 
-    let names = |users: &[usize]| -> Vec<&str> {
+    let names_of = |users: &[usize]| -> Vec<&str> {
         users
             .iter()
             .map(|&user| binary.items[user].name.as_str())
             .collect()
     };
-    let unreachable = names(&unreachable);
-    let behind = names(&behind);
+    let unreachable = names_of(&unreachable);
+    let behind = names_of(&behind);
     if keeping.is_empty() {
         return write_unreachable(name, &unreachable, all, out);
     }
@@ -152,9 +155,15 @@ pub fn run(
     let shown = &keeping[..text::shown_count(keeping.len(), room)];
     writeln!(out, "{}", lead(binary, node, &keeping, shown.len()))?;
     writeln!(out)?;
-    let chains = Chains::new(binary, &graph, &paths, node, shown);
+    let chains = Chains::new(binary, &graph, names, &paths, node, shown);
     let mut table = Table::new(&[("HOW", Align::Left), ("ITEM", Align::Left)]);
-    table.tree(&chains.rows(), TreeShape::Drawn);
+    // A chain branches only now and then, so a row names its user only
+    // where it doesn't come right after it.
+    let shape = match format {
+        Format::Tree => TreeShape::Drawn,
+        _ => TreeShape::Chains { words: "used by" },
+    };
+    table.tree(&chains.rows(shape), shape);
     table.write(out)?;
 
     if !unreachable.is_empty() {
@@ -257,6 +266,8 @@ fn lead(binary: &Binary, symbol: Node, keeping: &[usize], shown: usize) -> Strin
 struct Chains<'a> {
     binary: &'a Binary,
     graph: &'a Graph,
+    /// The names that find each item, for the short names of the rows.
+    names: Names<'a>,
     /// The roots that the chains start from, and why each is one.
     roots: Vec<Root>,
     /// The items each item leads to, in the tree.
@@ -267,6 +278,7 @@ impl<'a> Chains<'a> {
     fn new(
         binary: &'a Binary,
         graph: &'a Graph,
+        names: Names<'a>,
         paths: &ShortestPaths,
         symbol: Node,
         keeping: &[usize],
@@ -274,6 +286,7 @@ impl<'a> Chains<'a> {
         let mut chains = Chains {
             binary,
             graph,
+            names,
             roots: Vec::new(),
             children: BTreeMap::new(),
         };
@@ -309,36 +322,45 @@ impl<'a> Chains<'a> {
         }
     }
 
-    /// The tree's rows: each root, and under it the chains that start
-    /// there.
-    fn rows(&self) -> Vec<TreeRow> {
+    /// The tree's rows, for a table that shows them in `shape`: each root,
+    /// and under it the chains that start there.
+    fn rows(&self, shape: TreeShape) -> Vec<TreeRow> {
         self.roots
             .iter()
-            .map(|root| {
-                TreeRow::new(
-                    vec![text::root_column(self.binary, root.kind)],
-                    root.node.name(self.binary),
-                    self.children_rows(root.node),
-                )
-            })
+            .map(|root| self.row(text::root_column(self.binary, root.kind), root.node, shape))
             .collect()
     }
 
+    /// The row of `node`, whose HOW column says `how`, with the rows of its
+    /// children under it. As rows, those call it by its short name.
+    fn row(&self, how: String, node: Node, shape: TreeShape) -> TreeRow {
+        let children = self.children_rows(node, shape);
+        let name = node.name(self.binary);
+        // Finding a short name takes a while, so only rows that show it
+        // find it.
+        let short_name = if children.is_empty() || shape == TreeShape::Drawn {
+            name.to_string()
+        } else {
+            self.names.short_name(node)
+        };
+        TreeRow {
+            short_name,
+            ..TreeRow::new(vec![how], name, children)
+        }
+    }
+
     /// The rows of `node`'s children, each with the rows of its own.
-    fn children_rows(&self, node: Node) -> Vec<TreeRow> {
+    fn children_rows(&self, node: Node, shape: TreeShape) -> Vec<TreeRow> {
         let Some(children) = self.children.get(&node) else {
             return Vec::new();
         };
         children
             .iter()
             .map(|&child| {
-                TreeRow::new(
-                    vec![hows_between(self.graph, node, child, |r| {
-                        text::how_column(self.binary, r.to, r.kind)
-                    })],
-                    child.name(self.binary),
-                    self.children_rows(child),
-                )
+                let how = hows_between(self.graph, node, child, |r| {
+                    text::how_column(self.binary, r.to, r.kind)
+                });
+                self.row(how, child, shape)
             })
             .collect()
     }

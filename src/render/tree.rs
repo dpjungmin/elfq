@@ -23,6 +23,12 @@ pub enum TreeShape {
     /// ends with `words` and that row's [`short_name`](TreeRow::short_name),
     /// as in "crc_table, kept by crc32".
     Rows { words: &'static str },
+    /// As [`TreeShape::Rows`], except that a row right after the row it
+    /// hangs under doesn't name it. The rows at the top name none either,
+    /// so the other cells must mark them, as HOW does in `why`; then a row
+    /// below the top that names none hangs under the row above. For
+    /// chains, which branch only now and then.
+    Chains { words: &'static str },
     /// Drawn with branches, as `--tree` asks.
     Drawn,
 }
@@ -74,23 +80,27 @@ impl Table {
     /// shape asked for.
     pub fn tree(&mut self, top: &[TreeRow], shape: TreeShape) {
         match shape {
-            TreeShape::Rows { words } => self.rows_of(top, None, words),
+            TreeShape::Rows { words } => self.rows_of(top, None, words, true),
+            TreeShape::Chains { words } => self.rows_of(top, None, words, false),
             TreeShape::Drawn => self.drawn(top),
         }
     }
 
     /// Adds `rows` and the rows under each, one per line. Those under
-    /// `parent` end with `words` and its short name.
-    fn rows_of(&mut self, rows: &[TreeRow], parent: Option<&TreeRow>, words: &str) {
-        for row in rows {
+    /// `parent` end with `words` and its short name: every one, or unless
+    /// `every`, all but the first, which comes right after it.
+    fn rows_of(&mut self, rows: &[TreeRow], parent: Option<&TreeRow>, words: &str, every: bool) {
+        for (i, row) in rows.iter().enumerate() {
             let mut label = row.label();
-            if let Some(parent) = parent {
+            if let Some(parent) = parent
+                && (every || i > 0)
+            {
                 label = format!("{label}, {words} {}", parent.short_name);
             }
             let mut cells = row.cells.clone();
             cells.push(label);
             self.row(cells);
-            self.rows_of(&row.children, Some(row), words);
+            self.rows_of(&row.children, Some(row), words, every);
         }
     }
 
@@ -230,6 +240,20 @@ mod tests {
    app::run, kept by main
    app::log, kept by run
    app::tick (through a pointer), kept by main
+   app::init
+"
+        );
+    }
+
+    #[test]
+    fn chains_name_the_row_they_hang_under_only_where_they_branch() {
+        assert_eq!(
+            text(&branching(), TreeShape::Chains { words: "used by" }),
+            "N  ITEM
+   app::main
+   app::run
+   app::log
+   app::tick (through a pointer), used by main
    app::init
 "
         );

@@ -192,23 +192,24 @@ does, elfq still finishes and exits with the answer's status.
 All commands print a table for people by default, with one row per line. A
 table puts its short cells, such as sizes, HOW and AT, first and the name
 last, so that a long name that the terminal wraps moves no column. Where an
-answer is a tree, as in the overview, `top` and `retained`, each row then
-names the row it hangs under, as in `crc_table, kept by crc32`, by the
+answer is a tree, as in the overview, `top`, `retained` and `why`, each row
+then names the row it hangs under, as in `crc_table, kept by crc32`, by the
 shortest form of its name that finds that item as SYMBOL, or by its whole
 name when only an address would, and a row that grep finds still says where
-it is. `--tree` draws such answers as trees instead. AT
-shows where an item is used: every site when there are one or two, else the
-first and how many more. `callers SYMBOL` and `callees SYMBOL` list the 30
-items with the largest own sizes, callers in order of name and callees in
-the order SYMBOL first uses them, and a last row such as `70 more` counts
-the rest; with ranges, they list every crossing. `--all` lifts every such
-cut in an answer but AT's: it shows every item in a table or tree, every
-chain in `why`, and every name and address in a sentence, where a long list
-otherwise ends with "and 48 more". `--json` prints the same answer for
-scripts. The JSON has every item and every site, where the text shows only
-the largest items and the first sites; every key is always there, `null`
-when it has no value; addresses are hex strings, as elfq prints them and
-SYMBOL takes them, and sizes are numbers. An item looks like this:
+it is; in `why`, only where chains branch. `--tree` draws such answers as
+trees instead. AT shows where an item is used: every site when there are
+one or two, else the first and how many more. `callers SYMBOL` and
+`callees SYMBOL` list the 30 items with the largest own sizes, callers in
+order of name and callees in the order SYMBOL first uses them, and a last
+row such as `70 more` counts the rest; with ranges, they list every
+crossing. `--all` lifts every such cut in an answer but AT's: it shows
+every item in a table or tree, every chain in `why`, and every name and
+address in a sentence, where a long list otherwise ends with "and 48 more".
+`--json` prints the same answer for scripts. The JSON has every item and
+every site, where the text shows only the largest items and the first
+sites; every key is always there, `null` when it has no value; addresses
+are hex strings, as elfq prints them and SYMBOL takes them, and sizes are
+numbers. An item looks like this:
 
 ```json
 {
@@ -273,9 +274,12 @@ library's backtrace printer keeps 228,391 of the file's 282,384 bytes of
 code and data.
 
 `why` answers from the other end: each item that uses SYMBOL keeps it in the
-file, and the tree shows the shortest chain to each of them from where the
-program starts. Users that nothing reaches, or that are there only because
-of SYMBOL, don't keep it and are left out of the tree:
+file, and the rows show the shortest chain to each of them from where the
+program starts, merged into a tree. Each chain starts at a row whose HOW
+says why the program starts there, such as `entry point`. Below that, a row
+names its user only where chains branch, since HOW says how the row above
+uses it. Users that nothing reaches, or that are there only because of
+SYMBOL, don't keep it and are left out of the chains:
 
 ```
 $ elfq testdata/bin/c-x86_64.elf why log_msg
@@ -283,15 +287,15 @@ log_msg is used by 4 functions, through these chains:
 
 HOW            ITEM
 entry point    _start
-address taken  └─ main
-call              ├─ app_tick
-call              │  └─ log_msg
-address taken     ├─ on_button
-tail call         │  └─ log_msg
-call              ├─ process_frame
-call              │  └─ log_msg
-call              └─ report
-call                 └─ log_msg
+address taken  main
+call           app_tick
+call           log_msg
+address taken  on_button, used by main
+tail call      log_msg
+call           process_frame, used by main
+call           log_msg
+call           report, used by main
+call           log_msg
 
 debug_dump uses log_msg too, but nothing reaches debug_dump.
 
