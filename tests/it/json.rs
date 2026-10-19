@@ -32,6 +32,7 @@ fn items_have_the_same_keys_everywhere() {
             "symbol": {
                 "name": "debug_dump",
                 "kind": "function",
+                "section": ".text",
                 "address": "0x1aa0",
                 "size": 29,
                 "size_estimated": false
@@ -39,23 +40,77 @@ fn items_have_the_same_keys_everywhere() {
             "reachable": false,
             "range": null,
             "retained": 29,
-            "keeps": [],
+            "items": [],
             "shares": [],
             "indirect_calls": 0
         })
     );
-    // An import has no address or size in this file.
+    // An import has no section, address or size in this file.
     let callees = elfq_json(&[SAMPLE, "callees", "_start"]);
     assert_eq!(
         callees["callees"][1]["item"],
         json!({
             "name": "__libc_start_main",
             "kind": "import",
+            "section": null,
             "address": null,
             "size": null,
             "size_estimated": false
         })
     );
+    // Each item names the section that holds it, so that scripts can tell
+    // data in .bss from data in .data.
+    let retained = elfq_json(&[SAMPLE, "retained", "process_frame"]);
+    let sections: Vec<(&str, &str)> = retained["shares"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| {
+            let name = item["name"].as_str().unwrap();
+            (name, item["section"].as_str().unwrap())
+        })
+        .collect();
+    assert_eq!(
+        sections,
+        [
+            ("__stack_chk_fail@plt", ".plt.sec"),
+            ("dispatch_event", ".text"),
+            ("frames_bad", ".bss"),
+            ("frames_ok", ".bss"),
+            ("log_msg", ".text"),
+            ("stats", ".data")
+        ]
+    );
+}
+
+#[test]
+fn each_row_is_a_line() {
+    // The first line holds the answer up to its first list, and each row of
+    // a list has a line of its own, so that grep finds a row.
+    let output = elfq(&[SAMPLE, "callers", "log_msg", "--json"]);
+    let text = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(
+        lines[0].starts_with(r#"{"symbol":{"name":"log_msg","#),
+        "{text}"
+    );
+    assert!(lines[0].ends_with(r#""callers":["#), "{text}");
+    assert_eq!(
+        lines[4],
+        r#"{"item":{"name":"process_frame","kind":"function","section":".text","#.to_string()
+            + r#""address":"0x1700","size":532,"size_estimated":false},"how":"call","#
+            + r#""sites":["0x18ee","0x1908"]},"#
+    );
+    for line in &lines[1..6] {
+        let row: Value = serde_json::from_str(line.trim_end_matches(',')).unwrap();
+        assert!(row["item"]["name"].is_string(), "{line}");
+    }
+    assert_eq!(lines[6..], [r#"],"complete":true}"#]);
+
+    // An empty list takes no line.
+    let output = elfq(&[SAMPLE, "retained", "debug_dump", "--json"]);
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(text.lines().count(), 1, "{text}");
 }
 
 #[test]
@@ -318,14 +373,36 @@ fn inlined_lists_every_function_and_the_whole_tree() {
     let tree = elfq_json(&["testdata/bin/rust-cortex-m4.elf", "inlined", "memcpy"]);
     assert_eq!(tree["function"]["name"], "compiler_builtins::mem::memcpy");
     assert_eq!(tree["inlined_bytes"], 712);
+    // The rows of the tree, each with the row it was inlined into.
     let copy_forward = &tree["inlined"][0];
     assert_eq!(
         copy_forward["name"],
         "compiler_builtins::mem::impls::copy_forward"
     );
+    assert_eq!(copy_forward["id"], 0);
+    assert_eq!(copy_forward["parent"], Value::Null);
+    let misaligned = &tree["inlined"][1];
     assert_eq!(
-        copy_forward["inlined"][0]["name"],
+        misaligned["name"],
         "compiler_builtins::mem::impls::copy_forward::copy_forward_misaligned_words"
+    );
+    assert_eq!(misaligned["parent"], 0);
+    let rows = tree["inlined"].as_array().unwrap();
+    for (id, row) in rows.iter().enumerate() {
+        assert_eq!(row["id"], id);
+        assert!(
+            row["parent"]
+                .as_u64()
+                .is_none_or(|parent| parent < id as u64)
+        );
+    }
+    // Only copy_forward was inlined into memcpy itself.
+    let top = rows.iter().filter(|row| row["parent"].is_null()).count();
+    assert_eq!(top, 1);
+    // The rows come in the order of the text's.
+    assert_eq!(
+        names(&tree["inlined"]),
+        text_rows(&["testdata/bin/rust-cortex-m4.elf", "inlined", "memcpy"])
     );
 }
 
@@ -374,9 +451,10 @@ fn a_range_limits_the_counts_to_it() {
     let top = elfq_json(&[TCM_SAMPLE, "top", "--range", "0x0..0xe0"]);
     assert_eq!(top["range"], json!({"start": "0x0", "end": "0xe0"}));
     assert_eq!(top["bytes"], 224);
-    // Only items that keep some of the range's bytes.
+    // Only items that keep some of the range's bytes, each with its own
+    // bytes in the range.
     assert_eq!(
-        tree_names(&top["items"]),
+        names(&top["items"]),
         [
             "Reset_Handler",
             "main",
@@ -392,6 +470,28 @@ fn a_range_limits_the_counts_to_it() {
         ]
     );
     assert_eq!(top["items"][0]["retained"], 200);
+    assert_eq!(top["items"][0]["own"], 0);
+    assert_eq!(top["items"][4]["name"], "apply_filter");
+    assert_eq!(top["items"][4]["own"], 92);
+    assert_eq!(own_bytes(&top["items"]), 224);
+    // An item partly in the range counts only its bytes in it, as does an
+    // item that nothing reaches.
+    let top = elfq_json(&[TCM_SAMPLE, "top", "--range", "0x0..0x80"]);
+    let apply_filter = &top["items"][4];
+    assert_eq!(apply_filter["name"], "apply_filter");
+    assert_eq!(apply_filter["size"], 92);
+    assert_eq!(apply_filter["own"], 12);
+    assert_eq!(own_bytes(&top["items"]), 128);
+    let top = elfq_json(&[SAMPLE, "top", "--range", "0x1a90+0x20"]);
+    let debug_dump = &top["unreachable"][0];
+    assert_eq!(debug_dump["name"], "debug_dump");
+    assert_eq!(debug_dump["size"], 29);
+    assert_eq!(debug_dump["own"], 16);
+    assert_eq!(top["bytes"], 18);
+    assert_eq!(
+        own_bytes(&top["items"]) + own_bytes(&top["unreachable"]),
+        18
+    );
 
     let retained = elfq_json(&[
         TCM_SAMPLE,
@@ -405,12 +505,12 @@ fn a_range_limits_the_counts_to_it() {
         json!({"start": "0x20000000", "end": "0x20000450"})
     );
     assert_eq!(retained["retained"], 1024);
-    assert_eq!(tree_names(&retained["keeps"]), ["crc_table"]);
+    assert_eq!(names(&retained["items"]), ["crc_table"]);
 
     let retained = elfq_json(&[TCM_SAMPLE, "retained", "process_frame", "--range", "0+224"]);
     assert_eq!(retained["retained"], 200);
     assert_eq!(
-        tree_names(&retained["keeps"]),
+        names(&retained["items"]),
         [
             "__apply_filter_veneer",
             "apply_filter",
@@ -422,37 +522,64 @@ fn a_range_limits_the_counts_to_it() {
     );
 }
 
-/// The names of the items in a tree from `top` or `retained`, each followed
-/// by those it keeps.
-fn tree_names(items: &Value) -> Vec<&str> {
-    let mut names = Vec::new();
-    for item in items.as_array().unwrap() {
-        names.push(item["name"].as_str().unwrap());
-        names.extend(tree_names(&item["keeps"]));
-    }
-    names
+/// The sum of the `own` bytes of the rows in a list.
+fn own_bytes(rows: &Value) -> u64 {
+    rows.as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["own"].as_u64().unwrap())
+        .sum()
+}
+
+/// The names in the rows of a command's table with `--all`, in order,
+/// without what each says about the row it hangs under, to compare with
+/// the rows of the JSON.
+fn text_rows(args: &[&str]) -> Vec<String> {
+    let output = elfq(&[args, &["--all"]].concat());
+    let text = String::from_utf8(output.stdout).unwrap();
+    // The table starts after the first blank line, with its header, and
+    // the names start where the header's last column does.
+    let mut lines = text.lines().skip_while(|line| !line.is_empty()).skip(1);
+    let header = lines.next().unwrap();
+    let start = header.rfind(' ').unwrap() + 1;
+    lines
+        .take_while(|line| !line.is_empty())
+        .map(|line| {
+            let name = line[start..].split(", kept by ").next().unwrap();
+            let name = name.split(", inlined into ").next().unwrap();
+            name.trim_end_matches(" (through a pointer)").to_string()
+        })
+        .collect()
 }
 
 #[test]
 fn top_has_every_item_in_the_file() {
     let top = elfq_json(&[SAMPLE, "top"]);
-    // What the tree keeps and what nothing reaches add up to the file.
-    let kept: u64 = top["items"]
-        .as_array()
-        .unwrap()
-        .iter()
+    // The rows and what nothing reaches add up to the file.
+    assert_eq!(top["bytes"], 4021);
+    assert_eq!(
+        own_bytes(&top["items"]) + own_bytes(&top["unreachable"]),
+        4021
+    );
+    let items = top["items"].as_array().unwrap();
+    assert_eq!(items.len(), 65);
+    // So do the top of the tree and what nothing reaches.
+    let top_rows = items.iter().filter(|item| item["parent"].is_null());
+    let kept: u64 = top_rows
         .map(|item| item["retained"].as_u64().unwrap())
         .sum();
-    let unreachable: u64 = top["unreachable"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|item| item["size"].as_u64().unwrap())
-        .sum();
-    assert_eq!(top["bytes"], 4021);
-    assert_eq!(kept + unreachable, 4021);
-    assert_eq!(tree_names(&top["items"]).len(), 65);
-    assert_eq!(top["items"][0]["name"], "_start");
+    assert_eq!(kept + own_bytes(&top["unreachable"]), 4021);
+    // The rows are numbered in order, and each comes after its parent's.
+    for (id, item) in items.iter().enumerate() {
+        assert_eq!(item["id"], id);
+        assert!(
+            item["parent"]
+                .as_u64()
+                .is_none_or(|parent| parent < id as u64)
+        );
+    }
+    assert_eq!(items[0]["name"], "_start");
+    assert_eq!(names(&top["items"]), text_rows(&[SAMPLE, "top"]));
     assert_eq!(
         names(&top["unreachable"]),
         ["debug_dump", ".rodata@0x2056", "_IO_stdin_used"]
@@ -460,15 +587,23 @@ fn top_has_every_item_in_the_file() {
 }
 
 #[test]
-fn retained_has_what_symbol_keeps_as_a_tree() {
+fn retained_has_what_symbol_keeps_as_rows() {
     let retained = elfq_json(&[SAMPLE, "retained", "process_frame"]);
     assert_eq!(retained["reachable"], true);
     assert_eq!(retained["retained"], 2068);
-    let crc32 = &retained["keeps"][0];
+    // process_frame's own bytes, and those of every row.
+    assert_eq!(own_bytes(&retained["items"]), 2068 - 532);
+    let crc32 = &retained["items"][0];
+    assert_eq!(crc32["id"], 0);
     assert_eq!(crc32["name"], "crc32");
+    assert_eq!(crc32["own"], 59);
     assert_eq!(crc32["retained"], 1083);
     assert_eq!(crc32["through_pointer"], false);
-    assert_eq!(crc32["keeps"][0]["name"], "crc_table");
+    // process_frame keeps crc32 itself, and crc32 keeps crc_table.
+    assert_eq!(crc32["parent"], Value::Null);
+    let crc_table = &retained["items"][1];
+    assert_eq!(crc_table["name"], "crc_table");
+    assert_eq!(crc_table["parent"], 0);
     assert_eq!(
         names(&retained["shares"]),
         [
@@ -480,9 +615,14 @@ fn retained_has_what_symbol_keeps_as_a_tree() {
             "stats"
         ]
     );
-    // The tree holds every item that only process_frame leads to.
+    // The rows hold every item that only process_frame leads to, in the
+    // order of the text's rows, which start with process_frame's own.
     assert_eq!(
-        tree_names(&retained["keeps"]),
+        names(&retained["items"]),
+        text_rows(&[SAMPLE, "retained", "process_frame"])[1..]
+    );
+    assert_eq!(
+        names(&retained["items"]),
         [
             "crc32",
             "crc_table",
@@ -495,7 +635,7 @@ fn retained_has_what_symbol_keeps_as_a_tree() {
         ]
     );
     // A string literal without a symbol has an estimated size.
-    let literal = &retained["keeps"][3];
+    let literal = &retained["items"][6];
     assert_eq!(literal["name"], ".rodata@0x2012");
     assert_eq!(literal["size_estimated"], true);
     assert_eq!(retained["indirect_calls"], 0);
@@ -509,23 +649,22 @@ fn retained_has_what_symbol_keeps_as_a_tree() {
     let unreachable = elfq_json(&[SAMPLE, "retained", "debug_dump"]);
     assert_eq!(unreachable["reachable"], false);
     assert_eq!(unreachable["retained"], 29);
-    assert_eq!(unreachable["keeps"], json!([]));
+    assert_eq!(unreachable["items"], json!([]));
     assert_eq!(unreachable["shares"], json!([]));
 }
 
 #[test]
 fn deep_trees_are_whole() {
-    // The text continues a tree deeper than 9 levels below it; JSON nests
-    // all of it.
+    // `--tree` continues a tree deeper than 9 levels below it; JSON has all
+    // of it, each row under the one before.
     let answer = elfq_json(&[DEEP_SAMPLE, "retained", "chain1"]);
-    let mut chain = Vec::new();
-    let mut keeps = &answer["keeps"];
-    while let [item] = &keeps.as_array().unwrap()[..] {
-        chain.push(item["name"].as_str().unwrap());
-        keeps = &item["keeps"];
-    }
+    let items = answer["items"].as_array().unwrap();
     let expected: Vec<String> = (2..=20).map(|n| format!("chain{n}")).collect();
-    assert_eq!(chain, expected);
+    assert_eq!(names(&answer["items"]), expected);
+    assert_eq!(items[0]["parent"], Value::Null);
+    for (id, item) in items.iter().enumerate().skip(1) {
+        assert_eq!(item["parent"], id - 1);
+    }
 }
 
 #[test]
@@ -561,7 +700,12 @@ fn why_has_the_chain_through_every_user() {
     );
     assert_eq!(why["root"], Value::Null);
     assert_eq!(names(&why["unreachable_users"]), ["debug_dump"]);
+    assert_eq!(why["users_it_keeps"], json!([]));
     assert_eq!(why["on_every_chain"]["name"], "main");
+    // parse_list calls parse_value back, so it doesn't keep it.
+    let parse_value = elfq_json(&[SAMPLE, "why", "parse_value"]);
+    assert_eq!(names(&parse_value["users_it_keeps"]), ["parse_list"]);
+    assert_eq!(parse_value["unreachable_users"], json!([]));
     // JSON keeps its words where the HOW column shortened them: Arm code
     // takes the address of `stats` to use it, and a handler is listed in
     // the vector table.
@@ -583,6 +727,7 @@ fn why_has_the_chain_through_every_user() {
     let start = elfq_json(&[SAMPLE, "why", "_start"]);
     assert_eq!(start["root"], "entry point");
     assert_eq!(start["chains"], json!([]));
+    assert_eq!(start["users_it_keeps"], json!([]));
     assert_eq!(start["on_every_chain"], Value::Null);
 }
 

@@ -1,23 +1,86 @@
 //! The shapes of the JSON that commands write for `--json`.
 //!
 //! A command builds one value from these and its own shapes, and writes it
-//! with [`write()`]. Every key is always there, `null` when it has no value,
-//! so that scripts can count on the shape. Addresses are hex strings, as
-//! elfq prints them and SYMBOL takes them; sizes are numbers.
+//! with [`write()`], one row of the answer per line. Every key is always
+//! there, `null` when it has no value, so that scripts can count on the
+//! shape. Addresses are hex strings, as elfq prints them and SYMBOL takes
+//! them; sizes are numbers.
 
-use std::io::Write;
+use std::io::{self, Write};
 
 use anyhow::Result;
 use serde::Serialize;
+use serde_json::ser::Formatter;
 
 use crate::binary::{AddressRange, Binary, MemoryBlock};
 use crate::graph::{Node, ReferenceKind, RootKind};
 
-/// Writes `value` as indented JSON.
+/// Writes `value`, an answer's object, as JSON with one row per line: each
+/// element of a list that the object holds, such as an item of `top` or a
+/// chain of `why`, goes on a line of its own, so that `grep` and `head` work
+/// on the rows as they do on the text's. The rest has no spaces or line
+/// breaks.
 pub(super) fn write(value: &impl Serialize, out: &mut dyn Write) -> Result<()> {
-    serde_json::to_writer_pretty(&mut *out, value)?;
+    let mut serializer = serde_json::Serializer::with_formatter(&mut *out, RowPerLine::default());
+    value.serialize(&mut serializer)?;
     writeln!(out)?;
     Ok(())
+}
+
+/// How many objects and lists hold a row: the answer's object, and the list
+/// of rows in it.
+const ROWS: usize = 2;
+
+/// Lays out JSON for [`write()`].
+#[derive(Default)]
+struct RowPerLine {
+    /// How many objects and lists hold the next value.
+    depth: usize,
+    /// Whether the list of rows being written has a row yet.
+    has_rows: bool,
+}
+
+impl Formatter for RowPerLine {
+    fn begin_object<W: ?Sized + Write>(&mut self, writer: &mut W) -> io::Result<()> {
+        self.depth += 1;
+        writer.write_all(b"{")
+    }
+
+    fn end_object<W: ?Sized + Write>(&mut self, writer: &mut W) -> io::Result<()> {
+        self.depth -= 1;
+        writer.write_all(b"}")
+    }
+
+    fn begin_array<W: ?Sized + Write>(&mut self, writer: &mut W) -> io::Result<()> {
+        self.depth += 1;
+        if self.depth == ROWS {
+            self.has_rows = false;
+        }
+        writer.write_all(b"[")
+    }
+
+    fn begin_array_value<W: ?Sized + Write>(
+        &mut self,
+        writer: &mut W,
+        first: bool,
+    ) -> io::Result<()> {
+        if !first {
+            writer.write_all(b",")?;
+        }
+        if self.depth == ROWS {
+            self.has_rows = true;
+            writer.write_all(b"\n")?;
+        }
+        Ok(())
+    }
+
+    fn end_array<W: ?Sized + Write>(&mut self, writer: &mut W) -> io::Result<()> {
+        if self.depth == ROWS && self.has_rows {
+            writer.write_all(b"\n")?;
+        }
+        self.depth -= 1;
+        writer.write_all(b"]")
+    }
 }
 
 /// An item or an import.
@@ -26,6 +89,9 @@ pub(super) struct Item<'a> {
     pub name: &'a str,
     /// `function`, `data` or `import`.
     pub kind: String,
+    /// The section that holds it, such as `.text` or `.bss`, or `null` for
+    /// an import.
+    pub section: Option<&'a str>,
     /// Where it starts, or `null` for an import, whose code is in another
     /// file.
     pub address: Option<String>,
@@ -47,6 +113,7 @@ impl<'a> Item<'a> {
                 Item {
                     name: &item.name,
                     kind: item.kind.to_string(),
+                    section: Some(&binary.sections[item.section].name),
                     address: Some(address(item.address)),
                     size: (item.size > 0).then_some(item.size),
                     size_estimated: item.size_estimated,
@@ -55,6 +122,7 @@ impl<'a> Item<'a> {
             Node::Import(_) => Item {
                 name: node.name(binary),
                 kind: "import".to_string(),
+                section: None,
                 address: None,
                 size: None,
                 size_estimated: false,
@@ -159,4 +227,51 @@ pub(super) fn address(address: u64) -> String {
 
 pub(super) fn addresses(addresses: &[u64]) -> Vec<String> {
     addresses.iter().map(|&a| address(a)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::Value;
+
+    use super::*;
+
+    /// An answer with each kind of value that the layout tells apart.
+    #[derive(Serialize)]
+    struct Answer {
+        name: &'static str,
+        rows: Vec<Value>,
+        empty: Vec<Value>,
+        more: Vec<Value>,
+        last: Value,
+    }
+
+    #[test]
+    fn each_row_of_a_list_in_the_answer_is_a_line() {
+        // Each row of a list in the answer is a line. Lists further in, in a
+        // row or in another object, stay on their line, brackets in a
+        // string are only text, and an empty list takes no line, even after
+        // one that has rows.
+        let answer = Answer {
+            name: "a [b],\n{c}",
+            rows: vec![
+                serde_json::json!({"sites": ["0x1", "0x2"]}),
+                serde_json::json!([1, [2]]),
+            ],
+            empty: Vec::new(),
+            more: vec![serde_json::json!(3)],
+            last: serde_json::json!({"list": [4]}),
+        };
+        let mut out = Vec::new();
+        write(&answer, &mut out).unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            r#"{"name":"a [b],\n{c}","rows":[
+{"sites":["0x1","0x2"]},
+[1,[2]]
+],"empty":[],"more":[
+3
+],"last":{"list":[4]}}
+"#
+        );
+    }
 }

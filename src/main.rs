@@ -11,7 +11,7 @@ use elfq::cli::{self, Cli};
 use elfq::commands::Outcome;
 
 /// The stack for the thread that runs elfq. Trees are built, drawn and
-/// written as JSON recursively, as deep as the file nests them: the retained
+/// listed for JSON recursively, as deep as the file nests them: the retained
 /// tree as deep as the longest chain of calls, and the tree of inlined
 /// copies as deep as the copies nest. The main thread's stack, usually
 /// 8 MiB, runs out at a chain of some 10,000 calls, and of fewer in a debug

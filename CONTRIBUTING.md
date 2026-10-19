@@ -202,6 +202,11 @@ is a short one to copy.
    `text.rs`. JSON is a struct that derives `Serialize`, made of the shapes
    in `json.rs`, such as `json::Item` for each item, and written with
    `json::write`. Every key is always there, `null` when it has no value.
+   `json::write` puts each element of a list that the answer's object
+   holds on a line of its own, so give the rows their own list there, as
+   a flat list rather than a tree. A tree's rows go in the text's order,
+   each with an `id` counting from 0 and the `parent` id of the row it
+   hangs under, or `null`, as `RetainedTree::to_json` makes them.
 6. **Tests.** Pin the text output with `assert_output` in
    `tests/it/cli.rs`, and test the JSON in `tests/it/json.rs`. Add the
    command to the tests in `cli.rs` that go through commands one by one:

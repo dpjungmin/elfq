@@ -40,6 +40,9 @@ struct WhyJson<'a> {
     chains: Vec<Vec<Step<'a>>>,
     /// The items that use SYMBOL but that nothing reaches.
     unreachable_users: Vec<json::Item<'a>>,
+    /// The items that use SYMBOL but that only SYMBOL leads to, as when it
+    /// calls them and they call it back, so they don't keep it either.
+    users_it_keeps: Vec<json::Item<'a>>,
     /// The closest item that every chain goes through, toward whose
     /// retained size SYMBOL counts, or `null` when no single item is.
     on_every_chain: Option<json::Item<'a>>,
@@ -84,6 +87,7 @@ pub fn run(
                 root: Some(json::root_field(binary, root.kind)),
                 chains: Vec::new(),
                 unreachable_users: Vec::new(),
+                users_it_keeps: Vec::new(),
                 on_every_chain: None,
             };
             return json::write(&answer, out);
@@ -135,6 +139,7 @@ pub fn run(
                 .iter()
                 .map(|&user| item(Node::Item(user)))
                 .collect(),
+            users_it_keeps: behind.iter().map(|&user| item(Node::Item(user))).collect(),
             on_every_chain: tree.parent(node).map(item),
         };
         return json::write(&answer, out);

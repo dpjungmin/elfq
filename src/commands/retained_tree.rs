@@ -18,20 +18,29 @@ use crate::cli::Format;
 use crate::graph::{DominatorTree, Graph, Node};
 use crate::render::{Align, Table, TreeRow, TreeShape};
 
-/// An item and everything it keeps, for `--json`.
+/// One row of the tree, for `--json`: an item, and the row of the item that
+/// keeps it.
 #[derive(Serialize)]
 pub(super) struct KeptItem<'a> {
+    /// Which row this is, counting from 0.
+    id: usize,
     #[serde(flatten)]
     item: json::Item<'a>,
+    /// Its own bytes that sizes count, as in the OWN column: all of them, or
+    /// with a range, those in it. 0 when elfq doesn't know its size, where
+    /// OWN shows `?`.
+    own: u64,
     /// Its own bytes and those of everything it keeps.
     retained: u64,
     /// Whether nothing calls this function directly, so that it hangs under,
     /// and counts for, the code or data that holds its address. `false` at
-    /// the top of the tree, such as for a function listed in `.init_array`.
+    /// the top of the whole tree, where the program starts, such as for a
+    /// function listed in `.init_array`.
     through_pointer: bool,
-    /// The items that only it leads to, each with what it keeps in turn,
-    /// largest first.
-    keeps: Vec<KeptItem<'a>>,
+    /// The id of the row of the item that keeps it, or `null` for an item
+    /// at the top of the list: in `top`, at the top of the whole tree, and
+    /// in `retained`, one that SYMBOL keeps itself.
+    parent: Option<usize>,
 }
 
 /// A binary's graph and dominator tree.
@@ -303,18 +312,31 @@ impl<'a> RetainedTree<'a> {
         Some(TreeRow::new(cells, format!("{items} more"), Vec::new()))
     }
 
-    /// The items in `nodes`, each with the whole tree of what it keeps.
-    /// Imports are left out, since their code isn't in the file, and so are
-    /// items that keep none of the range's bytes.
+    /// The rows of the items in `nodes` and of everything they keep, in the
+    /// order of the text's rows: each item, largest first, followed by what
+    /// it keeps. Imports are left out, since their code isn't in the file,
+    /// and so are items that keep none of the range's bytes.
     pub fn to_json(&self, nodes: &[Node]) -> Vec<KeptItem<'a>> {
-        self.counted(nodes)
-            .map(|index| KeptItem {
+        let mut rows = Vec::new();
+        self.add_json(nodes, None, &mut rows);
+        rows
+    }
+
+    /// Adds the rows of the items in `nodes`, which the row `parent` keeps,
+    /// each followed by the rows of what it keeps in turn.
+    fn add_json(&self, nodes: &[Node], parent: Option<usize>, rows: &mut Vec<KeptItem<'a>>) {
+        for index in self.counted(nodes) {
+            let id = rows.len();
+            rows.push(KeptItem {
+                id,
                 item: json::Item::new(self.binary, Node::Item(index)),
+                own: self.own(index),
                 retained: self.retained(index),
                 through_pointer: self.through_pointer(index),
-                keeps: self.to_json(self.tree.children(Node::Item(index))),
-            })
-            .collect()
+                parent,
+            });
+            self.add_json(self.tree.children(Node::Item(index)), Some(id), rows);
+        }
     }
 
     pub fn retained(&self, index: usize) -> u64 {

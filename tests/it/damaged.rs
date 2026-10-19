@@ -580,6 +580,18 @@ fn inlined_copies_that_nest_deeply_are_summed_up() {
         stdout.contains(&format!("  99970 more, inlined into {place}main\n")),
         "{stdout}"
     );
+    // JSON has every copy, as a row under the one before.
+    let (json, _) = run(
+        "deep-inlined-copies.elf",
+        &data,
+        &["inlined", "main", "--json"],
+    );
+    let tree: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let rows = tree["inlined"].as_array().unwrap();
+    assert_eq!(rows.len(), depth);
+    for (id, row) in rows.iter().enumerate().skip(1) {
+        assert_eq!(row["parent"], id - 1);
+    }
 }
 
 /// Stripped firmware whose code is `count` Thumb functions, in place of
@@ -614,6 +626,15 @@ fn a_long_chain_of_calls_is_read() {
     let total = stdout.lines().nth(1).unwrap();
     assert_eq!(total, "10000 functions, 79994 bytes of code and data");
     run("long-chain.elf", &data, &["top", "--all"]);
+    // JSON has the whole chain, as rows that each hang under the one
+    // before.
+    let (json, _) = run("long-chain.elf", &data, &["top", "--json"]);
+    let top: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let items = top["items"].as_array().unwrap();
+    assert_eq!(items.len(), 10_000);
+    for (id, item) in items.iter().enumerate().skip(1) {
+        assert_eq!(item["parent"], id - 1);
+    }
 }
 
 #[test]
