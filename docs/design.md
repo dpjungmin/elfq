@@ -203,33 +203,7 @@ name and callees in the order SYMBOL first uses them, and a last row such
 as `70 more` counts the rest; with ranges, they list every crossing.
 `--all` lifts every such cut in an answer but AT's: it shows every item in
 a table or tree, every chain in `why`, and every name and address in a
-sentence, where a long list otherwise ends with "and 48 more". `--json`
-prints the same answer for scripts. The JSON has every item and every site,
-where the text shows only the largest items and the first sites; every key
-is always there, `null` when it has no value; addresses are hex strings, as
-elfq prints them and SYMBOL takes them, and sizes are numbers. An item
-looks like this:
-
-```json
-{
-  "name": "process_frame",
-  "kind": "function",
-  "address": "0x1700",
-  "size": 532,
-  "size_estimated": false
-}
-```
-
-`kind` is `function`, `data` or `import`; an import has no address or size
-in the file. In the trees of `top` and `retained`, each item also has its
-`retained` size and `keeps`, the items under it. `why` gives each chain as a
-list of steps, each an item and a `how`. The first step is a root, and its
-`how` says why the program starts there, such as `entry point` or
-`listed in .init_array`. In the others, it says how the item before uses
-this one, in the words of the JSON column in [Concepts](#concepts), joined
-with commas when there are several. The
-overview's JSON says what the
-file is and what elfq found in it; the largest items are in `top`'s.
+sentence, where a long list otherwise ends with "and 48 more".
 
 For example:
 
@@ -344,6 +318,38 @@ and a `--range` command to try for each block that elfq counts bytes in, so
 the range needn't come from the chip's reference manual. Sizes can take a
 unit, in any case: `0x20000000+256K`. Units are powers of 1024, as memory
 sizes usually are.
+
+### JSON
+
+`--json` prints the same answer for scripts. The JSON has every item and
+every site, where the text shows only the largest items and the first
+sites; every key is always there, `null` when it has no value; addresses
+are hex strings, as elfq prints them and SYMBOL takes them, and sizes are
+numbers. Each row of a list in the answer, such as a caller or a chain of
+`why`, is a line of its own, so that `grep` and `head` work on the JSON as
+on the text. An item looks like this, spread over lines here:
+
+```json
+{
+  "name": "process_frame",
+  "kind": "function",
+  "address": "0x1700",
+  "size": 532,
+  "size_estimated": false
+}
+```
+
+`kind` is `function`, `data` or `import`; an import has no address or size
+in the file. In the trees of `top` and `retained`, each item
+also has its `retained` size and `keeps`, the items under it.
+
+`why` gives each chain as a list of steps, each an item and a `how`. The
+first step is a root, and its `how` says why the program starts there,
+such as `entry point` or `listed in .init_array`. In the others, it says
+how the item before uses this one, in the words of the JSON column in
+[Concepts](#concepts), joined with commas when there are several. The
+overview's JSON says what the file is and what elfq found in it; the
+largest items are in `top`'s.
 
 ### Calls elfq can't follow
 

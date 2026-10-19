@@ -59,6 +59,36 @@ fn items_have_the_same_keys_everywhere() {
 }
 
 #[test]
+fn each_row_is_a_line() {
+    // The first line holds the answer up to its first list, and each row of
+    // a list has a line of its own, so that grep finds a row.
+    let output = elfq(&[SAMPLE, "callers", "log_msg", "--json"]);
+    let text = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(
+        lines[0].starts_with(r#"{"symbol":{"name":"log_msg","#),
+        "{text}"
+    );
+    assert!(lines[0].ends_with(r#""callers":["#), "{text}");
+    assert_eq!(
+        lines[4],
+        r#"{"item":{"name":"process_frame","kind":"function","address":"0x1700","size":532,"#
+            .to_string()
+            + r#""size_estimated":false},"how":"call","sites":["0x18ee","0x1908"]},"#
+    );
+    for line in &lines[1..6] {
+        let row: Value = serde_json::from_str(line.trim_end_matches(',')).unwrap();
+        assert!(row["item"]["name"].is_string(), "{line}");
+    }
+    assert_eq!(lines[6..], [r#"],"complete":true}"#]);
+
+    // An empty list takes no line.
+    let output = elfq(&[SAMPLE, "retained", "debug_dump", "--json"]);
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(text.lines().count(), 1, "{text}");
+}
+
+#[test]
 fn a_shared_library_has_the_same_callers_as_the_program() {
     // Each caller and how it calls, and whether that is every caller.
     let callers = |sample: &str, function: &str| {
