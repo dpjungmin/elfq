@@ -136,12 +136,13 @@ const CALLEES_RANGES: &str = "\
 With ranges of memory in place of SYMBOL, such as 0x0+256K for an ITCM,
 elfq lists only what the code and data in them use outside them. Each row
 names the item outside first, as in \"memcpy, used by apply_filter\", and
-ADDRESS and SIZE are that item's. Calls and jumps that elfq can't follow
-come first, as \"(through a pointer)\", or as \"(outside any function)\" when
-they go to an address no function holds. A call through a veneer, which a
-linker adds when the target is too far away for the call instruction, is
-listed where it calls the veneer, as \"call via veneer\". elfq knows the
-veneers that GNU ld and LLD add for Cortex-M.
+ADDRESS and SIZE are that item's. Every crossing has a row, and --all makes
+the sentences name everything they would cut short. Calls and jumps that
+elfq can't follow come first, as \"(through a pointer)\", or as \"(outside any
+function)\" when they go to an address no function holds. A call through a
+veneer, which a linker adds when the target is too far away for the call
+instruction, is listed where it calls the veneer, as \"call via veneer\".
+elfq knows the veneers that GNU ld and LLD add for Cortex-M.
 
 Exit status: 0 if nothing leaves the ranges, 1 if something does or might,
 and 2 for an error.";
@@ -149,9 +150,10 @@ and 2 for an error.";
 const CALLERS_RANGES: &str = "\
 With ranges of memory in place of SYMBOL, such as 0x0+256K for an ITCM,
 elfq lists only the code and data outside them that use what is in them.
-Each row names the item outside first, as in \"process_frame, uses
-crc32\", and ADDRESS and SIZE are that item's. A call through a veneer,
-which a linker adds when the target is too far away for the call
+Each row names the item outside first, as in \"process_frame, uses crc32\",
+and ADDRESS and SIZE are that item's. Every crossing has a row, and --all
+makes the sentences name everything they would cut short. A call through a
+veneer, which a linker adds when the target is too far away for the call
 instruction, is listed where it calls the veneer, as \"call via veneer\".
 elfq knows the veneers that GNU ld and LLD add for Cortex-M.
 

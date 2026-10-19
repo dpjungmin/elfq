@@ -82,18 +82,27 @@ fn phrase(words: &[&str], room: usize) -> String {
     }
 }
 
+/// How many names a list of names in a sentence names before "and 5 more",
+/// unless `--all` asks for every one.
+const NAMED: usize = 10;
+
+/// How many names to name: [`NAMED`], or with `--all`, every one.
+pub(super) fn named(all: bool) -> usize {
+    if all { usize::MAX } else { NAMED }
+}
+
 /// Names joined into a phrase: "a", "a and b", "a, b and c", or for more
-/// than eleven, "a, b, … and 5 more".
-pub(super) fn names_text(names: &[&str]) -> String {
-    phrase(names, 10)
+/// than eleven, "a, b, … and 5 more" unless `all`.
+pub(super) fn names_text(names: &[&str], all: bool) -> String {
+    phrase(names, named(all))
 }
 
 /// Addresses for a sentence: "0x1795", "0x1795 and 0x17d4", or for more
-/// than four, "0x1795, 0x17d4, 0x17e0 and 3 more".
-pub(super) fn addresses_text(sites: &[u64]) -> String {
+/// than four, "0x1795, 0x17d4, 0x17e0 and 3 more" unless `all`.
+pub(super) fn addresses_text(sites: &[u64], all: bool) -> String {
     let sites: Vec<String> = sites.iter().map(|site| format!("{site:#x}")).collect();
     let sites: Vec<&str> = sites.iter().map(String::as_str).collect();
-    phrase(&sites, 3)
+    phrase(&sites, if all { usize::MAX } else { 3 })
 }
 
 /// Addresses for the AT column: "0x1795", "0x1795, 0x17d4", or for more
@@ -250,12 +259,12 @@ pub(super) fn sections_in(binary: &Binary, range: AddressRange) -> Vec<&str> {
 }
 
 /// A range as `--range` takes it, with the sections that have bytes in it,
-/// such as `0x00000000..0x000000e0 (.itcm)`.
-pub(super) fn range_text(binary: &Binary, range: AddressRange) -> String {
+/// such as `0x00000000..0x000000e0 (.itcm)`, every one with `all`.
+pub(super) fn range_text(binary: &Binary, range: AddressRange, all: bool) -> String {
     let sections = sections_in(binary, range);
     match sections[..] {
         [] => range_argument(range),
-        _ => format!("{} ({})", range_argument(range), names_text(&sections)),
+        _ => format!("{} ({})", range_argument(range), names_text(&sections, all)),
     }
 }
 
@@ -285,24 +294,38 @@ mod tests {
         let names: Vec<String> = (1..=12).map(|n| format!("f{n}")).collect();
         let names: Vec<&str> = names.iter().map(String::as_str).collect();
         assert_eq!(
-            names_text(&names[..11]),
+            names_text(&names[..11], false),
             "f1, f2, f3, f4, f5, f6, f7, f8, f9, f10 and f11"
         );
         assert_eq!(
-            names_text(&names),
+            names_text(&names, false),
             "f1, f2, f3, f4, f5, f6, f7, f8, f9, f10 and 2 more"
+        );
+        assert_eq!(
+            names_text(&names, true),
+            "f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11 and f12"
         );
         assert_eq!(at_column(&[1]), "0x1");
         assert_eq!(at_column(&[1, 2]), "0x1, 0x2");
         assert_eq!(at_column(&[1, 2, 3]), "0x1 and 2 more");
-        assert_eq!(addresses_text(&[1, 2, 3, 4]), "0x1, 0x2, 0x3 and 0x4");
-        assert_eq!(addresses_text(&[1, 2, 3, 4, 5]), "0x1, 0x2, 0x3 and 2 more");
+        assert_eq!(
+            addresses_text(&[1, 2, 3, 4], false),
+            "0x1, 0x2, 0x3 and 0x4"
+        );
+        assert_eq!(
+            addresses_text(&[1, 2, 3, 4, 5], false),
+            "0x1, 0x2, 0x3 and 2 more"
+        );
+        assert_eq!(
+            addresses_text(&[1, 2, 3, 4, 5], true),
+            "0x1, 0x2, 0x3, 0x4 and 0x5"
+        );
     }
 
     #[test]
     fn a_sentence_joins_its_last_two_words_with_and() {
-        assert_eq!(addresses_text(&[0x10]), "0x10");
-        assert_eq!(addresses_text(&[0x10, 0x20]), "0x10 and 0x20");
+        assert_eq!(addresses_text(&[0x10], false), "0x10");
+        assert_eq!(addresses_text(&[0x10, 0x20], false), "0x10 and 0x20");
     }
 
     #[test]

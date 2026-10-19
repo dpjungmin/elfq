@@ -146,7 +146,7 @@ pub fn run(
     let unreachable = names(&unreachable);
     let behind = names(&behind);
     if keeping.is_empty() {
-        return write_unreachable(name, &unreachable, out);
+        return write_unreachable(name, &unreachable, all, out);
     }
     let room = if all { usize::MAX } else { SHOWN };
     let shown = &keeping[..text::shown_count(keeping.len(), room)];
@@ -163,7 +163,7 @@ pub fn run(
         writeln!(
             out,
             "{} {verb} {name} too, but nothing reaches {pronoun}.",
-            text::names_text(&unreachable),
+            text::names_text(&unreachable, all),
         )?;
     }
     if !behind.is_empty() {
@@ -172,7 +172,7 @@ pub fn run(
         writeln!(
             out,
             "{} {verb} {name} too, but only {name} leads to {pronoun}.",
-            text::names_text(&behind),
+            text::names_text(&behind, all),
         )?;
     }
     writeln!(out)?;
@@ -217,15 +217,16 @@ fn chain(
     chain
 }
 
-/// Says that nothing reaches SYMBOL, nor the items that use it.
-fn write_unreachable(name: &str, users: &[&str], out: &mut dyn Write) -> Result<()> {
+/// Says that nothing reaches SYMBOL, nor the items that use it: as many as
+/// [`text::names_text`] names, or with `all`, every one.
+fn write_unreachable(name: &str, users: &[&str], all: bool, out: &mut dyn Write) -> Result<()> {
     writeln!(out, "{}", text::nothing_reaches(name))?;
     if !users.is_empty() {
         let (verb, pronoun) = verb_and_pronoun(users);
         writeln!(
             out,
             "{} {verb} it, but nothing reaches {pronoun} either.",
-            text::names_text(users),
+            text::names_text(users, all),
         )?;
     }
     Ok(())

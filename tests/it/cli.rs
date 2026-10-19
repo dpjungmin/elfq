@@ -717,6 +717,14 @@ _init is in .init, which the program uses when it starts.
     );
 }
 
+/// Whether `text` sums up what it leaves out: a row such as "└─ 6 more" or
+/// "70 more", or a list in a sentence such as "a, b and 48 more.". The AT
+/// column keeps its cut, as in "0x3a249 and 3 more  .rodata@0x6044".
+fn sums_up(text: &str) -> bool {
+    text.lines()
+        .any(|line| line.contains(" more") && !line.contains(" more  "))
+}
+
 #[test]
 fn all_shows_every_item() {
     let sample = "testdata/bin/rust-x86_64-nodebug.elf";
@@ -730,11 +738,18 @@ fn all_shows_every_item() {
     ] {
         let largest = stdout(&args);
         let all = stdout(&[&args[..], &["--all"]].concat());
-        let sums_up = |text: &str| text.lines().any(|line| line.ends_with(" more"));
         assert!(sums_up(&largest), "{args:?}\n{largest}");
         assert!(!sums_up(&all), "{args:?}\n{all}");
         assert!(all.lines().count() > largest.lines().count());
     }
+    // A range check lists every crossing either way, and --all names every
+    // function in the sentence under the table.
+    let range = [sample, "callers", "0x20000+0x10000"];
+    let largest = crossing(&range);
+    let all = crossing(&[&range[..], &["--all"]].concat());
+    assert!(largest.contains(" and 9 more aren't listed"), "{largest}");
+    assert!(!sums_up(&all), "{all}");
+    assert_eq!(all.lines().count(), largest.lines().count());
     // why draws the chains through the nearest 10 users, or every one.
     let chains = |why: &str| {
         why.lines()

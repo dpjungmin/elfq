@@ -188,7 +188,7 @@ fn empty_place(binary: &Binary, range: Option<AddressRange>) -> Result<String> {
              sections occupy",
             text::range_argument(range)
         ),
-        Some(range) => text::range_text(binary, range),
+        Some(range) => text::range_text(binary, range, false),
         None => "the file".to_string(),
     };
     if !found_functions(binary) {

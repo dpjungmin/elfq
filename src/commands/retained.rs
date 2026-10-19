@@ -66,7 +66,7 @@ pub fn run(
     let items = symbol.counted_items();
     let own = retained.own(index);
     let own_bytes = text::bytes_text(own);
-    let range = range.map(|range| text::range_text(binary, range));
+    let range = range.map(|range| text::range_text(binary, range, all));
     if items.is_empty() {
         match &range {
             Some(range) if own == 0 => writeln!(
@@ -82,7 +82,7 @@ pub fn run(
                 "Removing {name} would save its own {own_bytes}, and nothing else."
             )?,
         }
-        write_shared(&symbol, out)?;
+        write_shared(&symbol, all, out)?;
         return symbol.write_indirect_note(out);
     }
     let in_range = range
@@ -102,7 +102,7 @@ pub fn run(
     ]);
     table.tree(&[retained.tree_row(&shown, index)]);
     table.write(out)?;
-    write_shared(&symbol, out)?;
+    write_shared(&symbol, all, out)?;
     symbol.write_indirect_note(out)
 }
 
@@ -161,9 +161,9 @@ fn shared(symbol: &SymbolInTree) -> Vec<Node> {
 }
 
 /// Names what SYMBOL and the items it keeps use that other code uses too,
-/// and so isn't counted.
-fn write_shared(symbol: &SymbolInTree, out: &mut dyn Write) -> Result<()> {
-    const NAMED: usize = 10;
+/// and so isn't counted, in order of name: as many as [`text::named`] says,
+/// and how many more, or with `all`, every one.
+fn write_shared(symbol: &SymbolInTree, all: bool, out: &mut dyn Write) -> Result<()> {
     let binary = symbol.retained.binary;
     let mut shared: Vec<&str> = shared(symbol)
         .into_iter()
@@ -173,7 +173,7 @@ fn write_shared(symbol: &SymbolInTree, out: &mut dyn Write) -> Result<()> {
     if shared.is_empty() {
         return Ok(());
     }
-    let named = text::shown_count(shared.len(), NAMED);
+    let named = text::shown_count(shared.len(), text::named(all));
     let mut names = shared[..named].join(", ");
     if named < shared.len() {
         names += &format!(" and {} more", shared.len() - named);

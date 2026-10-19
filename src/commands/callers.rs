@@ -41,7 +41,9 @@ pub fn run(
             callers(binary, &graph, node, all, format, out)?;
             Ok(Outcome::Answered)
         }
-        Subject::Ranges(ranges) => ranges::run(binary, &graph, &ranges, Direction::In, format, out),
+        Subject::Ranges(ranges) => {
+            ranges::run(binary, &graph, &ranges, Direction::In, all, format, out)
+        }
     }
 }
 

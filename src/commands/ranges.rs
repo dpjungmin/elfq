@@ -92,13 +92,15 @@ struct CallerJson<'a> {
     sites: Vec<String>,
 }
 
-/// Lists what crosses the boundary of `ranges` in `direction`. The answer
-/// is [`Outcome::Crossed`] when something does, or may.
+/// Lists what crosses the boundary of `ranges` in `direction`, every
+/// crossing, and with `all`, every name in its sentences. The answer is
+/// [`Outcome::Crossed`] when something does, or may.
 pub fn run(
     binary: &Binary,
     graph: &Graph,
     ranges: &[AddressRange],
     direction: Direction,
+    all: bool,
     format: Format,
     out: &mut dyn Write,
 ) -> Result<Outcome> {
@@ -115,6 +117,7 @@ pub fn run(
                 crossings: boundary.leaving(),
                 unfollowed: boundary.unfollowed(),
                 unreadable: boundary.unreadable(),
+                all,
             };
             match format {
                 Format::Json => leaving.write_json(out)?,
@@ -130,6 +133,7 @@ pub fn run(
                 ranges,
                 crossings: boundary.entering(),
                 through_pointer: boundary.callable_through_pointer(),
+                all,
             };
             match format {
                 Format::Json => entering.write_json(out)?,
@@ -156,6 +160,9 @@ struct Leaving<'a> {
     /// The functions in the ranges whose code elfq can't read, since it
     /// doesn't know where they end.
     unreadable: Vec<usize>,
+    /// Whether the sentences name every range, section and function, for
+    /// `--all`.
+    all: bool,
 }
 
 impl Leaving<'_> {
@@ -203,7 +210,7 @@ impl Leaving<'_> {
     fn write_text(&self, out: &mut dyn Write) -> Result<()> {
         let binary = self.binary;
         let one_range = self.ranges.len() == 1;
-        let subject = ranges_text(binary, self.ranges);
+        let subject = ranges_text(binary, self.ranges, self.all);
         let it = if one_range { "it" } else { "them" };
         let verb = |one: &str, many: &str| if one_range { one } else { many }.to_string();
         let groups = groups(binary, &self.crossings, Direction::Out, |crossing| {
@@ -276,7 +283,7 @@ impl Leaving<'_> {
             writeln!(
                 out,
                 "elfq doesn't know where {} {}, so it can't read {} code.",
-                text::names_text(&names),
+                text::names_text(&names, self.all),
                 if names.len() == 1 { "ends" } else { "end" },
                 if names.len() == 1 { "its" } else { "their" }
             )?;
@@ -294,6 +301,9 @@ struct Entering<'a> {
     /// The functions in the ranges that code outside may call through a
     /// pointer, which elfq can't see.
     through_pointer: Vec<usize>,
+    /// Whether the sentences name every range, section and function, for
+    /// `--all`.
+    all: bool,
 }
 
 impl Entering<'_> {
@@ -326,7 +336,7 @@ impl Entering<'_> {
 
     fn write_text(&self, out: &mut dyn Write) -> Result<()> {
         let binary = self.binary;
-        let subject = ranges_text(binary, self.ranges);
+        let subject = ranges_text(binary, self.ranges, self.all);
         let it = if self.ranges.len() == 1 { "it" } else { "them" };
         let groups = groups(binary, &self.crossings, Direction::In, |crossing| {
             how_column(binary, crossing)
@@ -359,7 +369,7 @@ impl Entering<'_> {
             writeln!(
                 out,
                 "Calls through a pointer to {} aren't listed, since elfq can't see them.",
-                text::names_text(&names)
+                text::names_text(&names, self.all)
             )?;
         }
         Ok(())
@@ -543,14 +553,14 @@ fn group_unfollowed(unfollowed: &[Unfollowed]) -> Vec<(Unfollowed, Vec<u64>)> {
 }
 
 /// The ranges as `--range` takes them, with the sections in each, joined
-/// into a phrase.
-fn ranges_text(binary: &Binary, ranges: &[AddressRange]) -> String {
+/// into a phrase, every range and section with `all`.
+fn ranges_text(binary: &Binary, ranges: &[AddressRange], all: bool) -> String {
     let texts: Vec<String> = ranges
         .iter()
-        .map(|&range| text::range_text(binary, range))
+        .map(|&range| text::range_text(binary, range, all))
         .collect();
     let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
-    text::names_text(&texts)
+    text::names_text(&texts, all)
 }
 
 #[cfg(test)]
@@ -585,6 +595,7 @@ mod tests {
             &graph,
             &ranges,
             Direction::Out,
+            false,
             Format::Text,
             &mut out,
         );

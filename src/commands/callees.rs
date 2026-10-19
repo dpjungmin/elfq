@@ -55,7 +55,7 @@ pub fn run(
         }
         Subject::Ranges(ranges) => {
             let graph = Graph::build(binary);
-            ranges::run(binary, &graph, &ranges, Direction::Out, format, out)
+            ranges::run(binary, &graph, &ranges, Direction::Out, all, format, out)
         }
     }
 }
@@ -111,16 +111,17 @@ fn callees(
         if listed {
             writeln!(out)?;
         }
-        for line in unresolved_lines(name, unresolved, listed) {
+        for line in unresolved_lines(name, unresolved, listed, all) {
             writeln!(out, "{line}")?;
         }
     }
     Ok(())
 }
 
-/// Sentences about the calls and jumps in `name` that elfq can't follow.
-/// `listed` is whether the table above lists what it does call or use.
-fn unresolved_lines(name: &str, unresolved: &[Unresolved], listed: bool) -> Vec<String> {
+/// Sentences about the calls and jumps in `name` that elfq can't follow,
+/// with the first few sites, or with `all`, every one. `listed` is whether
+/// the table above lists what it does call or use.
+fn unresolved_lines(name: &str, unresolved: &[Unresolved], listed: bool, all: bool) -> Vec<String> {
     let mut lines = Vec::new();
     // Through a pointer, so that only the running program knows where
     // they go, or to an address the code names but no item holds.
@@ -149,7 +150,7 @@ fn unresolved_lines(name: &str, unresolved: &[Unresolved], listed: bool) -> Vec<
         };
         lines.push(format!(
             "{start} {what}{through}, at {}, {end}.",
-            text::addresses_text(&sites)
+            text::addresses_text(&sites, all)
         ));
     }
     lines
@@ -175,7 +176,7 @@ mod tests {
             unresolved(0x20, false, Some(0x9000)),
         ];
         assert_eq!(
-            unresolved_lines("f", &calls, false),
+            unresolved_lines("f", &calls, false, false),
             [
                 "f makes 1 call through a pointer, at 0x10, which elfq can't follow.",
                 "Also 1 jump, at 0x20, to code outside every function elfq knows.",
@@ -186,7 +187,7 @@ mod tests {
             unresolved(0x18, false, Some(0x9100)),
         ];
         assert_eq!(
-            unresolved_lines("f", &jumps, true),
+            unresolved_lines("f", &jumps, true, false),
             ["Also 2 jumps, at 0x10 and 0x18, to code outside every function elfq knows."]
         );
     }

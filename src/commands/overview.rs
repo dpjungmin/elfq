@@ -194,7 +194,7 @@ fn write_range(
         out,
         "{} in {}, {} of code and data",
         items_text(binary, Some(range)),
-        text::range_text(binary, range),
+        text::range_text(binary, range, false),
         text::bytes_text(total_bytes(binary, Some(range)))
     )?;
     // When nothing reaches the items in the range, there is nothing to rank.
