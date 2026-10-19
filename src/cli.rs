@@ -86,7 +86,7 @@ pub enum Command {
     Retained(RetainedArgs),
     /// Show the chains of calls and references that keep SYMBOL in the file
     #[command(after_help = format!("{WHY}\n\n{HOW}"))]
-    Why(SymbolArgs),
+    Why(WhyArgs),
     /// List the functions the compiler inlined, by the bytes their copies take
     #[command(after_help = INLINED)]
     Inlined(InlinedArgs),
@@ -94,14 +94,14 @@ pub enum Command {
     #[command(
         override_usage = "elfq <FILE> callers [OPTIONS] <SYMBOL>\n       \
                           elfq <FILE> callers [OPTIONS] <RANGE>...",
-        after_help = format!("{HOW}\n\n{CALLERS_RANGES}")
+        after_help = format!("{HOW}\n\n{CALLERS}\n\n{CALLERS_RANGES}")
     )]
     Callers(UsesArgs),
     /// List what SYMBOL calls or uses
     #[command(
         override_usage = "elfq <FILE> callees [OPTIONS] <SYMBOL>\n       \
                           elfq <FILE> callees [OPTIONS] <RANGE>...",
-        after_help = format!("{HOW}\n\n{CALLEES_RANGES}")
+        after_help = format!("{HOW}\n\n{CALLEES}\n\n{CALLEES_RANGES}")
     )]
     Callees(UsesArgs),
     /// Show elfq's own view of the file (for developing elfq)
@@ -123,16 +123,26 @@ The HOW column says how one item uses the other:
 elfq can't tell where a call through a pointer set at run time goes; the
 address taken and pointer rows show where such pointers come from.";
 
+const CALLERS: &str = "\
+The table lists the 30 largest callers by their own size, in order of name,
+and a last row such as \"70 more\" counts the rest; --all lists every one.";
+
+const CALLEES: &str = "\
+The table lists the 30 largest callees by their own size, in the order
+SYMBOL first uses them, and a last row such as \"70 more\" counts the rest;
+--all lists every one.";
+
 const CALLEES_RANGES: &str = "\
 With ranges of memory in place of SYMBOL, such as 0x0+256K for an ITCM,
 elfq lists only what the code and data in them use outside them. Each row
 names the item outside first, as in \"memcpy, used by apply_filter\", and
-ADDRESS and SIZE are that item's. Calls and jumps that elfq can't follow
-come first, as \"(through a pointer)\", or as \"(outside any function)\" when
-they go to an address no function holds. A call through a veneer, which a
-linker adds when the target is too far away for the call instruction, is
-listed where it calls the veneer, as \"call via veneer\". elfq knows the
-veneers that GNU ld and LLD add for Cortex-M.
+ADDRESS and SIZE are that item's. Every crossing has a row, and --all makes
+the sentences name everything they would cut short. Calls and jumps that
+elfq can't follow come first, as \"(through a pointer)\", or as \"(outside any
+function)\" when they go to an address no function holds. A call through a
+veneer, which a linker adds when the target is too far away for the call
+instruction, is listed where it calls the veneer, as \"call via veneer\".
+elfq knows the veneers that GNU ld and LLD add for Cortex-M.
 
 Exit status: 0 if nothing leaves the ranges, 1 if something does or might,
 and 2 for an error.";
@@ -140,9 +150,10 @@ and 2 for an error.";
 const CALLERS_RANGES: &str = "\
 With ranges of memory in place of SYMBOL, such as 0x0+256K for an ITCM,
 elfq lists only the code and data outside them that use what is in them.
-Each row names the item outside first, as in \"process_frame, uses
-crc32\", and ADDRESS and SIZE are that item's. A call through a veneer,
-which a linker adds when the target is too far away for the call
+Each row names the item outside first, as in \"process_frame, uses crc32\",
+and ADDRESS and SIZE are that item's. Every crossing has a row, and --all
+makes the sentences name everything they would cut short. A call through a
+veneer, which a linker adds when the target is too far away for the call
 instruction, is listed where it calls the veneer, as \"call via veneer\".
 elfq knows the veneers that GNU ld and LLD add for Cortex-M.
 
@@ -154,9 +165,8 @@ The tree starts where the program does: at the entry point, a function the
 C runtime runs at startup, or a handler in the vector table. Each item in
 it is used by the one above it, and the chains end at SYMBOL. Only the
 shortest chain through each item that uses SYMBOL is shown, for the 10
-nearest at most; elfq FILE callers SYMBOL lists them all. Items that
-nothing reaches, or that only SYMBOL leads to, don't keep it, and are
-named below the tree.
+nearest, or for every one with --all. Items that nothing reaches, or that
+only SYMBOL leads to, don't keep it, and are named below the tree.
 
 The last line names the closest item that every chain goes through, if
 there is one: SYMBOL counts toward that item's retained size.";
@@ -211,10 +221,14 @@ pub struct RetainedArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct SymbolArgs {
+pub struct WhyArgs {
     /// A function or data object: its name, the end of its name
     /// (process_frame for app::process_frame), or an address such as 0x1700
     pub symbol: String,
+    /// Show the chains through every item that keeps SYMBOL, not only the
+    /// 10 nearest
+    #[arg(long)]
+    pub all: bool,
 }
 
 #[derive(Debug, Args)]
@@ -227,6 +241,9 @@ pub struct UsesArgs {
     // and with --range, to give the range here instead.
     #[arg(value_name = "SYMBOL|RANGE")]
     pub symbols: Vec<String>,
+    /// Show every item, not only the 30 largest
+    #[arg(long)]
+    pub all: bool,
 }
 
 #[derive(Debug, Args)]

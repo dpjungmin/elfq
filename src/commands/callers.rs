@@ -12,7 +12,6 @@ use super::{Outcome, json, text};
 use crate::binary::{Binary, ItemKind};
 use crate::cli::Format;
 use crate::graph::{Graph, Node, Reference, ReferenceKind};
-use crate::render::{Align, Table};
 
 #[derive(Serialize)]
 struct Callers<'a> {
@@ -25,10 +24,12 @@ struct Callers<'a> {
 }
 
 /// Answers `elfq FILE callers SYMBOL`, or with ranges in place of SYMBOL,
-/// `callers RANGE...`.
+/// `callers RANGE...`. For SYMBOL, the text lists the 30 largest callers,
+/// or with `all`, every one; for ranges, see [`ranges::run`].
 pub fn run(
     binary: &Binary,
     symbols: &[String],
+    all: bool,
     format: Format,
     out: &mut dyn Write,
 ) -> Result<Outcome> {
@@ -37,10 +38,12 @@ pub fn run(
     let graph = Graph::build(binary);
     match subject {
         Subject::Node(node) => {
-            callers(binary, &graph, node, format, out)?;
+            callers(binary, &graph, node, all, format, out)?;
             Ok(Outcome::Answered)
         }
-        Subject::Ranges(ranges) => ranges::run(binary, &graph, &ranges, Direction::In, format, out),
+        Subject::Ranges(ranges) => {
+            ranges::run(binary, &graph, &ranges, Direction::In, all, format, out)
+        }
     }
 }
 
@@ -49,6 +52,7 @@ fn callers(
     binary: &Binary,
     graph: &Graph,
     node: Node,
+    all: bool,
     format: Format,
     out: &mut dyn Write,
 ) -> Result<()> {
@@ -128,19 +132,7 @@ fn callers(
         text::count_text(binary, &callers)
     )?;
     writeln!(out)?;
-    let mut table = Table::new(&[
-        ("HOW", Align::Left),
-        ("AT", Align::Left),
-        ("CALLER", Align::Left),
-    ]);
-    for row in &rows {
-        table.row(vec![
-            row.how.to_string(),
-            text::at_column(&row.sites),
-            row.node.name(binary).to_string(),
-        ]);
-    }
-    table.write(out)?;
+    super::write_uses_table(binary, rows, "CALLER", text::shown(all), out)?;
     if !notes.is_empty() {
         writeln!(out)?;
         for note in notes {

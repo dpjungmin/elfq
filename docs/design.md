@@ -193,11 +193,17 @@ All commands print a table or tree for people by default. A table puts its
 short cells, such as sizes, HOW and AT, first and the name last, so that a
 long name that the terminal wraps moves no column. AT shows where an item
 is used: every site when there are one or two, else the first and how many
-more. `--json` prints the same answer for scripts. The JSON has every item
-and every site, where the text shows only the largest items and the first
-sites; every key is always there, `null` when it has no value; addresses
-are hex strings, as elfq prints them and SYMBOL takes them, and sizes are
-numbers. An item looks like this:
+more. `callers SYMBOL` and `callees SYMBOL` list the 30 items with the
+largest own sizes, callers in order of name and callees in the order SYMBOL
+first uses them, and a last row such as `70 more` counts the rest; with
+ranges, they list every crossing. `--all` lifts every such cut in an answer
+but AT's: it shows every item in a table or tree, every chain in `why`, and
+every name and address in a sentence, where a long list otherwise ends with
+"and 48 more". `--json` prints the same answer for scripts. The JSON has
+every item and every site, where the text shows only the largest items and
+the first sites; every key is always there, `null` when it has no value;
+addresses are hex strings, as elfq prints them and SYMBOL takes them, and
+sizes are numbers. An item looks like this:
 
 ```json
 {
@@ -244,8 +250,7 @@ A tree shows its 30 largest items and sums up the rest under their parents:
 `└─ 6 more` stands for six items, and its RETAINED column adds up their
 bytes. A line never stands for a single item, since the item's own line
 takes no more room, and lists of names and addresses never end in "and 1
-more" either. `--all` shows every item instead, in `top`, `retained` and
-`inlined`.
+more" either. `--all` shows every item instead.
 
 Every tree, in every command, is drawn at most 9 levels below its top
 row, so names never start more than 27 columns into the tree and long names

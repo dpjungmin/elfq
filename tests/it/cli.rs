@@ -717,6 +717,14 @@ _init is in .init, which the program uses when it starts.
     );
 }
 
+/// Whether `text` sums up what it leaves out: a row such as "└─ 6 more" or
+/// "70 more", or a list in a sentence such as "a, b and 48 more.". The AT
+/// column keeps its cut, as in "0x3a249 and 3 more  .rodata@0x6044".
+fn sums_up(text: &str) -> bool {
+    text.lines()
+        .any(|line| line.contains(" more") && !line.contains(" more  "))
+}
+
 #[test]
 fn all_shows_every_item() {
     let sample = "testdata/bin/rust-x86_64-nodebug.elf";
@@ -725,18 +733,119 @@ fn all_shows_every_item() {
         vec![sample, "top"],
         vec![sample, "retained", "main"],
         vec![firmware, "inlined"],
+        vec![sample, "callers", "memcpy"],
+        vec![sample, "callees", "std::rt::lang_start_internal"],
     ] {
         let largest = stdout(&args);
         let all = stdout(&[&args[..], &["--all"]].concat());
-        let sums_up = |text: &str| text.lines().any(|line| line.ends_with(" more"));
         assert!(sums_up(&largest), "{args:?}\n{largest}");
         assert!(!sums_up(&all), "{args:?}\n{all}");
         assert!(all.lines().count() > largest.lines().count());
     }
+    // A range check lists every crossing either way, and --all names every
+    // function in the sentence under the table.
+    let range = [sample, "callers", "0x20000+0x10000"];
+    let largest = crossing(&range);
+    let all = crossing(&[&range[..], &["--all"]].concat());
+    assert!(largest.contains(" and 9 more aren't listed"), "{largest}");
+    assert!(!sums_up(&all), "{all}");
+    assert_eq!(all.lines().count(), largest.lines().count());
+    // why draws the chains through the nearest 10 users, or every one.
+    let chains = |why: &str| {
+        why.lines()
+            .filter(|line| line.ends_with("─ memcpy"))
+            .count()
+    };
+    let why = stdout(&[sample, "why", "memcpy"]);
+    assert!(
+        why.starts_with(
+            "memcpy is used by 57 functions; these are the chains through the nearest 10:\n"
+        ),
+        "{why}"
+    );
+    assert_eq!(chains(&why), 10, "{why}");
+    let why = stdout(&[sample, "why", "memcpy", "--all"]);
+    assert!(
+        why.starts_with("memcpy is used by 57 functions, through these chains:\n"),
+        "{why}"
+    );
+    assert_eq!(chains(&why), 57, "{why}");
     // A tree of fewer than 30 items is the same either way.
     assert_output(
         &stdout(&[SAMPLE, "retained", "process_frame", "--all"]),
         &stdout(&[SAMPLE, "retained", "process_frame"]),
+    );
+}
+
+#[test]
+fn callers_lists_the_largest_callers() {
+    let sample = "testdata/bin/rust-x86_64-nodebug.elf";
+    let callers = stdout(&[sample, "callers", "_Unwind_Resume"]);
+    let lines: Vec<&str> = callers.lines().collect();
+    assert_eq!(lines[0], "_Unwind_Resume@plt is used by 100 functions:");
+    assert_eq!(lines[2], "HOW   AT                  CALLER");
+    // 30 callers, then a row that counts the rest.
+    assert_eq!(lines.len(), 34, "{callers}");
+    assert!(lines[3..33].iter().all(|line| line.starts_with("call  ")));
+    assert_eq!(lines[33], "                          70 more");
+    let all = stdout(&[sample, "callers", "_Unwind_Resume", "--all"]);
+    assert_eq!(all.lines().count(), 103, "{all}");
+    // JSON has every caller either way.
+    let json = stdout(&[sample, "callers", "_Unwind_Resume", "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(json["callers"].as_array().unwrap().len(), 100);
+}
+
+#[test]
+fn callees_lists_the_largest_callees_in_the_order_of_the_code() {
+    // The 30 largest of 54, in the order the code first uses them. Of the
+    // 8-byte objects, those whose names sort first are kept, and the
+    // imports that std::rt::lang_start_internal calls, such as poll and
+    // abort, count as 0 bytes. "24 more" counts items, not rows.
+    assert_output(
+        &stdout(&[
+            "testdata/bin/rust-x86_64-nodebug.elf",
+            "callees",
+            "std::rt::lang_start_internal",
+        ]),
+        "\
+std::rt::lang_start_internal uses 54 items:
+
+HOW            AT                  CALLEE
+uses           0x3a17f, 0x3a19e    <std::thread::id::ThreadId>::new::COUNTER
+uses           0x3a1ca             .rodata@0x71c0
+uses           0x3a249 and 3 more  .rodata@0x6044
+uses           0x3a31b             .rodata@0x79e8
+call           0x3a525, 0x3a5a1    std::sys::pal::unix::stack_overflow::imp::make_handler
+call           0x3a53b, 0x3a5b8    std::sys::pal::unix::stack_overflow::thread_info::set_current_info
+address taken  0x3a54a, 0x3a5c4    std::sys::pal::unix::stack_overflow::imp::signal_handler
+uses           0x3a5ea             std::sys::args::unix::imp::ARGC.0
+call           0x3a654             <std::thread::id::ThreadId>::new::exhausted
+uses           0x3a674             .data.rel.ro@0x52e80
+uses           0x3a67b             .data.rel.ro@0x53628
+call           0x3a68b             <std::sys::sync::once::futex::Once>::call
+uses           0x3a693             .rodata@0x89fd
+call           0x3a6a3             <std::sys::stdio::unix::Stderr as std::io::Write>::write_fmt
+call           0x3a6b6             core::ptr::drop_glue::<core::result::Result<(), std::io::error::Error>>
+call           0x3a6bb             std::process::abort
+uses           0x3a6c1             .rodata@0x87ef
+call           0x3a6cd             core::panicking::panic_nounwind
+uses           0x3a6d3             .data.rel.ro@0x538f8
+uses           0x3a6e0             .data.rel.ro@0x538e0
+call           0x3a6f5             core::panicking::assert_failed::<i32, i32>
+uses           0x3a700             .rodata@0x80a8
+uses           0x3a707             .data.rel.ro@0x53970
+call           0x3a713             core::panicking::panic
+uses           0x3a71e             .data.rel.ro@0x53910
+call           0x3a725             core::panicking::panic_const::panic_const_rem_by_zero
+call           0x3a733 and 2 more  __rustc::__rust_panic_cleanup
+uses           0x3a73f, 0x3a7dd    std::panicking::panic_count::GLOBAL_PANIC_COUNT
+call           0x3a7cd             std::rt::lang_start_internal::{closure#0}::{closure#0}::{closure#1}
+call           0x3a802             std::rt::handle_rt_panic::<isize>
+                                   24 more
+
+Also 7 calls and 1 jump through pointers, at 0x3a1fa, 0x3a206, 0x3a329 and 5 more, which elfq can't follow.
+",
     );
 }
 
@@ -781,8 +890,20 @@ Removing main would remove log_msg too.
         ),
         "{why}"
     );
-    // With more than ten users, the tree shows the chains through the
-    // nearest ten.
+    // With exactly 11 users, the tree shows every chain, since a summary
+    // never stands for a single item.
+    let why = stdout(&["testdata/bin/far-gnu-m4-nodebug.elf", "why", "counter"]);
+    assert!(
+        why.starts_with("counter is used by 11 functions, through these chains:\n"),
+        "{why}"
+    );
+    assert_eq!(
+        why.lines()
+            .filter(|line| line.ends_with("─ counter"))
+            .count(),
+        11
+    );
+    // With more, it shows the chains through the nearest ten.
     let why = stdout(&[
         "testdata/bin/rust-x86_64-nodebug.elf",
         "why",

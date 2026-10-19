@@ -70,14 +70,14 @@ pub fn run(
             Some(range) => writeln!(
                 out,
                 "{total} of code and data in {}, by what keeps them:",
-                text::range_text(binary, range)
+                text::range_text(binary, range, all)
             )?,
             None => writeln!(out, "{total} of code and data, by what keeps them:")?,
         }
         writeln!(out)?;
         retained.write_largest(text::shown(all), out)?;
     }
-    if let Some(unreachable) = unreachable_text(&retained) {
+    if let Some(unreachable) = unreachable_text(&retained, all) {
         if kept {
             writeln!(out)?;
         }
@@ -98,8 +98,9 @@ fn unreachable(retained: &RetainedTree) -> Vec<usize> {
     unreachable
 }
 
-/// The sentence that names the items that nothing reaches, if any.
-fn unreachable_text(retained: &RetainedTree) -> Option<String> {
+/// The sentence that names the items that nothing reaches, if any, largest
+/// first: as many as [`text::names_text`] names, or with `all`, every one.
+fn unreachable_text(retained: &RetainedTree, all: bool) -> Option<String> {
     let binary = retained.binary;
     let unreachable = unreachable(retained);
     if unreachable.is_empty() {
@@ -121,6 +122,6 @@ fn unreachable_text(retained: &RetainedTree) -> Option<String> {
         "Nothing reaches {}, {} in all: {}. They are dead code, or used in a way elfq can't see.",
         text::count_text(binary, &nodes),
         text::bytes_text(bytes),
-        text::names_text(&names)
+        text::names_text(&names, all)
     ))
 }

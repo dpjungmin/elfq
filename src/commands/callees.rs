@@ -12,7 +12,6 @@ use super::{Outcome, json, text};
 use crate::binary::Binary;
 use crate::cli::Format;
 use crate::graph::{Graph, Node, Reference, Unresolved};
-use crate::render::{Align, Table};
 
 #[derive(Serialize)]
 struct Callees<'a> {
@@ -37,10 +36,12 @@ struct UnresolvedJson {
 }
 
 /// Answers `elfq FILE callees SYMBOL`, or with ranges in place of SYMBOL,
-/// `callees RANGE...`.
+/// `callees RANGE...`. For SYMBOL, the text lists the 30 largest callees,
+/// or with `all`, every one; for ranges, see [`ranges::run`].
 pub fn run(
     binary: &Binary,
     symbols: &[String],
+    all: bool,
     format: Format,
     out: &mut dyn Write,
 ) -> Result<Outcome> {
@@ -49,12 +50,12 @@ pub fn run(
         Subject::Node(node) => {
             let index = super::readable_item(binary, node)?;
             let graph = Graph::build(binary);
-            callees(binary, &graph, index, format, out)?;
+            callees(binary, &graph, index, all, format, out)?;
             Ok(Outcome::Answered)
         }
         Subject::Ranges(ranges) => {
             let graph = Graph::build(binary);
-            ranges::run(binary, &graph, &ranges, Direction::Out, format, out)
+            ranges::run(binary, &graph, &ranges, Direction::Out, all, format, out)
         }
     }
 }
@@ -64,6 +65,7 @@ fn callees(
     binary: &Binary,
     graph: &Graph,
     index: usize,
+    all: bool,
     format: Format,
     out: &mut dyn Write,
 ) -> Result<()> {
@@ -98,38 +100,28 @@ fn callees(
         return Ok(());
     }
 
-    if !rows.is_empty() {
+    let listed = !rows.is_empty();
+    if listed {
         let callees = super::distinct_nodes(&rows);
         writeln!(out, "{name} uses {}:", text::count_text(binary, &callees))?;
         writeln!(out)?;
-        let mut table = Table::new(&[
-            ("HOW", Align::Left),
-            ("AT", Align::Left),
-            ("CALLEE", Align::Left),
-        ]);
-        for row in &rows {
-            table.row(vec![
-                row.how.to_string(),
-                text::at_column(&row.sites),
-                row.node.name(binary).to_string(),
-            ]);
-        }
-        table.write(out)?;
+        super::write_uses_table(binary, rows, "CALLEE", text::shown(all), out)?;
     }
     if !unresolved.is_empty() {
-        if !rows.is_empty() {
+        if listed {
             writeln!(out)?;
         }
-        for line in unresolved_lines(name, unresolved, !rows.is_empty()) {
+        for line in unresolved_lines(name, unresolved, listed, all) {
             writeln!(out, "{line}")?;
         }
     }
     Ok(())
 }
 
-/// Sentences about the calls and jumps in `name` that elfq can't follow.
-/// `listed` is whether the table above lists what it does call or use.
-fn unresolved_lines(name: &str, unresolved: &[Unresolved], listed: bool) -> Vec<String> {
+/// Sentences about the calls and jumps in `name` that elfq can't follow,
+/// with the first few sites, or with `all`, every one. `listed` is whether
+/// the table above lists what it does call or use.
+fn unresolved_lines(name: &str, unresolved: &[Unresolved], listed: bool, all: bool) -> Vec<String> {
     let mut lines = Vec::new();
     // Through a pointer, so that only the running program knows where
     // they go, or to an address the code names but no item holds.
@@ -158,7 +150,7 @@ fn unresolved_lines(name: &str, unresolved: &[Unresolved], listed: bool) -> Vec<
         };
         lines.push(format!(
             "{start} {what}{through}, at {}, {end}.",
-            text::addresses_text(&sites)
+            text::addresses_text(&sites, all)
         ));
     }
     lines
@@ -184,7 +176,7 @@ mod tests {
             unresolved(0x20, false, Some(0x9000)),
         ];
         assert_eq!(
-            unresolved_lines("f", &calls, false),
+            unresolved_lines("f", &calls, false, false),
             [
                 "f makes 1 call through a pointer, at 0x10, which elfq can't follow.",
                 "Also 1 jump, at 0x20, to code outside every function elfq knows.",
@@ -195,7 +187,7 @@ mod tests {
             unresolved(0x18, false, Some(0x9100)),
         ];
         assert_eq!(
-            unresolved_lines("f", &jumps, true),
+            unresolved_lines("f", &jumps, true, false),
             ["Also 2 jumps, at 0x10 and 0x18, to code outside every function elfq knows."]
         );
     }
