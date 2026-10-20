@@ -251,8 +251,8 @@ impl<'a> SymbolInTree<'a> {
         self.retained.tree.is_reachable(self.node())
     }
 
-    /// Says that nothing reaches SYMBOL, so it is dead code, or used in a way
-    /// elfq can't see.
+    /// Says that nothing reaches SYMBOL, so the program never uses it, or
+    /// uses it in a way elfq can't see.
     fn write_unreachable(&self, out: &mut dyn Write) -> Result<()> {
         writeln!(out, "{}", text::nothing_reaches(&self.lead_name))?;
         Ok(())

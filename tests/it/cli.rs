@@ -273,8 +273,9 @@ RETAINED   OWN  ITEM
       32    32  __abi_tag
       17        5 more
 
-Nothing reaches 3 items, 41 bytes in all: debug_dump, .rodata@0x2056 and _IO_stdin_used. They are dead code, or used in a way elfq can't see.
-"
+Nothing reaches 3 items, 41 bytes in all: debug_dump, .rodata@0x2056 and _IO_stdin_used.
+The program never uses them, or elfq can't see how.
+",
     );
     // On Cortex-M the SysTick interrupt also reaches `log_msg`, so it isn't
     // under `main` but at the top, with what only it leads to.
@@ -287,8 +288,8 @@ Nothing reaches 3 items, 41 bytes in all: debug_dump, .rodata@0x2056 and _IO_std
     let cpp = stdout(&["testdata/bin/cpp-x86_64.elf", "top"]);
     assert!(
         cpp.ends_with(
-            "\n\nNothing reaches _IO_stdin_used, 4 bytes: it is dead code, or used in a way elfq \
-             can't see.\n"
+            "\n\nNothing reaches _IO_stdin_used, 4 bytes: the program never uses it, or elfq \
+             can't see how.\n"
         ),
         "{cpp}"
     );
@@ -626,8 +627,8 @@ fn a_range_that_nothing_reaches_has_no_tree() {
     // `debug_dump` is all that is in this range.
     assert_output(
         &stdout(&[SAMPLE, "top", "--range", "0x1aa0+29"]),
-        "Nothing reaches debug_dump, 29 bytes: it is dead code, or used in a way elfq can't \
-         see.\n",
+        "Nothing reaches debug_dump, 29 bytes: the program never uses it, or elfq can't see \
+         how.\n",
     );
     assert_output(
         &stdout(&[SAMPLE, "--range", "0x1aa0+29"]),
@@ -788,7 +789,8 @@ RETAINED  OWN  ITEM
        4    4  less, kept by Reset_Handler
        8    8  vector_table
 
-Nothing reaches 11 functions, 242 bytes in all: __aeabi_f2d, __aeabi_i2d, __aeabi_ui2d, __aeabi_dcmpeq, __aeabi_dcmple, __aeabi_dcmpge, __aeabi_dcmpgt, __aeabi_cdrcmple, __aeabi_drsub, __gedf2 and __ledf2. They are dead code, or used in a way elfq can't see.
+Nothing reaches 11 functions, 242 bytes in all: __aeabi_f2d, __aeabi_i2d, __aeabi_ui2d, __aeabi_dcmpeq, __aeabi_dcmple, __aeabi_dcmpge, __aeabi_dcmpgt, __aeabi_cdrcmple, __aeabi_drsub, __gedf2 and __ledf2.
+The program never uses them, or elfq can't see how.
 ",
     );
     assert_output(
@@ -1205,8 +1207,7 @@ Also 7 calls and 1 jump through pointers, at 0x3a1fa, 0x3a206, 0x3a329 and 5 mor
 fn dead_code_keeps_nothing() {
     assert_output(
         &stdout(&[SAMPLE, "retained", "debug_dump"]),
-        "Nothing reaches debug_dump from where the program starts: it is dead code, or used in \
-         a way elfq can't see.\n",
+        "Nothing reaches debug_dump: the program never uses it, or elfq can't see how.\n",
     );
 }
 
@@ -1360,14 +1361,12 @@ fn why_explains_where_the_program_starts() {
 fn why_says_when_nothing_reaches_an_item() {
     assert_output(
         &stdout(&[SAMPLE, "why", "debug_dump"]),
-        "Nothing reaches debug_dump from where the program starts: it is dead code, or used in a \
-         way elfq can't see.\n",
+        "Nothing reaches debug_dump: the program never uses it, or elfq can't see how.\n",
     );
     // The string that only `debug_dump` prints.
     assert_output(
         &stdout(&[SAMPLE, "why", ".rodata@0x2056"]),
-        "Nothing reaches .rodata@0x2056 from where the program starts: it is dead code, or used \
-         in a way elfq can't see.\n\
+        "Nothing reaches .rodata@0x2056: the program never uses it, or elfq can't see how.\n\
          debug_dump uses it, but nothing reaches debug_dump either.\n",
     );
 }
@@ -1517,8 +1516,8 @@ fn the_first_line_says_what_symbol_gave_when_it_isnt_the_name() {
     );
     assert_eq!(
         first_line(&[SAMPLE, "why", "0x1aa5"]),
-        "Nothing reaches debug_dump (which holds 0x1aa5) from where the program starts: it is \
-         dead code, or used in a way elfq can't see."
+        "Nothing reaches debug_dump (which holds 0x1aa5): the program never uses it, or elfq \
+         can't see how."
     );
     // A name with a note can't take "'s".
     assert_eq!(

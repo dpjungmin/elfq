@@ -115,8 +115,9 @@ fn unreachable(retained: &RetainedTree) -> Vec<usize> {
     unreachable
 }
 
-/// The sentence that names the items that nothing reaches, if any, largest
-/// first: as many as [`text::names_text`] names, or with `all`, every one.
+/// The sentences on the items that nothing reaches, if any, which name them
+/// largest first: as many as [`text::names_text`] names, or with `all`,
+/// every one.
 fn unreachable_text(retained: &RetainedTree, all: bool) -> Option<String> {
     let binary = retained.binary;
     let unreachable = unreachable(retained);
@@ -138,13 +139,14 @@ fn unreachable_text(retained: &RetainedTree, all: bool) -> Option<String> {
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
     if let [name] = names[..] {
         return Some(format!(
-            "Nothing reaches {name}, {}: it is dead code, or used in a way elfq can't see.",
+            "Nothing reaches {name}, {}: the program never uses it, or elfq can't see how.",
             text::bytes_text(bytes)
         ));
     }
+    // The names can be many, so the reason has a line of its own.
     let nodes: Vec<Node> = unreachable.iter().map(|&index| Node::Item(index)).collect();
     Some(format!(
-        "Nothing reaches {}, {} in all: {}. They are dead code, or used in a way elfq can't see.",
+        "Nothing reaches {}, {} in all: {}.\nThe program never uses them, or elfq can't see how.",
         text::count_text(binary, &nodes),
         text::bytes_text(bytes),
         text::names_text(&names, all)
@@ -177,8 +179,8 @@ mod tests {
         let retained = RetainedTree::from_graph(&binary, graph, Some(flash));
         assert_eq!(
             unreachable_text(&retained, false).unwrap(),
-            "Nothing reaches stats (load image), 32 bytes: it is dead code, or used in a way \
-             elfq can't see."
+            "Nothing reaches stats (load image), 32 bytes: the program never uses it, or elfq \
+             can't see how."
         );
     }
 }

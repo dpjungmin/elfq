@@ -179,10 +179,7 @@ pub(super) fn unnamed_items(binary: &Binary) -> Option<(&Item, Option<&Item>)> {
 /// Says that nothing reaches the item called `name` from where the program
 /// starts.
 pub(super) fn nothing_reaches(name: &str) -> String {
-    format!(
-        "Nothing reaches {name} from where the program starts: it is dead code, or used in a \
-         way elfq can't see."
-    )
+    format!("Nothing reaches {name}: the program never uses it, or elfq can't see how.")
 }
 
 /// Why the item called `name` is a root of `kind`, as a sentence.
