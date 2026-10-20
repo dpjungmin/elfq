@@ -207,7 +207,8 @@ know. A CI job can then check
 that code in ITCM stays there, or that code run from RAM never touches
 flash. As with `diff`, the exit status is 0 otherwise, and 2 for any
 error, with or without ranges. When the reader stops early, as `head`
-does, elfq still finishes and exits with the answer's status.
+does, elfq still finishes and exits with the answer's status, and an error
+that nothing reads still exits with 2.
 
 All commands print a table for people by default, with one row per line. A
 table puts its short cells, such as sizes, HOW and AT, first and the name

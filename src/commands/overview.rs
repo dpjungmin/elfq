@@ -174,7 +174,7 @@ fn write_range(
         );
     }
     let retained = RetainedTree::build(binary, Some(range))?;
-    retained.check_has_bytes()?;
+    super::check_has_bytes(binary, Some(range))?;
     write_file(path, binary, out)?;
     writeln!(
         out,
@@ -267,6 +267,10 @@ fn write_json(
     range: Option<AddressRange>,
     out: &mut dyn Write,
 ) -> Result<()> {
+    // As the text does, refuse a range with nothing in it.
+    if range.is_some() {
+        super::check_has_bytes(binary, range)?;
+    }
     let readable = arch::is_supported(binary.architecture, binary.thumb);
     let graph = (readable && range.is_none()).then(|| Graph::build(binary));
     let answer = OverviewJson {

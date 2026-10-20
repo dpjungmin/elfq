@@ -700,6 +700,25 @@ fn a_range_must_hold_something() {
         "error: elfq doesn't know where _init ends, so it can't count the bytes in \
          0x00001000..0x00001004 (.init)\n",
     );
+    // The overview's JSON refuses such ranges as its text does.
+    for (args, error) in [
+        (
+            &[TCM_SAMPLE, "--range", "0x40000000+4K"],
+            "nothing in the file is in",
+        ),
+        (
+            &[SAMPLE, "--range", "0x25f0+0x2c8"],
+            "found no functions or data in",
+        ),
+        (
+            &[SAMPLE, "--range", "0x1000+4"],
+            "doesn't know where _init ends",
+        ),
+    ] {
+        let text = stderr(args, 2);
+        assert!(text.contains(error), "{text}");
+        assert_output(&stderr(&[args, &["--json"][..]].concat(), 2), &text);
+    }
     assert!(
         stderr(&[TCM_SAMPLE, "--range", "0x20000000"], 2)
             .contains("expected START..END or START+SIZE")
@@ -1980,6 +1999,26 @@ fn a_reader_that_stops_early_keeps_the_exit_status() {
         let output = child.wait_with_output().unwrap();
         assert_eq!(output.status.code(), Some(code), "{args:?}: {output:?}");
         assert!(output.stderr.is_empty(), "{args:?}: {output:?}");
+    }
+}
+
+#[test]
+fn an_error_keeps_its_exit_status_when_nothing_reads_it() {
+    // As in `elfq ... 2>&1 | head -0`: the error is written after the
+    // reader has gone.
+    for args in [
+        &[SAMPLE, "callers", "nothing_has_this_name"][..],
+        &["callers", SAMPLE, "log_msg"],
+    ] {
+        let (reader, writer) = std::io::pipe().unwrap();
+        drop(reader);
+        let status = command()
+            .args(args)
+            .stdout(Stdio::null())
+            .stderr(writer)
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(2), "{args:?}");
     }
 }
 
