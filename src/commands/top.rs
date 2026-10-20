@@ -55,10 +55,7 @@ pub fn run(
     out: &mut dyn Write,
 ) -> Result<()> {
     if binary.kind == FileKind::SharedLibrary {
-        bail!(
-            "elfq doesn't know yet which functions a shared library offers to other files, so \
-             it can't tell what keeps the most bytes in it"
-        );
+        bail!("elfq can't yet tell what keeps the most bytes in a shared library");
     }
     let retained = RetainedTree::build(binary, range)?;
     super::check_has_bytes(binary, range)?;

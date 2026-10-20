@@ -88,16 +88,12 @@ pub fn run(
             )?,
             Some(range) => writeln!(
                 out,
-                "Removing {name} would save its own {own_bytes} in {range}{load_image}, and \
-                 nothing else."
+                "Removing {name} would save only its own {own_bytes} in {range}{load_image}."
             )?,
-            None => writeln!(
-                out,
-                "Removing {name} would save its own {own_bytes}, and nothing else."
-            )?,
+            None => writeln!(out, "Removing {name} would save only its own {own_bytes}.")?,
         }
         write_shared(&symbol, all, out)?;
-        return symbol.write_indirect_note(out);
+        return symbol.write_indirect_note(all, out);
     }
     let in_range = range
         .map(|range| format!(" in {range}"))
@@ -118,7 +114,7 @@ pub fn run(
     table.tree(&[retained.tree_row(&shown, index, shape)], shape);
     table.write(out)?;
     write_shared(&symbol, all, out)?;
-    symbol.write_indirect_note(out)
+    symbol.write_indirect_note(all, out)
 }
 
 fn write_json(symbol: &SymbolInTree, out: &mut dyn Write) -> Result<()> {
@@ -228,10 +224,7 @@ impl<'a> SymbolInTree<'a> {
         let index = super::readable_item(binary, node)?;
         let name = node.name(binary);
         if binary.kind == FileKind::SharedLibrary {
-            bail!(
-                "elfq doesn't know yet which functions a shared library offers to other files, \
-                 so it can't tell what only {name} leads to"
-            );
+            bail!("elfq can't yet tell what only {name} leads to in a shared library");
         }
         let retained = RetainedTree::build(binary, range)?.with_names(names);
         Ok(SymbolInTree {
@@ -271,28 +264,31 @@ impl<'a> SymbolInTree<'a> {
     }
 
     /// Says that what SYMBOL's code calls through pointers may count for
-    /// other items, if it calls anything that way.
-    fn write_indirect_note(&self, out: &mut dyn Write) -> Result<()> {
+    /// other items, if it calls anything that way, naming the functions that
+    /// do: SYMBOL first, then those that only it leads to, as many as
+    /// [`text::names_text`] names, or with `all`, every one.
+    fn write_indirect_note(&self, all: bool, out: &mut dyn Write) -> Result<()> {
         let indirect = self.indirect_calls();
         if indirect.is_empty() {
             return Ok(());
         }
-        let name = self.node().name(self.retained.binary);
-        let in_symbol = indirect.iter().any(|u| u.from == self.index);
-        let in_items = indirect.iter().any(|u| u.from != self.index);
+        let mut callers: Vec<usize> = indirect.iter().map(|u| u.from).collect();
+        callers.sort_by_key(|&index| (index != self.index, index));
+        callers.dedup();
+        let binary = self.retained.binary;
+        let names: Vec<&str> = callers
+            .iter()
+            .map(|&index| Node::Item(index).name(binary))
+            .collect();
         let calls = indirect.iter().any(|u| u.is_call);
         let jumps = indirect.iter().any(|u| !u.is_call);
-        // The verb after one subject, and after two.
-        let (one, two) = match (calls, jumps) {
+        // The verb after one name, and after several.
+        let (one, several) = match (calls, jumps) {
             (true, true) => ("calls and jumps", "call and jump"),
             (true, false) => ("calls", "call"),
             (false, _) => ("jumps", "jump"),
         };
-        let what = match (in_symbol, in_items) {
-            (true, false) => format!("{name} also {one}"),
-            (false, _) => format!("Code that only {name} leads to also {one}"),
-            (true, true) => format!("{name} and the code that only it leads to also {two}"),
-        };
+        let verb = if names.len() == 1 { one } else { several };
         let (through, reach) = if indirect.len() == 1 {
             ("a pointer", "that reaches")
         } else {
@@ -301,8 +297,8 @@ impl<'a> SymbolInTree<'a> {
         writeln!(out)?;
         writeln!(
             out,
-            "{what} through {through}, which elfq can't follow, so what {reach} may count \
-             elsewhere."
+            "{} also {verb} through {through}, so what {reach} may count elsewhere.",
+            text::names_text(&names, all)
         )?;
         Ok(())
     }

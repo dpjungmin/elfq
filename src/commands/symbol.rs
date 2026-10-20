@@ -24,7 +24,7 @@ use anyhow::{Context, Result, anyhow, bail};
 
 use super::text;
 use crate::binary::{
-    AddressRange, Binary, ItemKind, demangle, example_range, hex_number, short_names,
+    AddressRange, Binary, ItemKind, demangle, hex_number, range_hint, short_names,
 };
 use crate::debuginfo::{self, InlinedCopy};
 use crate::graph::Node;
@@ -105,7 +105,7 @@ fn range(query: &str) -> Option<Result<AddressRange>> {
         match parts[..] {
             [_] => bail!("`{query}` isn't a range; leave out the comma"),
             _ => bail!(
-                "`{query}` isn't a range; give each range as an argument of its own: {}",
+                "`{query}` isn't a range; give each range as its own argument: {}",
                 parts.join(" ")
             ),
         }
@@ -117,11 +117,7 @@ fn range(query: &str) -> Option<Result<AddressRange>> {
 /// no name starts with a digit, and no address has `-` or `:` in it.
 fn check_not_a_range(query: &str) -> Result<()> {
     if query.starts_with(|c: char| c.is_ascii_digit()) && query.contains(['-', ':']) {
-        bail!(
-            "`{query}` isn't a range or an address; a range is START..END or START+SIZE, such \
-             as {}",
-            example_range(query)
-        );
+        bail!("`{query}` isn't a range: {}", range_hint(query));
     }
     Ok(())
 }
@@ -289,10 +285,7 @@ impl<'a> Names<'a> {
             return None;
         }
         if !super::found_functions(self.binary) {
-            return Some(
-                "the file has no symbols or unwind table, so elfq can't find its functions yet"
-                    .to_string(),
-            );
+            return Some(text::NO_FUNCTIONS.to_string());
         }
         let names = match text::unnamed_items(self.binary)? {
             (function, Some(data)) => {
@@ -454,17 +447,8 @@ impl<'a> Names<'a> {
             .map(|(query, _)| query.chars().count())
             .max()
             .unwrap_or(0);
-
-        let is_address = |query: &str| hex_number(query).is_some();
-        let names = rows.iter().any(|(query, _)| !is_address(query));
-        let addresses = rows.iter().any(|(query, _)| is_address(query));
-        let what = match (names, addresses) {
-            (true, true) => "names or addresses",
-            (false, true) => "addresses",
-            _ => "names",
-        };
         let mut message = format!(
-            "`{query}` could mean {}; use one of the {what} on the left instead:",
+            "`{query}` could mean {}; use one on the left instead:",
             text::count_text(self.binary, nodes)
         );
         for (query, name) in rows {

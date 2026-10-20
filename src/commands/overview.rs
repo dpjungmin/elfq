@@ -90,15 +90,12 @@ pub fn run(
     }
     let graph = Graph::build(binary);
     if !super::found_functions(binary) {
-        writeln!(
-            out,
-            "The file has no symbols or unwind table, so elfq can't find its functions yet."
-        )?;
+        writeln!(out, "{}.", text::NO_FUNCTIONS)?;
     }
     match text::unnamed_items(binary) {
         Some((function, Some(data))) => writeln!(
             out,
-            "Functions and data without symbols are named by address, like {} and {}.",
+            "Items without symbols are named by address, like {} and {}.",
             function.name, data.name
         )?,
         Some((function, None)) => writeln!(
@@ -168,10 +165,7 @@ fn write_range(
     out: &mut dyn Write,
 ) -> Result<()> {
     if binary.kind == FileKind::SharedLibrary {
-        bail!(
-            "elfq doesn't know yet which functions a shared library offers to other files, so \
-             it can't tell what keeps the bytes in a range of it"
-        );
+        bail!("elfq can't yet tell what keeps the bytes of a range in a shared library");
     }
     let retained = RetainedTree::build(binary, Some(range))?;
     super::check_has_bytes(binary, Some(range))?;

@@ -121,8 +121,7 @@ pub fn run(
         if !used_at.is_empty() {
             let used_at: Vec<&str> = used_at.iter().map(String::as_str).collect();
             bail!(
-                "elfq found no functions or data in {place} where the program uses them: it \
-                 uses {}",
+                "elfq found no functions or data in {place}; the program uses {}",
                 text::names_text(&used_at, false)
             );
         }
@@ -256,9 +255,8 @@ impl Leaving<'_> {
                 verb("makes", "make")
             ),
             (false, false) => format!(
-                "{subject} {} {used} outside {it}, and {} {unknown} that elfq can't follow:",
-                verb("uses", "use"),
-                verb("makes", "make")
+                "{subject} {} {used} outside {it}; elfq can't follow {unknown}:",
+                verb("uses", "use")
             ),
         };
         writeln!(out, "{lead}")?;

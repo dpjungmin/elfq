@@ -105,7 +105,7 @@ fn a_shared_librarys_function_is_not_its_stub() {
     );
     assert_eq!(
         error(&binary, "log"),
-        "`log` could mean 2 functions; use one of the names on the left instead:
+        "`log` could mean 2 functions; use one on the left instead:
   'log(char const*)'   app::log(char const*)
   'log(unsigned int)'  app::log(unsigned int)"
     );
@@ -156,14 +156,14 @@ fn a_name_that_could_mean_several_items_lists_them() {
     let binary = load_sample("rust-x86_64-nodebug.elf");
     assert_eq!(
         error(&binary, "checksum"),
-        "`checksum` could mean 3 functions; use one of the names on the left instead:
+        "`checksum` could mean 3 functions; use one on the left instead:
   'checksum::<u8>'   elfq_sample::checksum::<u8>
   'checksum::<u32>'  elfq_sample::checksum::<u32>
   'checksum::<u16>'  elfq_sample::checksum::<u16>"
     );
     assert_eq!(
         error(&binary, "Stage::run"),
-        "`Stage::run` could mean 2 functions; use one of the names on the left instead:
+        "`Stage::run` could mean 2 functions; use one on the left instead:
   Gain::run     <elfq_sample::Gain as elfq_sample::Stage>::run
   DcBlock::run  <elfq_sample::DcBlock as elfq_sample::Stage>::run"
     );
@@ -176,7 +176,7 @@ fn a_name_that_could_mean_several_items_lists_them() {
             .lines()
             .next()
             .unwrap()
-            .ends_with("; use one of the addresses on the left instead:"),
+            .ends_with("; use one on the left instead:"),
         "{message}"
     );
     let choices: Vec<&str> = message.lines().skip(1).collect();
@@ -196,7 +196,7 @@ fn a_name_longer_than_40_characters_gives_way_to_an_address() {
     let mut lines = message.lines();
     assert_eq!(
         lines.next(),
-        Some("`drop_glue` could mean 50 functions; use one of the addresses on the left instead:")
+        Some("`drop_glue` could mean 50 functions; use one on the left instead:")
     );
     let choices: Vec<&str> = lines.take_while(|line| !line.ends_with(" more")).collect();
     assert_eq!(choices.len(), 10);
@@ -206,13 +206,20 @@ fn a_name_longer_than_40_characters_gives_way_to_an_address() {
         assert!(query.chars().count() <= 40, "{choice}");
         assert_eq!(found(&binary, query), name.trim_start(), "{choice}");
     }
+    // Names and addresses can share a list.
     let message = error(&binary, "fmt");
+    let queries: Vec<&str> = message
+        .lines()
+        .skip(1)
+        .filter_map(|line| line.trim().split_once("  "))
+        .map(|(query, _)| query)
+        .collect();
     assert!(
-        message
-            .lines()
-            .next()
-            .unwrap()
-            .ends_with("; use one of the names or addresses on the left instead:"),
+        queries.iter().any(|query| query.starts_with("0x")),
+        "{message}"
+    );
+    assert!(
+        queries.iter().any(|query| !query.starts_with("0x")),
         "{message}"
     );
 }

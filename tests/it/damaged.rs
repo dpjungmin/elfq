@@ -506,7 +506,7 @@ Inlined copies of 1 function take 0 of the 2557 bytes of code:
 BYTES  COPIES  FUNCTION
     0       1  (unnamed)
 
-A copy of 0 bytes is one the compiler merged into the code around it, so the debug info gives it no bytes of its own.
+A copy of 0 bytes is one the compiler merged into the code around it.
 ",
     );
 }
@@ -530,7 +530,7 @@ Inlined copies of 1 function take 0 of the 2557 bytes of code:
 BYTES  COPIES  FUNCTION
     0       1  (unnamed)
 
-A copy of 0 bytes is one the compiler merged into the code around it, so the debug info gives it no bytes of its own.
+A copy of 0 bytes is one the compiler merged into the code around it.
 ";
     // DWARF 4, abbreviations at offset 0, 8-byte addresses, then the
     // entries, with the byte after them, or, as gimli also reads it, with a

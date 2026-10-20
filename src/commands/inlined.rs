@@ -33,8 +33,7 @@ pub fn run(
 ) -> Result<()> {
     if !binary.has_dwarf {
         bail!(
-            "{} has no DWARF debug info, which elfq needs to tell what the compiler inlined; \
-             build it with debug info (such as -g) and don't strip it",
+            "{} has no DWARF debug info; build it with debug info and don't strip it",
             path.display()
         );
     }
@@ -260,8 +259,7 @@ fn write_empty_copies_note(out: &mut dyn Write) -> Result<()> {
     writeln!(out)?;
     writeln!(
         out,
-        "A copy of 0 bytes is one the compiler merged into the code around it, so the debug \
-         info gives it no bytes of its own."
+        "A copy of 0 bytes is one the compiler merged into the code around it."
     )?;
     Ok(())
 }

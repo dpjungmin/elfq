@@ -24,7 +24,7 @@ use std::io::Write;
 use anyhow::{Result, bail};
 
 use crate::arch;
-use crate::binary::{AddressRange, Binary, Item, ItemKind, Source};
+use crate::binary::{AddressRange, Binary, Item, ItemKind, Source, memory_blocks};
 use crate::cli::{Cli, Command, DebugCommand, Format};
 use crate::graph::{Graph, Node, Reference};
 use crate::render::{Align, Table};
@@ -102,7 +102,7 @@ fn check_arguments(cli: &Cli) -> Result<()> {
             )
         }
         Some(_) if cli.range.is_some() => {
-            bail!("--range limits sizes, so only the overview, top and retained take it")
+            bail!("only the overview, top and retained take --range")
         }
         Some(Command::Debug(_)) if cli.format() == Format::Json => {
             bail!("the debug commands print only text")
@@ -120,10 +120,7 @@ fn check_tree(cli: &Cli) -> Result<()> {
     match &cli.command {
         None | Some(Command::Top(_) | Command::Retained(_) | Command::Why(_)) => Ok(()),
         Some(Command::Inlined(args)) if args.symbol.is_some() => Ok(()),
-        Some(_) => bail!(
-            "--tree draws trees, so only the overview, top, retained, why and inlined SYMBOL \
-             take it"
-        ),
+        Some(_) => bail!("only the overview, top, retained, why and inlined SYMBOL take --tree"),
     }
 }
 
@@ -227,24 +224,30 @@ fn check_has_bytes(binary: &Binary, range: Option<AddressRange>) -> Result<()> {
 /// Where an answer that found nothing looked, for its error: `range`, such
 /// as `0x00000000..0x000000e0 (.itcm)`, or without one, "the file". Fails
 /// instead when no section or load image is in `range`, which is then most
-/// likely mistyped, or when elfq can't find the file's functions yet.
+/// likely mistyped, saying where to look: the file's one block of
+/// addresses, or the overview, which lists them when there are several. It
+/// also fails when elfq can't find the file's functions yet.
 fn empty_place(binary: &Binary, range: Option<AddressRange>) -> Result<String> {
     let place = match range {
         Some(range)
             if text::sections_in(binary, range).is_empty()
                 && text::load_images_in(binary, range).is_empty() =>
         {
-            bail!(
-                "nothing in the file is in {}; the overview lists the ranges that the file's \
-                 sections and load images occupy",
-                text::range_argument(range)
-            )
+            let range = text::range_argument(range);
+            match &memory_blocks(&binary.sections)[..] {
+                [] => bail!("the file has nothing in {range}"),
+                [block] => bail!(
+                    "the file has nothing in {range}, only in {}",
+                    text::range_argument(block.range)
+                ),
+                _ => bail!("the file has nothing in {range}; the overview lists its ranges"),
+            }
         }
         Some(range) => text::range_text(binary, range, false),
         None => "the file".to_string(),
     };
     if !found_functions(binary) {
-        bail!("the file has no symbols or unwind table, so elfq can't find its functions yet");
+        bail!("{}", text::NO_FUNCTIONS);
     }
     Ok(place)
 }
@@ -393,7 +396,7 @@ mod tests {
             "\
 testdata/bin/c-cortex-m4-stripped.elf: 32-bit Arm executable, stripped
 1 function
-The file has no symbols or unwind table, so elfq can't find its functions yet.
+elfq can't yet find functions without symbols or an unwind table.
 
 MEMORY                  SIZE  SECTIONS
 0x08000000..0x08000e0c  3596  .isr_vector .text .rodata .ARM.exidx, load image of .data
@@ -403,7 +406,7 @@ MEMORY                  SIZE  SECTIONS
         let error = top::run(&binary, None, false, Format::Text, &mut Vec::new()).unwrap_err();
         assert_eq!(
             error.to_string(),
-            "the file has no symbols or unwind table, so elfq can't find its functions yet"
+            "elfq can't yet find functions without symbols or an unwind table"
         );
     }
 

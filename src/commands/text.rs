@@ -230,18 +230,15 @@ pub(super) fn root_sentence(binary: &Binary, name: &str, kind: RootKind) -> Stri
             binary.sections[section].name,
             when(section)
         ),
-        RootKind::PltHeader => format!(
-            "{name} is the header of the procedure linkage table, which the dynamic loader uses \
-             to find imported functions."
-        ),
+        RootKind::PltHeader => {
+            format!("{name} is the PLT header, which the dynamic loader uses to find imports.")
+        }
         RootKind::Personality => format!(
-            "{name} is a personality routine, which the unwinder calls while it handles a panic \
-             or an exception."
+            "{name} is a personality routine, which the unwinder calls on a panic or exception."
         ),
-        RootKind::VectorTable => format!(
-            "{name} holds the vector table, from which the processor takes the addresses of its \
-             handlers."
-        ),
+        RootKind::VectorTable => {
+            format!("{name} holds the vector table, where the processor finds its handlers.")
+        }
         RootKind::Handler => format!(
             "{name} is in the vector table: the processor runs it on an interrupt or exception."
         ),
@@ -267,6 +264,10 @@ pub(super) fn architecture_name(architecture: Architecture) -> String {
     }
 }
 
+/// Why elfq has no functions in a file but its entry point.
+pub(super) const NO_FUNCTIONS: &str =
+    "elfq can't yet find functions without symbols or an unwind table";
+
 /// Says that elfq can't read the file's code yet, and so can't tell what
 /// calls what.
 pub(super) fn cannot_read_code(binary: &Binary) -> String {
@@ -275,7 +276,7 @@ pub(super) fn cannot_read_code(binary: &Binary) -> String {
         Architecture::Arm => "32-bit Arm (A32)".to_string(),
         other => architecture_name(other),
     };
-    format!("elfq can't read {code} code yet, so it can't tell what calls what")
+    format!("elfq can't yet read {code} code to tell what calls what")
 }
 
 /// The names of the sections that have bytes in `range`.
