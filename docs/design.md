@@ -48,10 +48,13 @@ is (`graph::ReferenceKind`):
 | `address taken` | `address taken` | code loads the address of a function or an import, as when passing a function pointer |
 | `pointer` | `pointer` | data holds a pointer to it, as a table of functions does |
 
-`callers` and `callees` give each way that one item uses another a row of
-its own. `why` joins them with commas, as in `call, address taken`, and the
-first row of each chain is a root, whose HOW says why the program starts
-there instead, such as `entry point` or `vector table`.
+elfq tells `access` from `address taken` only in x86-64 code: Thumb code
+loads an address before it reads or writes data there, so in Thumb code,
+JSON says `address taken`. `callers` and `callees` give each way that one
+item uses another a row of its own. `why` joins them with commas, as in
+`call, address taken`, and the first row of each chain is a root, whose HOW
+says why the program starts there instead, such as `entry point` or `vector
+table`.
 
 **Root.** A place where the program starts running, such as the entry
 point, a function that `.init_array` lists, or on Cortex-M a handler that
@@ -351,13 +354,17 @@ or `0x0:0x40000`, is refused with the form to type, `0x0..0x40000`, and
 
 ### JSON
 
-`--json` prints the same answer for scripts. The JSON has every item and
-every site, where the text shows only the largest items and the first
-sites; every key is always there, `null` when it has no value; addresses
-are hex strings, as elfq prints them and SYMBOL takes them, and sizes are
-numbers. Each row of a list in the answer, such as an item of `top` or a
-chain of `why`, is a line of its own, so that `grep` and `head` work on
-the JSON as on the text. An item looks like this, spread over lines here:
+`--json` prints the same answer for scripts, as one object. The JSON has
+every item, site and chain, where the text shows only the largest items,
+the first sites and the nearest chains; every key is always there, `null`
+when it has no value; addresses are hex strings, as elfq prints them and
+SYMBOL takes them, and sizes are numbers. Each row of a list in the answer,
+such as an item of `top` or a chain of `why`, is a line of its own, so that
+`grep` and `head` work on the JSON as on the text. Until 1.0 the JSON can
+change, and each release says how. An error is never JSON: it goes to
+stderr, with exit status 2 and nothing on stdout.
+
+An item looks like this, spread over lines here:
 
 ```json
 {
@@ -370,46 +377,139 @@ the JSON as on the text. An item looks like this, spread over lines here:
 }
 ```
 
-`kind` is `function`, `data` or `import`, and `section` names the section
-that holds the item, such as `.data` or `.bss`; an import has no section,
-address or size in the file. `top` and `retained` list the items of their
-trees as rows, in the order of the text's rows. Each also has an `id`,
-which counts the rows from 0; `own`, its own bytes as in the OWN column, or
-with `--range` those in the range, and 0 where OWN shows `?`;
-`load_image`, how many of `own` are its load image's, for a row marked
-"(load image)" or "(with its load image)"; its `retained` size;
-`through_pointer`, for a function marked "(through a pointer)"; and
-`parent`, the `id` of the row it hangs under, or `null` at the top, which
-in `retained` holds what SYMBOL keeps itself. So a script that adds up
-`retained` takes only the rows whose `parent` is `null`. The answer of
-`retained` also gives SYMBOL's own `own` and `load_image`, and `top`'s
-`unreachable` items have them too; `top`'s `bytes` is the sum of every
-`own`. The first rows of `retained process_frame`, shown above:
+| Key | Value |
+|---|---|
+| `name` | its name, as the text shows it |
+| `kind` | `function`, `data` or `import` |
+| `section` | the section that holds it, such as `.data` or `.bss`, or `null` for an import |
+| `address` | where it starts, or `null` for an import, whose code is in another file |
+| `size` | its size in bytes, or `null` for an import, or when elfq doesn't know it |
+| `size_estimated` | whether elfq estimated the size, which the text marks `~` |
+
+SYMBOL's item, `symbol` in most answers and `function` in
+`inlined SYMBOL`'s, also has `aliases`: its other names, such as the
+mangled symbol of a demangled name, or weak aliases at its address. A
+range has a `start` and an `end`, which isn't in it.
+
+Each answer has these keys, in this order.
+
+**The overview**, `elfq FILE --json`, says what the file is and what elfq
+found in it, and leaves its table of the largest items to `top --json`:
+
+| Key | Value |
+|---|---|
+| `file` | the file's path, as given |
+| `architecture` | as the text names it, such as `x86-64` or `32-bit Arm` |
+| `kind` | `executable`, `position-independent executable` or `shared library` |
+| `has_symbols`, `has_dwarf` | whether the file has a symbol table, and DWARF debug info |
+| `memory` | the memory blocks, in address order, each a range with its `size`, its `sections`, and `load_images`, the sections whose load images it holds |
+| `range` | the range that `--range` picked, or `null` |
+| `functions`, `data_objects` | how many of each elfq found, or with `--range`, how many have bytes in it |
+| `bytes` | the bytes of all of them, or those in the range |
+| `imports` | how many imports the file has, or `null` with `--range` |
+| `references` | how many references elfq found, or `null` when it can't read the file's code, or with `--range` |
+| `indirect_calls` | how many calls and jumps go through pointers set at run time, or `null` when `references` is |
+
+**`top`**:
+
+| Key | Value |
+|---|---|
+| `range` | the range that `--range` picked, or `null` |
+| `bytes` | the bytes of every item, or of those in the range: the sum of every `own` in `items` and `unreachable` |
+| `items` | the rows of the tree, below, for the items that something reaches |
+| `unreachable` | the items that nothing reaches, largest first, each with `own` and `load_image` too |
+
+**`retained SYMBOL`**:
+
+| Key | Value |
+|---|---|
+| `symbol` | SYMBOL's item |
+| `reachable` | whether anything reaches SYMBOL from the roots; when nothing does, `items` and `shares` are empty |
+| `range` | the range that `--range` picked, or `null` |
+| `own` | SYMBOL's own bytes, or with `--range`, those in the range |
+| `load_image` | how many of `own` are its load image's |
+| `retained` | `own` and the `own` of each row of `items`: what removing SYMBOL would save |
+| `items` | the rows of the tree, below, for the items that only SYMBOL leads to |
+| `shares` | what SYMBOL and those items use that other code uses too, and so isn't counted, sorted by name; with `--range`, only items with bytes in it |
+| `indirect_calls` | how many calls and jumps in SYMBOL and those items go through pointers set at run time |
+
+The `items` of `top` and `retained` are the rows of their trees, in the
+order of the text's rows, each an item with these keys too:
+
+| Key | Value |
+|---|---|
+| `id` | the row's number, counting from 0 |
+| `own` | its own bytes, as in the OWN column: all of them, or with `--range`, those in the range; 0 where OWN shows `?` |
+| `load_image` | how many of `own` are its load image's, for a row marked "(load image)" or "(with its load image)" |
+| `retained` | its retained size |
+| `through_pointer` | whether the row is marked "(through a pointer)" |
+| `parent` | the `id` of the row it hangs under, or `null` for a row at the top of the tree: in `top`, a root or what several roots reach; in `retained`, what SYMBOL keeps itself |
+
+So a script that adds up `retained` takes only the rows whose `parent` is
+`null`. The first rows of `retained process_frame`, shown above:
 
 ```json
 {"id":0,"name":"crc32","kind":"function","section":".text","address":"0x1280","size":59,"size_estimated":false,"own":59,"load_image":0,"retained":1083,"through_pointer":false,"parent":null},
 {"id":1,"name":"crc_table","kind":"data","section":".rodata","address":"0x2120","size":1024,"size_estimated":false,"own":1024,"load_image":0,"retained":1024,"through_pointer":false,"parent":0},
 ```
 
-SYMBOL's item, `symbol` in most answers and `function` in `inlined
-SYMBOL`'s, also has `aliases`: its other names, such as the mangled symbol
-of a demangled name, or weak aliases at its address.
+**`why SYMBOL`**:
 
-`inlined SYMBOL` lists the rows of its tree the same way, each the copies
-of one function in one place, with `id`, `name`, `bytes`, `copies` and
-`parent`, the `id` of the row of the copies they were inlined into, or
-`null` for those inlined into SYMBOL's function itself.
+| Key | Value |
+|---|---|
+| `symbol` | SYMBOL's item |
+| `reachable` | whether anything reaches SYMBOL from the roots |
+| `root` | why SYMBOL is itself a root, in the words of a chain's first step, or `null`; when it is one, `chains`, `unreachable_users` and `users_it_keeps` are empty |
+| `chains` | for each item that keeps SYMBOL, the shortest chain from the roots through it to SYMBOL, the shortest first; each is a list of steps with an `item` and a `how` |
+| `unreachable_users` | the items that use SYMBOL but that nothing reaches |
+| `users_it_keeps` | the items that use SYMBOL but that only SYMBOL leads to, so they don't keep it either |
+| `on_every_chain` | the closest item that every chain goes through, or `null`: SYMBOL counts toward that item's retained size |
 
-`why` gives each chain as a list of steps, each an item and a `how`. The
-first step is a root, and its `how` says why the program starts there,
-such as `entry point` or `listed in .init_array`. In the others, it says
-how the item before uses this one, in the words of the JSON column in
-[Concepts](#concepts), joined with commas when there are several. The
-items that use SYMBOL but don't keep it, which the text names below the
-chains, are in `unreachable_users` when nothing reaches them, and in
-`users_it_keeps` when only SYMBOL leads to them. The overview's JSON says
-what the file is and what elfq found in it; the largest items are in
-`top`'s.
+The first step of a chain is a root, and its `how` says why the program
+starts there: `entry point`; `vector table` for the table itself; `listed
+in the vector table` for a handler, which the HOW column shortens to
+`vector table`; `used by the dynamic loader`; `used by the unwinder`; or
+`in` or `listed in` and a section, as in `listed in .init_array`. In the
+other steps, it says how the item before uses this one, in the words of the
+JSON column in [Concepts](#concepts), joined with commas when there are
+several.
+
+**`inlined`**:
+
+| Key | Value |
+|---|---|
+| `inlined_bytes` | the bytes of code that inlined copies take in all |
+| `code_bytes` | the bytes of all the functions in the file |
+| `functions` | each function that the compiler inlined, the most bytes first, with its `name`, the `bytes` its copies take, leaving out the functions inlined into them, and how many `copies` there are |
+
+**`inlined SYMBOL`**:
+
+| Key | Value |
+|---|---|
+| `function` | SYMBOL's item |
+| `inlined_bytes` | the bytes of its code that inlined copies take |
+| `inlined` | the rows of the tree, in the order of the text's rows, each the copies of one function in one place, with `id`, `name`, `bytes`, which count the copies inlined into them, `copies`, and `parent`, the `id` of the row of the copies they were inlined into, or `null` for those inlined into SYMBOL's function itself |
+
+**`callers SYMBOL`** and **`callees SYMBOL`**:
+
+| Key | Value |
+|---|---|
+| `symbol` | SYMBOL's item |
+| `callers` or `callees` | a row for each item on the other end and way it is used, in the text's order: callers by name, callees as SYMBOL first uses them. Each has the `item`, the `how` and the `sites`; `how` is in the words of the JSON column in [Concepts](#concepts), so a text row that says `uses` can be two rows here |
+| `unresolved` | for `callees` only, the calls and jumps that elfq can't follow, each with its `site`, `how`, which is `call` or `jump`, and `target`, where it goes when the code says so but no item is there, else `null` |
+| `complete` | whether the list is complete, as far as elfq can tell, as [below](#calls-elfq-cant-follow) |
+
+**`callees RANGE...`** and **`callers RANGE...`**:
+
+| Key | Value |
+|---|---|
+| `ranges` | the ranges |
+| `callees` | for `callees`, the references that cross, a row for each pair of items and way of use, in the text's order, the largest item outside first: the `item` or import outside; the `caller` in the ranges that uses it; `how`, as in `callees SYMBOL`; `veneer`, the linker's veneer that a call goes through, or `null`; and the `sites` |
+| `callers` | for `callers`, the same, but with the `callee` in the ranges that `item` uses, in place of `caller` |
+| `unresolved` | for `callees` only, as in `callees SYMBOL`, with the `caller` it is in and the `veneer` too |
+| `unreadable` | for `callees` only, the functions in the ranges whose end elfq doesn't know, so it can't read their code |
+| `through_pointer` | for `callers` only, the functions in the ranges whose address is taken or stored, other than in the vector table |
+| `complete` | whether the lists have every crossing, as far as elfq can tell, as [below](#calls-elfq-cant-follow) |
 
 ### Calls elfq can't follow
 

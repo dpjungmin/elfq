@@ -125,7 +125,7 @@ that reaches up the list is a sign that the code belongs lower down.
 | `symbol.rs` | Looking up SYMBOL |
 | `inlined.rs` | Inlined copies, from DWARF |
 | `damaged.rs` | Damaged and unusual files, made by changing a sample's bytes |
-| `docs.rs` | The `$ elfq` examples in README.md and docs/design.md |
+| `docs.rs` | The `$ elfq` examples in README.md and docs/design.md, and that design.md names every JSON key |
 
 Two tests in `cli.rs` run the overview and every command it suggests on
 each `.elf` and `.so` file in `testdata/bin`, and `top` on each `.elf`
@@ -217,7 +217,9 @@ is a short one to copy.
    `a_file_whose_code_elfq_cant_read_says_so` if it reads code, and
    `commands_that_need_roots_refuse_a_shared_library` if it needs the roots.
 7. **Docs.** List it in README.md and in the Commands table in
-   docs/design.md.
+   docs/design.md, and its JSON keys in design.md's JSON section. Add
+   answers of it to `JSON_ANSWERS` in `tests/it/docs.rs` with an entry in
+   each of its lists: the test checks that the section names every key.
 
 ## Adding an instruction set
 
