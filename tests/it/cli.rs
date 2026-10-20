@@ -470,7 +470,7 @@ fn a_range_counts_only_the_bytes_in_it() {
     assert_output(
         &stdout(&[TCM_SAMPLE, "top", "--range", "0x0..0xe0"]),
         "\
-224 bytes of code and data in 0x00000000..0x000000e0 (.itcm), by what keeps them:
+224 bytes of code in 0x00000000..0x000000e0 (.itcm), by what keeps them:
 
 RETAINED  OWN  ITEM
      200    0  Reset_Handler
@@ -503,7 +503,7 @@ RETAINED  OWN  ITEM
         &stdout(&[TCM_SAMPLE, "--range", "0x20240000+4k"]),
         "\
 testdata/bin/c-cortex-m7.elf: 32-bit Arm executable, with symbols and DWARF debug info
-1 data object in 0x20240000..0x20241000 (.ocram_bss), 4096 bytes of code and data
+1 data object in 0x20240000..0x20241000 (.ocram_bss), 4096 bytes of data
 
 RETAINED   OWN  ITEM
     4096     0  log_msg
@@ -562,7 +562,7 @@ Shared with other code, so not counted: dispatch_event, log_msg, memcpy, stats.
     assert_output(
         &stdout(&[TCM_SAMPLE, "top", "--range", "0x30000040+224"]),
         "\
-224 bytes of code and data in 0x30000040..0x30000120 (the load image of .itcm), by what keeps them:
+224 bytes of code in 0x30000040..0x30000120 (the load image of .itcm), by what keeps them:
 
 RETAINED  OWN  ITEM
      200    0  Reset_Handler
@@ -634,7 +634,7 @@ fn a_range_that_nothing_reaches_has_no_tree() {
         &stdout(&[SAMPLE, "--range", "0x1aa0+29"]),
         "\
 testdata/bin/c-x86_64.elf: x86-64 position-independent executable, with symbols and DWARF debug info
-1 function in 0x00001aa0..0x00001abd (.text), 29 bytes of code and data
+1 function in 0x00001aa0..0x00001abd (.text), 29 bytes of code
 
 Try:
   elfq testdata/bin/c-x86_64.elf top --range 0x00001aa0..0x00001abd

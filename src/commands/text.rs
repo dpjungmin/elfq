@@ -18,6 +18,23 @@ pub(super) fn bytes_text(n: u64) -> String {
     format!("{n} {}", if n == 1 { "byte" } else { "bytes" })
 }
 
+/// The bytes of every item, or with a range, those in it, and what they
+/// are: "200 bytes of code", "16 bytes of data" or "216 bytes of code and
+/// data".
+pub(super) fn bytes_of_items(binary: &Binary, range: Option<AddressRange>) -> String {
+    let bytes_of = |kind: ItemKind| {
+        let items = binary.items.iter().filter(|item| item.kind == kind);
+        super::total(items.map(|item| binary.bytes_in(item, range)))
+    };
+    let (code, data) = (bytes_of(ItemKind::Function), bytes_of(ItemKind::Data));
+    let what = match (code > 0, data > 0) {
+        (true, false) => "code",
+        (false, true) => "data",
+        _ => "code and data",
+    };
+    format!("{} of {what}", bytes_text(code.saturating_add(data)))
+}
+
 /// An item's size, `~N` when it is an estimate, or `?` when it is unknown.
 pub(super) fn size_text(item: &Item) -> String {
     match (item.size, item.size_estimated) {

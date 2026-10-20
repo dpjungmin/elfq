@@ -82,14 +82,14 @@ pub fn run(
     // reaches is the whole answer.
     let kept = retained.kept() > 0;
     if kept {
-        let total = text::bytes_text(retained.bytes());
+        let total = text::bytes_of_items(binary, range);
         match range {
             Some(range) => writeln!(
                 out,
-                "{total} of code and data in {}, by what keeps them:",
+                "{total} in {}, by what keeps them:",
                 text::range_text(binary, range, all)
             )?,
-            None => writeln!(out, "{total} of code and data, by what keeps them:")?,
+            None => writeln!(out, "{total}, by what keeps them:")?,
         }
         writeln!(out)?;
         retained.write_largest(text::shown(all), format, out)?;

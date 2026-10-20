@@ -75,7 +75,7 @@ pub fn run(
     // A stripped file may have only its entry point, of unknown size.
     let bytes = total_bytes(binary, None);
     if bytes > 0 {
-        found += &format!(", {} of code and data", text::bytes_text(bytes));
+        found += &format!(", {}", text::bytes_of_items(binary, None));
     }
     if !binary.imports.is_empty() {
         found += &format!(
@@ -178,10 +178,10 @@ fn write_range(
     write_file(path, binary, out)?;
     writeln!(
         out,
-        "{} in {}, {} of code and data",
+        "{} in {}, {}",
         items_text(binary, Some(range)),
         text::range_text(binary, range, false),
-        text::bytes_text(total_bytes(binary, Some(range)))
+        text::bytes_of_items(binary, Some(range))
     )?;
     // When nothing reaches the items in the range, there is nothing to rank.
     if retained.kept() > 0 {
