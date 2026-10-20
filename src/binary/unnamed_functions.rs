@@ -482,6 +482,7 @@ mod tests {
             allocated: true,
             file_range: Some((offset, bytes.len() as u64)),
             entry_size: 0,
+            load_address: None,
         };
         let binary = Binary {
             architecture: Architecture::Arm,

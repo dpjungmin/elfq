@@ -198,15 +198,20 @@ fn readable_item(binary: &Binary, node: Node) -> Result<usize> {
 
 /// Where an answer that found nothing looked, for its error: `range`, such
 /// as `0x00000000..0x000000e0 (.itcm)`, or without one, "the file". Fails
-/// instead when no section is in `range`, which is then most likely
-/// mistyped, or when elfq can't find the file's functions yet.
+/// instead when no section or load image is in `range`, which is then most
+/// likely mistyped, or when elfq can't find the file's functions yet.
 fn empty_place(binary: &Binary, range: Option<AddressRange>) -> Result<String> {
     let place = match range {
-        Some(range) if text::sections_in(binary, range).is_empty() => bail!(
-            "nothing in the file is in {}; the overview lists the ranges that the file's \
-             sections occupy",
-            text::range_argument(range)
-        ),
+        Some(range)
+            if text::sections_in(binary, range).is_empty()
+                && text::load_images_in(binary, range).is_empty() =>
+        {
+            bail!(
+                "nothing in the file is in {}; the overview lists the ranges that the file's \
+                 sections and load images occupy",
+                text::range_argument(range)
+            )
+        }
         Some(range) => text::range_text(binary, range, false),
         None => "the file".to_string(),
     };
@@ -363,7 +368,7 @@ testdata/bin/c-cortex-m4-stripped.elf: 32-bit Arm executable, stripped
 The file has no symbols or unwind table, so elfq can't find its functions yet.
 
 MEMORY                  SIZE  SECTIONS
-0x08000000..0x08000dec  3564  .isr_vector .text .rodata .ARM.exidx
+0x08000000..0x08000e0c  3596  .isr_vector .text .rodata .ARM.exidx, load image of .data
 0x20000000..0x20000048    72  .data .bss
 "
         );

@@ -5,7 +5,7 @@
 use object::Architecture;
 
 use super::json;
-use crate::binary::{AddressRange, Binary, Item, ItemKind};
+use crate::binary::{AddressRange, Binary, Item, ItemKind, Section};
 use crate::graph::{Node, ReferenceKind, Root, RootKind, Unresolved};
 
 /// "1 function", "2 functions".
@@ -258,9 +258,51 @@ pub(super) fn sections_in(binary: &Binary, range: AddressRange) -> Vec<&str> {
         .collect()
 }
 
-/// A range as `--range` takes it, with the sections that have bytes in it,
-/// such as `0x00000000..0x000000e0 (.itcm)`, every one with `all`.
+/// The sections whose load images have bytes in `range`.
+pub(super) fn load_images_in(binary: &Binary, range: AddressRange) -> Vec<&Section> {
+    binary
+        .sections
+        .iter()
+        .filter(|section| {
+            section
+                .load_address
+                .is_some_and(|address| range.overlap(address, section.size) > 0)
+        })
+        .collect()
+}
+
+/// A range as `--range` takes it, with the sections and load images that
+/// have bytes in it, such as `0x00000000..0x000000e0 (.itcm)` or
+/// `0x30000000..0x30000edc (.isr_vector, .text, .rodata and .ARM.exidx,
+/// with the load images of .itcm and .data)`, every one with `all`.
 pub(super) fn range_text(binary: &Binary, range: AddressRange, all: bool) -> String {
+    let load_images: Vec<&str> = load_images_in(binary, range)
+        .into_iter()
+        .map(|section| section.name.as_str())
+        .collect();
+    let load_images = match load_images[..] {
+        [] => None,
+        [one] => Some(format!("the load image of {one}")),
+        _ => Some(format!(
+            "the load images of {}",
+            names_text(&load_images, all)
+        )),
+    };
+    let sections = sections_in(binary, range);
+    let sections = (!sections.is_empty()).then(|| names_text(&sections, all));
+    let range = range_argument(range);
+    match (sections, load_images) {
+        (None, None) => range,
+        (Some(sections), None) => format!("{range} ({sections})"),
+        (None, Some(load_images)) => format!("{range} ({load_images})"),
+        (Some(sections), Some(load_images)) => format!("{range} ({sections}, with {load_images})"),
+    }
+}
+
+/// A range as `--range` takes it, with the sections that have bytes in
+/// it, every one with `all`: [`range_text`] without the load images, for
+/// range checks, which look only where the program uses its code and data.
+pub(super) fn range_sections_text(binary: &Binary, range: AddressRange, all: bool) -> String {
     let sections = sections_in(binary, range);
     match sections[..] {
         [] => range_argument(range),

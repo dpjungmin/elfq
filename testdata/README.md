@@ -9,7 +9,7 @@ known answers.
 testdata/
 ├── build.sh     Rebuilds everything in bin/ from the sources.
 ├── bin/         The built files (committed).
-├── c/           C samples: app.c plus a platform file per target, deep.c, plt.c and far.c.
+├── c/           C samples: app.c plus a platform file per target, deep.c, plt.c, far.c and softfloat.c.
 ├── cpp/         C++ sample: the kinds of names C++ compilers make.
 └── rust/        Rust sample: the same program, plus Rust-only patterns.
 ```
@@ -26,6 +26,7 @@ testdata/
 | `c-cortex-m7*.elf` | C | Cortex-M7 bare metal, with code and data in TCM, OCRAM and flash |
 | `c-deep.elf` | C | x86-64 Linux, PIE, with calls and inlined code nested 20 deep |
 | `far-*.elf` | C | Cortex-M0 and M4 bare metal, with calls too far for one branch instruction, linked by GNU ld or LLD |
+| `c-softfloat-nodebug.elf` | C | Cortex-M4 bare metal without its FPU, with libgcc's routines for doubles |
 | `cpp-x86_64*.elf` | C++ | x86-64 Linux, PIE, dynamically linked against glibc and libstdc++ |
 | `cpp-x86_64.so` | C++ | x86-64 Linux, the same code as a shared library |
 | `rust-x86_64*.elf` | Rust | x86-64 Linux, std |
@@ -33,7 +34,8 @@ testdata/
 
 Each comes in up to three variants, matching what people usually have
 (`c-deep.elf`, `c-x86_64.so`, `cpp-x86_64.so` and `c-plt.so` only in the
-first, `c-cortex-m4-cmsis` and `far-*` only in the last two):
+first, `c-softfloat` only in the second, `c-cortex-m4-cmsis` and `far-*`
+only in the last two):
 
 | Suffix | Symbols | DWARF | Typical of |
 |---|---|---|---|
@@ -178,6 +180,21 @@ that makes it:
 `callers 0x0+64K` lists `Reset_Handler` and `flash_calls_ram`, which call
 into RAM through veneers. The stripped files give the same rows, under
 names like `fn_0x10`.
+
+### Soft-float sample ([c/softfloat.c](c/softfloat.c))
+
+Adds, subtracts, compares and converts doubles on a Cortex-M4 built
+without its FPU, so GCC calls libgcc's routines for them. Those are
+hand-written, and some have more than one entry point, each with a symbol
+whose size runs to the end they share. elfq ends each entry where the next
+starts:
+
+| Function | Shape | Expected answer |
+|---|---|---|
+| `__aeabi_dsub` | Flips the sign of its second argument and runs on into `__adddf3`, which `Reset_Handler` also calls as `__aeabi_dadd`. Its symbol runs to `__adddf3`'s end. | 4 bytes, which tail-call `__adddf3`. `retained __aeabi_dsub` would save its own 4 bytes. |
+| `__aeabi_ul2d` | Jumps into `__aeabi_l2d`, which its symbol covers. | 16 bytes, which tail-call `__aeabi_l2d`. |
+| `__gedf2`, `__ledf2` | Each sets a register and jumps into `__cmpdf2`, which both their symbols cover. | 8 bytes each, which tail-call `__cmpdf2`. Nothing reaches them. |
+| `__aeabi_cdrcmple` | Swaps its arguments and jumps to `__aeabi_cdcmpeq`, which its symbol covers. | 16 bytes, which tail-call `__aeabi_cdcmpeq`. Nothing reaches it. |
 
 ### Deep sample ([c/deep.c](c/deep.c))
 

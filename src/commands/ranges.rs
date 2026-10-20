@@ -107,6 +107,25 @@ pub fn run(
     let boundary = Boundary::new(binary, graph, ranges);
     if let Some(range) = boundary.empty_range() {
         let place = super::empty_place(binary, Some(range))?;
+        // Where the program uses what is stored in the range.
+        let used_at: Vec<String> = text::load_images_in(binary, range)
+            .into_iter()
+            .map(|section| {
+                let used_at = AddressRange {
+                    start: section.address,
+                    end: section.address + section.size,
+                };
+                format!("{} at {}", section.name, text::range_argument(used_at))
+            })
+            .collect();
+        if !used_at.is_empty() {
+            let used_at: Vec<&str> = used_at.iter().map(String::as_str).collect();
+            bail!(
+                "elfq found no functions or data in {place} where the program uses them: it \
+                 uses {}",
+                text::names_text(&used_at, false)
+            );
+        }
         bail!("elfq found no functions or data in {place}");
     }
     let nothing_crosses = match direction {
@@ -554,11 +573,13 @@ fn group_unfollowed(unfollowed: &[Unfollowed]) -> Vec<(Unfollowed, Vec<u64>)> {
 }
 
 /// The ranges as `--range` takes them, with the sections in each, joined
-/// into a phrase, every range and section with `all`.
+/// into a phrase, every range and section with `all`. A load image in a
+/// range isn't named, since range checks look only where the program uses
+/// its code and data, and a load image is never used where it is stored.
 fn ranges_text(binary: &Binary, ranges: &[AddressRange], all: bool) -> String {
     let texts: Vec<String> = ranges
         .iter()
-        .map(|&range| text::range_text(binary, range, all))
+        .map(|&range| text::range_sections_text(binary, range, all))
         .collect();
     let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
     text::names_text(&texts, all)

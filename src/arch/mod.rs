@@ -44,8 +44,10 @@ pub enum CodeReferenceKind {
     /// in another function. Only Thumb tells these apart, and only as a
     /// hint: an unconditional `b.w`, which long functions also use inside
     /// themselves, the jump of a linker's veneer, and a jump through a
-    /// register that the code put the target in. The graph treats it as a
-    /// `Jump`.
+    /// register that the code put the target in. On any instruction set,
+    /// `Binary::code_references` also gives one from the last instruction
+    /// of an entry point that runs on into the next function (see
+    /// [`runs_on`]). The graph treats it as a `Jump`.
     TailJump(u64),
     /// A call through the pointer stored at an address: `call [pointer]`.
     CallThrough(u64),
@@ -177,5 +179,27 @@ pub fn ending(
     match architecture {
         Architecture::Arm => thumb::ending(code, address, endianness),
         _ => Ending::RunsOn,
+    }
+}
+
+/// Where the last instruction of the code that starts at `address` is, when
+/// the processor can run on past the end of the code after it: unless that
+/// instruction always jumps, returns or traps. A conditional jump runs on
+/// when it isn't taken, and a call counts as running on, since elfq can't
+/// tell whether what it calls returns. `None` when the code stops before
+/// its end. Padding after the last instruction doesn't count. Only x86-64
+/// and Thumb are read; for other instruction sets, this is `None`.
+pub fn runs_on(
+    architecture: Architecture,
+    endianness: Endianness,
+    code: &[u8],
+    address: u64,
+) -> Option<u64> {
+    match architecture {
+        Architecture::X86_64 => x86_64::runs_on(code, address),
+        Architecture::Arm => thumb::last_instruction(code, address, endianness)
+            .filter(|&(_, ending)| ending != Ending::Stops)
+            .map(|(offset, _)| address + offset as u64),
+        _ => None,
     }
 }

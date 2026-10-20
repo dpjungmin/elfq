@@ -2,8 +2,8 @@
 //! with their retained sizes, each row naming the item that keeps it,
 //! functions marked when only pointers lead to them below the top, and
 //! large trees cut down to their largest items. With `--range`, sizes count
-//! only the bytes in the range, and items that keep none of them are left
-//! out.
+//! only the bytes in the range, items that keep none of them are left out,
+//! and items whose load images are in it are marked.
 
 use std::collections::HashSet;
 use std::io::Write;
@@ -30,6 +30,11 @@ pub(super) struct KeptItem<'a> {
     /// with a range, those in it. 0 when elfq doesn't know its size, where
     /// OWN shows `?`.
     own: u64,
+    /// How many of `own` are bytes of its load image, which a range counts
+    /// where the file stores it, and where the text marks the row "(load
+    /// image)", or "(with its load image)" when the range holds both
+    /// copies. 0 without a range.
+    load_image: u64,
     /// Its own bytes and those of everything it keeps.
     retained: u64,
     /// Whether nothing calls this function directly, so that it hangs under,
@@ -120,9 +125,9 @@ impl<'a> RetainedTree<'a> {
     }
 
     /// Explains why there are no bytes to count, if there aren't: a range
-    /// that no section is in is most likely mistyped, in some stripped files
-    /// elfq can't find the functions yet, and hand-written assembly often
-    /// leaves out the sizes.
+    /// that no section or load image is in is most likely mistyped, in some
+    /// stripped files elfq can't find the functions yet, and hand-written
+    /// assembly often leaves out the sizes.
     pub fn check_has_bytes(&self) -> Result<()> {
         let binary = self.binary;
         if self.bytes() > 0 {
@@ -130,8 +135,12 @@ impl<'a> RetainedTree<'a> {
         }
         let place = super::empty_place(binary, self.range)?;
         let starts_in_place = |item: &&Item| {
-            self.range
-                .is_none_or(|range| range.overlap(item.address, 1) > 0)
+            self.range.is_none_or(|range| {
+                [Some(item.address), binary.load_address(item)]
+                    .into_iter()
+                    .flatten()
+                    .any(|start| range.overlap(start, 1) > 0)
+            })
         };
         if let Some(item) = binary.items.iter().find(starts_in_place) {
             bail!(
@@ -143,16 +152,22 @@ impl<'a> RetainedTree<'a> {
     }
 
     /// The item's own bytes that sizes count: all of them, or those in the
-    /// range.
+    /// range, its load image's too (see [`Binary::bytes_in`]).
     pub fn own(&self, index: usize) -> u64 {
-        let item = &self.binary.items[index];
-        match self.range {
-            Some(range) => range.overlap(item.address, item.size),
-            None => item.size,
-        }
+        self.binary.bytes_in(&self.binary.items[index], self.range)
     }
 
-    /// The OWN column for an item. Outside the range it is 0.
+    /// How many of the item's own bytes that sizes count are in its load
+    /// image: 0 without a range.
+    pub fn load_image(&self, index: usize) -> u64 {
+        self.range.map_or(0, |range| {
+            self.binary
+                .load_image_bytes_in(&self.binary.items[index], range)
+        })
+    }
+
+    /// The OWN column for an item: its own bytes, or with a range, those in
+    /// it, its load image's too.
     fn own_text(&self, index: usize) -> String {
         let item = &self.binary.items[index];
         match (self.range, self.own(index)) {
@@ -168,10 +183,21 @@ impl<'a> RetainedTree<'a> {
         self.range.is_none() || self.retained(index) > 0
     }
 
-    /// The mark after the name of a function below the top that only
-    /// pointers lead to, and so counts for whatever holds its address.
-    fn mark(&self, index: usize) -> Option<&'static str> {
-        self.through_pointer(index).then_some("(through a pointer)")
+    /// The words after the name of an item: "(load image)" when its bytes
+    /// that sizes count are those of its load image, or "(with its load
+    /// image)" when they are those of both copies, as in a range that holds
+    /// both; "(through a pointer)" for a function below the top that only
+    /// pointers lead to, and so counts for whatever holds its address; or
+    /// both, as in "(load image, through a pointer)".
+    pub fn mark(&self, index: usize) -> Option<String> {
+        let load_image = match self.load_image(index) {
+            0 => None,
+            bytes if bytes == self.own(index) => Some("load image"),
+            _ => Some("with its load image"),
+        };
+        let pointer = self.through_pointer(index).then_some("through a pointer");
+        let words: Vec<&str> = [load_image, pointer].into_iter().flatten().collect();
+        (!words.is_empty()).then(|| format!("({})", words.join(", ")))
     }
 
     /// Whether `index` is a function below the top of the tree that nothing
@@ -331,6 +357,7 @@ impl<'a> RetainedTree<'a> {
                 id,
                 item: json::Item::new(self.binary, Node::Item(index)),
                 own: self.own(index),
+                load_image: self.load_image(index),
                 retained: self.retained(index),
                 through_pointer: self.through_pointer(index),
                 parent,
@@ -351,5 +378,44 @@ pub(super) fn shape(format: Format) -> TreeShape {
     match format {
         Format::Tree => TreeShape::Drawn,
         _ => TreeShape::Rows { words: "kept by" },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+    use crate::graph::ReferenceKind;
+
+    #[test]
+    fn a_load_image_can_be_reached_through_a_pointer() {
+        // As if apply_filter only took the address of filter_tap, which
+        // both run from ITCM in the Cortex-M7 sample, stored in flash.
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/bin/c-cortex-m7.elf");
+        let binary = Binary::load(&path).unwrap();
+        let filter_tap = binary
+            .items
+            .iter()
+            .position(|item| item.name == "filter_tap")
+            .unwrap();
+        let mark = |range: &str| {
+            let mut graph = Graph::build(&binary);
+            for reference in &mut graph.references {
+                if reference.to == Node::Item(filter_tap) {
+                    reference.kind = ReferenceKind::Address;
+                }
+            }
+            let range = range.parse().unwrap();
+            RetainedTree::from_graph(&binary, graph, Some(range)).mark(filter_tap)
+        };
+        assert_eq!(
+            mark("0x30000000..0x30000edc").as_deref(),
+            Some("(load image, through a pointer)")
+        );
+        assert_eq!(
+            mark("0x0..0x40000000").as_deref(),
+            Some("(with its load image, through a pointer)")
+        );
     }
 }

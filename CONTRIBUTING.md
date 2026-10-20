@@ -227,7 +227,10 @@ is a short one to copy.
 2. **Wiring, in `src/arch/mod.rs`.** Add `mod <name>;`, an arm in `scan`
    and an arm in `is_supported`: until `is_supported` says yes, elfq never
    scans the code and says it can't read it. An arm in `is_veneer` lets
-   `callers` and `callees` of ranges see through a linker's veneers.
+   `callers` and `callees` of ranges see through a linker's veneers. An arm
+   in `runs_on` lets an entry point that shares its code with the next
+   function, as libgcc's `__aeabi_dsub` does with `__adddf3`, run on into
+   it as a tail call; without one, such entry points use nothing.
    `code_size`, `leading_padding` and `ending` matter only for finding the
    functions in stripped firmware, which elfq does only for Thumb.
 3. **Its name.** Add it to `text::architecture_name`, which the overview

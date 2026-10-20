@@ -44,13 +44,13 @@ use std::fmt;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use object::read::elf::SectionHeader;
+use object::read::elf::{ElfFile, FileHeader, ProgramHeader, SectionHeader};
 use object::{
     Architecture, Endianness, Object, ObjectKind, ObjectSection, ObjectSymbol, SectionFlags,
     SectionIndex, SectionKind, SymbolKind,
 };
 
-use crate::arch::{self, CodeReference};
+use crate::arch::{self, CodeReference, CodeReferenceKind};
 
 /// Arrays of pointers to the functions that the C runtime calls at startup
 /// and exit.
@@ -150,6 +150,14 @@ pub struct Section {
     /// such as `.plt.got`, as the section's header gives it; 0 when it
     /// gives none.
     pub entry_size: u64,
+    /// Where the file puts the section's bytes in memory, when that isn't
+    /// where the program uses them: the address of its load image, which
+    /// the program copies to `address` before it uses it. Firmware stores
+    /// the starting values of `.data`, and code that runs from RAM, in
+    /// flash this way, and its startup code copies them. `None` for most
+    /// sections, whose bytes are stored where the program uses them, and
+    /// for sections such as `.bss` that take no space in the file.
+    pub load_address: Option<u64>,
 }
 
 /// A function or data object.
@@ -362,10 +370,11 @@ impl Binary {
             unnamed_functions::add(&binary, &mut items);
         }
 
+        let run_on = end_where_functions_start(&mut items);
         sort_items(&mut items);
         estimate_missing_sizes(&mut items, &binary.sections);
         binary.items = items;
-        binary.code_references = scan_functions(&binary);
+        binary.code_references = scan_functions(&binary, &run_on);
         // Last, since finding unnamed data needs all the other items.
         let unnamed = unnamed_data::items(&binary);
         binary.items.extend(unnamed);
@@ -374,9 +383,10 @@ impl Binary {
     }
 
     /// The references that the code of `function` makes, as `arch::scan`
-    /// finds them: none when elfq can't read the code. Scanning code is
-    /// much of what elfq does, so it scans each function once, as it loads
-    /// the file.
+    /// finds them, and a jump to the next function when the code runs on
+    /// into it (see `end_where_functions_start`): none when elfq can't read
+    /// the code. Scanning code is much of what elfq does, so it scans each
+    /// function once, as it loads the file.
     pub fn code_references(&self, function: &Item) -> &[CodeReference] {
         self.code_references
             .get(&(function.address, function.size))
@@ -477,6 +487,34 @@ impl Binary {
         self.sections
             .iter()
             .position(|section| section.in_memory() && section.contains(address))
+    }
+
+    /// Where the load image of `item` starts, when its section has one
+    /// (see [`Section::load_address`]): where the file stores its bytes for
+    /// the program to copy to where it uses them.
+    pub fn load_address(&self, item: &Item) -> Option<u64> {
+        let section = &self.sections[item.section];
+        let offset = item.address.checked_sub(section.address)?;
+        section.load_address?.checked_add(offset)
+    }
+
+    /// The bytes of `item` that sizes count: all of them, or with a range,
+    /// those in it. A range counts the item's load image too, where the
+    /// file stores it, so a range that holds both copies counts both.
+    pub fn bytes_in(&self, item: &Item, range: Option<AddressRange>) -> u64 {
+        match range {
+            Some(range) => range
+                .overlap(item.address, item.size)
+                .saturating_add(self.load_image_bytes_in(item, range)),
+            None => item.size,
+        }
+    }
+
+    /// How many bytes of `item`'s load image `range` holds: 0 when it has
+    /// none.
+    pub fn load_image_bytes_in(&self, item: &Item, range: AddressRange) -> u64 {
+        self.load_address(item)
+            .map_or(0, |address| range.overlap(address, item.size))
     }
 
     /// The item whose bytes include `address`, as an index into
@@ -629,6 +667,7 @@ fn word(bytes: &[u8], endianness: Endianness) -> u64 {
 /// a damaged header can make it do, and read as far as the file goes if it
 /// runs past the end of the file, each with a warning.
 fn read_sections(file: &object::File, file_size: u64, warnings: &mut Vec<String>) -> Vec<Section> {
+    let segments = load_segments(file);
     let mut sections = Vec::new();
     for section in file.sections() {
         let index = section.index().0;
@@ -667,6 +706,12 @@ fn read_sections(file: &object::File, file_size: u64, warnings: &mut Vec<String>
         if allocated && past_the_end {
             warnings.push(format!("section {shown} runs past the end of the file"));
         }
+        let load_address = match file_range {
+            Some((offset, _)) if allocated && size > 0 => {
+                load_address(&segments, section.address(), size, offset)
+            }
+            _ => None,
+        };
         sections[index] = Section {
             name,
             address: section.address(),
@@ -675,9 +720,89 @@ fn read_sections(file: &object::File, file_size: u64, warnings: &mut Vec<String>
             allocated,
             file_range,
             entry_size: entry_size(file, section.index()),
+            load_address,
         };
     }
     sections
+}
+
+/// A loadable segment, as the file's program headers describe it: the bytes
+/// of the file that are put in memory.
+struct Segment {
+    /// Where its bytes are in the file, as (offset, size).
+    file_range: (u64, u64),
+    /// Where the program uses it.
+    address: u64,
+    /// Where its bytes are put in memory, which the program copies them
+    /// from when that isn't `address`.
+    load_address: u64,
+    /// Its size in memory, which takes in any `.bss` after its bytes.
+    size: u64,
+}
+
+/// The file's loadable segments. When the program headers give several
+/// segments the load address 0 and the others none, as some linkers do,
+/// their load images would overlap, so those addresses say nothing, and
+/// each segment is taken to be stored where the program uses it, as GNU's
+/// `objdump` and `objcopy` take it. One segment's 0 can be true, as for a
+/// program that is stored at 0 and copied to RAM to run.
+fn load_segments(file: &object::File) -> Vec<Segment> {
+    fn read<Elf: FileHeader>(elf: &ElfFile<'_, Elf>) -> Vec<Segment> {
+        let endian = elf.endian();
+        elf.elf_program_headers()
+            .iter()
+            .filter(|header| header.p_type(endian) == object::elf::PT_LOAD)
+            .map(|header| Segment {
+                file_range: header.file_range(endian),
+                address: header.p_vaddr(endian).into(),
+                load_address: header.p_paddr(endian).into(),
+                size: header.p_memsz(endian).into(),
+            })
+            .collect()
+    }
+    let segments = match file {
+        object::File::Elf32(elf) => read(elf),
+        object::File::Elf64(elf) => read(elf),
+        _ => Vec::new(),
+    };
+    with_load_addresses(segments)
+}
+
+/// `segments`, each stored where the program uses it when the program
+/// headers give several the load address 0 and the others none (see
+/// [`load_segments`]).
+fn with_load_addresses(mut segments: Vec<Segment>) -> Vec<Segment> {
+    let several = segments.iter().filter(|segment| segment.size > 0).count() > 1;
+    if several && segments.iter().all(|segment| segment.load_address == 0) {
+        for segment in &mut segments {
+            segment.load_address = segment.address;
+        }
+    }
+    segments
+}
+
+/// Where the bytes of a section that the program uses at `address`, and
+/// that are at `offset` in the file, are put in memory, when that isn't
+/// `address`: the segment that holds them says, as GNU's tools read it.
+/// `None` when no segment holds all `size` of them where the program uses
+/// them, or when the load image would run past the last address, which only
+/// a damaged header can make it do.
+fn load_address(segments: &[Segment], address: u64, size: u64, offset: u64) -> Option<u64> {
+    let end = offset.checked_add(size)?;
+    let segment = segments.iter().find(|segment| {
+        let (start, length) = segment.file_range;
+        offset >= start
+            && start.checked_add(length).is_some_and(|stop| end <= stop)
+            && address >= segment.address
+            && address - segment.address < segment.size
+    })?;
+    let load_address = segment
+        .load_address
+        .checked_add(offset - segment.file_range.0)?;
+    if fitting_size(load_address, size) != Some(size) {
+        return None;
+    }
+    (load_address != address).then_some(load_address)
 }
 
 /// The size of each entry that the header of the section at `index` gives.
@@ -713,6 +838,7 @@ fn null_section() -> Section {
         allocated: false,
         file_range: None,
         entry_size: 0,
+        load_address: None,
     }
 }
 
@@ -829,9 +955,57 @@ fn add_entry_item(items: &mut Vec<Item>, entry: u64, sections: &[Section]) {
     }
 }
 
+/// Ends each function where the next one starts, when that is inside it
+/// and the functions that start inside it run to its end. Hand-written
+/// code can give a function several entry points that share its end, each
+/// with a symbol whose size runs to that end: libgcc's `__aeabi_dsub` flips
+/// the sign of its second argument and runs on into `__adddf3`. Ending each
+/// entry where the next starts counts each byte once. A function whose
+/// code goes on after the functions inside it stays whole. Returns the
+/// functions it ended, by address and size, as the code of each may run on
+/// into the next.
+fn end_where_functions_start(items: &mut [Item]) -> HashSet<(u64, u64)> {
+    // Each function's section, start and end, sorted.
+    let mut functions: Vec<(usize, u64, u64)> = items
+        .iter()
+        .filter(|item| item.kind == ItemKind::Function)
+        .map(|item| (item.section, item.address, item.address + item.size))
+        .collect();
+    functions.sort_unstable();
+    let mut ended = HashSet::new();
+    for item in items
+        .iter_mut()
+        .filter(|item| item.kind == ItemKind::Function)
+    {
+        let end = item.address + item.size;
+        let after = functions.partition_point(|&(section, address, _)| {
+            (section, address) <= (item.section, item.address)
+        });
+        let mut inside = functions[after..]
+            .iter()
+            .take_while(|&&(section, address, _)| section == item.section && address < end)
+            .peekable();
+        let Some(&&(_, next, _)) = inside.peek() else {
+            continue;
+        };
+        if inside.all(|&(_, _, inner_end)| inner_end < end) {
+            continue;
+        }
+        item.size = next - item.address;
+        ended.insert((item.address, item.size));
+    }
+    ended
+}
+
 /// The references in the code of each function in `binary.items`, by the
-/// function's address and size; see [`Binary::code_references`].
-fn scan_functions(binary: &Binary) -> HashMap<(u64, u64), Vec<CodeReference>> {
+/// function's address and size; see [`Binary::code_references`]. Each of
+/// `run_on`, the functions that `end_where_functions_start` ended, also
+/// jumps to the function after it if its code runs on into it, as a tail
+/// call does.
+fn scan_functions(
+    binary: &Binary,
+    run_on: &HashSet<(u64, u64)>,
+) -> HashMap<(u64, u64), Vec<CodeReference>> {
     if !arch::is_supported(binary.architecture, binary.thumb) {
         return HashMap::new();
     }
@@ -841,16 +1015,51 @@ fn scan_functions(binary: &Binary) -> HashMap<(u64, u64), Vec<CodeReference>> {
         .filter(|item| item.kind == ItemKind::Function);
     functions
         .filter_map(|function| {
+            let key = (function.address, function.size);
             let code = binary.bytes(function.address, function.size)?;
-            let references = arch::scan(
+            let mut references = arch::scan(
                 binary.architecture,
                 binary.endianness,
                 code,
                 function.address,
             );
-            Some(((function.address, function.size), references))
+            if run_on.contains(&key) {
+                references.extend(run_on_jump(binary, function, code, &references));
+            }
+            Some((key, references))
         })
         .collect()
+}
+
+/// The jump from the last instruction of `function`, whose `code` makes
+/// `references`, to the function that starts where it ends, when the code
+/// runs on into it (see `arch::runs_on`). `None` when it doesn't, or when
+/// that instruction is a conditional jump there, which `references`
+/// already has.
+fn run_on_jump(
+    binary: &Binary,
+    function: &Item,
+    code: &[u8],
+    references: &[CodeReference],
+) -> Option<CodeReference> {
+    let next = function.address + function.size;
+    let site = arch::runs_on(
+        binary.architecture,
+        binary.endianness,
+        code,
+        function.address,
+    )?;
+    let jumps_there = references.iter().any(|reference| {
+        reference.site == site
+            && matches!(
+                reference.kind,
+                CodeReferenceKind::Jump(to) | CodeReferenceKind::TailJump(to) if to == next
+            )
+    });
+    (!jumps_there).then_some(CodeReference {
+        site,
+        kind: CodeReferenceKind::TailJump(next),
+    })
 }
 
 /// Gives each function of unknown size the distance to the next item in its
@@ -887,6 +1096,7 @@ mod tests {
             allocated: true,
             file_range: None,
             entry_size: 0,
+            load_address: None,
         }
     }
 
@@ -930,6 +1140,165 @@ mod tests {
                 ("unsized", 0x1100, 0x40, Source::SymbolTable),
                 ("fn_0x1200", 0x1200, 0x10, Source::EhFrame),
             ]
+        );
+    }
+
+    #[test]
+    fn entry_points_end_where_the_next_starts() {
+        // As libgcc's __gedf2, __ledf2 and __cmpdf2: each symbol runs to
+        // the end they share.
+        let mut items = vec![
+            function("__cmpdf2", 0x1010, 0x70),
+            function("__gedf2", 0x1000, 0x80),
+            function("__ledf2", 0x1008, 0x78),
+            // A function of unknown size, a function at the same address,
+            // and data inside a function, change nothing.
+            function("unsized", 0x2000, 0),
+            function("whole", 0x3000, 0x20),
+            function("alias", 0x3000, 0x10),
+            Item {
+                kind: ItemKind::Data,
+                ..function("table", 0x3004, 4)
+            },
+            // Nor does a function in another section, at an address inside
+            // one.
+            Item {
+                section: 1,
+                ..function("elsewhere", 0x3010, 4)
+            },
+            // A function whose code goes on after the one inside it stays
+            // whole, as does one with a function of unknown size inside.
+            function("outer", 0x4000, 0x20),
+            function("inner", 0x4008, 8),
+            function("around", 0x5000, 0x20),
+            function("unknown", 0x5010, 0),
+        ];
+        let ended = end_where_functions_start(&mut items);
+        let sizes: Vec<(&str, u64)> = items
+            .iter()
+            .map(|item| (item.name.as_str(), item.size))
+            .collect();
+        assert_eq!(
+            sizes,
+            [
+                ("__cmpdf2", 0x70),
+                ("__gedf2", 8),
+                ("__ledf2", 8),
+                ("unsized", 0),
+                ("whole", 0x20),
+                ("alias", 0x10),
+                ("table", 4),
+                ("elsewhere", 4),
+                ("outer", 0x20),
+                ("inner", 8),
+                ("around", 0x20),
+                ("unknown", 0),
+            ]
+        );
+        assert_eq!(ended, HashSet::from([(0x1000, 8), (0x1008, 8)]));
+    }
+
+    /// An x86-64 file whose `.text` at 0x1000 is `code`, holding `items`.
+    fn x86_64_binary(code: Vec<u8>, items: Vec<Item>) -> Binary {
+        let text = Section {
+            size: code.len() as u64,
+            file_range: Some((0, code.len() as u64)),
+            ..text_section()
+        };
+        Binary {
+            architecture: Architecture::X86_64,
+            pointer_size: 8,
+            kind: FileKind::Executable,
+            entry: 0x1000,
+            thumb: false,
+            endianness: Endianness::Little,
+            has_symbols: true,
+            has_dwarf: false,
+            sections: vec![null_section(), text],
+            items: items
+                .into_iter()
+                .map(|item| Item { section: 1, ..item })
+                .collect(),
+            imports: Vec::new(),
+            relocations: Vec::new(),
+            used_by_unwinder: Vec::new(),
+            merged_variables: Vec::new(),
+            vector_table: None,
+            warnings: Vec::new(),
+            code_references: HashMap::new(),
+            data: code,
+        }
+    }
+
+    #[test]
+    fn an_entry_point_that_runs_on_tail_calls_the_next() {
+        // neg esi, which runs on into add's lea eax, [rdi + rsi]; ret.
+        let mut items = vec![function("subtract", 0x1000, 6), function("add", 0x1002, 4)];
+        let ended = end_where_functions_start(&mut items);
+        let binary = x86_64_binary(vec![0xf7, 0xde, 0x8d, 0x04, 0x37, 0xc3], items);
+        let references = scan_functions(&binary, &ended);
+        let run_on = CodeReference {
+            site: 0x1000,
+            kind: CodeReferenceKind::TailJump(0x1002),
+        };
+        assert_eq!(references[&(0x1000, 2)], [run_on]);
+        assert_eq!(references[&(0x1002, 4)], []);
+
+        // test esi, esi; jne 0x1004, a conditional jump to the next
+        // entry, is one reference to it, not two; and ret runs on nowhere.
+        let mut items = vec![
+            function("skip", 0x1000, 9),
+            function("add", 0x1004, 5),
+            function("done", 0x1008, 1),
+        ];
+        let ended = end_where_functions_start(&mut items);
+        let code = vec![0x85, 0xf6, 0x75, 0x00, 0x8d, 0x04, 0x37, 0xc3, 0xc3];
+        let binary = x86_64_binary(code, items);
+        let references = scan_functions(&binary, &ended);
+        let jump = CodeReference {
+            site: 0x1002,
+            kind: CodeReferenceKind::Jump(0x1004),
+        };
+        assert_eq!(references[&(0x1000, 4)], [jump]);
+        assert_eq!(references[&(0x1004, 4)], []);
+    }
+
+    #[test]
+    fn a_segment_says_where_its_sections_are_stored() {
+        // As in firmware: code in flash, then .data and .bss in RAM, whose
+        // bytes the file stores in flash after the code.
+        let segment = |file_range, address, load_address, size| Segment {
+            file_range,
+            address,
+            load_address,
+            size,
+        };
+        let segments = [
+            segment((0x1000, 0x800), 0x0800_0000, 0x0800_0000, 0x800),
+            segment((0x2000, 0x20), 0x2000_0000, 0x0800_0800, 0x48),
+        ];
+        // .text is stored where it runs, and .data's bytes in flash.
+        assert_eq!(load_address(&segments, 0x0800_0000, 0x800, 0x1000), None);
+        assert_eq!(
+            load_address(&segments, 0x2000_0000, 0x20, 0x2000),
+            Some(0x0800_0800)
+        );
+        // Bytes that run past the segment's in the file, or that the
+        // program uses outside it, aren't in it.
+        assert_eq!(load_address(&segments, 0x2000_0000, 0x21, 0x2000), None);
+        assert_eq!(load_address(&segments, 0x2000_0048, 0x10, 0x2000), None);
+        // When every load address is 0, none of them says anything.
+        let unset = with_load_addresses(vec![
+            segment((0x1000, 0x800), 0x0800_0000, 0, 0x800),
+            segment((0x2000, 0x20), 0x2000_0000, 0, 0x48),
+        ]);
+        assert_eq!(load_address(&unset, 0x2000_0000, 0x20, 0x2000), None);
+        // Unless there is only one: a program stored at 0 that runs from
+        // RAM.
+        let stored_at_0 = with_load_addresses(vec![segment((0x1000, 0x84), 0x2000_0000, 0, 0xa4)]);
+        assert_eq!(
+            load_address(&stored_at_0, 0x2000_0044, 0x40, 0x1044),
+            Some(0x44)
         );
     }
 

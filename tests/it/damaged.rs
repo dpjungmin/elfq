@@ -57,7 +57,7 @@ fn set_section_field(data: &mut [u8], section: &str, field: Field, value: u64) {
     write(data, headers + index * header_size + at, width, value);
 }
 
-/// Sets the size that `.symtab` gives `symbol` to `size`, in a 64-bit file.
+/// Sets the size that `.symtab` gives `symbol` to `size`.
 fn set_symbol_size(data: &mut [u8], symbol: &str, size: u64) {
     let file = object::File::parse(&*data).unwrap();
     let index = file.symbol_by_name(symbol).unwrap().index().0;
@@ -66,8 +66,15 @@ fn set_symbol_size(data: &mut [u8], symbol: &str, size: u64) {
         .unwrap()
         .file_range()
         .unwrap();
-    // Each symbol takes 24 bytes, and `st_size` is the last 8.
-    write(data, table as usize + index * 24 + 16, 8, size);
+    // In a 64-bit file each symbol takes 24 bytes, and `st_size` is the
+    // last 8; in a 32-bit one, 16 bytes, with `st_size` the 4 after
+    // `st_name` and `st_value`.
+    let (entry_size, at, width) = if file.is_64() {
+        (24, 16, 8)
+    } else {
+        (16, 8, 4)
+    };
+    write(data, table as usize + index * entry_size + at, width, size);
 }
 
 /// Puts `bytes` at the end of the file and points `section` at them.
@@ -350,10 +357,28 @@ fn a_data_object_whose_size_would_end_past_the_last_address_is_dropped() {
 }
 
 #[test]
+fn a_function_of_unknown_size_is_named_where_its_load_image_is() {
+    // The last function in .itcm, which flash stores from 0x30000118 for
+    // the startup code to copy, without a size.
+    let mut data = sample("c-cortex-m7-nodebug.elf");
+    set_symbol_size(&mut data, "__memcpy_veneer", 0);
+    let path = save("memcpy-veneer-unsized.elf", &data);
+    let output = elfq(&[&path, "top", "--range", "0x30000118+8"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert_output(
+        &String::from_utf8(output.stderr).unwrap(),
+        "error: elfq doesn't know where __memcpy_veneer ends, so it can't count the bytes in \
+         0x30000118..0x30000120 (the load image of .itcm)\n",
+    );
+}
+
+#[test]
 fn sizes_that_add_up_past_the_largest_number_stop_there() {
     // Functions that overlap, each half as large as the address space.
+    // Each is the last in its section, since one that runs on past the
+    // start of another in its section would end there.
     let mut data = sample("c-x86_64.elf");
-    for function in ["on_timer", "on_data", "crc32"] {
+    for function in ["_init", "platform_write", "_fini"] {
         set_symbol_size(&mut data, function, 1 << 63);
     }
     let (stdout, _) = run("huge-functions.elf", &data, &[]);

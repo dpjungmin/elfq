@@ -39,6 +39,8 @@ fn items_have_the_same_keys_everywhere() {
             },
             "reachable": false,
             "range": null,
+            "own": 29,
+            "load_image": 0,
             "retained": 29,
             "items": [],
             "shares": [],
@@ -417,6 +419,7 @@ fn the_overview_says_what_the_file_is() {
     assert_eq!(memory[0]["size"], 0x4088 - 0x318);
     assert_eq!(memory[0]["sections"][0], ".interp");
     assert_eq!(memory[0]["sections"][26], ".bss");
+    assert_eq!(memory[0]["load_images"], json!([]));
     assert_eq!(
         overview,
         json!({
@@ -435,6 +438,24 @@ fn the_overview_says_what_the_file_is() {
             "indirect_calls": 4
         })
     );
+}
+
+#[test]
+fn firmware_stores_load_images_in_flash() {
+    // The starting values of .data, and the code that runs from ITCM, are
+    // stored in flash, for the startup code to copy.
+    let memory = elfq_json(&[TCM_SAMPLE])["memory"].take();
+    assert_eq!(
+        memory[3],
+        json!({
+            "start": "0x30000000",
+            "end": "0x30000edc",
+            "size": 0xedc,
+            "sections": [".isr_vector", ".text", ".rodata", ".ARM.exidx"],
+            "load_images": [".itcm", ".data"]
+        })
+    );
+    assert_eq!(memory[0]["load_images"], json!([]));
 }
 
 #[test]
@@ -520,6 +541,71 @@ fn a_range_limits_the_counts_to_it() {
             "crc32"
         ]
     );
+}
+
+#[test]
+fn rows_say_which_bytes_are_a_load_image() {
+    // Flash holds the load images of .itcm and .data, for the startup code
+    // to copy.
+    let retained = elfq_json(&[
+        TCM_SAMPLE,
+        "retained",
+        "process_frame",
+        "--range",
+        "0x30000000+16M",
+    ]);
+    assert_eq!(retained["retained"], 1712);
+    assert_eq!(
+        (&retained["own"], &retained["load_image"]),
+        (&json!(376), &json!(0))
+    );
+    let rows = retained["items"].as_array().unwrap();
+    let row = |name: &str| rows.iter().find(|row| row["name"] == name).unwrap();
+    let bytes = |name: &str| {
+        let row = row(name);
+        (
+            row["section"].clone(),
+            row["own"].clone(),
+            row["load_image"].clone(),
+        )
+    };
+    assert_eq!(
+        bytes("crc_table"),
+        (json!(".data"), json!(1024), json!(1024))
+    );
+    assert_eq!(bytes("crc32"), (json!(".itcm"), json!(48), json!(48)));
+    assert_eq!(
+        bytes("decode_header"),
+        (json!(".text"), json!(40), json!(0))
+    );
+    // A range that holds both copies counts both.
+    let retained = elfq_json(&[TCM_SAMPLE, "retained", "crc32", "--range", "0..0x40000000"]);
+    assert_eq!(retained["items"][0]["name"], "crc_table");
+    assert_eq!(retained["items"][0]["own"], 2048);
+    assert_eq!(retained["items"][0]["load_image"], 1024);
+    // SYMBOL's own bytes too.
+    let retained = elfq_json(&[
+        TCM_SAMPLE,
+        "retained",
+        "crc_table",
+        "--range",
+        "0..0x40000000",
+    ]);
+    assert_eq!(
+        (&retained["own"], &retained["load_image"]),
+        (&json!(2048), &json!(1024))
+    );
+    // Without a range, every item counts once, where the program uses it.
+    let top = elfq_json(&[TCM_SAMPLE, "top"]);
+    for list in ["items", "unreachable"] {
+        assert!(
+            top[list]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|row| row["load_image"] == 0)
+        );
+    }
 }
 
 /// The sum of the `own` bytes of the rows in a list.

@@ -13,9 +13,7 @@ use super::retained_tree::RetainedTree;
 use super::symbol::Names;
 use super::{json, text};
 use crate::arch;
-use crate::binary::{
-    AddressRange, Binary, FileKind, Item, ItemKind, MemoryBlock, Source, memory_blocks,
-};
+use crate::binary::{AddressRange, Binary, FileKind, ItemKind, MemoryBlock, Source, memory_blocks};
 use crate::cli::Format;
 use crate::graph::{Graph, Node};
 use crate::render::{Align, Table};
@@ -35,8 +33,8 @@ struct OverviewJson<'a> {
     kind: String,
     has_symbols: bool,
     has_dwarf: bool,
-    /// The blocks of addresses that the file's sections occupy, such as
-    /// flash and RAM, in address order.
+    /// The blocks of addresses that the file's sections and their load
+    /// images occupy, such as flash and RAM, in address order.
     memory: Vec<json::Block<'a>>,
     /// The range of memory that `--range` picked, or `null`. With a range,
     /// the counts and bytes below are of the items that have bytes in it,
@@ -229,8 +227,9 @@ fn write_file(path: &Path, binary: &Binary, out: &mut dyn Write) -> Result<()> {
     Ok(())
 }
 
-/// Lists the blocks of addresses that the sections occupy, when there are
-/// several, as in firmware with flash and RAM, and returns them.
+/// Lists the blocks of addresses that the sections and their load images
+/// occupy, when there are several, as in firmware with flash and RAM, and
+/// returns them.
 fn write_memory(binary: &Binary, out: &mut dyn Write) -> Result<Vec<MemoryBlock>> {
     let blocks = memory_blocks(&binary.sections);
     if blocks.len() < 2 {
@@ -242,20 +241,35 @@ fn write_memory(binary: &Binary, out: &mut dyn Write) -> Result<Vec<MemoryBlock>
         ("SECTIONS", Align::Left),
     ]);
     for block in &blocks {
-        let sections: Vec<&str> = block
-            .sections
-            .iter()
-            .map(|&index| binary.sections[index].name.as_str())
-            .collect();
         table.row(vec![
             text::range_argument(block.range),
             (block.range.end - block.range.start).to_string(),
-            sections.join(" "),
+            sections_text(
+                &json::section_names(binary, &block.sections),
+                &json::section_names(binary, &block.load_images),
+            ),
         ]);
     }
     writeln!(out)?;
     table.write(out)?;
     Ok(blocks)
+}
+
+/// The sections in a block, then the sections whose load images are in
+/// it, such as ".isr_vector .text .rodata, load image of .data".
+fn sections_text(sections: &[&str], load_images: &[&str]) -> String {
+    let mut text = sections.join(" ");
+    if !load_images.is_empty() {
+        if !text.is_empty() {
+            text += ", ";
+        }
+        text += match load_images.len() {
+            1 => "load image of ",
+            _ => "load images of ",
+        };
+        text += &load_images.join(" ");
+    }
+    text
 }
 
 fn write_json(
@@ -287,11 +301,6 @@ fn write_json(
     json::write(&answer, out)
 }
 
-/// The bytes of an item that are in `range`, or all of them without one.
-fn in_range(item: &Item, range: Option<AddressRange>) -> u64 {
-    range.map_or(item.size, |range| range.overlap(item.address, item.size))
-}
-
 /// How many items of `kind` the file has, or with a range, how many have
 /// bytes in it.
 fn count(binary: &Binary, kind: ItemKind, range: Option<AddressRange>) -> usize {
@@ -299,13 +308,13 @@ fn count(binary: &Binary, kind: ItemKind, range: Option<AddressRange>) -> usize 
         .items
         .iter()
         .filter(|item| item.kind == kind)
-        .filter(|item| range.is_none() || in_range(item, range) > 0)
+        .filter(|item| range.is_none() || binary.bytes_in(item, range) > 0)
         .count()
 }
 
 /// The bytes of all the items, or with a range, those in it.
 fn total_bytes(binary: &Binary, range: Option<AddressRange>) -> u64 {
-    super::total(binary.items.iter().map(|item| in_range(item, range)))
+    super::total(binary.items.iter().map(|item| binary.bytes_in(item, range)))
 }
 
 /// What elfq found, such as "25 functions and 31 data objects", leaving
@@ -419,4 +428,22 @@ fn starting_point(binary: &Binary, names: &Names) -> Option<usize> {
 fn is_own_function(binary: &Binary, index: usize) -> bool {
     let item = &binary.items[index];
     item.kind == ItemKind::Function && item.source != Source::Plt && item.size > 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_memory_row_names_its_sections_then_its_load_images() {
+        assert_eq!(sections_text(&[".text", ".rodata"], &[]), ".text .rodata");
+        assert_eq!(
+            sections_text(&[".text"], &[".data"]),
+            ".text, load image of .data"
+        );
+        assert_eq!(
+            sections_text(&[], &[".itcm", ".data"]),
+            "load images of .itcm .data"
+        );
+    }
 }

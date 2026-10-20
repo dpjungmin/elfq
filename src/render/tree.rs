@@ -45,7 +45,7 @@ pub struct TreeRow {
     /// What the last column shows after the tree's branches.
     pub name: String,
     /// Words after the name, such as "(through a pointer)".
-    pub mark: Option<&'static str>,
+    pub mark: Option<String>,
     /// What the rows under it call it, when the tree is shown as rows: a
     /// name often shorter than `name`, such as `process_frame` for
     /// `app::process_frame`.
@@ -68,7 +68,7 @@ impl TreeRow {
     }
 
     fn label(&self) -> String {
-        match self.mark {
+        match &self.mark {
             Some(mark) => format!("{} {mark}", self.name),
             None => self.name.clone(),
         }
@@ -222,7 +222,7 @@ mod tests {
                 vec![
                     row("app::run", vec![leaf("app::log")]),
                     TreeRow {
-                        mark: Some("(through a pointer)"),
+                        mark: Some("(through a pointer)".to_string()),
                         ..leaf("app::tick")
                     },
                 ],
@@ -279,7 +279,7 @@ mod tests {
         for _ in 0..8 {
             row = &mut row.children[0];
         }
-        row.mark = Some("(marked)");
+        row.mark = Some("(marked)".to_string());
         row.children
             .push(TreeRow::new(vec![String::new()], "leaf", Vec::new()));
         assert_eq!(

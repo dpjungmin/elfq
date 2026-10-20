@@ -72,6 +72,17 @@ arm-none-eabi-gcc $cflags \
     -o "$out/c-cortex-m7.elf" c/app.c c/platform_cortexm7.c
 variants arm-none-eabi-strip c-cortex-m7
 
+# Only the variant with symbols and no DWARF: this sample is for libgcc's
+# routines for doubles, which have no DWARF of their own.
+echo "C, Cortex-M4 without its FPU"
+arm-none-eabi-gcc $cflags \
+    -mcpu=cortex-m4 -mthumb -mfloat-abi=soft \
+    -ffunction-sections -fdata-sections -nostdlib \
+    -T c/cortex-m4.ld -Wl,--gc-sections \
+    -o "$out/c-softfloat.elf" c/softfloat.c -lgcc
+arm-none-eabi-strip --strip-debug -o "$out/c-softfloat-nodebug.elf" "$out/c-softfloat.elf"
+rm "$out/c-softfloat.elf"
+
 # Calls too far for one branch instruction, through the veneers that GNU ld
 # and LLD add for Cortex-M, all but two of LLD's (see README.md), and through a
 # register (see c/far.c). Only the variants without DWARF, which has nothing to add here.
