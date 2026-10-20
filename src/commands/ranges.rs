@@ -593,7 +593,7 @@ mod tests {
     use crate::graph::Unresolved;
 
     #[test]
-    fn a_call_to_code_outside_every_function_has_a_row() {
+    fn a_call_to_code_outside_any_function_has_a_row() {
         // As when code in ITCM calls a routine in a microcontroller's ROM,
         // which the file has no symbol for.
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/bin/c-cortex-m7.elf");
