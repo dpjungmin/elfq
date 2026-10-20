@@ -36,7 +36,7 @@ mod unnamed_functions;
 mod vector_table;
 
 pub use names::{demangle, short_names};
-pub use range::{AddressRange, MemoryBlock, example_range, hex_number, memory_blocks};
+pub use range::{AddressRange, MemoryBlock, hex_number, memory_blocks, range_hint};
 pub use vector_table::VectorTable;
 
 use std::collections::{HashMap, HashSet};
@@ -297,10 +297,9 @@ impl Binary {
                 FileKind::PositionIndependentExecutable
             }
             ObjectKind::Dynamic => FileKind::SharedLibrary,
-            ObjectKind::Relocatable => bail!(
-                "this is an object file; elfq needs a linked executable, shared library \
-                 or firmware image"
-            ),
+            ObjectKind::Relocatable => {
+                bail!("this is an object file, not a linked program or library")
+            }
             ObjectKind::Core => bail!("core dumps are not supported"),
             _ => bail!("unknown ELF file type"),
         };

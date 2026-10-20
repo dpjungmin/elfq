@@ -131,7 +131,7 @@ fn unresolved_lines(name: &str, unresolved: &[Unresolved], listed: bool, all: bo
     // they go, or to an address the code names but no item holds.
     for (known_target, end) in [
         (false, "which elfq can't follow"),
-        (true, "to code outside every function elfq knows"),
+        (true, "to code outside any function"),
     ] {
         let these: Vec<&Unresolved> = unresolved
             .iter()
@@ -183,7 +183,7 @@ mod tests {
             unresolved_lines("f", &calls, false, false),
             [
                 "f makes 1 call through a pointer, at 0x10, which elfq can't follow.",
-                "Also 1 jump, at 0x20, to code outside every function elfq knows.",
+                "Also 1 jump, at 0x20, to code outside any function.",
             ]
         );
         let jumps = [
@@ -192,7 +192,7 @@ mod tests {
         ];
         assert_eq!(
             unresolved_lines("f", &jumps, true, false),
-            ["Also 2 jumps, at 0x10 and 0x18, to code outside every function elfq knows."]
+            ["Also 2 jumps, at 0x10 and 0x18, to code outside any function."]
         );
     }
 }

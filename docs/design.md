@@ -57,10 +57,10 @@ there instead, such as `entry point` or `vector table`.
 point, a function that `.init_array` lists, or on Cortex-M a handler that
 the vector table lists. Step 5 of [How it works](#how-it-works) lists every
 kind. An item that no chain of references from a root reaches is
-**unreachable**: dead
-code, or used in a way elfq can't see. The functions that a shared library
-exports aren't roots yet, so `top`, `retained` and `why` don't answer for
-libraries. (`graph::Root`)
+**unreachable**: the program never uses it, or uses it in a way elfq
+can't see. The functions that a shared library exports aren't roots yet,
+so `top`, `retained` and `why` don't answer for libraries.
+(`graph::Root`)
 
 **Exclusive and retained size.** An item is **exclusive** to X when every
 chain of references from the roots to it passes through X, so that it is

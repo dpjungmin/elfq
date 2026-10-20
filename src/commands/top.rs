@@ -55,10 +55,7 @@ pub fn run(
     out: &mut dyn Write,
 ) -> Result<()> {
     if binary.kind == FileKind::SharedLibrary {
-        bail!(
-            "elfq doesn't know yet which functions a shared library offers to other files, so \
-             it can't tell what keeps the most bytes in it"
-        );
+        bail!("elfq can't yet tell what keeps the most bytes in a shared library");
     }
     let retained = RetainedTree::build(binary, range)?;
     super::check_has_bytes(binary, range)?;
@@ -82,14 +79,14 @@ pub fn run(
     // reaches is the whole answer.
     let kept = retained.kept() > 0;
     if kept {
-        let total = text::bytes_text(retained.bytes());
+        let total = text::bytes_of_items(binary, range);
         match range {
             Some(range) => writeln!(
                 out,
-                "{total} of code and data in {}, by what keeps them:",
+                "{total} in {}, by what keeps them:",
                 text::range_text(binary, range, all)
             )?,
-            None => writeln!(out, "{total} of code and data, by what keeps them:")?,
+            None => writeln!(out, "{total}, by what keeps them:")?,
         }
         writeln!(out)?;
         retained.write_largest(text::shown(all), format, out)?;
@@ -115,8 +112,9 @@ fn unreachable(retained: &RetainedTree) -> Vec<usize> {
     unreachable
 }
 
-/// The sentence that names the items that nothing reaches, if any, largest
-/// first: as many as [`text::names_text`] names, or with `all`, every one.
+/// The sentences on the items that nothing reaches, if any, which name them
+/// largest first: as many as [`text::names_text`] names, or with `all`,
+/// every one.
 fn unreachable_text(retained: &RetainedTree, all: bool) -> Option<String> {
     let binary = retained.binary;
     let unreachable = unreachable(retained);
@@ -138,13 +136,14 @@ fn unreachable_text(retained: &RetainedTree, all: bool) -> Option<String> {
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
     if let [name] = names[..] {
         return Some(format!(
-            "Nothing reaches {name}, {}: it is dead code, or used in a way elfq can't see.",
+            "Nothing reaches {name}, {}: the program never uses it, or elfq can't see how.",
             text::bytes_text(bytes)
         ));
     }
+    // The names can be many, so the reason has a line of its own.
     let nodes: Vec<Node> = unreachable.iter().map(|&index| Node::Item(index)).collect();
     Some(format!(
-        "Nothing reaches {}, {} in all: {}. They are dead code, or used in a way elfq can't see.",
+        "Nothing reaches {}, {} in all: {}.\nThe program never uses them, or elfq can't see how.",
         text::count_text(binary, &nodes),
         text::bytes_text(bytes),
         text::names_text(&names, all)
@@ -177,8 +176,8 @@ mod tests {
         let retained = RetainedTree::from_graph(&binary, graph, Some(flash));
         assert_eq!(
             unreachable_text(&retained, false).unwrap(),
-            "Nothing reaches stats (load image), 32 bytes: it is dead code, or used in a way \
-             elfq can't see."
+            "Nothing reaches stats (load image), 32 bytes: the program never uses it, or elfq \
+             can't see how."
         );
     }
 }

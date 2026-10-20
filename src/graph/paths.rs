@@ -10,7 +10,7 @@
 //! `why` asks what keeps an item X in the file. Every path to X ends with an
 //! item that uses X, so the search is made without passing through X: the
 //! users it reaches are the ones that keep X, and a user it can't reach is
-//! either dead code or there only because of X.
+//! either unreachable or there only because of X.
 
 use std::collections::VecDeque;
 

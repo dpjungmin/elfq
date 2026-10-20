@@ -75,7 +75,7 @@ pub fn run(
     // A stripped file may have only its entry point, of unknown size.
     let bytes = total_bytes(binary, None);
     if bytes > 0 {
-        found += &format!(", {} of code and data", text::bytes_text(bytes));
+        found += &format!(", {}", text::bytes_of_items(binary, None));
     }
     if !binary.imports.is_empty() {
         found += &format!(
@@ -90,15 +90,12 @@ pub fn run(
     }
     let graph = Graph::build(binary);
     if !super::found_functions(binary) {
-        writeln!(
-            out,
-            "The file has no symbols or unwind table, so elfq can't find its functions yet."
-        )?;
+        writeln!(out, "{}.", text::NO_FUNCTIONS)?;
     }
     match text::unnamed_items(binary) {
         Some((function, Some(data))) => writeln!(
             out,
-            "Functions and data without symbols are named by address, like {} and {}.",
+            "Items without symbols are named by address, like {} and {}.",
             function.name, data.name
         )?,
         Some((function, None)) => writeln!(
@@ -168,20 +165,17 @@ fn write_range(
     out: &mut dyn Write,
 ) -> Result<()> {
     if binary.kind == FileKind::SharedLibrary {
-        bail!(
-            "elfq doesn't know yet which functions a shared library offers to other files, so \
-             it can't tell what keeps the bytes in a range of it"
-        );
+        bail!("elfq can't yet tell what keeps the bytes of a range in a shared library");
     }
     let retained = RetainedTree::build(binary, Some(range))?;
     super::check_has_bytes(binary, Some(range))?;
     write_file(path, binary, out)?;
     writeln!(
         out,
-        "{} in {}, {} of code and data",
+        "{} in {}, {}",
         items_text(binary, Some(range)),
         text::range_text(binary, range, false),
-        text::bytes_text(total_bytes(binary, Some(range)))
+        text::bytes_of_items(binary, Some(range))
     )?;
     // When nothing reaches the items in the range, there is nothing to rank.
     if retained.kept() > 0 {

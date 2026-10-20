@@ -59,10 +59,7 @@ impl FromStr for AddressRange {
                 .ok_or("the range goes past the last address")?;
             (start, end)
         } else {
-            return Err(format!(
-                "expected START..END or START+SIZE, such as {}",
-                example_range(text)
-            ));
+            return Err(range_hint(text));
         };
         if end <= start {
             return Err("the range must end after it starts".to_string());
@@ -71,12 +68,22 @@ impl FromStr for AddressRange {
     }
 }
 
-/// A range to show in an error about `text`, written as elfq takes it:
-/// the range that `text` means when it puts `-` or `:` between two numbers,
-/// as `0x0..0x40000` for `0x0-0x40000`, or `0x20000000+256K` for
-/// `0x20000000:256K`, whose second number is too small to be its end.
-/// Otherwise the usual examples.
-pub fn example_range(text: &str) -> String {
+/// What to tell someone who typed `text` for a range, with neither `..` nor
+/// `+` in it: the range it means, if it puts `-` or `:` between two
+/// numbers, as `did you mean 0x0..0x40000?` for `0x0-0x40000`, or else the
+/// forms a range takes.
+pub fn range_hint(text: &str) -> String {
+    match meant_range(text) {
+        Some(range) => format!("did you mean {range}?"),
+        None => "expected START..END or START+SIZE, such as 0x0+256K".to_string(),
+    }
+}
+
+/// The range that `text` means when it puts `-` or `:` between two
+/// numbers, written as elfq takes it: `0x0..0x40000` for `0x0-0x40000`, or
+/// `0x20000000+256K` for `0x20000000:256K`, whose second number is too
+/// small to be its end. `None` when the numbers make no range.
+fn meant_range(text: &str) -> Option<String> {
     let meant = |(start, end): (&str, &str)| {
         let (start, end) = (start.trim(), end.trim());
         let range = match number(end).ok()?.cmp(&number(start).ok()?) {
@@ -89,7 +96,6 @@ pub fn example_range(text: &str) -> String {
     text.split_once('-')
         .or_else(|| text.split_once(':'))
         .and_then(meant)
-        .unwrap_or_else(|| "0x20000000..0x20040000 or 0x20000000+256K".to_string())
 }
 
 /// The number that `text` writes in hexadecimal, after `0x` or `0X`, as
@@ -109,7 +115,7 @@ pub fn hex_number(text: &str) -> Option<Result<u64, ParseIntError>> {
 fn number(text: &str) -> Result<u64, String> {
     let text = text.trim();
     if text.is_empty() {
-        return Err("expected START..END or START+SIZE, with a number on each side".to_string());
+        return Err("expected a number on each side of .. or +".to_string());
     }
     if let Some(number) = hex_number(text) {
         return number.map_err(|_| format!("`{text}` isn't a hex number"));
@@ -261,15 +267,15 @@ mod tests {
         // A range typed with `-` or `:` gets the same range as elfq takes it.
         assert_eq!(
             range("0x0-0x40000"),
-            Err("expected START..END or START+SIZE, such as 0x0..0x40000".to_string())
+            Err("did you mean 0x0..0x40000?".to_string())
         );
-        assert_eq!(example_range("0x0:0x40000"), "0x0..0x40000");
-        assert_eq!(example_range("0 - 256K"), "0..256K");
+        assert_eq!(meant_range("0x0:0x40000").unwrap(), "0x0..0x40000");
+        assert_eq!(meant_range("0 - 256K").unwrap(), "0..256K");
         // A second number smaller than the first is a size.
-        assert_eq!(example_range("0x20000000:256K"), "0x20000000+256K");
-        let usual = "0x20000000..0x20040000 or 0x20000000+256K";
+        assert_eq!(meant_range("0x20000000:256K").unwrap(), "0x20000000+256K");
+        let forms = "expected START..END or START+SIZE, such as 0x0+256K";
         for text in ["0x10-0x10", "0x40000-0x0", "0x0-x", "0x1700"] {
-            assert_eq!(example_range(text), usual, "{text}");
+            assert_eq!(range_hint(text), forms, "{text}");
         }
     }
 

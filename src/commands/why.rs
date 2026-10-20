@@ -77,10 +77,7 @@ pub fn run(
     // it isn't that.
     let lead_name = symbol.lead_name(binary);
     if binary.kind == FileKind::SharedLibrary {
-        bail!(
-            "elfq doesn't know yet which functions a shared library offers to other files, \
-             so it can't tell why {name} is in it"
-        );
+        bail!("elfq can't yet tell why {name} is in a shared library");
     }
     let graph = Graph::build(binary);
     if let Some(root) = graph.root(node) {

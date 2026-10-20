@@ -506,7 +506,7 @@ Inlined copies of 1 function take 0 of the 2557 bytes of code:
 BYTES  COPIES  FUNCTION
     0       1  (unnamed)
 
-A copy of 0 bytes is one the compiler merged into the code around it, so the debug info gives it no bytes of its own.
+A copy of 0 bytes is one the compiler merged into the code around it.
 ",
     );
 }
@@ -530,7 +530,7 @@ Inlined copies of 1 function take 0 of the 2557 bytes of code:
 BYTES  COPIES  FUNCTION
     0       1  (unnamed)
 
-A copy of 0 bytes is one the compiler merged into the code around it, so the debug info gives it no bytes of its own.
+A copy of 0 bytes is one the compiler merged into the code around it.
 ";
     // DWARF 4, abbreviations at offset 0, 8-byte addresses, then the
     // entries, with the byte after them, or, as gimli also reads it, with a
@@ -664,7 +664,7 @@ fn a_long_chain_of_calls_is_read() {
     let data = chain_of_calls(10_000);
     let (stdout, _) = run("long-chain.elf", &data, &[]);
     let total = stdout.lines().nth(1).unwrap();
-    assert_eq!(total, "10000 functions, 79994 bytes of code and data");
+    assert_eq!(total, "10000 functions, 79994 bytes of code");
     run("long-chain.elf", &data, &["top", "--all"]);
     // JSON has the whole chain, as rows that each hang under the one
     // before.
