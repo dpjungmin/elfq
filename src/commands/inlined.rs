@@ -38,7 +38,9 @@ pub fn run(
             path.display()
         );
     }
-    // SYMBOL first, since reading the DWARF takes a while in a large file.
+    // SYMBOL first, since reading the DWARF takes a while in a large file:
+    // a name that could mean several items, or isn't a function, needn't
+    // wait for it.
     let function = match symbol {
         Some(symbol) => Some(find_function(binary, symbol)?),
         None => None,
@@ -47,22 +49,27 @@ pub fn run(
         .with_context(|| format!("cannot read the DWARF debug info in {}", path.display()))?;
     match function {
         None => write_list(binary, &copies, all, format, out),
-        Some(index) => write_tree(binary, &copies, index, all, format, out),
+        Some((index, lead_name)) => {
+            write_tree(binary, &copies, index, &lead_name, all, format, out)
+        }
     }
 }
 
-/// The index of the function that `symbol` names, or why nothing is
-/// inlined into it.
-fn find_function(binary: &Binary, symbol: &str) -> Result<usize> {
-    let node = super::symbol::find(binary, symbol)?;
-    let index = super::item_in_file(binary, node)?;
+/// The index of the function that `symbol` names, with its name as the
+/// answer's first line gives it (see [`Symbol::lead_name`]), or why nothing
+/// is inlined into it.
+///
+/// [`Symbol::lead_name`]: super::symbol::Symbol::lead_name
+fn find_function(binary: &Binary, symbol: &str) -> Result<(usize, String)> {
+    let symbol = super::symbol::find(binary, symbol)?;
+    let index = super::item_in_file(binary, symbol.node)?;
     if binary.items[index].kind != ItemKind::Function {
         bail!(
             "{} is a data object, not a function, so nothing is inlined into it",
-            node.name(binary)
+            symbol.node.name(binary)
         );
     }
-    Ok(index)
+    Ok((index, symbol.lead_name(binary)))
 }
 
 /// The list as JSON: every inlined function, not only the largest.
@@ -161,11 +168,12 @@ fn write_list(
 }
 
 /// Writes the tree of the inlined code in SYMBOL's function, the item at
-/// `index`.
+/// `index`, called `lead_name` in the answer's first line.
 fn write_tree(
     binary: &Binary,
     copies: &[InlinedCopy],
     index: usize,
+    lead_name: &str,
     all: bool,
     format: Format,
     out: &mut dyn Write,
@@ -177,33 +185,43 @@ fn write_tree(
     let bytes = super::total(groups.top.iter().map(|&group| groups.list[group].bytes));
     if format == Format::Json {
         let tree = TreeJson {
-            function: json::Item::new(binary, node),
+            function: json::Symbol::new(binary, node),
             inlined_bytes: bytes,
             inlined: groups.to_json(&groups.top),
         };
         return json::write(&tree, out);
     }
     if groups.top.is_empty() {
-        writeln!(out, "The debug info lists no inlined code in {name}.")?;
+        writeln!(out, "The debug info lists no inlined code in {lead_name}.")?;
         return Ok(());
     }
 
     let functions: BTreeSet<&str> = groups.list.iter().map(|group| group.name).collect();
     let functions = text::plural(functions.len(), "function", "functions");
     let are = if bytes == 1 { "is" } else { "are" };
+    // "process_frame's code", or "the code of sniprintf (also named
+    // snprintf)", since a name with a note can't take "'s".
+    let of_function = |what: &str| {
+        if lead_name == name {
+            format!("{name}'s {what}")
+        } else {
+            format!("the {what} of {lead_name}")
+        }
+    };
     // The copies' code can reach past the function's symbol, into a part
     // that the compiler moved away from the rest, such as `name.cold`.
     if bytes <= item.size {
         writeln!(
             out,
-            "Of {name}'s {}, {bytes} {are} inlined copies of {functions}:",
-            text::bytes_text(item.size)
+            "Of {}, {bytes} {are} inlined copies of {functions}:",
+            of_function(&text::bytes_text(item.size))
         )?;
     } else {
         writeln!(
             out,
-            "{} of {name}'s code {are} inlined copies of {functions}:",
-            text::bytes_text(bytes)
+            "{} of {} {are} inlined copies of {functions}:",
+            text::bytes_text(bytes),
+            of_function("code")
         )?;
     }
     writeln!(out)?;
@@ -228,6 +246,16 @@ fn write_tree(
     Ok(())
 }
 
+/// Whether `inlined FUNCTION`, for the item at `into`, has a row of the
+/// copies of `name` without `--all`, among the largest that it shows.
+pub(super) fn shows(copies: &[InlinedCopy], into: usize, name: &str) -> bool {
+    let groups = Groups::new(copies, into);
+    groups
+        .largest(text::shown(false))
+        .into_iter()
+        .any(|group| groups.list[group].name == name)
+}
+
 fn write_empty_copies_note(out: &mut dyn Write) -> Result<()> {
     writeln!(out)?;
     writeln!(
@@ -241,7 +269,7 @@ fn write_empty_copies_note(out: &mut dyn Write) -> Result<()> {
 /// The tree as JSON: every group, not only the largest.
 #[derive(Serialize)]
 struct TreeJson<'a> {
-    function: json::Item<'a>,
+    function: json::Symbol<'a>,
     /// The bytes of the function's code that inlined copies take.
     inlined_bytes: u64,
     /// The groups, as the rows of the tree in the text's order.
@@ -627,6 +655,23 @@ mod tests {
             lines(&rows, 0),
             ["big 200 1", "parent 100 1", "  2 more 90 3", "leaf 5 1"]
         );
+    }
+
+    #[test]
+    fn the_smallest_of_many_groups_needs_all() {
+        // Two more than `inlined` shows: one more would be shown in place
+        // of "1 more".
+        let names: Vec<String> = (0..text::shown(false) + 2)
+            .map(|n| format!("f{n}"))
+            .collect();
+        let copies: Vec<InlinedCopy> = names
+            .iter()
+            .enumerate()
+            .map(|(n, name)| copy(name, 100 - n as u64, None))
+            .collect();
+        assert!(shows(&copies, 0, "f0"));
+        assert!(!shows(&copies, 0, &names[names.len() - 1]));
+        assert!(!shows(&copies, 0, "f99"));
     }
 
     #[test]

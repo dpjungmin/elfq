@@ -27,7 +27,7 @@ const SHOWN: usize = 10;
 
 #[derive(Serialize)]
 struct WhyJson<'a> {
-    symbol: json::Item<'a>,
+    symbol: json::Symbol<'a>,
     /// Whether anything reaches SYMBOL from where the program starts.
     reachable: bool,
     /// Why SYMBOL is itself where the program starts, in the words of
@@ -70,8 +70,12 @@ pub fn run(
 ) -> Result<()> {
     super::check_code_is_readable(binary)?;
     let names = Names::new(binary);
-    let node = names.find(symbol)?;
+    let symbol = names.find(symbol)?;
+    let node = symbol.node;
     let name = node.name(binary);
+    // The name in the answer's first line, which says what SYMBOL gave when
+    // it isn't that.
+    let lead_name = symbol.lead_name(binary);
     if binary.kind == FileKind::SharedLibrary {
         bail!(
             "elfq doesn't know yet which functions a shared library offers to other files, \
@@ -82,7 +86,7 @@ pub fn run(
     if let Some(root) = graph.root(node) {
         if format == Format::Json {
             let answer = WhyJson {
-                symbol: json::Item::new(binary, node),
+                symbol: json::Symbol::new(binary, node),
                 reachable: true,
                 root: Some(json::root_field(binary, root.kind)),
                 chains: Vec::new(),
@@ -92,7 +96,11 @@ pub fn run(
             };
             return json::write(&answer, out);
         }
-        writeln!(out, "{}", text::root_sentence(binary, root))?;
+        writeln!(
+            out,
+            "{}",
+            text::root_sentence(binary, &lead_name, root.kind)
+        )?;
         return Ok(());
     }
 
@@ -120,7 +128,7 @@ pub fn run(
     if format == Format::Json {
         let item = |node: Node| json::Item::new(binary, node);
         let answer = WhyJson {
-            symbol: item(node),
+            symbol: json::Symbol::new(binary, node),
             reachable: !keeping.is_empty(),
             root: None,
             chains: keeping
@@ -154,11 +162,11 @@ pub fn run(
     let unreachable = names_of(&unreachable);
     let behind = names_of(&behind);
     if keeping.is_empty() {
-        return write_unreachable(name, &unreachable, all, out);
+        return write_unreachable(&lead_name, &unreachable, all, out);
     }
     let room = if all { usize::MAX } else { SHOWN };
     let shown = &keeping[..text::shown_count(keeping.len(), room)];
-    writeln!(out, "{}", lead(binary, node, &keeping, shown.len()))?;
+    writeln!(out, "{}", lead(binary, &lead_name, &keeping, shown.len()))?;
     writeln!(out)?;
     let chains = Chains::new(binary, &graph, names, &paths, node, shown);
     let mut table = Table::new(&[("HOW", Align::Left), ("ITEM", Align::Left)]);
@@ -231,8 +239,9 @@ fn chain(
     chain
 }
 
-/// Says that nothing reaches SYMBOL, nor the items that use it: as many as
-/// [`text::names_text`] names, or with `all`, every one.
+/// Says that nothing reaches SYMBOL, called `name` in this first line of
+/// the answer, nor the items that use it: as many as [`text::names_text`]
+/// names, or with `all`, every one.
 fn write_unreachable(name: &str, users: &[&str], all: bool, out: &mut dyn Write) -> Result<()> {
     writeln!(out, "{}", text::nothing_reaches(name))?;
     if !users.is_empty() {
@@ -246,10 +255,9 @@ fn write_unreachable(name: &str, users: &[&str], all: bool, out: &mut dyn Write)
     Ok(())
 }
 
-/// The first line of the answer: what keeps SYMBOL, through the chains to
-/// the nearest `shown` of the items that keep it.
-fn lead(binary: &Binary, symbol: Node, keeping: &[usize], shown: usize) -> String {
-    let name = symbol.name(binary);
+/// The first line of the answer: what keeps SYMBOL, called `name` here,
+/// through the chains to the nearest `shown` of the items that keep it.
+fn lead(binary: &Binary, name: &str, keeping: &[usize], shown: usize) -> String {
     if let [user] = keeping {
         return format!(
             "{name} is used by {}, through this chain:",

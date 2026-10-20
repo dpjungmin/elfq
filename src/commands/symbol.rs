@@ -10,22 +10,52 @@
 //!    `app::process_frame`, or `Gain::run` for
 //!    `<app::Gain as app::Stage>::run` (see [`short_names`]).
 //!
+//! When SYMBOL gives another of an item's names, or an address inside it,
+//! the answer's first line says so (see [`Symbol::lead_name`]).
+//!
 //! For `callers` and `callees`, SYMBOL can also be one or more ranges of
 //! memory instead (see [`subject`]).
 
 use std::cell::OnceCell;
-use std::collections::{HashMap, HashSet};
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use anyhow::{Context, Result, anyhow, bail};
 
 use super::text;
-use crate::binary::{AddressRange, Binary, demangle, hex_number, short_names};
+use crate::binary::{
+    AddressRange, Binary, ItemKind, demangle, example_range, hex_number, short_names,
+};
+use crate::debuginfo::{self, InlinedCopy};
 use crate::graph::Node;
+
+/// The item or import that SYMBOL finds.
+#[derive(Debug)]
+pub struct Symbol {
+    pub node: Node,
+    /// What the answer's first line adds to the item's name when SYMBOL
+    /// gave something other than that name: another of its names, as in
+    /// "also named snprintf", or an address inside it, as in "which holds
+    /// 0x30000290".
+    pub note: Option<String>,
+}
+
+impl Symbol {
+    /// The item's name as the answer's first line gives it, with the note
+    /// if there is one: `sniprintf (also named snprintf)`.
+    pub fn lead_name(&self, binary: &Binary) -> String {
+        let name = self.node.name(binary);
+        match &self.note {
+            Some(note) => format!("{name} ({note})"),
+            None => name.to_string(),
+        }
+    }
+}
 
 /// What `callers` and `callees` ask about.
 pub enum Subject {
     /// One item or import.
-    Node(Node),
+    Symbol(Symbol),
     /// Everything in some ranges of memory, together.
     Ranges(Vec<AddressRange>),
 }
@@ -36,26 +66,64 @@ pub fn subject(binary: &Binary, queries: &[String]) -> Result<Subject> {
     if let [query] = queries
         && range(query).is_none()
     {
-        return Ok(Subject::Node(find(binary, query)?));
+        check_not_a_range(query)?;
+        return Ok(Subject::Symbol(find(binary, query)?));
     }
     let ranges = queries
         .iter()
         .map(|query| match range(query) {
             Some(range) => range,
-            None => bail!("`{query}` isn't a range; give one SYMBOL, or ranges such as 0x0+256K"),
+            None => {
+                check_not_a_range(query)?;
+                bail!("`{query}` isn't a range; give one SYMBOL, or ranges such as 0x0+256K")
+            }
         })
         .collect::<Result<_>>()?;
     Ok(Subject::Ranges(ranges))
 }
 
 /// The range that `query` gives, if it gives one (see [`is_range`]):
-/// `START..END` or `START+SIZE`, as `--range` takes it.
+/// `START..END` or `START+SIZE`, as `--range` takes it. Ranges joined by
+/// commas are an error that says to give each on its own.
 fn range(query: &str) -> Option<Result<AddressRange>> {
     is_range(query).then(|| {
-        query
-            .parse()
-            .map_err(|error| anyhow!("`{query}` isn't a range: {error}"))
+        if !query.contains(',') {
+            return query
+                .parse()
+                .map_err(|error| anyhow!("`{query}` isn't a range: {error}"));
+        }
+        let parts: Vec<&str> = query
+            .split(',')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .collect();
+        for part in &parts {
+            if let Err(error) = part.parse::<AddressRange>() {
+                bail!("`{part}` isn't a range: {error}");
+            }
+        }
+        match parts[..] {
+            [_] => bail!("`{query}` isn't a range; leave out the comma"),
+            _ => bail!(
+                "`{query}` isn't a range; give each range as an argument of its own: {}",
+                parts.join(" ")
+            ),
+        }
     })
+}
+
+/// Refuses `query` when it is a range typed with `-` or `:` between its
+/// ends, as in `0x0-0x40000`, which neither a range nor SYMBOL can be:
+/// no name starts with a digit, and no address has `-` or `:` in it.
+fn check_not_a_range(query: &str) -> Result<()> {
+    if query.starts_with(|c: char| c.is_ascii_digit()) && query.contains(['-', ':']) {
+        bail!(
+            "`{query}` isn't a range or an address; a range is START..END or START+SIZE, such \
+             as {}",
+            example_range(query)
+        );
+    }
+    Ok(())
 }
 
 /// Whether `query` is meant as a range of memory rather than a symbol: it
@@ -65,7 +133,7 @@ pub fn is_range(query: &str) -> bool {
 }
 
 /// Finds the item or import that `query` names, as `Names::find` does.
-pub fn find(binary: &Binary, query: &str) -> Result<Node> {
+pub fn find(binary: &Binary, query: &str) -> Result<Symbol> {
     Names::new(binary).find(query)
 }
 
@@ -98,30 +166,163 @@ impl<'a> Names<'a> {
 
     /// Finds the item or import that `query` names. When it could mean
     /// several, or none, the error lists names to try instead.
-    pub(super) fn find(&self, query: &str) -> Result<Node> {
+    pub(super) fn find(&self, query: &str) -> Result<Symbol> {
         if let Some(address) = hex_number(query) {
             let address =
                 address.with_context(|| format!("`{query}` is not a hexadecimal address"))?;
-            return match self.binary.item_at(address) {
-                Some(index) => Ok(Node::Item(index)),
-                None => bail!("no function or data object contains address {address:#x}"),
+            let Some(index) = self.binary.item_at(address) else {
+                bail!("no function or data object contains address {address:#x}");
             };
+            // The item's start needs no note: it is what the item's name
+            // stands for. So is a Thumb function's start with bit 0 set, as
+            // symbols, pointers and the entry point give it.
+            let item = &self.binary.items[index];
+            let thumb_start =
+                self.binary.thumb && item.kind == ItemKind::Function && address == item.address | 1;
+            let note = (address != item.address && !thumb_start)
+                .then(|| format!("which holds {address:#x}"));
+            return Ok(Symbol {
+                node: Node::Item(index),
+                note,
+            });
         }
 
         match self.nodes(query) {
-            [node] => Ok(*node),
+            &[node] => Ok(Symbol {
+                node,
+                note: self
+                    .other_name(node, query)
+                    .map(|name| format!("also named {name}")),
+            }),
             [] => {
-                let similar = self.similar(query);
-                if similar.is_empty() {
-                    bail!("no function or data object is named `{query}`");
+                let mut message = format!("no function or data object is named `{query}`");
+                if let Some(reason) = self.unnamed().or_else(|| self.inlined_everywhere(query)) {
+                    message += &format!("; {reason}");
                 }
-                bail!(
-                    "no function or data object is named `{query}`; did you mean {}?",
-                    similar.join(", ")
-                );
+                let similar = self.similar(query);
+                if !similar.is_empty() {
+                    message += &format!("; did you mean {}?", similar.join(", "));
+                }
+                bail!("{message}");
             }
             nodes => bail!("{}", self.choices(query, nodes)),
         }
+    }
+
+    /// Where the compiler inlined every copy of the function that `query`
+    /// names, as the DWARF says: the reason that no item has the name.
+    /// `None` without DWARF, when `query` ends the names of several inlined
+    /// functions, or when the compiler kept part of the function out of
+    /// line, as `checksum.part.0` for `checksum`.
+    fn inlined_everywhere(&self, query: &str) -> Option<String> {
+        if !self.binary.has_dwarf {
+            return None;
+        }
+        let all_copies = debuginfo::inlined_copies(self.binary).ok()?;
+        let copies: Vec<&InlinedCopy> = all_copies
+            .iter()
+            .filter(|copy| copy.name == query || short_names(&copy.name).iter().any(|s| s == query))
+            .collect();
+        let name = &copies.first()?.name;
+        if copies.iter().any(|copy| &copy.name != name) {
+            return None;
+        }
+        // GCC names what it keeps out of line after the function, as
+        // `checksum.part.0`, or in C++, `checksum(char const*) [clone
+        // .part.0]`.
+        let kept = self.binary.items.iter().any(|item| {
+            item.name
+                .strip_prefix(name.as_str())
+                .is_some_and(|rest| rest.starts_with('.') || rest.starts_with(" [clone ."))
+        });
+        if kept {
+            return None;
+        }
+        // The functions that hold the copies, those with the most first.
+        let mut into: BTreeMap<usize, usize> = BTreeMap::new();
+        for copy in &copies {
+            *into.entry(copy.into).or_default() += 1;
+        }
+        let mut into: Vec<(usize, Node)> = into
+            .into_iter()
+            .map(|(index, count)| (count, Node::Item(index)))
+            .collect();
+        into.sort_by_key(|&(count, node)| (Reverse(count), node.name(self.binary)));
+        let names: Vec<String> = into
+            .iter()
+            .map(|&(_, node)| self.short_name(node))
+            .collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        // `inlined` lists the largest of what a function holds, which can
+        // leave this one out without `--all`.
+        let (_, first) = into[0];
+        let all = match first {
+            Node::Item(index) if !super::inlined::shows(&all_copies, index, name) => " --all",
+            _ => "",
+        };
+        let command = format!(
+            "`inlined {}{all}`",
+            text::shell_quote(&self.query_for(first))
+        );
+        let copies = match copies.len() {
+            1 => "its one copy".to_string(),
+            2 => "both copies of it".to_string(),
+            count => format!("all {count} copies of it"),
+        };
+        Some(match names[..] {
+            [function] => {
+                format!("the compiler inlined {copies} into {function}, which {command} lists")
+            }
+            _ => format!(
+                "the compiler inlined {copies} into {}; {command} lists those in {}",
+                text::names_text(&names, false),
+                names[0]
+            ),
+        })
+    }
+
+    /// How elfq names items in a file without a symbol table, with
+    /// examples, or why it found no functions in it: the likely reason that
+    /// no item has a name. `None` in a file with a symbol table.
+    fn unnamed(&self) -> Option<String> {
+        if self.binary.has_symbols {
+            return None;
+        }
+        if !super::found_functions(self.binary) {
+            return Some(
+                "the file has no symbols or unwind table, so elfq can't find its functions yet"
+                    .to_string(),
+            );
+        }
+        let names = match text::unnamed_items(self.binary)? {
+            (function, Some(data)) => {
+                format!(
+                    "functions and data by address, like {} and {}",
+                    function.name, data.name
+                )
+            }
+            (function, None) => format!("functions by address, like {}", function.name),
+        };
+        Some(format!(
+            "the file has no symbol table, so elfq names its {names}"
+        ))
+    }
+
+    /// The other name of `node` that `query` gives, if it gives one rather
+    /// than the item's name: an alias, or the alias that a short name gives.
+    /// A mangled symbol stands for its readable name, which is no other name
+    /// when it is the item's.
+    fn other_name(&self, node: Node, query: &str) -> Option<String> {
+        let Node::Item(index) = node else {
+            return None;
+        };
+        let item = &self.binary.items[index];
+        let gives = |name: &str| name == query || short_names(name).iter().any(|s| s == query);
+        if gives(&item.name) {
+            return None;
+        }
+        let alias = readable(item.aliases.iter().find(|alias| gives(alias))?);
+        (alias != item.name).then_some(alias)
     }
 
     /// What `query` finds: the items and imports with that name, or if
@@ -229,14 +430,22 @@ impl<'a> Names<'a> {
     }
 
     /// The message for a query that finds several things: what to type for
-    /// each, next to its full name.
+    /// each, next to its full name. An item whose shortest name is longer
+    /// than 40 characters gets its address instead, so that the names on the
+    /// right line up close by.
     fn choices(&self, query: &str, nodes: &[Node]) -> String {
         const SHOWN: usize = 10;
+        const LONGEST: usize = 40;
         let shown = text::shown_count(nodes.len(), SHOWN);
         let rows: Vec<(String, &str)> = nodes[..shown]
             .iter()
             .map(|&node| {
-                let query = text::shell_quote(&self.query_for(node));
+                let query = match (self.query_for(node), node) {
+                    (query, Node::Item(index)) if query.chars().count() > LONGEST => {
+                        format!("{:#x}", self.binary.items[index].address)
+                    }
+                    (query, _) => text::shell_quote(&query),
+                };
                 (query, node.name(self.binary))
             })
             .collect();
@@ -246,8 +455,16 @@ impl<'a> Names<'a> {
             .max()
             .unwrap_or(0);
 
+        let is_address = |query: &str| hex_number(query).is_some();
+        let names = rows.iter().any(|(query, _)| !is_address(query));
+        let addresses = rows.iter().any(|(query, _)| is_address(query));
+        let what = match (names, addresses) {
+            (true, true) => "names or addresses",
+            (false, true) => "addresses",
+            _ => "names",
+        };
         let mut message = format!(
-            "`{query}` could mean {}; use one of the names on the left instead:",
+            "`{query}` could mean {}; use one of the {what} on the left instead:",
             text::count_text(self.binary, nodes)
         );
         for (query, name) in rows {
@@ -278,12 +495,29 @@ impl<'a> Names<'a> {
             }
             Some(edit_distance(&name, &query)).filter(|&distance| distance <= typos)
         };
+        // How close the closest of `names` and their short names comes, and
+        // those of them to suggest: the fewest typos from `query`, and of
+        // those, the ones that contain it. So `SV_Handler` gets
+        // `SVC_Handler`, not `PendSV_Handler`, and `iprintf` gets
+        // `fiprintf`, not `fprintf`.
         let closest = |names: Vec<&str>| {
-            names
+            let close: Vec<(usize, String)> = names
                 .into_iter()
                 .flat_map(|name| short_names(name).into_iter().chain([name.to_string()]))
-                .filter_map(|name| distance(&name))
-                .min()
+                .filter_map(|name| Some((distance(&name)?, name)))
+                .collect();
+            let nearest = close.iter().map(|(distance, _)| *distance).min()?;
+            let rank = |(distance, name): &(usize, String)| {
+                let typos_from = edit_distance(&name.to_lowercase(), &query).min(typos + 1);
+                (typos_from, *distance > 0)
+            };
+            let best = close.iter().map(rank).min()?;
+            let closest: Vec<String> = close
+                .iter()
+                .filter(|name| rank(name) == best)
+                .map(|(_, name)| name.clone())
+                .collect();
+            Some((nearest, closest))
         };
 
         // A stub for one of the file's own functions is left out: its
@@ -303,20 +537,34 @@ impl<'a> Names<'a> {
             (Node::Import(index), import, vec![import])
         });
         // Closest first, then shortest.
-        let mut similar: Vec<(usize, usize, &str, Node)> = items
+        let mut similar: Vec<(usize, usize, &str, Node, Vec<String>)> = items
             .chain(imports)
-            .filter_map(|(node, name, names)| Some((closest(names)?, name.len(), name, node)))
+            .filter_map(|(node, name, names)| {
+                let (distance, closest) = closest(names)?;
+                Some((distance, name.len(), name, node, closest))
+            })
             .collect();
-        similar.sort();
+        similar.sort_by(|a, b| (a.0, a.1, a.2, a.3).cmp(&(b.0, b.1, b.2, b.3)));
 
         let mut suggestions: Vec<String> = Vec::new();
-        for (distance, _, _, node) in similar {
-            let suggestion = self.query_for(node);
-            // Skip a name that has `query` only in a part that the
-            // suggestion leaves out, such as a generic argument.
-            if distance == 0 && !suggestion.to_lowercase().contains(&query) {
+        for (distance, _, _, node, closest) in similar {
+            // The shortest of the names that came closest, which needn't be
+            // the item's shortest name: `sniprintf` for `sniprin`, though
+            // its alias `snprintf` is shorter. Failing that, when none of them
+            // finds only this item, or they are all mangled symbols, the
+            // shortest thing to type that does, but not one that has `query`
+            // only in a part that it leaves out, such as a generic argument.
+            let suggestion = closest
+                .into_iter()
+                .filter(|name| demangle(name).is_none() && self.nodes(name) == [node])
+                .min_by(|a, b| a.len().cmp(&b.len()).then(a.cmp(b)))
+                .or_else(|| {
+                    let query_for = self.query_for(node);
+                    (distance > 0 || query_for.to_lowercase().contains(&query)).then_some(query_for)
+                });
+            let Some(suggestion) = suggestion else {
                 continue;
-            }
+            };
             let suggestion = text::shell_quote(&suggestion);
             if !suggestions.contains(&suggestion) {
                 suggestions.push(suggestion);
@@ -327,6 +575,16 @@ impl<'a> Names<'a> {
         }
         suggestions
     }
+}
+
+/// `name` demangled, if it is a mangled symbol, as an alias can be: with
+/// `@plt` after it for one of a stub's.
+fn readable(name: &str) -> String {
+    let (symbol, plt) = match name.strip_suffix("@plt") {
+        Some(symbol) => (symbol, "@plt"),
+        None => (name, ""),
+    };
+    demangle(symbol).map_or_else(|| name.to_string(), |readable| readable + plt)
 }
 
 /// Adds `node` to what a name finds, unless it is there already.

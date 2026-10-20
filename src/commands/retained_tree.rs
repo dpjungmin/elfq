@@ -8,12 +8,12 @@
 use std::collections::HashSet;
 use std::io::Write;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use serde::Serialize;
 
 use super::symbol::Names;
 use super::{json, text};
-use crate::binary::{AddressRange, Binary, Item, ItemKind};
+use crate::binary::{AddressRange, Binary, ItemKind};
 use crate::cli::Format;
 use crate::graph::{DominatorTree, Graph, Node};
 use crate::render::{Align, Table, TreeRow, TreeShape};
@@ -122,33 +122,6 @@ impl<'a> RetainedTree<'a> {
     /// items that nothing reaches.
     pub fn kept(&self) -> u64 {
         super::total(self.tree.top().iter().map(|&node| self.tree.retained(node)))
-    }
-
-    /// Explains why there are no bytes to count, if there aren't: a range
-    /// that no section or load image is in is most likely mistyped, in some
-    /// stripped files elfq can't find the functions yet, and hand-written
-    /// assembly often leaves out the sizes.
-    pub fn check_has_bytes(&self) -> Result<()> {
-        let binary = self.binary;
-        if self.bytes() > 0 {
-            return Ok(());
-        }
-        let place = super::empty_place(binary, self.range)?;
-        let starts_in_place = |item: &&Item| {
-            self.range.is_none_or(|range| {
-                [Some(item.address), binary.load_address(item)]
-                    .into_iter()
-                    .flatten()
-                    .any(|start| range.overlap(start, 1) > 0)
-            })
-        };
-        if let Some(item) = binary.items.iter().find(starts_in_place) {
-            bail!(
-                "elfq doesn't know where {} ends, so it can't count the bytes in {place}",
-                item.name
-            );
-        }
-        bail!("elfq found no functions or data in {place}")
     }
 
     /// The item's own bytes that sizes count: all of them, or those in the

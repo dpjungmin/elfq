@@ -38,8 +38,19 @@ pub struct Cli {
     /// or START+SIZE, like 0x20000000+256K. The overview lists the ranges
     /// that the file's sections and load images occupy. For the overview,
     /// top and retained.
-    #[arg(long, global = true, value_name = "RANGE")]
+    #[arg(long, global = true, value_name = "RANGE", value_parser = one_range)]
     pub range: Option<AddressRange>,
+}
+
+/// Reads `--range`, which takes one range: given several, separated by
+/// commas, it says so, with the first as the example.
+fn one_range(text: &str) -> Result<AddressRange, String> {
+    if let Some((first, _)) = text.split_once(',')
+        && first.parse::<AddressRange>().is_ok()
+    {
+        return Err(format!("--range takes one range, such as {}", first.trim()));
+    }
+    text.parse()
 }
 
 impl Cli {

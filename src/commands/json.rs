@@ -131,6 +131,35 @@ impl<'a> Item<'a> {
     }
 }
 
+/// SYMBOL's item or import, the subject of an answer, with its other
+/// names.
+#[derive(Serialize)]
+pub(super) struct Symbol<'a> {
+    #[serde(flatten)]
+    pub item: Item<'a>,
+    /// The item's other names: the symbol that `name` is demangled from,
+    /// and other symbols at its address, such as weak aliases, each mangled
+    /// one also demangled. Empty for an import.
+    pub aliases: Vec<&'a str>,
+}
+
+impl<'a> Symbol<'a> {
+    pub fn new(binary: &'a Binary, node: Node) -> Symbol<'a> {
+        let aliases = match node {
+            Node::Item(index) => binary.items[index]
+                .aliases
+                .iter()
+                .map(String::as_str)
+                .collect(),
+            Node::Import(_) => Vec::new(),
+        };
+        Symbol {
+            item: Item::new(binary, node),
+            aliases,
+        }
+    }
+}
+
 /// How one item uses another: one row of `callers` or `callees`.
 #[derive(Serialize)]
 pub(super) struct Use<'a> {

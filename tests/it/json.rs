@@ -25,7 +25,8 @@ fn names(list: &Value) -> Vec<&str> {
 
 #[test]
 fn items_have_the_same_keys_everywhere() {
-    // An item, and an answer with nothing in it.
+    // An item, and an answer with nothing in it. SYMBOL's item also has its
+    // other names.
     assert_eq!(
         elfq_json(&[SAMPLE, "retained", "debug_dump"]),
         json!({
@@ -35,7 +36,8 @@ fn items_have_the_same_keys_everywhere() {
                 "section": ".text",
                 "address": "0x1aa0",
                 "size": 29,
-                "size_estimated": false
+                "size_estimated": false,
+                "aliases": []
             },
             "reachable": false,
             "range": null,
@@ -191,6 +193,35 @@ fn callers_and_callees_list_every_use() {
         json!([{ "site": "0x16ad", "how": "jump", "target": null }])
     );
     assert_eq!(callees["complete"], false);
+}
+
+#[test]
+fn symbol_lists_its_other_names() {
+    let m4 = "testdata/bin/c-cortex-m4.elf";
+    let handlers = [
+        "BusFault_Handler",
+        "DebugMon_Handler",
+        "HardFault_Handler",
+        "MemManage_Handler",
+        "NMI_Handler",
+        "PendSV_Handler",
+        "SVC_Handler",
+        "UsageFault_Handler",
+    ];
+    for command in ["callers", "callees", "retained", "why"] {
+        let answer = elfq_json(&[m4, command, "NMI_Handler"]);
+        assert_eq!(answer["symbol"]["name"], "Default_Handler", "{command}");
+        assert_eq!(answer["symbol"]["aliases"], json!(handlers), "{command}");
+    }
+    // A mangled symbol is the other name of its readable one.
+    let inlined = elfq_json(&["testdata/bin/cpp-x86_64.elf", "inlined", "Gain::run"]);
+    assert_eq!(
+        inlined["function"]["aliases"],
+        json!(["_ZN3app4Gain3runEPsm"])
+    );
+    // Items elsewhere in the answer don't list theirs.
+    let callers = elfq_json(&[m4, "callers", "NMI_Handler"]);
+    assert_eq!(callers["callers"][0]["item"].get("aliases"), None);
 }
 
 #[test]

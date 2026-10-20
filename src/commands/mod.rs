@@ -24,7 +24,7 @@ use std::io::Write;
 use anyhow::{Result, bail};
 
 use crate::arch;
-use crate::binary::{AddressRange, Binary, ItemKind, Source};
+use crate::binary::{AddressRange, Binary, Item, ItemKind, Source};
 use crate::cli::{Cli, Command, DebugCommand, Format};
 use crate::graph::{Graph, Node, Reference};
 use crate::render::{Align, Table};
@@ -45,7 +45,9 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<Outcome> {
     check_arguments(cli)?;
     let binary = Binary::load(&cli.file)?;
     for warning in &binary.warnings {
-        eprintln!("warning: {warning}");
+        // Not `eprintln!`, which panics when nothing reads standard error
+        // any more: the answer still counts.
+        let _ = writeln!(std::io::stderr(), "warning: {warning}");
     }
     let format = cli.format();
     let range = cli.range;
@@ -194,6 +196,32 @@ fn readable_item(binary: &Binary, node: Node) -> Result<usize> {
         );
     }
     Ok(index)
+}
+
+/// Explains why there are no bytes to count in the file, or with a range,
+/// in it, if there aren't: a range that no section or load image is in is
+/// most likely mistyped, in some stripped files elfq can't find the
+/// functions yet, and hand-written assembly often leaves out the sizes.
+fn check_has_bytes(binary: &Binary, range: Option<AddressRange>) -> Result<()> {
+    if total(binary.items.iter().map(|item| binary.bytes_in(item, range))) > 0 {
+        return Ok(());
+    }
+    let place = empty_place(binary, range)?;
+    let starts_in_place = |item: &&Item| {
+        range.is_none_or(|range| {
+            [Some(item.address), binary.load_address(item)]
+                .into_iter()
+                .flatten()
+                .any(|start| range.overlap(start, 1) > 0)
+        })
+    };
+    if let Some(item) = binary.items.iter().find(starts_in_place) {
+        bail!(
+            "elfq doesn't know where {} ends, so it can't count the bytes in {place}",
+            item.name
+        );
+    }
+    bail!("elfq found no functions or data in {place}")
 }
 
 /// Where an answer that found nothing looked, for its error: `range`, such

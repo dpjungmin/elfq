@@ -9,8 +9,16 @@ use crate::support::load_sample;
 fn found(binary: &Binary, query: &str) -> String {
     symbol::find(binary, query)
         .unwrap_or_else(|err| panic!("{query}: {err}"))
+        .node
         .name(binary)
         .to_string()
+}
+
+/// The name of what `query` finds as the answer's first line gives it.
+fn lead_name(binary: &Binary, query: &str) -> String {
+    symbol::find(binary, query)
+        .unwrap_or_else(|err| panic!("{query}: {err}"))
+        .lead_name(binary)
 }
 
 fn error(binary: &Binary, query: &str) -> String {
@@ -32,6 +40,45 @@ fn names_addresses_and_imports() {
         error(&binary, "0x10"),
         "no function or data object contains address 0x10"
     );
+}
+
+#[test]
+fn the_first_line_says_what_symbol_gave_when_it_isnt_the_name() {
+    let binary = load_sample("c-x86_64.elf");
+    assert_eq!(lead_name(&binary, "process_frame"), "process_frame");
+    assert_eq!(lead_name(&binary, "0x1700"), "process_frame");
+    assert_eq!(
+        lead_name(&binary, "0x1705"),
+        "process_frame (which holds 0x1705)"
+    );
+    // An import's name gives its stub, whose name says so.
+    assert_eq!(lead_name(&binary, "write"), "write@plt");
+    // A Thumb function's start, with bit 0 set as its symbol has it, is
+    // its start.
+    let binary = load_sample("c-cortex-m4.elf");
+    assert_eq!(lead_name(&binary, "0x80002c9"), "process_frame");
+    assert_eq!(
+        lead_name(&binary, "0x80002ca"),
+        "process_frame (which holds 0x80002ca)"
+    );
+
+    // A weak alias is another name.
+    let binary = load_sample("c-cortex-m4.elf");
+    assert_eq!(
+        lead_name(&binary, "NMI_Handler"),
+        "Default_Handler (also named NMI_Handler)"
+    );
+    let binary = load_sample("c-plt.so");
+    assert_eq!(
+        lead_name(&binary, "square_resolver@plt"),
+        "square@plt (also named square_resolver@plt)"
+    );
+
+    // A mangled symbol and a short name are the item's own name.
+    let binary = load_sample("cpp-x86_64.elf");
+    let run = "app::Gain::run(short*, unsigned long)";
+    assert_eq!(lead_name(&binary, "_ZN3app4Gain3runEPsm"), run);
+    assert_eq!(lead_name(&binary, "Gain::run"), run);
 }
 
 #[test]
@@ -124,6 +171,14 @@ fn a_name_that_could_mean_several_items_lists_them() {
     // library's formatting code: only an address tells them apart.
     let display = "<&str as core::fmt::Display>::fmt";
     let message = error(&binary, display);
+    assert!(
+        message
+            .lines()
+            .next()
+            .unwrap()
+            .ends_with("; use one of the addresses on the left instead:"),
+        "{message}"
+    );
     let choices: Vec<&str> = message.lines().skip(1).collect();
     assert_eq!(choices.len(), 2);
     for choice in choices {
@@ -132,6 +187,34 @@ fn a_name_that_could_mean_several_items_lists_them() {
         assert_eq!(name, display);
         assert_eq!(found(&binary, address), display);
     }
+}
+
+#[test]
+fn a_name_longer_than_40_characters_gives_way_to_an_address() {
+    let binary = load_sample("rust-x86_64-nodebug.elf");
+    let message = error(&binary, "drop_glue");
+    let mut lines = message.lines();
+    assert_eq!(
+        lines.next(),
+        Some("`drop_glue` could mean 50 functions; use one of the addresses on the left instead:")
+    );
+    let choices: Vec<&str> = lines.take_while(|line| !line.ends_with(" more")).collect();
+    assert_eq!(choices.len(), 10);
+    for choice in choices {
+        let (query, name) = choice.trim().split_once("  ").unwrap();
+        let query = query.trim_matches('\'');
+        assert!(query.chars().count() <= 40, "{choice}");
+        assert_eq!(found(&binary, query), name.trim_start(), "{choice}");
+    }
+    let message = error(&binary, "fmt");
+    assert!(
+        message
+            .lines()
+            .next()
+            .unwrap()
+            .ends_with("; use one of the names or addresses on the left instead:"),
+        "{message}"
+    );
 }
 
 #[test]
@@ -155,5 +238,24 @@ fn typos_get_suggestions() {
     assert!(
         error(&binary, "Gain")
             .starts_with("no function or data object is named `Gain`; did you mean Gain::run, ")
+    );
+
+    // Of an item's names, a typo away beats containing what was typed.
+    let binary = load_sample("c-cortex-m4.elf");
+    assert_eq!(
+        error(&binary, "Dfault_Handler"),
+        "no function or data object is named `Dfault_Handler`; did you mean Default_Handler?"
+    );
+    assert_eq!(
+        error(&binary, "SV_Handler"),
+        "no function or data object is named `SV_Handler`; did you mean SVC_Handler?"
+    );
+
+    // An alias can be what comes closest, though the item's shortest name
+    // is another.
+    let binary = load_sample("c-softfloat-nodebug.elf");
+    assert_eq!(
+        error(&binary, "aeabi_dad"),
+        "no function or data object is named `aeabi_dad`; did you mean __aeabi_dadd?"
     );
 }

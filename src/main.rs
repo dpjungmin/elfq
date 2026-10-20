@@ -65,7 +65,7 @@ fn run() -> ExitCode {
             if err.use_stderr()
                 && let Some(hint) = file_first_hint()
             {
-                eprintln!("{hint}");
+                report(&hint);
                 return ExitCode::from(2);
             }
             err.exit();
@@ -82,10 +82,17 @@ fn run() -> ExitCode {
         Ok(Outcome::Answered) => ExitCode::SUCCESS,
         Ok(Outcome::Crossed) => ExitCode::from(1),
         Err(err) => {
-            eprintln!("error: {err:#}");
+            report(&format!("error: {err:#}"));
             ExitCode::from(2)
         }
     }
+}
+
+/// Writes `message` to standard error, as `eprintln!` does, but goes on
+/// when nothing reads it any more, as after `2>&1 | head -1`, where
+/// `eprintln!` would panic, and elfq would exit with 101 instead of 2.
+fn report(message: &str) {
+    let _ = writeln!(io::stderr(), "{message}");
 }
 
 /// Standard output, which drops what is written to it once the reader has

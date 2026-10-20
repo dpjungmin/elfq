@@ -36,7 +36,7 @@ mod unnamed_functions;
 mod vector_table;
 
 pub use names::{demangle, short_names};
-pub use range::{AddressRange, MemoryBlock, hex_number, memory_blocks};
+pub use range::{AddressRange, MemoryBlock, example_range, hex_number, memory_blocks};
 pub use vector_table::VectorTable;
 
 use std::collections::{HashMap, HashSet};

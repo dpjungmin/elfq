@@ -61,7 +61,7 @@ pub fn run(
         );
     }
     let retained = RetainedTree::build(binary, range)?;
-    retained.check_has_bytes()?;
+    super::check_has_bytes(binary, range)?;
     if format == Format::Json {
         let answer = TopJson {
             range: range.map(json::Range::new),

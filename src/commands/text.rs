@@ -5,8 +5,8 @@
 use object::Architecture;
 
 use super::json;
-use crate::binary::{AddressRange, Binary, Item, ItemKind, Section};
-use crate::graph::{Node, ReferenceKind, Root, RootKind, Unresolved};
+use crate::binary::{AddressRange, Binary, Item, ItemKind, Section, Source};
+use crate::graph::{Node, ReferenceKind, RootKind, Unresolved};
 
 /// "1 function", "2 functions".
 pub(super) fn plural(n: usize, one: &str, many: &str) -> String {
@@ -159,6 +159,23 @@ pub(super) fn calls_and_jumps<'a>(unresolved: impl IntoIterator<Item = &'a Unres
     }
 }
 
+/// Examples of the names that elfq gives items without symbols: the first
+/// unnamed function, such as `fn_0x10a0`, and the first unnamed data object,
+/// such as `.rodata@0x2004`, if there is one. `None` when no function is
+/// unnamed: unnamed data is common even with symbols, such as string
+/// literals, so it needs explaining only in files that have unnamed
+/// functions too.
+pub(super) fn unnamed_items(binary: &Binary) -> Option<(&Item, Option<&Item>)> {
+    let unnamed = |sources: &[Source]| {
+        binary
+            .items
+            .iter()
+            .find(|item| sources.contains(&item.source))
+    };
+    let function = unnamed(&[Source::EhFrame, Source::Reached])?;
+    Some((function, unnamed(&[Source::Reference])))
+}
+
 /// Says that nothing reaches the item called `name` from where the program
 /// starts.
 pub(super) fn nothing_reaches(name: &str) -> String {
@@ -168,9 +185,8 @@ pub(super) fn nothing_reaches(name: &str) -> String {
     )
 }
 
-/// Why a root is one, as a sentence.
-pub(super) fn root_sentence(binary: &Binary, root: &Root) -> String {
-    let name = root.node.name(binary);
+/// Why the item called `name` is a root of `kind`, as a sentence.
+pub(super) fn root_sentence(binary: &Binary, name: &str, kind: RootKind) -> String {
     // Whether the program uses a startup section when it starts or exits.
     let when = |section: usize| {
         let section = &binary.sections[section].name;
@@ -180,7 +196,7 @@ pub(super) fn root_sentence(binary: &Binary, root: &Root) -> String {
             "starts"
         }
     };
-    match root.kind {
+    match kind {
         RootKind::Entry => format!("{name} is the entry point, where the program starts."),
         RootKind::InSection(section)
             if binary.sections[section].kind == object::SectionKind::Note =>

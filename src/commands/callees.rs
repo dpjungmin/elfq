@@ -15,7 +15,7 @@ use crate::graph::{Graph, Node, Reference, Unresolved};
 
 #[derive(Serialize)]
 struct Callees<'a> {
-    symbol: json::Item<'a>,
+    symbol: json::Symbol<'a>,
     callees: Vec<json::Use<'a>>,
     /// The calls and jumps that elfq can't follow.
     unresolved: Vec<UnresolvedJson>,
@@ -47,10 +47,11 @@ pub fn run(
 ) -> Result<Outcome> {
     super::check_code_is_readable(binary)?;
     match symbol::subject(binary, symbols)? {
-        Subject::Node(node) => {
-            let index = super::readable_item(binary, node)?;
+        Subject::Symbol(symbol) => {
+            let index = super::readable_item(binary, symbol.node)?;
             let graph = Graph::build(binary);
-            callees(binary, &graph, index, all, format, out)?;
+            let lead_name = symbol.lead_name(binary);
+            callees(binary, &graph, index, &lead_name, all, format, out)?;
             Ok(Outcome::Answered)
         }
         Subject::Ranges(ranges) => {
@@ -60,17 +61,20 @@ pub fn run(
     }
 }
 
-/// What the item at `index` calls or uses.
+/// What the item at `index` calls or uses. `name` is its name as the
+/// answer's first line gives it (see [`Symbol::lead_name`]).
+///
+/// [`Symbol::lead_name`]: symbol::Symbol::lead_name
 fn callees(
     binary: &Binary,
     graph: &Graph,
     index: usize,
+    name: &str,
     all: bool,
     format: Format,
     out: &mut dyn Write,
 ) -> Result<()> {
     let node = Node::Item(index);
-    let name = node.name(binary);
 
     // The text and JSON word some uses differently ("uses" for both
     // "access" and "address taken" on data), so each gets its own rows.
@@ -80,7 +84,7 @@ fn callees(
     let unresolved = graph.unresolved_in(index);
     if format == Format::Json {
         let callees = Callees {
-            symbol: json::Item::new(binary, node),
+            symbol: json::Symbol::new(binary, node),
             callees: json::uses(binary, &rows(&|reference| json::how_field(reference.kind))),
             unresolved: unresolved
                 .iter()

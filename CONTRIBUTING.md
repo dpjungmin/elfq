@@ -46,7 +46,7 @@ install 1.88` gets it.
 | `src/arch/` | Finding the addresses that machine code calls or uses, one module per instruction set (x86-64 and Thumb). Thumb's has three parts: `thumb/mod.rs` reads each instruction on its own, `thumb/decode.rs` says what an instruction does with the registers and the stack, and `thumb/values/` follows the addresses that code puts in registers to where a branch through one goes, as for long calls and veneers. |
 | `src/binary/` | Reading an ELF file: its functions and data objects ("items") and where they were found, their names, imports, stored pointers and memory blocks. Unnamed data, such as string literals, is found from what code and pointers refer to. Each function's code is scanned once, as the file loads (`Binary::code_references`). |
 | `src/graph/` | The reference graph that connects items, the roots where the program starts, the dominator tree that says what is exclusive to what, the shortest paths that `why` shows, and the references that cross the boundary of ranges of memory. |
-| `src/debuginfo/` | Reading DWARF, when the file has it: the copies of functions that the compiler inlined, for `inlined`. |
+| `src/debuginfo/` | Reading DWARF, when the file has it: the copies of functions that the compiler inlined, for `inlined`, and for the error when SYMBOL names a function that the compiler inlined everywhere. |
 | `src/render/` | Text output: tables, and the trees in their last column (`tree.rs`), which every command shows the same way: as rows that name the row they hang under (in `why`, only where chains branch), or drawn with `--tree`. |
 | `tests/it/` | Integration tests, built as one test program (`main.rs` lists its modules). See [Tests](#tests). |
 | `testdata/` | The sample programs and the ELF files built from them. See [Sample binaries](#sample-binaries). |
@@ -193,14 +193,17 @@ is a short one to copy.
    that error, its tests and the `--tree` help.
 4. **SYMBOL.** If the command reads code, call `check_code_is_readable`
    first, so that a file whose code elfq can't read says so even when
-   SYMBOL names nothing. `symbol::find` turns SYMBOL into a `Node`, which
-   may be an import; `item_in_file` or `readable_item` gives its item, or
-   an error that says why there is none. A command that needs the roots
+   SYMBOL names nothing. `symbol::find` turns SYMBOL into a `Symbol`, whose
+   `node` may be an import; `item_in_file` or `readable_item` gives its
+   item, or an error that says why there is none. The answer's first line
+   names it with `Symbol::lead_name`, which says when SYMBOL gave another
+   of its names or an address inside it. A command that needs the roots
    refuses shared libraries, as `top`, `retained` and `why` do.
 5. **The answer.** Work it out first, then write it. Text uses
    `render::Table`, `TreeRow` for trees, and the shared wording in
    `text.rs`. JSON is a struct that derives `Serialize`, made of the shapes
-   in `json.rs`, such as `json::Item` for each item, and written with
+   in `json.rs`, such as `json::Symbol` for SYMBOL's item, which adds its
+   `aliases`, and `json::Item` for every other item, and written with
    `json::write`. Every key is always there, `null` when it has no value.
    `json::write` puts each element of a list that the answer's object
    holds on a line of its own, so give the rows their own list there, as

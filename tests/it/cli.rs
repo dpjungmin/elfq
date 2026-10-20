@@ -700,6 +700,25 @@ fn a_range_must_hold_something() {
         "error: elfq doesn't know where _init ends, so it can't count the bytes in \
          0x00001000..0x00001004 (.init)\n",
     );
+    // The overview's JSON refuses such ranges as its text does.
+    for (args, error) in [
+        (
+            &[TCM_SAMPLE, "--range", "0x40000000+4K"],
+            "nothing in the file is in",
+        ),
+        (
+            &[SAMPLE, "--range", "0x25f0+0x2c8"],
+            "found no functions or data in",
+        ),
+        (
+            &[SAMPLE, "--range", "0x1000+4"],
+            "doesn't know where _init ends",
+        ),
+    ] {
+        let text = stderr(args, 2);
+        assert!(text.contains(error), "{text}");
+        assert_output(&stderr(&[args, &["--json"][..]].concat(), 2), &text);
+    }
     assert!(
         stderr(&[TCM_SAMPLE, "--range", "0x20000000"], 2)
             .contains("expected START..END or START+SIZE")
@@ -1475,6 +1494,45 @@ call       0x1a72          report
 }
 
 #[test]
+fn the_first_line_says_what_symbol_gave_when_it_isnt_the_name() {
+    let first_line = |args: &[&str]| stdout(args).lines().next().unwrap().to_string();
+    let m4 = "testdata/bin/c-cortex-m4.elf";
+    assert_eq!(
+        first_line(&[m4, "retained", "NMI_Handler"]),
+        "Removing Default_Handler (also named NMI_Handler) would save its own 2 bytes, and \
+         nothing else."
+    );
+    assert_eq!(
+        first_line(&[m4, "why", "HardFault_Handler"]),
+        "Default_Handler (also named HardFault_Handler) is in the vector table: the processor \
+         runs it on an interrupt or exception."
+    );
+    assert_eq!(
+        first_line(&[m4, "callees", "SVC_Handler"]),
+        "Default_Handler (also named SVC_Handler) doesn't call or use anything."
+    );
+    assert_eq!(
+        first_line(&[TCM_SAMPLE, "callers", "0x30000290"]),
+        "log_msg (which holds 0x30000290) is used by 4 functions:"
+    );
+    assert_eq!(
+        first_line(&[SAMPLE, "why", "0x1aa5"]),
+        "Nothing reaches debug_dump (which holds 0x1aa5) from where the program starts: it is \
+         dead code, or used in a way elfq can't see."
+    );
+    // A name with a note can't take "'s".
+    assert_eq!(
+        first_line(&[SAMPLE, "inlined", "0x1710"]),
+        "Of the 532 bytes of process_frame (which holds 0x1710), 238 are inlined copies of 3 \
+         functions:"
+    );
+    assert_eq!(
+        first_line(&[SAMPLE, "inlined", "0x1700"]),
+        "Of process_frame's 532 bytes, 238 are inlined copies of 3 functions:"
+    );
+}
+
+#[test]
 fn callers_in_a_shared_library_include_calls_through_its_stubs() {
     assert_output(
         &stdout(&[LIBRARY_SAMPLE, "callers", "log_msg"]),
@@ -1945,6 +2003,26 @@ fn a_reader_that_stops_early_keeps_the_exit_status() {
 }
 
 #[test]
+fn an_error_keeps_its_exit_status_when_nothing_reads_it() {
+    // As in `elfq ... 2>&1 | head -0`: the error is written after the
+    // reader has gone.
+    for args in [
+        &[SAMPLE, "callers", "nothing_has_this_name"][..],
+        &["callers", SAMPLE, "log_msg"],
+    ] {
+        let (reader, writer) = std::io::pipe().unwrap();
+        drop(reader);
+        let status = command()
+            .args(args)
+            .stdout(Stdio::null())
+            .stderr(writer)
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(2), "{args:?}");
+    }
+}
+
+#[test]
 fn ranges_in_place_of_symbol_must_be_ranges_with_something_in_them() {
     assert_output(
         &stderr(&[TCM_SAMPLE, "callees", "0x40000000+4K"], 2),
@@ -2093,6 +2171,112 @@ fn errors_go_to_stderr_with_exit_code_2() {
     assert_output(
         &stderr(&[SAMPLE, "callers", "proces_frame"], 2),
         "error: no function or data object is named `proces_frame`; did you mean process_frame?\n",
+    );
+}
+
+#[test]
+fn errors_say_what_to_try() {
+    // A range typed with `-` or `:` between its ends.
+    let dash = "error: `0x0-0x40000` isn't a range or an address; a range is START..END or \
+                START+SIZE, such as 0x0..0x40000\n";
+    assert_output(&stderr(&[TCM_SAMPLE, "callees", "0x0-0x40000"], 2), dash);
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "callers", "0x0..0x100", "0x0-0x40000"], 2),
+        dash,
+    );
+    let error = stderr(&[TCM_SAMPLE, "top", "--range", "0x0:0x40000"], 2);
+    assert!(
+        error.starts_with(
+            "error: invalid value '0x0:0x40000' for '--range <RANGE>': expected START..END or \
+             START+SIZE, such as 0x0..0x40000\n"
+        ),
+        "{error}"
+    );
+    // A second number smaller than the first is a size.
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "callers", "0x20000000:256K"], 2),
+        "error: `0x20000000:256K` isn't a range or an address; a range is START..END or \
+         START+SIZE, such as 0x20000000+256K\n",
+    );
+    // Ends that make no range get the usual examples.
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "callers", "0x40000-0x0"], 2),
+        "error: `0x40000-0x0` isn't a range or an address; a range is START..END or \
+         START+SIZE, such as 0x20000000..0x20040000 or 0x20000000+256K\n",
+    );
+    // Several ranges joined by commas.
+    let error = stderr(
+        &[TCM_SAMPLE, "top", "--range", "0x0..0x100,0x200..0x300"],
+        2,
+    );
+    assert!(
+        error.starts_with(
+            "error: invalid value '0x0..0x100,0x200..0x300' for '--range <RANGE>': --range takes \
+             one range, such as 0x0..0x100\n"
+        ),
+        "{error}"
+    );
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "callers", "0x0..0x100,0x200..0x300"], 2),
+        "error: `0x0..0x100,0x200..0x300` isn't a range; give each range as an argument of its \
+         own: 0x0..0x100 0x200..0x300\n",
+    );
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "callers", "0x0..0x100,", "0x200..0x300"], 2),
+        "error: `0x0..0x100,` isn't a range; leave out the comma\n",
+    );
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "callers", "0x0..0x100,0x200"], 2),
+        "error: `0x200` isn't a range: expected START..END or START+SIZE, such as \
+         0x20000000..0x20040000 or 0x20000000+256K\n",
+    );
+
+    // A file without a symbol table names its items by address.
+    assert_output(
+        &stderr(
+            &["testdata/bin/c-cortex-m4-stripped.elf", "callers", "main"],
+            2,
+        ),
+        "error: no function or data object is named `main`; the file has no symbol table, so \
+         elfq names its functions and data by address, like fn_0x8000040 and .rodata@0x80008f0\n",
+    );
+
+    // A function that the compiler inlined everywhere has no item.
+    assert_output(
+        &stderr(&[SAMPLE, "callers", "append"], 2),
+        "error: no function or data object is named `append`; the compiler inlined all 6 copies \
+         of it into report, which `inlined report` lists\n",
+    );
+    assert_output(
+        &stderr(
+            &[
+                "testdata/bin/rust-cortex-m4.elf",
+                "inlined",
+                "copy_forward_bytes",
+            ],
+            2,
+        ),
+        "error: no function or data object is named `copy_forward_bytes`; the compiler inlined \
+         both copies of it into memcpy, which `inlined memcpy` lists\n",
+    );
+    assert_output(
+        &stderr(
+            &[
+                "testdata/bin/rust-cortex-m4.elf",
+                "why",
+                "atomic_add::<u32, u32>",
+            ],
+            2,
+        ),
+        "error: no function or data object is named `atomic_add::<u32, u32>`; the compiler \
+         inlined all 9 copies of it into process_frame, app_main, on_button, on_data, on_timer \
+         and sys_tick; `inlined process_frame` lists those in process_frame\n",
+    );
+    // Suggestions still follow, as the name may not be the one meant.
+    assert_output(
+        &stderr(&["testdata/bin/c-deep.elf", "why", "printf"], 2),
+        "error: no function or data object is named `printf`; the compiler inlined its one copy \
+         into main, which `inlined main` lists; did you mean __printf_chk?\n",
     );
 }
 
