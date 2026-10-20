@@ -35,9 +35,9 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub tree: bool,
     /// Count only the bytes in one range of memory, such as ITCM: START..END
-    /// or START+SIZE, like 0x20000000+256K. The overview lists the ranges
-    /// that the file's sections and load images occupy. For the overview,
-    /// top and retained.
+    /// or START+SIZE, like 0x20000000+256K. When the file's sections and load
+    /// images occupy several ranges, as in firmware, the overview lists them.
+    /// For the overview, top and retained.
     #[arg(long, global = true, value_name = "RANGE", value_parser = one_range)]
     pub range: Option<AddressRange>,
 }
@@ -93,7 +93,22 @@ Examples:
   elfq app.elf callees 0x0+256K           What the first 256 KiB uses outside it
 
 The overview's table is the start of the one top shows; elfq help top
-explains it.";
+explains it.
+
+Tables have one row per line: short cells such as sizes, HOW and AT come
+first, and the name last. A name after \"kept by\" or \"used by\" works as
+SYMBOL, and a why row without \"used by\" is used by the row above, or
+starts a chain. The tables of top, retained, callers and callees show the
+30 largest items, inlined the 30 largest functions, and why the chains
+through the 10 nearest users; --all shows every row, and makes sentences
+name everything they would cut short. With ranges, callers and callees
+show every row anyway. --json has every item, site and chain, one row per
+line, but the overview's JSON leaves its table to top's. Scripts that read
+why's chains should use --json.
+
+Exit status: 0 for an answer, 1 when callers or callees with ranges finds
+something that crosses them, or might, and 2 for an error, which goes to
+stderr with nothing on stdout.";
 
 // One variant per command. Each variant's `///` line is its line in
 // `elfq --help`.
