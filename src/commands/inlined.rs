@@ -38,7 +38,9 @@ pub fn run(
             path.display()
         );
     }
-    // SYMBOL first, since reading the DWARF takes a while in a large file.
+    // SYMBOL first, since reading the DWARF takes a while in a large file:
+    // a name that could mean several items, or isn't a function, needn't
+    // wait for it.
     let function = match symbol {
         Some(symbol) => Some(find_function(binary, symbol)?),
         None => None,
@@ -242,6 +244,16 @@ fn write_tree(
         write_empty_copies_note(out)?;
     }
     Ok(())
+}
+
+/// Whether `inlined FUNCTION`, for the item at `into`, has a row of the
+/// copies of `name` without `--all`, among the largest that it shows.
+pub(super) fn shows(copies: &[InlinedCopy], into: usize, name: &str) -> bool {
+    let groups = Groups::new(copies, into);
+    groups
+        .largest(text::shown(false))
+        .into_iter()
+        .any(|group| groups.list[group].name == name)
 }
 
 fn write_empty_copies_note(out: &mut dyn Write) -> Result<()> {
@@ -643,6 +655,23 @@ mod tests {
             lines(&rows, 0),
             ["big 200 1", "parent 100 1", "  2 more 90 3", "leaf 5 1"]
         );
+    }
+
+    #[test]
+    fn the_smallest_of_many_groups_needs_all() {
+        // Two more than `inlined` shows: one more would be shown in place
+        // of "1 more".
+        let names: Vec<String> = (0..text::shown(false) + 2)
+            .map(|n| format!("f{n}"))
+            .collect();
+        let copies: Vec<InlinedCopy> = names
+            .iter()
+            .enumerate()
+            .map(|(n, name)| copy(name, 100 - n as u64, None))
+            .collect();
+        assert!(shows(&copies, 0, "f0"));
+        assert!(!shows(&copies, 0, &names[names.len() - 1]));
+        assert!(!shows(&copies, 0, "f99"));
     }
 
     #[test]

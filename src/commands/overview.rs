@@ -95,29 +95,18 @@ pub fn run(
             "The file has no symbols or unwind table, so elfq can't find its functions yet."
         )?;
     }
-    // Unnamed data is common even with symbols, such as string literals, so
-    // explain its names only in files that have unnamed functions too.
-    let unnamed = |sources: &[Source]| {
-        binary
-            .items
-            .iter()
-            .find(|item| sources.contains(&item.source))
-    };
-    match (
-        unnamed(&[Source::EhFrame, Source::Reached]),
-        unnamed(&[Source::Reference]),
-    ) {
-        (Some(function), Some(data)) => writeln!(
+    match text::unnamed_items(binary) {
+        Some((function, Some(data))) => writeln!(
             out,
             "Functions and data without symbols are named by address, like {} and {}.",
             function.name, data.name
         )?,
-        (Some(function), None) => writeln!(
+        Some((function, None)) => writeln!(
             out,
             "Functions without symbols are named by address, like {}.",
             function.name
         )?,
-        _ => {}
+        None => {}
     }
     let blocks = write_memory(binary, out)?;
     // Only ranges that hold something: in a stripped file whose functions

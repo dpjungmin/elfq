@@ -36,9 +36,10 @@ fn write(data: &mut [u8], at: usize, width: usize, value: u64) {
     data[at..at + width].copy_from_slice(&value.to_le_bytes()[..width]);
 }
 
-/// Sets `field` in the header of `section` to `value`.
-fn set_section_field(data: &mut [u8], section: &str, field: Field, value: u64) {
-    let file = object::File::parse(&*data).unwrap();
+/// Where the header of `section` is in the file, and whether the file is a
+/// 64-bit one.
+fn section_header(data: &[u8], section: &str) -> (usize, bool) {
+    let file = object::File::parse(data).unwrap();
     let index = file.section_by_name(section).unwrap().index().0;
     let is_64 = file.is_64();
     let number = |at: usize, width: usize| {
@@ -53,8 +54,14 @@ fn set_section_field(data: &mut [u8], section: &str, field: Field, value: u64) {
     } else {
         (number(0x20, 4), number(0x2e, 2))
     };
+    (headers + index * header_size, is_64)
+}
+
+/// Sets `field` in the header of `section` to `value`.
+fn set_section_field(data: &mut [u8], section: &str, field: Field, value: u64) {
+    let (header, is_64) = section_header(data, section);
     let (at, width) = if is_64 { (field.0, 8) } else { (field.1, 4) };
-    write(data, headers + index * header_size + at, width, value);
+    write(data, header + at, width, value);
 }
 
 /// Sets the size that `.symtab` gives `symbol` to `size`.
@@ -118,6 +125,14 @@ fn save(name: &str, data: &[u8]) -> String {
     let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
     std::fs::write(&path, data).unwrap();
     path.to_str().unwrap().to_string()
+}
+
+/// Runs elfq with `args` on `data`, saved as `name`, and returns the error
+/// it printed, with exit status 2.
+fn error(name: &str, data: &[u8], args: &[&str]) -> String {
+    let output = elfq(&[&[save(name, data).as_str()], args].concat());
+    assert_eq!(output.status.code(), Some(2), "{name}");
+    String::from_utf8(output.stderr).unwrap()
 }
 
 /// Runs elfq with `args` on `data`, saved as `name`, and returns what it
@@ -671,4 +686,47 @@ fn the_functions_of_a_long_chain_are_found_quickly() {
     let (binary, _) = parse_quickly(chain_of_calls(100_000));
     let functions = binary.items.iter().filter(|item| item.size == 8).count();
     assert_eq!(functions, 99_999);
+}
+
+#[test]
+fn a_function_inlined_everywhere_is_told_from_one_kept_in_part() {
+    // GCC can inline the start of a function and keep the rest out of line,
+    // as `append.part.0`. Then not every copy of `append` was inlined, and
+    // the error suggests the part. `process_frame` has as many letters.
+    let mut data = sample("c-x86_64.elf");
+    let file = object::File::parse(&*data).unwrap();
+    let (start, size) = file
+        .section_by_name(".strtab")
+        .unwrap()
+        .file_range()
+        .unwrap();
+    let (start, end) = (start as usize, (start + size) as usize);
+    let at = start
+        + data[start..end]
+            .windows(15)
+            .position(|name| name == b"\0process_frame\0")
+            .unwrap();
+    data[at + 1..at + 14].copy_from_slice(b"append.part.0");
+    assert_output(
+        &error("kept-in-part.elf", &data, &["callers", "append"]),
+        "error: no function or data object is named `append`; did you mean append.part.0?\n",
+    );
+}
+
+#[test]
+fn a_file_with_dwarf_but_no_symbol_table_says_so() {
+    // Without names, elfq can't tell a function that the compiler inlined
+    // everywhere from one it named by address.
+    let mut data = sample("c-x86_64.elf");
+    // `sh_type`, which says what a section holds, takes the 4 bytes after
+    // its name in either size of file: 1 is `SHT_PROGBITS`, plain bytes.
+    let (header, _) = section_header(&data, ".symtab");
+    write(&mut data, header + 4, 4, 1);
+    let error = error("no-symbol-table.elf", &data, &["callers", "append"]);
+    assert!(
+        error.starts_with(
+            "error: no function or data object is named `append`; the file has no symbol table"
+        ),
+        "{error}"
+    );
 }

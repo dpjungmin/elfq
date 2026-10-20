@@ -3,6 +3,7 @@
 //! and their load images occupy, which the overview lists so that nobody has
 //! to look them up.
 
+use std::cmp::Ordering;
 use std::fmt;
 use std::num::ParseIntError;
 use std::str::FromStr;
@@ -58,15 +59,37 @@ impl FromStr for AddressRange {
                 .ok_or("the range goes past the last address")?;
             (start, end)
         } else {
-            return Err("expected START..END or START+SIZE, such as \
-                        0x20000000..0x20040000 or 0x20000000+256K"
-                .to_string());
+            return Err(format!(
+                "expected START..END or START+SIZE, such as {}",
+                example_range(text)
+            ));
         };
         if end <= start {
             return Err("the range must end after it starts".to_string());
         }
         Ok(AddressRange { start, end })
     }
+}
+
+/// A range to show in an error about `text`, written as elfq takes it:
+/// the range that `text` means when it puts `-` or `:` between two numbers,
+/// as `0x0..0x40000` for `0x0-0x40000`, or `0x20000000+256K` for
+/// `0x20000000:256K`, whose second number is too small to be its end.
+/// Otherwise the usual examples.
+pub fn example_range(text: &str) -> String {
+    let meant = |(start, end): (&str, &str)| {
+        let (start, end) = (start.trim(), end.trim());
+        let range = match number(end).ok()?.cmp(&number(start).ok()?) {
+            Ordering::Greater => format!("{start}..{end}"),
+            Ordering::Less => format!("{start}+{end}"),
+            Ordering::Equal => return None,
+        };
+        range.parse::<AddressRange>().is_ok().then_some(range)
+    };
+    text.split_once('-')
+        .or_else(|| text.split_once(':'))
+        .and_then(meant)
+        .unwrap_or_else(|| "0x20000000..0x20040000 or 0x20000000+256K".to_string())
 }
 
 /// The number that `text` writes in hexadecimal, after `0x` or `0X`, as
@@ -235,6 +258,19 @@ mod tests {
                 .unwrap_err()
                 .contains("past the last")
         );
+        // A range typed with `-` or `:` gets the same range as elfq takes it.
+        assert_eq!(
+            range("0x0-0x40000"),
+            Err("expected START..END or START+SIZE, such as 0x0..0x40000".to_string())
+        );
+        assert_eq!(example_range("0x0:0x40000"), "0x0..0x40000");
+        assert_eq!(example_range("0 - 256K"), "0..256K");
+        // A second number smaller than the first is a size.
+        assert_eq!(example_range("0x20000000:256K"), "0x20000000+256K");
+        let usual = "0x20000000..0x20040000 or 0x20000000+256K";
+        for text in ["0x10-0x10", "0x40000-0x0", "0x0-x", "0x1700"] {
+            assert_eq!(example_range(text), usual, "{text}");
+        }
     }
 
     #[test]

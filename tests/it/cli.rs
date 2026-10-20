@@ -2136,6 +2136,112 @@ fn errors_go_to_stderr_with_exit_code_2() {
 }
 
 #[test]
+fn errors_say_what_to_try() {
+    // A range typed with `-` or `:` between its ends.
+    let dash = "error: `0x0-0x40000` isn't a range or an address; a range is START..END or \
+                START+SIZE, such as 0x0..0x40000\n";
+    assert_output(&stderr(&[TCM_SAMPLE, "callees", "0x0-0x40000"], 2), dash);
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "callers", "0x0..0x100", "0x0-0x40000"], 2),
+        dash,
+    );
+    let error = stderr(&[TCM_SAMPLE, "top", "--range", "0x0:0x40000"], 2);
+    assert!(
+        error.starts_with(
+            "error: invalid value '0x0:0x40000' for '--range <RANGE>': expected START..END or \
+             START+SIZE, such as 0x0..0x40000\n"
+        ),
+        "{error}"
+    );
+    // A second number smaller than the first is a size.
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "callers", "0x20000000:256K"], 2),
+        "error: `0x20000000:256K` isn't a range or an address; a range is START..END or \
+         START+SIZE, such as 0x20000000+256K\n",
+    );
+    // Ends that make no range get the usual examples.
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "callers", "0x40000-0x0"], 2),
+        "error: `0x40000-0x0` isn't a range or an address; a range is START..END or \
+         START+SIZE, such as 0x20000000..0x20040000 or 0x20000000+256K\n",
+    );
+    // Several ranges joined by commas.
+    let error = stderr(
+        &[TCM_SAMPLE, "top", "--range", "0x0..0x100,0x200..0x300"],
+        2,
+    );
+    assert!(
+        error.starts_with(
+            "error: invalid value '0x0..0x100,0x200..0x300' for '--range <RANGE>': --range takes \
+             one range, such as 0x0..0x100\n"
+        ),
+        "{error}"
+    );
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "callers", "0x0..0x100,0x200..0x300"], 2),
+        "error: `0x0..0x100,0x200..0x300` isn't a range; give each range as an argument of its \
+         own: 0x0..0x100 0x200..0x300\n",
+    );
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "callers", "0x0..0x100,", "0x200..0x300"], 2),
+        "error: `0x0..0x100,` isn't a range; leave out the comma\n",
+    );
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "callers", "0x0..0x100,0x200"], 2),
+        "error: `0x200` isn't a range: expected START..END or START+SIZE, such as \
+         0x20000000..0x20040000 or 0x20000000+256K\n",
+    );
+
+    // A file without a symbol table names its items by address.
+    assert_output(
+        &stderr(
+            &["testdata/bin/c-cortex-m4-stripped.elf", "callers", "main"],
+            2,
+        ),
+        "error: no function or data object is named `main`; the file has no symbol table, so \
+         elfq names its functions and data by address, like fn_0x8000040 and .rodata@0x80008f0\n",
+    );
+
+    // A function that the compiler inlined everywhere has no item.
+    assert_output(
+        &stderr(&[SAMPLE, "callers", "append"], 2),
+        "error: no function or data object is named `append`; the compiler inlined all 6 copies \
+         of it into report, which `inlined report` lists\n",
+    );
+    assert_output(
+        &stderr(
+            &[
+                "testdata/bin/rust-cortex-m4.elf",
+                "inlined",
+                "copy_forward_bytes",
+            ],
+            2,
+        ),
+        "error: no function or data object is named `copy_forward_bytes`; the compiler inlined \
+         both copies of it into memcpy, which `inlined memcpy` lists\n",
+    );
+    assert_output(
+        &stderr(
+            &[
+                "testdata/bin/rust-cortex-m4.elf",
+                "why",
+                "atomic_add::<u32, u32>",
+            ],
+            2,
+        ),
+        "error: no function or data object is named `atomic_add::<u32, u32>`; the compiler \
+         inlined all 9 copies of it into process_frame, app_main, on_button, on_data, on_timer \
+         and sys_tick; `inlined process_frame` lists those in process_frame\n",
+    );
+    // Suggestions still follow, as the name may not be the one meant.
+    assert_output(
+        &stderr(&["testdata/bin/c-deep.elf", "why", "printf"], 2),
+        "error: no function or data object is named `printf`; the compiler inlined its one copy \
+         into main, which `inlined main` lists; did you mean __printf_chk?\n",
+    );
+}
+
+#[test]
 fn a_command_typed_before_the_file_gets_a_hint() {
     assert_output(
         &stderr(&["callers", SAMPLE, "log_msg"], 2),

@@ -5,7 +5,7 @@
 use object::Architecture;
 
 use super::json;
-use crate::binary::{AddressRange, Binary, Item, ItemKind, Section};
+use crate::binary::{AddressRange, Binary, Item, ItemKind, Section, Source};
 use crate::graph::{Node, ReferenceKind, RootKind, Unresolved};
 
 /// "1 function", "2 functions".
@@ -157,6 +157,23 @@ pub(super) fn calls_and_jumps<'a>(unresolved: impl IntoIterator<Item = &'a Unres
             plural(jumps, "jump", "jumps")
         ),
     }
+}
+
+/// Examples of the names that elfq gives items without symbols: the first
+/// unnamed function, such as `fn_0x10a0`, and the first unnamed data object,
+/// such as `.rodata@0x2004`, if there is one. `None` when no function is
+/// unnamed: unnamed data is common even with symbols, such as string
+/// literals, so it needs explaining only in files that have unnamed
+/// functions too.
+pub(super) fn unnamed_items(binary: &Binary) -> Option<(&Item, Option<&Item>)> {
+    let unnamed = |sources: &[Source]| {
+        binary
+            .items
+            .iter()
+            .find(|item| sources.contains(&item.source))
+    };
+    let function = unnamed(&[Source::EhFrame, Source::Reached])?;
+    Some((function, unnamed(&[Source::Reference])))
 }
 
 /// Says that nothing reaches the item called `name` from where the program

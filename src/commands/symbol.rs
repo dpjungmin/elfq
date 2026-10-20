@@ -17,12 +17,16 @@
 //! memory instead (see [`subject`]).
 
 use std::cell::OnceCell;
-use std::collections::{HashMap, HashSet};
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use anyhow::{Context, Result, anyhow, bail};
 
 use super::text;
-use crate::binary::{AddressRange, Binary, ItemKind, demangle, hex_number, short_names};
+use crate::binary::{
+    AddressRange, Binary, ItemKind, demangle, example_range, hex_number, short_names,
+};
+use crate::debuginfo::{self, InlinedCopy};
 use crate::graph::Node;
 
 /// The item or import that SYMBOL finds.
@@ -62,26 +66,64 @@ pub fn subject(binary: &Binary, queries: &[String]) -> Result<Subject> {
     if let [query] = queries
         && range(query).is_none()
     {
+        check_not_a_range(query)?;
         return Ok(Subject::Symbol(find(binary, query)?));
     }
     let ranges = queries
         .iter()
         .map(|query| match range(query) {
             Some(range) => range,
-            None => bail!("`{query}` isn't a range; give one SYMBOL, or ranges such as 0x0+256K"),
+            None => {
+                check_not_a_range(query)?;
+                bail!("`{query}` isn't a range; give one SYMBOL, or ranges such as 0x0+256K")
+            }
         })
         .collect::<Result<_>>()?;
     Ok(Subject::Ranges(ranges))
 }
 
 /// The range that `query` gives, if it gives one (see [`is_range`]):
-/// `START..END` or `START+SIZE`, as `--range` takes it.
+/// `START..END` or `START+SIZE`, as `--range` takes it. Ranges joined by
+/// commas are an error that says to give each on its own.
 fn range(query: &str) -> Option<Result<AddressRange>> {
     is_range(query).then(|| {
-        query
-            .parse()
-            .map_err(|error| anyhow!("`{query}` isn't a range: {error}"))
+        if !query.contains(',') {
+            return query
+                .parse()
+                .map_err(|error| anyhow!("`{query}` isn't a range: {error}"));
+        }
+        let parts: Vec<&str> = query
+            .split(',')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .collect();
+        for part in &parts {
+            if let Err(error) = part.parse::<AddressRange>() {
+                bail!("`{part}` isn't a range: {error}");
+            }
+        }
+        match parts[..] {
+            [_] => bail!("`{query}` isn't a range; leave out the comma"),
+            _ => bail!(
+                "`{query}` isn't a range; give each range as an argument of its own: {}",
+                parts.join(" ")
+            ),
+        }
     })
+}
+
+/// Refuses `query` when it is a range typed with `-` or `:` between its
+/// ends, as in `0x0-0x40000`, which neither a range nor SYMBOL can be:
+/// no name starts with a digit, and no address has `-` or `:` in it.
+fn check_not_a_range(query: &str) -> Result<()> {
+    if query.starts_with(|c: char| c.is_ascii_digit()) && query.contains(['-', ':']) {
+        bail!(
+            "`{query}` isn't a range or an address; a range is START..END or START+SIZE, such \
+             as {}",
+            example_range(query)
+        );
+    }
+    Ok(())
 }
 
 /// Whether `query` is meant as a range of memory rather than a symbol: it
@@ -153,17 +195,117 @@ impl<'a> Names<'a> {
                     .map(|name| format!("also named {name}")),
             }),
             [] => {
-                let similar = self.similar(query);
-                if similar.is_empty() {
-                    bail!("no function or data object is named `{query}`");
+                let mut message = format!("no function or data object is named `{query}`");
+                if let Some(reason) = self.unnamed().or_else(|| self.inlined_everywhere(query)) {
+                    message += &format!("; {reason}");
                 }
-                bail!(
-                    "no function or data object is named `{query}`; did you mean {}?",
-                    similar.join(", ")
-                );
+                let similar = self.similar(query);
+                if !similar.is_empty() {
+                    message += &format!("; did you mean {}?", similar.join(", "));
+                }
+                bail!("{message}");
             }
             nodes => bail!("{}", self.choices(query, nodes)),
         }
+    }
+
+    /// Where the compiler inlined every copy of the function that `query`
+    /// names, as the DWARF says: the reason that no item has the name.
+    /// `None` without DWARF, when `query` ends the names of several inlined
+    /// functions, or when the compiler kept part of the function out of
+    /// line, as `checksum.part.0` for `checksum`.
+    fn inlined_everywhere(&self, query: &str) -> Option<String> {
+        if !self.binary.has_dwarf {
+            return None;
+        }
+        let all_copies = debuginfo::inlined_copies(self.binary).ok()?;
+        let copies: Vec<&InlinedCopy> = all_copies
+            .iter()
+            .filter(|copy| copy.name == query || short_names(&copy.name).iter().any(|s| s == query))
+            .collect();
+        let name = &copies.first()?.name;
+        if copies.iter().any(|copy| &copy.name != name) {
+            return None;
+        }
+        // GCC names what it keeps out of line after the function, as
+        // `checksum.part.0`, or in C++, `checksum(char const*) [clone
+        // .part.0]`.
+        let kept = self.binary.items.iter().any(|item| {
+            item.name
+                .strip_prefix(name.as_str())
+                .is_some_and(|rest| rest.starts_with('.') || rest.starts_with(" [clone ."))
+        });
+        if kept {
+            return None;
+        }
+        // The functions that hold the copies, those with the most first.
+        let mut into: BTreeMap<usize, usize> = BTreeMap::new();
+        for copy in &copies {
+            *into.entry(copy.into).or_default() += 1;
+        }
+        let mut into: Vec<(usize, Node)> = into
+            .into_iter()
+            .map(|(index, count)| (count, Node::Item(index)))
+            .collect();
+        into.sort_by_key(|&(count, node)| (Reverse(count), node.name(self.binary)));
+        let names: Vec<String> = into
+            .iter()
+            .map(|&(_, node)| self.short_name(node))
+            .collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        // `inlined` lists the largest of what a function holds, which can
+        // leave this one out without `--all`.
+        let (_, first) = into[0];
+        let all = match first {
+            Node::Item(index) if !super::inlined::shows(&all_copies, index, name) => " --all",
+            _ => "",
+        };
+        let command = format!(
+            "`inlined {}{all}`",
+            text::shell_quote(&self.query_for(first))
+        );
+        let copies = match copies.len() {
+            1 => "its one copy".to_string(),
+            2 => "both copies of it".to_string(),
+            count => format!("all {count} copies of it"),
+        };
+        Some(match names[..] {
+            [function] => {
+                format!("the compiler inlined {copies} into {function}, which {command} lists")
+            }
+            _ => format!(
+                "the compiler inlined {copies} into {}; {command} lists those in {}",
+                text::names_text(&names, false),
+                names[0]
+            ),
+        })
+    }
+
+    /// How elfq names items in a file without a symbol table, with
+    /// examples, or why it found no functions in it: the likely reason that
+    /// no item has a name. `None` in a file with a symbol table.
+    fn unnamed(&self) -> Option<String> {
+        if self.binary.has_symbols {
+            return None;
+        }
+        if !super::found_functions(self.binary) {
+            return Some(
+                "the file has no symbols or unwind table, so elfq can't find its functions yet"
+                    .to_string(),
+            );
+        }
+        let names = match text::unnamed_items(self.binary)? {
+            (function, Some(data)) => {
+                format!(
+                    "functions and data by address, like {} and {}",
+                    function.name, data.name
+                )
+            }
+            (function, None) => format!("functions by address, like {}", function.name),
+        };
+        Some(format!(
+            "the file has no symbol table, so elfq names its {names}"
+        ))
     }
 
     /// The other name of `node` that `query` gives, if it gives one rather
