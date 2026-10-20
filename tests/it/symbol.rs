@@ -171,6 +171,14 @@ fn a_name_that_could_mean_several_items_lists_them() {
     // library's formatting code: only an address tells them apart.
     let display = "<&str as core::fmt::Display>::fmt";
     let message = error(&binary, display);
+    assert!(
+        message
+            .lines()
+            .next()
+            .unwrap()
+            .ends_with("; use one of the addresses on the left instead:"),
+        "{message}"
+    );
     let choices: Vec<&str> = message.lines().skip(1).collect();
     assert_eq!(choices.len(), 2);
     for choice in choices {
@@ -179,6 +187,34 @@ fn a_name_that_could_mean_several_items_lists_them() {
         assert_eq!(name, display);
         assert_eq!(found(&binary, address), display);
     }
+}
+
+#[test]
+fn a_name_longer_than_40_characters_gives_way_to_an_address() {
+    let binary = load_sample("rust-x86_64-nodebug.elf");
+    let message = error(&binary, "drop_glue");
+    let mut lines = message.lines();
+    assert_eq!(
+        lines.next(),
+        Some("`drop_glue` could mean 50 functions; use one of the addresses on the left instead:")
+    );
+    let choices: Vec<&str> = lines.take_while(|line| !line.ends_with(" more")).collect();
+    assert_eq!(choices.len(), 10);
+    for choice in choices {
+        let (query, name) = choice.trim().split_once("  ").unwrap();
+        let query = query.trim_matches('\'');
+        assert!(query.chars().count() <= 40, "{choice}");
+        assert_eq!(found(&binary, query), name.trim_start(), "{choice}");
+    }
+    let message = error(&binary, "fmt");
+    assert!(
+        message
+            .lines()
+            .next()
+            .unwrap()
+            .ends_with("; use one of the names or addresses on the left instead:"),
+        "{message}"
+    );
 }
 
 #[test]
@@ -202,5 +238,24 @@ fn typos_get_suggestions() {
     assert!(
         error(&binary, "Gain")
             .starts_with("no function or data object is named `Gain`; did you mean Gain::run, ")
+    );
+
+    // Of an item's names, a typo away beats containing what was typed.
+    let binary = load_sample("c-cortex-m4.elf");
+    assert_eq!(
+        error(&binary, "Dfault_Handler"),
+        "no function or data object is named `Dfault_Handler`; did you mean Default_Handler?"
+    );
+    assert_eq!(
+        error(&binary, "SV_Handler"),
+        "no function or data object is named `SV_Handler`; did you mean SVC_Handler?"
+    );
+
+    // An alias can be what comes closest, though the item's shortest name
+    // is another.
+    let binary = load_sample("c-softfloat-nodebug.elf");
+    assert_eq!(
+        error(&binary, "aeabi_dad"),
+        "no function or data object is named `aeabi_dad`; did you mean __aeabi_dadd?"
     );
 }

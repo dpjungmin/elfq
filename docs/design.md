@@ -179,8 +179,9 @@ item's names, such as the weak alias `NMI_Handler` of `Default_Handler`, or
 an address past its start, the answer's first line says so:
 `Default_Handler (also named NMI_Handler)`, or `process_frame (which holds
 0x1705)`. When a name could mean several items,
-the error lists the shortest name that picks each one, and a misspelled name
-gets suggestions. Typing the command first, as in
+the error lists the shortest name that picks each one, or its address when
+that name is longer than 40 characters, and a misspelled name gets
+suggestions from every name an item has. Typing the command first, as in
 `elfq callers app.elf log_msg`, gets a hint that the file comes first, and
 `elfq help top` prints the same help as `elfq app.elf top --help`.
 

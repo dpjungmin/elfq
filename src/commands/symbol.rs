@@ -288,14 +288,22 @@ impl<'a> Names<'a> {
     }
 
     /// The message for a query that finds several things: what to type for
-    /// each, next to its full name.
+    /// each, next to its full name. An item whose shortest name is longer
+    /// than 40 characters gets its address instead, so that the names on the
+    /// right line up close by.
     fn choices(&self, query: &str, nodes: &[Node]) -> String {
         const SHOWN: usize = 10;
+        const LONGEST: usize = 40;
         let shown = text::shown_count(nodes.len(), SHOWN);
         let rows: Vec<(String, &str)> = nodes[..shown]
             .iter()
             .map(|&node| {
-                let query = text::shell_quote(&self.query_for(node));
+                let query = match (self.query_for(node), node) {
+                    (query, Node::Item(index)) if query.chars().count() > LONGEST => {
+                        format!("{:#x}", self.binary.items[index].address)
+                    }
+                    (query, _) => text::shell_quote(&query),
+                };
                 (query, node.name(self.binary))
             })
             .collect();
@@ -305,8 +313,16 @@ impl<'a> Names<'a> {
             .max()
             .unwrap_or(0);
 
+        let is_address = |query: &str| hex_number(query).is_some();
+        let names = rows.iter().any(|(query, _)| !is_address(query));
+        let addresses = rows.iter().any(|(query, _)| is_address(query));
+        let what = match (names, addresses) {
+            (true, true) => "names or addresses",
+            (false, true) => "addresses",
+            _ => "names",
+        };
         let mut message = format!(
-            "`{query}` could mean {}; use one of the names on the left instead:",
+            "`{query}` could mean {}; use one of the {what} on the left instead:",
             text::count_text(self.binary, nodes)
         );
         for (query, name) in rows {
@@ -337,12 +353,29 @@ impl<'a> Names<'a> {
             }
             Some(edit_distance(&name, &query)).filter(|&distance| distance <= typos)
         };
+        // How close the closest of `names` and their short names comes, and
+        // those of them to suggest: the fewest typos from `query`, and of
+        // those, the ones that contain it. So `SV_Handler` gets
+        // `SVC_Handler`, not `PendSV_Handler`, and `iprintf` gets
+        // `fiprintf`, not `fprintf`.
         let closest = |names: Vec<&str>| {
-            names
+            let close: Vec<(usize, String)> = names
                 .into_iter()
                 .flat_map(|name| short_names(name).into_iter().chain([name.to_string()]))
-                .filter_map(|name| distance(&name))
-                .min()
+                .filter_map(|name| Some((distance(&name)?, name)))
+                .collect();
+            let nearest = close.iter().map(|(distance, _)| *distance).min()?;
+            let rank = |(distance, name): &(usize, String)| {
+                let typos_from = edit_distance(&name.to_lowercase(), &query).min(typos + 1);
+                (typos_from, *distance > 0)
+            };
+            let best = close.iter().map(rank).min()?;
+            let closest: Vec<String> = close
+                .iter()
+                .filter(|name| rank(name) == best)
+                .map(|(_, name)| name.clone())
+                .collect();
+            Some((nearest, closest))
         };
 
         // A stub for one of the file's own functions is left out: its
@@ -362,20 +395,34 @@ impl<'a> Names<'a> {
             (Node::Import(index), import, vec![import])
         });
         // Closest first, then shortest.
-        let mut similar: Vec<(usize, usize, &str, Node)> = items
+        let mut similar: Vec<(usize, usize, &str, Node, Vec<String>)> = items
             .chain(imports)
-            .filter_map(|(node, name, names)| Some((closest(names)?, name.len(), name, node)))
+            .filter_map(|(node, name, names)| {
+                let (distance, closest) = closest(names)?;
+                Some((distance, name.len(), name, node, closest))
+            })
             .collect();
-        similar.sort();
+        similar.sort_by(|a, b| (a.0, a.1, a.2, a.3).cmp(&(b.0, b.1, b.2, b.3)));
 
         let mut suggestions: Vec<String> = Vec::new();
-        for (distance, _, _, node) in similar {
-            let suggestion = self.query_for(node);
-            // Skip a name that has `query` only in a part that the
-            // suggestion leaves out, such as a generic argument.
-            if distance == 0 && !suggestion.to_lowercase().contains(&query) {
+        for (distance, _, _, node, closest) in similar {
+            // The shortest of the names that came closest, which needn't be
+            // the item's shortest name: `sniprintf` for `sniprin`, though
+            // its alias `snprintf` is shorter. Failing that, when none of them
+            // finds only this item, or they are all mangled symbols, the
+            // shortest thing to type that does, but not one that has `query`
+            // only in a part that it leaves out, such as a generic argument.
+            let suggestion = closest
+                .into_iter()
+                .filter(|name| demangle(name).is_none() && self.nodes(name) == [node])
+                .min_by(|a, b| a.len().cmp(&b.len()).then(a.cmp(b)))
+                .or_else(|| {
+                    let query_for = self.query_for(node);
+                    (distance > 0 || query_for.to_lowercase().contains(&query)).then_some(query_for)
+                });
+            let Some(suggestion) = suggestion else {
                 continue;
-            }
+            };
             let suggestion = text::shell_quote(&suggestion);
             if !suggestions.contains(&suggestion) {
                 suggestions.push(suggestion);
