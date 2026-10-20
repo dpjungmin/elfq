@@ -174,7 +174,11 @@ parameters, as `c++filt` shows them, but can be typed without:
 `process_frame` finds `app::process_frame(app::Frame const&, app::Stage&)`,
 `log(unsigned int)` picks one of two overloads of `app::log`, and
 `vtable for Gain` finds `vtable for app::Gain`. A name that matches exactly
-wins over one that only ends the same way. When a name could mean several items,
+wins over one that only ends the same way. When SYMBOL is another of an
+item's names, such as the weak alias `NMI_Handler` of `Default_Handler`, or
+an address past its start, the answer's first line says so:
+`Default_Handler (also named NMI_Handler)`, or `process_frame (which holds
+0x1705)`. When a name could mean several items,
 the error lists the shortest name that picks each one, and a misspelled name
 gets suggestions. Typing the command first, as in
 `elfq callers app.elf log_msg`, gets a hint that the file comes first, and
@@ -379,6 +383,10 @@ in `retained` holds what SYMBOL keeps itself. So a script that adds up
 {"id":0,"name":"crc32","kind":"function","section":".text","address":"0x1280","size":59,"size_estimated":false,"own":59,"load_image":0,"retained":1083,"through_pointer":false,"parent":null},
 {"id":1,"name":"crc_table","kind":"data","section":".rodata","address":"0x2120","size":1024,"size_estimated":false,"own":1024,"load_image":0,"retained":1024,"through_pointer":false,"parent":0},
 ```
+
+SYMBOL's item, `symbol` in most answers and `function` in `inlined
+SYMBOL`'s, also has `aliases`: its other names, such as the mangled symbol
+of a demangled name, or weak aliases at its address.
 
 `inlined SYMBOL` lists the rows of its tree the same way, each the copies
 of one function in one place, with `id`, `name`, `bytes`, `copies` and

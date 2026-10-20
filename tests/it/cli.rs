@@ -1475,6 +1475,45 @@ call       0x1a72          report
 }
 
 #[test]
+fn the_first_line_says_what_symbol_gave_when_it_isnt_the_name() {
+    let first_line = |args: &[&str]| stdout(args).lines().next().unwrap().to_string();
+    let m4 = "testdata/bin/c-cortex-m4.elf";
+    assert_eq!(
+        first_line(&[m4, "retained", "NMI_Handler"]),
+        "Removing Default_Handler (also named NMI_Handler) would save its own 2 bytes, and \
+         nothing else."
+    );
+    assert_eq!(
+        first_line(&[m4, "why", "HardFault_Handler"]),
+        "Default_Handler (also named HardFault_Handler) is in the vector table: the processor \
+         runs it on an interrupt or exception."
+    );
+    assert_eq!(
+        first_line(&[m4, "callees", "SVC_Handler"]),
+        "Default_Handler (also named SVC_Handler) doesn't call or use anything."
+    );
+    assert_eq!(
+        first_line(&[TCM_SAMPLE, "callers", "0x30000290"]),
+        "log_msg (which holds 0x30000290) is used by 4 functions:"
+    );
+    assert_eq!(
+        first_line(&[SAMPLE, "why", "0x1aa5"]),
+        "Nothing reaches debug_dump (which holds 0x1aa5) from where the program starts: it is \
+         dead code, or used in a way elfq can't see."
+    );
+    // A name with a note can't take "'s".
+    assert_eq!(
+        first_line(&[SAMPLE, "inlined", "0x1710"]),
+        "Of the 532 bytes of process_frame (which holds 0x1710), 238 are inlined copies of 3 \
+         functions:"
+    );
+    assert_eq!(
+        first_line(&[SAMPLE, "inlined", "0x1700"]),
+        "Of process_frame's 532 bytes, 238 are inlined copies of 3 functions:"
+    );
+}
+
+#[test]
 fn callers_in_a_shared_library_include_calls_through_its_stubs() {
     assert_output(
         &stdout(&[LIBRARY_SAMPLE, "callers", "log_msg"]),

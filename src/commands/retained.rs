@@ -22,7 +22,7 @@ use crate::render::{Align, Table};
 
 #[derive(Serialize)]
 struct RetainedJson<'a> {
-    symbol: json::Item<'a>,
+    symbol: json::Symbol<'a>,
     /// Whether anything reaches SYMBOL from where the program starts. When
     /// nothing does, nothing is there only because of it.
     reachable: bool,
@@ -68,7 +68,7 @@ pub fn run(
     }
     let node = symbol.node();
     let index = symbol.index;
-    let name = node.name(binary);
+    let name = &symbol.lead_name;
     let retained = &symbol.retained;
     let items = symbol.counted_items();
     let own = retained.own(index);
@@ -132,7 +132,7 @@ fn write_json(symbol: &SymbolInTree, out: &mut dyn Write) -> Result<()> {
         Vec::new()
     };
     let answer = RetainedJson {
-        symbol: json::Item::new(binary, node),
+        symbol: json::Symbol::new(binary, node),
         reachable,
         range: retained.range.map(json::Range::new),
         own: retained.own(symbol.index),
@@ -206,6 +206,11 @@ struct SymbolInTree<'a> {
     retained: RetainedTree<'a>,
     /// SYMBOL's item, as an index into [`Binary::items`].
     index: usize,
+    /// The item's name as the answer's first line gives it (see
+    /// [`Symbol::lead_name`]).
+    ///
+    /// [`Symbol::lead_name`]: super::symbol::Symbol::lead_name
+    lead_name: String,
 }
 
 impl<'a> SymbolInTree<'a> {
@@ -218,7 +223,8 @@ impl<'a> SymbolInTree<'a> {
     ) -> Result<SymbolInTree<'a>> {
         super::check_code_is_readable(binary)?;
         let names = Names::new(binary);
-        let node = names.find(symbol)?;
+        let symbol = names.find(symbol)?;
+        let node = symbol.node;
         let index = super::readable_item(binary, node)?;
         let name = node.name(binary);
         if binary.kind == FileKind::SharedLibrary {
@@ -228,7 +234,11 @@ impl<'a> SymbolInTree<'a> {
             );
         }
         let retained = RetainedTree::build(binary, range)?.with_names(names);
-        Ok(SymbolInTree { retained, index })
+        Ok(SymbolInTree {
+            retained,
+            index,
+            lead_name: symbol.lead_name(binary),
+        })
     }
 
     /// SYMBOL's item, as a node of the graph.
@@ -244,11 +254,7 @@ impl<'a> SymbolInTree<'a> {
     /// Says that nothing reaches SYMBOL, so it is dead code, or used in a way
     /// elfq can't see.
     fn write_unreachable(&self, out: &mut dyn Write) -> Result<()> {
-        writeln!(
-            out,
-            "{}",
-            text::nothing_reaches(self.node().name(self.retained.binary))
-        )?;
+        writeln!(out, "{}", text::nothing_reaches(&self.lead_name))?;
         Ok(())
     }
 

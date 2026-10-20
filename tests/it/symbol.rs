@@ -9,8 +9,16 @@ use crate::support::load_sample;
 fn found(binary: &Binary, query: &str) -> String {
     symbol::find(binary, query)
         .unwrap_or_else(|err| panic!("{query}: {err}"))
+        .node
         .name(binary)
         .to_string()
+}
+
+/// The name of what `query` finds as the answer's first line gives it.
+fn lead_name(binary: &Binary, query: &str) -> String {
+    symbol::find(binary, query)
+        .unwrap_or_else(|err| panic!("{query}: {err}"))
+        .lead_name(binary)
 }
 
 fn error(binary: &Binary, query: &str) -> String {
@@ -32,6 +40,45 @@ fn names_addresses_and_imports() {
         error(&binary, "0x10"),
         "no function or data object contains address 0x10"
     );
+}
+
+#[test]
+fn the_first_line_says_what_symbol_gave_when_it_isnt_the_name() {
+    let binary = load_sample("c-x86_64.elf");
+    assert_eq!(lead_name(&binary, "process_frame"), "process_frame");
+    assert_eq!(lead_name(&binary, "0x1700"), "process_frame");
+    assert_eq!(
+        lead_name(&binary, "0x1705"),
+        "process_frame (which holds 0x1705)"
+    );
+    // An import's name gives its stub, whose name says so.
+    assert_eq!(lead_name(&binary, "write"), "write@plt");
+    // A Thumb function's start, with bit 0 set as its symbol has it, is
+    // its start.
+    let binary = load_sample("c-cortex-m4.elf");
+    assert_eq!(lead_name(&binary, "0x80002c9"), "process_frame");
+    assert_eq!(
+        lead_name(&binary, "0x80002ca"),
+        "process_frame (which holds 0x80002ca)"
+    );
+
+    // A weak alias is another name.
+    let binary = load_sample("c-cortex-m4.elf");
+    assert_eq!(
+        lead_name(&binary, "NMI_Handler"),
+        "Default_Handler (also named NMI_Handler)"
+    );
+    let binary = load_sample("c-plt.so");
+    assert_eq!(
+        lead_name(&binary, "square_resolver@plt"),
+        "square@plt (also named square_resolver@plt)"
+    );
+
+    // A mangled symbol and a short name are the item's own name.
+    let binary = load_sample("cpp-x86_64.elf");
+    let run = "app::Gain::run(short*, unsigned long)";
+    assert_eq!(lead_name(&binary, "_ZN3app4Gain3runEPsm"), run);
+    assert_eq!(lead_name(&binary, "Gain::run"), run);
 }
 
 #[test]

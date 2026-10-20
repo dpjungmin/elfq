@@ -6,7 +6,7 @@ use object::Architecture;
 
 use super::json;
 use crate::binary::{AddressRange, Binary, Item, ItemKind, Section};
-use crate::graph::{Node, ReferenceKind, Root, RootKind, Unresolved};
+use crate::graph::{Node, ReferenceKind, RootKind, Unresolved};
 
 /// "1 function", "2 functions".
 pub(super) fn plural(n: usize, one: &str, many: &str) -> String {
@@ -168,9 +168,8 @@ pub(super) fn nothing_reaches(name: &str) -> String {
     )
 }
 
-/// Why a root is one, as a sentence.
-pub(super) fn root_sentence(binary: &Binary, root: &Root) -> String {
-    let name = root.node.name(binary);
+/// Why the item called `name` is a root of `kind`, as a sentence.
+pub(super) fn root_sentence(binary: &Binary, name: &str, kind: RootKind) -> String {
     // Whether the program uses a startup section when it starts or exits.
     let when = |section: usize| {
         let section = &binary.sections[section].name;
@@ -180,7 +179,7 @@ pub(super) fn root_sentence(binary: &Binary, root: &Root) -> String {
             "starts"
         }
     };
-    match root.kind {
+    match kind {
         RootKind::Entry => format!("{name} is the entry point, where the program starts."),
         RootKind::InSection(section)
             if binary.sections[section].kind == object::SectionKind::Note =>

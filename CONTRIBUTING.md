@@ -193,14 +193,17 @@ is a short one to copy.
    that error, its tests and the `--tree` help.
 4. **SYMBOL.** If the command reads code, call `check_code_is_readable`
    first, so that a file whose code elfq can't read says so even when
-   SYMBOL names nothing. `symbol::find` turns SYMBOL into a `Node`, which
-   may be an import; `item_in_file` or `readable_item` gives its item, or
-   an error that says why there is none. A command that needs the roots
+   SYMBOL names nothing. `symbol::find` turns SYMBOL into a `Symbol`, whose
+   `node` may be an import; `item_in_file` or `readable_item` gives its
+   item, or an error that says why there is none. The answer's first line
+   names it with `Symbol::lead_name`, which says when SYMBOL gave another
+   of its names or an address inside it. A command that needs the roots
    refuses shared libraries, as `top`, `retained` and `why` do.
 5. **The answer.** Work it out first, then write it. Text uses
    `render::Table`, `TreeRow` for trees, and the shared wording in
    `text.rs`. JSON is a struct that derives `Serialize`, made of the shapes
-   in `json.rs`, such as `json::Item` for each item, and written with
+   in `json.rs`, such as `json::Symbol` for SYMBOL's item, which adds its
+   `aliases`, and `json::Item` for every other item, and written with
    `json::write`. Every key is always there, `null` when it has no value.
    `json::write` puts each element of a list that the answer's object
    holds on a line of its own, so give the rows their own list there, as

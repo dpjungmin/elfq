@@ -31,7 +31,9 @@ pub fn load_sample(name: &str) -> Binary {
 
 /// What elfq finds for `name` as a SYMBOL.
 pub fn node(binary: &Binary, name: &str) -> Node {
-    symbol::find(binary, name).unwrap_or_else(|err| panic!("{name}: {err}"))
+    symbol::find(binary, name)
+        .unwrap_or_else(|err| panic!("{name}: {err}"))
+        .node
 }
 
 /// The elfq program, set to run in the crate's root so that sample paths

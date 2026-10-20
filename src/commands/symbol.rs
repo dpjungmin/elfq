@@ -10,6 +10,9 @@
 //!    `app::process_frame`, or `Gain::run` for
 //!    `<app::Gain as app::Stage>::run` (see [`short_names`]).
 //!
+//! When SYMBOL gives another of an item's names, or an address inside it,
+//! the answer's first line says so (see [`Symbol::lead_name`]).
+//!
 //! For `callers` and `callees`, SYMBOL can also be one or more ranges of
 //! memory instead (see [`subject`]).
 
@@ -19,13 +22,36 @@ use std::collections::{HashMap, HashSet};
 use anyhow::{Context, Result, anyhow, bail};
 
 use super::text;
-use crate::binary::{AddressRange, Binary, demangle, hex_number, short_names};
+use crate::binary::{AddressRange, Binary, ItemKind, demangle, hex_number, short_names};
 use crate::graph::Node;
+
+/// The item or import that SYMBOL finds.
+#[derive(Debug)]
+pub struct Symbol {
+    pub node: Node,
+    /// What the answer's first line adds to the item's name when SYMBOL
+    /// gave something other than that name: another of its names, as in
+    /// "also named snprintf", or an address inside it, as in "which holds
+    /// 0x30000290".
+    pub note: Option<String>,
+}
+
+impl Symbol {
+    /// The item's name as the answer's first line gives it, with the note
+    /// if there is one: `sniprintf (also named snprintf)`.
+    pub fn lead_name(&self, binary: &Binary) -> String {
+        let name = self.node.name(binary);
+        match &self.note {
+            Some(note) => format!("{name} ({note})"),
+            None => name.to_string(),
+        }
+    }
+}
 
 /// What `callers` and `callees` ask about.
 pub enum Subject {
     /// One item or import.
-    Node(Node),
+    Symbol(Symbol),
     /// Everything in some ranges of memory, together.
     Ranges(Vec<AddressRange>),
 }
@@ -36,7 +62,7 @@ pub fn subject(binary: &Binary, queries: &[String]) -> Result<Subject> {
     if let [query] = queries
         && range(query).is_none()
     {
-        return Ok(Subject::Node(find(binary, query)?));
+        return Ok(Subject::Symbol(find(binary, query)?));
     }
     let ranges = queries
         .iter()
@@ -65,7 +91,7 @@ pub fn is_range(query: &str) -> bool {
 }
 
 /// Finds the item or import that `query` names, as `Names::find` does.
-pub fn find(binary: &Binary, query: &str) -> Result<Node> {
+pub fn find(binary: &Binary, query: &str) -> Result<Symbol> {
     Names::new(binary).find(query)
 }
 
@@ -98,18 +124,34 @@ impl<'a> Names<'a> {
 
     /// Finds the item or import that `query` names. When it could mean
     /// several, or none, the error lists names to try instead.
-    pub(super) fn find(&self, query: &str) -> Result<Node> {
+    pub(super) fn find(&self, query: &str) -> Result<Symbol> {
         if let Some(address) = hex_number(query) {
             let address =
                 address.with_context(|| format!("`{query}` is not a hexadecimal address"))?;
-            return match self.binary.item_at(address) {
-                Some(index) => Ok(Node::Item(index)),
-                None => bail!("no function or data object contains address {address:#x}"),
+            let Some(index) = self.binary.item_at(address) else {
+                bail!("no function or data object contains address {address:#x}");
             };
+            // The item's start needs no note: it is what the item's name
+            // stands for. So is a Thumb function's start with bit 0 set, as
+            // symbols, pointers and the entry point give it.
+            let item = &self.binary.items[index];
+            let thumb_start =
+                self.binary.thumb && item.kind == ItemKind::Function && address == item.address | 1;
+            let note = (address != item.address && !thumb_start)
+                .then(|| format!("which holds {address:#x}"));
+            return Ok(Symbol {
+                node: Node::Item(index),
+                note,
+            });
         }
 
         match self.nodes(query) {
-            [node] => Ok(*node),
+            &[node] => Ok(Symbol {
+                node,
+                note: self
+                    .other_name(node, query)
+                    .map(|name| format!("also named {name}")),
+            }),
             [] => {
                 let similar = self.similar(query);
                 if similar.is_empty() {
@@ -122,6 +164,23 @@ impl<'a> Names<'a> {
             }
             nodes => bail!("{}", self.choices(query, nodes)),
         }
+    }
+
+    /// The other name of `node` that `query` gives, if it gives one rather
+    /// than the item's name: an alias, or the alias that a short name gives.
+    /// A mangled symbol stands for its readable name, which is no other name
+    /// when it is the item's.
+    fn other_name(&self, node: Node, query: &str) -> Option<String> {
+        let Node::Item(index) = node else {
+            return None;
+        };
+        let item = &self.binary.items[index];
+        let gives = |name: &str| name == query || short_names(name).iter().any(|s| s == query);
+        if gives(&item.name) {
+            return None;
+        }
+        let alias = readable(item.aliases.iter().find(|alias| gives(alias))?);
+        (alias != item.name).then_some(alias)
     }
 
     /// What `query` finds: the items and imports with that name, or if
@@ -327,6 +386,16 @@ impl<'a> Names<'a> {
         }
         suggestions
     }
+}
+
+/// `name` demangled, if it is a mangled symbol, as an alias can be: with
+/// `@plt` after it for one of a stub's.
+fn readable(name: &str) -> String {
+    let (symbol, plt) = match name.strip_suffix("@plt") {
+        Some(symbol) => (symbol, "@plt"),
+        None => (name, ""),
+    };
+    demangle(symbol).map_or_else(|| name.to_string(), |readable| readable + plt)
 }
 
 /// Adds `node` to what a name finds, unless it is there already.

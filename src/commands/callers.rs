@@ -7,7 +7,7 @@ use anyhow::Result;
 use serde::Serialize;
 
 use super::ranges::{self, Direction};
-use super::symbol::{self, Subject};
+use super::symbol::{self, Subject, Symbol};
 use super::{Outcome, json, text};
 use crate::binary::{Binary, ItemKind};
 use crate::cli::Format;
@@ -15,7 +15,7 @@ use crate::graph::{Graph, Node, Reference, ReferenceKind};
 
 #[derive(Serialize)]
 struct Callers<'a> {
-    symbol: json::Item<'a>,
+    symbol: json::Symbol<'a>,
     callers: Vec<json::Use<'a>>,
     /// Whether the list has every caller, as far as elfq can tell: `false`
     /// when SYMBOL is a function whose address is taken or stored, so that
@@ -37,8 +37,8 @@ pub fn run(
     let subject = symbol::subject(binary, symbols)?;
     let graph = Graph::build(binary);
     match subject {
-        Subject::Node(node) => {
-            callers(binary, &graph, node, all, format, out)?;
+        Subject::Symbol(symbol) => {
+            callers(binary, &graph, &symbol, all, format, out)?;
             Ok(Outcome::Answered)
         }
         Subject::Ranges(ranges) => {
@@ -47,15 +47,16 @@ pub fn run(
     }
 }
 
-/// What calls or uses `node`.
+/// What calls or uses SYMBOL.
 fn callers(
     binary: &Binary,
     graph: &Graph,
-    node: Node,
+    symbol: &Symbol,
     all: bool,
     format: Format,
     out: &mut dyn Write,
 ) -> Result<()> {
+    let node = symbol.node;
     let name = node.name(binary);
 
     // Code can call the file's own functions through PLT stubs, such as
@@ -88,7 +89,7 @@ fn callers(
     let through_pointer = can_be_called_through_pointer(binary, node, &references);
     if format == Format::Json {
         let callers = Callers {
-            symbol: json::Item::new(binary, node),
+            symbol: json::Symbol::new(binary, node),
             callers: json::uses(binary, &rows(&|reference| json::how_field(reference.kind))),
             complete: !through_pointer,
         };
@@ -111,14 +112,15 @@ fn callers(
     // Some calls can't be listed: the system's, to where the program starts,
     // and those through a pointer.
     match graph.root(node) {
-        Some(root) => notes.push(text::root_sentence(binary, root)),
+        Some(root) => notes.push(text::root_sentence(binary, name, root.kind)),
         None if through_pointer => notes.push(format!(
             "Calls to {name} through a pointer aren't listed, since elfq can't see them."
         )),
         None => {}
     }
+    let lead_name = symbol.lead_name(binary);
     if rows.is_empty() {
-        writeln!(out, "Nothing in the file calls or uses {name}.")?;
+        writeln!(out, "Nothing in the file calls or uses {lead_name}.")?;
         for note in notes {
             writeln!(out, "{note}")?;
         }
@@ -128,7 +130,7 @@ fn callers(
     let callers = super::distinct_nodes(&rows);
     writeln!(
         out,
-        "{name} is used by {}:",
+        "{lead_name} is used by {}:",
         text::count_text(binary, &callers)
     )?;
     writeln!(out)?;
