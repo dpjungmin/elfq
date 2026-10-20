@@ -27,7 +27,10 @@ elfq app.elf callees main               # what main calls or uses
 elfq app.elf callees 0x0+256K           # what the first 256 KiB uses outside it
 ```
 
-Every command also prints JSON for scripts with `--json`. The overview,
+Every command also prints JSON for scripts with `--json`: every item, site
+and chain, one row per line, though the overview's JSON leaves its table to
+`top`'s. [docs/design.md](docs/design.md#json) lists the keys. Until 1.0
+the JSON can change, and each release says how. The overview,
 `top` and `retained` can count only the bytes in one range of memory, such
 as a microcontroller's ITCM, with `--range START..END` or
 `--range START+SIZE`; for firmware, the overview lists the ranges its
@@ -37,7 +40,32 @@ sections and their load images occupy.
 only what crosses their edge, such as code in ITCM that calls a function in
 flash. elfq's exit status is then 1 if anything does or might, so a CI job
 can check that time-critical code stays in fast memory, or that code run
-from RAM never touches flash. Errors exit with status 2.
+from RAM never touches flash. Errors go to stderr, with exit status 2 and
+nothing on stdout.
+
+**For AI agents:** paste this into a project's AGENTS.md or CLAUDE.md to
+tell its agents about elfq:
+
+```markdown
+## elfq
+
+elfq answers questions about a built ELF file: what keeps the most bytes,
+what removing a function would save, why something is in it, and what
+calls what. Run `elfq FILE.elf` first: its table is the start of `top`'s,
+and `elfq --help` lists the commands.
+
+- SYMBOL is a name, the end of a name, or an address. `top`, `retained`,
+  `callers` and `callees` show the 30 largest items, `inlined` the 30
+  largest functions, and `why` the chains through the 10 nearest users;
+  `--all` shows every row, and `--json` has every row.
+- Each table row is one line, with the name last. A name after "kept by"
+  or "used by" works as SYMBOL, and a `why` row without "used by" is used
+  by the row above, or starts a chain. Read `why`'s chains with `--json`.
+- `elfq FILE.elf callees 0x0+256K` lists what the code and data in that
+  range use outside it, and exits 1 if anything does or might. With
+  ranges, `callers` and `callees` show every row.
+- elfq reads the built file, not the source: rebuild before asking again.
+```
 
 **Install** with Rust 1.88 or later:
 
