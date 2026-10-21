@@ -9,7 +9,7 @@ use serde_json::Value;
 use crate::support::{SAMPLE, TCM_SAMPLE, assert_output, elfq};
 
 /// The docs that can hold examples, relative to the crate's root.
-const DOCS: [&str; 2] = ["README.md", "docs/design.md"];
+const DOCS: [&str; 3] = ["README.md", "docs/design.md", "docs/examples.md"];
 
 #[test]
 fn the_examples_in_the_docs_show_what_elfq_prints() {
@@ -34,9 +34,9 @@ fn the_examples_in_the_docs_show_what_elfq_prints() {
             examples += 1;
         }
     }
-    // The examples in design.md, so that a change in how blocks are
-    // written can't make this test check nothing.
-    assert!(examples >= 3, "found {examples} examples");
+    // Well under the number of examples in the docs, so that a change in
+    // how blocks are written can't make this test check nothing.
+    assert!(examples >= 10, "found {examples} examples");
 }
 
 /// Answers that between them have every key that elfq's JSON has. A key

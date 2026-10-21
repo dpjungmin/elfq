@@ -50,7 +50,7 @@ install 1.88` gets it.
 | `src/render/` | Text output: tables, and the trees in their last column (`tree.rs`), which every command shows the same way: as rows that name the row they hang under (in `why`, only where chains branch), or drawn with `--tree`. |
 | `tests/it/` | Integration tests, built as one test program (`main.rs` lists its modules). See [Tests](#tests). |
 | `testdata/` | The sample programs and the ELF files built from them. See [Sample binaries](#sample-binaries). |
-| `docs/` | `design.md`, how elfq works and what comes next, and `survey.md`, how existing tools compare, written before elfq existed. |
+| `docs/` | `design.md`, how elfq works and what comes next; `examples.md`, real questions about the sample binaries, each with the command that answers it and what elfq prints; and `survey.md`, how existing tools compare, written before elfq existed. |
 
 ## Rules that keep it approachable
 
@@ -125,7 +125,7 @@ that reaches up the list is a sign that the code belongs lower down.
 | `symbol.rs` | Looking up SYMBOL |
 | `inlined.rs` | Inlined copies, from DWARF |
 | `damaged.rs` | Damaged and unusual files, made by changing a sample's bytes |
-| `docs.rs` | The `$ elfq` examples in README.md and docs/design.md, and that design.md names every JSON key |
+| `docs.rs` | The `$ elfq` examples in README.md, docs/design.md and docs/examples.md, and that design.md names every JSON key |
 
 Two tests in `cli.rs` run the overview and every command it suggests on
 each `.elf` and `.so` file in `testdata/bin`, and `top` on each `.elf`
@@ -148,11 +148,13 @@ expected texts are `format!` templates, with placeholders such as `{path}`;
 put those back. A test that checks several outputs stops at the first that
 differs, so run it again until it passes.
 
-**The examples in the docs.** A code block in README.md or docs/design.md
-whose first line starts with `$ elfq ` is run by `docs.rs`, which checks
-that elfq prints the rest of the block and nothing on stderr. The command
-is split at spaces, with no shell quoting, and its exit status isn't
-checked.
+**The examples in the docs.** A code block in README.md, docs/design.md or
+docs/examples.md whose first line starts with `$ elfq ` is run by
+`docs.rs`, which checks that elfq prints the rest of the block and nothing
+on stderr. The command is split at spaces, with no shell quoting, and its
+exit status isn't checked. The text around an example often repeats its
+numbers and names, as docs/examples.md does, so when an example's output
+changes, check that the text around it still matches the new output.
 
 **Damaged files.** `damaged.rs` makes its files from a sample's bytes, so
 that the hangs and crashes they once caused stay fixed. Tests run in a
@@ -259,7 +261,9 @@ is a short one to copy.
 
 [testdata/README.md](testdata/README.md) lists what each sample contains and
 the answers tests should expect. If you change a sample's source, rebuild with
-`testdata/build.sh` and commit the new files with the source change.
+`testdata/build.sh` and commit the new files with the source change. Then
+read docs/examples.md again: it says what the samples' source does, down to
+line numbers in testdata/rust/src/main.rs, and no test checks that.
 
 ## Checking performance
 
