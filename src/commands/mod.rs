@@ -49,6 +49,17 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<Outcome> {
         // any more: the answer still counts.
         let _ = writeln!(std::io::stderr(), "warning: {warning}");
     }
+    // `check_arguments` leaves `--range` with one SYMBOL until SYMBOL is
+    // found.
+    if let Some(range) = cli.range
+        && let Some(command) = &cli.command
+        && let Some(uses) = uses_args(command)
+    {
+        bail!(
+            "{}",
+            symbol_range_error(cli, &binary, command, &uses, range)?
+        );
+    }
     let format = cli.format();
     let range = cli.range;
     let answered = |result: Result<()>| result.map(|()| Outcome::Answered);
@@ -112,7 +123,17 @@ fn check_arguments(cli: &Cli) -> Result<()> {
             )
         }
         if let Some(range) = cli.range {
-            bail!("{}", range_hint(cli, name, &uses, range))
+            let symbols = &uses.args.symbols;
+            let not_range = symbols.iter().find(|query| !symbol::is_range(query));
+            match not_range {
+                None => bail!("{}", range_hint(cli, name, &uses, range)),
+                Some(query) if symbols.len() > 1 => {
+                    bail!("`{query}` isn't a range; give one SYMBOL, or ranges such as 0x0+256K")
+                }
+                // Whether `--from` or `--to` can take its place depends on
+                // what SYMBOL is: see `symbol_range_error`.
+                Some(_) => return Ok(()),
+            }
         }
         if uses.args.symbols.is_empty() {
             bail!("{name} needs a SYMBOL, or ranges such as 0x0+256K")
@@ -141,6 +162,30 @@ fn check_tree(cli: &Cli) -> Result<()> {
         Some(Command::Inlined(args)) if args.symbol.is_some() => Ok(()),
         Some(_) => bail!("only the overview, top, retained, why and inlined SYMBOL take --tree"),
     }
+}
+
+/// The error for `--range` with `callers` or `callees` and one SYMBOL,
+/// which `binary` has: with the command that lists only the uses in
+/// `range`, when `--from` or `--to` can ask about SYMBOL, which needs its
+/// range in the file, and for `callees`, its code.
+fn symbol_range_error(
+    cli: &Cli,
+    binary: &Binary,
+    command: &Command,
+    uses: &Uses,
+    range: AddressRange,
+) -> Result<String> {
+    let symbol::Subject::Symbol(symbol) = symbol::subject(binary, &uses.args.symbols)? else {
+        return Ok(range_hint(cli, command_name(command), uses, range));
+    };
+    let has_range = match command {
+        Command::Callees(_) => readable_item(binary, symbol.node).is_ok(),
+        _ => matches!(symbol.node, Node::Item(_)),
+    };
+    if !has_range {
+        return Ok("only the overview, top and retained take --range".to_string());
+    }
+    Ok(range_hint(cli, command_name(command), uses, range))
 }
 
 /// The error for `--range` with `callers` or `callees`, which don't take
@@ -289,7 +334,7 @@ fn check_has_bytes(binary: &Binary, range: Option<AddressRange>) -> Result<()> {
             [Some(item.address), binary.load_address(item)]
                 .into_iter()
                 .flatten()
-                .any(|start| range.overlap(start, 1) > 0)
+                .any(|start| range.contains(start))
         })
     };
     if let Some(item) = binary.items.iter().find(starts_in_place) {

@@ -1,9 +1,9 @@
 //! `elfq FILE callers SYMBOL`: what calls or uses SYMBOL. For ranges of
-//! memory in place of SYMBOL, see `ranges.rs`.
+//! memory in place of SYMBOL, or SYMBOL with `--from`, see `ranges.rs`.
 
 use std::io::Write;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use serde::Serialize;
 
 use super::ranges::{self, Direction, RangeCheck};
@@ -45,7 +45,14 @@ pub fn run(
             Ok(Outcome::Answered)
         }
         Subject::Symbol(symbol) => {
-            let range = ranges::symbol_range(binary, &symbol, "--from")?;
+            let Node::Item(index) = symbol.node else {
+                bail!(
+                    "{} is imported from a shared library, so it has no range in this file for \
+                     --from",
+                    symbol.node.name(binary)
+                );
+            };
+            let range = ranges::item_range(binary, index);
             let check = RangeCheck {
                 ranges: &[range],
                 name: Some(symbol.lead_name(binary)),

@@ -27,6 +27,11 @@ impl AddressRange {
         end.saturating_sub(start)
     }
 
+    /// Whether `address` is in the range.
+    pub fn contains(&self, address: u64) -> bool {
+        self.start <= address && address < self.end
+    }
+
     /// The range as `--range` takes it, with each address padded to
     /// `digits` hex digits so that ranges line up in a column.
     pub fn text(&self, digits: usize) -> String {

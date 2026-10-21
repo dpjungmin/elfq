@@ -313,6 +313,25 @@ fn from_and_to_list_their_ranges() {
         names(&callees["callees"]),
         ["memcpy", "app_tick", "fir_coeffs"]
     );
+
+    // callers lists the calls into code that no item holds, as callees
+    // does.
+    let output = elfq(&[
+        "testdata/bin/far-gnu-m4-nodebug.elf",
+        "callers",
+        "0x1fff0000+64K",
+        "--from",
+        "0x30000000+16M",
+        "--json",
+    ]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let callers: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let unresolved = &callers["unresolved"][0];
+    assert_eq!(unresolved["caller"]["name"], "flash_calls_rom");
+    assert_eq!(unresolved["target"], "0x1fff0000");
+    assert_eq!(unresolved["veneer"]["name"], "__rom_routine_veneer");
+    assert_eq!(callers["callers"], json!([]));
+    assert_eq!(callers["complete"], true);
 }
 
 /// The rows of a range check's JSON, by address rather than by name, so

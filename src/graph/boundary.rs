@@ -13,9 +13,16 @@
 //! it is reported as a call to the target from the code someone wrote, at
 //! the call to the veneer, with the veneer beside it. That holds for a
 //! target outside every item too, such as a routine in a microcontroller's
-//! ROM: it is a call that elfq can't follow. Only when the caller and the
-//! target are on one side and the veneer is on the other do both hops
-//! cross; then each is reported as it is.
+//! ROM, which elfq doesn't read. Only when the caller and the target are on
+//! one side and the veneer is on the other do both hops cross; then each is
+//! reported as it is.
+//!
+//! A PLT stub that passes calls on to one of the file's own functions, as
+//! `log_msg@plt` does in a shared library, counts as a veneer for that
+//! function. Its other jump, to the header that lazy binding uses, is its
+//! own.
+
+use std::collections::HashMap;
 
 use crate::arch;
 use crate::binary::{AddressRange, Binary, ItemKind, Source};
@@ -41,8 +48,9 @@ pub struct Crossing {
     pub veneer: Option<usize>,
 }
 
-/// A call or jump in the ranges that elfq can't follow, and that may leave
-/// them.
+/// A call or jump that elfq can't follow across the boundary: through a
+/// pointer, or to code outside every item, such as a routine in a
+/// microcontroller's ROM.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Unfollowed {
     /// The call or jump. For a call through a veneer, the call to the
@@ -72,6 +80,8 @@ pub struct Boundary<'a> {
     ranges: &'a [AddressRange],
     /// For each item, whether it is in the ranges.
     inside: Vec<bool>,
+    /// The PLT stubs for the file's own functions, each with its function.
+    stubs: HashMap<usize, usize>,
 }
 
 impl<'a> Boundary<'a> {
@@ -84,6 +94,7 @@ impl<'a> Boundary<'a> {
             graph,
             ranges,
             inside,
+            stubs: binary.own_function_stubs(),
         }
     }
 
@@ -103,12 +114,36 @@ impl<'a> Boundary<'a> {
     /// ranges even when it is in them, since elfq doesn't read it: it may be
     /// a veneer whose symbol was stripped.
     pub fn unfollowed(&self) -> Vec<Unfollowed> {
+        self.unfollowed_from(true, |_| true)
+    }
+
+    /// The calls and jumps from the rest of the file into code in the
+    /// ranges that is outside every item, such as a routine in a
+    /// microcontroller's ROM, directly or through a veneer.
+    pub fn unfollowed_entering(&self) -> Vec<Unfollowed> {
+        self.unfollowed_from(false, |target| target.is_some_and(|t| self.in_ranges(t)))
+    }
+
+    /// The calls and jumps that elfq can't follow from the items on one
+    /// side of the boundary, the ranges' side when `from_inside`, whose
+    /// target passes `goes`. In place of a veneer's jump, the calls to the
+    /// veneer from its own side.
+    fn unfollowed_from(
+        &self,
+        from_inside: bool,
+        goes: impl Fn(Option<u64>) -> bool,
+    ) -> Vec<Unfollowed> {
         let mut unfollowed = Vec::new();
         for unresolved in &self.graph.unresolved {
-            if !self.inside[unresolved.from] {
+            if self.inside[unresolved.from] != from_inside || !goes(unresolved.target) {
                 continue;
             }
-            let calls = self.calls_from_its_side(unresolved.from);
+            let calls = match unresolved.target {
+                Some(target) => {
+                    self.calls_from_its_side(unresolved.from, VeneerTarget::Outside(target))
+                }
+                None => Vec::new(),
+            };
             if calls.is_empty() {
                 unfollowed.push(Unfollowed {
                     unresolved: *unresolved,
@@ -120,10 +155,11 @@ impl<'a> Boundary<'a> {
                 unfollowed.push(through_veneer(call, unresolved.from, unresolved.target));
             }
         }
-        // The calls to a veneer on the other side, which jumps there.
+        // The calls to a veneer on the other side, which jumps to code on
+        // its own side.
         for reference in &self.graph.references {
-            if self.inside[reference.from]
-                && let Some((veneer, target)) = self.call_to_veneer_outside(reference)
+            if self.inside[reference.from] == from_inside
+                && let Some((veneer, target)) = self.call_to_veneer_across(reference)
             {
                 unfollowed.push(through_veneer(reference, veneer, Some(target)));
             }
@@ -184,9 +220,7 @@ impl<'a> Boundary<'a> {
 
     /// Whether `address` is in the ranges.
     fn in_ranges(&self, address: u64) -> bool {
-        self.ranges
-            .iter()
-            .any(|range| range.overlap(address, 1) > 0)
+        self.ranges.iter().any(|range| range.contains(address))
     }
 
     /// The uses across the boundary by the items on one side of it: the items
@@ -206,7 +240,7 @@ impl<'a> Boundary<'a> {
                 site: used.site,
                 veneer,
             };
-            let calls = self.calls_from_its_side(reference.from);
+            let calls = self.calls_from_its_side(reference.from, VeneerTarget::Node(reference.to));
             if !calls.is_empty() {
                 // A veneer's jump across: the calls to the veneer take its
                 // place.
@@ -221,8 +255,8 @@ impl<'a> Boundary<'a> {
                 // A call across to a veneer, which jumps on without
                 // crossing back.
                 crossings.push(crossing(reference, Some(veneer), target));
-            } else if self.call_to_veneer_outside(reference).is_some() {
-                // A call that elfq can't follow: see `unfollowed`.
+            } else if self.call_to_veneer_across(reference).is_some() {
+                // A call to code outside every item: see `unfollowed_from`.
             } else {
                 crossings.push(crossing(reference, None, reference.to));
             }
@@ -230,11 +264,11 @@ impl<'a> Boundary<'a> {
         crossings
     }
 
-    /// When `item` is a veneer, the calls to it from its own side of the
-    /// boundary, which take the place of its jump to the other side. Otherwise,
-    /// or when nothing on its side calls it, nothing.
-    fn calls_from_its_side(&self, item: usize) -> Vec<&'a Reference> {
-        if self.veneer_target(item).is_none() {
+    /// When `item` is a veneer that jumps to `target`, the calls to it from
+    /// its own side of the boundary, which take the place of that jump.
+    /// Otherwise, or when nothing on its side calls it, nothing.
+    fn calls_from_its_side(&self, item: usize, target: VeneerTarget) -> Vec<&'a Reference> {
+        if self.veneer_target(item) != Some(target) {
             return Vec::new();
         }
         let side = self.inside[item];
@@ -244,27 +278,32 @@ impl<'a> Boundary<'a> {
             .collect()
     }
 
-    /// When `reference` is a call from the ranges to a veneer outside them
-    /// that jumps to code outside every item and outside the ranges, the
-    /// veneer, as an index into [`Binary::items`], and that code's
-    /// address.
-    fn call_to_veneer_outside(&self, reference: &Reference) -> Option<(usize, u64)> {
+    /// When `reference` is a call across the boundary to a veneer that
+    /// jumps to code outside every item on the veneer's side, the veneer, as
+    /// an index into [`Binary::items`], and that code's address.
+    fn call_to_veneer_across(&self, reference: &Reference) -> Option<(usize, u64)> {
         let Node::Item(veneer) = reference.to else {
             return None;
         };
-        if !reference.kind.is_call() || !self.inside[reference.from] || self.inside[veneer] {
+        if !reference.kind.is_call() || self.inside[reference.from] == self.inside[veneer] {
             return None;
         }
         match self.veneer_target(veneer)? {
-            VeneerTarget::Outside(target) if !self.in_ranges(target) => Some((veneer, target)),
+            VeneerTarget::Outside(target) if self.in_ranges(target) == self.inside[veneer] => {
+                Some((veneer, target))
+            }
             _ => None,
         }
     }
 
     /// Where `item` jumps to, when it is a linker's veneer: its code is all
     /// a veneer (see [`arch::is_veneer`]), and jumps to one function, or to
-    /// code outside every item.
+    /// code outside every item. A PLT stub for one of the file's own
+    /// functions passes calls on to it.
     fn veneer_target(&self, item: usize) -> Option<VeneerTarget> {
+        if let Some(&function) = self.stubs.get(&item) {
+            return Some(VeneerTarget::Node(Node::Item(function)));
+        }
         let function = &self.binary.items[item];
         let code = self.binary.bytes(function.address, function.size)?;
         let symbol = matches!(

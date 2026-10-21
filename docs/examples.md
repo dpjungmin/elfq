@@ -251,8 +251,8 @@ ADDRESS  SIZE  HOW   AT    CALLER
 
 `crc32` reads its table from DTCM, and `SysTick_Handler` counts the timer's
 ticks there. `callees 0x0+256K --to 0x20000000+256K` lists the same two
-uses, with the data in DTCM first. Either option also takes a name in place
-of the ranges, for the range that the item occupies:
+uses, with the data in DTCM first. Either command also takes a name in
+place of the ranges, and then asks about the range that the item occupies:
 
 ```
 $ elfq testdata/bin/c-cortex-m7.elf callees process_frame --to 0x0+256K

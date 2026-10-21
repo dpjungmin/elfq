@@ -1,5 +1,5 @@
 //! `elfq FILE callees SYMBOL`: what SYMBOL calls or uses. For ranges of
-//! memory in place of SYMBOL, see `ranges.rs`.
+//! memory in place of SYMBOL, or SYMBOL with `--to`, see `ranges.rs`.
 
 use std::io::Write;
 
@@ -59,7 +59,7 @@ pub fn run(
                 return Ok(Outcome::Answered);
             }
             let check = RangeCheck {
-                ranges: &[ranges::symbol_range(binary, &symbol, "--to")?],
+                ranges: &[ranges::item_range(binary, index)],
                 name: Some(lead_name),
                 other: to,
                 direction: Direction::Out,

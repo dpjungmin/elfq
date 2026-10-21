@@ -71,9 +71,9 @@ and `elfq --help` lists the commands.
   by the row above, or starts a chain. Read `why`'s chains with `--json`.
 - `elfq FILE.elf callees 0x0+256K` lists what the code and data in that
   range use outside it, and `callers 0x0+256K` what uses them from
-  outside; both exit 1 if anything does or might. `--to RANGE` and
-  `--from RANGE` keep only what is in RANGE, for ranges or SYMBOL. Then
-  `callers` and `callees` show every row.
+  outside; both exit 1 if anything does or might. `callees --to RANGE`
+  and `callers --from RANGE` keep only what is in RANGE, with ranges or
+  SYMBOL. With ranges, `--to` or `--from`, both show every row.
 - elfq reads the built file, not the source: rebuild before asking again.
 ```
 
