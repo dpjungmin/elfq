@@ -27,6 +27,10 @@ elfq app.elf callees main               # what main calls or uses
 elfq app.elf callees 0x0+256K           # what the first 256 KiB uses outside it
 ```
 
+[docs/examples.md](docs/examples.md) asks real questions about the sample
+binaries in `testdata/bin`, each with the command that answers it and what
+elfq prints.
+
 Every command also prints JSON for scripts with `--json`: every item, site
 and chain, one row per line, though the overview's JSON leaves its table to
 `top`'s. [docs/design.md](docs/design.md#json) lists the keys. Until 1.0
