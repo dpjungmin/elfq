@@ -186,9 +186,9 @@ is a short one to copy.
    won't ask about `check_arguments`, which refuses `--range` for every
    command but the overview, `top` and `retained`. A command that takes
    `--range` goes in its first arm, and its arm in `run` passes it `range`.
-   Then name it in the error further down that lists the commands that take
-   `--range`, in the tests in `tests/it/cli.rs` that check that error, and
-   in the `--range` help in `cli.rs`, README.md and docs/design.md. A
+   Then name it in `RANGE_REFUSED`, the error that lists the commands that
+   take `--range`, in the tests in `tests/it/cli.rs` that check that error,
+   and in the `--range` help in `cli.rs`, README.md and docs/design.md. A
    command that can't print JSON needs an arm like the one for the debug
    commands. `check_tree` likewise refuses `--tree` for every command that
    shows no tree: a command that shows one goes in its first arm, and in

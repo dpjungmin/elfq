@@ -239,8 +239,10 @@ SYMBOL occupies: callees process_frame --to 0x0+256K lists what
 process_frame uses in the ITCM. Calls and jumps that elfq can't follow stay
 when they may go to the --to ranges: one to a known address, when the
 address is in them, and one through a pointer, when the ranges hold a
-function whose address is taken or stored other than in the vector table,
-or code outside every function that the file calls, as in a ROM.
+function whose address is taken or stored other than in the vector table.
+When the --to ranges hold a veneer or PLT stub but not its target, the call
+is listed as a call to the veneer or stub, as in \"__crc32_veneer, used by
+process_frame\".
 
 Exit status, with ranges or --to: 1 if the answer lists a callee, or code
 that elfq can't follow or read; 0 if not; and 2 for an error.";
@@ -266,10 +268,12 @@ uses a DTCM at 0x20000000. With SYMBOL, --from answers as for the range
 that SYMBOL occupies: callers crc32 --from 0x30000000+16M lists what in
 flash at 0x30000000 calls or uses crc32. The note on calls through a pointer
 stays only when code in the --from ranges calls through one, or elfq can't
-read it.
+read it. When the --from ranges hold a veneer or PLT stub but not the code
+that calls it, the veneer or stub is listed as the caller, at its jump.
 
 Exit status, with ranges or --from: 1 if the answer lists a caller, or
-notes calls through a pointer; 0 if not; and 2 for an error.";
+notes calls through a pointer or code that elfq can't read; 0 if not; and 2
+for an error.";
 
 const WHY: &str = "\
 The chains start where the program does, as HOW says: at the entry point, a

@@ -2076,15 +2076,35 @@ Calls through a pointer to on_timer and on_data aren't listed, since elfq can't 
         ]),
         "0x00001180..0x00001280 (.text) uses nothing in 0x00001180..0x00001300 (.text).\n",
     );
-    // Code that elfq can't read may call through a pointer too, as glibc's
-    // _init may.
+    // Code that elfq can't read, as glibc's _init, may use the ranges in
+    // any way, and both sides say so.
     assert_output(
         &crossing(&[SAMPLE, "callers", "0x1260+0x20", "--from", "0x1000+1"]),
         "\
-Nothing in 0x00001000..0x00001001 (.init) uses 0x00001260..0x00001280 (.text) directly.
+In the code elfq can read, nothing in 0x00001000..0x00001001 (.init) uses 0x00001260..0x00001280 (.text) directly.
 Calls through a pointer to on_timer and on_data aren't listed, since elfq can't see them.
+elfq doesn't know where _init ends, so it can't read its code.
 ",
     );
+    assert_output(
+        &crossing(&[SAMPLE, "callees", "0x1000+1", "--to", "0x1260+0x20"]),
+        "\
+In the code elfq can read, 0x00001000..0x00001001 (.init) uses nothing in 0x00001260..0x00001280 (.text).
+elfq doesn't know where _init ends, so it can't read its code.
+",
+    );
+    let plt = "testdata/bin/c-plt.so";
+    for args in [
+        &[plt, "callers", "0x11f0+4", "--from", "0x1000+1", "--json"],
+        &[plt, "callees", "0x1000+1", "--to", "0x11f0+4", "--json"],
+    ] {
+        let json = crossing(args);
+        assert!(
+            json.contains("],\"unreadable\":[\n{\"name\":\"_init\",")
+                && json.ends_with("],\"complete\":false}\n"),
+            "{json}"
+        );
+    }
     // Not to data, nor to functions whose addresses only the vector table
     // holds; and code that makes no such call doesn't make one.
     assert_output(
@@ -2291,6 +2311,84 @@ ADDRESS     SIZE  HOW   AT    CALLEE
 }
 
 #[test]
+fn from_and_to_keep_their_rules_for_code_outside_any_function() {
+    // Both sides list ram_tails_rom's jump to the ROM, at its veneer.
+    let far = "testdata/bin/far-gnu-m4-nodebug.elf";
+    assert_output(
+        &crossing(&[far, "callers", "0x1fff0000+64K", "--from", "0x58..0x98"]),
+        "\
+0x1fff0000..0x20000000 is used by 1 function in 0x00000058..0x00000098 (.ram):
+
+ADDRESS  SIZE  HOW              AT    CALLER
+0x58       16  jump via veneer  0x60  ram_tails_rom, uses 0x1fff0000 (outside any function)
+",
+    );
+    assert_output(
+        &crossing(&[far, "callees", "0x58..0x98", "--to", "0x1fff0000+64K"]),
+        "\
+0x00000058..0x00000098 (.ram) makes 1 jump that elfq can't follow, which goes to 0x1fff0000..0x20000000:
+
+ADDRESS     SIZE  HOW              AT    CALLEE
+0x1fff0000        jump via veneer  0x60  (outside any function), used by ram_tails_rom
+",
+    );
+    // callees asks about code it can read, so not about the ROM alone.
+    assert_output(
+        &stderr(&[far, "callees", "0x1fff0000+64K"], 2),
+        "error: the file has nothing in 0x1fff0000..0x20000000; the overview lists its ranges\n",
+    );
+    // A --to range must hold something outside the ranges asked about, and
+    // code there that the file calls counts only when it is outside them.
+    assert_output(
+        &stderr(
+            &[
+                far,
+                "callees",
+                "0x1fff0000..0x20000004",
+                "--to",
+                "0x1fff0000..0x20000004",
+            ],
+            2,
+        ),
+        "error: --to 0x1fff0000..0x20000004 holds nothing outside 0x1fff0000..0x20000004, and \
+         callees lists only what it uses outside it\n",
+    );
+    assert_output(
+        &stderr(
+            &[
+                far,
+                "callers",
+                "0x0+64K",
+                "0x1fff0000..0x1fff0004",
+                "--from",
+                "0x1fff0000..0x20000004",
+            ],
+            2,
+        ),
+        "error: --from 0x1fff0000..0x20000004 and 0x1fff0000..0x1fff0004 both hold the code at \
+         0x1fff0000; give ranges that don't share it\n",
+    );
+    // A tail call between two functions of the ranges isn't listed, nor a
+    // call through a pointer from code in them: only app_tick is outside.
+    assert_output(
+        &crossing(&[
+            SAMPLE,
+            "callers",
+            "0x1260..0x16c0",
+            "--from",
+            "0x1260..0x1700",
+        ]),
+        "\
+0x00001260..0x000016c0 (.text) is used by 1 function in 0x00001260..0x00001700 (.text):
+
+ADDRESS  SIZE  HOW        AT              CALLER
+0x16c0     51  tail call  0x16dc, 0x16f1  app_tick, uses dispatch_event
+0x16c0     51  call       0x16e7          app_tick, uses log_msg
+",
+    );
+}
+
+#[test]
 fn from_and_to_see_through_a_plt_stub() {
     // A shared library calls its own functions through PLT stubs, as
     // `callers log_msg` says.
@@ -2306,6 +2404,8 @@ ADDRESS  SIZE  HOW                AT              CALLER
 0x1770     62  call via PLT       0x179f          app_tick, uses log_msg
 0x1b50     29  call via PLT       0x1b5f          debug_dump, uses log_msg
 0x1700     22  tail call via PLT  0x1711          on_button, uses log_msg
+
+elfq doesn't know where _fini ends, so it can't read its code.
 ",
     );
     // When the caller and the function are on one side, the stub's jump
@@ -2371,10 +2471,12 @@ ADDRESS  SIZE  HOW              AT                      CALLEE
         "Nothing in 0x00000000..0x00040000 (.itcm) uses crc32.\n",
     );
     // A function of unknown size counts as its first byte.
-    let init = stdout(&[SAMPLE, "callers", "_init", "--from", "0x0+16M"]);
+    let init = crossing(&[SAMPLE, "callers", "_init", "--from", "0x0+16M"]);
     assert!(
-        init.starts_with("Nothing in 0x00000000..0x01000000 (.interp, ")
-            && init.ends_with(") uses _init.\n"),
+        init.starts_with("In the code elfq can read, nothing in 0x00000000..0x01000000 (.interp, ")
+            && init.ends_with(
+                ") uses _init.\nelfq doesn't know where _fini ends, so it can't read its code.\n"
+            ),
         "{init}"
     );
     // An alias names its item.
@@ -2480,13 +2582,42 @@ fn ranges_in_place_of_symbol_must_be_ranges_with_something_in_them() {
          only the callers in 0x20000000..0x20040000: elfq testdata/bin/c-cortex-m7.elf callers \
          0x0+256K --from 0x20000000..0x20040000\n",
     );
-    // Not when --range is in a range given, where nothing is outside them,
-    // and keeping the --from given.
+    // Each command only when it answers: not with --from when --range is in
+    // a range given, where nothing is outside them, or shares an item with
+    // them, as app_tick; and neither when the file has nothing there.
     assert_output(
         &stderr(&[TCM_SAMPLE, "callers", "0x0+256K", "--range", "0x0+1K"], 2),
         "error: callers takes ranges in place of SYMBOL, not with --range: \
          elfq testdata/bin/c-cortex-m7.elf callers 0x0+256K 0x00000000..0x00000400\n",
     );
+    assert_output(
+        &stderr(
+            &[
+                TCM_SAMPLE,
+                "callers",
+                "0x30000000+0x400",
+                "--range",
+                "0x30000300+0x400",
+            ],
+            2,
+        ),
+        "error: callers takes ranges in place of SYMBOL, not with --range: \
+         elfq testdata/bin/c-cortex-m7.elf callers 0x30000000+0x400 0x30000300..0x30000700\n",
+    );
+    assert_output(
+        &stderr(
+            &[
+                TCM_SAMPLE,
+                "callers",
+                "0x0+256K",
+                "--range",
+                "0x40000000+16",
+            ],
+            2,
+        ),
+        "error: only the overview, top and retained take --range\n",
+    );
+    // Keeping the --from given.
     assert_output(
         &stderr(
             &[
@@ -2503,18 +2634,31 @@ fn ranges_in_place_of_symbol_must_be_ranges_with_something_in_them() {
          elfq testdata/bin/c-cortex-m7.elf callers 0x20000000..0x20040000 --from \
          0x00000000..0x00040000\n",
     );
-    // With SYMBOL, --from or --to is what --range can mean, when it can
-    // take SYMBOL.
+    // With SYMBOL, --from or --to is what --range can mean, when that
+    // answers: not for an import, nor for code that elfq can't read, nor
+    // for a range in SYMBOL, nor where the file has nothing.
+    for args in [
+        &[SAMPLE, "callers", "__libc_start_main", "--range", "0+16M"],
+        &[SAMPLE, "callees", "_init", "--range", "0+16M"],
+        &[TCM_SAMPLE, "callers", "crc32", "--range", "0x10+48"],
+        &[
+            TCM_SAMPLE,
+            "callees",
+            "process_frame",
+            "--range",
+            "0x30000320+16",
+        ],
+        &[TCM_SAMPLE, "callers", "crc32", "--range", "0x40000000+16"],
+    ] {
+        assert_output(
+            &stderr(args, 2),
+            "error: only the overview, top and retained take --range\n",
+        );
+    }
+    // A mistyped name comes first.
     assert_output(
-        &stderr(
-            &[SAMPLE, "callers", "__libc_start_main", "--range", "0+16M"],
-            2,
-        ),
-        "error: only the overview, top and retained take --range\n",
-    );
-    assert_output(
-        &stderr(&[SAMPLE, "callees", "_init", "--range", "0+16M"], 2),
-        "error: only the overview, top and retained take --range\n",
+        &stderr(&[TCM_SAMPLE, "callers", "crc32x", "--range", "0+1K"], 2),
+        "error: no function or data object is named `crc32x`; did you mean crc32?\n",
     );
     assert_output(
         &stderr(

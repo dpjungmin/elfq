@@ -29,6 +29,9 @@ use crate::cli::{Cli, Command, DebugCommand, Format, UsesArgs};
 use crate::graph::{Graph, Node, Reference};
 use crate::render::{Align, Table};
 
+/// The error for `--range` with a command that doesn't take it.
+const RANGE_REFUSED: &str = "only the overview, top and retained take --range";
+
 /// What an answer means for elfq's exit status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
@@ -49,16 +52,13 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<Outcome> {
         // any more: the answer still counts.
         let _ = writeln!(std::io::stderr(), "warning: {warning}");
     }
-    // `check_arguments` leaves `--range` with one SYMBOL until SYMBOL is
-    // found.
+    // `check_arguments` leaves `--range` with SYMBOL or ranges until elfq
+    // can tell which command to suggest.
     if let Some(range) = cli.range
         && let Some(command) = &cli.command
         && let Some(uses) = uses_args(command)
     {
-        bail!(
-            "{}",
-            symbol_range_error(cli, &binary, command, &uses, range)?
-        );
+        bail!("{}", range_error(cli, &binary, command, &uses, range)?);
     }
     let format = cli.format();
     let range = cli.range;
@@ -124,16 +124,17 @@ fn check_arguments(cli: &Cli) -> Result<()> {
         }
         if let Some(range) = cli.range {
             let symbols = &uses.args.symbols;
-            let not_range = symbols.iter().find(|query| !symbol::is_range(query));
-            match not_range {
-                None => bail!("{}", range_hint(cli, name, &uses, range)),
-                Some(query) if symbols.len() > 1 => {
-                    bail!("`{query}` isn't a range; give one SYMBOL, or ranges such as 0x0+256K")
-                }
-                // Whether `--from` or `--to` can take its place depends on
-                // what SYMBOL is: see `symbol_range_error`.
-                Some(_) => return Ok(()),
+            if symbols.is_empty() {
+                bail!("{}", range_hint(cli, name, &uses, range, true, false));
             }
+            if symbols.len() > 1
+                && let Some(query) = symbols.iter().find(|query| !symbol::is_range(query))
+            {
+                bail!("`{query}` isn't a range; give one SYMBOL, or ranges such as 0x0+256K")
+            }
+            // Which command can take its place depends on what the file
+            // holds: see `range_error`.
+            return Ok(());
         }
         if uses.args.symbols.is_empty() {
             bail!("{name} needs a SYMBOL, or ranges such as 0x0+256K")
@@ -141,9 +142,7 @@ fn check_arguments(cli: &Cli) -> Result<()> {
     }
     match &cli.command {
         None | Some(Command::Top(_) | Command::Retained(_)) => Ok(()),
-        Some(_) if cli.range.is_some() => {
-            bail!("only the overview, top and retained take --range")
-        }
+        Some(_) if cli.range.is_some() => bail!("{RANGE_REFUSED}"),
         Some(Command::Debug(_)) if cli.format() == Format::Json => {
             bail!("the debug commands print only text")
         }
@@ -164,36 +163,59 @@ fn check_tree(cli: &Cli) -> Result<()> {
     }
 }
 
-/// The error for `--range` with `callers` or `callees` and one SYMBOL,
-/// which `binary` has: with the command that lists only the uses in
-/// `range`, when `--from` or `--to` can ask about SYMBOL, which needs its
-/// range in the file, and for `callees`, its code.
-fn symbol_range_error(
+/// The error for `--range` with `callers` or `callees` and SYMBOL or ranges
+/// (see [`range_hint`]), suggesting only the commands that answer for
+/// `binary`: elfq runs them to find out, which costs time only on this
+/// mistake.
+fn range_error(
     cli: &Cli,
     binary: &Binary,
     command: &Command,
     uses: &Uses,
     range: AddressRange,
 ) -> Result<String> {
-    let symbol::Subject::Symbol(symbol) = symbol::subject(binary, &uses.args.symbols)? else {
-        return Ok(range_hint(cli, command_name(command), uses, range));
-    };
-    let has_range = match command {
-        Command::Callees(_) => readable_item(binary, symbol.node).is_ok(),
-        _ => matches!(symbol.node, Node::Item(_)),
-    };
-    if !has_range {
-        return Ok("only the overview, top and retained take --range".to_string());
+    let symbols = &uses.args.symbols;
+    let ranges = symbols.iter().all(|query| symbol::is_range(query));
+    if !ranges {
+        // A mistyped name is the first thing to fix.
+        symbol::subject(binary, symbols)?;
     }
-    Ok(range_hint(cli, command_name(command), uses, range))
+    let answers = |symbols: &[String], other: &[AddressRange]| {
+        let sink = &mut std::io::sink();
+        let answer = match command {
+            Command::Callers(_) => callers::run(binary, symbols, other, false, Format::Json, sink),
+            _ => callees::run(binary, symbols, other, false, Format::Json, sink),
+        };
+        answer.is_ok()
+    };
+    let added = ranges && answers(&[&symbols[..], &[range.to_string()]].concat(), uses.other);
+    let limited = answers(symbols, &[uses.other, &[range]].concat());
+    if !added && !limited {
+        return Ok(RANGE_REFUSED.to_string());
+    }
+    Ok(range_hint(
+        cli,
+        command_name(command),
+        uses,
+        range,
+        added,
+        limited,
+    ))
 }
 
 /// The error for `--range` with `callers` or `callees`, which don't take
-/// it, with the command to type: with ranges in place of SYMBOL, or none,
-/// the one that adds `range` to them, and else, or as well, the one that
-/// lists only the uses in `range`, with `--from` or `--to`. Keeps what
-/// `uses` has of those.
-fn range_hint(cli: &Cli, name: &str, uses: &Uses, range: AddressRange) -> String {
+/// it, with the commands to type: with ranges in place of SYMBOL, or none,
+/// the one that adds `range` to them, when `added`, and the one that lists
+/// only the uses in `range`, with `--from` or `--to`, when `limited`. Keeps
+/// what `uses` has of those. One of them must be given.
+fn range_hint(
+    cli: &Cli,
+    name: &str,
+    uses: &Uses,
+    range: AddressRange,
+    added: bool,
+    limited: bool,
+) -> String {
     let option = uses.option;
     let file = text::shell_quote(&cli.file.display().to_string());
     let command = |args: Vec<String>| {
@@ -215,22 +237,21 @@ fn range_hint(cli: &Cli, name: &str, uses: &Uses, range: AddressRange) -> String
         .flat_map(|&other| [option.to_string(), text::range_argument(other)])
         .collect();
     let range_text = text::range_argument(range);
-    let limited = command([&given[..], &kept, &[option.to_string(), range_text.clone()]].concat());
-    if !symbols.iter().all(|query| symbol::is_range(query)) {
+    let limited_command =
+        command([&given[..], &kept, &[option.to_string(), range_text.clone()]].concat());
+    if !added || !symbols.iter().all(|query| symbol::is_range(query)) {
         return format!(
-            "{name} takes {option}, not --range, to list only the {name} in a range: {limited}"
+            "{name} takes {option}, not --range, to list only the {name} in a range: \
+             {limited_command}"
         );
     }
-    let added = command([&given[..], std::slice::from_ref(&range_text), &kept].concat());
-    let mut error = format!("{name} takes ranges in place of SYMBOL, not with --range: {added}");
-    // When `range` is in one of the ranges given, nothing in it is outside
-    // them, so `--from` or `--to` can't mean it.
-    let within = symbols
-        .iter()
-        .filter_map(|query| query.parse::<AddressRange>().ok())
-        .any(|given| given.start <= range.start && range.end <= given.end);
-    if !given.is_empty() && kept.is_empty() && !within {
-        error += &format!("; to list only the {name} in {range_text}: {limited}");
+    let added_command = command([&given[..], std::slice::from_ref(&range_text), &kept].concat());
+    let mut error =
+        format!("{name} takes ranges in place of SYMBOL, not with --range: {added_command}");
+    // With `--from` or `--to` given, the command that adds `range` to them
+    // lists the uses in theirs too.
+    if limited && !given.is_empty() && kept.is_empty() {
+        error += &format!("; to list only the {name} in {range_text}: {limited_command}");
     }
     error
 }

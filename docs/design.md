@@ -228,12 +228,13 @@ the same uses, each row from its own side, and a use through a veneer that
 only one of A and B holds is listed at the veneer. What elfq can't follow
 stays when it may be in the other ranges: `callees` keeps a call to a known
 address in them, and a call through a pointer when they hold a function
-whose address is taken or stored other than in the vector table, or code
-outside every item that the file calls; `callers` keeps its note on calls
-through a pointer when code in the `--from` ranges calls through one, or
-is code that elfq can't read. Each range of `--from` or `--to` must hold an
-item outside the ranges asked about, or for `--to`, code outside every item
-that the file calls or jumps to, such as a routine in a chip's ROM, so that
+whose address is taken or stored other than in the vector table; `callers`
+keeps its note on calls through a pointer when code in the `--from` ranges
+calls through one, or is code that elfq can't read, which it names, as
+`callees` does, since that code may use the ranges in any way. Each range
+of `--from` or `--to` must hold an item outside the ranges asked about, or
+for `--to`, code outside every item and outside those ranges that the file
+calls or jumps to, such as a routine in a chip's ROM, so that
 a mistyped range is an error and not a quiet exit status 0. An item can be
 in both only when everything in the ranges asked about is, as SYMBOL is in
 `callees process_frame --to 0x30000000+16M`; otherwise it would be on both
@@ -537,7 +538,7 @@ several.
 | `callees` | for `callees`, the references that cross, a row for each pair of items and way of use, in the text's order, the largest item outside first: the `item` or import outside; the `caller` in the ranges that uses it; `how`, as in `callees SYMBOL`; `veneer`, the linker's veneer or PLT stub that a call goes through, or `null`; and the `sites`. With `--to`, only those into its ranges, where a call through a veneer in them that goes on elsewhere uses the veneer, as its `item` |
 | `callers` | for `callers`, the same, but with the `callee` in the ranges that `item` uses, in place of `caller` |
 | `unresolved` | for `callees`, as in `callees SYMBOL`, with the `caller` it is in and the `veneer` too; with `--to`, only those that may go to its ranges. For `callers`, the calls and jumps from outside to an address in the ranges that no item holds, as to a chip's ROM, in the same shape |
-| `unreadable` | for `callees` only, the functions in the ranges whose end elfq doesn't know, so it can't read their code |
+| `unreadable` | the functions whose end elfq doesn't know, so it can't read their code: for `callees`, those in the ranges; for `callers`, those in the ranges of `--from`, outside the ranges, and none without it |
 | `through_pointer` | for `callers` only, the functions in the ranges whose address is taken or stored, other than in the vector table; with `--from`, only when code in its ranges calls through a pointer, or is code that elfq can't read |
 | `complete` | whether the lists have every crossing, as far as elfq can tell, as [below](#calls-elfq-cant-follow) |
 
@@ -554,12 +555,13 @@ In JSON, `callers` and `callees` have `complete`, and `retained` has
 `false` when `callees` lists a call it can't follow or a function whose end
 it doesn't know, or when `callers` notes calls through a pointer to a
 function in the ranges, whose address is taken or stored other than in the
-vector table, which only the processor calls through.
+vector table, which only the processor calls through, or names code in the
+`--from` ranges whose end it doesn't know.
 `callers` can't see calls from code whose end elfq doesn't know, such as
 assembly without a `.size`, but C runtimes have such code (`_init`,
 `_fini`) in almost every file, so it doesn't make the answer incomplete,
-except in the `--from` ranges, where it keeps the note on calls through a
-pointer, since it may make them.
+except in the `--from` ranges, where `callers` names it and keeps the note
+on calls through a pointer, since it may make them.
 
 ## How it works
 

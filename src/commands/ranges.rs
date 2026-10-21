@@ -12,7 +12,7 @@ use anyhow::{Result, bail};
 use serde::Serialize;
 
 use super::{Outcome, json, text};
-use crate::binary::{AddressRange, Binary, ItemKind, Source};
+use crate::binary::{AddressRange, Binary, Source};
 use crate::cli::Format;
 use crate::graph::{Boundary, Crossing, Graph, Node, ReferenceKind, Unfollowed};
 use crate::render::{Align, Table};
@@ -81,6 +81,9 @@ struct EnteringJson<'a> {
     /// The calls and jumps from outside into code in the ranges that is
     /// outside every item, as in a chip's ROM, which elfq doesn't read.
     unresolved: Vec<UnresolvedJson<'a>>,
+    /// The functions in the ranges of `--from`, outside the ranges, whose
+    /// code elfq can't read, since it doesn't know where they end.
+    unreadable: Vec<json::Item<'a>>,
     /// The functions in the ranges whose address is taken or stored, so
     /// that code outside may call them through a pointer, which elfq can't
     /// see. A pointer in the vector table doesn't count, since only the
@@ -88,7 +91,8 @@ struct EnteringJson<'a> {
     /// ranges calls through a pointer, or elfq can't read it.
     through_pointer: Vec<json::Item<'a>>,
     /// Whether `callers` has everything outside the ranges that uses them,
-    /// as far as elfq can tell: `false` when `through_pointer` isn't empty.
+    /// or with `--from`, in its ranges, as far as elfq can tell: `false`
+    /// when `through_pointer` or `unreadable` isn't empty.
     complete: bool,
 }
 
@@ -174,8 +178,7 @@ pub fn run(
     let boundary = Boundary::new(binary, graph, check.ranges);
     let nothing_crosses = match check.direction {
         Direction::Out => {
-            let (crossings, unfollowed) =
-                leaving_to(binary, graph, &boundary, check, &code_outside);
+            let (crossings, unfollowed) = leaving_to(binary, graph, &boundary, check);
             let leaving = Leaving {
                 binary,
                 check,
@@ -195,14 +198,27 @@ pub fn run(
         }
         Direction::In => {
             let from = check.other;
+            // Code in the `--from` ranges that elfq can't read may use the
+            // ranges in any way.
+            let unreadable = if from.is_empty() {
+                Vec::new()
+            } else {
+                Boundary::new(binary, graph, from)
+                    .unreadable()
+                    .into_iter()
+                    .filter(|&index| !binary.items[index].is_in(check.ranges))
+                    .collect()
+            };
             // Code anywhere may call through a pointer passed to it, but
             // with `--from`, only code in its ranges counts.
-            let through_pointer =
-                if from.is_empty() || may_call_through_pointer(binary, graph, from, check.ranges) {
-                    boundary.callable_through_pointer()
-                } else {
-                    Vec::new()
-                };
+            let through_pointer = if from.is_empty()
+                || !unreadable.is_empty()
+                || calls_through_pointer(binary, graph, from, check.ranges)
+            {
+                boundary.callable_through_pointer()
+            } else {
+                Vec::new()
+            };
             let (crossings, unfollowed) = entering_from(binary, graph, &boundary, check);
             let entering = Entering {
                 binary,
@@ -210,6 +226,7 @@ pub fn run(
                 crossings,
                 unfollowed,
                 through_pointer,
+                unreadable,
                 all,
             };
             match format {
@@ -219,6 +236,7 @@ pub fn run(
             entering.crossings.is_empty()
                 && entering.unfollowed.is_empty()
                 && entering.through_pointer.is_empty()
+                && entering.unreadable.is_empty()
         }
     };
     if nothing_crosses {
@@ -243,14 +261,12 @@ pub(super) fn item_range(binary: &Binary, index: usize) -> AddressRange {
 /// in them that elfq can't follow, and that may leave them. With `--to`,
 /// only what is in its ranges, and what elfq can't follow that may go
 /// there: to an address in them, or through a pointer when a function
-/// there has its address taken or stored, or the file calls code there that
-/// is outside every item, at one of `code_outside`.
+/// there, outside the ranges, has its address taken or stored.
 fn leaving_to(
     binary: &Binary,
     graph: &Graph,
     boundary: &Boundary,
     check: &RangeCheck,
-    code_outside: &[u64],
 ) -> (Vec<Crossing>, Vec<Unfollowed>) {
     let to = check.other;
     if to.is_empty() {
@@ -277,13 +293,10 @@ fn leaving_to(
             });
         }
     }
-    let through_pointer = code_outside
-        .iter()
-        .any(|&target| contains(to, target) && !contains(check.ranges, target))
-        || Boundary::new(binary, graph, to)
-            .callable_through_pointer()
-            .into_iter()
-            .any(|function| !binary.items[function].is_in(check.ranges));
+    let through_pointer = Boundary::new(binary, graph, to)
+        .callable_through_pointer()
+        .into_iter()
+        .any(|function| !binary.items[function].is_in(check.ranges));
     let mut unfollowed = Vec::new();
     for row in boundary.unfollowed() {
         let unresolved = row.unresolved;
@@ -392,27 +405,18 @@ fn entering_from(
     (crossings, unfollowed)
 }
 
-/// Whether code in `from`, outside `ranges`, may call a function through a
-/// pointer: it calls or jumps through one, or elfq can't read it.
-fn may_call_through_pointer(
+/// Whether code in `from`, outside `ranges`, calls or jumps through a
+/// pointer.
+fn calls_through_pointer(
     binary: &Binary,
     graph: &Graph,
     from: &[AddressRange],
     ranges: &[AddressRange],
 ) -> bool {
-    let counts = |index: usize| {
-        let item = &binary.items[index];
-        item.is_in(from) && !item.is_in(ranges)
-    };
-    graph
-        .unresolved
-        .iter()
-        .any(|unresolved| unresolved.is_indirect() && counts(unresolved.from))
-        || binary
-            .items
-            .iter()
-            .enumerate()
-            .any(|(index, item)| item.kind == ItemKind::Function && item.size == 0 && counts(index))
+    graph.unresolved.iter().any(|unresolved| {
+        let item = &binary.items[unresolved.from];
+        unresolved.is_indirect() && item.is_in(from) && !item.is_in(ranges)
+    })
 }
 
 /// Whether `node` is an item in `ranges`. An import is in none.
@@ -463,11 +467,11 @@ fn check_holds_items(binary: &Binary, range: AddressRange) -> Result<()> {
 
 /// Checks the ranges of `--from` or `--to`. Each must hold an item outside
 /// the ranges that `check` asks about, since the other end of each use is
-/// outside them, or for `--to`, code outside every item that the file calls
-/// or jumps to, at one of `code_outside`, as in a chip's ROM. Else it is
-/// most likely mistyped. And when the ranges hold something outside them,
-/// nothing may be in both, since each end of a use would then be on either
-/// side.
+/// outside them, or for `--to`, code outside every item and outside those
+/// ranges that the file calls or jumps to, at one of `code_outside`, as in
+/// a chip's ROM. Else it is most likely mistyped. And when the ranges hold
+/// something outside them, nothing may be in both, since each end of a use
+/// would then be on either side.
 fn check_other_side(binary: &Binary, check: &RangeCheck, code_outside: &[u64]) -> Result<()> {
     let option = check.option();
     let it = check.it();
@@ -491,25 +495,31 @@ fn check_other_side(binary: &Binary, check: &RangeCheck, code_outside: &[u64]) -
         }
     };
     for &range in check.other {
-        if check.direction == Direction::Out && has_address(code_outside, range) {
-            continue;
+        // Code that the file calls in a `--to` range, as in a ROM, is all
+        // that the range need hold.
+        let called = check.direction == Direction::Out && has_address(code_outside, range);
+        if !called {
+            if check.direction == Direction::Out
+                && text::sections_in(binary, range).is_empty()
+                && text::load_images_in(binary, range).is_empty()
+            {
+                bail!(
+                    "--to {} holds no functions or data, and no code in the file calls or \
+                     jumps there",
+                    text::range_argument(range)
+                );
+            }
+            check_holds_items(binary, range)?;
         }
-        if check.direction == Direction::Out
-            && text::sections_in(binary, range).is_empty()
-            && text::load_images_in(binary, range).is_empty()
-        {
-            bail!(
-                "--to {} holds no functions or data, and no code in the file calls or jumps \
-                 there",
-                text::range_argument(range)
-            );
-        }
-        check_holds_items(binary, range)?;
-        if !binary
+        let item_outside = binary
             .items
             .iter()
-            .any(|item| item.is_in(&[range]) && !item.is_in(check.ranges))
-        {
+            .any(|item| item.is_in(&[range]) && !item.is_in(check.ranges));
+        let code_outside_them = called
+            && code_outside
+                .iter()
+                .any(|&address| range.contains(address) && !contains(check.ranges, address));
+        if !item_outside && !code_outside_them {
             bail!(
                 "{option} {} holds nothing outside {}, and {lists}",
                 text::range_argument(range),
@@ -703,21 +713,13 @@ impl Leaving<'_> {
             table.write(out)?;
         }
         if !self.unreadable.is_empty() {
-            let names: Vec<&str> = self
-                .unreadable
-                .iter()
-                .map(|&index| binary.items[index].name.as_str())
-                .collect();
             if listed {
                 writeln!(out)?;
             }
-            // As `callees SYMBOL` says it.
             writeln!(
                 out,
-                "elfq doesn't know where {} {}, so it can't read {} code.",
-                text::names_text(&names, self.all),
-                if names.len() == 1 { "ends" } else { "end" },
-                if names.len() == 1 { "its" } else { "their" }
+                "{}",
+                unreadable_text(binary, &self.unreadable, self.all)
             )?;
         }
         Ok(())
@@ -737,6 +739,9 @@ struct Entering<'a> {
     /// pointer, which elfq can't see. With `--from`, only when code in its
     /// ranges calls through a pointer, or elfq can't read it.
     through_pointer: Vec<usize>,
+    /// The functions in the ranges of `--from`, outside the ranges, whose
+    /// code elfq can't read, since it doesn't know where they end.
+    unreadable: Vec<usize>,
     /// Whether the sentences name every range, section and function, for
     /// `--all`.
     all: bool,
@@ -762,12 +767,17 @@ impl Entering<'_> {
                 })
                 .collect(),
             unresolved: unresolved_json(binary, &self.unfollowed),
+            unreadable: self
+                .unreadable
+                .iter()
+                .map(|&index| item(Node::Item(index)))
+                .collect(),
             through_pointer: self
                 .through_pointer
                 .iter()
                 .map(|&index| item(Node::Item(index)))
                 .collect(),
-            complete: self.through_pointer.is_empty(),
+            complete: self.through_pointer.is_empty() && self.unreadable.is_empty(),
         };
         json::write(&entering, out)
     }
@@ -784,8 +794,10 @@ impl Entering<'_> {
         // "Nothing outside X uses it", or "Nothing in Y uses X".
         let nothing = if check.other.is_empty() {
             format!("Nothing outside {subject} uses {it}")
-        } else {
+        } else if self.unreadable.is_empty() {
             format!("Nothing {far_side} uses {subject}")
+        } else {
+            format!("In the code elfq can read, nothing {far_side} uses {subject}")
         };
         let listed = !groups.is_empty() || !self.unfollowed.is_empty();
         if !listed && self.through_pointer.is_empty() {
@@ -846,8 +858,33 @@ impl Entering<'_> {
                 text::names_text(&names, self.all)
             )?;
         }
+        if !self.unreadable.is_empty() {
+            if listed && self.through_pointer.is_empty() {
+                writeln!(out)?;
+            }
+            writeln!(
+                out,
+                "{}",
+                unreadable_text(binary, &self.unreadable, self.all)
+            )?;
+        }
         Ok(())
     }
+}
+
+/// The sentence that says elfq can't read `unreadable`, the functions whose
+/// end it doesn't know, as `callees SYMBOL` says it.
+fn unreadable_text(binary: &Binary, unreadable: &[usize], all: bool) -> String {
+    let names: Vec<&str> = unreadable
+        .iter()
+        .map(|&index| binary.items[index].name.as_str())
+        .collect();
+    format!(
+        "elfq doesn't know where {} {}, so it can't read {} code.",
+        text::names_text(&names, all),
+        if names.len() == 1 { "ends" } else { "end" },
+        if names.len() == 1 { "its" } else { "their" }
+    )
 }
 
 /// The calls and jumps that elfq can't follow, for JSON.
@@ -1212,8 +1249,8 @@ mod tests {
             Direction::In,
         );
         assert_eq!(outcome, Outcome::Answered, "{out}");
-        // Code in flash that calls through a pointer may reach the ROM, now
-        // that code calls there.
+        // Code in flash calls through a pointer, but no pointer goes to the
+        // ROM, which holds no function, and both sides say so.
         let (outcome, out) = answer(
             &binary,
             &graph,
@@ -1221,11 +1258,15 @@ mod tests {
             &["0x1fff0000+64K"],
             Direction::Out,
         );
-        assert_eq!(outcome, Outcome::Crossed);
-        assert!(
-            out.contains("(through a pointer), used by dispatch_event\n"),
-            "{out}"
+        assert_eq!(outcome, Outcome::Answered, "{out}");
+        let (outcome, out) = answer(
+            &binary,
+            &graph,
+            &["0x1fff0000+64K"],
+            &["0x30000000+16M"],
+            Direction::In,
         );
+        assert_eq!(outcome, Outcome::Answered, "{out}");
         // But not when that code is in the ranges asked about too: a call
         // there doesn't leave them.
         let crc32 = index(&binary, "crc32");
