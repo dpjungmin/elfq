@@ -53,6 +53,20 @@ fn one_range(text: &str) -> Result<AddressRange, String> {
     text.parse()
 }
 
+/// Reads one `--from` or `--to`, which take one range each: given several,
+/// separated by commas, it says to give the option again for each.
+fn one_range_each(text: &str) -> Result<AddressRange, String> {
+    if let Some((first, _)) = text.split_once(',')
+        && first.parse::<AddressRange>().is_ok()
+    {
+        return Err(format!(
+            "it takes one range, such as {}; give it again for each other range",
+            first.trim()
+        ));
+    }
+    text.parse()
+}
+
 impl Cli {
     /// How to print the answer. `--json` and `--tree` don't go together,
     /// which `commands::run` checks.
@@ -132,14 +146,14 @@ pub enum Command {
                           elfq <FILE> callers [OPTIONS] <RANGE>...",
         after_help = format!("{HOW}\n\n{AT}\n\n{CALLERS}\n\n{CALLERS_RANGES}")
     )]
-    Callers(UsesArgs),
+    Callers(CallersArgs),
     /// List what SYMBOL calls or uses
     #[command(
         override_usage = "elfq <FILE> callees [OPTIONS] <SYMBOL>\n       \
                           elfq <FILE> callees [OPTIONS] <RANGE>...",
         after_help = format!("{HOW}\n\n{AT}\n\n{CALLEES}\n\n{CALLEES_RANGES}")
     )]
-    Callees(UsesArgs),
+    Callees(CalleesArgs),
     /// Show elfq's own view of the file (for developing elfq)
     #[command(subcommand, hide = true)]
     Debug(DebugCommand),
@@ -190,8 +204,13 @@ instruction, is listed where it calls the veneer, as \"call via veneer\".
 In --json, the how key leaves out \"via veneer\", and the veneer key names
 the veneer. elfq knows the veneers that GNU ld and LLD add for Cortex-M.
 
-Exit status: 0 if nothing leaves the ranges, 1 if something does or might,
-and 2 for an error.";
+--to RANGE lists only the callees in another range, and can be given again
+for more: callees 0x0+256K --to 0x30000000+16M lists what an ITCM at 0x0
+uses in flash at 0x30000000. Calls and jumps that elfq can't follow stay,
+unless the code names an address outside the --to ranges.
+
+Exit status: 0 if nothing leaves the ranges, or with --to, nothing goes to
+its ranges; 1 if something does or might; and 2 for an error.";
 
 const CALLERS_RANGES: &str = "\
 With ranges of memory in place of SYMBOL, such as 0x0+256K for an ITCM,
@@ -204,8 +223,13 @@ instruction, is listed where it calls the veneer, as \"call via veneer\".
 In --json, the how key leaves out \"via veneer\", and the veneer key names
 the veneer. elfq knows the veneers that GNU ld and LLD add for Cortex-M.
 
-Exit status: 0 if nothing outside uses the ranges, 1 if something does or
-might through a pointer, and 2 for an error.";
+--from RANGE lists only the callers in another range, and can be given
+again for more: callers 0x20000000+256K --from 0x0+256K lists what in an
+ITCM at 0x0 uses a DTCM at 0x20000000.
+
+Exit status: 0 if nothing outside uses the ranges, or with --from, nothing
+in its ranges does; 1 if something does or might through a pointer; and 2
+for an error.";
 
 const WHY: &str = "\
 The chains start where the program does, as HOW says: at the entry point, a
@@ -304,6 +328,26 @@ pub struct UsesArgs {
     /// Show every item, not only the 30 largest
     #[arg(long)]
     pub all: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct CallersArgs {
+    #[command(flatten)]
+    pub uses: UsesArgs,
+    /// With ranges in place of SYMBOL, list only the callers in this range
+    /// of memory: START..END or START+SIZE
+    #[arg(long, value_name = "RANGE", value_parser = one_range_each)]
+    pub from: Vec<AddressRange>,
+}
+
+#[derive(Debug, Args)]
+pub struct CalleesArgs {
+    #[command(flatten)]
+    pub uses: UsesArgs,
+    /// With ranges in place of SYMBOL, list only the callees in this range
+    /// of memory: START..END or START+SIZE
+    #[arg(long, value_name = "RANGE", value_parser = one_range_each)]
+    pub to: Vec<AddressRange>,
 }
 
 #[derive(Debug, Args)]

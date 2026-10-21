@@ -78,15 +78,7 @@ impl<'a> Boundary<'a> {
     /// Works out which items are in `ranges`: those with any byte in one of
     /// them, where an item of unknown size counts as its first byte.
     pub fn new(binary: &'a Binary, graph: &'a Graph, ranges: &'a [AddressRange]) -> Boundary<'a> {
-        let inside = binary
-            .items
-            .iter()
-            .map(|item| {
-                ranges
-                    .iter()
-                    .any(|range| range.overlap(item.address, item.size.max(1)) > 0)
-            })
-            .collect();
+        let inside = binary.items.iter().map(|item| item.is_in(ranges)).collect();
         Boundary {
             binary,
             graph,
@@ -97,13 +89,10 @@ impl<'a> Boundary<'a> {
 
     /// A range that no item is in, if there is one: most likely a typo.
     pub fn empty_range(&self) -> Option<AddressRange> {
-        self.ranges.iter().copied().find(|&range| {
-            !self
-                .binary
-                .items
-                .iter()
-                .any(|item| range.overlap(item.address, item.size.max(1)) > 0)
-        })
+        self.ranges
+            .iter()
+            .copied()
+            .find(|&range| !self.binary.items.iter().any(|item| item.is_in(&[range])))
     }
 
     /// The uses of the rest of the file by the items in the ranges.

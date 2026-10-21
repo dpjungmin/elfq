@@ -9,7 +9,7 @@ use serde::Serialize;
 use super::ranges::{self, Direction};
 use super::symbol::{self, Subject};
 use super::{Outcome, json, text};
-use crate::binary::Binary;
+use crate::binary::{AddressRange, Binary};
 use crate::cli::Format;
 use crate::graph::{Graph, Node, Reference, Unresolved};
 
@@ -36,11 +36,13 @@ struct UnresolvedJson {
 }
 
 /// Answers `elfq FILE callees SYMBOL`, or with ranges in place of SYMBOL,
-/// `callees RANGE...`. For SYMBOL, the text lists the 30 largest callees,
-/// or with `all`, every one; for ranges, see [`ranges::run`].
+/// `callees RANGE...`, which `to`, the ranges of `--to`, limits to the
+/// callees in them. For SYMBOL, the text lists the 30 largest callees, or
+/// with `all`, every one; for ranges, see [`ranges::run`].
 pub fn run(
     binary: &Binary,
     symbols: &[String],
+    to: &[AddressRange],
     all: bool,
     format: Format,
     out: &mut dyn Write,
@@ -48,6 +50,9 @@ pub fn run(
     super::check_code_is_readable(binary)?;
     match symbol::subject(binary, symbols)? {
         Subject::Symbol(symbol) => {
+            if !to.is_empty() {
+                return Err(ranges::needs_ranges(binary, &symbol, "--to"));
+            }
             let index = super::readable_item(binary, symbol.node)?;
             let graph = Graph::build(binary);
             let lead_name = symbol.lead_name(binary);
@@ -56,7 +61,16 @@ pub fn run(
         }
         Subject::Ranges(ranges) => {
             let graph = Graph::build(binary);
-            ranges::run(binary, &graph, &ranges, Direction::Out, all, format, out)
+            ranges::run(
+                binary,
+                &graph,
+                &ranges,
+                to,
+                Direction::Out,
+                all,
+                format,
+                out,
+            )
         }
     }
 }

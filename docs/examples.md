@@ -236,6 +236,23 @@ ADDRESS     SIZE  HOW              AT                      CALLER
 from three places, and the vector table holds the address of
 `SysTick_Handler`.
 
+`--from` keeps only the callers in another range, and `--to` only the
+callees. DTCM is used by 11 functions, most of them in flash; this asks
+which of them are in ITCM:
+
+```
+$ elfq testdata/bin/c-cortex-m7.elf callers 0x20000000+256K --from 0x0+256K
+0x20000000..0x20040000 (.data and .bss) is used by 2 functions in 0x00000000..0x00040000 (.itcm):
+
+ADDRESS  SIZE  HOW   AT    CALLER
+0x10       48  uses  0x18  crc32, uses crc_table
+0x0        16  uses  0x0   SysTick_Handler, uses systick_count
+```
+
+`crc32` reads its table from DTCM, and `SysTick_Handler` counts the timer's
+ticks there. `callees 0x0+256K --to 0x20000000+256K` lists the same two
+uses, with the data in DTCM first.
+
 ## What is in stripped firmware?
 
 Shipped firmware often has no symbols. elfq still finds its functions, from

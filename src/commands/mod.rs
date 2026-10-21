@@ -25,7 +25,7 @@ use anyhow::{Result, bail};
 
 use crate::arch;
 use crate::binary::{AddressRange, Binary, Item, ItemKind, Source, memory_blocks};
-use crate::cli::{Cli, Command, DebugCommand, Format};
+use crate::cli::{Cli, Command, DebugCommand, Format, UsesArgs};
 use crate::graph::{Graph, Node, Reference};
 use crate::render::{Align, Table};
 
@@ -74,8 +74,22 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<Outcome> {
             format,
             out,
         )),
-        Some(Command::Callers(args)) => callers::run(&binary, &args.symbols, args.all, format, out),
-        Some(Command::Callees(args)) => callees::run(&binary, &args.symbols, args.all, format, out),
+        Some(Command::Callers(args)) => callers::run(
+            &binary,
+            &args.uses.symbols,
+            &args.from,
+            args.uses.all,
+            format,
+            out,
+        ),
+        Some(Command::Callees(args)) => callees::run(
+            &binary,
+            &args.uses.symbols,
+            &args.to,
+            args.uses.all,
+            format,
+            out,
+        ),
         Some(Command::Debug(DebugCommand::Items)) => answered(debug_items::run(&binary, out)),
     }
 }
@@ -86,21 +100,24 @@ fn check_arguments(cli: &Cli) -> Result<()> {
     if cli.tree {
         check_tree(cli)?;
     }
-    match &cli.command {
-        None | Some(Command::Top(_) | Command::Retained(_)) => Ok(()),
-        Some(command @ (Command::Callers(args) | Command::Callees(args)))
-            if cli.range.is_some() && args.symbols.iter().all(|query| symbol::is_range(query)) =>
-        {
-            bail!("{}", range_in_place_of_symbol(cli, command, &args.symbols))
+    if let Some(command) = &cli.command
+        && let Some((args, flag)) = uses_args(command)
+    {
+        if cli.range.is_some() && args.symbols.iter().all(|query| symbol::is_range(query)) {
+            bail!(
+                "{}",
+                range_in_place_of_symbol(cli, command, &args.symbols, flag)
+            )
         }
-        Some(command @ (Command::Callers(args) | Command::Callees(args)))
-            if args.symbols.is_empty() =>
-        {
+        if args.symbols.is_empty() {
             bail!(
                 "{} needs a SYMBOL, or ranges such as 0x0+256K",
                 command_name(command)
             )
         }
+    }
+    match &cli.command {
+        None | Some(Command::Top(_) | Command::Retained(_)) => Ok(()),
         Some(_) if cli.range.is_some() => {
             bail!("only the overview, top and retained take --range")
         }
@@ -126,20 +143,38 @@ fn check_tree(cli: &Cli) -> Result<()> {
 
 /// The error for `--range` with `callers` or `callees`, when it adds to the
 /// ranges in place of SYMBOL, or there is no SYMBOL: they take ranges there
-/// instead. Says the command to type.
-fn range_in_place_of_symbol(cli: &Cli, command: &Command, ranges: &[String]) -> String {
+/// instead. Says the command to type, and with ranges in place of SYMBOL,
+/// the one with `flag`, `--from` or `--to`, which may be what was meant.
+fn range_in_place_of_symbol(cli: &Cli, command: &Command, ranges: &[String], flag: &str) -> String {
     let name = command_name(command);
-    let ranges: Vec<String> = ranges
+    let file = text::shell_quote(&cli.file.display().to_string());
+    let json = if cli.json { " --json" } else { "" };
+    // Each given range with a space after it.
+    let given: String = ranges
         .iter()
-        .map(|range| text::shell_quote(range))
-        .chain(cli.range.map(text::range_argument))
+        .map(|range| text::shell_quote(range) + " ")
         .collect();
-    format!(
-        "{name} takes ranges in place of SYMBOL, not with --range: elfq {} {name} {}{}",
-        text::shell_quote(&cli.file.display().to_string()),
-        ranges.join(" "),
-        if cli.json { " --json" } else { "" }
-    )
+    let range = cli.range.map(text::range_argument).unwrap_or_default();
+    let mut error = format!(
+        "{name} takes ranges in place of SYMBOL, not with --range: \
+         elfq {file} {name} {given}{range}{json}"
+    );
+    if !given.is_empty() {
+        error += &format!(
+            "; to list only the {name} in {range}: elfq {file} {name} {given}{flag} {range}{json}"
+        );
+    }
+    error
+}
+
+/// The arguments of `callers` or `callees`, with the option that limits the
+/// other side of each use to some ranges: `--from` or `--to`.
+fn uses_args(command: &Command) -> Option<(&UsesArgs, &'static str)> {
+    match command {
+        Command::Callers(args) => Some((&args.uses, "--from")),
+        Command::Callees(args) => Some((&args.uses, "--to")),
+        _ => None,
+    }
 }
 
 /// The name of `command` as typed: `callers` for [`Command::Callers`].

@@ -570,6 +570,14 @@ impl Item {
         address == self.address || (address > self.address && address - self.address < self.size)
     }
 
+    /// Whether any of the item's bytes are in one of `ranges`, where an item
+    /// of unknown size counts as its first byte.
+    pub fn is_in(&self, ranges: &[AddressRange]) -> bool {
+        ranges
+            .iter()
+            .any(|range| range.overlap(self.address, self.size.max(1)) > 0)
+    }
+
     /// The item's name, then its aliases.
     pub fn names(&self) -> impl Iterator<Item = &str> {
         std::iter::once(self.name.as_str()).chain(self.aliases.iter().map(String::as_str))

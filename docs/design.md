@@ -97,7 +97,8 @@ its size shows as `?`, and elfq can't read its code.
 **Range and memory block.** A range is the addresses from START up to END,
 written `START..END` or `START+SIZE`. With `--range`, the overview, `top`
 and `retained` count only the bytes inside one range, and `callers` and
-`callees` take ranges in place of SYMBOL. A memory block is a run of
+`callees` take ranges in place of SYMBOL, and in `--from` and `--to`. A
+memory block is a run of
 sections and load images less than 64 KiB apart, which stands for one
 memory, such as flash or a RAM; the overview lists the blocks when there
 are several. (`binary::AddressRange`, `binary::MemoryBlock`)
@@ -166,6 +167,7 @@ except `inlined`, which reads DWARF instead of machine code.
 | `elfq FILE callers SYMBOL` | What calls or uses SYMBOL directly, and how (call, tail call, uses, address taken, pointer)? |
 | `elfq FILE callees SYMBOL` | What does SYMBOL call or use directly? |
 | `elfq FILE callees RANGE...` | What do the code and data in these ranges of memory use outside them, such as code in ITCM that calls a function in flash? `callers RANGE...` asks the reverse. |
+| `elfq FILE callers RANGE... --from RANGE` | What in one range of memory uses these, such as code in ITCM that uses data in DTCM? `callees RANGE... --to RANGE` asks what these use in one. |
 | `elfq FILE inlined [SYMBOL]` | Which inlined functions cost the most bytes across the binary, or inside SYMBOL? Needs DWARF. |
 
 SYMBOL is a function or data object's name, an import (`write` finds the
@@ -208,7 +210,23 @@ or might: through a call elfq can't follow, through a pointer to a
 function in the ranges, or in a function in them whose end elfq doesn't
 know. A CI job can then check
 that code in ITCM stays there, or that code run from RAM never touches
-flash. As with `diff`, the exit status is 0 otherwise, and 2 for any
+flash.
+
+`--from RANGE` keeps only the callers in other ranges, and `--to RANGE`
+only the callees, so that `callers 0x20000000+256K --from 0x0+256K` lists
+what in ITCM uses DTCM, and the exit status is 1 only for that. Each takes
+one range, and can be given again. `callees 0x0+256K --to
+0x20000000+256K` lists the same uses as that `callers`, but with each row
+from the other side, and with what `callees` can't follow: a call through a
+pointer may go anywhere, and a call to an address where the file has no
+item stays when the address is in the `--to` ranges. So `--to` can name a
+range where the file has nothing, such as a chip's ROM, as long as code
+calls into it; any other range in `--from` or `--to` must hold an item
+outside the ranges in place of SYMBOL, so that a mistyped range is an
+error and not a quiet exit status 0. The two options go only with ranges in
+place of SYMBOL: one function's range, which the error names, asks the same
+for it, and sees through veneers as `callers SYMBOL` and `callees SYMBOL`
+don't. As with `diff`, the exit status is 0 otherwise, and 2 for any
 error, with or without ranges. When the reader stops early, as `head`
 does, elfq still finishes and exits with the answer's status, and an error
 that nothing reads still exits with 2.
@@ -504,6 +522,8 @@ several.
 | Key | Value |
 |---|---|
 | `ranges` | the ranges |
+| `to` | for `callees` only, the ranges of `--to`, or `null` without it |
+| `from` | for `callers` only, the ranges of `--from`, or `null` without it |
 | `callees` | for `callees`, the references that cross, a row for each pair of items and way of use, in the text's order, the largest item outside first: the `item` or import outside; the `caller` in the ranges that uses it; `how`, as in `callees SYMBOL`; `veneer`, the linker's veneer that a call goes through, or `null`; and the `sites` |
 | `callers` | for `callers`, the same, but with the `callee` in the ranges that `item` uses, in place of `caller` |
 | `unresolved` | for `callees` only, as in `callees SYMBOL`, with the `caller` it is in and the `veneer` too |
