@@ -6,7 +6,7 @@ use std::io::Write;
 use anyhow::Result;
 use serde::Serialize;
 
-use super::ranges::{self, Direction};
+use super::ranges::{self, Direction, RangeCheck};
 use super::symbol::{self, Subject, Symbol};
 use super::{Outcome, json, text};
 use crate::binary::{AddressRange, Binary, ItemKind};
@@ -24,8 +24,9 @@ struct Callers<'a> {
 }
 
 /// Answers `elfq FILE callers SYMBOL`, or with ranges in place of SYMBOL,
-/// `callers RANGE...`, which `from`, the ranges of `--from`, limits to the
-/// callers in them. For SYMBOL, the text lists the 30 largest callers, or
+/// `callers RANGE...`. `from`, the ranges of `--from`, limits either to the
+/// callers in them, and then SYMBOL is asked about as the range it
+/// occupies. For SYMBOL alone, the text lists the 30 largest callers, or
 /// with `all`, every one; for ranges, see [`ranges::run`].
 pub fn run(
     binary: &Binary,
@@ -38,26 +39,29 @@ pub fn run(
     super::check_code_is_readable(binary)?;
     let subject = symbol::subject(binary, symbols)?;
     match subject {
-        Subject::Symbol(symbol) => {
-            if !from.is_empty() {
-                return Err(ranges::needs_ranges(binary, &symbol, "--from"));
-            }
+        Subject::Symbol(symbol) if from.is_empty() => {
             let graph = Graph::build(binary);
             callers(binary, &graph, &symbol, all, format, out)?;
             Ok(Outcome::Answered)
         }
+        Subject::Symbol(symbol) => {
+            let range = ranges::symbol_range(binary, &symbol, "--from")?;
+            let check = RangeCheck {
+                ranges: &[range],
+                name: Some(symbol.lead_name(binary)),
+                other: from,
+                direction: Direction::In,
+            };
+            ranges::run(binary, &Graph::build(binary), &check, all, format, out)
+        }
         Subject::Ranges(ranges) => {
-            let graph = Graph::build(binary);
-            ranges::run(
-                binary,
-                &graph,
-                &ranges,
-                from,
-                Direction::In,
-                all,
-                format,
-                out,
-            )
+            let check = RangeCheck {
+                ranges: &ranges,
+                name: None,
+                other: from,
+                direction: Direction::In,
+            };
+            ranges::run(binary, &Graph::build(binary), &check, all, format, out)
         }
     }
 }

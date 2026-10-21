@@ -44,10 +44,12 @@ sections and their load images occupy.
 only what crosses their edge, such as code in ITCM that calls a function in
 flash. elfq's exit status is then 1 if anything does or might, so a CI job
 can check that time-critical code stays in fast memory, or that code run
-from RAM never touches flash. `--from` keeps only the callers in other
-ranges, and `--to` only the callees: `callers 0x20000000+256K --from
-0x0+256K` lists what in the first 256 KiB uses the 256 KiB at 0x20000000.
-Errors go to stderr, with exit status 2 and nothing on stdout.
+from RAM never touches flash. `--from RANGE` lists only the callers in
+RANGE, and `--to RANGE` only the callees, for ranges or a symbol:
+`callers 0x20000000+256K --from 0x0+256K` lists what in the first 256 KiB
+uses the 256 KiB at 0x20000000, and `callers crc32 --from 0x30000000+16M`
+what at 0x30000000 calls crc32. Errors go to stderr, with exit status 2
+and nothing on stdout.
 
 **For AI agents:** paste this into a project's AGENTS.md or CLAUDE.md to
 tell its agents about elfq:
@@ -70,8 +72,8 @@ and `elfq --help` lists the commands.
 - `elfq FILE.elf callees 0x0+256K` lists what the code and data in that
   range use outside it, and `callers 0x0+256K` what uses them from
   outside; both exit 1 if anything does or might. `--to RANGE` and
-  `--from RANGE` keep only what is in RANGE. With ranges, `callers` and
-  `callees` show every row.
+  `--from RANGE` keep only what is in RANGE, for ranges or SYMBOL. Then
+  `callers` and `callees` show every row.
 - elfq reads the built file, not the source: rebuild before asking again.
 ```
 

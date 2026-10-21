@@ -97,11 +97,10 @@ its size shows as `?`, and elfq can't read its code.
 **Range and memory block.** A range is the addresses from START up to END,
 written `START..END` or `START+SIZE`. With `--range`, the overview, `top`
 and `retained` count only the bytes inside one range, and `callers` and
-`callees` take ranges in place of SYMBOL, and in `--from` and `--to`. A
-memory block is a run of
-sections and load images less than 64 KiB apart, which stands for one
-memory, such as flash or a RAM; the overview lists the blocks when there
-are several. (`binary::AddressRange`, `binary::MemoryBlock`)
+`callees` take ranges in place of SYMBOL, and with `--from` and `--to`. A
+memory block is a run of sections and load images less than 64 KiB apart,
+which stands for one memory, such as flash or a RAM; the overview lists the
+blocks when there are several. (`binary::AddressRange`, `binary::MemoryBlock`)
 
 **Load image.** The bytes of a section that the file stores in one place,
 such as flash, for the program to copy to where it uses them, such as RAM:
@@ -167,7 +166,7 @@ except `inlined`, which reads DWARF instead of machine code.
 | `elfq FILE callers SYMBOL` | What calls or uses SYMBOL directly, and how (call, tail call, uses, address taken, pointer)? |
 | `elfq FILE callees SYMBOL` | What does SYMBOL call or use directly? |
 | `elfq FILE callees RANGE...` | What do the code and data in these ranges of memory use outside them, such as code in ITCM that calls a function in flash? `callers RANGE...` asks the reverse. |
-| `elfq FILE callers RANGE... --from RANGE` | What in one range of memory uses these, such as code in ITCM that uses data in DTCM? `callees RANGE... --to RANGE` asks what these use in one. |
+| `elfq FILE callers RANGE... --from RANGE` | What in one range of memory uses these ranges, such as code in ITCM that uses data in DTCM? `callees RANGE... --to RANGE` asks what these ranges use in that one, and either takes SYMBOL in place of the ranges. |
 | `elfq FILE inlined [SYMBOL]` | Which inlined functions cost the most bytes across the binary, or inside SYMBOL? Needs DWARF. |
 
 SYMBOL is a function or data object's name, an import (`write` finds the
@@ -212,21 +211,24 @@ know. A CI job can then check
 that code in ITCM stays there, or that code run from RAM never touches
 flash.
 
-`--from RANGE` keeps only the callers in other ranges, and `--to RANGE`
-only the callees, so that `callers 0x20000000+256K --from 0x0+256K` lists
-what in ITCM uses DTCM, and the exit status is 1 only for that. Each takes
-one range, and can be given again. `callees 0x0+256K --to
-0x20000000+256K` lists the same uses as that `callers`, but with each row
-from the other side, and with what `callees` can't follow: a call through a
-pointer may go anywhere, and a call to an address where the file has no
-item stays when the address is in the `--to` ranges. So `--to` can name a
-range where the file has nothing, such as a chip's ROM, as long as code
-calls into it; any other range in `--from` or `--to` must hold an item
-outside the ranges in place of SYMBOL, so that a mistyped range is an
-error and not a quiet exit status 0. The two options go only with ranges in
-place of SYMBOL: one function's range, which the error names, asks the same
-for it, and sees through veneers as `callers SYMBOL` and `callees SYMBOL`
-don't. As with `diff`, the exit status is 0 otherwise, and 2 for any
+`--from RANGE` lists only the callers in RANGE, and `--to RANGE` only the
+callees, so that `callers 0x20000000+256K --from 0x0+256K` lists what in
+ITCM uses DTCM, and the exit status is 1 only for that. Each takes one
+range and can be given again. With SYMBOL, they ask about the range that
+SYMBOL occupies, as `callers crc32 --from 0x30000000+16M` does, so the
+answer looks through veneers as the range forms do, where `callers SYMBOL`
+alone lists the veneer. `callees A --to B` and `callers B --from A` list
+the same uses, each row from its own side, and a use through a veneer that
+only one of A and B holds is listed at the veneer. What elfq can't follow
+stays when it may be in the other ranges: `callees` keeps a call to a known
+address in them, and a call through a pointer when they hold a function
+whose address is taken or stored, or code outside every item that the file
+calls; `callers` keeps its note on calls through a pointer when code in the
+`--from` ranges calls through one, or is code that elfq can't read. Each
+range of `--from` or `--to` must hold an item outside the ranges asked
+about, or for `--to`, code outside every item that the file calls or jumps
+to, such as a routine in a chip's ROM, so that a mistyped range is an
+error and not a quiet exit status 0. As with `diff`, the exit status is 0 otherwise, and 2 for any
 error, with or without ranges. When the reader stops early, as `head`
 does, elfq still finishes and exits with the answer's status, and an error
 that nothing reads still exits with 2.
@@ -242,7 +244,8 @@ trees instead. AT shows where an item is used: every site when there are
 one or two, else the first and how many more. `callers SYMBOL` and `callees
 SYMBOL` list the 30 items with the largest own sizes, callers in order of
 name and callees in the order SYMBOL first uses them, and a last row such
-as `70 more` counts the rest; with ranges, they list every crossing.
+as `70 more` counts the rest; with ranges, `--from` or `--to`, they list
+every crossing.
 `--all` lifts every such cut in an answer but AT's: it shows every item in
 a table or tree, every chain in `why`, and every name and address in a
 sentence, where a long list otherwise ends with "and 48 more".
@@ -517,11 +520,12 @@ several.
 | `unresolved` | for `callees` only, the calls and jumps that elfq can't follow, each with its `site`, `how`, which is `call` or `jump`, and `target`, where it goes when the code says so but no item is there, else `null` |
 | `complete` | whether the list is complete, as far as elfq can tell, as [below](#calls-elfq-cant-follow) |
 
-**`callees RANGE...`** and **`callers RANGE...`**:
+**`callees RANGE...`** and **`callers RANGE...`**, and with `--to` or
+`--from`, **`callees SYMBOL`** and **`callers SYMBOL`**:
 
 | Key | Value |
 |---|---|
-| `ranges` | the ranges |
+| `ranges` | the ranges, or the range that SYMBOL occupies |
 | `to` | for `callees` only, the ranges of `--to`, or `null` without it |
 | `from` | for `callers` only, the ranges of `--from`, or `null` without it |
 | `callees` | for `callees`, the references that cross, a row for each pair of items and way of use, in the text's order, the largest item outside first: the `item` or import outside; the `caller` in the ranges that uses it; `how`, as in `callees SYMBOL`; `veneer`, the linker's veneer that a call goes through, or `null`; and the `sites` |
@@ -540,10 +544,11 @@ and jumps it can't follow. `retained` notes when SYMBOL or the items it
 keeps call through pointers, since what those calls reach may count for
 other items.
 In JSON, `callers` and `callees` have `complete`, and `retained` has
-`indirect_calls`. For ranges, `complete` is `false` when `callees` finds a
-call it can't follow in them, or a function whose end it doesn't know, or
-when `callers` finds a function in them whose address is taken or stored,
-other than in the vector table, which only the processor calls through.
+`indirect_calls`. For ranges, and with `--from` or `--to`, `complete` is
+`false` when `callees` lists a call it can't follow or a function whose end
+it doesn't know, or when `callers` notes calls through a pointer to a
+function in the ranges, whose address is taken or stored other than in the
+vector table, which only the processor calls through.
 `callers` can't see calls from code whose end elfq doesn't know, such as
 assembly without a `.size`, but C runtimes have such code (`_init`,
 `_fini`) in almost every file, so it doesn't make the answer incomplete.
@@ -738,9 +743,9 @@ in order. Its output is the first example under [Commands](#commands).
    keeps. With `--json`, `retained::write_json` lists every row of the tree
    instead (`RetainedTree::to_json`), and writes them through `json::write`.
 8. **Exit.** `run`, in main.rs, flushes the output and turns the answer into
-   the exit status: 0 for an answer, 1 when `callers` or `callees` finds
-   something that crosses its ranges, or may, and 2 for an error, which it
-   prints after `error:`.
+   the exit status: 0 for an answer, 1 when `callers` or `callees` with
+   ranges, `--from` or `--to` finds something that crosses, or may, and 2
+   for an error, which it prints after `error:`.
 
 Each module uses only the ones below it. Beside each are the steps above
 that run in it:

@@ -6,12 +6,12 @@
 use std::collections::HashMap;
 use std::io::Write;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, bail};
 use serde::Serialize;
 
 use super::symbol::Symbol;
 use super::{Outcome, json, text};
-use crate::binary::{AddressRange, Binary};
+use crate::binary::{AddressRange, Binary, ItemKind};
 use crate::cli::Format;
 use crate::graph::{Boundary, Crossing, Graph, Node, ReferenceKind, Unfollowed};
 use crate::render::{Align, Table};
@@ -98,55 +98,68 @@ struct CallerJson<'a> {
     sites: Vec<String>,
 }
 
-/// Lists what crosses the boundary of `ranges` in `direction`, every
-/// crossing, and with `all`, every name in its sentences. When `other`
-/// isn't empty, only the crossings with an item in it on the far side, as
-/// `--to` and `--from` ask. The answer is [`Outcome::Crossed`] when
-/// something crosses, or may.
-#[allow(clippy::too_many_arguments)]
+/// What a range check asks.
+pub struct RangeCheck<'a> {
+    /// The ranges in place of SYMBOL, or the range that SYMBOL occupies.
+    pub ranges: &'a [AddressRange],
+    /// SYMBOL, as the answer names it, when `ranges` is its range.
+    pub name: Option<String>,
+    /// The ranges of `--from` or `--to`: when there are any, only the uses
+    /// whose other end is in them count.
+    pub other: &'a [AddressRange],
+    pub direction: Direction,
+}
+
+impl RangeCheck<'_> {
+    /// What the sentences call the ranges: SYMBOL, or the ranges with the
+    /// sections in them.
+    fn subject(&self, binary: &Binary, all: bool) -> String {
+        match &self.name {
+            Some(name) => name.clone(),
+            None => ranges_text(binary, self.ranges, all),
+        }
+    }
+
+    /// Whether the sentences call the ranges "it", and not "them".
+    fn one(&self) -> bool {
+        self.name.is_some() || self.ranges.len() == 1
+    }
+}
+
+/// Lists what crosses the boundary of the ranges that `check` asks about,
+/// every crossing, and with `all`, every name in its sentences. The answer
+/// is [`Outcome::Crossed`] when it lists something, or says that something
+/// may cross.
 pub fn run(
     binary: &Binary,
     graph: &Graph,
-    ranges: &[AddressRange],
-    other: &[AddressRange],
-    direction: Direction,
+    check: &RangeCheck,
     all: bool,
     format: Format,
     out: &mut dyn Write,
 ) -> Result<Outcome> {
-    let boundary = Boundary::new(binary, graph, ranges);
-    if let Some(range) = boundary.empty_range() {
+    for &range in check.ranges {
         check_holds_items(binary, range)?;
     }
-    let unfollowed = match direction {
-        Direction::Out => boundary.unfollowed(),
-        Direction::In => Vec::new(),
-    };
-    let targets: Vec<u64> = unfollowed
-        .iter()
-        .filter_map(|u| u.unresolved.target)
-        .collect();
-    check_other_side(binary, other, ranges, &targets, direction)?;
-    let nothing_crosses = match direction {
+    let boundary = Boundary::new(binary, graph, check.ranges);
+    let nothing_crosses = match check.direction {
         Direction::Out => {
+            // Where calls and jumps anywhere in the file go outside every
+            // item and the ranges, as to a routine in a chip's ROM: code
+            // that `--to` can name.
+            let code_outside: Vec<u64> = graph
+                .unresolved
+                .iter()
+                .filter_map(|unresolved| unresolved.target)
+                .filter(|&target| !has_address(check.ranges, target))
+                .collect();
+            check_other_side(binary, check, &code_outside)?;
+            let (crossings, unfollowed) = leaving(binary, graph, &boundary, check, &code_outside);
             let leaving = Leaving {
                 binary,
-                ranges,
-                to: other,
-                crossings: boundary
-                    .leaving()
-                    .into_iter()
-                    .filter(|crossing| node_in(binary, crossing.to, other))
-                    .collect(),
-                // A call through a pointer may go anywhere, but one to an
-                // address that the code names goes there.
-                unfollowed: unfollowed
-                    .into_iter()
-                    .filter(|unfollowed| match unfollowed.unresolved.target {
-                        Some(target) => address_in(target, other),
-                        None => true,
-                    })
-                    .collect(),
+                check,
+                crossings,
+                unfollowed,
                 unreadable: boundary.unreadable(),
                 all,
             };
@@ -160,17 +173,21 @@ pub fn run(
                 && leaving.unreadable.is_empty()
         }
         Direction::In => {
+            check_other_side(binary, check, &[])?;
+            let from = check.other;
+            // Code anywhere may call through a pointer passed to it, but
+            // with `--from`, only code in its ranges counts.
+            let through_pointer =
+                if from.is_empty() || may_call_through_pointer(binary, graph, from, check.ranges) {
+                    boundary.callable_through_pointer()
+                } else {
+                    Vec::new()
+                };
             let entering = Entering {
                 binary,
-                ranges,
-                from: other,
-                crossings: boundary
-                    .entering()
-                    .into_iter()
-                    .filter(|crossing| node_in(binary, Node::Item(crossing.from), other))
-                    .collect(),
-                // Code anywhere may call through a pointer passed to it.
-                through_pointer: boundary.callable_through_pointer(),
+                check,
+                crossings: entering(binary, graph, &boundary, check),
+                through_pointer,
                 all,
             };
             match format {
@@ -187,38 +204,174 @@ pub fn run(
     }
 }
 
-/// The error for `--from` or `--to`, `option`, with SYMBOL: they go with
-/// ranges in place of SYMBOL, such as the one SYMBOL's item occupies.
-pub(super) fn needs_ranges(binary: &Binary, symbol: &Symbol, option: &str) -> anyhow::Error {
-    let name = symbol.node.name(binary);
-    let start = format!("{option} goes with ranges in place of SYMBOL");
+/// The range that SYMBOL's item occupies, for `option`, `--from` or `--to`,
+/// which ask about ranges. An item of unknown size counts as its first
+/// byte, as it does in a range check. An import has no range.
+pub(super) fn symbol_range(binary: &Binary, symbol: &Symbol, option: &str) -> Result<AddressRange> {
     match symbol.node {
-        Node::Item(index) if binary.items[index].size > 0 => {
+        Node::Item(index) => {
             let item = &binary.items[index];
-            let range = AddressRange {
+            Ok(AddressRange {
                 start: item.address,
-                end: item.address + item.size,
-            };
-            anyhow!("{start}, such as {name}'s: {}", text::range_argument(range))
+                end: item.address + item.size.max(1),
+            })
         }
-        Node::Item(_) => anyhow!("{start}, and elfq doesn't know where {name} ends"),
-        Node::Import(_) => anyhow!("{start}, and {name} is imported, so it is in none"),
+        Node::Import(_) => bail!(
+            "{option} needs SYMBOL's range in this file, and {} is imported from a shared \
+             library",
+            symbol.node.name(binary)
+        ),
     }
 }
 
-/// Whether `node` is an item in `ranges`, or `ranges` is empty, as when
-/// neither `--from` nor `--to` is given. An import is in no range.
-fn node_in(binary: &Binary, node: Node, ranges: &[AddressRange]) -> bool {
-    ranges.is_empty()
-        || match node {
-            Node::Item(index) => binary.items[index].is_in(ranges),
-            Node::Import(_) => false,
+/// What the items in the ranges use outside them, with the calls and jumps
+/// in them that elfq can't follow, and that may leave them. With `--to`,
+/// only what is in its ranges, and what elfq can't follow that may go
+/// there: to an address in them, or through a pointer when a function
+/// there has its address taken or stored, or the file calls code there that
+/// is outside every item, at `code_outside`.
+fn leaving(
+    binary: &Binary,
+    graph: &Graph,
+    boundary: &Boundary,
+    check: &RangeCheck,
+    code_outside: &[u64],
+) -> (Vec<Crossing>, Vec<Unfollowed>) {
+    let to = check.other;
+    if to.is_empty() {
+        return (boundary.leaving(), boundary.unfollowed());
+    }
+    // A veneer in `to` that a use goes through to something outside `to`:
+    // the use goes into `to` at the veneer, so it is listed as a use of the
+    // veneer.
+    let veneer_in_to = |veneer: Option<usize>| {
+        veneer.filter(|&veneer| {
+            let item = &binary.items[veneer];
+            item.is_in(to) && !item.is_in(check.ranges)
+        })
+    };
+    let mut crossings = Vec::new();
+    for crossing in boundary.leaving() {
+        if node_in(binary, crossing.to, to) {
+            crossings.push(crossing);
+        } else if let Some(veneer) = veneer_in_to(crossing.veneer) {
+            crossings.push(Crossing {
+                to: Node::Item(veneer),
+                veneer: None,
+                ..crossing
+            });
         }
+    }
+    let through_pointer = code_outside.iter().any(|&target| has_address(to, target))
+        || Boundary::new(binary, graph, to)
+            .callable_through_pointer()
+            .into_iter()
+            .any(|function| !binary.items[function].is_in(check.ranges));
+    let mut unfollowed = Vec::new();
+    for row in boundary.unfollowed() {
+        let unresolved = row.unresolved;
+        let may_go_to = match unresolved.target {
+            Some(target) => has_address(to, target),
+            None => through_pointer,
+        };
+        if may_go_to {
+            unfollowed.push(row);
+        } else if let Some(veneer) = veneer_in_to(row.veneer) {
+            crossings.push(Crossing {
+                from: unresolved.from,
+                to: Node::Item(veneer),
+                kind: if unresolved.is_call {
+                    ReferenceKind::Call
+                } else {
+                    ReferenceKind::TailCall
+                },
+                site: unresolved.site,
+                veneer: None,
+            });
+        }
+    }
+    (crossings, unfollowed)
 }
 
-/// Whether `address` is in `ranges`, or `ranges` is empty.
-fn address_in(address: u64, ranges: &[AddressRange]) -> bool {
-    ranges.is_empty() || ranges.iter().any(|range| range.overlap(address, 1) > 0)
+/// What uses the items in the ranges from outside them, and with `--from`,
+/// only what is in its ranges.
+fn entering(
+    binary: &Binary,
+    graph: &Graph,
+    boundary: &Boundary,
+    check: &RangeCheck,
+) -> Vec<Crossing> {
+    let from = check.other;
+    let all = boundary.entering();
+    if from.is_empty() {
+        return all;
+    }
+    let (mut crossings, others): (Vec<Crossing>, Vec<Crossing>) = all
+        .into_iter()
+        .partition(|crossing| binary.items[crossing.from].is_in(from));
+    // A call through a veneer in `from` whose caller is outside `from`: the
+    // veneer's jump is what uses the ranges from `from`, unless a caller in
+    // `from` already has a row for it.
+    let mut veneers: Vec<usize> = others
+        .iter()
+        .filter_map(|crossing| crossing.veneer)
+        .filter(|&veneer| {
+            let item = &binary.items[veneer];
+            item.is_in(from)
+                && !item.is_in(check.ranges)
+                && !crossings.iter().any(|kept| kept.veneer == Some(veneer))
+        })
+        .collect();
+    veneers.sort_unstable();
+    veneers.dedup();
+    for veneer in veneers {
+        if let [jump] = graph.references_from(veneer) {
+            crossings.push(Crossing {
+                from: veneer,
+                to: jump.to,
+                kind: jump.kind,
+                site: jump.site,
+                veneer: None,
+            });
+        }
+    }
+    crossings
+}
+
+/// Whether code in `from`, outside `ranges`, may call a function through a
+/// pointer: it calls or jumps through one, or elfq can't read it.
+fn may_call_through_pointer(
+    binary: &Binary,
+    graph: &Graph,
+    from: &[AddressRange],
+    ranges: &[AddressRange],
+) -> bool {
+    let counts = |index: usize| {
+        let item = &binary.items[index];
+        item.is_in(from) && !item.is_in(ranges)
+    };
+    graph
+        .unresolved
+        .iter()
+        .any(|unresolved| unresolved.target.is_none() && counts(unresolved.from))
+        || binary
+            .items
+            .iter()
+            .enumerate()
+            .any(|(index, item)| item.kind == ItemKind::Function && item.size == 0 && counts(index))
+}
+
+/// Whether `node` is an item in `ranges`. An import is in none.
+fn node_in(binary: &Binary, node: Node, ranges: &[AddressRange]) -> bool {
+    match node {
+        Node::Item(index) => binary.items[index].is_in(ranges),
+        Node::Import(_) => false,
+    }
+}
+
+/// Whether `address` is in `ranges`.
+fn has_address(ranges: &[AddressRange], address: u64) -> bool {
+    ranges.iter().any(|range| range.overlap(address, 1) > 0)
 }
 
 /// Explains that no item is in `range`, as for a mistyped range, unless
@@ -249,47 +402,56 @@ fn check_holds_items(binary: &Binary, range: AddressRange) -> Result<()> {
     bail!("elfq found no functions or data in {place}");
 }
 
-/// Checks the ranges of `--from` or `--to`, which `other` holds: each must
-/// hold an item, as the ranges in place of SYMBOL, `inside`, must, and some
-/// item must be outside `inside`, since the far side of a crossing is. For
-/// `--to`, the addresses that calls and jumps in `inside` go to outside
-/// every item, `targets`, count too, as for a routine in a chip's ROM.
-fn check_other_side(
-    binary: &Binary,
-    other: &[AddressRange],
-    inside: &[AddressRange],
-    targets: &[u64],
-    direction: Direction,
-) -> Result<()> {
-    for &range in other {
-        if !targets.iter().any(|&target| address_in(target, &[range])) {
-            check_holds_items(binary, range)?;
+/// Checks the ranges of `--from` or `--to`: each must hold an item outside
+/// the ranges that `check` asks about, since the other end of each use is
+/// outside them, or for `--to`, code outside every item that the file calls
+/// or jumps to, at one of `code_outside`, as in a chip's ROM. Else it is
+/// most likely mistyped.
+fn check_other_side(binary: &Binary, check: &RangeCheck, code_outside: &[u64]) -> Result<()> {
+    let it = if check.one() { "it" } else { "them" };
+    let (option, lists) = match check.direction {
+        Direction::Out => (
+            "--to",
+            format!(
+                "callees lists only what {it} {} outside {it}",
+                if check.one() { "uses" } else { "use" }
+            ),
+        ),
+        Direction::In => (
+            "--from",
+            format!("callers lists only what uses {it} from outside"),
+        ),
+    };
+    for &range in check.other {
+        if code_outside
+            .iter()
+            .any(|&target| has_address(&[range], target))
+        {
+            continue;
         }
-    }
-    if !other.is_empty()
-        && !targets.iter().any(|&target| address_in(target, other))
-        && !binary
+        check_holds_items(binary, range)?;
+        if !binary
             .items
             .iter()
-            .any(|item| item.is_in(other) && !item.is_in(inside))
-    {
-        let one = inside.len() == 1;
-        let lists = match (direction, one) {
-            (Direction::Out, true) => "callees lists only what it uses outside it",
-            (Direction::Out, false) => "callees lists only what they use outside them",
-            (Direction::In, true) => "callers lists only what uses it from outside",
-            (Direction::In, false) => "callers lists only what uses them from outside",
-        };
-        let texts = |ranges: &[AddressRange]| {
-            let texts: Vec<String> = ranges.iter().map(|&r| text::range_argument(r)).collect();
-            let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
-            text::names_text(&texts, true)
-        };
-        bail!(
-            "everything in {} is in {} too, and {lists}",
-            texts(other),
-            texts(inside)
-        );
+            .any(|item| item.is_in(&[range]) && !item.is_in(check.ranges))
+        {
+            let inside = match &check.name {
+                Some(name) => name.clone(),
+                None => {
+                    let texts: Vec<String> = check
+                        .ranges
+                        .iter()
+                        .map(|&r| text::range_argument(r))
+                        .collect();
+                    let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
+                    text::names_text(&texts, true)
+                }
+            };
+            bail!(
+                "{option} {} holds nothing outside {inside}, and {lists}",
+                text::range_argument(range)
+            );
+        }
     }
     Ok(())
 }
@@ -313,10 +475,7 @@ fn json_other(other: &[AddressRange]) -> Option<Vec<json::Range>> {
 /// What the items in the ranges use outside them: `callees RANGE...`.
 struct Leaving<'a> {
     binary: &'a Binary,
-    ranges: &'a [AddressRange],
-    /// The ranges of `--to`, to which `crossings` and `unfollowed` are
-    /// limited, or none.
-    to: &'a [AddressRange],
+    check: &'a RangeCheck<'a>,
     crossings: Vec<Crossing>,
     /// The calls and jumps in the ranges that elfq can't follow, and that
     /// may leave them.
@@ -337,8 +496,8 @@ impl Leaving<'_> {
             json::how_field(crossing.kind)
         });
         let leaving = LeavingJson {
-            ranges: json_ranges(self.ranges),
-            to: json_other(self.to),
+            ranges: json_ranges(self.check.ranges),
+            to: json_other(self.check.other),
             callees: each_row(groups)
                 .map(|(outside, row)| CalleeJson {
                     item: item(outside),
@@ -374,10 +533,10 @@ impl Leaving<'_> {
 
     fn write_text(&self, out: &mut dyn Write) -> Result<()> {
         let binary = self.binary;
-        let one_range = self.ranges.len() == 1;
-        let subject = ranges_text(binary, self.ranges, self.all);
-        let it = if one_range { "it" } else { "them" };
-        let verb = |one: &str, many: &str| if one_range { one } else { many }.to_string();
+        let check = self.check;
+        let subject = check.subject(binary, self.all);
+        let it = if check.one() { "it" } else { "them" };
+        let verb = |one: &str, many: &str| if check.one() { one } else { many }.to_string();
         let groups = groups(binary, &self.crossings, Direction::Out, |crossing| {
             how_column(binary, crossing)
         });
@@ -387,7 +546,7 @@ impl Leaving<'_> {
                 .iter()
                 .map(|unfollowed| &unfollowed.unresolved),
         );
-        let far_side = far_side(binary, self.to, it, self.all);
+        let far_side = far_side(binary, check.other, it, self.all);
         let lead = match (groups.is_empty(), self.unfollowed.is_empty()) {
             (true, true) if self.unreadable.is_empty() => {
                 format!("{subject} {} nothing {far_side}.", verb("uses", "use"))
@@ -397,15 +556,30 @@ impl Leaving<'_> {
                 verb("uses", "use")
             ),
             (false, true) => format!("{subject} {} {used} {far_side}:", verb("uses", "use")),
-            (true, false) if self.to.is_empty() => format!(
+            (true, false) if check.other.is_empty() => format!(
                 "{subject} {} {unknown} that elfq can't follow:",
                 verb("makes", "make")
             ),
-            (true, false) => format!(
-                "{subject} {} {unknown} that elfq can't follow, which may go to {}:",
-                verb("makes", "make"),
-                ranges_text(binary, self.to, self.all)
-            ),
+            (true, false) => {
+                // A call through a pointer may go anywhere, but one to an
+                // address that the code names goes there.
+                let go = if self
+                    .unfollowed
+                    .iter()
+                    .any(|u| u.unresolved.target.is_none())
+                {
+                    "may go"
+                } else if self.unfollowed.len() == 1 {
+                    "goes"
+                } else {
+                    "go"
+                };
+                format!(
+                    "{subject} {} {unknown} that elfq can't follow, which {go} to {}:",
+                    verb("makes", "make"),
+                    ranges_text(binary, check.other, self.all)
+                )
+            }
             (false, false) => format!(
                 "{subject} {} {used} {far_side}; elfq can't follow {unknown}:",
                 verb("uses", "use")
@@ -466,9 +640,7 @@ impl Leaving<'_> {
 /// RANGE...`.
 struct Entering<'a> {
     binary: &'a Binary,
-    ranges: &'a [AddressRange],
-    /// The ranges of `--from`, to which `crossings` are limited, or none.
-    from: &'a [AddressRange],
+    check: &'a RangeCheck<'a>,
     crossings: Vec<Crossing>,
     /// The functions in the ranges that code outside may call through a
     /// pointer, which elfq can't see.
@@ -486,8 +658,8 @@ impl Entering<'_> {
             json::how_field(crossing.kind)
         });
         let entering = EnteringJson {
-            ranges: json_ranges(self.ranges),
-            from: json_other(self.from),
+            ranges: json_ranges(self.check.ranges),
+            from: json_other(self.check.other),
             callers: each_row(groups)
                 .map(|(outside, row)| CallerJson {
                     item: item(outside),
@@ -509,18 +681,19 @@ impl Entering<'_> {
 
     fn write_text(&self, out: &mut dyn Write) -> Result<()> {
         let binary = self.binary;
-        let subject = ranges_text(binary, self.ranges, self.all);
-        let it = if self.ranges.len() == 1 { "it" } else { "them" };
+        let check = self.check;
+        let subject = check.subject(binary, self.all);
+        let it = if check.one() { "it" } else { "them" };
         let groups = groups(binary, &self.crossings, Direction::In, |crossing| {
             how_column(binary, crossing)
         });
         // "Nothing outside X uses it", or "Nothing in Y uses X".
-        let nothing = if self.from.is_empty() {
+        let nothing = if check.other.is_empty() {
             format!("Nothing outside {subject} uses {it}")
         } else {
             format!(
                 "Nothing {} uses {subject}",
-                far_side(binary, self.from, it, self.all)
+                far_side(binary, check.other, it, self.all)
             )
         };
         if groups.is_empty() && self.through_pointer.is_empty() {
@@ -531,9 +704,9 @@ impl Entering<'_> {
             writeln!(
                 out,
                 "{subject} {} used by {} {}:",
-                if self.ranges.len() == 1 { "is" } else { "are" },
+                if check.one() { "is" } else { "are" },
                 text::count_text(binary, &outside_nodes(&groups)),
-                far_side(binary, self.from, it, self.all)
+                far_side(binary, check.other, it, self.all)
             )?;
             writeln!(out)?;
             let mut table = crossings_table(Direction::In);
@@ -775,16 +948,13 @@ mod tests {
         });
         let ranges = ["0x0+256K".parse().unwrap()];
         let mut out = Vec::new();
-        let outcome = run(
-            &binary,
-            &graph,
-            &ranges,
-            &[],
-            Direction::Out,
-            false,
-            Format::Text,
-            &mut out,
-        );
+        let check = RangeCheck {
+            ranges: &ranges,
+            name: None,
+            other: &[],
+            direction: Direction::Out,
+        };
+        let outcome = run(&binary, &graph, &check, false, Format::Text, &mut out);
         assert_eq!(outcome.unwrap(), Outcome::Crossed);
         let out = String::from_utf8(out).unwrap();
         assert!(out.contains("\n0x1fff0100        call  "), "{out}");

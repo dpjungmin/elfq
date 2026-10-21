@@ -87,14 +87,6 @@ impl<'a> Boundary<'a> {
         }
     }
 
-    /// A range that no item is in, if there is one: most likely a typo.
-    pub fn empty_range(&self) -> Option<AddressRange> {
-        self.ranges
-            .iter()
-            .copied()
-            .find(|&range| !self.binary.items.iter().any(|item| item.is_in(&[range])))
-    }
-
     /// The uses of the rest of the file by the items in the ranges.
     pub fn leaving(&self) -> Vec<Crossing> {
         self.crossings(true)
