@@ -112,8 +112,9 @@ are stored. (`binary::Section::load_address`)
 
 **Boundary and crossing.** For `callers` and `callees` with ranges, `--from`
 or `--to`, an item is inside when any of its bytes is in one of the ranges,
-and a reference **crosses** the boundary when one end is inside and the
-other isn't. The help calls the boundary the ranges' edge. (`graph::Boundary`,
+where an item whose size elfq doesn't know counts as its first byte, and a
+reference **crosses** the boundary when one end is inside and the other
+isn't. The help calls the boundary the ranges' edge. (`graph::Boundary`,
 `graph::Crossing`)
 
 **Thumb.** The instruction set of Cortex-M processors, with 16- and 32-bit
@@ -224,17 +225,20 @@ range and can be given again. With SYMBOL, they ask about the range that
 SYMBOL occupies, as `callers crc32 --from 0x30000000+16M` does, so the
 answer looks through veneers as the range forms do, where `callers SYMBOL`
 alone lists the veneer. `callees A --to B` and `callers B --from A` list
-the same uses, each row from its own side, and a use through a veneer that
-only one of A and B holds is listed at the veneer. What elfq can't follow
-stays when it may be in the other ranges: `callees` keeps a call to a known
-address in them, and a call through a pointer when they hold a function
-whose address is taken or stored other than in the vector table; `callers`
-keeps its note on calls through a pointer when code in the `--from` ranges
-calls through one, or is code that elfq can't read, which it names, as
-`callees` does, since that code may use the ranges in any way. Each range
-of `--from` or `--to` must hold an item outside the ranges asked about, or
-for `--to`, code outside every item and outside those ranges that the file
-calls or jumps to, such as a routine in a chip's ROM, so that
+the same uses, each row from its own side. A call through a veneer or PLT
+stub is listed at the call, "via veneer", unless the edge falls at the
+veneer: when B holds the veneer but not its target, it is listed as a call
+to the veneer, and when A holds the veneer but not the code that calls it,
+at the veneer's jump. What elfq can't follow stays when it may be in the
+other ranges: `callees` keeps a call to a known address in them, and a call
+through a pointer when they hold a function whose address is taken or
+stored other than in the vector table; `callers` keeps its note on calls
+through a pointer when code in the `--from` ranges calls through one, or is
+a function whose end elfq doesn't know, which it names, as `callees` does,
+since that code may use the ranges in any way. Code that no item holds,
+such as a routine in a chip's ROM, counts only where the file calls it, not
+as a caller. Each range of `--from` or `--to` must hold an item outside the
+ranges asked about, or for `--to`, such code outside those ranges, so that
 a mistyped range is an error and not a quiet exit status 0. An item can be
 in both only when everything in the ranges asked about is, as SYMBOL is in
 `callees process_frame --to 0x30000000+16M`; otherwise it would be on both
@@ -532,7 +536,7 @@ several.
 
 | Key | Value |
 |---|---|
-| `ranges` | the ranges, or the range that SYMBOL occupies |
+| `ranges` | the ranges, or the range that SYMBOL occupies: its first byte when elfq doesn't know its size |
 | `to` | for `callees` only, the ranges of `--to`, or `null` without it |
 | `from` | for `callers` only, the ranges of `--from`, or `null` without it |
 | `callees` | for `callees`, the references that cross, a row for each pair of items and way of use, in the text's order, the largest item outside first: the `item` or import outside; the `caller` in the ranges that uses it; `how`, as in `callees SYMBOL`; `veneer`, the linker's veneer or PLT stub that a call goes through, or `null`; and the `sites`. With `--to`, only those into its ranges, where a call through a veneer in them that goes on elsewhere uses the veneer, as its `item` |
@@ -552,11 +556,14 @@ keeps call through pointers, since what those calls reach may count for
 other items.
 In JSON, `callers` and `callees` have `complete`, and `retained` has
 `indirect_calls`. For ranges, and with `--from` or `--to`, `complete` is
-`false` when `callees` lists a call it can't follow or a function whose end
-it doesn't know, or when `callers` notes calls through a pointer to a
-function in the ranges, whose address is taken or stored other than in the
-vector table, which only the processor calls through, or names code in the
-`--from` ranges whose end it doesn't know.
+`false` when `callees` lists a call it can't follow, other than, with
+`--to`, one to a known address in its ranges, or a function whose end it
+doesn't know, or when `callers` notes calls through a pointer to a function
+in the ranges, whose address is taken or stored other than in the vector
+table, which only the processor calls through, or names code in the
+`--from` ranges whose end it doesn't know. A call from outside to code in
+the ranges that no item holds, as to a chip's ROM, goes where `callers`
+says, so it leaves the answer complete.
 `callers` can't see calls from code whose end elfq doesn't know, such as
 assembly without a `.size`, but C runtimes have such code (`_init`,
 `_fini`) in almost every file, so it doesn't make the answer incomplete,

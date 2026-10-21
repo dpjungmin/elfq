@@ -260,16 +260,20 @@ instruction, is listed where it calls the veneer, as \"call via veneer\",
 and a call through a PLT stub to one of the file's own functions, as in a
 shared library, as \"call via PLT\". In --json, the how key leaves out \"via
 veneer\" and \"via PLT\", and the veneer key names the veneer or stub. elfq
-knows the veneers that GNU ld and LLD add for Cortex-M.
+knows the veneers that GNU ld and LLD add for Cortex-M. A note below the
+table names the functions in the ranges whose address is taken or stored,
+other than in the vector table, since calls to them through a pointer
+aren't listed.
 
 --from RANGE lists only the callers in RANGE, and can be given again for
 more: callers 0x20000000+256K --from 0x0+256K lists what in an ITCM at 0x0
 uses a DTCM at 0x20000000. With SYMBOL, --from answers as for the range
 that SYMBOL occupies: callers crc32 --from 0x30000000+16M lists what in
 flash at 0x30000000 calls or uses crc32. The note on calls through a pointer
-stays only when code in the --from ranges calls through one, or elfq can't
-read it. When the --from ranges hold a veneer or PLT stub but not the code
-that calls it, the veneer or stub is listed as the caller, at its jump.
+stays only when code in the --from ranges calls through one, or is a
+function whose end elfq doesn't know, which a line then names. When the
+--from ranges hold a veneer or PLT stub but not the code that calls it, the
+veneer or stub is listed as the caller, at its jump.
 
 Exit status, with ranges or --from: 1 if the answer lists a caller, or
 notes calls through a pointer or code that elfq can't read; 0 if not; and 2

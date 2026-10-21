@@ -40,7 +40,8 @@ struct LeavingJson<'a> {
     unreadable: Vec<json::Item<'a>>,
     /// Whether `callees` has everything the ranges use outside them, or with
     /// `--to`, in its ranges, as far as elfq can tell: `false` when
-    /// `unresolved` or `unreadable` isn't empty.
+    /// `unreadable` isn't empty, or `unresolved` is not, other than with
+    /// `--to`, for calls to known addresses in its ranges.
     complete: bool,
 }
 
@@ -630,7 +631,14 @@ impl Leaving<'_> {
                 .iter()
                 .map(|&index| item(Node::Item(index)))
                 .collect(),
-            complete: self.unfollowed.is_empty() && self.unreadable.is_empty(),
+            // With `--to`, a call to a known address in its ranges, as to a
+            // chip's ROM, is a whole answer, as `callers --from` counts it:
+            // only a call through a pointer leaves it open.
+            complete: self.unreadable.is_empty()
+                && self
+                    .unfollowed
+                    .iter()
+                    .all(|row| !self.check.other.is_empty() && row.unresolved.target.is_some()),
         };
         json::write(&leaving, out)
     }

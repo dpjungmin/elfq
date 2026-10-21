@@ -2638,8 +2638,7 @@ fn ranges_in_place_of_symbol_must_be_ranges_with_something_in_them() {
     // answers: not for an import, nor for code that elfq can't read, nor
     // for a range in SYMBOL, nor where the file has nothing.
     for args in [
-        &[SAMPLE, "callers", "__libc_start_main", "--range", "0+16M"],
-        &[SAMPLE, "callees", "_init", "--range", "0+16M"],
+        &[SAMPLE, "callers", "__libc_start_main", "--range", "0+16M"][..],
         &[TCM_SAMPLE, "callers", "crc32", "--range", "0x10+48"],
         &[
             TCM_SAMPLE,
@@ -2649,11 +2648,58 @@ fn ranges_in_place_of_symbol_must_be_ranges_with_something_in_them() {
             "0x30000320+16",
         ],
         &[TCM_SAMPLE, "callers", "crc32", "--range", "0x40000000+16"],
+        // Nor without SYMBOL.
+        &[TCM_SAMPLE, "callers", "--range", "0x40000000+16"],
+        &[
+            TCM_SAMPLE, "callers", "--range", "0x0+256K", "--from", "0x0+1K",
+        ],
+        &[
+            TCM_SAMPLE,
+            "callees",
+            "--range",
+            "0x30000000+16M",
+            "--to",
+            "0x30000320+376",
+        ],
     ] {
         assert_output(
             &stderr(args, 2),
             "error: only the overview, top and retained take --range\n",
         );
+    }
+    // When no command answers, and the one given fails without --range
+    // too, its error comes first.
+    for (args, error) in [
+        (
+            &[SAMPLE, "callees", "_init", "--range", "0+16M"][..],
+            "error: elfq doesn't know where _init ends, so it can't read its code\n",
+        ),
+        (
+            &[
+                TCM_SAMPLE,
+                "callers",
+                "0x4000000+256K",
+                "--range",
+                "0x30000000+16M",
+            ],
+            "error: the file has nothing in 0x04000000..0x04040000; the overview lists its \
+             ranges\n",
+        ),
+        (
+            &[
+                TCM_SAMPLE,
+                "callees",
+                "process_frame",
+                "--to",
+                "0x40000000+16",
+                "--range",
+                "0x0+256K",
+            ],
+            "error: --to 0x40000000..0x40000010 holds no functions or data, and no code in the \
+             file calls or jumps there\n",
+        ),
+    ] {
+        assert_output(&stderr(args, 2), error);
     }
     // A mistyped name comes first.
     assert_output(
@@ -2840,11 +2886,6 @@ fn arguments_that_dont_go_together_are_refused_before_the_file_is_read() {
             "error: only the overview, top and retained take --range\n",
         ),
         (
-            &["missing.elf", "callees", "--range", "0+1K"],
-            "error: callees takes ranges in place of SYMBOL, not with --range: \
-             elfq missing.elf callees 0x00000000..0x00000400\n",
-        ),
-        (
             &["missing.elf", "callers"],
             "error: callers needs a SYMBOL, or ranges such as 0x0+256K\n",
         ),
@@ -2916,6 +2957,14 @@ elfq can't yet read Aarch64 code to tell what calls what.
         &[path, "why", "no_such_function"],
         &[path, "callers", "no_such_function"],
         &[path, "callees", "no_such_function"],
+        &[
+            path,
+            "callers",
+            "no_such_function",
+            "--range",
+            "0x1000+0x100",
+        ],
+        &[path, "callers", "--range", "0x1000+0x100"],
     ] {
         assert_output(
             &stderr(args, 2),

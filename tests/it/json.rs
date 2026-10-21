@@ -332,6 +332,23 @@ fn from_and_to_list_their_ranges() {
     assert_eq!(unresolved["veneer"]["name"], "__rom_routine_veneer");
     assert_eq!(callers["callers"], json!([]));
     assert_eq!(callers["complete"], true);
+    // And callees --to the ROM, the same call, as complete.
+    let output = elfq(&[
+        "testdata/bin/far-gnu-m4-nodebug.elf",
+        "callees",
+        "0x30000000+16M",
+        "--to",
+        "0x1fff0000+64K",
+        "--json",
+    ]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let callees: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        callees["unresolved"][0]["caller"]["name"],
+        "flash_calls_rom"
+    );
+    assert_eq!(callees["unresolved"][0]["target"], "0x1fff0000");
+    assert_eq!(callees["complete"], true);
 }
 
 /// The rows of a range check's JSON, by address rather than by name, so

@@ -52,8 +52,8 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<Outcome> {
         // any more: the answer still counts.
         let _ = writeln!(std::io::stderr(), "warning: {warning}");
     }
-    // `check_arguments` leaves `--range` with SYMBOL or ranges until elfq
-    // can tell which command to suggest.
+    // `check_arguments` leaves `--range` with `callers` and `callees` until
+    // elfq can tell which command to suggest.
     if let Some(range) = cli.range
         && let Some(command) = &cli.command
         && let Some(uses) = uses_args(command)
@@ -122,11 +122,8 @@ fn check_arguments(cli: &Cli) -> Result<()> {
                 uses.option
             )
         }
-        if let Some(range) = cli.range {
+        if cli.range.is_some() {
             let symbols = &uses.args.symbols;
-            if symbols.is_empty() {
-                bail!("{}", range_hint(cli, name, &uses, range, true, false));
-            }
             if symbols.len() > 1
                 && let Some(query) = symbols.iter().find(|query| !symbol::is_range(query))
             {
@@ -163,10 +160,11 @@ fn check_tree(cli: &Cli) -> Result<()> {
     }
 }
 
-/// The error for `--range` with `callers` or `callees` and SYMBOL or ranges
-/// (see [`range_hint`]), suggesting only the commands that answer for
-/// `binary`: elfq runs them to find out, which costs time only on this
-/// mistake.
+/// The error for `--range` with `callers` or `callees` (see
+/// [`range_hint`]), suggesting only the commands that answer for `binary`:
+/// elfq runs them to find out, which costs time only on this mistake. When
+/// none does, and the command fails without `--range` too, that error comes
+/// first, since no form of the command answers until it is fixed.
 fn range_error(
     cli: &Cli,
     binary: &Binary,
@@ -174,23 +172,27 @@ fn range_error(
     uses: &Uses,
     range: AddressRange,
 ) -> Result<String> {
+    check_code_is_readable(binary)?;
     let symbols = &uses.args.symbols;
     let ranges = symbols.iter().all(|query| symbol::is_range(query));
     if !ranges {
         // A mistyped name is the first thing to fix.
         symbol::subject(binary, symbols)?;
     }
-    let answers = |symbols: &[String], other: &[AddressRange]| {
+    let answer = |symbols: &[String], other: &[AddressRange]| {
         let sink = &mut std::io::sink();
-        let answer = match command {
+        match command {
             Command::Callers(_) => callers::run(binary, symbols, other, false, Format::Json, sink),
             _ => callees::run(binary, symbols, other, false, Format::Json, sink),
-        };
-        answer.is_ok()
+        }
     };
-    let added = ranges && answers(&[&symbols[..], &[range.to_string()]].concat(), uses.other);
-    let limited = answers(symbols, &[uses.other, &[range]].concat());
+    let added =
+        ranges && answer(&[&symbols[..], &[range.to_string()]].concat(), uses.other).is_ok();
+    let limited = !symbols.is_empty() && answer(symbols, &[uses.other, &[range]].concat()).is_ok();
     if !added && !limited {
+        if !symbols.is_empty() {
+            answer(symbols, uses.other)?;
+        }
         return Ok(RANGE_REFUSED.to_string());
     }
     Ok(range_hint(
