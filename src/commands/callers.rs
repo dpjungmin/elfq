@@ -1,15 +1,15 @@
 //! `elfq FILE callers SYMBOL`: what calls or uses SYMBOL. For ranges of
-//! memory in place of SYMBOL, see `ranges.rs`.
+//! memory in place of SYMBOL, or SYMBOL with `--from`, see `ranges.rs`.
 
 use std::io::Write;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use serde::Serialize;
 
-use super::ranges::{self, Direction};
+use super::ranges::{self, Direction, RangeCheck};
 use super::symbol::{self, Subject, Symbol};
 use super::{Outcome, json, text};
-use crate::binary::{Binary, ItemKind};
+use crate::binary::{AddressRange, Binary, ItemKind};
 use crate::cli::Format;
 use crate::graph::{Graph, Node, Reference, ReferenceKind};
 
@@ -24,25 +24,51 @@ struct Callers<'a> {
 }
 
 /// Answers `elfq FILE callers SYMBOL`, or with ranges in place of SYMBOL,
-/// `callers RANGE...`. For SYMBOL, the text lists the 30 largest callers,
-/// or with `all`, every one; for ranges, see [`ranges::run`].
+/// `callers RANGE...`. `from`, the ranges of `--from`, limits either to the
+/// callers in them, and then SYMBOL is asked about as the range it
+/// occupies. For SYMBOL alone, the text lists the 30 largest callers, or
+/// with `all`, every one; for ranges, see [`ranges::run`].
 pub fn run(
     binary: &Binary,
     symbols: &[String],
+    from: &[AddressRange],
     all: bool,
     format: Format,
     out: &mut dyn Write,
 ) -> Result<Outcome> {
     super::check_code_is_readable(binary)?;
     let subject = symbol::subject(binary, symbols)?;
-    let graph = Graph::build(binary);
     match subject {
-        Subject::Symbol(symbol) => {
+        Subject::Symbol(symbol) if from.is_empty() => {
+            let graph = Graph::build(binary);
             callers(binary, &graph, &symbol, all, format, out)?;
             Ok(Outcome::Answered)
         }
+        Subject::Symbol(symbol) => {
+            let Node::Item(index) = symbol.node else {
+                bail!(
+                    "{} is imported from a shared library, so it has no range in this file for \
+                     --from",
+                    symbol.node.name(binary)
+                );
+            };
+            let range = ranges::item_range(binary, index);
+            let check = RangeCheck {
+                ranges: &[range],
+                name: Some(symbol.lead_name(binary)),
+                other: from,
+                direction: Direction::In,
+            };
+            ranges::run(binary, &Graph::build(binary), &check, all, format, out)
+        }
         Subject::Ranges(ranges) => {
-            ranges::run(binary, &graph, &ranges, Direction::In, all, format, out)
+            let check = RangeCheck {
+                ranges: &ranges,
+                name: None,
+                other: from,
+                direction: Direction::In,
+            };
+            ranges::run(binary, &Graph::build(binary), &check, all, format, out)
         }
     }
 }

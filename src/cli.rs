@@ -53,6 +53,46 @@ fn one_range(text: &str) -> Result<AddressRange, String> {
     text.parse()
 }
 
+/// Reads one `--from`.
+fn from_range(text: &str) -> Result<AddressRange, String> {
+    one_range_each("--from", text)
+}
+
+/// Reads one `--to`.
+fn to_range(text: &str) -> Result<AddressRange, String> {
+    one_range_each("--to", text)
+}
+
+/// Reads one range for `option`, `--from` or `--to`, which take one each:
+/// given several, separated by commas, it shows them given apart.
+fn one_range_each(option: &str, text: &str) -> Result<AddressRange, String> {
+    if !text.contains(',') {
+        return text.parse();
+    }
+    let parts: Vec<&str> = text
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect();
+    for part in &parts {
+        part.parse::<AddressRange>()?;
+    }
+    match parts[..] {
+        [] => text.parse(),
+        [_] => Err(format!("{option} takes one range; leave out the comma")),
+        _ => {
+            let apart: Vec<String> = parts
+                .iter()
+                .map(|part| format!("{option} {part}"))
+                .collect();
+            Err(format!(
+                "{option} takes one range; give it again for each: {}",
+                apart.join(" ")
+            ))
+        }
+    }
+}
+
 impl Cli {
     /// How to print the answer. `--json` and `--tree` don't go together,
     /// which `commands::run` checks.
@@ -101,14 +141,14 @@ SYMBOL, and a why row without \"used by\" is used by the row above, or
 starts a chain. The tables of top, retained, callers and callees show the
 30 largest items, inlined the 30 largest functions, and why the chains
 through the 10 nearest users; --all shows every row, and makes sentences
-name everything they would cut short. With ranges, callers and callees
-show every row anyway. --json has every item, site and chain, one row per
-line, but the overview's JSON leaves its table to top's. Scripts that read
-why's chains should use --json.
+name everything they would cut short. With ranges, --from or --to, callers
+and callees show every row. --json has every item, site and chain, one row
+per line, but the overview's JSON leaves its table to top's. Scripts that
+read why's chains should use --json.
 
-Exit status: 0 for an answer, 1 when callers or callees with ranges finds
-something that crosses them, or might, and 2 for an error, which goes to
-stderr with nothing on stdout.";
+Exit status: 0 for an answer, 1 when callers or callees with ranges, --from
+or --to finds something that crosses, or might, and 2 for an error, which
+goes to stderr with nothing on stdout.";
 
 // One variant per command. Each variant's `///` line is its line in
 // `elfq --help`.
@@ -132,14 +172,14 @@ pub enum Command {
                           elfq <FILE> callers [OPTIONS] <RANGE>...",
         after_help = format!("{HOW}\n\n{AT}\n\n{CALLERS}\n\n{CALLERS_RANGES}")
     )]
-    Callers(UsesArgs),
+    Callers(CallersArgs),
     /// List what SYMBOL calls or uses
     #[command(
         override_usage = "elfq <FILE> callees [OPTIONS] <SYMBOL>\n       \
                           elfq <FILE> callees [OPTIONS] <RANGE>...",
         after_help = format!("{HOW}\n\n{AT}\n\n{CALLEES}\n\n{CALLEES_RANGES}")
     )]
-    Callees(UsesArgs),
+    Callees(CalleesArgs),
     /// Show elfq's own view of the file (for developing elfq)
     #[command(subcommand, hide = true)]
     Debug(DebugCommand),
@@ -186,26 +226,58 @@ the sentences name everything they would cut short. Calls and jumps that
 elfq can't follow come first, as \"(through a pointer)\", or as \"(outside any
 function)\" when they go to an address no function holds. A call through a
 veneer, which a linker adds when the target is too far away for the call
-instruction, is listed where it calls the veneer, as \"call via veneer\".
-In --json, the how key leaves out \"via veneer\", and the veneer key names
-the veneer. elfq knows the veneers that GNU ld and LLD add for Cortex-M.
+instruction, is listed where it calls the veneer, as \"call via veneer\",
+and a call through a PLT stub to one of the file's own functions, as in a
+shared library, as \"call via PLT\". In --json, the how key leaves out \"via
+veneer\" and \"via PLT\", and the veneer key names the veneer or stub. elfq
+knows the veneers that GNU ld and LLD add for Cortex-M.
 
-Exit status: 0 if nothing leaves the ranges, 1 if something does or might,
-and 2 for an error.";
+--to RANGE lists only the callees in RANGE, and can be given again for
+more: callees 0x0+256K --to 0x30000000+16M lists what an ITCM at 0x0 uses
+in flash at 0x30000000. With SYMBOL, --to answers as for the range that
+SYMBOL occupies: callees process_frame --to 0x0+256K lists what
+process_frame uses in the ITCM. Calls and jumps that elfq can't follow stay
+when they may go to the --to ranges: one to a known address, when the
+address is in them, and one through a pointer, when the ranges hold a
+function whose address is taken or stored other than in the vector table.
+When the --to ranges hold a veneer or PLT stub but not its target, the call
+is listed as a call to the veneer or stub, as in \"__crc32_veneer, used by
+process_frame\".
+
+Exit status, with ranges or --to: 1 if the answer lists a callee, or code
+that elfq can't follow or read; 0 if not; and 2 for an error.";
 
 const CALLERS_RANGES: &str = "\
 With ranges of memory in place of SYMBOL, such as 0x0+256K for an ITCM,
 elfq lists only the code and data outside them that use what is in them.
 Each row names the item outside first, as in \"process_frame, uses crc32\",
 and ADDRESS and SIZE are that item's. Every crossing has a row, and --all
-makes the sentences name everything they would cut short. A call through a
+makes the sentences name everything they would cut short. Calls and jumps
+to an address in the ranges that no function holds, as in a ROM, come
+first, as \"uses 0x1fff0000 (outside any function)\". A call through a
 veneer, which a linker adds when the target is too far away for the call
-instruction, is listed where it calls the veneer, as \"call via veneer\".
-In --json, the how key leaves out \"via veneer\", and the veneer key names
-the veneer. elfq knows the veneers that GNU ld and LLD add for Cortex-M.
+instruction, is listed where it calls the veneer, as \"call via veneer\",
+and a call through a PLT stub to one of the file's own functions, as in a
+shared library, as \"call via PLT\". In --json, the how key leaves out \"via
+veneer\" and \"via PLT\", and the veneer key names the veneer or stub. elfq
+knows the veneers that GNU ld and LLD add for Cortex-M. A note below the
+table names the functions in the ranges whose address is taken or stored,
+other than in the vector table, since calls to them through a pointer
+aren't listed.
 
-Exit status: 0 if nothing outside uses the ranges, 1 if something does or
-might through a pointer, and 2 for an error.";
+--from RANGE lists only the callers in RANGE, and can be given again for
+more: callers 0x20000000+256K --from 0x0+256K lists what in an ITCM at 0x0
+uses a DTCM at 0x20000000. With SYMBOL, --from answers as for the range
+that SYMBOL occupies: callers crc32 --from 0x30000000+16M lists what in
+flash at 0x30000000 calls or uses crc32. The note on calls through a pointer
+stays only when code in the --from ranges calls through one, or is a
+function whose end elfq doesn't know, which a line then names. When the
+--from ranges hold a veneer or PLT stub but not the code that calls it, the
+veneer or stub is listed as the caller, at its jump.
+
+Exit status, with ranges or --from: 1 if the answer lists a caller, or
+notes calls through a pointer or code that elfq can't read; 0 if not; and 2
+for an error.";
 
 const WHY: &str = "\
 The chains start where the program does, as HOW says: at the entry point, a
@@ -298,12 +370,39 @@ pub struct UsesArgs {
     /// Or one or more ranges of memory, START..END or START+SIZE, to list
     /// only what crosses their edge
     // Not required here: commands::check_arguments says what is missing,
-    // and with --range, to give the range here instead.
+    // and with --range, what to type instead.
     #[arg(value_name = "SYMBOL|RANGE")]
     pub symbols: Vec<String>,
     /// Show every item, not only the 30 largest
     #[arg(long)]
     pub all: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct CallersArgs {
+    #[command(flatten)]
+    pub uses: UsesArgs,
+    /// List only the callers in this range of memory, START..END or
+    /// START+SIZE; give it again for more
+    #[arg(long, value_name = "RANGE", value_parser = from_range)]
+    pub from: Vec<AddressRange>,
+    // Hidden, so that commands::check_arguments can say that --to goes with
+    // callees, in place of clap's error.
+    #[arg(long = "to", hide = true, value_name = "RANGE")]
+    pub misplaced_to: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct CalleesArgs {
+    #[command(flatten)]
+    pub uses: UsesArgs,
+    /// List only the callees in this range of memory, START..END or
+    /// START+SIZE; give it again for more
+    #[arg(long, value_name = "RANGE", value_parser = to_range)]
+    pub to: Vec<AddressRange>,
+    // As `CallersArgs::misplaced_to`.
+    #[arg(long = "from", hide = true, value_name = "RANGE")]
+    pub misplaced_from: Vec<String>,
 }
 
 #[derive(Debug, Args)]

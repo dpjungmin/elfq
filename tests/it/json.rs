@@ -268,6 +268,87 @@ fn ranges_list_what_crosses_their_edge() {
     assert_eq!(callers["callers"][0]["how"], "address taken");
     assert_eq!(names(&callers["through_pointer"]), ["on_timer", "on_data"]);
     assert_eq!(callers["complete"], false);
+    assert_eq!(callers["from"], Value::Null);
+    assert_eq!(callees["to"], Value::Null);
+}
+
+#[test]
+fn from_and_to_list_their_ranges() {
+    let output = elfq(&[
+        TCM_SAMPLE,
+        "callers",
+        "0x20000000+256K",
+        "--from",
+        "0x0+256K",
+        "--json",
+    ]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let callers: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        callers["from"],
+        json!([{ "start": "0x0", "end": "0x40000" }])
+    );
+    assert_eq!(names(&callers["callers"]), ["crc32", "SysTick_Handler"]);
+
+    let output = elfq(&[
+        TCM_SAMPLE,
+        "callees",
+        "0x0+256K",
+        "--to",
+        "0x30000000+16M",
+        "--to",
+        "0x20240000+512K",
+        "--json",
+    ]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let callees: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        callees["to"],
+        json!([
+            { "start": "0x30000000", "end": "0x31000000" },
+            { "start": "0x20240000", "end": "0x202c0000" }
+        ])
+    );
+    assert_eq!(
+        names(&callees["callees"]),
+        ["memcpy", "app_tick", "fir_coeffs"]
+    );
+
+    // callers lists the calls into code that no item holds, as callees
+    // does.
+    let output = elfq(&[
+        "testdata/bin/far-gnu-m4-nodebug.elf",
+        "callers",
+        "0x1fff0000+64K",
+        "--from",
+        "0x30000000+16M",
+        "--json",
+    ]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let callers: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let unresolved = &callers["unresolved"][0];
+    assert_eq!(unresolved["caller"]["name"], "flash_calls_rom");
+    assert_eq!(unresolved["target"], "0x1fff0000");
+    assert_eq!(unresolved["veneer"]["name"], "__rom_routine_veneer");
+    assert_eq!(callers["callers"], json!([]));
+    assert_eq!(callers["complete"], true);
+    // And callees --to the ROM, the same call, as complete.
+    let output = elfq(&[
+        "testdata/bin/far-gnu-m4-nodebug.elf",
+        "callees",
+        "0x30000000+16M",
+        "--to",
+        "0x1fff0000+64K",
+        "--json",
+    ]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let callees: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        callees["unresolved"][0]["caller"]["name"],
+        "flash_calls_rom"
+    );
+    assert_eq!(callees["unresolved"][0]["target"], "0x1fff0000");
+    assert_eq!(callees["complete"], true);
 }
 
 /// The rows of a range check's JSON, by address rather than by name, so

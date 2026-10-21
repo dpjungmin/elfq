@@ -236,6 +236,36 @@ ADDRESS     SIZE  HOW              AT                      CALLER
 from three places, and the vector table holds the address of
 `SysTick_Handler`.
 
+`--from RANGE` lists only the callers in RANGE, and `--to RANGE` only the
+callees. DTCM is used by 11 functions, most of them in flash; this asks
+which of them are in ITCM:
+
+```
+$ elfq testdata/bin/c-cortex-m7.elf callers 0x20000000+256K --from 0x0+256K
+0x20000000..0x20040000 (.data and .bss) is used by 2 functions in 0x00000000..0x00040000 (.itcm):
+
+ADDRESS  SIZE  HOW   AT    CALLER
+0x10       48  uses  0x18  crc32, uses crc_table
+0x0        16  uses  0x0   SysTick_Handler, uses systick_count
+```
+
+`crc32` reads its table from DTCM, and `SysTick_Handler` counts the timer's
+ticks there. `callees 0x0+256K --to 0x20000000+256K` lists the same two
+uses, with the data in DTCM first. Either command also takes a name in
+place of the ranges, and then asks about the range that the item occupies:
+
+```
+$ elfq testdata/bin/c-cortex-m7.elf callees process_frame --to 0x0+256K
+process_frame uses 2 functions in 0x00000000..0x00040000 (.itcm):
+
+ADDRESS  SIZE  HOW              AT                      CALLEE
+0x74       92  call via veneer  0x30000386, 0x30000454  apply_filter, used by process_frame
+0x10       48  call via veneer  0x3000034c              crc32, used by process_frame
+```
+
+`process_frame`, in flash, calls two functions in ITCM, both through
+veneers.
+
 ## What is in stripped firmware?
 
 Shipped firmware often has no symbols. elfq still finds its functions, from

@@ -1918,7 +1918,7 @@ fn callees_of_ranges_lists_first_what_elfq_cannot_follow() {
     assert_output(
         &crossing(&[SAMPLE, "callees", "0x1000+4"]),
         "\
-0x00001000..0x00001004 (.init) uses nothing outside it in the code elfq can read.
+In the code elfq can read, 0x00001000..0x00001004 (.init) uses nothing outside it.
 elfq doesn't know where _init ends, so it can't read its code.
 ",
     );
@@ -1971,6 +1971,524 @@ Calls through a pointer to on_timer and on_data aren't listed, since elfq can't 
          .ARM.exidx) uses them directly.\n\
          Calls through a pointer to on_timer, on_data and on_button aren't listed, since elfq \
          can't see them.\n",
+    );
+}
+
+#[test]
+fn from_and_to_list_only_what_is_in_other_ranges() {
+    // What in ITCM uses DTCM.
+    assert_output(
+        &crossing(&[
+            TCM_SAMPLE,
+            "callers",
+            "0x20000000+256K",
+            "--from",
+            "0x0+256K",
+        ]),
+        "\
+0x20000000..0x20040000 (.data and .bss) is used by 2 functions in 0x00000000..0x00040000 (.itcm):
+
+ADDRESS  SIZE  HOW   AT    CALLER
+0x10       48  uses  0x18  crc32, uses crc_table
+0x0        16  uses  0x0   SysTick_Handler, uses systick_count
+",
+    );
+    // What ITCM uses in flash, which leaves out DTCM.
+    assert_output(
+        &crossing(&[TCM_SAMPLE, "callees", "0x0+256K", "--to", "0x30000000+16M"]),
+        "\
+0x00000000..0x00040000 (.itcm) uses 3 items in 0x30000000..0x31000000 (.isr_vector, .text, .rodata and .ARM.exidx):
+
+ADDRESS     SIZE  HOW                   AT    CALLEE
+0x3000087c   308  call via veneer       0xbc  memcpy, used by apply_filter
+0x300002e4    60  tail call via veneer  0x8   app_tick, used by SysTick_Handler
+0x30000eb4    32  uses                  0x56  fir_coeffs, used by filter_tap
+",
+    );
+    // Each option takes one range, and can be given again.
+    assert_output(
+        &crossing(&[
+            TCM_SAMPLE,
+            "callers",
+            "0x0+256K",
+            "--from",
+            "0x30000000+16M",
+            "--from",
+            "0x20000000+256K",
+        ]),
+        "\
+0x00000000..0x00040000 (.itcm) is used by 2 items in 0x30000000..0x31000000 (.isr_vector, .text, .rodata and .ARM.exidx) and 0x20000000..0x20040000 (.data and .bss):
+
+ADDRESS     SIZE  HOW              AT                      CALLER
+0x30000320   376  call via veneer  0x3000034c              process_frame, uses crc32
+0x30000320   376  call via veneer  0x30000386, 0x30000454  process_frame, uses apply_filter
+0x30000000    64  pointer          0x3000003c              vector_table, uses SysTick_Handler
+",
+    );
+    // Nothing there: exit status 0.
+    assert_output(
+        &stdout(&[
+            TCM_SAMPLE,
+            "callers",
+            "0x20000000+256K",
+            "--from",
+            "0x20240000+512K",
+        ]),
+        "Nothing in 0x20240000..0x202c0000 (.ocram_bss) uses 0x20000000..0x20040000 (.data and \
+         .bss).\n",
+    );
+    assert_output(
+        &stdout(&[TCM_SAMPLE, "callees", "0x0+256K", "--to", "0x20240000+512K"]),
+        "0x00000000..0x00040000 (.itcm) uses nothing in 0x20240000..0x202c0000 (.ocram_bss).\n",
+    );
+}
+
+#[test]
+fn from_and_to_keep_what_elfq_cannot_follow_that_may_be_there() {
+    // A call through a pointer may go to a function whose address is taken
+    // or stored, as on_timer's and on_data's are.
+    assert_output(
+        &crossing(&[SAMPLE, "callees", "0x1180+0x80", "--to", "0x1260+0x20"]),
+        "\
+0x00001180..0x00001200 (.text) makes 2 jumps that elfq can't follow, which may go to 0x00001260..0x00001280 (.text):
+
+ADDRESS  SIZE  HOW   AT      CALLEE
+               jump  0x11bf  (through a pointer), used by deregister_tm_clones
+               jump  0x1200  (through a pointer), used by register_tm_clones
+",
+    );
+    assert_output(
+        &crossing(&[SAMPLE, "callers", "0x1260+0x20", "--from", "0x1180+0x80"]),
+        "\
+Nothing in 0x00001180..0x00001200 (.text) uses 0x00001260..0x00001280 (.text) directly.
+Calls through a pointer to on_timer and on_data aren't listed, since elfq can't see them.
+",
+    );
+    // Nor when every such function in the --to ranges is in the ranges
+    // asked about too.
+    assert_output(
+        &stdout(&[
+            SAMPLE,
+            "callees",
+            "0x1180..0x1280",
+            "--to",
+            "0x1180..0x1300",
+        ]),
+        "0x00001180..0x00001280 (.text) uses nothing in 0x00001180..0x00001300 (.text).\n",
+    );
+    // Code that elfq can't read, as glibc's _init, may use the ranges in
+    // any way, and both sides say so.
+    assert_output(
+        &crossing(&[SAMPLE, "callers", "0x1260+0x20", "--from", "0x1000+1"]),
+        "\
+In the code elfq can read, nothing in 0x00001000..0x00001001 (.init) uses 0x00001260..0x00001280 (.text) directly.
+Calls through a pointer to on_timer and on_data aren't listed, since elfq can't see them.
+elfq doesn't know where _init ends, so it can't read its code.
+",
+    );
+    assert_output(
+        &crossing(&[SAMPLE, "callees", "0x1000+1", "--to", "0x1260+0x20"]),
+        "\
+In the code elfq can read, 0x00001000..0x00001001 (.init) uses nothing in 0x00001260..0x00001280 (.text).
+elfq doesn't know where _init ends, so it can't read its code.
+",
+    );
+    let plt = "testdata/bin/c-plt.so";
+    for args in [
+        &[plt, "callers", "0x11f0+4", "--from", "0x1000+1", "--json"],
+        &[plt, "callees", "0x1000+1", "--to", "0x11f0+4", "--json"],
+    ] {
+        let json = crossing(args);
+        assert!(
+            json.contains("],\"unreadable\":[\n{\"name\":\"_init\",")
+                && json.ends_with("],\"complete\":false}\n"),
+            "{json}"
+        );
+    }
+    // Not to data, nor to functions whose addresses only the vector table
+    // holds; and code that makes no such call doesn't make one.
+    assert_output(
+        &stdout(&[
+            TCM_SAMPLE,
+            "callees",
+            "0x300002cc+24",
+            "--to",
+            "0x20240000+4K",
+        ]),
+        "0x300002cc..0x300002e4 (.text) uses nothing in 0x20240000..0x20241000 (.ocram_bss).\n",
+    );
+    assert_output(
+        &crossing(&[
+            TCM_SAMPLE,
+            "callees",
+            "0x30000000+0x2e0",
+            "--to",
+            "0x0+256K",
+        ]),
+        "\
+0x30000000..0x300002e0 (.isr_vector and .text) uses 1 function in 0x00000000..0x00040000 (.itcm):
+
+ADDRESS  SIZE  HOW      AT          CALLEE
+0x0        16  pointer  0x3000003c  SysTick_Handler, used by vector_table
+",
+    );
+    assert_output(
+        &stdout(&[TCM_SAMPLE, "callers", "0x30000000+16M", "--from", "0x10+48"]),
+        "Nothing in 0x00000010..0x00000040 (.itcm) uses 0x30000000..0x31000000 (.isr_vector, \
+         .text, .rodata and .ARM.exidx).\n",
+    );
+    // A call to an address outside every function goes there, as to a
+    // routine in the chip's ROM, which --to can name though the file has
+    // nothing there, when code in it calls there.
+    let far = "testdata/bin/far-gnu-m4-nodebug.elf";
+    assert_output(
+        &crossing(&[far, "callees", "0x0+64K", "--to", "0x1fff0000+64K"]),
+        "\
+0x00000000..0x00010000 (.ram) makes 1 call and 1 jump that elfq can't follow, which go to 0x1fff0000..0x20000000:
+
+ADDRESS     SIZE  HOW              AT    CALLEE
+0x1fff0000        call via veneer  0x46  (outside any function), used by ram_calls_rom
+0x1fff0000        jump via veneer  0x60  (outside any function), used by ram_tails_rom
+",
+    );
+    assert_output(
+        &crossing(&[far, "callees", "0x3c+28", "--to", "0x1fff0000+64K"]),
+        "\
+0x0000003c..0x00000058 (.ram) makes 1 call that elfq can't follow, which goes to 0x1fff0000..0x20000000:
+
+ADDRESS     SIZE  HOW              AT    CALLEE
+0x1fff0000        call via veneer  0x46  (outside any function), used by ram_calls_rom
+",
+    );
+    assert_output(
+        &stdout(&[far, "callees", "0x0..0x3c", "--to", "0x1fff0000+64K"]),
+        "0x00000000..0x0000003c (.ram) uses nothing in 0x1fff0000..0x20000000.\n",
+    );
+    // callers lists the same calls from the other side, and a range that
+    // holds only such code needs no --from.
+    assert_output(
+        &crossing(&[far, "callers", "0x1fff0000+64K"]),
+        "\
+0x1fff0000..0x20000000 is used by 3 functions outside it:
+
+ADDRESS     SIZE  HOW              AT          CALLER
+0x3c          28  call via veneer  0x46        ram_calls_rom, uses 0x1fff0000 (outside any function)
+0x58          16  jump via veneer  0x60        ram_tails_rom, uses 0x1fff0000 (outside any function)
+0x300000e4    28  call via veneer  0x300000ee  flash_calls_rom, uses 0x1fff0000 (outside any function)
+",
+    );
+    assert_output(
+        &crossing(&[
+            far,
+            "callers",
+            "0x1fff0000..0x20000004",
+            "--from",
+            "0x300000e4..0x30000100",
+        ]),
+        "\
+0x1fff0000..0x20000004 (.bss) is used by 1 function in 0x300000e4..0x30000100 (.text):
+
+ADDRESS     SIZE  HOW              AT          CALLER
+0x300000e4    28  call via veneer  0x300000ee  flash_calls_rom, uses 0x1fff0000 (outside any function)
+0x300000e4    28  uses             0x300000e6  flash_calls_rom, uses counter
+",
+    );
+    // The veneer's own jump, when only it is in the --from ranges.
+    assert_output(
+        &crossing(&[
+            far,
+            "callers",
+            "0x1fff0000..0x20000004",
+            "--from",
+            "0x30000138+8",
+        ]),
+        "\
+0x1fff0000..0x20000004 (.bss) is used by 1 function in 0x30000138..0x30000140 (.text):
+
+ADDRESS     SIZE  HOW   AT          CALLER
+0x30000138     8  jump  0x30000138  __rom_routine_veneer, uses 0x1fff0000 (outside any function)
+",
+    );
+    assert_output(
+        &crossing(&[far, "callees", "0x0+64K", "--to", "0x30000000+16M"]),
+        "\
+0x00000000..0x00010000 (.ram) uses 3 functions in 0x30000000..0x31000000 (.isr_vector and .text):
+
+ADDRESS     SIZE  HOW                   AT    CALLEE
+0x30000100    16  call                  0x74  flash_far, used by ram_long_calls_flash
+0x300000b8    16  tail call via veneer  0x34  flash_tail, used by ram_tails_flash
+0x300000a8    16  call via veneer       0x1a  flash_work, used by ram_calls_flash
+",
+    );
+}
+
+#[test]
+fn from_and_to_see_a_veneer_on_the_far_side() {
+    // A call goes into the --to ranges at a veneer there, which jumps on
+    // elsewhere; callers asks the same from the other side.
+    let tcm = |args: &[&str]| crossing(&[&[TCM_SAMPLE][..], args].concat());
+    assert_output(
+        &tcm(&["callees", "0x0..0xd0", "--to", "0xd0+256K"]),
+        "\
+0x00000000..0x000000d0 (.itcm) uses 2 functions in 0x000000d0..0x000400d0 (.itcm):
+
+ADDRESS  SIZE  HOW        AT    CALLEE
+0xd0        8  tail call  0x8   __app_tick_veneer, used by SysTick_Handler
+0xd8        8  call       0xbc  __memcpy_veneer, used by apply_filter
+",
+    );
+    assert_output(
+        &tcm(&["callers", "0xd0+256K", "--from", "0x0..0xd0"]),
+        "\
+0x000000d0..0x000400d0 (.itcm) is used by 2 functions in 0x00000000..0x000000d0 (.itcm):
+
+ADDRESS  SIZE  HOW        AT    CALLER
+0x74       92  call       0xbc  apply_filter, uses __memcpy_veneer
+0x0        16  tail call  0x8   SysTick_Handler, uses __app_tick_veneer
+",
+    );
+    // The veneers' jumps, when only they are in the --from ranges.
+    assert_output(
+        &tcm(&["callers", "0x30000000+16M", "--from", "0xd0..0xe0"]),
+        "\
+0x30000000..0x31000000 (.isr_vector, .text, .rodata and .ARM.exidx) is used by 2 functions in 0x000000d0..0x000000e0 (.itcm):
+
+ADDRESS  SIZE  HOW        AT    CALLER
+0xd0        8  tail call  0xd0  __app_tick_veneer, uses app_tick
+0xd8        8  tail call  0xd8  __memcpy_veneer, uses memcpy
+",
+    );
+    assert_output(
+        &tcm(&["callees", "0xd0..0xe0", "--to", "0x30000000+16M"]),
+        "\
+0x000000d0..0x000000e0 (.itcm) uses 2 functions in 0x30000000..0x31000000 (.isr_vector, .text, .rodata and .ARM.exidx):
+
+ADDRESS     SIZE  HOW        AT    CALLEE
+0x3000087c   308  tail call  0xd8  memcpy, used by __memcpy_veneer
+0x300002e4    60  tail call  0xd0  app_tick, used by __app_tick_veneer
+",
+    );
+    // A veneer in both is neither on the far side, nor used there.
+    assert_output(
+        &tcm(&["callees", "0x0..0xe0", "--to", "0x0..0x20000010"]),
+        "\
+0x00000000..0x000000e0 (.itcm) uses 1 data object in 0x00000000..0x20000010 (.itcm and .data):
+
+ADDRESS     SIZE  HOW   AT    CALLEE
+0x20000000  1024  uses  0x18  crc_table, used by crc32
+",
+    );
+    assert_output(
+        &stdout(&[
+            TCM_SAMPLE,
+            "callers",
+            "0x0+256K",
+            "0x300009b0..0x300009c0",
+            "--from",
+            "0x0..0x20000010",
+            "--from",
+            "0x300009b0..0x30001000",
+        ]),
+        "Nothing in 0x00000000..0x20000010 (.itcm and .data) and 0x300009b0..0x30001000 (.text, \
+         .rodata and .ARM.exidx) uses 0x00000000..0x00040000 (.itcm) and \
+         0x300009b0..0x300009c0 (.text).\n",
+    );
+    // A call to a veneer that jumps to the chip's ROM.
+    let far = "testdata/bin/far-gnu-m4-nodebug.elf";
+    let calls_rom = crossing(&[
+        far,
+        "callees",
+        "0x30000000..0x30000130",
+        "--to",
+        "0x30000130..0x30000168",
+    ]);
+    assert!(
+        calls_rom.contains(
+            "\n0x30000138     8  call  0x300000ee  __rom_routine_veneer, used by flash_calls_rom\n"
+        ),
+        "{calls_rom}"
+    );
+}
+
+#[test]
+fn from_and_to_keep_their_rules_for_code_outside_any_function() {
+    // Both sides list ram_tails_rom's jump to the ROM, at its veneer.
+    let far = "testdata/bin/far-gnu-m4-nodebug.elf";
+    assert_output(
+        &crossing(&[far, "callers", "0x1fff0000+64K", "--from", "0x58..0x98"]),
+        "\
+0x1fff0000..0x20000000 is used by 1 function in 0x00000058..0x00000098 (.ram):
+
+ADDRESS  SIZE  HOW              AT    CALLER
+0x58       16  jump via veneer  0x60  ram_tails_rom, uses 0x1fff0000 (outside any function)
+",
+    );
+    assert_output(
+        &crossing(&[far, "callees", "0x58..0x98", "--to", "0x1fff0000+64K"]),
+        "\
+0x00000058..0x00000098 (.ram) makes 1 jump that elfq can't follow, which goes to 0x1fff0000..0x20000000:
+
+ADDRESS     SIZE  HOW              AT    CALLEE
+0x1fff0000        jump via veneer  0x60  (outside any function), used by ram_tails_rom
+",
+    );
+    // callees asks about code it can read, so not about the ROM alone.
+    assert_output(
+        &stderr(&[far, "callees", "0x1fff0000+64K"], 2),
+        "error: the file has nothing in 0x1fff0000..0x20000000; the overview lists its ranges\n",
+    );
+    // A --to range must hold something outside the ranges asked about, and
+    // code there that the file calls counts only when it is outside them.
+    assert_output(
+        &stderr(
+            &[
+                far,
+                "callees",
+                "0x1fff0000..0x20000004",
+                "--to",
+                "0x1fff0000..0x20000004",
+            ],
+            2,
+        ),
+        "error: --to 0x1fff0000..0x20000004 holds nothing outside 0x1fff0000..0x20000004, and \
+         callees lists only what it uses outside it\n",
+    );
+    assert_output(
+        &stderr(
+            &[
+                far,
+                "callers",
+                "0x0+64K",
+                "0x1fff0000..0x1fff0004",
+                "--from",
+                "0x1fff0000..0x20000004",
+            ],
+            2,
+        ),
+        "error: --from 0x1fff0000..0x20000004 and 0x1fff0000..0x1fff0004 both hold the code at \
+         0x1fff0000; give ranges that don't share it\n",
+    );
+    // A tail call between two functions of the ranges isn't listed, nor a
+    // call through a pointer from code in them: only app_tick is outside.
+    assert_output(
+        &crossing(&[
+            SAMPLE,
+            "callers",
+            "0x1260..0x16c0",
+            "--from",
+            "0x1260..0x1700",
+        ]),
+        "\
+0x00001260..0x000016c0 (.text) is used by 1 function in 0x00001260..0x00001700 (.text):
+
+ADDRESS  SIZE  HOW        AT              CALLER
+0x16c0     51  tail call  0x16dc, 0x16f1  app_tick, uses dispatch_event
+0x16c0     51  call       0x16e7          app_tick, uses log_msg
+",
+    );
+}
+
+#[test]
+fn from_and_to_see_through_a_plt_stub() {
+    // A shared library calls its own functions through PLT stubs, as
+    // `callers log_msg` says.
+    let library = "testdata/bin/c-x86_64.so";
+    assert_output(
+        &crossing(&[library, "callers", "log_msg", "--from", "0x1180..0x2000"]),
+        "\
+log_msg is used by 5 functions in 0x00001180..0x00002000 (.text and .fini):
+
+ADDRESS  SIZE  HOW                AT              CALLER
+0x17b0    532  call via PLT       0x199e, 0x19b8  process_frame, uses log_msg
+0x19d0    370  call via PLT       0x1b22          report, uses log_msg
+0x1770     62  call via PLT       0x179f          app_tick, uses log_msg
+0x1b50     29  call via PLT       0x1b5f          debug_dump, uses log_msg
+0x1700     22  tail call via PLT  0x1711          on_button, uses log_msg
+
+elfq doesn't know where _fini ends, so it can't read its code.
+",
+    );
+    // When the caller and the function are on one side, the stub's jump
+    // crosses back.
+    assert!(
+        crossing(&[library, "callers", "0x1180..0x2000"])
+            .contains("\n0x1140     16  tail call  0x1144  log_msg@plt, uses log_msg\n")
+    );
+    let plt = "testdata/bin/c-plt.so";
+    assert_output(
+        &crossing(&[plt, "callers", "twice", "--from", "0x1250+62"]),
+        "\
+twice is used by 1 function in 0x00001250..0x0000128e (.text):
+
+ADDRESS  SIZE  HOW           AT      CALLER
+0x1250     62  call via PLT  0x1258  run, uses twice
+",
+    );
+    assert_output(
+        &crossing(&[plt, "callees", "run", "--to", "0x11f0+4"]),
+        "\
+run uses 1 function in 0x000011f0..0x000011f4 (.text):
+
+ADDRESS  SIZE  HOW           AT      CALLEE
+0x11f0      4  call via PLT  0x1258  twice, used by run
+",
+    );
+    // A lazy stub's jump to the PLT's header is its own.
+    assert_output(
+        &crossing(&[plt, "callers", "0x1020+16", "--from", "0x1030+16"]),
+        "\
+0x00001020..0x00001030 (.plt) is used by 1 function in 0x00001030..0x00001040 (.plt):
+
+ADDRESS  SIZE  HOW        AT      CALLER
+0x1030     16  tail call  0x103b  twice@plt, uses .plt
+",
+    );
+}
+
+#[test]
+fn from_and_to_take_symbol_as_the_range_it_occupies() {
+    assert_output(
+        &crossing(&[TCM_SAMPLE, "callers", "crc32", "--from", "0x30000000+16M"]),
+        "\
+crc32 is used by 1 function in 0x30000000..0x31000000 (.isr_vector, .text, .rodata and .ARM.exidx):
+
+ADDRESS     SIZE  HOW              AT          CALLER
+0x30000320   376  call via veneer  0x3000034c  process_frame, uses crc32
+",
+    );
+    assert_output(
+        &crossing(&[TCM_SAMPLE, "callees", "process_frame", "--to", "0x0+256K"]),
+        "\
+process_frame uses 2 functions in 0x00000000..0x00040000 (.itcm):
+
+ADDRESS  SIZE  HOW              AT                      CALLEE
+0x74       92  call via veneer  0x30000386, 0x30000454  apply_filter, used by process_frame
+0x10       48  call via veneer  0x3000034c              crc32, used by process_frame
+",
+    );
+    assert_output(
+        &stdout(&[TCM_SAMPLE, "callers", "crc32", "--from", "0x0+256K"]),
+        "Nothing in 0x00000000..0x00040000 (.itcm) uses crc32.\n",
+    );
+    // A function of unknown size counts as its first byte.
+    let init = crossing(&[SAMPLE, "callers", "_init", "--from", "0x0+16M"]);
+    assert!(
+        init.starts_with("In the code elfq can read, nothing in 0x00000000..0x01000000 (.interp, ")
+            && init.ends_with(
+                ") uses _init.\nelfq doesn't know where _fini ends, so it can't read its code.\n"
+            ),
+        "{init}"
+    );
+    // An alias names its item.
+    assert!(
+        crossing(&[
+            TCM_SAMPLE,
+            "callers",
+            "NMI_Handler",
+            "--from",
+            "0x30000000+16M"
+        ])
+        .starts_with("Default_Handler (also named NMI_Handler) is used by 1 data object in "),
     );
 }
 
@@ -2060,11 +2578,297 @@ fn ranges_in_place_of_symbol_must_be_ranges_with_something_in_them() {
             2,
         ),
         "error: callers takes ranges in place of SYMBOL, not with --range: \
-         elfq testdata/bin/c-cortex-m7.elf callers 0x0+256K 0x20000000..0x20040000\n",
+         elfq testdata/bin/c-cortex-m7.elf callers 0x0+256K 0x20000000..0x20040000; to list \
+         only the callers in 0x20000000..0x20040000: elfq testdata/bin/c-cortex-m7.elf callers \
+         0x0+256K --from 0x20000000..0x20040000\n",
+    );
+    // Each command only when it answers: not with --from when --range is in
+    // a range given, where nothing is outside them, or shares an item with
+    // them, as app_tick; and neither when the file has nothing there.
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "callers", "0x0+256K", "--range", "0x0+1K"], 2),
+        "error: callers takes ranges in place of SYMBOL, not with --range: \
+         elfq testdata/bin/c-cortex-m7.elf callers 0x0+256K 0x00000000..0x00000400\n",
+    );
+    assert_output(
+        &stderr(
+            &[
+                TCM_SAMPLE,
+                "callers",
+                "0x30000000+0x400",
+                "--range",
+                "0x30000300+0x400",
+            ],
+            2,
+        ),
+        "error: callers takes ranges in place of SYMBOL, not with --range: \
+         elfq testdata/bin/c-cortex-m7.elf callers 0x30000000+0x400 0x30000300..0x30000700\n",
+    );
+    assert_output(
+        &stderr(
+            &[
+                TCM_SAMPLE,
+                "callers",
+                "0x0+256K",
+                "--range",
+                "0x40000000+16",
+            ],
+            2,
+        ),
+        "error: only the overview, top and retained take --range\n",
+    );
+    // Keeping the --from given.
+    assert_output(
+        &stderr(
+            &[
+                TCM_SAMPLE,
+                "callers",
+                "--range",
+                "0x20000000+256K",
+                "--from",
+                "0x0+256K",
+            ],
+            2,
+        ),
+        "error: callers takes ranges in place of SYMBOL, not with --range: \
+         elfq testdata/bin/c-cortex-m7.elf callers 0x20000000..0x20040000 --from \
+         0x00000000..0x00040000\n",
+    );
+    // With SYMBOL, --from or --to is what --range can mean, when that
+    // answers: not for an import, nor for code that elfq can't read, nor
+    // for a range in SYMBOL, nor where the file has nothing.
+    for args in [
+        &[SAMPLE, "callers", "__libc_start_main", "--range", "0+16M"][..],
+        &[TCM_SAMPLE, "callers", "crc32", "--range", "0x10+48"],
+        &[
+            TCM_SAMPLE,
+            "callees",
+            "process_frame",
+            "--range",
+            "0x30000320+16",
+        ],
+        &[TCM_SAMPLE, "callers", "crc32", "--range", "0x40000000+16"],
+        // Nor without SYMBOL.
+        &[TCM_SAMPLE, "callers", "--range", "0x40000000+16"],
+        &[
+            TCM_SAMPLE, "callers", "--range", "0x0+256K", "--from", "0x0+1K",
+        ],
+        &[
+            TCM_SAMPLE,
+            "callees",
+            "--range",
+            "0x30000000+16M",
+            "--to",
+            "0x30000320+376",
+        ],
+    ] {
+        assert_output(
+            &stderr(args, 2),
+            "error: only the overview, top and retained take --range\n",
+        );
+    }
+    // When no command answers, and the one given fails without --range
+    // too, its error comes first.
+    for (args, error) in [
+        (
+            &[SAMPLE, "callees", "_init", "--range", "0+16M"][..],
+            "error: elfq doesn't know where _init ends, so it can't read its code\n",
+        ),
+        (
+            &[
+                TCM_SAMPLE,
+                "callers",
+                "0x4000000+256K",
+                "--range",
+                "0x30000000+16M",
+            ],
+            "error: the file has nothing in 0x04000000..0x04040000; the overview lists its \
+             ranges\n",
+        ),
+        (
+            &[
+                TCM_SAMPLE,
+                "callees",
+                "process_frame",
+                "--to",
+                "0x40000000+16",
+                "--range",
+                "0x0+256K",
+            ],
+            "error: --to 0x40000000..0x40000010 holds no functions or data, and no code in the \
+             file calls or jumps there\n",
+        ),
+    ] {
+        assert_output(&stderr(args, 2), error);
+    }
+    // A mistyped name comes first.
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "callers", "crc32x", "--range", "0+1K"], 2),
+        "error: no function or data object is named `crc32x`; did you mean crc32?\n",
+    );
+    assert_output(
+        &stderr(
+            &[
+                TCM_SAMPLE,
+                "callers",
+                "crc32",
+                "apply_filter",
+                "--range",
+                "0+1K",
+            ],
+            2,
+        ),
+        "error: `crc32` isn't a range; give one SYMBOL, or ranges such as 0x0+256K\n",
     );
     assert_output(
         &stderr(&[TCM_SAMPLE, "callees", "crc32", "--range", "0+1K"], 2),
-        "error: only the overview, top and retained take --range\n",
+        "error: callees takes --to, not --range, to list only the callees in a range: \
+         elfq testdata/bin/c-cortex-m7.elf callees crc32 --to 0x00000000..0x00000400\n",
+    );
+    assert_output(
+        &stderr(
+            &[
+                TCM_SAMPLE,
+                "callers",
+                "crc32",
+                "--from",
+                "0x30000000+16M",
+                "--range",
+                "0+1K",
+            ],
+            2,
+        ),
+        "error: callers takes --from, not --range, to list only the callers in a range: \
+         elfq testdata/bin/c-cortex-m7.elf callers crc32 --from 0x30000000..0x31000000 --from \
+         0x00000000..0x00000400\n",
+    );
+    // The ranges of --from and --to must each hold something outside the
+    // ranges asked about, or they are most likely mistyped.
+    assert_output(
+        &stderr(
+            &[TCM_SAMPLE, "callers", "0x0+256K", "--from", "0x40000000+4K"],
+            2,
+        ),
+        "error: the file has nothing in 0x40000000..0x40001000; the overview lists its ranges\n",
+    );
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "callees", "0x0+256K", "--to", "0x0+1K"], 2),
+        "error: --to 0x00000000..0x00000400 holds nothing outside 0x00000000..0x00040000, and \
+         callees lists only what it uses outside it\n",
+    );
+    assert_output(
+        &stderr(
+            &[
+                TCM_SAMPLE,
+                "callees",
+                "0x0+256K",
+                "0x20000000+256K",
+                "--to",
+                "0x10+16",
+            ],
+            2,
+        ),
+        "error: --to 0x00000010..0x00000020 holds nothing outside 0x00000000..0x00040000 and \
+         0x20000000..0x20040000, and callees lists only what they use outside them\n",
+    );
+    // --to can name a ROM only when code calls there.
+    assert_output(
+        &stderr(
+            &[TCM_SAMPLE, "callees", "0x0+256K", "--to", "0x1fff0000+64K"],
+            2,
+        ),
+        "error: --to 0x1fff0000..0x20000000 holds no functions or data, and no code in the \
+         file calls or jumps there\n",
+    );
+    // An item in both would be on both sides, unless everything in the
+    // ranges asked about is in the others too.
+    assert_output(
+        &stderr(
+            &[
+                TCM_SAMPLE,
+                "callers",
+                "0x30000498..0x300005b2",
+                "--from",
+                "0x30000570..0x300005f6",
+            ],
+            2,
+        ),
+        "error: --from 0x30000570..0x300005f6 and 0x30000498..0x300005b2 both hold main; give \
+         ranges that don't share it\n",
+    );
+    assert_output(
+        &stderr(
+            &[
+                TCM_SAMPLE,
+                "callees",
+                "0x30000668+96",
+                "0x2000044a+2",
+                "--to",
+                "0x20000444..0x2000044a",
+            ],
+            2,
+        ),
+        "error: --to 0x20000444..0x2000044a and 0x2000044a..0x2000044c both hold tx_tail; give \
+         ranges that don't share it\n",
+    );
+    // Each range on its own, though another is fine.
+    assert_output(
+        &stderr(
+            &[
+                TCM_SAMPLE,
+                "callers",
+                "0x0+256K",
+                "0x20000000+256K",
+                "--from",
+                "0x20240000+512K",
+                "--from",
+                "0x20000000+1K",
+            ],
+            2,
+        ),
+        "error: --from 0x20000000..0x20000400 holds nothing outside 0x00000000..0x00040000 and \
+         0x20000000..0x20040000, and callers lists only what uses them from outside\n",
+    );
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "callers", "crc32", "--from", "0x10+16"], 2),
+        "error: --from 0x00000010..0x00000020 holds nothing outside crc32, and callers lists \
+         only what uses it from outside\n",
+    );
+    // An import has no range in the file, and callees can't read code
+    // whose end elfq doesn't know.
+    assert_output(
+        &stderr(
+            &[SAMPLE, "callers", "__libc_start_main", "--from", "0x0+16M"],
+            2,
+        ),
+        "error: __libc_start_main is imported from a shared library, so it has no range in \
+         this file for --from\n",
+    );
+    assert_output(
+        &stderr(&[SAMPLE, "callees", "_init", "--to", "0x0+16M"], 2),
+        "error: elfq doesn't know where _init ends, so it can't read its code\n",
+    );
+    // Each option takes one range.
+    assert_output(
+        &stderr(
+            &[
+                TCM_SAMPLE,
+                "callers",
+                "0x0+256K",
+                "--from",
+                "0x0+1K,0x20000000+1K",
+            ],
+            2,
+        ),
+        "error: invalid value '0x0+1K,0x20000000+1K' for '--from <RANGE>': --from takes one \
+         range; give it again for each: --from 0x0+1K --from 0x20000000+1K\n\n\
+         For more information, try '--help'.\n",
+    );
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "callees", "0x0+256K", "--to", "0x0+1K,"], 2),
+        "error: invalid value '0x0+1K,' for '--to <RANGE>': --to takes one range; leave out \
+         the comma\n\n\
+         For more information, try '--help'.\n",
     );
     assert_output(
         &stderr(&[TCM_SAMPLE, "callers"], 2),
@@ -2082,13 +2886,18 @@ fn arguments_that_dont_go_together_are_refused_before_the_file_is_read() {
             "error: only the overview, top and retained take --range\n",
         ),
         (
-            &["missing.elf", "callees", "--range", "0+1K"],
-            "error: callees takes ranges in place of SYMBOL, not with --range: \
-             elfq missing.elf callees 0x00000000..0x00000400\n",
-        ),
-        (
             &["missing.elf", "callers"],
             "error: callers needs a SYMBOL, or ranges such as 0x0+256K\n",
+        ),
+        (
+            &["missing.elf", "callers", "log_msg", "--to", "0x0+1K"],
+            "error: --to goes with callees; callers takes --from to list only the callers in a \
+             range\n",
+        ),
+        (
+            &["missing.elf", "callees", "0x0+1K", "--from", "0x0+1K"],
+            "error: --from goes with callers; callees takes --to to list only the callees in a \
+             range\n",
         ),
         (
             &["missing.elf", "debug", "items", "--json"],
@@ -2148,6 +2957,14 @@ elfq can't yet read Aarch64 code to tell what calls what.
         &[path, "why", "no_such_function"],
         &[path, "callers", "no_such_function"],
         &[path, "callees", "no_such_function"],
+        &[
+            path,
+            "callers",
+            "no_such_function",
+            "--range",
+            "0x1000+0x100",
+        ],
+        &[path, "callers", "--range", "0x1000+0x100"],
     ] {
         assert_output(
             &stderr(args, 2),

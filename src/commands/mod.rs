@@ -25,9 +25,12 @@ use anyhow::{Result, bail};
 
 use crate::arch;
 use crate::binary::{AddressRange, Binary, Item, ItemKind, Source, memory_blocks};
-use crate::cli::{Cli, Command, DebugCommand, Format};
+use crate::cli::{Cli, Command, DebugCommand, Format, UsesArgs};
 use crate::graph::{Graph, Node, Reference};
 use crate::render::{Align, Table};
+
+/// The error for `--range` with a command that doesn't take it.
+const RANGE_REFUSED: &str = "only the overview, top and retained take --range";
 
 /// What an answer means for elfq's exit status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +51,14 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<Outcome> {
         // Not `eprintln!`, which panics when nothing reads standard error
         // any more: the answer still counts.
         let _ = writeln!(std::io::stderr(), "warning: {warning}");
+    }
+    // `check_arguments` leaves `--range` with `callers` and `callees` until
+    // elfq can tell which command to suggest.
+    if let Some(range) = cli.range
+        && let Some(command) = &cli.command
+        && let Some(uses) = uses_args(command)
+    {
+        bail!("{}", range_error(cli, &binary, command, &uses, range)?);
     }
     let format = cli.format();
     let range = cli.range;
@@ -74,8 +85,22 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<Outcome> {
             format,
             out,
         )),
-        Some(Command::Callers(args)) => callers::run(&binary, &args.symbols, args.all, format, out),
-        Some(Command::Callees(args)) => callees::run(&binary, &args.symbols, args.all, format, out),
+        Some(Command::Callers(args)) => callers::run(
+            &binary,
+            &args.uses.symbols,
+            &args.from,
+            args.uses.all,
+            format,
+            out,
+        ),
+        Some(Command::Callees(args)) => callees::run(
+            &binary,
+            &args.uses.symbols,
+            &args.to,
+            args.uses.all,
+            format,
+            out,
+        ),
         Some(Command::Debug(DebugCommand::Items)) => answered(debug_items::run(&binary, out)),
     }
 }
@@ -86,24 +111,35 @@ fn check_arguments(cli: &Cli) -> Result<()> {
     if cli.tree {
         check_tree(cli)?;
     }
-    match &cli.command {
-        None | Some(Command::Top(_) | Command::Retained(_)) => Ok(()),
-        Some(command @ (Command::Callers(args) | Command::Callees(args)))
-            if cli.range.is_some() && args.symbols.iter().all(|query| symbol::is_range(query)) =>
-        {
-            bail!("{}", range_in_place_of_symbol(cli, command, &args.symbols))
-        }
-        Some(command @ (Command::Callers(args) | Command::Callees(args)))
-            if args.symbols.is_empty() =>
-        {
+    if let Some(command) = &cli.command
+        && let Some(uses) = uses_args(command)
+    {
+        let name = command_name(command);
+        if let Some((misplaced, belongs_to)) = uses.misplaced {
             bail!(
-                "{} needs a SYMBOL, or ranges such as 0x0+256K",
-                command_name(command)
+                "{misplaced} goes with {belongs_to}; {name} takes {} to list only the {name} \
+                 in a range",
+                uses.option
             )
         }
-        Some(_) if cli.range.is_some() => {
-            bail!("only the overview, top and retained take --range")
+        if cli.range.is_some() {
+            let symbols = &uses.args.symbols;
+            if symbols.len() > 1
+                && let Some(query) = symbols.iter().find(|query| !symbol::is_range(query))
+            {
+                bail!("`{query}` isn't a range; give one SYMBOL, or ranges such as 0x0+256K")
+            }
+            // Which command can take its place depends on what the file
+            // holds: see `range_error`.
+            return Ok(());
         }
+        if uses.args.symbols.is_empty() {
+            bail!("{name} needs a SYMBOL, or ranges such as 0x0+256K")
+        }
+    }
+    match &cli.command {
+        None | Some(Command::Top(_) | Command::Retained(_)) => Ok(()),
+        Some(_) if cli.range.is_some() => bail!("{RANGE_REFUSED}"),
         Some(Command::Debug(_)) if cli.format() == Format::Json => {
             bail!("the debug commands print only text")
         }
@@ -124,22 +160,134 @@ fn check_tree(cli: &Cli) -> Result<()> {
     }
 }
 
-/// The error for `--range` with `callers` or `callees`, when it adds to the
-/// ranges in place of SYMBOL, or there is no SYMBOL: they take ranges there
-/// instead. Says the command to type.
-fn range_in_place_of_symbol(cli: &Cli, command: &Command, ranges: &[String]) -> String {
-    let name = command_name(command);
-    let ranges: Vec<String> = ranges
+/// The error for `--range` with `callers` or `callees` (see
+/// [`range_hint`]), suggesting only the commands that answer for `binary`:
+/// elfq runs them to find out, which costs time only on this mistake. When
+/// none does, and the command fails without `--range` too, that error comes
+/// first, since no form of the command answers until it is fixed.
+fn range_error(
+    cli: &Cli,
+    binary: &Binary,
+    command: &Command,
+    uses: &Uses,
+    range: AddressRange,
+) -> Result<String> {
+    check_code_is_readable(binary)?;
+    let symbols = &uses.args.symbols;
+    let ranges = symbols.iter().all(|query| symbol::is_range(query));
+    if !ranges {
+        // A mistyped name is the first thing to fix.
+        symbol::subject(binary, symbols)?;
+    }
+    let answer = |symbols: &[String], other: &[AddressRange]| {
+        let sink = &mut std::io::sink();
+        match command {
+            Command::Callers(_) => callers::run(binary, symbols, other, false, Format::Json, sink),
+            _ => callees::run(binary, symbols, other, false, Format::Json, sink),
+        }
+    };
+    let added =
+        ranges && answer(&[&symbols[..], &[range.to_string()]].concat(), uses.other).is_ok();
+    let limited = !symbols.is_empty() && answer(symbols, &[uses.other, &[range]].concat()).is_ok();
+    if !added && !limited {
+        if !symbols.is_empty() {
+            answer(symbols, uses.other)?;
+        }
+        return Ok(RANGE_REFUSED.to_string());
+    }
+    Ok(range_hint(
+        cli,
+        command_name(command),
+        uses,
+        range,
+        added,
+        limited,
+    ))
+}
+
+/// The error for `--range` with `callers` or `callees`, which don't take
+/// it, with the commands to type: with ranges in place of SYMBOL, or none,
+/// the one that adds `range` to them, when `added`, and the one that lists
+/// only the uses in `range`, with `--from` or `--to`, when `limited`. Keeps
+/// what `uses` has of those. One of them must be given.
+fn range_hint(
+    cli: &Cli,
+    name: &str,
+    uses: &Uses,
+    range: AddressRange,
+    added: bool,
+    limited: bool,
+) -> String {
+    let option = uses.option;
+    let file = text::shell_quote(&cli.file.display().to_string());
+    let command = |args: Vec<String>| {
+        let mut words = vec!["elfq".to_string(), file.clone(), name.to_string()];
+        words.extend(args);
+        if cli.json {
+            words.push("--json".to_string());
+        }
+        words.join(" ")
+    };
+    let symbols = &uses.args.symbols;
+    let given: Vec<String> = symbols
         .iter()
-        .map(|range| text::shell_quote(range))
-        .chain(cli.range.map(text::range_argument))
+        .map(|query| text::shell_quote(query))
         .collect();
-    format!(
-        "{name} takes ranges in place of SYMBOL, not with --range: elfq {} {name} {}{}",
-        text::shell_quote(&cli.file.display().to_string()),
-        ranges.join(" "),
-        if cli.json { " --json" } else { "" }
-    )
+    let kept: Vec<String> = uses
+        .other
+        .iter()
+        .flat_map(|&other| [option.to_string(), text::range_argument(other)])
+        .collect();
+    let range_text = text::range_argument(range);
+    let limited_command =
+        command([&given[..], &kept, &[option.to_string(), range_text.clone()]].concat());
+    if !added || !symbols.iter().all(|query| symbol::is_range(query)) {
+        return format!(
+            "{name} takes {option}, not --range, to list only the {name} in a range: \
+             {limited_command}"
+        );
+    }
+    let added_command = command([&given[..], std::slice::from_ref(&range_text), &kept].concat());
+    let mut error =
+        format!("{name} takes ranges in place of SYMBOL, not with --range: {added_command}");
+    // With `--from` or `--to` given, the command that adds `range` to them
+    // lists the uses in theirs too.
+    if limited && !given.is_empty() && kept.is_empty() {
+        error += &format!("; to list only the {name} in {range_text}: {limited_command}");
+    }
+    error
+}
+
+/// What `callers` or `callees` was given.
+struct Uses<'a> {
+    args: &'a UsesArgs,
+    /// The option that lists only the uses whose other end is in some
+    /// ranges: `--from` or `--to`.
+    option: &'static str,
+    /// Its ranges.
+    other: &'a [AddressRange],
+    /// The other command's option, when it was given by mistake, and that
+    /// command: `--to` and `callees` for `callers`.
+    misplaced: Option<(&'static str, &'static str)>,
+}
+
+/// What `command` was given, when it is `callers` or `callees`.
+fn uses_args(command: &Command) -> Option<Uses<'_>> {
+    match command {
+        Command::Callers(args) => Some(Uses {
+            args: &args.uses,
+            option: "--from",
+            other: &args.from,
+            misplaced: (!args.misplaced_to.is_empty()).then_some(("--to", "callees")),
+        }),
+        Command::Callees(args) => Some(Uses {
+            args: &args.uses,
+            option: "--to",
+            other: &args.to,
+            misplaced: (!args.misplaced_from.is_empty()).then_some(("--from", "callers")),
+        }),
+        _ => None,
+    }
 }
 
 /// The name of `command` as typed: `callers` for [`Command::Callers`].
@@ -209,7 +357,7 @@ fn check_has_bytes(binary: &Binary, range: Option<AddressRange>) -> Result<()> {
             [Some(item.address), binary.load_address(item)]
                 .into_iter()
                 .flatten()
-                .any(|start| range.overlap(start, 1) > 0)
+                .any(|start| range.contains(start))
         })
     };
     if let Some(item) = binary.items.iter().find(starts_in_place) {
