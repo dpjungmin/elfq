@@ -35,9 +35,9 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub tree: bool,
     /// Count only the bytes in one range of memory, such as ITCM: START..END
-    /// or START+SIZE, like 0x20000000+256K. The overview lists the ranges
-    /// that the file's sections and load images occupy. For the overview,
-    /// top and retained.
+    /// or START+SIZE, like 0x20000000+256K. When the file's sections and load
+    /// images occupy several ranges, as in firmware, the overview lists them.
+    /// For the overview, top and retained.
     #[arg(long, global = true, value_name = "RANGE", value_parser = one_range)]
     pub range: Option<AddressRange>,
 }
@@ -93,7 +93,22 @@ Examples:
   elfq app.elf callees 0x0+256K           What the first 256 KiB uses outside it
 
 The overview's table is the start of the one top shows; elfq help top
-explains it.";
+explains it.
+
+Tables have one row per line: short cells such as sizes, HOW and AT come
+first, and the name last. A name after \"kept by\" or \"used by\" works as
+SYMBOL, and a why row without \"used by\" is used by the row above, or
+starts a chain. The tables of top, retained, callers and callees show the
+30 largest items, inlined the 30 largest functions, and why the chains
+through the 10 nearest users; --all shows every row, and makes sentences
+name everything they would cut short. With ranges, callers and callees
+show every row anyway. --json has every item, site and chain, one row per
+line, but the overview's JSON leaves its table to top's. Scripts that read
+why's chains should use --json.
+
+Exit status: 0 for an answer, 1 when callers or callees with ranges finds
+something that crosses them, or might, and 2 for an error, which goes to
+stderr with nothing on stdout.";
 
 // One variant per command. Each variant's `///` line is its line in
 // `elfq --help`.
@@ -115,14 +130,14 @@ pub enum Command {
     #[command(
         override_usage = "elfq <FILE> callers [OPTIONS] <SYMBOL>\n       \
                           elfq <FILE> callers [OPTIONS] <RANGE>...",
-        after_help = format!("{HOW}\n\n{CALLERS}\n\n{CALLERS_RANGES}")
+        after_help = format!("{HOW}\n\n{AT}\n\n{CALLERS}\n\n{CALLERS_RANGES}")
     )]
     Callers(UsesArgs),
     /// List what SYMBOL calls or uses
     #[command(
         override_usage = "elfq <FILE> callees [OPTIONS] <SYMBOL>\n       \
                           elfq <FILE> callees [OPTIONS] <RANGE>...",
-        after_help = format!("{HOW}\n\n{CALLEES}\n\n{CALLEES_RANGES}")
+        after_help = format!("{HOW}\n\n{AT}\n\n{CALLEES}\n\n{CALLEES_RANGES}")
     )]
     Callees(UsesArgs),
     /// Show elfq's own view of the file (for developing elfq)
@@ -141,8 +156,17 @@ The HOW column says how one item uses the other:
                  function pointer, or an import's
   pointer        data holds a pointer to it, as in a table of functions
 
+In --json, the how key uses these words, but in place of uses, it says
+access where code reads or writes data, and address taken where it loads
+its address. elfq tells the two apart only in x86-64 code; in Thumb code,
+it says address taken.
+
 elfq can't tell where a call through a pointer set at run time goes; the
 address taken and pointer rows show where such pointers come from.";
+
+const AT: &str = "\
+The AT column gives the sites: the address of each instruction or pointer,
+or for more than two, the first and how many more; --json has every one.";
 
 const CALLERS: &str = "\
 The table lists the 30 largest callers by their own size, in order of name,
@@ -163,7 +187,8 @@ elfq can't follow come first, as \"(through a pointer)\", or as \"(outside any
 function)\" when they go to an address no function holds. A call through a
 veneer, which a linker adds when the target is too far away for the call
 instruction, is listed where it calls the veneer, as \"call via veneer\".
-elfq knows the veneers that GNU ld and LLD add for Cortex-M.
+In --json, the how key leaves out \"via veneer\", and the veneer key names
+the veneer. elfq knows the veneers that GNU ld and LLD add for Cortex-M.
 
 Exit status: 0 if nothing leaves the ranges, 1 if something does or might,
 and 2 for an error.";
@@ -176,7 +201,8 @@ and ADDRESS and SIZE are that item's. Every crossing has a row, and --all
 makes the sentences name everything they would cut short. A call through a
 veneer, which a linker adds when the target is too far away for the call
 instruction, is listed where it calls the veneer, as \"call via veneer\".
-elfq knows the veneers that GNU ld and LLD add for Cortex-M.
+In --json, the how key leaves out \"via veneer\", and the veneer key names
+the veneer. elfq knows the veneers that GNU ld and LLD add for Cortex-M.
 
 Exit status: 0 if nothing outside uses the ranges, 1 if something does or
 might through a pointer, and 2 for an error.";
