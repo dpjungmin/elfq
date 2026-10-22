@@ -423,7 +423,7 @@ fn only_trees_are_drawn() {
     ] {
         assert_output(
             &stderr(args, 2),
-            "error: only the overview, top, retained, why and inlined SYMBOL take --tree\n",
+            "error: only the overview, top, retained, why, reach and inlined SYMBOL take --tree\n",
         );
     }
 }
@@ -971,6 +971,10 @@ fn every_tree_is_at_most_nine_levels_deep() {
         (
             &[DEEP_SAMPLE, "inlined", "run_steps", "--tree"],
             &["step9", "step17"],
+        ),
+        (
+            &[DEEP_SAMPLE, "reach", "chain1", "--tree"],
+            &["chain9", "chain17"],
         ),
         (
             &[
@@ -2855,6 +2859,182 @@ run also calls through a pointer, at 0x1283, which elfq can't follow, so it may 
 }
 
 #[test]
+fn reach_draws_what_it_reaches_as_a_tree() {
+    // Veneers are steps of their own, each item hangs under the item
+    // that uses it, in the order that one first uses them.
+    assert_output(
+        &stdout(&[TCM_SAMPLE, "reach", "SysTick_Handler", "--tree"]),
+        "\
+SysTick_Handler and the 12 items it reaches take 446 bytes of code and 4128 bytes of data; elfq can't follow 1 jump:
+
+MEMORY                  CODE  DATA  SECTIONS
+0x00000000..0x000000e0    24     0  .itcm
+0x20000000..0x20000450     0    24  .bss
+0x20240000..0x20241000     0  4096  .ocram_bss
+0x30000000..0x30000edc   422     8  .text .rodata
+
+ADDRESS     SIZE  HOW        ITEM
+0x0           16             SysTick_Handler
+0x20000444     4  uses       ├─ systick_count
+0xd0           8  tail call  └─ __app_tick_veneer
+0x300002e4    60  tail call     └─ app_tick
+0x300002cc    24  tail call        ├─ dispatch_event
+0x20000438    12  uses             │  └─ handlers
+0x30000de8    ~8  uses             ├─ .rodata@0x30000de8
+0x30000288    26  call             └─ log_msg
+0x30000700   216  call                ├─ strlen
+0x30000668    96  tail call           └─ platform_write
+0x2000044c     4  uses                   ├─ tx_head
+0x20240000  4096  uses                   ├─ tx_buffer
+0x20000448     4  uses                   └─ tx_tail
+
+dispatch_event also jumps through a pointer, at 0x300002da, which elfq can't follow, so SysTick_Handler may reach more.
+",
+    );
+    // The 30 largest items, with the items on their chains from main, and
+    // rows that sum up the rest under each item.
+    assert_output(
+        &stdout(&[TCM_SAMPLE, "reach", "main", "--tree"]),
+        "\
+main and the 55 items it reaches take 2036 bytes of code and 5431 bytes of data; elfq can't follow 1 jump:
+
+MEMORY                  CODE  DATA  SECTIONS
+0x00000000..0x000000e0   200     0  .itcm
+0x20000000..0x20000450     0  1100  .data .bss
+0x20240000..0x20241000     0  4096  .ocram_bss
+0x30000000..0x30000edc  1836   235  .text .rodata
+
+ADDRESS     SIZE  HOW            ITEM
+0x30000570   132                 main
+0x30000140    16  address taken  ├─ on_timer (through a pointer)
+0x20000434     4  uses           │  └─ timer_ticks
+0x300002bc    16  call           ├─ register_handler
+0x20000438    12  uses           │  └─ handlers
+0x300002a4    24  address taken  ├─ on_button (through a pointer)
+              12                 │  └─ 2 more
+0x30000150    16  address taken  ├─ on_data (through a pointer)
+0x2000042c     4  uses           │  └─ data_events
+0x30000e40   ~20  uses           ├─ .rodata@0x30000e40
+0x30000188    84  call           ├─ parse_value
+0x20000420     4  uses           │  ├─ config_sum
+0x300001dc    60  tail call      │  └─ parse_list
+0x30000e70    25  uses           ├─ frame_a
+0x30000320   376  call           ├─ process_frame
+0x30000160    40  call           │  ├─ decode_header
+0x300009b0     8  call           │  ├─ __crc32_veneer
+0x10          48  tail call      │  │  └─ crc32
+0x20000000  1024  uses           │  │     └─ crc_table
+0x300009b8     8  call           │  ├─ __apply_filter_veneer
+0x74          92  tail call      │  │  └─ apply_filter
+0x40          52  call           │  │     ├─ filter_tap
+0x30000eb4    32  uses           │  │     │  └─ fir_coeffs
+0xd8           8  call           │  │     └─ __memcpy_veneer
+0x3000087c   308  tail call      │  │        └─ memcpy
+0x20000400    32  uses           │  ├─ stats
+0x30000df0   ~12  uses           │  ├─ .rodata@0x30000df0
+0x30000288    26  call           │  ├─ log_msg
+0x30000700   216  call           │  │  ├─ strlen
+0x30000668    96  tail call      │  │  └─ platform_write
+0x20240000  4096  uses           │  │     ├─ tx_buffer
+               8                 │  │     └─ 2 more
+0x30000dfc   ~12  uses           │  ├─ .rodata@0x30000dfc
+               8                 │  └─ 2 more
+0x30000e5c    17  uses           ├─ frame_b
+0x30000e54     5  uses           ├─ frame_c
+0x300002e4    60  call           ├─ app_tick
+0x30000de8    ~8  uses           │  └─ .rodata@0x30000de8
+0x300002cc    24  call           ├─ dispatch_event
+0x30000498   216  call           └─ report
+0x3000023c    76  call              ├─ format_u32
+0x30000e14   ~12  uses              ├─ .rodata@0x30000e14
+0x30000218    34  call              ├─ count_nodes
+              84                    └─ 10 more
+
+dispatch_event also jumps through a pointer, at 0x300002da, which elfq can't follow, so main may reach more.
+",
+    );
+    // --all shows every item, with no rows that sum some up.
+    let all = stdout(&[TCM_SAMPLE, "reach", "main", "--tree", "--all"]);
+    assert_eq!(
+        all.lines().filter(|line| line.contains("─ ")).count(),
+        55,
+        "{all}"
+    );
+    assert!(!all.contains(" more\n"), "{all}");
+    // The jump in the veneer to the chip's ROM hangs under the veneer, and
+    // the first line counts it as a jump, as the tree shows it.
+    assert_output(
+        &stdout(&["testdata/bin/far-gnu-m4-nodebug.elf", "reach", "ram_calls_rom", "--tree"]),
+        "\
+ram_calls_rom and the 2 items it reaches take 36 bytes of code and 4 bytes of data; elfq can't follow 1 jump:
+
+MEMORY                  CODE  DATA  SECTIONS
+0x00000000..0x000000a0    36     0  .ram
+0x20000000..0x20000004     0     4  .bss
+0x30000000..0x30000168     0     0
+
+ADDRESS     SIZE  HOW   ITEM
+0x3c          28        ram_calls_rom
+0x20000000     4  uses  ├─ counter
+0x90           8  call  └─ __rom_routine_veneer
+0x1fff0000        jump     └─ (outside any function)
+",
+    );
+    // Imports hang under the PLT stubs that jump to them.
+    assert_output(
+        &stdout(&[SAMPLE, "reach", "log_msg", "--tree"]),
+        "\
+log_msg and the 3 functions it reaches take 103 bytes of code and 0 bytes of data, plus 2 imports:
+
+ADDRESS  SIZE  HOW        ITEM
+0x1610     51             log_msg
+0x1080     16  call       ├─ strlen@plt
+               tail call  │  └─ strlen
+0x1ac0     20  tail call  └─ platform_write
+0x1070     16  tail call     └─ write@plt
+               tail call        └─ write
+",
+    );
+}
+
+#[test]
+fn reach_continues_a_deep_chain_below() {
+    assert_output(
+        &stdout(&[DEEP_SAMPLE, "reach", "chain1", "--tree"]),
+        "\
+chain1 and the 20 items it reaches take 402 bytes of code and 1024 bytes of data:
+
+ADDRESS  SIZE  HOW   ITEM
+0x13f0     16        chain1
+0x13d0     17  call  └─ chain2
+0x13b0     17  call     └─ chain3
+0x1390     20  call        └─ chain4
+0x1370     17  call           └─ chain5
+0x1350     20  call              └─ chain6
+0x1330     27  call                 └─ chain7
+0x1310     20  call                    └─ chain8
+0x12f0     17  call                       └─ chain9 (continued below)
+
+                     chain9 (continued)
+0x12d0     20  call  └─ chain10
+0x12b0     20  call     └─ chain11
+0x1290     23  call        └─ chain12
+0x1270     20  call           └─ chain13
+0x1250     19  call              └─ chain14
+0x1230     23  call                 └─ chain15
+0x1210     19  call                    └─ chain16
+0x11f0     22  call                       └─ chain17 (continued below)
+
+                     chain17 (continued)
+0x11d0     20  call  └─ chain18
+0x11b0     20  call     └─ chain19
+0x1190     25  call        └─ chain20
+0x4420   1024  uses           └─ chain_table
+",
+    );
+}
+
+#[test]
 fn reach_needs_an_item_whose_code_elfq_can_read() {
     assert_output(
         &stderr(&[SAMPLE, "reach", "_init"], 2),
@@ -3284,11 +3464,11 @@ fn arguments_that_dont_go_together_are_refused_before_the_file_is_read() {
         ),
         (
             &["missing.elf", "inlined", "--tree"],
-            "error: only the overview, top, retained, why and inlined SYMBOL take --tree\n",
+            "error: only the overview, top, retained, why, reach and inlined SYMBOL take --tree\n",
         ),
         (
-            &["missing.elf", "reach", "main", "--tree"],
-            "error: only the overview, top, retained, why and inlined SYMBOL take --tree\n",
+            &["missing.elf", "reach", "main", "--tree", "--json"],
+            "error: --tree draws trees in the text, so it doesn't go with --json\n",
         ),
         (
             &["missing.elf", "reach", "main", "--range", "0+1K"],

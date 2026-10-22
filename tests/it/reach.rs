@@ -1,6 +1,6 @@
 //! What `reach` lists, checked for every item of the Cortex-M samples
-//! against `retained` and `callees`, and for every function of each stripped
-//! one against its twin with symbols.
+//! against `retained`, `callees` and the tree that `--tree` draws, and for
+//! every function of each stripped one against its twin with symbols.
 
 use std::collections::BTreeSet;
 
@@ -31,15 +31,64 @@ const SAMPLES: [&str; 13] = [
     "far-lld-m4-pic-nodebug.elf",
 ];
 
-/// The answer to `elfq SAMPLE ARGS --json`, run in this process, which is
-/// much quicker than starting elfq for each function.
-fn answer(sample: &str, args: &[&str]) -> Value {
+/// What `elfq SAMPLE ARGS` prints, run in this process, which is much
+/// quicker than starting elfq for each function.
+fn output(sample: &str, args: &[&str]) -> String {
     let path = sample_path(sample);
-    let command_line = [&["elfq", path.to_str().unwrap()], args, &["--json"]].concat();
+    let command_line = [&["elfq", path.to_str().unwrap()], args].concat();
     let cli = Cli::try_parse_from(command_line).unwrap();
     let mut out = Vec::new();
     elfq::commands::run(&cli, &mut out).unwrap_or_else(|err| panic!("{sample} {args:?}: {err:#}"));
-    serde_json::from_slice(&out).unwrap()
+    String::from_utf8(out).unwrap()
+}
+
+/// The answer to `elfq SAMPLE ARGS --json`.
+fn answer(sample: &str, args: &[&str]) -> Value {
+    serde_json::from_str(&output(sample, &[args, &["--json"]].concat())).unwrap()
+}
+
+/// A row of the tree that `--tree` draws: how deep it is, counting from 0,
+/// its ADDRESS cell, and the name after the branches.
+struct Drawn {
+    level: usize,
+    address: String,
+    name: String,
+}
+
+/// The rows of the tree in the table of `text`, as `--tree` draws it, in
+/// the order of the lines, without the rows that start a part continued
+/// below.
+fn drawn(text: &str) -> Vec<Drawn> {
+    let mut lines = text.lines();
+    let Some(header) = lines.find(|line| line.starts_with("ADDRESS")) else {
+        return Vec::new();
+    };
+    // The tree is in the last column, after cells that are all ASCII. Each
+    // level is 3 columns.
+    let column = header.rfind(' ').unwrap() + 1;
+    let mut rows = Vec::new();
+    let mut lines = lines.peekable();
+    while let Some(line) = lines.next() {
+        if line.is_empty() {
+            // A part continued below starts with an empty line, then a row
+            // with only a name.
+            match lines.peek() {
+                Some(next) if next.len() > column && next[..column].trim().is_empty() => continue,
+                _ => break,
+            }
+        }
+        let tree = &line[column..];
+        if line[..column].trim().is_empty() && tree.ends_with(" (continued)") {
+            continue;
+        }
+        let name = tree.trim_start_matches(['│', '├', '└', '─', ' ']);
+        rows.push(Drawn {
+            level: (tree.chars().count() - name.chars().count()) / 3,
+            address: line.split(' ').next().unwrap().to_string(),
+            name: name.trim_end_matches(" (continued below)").to_string(),
+        });
+    }
+    rows
 }
 
 /// The items of `kind` in `binary` that reach takes, by address, as SYMBOL
@@ -132,9 +181,79 @@ fn check_tree(sample: &str) -> usize {
         for kept in retained["items"].as_array().unwrap() {
             assert!(reached.contains(&item(kept)), "{context}: {kept}");
         }
+
+        check_drawn(sample, &symbol, items);
         checked += 1;
     }
     checked
+}
+
+/// Checks the tree that `reach SYMBOL --tree` draws against `items`, the
+/// rows of the JSON: with `--all`, it has every one, each under its parent,
+/// in the same order unless part of it is continued below; without, its
+/// rows that sum up others, such as "4 more", count the rest.
+fn check_drawn(sample: &str, symbol: &str, items: &[Value]) {
+    let context = format!("{sample} reach {symbol} --tree");
+    let all = output(sample, &["reach", symbol, "--tree", "--all"]);
+    let rows: Vec<Drawn> = drawn(&all)
+        .into_iter()
+        .filter(|row| row.name != "(outside any function)")
+        .collect();
+    if rows.is_empty() {
+        assert_eq!(items.len(), 1, "{context}: {all}");
+        return;
+    }
+    let mut levels: Vec<usize> = Vec::new();
+    for row in items {
+        let level = row["parent"]
+            .as_u64()
+            .map_or(0, |parent| levels[parent as usize] + 1);
+        levels.push(level);
+    }
+    let expected = |(item, level): (&Value, usize)| {
+        let address = item["address"].as_str().unwrap_or_default();
+        let mark = if item["through_pointer"] == true {
+            " (through a pointer)"
+        } else {
+            ""
+        };
+        (
+            level,
+            address.to_string(),
+            format!("{}{mark}", item["name"].as_str().unwrap()),
+        )
+    };
+    let mut expected: Vec<(usize, String, String)> =
+        items.iter().zip(levels).map(expected).collect();
+    let mut found: Vec<(usize, String, String)> = rows
+        .into_iter()
+        .map(|row| (row.level, row.address, row.name))
+        .collect();
+    if all.contains(" (continued below)\n") {
+        // A part continued below starts again on level 0.
+        expected = expected
+            .into_iter()
+            .map(|(_, address, name)| (0, address, name))
+            .collect();
+        found = found
+            .into_iter()
+            .map(|(_, address, name)| (0, address, name))
+            .collect();
+        expected.sort();
+        found.sort();
+    }
+    assert_eq!(found, expected, "{context} --all");
+
+    let capped = output(sample, &["reach", symbol, "--tree"]);
+    let counted: usize = drawn(&capped)
+        .iter()
+        .filter(|row| row.name != "(outside any function)")
+        .map(|row| match row.name.strip_suffix(" more") {
+            Some(count) if row.address.is_empty() => count.parse().unwrap(),
+            _ => 1,
+        })
+        .sum();
+    assert_eq!(counted, items.len(), "{context}: {capped}");
 }
 
 #[test]

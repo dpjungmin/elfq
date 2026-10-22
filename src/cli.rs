@@ -31,7 +31,8 @@ pub struct Cli {
     /// Print the answer as JSON, for scripts
     #[arg(long, global = true)]
     pub json: bool,
-    /// Draw the overview, top, retained, why and inlined SYMBOL as trees
+    /// Draw the overview, top, retained, why, reach and inlined SYMBOL as
+    /// trees
     #[arg(long, global = true)]
     pub tree: bool,
     /// Count only the bytes in one range of memory, such as ITCM: START..END
@@ -314,8 +315,13 @@ estimates, and ? marks a function whose end elfq doesn't know. It shows
 the 30 largest items, and rows such as \"9 more data objects in
 0x20000000..0x20000450\" sum up the rest of a block's; --all shows every
 row. Calls through pointers, which elfq can't follow, are named below it,
-since SYMBOL may reach more through them. --json has the whole tree, with
-veneers as steps of their own.";
+since SYMBOL may reach more through them.
+
+--tree draws the items as a tree instead: each under the item that uses
+it, in the order that item first uses them, with veneers and PLT stubs as
+steps of their own. It shows the 30 largest items and the items on their
+chains from SYMBOL, and rows such as \"4 more\" sum up the rest under an
+item. --json has the whole tree.";
 
 const WHY: &str = "\
 The chains start where the program does, as HOW says: at the entry point, a
