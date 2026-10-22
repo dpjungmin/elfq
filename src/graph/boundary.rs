@@ -19,15 +19,12 @@
 //!
 //! A PLT stub that passes calls on to one of the file's own functions, as
 //! `log_msg@plt` does in a shared library, counts as a veneer for that
-//! function. Its other jump, to the header that lazy binding uses, is its
-//! own.
+//! function (see `veneers.rs`). When the stub also jumps to the header that
+//! lazy binding uses, that jump is reported as the stub's own.
 
-use std::collections::HashMap;
+use crate::binary::{AddressRange, Binary, ItemKind};
 
-use crate::arch;
-use crate::binary::{AddressRange, Binary, ItemKind, Source};
-
-use super::{Graph, Node, Reference, ReferenceKind, RootKind, Unresolved};
+use super::{Graph, Node, Reference, ReferenceKind, RootKind, Unresolved, VeneerTarget, Veneers};
 
 /// One use across the boundary: `from` uses `to`, directly or through a
 /// veneer.
@@ -61,16 +58,6 @@ pub struct Unfollowed {
     pub veneer: Option<usize>,
 }
 
-/// Where a veneer jumps to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum VeneerTarget {
-    /// A function or import.
-    Node(Node),
-    /// Code outside every item, such as a routine in a microcontroller's
-    /// ROM.
-    Outside(u64),
-}
-
 /// The boundary of some ranges of memory.
 pub struct Boundary<'a> {
     binary: &'a Binary,
@@ -80,8 +67,8 @@ pub struct Boundary<'a> {
     ranges: &'a [AddressRange],
     /// For each item, whether it is in the ranges.
     inside: Vec<bool>,
-    /// The PLT stubs for the file's own functions, each with its function.
-    stubs: HashMap<usize, usize>,
+    /// The veneers, and where each jumps to.
+    veneers: Veneers<'a>,
 }
 
 impl<'a> Boundary<'a> {
@@ -94,7 +81,7 @@ impl<'a> Boundary<'a> {
             graph,
             ranges,
             inside,
-            stubs: binary.own_function_stubs(),
+            veneers: Veneers::new(binary, graph),
         }
     }
 
@@ -249,7 +236,7 @@ impl<'a> Boundary<'a> {
                 }
             } else if reference.kind.is_call()
                 && let Node::Item(veneer) = reference.to
-                && let Some(VeneerTarget::Node(target)) = self.veneer_target(veneer)
+                && let Some(VeneerTarget::Node(target)) = self.veneers.target(veneer)
                 && self.contains(target) != from_inside
             {
                 // A call across to a veneer, which jumps on without
@@ -268,7 +255,7 @@ impl<'a> Boundary<'a> {
     /// its own side of the boundary, which take the place of that jump.
     /// Otherwise, or when nothing on its side calls it, nothing.
     fn calls_from_its_side(&self, item: usize, target: VeneerTarget) -> Vec<&'a Reference> {
-        if self.veneer_target(item) != Some(target) {
+        if self.veneers.target(item) != Some(target) {
             return Vec::new();
         }
         let side = self.inside[item];
@@ -288,51 +275,10 @@ impl<'a> Boundary<'a> {
         if !reference.kind.is_call() || self.inside[reference.from] == self.inside[veneer] {
             return None;
         }
-        match self.veneer_target(veneer)? {
+        match self.veneers.target(veneer)? {
             VeneerTarget::Outside(target) if self.in_ranges(target) == self.inside[veneer] => {
                 Some((veneer, target))
             }
-            _ => None,
-        }
-    }
-
-    /// Where `item` jumps to, when it is a linker's veneer: its code is all
-    /// a veneer (see [`arch::is_veneer`]), and jumps to one function, or to
-    /// code outside every item. A PLT stub for one of the file's own
-    /// functions passes calls on to it.
-    fn veneer_target(&self, item: usize) -> Option<VeneerTarget> {
-        if let Some(&function) = self.stubs.get(&item) {
-            return Some(VeneerTarget::Node(Node::Item(function)));
-        }
-        let function = &self.binary.items[item];
-        let code = self.binary.bytes(function.address, function.size)?;
-        let symbol = matches!(
-            function.source,
-            Source::SymbolTable | Source::DynamicSymbolTable
-        )
-        .then_some(function.name.as_str());
-        if function.kind != ItemKind::Function
-            || !arch::is_veneer(self.binary.architecture, code, symbol)
-        {
-            return None;
-        }
-        match (
-            self.graph.references_from(item),
-            self.graph.unresolved_in(item),
-        ) {
-            ([reference], []) if reference.kind == ReferenceKind::TailCall => {
-                Some(VeneerTarget::Node(reference.to))
-            }
-            (
-                [],
-                [
-                    Unresolved {
-                        is_call: false,
-                        target: Some(target),
-                        ..
-                    },
-                ],
-            ) => Some(VeneerTarget::Outside(*target)),
             _ => None,
         }
     }
@@ -444,35 +390,6 @@ mod tests {
                 crossing("apply_filter", "__memcpy_veneer", ""),
             ]
         );
-    }
-
-    #[test]
-    fn a_veneer_only_jumps_to_one_function() {
-        let (binary, mut graph) = sample();
-        // Calling on is not what a veneer does.
-        let veneer = index(&binary, "__memcpy_veneer");
-        let start = graph.references.partition_point(|r| r.from < veneer);
-        graph.references[start].kind = ReferenceKind::Call;
-        let ranges = [range("0x0+256K"), range("0x20000000+256K")];
-        let boundary = Boundary::new(&binary, &graph, &ranges);
-        assert!(
-            names(&binary, &boundary.leaving()).contains(&crossing(
-                "__memcpy_veneer",
-                "memcpy",
-                ""
-            )),
-            "{:?}",
-            boundary.leaving()
-        );
-        // Nor is a function a veneer when it only makes one tail call, but
-        // its code isn't a veneer's.
-        let handler = index(&binary, "SysTick_Handler");
-        graph
-            .references
-            .retain(|r| r.from != handler || r.kind == ReferenceKind::TailCall);
-        let boundary = Boundary::new(&binary, &graph, &ranges);
-        assert_eq!(graph.references_from(handler).len(), 1);
-        assert_eq!(boundary.veneer_target(handler), None);
     }
 
     #[test]

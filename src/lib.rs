@@ -15,7 +15,8 @@
 //!   inlined.
 //! - [`graph`]: connects items by the references between them, and works
 //!   out the roots, what is exclusive to what, the shortest chains to each
-//!   item and the references that cross the boundary of ranges of memory.
+//!   item, the references that cross the boundary of ranges of memory and
+//!   where a linker's veneers jump to.
 //! - [`binary`]: reads an ELF file and finds its functions and data objects.
 //! - `arch`: finds the addresses that machine code calls or uses.
 

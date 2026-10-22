@@ -137,7 +137,8 @@ calls the veneer, which jumps on to the target. The range forms of
 target, "via veneer", and a call through a PLT stub to one of the file's
 own functions, as a shared library makes, the same way, "via PLT";
 elsewhere a veneer is a function that tail-calls its target. elfq knows the
-veneers that GNU ld and LLD add for Cortex-M. (`arch::is_veneer`)
+veneers that GNU ld and LLD add for Cortex-M. (`arch::is_veneer`,
+`graph::Veneers`)
 
 **Long call.** A call that puts the target's address in a register and
 branches through it, as `ldr r3, =f; blx r3`, so that it can reach any
