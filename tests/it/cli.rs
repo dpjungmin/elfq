@@ -2842,6 +2842,16 @@ ADDRESS  SIZE  HOW            ITEM
 run also calls through a pointer, at 0x1283, which elfq can't follow, so it may reach more.
 ",
     );
+    assert_output(
+        &stdout(&["testdata/bin/c-plt.so", "reach", ".plt"]),
+        ".plt is the PLT header, which jumps only to the dynamic loader.\n",
+    );
+    // A stub keeps its `@plt` after "used by", in its shortest form.
+    let stub = stdout(&["testdata/bin/cpp-x86_64.so", "reach", "0x1150"]);
+    assert!(
+        stub.contains("  app::log(char const*), used by log(char const*)@plt\n"),
+        "{stub}"
+    );
 }
 
 #[test]

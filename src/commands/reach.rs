@@ -130,6 +130,9 @@ struct Reach<'a> {
     /// How SYMBOL uses itself, as a recursive function calls itself:
     /// "calls" or "uses", or `None` when it doesn't. No row shows it.
     self_use: Option<&'static str>,
+    /// Whether SYMBOL is a PLT's header, whose one jump goes to the dynamic
+    /// loader.
+    plt_header: bool,
     /// SYMBOL and what it reaches, as the rows of the tree: SYMBOL first,
     /// then depth first, each item's children in the order it first uses
     /// them.
@@ -203,6 +206,11 @@ impl<'a> Reach<'a> {
             [] => None,
             uses if uses.iter().all(|reference| reference.kind.is_call()) => Some("calls"),
             _ => Some("uses"),
+        };
+        let is_plt_header = |node| {
+            graph
+                .root(node)
+                .is_some_and(|root| root.kind == RootKind::PltHeader)
         };
 
         let nodes = (0..binary.items.len())
@@ -284,10 +292,7 @@ impl<'a> Reach<'a> {
             if item.kind == ItemKind::Function && item.size == 0 {
                 unreadable.push(index);
             }
-            let plt_header = graph
-                .root(step.node)
-                .is_some_and(|root| root.kind == RootKind::PltHeader);
-            if plt_header {
+            if is_plt_header(step.node) {
                 continue;
             }
             for &jump in graph.unresolved_in(index) {
@@ -301,6 +306,7 @@ impl<'a> Reach<'a> {
             index,
             lead_name,
             self_use,
+            plt_header: is_plt_header(start),
             steps,
             unresolved,
             unfollowed,
@@ -419,16 +425,15 @@ impl<'a> Reach<'a> {
             .copied()
             .collect();
         if reached.is_empty() && outside.is_empty() {
-            let pointers = !self.unresolved.is_empty();
-            match self.self_use {
-                Some(verb) if pointers => writeln!(out, "{name} {verb} itself.")?,
-                Some(verb) => writeln!(out, "{name} {verb} only itself.")?,
-                None if pointers => {}
-                None => writeln!(out, "{name} doesn't call or use anything.")?,
-            }
-            // All in SYMBOL, through pointers, as `callees` says them.
-            let listed = self.self_use.is_some();
-            for line in callees::unresolved_lines(name, &self.unresolved, listed, self.all) {
+            // Any calls and jumps elfq can't follow are in SYMBOL, through
+            // pointers.
+            for line in nothing_reached_lines(
+                name,
+                self.self_use,
+                self.plt_header,
+                &self.unresolved,
+                self.all,
+            ) {
                 writeln!(out, "{line}")?;
             }
             return Ok(());
@@ -779,5 +784,70 @@ fn kind_name(kind: ItemKind) -> &'static str {
     match kind {
         ItemKind::Function => "function",
         ItemKind::Data => "data object",
+    }
+}
+
+/// The answer when SYMBOL, `name`, reaches nothing but perhaps itself:
+/// how it uses itself, if it does ("calls" or "uses"), or else what it is,
+/// then its calls and jumps that elfq can't follow, as `callees` says them,
+/// with the first few sites, or with `all`, every one. `plt_header` is
+/// whether SYMBOL is a PLT's header, whose jump is left out.
+fn nothing_reached_lines(
+    name: &str,
+    self_use: Option<&str>,
+    plt_header: bool,
+    unresolved: &[Unresolved],
+    all: bool,
+) -> Vec<String> {
+    let pointers = !unresolved.is_empty();
+    let mut lines = match self_use {
+        Some(verb) if pointers => vec![format!("{name} {verb} itself.")],
+        Some(verb) => vec![format!("{name} {verb} only itself.")],
+        None if pointers => vec![],
+        None if plt_header => {
+            vec![format!(
+                "{name} is the PLT header, which jumps only to the dynamic loader."
+            )]
+        }
+        None => vec![format!("{name} doesn't call or use anything.")],
+    };
+    let listed = self_use.is_some();
+    lines.extend(callees::unresolved_lines(name, unresolved, listed, all));
+    lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn what_reaches_nothing_says_how_it_uses_itself() {
+        let lines = |self_use, plt_header, unresolved: &[Unresolved]| {
+            nothing_reached_lines("f", self_use, plt_header, unresolved, false)
+        };
+        let pointer = [Unresolved {
+            from: 0,
+            site: 0x10,
+            is_call: true,
+            target: None,
+        }];
+        assert_eq!(lines(None, false, &[]), ["f doesn't call or use anything."]);
+        assert_eq!(lines(Some("calls"), false, &[]), ["f calls only itself."]);
+        assert_eq!(lines(Some("uses"), false, &[]), ["f uses only itself."]);
+        assert_eq!(
+            lines(Some("calls"), false, &pointer),
+            [
+                "f calls itself.",
+                "Also 1 call through a pointer, at 0x10, which elfq can't follow.",
+            ]
+        );
+        assert_eq!(
+            lines(None, false, &pointer),
+            ["f makes 1 call through a pointer, at 0x10, which elfq can't follow."]
+        );
+        assert_eq!(
+            lines(None, true, &[]),
+            ["f is the PLT header, which jumps only to the dynamic loader."]
+        );
     }
 }

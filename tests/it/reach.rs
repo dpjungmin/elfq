@@ -14,7 +14,7 @@ use crate::support::{load_sample, sample_path};
 
 /// The Cortex-M samples with symbols, whose every item the checks run on:
 /// the C and Rust samples, and each build with veneers to and from RAM and
-/// ROM. Rust's is the one without DWARF, which takes a while to read.
+/// ROM.
 const SAMPLES: [&str; 13] = [
     "c-cortex-m4.elf",
     "c-cortex-m4-cmsis-nodebug.elf",
@@ -193,8 +193,6 @@ fn check_twin(sample: &str) -> usize {
     checked
 }
 
-/// Runs `check` on each of the samples, each on a thread of its own, and
-/// adds up what they return.
 /// Runs `check` on each of the samples, each on a thread of its own, and
 /// adds up what they return.
 fn on_each_sample(check: fn(&str) -> usize) -> usize {

@@ -388,7 +388,7 @@ impl<'a> Names<'a> {
             Node::Item(index) => self.binary.items[index].names().collect(),
             Node::Import(index) => vec![&self.binary.imports[index]],
         };
-        self.shortest_name(node, names)
+        self.shortest_name(node, names, |_| true)
             .unwrap_or_else(|| match node {
                 Node::Item(index) => format!("{:#x}", self.binary.items[index].address),
                 Node::Import(_) => node.name(self.binary).to_string(),
@@ -402,7 +402,7 @@ impl<'a> Names<'a> {
     /// no row shows.
     pub(super) fn short_name(&self, node: Node) -> String {
         let name = node.name(self.binary);
-        self.shortest_name(node, vec![name])
+        self.shortest_name(node, vec![name], |_| true)
             .unwrap_or_else(|| name.to_string())
     }
 
@@ -413,25 +413,29 @@ impl<'a> Names<'a> {
     pub(super) fn row_name(&self, index: usize) -> String {
         let node = Node::Item(index);
         let name = node.name(self.binary);
-        let shortest = if name.ends_with("@plt") {
-            // Without `@plt`, a stub's name means what the stub passes calls
-            // to, which reads as another item: `strlen, used by strlen`.
-            (self.nodes(name) == [node]).then(|| name.to_string())
-        } else {
-            self.shortest_name(node, vec![name])
-        };
-        shortest.unwrap_or_else(|| format!("{:#x}", self.binary.items[index].address))
+        // Without `@plt`, a stub's name means what the stub passes calls
+        // to, which reads as another item: `strlen, used by strlen`.
+        let stub = name.ends_with("@plt");
+        self.shortest_name(node, vec![name], |query| !stub || query.ends_with("@plt"))
+            .unwrap_or_else(|| format!("{:#x}", self.binary.items[index].address))
     }
 
     /// The shortest of `names` and their short names that finds only
-    /// `node`, leaving out mangled symbols, if one does.
-    fn shortest_name(&self, node: Node, names: Vec<&str>) -> Option<String> {
+    /// `node` and that `keep` keeps, leaving out mangled symbols, if one
+    /// does.
+    fn shortest_name(
+        &self,
+        node: Node,
+        names: Vec<&str>,
+        keep: impl Fn(&str) -> bool,
+    ) -> Option<String> {
         // A stub for one of the file's own functions has the function's
         // mangled names as aliases, with `@plt` added.
         let mut queries: Vec<String> = names
             .into_iter()
             .filter(|name| demangle(name.strip_suffix("@plt").unwrap_or(name)).is_none())
             .flat_map(|name| short_names(name).into_iter().chain([name.to_string()]))
+            .filter(|query| keep(query))
             .collect();
         queries.sort_by(|a, b| a.len().cmp(&b.len()).then(a.cmp(b)));
         queries
