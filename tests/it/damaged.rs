@@ -759,6 +759,7 @@ fn a_long_chain_of_calls_is_read() {
         assert_eq!(item["parent"], id - 1);
     }
     run("long-chain.elf", &data, &["reach", "0x8113878", "--all"]);
+    run("long-chain.elf", &data, &["reach", "0x8113878", "--tree"]);
 }
 
 #[test]

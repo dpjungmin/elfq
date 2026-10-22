@@ -873,11 +873,12 @@ impl<'r, 'a> Tree<'r, 'a> {
     /// them, which no row shows.
     fn more(&self, hidden: &[usize]) -> TreeRow {
         let binary = self.reach.binary;
-        let nodes: Vec<Node> = hidden
-            .iter()
-            .flat_map(|&step| self.under(step))
-            .map(|step| self.reach.steps[step].node)
-            .collect();
+        let mut nodes: Vec<Node> = Vec::new();
+        let mut next = hidden.to_vec();
+        while let Some(step) = next.pop() {
+            nodes.push(self.reach.steps[step].node);
+            next.extend(&self.children[step]);
+        }
         // Imports have no bytes in the file, as their own rows show.
         let size = if nodes.iter().all(|node| matches!(node, Node::Import(_))) {
             String::new()
@@ -886,15 +887,6 @@ impl<'r, 'a> Tree<'r, 'a> {
         };
         let cells = vec![String::new(), size, String::new()];
         TreeRow::new(cells, format!("{} more", nodes.len()), Vec::new())
-    }
-
-    /// `step` and every step under it.
-    fn under(&self, step: usize) -> Vec<usize> {
-        let mut steps = vec![step];
-        for &child in &self.children[step] {
-            steps.extend(self.under(child));
-        }
-        steps
     }
 }
 

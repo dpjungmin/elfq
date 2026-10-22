@@ -850,6 +850,16 @@ fn no_line_sums_up_a_single_item() {
             runs.push(vec![sample, "--range", range]);
             runs.push(vec![sample, "top", "--range", range]);
         }
+        // What the item that the Try list asks about reaches.
+        for line in overview.lines() {
+            if let Some((_, symbol)) = line
+                .split_once(" retained ")
+                .or_else(|| line.split_once(" callees "))
+            {
+                runs.push(vec![sample, "reach", symbol]);
+                runs.push(vec![sample, "reach", symbol, "--tree"]);
+            }
+        }
         for args in &runs {
             let text = stdout(args);
             assert!(
@@ -2952,6 +2962,19 @@ ADDRESS     SIZE  HOW            ITEM
 
 dispatch_event also jumps through a pointer, at 0x300002da, which elfq can't follow, so main may reach more.
 ",
+    );
+    // A row that sums up only imports has no SIZE, as their own rows have
+    // none.
+    let rust = stdout(&[
+        "testdata/bin/rust-x86_64-nodebug.elf",
+        "reach",
+        "0x42060",
+        "--tree",
+    ]);
+    let imports = rust.lines().find(|line| line.ends_with("└─ 3 more"));
+    assert!(
+        imports.is_some_and(|line| line.trim_start().starts_with('└')),
+        "{rust}"
     );
     // --all shows every item, with no rows that sum some up.
     let all = stdout(&[TCM_SAMPLE, "reach", "main", "--tree", "--all"]);
