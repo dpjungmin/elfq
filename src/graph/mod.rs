@@ -16,20 +16,29 @@
 //! [`Boundary`] tells which references cross the boundary of some ranges
 //! of memory (see `boundary.rs`).
 //!
+//! [`Veneers`] tells where each of a linker's veneers jumps to. A veneer is
+//! code that the linker adds where a call is too far for the call
+//! instruction: the call goes to the veneer, which jumps on to the target
+//! (see `veneers.rs`).
+//!
 //! [`Graph::roots`] are where the program starts running (see `roots.rs`).
 //! From them, [`DominatorTree`] works out which items are reachable only
 //! through which (see `dominators.rs`), and [`ShortestPaths`] finds the
 //! shortest chain of references to each item (see `paths.rs`).
+//! [`ShortestPaths::from`] searches from one item instead, and finds the
+//! shortest chain to each item that it uses, directly or not.
 
 mod boundary;
 mod dominators;
 mod paths;
 mod roots;
+mod veneers;
 
 pub use boundary::{Boundary, Crossing, Unfollowed};
 pub use dominators::DominatorTree;
 pub use paths::ShortestPaths;
 pub use roots::{Root, RootKind};
+pub use veneers::{VeneerTarget, Veneers};
 
 use std::collections::HashSet;
 
