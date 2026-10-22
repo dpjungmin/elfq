@@ -930,6 +930,114 @@ fn why_has_the_chain_through_every_user() {
 }
 
 #[test]
+fn reach_has_the_whole_tree() {
+    let reach = elfq_json(&[TCM_SAMPLE, "reach", "SysTick_Handler"]);
+    assert_eq!(reach["symbol"]["name"], "SysTick_Handler");
+    assert_eq!(reach["code_bytes"], 446);
+    assert_eq!(reach["data_bytes"], 4128);
+    // Each item after the one that uses it, its parent, and that one's
+    // children in the order it uses them. The veneer has a row of its own,
+    // which the text leaves out of how app_tick is used.
+    let rows: Vec<String> = reach["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| {
+            let name = item["name"].as_str().unwrap();
+            format!("{} {name} ({}) {}", item["id"], item["how"], item["parent"])
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            "0 SysTick_Handler (null) null",
+            "1 systick_count (\"address taken\") 0",
+            "2 __app_tick_veneer (\"tail call\") 0",
+            "3 app_tick (\"tail call\") 2",
+            "4 dispatch_event (\"tail call\") 3",
+            "5 handlers (\"address taken\") 4",
+            "6 .rodata@0x30000de8 (\"address taken\") 3",
+            "7 log_msg (\"call\") 3",
+            "8 strlen (\"call\") 7",
+            "9 platform_write (\"tail call\") 7",
+            "10 tx_head (\"address taken\") 9",
+            "11 tx_buffer (\"address taken\") 9",
+            "12 tx_tail (\"address taken\") 9",
+        ]
+    );
+    assert_eq!(reach["items"][11]["block"], "0x20240000");
+    assert_eq!(
+        reach["items"][11]["sites"],
+        json!(["0x30000674", "0x30000696"])
+    );
+    assert_eq!(
+        reach["blocks"][3],
+        json!({
+            "start": "0x30000000",
+            "end": "0x30000edc",
+            "code_bytes": 422,
+            "data_bytes": 8,
+            "sections": [".text", ".rodata"]
+        })
+    );
+    // The jump through the handler table, which elfq can't follow.
+    let unresolved = &reach["unresolved"];
+    assert_eq!(names(&json!([unresolved[0]["caller"]])), ["dispatch_event"]);
+    assert_eq!(unresolved[0]["site"], "0x300002da");
+    assert_eq!(unresolved[0]["target"], Value::Null);
+    assert_eq!(reach["complete"], false);
+
+    // Functions there only because main takes their addresses.
+    let main = elfq_json(&[TCM_SAMPLE, "reach", "main"]);
+    let mut through_pointer: Vec<&str> = main["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["through_pointer"] == true)
+        .map(|item| item["name"].as_str().unwrap())
+        .collect();
+    through_pointer.sort();
+    assert_eq!(through_pointer, ["on_button", "on_data", "on_timer"]);
+    // Only the processor calls through the vector table, so a handler it
+    // lists is not there through a pointer.
+    let vector_table = elfq_json(&[TCM_SAMPLE, "reach", "vector_table"]);
+    let handlers: Vec<(&Value, &Value)> = vector_table["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["parent"] == 0 && item["kind"] == "function")
+        .map(|item| (&item["name"], &item["through_pointer"]))
+        .collect();
+    assert_eq!(
+        handlers,
+        [
+            (&json!("Reset_Handler"), &json!(false)),
+            (&json!("Default_Handler"), &json!(false)),
+            (&json!("SysTick_Handler"), &json!(false)),
+        ]
+    );
+    // A veneer's jump to the chip's ROM is where it is, in the veneer.
+    let rom = elfq_json(&[
+        "testdata/bin/far-gnu-m4-nodebug.elf",
+        "reach",
+        "ram_calls_rom",
+    ]);
+    assert_eq!(
+        rom["unresolved"][0]["caller"]["name"],
+        "__rom_routine_veneer"
+    );
+    assert_eq!(rom["unresolved"][0]["target"], "0x1fff0000");
+    // An import is in no block.
+    let log_msg = elfq_json(&[SAMPLE, "reach", "log_msg"]);
+    let write = &log_msg["items"][5];
+    assert_eq!(
+        (&write["name"], &write["block"]),
+        (&json!("write"), &Value::Null)
+    );
+    assert_eq!(log_msg["complete"], true);
+}
+
+#[test]
 fn debug_commands_print_only_text() {
     let output = elfq(&[SAMPLE, "debug", "items", "--json"]);
     assert_eq!(output.status.code(), Some(2));

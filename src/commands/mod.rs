@@ -10,6 +10,7 @@ mod inlined;
 mod json;
 mod overview;
 mod ranges;
+mod reach;
 mod retained;
 mod retained_tree;
 pub mod symbol;
@@ -101,6 +102,9 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<Outcome> {
             format,
             out,
         ),
+        Some(Command::Reach(args)) => {
+            answered(reach::run(&binary, &args.symbol, args.all, format, out))
+        }
         Some(Command::Debug(DebugCommand::Items)) => answered(debug_items::run(&binary, out)),
     }
 }
@@ -136,6 +140,23 @@ fn check_arguments(cli: &Cli) -> Result<()> {
         if uses.args.symbols.is_empty() {
             bail!("{name} needs a SYMBOL, or ranges such as 0x0+256K")
         }
+    }
+    if let Some(Command::Reach(args)) = &cli.command
+        && symbol::is_range(&args.symbol)
+    {
+        // What a range uses outside it is a range check, which callees has.
+        let callees = match args.symbol.parse::<AddressRange>() {
+            Ok(range) => {
+                let file = text::shell_quote(&cli.file.display().to_string());
+                let json = if cli.json { " --json" } else { "" };
+                format!(
+                    "; for what a range uses outside it: elfq {file} callees {}{json}",
+                    text::range_argument(range)
+                )
+            }
+            Err(_) => String::new(),
+        };
+        bail!("reach takes one SYMBOL, not ranges{callees}")
     }
     match &cli.command {
         None | Some(Command::Top(_) | Command::Retained(_)) => Ok(()),
@@ -299,6 +320,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::Inlined(_) => "inlined",
         Command::Callers(_) => "callers",
         Command::Callees(_) => "callees",
+        Command::Reach(_) => "reach",
         Command::Debug(_) => "debug",
     }
 }

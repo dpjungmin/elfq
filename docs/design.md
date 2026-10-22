@@ -37,8 +37,8 @@ stubs too, such as `log_msg@plt`. (`graph::Node::Import`)
 **site**: the address of an instruction, or of a pointer stored in data.
 Items and imports are the nodes of elfq's **reference graph**, and
 references are its edges. (`graph::Reference`, `graph::Graph`) The HOW
-column of `callers`, `callees` and `why` says what kind of reference each
-is (`graph::ReferenceKind`):
+column of `callers`, `callees`, `why` and `reach` says what kind of
+reference each is (`graph::ReferenceKind`):
 
 | HOW | JSON `how` | Meaning |
 |---|---|---|
@@ -80,6 +80,14 @@ for the code or data that holds its address, which is the same rule that
 the linker's `--gc-sections` follows. Rows mark such a function "(through
 a pointer)", since nothing calls it directly.
 
+**Reach.** What an item **reaches** is everything it calls or uses, what
+those call or use, and so on: every item that a chain of references from it
+leads to. Where its retained size counts only what no other code uses, what
+it reaches counts everything that it needs to run, shared or not, and
+doesn't depend on the roots. `reach` keeps the shortest chain to each item,
+so that the items form a tree under SYMBOL, each under the item that uses
+it on its chain. (`graph::ShortestPaths::from`)
+
 **Unresolved call.** A call or jump that elfq finds in code but can't turn
 into a reference: one through a pointer set at run time, as in a call
 through a function pointer or a C++ virtual call, or one to an address
@@ -100,7 +108,8 @@ and `retained` count only the bytes inside one range, and `callers` and
 `callees` take ranges in place of SYMBOL and after `--from` and `--to`. A
 memory block is a run of sections and load images less than 64 KiB apart,
 which stands for one memory, such as flash or a RAM; the overview lists the
-blocks when there are several. (`binary::AddressRange`, `binary::MemoryBlock`)
+blocks when there are several, and `reach` adds up what SYMBOL reaches in
+each. (`binary::AddressRange`, `binary::MemoryBlock`)
 
 **Load image.** The bytes of a section that the file stores in one place,
 such as flash, for the program to copy to where it uses them, such as RAM:
@@ -133,8 +142,8 @@ handlers. elfq finds it by its shape rather than its section's name.
 **Veneer.** A few instructions that a linker adds when a call's target is
 too far away for the call instruction, as between flash and ITCM: the code
 calls the veneer, which jumps on to the target. The range forms of
-`callers` and `callees` list a call through a veneer as a call to its
-target, "via veneer", and a call through a PLT stub to one of the file's
+`callers` and `callees`, and the rows of `reach`, list a call through a
+veneer as a call to its target, "via veneer", and a call through a PLT stub to one of the file's
 own functions, as a shared library makes, the same way, "via PLT";
 elsewhere a veneer is a function that tail-calls its target. elfq knows the
 veneers that GNU ld and LLD add for Cortex-M. (`arch::is_veneer`,
@@ -168,6 +177,7 @@ except `inlined`, which reads DWARF instead of machine code.
 | `elfq FILE top` | Which items keep the most bytes? |
 | `elfq FILE callers SYMBOL` | What calls or uses SYMBOL directly, and how (call, tail call, uses, address taken, pointer)? |
 | `elfq FILE callees SYMBOL` | What does SYMBOL call or use directly? |
+| `elfq FILE reach SYMBOL` | What does SYMBOL call or use at any depth, and how many bytes of code and data does that take in each block of memory, such as ITCM, DTCM and flash? |
 | `elfq FILE callees RANGE...` | What do the code and data in these ranges of memory use outside them, such as code in ITCM that calls a function in flash? `callers RANGE...` asks the reverse. |
 | `elfq FILE callers RANGE... --from RANGE` | What in one range of memory uses these ranges, such as code in ITCM that uses data in DTCM? `callees RANGE... --to RANGE` asks what these ranges use in that one, and either takes SYMBOL in place of the ranges. |
 | `elfq FILE inlined [SYMBOL]` | Which inlined functions cost the most bytes across the binary, or inside SYMBOL? Needs DWARF. |
@@ -257,7 +267,8 @@ one or two, else the first and how many more. `callers SYMBOL` and `callees
 SYMBOL` list the 30 items with the largest own sizes, callers in order of
 name and callees in the order SYMBOL first uses them, and a last row such
 as `70 more` counts the rest; with ranges, `--from` or `--to`, they list
-every crossing.
+every crossing. `reach` lists the 30 largest items, and a row such as `9
+more data objects in 0x20000000..0x20000450` sums up the rest of a block's.
 `--all` lifts every such cut in an answer but AT's: it shows every item in
 a table or tree, every chain in `why`, and every name and address in a
 sentence, where a long list otherwise ends with "and 48 more".
@@ -333,6 +344,35 @@ call           log_msg
 debug_dump uses log_msg too, but nothing reaches debug_dump.
 
 Removing main would remove log_msg too.
+```
+
+`reach` answers what SYMBOL needs: everything it calls or uses, at any
+depth, and the bytes of code and data that takes in each memory block, with
+the sections that hold them. It follows the same references as `retained`,
+but counts what other code uses too, and starts at SYMBOL instead of the
+roots, so it works on shared libraries. Each row names the item that uses
+it on a shortest chain from SYMBOL, as in `log_msg, used by app_tick`; a
+call through a veneer is listed as a call from the code that calls the
+veneer, "via veneer", and the veneer has a row of its own. The rows come by
+block, functions then data objects, largest first, then the calls to code
+outside any function, as to a chip's ROM, and the imports. Each item counts
+once, where the program uses it, not where a load image stores it, so
+`crc32`, which runs from ITCM, uses its table in DTCM and nothing in
+flash:
+
+```
+$ elfq testdata/bin/c-cortex-m7.elf reach crc32
+crc32 and the data object it reaches take 48 bytes of code and 1024 bytes of data:
+
+MEMORY                  CODE  DATA  SECTIONS
+0x00000000..0x000000e0    48     0  .itcm
+0x20000000..0x20000450     0  1024  .data
+0x20240000..0x20241000     0     0
+0x30000000..0x30000edc     0     0
+
+ADDRESS     SIZE  HOW   ITEM
+0x10          48        crc32
+0x20000000  1024  uses  crc_table, used by crc32
 ```
 
 `inlined` ranks the functions that the compiler copied into their callers
@@ -547,6 +587,18 @@ several.
 | `through_pointer` | for `callers` only, the functions in the ranges whose address is taken or stored, other than in the vector table; with `--from`, only when code in its ranges calls through a pointer, or is code that elfq can't read |
 | `complete` | whether the lists have every crossing, as far as elfq can tell, as [below](#calls-elfq-cant-follow) |
 
+**`reach SYMBOL`**:
+
+| Key | Value |
+|---|---|
+| `symbol` | SYMBOL's item |
+| `code_bytes`, `data_bytes` | the bytes of the functions, and of the data objects, among SYMBOL and what it reaches |
+| `blocks` | every memory block that the overview's `memory` lists, in address order, each a range with the `code_bytes` and `data_bytes` in it and the `sections` there that hold SYMBOL or what it reaches |
+| `items` | SYMBOL, then what it reaches, as the rows of a tree: each comes after its parent, and the items its parent uses come in the order it first uses them. Each is an item with an `id`, counting from 0; the `block` that holds it, as the block's `start`, or `null` for an import, or for an item in no block, as a damaged file can have; `how` its parent uses it, in the words of the JSON column in [Concepts](#concepts); the `sites` where it does; `through_pointer`, whether the text marks it "(through a pointer)"; and `parent`, the `id` of the item that uses it on its shortest chain from SYMBOL. `how` and `parent` are `null` for SYMBOL. A veneer has a row of its own, between the call to it and its target |
+| `unresolved` | the calls and jumps in SYMBOL and what it reaches that elfq can't follow, each with the `caller` it is in, and as in `callees SYMBOL`, its `site`, `how` and `target`; not the jump in a PLT's header to the dynamic loader |
+| `unreadable` | the functions that SYMBOL reaches whose end elfq doesn't know, so it can't read their code |
+| `complete` | whether `items` has everything SYMBOL reaches, as far as elfq can tell: `false` when `unresolved` or `unreadable` isn't empty |
+
 ### Calls elfq can't follow
 
 Calls through pointers leave some answers incomplete, and elfq says so
@@ -555,8 +607,11 @@ a function whose address is taken or stored, and `callees` lists the calls
 and jumps it can't follow. `retained` notes when SYMBOL or the items it
 keeps call through pointers, since what those calls reach may count for
 other items.
-In JSON, `callers` and `callees` have `complete`, and `retained` has
-`indirect_calls`. For ranges, and with `--from` or `--to`, `complete` is
+`reach` names the code in what SYMBOL reaches that calls or jumps through a
+pointer, since SYMBOL may reach more through it, and the functions whose
+end elfq doesn't know, since it can't read what they use.
+In JSON, `callers`, `callees` and `reach` have `complete`, and `retained`
+has `indirect_calls`. For ranges, and with `--from` or `--to`, `complete` is
 `false` when `callees` lists a call it can't follow, other than, with
 `--to`, one to a known address in its ranges, or a function whose end it
 doesn't know, or when `callers` notes calls through a pointer to a function
@@ -698,7 +753,10 @@ that do this.
 6. **Analyze**: compute the dominator tree once from a virtual node that
    points at every root. `retained` and `top` read it. `why` searches from
    the roots for the shortest chain to each item that uses SYMBOL, going
-   around SYMBOL itself, and prefers calls among equally short chains.
+   around SYMBOL itself. Of equally short chains it takes the one with the
+   most calls, and then the one that the breadth-first search found first,
+   so the answer is always the same. `reach` searches from SYMBOL the same
+   way, for the shortest chain to every item.
    `callers` and `callees` read edges. `callers` counts a call to the stub
    for one of the file's own functions, such as `log_msg@plt` in a shared
    library, as a call to the function, and says so.
@@ -798,16 +856,15 @@ disassembler's API.
 
 ## Status and roadmap
 
-The overview, `top`, `retained`, `why`, `callers` and `callees` work on
-x86-64 and Cortex-M executables, with or without symbols and DWARF, and
-`inlined` works on any file with DWARF that isn't compressed. The overview,
-`callers` and
-`callees` also work on x86-64 shared libraries. The pull requests and the
+The overview, `top`, `retained`, `why`, `callers`, `callees` and `reach`
+work on x86-64 and Cortex-M executables, with or without symbols and DWARF,
+and `inlined` works on any file with DWARF that isn't compressed. The
+overview, `callers`, `callees` and `reach` also work on x86-64 shared
+libraries. The pull requests and the
 git log record how elfq got here.
 
 Ideas for later, not yet planned: output that scripts and AI agents can
-read more easily, what one function can reach in each memory block, a
-check of what startup code copies into RAM, the retained size of a set of
+read more easily, a check of what startup code copies into RAM, the retained size of a set of
 items, comparing two builds, the functions that shared libraries export as
 roots, `--root SYMBOL`, worst-case stack depth (the call graph plus each
 function's stack frame), and a query language.

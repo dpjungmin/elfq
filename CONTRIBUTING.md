@@ -45,7 +45,7 @@ install 1.88` gets it.
 | `src/commands/` | One file per command, which looks up SYMBOL, asks `graph` or `debuginfo` and decides what the answer shows. `mod.rs` runs the command the arguments name, after checking arguments that don't go together. The rest are shared: `symbol.rs` works out what a user means by SYMBOL, `retained_tree.rs` builds the trees of retained sizes that the overview, `top` and `retained` show, `ranges.rs` answers `callers` and `callees` for ranges of memory or with `--from` or `--to`, `text.rs` holds the wording that commands share and `json.rs` the JSON shapes. |
 | `src/arch/` | Finding the addresses that machine code calls or uses, one module per instruction set (x86-64 and Thumb). Thumb's has three parts: `thumb/mod.rs` reads each instruction on its own, `thumb/decode.rs` says what an instruction does with the registers and the stack, and `thumb/values/` follows the addresses that code puts in registers to where a branch through one goes, as for long calls and veneers. |
 | `src/binary/` | Reading an ELF file: its functions and data objects ("items") and where they were found, their names, imports, stored pointers and memory blocks. Unnamed data, such as string literals, is found from what code and pointers refer to. Each function's code is scanned once, as the file loads (`Binary::code_references`). |
-| `src/graph/` | The reference graph that connects items, the roots where the program starts, the dominator tree that says what is exclusive to what, the shortest paths that `why` shows, the references that cross the boundary of ranges of memory, and where a linker's veneers jump to. |
+| `src/graph/` | The reference graph that connects items, the roots where the program starts, the dominator tree that says what is exclusive to what, the shortest paths that `why` and `reach` show, the references that cross the boundary of ranges of memory, and where a linker's veneers jump to. |
 | `src/debuginfo/` | Reading DWARF, when the file has it: the copies of functions that the compiler inlined, for `inlined`, and for the error when SYMBOL names a function that the compiler inlined everywhere. |
 | `src/render/` | Text output: tables, and the trees in their last column (`tree.rs`), which every command shows the same way: as rows that name the row they hang under (in `why`, only where chains branch), or drawn with `--tree`. |
 | `tests/it/` | Integration tests, built as one test program (`main.rs` lists its modules). See [Tests](#tests). |
@@ -109,7 +109,8 @@ that reaches up the list is a sign that the code belongs lower down.
   `cli.rs`, `json.rs` and `docs.rs` run the elfq program, the way a user
   would. The others call the library, as `Binary::load` and
   `Graph::build`. `damaged.rs` does both, and so does one test in
-  `json.rs`. The answers they expect are
+  `json.rs`; `reach.rs` runs commands in its own process, through
+  `commands::run`, which is quicker for the hundreds it runs. The answers they expect are
   those in [testdata/README.md](testdata/README.md), which says, for
   example, what calls `log_msg` in each sample.
 
@@ -122,6 +123,7 @@ that reaches up the list is a sign that the code belongs lower down.
 | `graph.rs` | The reference graph: callers, callees, pointers in data, veneers |
 | `retained.rs` | Roots, and what is exclusive to what |
 | `why.rs` | The shortest chains |
+| `reach.rs` | `reach` on every item of the Cortex-M samples, against `callees` and `retained`, and on every function of each stripped one against its twin with symbols |
 | `symbol.rs` | Looking up SYMBOL |
 | `inlined.rs` | Inlined copies, from DWARF |
 | `damaged.rs` | Damaged and unusual files, made by changing a sample's bytes |
@@ -234,10 +236,11 @@ is a short one to copy.
 2. **Wiring, in `src/arch/mod.rs`.** Add `mod <name>;`, an arm in `scan`
    and an arm in `is_supported`: until `is_supported` says yes, elfq never
    scans the code and says it can't read it. An arm in `is_veneer` lets
-   `callers` and `callees` of ranges see through a linker's veneers. An arm
-   in `runs_on` lets an entry point that shares its code with the next
-   function, as libgcc's `__aeabi_dsub` does with `__adddf3`, run on into
-   it as a tail call; without one, such entry points use nothing.
+   `callers` and `callees` of ranges, and `reach`, see through a linker's
+   veneers. An arm in `runs_on` lets an entry point that shares its code
+   with the next function, as libgcc's `__aeabi_dsub` does with
+   `__adddf3`, run on into it as a tail call; without one, such entry
+   points use nothing.
    `code_size`, `leading_padding` and `ending` matter only for finding the
    functions in stripped firmware, which elfq does only for Thumb.
 3. **Its name.** Add it to `text::architecture_name`, which the overview

@@ -8,11 +8,12 @@ every `$ elfq` example here and checks that elfq still prints exactly that.
 
 1. [Why is formatting code in Rust firmware?](#why-is-formatting-code-in-rust-firmware)
 2. [Does the code in fast memory use slow memory?](#does-the-code-in-fast-memory-use-slow-memory)
-3. [What is in stripped firmware?](#what-is-in-stripped-firmware)
-4. [Who calls a function, and how?](#who-calls-a-function-and-how)
-5. [What would removing a function save?](#what-would-removing-a-function-save)
-6. [Which inlined functions take the most bytes?](#which-inlined-functions-take-the-most-bytes)
-7. [How do scripts read the answers?](#how-do-scripts-read-the-answers)
+3. [What does SysTick_Handler run and use, and where?](#what-does-systick_handler-run-and-use-and-where)
+4. [What is in stripped firmware?](#what-is-in-stripped-firmware)
+5. [Who calls a function, and how?](#who-calls-a-function-and-how)
+6. [What would removing a function save?](#what-would-removing-a-function-save)
+7. [Which inlined functions take the most bytes?](#which-inlined-functions-take-the-most-bytes)
+8. [How do scripts read the answers?](#how-do-scripts-read-the-answers)
 
 ## Why is formatting code in Rust firmware?
 
@@ -265,6 +266,51 @@ ADDRESS  SIZE  HOW              AT                      CALLEE
 
 `process_frame`, in flash, calls two functions in ITCM, both through
 veneers.
+
+## What does SysTick_Handler run and use, and where?
+
+An interrupt handler should run from fast memory, and so should what it
+calls and the data it uses. `reach` lists all of that, at any depth, and
+adds up its bytes in each block of memory:
+
+```
+$ elfq testdata/bin/c-cortex-m7.elf reach SysTick_Handler
+SysTick_Handler and the 12 items it reaches take 446 bytes of code and 4128 bytes of data; elfq can't follow 1 jump:
+
+MEMORY                  CODE  DATA  SECTIONS
+0x00000000..0x000000e0    24     0  .itcm
+0x20000000..0x20000450     0    24  .bss
+0x20240000..0x20241000     0  4096  .ocram_bss
+0x30000000..0x30000edc   422     8  .text .rodata
+
+ADDRESS     SIZE  HOW                   ITEM
+0x0           16                        SysTick_Handler
+0xd0           8  tail call             __app_tick_veneer, used by SysTick_Handler
+0x20000438    12  uses                  handlers, used by dispatch_event
+0x20000444     4  uses                  systick_count, used by SysTick_Handler
+0x2000044c     4  uses                  tx_head, used by platform_write
+0x20000448     4  uses                  tx_tail, used by platform_write
+0x20240000  4096  uses                  tx_buffer, used by platform_write
+0x30000700   216  call                  strlen, used by log_msg
+0x30000668    96  tail call             platform_write, used by log_msg
+0x300002e4    60  tail call via veneer  app_tick, used by SysTick_Handler
+0x30000288    26  call                  log_msg, used by app_tick
+0x300002cc    24  tail call             dispatch_event, used by app_tick
+0x30000de8    ~8  uses                  .rodata@0x30000de8, used by app_tick
+
+dispatch_event also jumps through a pointer, at 0x300002da, which elfq can't follow, so SysTick_Handler may reach more.
+```
+
+`SysTick_Handler`, the timer's interrupt handler, is in ITCM, but 422 of
+the 446 bytes of code it runs are in flash: it jumps to `app_tick` there
+through a veneer, and `app_tick` logs through `log_msg`, `strlen` and
+`platform_write`. Its data is in DTCM, but for `tx_buffer`, the 4 KiB that
+`platform_write` fills in the RAM at 0x20240000, and the 8 bytes in flash
+of the message that `app_tick` logs. Each row names the item that uses it,
+on the shortest way there from `SysTick_Handler`.
+`dispatch_event` jumps through `handlers`, a table that the program fills
+in as it runs, so the handler may run more than elfq can see, as the last
+line says.
 
 ## What is in stripped firmware?
 

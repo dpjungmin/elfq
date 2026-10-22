@@ -2493,6 +2493,381 @@ ADDRESS  SIZE  HOW              AT                      CALLEE
 }
 
 #[test]
+fn reach_lists_what_a_function_runs_and_uses_by_block() {
+    // Through a veneer into flash, and data in two blocks of RAM and in
+    // flash.
+    assert_output(
+        &stdout(&[TCM_SAMPLE, "reach", "SysTick_Handler"]),
+        "\
+SysTick_Handler and the 12 items it reaches take 446 bytes of code and 4128 bytes of data; elfq can't follow 1 jump:
+
+MEMORY                  CODE  DATA  SECTIONS
+0x00000000..0x000000e0    24     0  .itcm
+0x20000000..0x20000450     0    24  .bss
+0x20240000..0x20241000     0  4096  .ocram_bss
+0x30000000..0x30000edc   422     8  .text .rodata
+
+ADDRESS     SIZE  HOW                   ITEM
+0x0           16                        SysTick_Handler
+0xd0           8  tail call             __app_tick_veneer, used by SysTick_Handler
+0x20000438    12  uses                  handlers, used by dispatch_event
+0x20000444     4  uses                  systick_count, used by SysTick_Handler
+0x2000044c     4  uses                  tx_head, used by platform_write
+0x20000448     4  uses                  tx_tail, used by platform_write
+0x20240000  4096  uses                  tx_buffer, used by platform_write
+0x30000700   216  call                  strlen, used by log_msg
+0x30000668    96  tail call             platform_write, used by log_msg
+0x300002e4    60  tail call via veneer  app_tick, used by SysTick_Handler
+0x30000288    26  call                  log_msg, used by app_tick
+0x300002cc    24  tail call             dispatch_event, used by app_tick
+0x30000de8    ~8  uses                  .rodata@0x30000de8, used by app_tick
+
+dispatch_event also jumps through a pointer, at 0x300002da, which elfq can't follow, so SysTick_Handler may reach more.
+",
+    );
+    // Code in ITCM that flash calls through veneers.
+    assert_output(
+        &stdout(&[TCM_SAMPLE, "reach", "process_frame"]),
+        "\
+process_frame and the 23 items it reaches take 1302 bytes of code and 5236 bytes of data; elfq can't follow 1 jump:
+
+MEMORY                  CODE  DATA  SECTIONS
+0x00000000..0x000000e0   200     0  .itcm
+0x20000000..0x20000450     0  1084  .data .bss
+0x20240000..0x20241000     0  4096  .ocram_bss
+0x30000000..0x30000edc  1102    56  .text .rodata
+
+ADDRESS     SIZE  HOW              ITEM
+0x30000320   376                   process_frame
+0x74          92  call via veneer  apply_filter, used by process_frame
+0x40          52  call             filter_tap, used by apply_filter
+0x10          48  call via veneer  crc32, used by process_frame
+0xd8           8  call             __memcpy_veneer, used by apply_filter
+0x20000000  1024  uses             crc_table, used by crc32
+0x20000400    32  uses             stats, used by process_frame
+0x20000438    12  uses             handlers, used by dispatch_event
+0x20000424     4  uses             frames_bad, used by process_frame
+0x20000428     4  uses             frames_ok, used by process_frame
+0x2000044c     4  uses             tx_head, used by platform_write
+0x20000448     4  uses             tx_tail, used by platform_write
+0x20240000  4096  uses             tx_buffer, used by platform_write
+0x3000087c   308  call via veneer  memcpy, used by apply_filter
+0x30000700   216  call             strlen, used by log_msg
+0x30000668    96  tail call        platform_write, used by log_msg
+0x30000160    40  call             decode_header, used by process_frame
+0x30000288    26  call             log_msg, used by process_frame
+0x300002cc    24  call             dispatch_event, used by process_frame
+0x300009b8     8  call             __apply_filter_veneer, used by process_frame
+0x300009b0     8  call             __crc32_veneer, used by process_frame
+0x30000eb4    32  uses             fir_coeffs, used by filter_tap
+0x30000df0   ~12  uses             .rodata@0x30000df0, used by process_frame
+0x30000dfc   ~12  uses             .rodata@0x30000dfc, used by process_frame
+
+dispatch_event also jumps through a pointer, at 0x300002da, which elfq can't follow, so process_frame may reach more.
+",
+    );
+    // The MEMORY table has every block, with nothing in some.
+    assert_output(
+        &stdout(&[TCM_SAMPLE, "reach", "crc32"]),
+        "\
+crc32 and the data object it reaches take 48 bytes of code and 1024 bytes of data:
+
+MEMORY                  CODE  DATA  SECTIONS
+0x00000000..0x000000e0    48     0  .itcm
+0x20000000..0x20000450     0  1024  .data
+0x20240000..0x20241000     0     0
+0x30000000..0x30000edc     0     0
+
+ADDRESS     SIZE  HOW   ITEM
+0x10          48        crc32
+0x20000000  1024  uses  crc_table, used by crc32
+",
+    );
+    // A table that the program fills in as it runs.
+    assert_output(
+        &stdout(&[TCM_SAMPLE, "reach", "handlers"]),
+        "handlers doesn't call or use anything.\n",
+    );
+    // A call to itself is no row.
+    assert_output(
+        &stdout(&[TCM_SAMPLE, "reach", "count_nodes"]),
+        "count_nodes calls only itself.\n",
+    );
+    // Calls and jumps through pointers, which may go anywhere.
+    assert_output(
+        &stdout(&["testdata/bin/rust-cortex-m4.elf", "reach", "0x8001728"]),
+        "<core::fmt::Formatter>::pad_integral::write_prefix makes 1 call and 1 jump through \
+         pointers, at 0x8001744 and 0x8001762, which elfq can't follow.\n",
+    );
+}
+
+#[test]
+fn reach_sums_up_the_rest_of_each_block() {
+    let reach = stdout(&[TCM_SAMPLE, "reach", "main"]);
+    assert_output(
+        &reach,
+        "\
+main and the 55 items it reaches take 2036 bytes of code and 5431 bytes of data; elfq can't follow 1 jump:
+
+MEMORY                  CODE  DATA  SECTIONS
+0x00000000..0x000000e0   200     0  .itcm
+0x20000000..0x20000450     0  1100  .data .bss
+0x20240000..0x20241000     0  4096  .ocram_bss
+0x30000000..0x30000edc  1836   235  .text .rodata
+
+ADDRESS     SIZE  HOW              ITEM
+0x30000570   132                   main
+0x74          92  call via veneer  apply_filter, used by process_frame
+0x40          52  call             filter_tap, used by apply_filter
+0x10          48  call via veneer  crc32, used by process_frame
+0xd8           8  call             __memcpy_veneer, used by apply_filter
+0x20000000  1024  uses             crc_table, used by crc32
+0x20000400    32  uses             stats, used by process_frame
+              44                   9 more data objects in 0x20000000..0x20000450
+0x20240000  4096  uses             tx_buffer, used by platform_write
+0x30000320   376  call             process_frame, used by main
+0x3000087c   308  call via veneer  memcpy, used by apply_filter
+0x30000498   216  call             report, used by main
+0x30000700   216  call             strlen, used by log_msg
+0x30000668    96  tail call        platform_write, used by log_msg
+0x30000188    84  call             parse_value, used by main
+0x3000023c    76  call             format_u32, used by report
+0x300002e4    60  call             app_tick, used by main
+0x300001dc    60  tail call        parse_list, used by parse_value
+0x30000160    40  call             decode_header, used by process_frame
+0x30000218    34  call             count_nodes, used by report
+0x30000288    26  call             log_msg, used by process_frame
+0x300002cc    24  call             dispatch_event, used by main
+0x300002a4    24  address taken    on_button (through a pointer), used by main
+0x30000150    16  address taken    on_data (through a pointer), used by main
+0x30000140    16  address taken    on_timer (through a pointer), used by main
+0x300002bc    16  call             register_handler, used by main
+              16                   2 more functions in 0x30000000..0x30000edc
+0x30000eb4    32  uses             fir_coeffs, used by filter_tap
+0x30000e70    25  uses             frame_a, used by main
+0x30000e40   ~20  uses             .rodata@0x30000e40, used by main
+0x30000e5c    17  uses             frame_b, used by main
+0x30000df0   ~12  uses             .rodata@0x30000df0, used by process_frame
+0x30000dfc   ~12  uses             .rodata@0x30000dfc, used by process_frame
+0x30000e14   ~12  uses             .rodata@0x30000e14, used by report
+             105                   13 more data objects in 0x30000000..0x30000edc
+
+dispatch_event also jumps through a pointer, at 0x300002da, which elfq can't follow, so main may reach more.
+",
+    );
+    // --all shows the rows that the sums stood for, in their place.
+    let all = stdout(&[TCM_SAMPLE, "reach", "main", "--all"]);
+    assert!(!all.contains(" more "), "{all}");
+    let rows = |text: &str| {
+        text.lines()
+            .filter(|line| line.contains(", used by "))
+            .count()
+    };
+    assert_eq!(rows(&all), 55);
+    assert_eq!(rows(&reach), 31);
+    assert!(
+        all.contains(
+            "\n0x20000400    32  uses             stats, used by process_frame\n\
+             0x20000438    12  uses             handlers, used by register_handler\n"
+        ),
+        "{all}"
+    );
+}
+
+#[test]
+fn reach_on_stripped_firmware_has_the_same_rows() {
+    assert_output(
+        &stdout(&["testdata/bin/c-cortex-m7-stripped.elf", "reach", "0x0"]),
+        "\
+fn_0x0 and the 12 items it reaches take 446 bytes of code and 4128 bytes of data; elfq can't follow 1 jump:
+
+MEMORY                  CODE  DATA  SECTIONS
+0x00000000..0x000000e0    24     0  .itcm
+0x20000000..0x20000450     0    24  .bss
+0x20240000..0x20241000     0  4096  .ocram_bss
+0x30000000..0x30000edc   422     8  .text .rodata
+
+ADDRESS      SIZE  HOW                   ITEM
+0x0           ~16                        fn_0x0
+0xd0           ~8  tail call             fn_0xd0, used by fn_0x0
+0x20000438    ~12  uses                  .bss@0x20000438, used by fn_0x300002cc
+0x20000444     ~4  uses                  .bss@0x20000444, used by fn_0x0
+0x20000448     ~4  uses                  .bss@0x20000448, used by fn_0x30000668
+0x2000044c     ~4  uses                  .bss@0x2000044c, used by fn_0x30000668
+0x20240000  ~4096  uses                  .ocram_bss@0x20240000, used by fn_0x30000668
+0x30000700   ~216  call                  fn_0x30000700, used by fn_0x30000288
+0x30000668    ~96  tail call             fn_0x30000668, used by fn_0x30000288
+0x300002e4    ~60  tail call via veneer  fn_0x300002e4, used by fn_0x0
+0x30000288    ~26  call                  fn_0x30000288, used by fn_0x300002e4
+0x300002cc    ~24  tail call             fn_0x300002cc, used by fn_0x300002e4
+0x30000de8     ~8  uses                  .rodata@0x30000de8, used by fn_0x300002e4
+
+fn_0x300002cc also jumps through a pointer, at 0x300002da, which elfq can't follow, so fn_0x0 may reach more.
+",
+    );
+}
+
+#[test]
+fn reach_lists_calls_to_code_outside_any_function() {
+    // A routine in the chip's ROM, which a veneer jumps to.
+    let far = "testdata/bin/far-gnu-m4-nodebug.elf";
+    assert_output(
+        &stdout(&[far, "reach", "ram_calls_rom"]),
+        "\
+ram_calls_rom and the 2 items it reaches take 36 bytes of code and 4 bytes of data; elfq can't follow 1 call:
+
+MEMORY                  CODE  DATA  SECTIONS
+0x00000000..0x000000a0    36     0  .ram
+0x20000000..0x20000004     0     4  .bss
+0x30000000..0x30000168     0     0
+
+ADDRESS     SIZE  HOW              ITEM
+0x3c          28                   ram_calls_rom
+0x90           8  call             __rom_routine_veneer, used by ram_calls_rom
+0x20000000     4  uses             counter, used by ram_calls_rom
+0x1fff0000        call via veneer  (outside any function), used by ram_calls_rom
+",
+    );
+    // Two veneers share a name, and each call to the ROM through them has a
+    // row, after the items.
+    let reach = stdout(&[far, "reach", "Reset_Handler"]);
+    let rows: Vec<&str> = reach
+        .lines()
+        .filter(|line| line.contains("rom_routine") || line.contains("(outside"))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            "0x90           8  call                  __rom_routine_veneer, used by ram_calls_rom",
+            "0x30000138     8  call                  __rom_routine_veneer, used by flash_calls_rom",
+            "0x1fff0000        call via veneer       (outside any function), used by ram_calls_rom",
+            "0x1fff0000        call via veneer       (outside any function), used by flash_calls_rom",
+        ],
+        "{reach}"
+    );
+    // Each veneer's own jump is named by its address after "used by",
+    // since its name finds both.
+    assert_output(
+        &stdout(&[far, "reach", "0x90"]),
+        "\
+__rom_routine_veneer takes 8 bytes of code and 0 bytes of data; elfq can't follow 1 jump:
+
+MEMORY                  CODE  DATA  SECTIONS
+0x00000000..0x000000a0     8     0  .ram
+0x20000000..0x20000004     0     0
+0x30000000..0x30000168     0     0
+
+ADDRESS     SIZE  HOW   ITEM
+0x90           8        __rom_routine_veneer
+0x1fff0000        jump  (outside any function), used by 0x90
+",
+    );
+}
+
+#[test]
+fn reach_lists_imports_last() {
+    // One block of memory, so no MEMORY table.
+    assert_output(
+        &stdout(&[SAMPLE, "reach", "log_msg"]),
+        "\
+log_msg and the 3 functions it reaches take 103 bytes of code and 0 bytes of data, plus 2 imports:
+
+ADDRESS  SIZE  HOW        ITEM
+0x1610     51             log_msg
+0x1ac0     20  tail call  platform_write, used by log_msg
+0x1080     16  call       strlen@plt, used by log_msg
+0x1070     16  tail call  write@plt, used by platform_write
+               tail call  strlen, used by strlen@plt
+               tail call  write, used by write@plt
+",
+    );
+    assert_output(
+        &stdout(&[SAMPLE, "reach", "0x1080"]),
+        "\
+strlen@plt takes 16 bytes of code and 0 bytes of data, plus 1 import:
+
+ADDRESS  SIZE  HOW        ITEM
+0x1080     16             strlen@plt
+               tail call  strlen, used by strlen@plt
+",
+    );
+    // With one block, a row that sums up the rest names no block.
+    let main = stdout(&[SAMPLE, "reach", "main"]);
+    assert!(
+        main.contains(
+            "\n          111                 17 more data objects\n\
+             \x20                             3 more imports\n\n"
+        ),
+        "{main}"
+    );
+    // The note on calls through pointers, made in several functions.
+    let cpp = stdout(&["testdata/bin/cpp-x86_64.elf", "reach", "main"]);
+    assert!(
+        cpp.ends_with(
+            "\napp::process_frame(app::Frame const&, app::Stage&) and app::dispatch(unsigned int, \
+             unsigned int) also call and jump through pointers, which elfq can't follow, so main \
+             may reach more.\n"
+        ),
+        "{cpp}"
+    );
+}
+
+#[test]
+fn reach_works_on_a_shared_library() {
+    // No entry point is needed. The calls through PLT stubs are listed as
+    // calls, and the jump in the PLT's header, to the dynamic loader, isn't
+    // something elfq can't follow.
+    assert_output(
+        &stdout(&["testdata/bin/c-plt.so", "reach", "run"]),
+        "\
+run and the 14 items it reaches take 291 bytes of code and 4 bytes of data; elfq can't follow 1 call:
+
+ADDRESS  SIZE  HOW            ITEM
+0x1250     62                 run
+0x1170     69  address taken  sum_plain (through a pointer), used by sum_to
+0x1220     27  call via PLT   sum_to, used by run
+0x1200     24  call via PLT   pick, used by run
+0x1020     16  tail call      .plt, used by twice@plt
+0x1040     16  call           pick@plt, used by run
+0x11c0     16  address taken  sum_fast (through a pointer), used by sum_to
+0x1060     16  call           sum_to@plt, used by run
+0x1030     16  call           twice@plt, used by run
+0x1070      8  call           negate@plt, used by run
+0x1080      8  call           thrice@plt, used by run
+0x1160      5  call via PLT   negate, used by run
+0x1150      4  call via PLT   thrice, used by run
+0x11f0      4  call via PLT   twice, used by run
+0x4028      4  uses           fast, used by sum_to
+
+run also calls through a pointer, at 0x1283, which elfq can't follow, so it may reach more.
+",
+    );
+    assert_output(
+        &stdout(&["testdata/bin/c-plt.so", "reach", ".plt"]),
+        ".plt is the PLT header, which jumps only to the dynamic loader.\n",
+    );
+    // A stub keeps its `@plt` after "used by", in its shortest form.
+    let stub = stdout(&["testdata/bin/cpp-x86_64.so", "reach", "0x1150"]);
+    assert!(
+        stub.contains("  app::log(char const*), used by log(char const*)@plt\n"),
+        "{stub}"
+    );
+}
+
+#[test]
+fn reach_needs_an_item_whose_code_elfq_can_read() {
+    assert_output(
+        &stderr(&[SAMPLE, "reach", "_init"], 2),
+        "error: elfq doesn't know where _init ends, so it can't read its code\n",
+    );
+    assert_output(
+        &stderr(&[SAMPLE, "reach", "__libc_start_main"], 2),
+        "error: __libc_start_main is imported from a shared library, so its code isn't in this \
+         file\n",
+    );
+}
+
+#[test]
 fn a_reader_that_stops_early_keeps_the_exit_status() {
     // As in `elfq ... | head`, in a shell with `set -o pipefail`. Each
     // answer is larger than a pipe holds, so elfq writes after the reader
@@ -2911,6 +3286,24 @@ fn arguments_that_dont_go_together_are_refused_before_the_file_is_read() {
             &["missing.elf", "inlined", "--tree"],
             "error: only the overview, top, retained, why and inlined SYMBOL take --tree\n",
         ),
+        (
+            &["missing.elf", "reach", "main", "--tree"],
+            "error: only the overview, top, retained, why and inlined SYMBOL take --tree\n",
+        ),
+        (
+            &["missing.elf", "reach", "main", "--range", "0+1K"],
+            "error: only the overview, top and retained take --range\n",
+        ),
+        // What a range uses is what callees lists for it.
+        (
+            &["missing.elf", "reach", "0x0+1K", "--json"],
+            "error: reach takes one SYMBOL, not ranges; for what a range uses outside it: elfq \
+             missing.elf callees 0x00000000..0x00000400 --json\n",
+        ),
+        (
+            &["missing.elf", "reach", "0x0..zz"],
+            "error: reach takes one SYMBOL, not ranges\n",
+        ),
     ] {
         assert_output(&stderr(args, 2), error);
     }
@@ -2957,6 +3350,7 @@ elfq can't yet read Aarch64 code to tell what calls what.
         &[path, "why", "no_such_function"],
         &[path, "callers", "no_such_function"],
         &[path, "callees", "no_such_function"],
+        &[path, "reach", "no_such_function"],
         &[
             path,
             "callers",

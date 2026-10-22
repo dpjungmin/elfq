@@ -120,6 +120,12 @@ impl ShortestPaths {
         self.distance[index(self.items, node)]
     }
 
+    /// The last reference on the shortest path to `node`, which reaches
+    /// it. `None` when the search started from `node`, or didn't reach it.
+    pub fn via(&self, node: Node) -> Option<Reference> {
+        self.via[index(self.items, node)]
+    }
+
     /// The shortest path to `node`: the references along it, from the
     /// first, which leaves a node that the search started from, to the
     /// last, which reaches `node`. Empty when the search started from
@@ -130,7 +136,7 @@ impl ShortestPaths {
         }
         let mut path = Vec::new();
         let mut next = node;
-        while let Some(reference) = self.via[index(self.items, next)] {
+        while let Some(reference) = self.via(next) {
             path.push(reference);
             next = Node::Item(reference.from);
         }

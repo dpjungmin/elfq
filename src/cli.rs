@@ -131,6 +131,7 @@ Examples:
   elfq app.elf callers log_msg            What calls or uses log_msg
   elfq app.elf callees main               What main calls or uses
   elfq app.elf callees 0x0+256K           What the first 256 KiB uses outside it
+  elfq app.elf reach SysTick_Handler      What SysTick_Handler runs and uses, and where
 
 The overview's table is the start of the one top shows; elfq help top
 explains it.
@@ -138,13 +139,13 @@ explains it.
 Tables have one row per line: short cells such as sizes, HOW and AT come
 first, and the name last. A name after \"kept by\" or \"used by\" works as
 SYMBOL, and a why row without \"used by\" is used by the row above, or
-starts a chain. The tables of top, retained, callers and callees show the
-30 largest items, inlined the 30 largest functions, and why the chains
-through the 10 nearest users; --all shows every row, and makes sentences
-name everything they would cut short. With ranges, --from or --to, callers
-and callees show every row. --json has every item, site and chain, one row
-per line, but the overview's JSON leaves its table to top's. Scripts that
-read why's chains should use --json.
+starts a chain. The tables of top, retained, callers, callees and reach
+show the 30 largest items, inlined the 30 largest functions, and why the
+chains through the 10 nearest users; --all shows every row, and makes
+sentences name everything they would cut short. With ranges, --from or
+--to, callers and callees show every row. --json has every item, site and
+chain, one row per line, but the overview's JSON leaves its table to
+top's. Scripts that read why's chains should use --json.
 
 Exit status: 0 for an answer, 1 when callers or callees with ranges, --from
 or --to finds something that crosses, or might, and 2 for an error, which
@@ -180,6 +181,9 @@ pub enum Command {
         after_help = format!("{HOW}\n\n{AT}\n\n{CALLEES}\n\n{CALLEES_RANGES}")
     )]
     Callees(CalleesArgs),
+    /// List everything SYMBOL calls or uses, at any depth, by memory block
+    #[command(after_help = format!("{REACH}\n\n{HOW}"))]
+    Reach(ReachArgs),
     /// Show elfq's own view of the file (for developing elfq)
     #[command(subcommand, hide = true)]
     Debug(DebugCommand),
@@ -279,6 +283,40 @@ Exit status, with ranges or --from: 1 if the answer lists a caller, or
 notes calls through a pointer or code that elfq can't read; 0 if not; and 2
 for an error.";
 
+const REACH: &str = "\
+SYMBOL reaches what it calls or uses, what those call or use, and so on:
+calls, tail calls, data that code reads or writes, anything whose address
+code takes, and pointers stored in data, as in a table of functions. These
+are what retained follows, and what a linker's --gc-sections keeps. reach
+needs no entry point, so it works on shared libraries too.
+
+Each row names the item that uses it on a shortest chain from SYMBOL, as in
+\"log_msg, used by app_tick\"; of chains equally short, elfq takes the one
+with the most calls, then the first it finds, so the answer is always the
+same. A call through a veneer, which a linker adds when the target is too
+far away for the call instruction, is listed as a call from the code that
+calls the veneer, as \"tail call via veneer\", and the veneer has a row of
+its own; so is a call through a PLT stub to one of the file's own
+functions, as in a shared library, as \"call via PLT\". A function marked
+\"(through a pointer)\" is there only because something takes or stores
+its address.
+
+The MEMORY table, for a file with several blocks of memory, has the bytes
+of code and data that SYMBOL and what it reaches take in each block, as
+the overview lists them, and the sections that hold them. Each item counts
+once, where the program uses it, not where a load image stores it, and a
+heap or stack that code uses, as _sbrk does, counts as data.
+
+The table of items lists SYMBOL, then what it reaches by block, functions
+then data objects, largest first, then the calls and jumps to code outside
+any function, as in a chip's ROM, and the imports. Sizes marked ~ are
+estimates, and ? marks a function whose end elfq doesn't know. It shows
+the 30 largest items, and rows such as \"9 more data objects in
+0x20000000..0x20000450\" sum up the rest of a block's; --all shows every
+row. Calls through pointers, which elfq can't follow, are named below it,
+since SYMBOL may reach more through them. --json has the whole tree, with
+veneers as steps of their own.";
+
 const WHY: &str = "\
 The chains start where the program does, as HOW says: at the entry point, a
 function the C runtime runs at startup, or a handler in the vector table.
@@ -333,7 +371,10 @@ Nothing calls a function marked \"(through a pointer)\" directly, so it counts
 for the code or data that holds its address. With --range, a row marked
 \"(load image)\" counts the copy of an item that the file stores in the
 range for startup code to copy where the program uses it, and one marked
-\"(with its load image)\" counts both copies. Sizes marked ~ are estimates.";
+\"(with its load image)\" counts both copies. Sizes marked ~ are estimates.
+
+reach SYMBOL lists everything SYMBOL calls or uses, including what other
+items use too.";
 
 #[derive(Debug, Args)]
 pub struct TopArgs {
@@ -403,6 +444,16 @@ pub struct CalleesArgs {
     // As `CallersArgs::misplaced_to`.
     #[arg(long = "from", hide = true, value_name = "RANGE")]
     pub misplaced_from: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct ReachArgs {
+    /// A function or data object: its name, the end of its name
+    /// (process_frame for app::process_frame), or an address such as 0x1700
+    pub symbol: String,
+    /// Show every item, not only the 30 largest
+    #[arg(long)]
+    pub all: bool,
 }
 
 #[derive(Debug, Args)]
