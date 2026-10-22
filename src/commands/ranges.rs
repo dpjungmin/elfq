@@ -12,7 +12,7 @@ use anyhow::{Result, bail};
 use serde::Serialize;
 
 use super::{Outcome, json, text};
-use crate::binary::{AddressRange, Binary, Source};
+use crate::binary::{AddressRange, Binary};
 use crate::cli::Format;
 use crate::graph::{Boundary, Crossing, Graph, Node, ReferenceKind, Unfollowed};
 use crate::render::{Align, Table};
@@ -727,7 +727,7 @@ impl Leaving<'_> {
             writeln!(
                 out,
                 "{}",
-                unreadable_text(binary, &self.unreadable, self.all)
+                text::unreadable_text(binary, &self.unreadable, self.all)
             )?;
         }
         Ok(())
@@ -873,26 +873,11 @@ impl Entering<'_> {
             writeln!(
                 out,
                 "{}",
-                unreadable_text(binary, &self.unreadable, self.all)
+                text::unreadable_text(binary, &self.unreadable, self.all)
             )?;
         }
         Ok(())
     }
-}
-
-/// The sentence that says elfq can't read `unreadable`, the functions whose
-/// end it doesn't know, as `callees SYMBOL` says it.
-fn unreadable_text(binary: &Binary, unreadable: &[usize], all: bool) -> String {
-    let names: Vec<&str> = unreadable
-        .iter()
-        .map(|&index| binary.items[index].name.as_str())
-        .collect();
-    format!(
-        "elfq doesn't know where {} {}, so it can't read {} code.",
-        text::names_text(&names, all),
-        if names.len() == 1 { "ends" } else { "end" },
-        if names.len() == 1 { "its" } else { "their" }
-    )
 }
 
 /// The calls and jumps that elfq can't follow, for JSON.
@@ -1059,21 +1044,12 @@ fn write_groups(binary: &Binary, groups: &[Group], direction: Direction, table: 
 /// How a crossing uses what is on the other side, for the HOW column, with
 /// "via veneer" after a call through one, or "via PLT" through a PLT stub.
 fn how_column(binary: &Binary, crossing: &Crossing) -> &'static str {
-    let plt = crossing
-        .veneer
-        .is_some_and(|veneer| binary.items[veneer].source == Source::Plt);
-    match (crossing.kind, crossing.veneer, plt) {
-        (ReferenceKind::Call, Some(_), false) => "call via veneer",
-        (ReferenceKind::Call, Some(_), true) => "call via PLT",
-        (ReferenceKind::TailCall, Some(_), false) => "tail call via veneer",
-        (ReferenceKind::TailCall, Some(_), true) => "tail call via PLT",
-        (kind, _, _) => text::how_column(binary, crossing.to, kind),
-    }
+    text::how_via(binary, crossing.to, crossing.kind, crossing.veneer)
 }
 
 /// How a call or jump that elfq can't follow goes, for the HOW column, with
 /// "via veneer" after one through a veneer.
-fn unfollowed_how(unfollowed: &Unfollowed) -> &'static str {
+pub(super) fn unfollowed_how(unfollowed: &Unfollowed) -> &'static str {
     match (unfollowed.veneer, unfollowed.unresolved.is_call) {
         (Some(_), true) => "call via veneer",
         (Some(_), false) => "jump via veneer",
@@ -1083,7 +1059,7 @@ fn unfollowed_how(unfollowed: &Unfollowed) -> &'static str {
 
 /// The calls and jumps that elfq can't follow, one per function, kind of
 /// call, target and veneer, with their sites.
-fn group_unfollowed(unfollowed: &[Unfollowed]) -> Vec<(Unfollowed, Vec<u64>)> {
+pub(super) fn group_unfollowed(unfollowed: &[Unfollowed]) -> Vec<(Unfollowed, Vec<u64>)> {
     let mut groups: Vec<(Unfollowed, Vec<u64>)> = Vec::new();
     // Where each group is in `groups`.
     let mut index: HashMap<(usize, bool, Option<u64>, Option<usize>), usize> = HashMap::new();

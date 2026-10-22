@@ -142,7 +142,12 @@ fn callees(
 /// Sentences about the calls and jumps in `name` that elfq can't follow,
 /// with the first few sites, or with `all`, every one. `listed` is whether
 /// the table above lists what it does call or use.
-fn unresolved_lines(name: &str, unresolved: &[Unresolved], listed: bool, all: bool) -> Vec<String> {
+pub(super) fn unresolved_lines(
+    name: &str,
+    unresolved: &[Unresolved],
+    listed: bool,
+    all: bool,
+) -> Vec<String> {
     let mut lines = Vec::new();
     // Through a pointer, so that only the running program knows where
     // they go, or to an address the code names but no item holds.

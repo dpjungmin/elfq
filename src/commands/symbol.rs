@@ -406,6 +406,28 @@ impl<'a> Names<'a> {
             .unwrap_or_else(|| name.to_string())
     }
 
+    /// What a row calls the item at `index` after "used by", so that it
+    /// works as SYMBOL: its [short name](Names::short_name) when that finds
+    /// only the item, or else its address, as when two functions share a
+    /// name.
+    pub(super) fn row_name(&self, index: usize) -> String {
+        let node = Node::Item(index);
+        let name = node.name(self.binary);
+        // Without `@plt`, a PLT stub's name means what the stub passes calls
+        // to, which reads as another item: `strlen, used by strlen`.
+        let stub = name.ends_with("@plt");
+        let mut queries: Vec<String> = short_names(name)
+            .into_iter()
+            .chain([name.to_string()])
+            .filter(|query| !stub || query.ends_with("@plt"))
+            .collect();
+        queries.sort_by(|a, b| a.len().cmp(&b.len()).then(a.cmp(b)));
+        queries
+            .into_iter()
+            .find(|query| self.nodes(query) == [node])
+            .unwrap_or_else(|| format!("{:#x}", self.binary.items[index].address))
+    }
+
     /// The shortest of `names` and their short names that finds only
     /// `node`, leaving out mangled symbols, if one does.
     fn shortest_name(&self, node: Node, names: Vec<&str>) -> Option<String> {

@@ -35,6 +35,16 @@ pub(super) fn bytes_of_items(binary: &Binary, range: Option<AddressRange>) -> St
     format!("{} of {what}", bytes_text(code.saturating_add(data)))
 }
 
+/// Bytes of code and of data, kept apart: "446 bytes of code and 4128 bytes
+/// of data".
+pub(super) fn code_and_data(code: u64, data: u64) -> String {
+    format!(
+        "{} of code and {} of data",
+        bytes_text(code),
+        bytes_text(data)
+    )
+}
+
 /// An item's size, `~N` when it is an estimate, or `?` when it is unknown.
 pub(super) fn size_text(item: &Item) -> String {
     match (item.size, item.size_estimated) {
@@ -154,6 +164,25 @@ pub(super) fn how_column(binary: &Binary, to: Node, kind: ReferenceKind) -> &'st
     }
 }
 
+/// How a reference of `kind` uses `to`, for the HOW column, as
+/// [`how_column`] says it, with "via veneer" after a call or tail call
+/// through `veneer`, or "via PLT" when `veneer` is a PLT stub.
+pub(super) fn how_via(
+    binary: &Binary,
+    to: Node,
+    kind: ReferenceKind,
+    veneer: Option<usize>,
+) -> &'static str {
+    let plt = veneer.is_some_and(|veneer| binary.items[veneer].source == Source::Plt);
+    match (kind, veneer, plt) {
+        (ReferenceKind::Call, Some(_), false) => "call via veneer",
+        (ReferenceKind::Call, Some(_), true) => "call via PLT",
+        (ReferenceKind::TailCall, Some(_), false) => "tail call via veneer",
+        (ReferenceKind::TailCall, Some(_), true) => "tail call via PLT",
+        (kind, _, _) => how_column(binary, to, kind),
+    }
+}
+
 /// "call" or "jump", for a call or jump that elfq can't follow.
 pub(super) fn call_or_jump(unresolved: &Unresolved) -> &'static str {
     if unresolved.is_call { "call" } else { "jump" }
@@ -174,6 +203,21 @@ pub(super) fn calls_and_jumps<'a>(unresolved: impl IntoIterator<Item = &'a Unres
             plural(jumps, "jump", "jumps")
         ),
     }
+}
+
+/// The sentence that says elfq can't read `unreadable`, the functions whose
+/// end it doesn't know, as `callees SYMBOL` says it.
+pub(super) fn unreadable_text(binary: &Binary, unreadable: &[usize], all: bool) -> String {
+    let names: Vec<&str> = unreadable
+        .iter()
+        .map(|&index| binary.items[index].name.as_str())
+        .collect();
+    format!(
+        "elfq doesn't know where {} {}, so it can't read {} code.",
+        names_text(&names, all),
+        if names.len() == 1 { "ends" } else { "end" },
+        if names.len() == 1 { "its" } else { "their" }
+    )
 }
 
 /// Examples of the names that elfq gives items without symbols: the first

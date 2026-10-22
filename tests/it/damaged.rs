@@ -388,6 +388,47 @@ fn a_function_of_unknown_size_is_named_where_its_load_image_is() {
 }
 
 #[test]
+fn reach_names_what_it_reaches_but_cant_read() {
+    // apply_filter calls memcpy through __memcpy_veneer, which has no size
+    // now, so memcpy isn't there.
+    let mut data = sample("c-cortex-m7-nodebug.elf");
+    set_symbol_size(&mut data, "__memcpy_veneer", 0);
+    let (stdout, _) = run(
+        "reach-unsized-veneer.elf",
+        &data,
+        &["reach", "apply_filter"],
+    );
+    assert_output(
+        &stdout,
+        "\
+apply_filter and the 3 items it reaches take 144 bytes of code and 32 bytes of data:
+
+MEMORY                  CODE  DATA  SECTIONS
+0x00000000..0x000000e0   144     0  .itcm
+0x20000000..0x20000450     0     0
+0x20240000..0x20241000     0     0
+0x30000000..0x30000edc     0    32  .rodata
+
+ADDRESS     SIZE  HOW   ITEM
+0x74          92        apply_filter
+0x40          52  call  filter_tap, used by apply_filter
+0xd8           ?  call  __memcpy_veneer, used by apply_filter
+0x30000eb4    32  uses  fir_coeffs, used by filter_tap
+
+elfq doesn't know where __memcpy_veneer ends, so it can't read its code.
+",
+    );
+    let (json, _) = run(
+        "reach-unsized-veneer.elf",
+        &data,
+        &["reach", "apply_filter", "--json"],
+    );
+    let reach: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(reach["unreadable"][0]["name"], "__memcpy_veneer");
+    assert_eq!(reach["complete"], false);
+}
+
+#[test]
 fn sizes_that_add_up_past_the_largest_number_stop_there() {
     // Functions that overlap, each half as large as the address space.
     // Each is the last in its section, since one that runs on past the
@@ -675,6 +716,15 @@ fn a_long_chain_of_calls_is_read() {
     for (id, item) in items.iter().enumerate().skip(1) {
         assert_eq!(item["parent"], id - 1);
     }
+    // So does reach's, from the last function.
+    let (json, _) = run("long-chain.elf", &data, &["reach", "0x8113878", "--json"]);
+    let reach: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let items = reach["items"].as_array().unwrap();
+    assert_eq!(items.len(), 10_000);
+    for (id, item) in items.iter().enumerate().skip(1) {
+        assert_eq!(item["parent"], id - 1);
+    }
+    run("long-chain.elf", &data, &["reach", "0x8113878", "--all"]);
 }
 
 #[test]

@@ -25,6 +25,7 @@ elfq app.elf inlined main               # the inlined code in main
 elfq app.elf callers log_msg            # what calls or uses log_msg
 elfq app.elf callees main               # what main calls or uses
 elfq app.elf callees 0x0+256K           # what the first 256 KiB uses outside it
+elfq app.elf reach SysTick_Handler      # what SysTick_Handler runs and uses, and where
 ```
 
 [docs/examples.md](docs/examples.md) asks real questions about the sample
@@ -63,8 +64,8 @@ calls what. Run `elfq FILE.elf` first: its table is the start of `top`'s,
 and `elfq --help` lists the commands.
 
 - SYMBOL is a name, the end of a name, or an address. `top`, `retained`,
-  `callers` and `callees` show the 30 largest items, `inlined` the 30
-  largest functions, and `why` the chains through the 10 nearest users;
+  `callers`, `callees` and `reach` show the 30 largest items, `inlined` the
+  30 largest functions, and `why` the chains through the 10 nearest users;
   `--all` shows every row, and `--json` has every row.
 - Each table row is one line, with the name last. A name after "kept by"
   or "used by" works as SYMBOL, and a `why` row without "used by" is used
@@ -74,6 +75,10 @@ and `elfq --help` lists the commands.
   outside; both exit 1 if anything does or might. `callees --to RANGE`
   and `callers --from RANGE` keep only what is in RANGE, with ranges or
   SYMBOL. With ranges, `--to` or `--from`, both show every row.
+- `elfq FILE.elf reach SYMBOL` lists everything SYMBOL calls or uses, at
+  any depth, with the bytes of code and data it takes in each block of
+  memory, such as ITCM and flash: a hot function's whole footprint, and
+  what of it isn't where it should be.
 - elfq reads the built file, not the source: rebuild before asking again.
 ```
 
@@ -88,10 +93,10 @@ Rust sample in `testdata`. The `elfq` crate on crates.io is only a
 placeholder for now.
 
 **Status:** early development. The overview, `top`, `retained`, `why`,
-`callers` and `callees` work on x86-64 and Cortex-M executables, with
-readable Rust and C++ names, and `inlined` works on any file with DWARF debug
-info that isn't compressed. The overview, `callers` and `callees` also work
-on x86-64 shared libraries.
+`callers`, `callees` and `reach` work on x86-64 and Cortex-M executables,
+with readable Rust and C++ names, and `inlined` works on any file with DWARF
+debug info that isn't compressed. The overview, `callers`, `callees` and
+`reach` also work on x86-64 shared libraries.
 See [docs/design.md](docs/design.md) for how elfq works and what comes next,
 [docs/survey.md](docs/survey.md) for how existing tools compare, and
 [CONTRIBUTING.md](CONTRIBUTING.md) to build it.

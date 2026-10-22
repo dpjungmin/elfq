@@ -109,7 +109,8 @@ that reaches up the list is a sign that the code belongs lower down.
   `cli.rs`, `json.rs` and `docs.rs` run the elfq program, the way a user
   would. The others call the library, as `Binary::load` and
   `Graph::build`. `damaged.rs` does both, and so does one test in
-  `json.rs`. The answers they expect are
+  `json.rs`; `reach.rs` runs commands in its own process, through
+  `commands::run`, which is quicker for the hundreds it runs. The answers they expect are
   those in [testdata/README.md](testdata/README.md), which says, for
   example, what calls `log_msg` in each sample.
 
@@ -122,6 +123,7 @@ that reaches up the list is a sign that the code belongs lower down.
 | `graph.rs` | The reference graph: callers, callees, pointers in data, veneers |
 | `retained.rs` | Roots, and what is exclusive to what |
 | `why.rs` | The shortest chains |
+| `reach.rs` | `reach` on every function of the firmware samples, against `callees` and `retained`, and on each stripped file against its twin with symbols |
 | `symbol.rs` | Looking up SYMBOL |
 | `inlined.rs` | Inlined copies, from DWARF |
 | `damaged.rs` | Damaged and unusual files, made by changing a sample's bytes |
