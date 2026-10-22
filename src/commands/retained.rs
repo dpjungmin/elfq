@@ -280,14 +280,7 @@ impl<'a> SymbolInTree<'a> {
             .iter()
             .map(|&index| Node::Item(index).name(binary))
             .collect();
-        let calls = indirect.iter().any(|u| u.is_call);
-        let jumps = indirect.iter().any(|u| !u.is_call);
-        // The verb after one name, and after several.
-        let (one, several) = match (calls, jumps) {
-            (true, true) => ("calls and jumps", "call and jump"),
-            (true, false) => ("calls", "call"),
-            (false, _) => ("jumps", "jump"),
-        };
+        let (one, several) = text::call_and_jump_verbs(&indirect);
         let verb = if names.len() == 1 { one } else { several };
         let (through, reach) = if indirect.len() == 1 {
             ("a pointer", "that reaches")

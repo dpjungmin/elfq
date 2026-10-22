@@ -2494,7 +2494,8 @@ ADDRESS  SIZE  HOW              AT                      CALLEE
 
 #[test]
 fn reach_lists_what_a_function_runs_and_uses_by_block() {
-    // Through a veneer into flash, and data in three blocks of RAM.
+    // Through a veneer into flash, and data in two blocks of RAM and in
+    // flash.
     assert_output(
         &stdout(&[TCM_SAMPLE, "reach", "SysTick_Handler"]),
         "\
@@ -2586,6 +2587,17 @@ ADDRESS     SIZE  HOW   ITEM
     assert_output(
         &stdout(&[TCM_SAMPLE, "reach", "handlers"]),
         "handlers doesn't call or use anything.\n",
+    );
+    // A call to itself is no row.
+    assert_output(
+        &stdout(&[TCM_SAMPLE, "reach", "count_nodes"]),
+        "count_nodes calls only itself.\n",
+    );
+    // Calls and jumps through pointers, which may go anywhere.
+    assert_output(
+        &stdout(&["testdata/bin/rust-cortex-m4.elf", "reach", "0x8001728"]),
+        "<core::fmt::Formatter>::pad_integral::write_prefix makes 1 call and 1 jump through \
+         pointers, at 0x8001744 and 0x8001762, which elfq can't follow.\n",
     );
 }
 
@@ -2716,8 +2728,8 @@ ADDRESS     SIZE  HOW              ITEM
 0x1fff0000        call via veneer  (outside any function), used by ram_calls_rom
 ",
     );
-    // Two veneers share a name, so each is named by its address after
-    // "used by", and the calls to the ROM come last, one row each.
+    // Two veneers share a name, and each call to the ROM through them has a
+    // row, after the items.
     let reach = stdout(&[far, "reach", "Reset_Handler"]);
     let rows: Vec<&str> = reach
         .lines()
@@ -2732,6 +2744,23 @@ ADDRESS     SIZE  HOW              ITEM
             "0x1fff0000        call via veneer       (outside any function), used by flash_calls_rom",
         ],
         "{reach}"
+    );
+    // Each veneer's own jump is named by its address after "used by",
+    // since its name finds both.
+    assert_output(
+        &stdout(&[far, "reach", "0x90"]),
+        "\
+__rom_routine_veneer takes 8 bytes of code and 0 bytes of data; elfq can't follow 1 jump:
+
+MEMORY                  CODE  DATA  SECTIONS
+0x00000000..0x000000a0     8     0  .ram
+0x20000000..0x20000004     0     0
+0x30000000..0x30000168     0     0
+
+ADDRESS     SIZE  HOW   ITEM
+0x90           8        __rom_routine_veneer
+0x1fff0000        jump  (outside any function), used by 0x90
+",
     );
 }
 
@@ -2751,6 +2780,35 @@ ADDRESS  SIZE  HOW        ITEM
                tail call  strlen, used by strlen@plt
                tail call  write, used by write@plt
 ",
+    );
+    assert_output(
+        &stdout(&[SAMPLE, "reach", "0x1080"]),
+        "\
+strlen@plt takes 16 bytes of code and 0 bytes of data, plus 1 import:
+
+ADDRESS  SIZE  HOW        ITEM
+0x1080     16             strlen@plt
+               tail call  strlen, used by strlen@plt
+",
+    );
+    // With one block, a row that sums up the rest names no block.
+    let main = stdout(&[SAMPLE, "reach", "main"]);
+    assert!(
+        main.contains(
+            "\n          111                 17 more data objects\n\
+             \x20                             3 more imports\n\n"
+        ),
+        "{main}"
+    );
+    // The note on calls through pointers, made in several functions.
+    let cpp = stdout(&["testdata/bin/cpp-x86_64.elf", "reach", "main"]);
+    assert!(
+        cpp.ends_with(
+            "\napp::process_frame(app::Frame const&, app::Stage&) and app::dispatch(unsigned int, \
+             unsigned int) also call and jump through pointers, which elfq can't follow, so main \
+             may reach more.\n"
+        ),
+        "{cpp}"
     );
 }
 

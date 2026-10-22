@@ -205,6 +205,24 @@ pub(super) fn calls_and_jumps<'a>(unresolved: impl IntoIterator<Item = &'a Unres
     }
 }
 
+/// The verbs for the calls and jumps in `unresolved`, after one name and
+/// after several: "calls" and "call", "jumps" and "jump", or "calls and
+/// jumps" and "call and jump".
+pub(super) fn call_and_jump_verbs<'a>(
+    unresolved: impl IntoIterator<Item = &'a Unresolved>,
+) -> (&'static str, &'static str) {
+    let (mut calls, mut jumps) = (false, false);
+    for unresolved in unresolved {
+        calls |= unresolved.is_call;
+        jumps |= !unresolved.is_call;
+    }
+    match (calls, jumps) {
+        (true, true) => ("calls and jumps", "call and jump"),
+        (true, false) => ("calls", "call"),
+        (false, _) => ("jumps", "jump"),
+    }
+}
+
 /// The sentence that says elfq can't read `unreadable`, the functions whose
 /// end it doesn't know, as `callees SYMBOL` says it.
 pub(super) fn unreadable_text(binary: &Binary, unreadable: &[usize], all: bool) -> String {

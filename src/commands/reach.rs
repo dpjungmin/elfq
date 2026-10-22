@@ -33,9 +33,9 @@ use crate::render::{Align, Table};
 #[derive(Serialize)]
 struct ReachJson<'a> {
     symbol: json::Symbol<'a>,
-    /// The bytes of SYMBOL and the functions it reaches.
+    /// The bytes of the functions among SYMBOL and what it reaches.
     code_bytes: u64,
-    /// The bytes of SYMBOL and the data objects it reaches.
+    /// The bytes of the data objects among SYMBOL and what it reaches.
     data_bytes: u64,
     /// Every block of memory that the overview's `memory` lists, with the
     /// bytes in it that SYMBOL and what it reaches take.
@@ -70,7 +70,8 @@ struct ItemJson<'a> {
     id: usize,
     #[serde(flatten)]
     item: json::Item<'a>,
-    /// The `start` of the block that holds it, or `null` for an import.
+    /// The `start` of the block that holds it, or `null` for an import, or
+    /// for an item in no block, as a damaged file can have.
     block: Option<String>,
     /// How its parent uses it, as in `callees`, or `null` for SYMBOL.
     how: Option<&'static str>,
@@ -119,11 +120,16 @@ pub fn run(
 struct Reach<'a> {
     binary: &'a Binary,
     names: Names<'a>,
+    /// SYMBOL's item, as an index into [`Binary::items`].
+    index: usize,
     /// SYMBOL's name as the answer's first line gives it (see
     /// [`Symbol::lead_name`]).
     ///
     /// [`Symbol::lead_name`]: super::symbol::Symbol::lead_name
     lead_name: String,
+    /// How SYMBOL uses itself, as a recursive function calls itself:
+    /// "calls" or "uses", or `None` when it doesn't. No row shows it.
+    self_use: Option<&'static str>,
     /// SYMBOL and what it reaches, as the rows of the tree: SYMBOL first,
     /// then depth first, each item's children in the order it first uses
     /// them.
@@ -188,6 +194,16 @@ impl<'a> Reach<'a> {
         let paths = ShortestPaths::from(binary, &graph, start);
         let veneers = Veneers::new(binary, &graph);
         let blocks = memory_blocks(&binary.sections);
+        let to_itself: Vec<&Reference> = graph
+            .references_from(index)
+            .iter()
+            .filter(|reference| reference.to == start)
+            .collect();
+        let self_use = match &to_itself[..] {
+            [] => None,
+            uses if uses.iter().all(|reference| reference.kind.is_call()) => Some("calls"),
+            _ => Some("uses"),
+        };
 
         let nodes = (0..binary.items.len())
             .map(Node::Item)
@@ -282,7 +298,9 @@ impl<'a> Reach<'a> {
         Ok(Reach {
             binary,
             names,
+            index,
             lead_name,
+            self_use,
             steps,
             unresolved,
             unfollowed,
@@ -290,19 +308,6 @@ impl<'a> Reach<'a> {
             blocks,
             all,
         })
-    }
-
-    /// SYMBOL's step.
-    fn symbol(&self) -> &Step {
-        &self.steps[0]
-    }
-
-    /// SYMBOL's item, as an index into [`Binary::items`].
-    fn symbol_index(&self) -> usize {
-        match self.symbol().node {
-            Node::Item(index) => index,
-            Node::Import(_) => unreachable!("SYMBOL is an item"),
-        }
     }
 
     /// The bytes of code and of data that the steps in `steps` take.
@@ -378,7 +383,7 @@ impl<'a> Reach<'a> {
             })
             .collect();
         let answer = ReachJson {
-            symbol: json::Symbol::new(binary, self.symbol().node),
+            symbol: json::Symbol::new(binary, Node::Item(self.index)),
             code_bytes,
             data_bytes,
             blocks,
@@ -407,17 +412,23 @@ impl<'a> Reach<'a> {
         let binary = self.binary;
         let name = &self.lead_name;
         let reached = &self.steps[1..];
-        let outside: Vec<&Unfollowed> = self
+        let outside: Vec<Unfollowed> = self
             .unfollowed
             .iter()
             .filter(|unfollowed| unfollowed.unresolved.target.is_some())
+            .copied()
             .collect();
         if reached.is_empty() && outside.is_empty() {
-            if self.unresolved.is_empty() {
-                writeln!(out, "{name} doesn't call or use anything.")?;
+            let pointers = !self.unresolved.is_empty();
+            match self.self_use {
+                Some(verb) if pointers => writeln!(out, "{name} {verb} itself.")?,
+                Some(verb) => writeln!(out, "{name} {verb} only itself.")?,
+                None if pointers => {}
+                None => writeln!(out, "{name} doesn't call or use anything.")?,
             }
             // All in SYMBOL, through pointers, as `callees` says them.
-            for line in callees::unresolved_lines(name, &self.unresolved, false, self.all) {
+            let listed = self.self_use.is_some();
+            for line in callees::unresolved_lines(name, &self.unresolved, listed, self.all) {
                 writeln!(out, "{line}")?;
             }
             return Ok(());
@@ -506,7 +517,7 @@ impl<'a> Reach<'a> {
     /// Unless the answer shows every row, only the 30 largest items are
     /// shown, and a row such as "9 more data objects in
     /// 0x20000000..0x20000450" sums up the rest of a block's.
-    fn write_rows(&self, outside: &[&Unfollowed], out: &mut dyn Write) -> Result<()> {
+    fn write_rows(&self, outside: &[Unfollowed], out: &mut dyn Write) -> Result<()> {
         let binary = self.binary;
         let mut table = Table::new(&[
             ("ADDRESS", Align::Left),
@@ -514,7 +525,7 @@ impl<'a> Reach<'a> {
             ("HOW", Align::Left),
             ("ITEM", Align::Left),
         ]);
-        let item = &binary.items[self.symbol_index()];
+        let item = &binary.items[self.index];
         table.row(vec![
             format!("{:#x}", item.address),
             text::size_text(item),
@@ -549,8 +560,7 @@ impl<'a> Reach<'a> {
         for steps in items.chunk_by(|a, b| group(a) == group(b)) {
             self.add_group(steps, &shown, &mut table);
         }
-        let outside: Vec<Unfollowed> = outside.iter().map(|&&unfollowed| unfollowed).collect();
-        for (unfollowed, _) in ranges::group_unfollowed(&outside) {
+        for (unfollowed, _) in ranges::group_unfollowed(outside) {
             let unresolved = &unfollowed.unresolved;
             table.row(vec![
                 unresolved
@@ -667,14 +677,7 @@ impl<'a> Reach<'a> {
             .iter()
             .map(|&index| binary.items[index].name.as_str())
             .collect();
-        let calls = pointers.iter().any(|u| u.is_call);
-        let jumps = pointers.iter().any(|u| !u.is_call);
-        // The verb after one name, and after several.
-        let (one, several) = match (calls, jumps) {
-            (true, true) => ("calls and jumps", "call and jump"),
-            (true, false) => ("calls", "call"),
-            (false, _) => ("jumps", "jump"),
-        };
+        let (one, several) = text::call_and_jump_verbs(pointers.iter().copied());
         let through = if pointers.len() == 1 {
             "a pointer"
         } else {
@@ -690,10 +693,10 @@ impl<'a> Reach<'a> {
             }
             _ => (several, String::new()),
         };
-        let who = if callers[..] == [self.symbol_index()] {
+        let who = if callers[..] == [self.index] {
             "it"
         } else {
-            &binary.items[self.symbol_index()].name
+            &binary.items[self.index].name
         };
         format!(
             "{} also {verb} through {through}{at}, which elfq can't follow, so {who} may reach \

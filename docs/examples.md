@@ -305,8 +305,9 @@ dispatch_event also jumps through a pointer, at 0x300002da, which elfq can't fol
 the 446 bytes of code it runs are in flash: it jumps to `app_tick` there
 through a veneer, and `app_tick` logs through `log_msg`, `strlen` and
 `platform_write`. Its data is in DTCM, but for `tx_buffer`, the 4 KiB that
-`platform_write` fills in the RAM at 0x20240000. Each row names the item
-that uses it, on the shortest way there from `SysTick_Handler`.
+`platform_write` fills in the RAM at 0x20240000, and the 8 bytes in flash
+of the message that `app_tick` logs. Each row names the item that uses it,
+on the shortest way there from `SysTick_Handler`.
 `dispatch_event` jumps through `handlers`, a table that the program fills
 in as it runs, so the handler may run more than elfq can see, as the last
 line says.

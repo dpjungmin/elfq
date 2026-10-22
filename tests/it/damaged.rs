@@ -429,6 +429,40 @@ elfq doesn't know where __memcpy_veneer ends, so it can't read its code.
 }
 
 #[test]
+fn reach_lists_an_item_in_no_block_after_the_blocks() {
+    // tx_buffer, in a section of size 0 now, so in no block of memory.
+    let mut data = sample("c-cortex-m7-nodebug.elf");
+    set_section_field(&mut data, ".ocram_bss", SIZE, 0);
+    let (stdout, _) = run("reach-no-block.elf", &data, &["reach", "platform_write"]);
+    assert_output(
+        &stdout,
+        "\
+platform_write and the 3 data objects it reaches take 96 bytes of code and 4104 bytes of data:
+
+MEMORY                  CODE  DATA  SECTIONS
+0x00000000..0x000000e0     0     0
+0x20000000..0x20000450     0     8  .bss
+0x30000000..0x30000edc    96     0  .text
+
+ADDRESS     SIZE  HOW   ITEM
+0x30000668    96        platform_write
+0x2000044c     4  uses  tx_head, used by platform_write
+0x20000448     4  uses  tx_tail, used by platform_write
+0x20240000  4096  uses  tx_buffer, used by platform_write
+",
+    );
+    let (json, _) = run(
+        "reach-no-block.elf",
+        &data,
+        &["reach", "platform_write", "--json"],
+    );
+    let reach: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let tx_buffer = &reach["items"][2];
+    assert_eq!(tx_buffer["name"], "tx_buffer");
+    assert_eq!(tx_buffer["block"], serde_json::Value::Null);
+}
+
+#[test]
 fn sizes_that_add_up_past_the_largest_number_stop_there() {
     // Functions that overlap, each half as large as the address space.
     // Each is the last in its section, since one that runs on past the

@@ -998,6 +998,24 @@ fn reach_has_the_whole_tree() {
         .collect();
     through_pointer.sort();
     assert_eq!(through_pointer, ["on_button", "on_data", "on_timer"]);
+    // Only the processor calls through the vector table, so a handler it
+    // lists is not there through a pointer.
+    let vector_table = elfq_json(&[TCM_SAMPLE, "reach", "vector_table"]);
+    let handlers: Vec<(&Value, &Value)> = vector_table["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["parent"] == 0 && item["kind"] == "function")
+        .map(|item| (&item["name"], &item["through_pointer"]))
+        .collect();
+    assert_eq!(
+        handlers,
+        [
+            (&json!("Reset_Handler"), &json!(false)),
+            (&json!("Default_Handler"), &json!(false)),
+            (&json!("SysTick_Handler"), &json!(false)),
+        ]
+    );
     // A veneer's jump to the chip's ROM is where it is, in the veneer.
     let rom = elfq_json(&[
         "testdata/bin/far-gnu-m4-nodebug.elf",

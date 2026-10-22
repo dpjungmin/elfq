@@ -407,25 +407,20 @@ impl<'a> Names<'a> {
     }
 
     /// What a row calls the item at `index` after "used by", so that it
-    /// works as SYMBOL: its [short name](Names::short_name) when that finds
-    /// only the item, or else its address, as when two functions share a
-    /// name.
+    /// works as SYMBOL: the shortest form of its name that finds only the
+    /// item, as [`Names::short_name`] picks it but keeping a PLT stub's
+    /// `@plt`, or else its address, as when two functions share a name.
     pub(super) fn row_name(&self, index: usize) -> String {
         let node = Node::Item(index);
         let name = node.name(self.binary);
-        // Without `@plt`, a PLT stub's name means what the stub passes calls
-        // to, which reads as another item: `strlen, used by strlen`.
-        let stub = name.ends_with("@plt");
-        let mut queries: Vec<String> = short_names(name)
-            .into_iter()
-            .chain([name.to_string()])
-            .filter(|query| !stub || query.ends_with("@plt"))
-            .collect();
-        queries.sort_by(|a, b| a.len().cmp(&b.len()).then(a.cmp(b)));
-        queries
-            .into_iter()
-            .find(|query| self.nodes(query) == [node])
-            .unwrap_or_else(|| format!("{:#x}", self.binary.items[index].address))
+        let shortest = if name.ends_with("@plt") {
+            // Without `@plt`, a stub's name means what the stub passes calls
+            // to, which reads as another item: `strlen, used by strlen`.
+            (self.nodes(name) == [node]).then(|| name.to_string())
+        } else {
+            self.shortest_name(node, vec![name])
+        };
+        shortest.unwrap_or_else(|| format!("{:#x}", self.binary.items[index].address))
     }
 
     /// The shortest of `names` and their short names that finds only
