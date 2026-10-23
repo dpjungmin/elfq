@@ -14,7 +14,7 @@ use serde::Serialize;
 use super::{Outcome, json, text};
 use crate::binary::{AddressRange, Binary};
 use crate::cli::Format;
-use crate::graph::{Boundary, Crossing, Graph, Node, ReferenceKind, Unfollowed};
+use crate::graph::{Boundary, Crossing, Graph, Node, ReferenceKind, Unfollowed, Unresolved};
 use crate::render::{Align, Table};
 
 /// Which way the references cross the boundary.
@@ -162,13 +162,7 @@ pub fn run(
     format: Format,
     out: &mut dyn Write,
 ) -> Result<Outcome> {
-    // Where calls and jumps in the file go to code outside every item, as
-    // to a routine in a chip's ROM, which `callers` and `--to` can name.
-    let code_outside: Vec<u64> = graph
-        .unresolved
-        .iter()
-        .filter_map(|unresolved| unresolved.target)
-        .collect();
+    let code_outside = code_outside(graph);
     for &range in check.ranges {
         if check.direction == Direction::In && has_address(&code_outside, range) {
             continue;
@@ -301,11 +295,7 @@ fn leaving_to(
     let mut unfollowed = Vec::new();
     for row in boundary.unfollowed() {
         let unresolved = row.unresolved;
-        let may_go_to = match unresolved.target {
-            Some(target) => contains(to, target),
-            None => through_pointer,
-        };
-        if may_go_to {
+        if may_go_to(&unresolved, to, through_pointer) {
             unfollowed.push(row);
         } else if let Some(veneer) = veneer_in_to(row.veneer) {
             crossings.push(Crossing {
@@ -420,6 +410,31 @@ fn calls_through_pointer(
     })
 }
 
+/// Whether `unresolved`, a call or jump that elfq can't follow, may go to
+/// `to`, the ranges of `--to`: one to a known address, when the address is
+/// in them, and one through a pointer, when `through_pointer`, since a
+/// function there has its address taken or stored.
+pub(super) fn may_go_to(
+    unresolved: &Unresolved,
+    to: &[AddressRange],
+    through_pointer: bool,
+) -> bool {
+    match unresolved.target {
+        Some(target) => contains(to, target),
+        None => through_pointer,
+    }
+}
+
+/// Where calls and jumps in the file go to code outside every item, as to
+/// a routine in a chip's ROM, which `callers` and `--to` can name.
+pub(super) fn code_outside(graph: &Graph) -> Vec<u64> {
+    graph
+        .unresolved
+        .iter()
+        .filter_map(|unresolved| unresolved.target)
+        .collect()
+}
+
 /// Whether `node` is an item in `ranges`. An import is in none.
 fn node_in(binary: &Binary, node: Node, ranges: &[AddressRange]) -> bool {
     match node {
@@ -496,21 +511,10 @@ fn check_other_side(binary: &Binary, check: &RangeCheck, code_outside: &[u64]) -
         }
     };
     for &range in check.other {
-        // Code that the file calls in a `--to` range, as in a ROM, is all
-        // that the range need hold.
         let called = check.direction == Direction::Out && has_address(code_outside, range);
-        if !called {
-            if check.direction == Direction::Out
-                && text::sections_in(binary, range).is_empty()
-                && text::load_images_in(binary, range).is_empty()
-            {
-                bail!(
-                    "--to {} holds no functions or data, and no code in the file calls or \
-                     jumps there",
-                    text::range_argument(range)
-                );
-            }
-            check_holds_items(binary, range)?;
+        match check.direction {
+            Direction::Out => check_to_range(binary, range, code_outside)?,
+            Direction::In => check_holds_items(binary, range)?,
         }
         let item_outside = binary
             .items
@@ -573,6 +577,28 @@ fn check_other_side(binary: &Binary, check: &RangeCheck, code_outside: &[u64]) -
     Ok(())
 }
 
+/// Explains that `range`, given to `--to`, holds nothing that code can use,
+/// as for a mistyped range, unless it holds an item, or code outside every
+/// item that the file calls or jumps to, at one of `code_outside`, as in a
+/// chip's ROM.
+pub(super) fn check_to_range(
+    binary: &Binary,
+    range: AddressRange,
+    code_outside: &[u64],
+) -> Result<()> {
+    if has_address(code_outside, range) {
+        return Ok(());
+    }
+    if text::sections_in(binary, range).is_empty() && text::load_images_in(binary, range).is_empty()
+    {
+        bail!(
+            "--to {} holds no functions or data, and no code in the file calls or jumps there",
+            text::range_argument(range)
+        );
+    }
+    check_holds_items(binary, range)
+}
+
 /// Where the far side of the crossings is, for a sentence: "outside it",
 /// or with `--to` or `--from`, in their ranges, as "in 0x30000000..0x31000000
 /// (.text)". `it` is "it" or "them".
@@ -585,7 +611,7 @@ fn far_side(binary: &Binary, other: &[AddressRange], it: &str, all: bool) -> Str
 }
 
 /// The ranges of `--to` or `--from` for JSON, or `None` when there are none.
-fn json_other(other: &[AddressRange]) -> Option<Vec<json::Range>> {
+pub(super) fn json_other(other: &[AddressRange]) -> Option<Vec<json::Range>> {
     (!other.is_empty()).then(|| json_ranges(other))
 }
 
@@ -1084,7 +1110,7 @@ pub(super) fn group_unfollowed(unfollowed: &[Unfollowed]) -> Vec<(Unfollowed, Ve
 /// into a phrase, every range and section with `all`. A load image in a
 /// range isn't named, since range checks look only where the program uses
 /// its code and data, and a load image is never used where it is stored.
-fn ranges_text(binary: &Binary, ranges: &[AddressRange], all: bool) -> String {
+pub(super) fn ranges_text(binary: &Binary, ranges: &[AddressRange], all: bool) -> String {
     let texts: Vec<String> = ranges
         .iter()
         .map(|&range| text::range_sections_text(binary, range, all))

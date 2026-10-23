@@ -13,6 +13,16 @@
 //! as `callees` lists it for ranges, and the veneer has a row of its own,
 //! since its bytes are in memory too. `--tree` draws the tree instead, with
 //! the veneer as a step of its own, as the JSON has it.
+//!
+//! With `--to`, the answer is what SYMBOL reaches in some ranges of memory,
+//! and the exit status says whether it reaches anything there. The row of
+//! an item that code outside the ranges uses is then the row that `callees
+//! USER --to RANGE` lists for that code, so that it names the code to
+//! change, but for a veneer whose target is in the ranges too, which
+//! `callees` steps over. The calls and jumps that elfq can't follow stay by
+//! the rule that `callees --to` keeps them by (see `ranges.rs`), and the
+//! tree and the JSON keep only the chains to what is in the ranges and to
+//! those calls and jumps.
 
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
@@ -22,35 +32,44 @@ use anyhow::Result;
 use serde::Serialize;
 
 use super::symbol::Names;
-use super::{callees, json, ranges, text};
-use crate::binary::{Binary, ItemKind, MemoryBlock, memory_blocks};
+use super::{Outcome, callees, json, ranges, text};
+use crate::binary::{AddressRange, Binary, ItemKind, MemoryBlock, memory_blocks};
 use crate::cli::Format;
 use crate::graph::{
-    Graph, Node, Reference, ReferenceKind, RootKind, ShortestPaths, Unfollowed, Unresolved,
-    VeneerTarget, Veneers,
+    Boundary, Graph, Node, Reference, ReferenceKind, RootKind, ShortestPaths, Unfollowed,
+    Unresolved, VeneerTarget, Veneers,
 };
 use crate::render::{Align, Table, TreeRow, TreeShape};
 
 #[derive(Serialize)]
 struct ReachJson<'a> {
     symbol: json::Symbol<'a>,
-    /// The bytes of the functions among SYMBOL and what it reaches.
+    /// The ranges of `--to`, or `null`.
+    to: Option<Vec<json::Range>>,
+    /// The bytes of the functions among SYMBOL and what it reaches, or with
+    /// `--to`, among those in its ranges.
     code_bytes: u64,
-    /// The bytes of the data objects among SYMBOL and what it reaches.
+    /// The bytes of the data objects, counted the same way.
     data_bytes: u64,
     /// Every block of memory that the overview's `memory` lists, with the
-    /// bytes in it that SYMBOL and what it reaches take.
+    /// bytes in it that SYMBOL and what it reaches take, counted the same
+    /// way.
     blocks: Vec<BlockJson<'a>>,
     /// SYMBOL, then what it reaches, as the rows of a tree: each item comes
     /// after the item that uses it on its chain from SYMBOL, its `parent`.
+    /// With `--to`, only the items that the tree draws (see
+    /// [`Reach::kept`]).
     items: Vec<ItemJson<'a>>,
-    /// The calls and jumps in what SYMBOL reaches that elfq can't follow.
+    /// The calls and jumps in what SYMBOL reaches that elfq can't follow,
+    /// or with `--to`, those that may go to its ranges.
     unresolved: Vec<UnresolvedJson<'a>>,
     /// The functions that SYMBOL reaches whose code elfq can't read, since
     /// it doesn't know where they end.
     unreadable: Vec<json::Item<'a>>,
-    /// Whether `items` has everything SYMBOL reaches, as far as elfq can
-    /// tell: `false` when `unresolved` or `unreadable` isn't empty.
+    /// Whether `items` has everything SYMBOL reaches, or with `--to`, in its
+    /// ranges, as far as elfq can tell: `false` when `unreadable` isn't
+    /// empty, or `unresolved` is not, other than with `--to`, for calls to
+    /// known addresses in its ranges.
     complete: bool,
 }
 
@@ -82,6 +101,10 @@ struct ItemJson<'a> {
     /// it is there because something takes or stores its address. A pointer
     /// in a vector table counts as a call.
     through_pointer: bool,
+    /// Whether it has a byte in the ranges of `--to`, or `null` without
+    /// `--to`. The rows where it is `false` lead to those where it isn't,
+    /// or to the calls and jumps in `unresolved`.
+    in_to: Option<bool>,
     /// The `id` of the row of the item that uses it on its chain from
     /// SYMBOL, or `null` for SYMBOL.
     parent: Option<usize>,
@@ -102,25 +125,30 @@ struct UnresolvedJson<'a> {
 
 /// Answers `elfq FILE reach SYMBOL`. The text lists SYMBOL and the 30
 /// largest items it reaches, or with `all`, every one, by block, or with
-/// `--tree`, as a tree.
+/// `--tree`, as a tree. `to`, the ranges of `--to`, limits the answer to
+/// what SYMBOL reaches in them, with every row, and then the answer is
+/// [`Outcome::Crossed`] when it lists something.
 pub fn run(
     binary: &Binary,
     symbol: &str,
+    to: &[AddressRange],
     all: bool,
     format: Format,
     out: &mut dyn Write,
-) -> Result<()> {
-    let reach = Reach::find(binary, symbol, all)?;
+) -> Result<Outcome> {
+    let reach = Reach::find(binary, symbol, to, all)?;
     match format {
-        Format::Json => reach.write_json(out),
-        Format::Text => reach.write_text(false, out),
-        Format::Tree => reach.write_text(true, out),
+        Format::Json => reach.write_json(out)?,
+        Format::Text => reach.write_text(false, out)?,
+        Format::Tree => reach.write_text(true, out)?,
     }
+    Ok(reach.outcome())
 }
 
 /// What SYMBOL reaches.
 struct Reach<'a> {
     binary: &'a Binary,
+    graph: Graph,
     names: Names<'a>,
     /// SYMBOL's item, as an index into [`Binary::items`].
     index: usize,
@@ -141,7 +169,8 @@ struct Reach<'a> {
     steps: Vec<Step>,
     /// The calls and jumps in what SYMBOL reaches that elfq can't follow,
     /// but for the jump in a PLT's header, which goes to the dynamic
-    /// loader. In the order of the steps they are in, then by site.
+    /// loader, and with `--to`, for those that can't go to its ranges. In
+    /// the order of the steps they are in, then by site.
     unresolved: Vec<Unresolved>,
     /// The same, as the text lists them: the jump in a veneer to code
     /// outside every item as the call to the veneer, as `callees` lists it
@@ -152,6 +181,9 @@ struct Reach<'a> {
     unreadable: Vec<usize>,
     /// The file's blocks of memory, as the overview lists them.
     blocks: Vec<MemoryBlock>,
+    /// The ranges of `--to`: when there are any, the answer is what SYMBOL
+    /// reaches in them.
+    to: Vec<AddressRange>,
     /// Whether the table shows every row, and the sentences every name.
     all: bool,
 }
@@ -187,14 +219,20 @@ struct Use {
 }
 
 impl<'a> Reach<'a> {
-    /// Finds SYMBOL's item and everything it reaches.
-    fn find(binary: &'a Binary, symbol: &str, all: bool) -> Result<Reach<'a>> {
+    /// Finds SYMBOL's item and everything it reaches, keeping only the calls
+    /// and jumps that elfq can't follow that may go to `to`, the ranges of
+    /// `--to`, if there are any.
+    fn find(binary: &'a Binary, symbol: &str, to: &[AddressRange], all: bool) -> Result<Reach<'a>> {
         super::check_code_is_readable(binary)?;
         let names = Names::new(binary);
         let symbol = names.find(symbol)?;
         let index = super::readable_item(binary, symbol.node)?;
         let lead_name = symbol.lead_name(binary);
         let graph = Graph::build(binary);
+        let code_outside = ranges::code_outside(&graph);
+        for &range in to {
+            ranges::check_to_range(binary, range, &code_outside)?;
+        }
         let start = Node::Item(index);
         let paths = ShortestPaths::from(binary, &graph, start);
         let veneers = Veneers::new(binary, &graph);
@@ -302,20 +340,62 @@ impl<'a> Reach<'a> {
                 unfollowed.push(through_veneer(&paths, &veneers, jump));
             }
         }
+        let plt_header = is_plt_header(start);
+        if !to.is_empty() {
+            let through_pointer = !Boundary::new(binary, &graph, to)
+                .callable_through_pointer()
+                .is_empty();
+            let may_go_to = |jump: &Unresolved| ranges::may_go_to(jump, to, through_pointer);
+            unresolved.retain(may_go_to);
+            unfollowed.retain(|row| may_go_to(&row.unresolved));
+        }
         Ok(Reach {
             binary,
+            graph,
             names,
             index,
             lead_name,
             self_use,
-            plt_header: is_plt_header(start),
+            plt_header,
             steps,
             unresolved,
             unfollowed,
             unreadable,
             blocks,
+            to: to.to_vec(),
             all,
         })
+    }
+
+    /// Whether `step` is an item in the ranges of `--to`.
+    fn in_to(&self, step: &Step) -> bool {
+        match step.node {
+            Node::Item(index) => self.binary.items[index].is_in(&self.to),
+            Node::Import(_) => false,
+        }
+    }
+
+    /// The steps whose bytes the answer counts: SYMBOL and everything it
+    /// reaches, or with `--to`, those in its ranges.
+    fn counted(&self) -> Vec<&Step> {
+        self.steps
+            .iter()
+            .filter(|step| self.to.is_empty() || self.in_to(step))
+            .collect()
+    }
+
+    /// The exit status: with `--to`, [`Outcome::Crossed`] when the answer
+    /// lists something in its ranges, a call or jump that may go there, or
+    /// code that elfq can't read, which may.
+    fn outcome(&self) -> Outcome {
+        let found = !self.counted().is_empty()
+            || !self.unresolved.is_empty()
+            || !self.unreadable.is_empty();
+        if !self.to.is_empty() && found {
+            Outcome::Crossed
+        } else {
+            Outcome::Answered
+        }
     }
 
     /// The bytes of code and of data that the steps in `steps` take.
@@ -334,14 +414,14 @@ impl<'a> Reach<'a> {
         (code, data)
     }
 
-    /// The bytes of code and of data in each block, and the sections that
-    /// hold them, in address order.
-    fn blocks_reached(&self) -> Vec<(u64, u64, Vec<&'a str>)> {
+    /// The bytes of code and of data that `steps` take in each block, and
+    /// the sections that hold them, in address order.
+    fn blocks_reached(&self, steps: &[&Step]) -> Vec<(u64, u64, Vec<&'a str>)> {
         (0..self.blocks.len())
             .map(|block| {
-                let steps: Vec<&Step> = self
-                    .steps
+                let steps: Vec<&Step> = steps
                     .iter()
+                    .copied()
                     .filter(|step| step.block == Some(block))
                     .collect();
                 let (code, data) = self.bytes(steps.iter().copied());
@@ -362,11 +442,12 @@ impl<'a> Reach<'a> {
     fn write_json(&self, out: &mut dyn Write) -> Result<()> {
         let binary = self.binary;
         let item = |node: Node| json::Item::new(binary, node);
-        let (code_bytes, data_bytes) = self.bytes(self.steps.iter());
+        let counted = self.counted();
+        let (code_bytes, data_bytes) = self.bytes(counted.iter().copied());
         let blocks = self
             .blocks
             .iter()
-            .zip(self.blocks_reached())
+            .zip(self.blocks_reached(&counted))
             .map(|(block, (code_bytes, data_bytes, sections))| BlockJson {
                 range: json::Range::new(block.range),
                 code_bytes,
@@ -374,24 +455,35 @@ impl<'a> Reach<'a> {
                 sections,
             })
             .collect();
+        let ids = self.json_ids();
         let items = self
             .steps
             .iter()
-            .enumerate()
-            .map(|(id, step)| ItemJson {
-                id,
-                item: item(step.node),
-                block: step
-                    .block
-                    .map(|block| json::address(self.blocks[block].range.start)),
-                how: step.via.map(|via| json::how_field(via.kind)),
-                sites: json::addresses(&step.sites),
-                through_pointer: step.through_pointer,
-                parent: step.parent,
+            .zip(&ids)
+            .filter_map(|(step, &id)| {
+                Some(ItemJson {
+                    id: id?,
+                    item: item(step.node),
+                    block: step
+                        .block
+                        .map(|block| json::address(self.blocks[block].range.start)),
+                    how: step.via.map(|via| json::how_field(via.kind)),
+                    sites: json::addresses(&step.sites),
+                    through_pointer: step.through_pointer,
+                    in_to: (!self.to.is_empty()).then(|| self.in_to(step)),
+                    parent: step
+                        .parent
+                        .map(|parent| ids[parent].expect("a row's parent has one")),
+                })
             })
             .collect();
+        // With `--to`, a call to a known address in its ranges, as to a
+        // chip's ROM, is a whole answer, as `callees --to` counts it: only
+        // a call through a pointer leaves it open.
+        let followed = |unresolved: &Unresolved| !self.to.is_empty() && unresolved.target.is_some();
         let answer = ReachJson {
             symbol: json::Symbol::new(binary, Node::Item(self.index)),
+            to: ranges::json_other(&self.to),
             code_bytes,
             data_bytes,
             blocks,
@@ -411,14 +503,51 @@ impl<'a> Reach<'a> {
                 .iter()
                 .map(|&index| item(Node::Item(index)))
                 .collect(),
-            complete: self.unresolved.is_empty() && self.unreadable.is_empty(),
+            complete: self.unresolved.iter().all(followed) && self.unreadable.is_empty(),
         };
         json::write(&answer, out)
+    }
+
+    /// Which steps the answer has: every one, or with `--to`, SYMBOL, the
+    /// steps in its ranges, those with calls and jumps that elfq can't
+    /// follow that may go there, and every step on their chains from
+    /// SYMBOL.
+    fn kept(&self) -> Vec<bool> {
+        let unfollowed: HashSet<Node> = self
+            .unresolved
+            .iter()
+            .map(|unresolved| Node::Item(unresolved.from))
+            .collect();
+        let mut kept = vec![self.to.is_empty(); self.steps.len()];
+        kept[0] = true;
+        // A step comes after its parent, so its children are kept first.
+        for (step, row) in self.steps.iter().enumerate().rev() {
+            if kept[step] || self.in_to(row) || unfollowed.contains(&row.node) {
+                kept[step] = true;
+                if let Some(parent) = row.parent {
+                    kept[parent] = true;
+                }
+            }
+        }
+        kept
+    }
+
+    /// The `id` of each step's row in the JSON, for the steps the answer
+    /// has (see [`Reach::kept`]).
+    fn json_ids(&self) -> Vec<Option<usize>> {
+        let mut ids = 0..;
+        self.kept()
+            .into_iter()
+            .map(|kept| if kept { ids.next() } else { None })
+            .collect()
     }
 
     /// Writes the answer as text: the items by block, or with `tree`, as
     /// a tree drawn with branches.
     fn write_text(&self, tree: bool, out: &mut dyn Write) -> Result<()> {
+        if !self.to.is_empty() {
+            return self.write_to_text(tree, out);
+        }
         let binary = self.binary;
         let name = &self.lead_name;
         let reached = &self.steps[1..];
@@ -510,6 +639,170 @@ impl<'a> Reach<'a> {
         Ok(())
     }
 
+    /// Writes the answer as text with `--to`: what SYMBOL reaches in its
+    /// ranges, every row, or with `tree`, the chains from SYMBOL to them.
+    fn write_to_text(&self, tree: bool, out: &mut dyn Write) -> Result<()> {
+        let binary = self.binary;
+        let name = &self.lead_name;
+        let counted = self.counted();
+        let symbol_in_to = counted.first().is_some_and(|step| step.parent.is_none());
+        let others: Vec<Node> = counted
+            .iter()
+            .filter(|step| step.parent.is_some())
+            .map(|step| step.node)
+            .collect();
+        let (code, data) = self.bytes(counted.iter().copied());
+        let bytes = text::code_and_data(code, data);
+        let ranges = ranges::ranges_text(binary, &self.to, self.all);
+        // Counted as the rows show them: a tree has the veneers that the
+        // other rows step over.
+        let unknown: Vec<&Unresolved> = if tree {
+            self.unresolved.iter().collect()
+        } else {
+            self.unfollowed.iter().map(|u| &u.unresolved).collect()
+        };
+        let mut lead = match (symbol_in_to, &others[..]) {
+            (true, []) => {
+                format!("{name} takes {bytes} in {ranges}, and reaches nothing else there")
+            }
+            (true, [Node::Item(index)]) => format!(
+                "{name} and the {} it reaches in {ranges} take {bytes}",
+                kind_name(binary.items[*index].kind)
+            ),
+            (true, _) => format!(
+                "{name} and the {} it reaches in {ranges} take {bytes}",
+                text::count_text(binary, &others)
+            ),
+            (false, []) if !unknown.is_empty() => format!("{name} reaches no items in {ranges}"),
+            (false, []) if self.unreadable.is_empty() => {
+                format!("{name} reaches nothing in {ranges}.")
+            }
+            (false, []) => {
+                format!("In the code elfq can read, {name} reaches nothing in {ranges}.")
+            }
+            (false, _) => format!(
+                "{name} reaches {} in {ranges}, which {} {bytes}",
+                text::count_text(binary, &others),
+                if others.len() == 1 { "takes" } else { "take" }
+            ),
+        };
+        if !unknown.is_empty() {
+            // A call through a pointer may go anywhere, but one to an
+            // address that the code names goes there.
+            let go = if unknown.iter().any(|u| u.target.is_none()) {
+                "may go"
+            } else if unknown.len() == 1 {
+                "goes"
+            } else {
+                "go"
+            };
+            let joint = if counted.is_empty() { ", but" } else { ";" };
+            lead += &format!(
+                "{joint} elfq can't follow {}, which {go} there",
+                text::calls_and_jumps(unknown.iter().copied())
+            );
+        }
+        let listed = !counted.is_empty() || !unknown.is_empty();
+        if listed {
+            lead += ":";
+        }
+        writeln!(out, "{lead}")?;
+        if listed {
+            writeln!(out)?;
+            if tree {
+                Tree::new(self).write(out)?;
+            } else {
+                self.write_to_rows(&counted, out)?;
+            }
+        }
+        if !self.unreadable.is_empty() {
+            if listed {
+                writeln!(out)?;
+            }
+            writeln!(
+                out,
+                "{}",
+                text::unreadable_text(binary, &self.unreadable, self.all)
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Writes the rows with `--to`: SYMBOL's, when it is among `counted`,
+    /// the steps in its ranges; then the calls and jumps that elfq can't
+    /// follow that may go there, first, as `callees --to` lists them, since
+    /// they may hide more; then the rest of `counted`, in the order of
+    /// [`Reach::write_rows`]. Every row is shown, with the sites of the use
+    /// it names in the AT column.
+    fn write_to_rows(&self, counted: &[&Step], out: &mut dyn Write) -> Result<()> {
+        let mut table = Table::new(&[
+            ("ADDRESS", Align::Left),
+            ("SIZE", Align::Right),
+            ("HOW", Align::Left),
+            ("AT", Align::Left),
+            ("ITEM", Align::Left),
+        ]);
+        let with_at = |mut cells: Vec<String>, sites: &[u64]| {
+            cells.insert(3, text::at_column(sites));
+            cells
+        };
+        let (symbol, reached) = match counted {
+            [first, rest @ ..] if first.parent.is_none() => (true, rest),
+            _ => (false, counted),
+        };
+        if symbol {
+            table.row(with_at(self.symbol_row(), &[]));
+        }
+        for (unfollowed, sites) in ranges::group_unfollowed(&self.unfollowed) {
+            let sites = self.unfollowed_sites(&unfollowed, sites);
+            table.row(with_at(self.unfollowed_row(&unfollowed), &sites));
+        }
+        for step in self.in_row_order(reached.to_vec()) {
+            table.row(with_at(self.row(step), &self.use_sites(step)));
+        }
+        table.write(out)?;
+        Ok(())
+    }
+
+    /// Where the item that uses `step` on its row uses it as the row's HOW
+    /// says, for the AT column: every such site, as `callees` lists them,
+    /// which may be more than the chain's, as when code both reads a
+    /// variable and loads its address, which is "uses" either way.
+    fn use_sites(&self, step: &Step) -> Vec<u64> {
+        let binary = self.binary;
+        let used = step.used.as_ref().expect("only SYMBOL has no user");
+        // A call through a veneer is a call to the veneer.
+        let to = used.veneer.map_or(step.node, Node::Item);
+        let how = |kind| text::how_via(binary, step.node, kind, used.veneer);
+        self.graph
+            .references_from(used.by)
+            .iter()
+            .filter(|reference| reference.to == to && how(reference.kind) == how(used.kind))
+            .map(|reference| reference.site)
+            .collect()
+    }
+
+    /// Where the code that `unfollowed` names makes it, for the AT column:
+    /// `sites`, or for a call through a veneer, every call of its kind from
+    /// there to the veneer, as `callees` lists them, since the answer keeps
+    /// only the one on the chain to the veneer.
+    fn unfollowed_sites(&self, unfollowed: &Unfollowed, sites: Vec<u64>) -> Vec<u64> {
+        let Some(veneer) = unfollowed.veneer else {
+            return sites;
+        };
+        let unresolved = &unfollowed.unresolved;
+        self.graph
+            .references_from(unresolved.from)
+            .iter()
+            .filter(|reference| {
+                reference.to == Node::Item(veneer)
+                    && reference.kind.is_call()
+                    && (reference.kind == ReferenceKind::Call) == unresolved.is_call
+            })
+            .map(|reference| reference.site)
+            .collect()
+    }
+
     /// Writes the bytes of code and data in each block of memory.
     fn write_memory(&self, out: &mut dyn Write) -> Result<()> {
         let mut table = Table::new(&[
@@ -518,7 +811,8 @@ impl<'a> Reach<'a> {
             ("DATA", Align::Right),
             ("SECTIONS", Align::Left),
         ]);
-        for (block, (code, data, sections)) in self.blocks.iter().zip(self.blocks_reached()) {
+        let steps: Vec<&Step> = self.steps.iter().collect();
+        for (block, (code, data, sections)) in self.blocks.iter().zip(self.blocks_reached(&steps)) {
             table.row(vec![
                 text::range_argument(block.range),
                 code.to_string(),
@@ -537,67 +831,86 @@ impl<'a> Reach<'a> {
     /// shown, and a row such as "9 more data objects in
     /// 0x20000000..0x20000450" sums up the rest of a block's.
     fn write_rows(&self, outside: &[Unfollowed], out: &mut dyn Write) -> Result<()> {
-        let binary = self.binary;
         let mut table = Table::new(&[
             ("ADDRESS", Align::Left),
             ("SIZE", Align::Right),
             ("HOW", Align::Left),
             ("ITEM", Align::Left),
         ]);
-        let item = &binary.items[self.index];
-        table.row(vec![
-            format!("{:#x}", item.address),
-            text::size_text(item),
-            String::new(),
-            item.name.clone(),
-        ]);
-
+        table.row(self.symbol_row());
         let reached = &self.steps[1..];
         let shown = self.shown(reached);
-        // Each block's functions, then its data objects; then the items in
-        // no block, which a damaged file can have; then the imports.
-        let group = |step: &Step| match step.node {
-            Node::Item(index) => {
-                let kind = binary.items[index].kind;
-                (step.block.unwrap_or(usize::MAX), kind != ItemKind::Function)
-            }
-            Node::Import(_) => (usize::MAX, true),
-        };
-        let mut steps: Vec<&Step> = reached.iter().collect();
-        steps.sort_by_key(|step| {
-            let node = step.node;
-            (
-                matches!(node, Node::Import(_)),
-                group(step),
-                Reverse(node.size(binary)),
-                node.name(binary),
-                node,
-            )
-        });
+        let steps = self.in_row_order(reached.iter().collect());
         let imports = steps.partition_point(|step| matches!(step.node, Node::Item(_)));
         let (items, imports) = steps.split_at(imports);
-        for steps in items.chunk_by(|a, b| group(a) == group(b)) {
+        for steps in items.chunk_by(|a, b| self.group(a) == self.group(b)) {
             self.add_group(steps, &shown, &mut table);
         }
         for (unfollowed, _) in ranges::group_unfollowed(outside) {
-            let unresolved = &unfollowed.unresolved;
-            table.row(vec![
-                unresolved
-                    .target
-                    .map_or(String::new(), |t| format!("{t:#x}")),
-                String::new(),
-                ranges::unfollowed_how(&unfollowed).to_string(),
-                format!(
-                    "(outside any function), used by {}",
-                    self.names.row_name(unresolved.from)
-                ),
-            ]);
+            table.row(self.unfollowed_row(&unfollowed));
         }
         if !imports.is_empty() {
             self.add_group(imports, &shown, &mut table);
         }
         table.write(out)?;
         Ok(())
+    }
+
+    /// The cells of SYMBOL's row.
+    fn symbol_row(&self) -> Vec<String> {
+        let item = &self.binary.items[self.index];
+        vec![
+            format!("{:#x}", item.address),
+            text::size_text(item),
+            String::new(),
+            item.name.clone(),
+        ]
+    }
+
+    /// Which group of the table `step`'s row is in: each block's functions,
+    /// then its data objects; then the items in no block, which a damaged
+    /// file can have; then the imports.
+    fn group(&self, step: &Step) -> (usize, bool) {
+        match step.node {
+            Node::Item(index) => {
+                let kind = self.binary.items[index].kind;
+                (step.block.unwrap_or(usize::MAX), kind != ItemKind::Function)
+            }
+            Node::Import(_) => (usize::MAX, true),
+        }
+    }
+
+    /// `steps` in the order of their rows: by group, each largest first.
+    fn in_row_order<'s>(&self, mut steps: Vec<&'s Step>) -> Vec<&'s Step> {
+        let binary = self.binary;
+        steps.sort_by_key(|step| {
+            let node = step.node;
+            (
+                matches!(node, Node::Import(_)),
+                self.group(step),
+                Reverse(node.size(binary)),
+                node.name(binary),
+                node,
+            )
+        });
+        steps
+    }
+
+    /// The cells of the row of a call or jump that elfq can't follow, as
+    /// `callees` words it, but for the AT column: to code outside every
+    /// item, at its address, or through a pointer.
+    fn unfollowed_row(&self, unfollowed: &Unfollowed) -> Vec<String> {
+        let unresolved = &unfollowed.unresolved;
+        let (address, what) = match unresolved.target {
+            Some(target) => (format!("{target:#x}"), "(outside any function)"),
+            None => (String::new(), "(through a pointer)"),
+        };
+        vec![
+            address,
+            String::new(),
+            ranges::unfollowed_how(unfollowed).to_string(),
+            format!("{what}, used by {}", self.user_name(unresolved.from)),
+        ]
     }
 
     /// Adds the rows of `steps`, one group of the table, such as a block's
@@ -645,7 +958,10 @@ impl<'a> Reach<'a> {
         ]);
     }
 
-    /// The cells of an item's or import's row.
+    /// The cells of an item's or import's row. With `--to`, the row is
+    /// written as `callees --to` writes it, with the whole name of the item
+    /// that uses it, and no mark for a function reached through a pointer,
+    /// which HOW shows.
     fn row(&self, step: &Step) -> Vec<String> {
         let binary = self.binary;
         let (address, size) = match step.node {
@@ -656,7 +972,7 @@ impl<'a> Reach<'a> {
             Node::Import(_) => (String::new(), String::new()),
         };
         let used = step.used.as_ref().expect("only SYMBOL has no user");
-        let mark = if step.through_pointer {
+        let mark = if step.through_pointer && self.to.is_empty() {
             " (through a pointer)"
         } else {
             ""
@@ -668,9 +984,19 @@ impl<'a> Reach<'a> {
             format!(
                 "{}{mark}, used by {}",
                 step.node.name(binary),
-                self.names.row_name(used.by)
+                self.user_name(used.by)
             ),
         ]
+    }
+
+    /// The name of `index`, an item that uses another, on that item's row:
+    /// the shortest that finds it, or with `--to`, its whole name, as
+    /// `callees --to` names it.
+    fn user_name(&self, index: usize) -> String {
+        match self.to[..] {
+            [] => self.names.row_name(index),
+            _ => self.binary.items[index].name.clone(),
+        }
     }
 
     /// The items and imports in `reached` that get rows: the 30 largest,
@@ -728,13 +1054,16 @@ impl<'a> Reach<'a> {
 /// What SYMBOL reaches, as `--tree` draws it: each item under the item that
 /// uses it on its chain from SYMBOL, in the order that item first uses
 /// them, with a veneer as a step of its own; and each call or jump to code
-/// outside every item under the item it is in.
+/// outside every item under the item it is in. With `--to`, only the chains
+/// to the items in its ranges, and to the calls and jumps that may go
+/// there, through pointers too.
 struct Tree<'r, 'a> {
     reach: &'r Reach<'a>,
     /// The steps under each step, in the order that it first uses them.
     children: Vec<Vec<usize>>,
-    /// The calls and jumps to code outside every item in each step, one per
-    /// kind and target.
+    /// The calls and jumps that elfq can't follow in each step that get
+    /// rows, one per kind and target: those to code outside every item, and
+    /// with `--to`, those through pointers too.
     outside: Vec<Vec<Unresolved>>,
     /// Whether each step gets a row.
     shown: Vec<bool>,
@@ -757,11 +1086,16 @@ impl<'r, 'a> Tree<'r, 'a> {
             .collect();
         let mut outside: Vec<Vec<Unresolved>> = vec![Vec::new(); steps.len()];
         for &unresolved in &reach.unresolved {
+            // Without `--to`, a note below the tree names the calls and
+            // jumps through pointers.
+            if unresolved.target.is_none() && reach.to.is_empty() {
+                continue;
+            }
             let rows = &mut outside[step_of[&unresolved.from]];
             let same = |row: &Unresolved| {
                 (row.is_call, row.target) == (unresolved.is_call, unresolved.target)
             };
-            if unresolved.target.is_some() && !rows.iter().any(same) {
+            if !rows.iter().any(same) {
                 rows.push(unresolved);
             }
         }
@@ -775,19 +1109,27 @@ impl<'r, 'a> Tree<'r, 'a> {
         tree
     }
 
-    /// Which steps get rows: SYMBOL; the largest items, or every one (see
-    /// [`Reach::shown`]); the steps with calls or jumps to code outside
-    /// every item, since rows by block show every one; and every step on
-    /// their chains from SYMBOL, so that the tree holds together. A step
-    /// that would be the only one left out under a row, with nothing under
-    /// it, is shown too, since its row takes no more room than "1 more"
-    /// would.
+    /// Which steps get rows: with `--to`, the steps the answer has (see
+    /// [`Reach::kept`]). Without it, SYMBOL; the largest items, or every
+    /// one (see [`Reach::shown`]); the steps with rows for calls or jumps
+    /// to code outside every item, since rows by block show every one; and
+    /// every step on their chains from SYMBOL, so that the tree holds
+    /// together. A step that would be the only one left out under a row,
+    /// with nothing under it, is shown too, since its row takes no more
+    /// room than "1 more" would.
     fn shown(&self) -> Vec<bool> {
-        let steps = &self.reach.steps;
-        let largest = self.reach.shown(&steps[1..]);
+        let reach = self.reach;
+        if !reach.to.is_empty() {
+            return reach.kept();
+        }
+        let steps = &reach.steps;
+        let largest = reach.shown(&steps[1..]);
+        let wanted = |step: usize| {
+            step == 0 || largest.contains(&steps[step].node) || !self.outside[step].is_empty()
+        };
         let mut shown = vec![false; steps.len()];
         for step in 0..steps.len() {
-            if step == 0 || largest.contains(&steps[step].node) || !self.outside[step].is_empty() {
+            if wanted(step) {
                 let mut on_chain = Some(step);
                 while let Some(step) = on_chain
                     && !shown[step]
@@ -849,15 +1191,19 @@ impl<'r, 'a> Tree<'r, 'a> {
             .partition(|&&child| self.shown[child]);
         let mut children: Vec<TreeRow> = shown.into_iter().map(|child| self.row(child)).collect();
         for unresolved in &self.outside[step] {
-            let target = unresolved.target.expect("only code outside every item");
+            let (address, name) = match unresolved.target {
+                Some(target) => (format!("{target:#x}"), "(outside any function)"),
+                None => (String::new(), "(through a pointer)"),
+            };
             let cells = vec![
-                format!("{target:#x}"),
+                address,
                 String::new(),
                 text::call_or_jump(unresolved).to_string(),
             ];
-            children.push(TreeRow::new(cells, "(outside any function)", Vec::new()));
+            children.push(TreeRow::new(cells, name, Vec::new()));
         }
-        if !hidden.is_empty() {
+        // With `--to`, the steps left out aren't part of the answer.
+        if !hidden.is_empty() && self.reach.to.is_empty() {
             children.push(self.more(&hidden));
         }
         let mut row = TreeRow::new(

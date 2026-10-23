@@ -52,6 +52,19 @@ uses the 256 KiB at 0x20000000, and `callers crc32 --from 0x30000000+16M`
 what at 0x30000000 calls crc32. Errors go to stderr, with exit status 2
 and nothing on stdout.
 
+`reach SYMBOL --to RANGE` lists only what SYMBOL reaches in RANGE, at any
+depth, with the code that uses each item there, and exits 1 if it reaches
+anything there or might. To check that an interrupt handler runs only from
+TCM, give `--to` for every other block that the overview lists. A call
+through a pointer that may go there counts too; to fail only on what elfq
+is sure of, let exit status 1 through and check the JSON:
+
+```sh
+elfq app.elf reach SysTick_Handler --to 0x20240000+1M --to 0x30000000+16M \
+  --json > reach.json || [ $? -eq 1 ]
+jq -e 'all(.items[]; .in_to | not) and all(.unresolved[]; .target == null)' reach.json
+```
+
 **For AI agents:** paste this into a project's AGENTS.md or CLAUDE.md to
 tell its agents about elfq:
 
@@ -68,8 +81,10 @@ and `elfq --help` lists the commands.
   30 largest functions, and `why` the chains through the 10 nearest users;
   `--all` shows every row, and `--json` has every row.
 - Each table row is one line, with the name last. A name after "kept by"
-  or "used by" works as SYMBOL, and a `why` row without "used by" is used
-  by the row above, or starts a chain. Read `why`'s chains with `--json`.
+  or "used by" works as SYMBOL; rows with ranges, `--to` or `--from` give
+  whole names, which several items can share, so use an address from AT.
+  A `why` row without "used by" is used by the row above, or starts a
+  chain. Read `why`'s chains with `--json`.
 - `elfq FILE.elf callees 0x0+256K` lists what the code and data in that
   range use outside it, and `callers 0x0+256K` what uses them from
   outside; both exit 1 if anything does or might. `callees --to RANGE`
@@ -78,7 +93,9 @@ and `elfq --help` lists the commands.
 - `elfq FILE.elf reach SYMBOL` lists everything SYMBOL calls or uses, at
   any depth, with the bytes of code and data it takes in each block of
   memory, such as ITCM and flash: a hot function's whole footprint, and
-  what of it isn't where it should be.
+  what of it isn't where it should be. `--to RANGE` keeps only what it
+  reaches in RANGE, with every row, and exits 1 if there is any, or might
+  be.
 - elfq reads the built file, not the source: rebuild before asking again.
 ```
 

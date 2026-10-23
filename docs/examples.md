@@ -9,11 +9,13 @@ every `$ elfq` example here and checks that elfq still prints exactly that.
 1. [Why is formatting code in Rust firmware?](#why-is-formatting-code-in-rust-firmware)
 2. [Does the code in fast memory use slow memory?](#does-the-code-in-fast-memory-use-slow-memory)
 3. [What does SysTick_Handler run and use, and where?](#what-does-systick_handler-run-and-use-and-where)
-4. [What is in stripped firmware?](#what-is-in-stripped-firmware)
-5. [Who calls a function, and how?](#who-calls-a-function-and-how)
-6. [What would removing a function save?](#what-would-removing-a-function-save)
-7. [Which inlined functions take the most bytes?](#which-inlined-functions-take-the-most-bytes)
-8. [How do scripts read the answers?](#how-do-scripts-read-the-answers)
+4. [Through which calls does SysTick_Handler reach the RAM at 0x20240000?](#through-which-calls-does-systick_handler-reach-the-ram-at-0x20240000)
+5. [Does SysTick_Handler run or use anything outside TCM?](#does-systick_handler-run-or-use-anything-outside-tcm)
+6. [What is in stripped firmware?](#what-is-in-stripped-firmware)
+7. [Who calls a function, and how?](#who-calls-a-function-and-how)
+8. [What would removing a function save?](#what-would-removing-a-function-save)
+9. [Which inlined functions take the most bytes?](#which-inlined-functions-take-the-most-bytes)
+10. [How do scripts read the answers?](#how-do-scripts-read-the-answers)
 
 ## Why is formatting code in Rust firmware?
 
@@ -349,6 +351,41 @@ The handler jumps through the veneer at 0xd0 to `app_tick` in flash, which
 calls `log_msg`, which jumps to `platform_write`, which fills `tx_buffer`.
 The veneer is a step of its own here, where the rows by block list
 `app_tick` as a "tail call via veneer" from the handler.
+
+## Does SysTick_Handler run or use anything outside TCM?
+
+A CI job can check that a handler stays in fast memory. `--to` keeps only
+what `reach` finds in the ranges it gives, here every block that the
+overview lists other than ITCM and DTCM, and the exit status is 1 when it
+finds anything there:
+
+```
+$ elfq testdata/bin/c-cortex-m7.elf reach SysTick_Handler --to 0x20240000+1M --to 0x30000000+16M
+SysTick_Handler reaches 7 items in 0x20240000..0x20340000 (.ocram_bss) and 0x30000000..0x31000000 (.isr_vector, .text, .rodata and .ARM.exidx), which take 422 bytes of code and 4104 bytes of data; elfq can't follow 1 jump, which may go there:
+
+ADDRESS     SIZE  HOW                   AT                      ITEM
+                  jump                  0x300002da              (through a pointer), used by dispatch_event
+0x20240000  4096  uses                  0x30000674, 0x30000696  tx_buffer, used by platform_write
+0x30000700   216  call                  0x30000292              strlen, used by log_msg
+0x30000668    96  tail call             0x3000029e              platform_write, used by log_msg
+0x300002e4    60  tail call via veneer  0x8                     app_tick, used by SysTick_Handler
+0x30000288    26  call                  0x30000304              log_msg, used by app_tick
+0x300002cc    24  tail call             0x300002fe, 0x30000310  dispatch_event, used by app_tick
+0x30000de8    ~8  uses                  0x30000302              .rodata@0x30000de8, used by app_tick
+```
+
+Each row names the code to change: for `app_tick`, the handler itself, at
+0x8, where it jumps through the veneer to flash. `callees SysTick_Handler`
+with the same ranges lists that row too, but stops there, where `reach`
+follows `app_tick` on to `log_msg`, `platform_write` and `tx_buffer`. The
+jump through a pointer in `dispatch_event` stays, since flash holds
+functions whose addresses `main` takes. `crc32`, which runs from ITCM and
+uses only DTCM, passes with exit status 0:
+
+```
+$ elfq testdata/bin/c-cortex-m7.elf reach crc32 --to 0x20240000+1M --to 0x30000000+16M
+crc32 reaches nothing in 0x20240000..0x20340000 (.ocram_bss) and 0x30000000..0x31000000 (.isr_vector, .text, .rodata and .ARM.exidx).
+```
 
 ## What is in stripped firmware?
 

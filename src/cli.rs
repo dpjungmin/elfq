@@ -144,13 +144,14 @@ starts a chain. The tables of top, retained, callers, callees and reach
 show the 30 largest items, inlined the 30 largest functions, and why the
 chains through the 10 nearest users; --all shows every row, and makes
 sentences name everything they would cut short. With ranges, --from or
---to, callers and callees show every row. --json has every item, site and
-chain, one row per line, but the overview's JSON leaves its table to
-top's. Scripts that read why's chains should use --json.
+--to, callers, callees and reach show every row. --json has every item,
+site and chain, one row per line, but the overview's JSON leaves its
+table to top's. Scripts that read why's chains should use --json.
 
 Exit status: 0 for an answer, 1 when callers or callees with ranges, --from
-or --to finds something that crosses, or might, and 2 for an error, which
-goes to stderr with nothing on stdout.";
+or --to finds something that crosses, or might, or reach --to finds
+something in its ranges, or might, and 2 for an error, which goes to stderr
+with nothing on stdout.";
 
 // One variant per command. Each variant's `///` line is its line in
 // `elfq --help`.
@@ -321,7 +322,25 @@ since SYMBOL may reach more through them.
 it, in the order that item first uses them, with veneers and PLT stubs as
 steps of their own. It shows the 30 largest items and the items on their
 chains from SYMBOL, and rows such as \"4 more\" sum up the rest under an
-item. --json has the whole tree.";
+item. --json has the whole tree.
+
+--to RANGE lists only what SYMBOL reaches in RANGE, SYMBOL included, and
+can be given again for more: reach SysTick_Handler --to 0x30000000+16M
+lists what the handler runs and uses in flash at 0x30000000. Every row is
+shown, with an AT column for the sites, and the row of an item that code
+outside the ranges uses is the one that callees lists for that code with
+--to, so that it names the code to change; only a veneer whose target is
+in the ranges too has a row that callees doesn't list. SYMBOL's row, if it
+is in the ranges, comes first, then the calls and jumps that elfq can't
+follow, kept as callees --to keeps them: one to a known address, when the
+address is in the ranges, and one through a pointer, when the ranges hold
+a function whose address is taken or stored other than in the vector
+table. --tree draws the chains from SYMBOL to what is in the ranges and to
+those calls and jumps, and --json has the items on them, with in_to
+saying which are in the ranges.
+
+Exit status, with --to: 1 if the answer lists an item, or code that elfq
+can't follow or read; 0 if not; and 2 for an error.";
 
 const WHY: &str = "\
 The chains start where the program does, as HOW says: at the entry point, a
@@ -457,9 +476,16 @@ pub struct ReachArgs {
     /// A function or data object: its name, the end of its name
     /// (process_frame for app::process_frame), or an address such as 0x1700
     pub symbol: String,
+    /// List only what SYMBOL reaches in this range of memory, START..END or
+    /// START+SIZE; give it again for more
+    #[arg(long, value_name = "RANGE", value_parser = to_range)]
+    pub to: Vec<AddressRange>,
     /// Show every item, not only the 30 largest
     #[arg(long)]
     pub all: bool,
+    // As `CallersArgs::misplaced_to`.
+    #[arg(long = "from", hide = true, value_name = "RANGE")]
+    pub misplaced_from: Vec<String>,
 }
 
 #[derive(Debug, Args)]

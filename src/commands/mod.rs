@@ -26,7 +26,7 @@ use anyhow::{Result, bail};
 
 use crate::arch;
 use crate::binary::{AddressRange, Binary, Item, ItemKind, Source, memory_blocks};
-use crate::cli::{Cli, Command, DebugCommand, Format, UsesArgs};
+use crate::cli::{Cli, Command, DebugCommand, Format, ReachArgs, UsesArgs};
 use crate::graph::{Graph, Node, Reference};
 use crate::render::{Align, Table};
 
@@ -39,8 +39,9 @@ pub enum Outcome {
     /// Exit status 0.
     Answered,
     /// Something crosses the boundary of the ranges that `callers` or
-    /// `callees` asked about, or may: exit status 1, so that a script can
-    /// check that code in a range stays in it.
+    /// `callees` asked about, or may, or `reach --to` finds something in
+    /// its ranges, or may: exit status 1, so that a script can check that
+    /// code in a range stays in it.
     Crossed,
 }
 
@@ -103,7 +104,7 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<Outcome> {
             out,
         ),
         Some(Command::Reach(args)) => {
-            answered(reach::run(&binary, &args.symbol, args.all, format, out))
+            reach::run(&binary, &args.symbol, &args.to, args.all, format, out)
         }
         Some(Command::Debug(DebugCommand::Items)) => answered(debug_items::run(&binary, out)),
     }
@@ -141,22 +142,8 @@ fn check_arguments(cli: &Cli) -> Result<()> {
             bail!("{name} needs a SYMBOL, or ranges such as 0x0+256K")
         }
     }
-    if let Some(Command::Reach(args)) = &cli.command
-        && symbol::is_range(&args.symbol)
-    {
-        // What a range uses outside it is a range check, which callees has.
-        let callees = match args.symbol.parse::<AddressRange>() {
-            Ok(range) => {
-                let file = text::shell_quote(&cli.file.display().to_string());
-                let json = if cli.json { " --json" } else { "" };
-                format!(
-                    "; for what a range uses outside it: elfq {file} callees {}{json}",
-                    text::range_argument(range)
-                )
-            }
-            Err(_) => String::new(),
-        };
-        bail!("reach takes one SYMBOL, not ranges{callees}")
+    if let Some(Command::Reach(args)) = &cli.command {
+        check_reach_arguments(cli, args)?;
     }
     match &cli.command {
         None | Some(Command::Top(_) | Command::Retained(_)) => Ok(()),
@@ -166,6 +153,51 @@ fn check_arguments(cli: &Cli) -> Result<()> {
         }
         Some(_) => Ok(()),
     }
+}
+
+/// Refuses what `reach` doesn't take: `--from`, ranges in place of SYMBOL,
+/// and `--range`, each with what to type instead.
+fn check_reach_arguments(cli: &Cli, args: &ReachArgs) -> Result<()> {
+    if !args.misplaced_from.is_empty() {
+        bail!("--from goes with callers; reach takes --to to list only what it reaches in a range")
+    }
+    let file = text::shell_quote(&cli.file.display().to_string());
+    let json = if cli.json { " --json" } else { "" };
+    let to: String = args
+        .to
+        .iter()
+        .map(|&range| format!(" --to {}", text::range_argument(range)))
+        .collect();
+    if symbol::is_range(&args.symbol) {
+        // What a range uses outside it, or in other ranges, is a range
+        // check, which callees has.
+        let callees = match args.symbol.parse::<AddressRange>() {
+            Ok(range) => {
+                let what = if to.is_empty() {
+                    "what a range uses outside it"
+                } else {
+                    "what a range uses in the --to ranges"
+                };
+                format!(
+                    "; for {what}: elfq {file} callees {}{to}{json}",
+                    text::range_argument(range)
+                )
+            }
+            Err(_) => String::new(),
+        };
+        bail!("reach takes one SYMBOL, not ranges{callees}")
+    }
+    if let Some(range) = cli.range {
+        let all = if args.all { " --all" } else { "" };
+        let tree = if cli.tree { " --tree" } else { "" };
+        bail!(
+            "reach takes --to, not --range, to list only what it reaches in a range: elfq {file} \
+             reach {}{to} --to {}{all}{tree}{json}",
+            text::shell_quote(&args.symbol),
+            text::range_argument(range)
+        )
+    }
+    Ok(())
 }
 
 /// Refuses `--tree` where there is no tree to draw: with `--json`, and for

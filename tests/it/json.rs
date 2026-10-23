@@ -1035,6 +1035,97 @@ fn reach_has_the_whole_tree() {
         (&json!("write"), &Value::Null)
     );
     assert_eq!(log_msg["complete"], true);
+    // Without --to, nothing says what is in its ranges.
+    assert_eq!(reach["to"], Value::Null);
+    assert_eq!(reach["items"][0]["in_to"], Value::Null);
+}
+
+#[test]
+fn reach_to_has_the_chains_to_what_is_in_its_ranges() {
+    let output = elfq(&[
+        TCM_SAMPLE,
+        "reach",
+        "SysTick_Handler",
+        "--to",
+        "0x30000000+16M",
+        "--json",
+    ]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let reach: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        reach["to"],
+        json!([{"start": "0x30000000", "end": "0x31000000"}])
+    );
+    // Only what is in flash counts.
+    assert_eq!(reach["code_bytes"], 422);
+    assert_eq!(reach["data_bytes"], 8);
+    assert_eq!(reach["blocks"][3]["code_bytes"], 422);
+    assert_eq!(reach["blocks"][2]["data_bytes"], 0);
+    // The items in flash, and those on their chains from SYMBOL, numbered
+    // again: the data in DTCM and OCRAM is gone, and the veneer in ITCM
+    // stays, on app_tick's chain.
+    let rows: Vec<String> = reach["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| {
+            let name = item["name"].as_str().unwrap();
+            format!("{} {name} {} {}", item["id"], item["in_to"], item["parent"])
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            "0 SysTick_Handler false null",
+            "1 __app_tick_veneer false 0",
+            "2 app_tick true 1",
+            "3 dispatch_event true 2",
+            "4 .rodata@0x30000de8 true 2",
+            "5 log_msg true 2",
+            "6 strlen true 5",
+            "7 platform_write true 5",
+        ]
+    );
+    // The jump through a pointer may go to the handlers in flash.
+    assert_eq!(reach["unresolved"][0]["site"], "0x300002da");
+    assert_eq!(reach["complete"], false);
+
+    // It can't go to ITCM, whose functions no pointer goes to.
+    let output = elfq(&[
+        TCM_SAMPLE,
+        "reach",
+        "dispatch_event",
+        "--to",
+        "0x0+256K",
+        "--json",
+    ]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let itcm: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(itcm["items"].as_array().unwrap().len(), 1);
+    assert_eq!(itcm["unresolved"], json!([]));
+    assert_eq!(itcm["complete"], true);
+
+    // Calls to a known address in the ranges are a whole answer. The
+    // veneer that makes the call is on the chain to it.
+    let output = elfq(&[
+        "testdata/bin/far-gnu-m4-nodebug.elf",
+        "reach",
+        "ram_calls_rom",
+        "--to",
+        "0x1fff0000+64K",
+        "--json",
+    ]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let rom: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(rom["items"][1]["name"], "__rom_routine_veneer");
+    assert_eq!(rom["items"][1]["parent"], 0);
+    assert_eq!(rom["items"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        rom["unresolved"][0]["caller"]["name"],
+        "__rom_routine_veneer"
+    );
+    assert_eq!(rom["unresolved"][0]["target"], "0x1fff0000");
+    assert_eq!(rom["complete"], true);
 }
 
 #[test]

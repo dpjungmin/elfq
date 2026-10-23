@@ -104,9 +104,9 @@ its size shows as `?`, and elfq can't read its code.
 
 **Range and memory block.** A range is the addresses from START up to END,
 written `START..END` or `START+SIZE`. With `--range`, the overview, `top`
-and `retained` count only the bytes inside one range, and `callers` and
-`callees` take ranges in place of SYMBOL and after `--from` and `--to`. A
-memory block is a run of sections and load images less than 64 KiB apart,
+and `retained` count only the bytes inside one range, `callers` and
+`callees` take ranges in place of SYMBOL and after `--from` and `--to`, and
+`reach` takes them after `--to`. A memory block is a run of sections and load images less than 64 KiB apart,
 which stands for one memory, such as flash or a RAM; the overview lists the
 blocks when there are several, and `reach` adds up what SYMBOL reaches in
 each. (`binary::AddressRange`, `binary::MemoryBlock`)
@@ -120,11 +120,11 @@ them, as in `load image of .data`, and `--range` counts them where they
 are stored. (`binary::Section::load_address`)
 
 **Boundary and crossing.** For `callers` and `callees` with ranges, `--from`
-or `--to`, an item is inside when any of its bytes is in one of the ranges,
-where an item whose size elfq doesn't know counts as its first byte, and a
-reference **crosses** the boundary when one end is inside and the other
-isn't. The help calls the boundary the ranges' edge. (`graph::Boundary`,
-`graph::Crossing`)
+or `--to`, and for `reach --to`, an item is inside when any of its bytes is
+in one of the ranges, where an item whose size elfq doesn't know counts as
+its first byte, and a reference **crosses** the boundary when one end is
+inside and the other isn't. The help calls the boundary the ranges' edge.
+(`graph::Boundary`, `graph::Crossing`)
 
 **Thumb.** The instruction set of Cortex-M processors, with 16- and 32-bit
 instructions. Arm sets bit 0 of a Thumb function's address wherever the
@@ -178,6 +178,7 @@ except `inlined`, which reads DWARF instead of machine code.
 | `elfq FILE callers SYMBOL` | What calls or uses SYMBOL directly, and how (call, tail call, uses, address taken, pointer)? |
 | `elfq FILE callees SYMBOL` | What does SYMBOL call or use directly? |
 | `elfq FILE reach SYMBOL` | What does SYMBOL call or use at any depth, and how many bytes of code and data does that take in each block of memory, such as ITCM, DTCM and flash? |
+| `elfq FILE reach SYMBOL --to RANGE` | What does SYMBOL reach in one range of memory, such as flash, and which code uses each item there? |
 | `elfq FILE callees RANGE...` | What do the code and data in these ranges of memory use outside them, such as code in ITCM that calls a function in flash? `callers RANGE...` asks the reverse. |
 | `elfq FILE callers RANGE... --from RANGE` | What in one range of memory uses these ranges, such as code in ITCM that uses data in DTCM? `callees RANGE... --to RANGE` asks what these ranges use in that one, and either takes SYMBOL in place of the ranges. |
 | `elfq FILE inlined [SYMBOL]` | Which inlined functions cost the most bytes across the binary, or inside SYMBOL? Needs DWARF. |
@@ -269,7 +270,7 @@ in order of name and callees in the order SYMBOL first uses them, and a
 last row such as `70 more` counts the rest; with ranges, `--from` or
 `--to`, they list every crossing. `reach` lists the 30 largest items, and a
 row such as `9 more data objects in 0x20000000..0x20000450` sums up the
-rest of a block's. `--all` lifts every such cut in an answer but AT's: it
+rest of a block's; with `--to`, it lists every item in its ranges. `--all` lifts every such cut in an answer but AT's: it
 shows every item in a table or tree, every chain in `why`, and every name
 and address in a sentence, where a long list otherwise ends with "and 48
 more".
@@ -383,6 +384,30 @@ and its target, and each call or jump to code outside any function under
 the item it is in. Like the other trees, it shows the 30 largest items,
 with the items on their chains from SYMBOL, and sums up the rest under the
 items that use them.
+
+`reach SYMBOL --to RANGE` lists only what SYMBOL reaches in the ranges of
+`--to`, SYMBOL included, with every row, and exits with 1 when it lists
+anything, as the range checks do, so that a CI job can check that an
+interrupt handler in ITCM never runs or uses anything in flash. Each row
+has an AT column, and the row of an item that code outside the ranges uses
+is the one that `callees USER --to RANGE` lists for that code, so that it
+names the code to change, as `app_tick, used by SysTick_Handler` at the
+call to its veneer. So the rows name items as `callees` does, by their
+whole names, with no "(through a pointer)" mark, since HOW, "address
+taken" or "pointer", shows that something takes or stores the function's
+address. After SYMBOL's row, what elfq can't follow comes first and stays
+by `callees --to`'s rule. The two differ in three ways. `callees --to`
+stops at the first crossing, and `reach --to` follows every chain:
+`callees app_tick --to 0x20240000+1M` uses nothing in OCRAM, but
+`app_tick` reaches `tx_buffer` there through `log_msg` and
+`platform_write`. `reach --to` lists SYMBOL itself when it is in the
+ranges, so a range that holds only SYMBOL, which `callees` refuses, is an
+answer. And a veneer in the ranges has a row of its own even when its
+target has one too, since its bytes are there, where `callees` lists only
+the call through it. Code that elfq can't read may reach the ranges, so it
+too makes the exit status 1. With `--tree`, only the chains from SYMBOL to
+what is in the ranges, and to the calls and jumps that elfq can't follow
+that may go there, are drawn, and the JSON has the items on those chains.
 
 `inlined` ranks the functions that the compiler copied into their callers
 by the bytes all their copies take, which ddbug shows only one function at
@@ -601,12 +626,13 @@ several.
 | Key | Value |
 |---|---|
 | `symbol` | SYMBOL's item |
-| `code_bytes`, `data_bytes` | the bytes of the functions, and of the data objects, among SYMBOL and what it reaches |
-| `blocks` | every memory block that the overview's `memory` lists, in address order, each a range with the `code_bytes` and `data_bytes` in it and the `sections` there that hold SYMBOL or what it reaches |
-| `items` | SYMBOL, then what it reaches, as the rows of a tree: each comes after its parent, and the items its parent uses come in the order it first uses them. Each is an item with an `id`, counting from 0; the `block` that holds it, as the block's `start`, or `null` for an import, or for an item in no block, as a damaged file can have; `how` its parent uses it, in the words of the JSON column in [Concepts](#concepts); the `sites` where it does; `through_pointer`, whether the text marks it "(through a pointer)"; and `parent`, the `id` of the item that uses it on its shortest chain from SYMBOL. `how` and `parent` are `null` for SYMBOL. A veneer has a row of its own, between the call to it and its target |
-| `unresolved` | the calls and jumps in SYMBOL and what it reaches that elfq can't follow, each with the `caller` it is in, and as in `callees SYMBOL`, its `site`, `how` and `target`; not the jump in a PLT's header to the dynamic loader |
+| `to` | the ranges of `--to`, or `null` without it |
+| `code_bytes`, `data_bytes` | the bytes of the functions, and of the data objects, among SYMBOL and what it reaches, or with `--to`, among those in its ranges |
+| `blocks` | every memory block that the overview's `memory` lists, in address order, each a range with the `code_bytes` and `data_bytes` in it, counted the same way, and the `sections` there that hold what they count |
+| `items` | SYMBOL, then what it reaches, as the rows of a tree: each comes after its parent, and the items its parent uses come in the order it first uses them. Each is an item with an `id`, counting from 0; the `block` that holds it, as the block's `start`, or `null` for an import, or for an item in no block, as a damaged file can have; `how` its parent uses it, in the words of the JSON column in [Concepts](#concepts); the `sites` where it does; `through_pointer`, whether it is a function there only because something takes or stores its address, which the text marks "(through a pointer)", but in the rows of `--to`; `in_to`, whether it is in the ranges of `--to`, or `null` without it; and `parent`, the `id` of the item that uses it on its shortest chain from SYMBOL. `how` and `parent` are `null` for SYMBOL. A veneer has a row of its own, between the call to it and its target. With `--to`, only the items that `--tree` draws, numbered again: SYMBOL, the items in its ranges, those with calls and jumps in `unresolved`, and the items on their chains |
+| `unresolved` | the calls and jumps in SYMBOL and what it reaches that elfq can't follow, each with the `caller` it is in, and as in `callees SYMBOL`, its `site`, `how` and `target`; not the jump in a PLT's header to the dynamic loader. With `--to`, only those that may go to its ranges, as `callees --to` keeps them |
 | `unreadable` | the functions that SYMBOL reaches whose end elfq doesn't know, so it can't read their code |
-| `complete` | whether `items` has everything SYMBOL reaches, as far as elfq can tell: `false` when `unresolved` or `unreadable` isn't empty |
+| `complete` | whether `items` has everything SYMBOL reaches, or with `--to`, in its ranges, as far as elfq can tell, as [below](#calls-elfq-cant-follow) |
 
 ### Calls elfq can't follow
 
@@ -617,16 +643,19 @@ and jumps it can't follow. `retained` notes when SYMBOL or the items it
 keeps call through pointers, since what those calls reach may count for
 other items.
 `reach` names the code in what SYMBOL reaches that calls or jumps through a
-pointer, since SYMBOL may reach more through it, and the functions whose
-end elfq doesn't know, since it can't read what they use.
+pointer, since SYMBOL may reach more through it, or with `--to`, lists
+those calls and jumps as `callees` does, and names the functions whose end
+elfq doesn't know, since it can't read what they use.
 In JSON, `callers`, `callees` and `reach` have `complete`, and `retained`
-has `indirect_calls`. For ranges, and with `--from` or `--to`, `complete` is
-`false` when `callees` lists a call it can't follow, other than, with
-`--to`, one to a known address in its ranges, or a function whose end it
-doesn't know, or when `callers` notes calls through a pointer to a function
-in the ranges, whose address is taken or stored other than in the vector
-table, which only the processor calls through, or names code in the
-`--from` ranges whose end it doesn't know. A call from outside to code in
+has `indirect_calls`. Without `--to`, `reach`'s is `false` when
+`unresolved` or `unreadable` isn't empty. For ranges, and with `--from` or
+`--to`, `complete` is `false` when `callees` or `reach` lists a call it
+can't follow, other than, with `--to`, one to a known address in its
+ranges, or a function whose end it doesn't know, or when `callers` notes
+calls through a pointer to a function in the ranges, whose address is
+taken or stored other than in the vector table, which only the processor
+calls through, or names code in the `--from` ranges whose end it doesn't
+know. A call from outside to code in
 the ranges that no item holds, as to a chip's ROM, goes where `callers`
 says, so it leaves the answer complete.
 `callers` can't see calls from code whose end elfq doesn't know, such as
@@ -829,8 +858,9 @@ in order. Its output is the first example under [Commands](#commands).
    instead (`RetainedTree::to_json`), and writes them through `json::write`.
 8. **Exit.** `run`, in main.rs, flushes the output and turns the answer into
    the exit status: 0 for an answer, 1 when `callers` or `callees` with
-   ranges, `--from` or `--to` finds something that crosses, or may, and 2
-   for an error, which it prints after `error:`.
+   ranges, `--from` or `--to` finds something that crosses, or may, or
+   `reach --to` finds something in its ranges, or may, and 2 for an error,
+   which it prints after `error:`.
 
 Each module uses only the ones below it. Beside each are the steps above
 that run in it:
