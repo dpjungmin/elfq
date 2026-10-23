@@ -38,10 +38,37 @@ pub struct VectorTable {
     /// table's order: first the reset handler, which is the entry point. A
     /// handler for several exceptions is listed once for each.
     pub handlers: Vec<u64>,
+    /// The exception of each of `handlers`, by its entry's number, counting
+    /// the stack pointer's as 0: 1 for reset, 3 for HardFault, 15 for
+    /// SysTick, and 16 on for the chip's interrupts.
+    pub exceptions: Vec<u64>,
+}
+
+impl VectorTable {
+    /// Whether the code at `address` handles an exception that comes in
+    /// normal operation: SVCall, PendSV, SysTick or one of the chip's
+    /// interrupts. The others come at reset, when something has gone wrong
+    /// (the faults, and NMI, which most chips raise for a hardware error),
+    /// while debugging (DebugMonitor), or never (reserved entries).
+    pub fn runs_in_normal_operation(&self, address: u64) -> bool {
+        self.handlers
+            .iter()
+            .zip(&self.exceptions)
+            .any(|(&handler, exception)| {
+                handler == address && (ROUTINE.contains(exception) || *exception >= FIRST_INTERRUPT)
+            })
+    }
 }
 
 /// The entries the architecture reserves, counted from the stack pointer's.
 const RESERVED: [u64; 5] = [7, 8, 9, 10, 13];
+
+/// The entries of SVCall, PendSV and SysTick, the exceptions other than the
+/// chip's interrupts that come in normal operation.
+const ROUTINE: [u64; 3] = [11, 14, 15];
+
+/// The entry of the chip's first interrupt.
+const FIRST_INTERRUPT: u64 = 16;
 
 /// Finds the vector table in a Thumb file, if it has one, by its shape:
 ///
@@ -77,6 +104,7 @@ pub(super) fn find(binary: &Binary) -> Option<VectorTable> {
     let address = reset - size;
     let section_end = section.address + section.size;
     let mut handlers = Vec::new();
+    let mut exceptions = Vec::new();
     let mut end = reset;
     let mut next = reset;
     for (slot, value) in binary.words(reset, section_end) {
@@ -88,6 +116,7 @@ pub(super) fn find(binary: &Binary) -> Option<VectorTable> {
         let index = (slot - address) / size;
         if value & 1 == 1 && code_section(&binary.sections, value & !1).is_some() {
             handlers.push(value & !1);
+            exceptions.push(index);
         } else if value != 0 {
             if RESERVED.contains(&index) {
                 continue;
@@ -100,6 +129,7 @@ pub(super) fn find(binary: &Binary) -> Option<VectorTable> {
         address,
         size: end - address,
         handlers,
+        exceptions,
     })
 }
 
@@ -186,7 +216,27 @@ mod tests {
             address: 0x1000,
             size: 28,
             handlers: vec![0x1030; 6],
+            exceptions: vec![1, 2, 3, 4, 5, 6],
         };
         assert_eq!(find(&binary), Some(table));
+    }
+
+    #[test]
+    fn a_handler_runs_in_normal_operation_when_an_entry_for_it_is_routine() {
+        let table = VectorTable {
+            address: 0,
+            size: 128,
+            handlers: vec![0x100, 0x200, 0x200, 0x300, 0x300, 0x400, 0x500, 0x500],
+            exceptions: vec![1, 2, 3, 4, 12, 11, 6, 20],
+        };
+        // SVCall, and an interrupt with a fault.
+        assert!(table.runs_in_normal_operation(0x400));
+        assert!(table.runs_in_normal_operation(0x500));
+        // Reset; NMI and HardFault; MemManage and DebugMonitor.
+        assert!(!table.runs_in_normal_operation(0x100));
+        assert!(!table.runs_in_normal_operation(0x200));
+        assert!(!table.runs_in_normal_operation(0x300));
+        // No entry lists it.
+        assert!(!table.runs_in_normal_operation(0x600));
     }
 }

@@ -1,5 +1,8 @@
 //! `elfq FILE`: what the file is, what elfq found in it, where in memory
-//! its sections are, which items keep the most bytes, and what to ask next.
+//! its sections are, which items keep the most bytes, and what to ask next:
+//! for firmware with several blocks of memory, that includes `reach` for
+//! the interrupt handler that reaches the most code, to show which blocks
+//! its code and data are in.
 //! With `--range`, what elfq found in the range and which items keep the
 //! most of its bytes.
 
@@ -15,7 +18,7 @@ use super::{json, text};
 use crate::arch;
 use crate::binary::{AddressRange, Binary, FileKind, ItemKind, MemoryBlock, Source, memory_blocks};
 use crate::cli::Format;
-use crate::graph::{Graph, Node};
+use crate::graph::{Graph, Node, RootKind, ShortestPaths};
 use crate::render::{Align, Table};
 
 /// How many of the largest items the overview's table shows. It is made as
@@ -138,6 +141,11 @@ pub fn run(
         writeln!(out)?;
         retained.write_largest(SHOWN, format, out)?;
     }
+    // `reach` shows a handler's code and data by block of memory.
+    let handler = match blocks.len() {
+        0 | 1 => None,
+        _ => handler_reaching_most_code(binary, &retained.graph),
+    };
     let examples: Vec<String> = ranges
         .into_iter()
         .chain(
@@ -145,6 +153,7 @@ pub fn run(
                 (kept > 0).then(|| "top".to_string()),
                 (kept > 0).then(|| "top --tree".to_string()),
                 starting_point(binary, names).map(|item| about(names, "retained", item)),
+                handler.map(|item| about(names, "reach", item)),
                 largest_kept(&retained).map(|item| about(names, "why", item)),
                 inlined(binary),
             ]
@@ -362,6 +371,40 @@ fn largest_kept(retained: &RetainedTree) -> Option<usize> {
         .filter(|&index| retained.tree.is_reachable(Node::Item(index)) && !is_root(index))
         .filter(|&index| retained.own(index) > 0)
         .max_by_key(|&index| (retained.own(index), std::cmp::Reverse(index)))
+}
+
+/// The handler in the vector table that reaches the most code, itself
+/// included, of those that run in normal operation and reach something
+/// else: not the entry point, which reaches nearly everything; nor a
+/// HardFault handler, which may print a report but runs only when
+/// something has gone wrong; nor a handler that only loops forever, as a
+/// default handler does.
+fn handler_reaching_most_code(binary: &Binary, graph: &Graph) -> Option<usize> {
+    let table = binary.vector_table.as_ref()?;
+    graph
+        .roots
+        .iter()
+        .filter(|root| root.kind == RootKind::Handler)
+        .filter_map(|root| match root.node {
+            Node::Item(index) if is_own_function(binary, index) => Some(index),
+            _ => None,
+        })
+        .filter(|&index| table.runs_in_normal_operation(binary.items[index].address))
+        .filter_map(|handler| {
+            let paths = ShortestPaths::from(binary, graph, Node::Item(handler));
+            let reached: Vec<usize> = (0..binary.items.len())
+                .filter(|&index| index != handler && paths.is_reached(Node::Item(index)))
+                .collect();
+            let code = reached
+                .iter()
+                .map(|&index| &binary.items[index])
+                .filter(|item| item.kind == ItemKind::Function)
+                .map(|item| item.size);
+            let code = super::total(code.chain([binary.items[handler].size]));
+            (!reached.is_empty()).then_some((code, handler))
+        })
+        .max_by_key(|&(code, handler)| (code, std::cmp::Reverse(handler)))
+        .map(|(_, handler)| handler)
 }
 
 /// The function with the most distinct callers, leaving out PLT stubs,
