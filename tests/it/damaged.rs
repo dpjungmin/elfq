@@ -426,6 +426,38 @@ elfq doesn't know where __memcpy_veneer ends, so it can't read its code.
     let reach: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(reach["unreadable"][0]["name"], "__memcpy_veneer");
     assert_eq!(reach["complete"], false);
+    // With --to, what elfq can't read may reach the ranges, so the exit
+    // status is 1, even when nothing is listed.
+    let path = save("reach-unsized-veneer.elf", &data);
+    for (to, expected) in [
+        (
+            "0x20240000+1M",
+            "\
+In the code elfq can read, apply_filter reaches nothing in 0x20240000..0x20340000 (.ocram_bss).
+elfq doesn't know where __memcpy_veneer ends, so it can't read its code.
+",
+        ),
+        (
+            "0x30000000+16M",
+            "\
+apply_filter reaches 1 data object in 0x30000000..0x31000000 (.isr_vector, .text, .rodata and .ARM.exidx), which takes 0 bytes of code and 32 bytes of data:
+
+ADDRESS     SIZE  HOW   AT    ITEM
+0x30000eb4    32  uses  0x56  fir_coeffs, used by filter_tap
+
+elfq doesn't know where __memcpy_veneer ends, so it can't read its code.
+",
+        ),
+    ] {
+        let output = elfq(&[&path, "reach", "apply_filter", "--to", to]);
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        assert_output(&String::from_utf8(output.stdout).unwrap(), expected);
+        let output = elfq(&[&path, "reach", "apply_filter", "--to", to, "--json"]);
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        let reach: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(reach["unreadable"][0]["name"], "__memcpy_veneer");
+        assert_eq!(reach["complete"], false);
+    }
 }
 
 #[test]

@@ -3058,6 +3058,169 @@ ADDRESS  SIZE  HOW   ITEM
 }
 
 #[test]
+fn reach_to_lists_only_what_it_reaches_in_ranges() {
+    // The blocks of the M7 sample that aren't ITCM or DTCM: OCRAM and
+    // flash. app_tick's row, through the veneer in ITCM, is the one that
+    // callees lists for SysTick_Handler with --to, and the jump through a
+    // pointer stays, since flash holds functions whose addresses main
+    // takes.
+    let slow = ["--to", "0x20240000+1M", "--to", "0x30000000+16M"];
+    assert_output(
+        &crossing(&[&[TCM_SAMPLE, "reach", "SysTick_Handler"][..], &slow].concat()),
+        "\
+SysTick_Handler reaches 7 items in 0x20240000..0x20340000 (.ocram_bss) and 0x30000000..0x31000000 (.isr_vector, .text, .rodata and .ARM.exidx), which take 422 bytes of code and 4104 bytes of data; elfq can't follow 1 jump, which may go there:
+
+ADDRESS     SIZE  HOW                   AT                      ITEM
+                  jump                  0x300002da              (through a pointer), used by dispatch_event
+0x20240000  4096  uses                  0x30000674, 0x30000696  tx_buffer, used by platform_write
+0x30000700   216  call                  0x30000292              strlen, used by log_msg
+0x30000668    96  tail call             0x3000029e              platform_write, used by log_msg
+0x300002e4    60  tail call via veneer  0x8                     app_tick, used by SysTick_Handler
+0x30000288    26  call                  0x30000304              log_msg, used by app_tick
+0x300002cc    24  tail call             0x300002fe, 0x30000310  dispatch_event, used by app_tick
+0x30000de8    ~8  uses                  0x30000302              .rodata@0x30000de8, used by app_tick
+",
+    );
+    assert!(
+        crossing(&[&[TCM_SAMPLE, "callees", "SysTick_Handler"][..], &slow].concat())
+            .ends_with("  tail call via veneer  0x8  app_tick, used by SysTick_Handler\n")
+    );
+    // The chains to them, with the jump under the code it is in.
+    assert_output(
+        &crossing(&[&[TCM_SAMPLE, "reach", "SysTick_Handler", "--tree"][..], &slow].concat()),
+        "\
+SysTick_Handler reaches 7 items in 0x20240000..0x20340000 (.ocram_bss) and 0x30000000..0x31000000 (.isr_vector, .text, .rodata and .ARM.exidx), which take 422 bytes of code and 4104 bytes of data; elfq can't follow 1 jump, which may go there:
+
+ADDRESS     SIZE  HOW        ITEM
+0x0           16             SysTick_Handler
+0xd0           8  tail call  └─ __app_tick_veneer
+0x300002e4    60  tail call     └─ app_tick
+0x300002cc    24  tail call        ├─ dispatch_event
+                  jump             │  └─ (through a pointer)
+0x30000de8    ~8  uses             ├─ .rodata@0x30000de8
+0x30000288    26  call             └─ log_msg
+0x30000700   216  call                ├─ strlen
+0x30000668    96  tail call           └─ platform_write
+0x20240000  4096  uses                   └─ tx_buffer
+",
+    );
+    // crc32 stays in TCM, which a script can check for with exit status 0.
+    for format in [&[][..], &["--tree"]] {
+        assert_output(
+            &stdout(&[&[TCM_SAMPLE, "reach", "crc32"][..], &slow, format].concat()),
+            "crc32 reaches nothing in 0x20240000..0x20340000 (.ocram_bss) and \
+             0x30000000..0x31000000 (.isr_vector, .text, .rodata and .ARM.exidx).\n",
+        );
+    }
+    // No function in ITCM has its address taken, so no call through a
+    // pointer goes there.
+    assert_output(
+        &crossing(&[TCM_SAMPLE, "reach", "main", "--to", "0x0+256K"]),
+        "\
+main reaches 4 functions in 0x00000000..0x00040000 (.itcm), which take 200 bytes of code and 0 bytes of data:
+
+ADDRESS  SIZE  HOW              AT                      ITEM
+0x74       92  call via veneer  0x30000386, 0x30000454  apply_filter, used by process_frame
+0x40       52  call             0x9a                    filter_tap, used by apply_filter
+0x10       48  call via veneer  0x3000034c              crc32, used by process_frame
+0xd8        8  call             0xbc                    __memcpy_veneer, used by apply_filter
+",
+    );
+    // SYMBOL counts too: callees refuses a range that holds only SYMBOL,
+    // but reach lists it.
+    assert_output(
+        &crossing(&[TCM_SAMPLE, "reach", "crc32", "--to", "0x10+48"]),
+        "\
+crc32 takes 48 bytes of code and 0 bytes of data in 0x00000010..0x00000040 (.itcm), and reaches nothing else there:
+
+ADDRESS  SIZE  HOW  AT  ITEM
+0x10       48           crc32
+",
+    );
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "callees", "crc32", "--to", "0x10+48"], 2),
+        "error: --to 0x00000010..0x00000040 holds nothing outside crc32, and callees lists only \
+         what it uses outside it\n",
+    );
+    // A range that holds nothing is most likely mistyped.
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "reach", "main", "--to", "0x40000000+4K"], 2),
+        "error: --to 0x40000000..0x40001000 holds no functions or data, and no code in the file \
+         calls or jumps there\n",
+    );
+}
+
+#[test]
+fn reach_to_lists_a_veneer_and_its_target() {
+    // The veneer in ITCM is in the ranges too, so it has a row of its own,
+    // where callees steps over it.
+    let ranges = ["--to", "0xd0+8", "--to", "0x30000000+16M"];
+    assert_output(
+        &crossing(&[&[TCM_SAMPLE, "reach", "SysTick_Handler"][..], &ranges].concat()),
+        "\
+SysTick_Handler reaches 7 items in 0x000000d0..0x000000d8 (.itcm) and 0x30000000..0x31000000 (.isr_vector, .text, .rodata and .ARM.exidx), which take 430 bytes of code and 8 bytes of data; elfq can't follow 1 jump, which may go there:
+
+ADDRESS     SIZE  HOW                   AT                      ITEM
+                  jump                  0x300002da              (through a pointer), used by dispatch_event
+0xd0           8  tail call             0x8                     __app_tick_veneer, used by SysTick_Handler
+0x30000700   216  call                  0x30000292              strlen, used by log_msg
+0x30000668    96  tail call             0x3000029e              platform_write, used by log_msg
+0x300002e4    60  tail call via veneer  0x8                     app_tick, used by SysTick_Handler
+0x30000288    26  call                  0x30000304              log_msg, used by app_tick
+0x300002cc    24  tail call             0x300002fe, 0x30000310  dispatch_event, used by app_tick
+0x30000de8    ~8  uses                  0x30000302              .rodata@0x30000de8, used by app_tick
+",
+    );
+    assert_output(
+        &crossing(&[&[TCM_SAMPLE, "callees", "SysTick_Handler"][..], &ranges].concat()),
+        "\
+SysTick_Handler uses 1 function in 0x000000d0..0x000000d8 (.itcm) and 0x30000000..0x31000000 (.isr_vector, .text, .rodata and .ARM.exidx):
+
+ADDRESS     SIZE  HOW                   AT   CALLEE
+0x300002e4    60  tail call via veneer  0x8  app_tick, used by SysTick_Handler
+",
+    );
+}
+
+#[test]
+fn reach_to_lists_calls_to_code_outside_any_function() {
+    // Calls through veneers to the chip's ROM, which holds no item. callees
+    // sees none from Reset_Handler, which reaches them through others.
+    let far = "testdata/bin/far-gnu-m4-nodebug.elf";
+    let rom = ["--to", "0x1fff0000+64K"];
+    assert_output(
+        &crossing(&[&[far, "reach", "Reset_Handler"][..], &rom].concat()),
+        "\
+Reset_Handler reaches no items in 0x1fff0000..0x20000000, but elfq can't follow 2 calls, which go there:
+
+ADDRESS     SIZE  HOW              AT          ITEM
+0x1fff0000        call via veneer  0x46        (outside any function), used by ram_calls_rom
+0x1fff0000        call via veneer  0x300000ee  (outside any function), used by flash_calls_rom
+",
+    );
+    assert_output(
+        &crossing(&[&[far, "reach", "Reset_Handler", "--tree"][..], &rom].concat()),
+        "\
+Reset_Handler reaches no items in 0x1fff0000..0x20000000, but elfq can't follow 2 jumps, which go there:
+
+ADDRESS     SIZE  HOW        ITEM
+0x30000110    32             Reset_Handler
+0x30000158     8  call       ├─ __ram_calls_rom_veneer
+0x3c          28  tail call  │  └─ ram_calls_rom
+0x90           8  call       │     └─ __rom_routine_veneer
+0x1fff0000        jump       │        └─ (outside any function)
+0x300000e4    28  call       └─ flash_calls_rom
+0x30000138     8  call          └─ __rom_routine_veneer
+0x1fff0000        jump             └─ (outside any function)
+",
+    );
+    assert_output(
+        &stdout(&[&[far, "callees", "Reset_Handler"][..], &rom].concat()),
+        "Reset_Handler uses nothing in 0x1fff0000..0x20000000.\n",
+    );
+}
+
+#[test]
 fn reach_needs_an_item_whose_code_elfq_can_read() {
     assert_output(
         &stderr(&[SAMPLE, "reach", "_init"], 2),
@@ -3078,6 +3241,8 @@ fn a_reader_that_stops_early_keeps_the_exit_status() {
     for (args, code) in [
         (&["callees", "0x1000+0x40000"][..], 1),
         (&["callees", "0x1000+0x40000", "--json"], 1),
+        (&["reach", "main", "--to", "0x1000+0x40000"], 1),
+        (&["reach", "main", "--to", "0x1000+0x40000", "--json"], 1),
         (&["top", "--all"], 0),
     ] {
         let mut child = command()
@@ -3495,13 +3660,52 @@ fn arguments_that_dont_go_together_are_refused_before_the_file_is_read() {
         ),
         (
             &["missing.elf", "reach", "main", "--range", "0+1K"],
-            "error: only the overview, top and retained take --range\n",
+            "error: reach takes --to, not --range, to list only what it reaches in a range: elfq \
+             missing.elf reach main --to 0x00000000..0x00000400\n",
+        ),
+        (
+            &[
+                "missing.elf",
+                "reach",
+                "main",
+                "--to",
+                "0x20000000+1K",
+                "--range",
+                "0+1K",
+                "--json",
+            ],
+            "error: reach takes --to, not --range, to list only what it reaches in a range: elfq \
+             missing.elf reach main --to 0x20000000..0x20000400 --to 0x00000000..0x00000400 \
+             --json\n",
+        ),
+        (
+            &[
+                "missing.elf",
+                "reach",
+                "main",
+                "--range",
+                "0+1K",
+                "--all",
+                "--tree",
+            ],
+            "error: reach takes --to, not --range, to list only what it reaches in a range: elfq \
+             missing.elf reach main --to 0x00000000..0x00000400 --all --tree\n",
+        ),
+        (
+            &["missing.elf", "reach", "main", "--from", "0x0+1K"],
+            "error: --from goes with callers; reach takes --to to list only what it reaches in a \
+             range\n",
         ),
         // What a range uses is what callees lists for it.
         (
             &["missing.elf", "reach", "0x0+1K", "--json"],
             "error: reach takes one SYMBOL, not ranges; for what a range uses outside it: elfq \
              missing.elf callees 0x00000000..0x00000400 --json\n",
+        ),
+        (
+            &["missing.elf", "reach", "0x0+1K", "--to", "0x20000000+1K"],
+            "error: reach takes one SYMBOL, not ranges; for what a range uses in the --to ranges: \
+             elfq missing.elf callees 0x00000000..0x00000400 --to 0x20000000..0x20000400\n",
         ),
         (
             &["missing.elf", "reach", "0x0..zz"],
