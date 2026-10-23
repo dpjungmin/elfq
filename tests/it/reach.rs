@@ -1,6 +1,6 @@
 //! What `reach` lists, checked for every item of the Cortex-M samples
-//! against `retained` and `callees`, and for every function of each stripped
-//! one against its twin with symbols.
+//! against `retained`, `callees` and the tree that `--tree` draws, and for
+//! every function of each stripped one against its twin with symbols.
 
 use std::collections::BTreeSet;
 
@@ -31,15 +31,54 @@ const SAMPLES: [&str; 13] = [
     "far-lld-m4-pic-nodebug.elf",
 ];
 
-/// The answer to `elfq SAMPLE ARGS --json`, run in this process, which is
-/// much quicker than starting elfq for each function.
-fn answer(sample: &str, args: &[&str]) -> Value {
+/// What `elfq SAMPLE ARGS` prints, run in this process, which is much
+/// quicker than starting elfq for each function.
+fn output(sample: &str, args: &[&str]) -> String {
     let path = sample_path(sample);
-    let command_line = [&["elfq", path.to_str().unwrap()], args, &["--json"]].concat();
+    let command_line = [&["elfq", path.to_str().unwrap()], args].concat();
     let cli = Cli::try_parse_from(command_line).unwrap();
     let mut out = Vec::new();
     elfq::commands::run(&cli, &mut out).unwrap_or_else(|err| panic!("{sample} {args:?}: {err:#}"));
-    serde_json::from_slice(&out).unwrap()
+    String::from_utf8(out).unwrap()
+}
+
+/// The answer to `elfq SAMPLE ARGS --json`.
+fn answer(sample: &str, args: &[&str]) -> Value {
+    serde_json::from_str(&output(sample, &[args, &["--json"]].concat())).unwrap()
+}
+
+/// A row of the tree that `--tree` draws: how deep it is, counting from 0,
+/// its ADDRESS cell, and the name after the branches.
+struct Drawn {
+    level: usize,
+    address: String,
+    name: String,
+}
+
+/// The rows of the tree in the table of `text`, as `--tree` draws it, in
+/// the order of the lines. The tree must be no more than 9 levels deep, so
+/// that no part of it is continued below the table.
+fn drawn(text: &str) -> Vec<Drawn> {
+    assert!(!text.contains(" (continued below)\n"), "{text}");
+    let mut lines = text.lines();
+    let Some(header) = lines.find(|line| line.starts_with("ADDRESS")) else {
+        return Vec::new();
+    };
+    // The tree is in the last column, after cells that are all ASCII. Each
+    // level is 3 columns.
+    let column = header.rfind(' ').unwrap() + 1;
+    lines
+        .take_while(|line| !line.is_empty())
+        .map(|line| {
+            let tree = &line[column..];
+            let name = tree.trim_start_matches(['│', '├', '└', '─', ' ']);
+            Drawn {
+                level: (tree.chars().count() - name.chars().count()) / 3,
+                address: line.split(' ').next().unwrap().to_string(),
+                name: name.to_string(),
+            }
+        })
+        .collect()
 }
 
 /// The items of `kind` in `binary` that reach takes, by address, as SYMBOL
@@ -132,9 +171,86 @@ fn check_tree(sample: &str) -> usize {
         for kept in retained["items"].as_array().unwrap() {
             assert!(reached.contains(&item(kept)), "{context}: {kept}");
         }
+
+        check_drawn(sample, &symbol, items);
         checked += 1;
     }
     checked
+}
+
+/// Checks the tree that `reach SYMBOL --tree` draws against `items`, the
+/// rows of the JSON: with `--all`, it has every one, each under its parent,
+/// in the same order; without, its rows that sum up others, such as "4
+/// more", count the rest, and none sums up a single item.
+fn check_drawn(sample: &str, symbol: &str, items: &[Value]) {
+    let context = format!("{sample} reach {symbol} --tree");
+    let all = output(sample, &["reach", symbol, "--tree", "--all"]);
+    let rows: Vec<Drawn> = drawn(&all)
+        .into_iter()
+        .filter(|row| row.name != "(outside any function)")
+        .collect();
+    if rows.is_empty() {
+        assert_eq!(items.len(), 1, "{context}: {all}");
+        return;
+    }
+    let mut levels: Vec<usize> = Vec::new();
+    for row in items {
+        let level = row["parent"]
+            .as_u64()
+            .map_or(0, |parent| levels[parent as usize] + 1);
+        levels.push(level);
+    }
+    let expected = |(item, level): (&Value, usize)| {
+        let address = item["address"].as_str().unwrap_or_default();
+        let mark = if item["through_pointer"] == true {
+            " (through a pointer)"
+        } else {
+            ""
+        };
+        (
+            level,
+            address.to_string(),
+            format!("{}{mark}", item["name"].as_str().unwrap()),
+        )
+    };
+    let expected: Vec<(usize, String, String)> = items.iter().zip(levels).map(expected).collect();
+    let found: Vec<(usize, String, String)> = rows
+        .into_iter()
+        .map(|row| (row.level, row.address, row.name))
+        .collect();
+    assert_eq!(found, expected, "{context} --all");
+
+    let capped = output(sample, &["reach", symbol, "--tree"]);
+    let counted: usize = drawn(&capped)
+        .iter()
+        .filter(|row| row.name != "(outside any function)")
+        .map(|row| match row.name.strip_suffix(" more") {
+            Some(count) if row.address.is_empty() => {
+                let count = count.parse().unwrap();
+                assert!(count > 1, "{context}: {capped}");
+                count
+            }
+            _ => 1,
+        })
+        .sum();
+    assert_eq!(counted, items.len(), "{context}: {capped}");
+}
+
+#[test]
+fn reach_draws_plt_stubs_and_imports_in_the_tree() {
+    // Every function of x86-64 files, whose PLT stubs jump to imports.
+    let check = |sample: &str| {
+        let binary = load_sample(sample);
+        for symbol in symbols(&binary, ItemKind::Function) {
+            let reach = answer(sample, &["reach", &symbol]);
+            check_drawn(sample, &symbol, reach["items"].as_array().unwrap());
+        }
+    };
+    std::thread::scope(|scope| {
+        for sample in ["c-x86_64.elf", "cpp-x86_64.elf", "c-plt.so"] {
+            scope.spawn(move || check(sample));
+        }
+    });
 }
 
 #[test]

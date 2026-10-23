@@ -258,20 +258,21 @@ sides of the edge, and elfq says so.
 All commands print a table for people by default, with one row per line. A
 table puts its short cells, such as sizes, HOW and AT, first and the name
 last, so that a long name that the terminal wraps moves no column. Where an
-answer is a tree, as in the overview, `top`, `retained`, `why` and `inlined
-SYMBOL`, each row then names the row it hangs under by a short name, as in
-`crc_table, kept by crc32`, so that a row that grep finds still says where
-it is; in `why`, only where chains branch. `--tree` draws such answers as
-trees instead. AT shows where an item is used: every site when there are
-one or two, else the first and how many more. `callers SYMBOL` and `callees
-SYMBOL` list the 30 items with the largest own sizes, callers in order of
-name and callees in the order SYMBOL first uses them, and a last row such
-as `70 more` counts the rest; with ranges, `--from` or `--to`, they list
-every crossing. `reach` lists the 30 largest items, and a row such as `9
-more data objects in 0x20000000..0x20000450` sums up the rest of a block's.
-`--all` lifts every such cut in an answer but AT's: it shows every item in
-a table or tree, every chain in `why`, and every name and address in a
-sentence, where a long list otherwise ends with "and 48 more".
+answer is a tree, as in the overview, `top`, `retained`, `why`, `reach` and
+`inlined SYMBOL`, each row then names the row it hangs under by a short
+name, as in `crc_table, kept by crc32`, so that a row that grep finds still
+says where it is; in `why`, only where chains branch. `--tree` draws such
+answers as trees instead. AT shows where an item is used: every site when
+there are one or two, else the first and how many more. `callers SYMBOL`
+and `callees SYMBOL` list the 30 items with the largest own sizes, callers
+in order of name and callees in the order SYMBOL first uses them, and a
+last row such as `70 more` counts the rest; with ranges, `--from` or
+`--to`, they list every crossing. `reach` lists the 30 largest items, and a
+row such as `9 more data objects in 0x20000000..0x20000450` sums up the
+rest of a block's. `--all` lifts every such cut in an answer but AT's: it
+shows every item in a table or tree, every chain in `why`, and every name
+and address in a sentence, where a long list otherwise ends with "and 48
+more".
 
 For example:
 
@@ -374,6 +375,14 @@ ADDRESS     SIZE  HOW   ITEM
 0x10          48        crc32
 0x20000000  1024  uses  crc_table, used by crc32
 ```
+
+`reach --tree` draws the same items as a tree, in the order of the JSON's
+rows: each under the item that uses it, in the order that item first uses
+them, with each veneer and PLT stub as a step of its own between the call
+and its target, and each call or jump to code outside any function under
+the item it is in. Like the other trees, it shows the 30 largest items,
+with the items on their chains from SYMBOL, and sums up the rest under the
+items that use them.
 
 `inlined` ranks the functions that the compiler copied into their callers
 by the bytes all their copies take, which ddbug shows only one function at

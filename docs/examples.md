@@ -312,6 +312,44 @@ on the shortest way there from `SysTick_Handler`.
 in as it runs, so the handler may run more than elfq can see, as the last
 line says.
 
+## Through which calls does SysTick_Handler reach the RAM at 0x20240000?
+
+`--tree` draws what `reach` lists as a tree, with each item under the item
+that uses it, so every chain from the handler reads from top to bottom:
+
+```
+$ elfq testdata/bin/c-cortex-m7.elf reach SysTick_Handler --tree
+SysTick_Handler and the 12 items it reaches take 446 bytes of code and 4128 bytes of data; elfq can't follow 1 jump:
+
+MEMORY                  CODE  DATA  SECTIONS
+0x00000000..0x000000e0    24     0  .itcm
+0x20000000..0x20000450     0    24  .bss
+0x20240000..0x20241000     0  4096  .ocram_bss
+0x30000000..0x30000edc   422     8  .text .rodata
+
+ADDRESS     SIZE  HOW        ITEM
+0x0           16             SysTick_Handler
+0x20000444     4  uses       ├─ systick_count
+0xd0           8  tail call  └─ __app_tick_veneer
+0x300002e4    60  tail call     └─ app_tick
+0x300002cc    24  tail call        ├─ dispatch_event
+0x20000438    12  uses             │  └─ handlers
+0x30000de8    ~8  uses             ├─ .rodata@0x30000de8
+0x30000288    26  call             └─ log_msg
+0x30000700   216  call                ├─ strlen
+0x30000668    96  tail call           └─ platform_write
+0x2000044c     4  uses                   ├─ tx_head
+0x20240000  4096  uses                   ├─ tx_buffer
+0x20000448     4  uses                   └─ tx_tail
+
+dispatch_event also jumps through a pointer, at 0x300002da, which elfq can't follow, so SysTick_Handler may reach more.
+```
+
+The handler jumps through the veneer at 0xd0 to `app_tick` in flash, which
+calls `log_msg`, which jumps to `platform_write`, which fills `tx_buffer`.
+The veneer is a step of its own here, where the rows by block list
+`app_tick` as a "tail call via veneer" from the handler.
+
 ## What is in stripped firmware?
 
 Shipped firmware often has no symbols. elfq still finds its functions, from

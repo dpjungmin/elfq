@@ -123,7 +123,7 @@ that reaches up the list is a sign that the code belongs lower down.
 | `graph.rs` | The reference graph: callers, callees, pointers in data, veneers |
 | `retained.rs` | Roots, and what is exclusive to what |
 | `why.rs` | The shortest chains |
-| `reach.rs` | `reach` on every item of the Cortex-M samples, against `callees` and `retained`, and on every function of each stripped one against its twin with symbols |
+| `reach.rs` | `reach` on every item of the Cortex-M samples, against `callees`, `retained` and its own `--tree`, and on every function of each stripped one against its twin with symbols |
 | `symbol.rs` | Looking up SYMBOL |
 | `inlined.rs` | Inlined copies, from DWARF |
 | `damaged.rs` | Damaged and unusual files, made by changing a sample's bytes |

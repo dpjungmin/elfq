@@ -175,9 +175,14 @@ fn check_tree(cli: &Cli) -> Result<()> {
         bail!("--tree draws trees in the text, so it doesn't go with --json");
     }
     match &cli.command {
-        None | Some(Command::Top(_) | Command::Retained(_) | Command::Why(_)) => Ok(()),
+        None
+        | Some(Command::Top(_) | Command::Retained(_) | Command::Why(_) | Command::Reach(_)) => {
+            Ok(())
+        }
         Some(Command::Inlined(args)) if args.symbol.is_some() => Ok(()),
-        Some(_) => bail!("only the overview, top, retained, why and inlined SYMBOL take --tree"),
+        Some(_) => {
+            bail!("only the overview, top, retained, why, reach and inlined SYMBOL take --tree")
+        }
     }
 }
 
