@@ -105,6 +105,7 @@ pub fn run(
     )?;
     writeln!(out)?;
     let shown = retained.largest(&[node], &items, text::shown(all));
+    retained.names().will_name(shown.len());
     let mut table = Table::new(&[
         ("RETAINED", Align::Right),
         ("OWN", Align::Right),

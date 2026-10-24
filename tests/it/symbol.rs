@@ -1,9 +1,9 @@
 //! Finding what the user means by SYMBOL.
 
-use elfq::binary::Binary;
+use elfq::binary::{Binary, short_name_key, short_name_keys, short_names};
 use elfq::commands::symbol;
 
-use crate::support::load_sample;
+use crate::support::{load_sample, samples};
 
 /// The name of what `query` finds.
 fn found(binary: &Binary, query: &str) -> String {
@@ -265,4 +265,26 @@ fn typos_get_suggestions() {
         error(&binary, "aeabi_dad"),
         "no function or data object is named `aeabi_dad`; did you mean __aeabi_dadd?"
     );
+}
+
+#[test]
+fn every_short_name_has_one_of_its_names_keys() {
+    // To find a short name, elfq works out the short names of only the
+    // items that one of their names files under the short name's key.
+    let mut checked = 0;
+    for sample in samples() {
+        let binary = load_sample(sample.trim_start_matches("testdata/bin/"));
+        for name in binary.items.iter().flat_map(|item| item.names()) {
+            let keys = short_name_keys(name);
+            for short_name in short_names(name) {
+                let key = short_name_key(&short_name);
+                assert!(
+                    key.is_some_and(|key| keys.iter().any(|k| k == key)),
+                    "{sample}: {short_name:?} of {name:?} has key {key:?}, not one of {keys:?}"
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked > 1000, "{checked}");
 }

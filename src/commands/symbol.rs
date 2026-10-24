@@ -16,7 +16,7 @@
 //! For `callers` and `callees`, SYMBOL can also be one or more ranges of
 //! memory instead (see [`subject`]).
 
-use std::cell::OnceCell;
+use std::cell::{Cell, OnceCell};
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -24,7 +24,8 @@ use anyhow::{Context, Result, anyhow, bail};
 
 use super::text;
 use crate::binary::{
-    AddressRange, Binary, ItemKind, demangle, hex_number, range_hint, short_names,
+    AddressRange, Binary, ItemKind, demangle, hex_number, range_hint, short_name_key,
+    short_name_keys, short_names,
 };
 use crate::debuginfo::{self, InlinedCopy};
 use crate::graph::Node;
@@ -141,8 +142,15 @@ pub(super) struct Names<'a> {
     binary: &'a Binary,
     /// Names of items and imports, and aliases of items.
     full: OnceCell<HashMap<&'a str, Vec<Node>>>,
-    /// Short names of items, built the first time a query isn't a full name.
-    short: OnceCell<HashMap<String, Vec<Node>>>,
+    /// For each key (see [`short_name_key`]), the items that one of their
+    /// names files under it, and the short names with the key, worked out
+    /// the first time a query that isn't a full name has it.
+    filed: OnceCell<HashMap<String, Filed>>,
+    /// Every short name of every item, worked out at once when many items
+    /// are to be named (see [`Names::will_name`]).
+    all_short: OnceCell<HashMap<String, Vec<Node>>>,
+    /// Whether many items are to be named.
+    many: Cell<bool>,
     /// The PLT stubs that jump to the file's own functions. Only their short
     /// names that end in `@plt` find them (see [`Names::short_names_of`]),
     /// and they are never suggested, since a name like theirs means the
@@ -150,12 +158,23 @@ pub(super) struct Names<'a> {
     own_function_stubs: OnceCell<HashSet<usize>>,
 }
 
+/// The items filed under a key, and their short names with it.
+struct Filed {
+    /// The items with a name that may have a short name with the key: a
+    /// few more than have one.
+    items: Vec<usize>,
+    /// The short names with the key, and what each finds.
+    nodes: OnceCell<HashMap<String, Vec<Node>>>,
+}
+
 impl<'a> Names<'a> {
     pub(super) fn new(binary: &'a Binary) -> Names<'a> {
         Names {
             binary,
             full: OnceCell::new(),
-            short: OnceCell::new(),
+            filed: OnceCell::new(),
+            all_short: OnceCell::new(),
+            many: Cell::new(false),
             own_function_stubs: OnceCell::new(),
         }
     }
@@ -342,10 +361,41 @@ impl<'a> Names<'a> {
     /// What `query` finds: the items and imports with that name, or if
     /// there are none, the items with that short name.
     pub(super) fn nodes(&self, query: &str) -> &[Node] {
-        self.full()
-            .get(query)
-            .or_else(|| self.short().get(query))
-            .map_or(&[], Vec::as_slice)
+        if let Some(nodes) = self.full().get(query) {
+            return nodes;
+        }
+        if self.many.get() {
+            return self.all_short().get(query).map_or(&[], Vec::as_slice);
+        }
+        // Working out every short name of every item takes a while in a
+        // large file: only those of the items filed under `query`'s key
+        // are worked out, once.
+        let key = short_name_key(query);
+        let Some(filed) = key.and_then(|key| self.filed().get(key)) else {
+            return &[];
+        };
+        let short = filed.nodes.get_or_init(|| {
+            let mut short: HashMap<String, Vec<Node>> = HashMap::new();
+            for &index in &filed.items {
+                for short_name in self.short_names_of(index) {
+                    if short_name_key(&short_name) == key {
+                        add(short.entry(short_name).or_default(), Node::Item(index));
+                    }
+                }
+            }
+            short
+        });
+        short.get(query).map_or(&[], Vec::as_slice)
+    }
+
+    /// Says that about `count` items are to be named, as `top --all` names
+    /// thousands. When that is many of the file's items, every short name
+    /// is worked out at once, the first time one is needed after this,
+    /// which is quicker than key by key.
+    pub(super) fn will_name(&self, count: usize) {
+        if count > self.binary.items.len() / 4 {
+            self.many.set(true);
+        }
     }
 
     /// The names of items and imports, and aliases of items, and what each
@@ -363,7 +413,11 @@ impl<'a> Names<'a> {
                     .get(format!("{import}@plt").as_str())
                     .and_then(|nodes| nodes.first().copied());
                 let node = stub.unwrap_or(Node::Import(index));
-                add(full.entry(import).or_default(), node);
+                let nodes = full.entry(import).or_default();
+                // A stub can have the import's name already.
+                if !nodes.contains(&node) {
+                    nodes.push(node);
+                }
             }
             full
         })
@@ -375,9 +429,9 @@ impl<'a> Names<'a> {
             .get_or_init(|| self.binary.own_function_stubs().into_keys().collect())
     }
 
-    /// The short names of items, and what each one finds.
-    fn short(&self) -> &HashMap<String, Vec<Node>> {
-        self.short.get_or_init(|| {
+    /// Every short name of every item, and what each finds.
+    fn all_short(&self) -> &HashMap<String, Vec<Node>> {
+        self.all_short.get_or_init(|| {
             let mut short: HashMap<String, Vec<Node>> = HashMap::new();
             for index in 0..self.binary.items.len() {
                 for short_name in self.short_names_of(index) {
@@ -385,6 +439,28 @@ impl<'a> Names<'a> {
                 }
             }
             short
+        })
+    }
+
+    /// The items filed under each key.
+    fn filed(&self) -> &HashMap<String, Filed> {
+        self.filed.get_or_init(|| {
+            let mut filed: HashMap<String, Filed> = HashMap::new();
+            for (index, item) in self.binary.items.iter().enumerate() {
+                for key in item.names().flat_map(short_name_keys) {
+                    let items = &mut filed
+                        .entry(key)
+                        .or_insert_with(|| Filed {
+                            items: Vec::new(),
+                            nodes: OnceCell::new(),
+                        })
+                        .items;
+                    if items.last() != Some(&index) {
+                        items.push(index);
+                    }
+                }
+            }
+            filed
         })
     }
 
@@ -613,9 +689,11 @@ fn readable(name: &str) -> String {
     demangle(symbol).map_or_else(|| name.to_string(), |readable| readable + plt)
 }
 
-/// Adds `node` to what a name finds, unless it is there already.
+/// Adds `node` to what a name finds, unless it is there already. Items are
+/// added in order, with all their names, so that one already there is the
+/// last.
 fn add(nodes: &mut Vec<Node>, node: Node) {
-    if !nodes.contains(&node) {
+    if nodes.last() != Some(&node) {
         nodes.push(node);
     }
 }

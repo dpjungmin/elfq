@@ -37,7 +37,7 @@ mod unnamed_functions;
 mod vector_table;
 
 pub use attributes::ArmArchitecture;
-pub use names::{demangle, short_names};
+pub use names::{demangle, short_name_key, short_name_keys, short_names};
 pub use range::{AddressRange, MemoryBlock, hex_number, memory_blocks, range_hint};
 pub use vector_table::VectorTable;
 

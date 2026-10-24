@@ -841,8 +841,12 @@ in order. Its output is the first example under [Commands](#commands).
 4. **SYMBOL.** `retained::run` calls `SymbolInTree::find`, which checks
    that elfq can read the file's code (`check_code_is_readable`) and turns
    `process_frame` into an item with `symbol::find`: by address, by full
-   name, or by the end of a name. `readable_item` refuses an import, and a
-   function whose end elfq doesn't know.
+   name, or by the end of a name. Working out the ends of every name takes
+   a while in a large file, so `Names` files each item under the last part
+   of the paths that its names' ends can have (`short_name_keys`), and
+   works out the ends of only the items filed under `process_frame`.
+   `readable_item` refuses an import, and a function whose end elfq
+   doesn't know.
 5. **The graph.** `RetainedTree::build` has `graph::Graph::build` turn
    what `arch::scan` found in each function's code into references, or
    into unresolved calls. `Graph::build` then adds the

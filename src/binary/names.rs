@@ -88,11 +88,107 @@ pub fn short_names(name: &str) -> Vec<String> {
         short.sort();
         return short;
     }
+    let mut short = Vec::new();
+    for_each_path(name, |parts| {
+        // Every end of the path, except one that starts with generic
+        // arguments, like the `<u8>` in `checksum::<u8>`.
+        for start in 0..parts.len() {
+            if start > 0 && (parts[start].is_empty() || parts[start].starts_with('<')) {
+                continue;
+            }
+            short.push(parts[start..].join("::"));
+        }
+    });
+    short.retain(|short_name| short_name != name);
+    short.sort();
+    short.dedup();
+    short
+}
+
+/// What a short name is filed under, to find the names that may have it
+/// without working out every short name: the last part of its path,
+/// without a special C++ prefix. `run(short*) const` for `Gain::run(short*)
+/// const`, and `Gain` for `vtable for Gain`. `None` when the brackets
+/// don't pair up, as in no short name.
+pub fn short_name_key(short_name: &str) -> Option<&str> {
+    split_path(without_special_prefixes(short_name))?.pop()
+}
+
+/// The [`short_name_key`] of every one of `name`'s [`short_names`], and
+/// perhaps a few more, worked out without joining the parts of paths.
+pub fn short_name_keys(name: &str) -> Vec<String> {
+    let name = without_special_prefixes(name);
+    let end = path_end(name);
+    let mut keys = Vec::new();
+    let mut add = |last: &str| {
+        keys.push(last.to_string());
+        // A short name of the last part alone may start with a special
+        // prefix, which its key leaves out.
+        keys.push(without_special_prefixes(last).to_string());
+    };
+    // Each short name ends with the last part of one of the paths that
+    // `for_each_path` visits, and those of `name` end as those of its end
+    // do, or as the end itself does when it has nothing to make shorter.
+    if end.len() < name.len()
+        && let Some(last) = split_path(end).and_then(|mut parts| parts.pop())
+    {
+        add(last);
+    }
+    for_each_path(end, |parts| add(parts[parts.len() - 1]));
+    keys.sort();
+    keys.dedup();
+    keys
+}
+
+/// The end of `name`'s path that its shorter paths differ in: from its
+/// last part that doesn't start with generic arguments, as
+/// `checksum::<u8>` in `app::checksum::<u8>`. Each of the shorter paths
+/// keeps the parts before the end, or a type or trait in place of the
+/// first, and ends with the end or a shorter path of it, so that it ends
+/// as one of those does. The whole name when a clone suffix starts before
+/// the end, which cuts it there, or when a `)` in the end closes a `(`
+/// before it, which takes parameters off there.
+fn path_end(name: &str) -> &str {
+    let Some(separators) = top_level_matches(name, "::") else {
+        return name;
+    };
+    let start = separators
+        .iter()
+        .map(|at| at + "::".len())
+        .rfind(|&start| !name[start..].starts_with('<'))
+        .unwrap_or(0);
+    let end = &name[start..];
+    let clone_before = name.find(" [clone ").is_some_and(|at| at < start);
+    let mut depth = 0usize;
+    let closes_before = end.chars().any(|c| match c {
+        '(' => {
+            depth += 1;
+            false
+        }
+        ')' => match depth.checked_sub(1) {
+            Some(rest) => {
+                depth = rest;
+                false
+            }
+            None => true,
+        },
+        _ => false,
+    });
+    if clone_before || closes_before {
+        return name;
+    }
+    end
+}
+
+/// Calls `visit` with each path that `name`'s short names are ends of,
+/// split into its parts: `name`'s own path, and the shorter paths that
+/// mean the same, each with and without generic arguments.
+fn for_each_path(name: &str, mut visit: impl FnMut(&[&str])) {
     // Only these make a name shorter: `::` in a path, `@plt`, `(` for
     // parameters, `<` for generic arguments and `[` for a clone suffix. Most
     // names, as in C, have none of them, and nothing to try.
     if !name.contains([':', '(', '<', '[']) && !name.ends_with("@plt") {
-        return Vec::new();
+        return;
     }
 
     // Each path adds the shorter paths that mean the same thing, until none
@@ -118,24 +214,23 @@ pub fn short_names(name: &str) -> Vec<String> {
         next += 1;
     }
 
-    let mut short = Vec::new();
     for path in &paths {
         for parts in [split_path(path), split_path(&without_generics(path))] {
             let Some(parts) = parts else { continue };
-            // Every end of the path, except one that starts with generic
-            // arguments, like the `<u8>` in `checksum::<u8>`.
-            for start in 0..parts.len() {
-                if start > 0 && (parts[start].is_empty() || parts[start].starts_with('<')) {
-                    continue;
-                }
-                short.push(parts[start..].join("::"));
-            }
+            visit(&parts);
         }
     }
-    short.retain(|short_name| short_name != name);
-    short.sort();
-    short.dedup();
-    short
+}
+
+/// `name` without the special C++ prefixes that it starts with.
+fn without_special_prefixes(mut name: &str) -> &str {
+    while let Some(prefix) = CPP_SPECIAL_PREFIXES
+        .iter()
+        .find(|prefix| name.starts_with(*prefix))
+    {
+        name = &name[prefix.len()..];
+    }
+    name
 }
 
 /// The special names that C++ compilers give to the data and code they make
@@ -288,8 +383,11 @@ fn top_level_matches(text: &str, pattern: &str) -> Option<Vec<usize>> {
     let mut matches = Vec::new();
     let mut depth = 0usize;
     let mut at = 0;
+    // Most names are long and have few brackets: the byte at `at` is
+    // checked before anything that starts there.
+    let first = pattern.as_bytes().first();
     while at < bytes.len() {
-        if depth == 0 && bytes[at..].starts_with(pattern.as_bytes()) {
+        if depth == 0 && Some(&bytes[at]) == first && bytes[at..].starts_with(pattern.as_bytes()) {
             matches.push(at);
             at += pattern.len();
             continue;
@@ -315,6 +413,9 @@ fn top_level_matches(text: &str, pattern: &str) -> Option<Vec<usize>> {
 /// `operator->`, where its symbol ends. Brackets in the symbol don't pair
 /// up with others.
 fn operator_end(bytes: &[u8], at: usize) -> Option<usize> {
+    if bytes.get(at) != Some(&b'o') {
+        return None;
+    }
     let is_word = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_';
     let after = at + "operator".len();
     if !bytes[at..].starts_with(b"operator")
@@ -488,5 +589,54 @@ mod tests {
     #[test]
     fn unpaired_brackets_give_no_short_names() {
         assert_eq!(short_names("app::Vec<u8::new"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn short_names_are_filed_under_keys_that_find_them() {
+        // Names that reach each case of the keys, as clone suffixes and
+        // parameters do before the end of a path, which no sample has.
+        let names = [
+            "app::log(unsigned int) [clone .constprop.0]",
+            "app::f(int) [clone .constprop.0]::b",
+            "a::f() [clone .cold]::g",
+            "ns::f(void (*)(int))",
+            "ns::f(a>::b<c)(int)",
+            "(anonymous namespace)::a::(anonymous namespace)::b(void (*)(void (*)(int)), int)",
+            "(anonymous namespace)::helper()",
+            "operator<",
+            "app::operator<(app::Reading const&, app::Reading const&)",
+            "app::Stream::operator<<(int)",
+            "app::Run::operator()(int)",
+            "app::Ptr::operator->() const",
+            "{lambda()#1}::operator()() const",
+            "app::f()::{lambda(int)#1}::operator()(int) const",
+            "vtable for app::Gain",
+            "a::vtable for B",
+            "typeinfo name for app::Gain",
+            "guard variable for app::f()::x",
+            "non-virtual thunk to app::Sensor::name()",
+            "<app::Gain as app::Stage>::run",
+            "<app::Gain>::run::<u8>",
+            "app::checksum::<u8>",
+            "app::main::{closure#0}",
+            "<fn() -> u8 as core::ops::FnOnce<()>>::call_once",
+            "<alloc::vec::Vec<u8> as core::ops::drop::Drop>::drop",
+            "std::vector<int, std::allocator<int> >::push_back(int const&)",
+            "write@plt",
+            "app::log(unsigned int)@plt",
+            "operator new(unsigned long)@plt",
+            "app::Vec<u8::new",
+            "process_frame",
+        ];
+        for name in names {
+            let keys = short_name_keys(name);
+            for short_name in &short_names(name) {
+                let key = short_name_key(short_name);
+                assert!(
+                    key.is_some_and(|key| keys.iter().any(|k| k == key)),
+                    "{short_name:?} of {name:?} has key {key:?}, not one of {keys:?}"
+                );
+            }
+        }
     }
 }

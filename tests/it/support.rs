@@ -24,6 +24,20 @@ pub fn sample_path(name: &str) -> PathBuf {
         .join(name)
 }
 
+/// Every sample file, as a path relative to the crate.
+pub fn samples() -> Vec<String> {
+    let bin = concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/bin");
+    let mut samples: Vec<String> = std::fs::read_dir(bin)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .filter(|name| name.ends_with(".elf") || name.ends_with(".so"))
+        .map(|name| format!("testdata/bin/{name}"))
+        .collect();
+    samples.sort();
+    assert!(samples.len() > 10);
+    samples
+}
+
 /// Loads the sample `name` from testdata/bin.
 pub fn load_sample(name: &str) -> Binary {
     Binary::load(&sample_path(name)).unwrap_or_else(|err| panic!("{name}: {err:#}"))
