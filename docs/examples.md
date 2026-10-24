@@ -557,7 +557,8 @@ the copies inside one function.
 
 ## How do scripts read the answers?
 
-Every command prints its answer as JSON with `--json`, one row per line:
+Every command but `browse` prints its answer as JSON with `--json`, one row
+per line:
 
 ```
 $ elfq testdata/bin/c-x86_64.elf callers log_msg --json

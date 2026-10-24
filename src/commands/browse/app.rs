@@ -1,10 +1,10 @@
 //! The browser's state: the pages the user has opened, kept as a web
 //! browser keeps its history, so that Back and Forward move through them,
-//! and how the screen is laid out around the page on top.
+//! the go-to box, and how the screen is laid out around the page on top.
 
 use anyhow::{Result, bail};
 use ratatui::Frame;
-use ratatui::crossterm::event::KeyEvent;
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::Stylize;
 use ratatui::text::Line;
@@ -13,7 +13,7 @@ use ratatui::widgets::{Paragraph, Wrap};
 use super::Stop;
 use super::keys::{self, Action};
 use super::session::Session;
-use super::views::{Go, ItemPage, View, cut, cut_left, imported};
+use super::views::{Go, Help, ItemPage, Picker, View, cut, cut_left, first_line, imported};
 use crate::binary::hex_number;
 use crate::commands::{found_functions, overview, text};
 use crate::graph::Node;
@@ -31,13 +31,17 @@ pub struct App<'a> {
     forward: Vec<View>,
     /// Said on the status line until the next key.
     message: Option<String>,
+    /// The go-to box, while it is open.
+    picker: Option<Picker>,
 }
 
 impl<'a> App<'a> {
     /// Opens the page of what `symbol` names, as the commands find it, or
     /// without one, of the function that the overview starts from: `main`,
-    /// else the entry point, else the largest function. The file's first
-    /// warning is on the status line, unless something about `symbol` is.
+    /// else the entry point, else the largest function. When `symbol`
+    /// finds several items or none, that page opens with the go-to box
+    /// over it, `symbol` typed in. The file's first warning is on the
+    /// status line, unless something about `symbol` is.
     pub fn new(session: Session<'a>, symbol: Option<&str>) -> Result<App<'a>> {
         let warnings = &session.binary.warnings;
         let mut message = warnings.first().map(|first| match warnings.len() {
@@ -48,6 +52,7 @@ impl<'a> App<'a> {
             ),
         });
         let mut first = None;
+        let mut picker = None;
         if let Some(query) = symbol {
             match session.names.find(query) {
                 Ok(found) => match found.node {
@@ -59,17 +64,9 @@ impl<'a> App<'a> {
                     }
                     Node::Import(_) => message = Some(imported(&session, found.node)),
                 },
-                // Such as "`log` could mean 2 functions", the first line of
-                // the CLI's error, without what it says about the list of
-                // them that the CLI prints after it.
+                // The CLI's error goes over the rows.
                 Err(error) => {
-                    let error = error.to_string();
-                    let line = error.lines().next().unwrap_or_default();
-                    let line = line.trim_end_matches(':');
-                    message = Some(
-                        line.trim_end_matches("; use one on the left instead")
-                            .to_string(),
-                    );
+                    picker = Some(Picker::noted(&session, query, first_line(&error)));
                 }
             }
         }
@@ -82,16 +79,26 @@ impl<'a> App<'a> {
             history: vec![View::Item(Box::new(first))],
             forward: Vec::new(),
             message,
+            picker,
         })
     }
 
     /// Does what `key` asks, and says whether the browser should stop.
     pub fn key(&mut self, key: KeyEvent) -> Option<Stop> {
+        if self.picker.is_some() {
+            return self.key_to_picker(key);
+        }
         let action = keys::action(key)?;
         self.message = None;
         match action {
             Action::Quit => return Some(Stop::Quit),
             Action::Suspend => return Some(Stop::Suspend),
+            Action::GoTo => self.picker = Some(Picker::new(&self.session, "")),
+            Action::Help => {
+                if !matches!(self.page(), View::Help(_)) {
+                    self.open(View::Help(Help::new()));
+                }
+            }
             Action::Back => self.back(),
             Action::Forward => {
                 if let Some(view) = self.forward.pop() {
@@ -103,15 +110,64 @@ impl<'a> App<'a> {
                 .last_mut()
                 .map(|view| view.handle(&self.session, action))
             {
-                Some(Some(Go::Open(view))) => {
-                    self.history.push(view);
-                    self.forward.clear();
-                }
+                Some(Some(Go::Open(view))) => self.open(view),
                 Some(Some(Go::Say(text))) => self.message = Some(text),
                 _ => {}
             },
         }
         None
+    }
+
+    /// Does what `key` asks of the go-to box. Keys type into it, so only
+    /// Ctrl-C and Ctrl-Z do what they do elsewhere.
+    fn key_to_picker(&mut self, key: KeyEvent) -> Option<Stop> {
+        match keys::while_typing(key) {
+            Some(Action::Quit) => return Some(Stop::Quit),
+            Some(Action::Suspend) => return Some(Stop::Suspend),
+            _ => {}
+        }
+        let picker = self.picker.as_mut()?;
+        let session = &self.session;
+        match key.code {
+            KeyCode::Esc => self.picker = None,
+            KeyCode::Enter => {
+                if let Some(found) = picker.selected() {
+                    // The header names the item as SYMBOL's answer does,
+                    // with what holds an address typed, or the other name
+                    // that found it.
+                    let name = &session.binary.items[found.index].name;
+                    let lead = found.lead.as_ref().unwrap_or(name);
+                    let page = ItemPage::new(session, found.index, found.at, lead);
+                    self.picker = None;
+                    self.message = None;
+                    self.open(View::Item(Box::new(page)));
+                }
+            }
+            KeyCode::Up => picker.handle(Action::Up),
+            KeyCode::Down => picker.handle(Action::Down),
+            KeyCode::PageUp => picker.handle(Action::PageUp),
+            KeyCode::PageDown => picker.handle(Action::PageDown),
+            KeyCode::Home => picker.handle(Action::First),
+            KeyCode::End => picker.handle(Action::Last),
+            KeyCode::Backspace => picker.type_char(session, None),
+            // Other Ctrl and Alt keys type nothing.
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                picker.type_char(session, Some(c));
+            }
+            _ => {}
+        }
+        None
+    }
+
+    /// Opens `view` after the page on the screen, as following a link
+    /// does, which leaves nothing to go forward to.
+    fn open(&mut self, view: View) {
+        self.history.push(view);
+        self.forward.clear();
     }
 
     /// Goes back within the page, as from a jump inside a function, or
@@ -137,7 +193,8 @@ impl<'a> App<'a> {
     }
 
     /// Draws the screen: the title line, with the file's name and the
-    /// pages that led here, the page, the status line, and the hints.
+    /// pages that led here, the page or the go-to box, the status line,
+    /// and the hints.
     pub fn draw(&mut self, frame: &mut Frame) {
         let area = frame.area();
         if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
@@ -162,8 +219,20 @@ impl<'a> App<'a> {
             trail += " › ";
             trail += view.title();
         }
+        if self.picker.is_some() {
+            trail += " › go to";
+        }
         frame.render_widget(Line::raw(cut_left(&trail, width)).bold(), title);
 
+        if let Some(picker) = &mut self.picker {
+            picker.draw(&self.session, frame, body);
+            // What is typed is cut from the left, so that its end shows.
+            let typed = format!("go to: {}▏", picker.text);
+            frame.render_widget(Line::raw(cut_left(&typed, width)), status);
+            let hint = "↑↓ move  enter open  esc cancel";
+            frame.render_widget(Line::raw(hint).dim(), hints);
+            return;
+        }
         let view = self
             .history
             .last_mut()

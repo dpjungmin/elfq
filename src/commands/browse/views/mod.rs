@@ -1,8 +1,10 @@
-//! The pages, one file each. [`View`] lists them, so that `app.rs` can
-//! keep any of them in its history, and each `match` on it shows every
-//! page's part.
+//! The pages, one file each, and the go-to box. [`View`] lists the pages,
+//! so that `app.rs` can keep any of them in its history, and each `match`
+//! on it shows every page's part.
 
+mod help;
 mod item;
+mod picker;
 
 use std::ops::Range;
 
@@ -14,7 +16,9 @@ use super::keys::Action;
 use super::session::Session;
 use crate::graph::Node;
 
+pub use help::Help;
 pub use item::ItemPage;
+pub use picker::{Picker, first_line};
 
 /// Where an action takes the user.
 pub enum Go {
@@ -28,6 +32,8 @@ pub enum Go {
 pub enum View {
     /// A function's code, or what a data object is.
     Item(Box<ItemPage>),
+    /// Every key, and the words that the notes use.
+    Help(Help),
 }
 
 impl View {
@@ -35,18 +41,24 @@ impl View {
     pub fn title(&self) -> &str {
         match self {
             View::Item(page) => &page.title,
+            View::Help(_) => "help",
         }
     }
 
     pub fn draw(&mut self, frame: &mut Frame, area: Rect) {
         match self {
             View::Item(page) => page.draw(frame, area),
+            View::Help(help) => help.draw(frame, area),
         }
     }
 
     pub fn handle(&mut self, session: &Session, action: Action) -> Option<Go> {
         match self {
             View::Item(page) => page.handle(session, action),
+            View::Help(help) => {
+                help.handle(action);
+                None
+            }
         }
     }
 
@@ -55,6 +67,7 @@ impl View {
     pub fn back(&mut self) -> bool {
         match self {
             View::Item(page) => page.back(),
+            View::Help(_) => false,
         }
     }
 
@@ -62,6 +75,7 @@ impl View {
     pub fn preview(&self, session: &Session) -> Option<String> {
         match self {
             View::Item(page) => page.preview(session),
+            View::Help(_) => None,
         }
     }
 
@@ -69,6 +83,7 @@ impl View {
     pub fn has_links(&self) -> bool {
         match self {
             View::Item(page) => page.has_links(),
+            View::Help(_) => false,
         }
     }
 }

@@ -165,7 +165,7 @@ pub enum Command {
     #[command(after_help = RETAINED)]
     Retained(RetainedArgs),
     /// Show the chains of calls and references that keep SYMBOL in the file
-    #[command(after_help = format!("{WHY}\n\n{HOW}"))]
+    #[command(after_help = format!("{WHY}\n\n{}\n\n{HOW_NOTES}", how_table()))]
     Why(WhyArgs),
     /// List the functions the compiler inlined, by the bytes their copies take
     #[command(after_help = INLINED)]
@@ -174,38 +174,78 @@ pub enum Command {
     #[command(
         override_usage = "elfq <FILE> callers [OPTIONS] <SYMBOL>\n       \
                           elfq <FILE> callers [OPTIONS] <RANGE>...",
-        after_help = format!("{HOW}\n\n{AT}\n\n{CALLERS}\n\n{CALLERS_RANGES}")
+        after_help = format!("{}\n\n{HOW_NOTES}\n\n{AT}\n\n{CALLERS}\n\n{CALLERS_RANGES}", how_table())
     )]
     Callers(CallersArgs),
     /// List what SYMBOL calls or uses
     #[command(
         override_usage = "elfq <FILE> callees [OPTIONS] <SYMBOL>\n       \
                           elfq <FILE> callees [OPTIONS] <RANGE>...",
-        after_help = format!("{HOW}\n\n{AT}\n\n{CALLEES}\n\n{CALLEES_RANGES}")
+        after_help = format!("{}\n\n{HOW_NOTES}\n\n{AT}\n\n{CALLEES}\n\n{CALLEES_RANGES}", how_table())
     )]
     Callees(CalleesArgs),
     /// List everything SYMBOL calls or uses, at any depth, by memory block
-    #[command(after_help = format!("{REACH}\n\n{HOW}"))]
+    #[command(after_help = format!("{REACH}\n\n{}\n\n{HOW_NOTES}", how_table()))]
     Reach(ReachArgs),
     /// Read a function's code in the terminal, and follow what it calls and uses
-    #[command(after_help = format!("{BROWSE}\n\n{HOW}"))]
+    #[command(after_help = format!("{BROWSE}\n\n{}", how_table()))]
     Browse(BrowseArgs),
     /// Show elfq's own view of the file (for developing elfq)
     #[command(subcommand, hide = true)]
     Debug(DebugCommand),
 }
 
-const HOW: &str = "\
-The HOW column says how one item uses the other:
-  call           a direct call, or a call through a register that the
-                 code loaded with the target's address, as a long call does
-  tail call      a jump to the start of a function, which then returns to
-                 the caller's caller
-  uses           code reads or writes data, or loads its address
-  address taken  code loads a function's address, as when passing a
-                 function pointer, or an import's
-  pointer        data holds a pointer to it, as in a table of functions
+/// The words of the HOW column, each with what it means, which `--help`
+/// prints as a table, and browse's help page lists too.
+pub const HOW_WORDS: [(&str, &str); 5] = [
+    (
+        "call",
+        "a direct call, or a call through a register that the code loaded with \
+         the target's address, as a long call does",
+    ),
+    (
+        "tail call",
+        "a jump to the start of a function, which then returns to the caller's caller",
+    ),
+    ("uses", "code reads or writes data, or loads its address"),
+    (
+        "address taken",
+        "code loads a function's address, as when passing a function pointer, \
+         or an import's",
+    ),
+    (
+        "pointer",
+        "data holds a pointer to it, as in a table of functions",
+    ),
+];
 
+/// What the HOW column's words mean, as a table: each meaning is wrapped
+/// under the column it starts in.
+fn how_table() -> String {
+    const WIDTH: usize = 76;
+    const INDENT: usize = 17;
+    let mut text = "The HOW column says how one item uses the other:".to_string();
+    for (word, meaning) in HOW_WORDS {
+        let mut line = format!("  {word:<13}  ");
+        for part in meaning.split(' ') {
+            if line.len() > INDENT && line.len() + 1 + part.len() > WIDTH {
+                text += "\n";
+                text += line.trim_end();
+                line = " ".repeat(INDENT);
+            } else if line.len() > INDENT {
+                line.push(' ');
+            }
+            line += part;
+        }
+        text += "\n";
+        text += &line;
+    }
+    text
+}
+
+/// What the commands with a HOW column also say about it, after
+/// [`how_table`].
+const HOW_NOTES: &str = "\
 In --json, the how key uses these words, but in place of uses, it says
 access where code reads or writes data, and address taken where it loads
 its address. elfq tells the two apart only in x86-64 code; in Thumb code,
@@ -348,15 +388,19 @@ can't follow or read; 0 if not; and 2 for an error.";
 
 const BROWSE: &str = "\
 browse opens a page for SYMBOL, or without it, for main, else the entry
-point, else the largest function. A function's page shows its code, one
-line per instruction, and a line that calls, jumps to or uses another item
-ends with a note that names it, in the words of the HOW column. Enter
-follows the selected line's link to that item's page, Esc goes back, and
-] goes forward again. elfq prints x86-64 code; in Thumb code, a page lists
-only the lines that use another item, for now.
+point, else the largest function. When SYMBOL could mean several items, or
+none, the go-to box opens over that page with SYMBOL typed in.
 
-browse needs a terminal, and takes no --json, --tree or --range: the other
-commands print the same answers for scripts.";
+A function's page shows its code, one line per instruction, and a line
+that calls, jumps to or uses another item ends with a note that names it,
+in the words of the HOW column. Enter follows the selected line's link to
+that item's page, Esc goes back, and ] goes forward again; g goes to any
+function or data object, and ? lists every key. elfq prints x86-64 code;
+in Thumb code, a page lists only the lines that use another item, for now.
+
+browse needs a terminal, and takes no --json, --tree or --range. For
+scripts, callers and callees print the same links, with --json, and
+objdump --start-address prints the instructions.";
 
 const WHY: &str = "\
 The chains start where the program does, as HOW says: at the entry point, a

@@ -1,6 +1,6 @@
 //! Which key does what. One table, [`BINDINGS`], says which keys make each
-//! [`Action`], and the hint line is printed from it too, so that what it
-//! says can't drift from what the keys do.
+//! [`Action`], and the help page and the hint line are printed from it too,
+//! so that what they say can't drift from what the keys do.
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -23,13 +23,21 @@ pub enum Action {
     /// The next or previous line that uses another item.
     NextLink,
     PreviousLink,
+    /// Type a name or an address to go to.
+    GoTo,
+    /// The help page.
+    Help,
     /// Give the terminal back to the shell for now, as Ctrl-Z does.
     Suspend,
     Quit,
 }
 
-/// One row of the table of keys.
+/// One row of the table of keys, and a line of the help page.
 pub struct Binding {
+    /// The keys, as the help page writes them.
+    pub label: &'static str,
+    /// What they do, as the help page says it.
+    pub what: &'static str,
     /// What the hint line says about them, if anything, and how much that
     /// matters: 0 is always shown, and the highest goes first when the
     /// screen is too narrow.
@@ -51,6 +59,8 @@ const CONTROL: KeyModifiers = KeyModifiers::CONTROL;
 /// Every key the browser takes, in the order the hint line names them.
 pub const BINDINGS: &[Binding] = &[
     Binding {
+        label: "↑ ↓  k j",
+        what: "move",
         hint: Some(("↑↓ move", 0)),
         keys: &[
             (KeyCode::Up, NONE, Action::Up),
@@ -60,6 +70,8 @@ pub const BINDINGS: &[Binding] = &[
         ],
     },
     Binding {
+        label: "PgUp PgDn Space",
+        what: "a page up or down",
         hint: None,
         keys: &[
             (KeyCode::PageUp, NONE, Action::PageUp),
@@ -68,6 +80,8 @@ pub const BINDINGS: &[Binding] = &[
         ],
     },
     Binding {
+        label: "Home End",
+        what: "the first or last line",
         hint: None,
         keys: &[
             (KeyCode::Home, NONE, Action::First),
@@ -75,6 +89,8 @@ pub const BINDINGS: &[Binding] = &[
         ],
     },
     Binding {
+        label: "Enter → l",
+        what: "follow the line's link",
         hint: Some(("enter follow", 0)),
         keys: &[
             (KeyCode::Enter, NONE, Action::Open),
@@ -83,6 +99,8 @@ pub const BINDINGS: &[Binding] = &[
         ],
     },
     Binding {
+        label: "Esc ← h Bksp Ctrl-O",
+        what: "back to where you were",
         hint: Some(("esc back", 0)),
         keys: &[
             (KeyCode::Esc, NONE, Action::Back),
@@ -93,10 +111,14 @@ pub const BINDINGS: &[Binding] = &[
         ],
     },
     Binding {
+        label: "]",
+        what: "forward again",
         hint: None,
         keys: &[(KeyCode::Char(']'), NONE, Action::Forward)],
     },
     Binding {
+        label: "Tab Shift-Tab",
+        what: "the next or previous line that uses another item",
         hint: Some(("tab next link", 2)),
         keys: &[
             (KeyCode::Tab, NONE, Action::NextLink),
@@ -104,10 +126,26 @@ pub const BINDINGS: &[Binding] = &[
         ],
     },
     Binding {
+        label: "g",
+        what: "go to a function or data object, by name or address",
+        hint: Some(("g go to", 1)),
+        keys: &[(KeyCode::Char('g'), NONE, Action::GoTo)],
+    },
+    Binding {
+        label: "?",
+        what: "this help",
+        hint: Some(("? help", 0)),
+        keys: &[(KeyCode::Char('?'), NONE, Action::Help)],
+    },
+    Binding {
+        label: "Ctrl-Z",
+        what: "back to the shell; fg returns",
         hint: None,
         keys: &[(KeyCode::Char('z'), CONTROL, Action::Suspend)],
     },
     Binding {
+        label: "q Ctrl-C",
+        what: "quit",
         hint: Some(("q quit", 0)),
         keys: &[
             (KeyCode::Char('q'), NONE, Action::Quit),
@@ -158,6 +196,15 @@ pub fn hints(width: usize, links: bool) -> String {
     line
 }
 
+/// The action for `key` while text is typed, as into the go-to box: only
+/// Ctrl-C and Ctrl-Z, since other keys type.
+pub fn while_typing(key: KeyEvent) -> Option<Action> {
+    if !key.modifiers.contains(CONTROL) {
+        return None;
+    }
+    action(key).filter(|&action| matches!(action, Action::Quit | Action::Suspend))
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
@@ -182,16 +229,29 @@ mod tests {
         assert_eq!(key(KeyCode::Char('o'), CONTROL), Some(Action::Back));
         assert_eq!(key(KeyCode::Char('o'), NONE), None);
         assert_eq!(key(KeyCode::Char('q'), KeyModifiers::ALT), None);
+        assert_eq!(
+            key(KeyCode::Char('?'), KeyModifiers::SHIFT),
+            Some(Action::Help)
+        );
     }
 
     #[test]
     fn the_hint_line_leaves_out_what_is_needed_least() {
-        let all = "↑↓ move  enter follow  esc back  tab next link  q quit";
+        let all = "↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit";
         assert_eq!(hints(100, true), all);
-        assert_eq!(
-            hints(all.chars().count() - 1, true),
-            "↑↓ move  enter follow  esc back  q quit"
-        );
-        assert_eq!(hints(100, false), "↑↓ move  enter follow  esc back  q quit");
+        let without_tab = "↑↓ move  enter follow  esc back  g go to  ? help  q quit";
+        assert_eq!(hints(all.chars().count() - 1, true), without_tab);
+        assert_eq!(hints(100, false), without_tab);
+        let least = "↑↓ move  enter follow  esc back  ? help  q quit";
+        assert_eq!(hints(without_tab.chars().count() - 1, true), least);
+    }
+
+    #[test]
+    fn only_ctrl_c_and_ctrl_z_work_while_typing() {
+        let typing = |code, modifiers| while_typing(KeyEvent::new(code, modifiers));
+        assert_eq!(typing(KeyCode::Char('c'), CONTROL), Some(Action::Quit));
+        assert_eq!(typing(KeyCode::Char('z'), CONTROL), Some(Action::Suspend));
+        assert_eq!(typing(KeyCode::Char('q'), NONE), None);
+        assert_eq!(typing(KeyCode::Char('o'), CONTROL), None);
     }
 }

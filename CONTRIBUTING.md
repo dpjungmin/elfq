@@ -26,14 +26,19 @@ cross compilers. Before opening a pull request, run what CI runs:
 ```sh
 cargo fmt --all --check
 cargo clippy --all-targets --locked -- -D warnings
+cargo clippy --all-targets --locked --no-default-features -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items --locked
 cargo test --locked
 cargo +1.88 check --all-targets --locked
+cargo +1.88 check --all-targets --locked --no-default-features
 ```
 
-The last line checks that elfq still compiles with Rust 1.88, the oldest
-version it supports (`rust-version` in `Cargo.toml`); `rustup toolchain
-install 1.88` gets it.
+The third line and the last check elfq without the `tui` feature, which
+`browse` needs. The last two lines check that elfq still compiles with Rust
+1.88, the oldest version it supports (`rust-version` in `Cargo.toml`);
+`rustup toolchain install 1.88` gets it. On Linux, CI also runs `browse` in
+a terminal that `script` makes, and checks that q quits it and that the
+terminal is as it was; `.github/workflows/ci.yml` has the command.
 
 ## Where things live
 
@@ -43,7 +48,8 @@ install 1.88` gets it.
 | `src/lib.rs` | Declares the modules below. elfq is a library plus that small program; the library exists for the program and its tests. |
 | `src/cli.rs` | Command-line arguments, with clap: a `Command` variant for each command, the structs that hold their arguments, and the text of `--help`. |
 | `src/commands/` | One file per command, which looks up SYMBOL, asks `graph` or `debuginfo` and decides what the answer shows. `mod.rs` runs the command the arguments name, after checking arguments that don't go together. The rest are shared: `symbol.rs` works out what a user means by SYMBOL, `retained_tree.rs` builds the trees of retained sizes that the overview, `top` and `retained` show, `ranges.rs` answers `callers` and `callees` for ranges of memory or with `--from` or `--to`, `text.rs` holds the wording that commands share and `json.rs` the JSON shapes. |
-| `src/arch/` | Finding the addresses that machine code calls or uses, one module per instruction set (x86-64 and Thumb). Thumb's has three parts: `thumb/mod.rs` reads each instruction on its own, `thumb/decode.rs` says what an instruction does with the registers and the stack, and `thumb/values/` follows the addresses that code puts in registers to where a branch through one goes, as for long calls and veneers. |
+| `src/commands/browse/` | `elfq FILE browse`, with the `tui` feature: `mod.rs` takes over the terminal and runs the event loop, `session.rs` holds the loaded file and asks the commands' code for answers, `keys.rs` is the table of keys, `app.rs` the history of pages, the go-to box and the screen's layout, and `views/` the pages and the go-to box, one file each. |
+| `src/arch/` | Finding the addresses that machine code calls or uses, one module per instruction set (x86-64 and Thumb). Thumb's has three parts: `thumb/mod.rs` reads each instruction on its own, `thumb/decode.rs` says what an instruction does with the registers and the stack, and `thumb/values/` follows the addresses that code puts in registers to where a branch through one goes, as for long calls and veneers. `listing.rs` prints a function's code as text, for `browse`. |
 | `src/binary/` | Reading an ELF file: its functions and data objects ("items") and where they were found, their names, imports, stored pointers and memory blocks. Unnamed data, such as string literals, is found from what code and pointers refer to. Each function's code is scanned once, as the file loads (`Binary::code_references`). |
 | `src/graph/` | The reference graph that connects items, the roots where the program starts, the dominator tree that says what is exclusive to what, the shortest paths that `why` and `reach` show, the references that cross the boundary of ranges of memory, and where a linker's veneers jump to. |
 | `src/debuginfo/` | Reading DWARF, when the file has it: the copies of functions that the compiler inlined, for `inlined`, and for the error when SYMBOL names a function that the compiler inlined everywhere. |
@@ -70,6 +76,13 @@ arch/        machine code
 So `arch` knows nothing about items, `binary` nothing about the graph, and
 `render` nothing about ELF files. No tool checks this; a `use crate::` line
 that reaches up the list is a sign that the code belongs lower down.
+
+`commands/browse/` is a command too, at the top of `commands/`: it asks the
+other commands' code for its answers, as `callers::answer` for "used by
+N", so that a page says what the commands print, and nothing else uses it.
+It is a child of `commands`, so it reaches their `pub(super)` helpers
+without making them public. It and `arch/listing.rs` build only with the
+`tui` feature.
 
 - **Analysis never prints.** `arch`, `binary`, `graph` and `debuginfo`
   return what they find. Problems found while loading a file go into
@@ -108,8 +121,8 @@ that reaches up the list is a sign that the code belongs lower down.
 - **Integration tests** in `tests/it/` use the samples in `testdata/bin`.
   `cli.rs`, `json.rs` and `docs.rs` run the elfq program, the way a user
   would. The others call the library, as `Binary::load` and
-  `Graph::build`. `damaged.rs` does both, and so does one test in
-  `json.rs`; `reach.rs` runs commands in its own process, through
+  `Graph::build`. `damaged.rs` and `browse.rs` do both, and so does one
+  test in `json.rs`; `reach.rs` runs commands in its own process, through
   `commands::run`, which is quicker for the hundreds it runs. The answers they expect are
   those in [testdata/README.md](testdata/README.md), which says, for
   example, what calls `log_msg` in each sample.
@@ -127,6 +140,7 @@ that reaches up the list is a sign that the code belongs lower down.
 | `symbol.rs` | Looking up SYMBOL |
 | `inlined.rs` | Inlined copies, from DWARF |
 | `damaged.rs` | Damaged and unusual files, made by changing a sample's bytes |
+| `browse.rs` | `browse`'s screens, driven with keys on ratatui's `TestBackend`, a screen in memory; its errors; and on Linux, the program in a terminal that `script` makes. The checks of every line's link and note on every sample need private types, so they are unit tests in `src/commands/browse/views/item.rs` |
 | `docs.rs` | The `$ elfq` examples in README.md, docs/design.md and docs/examples.md, and that design.md names every JSON key |
 
 Two tests in `cli.rs` run the overview and every command it suggests on
@@ -224,6 +238,48 @@ is a short one to copy.
    docs/design.md, and its JSON keys in design.md's JSON section. Add
    answers of it to `JSON_ANSWERS` in `tests/it/docs.rs` with an entry in
    each of its lists: the test checks that the section names every key.
+
+## Adding a view
+
+`browse`'s pages are views, in `src/commands/browse/views/`. An item's
+page, `item.rs`, is the one to copy; `help.rs` is a short one.
+
+1. **The page, in `views/<name>.rs`.** A struct with a `draw` function
+   that draws it in the area it is given, and a `handle` function that
+   does what an `Action` asks. A page that lists rows keeps a `Cursor`,
+   which scrolls them and draws only those on the screen. Following a
+   link returns `Go::Open` with the page to open, and `Go::Say` puts a
+   line on the status line. Pages ask `Session` and the commands' code for
+   their answers, rather than working them out again.
+2. **Wiring, in `views/mod.rs`.** Add `mod <name>;`, a variant to `View`,
+   and its arm in each of `View`'s functions; the compiler asks for them.
+   `title` names the page in the title line's trail, `preview` says what
+   the selected row's link opens, and `back` goes back within the page,
+   as from a jump inside a function, when it can.
+3. **Keys.** A key goes in `BINDINGS` in `keys.rs`, with the new `Action`,
+   what the help page says about it, and its hint, if the hint line names
+   it. The help page and the hint line are printed from that table, and
+   `no_key_does_two_things` checks it. `app.rs` handles an action that
+   opens a page, as `Action::Help` does.
+4. **Tests.** Pin its screens in `tests/it/browse.rs` at 80x24 and 100x30,
+   and drive it with keys there, as the other tests do.
+
+To see a page in a real terminal, run elfq in tmux and print the screen.
+Keys sent before elfq draws its first screen can be lost, so the script
+waits for the hint line first, and then for the page that the keys open:
+
+```sh
+cargo build
+tmux new-session -d -s elfq -x 100 -y 30 'target/debug/elfq testdata/bin/c-x86_64.elf browse log_msg'
+until tmux capture-pane -p -t elfq | grep -q 'q quit'; do sleep 0.1; done
+tmux send-keys -t elfq Tab Enter
+until tmux capture-pane -p -t elfq | grep -q '› strlen@plt'; do sleep 0.1; done
+tmux capture-pane -p -t elfq
+tmux send-keys -t elfq q
+```
+
+Tab selects log_msg's call to strlen@plt, and Enter opens strlen@plt's
+page, which the capture prints.
 
 ## Adding an instruction set
 

@@ -182,6 +182,7 @@ except `inlined`, which reads DWARF instead of machine code.
 | `elfq FILE callees RANGE...` | What do the code and data in these ranges of memory use outside them, such as code in ITCM that calls a function in flash? `callers RANGE...` asks the reverse. |
 | `elfq FILE callers RANGE... --from RANGE` | What in one range of memory uses these ranges, such as code in ITCM that uses data in DTCM? `callees RANGE... --to RANGE` asks what these ranges use in that one, and either takes SYMBOL in place of the ranges. |
 | `elfq FILE inlined [SYMBOL]` | Which inlined functions cost the most bytes across the binary, or inside SYMBOL? Needs DWARF. |
+| `elfq FILE browse [SYMBOL]` | What does SYMBOL's code do, line by line, and where does each call and use lead? Opens in the terminal, and follows the links that the other commands' answers name. |
 
 SYMBOL is a function or data object's name, an import (`write` finds the
 `write@plt` stub that code calls), or an address such as `0x1700`. Names are
@@ -466,15 +467,18 @@ or `0x0:0x40000`, is refused with the form to type, `0x0..0x40000`, and
 
 ### JSON
 
-`--json` prints the same answer for scripts, as one object. The JSON has
-every item, site and chain, where the text shows only the largest items,
-the first sites and the nearest chains; every key is always there, `null`
-when it has no value; addresses are hex strings, as elfq prints them and
-SYMBOL takes them, and sizes are numbers. Each row of a list in the answer,
-such as an item of `top` or a chain of `why`, is a line of its own, so that
-`grep` and `head` work on the JSON as on the text. Until 1.0 the JSON can
-change, and each release says how. An error is never JSON: it goes to
-stderr, with exit status 2 and nothing on stdout.
+`--json` prints the same answer for scripts, as one object, for every
+command but `browse`, which is for reading in a terminal and refuses
+`--json`, `--tree` and `--range`; for scripts, `callers` and `callees` print
+its links, and `objdump --start-address` the instructions. The JSON has
+every item, site and chain, where the text shows only the largest items, the
+first sites and the nearest chains; every key is always there, `null` when
+it has no value; addresses are hex strings, as elfq prints them and SYMBOL
+takes them, and sizes are numbers. Each row of a list in the answer, such as
+an item of `top` or a chain of `why`, is a line of its own, so that `grep`
+and `head` work on the JSON as on the text. Until 1.0 the JSON can change,
+and each release says how. An error is never JSON: it goes to stderr, with
+exit status 2 and nothing on stdout.
 
 An item looks like this, spread over lines here:
 
@@ -898,14 +902,24 @@ the code goes next, which is easier to read in its own code, with the
 samples' disassembly as the reference, than through a general
 disassembler's API.
 
+`browse` adds `ratatui` with its `crossterm` backend (the terminal),
+`rustix` and `signal-hook` (Ctrl-Z, on Unix) and iced-x86's Intel
+formatter (printing x86-64 code), behind the `tui` feature, which is on by
+default. They take elfq from 40 crates to 91, elfq included, as `cargo
+tree -e normal` lists them on Linux, each once; its release build from
+4.1 MB to 5.0 MB on x86-64 Linux; and a clean release build from about
+33 s to about 46 s on 4 CPUs. `cargo build --no-default-features` builds
+elfq without them, and then `browse` says so.
+
 ## Status and roadmap
 
 The overview, `top`, `retained`, `why`, `callers`, `callees` and `reach`
 work on x86-64 and Cortex-M executables, with or without symbols and DWARF,
 and `inlined` works on any file with DWARF that isn't compressed. The
 overview, `callers`, `callees` and `reach` also work on x86-64 shared
-libraries. The pull requests and the
-git log record how elfq got here.
+libraries. `browse` prints x86-64 code; in Thumb code, its pages list
+only the lines that use another item, until elfq prints Thumb
+instructions. The pull requests and the git log record how elfq got here.
 
 Ideas for later, not yet planned: output that scripts and AI agents can
 read more easily, a check of what startup code copies into RAM, the retained size of a set of
@@ -916,9 +930,13 @@ function's stack frame), and a query language.
 ## Non-goals
 
 - **Re-implementing readelf, objdump, nm or bloaty.** elfq does not print
-  headers, section tables, disassembly listings or flat size breakdowns. When
-  one of those tools already answers a question well, the docs point to it.
-- **A reverse-engineering framework.** No decompiler, no interactive session.
+  headers, section tables, whole-section disassembly listings, hex dumps or
+  flat size breakdowns. When one of those tools already answers a question
+  well, the docs point to it. `browse` shows one item's code at a time, as
+  the context for elfq's links: what each line calls or uses, in the words
+  of the other commands.
+- **A reverse-engineering framework.** `browse` reads code and follows it,
+  but it has no patching, renaming, decompiler or graph canvas.
 - **Runtime profiling.** elfq reads the file; it never runs the program.
 
 ## Known limitations

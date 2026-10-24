@@ -130,7 +130,7 @@ used by 5 · uses 2
 
 
 
-↑↓ move  enter follow  esc back  tab next link  q quit
+↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
 ",
     );
     // Tab goes to the next line that uses another item, and the status
@@ -161,7 +161,7 @@ used by 5 · uses 2
 
 
 → strlen@plt  function at 0x1080, 16 bytes, in .plt.sec
-↑↓ move  enter follow  esc back  tab next link  q quit
+↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
 ",
     );
 }
@@ -195,7 +195,7 @@ used by 1 · uses 1
 
 
 
-↑↓ move  enter follow  esc back  tab next link  q quit
+↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
 ",
     );
     // Back on the line that was followed, and forward again.
@@ -306,7 +306,7 @@ used by 1 · uses 13
   0x10f2   call    process_frame     call
   0x10f7   mov     esi, 0x11
 
-↑↓ move  enter follow  esc back  tab next link  q quit
+↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
 ",
     );
 }
@@ -341,7 +341,7 @@ used by 5 · uses 2
 
 
 → platform_write  function at 0x1ac0, 20 bytes, in .text
-↑↓ move  enter follow  esc back  tab next link  q quit
+↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
 ",
     );
     // An import has no page: its code is in a shared library.
@@ -371,47 +371,193 @@ used by 1 · uses 4
 
 
 memcpy is imported from a shared library: its code isn't in this file
-↑↓ move  enter follow  esc back  tab next link  q quit
+↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
 ",
     );
 }
 
 #[test]
-fn a_symbol_that_finds_several_items_or_none_says_so() {
+fn a_symbol_that_finds_several_items_or_none_opens_go_to() {
+    // On the page that opens without SYMBOL, with the CLI's message over
+    // the rows.
     assert_output(
         &screen("cpp-x86_64.elf", Some("log"), (80, 24), &[]),
         "\
-cpp-x86_64.elf › main
-main  function at 0x10a0, 335 bytes, in .text
-used by 1 · uses 18
-  ADDRESS  INSTRUCTION
-> 0x10a0   endbr64
-  0x10a4   push    r12
-  0x10a6   lea     r12, [rip+0xfd3]           uses frame_bad
-  0x10ad   push    rbp
-  0x10ae   lea     rbp, [rip+0xfdb]           uses frame_good
-  0x10b5   push    rbx
-  0x10b6   sub     rsp, 0x50
-  0x10ba   mov     rax, fs:[0x28]
-  0x10c3   mov     [rsp+0x48], rax
-  0x10c8   lea     rax, [rip+0x2c79]          uses vtable for Gain+0x10
-  0x10cf   lea     rbx, [rsp+0x20]
-  0x10d4   mov     rsi, rsp
-  0x10d7   mov     dword ptr [rsp+0x18], 0
-  0x10df   mov     rdi, rbx
-  0x10e2   mov     [rsp], rax
-  0x10e6   mov     eax, [rip+0x2f34]          uses config
-  0x10ec   mov     [rsp+8], ax
-  0x10f1   lea     rax, [rip+0x2c68]          uses vtable for DcBlock+0x10
+cpp-x86_64.elf › main › go to
 `log` could mean 2 functions
-↑↓ move  enter follow  esc back  tab next link  q quit
+  ADDRESS  SIZE  KIND      SECTION  ITEM
+> 0x13c0     64  function  .text    app::log(char const*)
+  0x1400    182  function  .text    app::log(unsigned int)
+  0x11f0     16  function  .text    _GLOBAL__sub_I__ZN3app3logEPKc
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+go to: log▏
+↑↓ move  enter open  esc cancel
 ",
     );
     let unknown = screen("c-x86_64.elf", Some("nosuch"), (80, 24), &[]);
+    let lines: Vec<&str> = unknown.lines().collect();
+    assert_eq!(lines[1], "no function or data object is named `nosuch`");
+    assert_eq!(lines[22], "go to: nosuch▏");
+    // The message goes when the text changes, and the one for the new
+    // text shows under the header; Esc shows the page.
+    let typed = screen("c-x86_64.elf", Some("nosuch"), (80, 24), &["Backspace"]);
+    let lines: Vec<&str> = typed.lines().collect();
     assert_eq!(
-        selected_and_status(&unknown).1,
-        "no function or data object is named `nosuch`"
+        lines[1..3],
+        [
+            "  ADDRESS  SIZE  KIND  SECTION  ITEM",
+            "no function or data object is named `nosuc`"
+        ]
     );
+    let page = screen("c-x86_64.elf", Some("nosuch"), (80, 24), &["Esc"]);
+    assert!(page.starts_with("c-x86_64.elf › main\n"), "{page}");
+}
+
+#[test]
+fn g_goes_to_what_is_typed() {
+    // Names that have the text, largest first, after what SYMBOL finds.
+    assert_output(
+        &screen("c-cortex-m7.elf", None, (100, 16), &["g", "crc"]),
+        "\
+c-cortex-m7.elf › main › go to
+  ADDRESS     SIZE  KIND      SECTION  ITEM
+> 0x20000000  1024  data      .data    crc_table
+  0x10          48  function  .itcm    crc32
+  0x300009b0     8  function  .text    __crc32_veneer
+
+
+
+
+
+
+
+
+
+go to: crc▏
+↑↓ move  enter open  esc cancel
+",
+    );
+    let opened = screen(
+        "c-cortex-m7.elf",
+        None,
+        (100, 16),
+        &["g", "crc", "Down", "Enter"],
+    );
+    assert!(
+        opened.starts_with("c-cortex-m7.elf › main › crc32\n"),
+        "{opened}"
+    );
+    // An address opens the item that holds it, at that line.
+    assert_output(
+        &screen("c-x86_64.elf", None, (80, 24), &["g", "0x162e", "Enter"]),
+        "\
+c-x86_64.elf › main › log_msg
+log_msg (which holds 0x162e)  function at 0x1610, 51 bytes, in .text
+used by 5 · uses 2
+  ADDRESS  INSTRUCTION
+  0x1610   endbr64
+  0x1614   push    rbx
+  0x1615   cmp     byte ptr [rdi], 0
+  0x1618   mov     rbx, rdi
+  0x161b   je      0x1638             jump ↓
+  0x161d   lea     rdi, [rdi+1]
+  0x1621   call    strlen@plt         call
+  0x1626   mov     rdi, rbx
+  0x1629   pop     rbx
+  0x162a   lea     rsi, [rax+1]
+> 0x162e   jmp     platform_write     tail call
+  0x1633   nop     [rax+rax]
+  0x1638   mov     rdi, rbx
+  0x163b   xor     esi, esi
+  0x163d   pop     rbx
+  0x163e   jmp     platform_write     tail call
+
+
+→ platform_write  function at 0x1ac0, 20 bytes, in .text
+↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
+",
+    );
+    // Keys type, but for Ctrl-C and Ctrl-Z, and Esc cancels.
+    let typed = screen("c-x86_64.elf", None, (80, 24), &["g", "q?j", "Ctrl-O"]);
+    assert_eq!(typed.lines().nth(22), Some("go to: q?j▏"));
+    let cancelled = screen("c-x86_64.elf", None, (80, 24), &["g", "log", "Esc"]);
+    assert!(
+        cancelled.starts_with("c-x86_64.elf › main\n"),
+        "{cancelled}"
+    );
+    let binary = load_sample("c-x86_64.elf");
+    let stop = |script: &[&str]| browse(SAMPLE, &binary, None, (80, 24), script).1;
+    assert_eq!(stop(&["g", "Ctrl-C"]), Stop::Quit);
+    #[cfg(unix)]
+    assert_eq!(stop(&["g", "Ctrl-Z"]), Stop::Suspend);
+    // With nothing typed, the box says what to type.
+    let empty = screen("c-x86_64.elf", None, (80, 24), &["g"]);
+    assert_eq!(
+        empty.lines().nth(1),
+        Some("type a name, the end of a name, or an address")
+    );
+}
+
+#[test]
+fn question_mark_opens_the_help() {
+    assert_output(
+        &screen("c-cortex-m7.elf", Some("app_tick"), (100, 30), &["?"]),
+        "\
+c-cortex-m7.elf › app_tick › help
+Keys
+  ↑ ↓  k j             move
+  PgUp PgDn Space      a page up or down
+  Home End             the first or last line
+  Enter → l            follow the line's link
+  Esc ← h Bksp Ctrl-O  back to where you were
+  ]                    forward again
+  Tab Shift-Tab        the next or previous line that uses another item
+  g                    go to a function or data object, by name or address
+  ?                    this help
+  Ctrl-Z               back to the shell; fg returns
+  q Ctrl-C             quit
+Words
+  call                 a direct call, or a call through a register that the code loaded with the
+                       target's address, as a long call does
+  tail call            a jump to the start of a function, which then returns to the caller's caller
+  uses                 code reads or writes data, or loads its address
+  address taken        code loads a function's address, as when passing a function pointer, or an
+                       import's
+  pointer              data holds a pointer to it, as in a table of functions
+  via veneer           through a stub that the linker added; the note names where it ends up
+  via PLT              through a PLT stub that passes the call on to one of the file's own
+                       functions; the note names it
+  jump ↓  jump ↑       a branch to a line further down or up the function; Enter moves there
+  in .bss              the section of an item in another block of memory than this function
+  ~12  ?               an estimated size, and an unknown size
+
+
+↑↓ move  enter follow  esc back  g go to  ? help  q quit
+",
+    );
+    // It scrolls, and Esc goes back.
+    let end = screen("c-x86_64.elf", None, (60, 16), &["?", "End"]);
+    assert!(
+        end.contains("\n  ~12  ?               an estimated size, and an unknown\n"),
+        "{end}"
+    );
+    let back = screen("c-x86_64.elf", None, (80, 24), &["?", "Esc"]);
+    assert!(back.starts_with("c-x86_64.elf › main\n"), "{back}");
 }
 
 #[test]
@@ -448,7 +594,7 @@ used by 1 · uses 3
 
 
 
-↑↓ move  enter follow  esc back  tab next link  q quit
+↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
 ",
     );
     // Through the stub, to the function.
@@ -489,7 +635,7 @@ used by 5 · uses 2
 
 
 
-↑↓ move  enter follow  esc back  tab next link  q quit
+↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
 ",
     );
 }
@@ -528,7 +674,7 @@ used by 1 · uses 7 · 1 call elfq can't follow
   0x1622   xor     eax, eax
   0x1624   mov     rdi, rsp
 
-↑↓ move  enter follow  esc back  tab next link  q quit
+↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
 ",
     );
 }
@@ -561,7 +707,7 @@ root: vector table · used by 1 · uses 2
 elfq doesn't print Thumb instructions yet: these are the lines that use another
 item.
 → systick_count  data object at 0x20000444, 4 bytes, in .bss
-↑↓ move  enter follow  esc back  tab next link  q quit
+↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
 ",
     );
     // An item in another block of memory has its section after it.
@@ -597,7 +743,7 @@ used by 1 · uses 10
 
 elfq doesn't print Thumb instructions yet: these are the lines that use another item.
 → decode_header  function at 0x30000160, 40 bytes, in .text
-↑↓ move  enter follow  esc back  tab next link  q quit
+↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
 ",
     );
     // And a function that uses nothing says so.
@@ -627,7 +773,7 @@ another item.
 
 
 
-↑↓ move  enter follow  esc back  q quit
+↑↓ move  enter follow  esc back  g go to  ? help  q quit
 ",
     );
 }
@@ -660,7 +806,7 @@ root: entry point · used by nothing · uses 2
 
 
 
-↑↓ move  enter follow  esc back  tab next link  q quit
+↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
 ",
     );
     assert_output(
@@ -695,7 +841,7 @@ found by following the code · root: vector table · used by 1 · uses 2
 
 elfq doesn't print Thumb instructions yet: these are the lines that use another item.
 → .bss@0x20000444  data object at 0x20000444, ~4 bytes, in .bss
-↑↓ move  enter follow  esc back  tab next link  q quit
+↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
 ",
     );
 }
@@ -728,7 +874,7 @@ elfq doesn't know where _init ends, so it can't read its code
 
 
 
-↑↓ move  enter follow  esc back  q quit
+↑↓ move  enter follow  esc back  g go to  ? help  q quit
 ",
     );
     assert_output(
@@ -757,7 +903,7 @@ frames_ok is a data object: it has no code
 
 
 
-↑↓ move  enter follow  esc back  q quit
+↑↓ move  enter follow  esc back  g go to  ? help  q quit
 ",
     );
 }
@@ -796,7 +942,7 @@ used by 1 · uses 13
   0x10c7   lea     rsi, [rip+0x1a2]  address taken on_data
   0x10ce   mov     edi, 2
 
-↑↓ move  enter follow  esc back  tab next link  q quit
+↑↓ move  enter follow  esc back  g go to  ? help  q quit
 ",
     );
 }
@@ -875,7 +1021,7 @@ found by following the code · used by 1 · uses 1
 elfq doesn't print Thumb instructions yet: these are the lines that use another
 item.
 → fn_0x8113858  function at 0x8113858, ~8 bytes, in .text
-↑↓ move  enter follow  esc back  tab next link  q quit
+↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
 ",
     );
 }
@@ -919,8 +1065,9 @@ fn browse_needs_a_terminal() {
 
 #[test]
 fn used_by_counts_the_callers_that_the_callers_command_lists() {
-    // `callers __rust_dealloc` says it "is used by 82 functions", from 118
-    // calls and uses.
+    // `callers __rust_dealloc` says it "is used by 82 functions", in 118
+    // rows: a function that calls it and also takes its address has a row
+    // for each.
     let page = screen(
         "rust-x86_64-nodebug.elf",
         Some("__rust_dealloc"),
@@ -1087,5 +1234,235 @@ fn the_files_warnings_are_printed_when_browse_quits_or_refuses_it() {
     assert_eq!(
         output,
         format!("{warning}\r\nerror: elfq can't yet read Aarch64 code to tell what calls what\r\n")
+    );
+}
+
+#[test]
+fn go_to_says_why_it_lists_nothing() {
+    // In the CLI's words.
+    assert_output(
+        &screen("cpp-x86_64.elf", None, (80, 24), &["g", "mainz"]),
+        "\
+cpp-x86_64.elf › main › go to
+  ADDRESS  SIZE  KIND  SECTION  ITEM
+no function or data object is named `mainz`; did you mean main?
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+go to: mainz▏
+↑↓ move  enter open  esc cancel
+",
+    );
+    let import = screen("rust-x86_64-nodebug.elf", None, (80, 24), &["g", "memcpy"]);
+    assert_eq!(
+        import.lines().nth(2),
+        Some("memcpy is imported from a shared library: its code isn't in this file"),
+    );
+}
+
+#[test]
+fn go_to_names_what_symbol_finds_as_the_commands_do() {
+    // Another name of an item finds it, and its row and its page say so.
+    assert_output(
+        &screen("c-cortex-m7.elf", None, (100, 16), &["g", "NMI_Handler"]),
+        "\
+c-cortex-m7.elf › main › go to
+  ADDRESS     SIZE  KIND      SECTION  ITEM
+> 0x300005f4     2  function  .text    Default_Handler (also named NMI_Handler)
+
+
+
+
+
+
+
+
+
+
+
+go to: NMI_Handler▏
+↑↓ move  enter open  esc cancel
+",
+    );
+    let page = screen(
+        "c-cortex-m7.elf",
+        None,
+        (100, 16),
+        &["g", "NMI_Handler", "Enter"],
+    );
+    assert_eq!(
+        page.lines().nth(1),
+        Some("Default_Handler (also named NMI_Handler)  function at 0x300005f4, 2 bytes, in .text"),
+    );
+}
+
+#[test]
+fn go_to_ignores_case_and_says_how_many_it_leaves_out() {
+    assert_eq!(
+        screen("c-cortex-m7.elf", None, (100, 16), &["g", "CRC"]),
+        screen("c-cortex-m7.elf", None, (100, 16), &["g", "crc"])
+            .replace("go to: crc", "go to: CRC")
+    );
+    // It lists 500 items, the largest first, and Home and End go to the
+    // first and the last.
+    assert_output(
+        &screen(
+            "rust-x86_64-nodebug.elf",
+            None,
+            (100, 16),
+            &["g", "e", "End", "Home"],
+        ),
+        "\
+rust-x86_64-nodebug.elf › main › go to
+  ADDRESS   SIZE  KIND      SECTION             ITEM
+> 0x18c00  15332  function  .text               <std::backtrace_rs::symbolize::gimli::Cache>::with_…
+  0x336a3  12242  function  .text               <std::backtrace_rs::symbolize::gimli::Context>::new
+  0x2f760   9301  function  .text               <gimli::read::dwarf::Unit<gimli::read::endian_slice…
+  0x16b20   8244  function  .text               <core::cell::once::OnceCell<core::result::Result<ad…
+  0x49d5d   6210  function  .text               miniz_oxide::inflate::core::decompress
+  0x20b10   5196  function  .text               gimli::read::unit::parse_attribute::<gimli::read::e…
+  0x2d960   4538  function  .text               <addr2line::function::Function<gimli::read::endian_…
+  0x3c8c0   4161  function  .text               std::sys::pal::unix::stack_overflow::thread_info::s…
+  0x37c50   3972  function  .text               <gimli::read::rnglists::RngListIter<gimli::read::en…
+  0x15ba0   3964  function  .text               <core::cell::once::OnceCell<core::result::Result<ad…
+  0x2b940   3222  function  .text               <std::backtrace_rs::symbolize::gimli::Mapping>::new…
+and 389 more; type more of the name
+go to: e▏
+↑↓ move  enter open  esc cancel
+",
+    );
+    let end = screen(
+        "rust-x86_64-nodebug.elf",
+        None,
+        (100, 16),
+        &["g", "e", "End"],
+    );
+    let (last, _) = selected_and_status(&end);
+    assert_eq!(
+        last,
+        "> 0x4a40      25  data      .rodata             elfq_sample::FRAME_A"
+    );
+}
+
+#[test]
+fn the_message_over_go_to_wraps() {
+    assert_output(
+        &screen("cpp-x86_64.elf", Some("Gain"), (80, 24), &[]),
+        "\
+cpp-x86_64.elf › main › go to
+no function or data object is named `Gain`; the compiler inlined its one copy
+into main, which `inlined main` lists; did you mean 'vtable for Gain', 'typeinfo
+for Gain', 'typeinfo name for Gain', Gain::run, main?
+  ADDRESS  SIZE  KIND      SECTION       ITEM
+> 0x12f0     56  function  .text         app::Gain::run(short*, unsigned long)
+  0x3d38     24  data      .data.rel.ro  vtable for app::Gain
+  0x3d78     24  data      .data.rel.ro  typeinfo for app::Gain
+  0x2050     12  data      .rodata       typeinfo name for app::Gain
+
+
+
+
+
+
+
+
+
+
+
+
+
+go to: Gain▏
+↑↓ move  enter open  esc cancel
+",
+    );
+}
+
+#[test]
+fn a_second_question_mark_opens_no_second_help() {
+    let back = screen("c-x86_64.elf", None, (80, 24), &["?", "?", "Esc"]);
+    assert!(back.starts_with("c-x86_64.elf › main\n"), "{back}");
+}
+
+#[test]
+fn rust_and_shared_library_pages_at_the_other_size() {
+    assert_output(
+        &screen("rust-x86_64-nodebug.elf", Some("main"), (100, 30), &[]),
+        "\
+rust-x86_64-nodebug.elf › main
+main  function at 0x15220, 46 bytes, in .text
+used by 1 · uses 4
+  ADDRESS  INSTRUCTION
+> 0x15220  push    rax
+  0x15221  mov     rcx, rsi
+  0x15224  movzx   eax, byte ptr [rip-0xade3]  uses __rustc_debug_gdb_scripts_section__
+  0x1522b  movsxd  rdx, edi
+  0x1522e  lea     rax, [rip-0x695]            address taken elfq_sample::main
+  0x15235  mov     [rsp], rax
+  0x15239  lea     rsi, [rip+0x3dab8]          uses .data.rel.ro@0x52cf8
+  0x15240  mov     rdi, rsp
+  0x15243  xor     r8d, r8d
+  0x15246  call    qword ptr [rip+0x3f924]     call lang_start_internal
+  0x1524c  pop     rcx
+  0x1524d  ret
+
+
+
+
+
+
+
+
+
+
+
+
+
+↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
+",
+    );
+    assert_output(
+        &screen("c-x86_64.so", Some("app_tick"), (80, 24), &[]),
+        "\
+c-x86_64.so › app_tick
+app_tick  function at 0x1770, 62 bytes, in .text
+used by 1 · uses 3
+  ADDRESS  INSTRUCTION
+> 0x1770   endbr64
+  0x1774   imul    eax, edi, 0xc28f5c29
+  0x177a   push    rbx
+  0x177b   mov     ebx, edi
+  0x177d   ror     eax, 2
+  0x1780   cmp     eax, 0x28f5c28
+  0x1785   jbe     0x1798                jump ↓
+  0x1787   mov     esi, ebx
+  0x1789   xor     edi, edi
+  0x178b   pop     rbx
+  0x178c   jmp     dispatch_event@plt    tail call via PLT → dispatch_event
+  0x1791   nop     [rax]
+  0x1798   lea     rdi, [rip+0x869]      uses .rodata@0x2008 \"tick\\n\"
+  0x179f   call    log_msg@plt           call via PLT → log_msg
+  0x17a4   mov     esi, ebx
+  0x17a6   xor     edi, edi
+  0x17a8   pop     rbx
+  0x17a9   jmp     dispatch_event@plt    tail call via PLT → dispatch_event
+
+↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
+",
     );
 }
