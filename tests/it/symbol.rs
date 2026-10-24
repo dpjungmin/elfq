@@ -265,6 +265,24 @@ fn typos_get_suggestions() {
         error(&binary, "aeabi_dad"),
         "no function or data object is named `aeabi_dad`; did you mean __aeabi_dadd?"
     );
+
+    // Of the names that contain the query, those the fewest typos from it
+    // are the ones to suggest: `app::checksum` is two typos from
+    // `app::checks`, closer than the longer names of the three checksum
+    // functions, but finds all three, so nothing is suggested. A name
+    // whose length is more typos away than the query allows counts as one
+    // typo further.
+    let binary = load_sample("cpp-x86_64.elf");
+    for query in ["app::checks", "app::l", "p::log", "p::checksum"] {
+        assert_eq!(
+            error(&binary, query),
+            format!("no function or data object is named `{query}`")
+        );
+    }
+    assert_eq!(
+        error(&binary, "load_defaultsxy"),
+        "no function or data object is named `load_defaultsxy`; did you mean load_defaults?"
+    );
 }
 
 #[test]

@@ -158,7 +158,7 @@ fn path_end(name: &str) -> &str {
         .rfind(|&start| !name[start..].starts_with('<'))
         .unwrap_or(0);
     let end = &name[start..];
-    let clone_before = name.find(" [clone ").is_some_and(|at| at < start);
+    let clone_before = clone_suffix_at(name).is_some_and(|at| at < start);
     let mut depth = 0usize;
     let closes_before = end.chars().any(|c| match c {
         '(' => {
@@ -215,8 +215,13 @@ fn for_each_path(name: &str, mut visit: impl FnMut(&[&str])) {
     }
 
     for path in &paths {
-        for parts in [split_path(path), split_path(&without_generics(path))] {
-            let Some(parts) = parts else { continue };
+        if let Some(parts) = split_path(path) {
+            visit(&parts);
+        }
+        // A path without generic arguments is the same without them.
+        if path.contains('<')
+            && let Some(parts) = split_path(&without_generics(path))
+        {
             visit(&parts);
         }
     }
@@ -253,8 +258,18 @@ const CPP_SPECIAL_PREFIXES: &[&str] = &[
 /// a function: `app::log(unsigned int) [clone .constprop.0]` becomes
 /// `app::log(unsigned int)`.
 fn without_clone_suffix(path: &str) -> Option<String> {
-    let at = path.find(" [clone ")?;
+    let at = clone_suffix_at(path)?;
     Some(path[..at].to_string())
+}
+
+/// Where the suffix that GCC adds to its copies of a function starts in
+/// `name`, if it has one.
+fn clone_suffix_at(name: &str) -> Option<usize> {
+    // Most names have no `[`, which is quicker to look for.
+    if !name.contains('[') {
+        return None;
+    }
+    name.find(" [clone ")
 }
 
 /// A C++ function's name without its parameters and the qualifiers after
@@ -293,6 +308,9 @@ fn without_parameters(path: &str) -> Option<String> {
 /// For a method in an impl block, written `<Type as Trait>::method` or
 /// `<Type>::method`, the paths `Type::method` and `Trait::method`.
 fn impl_method_paths(path: &str) -> Vec<String> {
+    if !path.starts_with('<') {
+        return Vec::new();
+    }
     let Some(parts) = split_path(path) else {
         return Vec::new();
     };
@@ -350,28 +368,43 @@ fn without_generics(path: &str) -> String {
 
 /// `text` without anything in angle brackets: `Vec<u8>` becomes `Vec`.
 fn remove_angle_brackets(text: &str) -> String {
+    if !text.contains('<') {
+        return text.to_string();
+    }
     let bytes = text.as_bytes();
     let mut depth = 0usize;
     let mut kept = String::new();
+    // Where the text outside brackets that `kept` doesn't have yet starts.
+    let mut outside = 0;
     let mut at = 0;
     while at < bytes.len() {
         // C++'s `operator<` is a name, not a bracket.
-        if let Some(end) = operator_end(bytes, at) {
-            if depth == 0 {
-                kept.push_str(&text[at..end]);
-            }
+        if bytes[at] == b'o'
+            && let Some(end) = operator_end(bytes, at)
+        {
             at = end;
             continue;
         }
-        let c = text[at..].chars().next().unwrap_or_default();
-        match c {
-            '<' => depth += 1,
+        match bytes[at] {
+            b'<' => {
+                if depth == 0 {
+                    kept.push_str(&text[outside..at]);
+                }
+                depth += 1;
+            }
             // The `>` of `->`, as in `fn() -> u8`, closes nothing.
-            '>' if !text[..at].ends_with('-') && depth > 0 => depth -= 1,
-            _ if depth == 0 => kept.push(c),
+            b'>' if depth > 0 && (at == 0 || bytes[at - 1] != b'-') => {
+                depth -= 1;
+                if depth == 0 {
+                    outside = at + 1;
+                }
+            }
             _ => {}
         }
-        at += c.len_utf8();
+        at += 1;
+    }
+    if depth == 0 {
+        kept.push_str(&text[outside..]);
     }
     kept
 }
@@ -380,24 +413,36 @@ fn remove_angle_brackets(text: &str) -> String {
 /// `None` when the brackets don't pair up.
 fn top_level_matches(text: &str, pattern: &str) -> Option<Vec<usize>> {
     let bytes = text.as_bytes();
+    let pattern = pattern.as_bytes();
     let mut matches = Vec::new();
     let mut depth = 0usize;
     let mut at = 0;
-    // Most names are long and have few brackets: the byte at `at` is
-    // checked before anything that starts there.
-    let first = pattern.as_bytes().first();
+    let first = pattern.first().copied();
     while at < bytes.len() {
-        if depth == 0 && Some(&bytes[at]) == first && bytes[at..].starts_with(pattern.as_bytes()) {
+        // Most names are long and have few brackets: bytes that start
+        // nothing are passed over first.
+        let byte = bytes[at];
+        let brackets_or_operator = matches!(
+            byte,
+            b'<' | b'>' | b'(' | b')' | b'[' | b']' | b'{' | b'}' | b'o'
+        );
+        if !brackets_or_operator && Some(byte) != first {
+            at += 1;
+            continue;
+        }
+        if depth == 0 && Some(byte) == first && bytes[at..].starts_with(pattern) {
             matches.push(at);
             at += pattern.len();
             continue;
         }
-        // C++'s `operator<` is a name, not a bracket.
-        if let Some(end) = operator_end(bytes, at) {
-            at = end;
-            continue;
-        }
-        match bytes[at] {
+        match byte {
+            // C++'s `operator<` is a name, not a bracket.
+            b'o' => {
+                if let Some(end) = operator_end(bytes, at) {
+                    at = end;
+                    continue;
+                }
+            }
             b'<' | b'(' | b'[' | b'{' => depth += 1,
             // The `>` of `->`, as in `fn() -> u8`, closes nothing.
             b'>' if at > 0 && bytes[at - 1] == b'-' => {}

@@ -156,6 +156,35 @@ pub(super) struct Names<'a> {
     /// and they are never suggested, since a name like theirs means the
     /// function.
     own_function_stubs: OnceCell<HashSet<usize>>,
+    /// The functions that the compiler inlined, read from the DWARF the
+    /// first time a query finds nothing; `None` when it can't be read.
+    inlined: OnceCell<Option<Inlined>>,
+    /// What [`Names::similar`] compares a query with, made the first time a
+    /// query finds nothing.
+    suggestable: OnceCell<Suggestable>,
+}
+
+/// The copies of functions that the compiler inlined, by function.
+struct Inlined {
+    copies: Vec<InlinedCopy>,
+    /// Each function's name, with its copies, as indices into `copies`.
+    functions: Vec<(String, Vec<usize>)>,
+    /// The function with each name, as an index into `functions`.
+    by_name: HashMap<String, usize>,
+    /// The functions that each key files (see [`short_name_key`]).
+    filed: HashMap<String, Vec<usize>>,
+}
+
+/// The names of every item and import that [`Names::similar`] can suggest,
+/// with their short names, in lowercase, so that each query needn't work
+/// them out again.
+struct Suggestable {
+    /// Each item or import, with where its names start in `ends`.
+    nodes: Vec<(Node, usize)>,
+    /// Every name, one after another.
+    text: String,
+    /// Where each name ends in `text`.
+    ends: Vec<usize>,
 }
 
 /// The items filed under a key, and their short names with it.
@@ -176,6 +205,8 @@ impl<'a> Names<'a> {
             all_short: OnceCell::new(),
             many: Cell::new(false),
             own_function_stubs: OnceCell::new(),
+            inlined: OnceCell::new(),
+            suggestable: OnceCell::new(),
         }
     }
 
@@ -254,15 +285,10 @@ impl<'a> Names<'a> {
         if !self.binary.has_dwarf {
             return None;
         }
-        let all_copies = debuginfo::inlined_copies(self.binary).ok()?;
-        let copies: Vec<&InlinedCopy> = all_copies
-            .iter()
-            .filter(|copy| copy.name == query || short_names(&copy.name).iter().any(|s| s == query))
-            .collect();
-        let name = &copies.first()?.name;
-        if copies.iter().any(|copy| &copy.name != name) {
-            return None;
-        }
+        let inlined = self.inlined()?;
+        let all_copies = &inlined.copies;
+        let (name, copies) = &inlined.functions[inlined.only_function(query)?];
+        let copies: Vec<&InlinedCopy> = copies.iter().map(|&copy| &all_copies[copy]).collect();
         // GCC names what it keeps out of line after the function, as
         // `checksum.part.0`, or in C++, `checksum(char const*) [clone
         // .part.0]`.
@@ -293,7 +319,7 @@ impl<'a> Names<'a> {
         // leave this one out without `--all`.
         let (_, first) = into[0];
         let all = match first {
-            Node::Item(index) if !super::inlined::shows(&all_copies, index, name) => " --all",
+            Node::Item(index) if !super::inlined::shows(all_copies, index, name) => " --all",
             _ => "",
         };
         let command = format!(
@@ -315,6 +341,38 @@ impl<'a> Names<'a> {
                 names[0]
             ),
         })
+    }
+
+    /// The copies of functions that the compiler inlined, as the DWARF
+    /// lists them, read once.
+    fn inlined(&self) -> Option<&Inlined> {
+        let inlined = self.inlined.get_or_init(|| {
+            let copies = debuginfo::inlined_copies(self.binary).ok()?;
+            // A function is often inlined in many places: each is filed
+            // once.
+            let mut functions: Vec<(String, Vec<usize>)> = Vec::new();
+            let mut by_name: HashMap<String, usize> = HashMap::new();
+            for (index, copy) in copies.iter().enumerate() {
+                let function = *by_name.entry(copy.name.clone()).or_insert_with(|| {
+                    functions.push((copy.name.clone(), Vec::new()));
+                    functions.len() - 1
+                });
+                functions[function].1.push(index);
+            }
+            let mut filed: HashMap<String, Vec<usize>> = HashMap::new();
+            for (function, (name, _)) in functions.iter().enumerate() {
+                for key in short_name_keys(name) {
+                    filed.entry(key).or_default().push(function);
+                }
+            }
+            Some(Inlined {
+                copies,
+                functions,
+                by_name,
+                filed,
+            })
+        });
+        inlined.as_ref()
     }
 
     /// How elfq names items in a file without a symbol table, with
@@ -481,11 +539,7 @@ impl<'a> Names<'a> {
     /// name other than a mangled symbol, or failing those, an item's
     /// address.
     pub(super) fn query_for(&self, node: Node) -> String {
-        let names: Vec<&str> = match node {
-            Node::Item(index) => self.binary.items[index].names().collect(),
-            Node::Import(index) => vec![&self.binary.imports[index]],
-        };
-        self.shortest_name(node, names, |_| true)
+        self.shortest_name(node, self.names_of(node), |_| true)
             .unwrap_or_else(|| match node {
                 Node::Item(index) => format!("{:#x}", self.binary.items[index].address),
                 Node::Import(_) => node.name(self.binary).to_string(),
@@ -586,16 +640,18 @@ impl<'a> Names<'a> {
     /// `query`, ignoring case, or differ from it by a typo or two.
     fn similar(&self, query: &str) -> Vec<String> {
         let query = query.to_lowercase();
-        let typos = (query.chars().count() / 3).min(2);
+        let query_length = query.chars().count();
+        let typos = (query_length / 3).min(2);
+        // How far `name`, in lowercase, is from `query`, if it is close:
+        // 0 when it contains `query`, or else the typos between them.
         let distance = |name: &str| {
-            let name = name.to_lowercase();
             if name.contains(&query) {
                 return Some(0);
             }
-            if name.chars().count().abs_diff(query.chars().count()) > typos {
+            if name.chars().count().abs_diff(query_length) > typos {
                 return None;
             }
-            Some(edit_distance(&name, &query)).filter(|&distance| distance <= typos)
+            Some(edit_distance(name, &query)).filter(|&distance| distance <= typos)
         };
         // How close the closest of `names` and their short names comes, and
         // those of them to suggest: the fewest typos from `query`, and of
@@ -606,11 +662,18 @@ impl<'a> Names<'a> {
             let close: Vec<(usize, String)> = names
                 .into_iter()
                 .flat_map(|name| short_names(name).into_iter().chain([name.to_string()]))
-                .filter_map(|name| Some((distance(&name)?, name)))
+                .filter_map(|name| Some((distance(&name.to_lowercase())?, name)))
                 .collect();
             let nearest = close.iter().map(|(distance, _)| *distance).min()?;
             let rank = |(distance, name): &(usize, String)| {
-                let typos_from = edit_distance(&name.to_lowercase(), &query).min(typos + 1);
+                // More typos than `typos` count the same, and a name whose
+                // length differs from the query's by more has more.
+                let name = name.to_lowercase();
+                let typos_from = if name.chars().count().abs_diff(query_length) > typos {
+                    typos + 1
+                } else {
+                    edit_distance(&name, &query).min(typos + 1)
+                };
                 (typos_from, *distance > 0)
             };
             let best = close.iter().map(rank).min()?;
@@ -622,34 +685,26 @@ impl<'a> Names<'a> {
             Some((nearest, closest))
         };
 
-        // A stub for one of the file's own functions is left out: its
-        // function is the one to suggest.
-        let items = (0..self.binary.items.len())
-            .filter(|index| !self.own_function_stubs().contains(index))
-            .map(|index| {
-                let item = &self.binary.items[index];
-                (
-                    Node::Item(index),
-                    item.name.as_str(),
-                    item.names().collect(),
-                )
-            });
-        let imports = (0..self.binary.imports.len()).map(|index| {
-            let import = self.binary.imports[index].as_str();
-            (Node::Import(index), import, vec![import])
-        });
-        // Closest first, then shortest.
-        let mut similar: Vec<(usize, usize, &str, Node, Vec<String>)> = items
-            .chain(imports)
-            .filter_map(|(node, name, names)| {
-                let (distance, closest) = closest(names)?;
-                Some((distance, name.len(), name, node, closest))
+        // Closest first, then shortest. How close each item or import
+        // comes is worked out from its names in lowercase, made once; which
+        // of its names came closest only for those that the loop below
+        // gets to.
+        let suggestable = self.suggestable();
+        let mut similar: Vec<(usize, usize, &str, Node)> = (0..suggestable.nodes.len())
+            .filter_map(|at| {
+                let distance = suggestable.names(at).filter_map(distance).min()?;
+                let node = suggestable.nodes[at].0;
+                let name = node.name(self.binary);
+                Some((distance, name.len(), name, node))
             })
             .collect();
-        similar.sort_by(|a, b| (a.0, a.1, a.2, a.3).cmp(&(b.0, b.1, b.2, b.3)));
+        similar.sort();
 
         let mut suggestions: Vec<String> = Vec::new();
-        for (distance, _, _, node, closest) in similar {
+        for (distance, _, _, node) in similar {
+            let Some((_, closest)) = closest(self.names_of(node)) else {
+                continue;
+            };
             // The shortest of the names that came closest, which needn't be
             // the item's shortest name: `sniprintf` for `sniprin`, though
             // its alias `snprintf` is shorter. Failing that, when none of them
@@ -676,6 +731,93 @@ impl<'a> Names<'a> {
             }
         }
         suggestions
+    }
+
+    /// The items and imports that [`Names::similar`] can suggest, with
+    /// their names and short names in lowercase. A stub for one of the
+    /// file's own functions is left out: its function is the one to
+    /// suggest.
+    fn suggestable(&self) -> &Suggestable {
+        self.suggestable.get_or_init(|| {
+            let items = (0..self.binary.items.len())
+                .filter(|index| !self.own_function_stubs().contains(index))
+                .map(Node::Item);
+            let imports = (0..self.binary.imports.len()).map(Node::Import);
+            let mut suggestable = Suggestable {
+                nodes: Vec::new(),
+                text: String::new(),
+                ends: Vec::new(),
+            };
+            for node in items.chain(imports) {
+                let first = suggestable.ends.len();
+                suggestable.nodes.push((node, first));
+                let mut names: Vec<String> = Vec::new();
+                for name in self.names_of(node) {
+                    for name in short_names(name).into_iter().chain([name.to_string()]) {
+                        let name = name.to_lowercase();
+                        // Names that are the same in lowercase come as
+                        // close: one is enough.
+                        if !names.contains(&name) {
+                            names.push(name);
+                        }
+                    }
+                }
+                for name in names {
+                    suggestable.text += &name;
+                    suggestable.ends.push(suggestable.text.len());
+                }
+            }
+            suggestable
+        })
+    }
+
+    /// The names of `node`: an item's name and aliases, or an import's
+    /// name.
+    fn names_of(&self, node: Node) -> Vec<&'a str> {
+        match node {
+            Node::Item(index) => self.binary.items[index].names().collect(),
+            Node::Import(index) => vec![&self.binary.imports[index]],
+        }
+    }
+}
+
+impl Inlined {
+    /// The function that `query` names, as its name or a short name, when
+    /// it names only one.
+    fn only_function(&self, query: &str) -> Option<usize> {
+        let mut found: Vec<usize> = self.by_name.get(query).copied().into_iter().collect();
+        let filed = short_name_key(query).and_then(|key| self.filed.get(key));
+        for &function in filed.into_iter().flatten() {
+            if found.contains(&function) {
+                continue;
+            }
+            let (name, _) = &self.functions[function];
+            if short_names(name)
+                .iter()
+                .any(|short_name| short_name == query)
+            {
+                found.push(function);
+            }
+        }
+        match found[..] {
+            [function] => Some(function),
+            _ => None,
+        }
+    }
+}
+
+impl Suggestable {
+    /// The names, in lowercase, of the item or import at `at` in `nodes`.
+    fn names(&self, at: usize) -> impl Iterator<Item = &str> {
+        let first = self.nodes[at].1;
+        let last = self
+            .nodes
+            .get(at + 1)
+            .map_or(self.ends.len(), |&(_, first)| first);
+        (first..last).map(move |name| {
+            let start = name.checked_sub(1).map_or(0, |before| self.ends[before]);
+            &self.text[start..self.ends[name]]
+        })
     }
 }
 
@@ -704,26 +846,26 @@ fn add(nodes: &mut Vec<Node>, node: Node) {
 fn edit_distance(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
-    // distance[i][j] is the distance between the first i characters of `a`
-    // and the first j of `b`.
-    let mut distance = vec![vec![0; b.len() + 1]; a.len() + 1];
-    for (i, row) in distance.iter_mut().enumerate() {
-        row[0] = i;
-    }
-    distance[0] = (0..=b.len()).collect();
+    // `row[j]` is the distance between the first i characters of `a` and
+    // the first j of `b`. Only the rows for the two i before are needed.
+    let mut two_before = vec![0; b.len() + 1];
+    let mut before: Vec<usize> = (0..=b.len()).collect();
+    let mut row = vec![0; b.len() + 1];
     for i in 1..=a.len() {
+        row[0] = i;
         for j in 1..=b.len() {
-            let replace = distance[i - 1][j - 1] + usize::from(a[i - 1] != b[j - 1]);
-            let mut best = replace
-                .min(distance[i - 1][j] + 1)
-                .min(distance[i][j - 1] + 1);
+            let replace = before[j - 1] + usize::from(a[i - 1] != b[j - 1]);
+            let mut best = replace.min(before[j] + 1).min(row[j - 1] + 1);
             if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
-                best = best.min(distance[i - 2][j - 2] + 1);
+                best = best.min(two_before[j - 2] + 1);
             }
-            distance[i][j] = best;
+            row[j] = best;
         }
+        // The row just made comes before the next, which reuses the oldest.
+        std::mem::swap(&mut two_before, &mut before);
+        std::mem::swap(&mut before, &mut row);
     }
-    distance[a.len()][b.len()]
+    before[b.len()]
 }
 
 #[cfg(test)]
@@ -759,5 +901,10 @@ mod tests {
         assert_eq!(edit_distance("write", "wirte"), 1);
         assert_eq!(edit_distance("log_msg", "lgo_mgs"), 2);
         assert_eq!(edit_distance("", "abc"), 3);
+        assert_eq!(edit_distance("abc", ""), 3);
+        // A swap counts once, but a character can't move further after it.
+        assert_eq!(edit_distance("ab", "ba"), 1);
+        assert_eq!(edit_distance("ca", "abc"), 3);
+        assert_eq!(edit_distance("größe", "grösse"), 2);
     }
 }
