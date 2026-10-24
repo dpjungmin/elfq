@@ -11,9 +11,16 @@
 //! In stripped Cortex-M firmware, elfq also has to work out where functions
 //! end, so the Thumb module also tells the padding between functions apart
 //! and how a stretch of code ends.
+//!
+//! `listing.rs` prints a function's code as text, for `elfq FILE browse`.
 
+#[cfg(feature = "tui")]
+mod listing;
 mod thumb;
 mod x86_64;
+
+#[cfg(feature = "tui")]
+pub use listing::{Line, listing};
 
 use object::{Architecture, Endianness};
 

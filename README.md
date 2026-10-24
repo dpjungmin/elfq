@@ -26,18 +26,19 @@ elfq app.elf callers log_msg            # what calls or uses log_msg
 elfq app.elf callees main               # what main calls or uses
 elfq app.elf callees 0x0+256K           # what the first 256 KiB uses outside it
 elfq app.elf reach SysTick_Handler      # what SysTick_Handler runs and uses, and where
+elfq app.elf browse log_msg             # read log_msg's code, and follow what it calls
 ```
 
 [docs/examples.md](docs/examples.md) asks real questions about the sample
 binaries in `testdata/bin`, each with the command that answers it and what
 elfq prints.
 
-Every command also prints JSON for scripts with `--json`: every item, site
-and chain, one row per line, though the overview's JSON leaves its table to
-`top`'s. [docs/design.md](docs/design.md#json) lists the keys. Until 1.0
-the JSON can change, and each release says how. The overview,
-`top` and `retained` can count only the bytes in one range of memory, such
-as a microcontroller's ITCM, with `--range START..END` or
+Every command but `browse` also prints JSON for scripts with `--json`:
+every item, site and chain, one row per line, though the overview's JSON
+leaves its table to `top`'s. [docs/design.md](docs/design.md#json) lists
+the keys. Until 1.0 the JSON can change, and each release says how. The
+overview, `top` and `retained` can count only the bytes in one range of
+memory, such as a microcontroller's ITCM, with `--range START..END` or
 `--range START+SIZE`; for firmware, the overview lists the ranges its
 sections and their load images occupy.
 
@@ -113,7 +114,9 @@ placeholder for now.
 `callers`, `callees` and `reach` work on x86-64 and Cortex-M executables,
 with readable Rust and C++ names, and `inlined` works on any file with DWARF
 debug info that isn't compressed. The overview, `callers`, `callees` and
-`reach` also work on x86-64 shared libraries.
+`reach` also work on x86-64 shared libraries. `browse` prints x86-64 code;
+in Thumb code, its pages list only the lines that use another item, until
+elfq prints Thumb instructions.
 See [docs/design.md](docs/design.md) for how elfq works and what comes next,
 [docs/survey.md](docs/survey.md) for how existing tools compare, and
 [CONTRIBUTING.md](CONTRIBUTING.md) to build it.

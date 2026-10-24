@@ -436,7 +436,7 @@ fn most_used(binary: &Binary, graph: &Graph) -> Option<usize> {
 /// `main` if there is one, or else the function where the program starts,
 /// such as firmware's reset handler, since every reader knows where those
 /// fit; otherwise the largest function.
-fn starting_point(binary: &Binary, names: &Names) -> Option<usize> {
+pub(super) fn starting_point(binary: &Binary, names: &Names) -> Option<usize> {
     // `main` as SYMBOL would find it, so also `app::main` in Rust.
     let main = match names.nodes("main") {
         [Node::Item(index)] => Some(*index),
