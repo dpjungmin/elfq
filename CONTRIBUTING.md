@@ -53,7 +53,7 @@ terminal is as it was; `.github/workflows/ci.yml` has the command.
 | `src/lib.rs` | Declares the modules below. elfq is a library plus that small program; the library exists for the program and its tests. |
 | `src/cli.rs` | Command-line arguments, with clap: a `Command` variant for each command, the structs that hold their arguments, and the text of `--help`. |
 | `src/commands/` | One file per command, which looks up SYMBOL, asks `graph` or `debuginfo` and decides what the answer shows. `mod.rs` runs the command the arguments name, after checking arguments that don't go together. The rest are shared: `symbol.rs` works out what a user means by SYMBOL, `retained_tree.rs` builds the trees of retained sizes that the overview, `top` and `retained` show, `ranges.rs` answers `callers` and `callees` for ranges of memory or with `--from` or `--to`, `text.rs` holds the wording that commands share and `json.rs` the JSON shapes. `mod.rs` also has `Kept`, which leaves what a command keeps until it has answered for the system to take back when elfq ends (`end_after_answer`). |
-| `src/commands/browse/` | `elfq FILE browse`, with the `tui` feature: `mod.rs` takes over the terminal and runs the event loop, `session.rs` holds the loaded file and asks the commands' code for answers, `keys.rs` is the table of keys, `app.rs` the history of pages, the go-to box and the screen's layout, and `views/` the pages and the go-to box, one file each. |
+| `src/commands/browse/` | `elfq FILE browse`, with the `tui` feature: `mod.rs` takes over the terminal and runs the event loop, `session.rs` holds the loaded file and asks the commands' code for answers, `keys.rs` is the table of keys, `app.rs` the history of pages, the go-to box and the screen's layout, and `views/` the pages, the go-to box and the tabs of an item's page other than its code, one file each. |
 | `src/arch/` | Finding the addresses that machine code calls or uses, one module per instruction set (x86-64 and Thumb). Thumb's has three parts: `thumb/mod.rs` reads each instruction on its own, `thumb/decode.rs` says what an instruction does with the registers and the stack, and `thumb/values/` follows the addresses that code puts in registers to where a branch through one goes, as for long calls and veneers. `listing.rs` prints a function's code as text, for `browse`: x86-64 with iced-x86's formatter, and Thumb with thumb-asm, in the lines that `thumb::layout` cuts the code into with the same sweep as `scan`. |
 | `src/binary/` | Reading an ELF file: its functions and data objects ("items") and where they were found, their names, imports, stored pointers and memory blocks, and in Arm files the core the code is for (`attributes.rs`) and the data that `$d` symbols mark among code. Unnamed data, such as string literals, is found from what code and pointers refer to. Each function's code is scanned once, as the file loads (`Binary::code_references`). |
 | `src/graph/` | The reference graph that connects items, the roots where the program starts, the dominator tree that says what is exclusive to what, the shortest paths that `why` and `reach` show, the references that cross the boundary of ranges of memory, and where a linker's veneers jump to. |
@@ -145,8 +145,20 @@ without making them public. It and `arch/listing.rs` build only with the
 | `symbol.rs` | Looking up SYMBOL |
 | `inlined.rs` | Inlined copies, from DWARF |
 | `damaged.rs` | Damaged and unusual files, made by changing a sample's bytes |
-| `browse.rs` | `browse`'s screens, driven with keys on ratatui's `TestBackend`, a screen in memory; its errors; and on Linux, the program in a terminal that `script` makes. The checks of every line's link and note on every sample need private types, so they are unit tests in `src/commands/browse/views/item.rs`, and so are those of the Thumb text, in `views/thumb_text.rs`: against objdump's text for each Cortex-M sample, in `testdata/tests/thumb`, and in each stripped sample, against the `$d` symbols of its twin |
+| `browse.rs` | `browse`'s screens, driven with keys on ratatui's `TestBackend`, a screen in memory; its errors; and on Linux, the program in a terminal that `script` makes. The checks that need its private types are unit tests; see below |
 | `docs.rs` | The `$ elfq` examples in README.md, docs/design.md and docs/examples.md, and that design.md names every JSON key |
+
+The checks of `browse` that need its private types are unit tests in
+`src/commands/browse/`:
+
+- `views/item.rs`: every line's link and note, on every sample.
+- `views/callers.rs`: the callers tab of every page of every sample,
+  against what the command under it prints.
+- `app.rs`: that a callers tab keeps its table's header and selected row
+  on a small screen.
+- `views/thumb_text.rs`: the Thumb text, against objdump's text for each
+  Cortex-M sample, in `testdata/tests/thumb`, and in each stripped
+  sample, against the `$d` symbols of its twin.
 
 Two tests in `cli.rs` run the overview and every command it suggests on
 each `.elf` and `.so` file in `testdata/bin`, and `top` on each `.elf`
@@ -268,8 +280,18 @@ page, `item.rs`, is the one to copy; `help.rs` is a short one.
 2. **Wiring, in `views/mod.rs`.** Add `mod <name>;`, a variant to `View`,
    and its arm in each of `View`'s functions; the compiler asks for them.
    `title` names the page in the title line's trail, `preview` says what
-   the selected row's link opens, and `back` goes back within the page,
-   as from a jump inside a function, when it can.
+   the selected row's link opens, `back` goes back within the page, as
+   from a jump inside a function, when it can, and `command` gives the
+   command that prints what the page shows, which goes under it.
+
+   A tab of an item's page, such as `callers.rs`, is drawn and handles
+   actions in the same way, but `item.rs` holds it: add it to `Tab` and
+   `Tab::ALL`, with its number and the name of the command that prints
+   the same answer in `Tab::number_and_name`, and its arm in each of
+   `ItemPage`'s functions; the compiler asks for those, but not for
+   `Tab::ALL`. Its key goes in the "1 3" row of `BINDINGS`, with its help
+   text and hint (step 3). Its rows come from that command's own code, as
+   `callers::answer`, so that they can't drift from what it prints.
 3. **Keys.** A key goes in `BINDINGS` in `keys.rs`, with the new `Action`,
    what the help page says about it, and its hint, if the hint line names
    it. The help page and the hint line are printed from that table, and

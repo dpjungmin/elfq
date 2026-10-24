@@ -23,6 +23,8 @@ pub enum Action {
     /// The next or previous line that uses another item.
     NextLink,
     PreviousLink,
+    /// Show the page's tab with this number, as `3` shows the callers.
+    Tab(u8),
     /// Type a name or an address to go to.
     GoTo,
     /// The help page.
@@ -90,7 +92,7 @@ pub const BINDINGS: &[Binding] = &[
     },
     Binding {
         label: "Enter → l",
-        what: "follow the line's link",
+        what: "follow the line's link, or open the row",
         hint: Some(("enter follow", 0)),
         keys: &[
             (KeyCode::Enter, NONE, Action::Open),
@@ -123,6 +125,15 @@ pub const BINDINGS: &[Binding] = &[
         keys: &[
             (KeyCode::Tab, NONE, Action::NextLink),
             (KeyCode::BackTab, NONE, Action::PreviousLink),
+        ],
+    },
+    Binding {
+        label: "1 3",
+        what: "tabs: 1 code, 3 callers",
+        hint: Some(("1 3 tabs", 3)),
+        keys: &[
+            (KeyCode::Char('1'), NONE, Action::Tab(1)),
+            (KeyCode::Char('3'), NONE, Action::Tab(3)),
         ],
     },
     Binding {
@@ -174,10 +185,11 @@ pub fn action(key: KeyEvent) -> Option<Action> {
 
 /// The hint line for a screen `width` columns wide: the hints that fit,
 /// leaving out the least needed first. `links` says whether the page has
-/// lines that link, for Tab.
-pub fn hints(width: usize, links: bool) -> String {
+/// lines that link, for Tab, and `tabs` whether it has tabs, for 1 and 3.
+pub fn hints(width: usize, links: bool, tabs: bool) -> String {
     let hints: Vec<(&str, u8)> = bindings()
         .filter(|binding| links || !binding.does(Action::NextLink))
+        .filter(|binding| tabs || !binding.does(Action::Tab(1)))
         .filter_map(|binding| binding.hint)
         .collect();
     let most = hints.iter().map(|&(_, level)| level).max().unwrap_or(0);
@@ -237,13 +249,21 @@ mod tests {
 
     #[test]
     fn the_hint_line_leaves_out_what_is_needed_least() {
-        let all = "↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit";
-        assert_eq!(hints(100, true), all);
+        let all =
+            "↑↓ move  enter follow  esc back  tab next link  1 3 tabs  g go to  ? help  q quit";
+        assert_eq!(hints(100, true, true), all);
+        let without_tabs =
+            "↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit";
+        assert_eq!(hints(all.chars().count() - 1, true, true), without_tabs);
+        assert_eq!(hints(100, true, false), without_tabs);
         let without_tab = "↑↓ move  enter follow  esc back  g go to  ? help  q quit";
-        assert_eq!(hints(all.chars().count() - 1, true), without_tab);
-        assert_eq!(hints(100, false), without_tab);
+        assert_eq!(
+            hints(without_tabs.chars().count() - 1, true, true),
+            without_tab
+        );
+        assert_eq!(hints(100, false, false), without_tab);
         let least = "↑↓ move  enter follow  esc back  ? help  q quit";
-        assert_eq!(hints(without_tab.chars().count() - 1, true), least);
+        assert_eq!(hints(without_tab.chars().count() - 1, true, true), least);
     }
 
     #[test]

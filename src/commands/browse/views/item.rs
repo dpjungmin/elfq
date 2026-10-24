@@ -1,9 +1,10 @@
-//! An item's page: a header of facts about it, then a function's code, one
-//! line per instruction. A line that calls, jumps to or uses another item
-//! ends with a note in the words of the CLI's HOW column, such as `call`,
-//! `tail call via PLT → log_msg` or `uses frames_ok`, and links to that
-//! item: Enter opens its page. A jump inside the function links to the
-//! line it goes to.
+//! An item's page: a header of facts about it, then its tabs. Tab 1 is a
+//! function's code, one line per instruction. A line that calls, jumps to
+//! or uses another item ends with a note in the words of the CLI's HOW
+//! column, such as `call`, `tail call via PLT → log_msg` or `uses
+//! frames_ok`, and links to that item: Enter opens its page. A jump inside
+//! the function links to the line it goes to. Tab 3 lists what calls or
+//! uses the item, as `callers SYMBOL` does (see `callers.rs`).
 
 use std::collections::{BTreeSet, HashMap};
 use std::rc::Rc;
@@ -15,11 +16,12 @@ use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Row, Table};
 
-use super::{Cursor, Go, View, cut, imported, wrap};
+use super::callers::Callers;
+use super::{Cursor, Go, View, cut, draw_lines, imported, keep_lines, whereabouts, wrap};
 use crate::arch::{self, CodeReferenceKind, Refers};
 use crate::binary::{Binary, Item, ItemKind, Source};
 use crate::commands::browse::{keys::Action, session::Session};
-use crate::commands::{readable_item, text};
+use crate::commands::{distinct_nodes, readable_item, text};
 use crate::graph::{Node, Reference, Unresolved, VeneerTarget, item_starting_at};
 
 /// The most columns that the instructions take, and the fewest they give
@@ -27,6 +29,43 @@ use crate::graph::{Node, Reference, Unresolved, VeneerTarget, item_starting_at};
 const INSTRUCTION_WIDTH: (usize, usize) = (48, 24);
 /// The fewest columns that a note is cut to before its section goes.
 const NOTE_WIDTH: usize = 16;
+
+/// The tabs of an item's page. Each is numbered as the key that shows it,
+/// and named after the command that prints the same answer, so that the
+/// numbers stay the same as more tabs come.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tab {
+    /// 1: a function's code.
+    Code,
+    /// 3: what calls or uses the item.
+    Callers,
+}
+
+impl Tab {
+    /// Every tab, in the order of their numbers.
+    const ALL: [Tab; 2] = [Tab::Code, Tab::Callers];
+
+    /// The number of the key that shows it, and its name.
+    fn number_and_name(self) -> (u8, &'static str) {
+        match self {
+            Tab::Code => (1, "code"),
+            Tab::Callers => (3, "callers"),
+        }
+    }
+
+    /// The tab that the key numbered `number` shows.
+    fn of_key(number: u8) -> Option<Tab> {
+        Tab::ALL
+            .into_iter()
+            .find(|tab| tab.number_and_name().0 == number)
+    }
+
+    /// Its name on the tab line: "1 code".
+    fn label(self) -> String {
+        let (number, name) = self.number_and_name();
+        format!("{number} {name}")
+    }
+}
 
 /// Where a line's link goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,8 +100,169 @@ struct CodeLine {
 pub struct ItemPage {
     /// Its name in the title line's trail.
     pub title: String,
-    /// The lines of facts above the code, before they are wrapped.
-    header: Vec<String>,
+    /// The first line of the header, before it is wrapped: the item's
+    /// name, what SYMBOL said about it, and where it is.
+    identity: String,
+    /// The second line of the header: "used by 2 · uses 3".
+    facts: String,
+    /// The tab on the screen. Each page in the history keeps its own, so
+    /// that Back shows the tab that was left.
+    tab: Tab,
+    /// Tab 1, or for an item that has no code, why not, as pressing 1
+    /// says.
+    code: Result<CodeTab, String>,
+    /// Tab 3.
+    callers: Callers,
+}
+
+impl ItemPage {
+    /// The page of item `index`, with the line that holds `at` selected.
+    /// The header names the item as `lead`, which may say what SYMBOL gave,
+    /// as in "Default_Handler (also named NMI_Handler)". A function's page
+    /// opens on its code, and a data object's on its callers.
+    pub fn new(session: &Session, index: usize, at: Option<u64>, lead: &str) -> ItemPage {
+        let node = Node::Item(index);
+        let title = session.row_name(index);
+        let answer = session.callers(node);
+        let (place, facts) = header(session, index, distinct_nodes(&answer.rows).len());
+        let code = match session.binary.items[index].kind {
+            ItemKind::Function => Ok(CodeTab::new(session, index, at)),
+            ItemKind::Data => Err(format!("{title} is a data object: it has no code")),
+        };
+        ItemPage {
+            title,
+            identity: format!("{lead}  {place}"),
+            facts,
+            tab: if code.is_ok() {
+                Tab::Code
+            } else {
+                Tab::Callers
+            },
+            code,
+            callers: Callers::new(session, node, answer),
+        }
+    }
+
+    /// The page on `tab`, when it has that tab, as a link from that tab
+    /// opens it.
+    pub fn on(mut self, tab: Tab) -> ItemPage {
+        if self.tabs().contains(&tab) {
+            self.tab = tab;
+        }
+        self
+    }
+
+    /// The tabs it has, in the order of their numbers.
+    fn tabs(&self) -> Vec<Tab> {
+        let has = |tab: &Tab| match tab {
+            Tab::Code => self.code.is_ok(),
+            Tab::Callers => true,
+        };
+        Tab::ALL.into_iter().filter(has).collect()
+    }
+
+    pub fn draw(&mut self, frame: &mut Frame, area: Rect) {
+        let width = usize::from(area.width);
+        let top = self.header_lines(width, usize::from(area.height).saturating_sub(3));
+        let [head, tabs, body] = Layout::vertical([
+            Constraint::Length(top.len() as u16),
+            Constraint::Length(1),
+            Constraint::Fill(1),
+        ])
+        .areas(area);
+        draw_lines(frame, head, top);
+
+        // The tabs it has, with the one on the screen in brackets:
+        // " 1 code  [3 callers]".
+        let mut line = Vec::new();
+        for tab in self.tabs() {
+            if tab == self.tab {
+                line.push(Span::raw(format!("[{}]", tab.label())).bold());
+            } else {
+                line.push(Span::raw(format!(" {} ", tab.label())));
+            }
+            line.push(Span::raw(" "));
+        }
+        frame.render_widget(Line::from(line), tabs);
+
+        match (self.tab, &mut self.code) {
+            (Tab::Code, Ok(code)) => code.draw(frame, body),
+            // Never on the screen: 1 says why instead.
+            (Tab::Code, Err(why)) => draw_lines(frame, body, vec![Line::raw(why.clone())]),
+            (Tab::Callers, _) => self.callers.draw(frame, body),
+        }
+    }
+
+    /// The header, wrapped to `width`, in at most `most` lines. It wraps,
+    /// so that nothing is cut, unless the screen is too short for it, with
+    /// the tab line and two lines of the tab under it. Then what is too
+    /// long is cut, ending in "…", the first line first.
+    fn header_lines(&self, width: usize, most: usize) -> Vec<Line<'static>> {
+        let facts = wrap(&self.facts, width);
+        let first = wrap(&self.identity, width);
+        let first = keep_lines(first, most.saturating_sub(facts.len()).max(1), width);
+        let facts = keep_lines(facts, most.saturating_sub(first.len()), width);
+        let first = first.into_iter().map(|line| Line::raw(line).bold());
+        let facts = facts.into_iter().map(|line| Line::raw(line).dim());
+        first.chain(facts).collect()
+    }
+
+    pub fn handle(&mut self, session: &Session, action: Action) -> Option<Go> {
+        if let Action::Tab(number) = action {
+            match (Tab::of_key(number)?, &self.code) {
+                // A tab that the item doesn't have says why.
+                (Tab::Code, Err(why)) => return Some(Go::Say(why.clone())),
+                (tab, _) => self.tab = tab,
+            }
+            return None;
+        }
+        match (self.tab, &mut self.code) {
+            (Tab::Code, Ok(code)) => code.handle(session, action),
+            (Tab::Code, Err(_)) => None,
+            (Tab::Callers, _) => self.callers.handle(session, action),
+        }
+    }
+
+    /// Goes back to the line before the last jump inside the function, if
+    /// there was one and the code is on the screen.
+    pub fn back(&mut self) -> bool {
+        match (self.tab, &mut self.code) {
+            (Tab::Code, Ok(code)) => code.back(),
+            (Tab::Code, Err(_)) | (Tab::Callers, _) => false,
+        }
+    }
+
+    /// Where the selected line's link goes, in full: "→ strlen@plt
+    /// function at 0x1080, 16 bytes, in .plt.sec".
+    pub fn preview(&self, session: &Session) -> Option<String> {
+        match (self.tab, &self.code) {
+            (Tab::Code, Ok(code)) => code.preview(session),
+            (Tab::Code, Err(_)) => None,
+            (Tab::Callers, _) => self.callers.preview(session),
+        }
+    }
+
+    /// Whether some line or row links to another item.
+    pub fn has_links(&self) -> bool {
+        match (self.tab, &self.code) {
+            (Tab::Code, Ok(code)) => code.has_links(),
+            (Tab::Code, Err(_)) => false,
+            (Tab::Callers, _) => self.callers.has_links(),
+        }
+    }
+
+    /// The command that prints what the tab on the screen shows, if one
+    /// does: the code tab has none.
+    pub fn command(&self) -> Option<&str> {
+        match self.tab {
+            Tab::Code => None,
+            Tab::Callers => Some(self.callers.command()),
+        }
+    }
+}
+
+/// Tab 1: a function's code.
+struct CodeTab {
     code: Rc<PageCode>,
     cursor: Cursor,
     /// The rows the cursor was on before each jump inside the function,
@@ -85,23 +285,20 @@ pub struct PageCode {
     footnote: Option<String>,
 }
 
-impl ItemPage {
-    /// The page of item `index`, with the line that holds `at` selected.
-    /// The header names the item as `lead`, which may say what SYMBOL gave,
-    /// as in "Default_Handler (also named NMI_Handler)".
-    pub fn new(session: &Session, index: usize, at: Option<u64>, lead: &str) -> ItemPage {
+impl CodeTab {
+    /// The code of function `index`, with the line that holds `at`
+    /// selected.
+    fn new(session: &Session, index: usize, at: Option<u64>) -> CodeTab {
         let code = session.page_code(index);
-        let mut page = ItemPage {
-            title: session.row_name(index),
-            header: header(session, index, lead),
+        let mut tab = CodeTab {
             cursor: Cursor::new(code.lines.len()),
             code,
             jumps: Vec::new(),
         };
         if let Some(at) = at {
-            page.select_address(at);
+            tab.select_address(at);
         }
-        page
+        tab
     }
 
     /// Selects the line that holds `address`.
@@ -113,35 +310,19 @@ impl ItemPage {
         self.cursor.select(after.saturating_sub(1));
     }
 
-    pub fn draw(&mut self, frame: &mut Frame, area: Rect) {
+    /// Draws the code, or why there is none, with the footnote under it.
+    /// The footnote wraps, so that nothing is cut.
+    fn draw(&mut self, frame: &mut Frame, area: Rect) {
         let width = usize::from(area.width);
-        // The header and the footnote wrap, so that nothing is cut.
-        let mut top: Vec<Line> = Vec::new();
-        for (index, text) in self.header.iter().enumerate() {
-            let style = if index == 0 {
-                Style::new().bold()
-            } else {
-                Style::new().dim()
-            };
-            top.extend(
-                wrap(text, width)
-                    .into_iter()
-                    .map(|line| Line::styled(line, style)),
-            );
-        }
         let bottom: Vec<String> = self
             .code
             .footnote
             .iter()
             .flat_map(|text| wrap(text, width))
             .collect();
-        let [head, body, foot] = Layout::vertical([
-            Constraint::Length(top.len() as u16),
-            Constraint::Fill(1),
-            Constraint::Length(bottom.len() as u16),
-        ])
-        .areas(area);
-        draw_lines(frame, head, top);
+        let [body, foot] =
+            Layout::vertical([Constraint::Fill(1), Constraint::Length(bottom.len() as u16)])
+                .areas(area);
         draw_lines(frame, foot, bottom.into_iter().map(Line::raw).collect());
         if let Some(text) = &self.code.empty {
             draw_lines(
@@ -201,7 +382,7 @@ impl ItemPage {
         frame.render_stateful_widget(table, area, &mut state);
     }
 
-    pub fn handle(&mut self, session: &Session, action: Action) -> Option<Go> {
+    fn handle(&mut self, session: &Session, action: Action) -> Option<Go> {
         if self.cursor.handle(action) {
             return None;
         }
@@ -244,7 +425,7 @@ impl ItemPage {
 
     /// Goes back to the line before the last jump inside the function, if
     /// there was one.
-    pub fn back(&mut self) -> bool {
+    fn back(&mut self) -> bool {
         match self.jumps.pop() {
             Some(row) => {
                 self.cursor.select(row);
@@ -256,7 +437,7 @@ impl ItemPage {
 
     /// Where the selected line's link goes, in full: "→ strlen@plt
     /// function at 0x1080, 16 bytes, in .plt.sec".
-    pub fn preview(&self, session: &Session) -> Option<String> {
+    fn preview(&self, session: &Session) -> Option<String> {
         let binary = session.binary;
         let link = self.code.lines.get(self.cursor.selected)?.link?;
         Some(match link {
@@ -284,25 +465,11 @@ impl ItemPage {
     }
 
     /// Whether some line links to another item.
-    pub fn has_links(&self) -> bool {
+    fn has_links(&self) -> bool {
         self.code
             .lines
             .iter()
             .any(|line| matches!(line.link, Some(Link::Node { .. })))
-    }
-}
-
-/// Draws `lines` one under the other in `area`, as many as fit.
-fn draw_lines(frame: &mut Frame, area: Rect, lines: Vec<Line>) {
-    for (row, line) in (area.y..area.bottom()).zip(lines) {
-        frame.render_widget(
-            line,
-            Rect {
-                y: row,
-                height: 1,
-                ..area
-            },
-        );
     }
 }
 
@@ -327,23 +494,10 @@ fn note_cell(line: &CodeLine, room: usize) -> Line<'static> {
     }
 }
 
-/// What and where an item is: "function at 0x1080, 16 bytes, in .plt.sec".
-fn whereabouts(item: &Item, section: &str) -> String {
-    let kind = match item.kind {
-        ItemKind::Function => "function",
-        ItemKind::Data => "data object",
-    };
-    let size = match (item.size, item.size_estimated) {
-        (0, _) => "size unknown".to_string(),
-        (size, true) => format!("~{}", text::bytes_text(size)),
-        (size, false) => text::bytes_text(size),
-    };
-    format!("{kind} at {:#x}, {size}, in {section}", item.address)
-}
-
-/// The lines of facts about item `index`, named `lead`: where it is, then
-/// what makes it a root, and how many items use it and it uses.
-fn header(session: &Session, index: usize, lead: &str) -> Vec<String> {
+/// The facts about item `index` that its header gives: where it is, and
+/// on the next line, what makes it a root, how many items use it,
+/// `used_by`, and how many it uses.
+fn header(session: &Session, index: usize, used_by: usize) -> (String, String) {
     let binary = session.binary;
     let item = &binary.items[index];
     let mut place = whereabouts(item, &binary.sections[item.section].name);
@@ -364,10 +518,7 @@ fn header(session: &Session, index: usize, lead: &str) -> Vec<String> {
     if let Some(root) = session.graph.root(node) {
         facts.push(format!("root: {}", text::root_column(binary, root.kind)));
     }
-    facts.push(match session.used_by(node) {
-        0 => "used by nothing".to_string(),
-        users => format!("used by {users}"),
-    });
+    facts.push(used_by_text(used_by));
     if item.size > 0 {
         let uses: BTreeSet<Node> = session
             .graph
@@ -384,7 +535,15 @@ fn header(session: &Session, index: usize, lead: &str) -> Vec<String> {
             text::calls_and_jumps(unresolved)
         ));
     }
-    vec![format!("{lead}  {place}"), facts.join(" · ")]
+    (place, facts.join(" · "))
+}
+
+/// "used by 5", or "used by nothing".
+fn used_by_text(used_by: usize) -> String {
+    match used_by {
+        0 => "used by nothing".to_string(),
+        users => format!("used by {users}"),
+    }
 }
 
 /// What a function's page lists.
@@ -814,22 +973,8 @@ fn string_at(session: &Session, index: usize) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
-
+    use super::super::samples;
     use super::*;
-    use crate::binary::Binary;
-
-    /// Every sample in testdata/bin.
-    fn samples() -> Vec<PathBuf> {
-        let folder = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/bin");
-        let mut paths: Vec<PathBuf> = std::fs::read_dir(folder)
-            .unwrap()
-            .map(|entry| entry.unwrap().path())
-            .filter(|path| path.extension().is_some_and(|e| e == "elf" || e == "so"))
-            .collect();
-        paths.sort();
-        paths
-    }
 
     /// Calls `check` with the session of every sample and the code of each
     /// of its functions that has some.

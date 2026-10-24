@@ -133,7 +133,7 @@ Examples:
   elfq app.elf callees main               What main calls or uses
   elfq app.elf callees 0x0+256K           What the first 256 KiB uses outside it
   elfq app.elf reach SysTick_Handler      What SysTick_Handler runs and uses, and where
-  elfq app.elf browse log_msg             Read log_msg's code, and follow what it calls
+  elfq app.elf browse log_msg             Read log_msg's code, its calls and its callers
 
 The overview's table is the start of the one top shows; elfq help top
 explains it.
@@ -187,7 +187,7 @@ pub enum Command {
     /// List everything SYMBOL calls or uses, at any depth, by memory block
     #[command(after_help = format!("{REACH}\n\n{}\n\n{HOW_NOTES}", how_table()))]
     Reach(ReachArgs),
-    /// Read a function's code in the terminal, and follow what it calls and uses
+    /// Read a function's code in the terminal, and follow its calls and callers
     #[command(after_help = format!("{BROWSE}\n\n{}", how_table()))]
     Browse(BrowseArgs),
     /// Show elfq's own view of the file (for developing elfq)
@@ -398,6 +398,12 @@ that item's page, Esc goes back, and ] goes forward again; g goes to any
 function or data object, and ? lists every key. elfq prints x86-64 code,
 and the Thumb code of Cortex-M cores up to Armv7E-M (M0, M0+, M3, M4, M7);
 for other Arm cores, a page lists only the lines that use another item.
+
+3 shows what calls or uses the item, as callers SYMBOL lists it, but with
+every row, and under them that command, ready to paste; 1 shows the code
+again. Enter on a row opens the caller's page on its callers too, so that
+Enter after Enter walks up the callers, and its code is already at the
+call. A data object's page opens on its callers.
 
 browse needs a terminal, and takes no --json, --tree or --range. For
 scripts, callers and callees print the same links, with --json, and

@@ -1,7 +1,9 @@
-//! The pages, one file each, and the go-to box. [`View`] lists the pages,
-//! so that `app.rs` can keep any of them in its history, and each `match`
-//! on it shows every page's part.
+//! The pages, one file each, the tabs of an item's page other than its
+//! code, and the go-to box. [`View`] lists the pages, so that `app.rs` can
+//! keep any of them in its history, and each `match` on it shows every
+//! page's part.
 
+mod callers;
 mod help;
 mod item;
 mod picker;
@@ -12,10 +14,13 @@ use std::ops::Range;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
+use ratatui::text::Line;
 use ratatui::widgets::TableState;
 
 use super::keys::Action;
 use super::session::Session;
+use crate::binary::{Item, ItemKind};
+use crate::commands::text;
 use crate::graph::Node;
 
 pub use help::Help;
@@ -32,7 +37,7 @@ pub enum Go {
 
 /// One page of the browser.
 pub enum View {
-    /// A function's code, or what a data object is.
+    /// An item's page: a function's code, and what uses the item.
     Item(Box<ItemPage>),
     /// Every key, and the words that the notes use.
     Help(Help),
@@ -86,6 +91,23 @@ impl View {
         match self {
             View::Item(page) => page.has_links(),
             View::Help(_) => false,
+        }
+    }
+
+    /// Whether the page has tabs, which 1 and 3 show.
+    pub fn has_tabs(&self) -> bool {
+        match self {
+            View::Item(_) => true,
+            View::Help(_) => false,
+        }
+    }
+
+    /// The command that prints what the page shows, ready to paste, if
+    /// one does.
+    pub fn command(&self) -> Option<&str> {
+        match self {
+            View::Item(page) => page.command(),
+            View::Help(_) => None,
         }
     }
 }
@@ -197,6 +219,34 @@ pub fn imported(session: &Session, node: Node) -> String {
     )
 }
 
+/// What and where an item is: "function at 0x1080, 16 bytes, in .plt.sec".
+pub fn whereabouts(item: &Item, section: &str) -> String {
+    let kind = match item.kind {
+        ItemKind::Function => "function",
+        ItemKind::Data => "data object",
+    };
+    let size = match (item.size, item.size_estimated) {
+        (0, _) => "size unknown".to_string(),
+        (size, true) => format!("~{}", text::bytes_text(size)),
+        (size, false) => text::bytes_text(size),
+    };
+    format!("{kind} at {:#x}, {size}, in {section}", item.address)
+}
+
+/// Draws `lines` one under the other in `area`, as many as fit.
+pub fn draw_lines(frame: &mut Frame, area: Rect, lines: Vec<Line>) {
+    for (row, line) in (area.y..area.bottom()).zip(lines) {
+        frame.render_widget(
+            line,
+            Rect {
+                y: row,
+                height: 1,
+                ..area
+            },
+        );
+    }
+}
+
 /// `text` cut to `width` characters, ending in "…" when cut.
 pub fn cut(text: &str, width: usize) -> String {
     if text.chars().count() <= width {
@@ -205,6 +255,18 @@ pub fn cut(text: &str, width: usize) -> String {
     let mut cut: String = text.chars().take(width.saturating_sub(1)).collect();
     cut.push('…');
     cut
+}
+
+/// At most `most` of `lines`, a text wrapped to `width`: when some are
+/// left out, the last line kept ends in "…".
+pub fn keep_lines(mut lines: Vec<String>, most: usize, width: usize) -> Vec<String> {
+    if lines.len() > most {
+        let rest = lines.split_off(most.saturating_sub(1)).join(" ");
+        if most > 0 {
+            lines.push(cut(&rest, width));
+        }
+    }
+    lines
 }
 
 /// `text` cut to `width` characters from the left, starting with "…".
@@ -241,6 +303,19 @@ pub fn wrap(text: &str, width: usize) -> Vec<String> {
         lines.push(line);
     }
     lines
+}
+
+/// Every sample in testdata/bin, for the tests that check every page.
+#[cfg(test)]
+pub(super) fn samples() -> Vec<std::path::PathBuf> {
+    let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/bin");
+    let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(folder)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|e| e == "elf" || e == "so"))
+        .collect();
+    paths.sort();
+    paths
 }
 
 #[cfg(test)]

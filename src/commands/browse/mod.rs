@@ -1,6 +1,7 @@
 //! `elfq FILE browse [SYMBOL]`: a function's code in the terminal, with a
 //! link on each line that calls, jumps to or uses another item, to follow
 //! as in a web browser: Enter opens the item's page, and Esc comes back.
+//! An item's page also lists what calls or uses it, on its callers tab.
 //!
 //! The parts, each in its own file:
 //!
@@ -10,8 +11,10 @@
 //!   hint line is printed from too.
 //! - `app.rs`: the pages the user has opened, as a browser's history, and
 //!   the screen's layout around the page on top.
-//! - `views/`: one file per kind of page. A page draws itself, and answers
-//!   an action by moving, by opening another page, or with a message.
+//! - `views/`: the pages, one file per kind, the tabs of an item's page
+//!   other than its code, and the go-to box. A page draws itself, and
+//!   answers an action by moving, by opening another page, or with a
+//!   message.
 //!
 //! This file takes the terminal and reads its keys. [`event_loop`] takes
 //! the keys from anywhere and draws on any ratatui backend, so that tests
