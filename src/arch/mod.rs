@@ -14,15 +14,12 @@
 //!
 //! `listing.rs` prints a function's code as text, for `elfq FILE browse`.
 
-// `elfq FILE browse`, which prints listings, comes in the next commit.
 #[cfg(feature = "tui")]
-#[allow(dead_code)]
 mod listing;
 mod thumb;
 mod x86_64;
 
 #[cfg(feature = "tui")]
-#[allow(unused_imports)]
 pub use listing::{Line, listing};
 
 use object::{Architecture, Endianness};

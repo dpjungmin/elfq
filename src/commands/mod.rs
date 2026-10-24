@@ -3,6 +3,8 @@
 //! they answer, and the rows and the table of `callers` and `callees`. How
 //! elfq words things is in `text.rs`, and the shapes of its JSON in `json.rs`.
 
+#[cfg(feature = "tui")]
+pub mod browse;
 mod callees;
 mod callers;
 mod debug_items;
@@ -26,7 +28,7 @@ use anyhow::{Result, bail};
 
 use crate::arch;
 use crate::binary::{AddressRange, Binary, Item, ItemKind, Source, memory_blocks};
-use crate::cli::{Cli, Command, DebugCommand, Format, ReachArgs, UsesArgs};
+use crate::cli::{BrowseArgs, Cli, Command, DebugCommand, Format, ReachArgs, UsesArgs};
 use crate::graph::{Graph, Node, Reference};
 use crate::render::{Align, Table};
 
@@ -48,12 +50,13 @@ pub enum Outcome {
 /// Runs the command in `cli`, writing its answer to `out`.
 pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<Outcome> {
     check_arguments(cli)?;
-    let binary = Binary::load(&cli.file)?;
-    for warning in &binary.warnings {
-        // Not `eprintln!`, which panics when nothing reads standard error
-        // any more: the answer still counts.
-        let _ = writeln!(std::io::stderr(), "warning: {warning}");
+    // The browser takes over the terminal, so it loads the file itself,
+    // and prints the warnings once it gives the terminal back.
+    if let Some(Command::Browse(args)) = &cli.command {
+        return run_browse(cli, args).map(|()| Outcome::Answered);
     }
+    let binary = Binary::load(&cli.file)?;
+    write_warnings(&binary);
     // `check_arguments` leaves `--range` with `callers` and `callees` until
     // elfq can tell which command to suggest.
     if let Some(range) = cli.range
@@ -107,12 +110,41 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<Outcome> {
             reach::run(&binary, &args.symbol, &args.to, args.all, format, out)
         }
         Some(Command::Debug(DebugCommand::Items)) => answered(debug_items::run(&binary, out)),
+        Some(Command::Browse(_)) => unreachable!("browse has run above"),
     }
+}
+
+/// Prints the file's warnings to stderr.
+fn write_warnings(binary: &Binary) {
+    for warning in &binary.warnings {
+        // Not `eprintln!`, which panics when nothing reads standard error
+        // any more: the answer still counts.
+        let _ = writeln!(std::io::stderr(), "warning: {warning}");
+    }
+}
+
+/// Runs `elfq FILE browse`, in a build with the browser.
+#[cfg(feature = "tui")]
+fn run_browse(cli: &Cli, args: &BrowseArgs) -> Result<()> {
+    browse::run(&cli.file, args.symbol.as_deref())
+}
+
+/// Says that this build has no browser.
+#[cfg(not(feature = "tui"))]
+fn run_browse(_: &Cli, _: &BrowseArgs) -> Result<()> {
+    bail!("this elfq was built without browse (the tui feature)")
 }
 
 /// Refuses arguments that don't go together, before the file is loaded, so
 /// that a mistake is reported at once, even for a large file.
 fn check_arguments(cli: &Cli) -> Result<()> {
+    // browse shows its pages on the screen, and prints no answer for these
+    // to change.
+    if let Some(Command::Browse(_)) = &cli.command
+        && (cli.json || cli.tree || cli.range.is_some())
+    {
+        bail!("browse takes no --json, --tree or --range");
+    }
     if cli.tree {
         check_tree(cli)?;
     }
@@ -358,6 +390,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::Callers(_) => "callers",
         Command::Callees(_) => "callees",
         Command::Reach(_) => "reach",
+        Command::Browse(_) => "browse",
         Command::Debug(_) => "debug",
     }
 }

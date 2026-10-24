@@ -133,6 +133,7 @@ Examples:
   elfq app.elf callees main               What main calls or uses
   elfq app.elf callees 0x0+256K           What the first 256 KiB uses outside it
   elfq app.elf reach SysTick_Handler      What SysTick_Handler runs and uses, and where
+  elfq app.elf browse log_msg             Read log_msg's code, and follow what it calls
 
 The overview's table is the start of the one top shows; elfq help top
 explains it.
@@ -186,6 +187,9 @@ pub enum Command {
     /// List everything SYMBOL calls or uses, at any depth, by memory block
     #[command(after_help = format!("{REACH}\n\n{HOW}"))]
     Reach(ReachArgs),
+    /// Read a function's code in the terminal, and follow what it calls and uses
+    #[command(after_help = format!("{BROWSE}\n\n{HOW}"))]
+    Browse(BrowseArgs),
     /// Show elfq's own view of the file (for developing elfq)
     #[command(subcommand, hide = true)]
     Debug(DebugCommand),
@@ -342,6 +346,18 @@ saying which are in the ranges.
 Exit status, with --to: 1 if the answer lists an item, or code that elfq
 can't follow or read; 0 if not; and 2 for an error.";
 
+const BROWSE: &str = "\
+browse opens a page for SYMBOL, or without it, for main, else the entry
+point, else the largest function. A function's page shows its code, one
+line per instruction, and a line that calls, jumps to or uses another item
+ends with a note that names it, in the words of the HOW column. Enter
+follows the selected line's link to that item's page, Esc goes back, and
+] goes forward again. elfq prints x86-64 code; in Thumb code, a page lists
+only the lines that use another item, for now.
+
+browse needs a terminal, and takes no --json, --tree or --range: the other
+commands print the same answers for scripts.";
+
 const WHY: &str = "\
 The chains start where the program does, as HOW says: at the entry point, a
 function the C runtime runs at startup, or a handler in the vector table.
@@ -486,6 +502,13 @@ pub struct ReachArgs {
     // As `CallersArgs::misplaced_to`.
     #[arg(long = "from", hide = true, value_name = "RANGE")]
     pub misplaced_from: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct BrowseArgs {
+    /// The function or data object to open first: its name, the end of its
+    /// name, or an address in it
+    pub symbol: Option<String>,
 }
 
 #[derive(Debug, Args)]

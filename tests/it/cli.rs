@@ -3649,6 +3649,18 @@ fn arguments_that_dont_go_together_are_refused_before_the_file_is_read() {
             "error: the debug commands print only text\n",
         ),
         (
+            &["missing.elf", "browse", "--json"],
+            "error: browse takes no --json, --tree or --range\n",
+        ),
+        (
+            &["missing.elf", "browse", "main", "--tree"],
+            "error: browse takes no --json, --tree or --range\n",
+        ),
+        (
+            &["missing.elf", "browse", "--range", "0+1K"],
+            "error: browse takes no --json, --tree or --range\n",
+        ),
+        (
             &["missing.elf", "top", "--tree", "--json"],
             "error: --tree draws trees in the text, so it doesn't go with --json\n",
         ),

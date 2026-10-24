@@ -121,7 +121,7 @@ fn parse_quickly(data: Vec<u8>) -> (Binary, Graph) {
 
 /// Saves `data` as `name` in a folder for the tests' files, and returns its
 /// path.
-fn save(name: &str, data: &[u8]) -> String {
+pub fn save(name: &str, data: &[u8]) -> String {
     let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
     std::fs::write(&path, data).unwrap();
     path.to_str().unwrap().to_string()
@@ -325,12 +325,21 @@ fn a_section_that_isnt_allocated_keeps_its_addresses() {
     assert_output(&stdout, &expected);
 }
 
+/// The x86-64 sample, with the bytes of each of `sections` past the end
+/// of the file.
+pub fn past_the_end(sections: &[&str]) -> Vec<u8> {
+    let mut data = sample("c-x86_64.elf");
+    for section in sections {
+        set_section_field(&mut data, section, OFFSET, u64::MAX - 15);
+    }
+    data
+}
+
 #[test]
 fn a_section_that_runs_past_the_end_of_the_file_keeps_its_addresses() {
     // Only where its bytes are is damaged, so the section is still there,
     // and the file holds none of its bytes.
-    let mut data = sample("c-x86_64.elf");
-    set_section_field(&mut data, ".plt", OFFSET, u64::MAX - 15);
+    let data = past_the_end(&[".plt"]);
     let (_, stderr) = run("plt-offset.elf", &data, &["top", "--all"]);
     assert_output(
         &stderr,
@@ -782,7 +791,7 @@ fn inlined_copies_that_nest_deeply_are_summed_up() {
 /// `.text`, that each call the one before. It starts at the last. The first
 /// function takes 2 bytes and the others 8, since elfq leaves out the
 /// padding after the first.
-fn chain_of_calls(count: usize) -> Vec<u8> {
+pub fn chain_of_calls(count: usize) -> Vec<u8> {
     // bx lr, then three nops as padding.
     let mut code: Vec<u16> = vec![0x4770, 0xbf00, 0xbf00, 0xbf00];
     for _ in 1..count {
