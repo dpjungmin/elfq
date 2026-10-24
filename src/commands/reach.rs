@@ -32,7 +32,7 @@ use anyhow::Result;
 use serde::Serialize;
 
 use super::symbol::Names;
-use super::{Outcome, callees, json, ranges, text};
+use super::{Kept, Outcome, callees, json, ranges, text};
 use crate::binary::{AddressRange, Binary, ItemKind, MemoryBlock, memory_blocks};
 use crate::cli::Format;
 use crate::graph::{
@@ -136,7 +136,7 @@ pub fn run(
     format: Format,
     out: &mut dyn Write,
 ) -> Result<Outcome> {
-    let reach = Reach::find(binary, symbol, to, all)?;
+    let reach = Kept::new(Reach::find(binary, symbol, to, all)?);
     match format {
         Format::Json => reach.write_json(out)?,
         Format::Text => reach.write_text(false, out)?,
@@ -224,11 +224,11 @@ impl<'a> Reach<'a> {
     /// `--to`, if there are any.
     fn find(binary: &'a Binary, symbol: &str, to: &[AddressRange], all: bool) -> Result<Reach<'a>> {
         super::check_code_is_readable(binary)?;
-        let names = Names::new(binary);
+        let names = Kept::new(Names::new(binary));
         let symbol = names.find(symbol)?;
         let index = super::readable_item(binary, symbol.node)?;
         let lead_name = symbol.lead_name(binary);
-        let graph = Graph::build(binary);
+        let graph = Kept::new(Graph::build(binary));
         let code_outside = ranges::code_outside(&graph);
         for &range in to {
             ranges::check_to_range(binary, range, &code_outside)?;
@@ -351,8 +351,8 @@ impl<'a> Reach<'a> {
         }
         Ok(Reach {
             binary,
-            graph,
-            names,
+            graph: graph.into_inner(),
+            names: names.into_inner(),
             index,
             lead_name,
             self_use,

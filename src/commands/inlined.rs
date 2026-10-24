@@ -14,7 +14,7 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
 
-use super::{json, text};
+use super::{Kept, json, text};
 use crate::binary::{Binary, ItemKind, short_names};
 use crate::cli::Format;
 use crate::debuginfo::{self, InlinedCopy};
@@ -44,8 +44,10 @@ pub fn run(
         Some(symbol) => Some(find_function(binary, symbol)?),
         None => None,
     };
-    let copies = debuginfo::inlined_copies(binary)
-        .with_context(|| format!("cannot read the DWARF debug info in {}", path.display()))?;
+    let copies = Kept::new(
+        debuginfo::inlined_copies(binary)
+            .with_context(|| format!("cannot read the DWARF debug info in {}", path.display()))?,
+    );
     match function {
         None => write_list(binary, &copies, all, format, out),
         Some((index, lead_name)) => {

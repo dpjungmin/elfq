@@ -15,7 +15,7 @@ use anyhow::{Result, bail};
 use serde::Serialize;
 
 use super::symbol::Names;
-use super::{json, text};
+use super::{Kept, json, text};
 use crate::binary::{Binary, FileKind};
 use crate::cli::Format;
 use crate::graph::{DominatorTree, Graph, Node, Reference, Root, ShortestPaths};
@@ -69,7 +69,7 @@ pub fn run(
     out: &mut dyn Write,
 ) -> Result<()> {
     super::check_code_is_readable(binary)?;
-    let names = Names::new(binary);
+    let names = Kept::new(Names::new(binary));
     let symbol = names.find(symbol)?;
     let node = symbol.node;
     let name = node.name(binary);
@@ -79,7 +79,7 @@ pub fn run(
     if binary.kind == FileKind::SharedLibrary {
         bail!("elfq can't yet tell why {name} is in a shared library");
     }
-    let graph = Graph::build(binary);
+    let graph = Kept::new(Graph::build(binary));
     if let Some(root) = graph.root(node) {
         if format == Format::Json {
             let answer = WhyJson {
@@ -165,7 +165,7 @@ pub fn run(
     let shown = &keeping[..text::shown_count(keeping.len(), room)];
     writeln!(out, "{}", lead(binary, &lead_name, &keeping, shown.len()))?;
     writeln!(out)?;
-    let chains = Chains::new(binary, &graph, names, &paths, node, shown);
+    let chains = Chains::new(binary, &graph, &names, &paths, node, shown);
     let mut table = Table::new(&[("HOW", Align::Left), ("ITEM", Align::Left)]);
     // A chain branches only now and then, so a row names its user only
     // where it doesn't come right after it.
@@ -273,26 +273,26 @@ fn lead(binary: &Binary, name: &str, keeping: &[usize], shown: usize) -> String 
 /// The chains to the items that keep SYMBOL, merged into a tree: each item
 /// hangs under the item that uses it on the way from a root, and SYMBOL
 /// under each item that keeps it.
-struct Chains<'a> {
+struct Chains<'n, 'a> {
     binary: &'a Binary,
-    graph: &'a Graph,
+    graph: &'n Graph,
     /// The names that find each item, for the short names of the rows.
-    names: Names<'a>,
+    names: &'n Names<'a>,
     /// The roots that the chains start from, and why each is one.
     roots: Vec<Root>,
     /// The items each item leads to, in the tree.
     children: BTreeMap<Node, Vec<Node>>,
 }
 
-impl<'a> Chains<'a> {
+impl<'n, 'a> Chains<'n, 'a> {
     fn new(
         binary: &'a Binary,
-        graph: &'a Graph,
-        names: Names<'a>,
+        graph: &'n Graph,
+        names: &'n Names<'a>,
         paths: &ShortestPaths,
         symbol: Node,
         keeping: &[usize],
-    ) -> Chains<'a> {
+    ) -> Chains<'n, 'a> {
         let mut chains = Chains {
             binary,
             graph,

@@ -130,6 +130,8 @@ pub fn is_range(query: &str) -> bool {
 }
 
 /// Finds the item or import that `query` names, as `Names::find` does.
+/// The names are freed before the answer, so that what the command builds
+/// next can take their memory.
 pub fn find(binary: &Binary, query: &str) -> Result<Symbol> {
     Names::new(binary).find(query)
 }

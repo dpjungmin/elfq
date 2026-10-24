@@ -874,7 +874,13 @@ in order. Its output is the first example under [Commands](#commands).
    the exit status: 0 for an answer, 1 when `callers` or `callees` with
    ranges, `--from` or `--to` finds something that crosses, or may, or
    `reach --to` finds something in its ranges, or may, and 2 for an error,
-   which it prints after `error:`.
+   which it prints after `error:`. What the command keeps until it has
+   answered, such as the loaded file, its graph and `Names`, isn't freed:
+   the commands keep it in a `Kept`, which leaves it for the system to
+   take back when elfq ends, at once, since freeing it a piece at a time
+   takes a while in a large file. `run` turns that on with
+   `end_after_answer`; tests, which run many commands in one process,
+   leave it off.
 
 Each module uses only the ones below it. Beside each are the steps above
 that run in it:

@@ -37,7 +37,7 @@ use ratatui::backend::Backend;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use ratatui::{DefaultTerminal, Terminal};
 
-use super::text;
+use super::{Kept, text};
 use crate::binary::Binary;
 
 /// Why the event loop stopped.
@@ -61,7 +61,7 @@ pub fn run(path: &Path, symbol: Option<&str>) -> Result<()> {
     }
     // On elfq's own thread, with its large stack, as for every command:
     // the browser starts no other thread.
-    let binary = Binary::load(path)?;
+    let binary = Kept::new(Binary::load(path)?);
     let result = browse(path, &binary, symbol);
     super::write_warnings(&binary);
     result
@@ -72,7 +72,7 @@ pub fn run(path: &Path, symbol: Option<&str>) -> Result<()> {
 /// start from, it says so before it takes the terminal.
 fn browse(path: &Path, binary: &Binary, symbol: Option<&str>) -> Result<()> {
     let session = Session::new(path, binary)?;
-    let mut app = App::new(session, symbol)?;
+    let mut app = Kept::new(App::new(session, symbol)?);
     // ratatui sets a panic hook that gives the terminal back first.
     let mut terminal = ratatui::try_init()?;
     let result = read_keys(&mut terminal, &mut app);
