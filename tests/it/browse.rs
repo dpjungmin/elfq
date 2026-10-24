@@ -818,10 +818,10 @@ root: entry point · used by 1 · uses 3
 
 #[test]
 fn a_table_of_addresses_lists_the_cases_it_jumps_to() {
-    // _strtod_l's switch on the first character: adr loads the address of
-    // the table, ldr.w pc jumps through it, and each word of the table
-    // holds the Thumb address of a case. The stripped file, which has no
-    // $d symbols, gives the same lines.
+    // _strtod_l's switch on the first character: after cmp and bhi, adr
+    // loads the address of the table, ldr.w pc jumps through it, and each
+    // word of the table holds the Thumb address of a case. The stripped
+    // file, which has no $d symbols, gives the same lines.
     assert_output(
         &screen("c-strtod.elf", Some("0x8000082"), (100, 16), &[]),
         "\
@@ -830,15 +830,15 @@ _strtod_l (which holds 0x8000082)  function at 0x8000058, 4084 bytes, in .text
 (0x08000000..0x08005324)
 used by 5 · uses 42 · 1 jump elfq can't follow
   ADDRESS    INSTRUCTION
+  0x800007a  ldrb    r2, [r1], #1
+  0x800007e  cmp     r2, #0x2d
+  0x8000080  bhi     0x8000140             jump ↓
 > 0x8000082  adr     r0, 0x8000088         address ↓
   0x8000084  ldr.w   pc, [r0, r2, lsl #2]  jump through a pointer: elfq can't follow
   0x8000088  .word   0x0800025b            jump ↓
   0x800008c  .word   0x08000141            jump ↓
   0x8000090  .word   0x08000141            jump ↓
   0x8000094  .word   0x08000141            jump ↓
-  0x8000098  .word   0x08000141            jump ↓
-  0x800009c  .word   0x08000141            jump ↓
-  0x80000a0  .word   0x08000141            jump ↓
 → 0x8000088, in this function
 ↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
 ",
@@ -851,15 +851,15 @@ fn_0x8000058 (which holds 0x8000082)  function at 0x8000058, ~4124 bytes, in .te
 (0x08000000..0x08005324)
 found by following the code · used by 1 · uses 44 · 1 jump elfq can't follow
   ADDRESS    INSTRUCTION
+  0x800007a  ldrb    r2, [r1], #1
+  0x800007e  cmp     r2, #0x2d
+  0x8000080  bhi     0x8000140             jump ↓
 > 0x8000082  adr     r0, 0x8000088         address ↓
   0x8000084  ldr.w   pc, [r0, r2, lsl #2]  jump through a pointer: elfq can't follow
   0x8000088  .word   0x0800025b            jump ↓
   0x800008c  .word   0x08000141            jump ↓
   0x8000090  .word   0x08000141            jump ↓
   0x8000094  .word   0x08000141            jump ↓
-  0x8000098  .word   0x08000141            jump ↓
-  0x800009c  .word   0x08000141            jump ↓
-  0x80000a0  .word   0x08000141            jump ↓
 → 0x8000088, in this function
 ↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
 ",
@@ -885,6 +885,41 @@ found by following the code · used by 1 · uses 44 · 1 jump elfq can't follow
     let back = [&down[..], &["Enter", "Esc"]].concat();
     let back = screen("c-strtod.elf", Some("0x8000082"), (100, 16), &back);
     assert_eq!(selected_and_status(&back).0, word);
+}
+
+#[test]
+fn a_page_opened_at_an_address_shows_the_lines_before_it() {
+    // The line comes a third of the way down, as after a jump inside the
+    // function.
+    assert_output(
+        &screen("c-cortex-m7.elf", Some("0x3000034c"), (80, 24), &[]),
+        "\
+c-cortex-m7.elf › process_frame
+process_frame (which holds 0x3000034c)  function at 0x30000320, 376 bytes, in
+.text (0x30000000..0x30000edc)
+used by 1 · uses 10
+  ADDRESS     INSTRUCTION
+  0x30000340  cmp     r3, r6
+  0x30000342  bhi.w   0x3000045a             jump ↓
+  0x30000346  adds    r7, r4, #5
+  0x30000348  mov     r1, r5
+  0x3000034a  mov     r0, r7
+> 0x3000034c  bl      __crc32_veneer         call via veneer → crc32 in .itcm
+  0x30000350  adds    r3, r4, r5
+  0x30000352  ldr.w   r3, [r3, #5]
+  0x30000356  cmp     r0, r3
+  0x30000358  bne.w   0x30000470             jump ↓
+  0x3000035c  cmp     r5, #0x41
+  0x3000035e  bhi     0x3000044c             jump ↓
+  0x30000360  lsrs    r5, r5, #1
+  0x30000362  beq     0x30000450             jump ↓
+  0x30000364  adds    r0, r4, #6
+  0x30000366  add     r4, sp, #0x20
+  0x30000368  movs    r3, #0
+→ crc32  function at 0x10, 48 bytes, in .itcm, through __crc32_veneer
+↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
+",
+    );
 }
 
 #[test]
