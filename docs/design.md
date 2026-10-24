@@ -736,10 +736,11 @@ that do this.
    the instructions and reports direct calls, tail jumps to other items,
    indirect call sites (target unknown), and PC-relative references to items
    (`lea rip+...` on x86-64; `adr`, literal-pool `ldr` and `movw`/`movt` on
-   Thumb). On x86-64 it needs only these instructions. On
-   Thumb it also skips the literal pools, jump tables and constants that
-   `adr` points at inside functions, which would otherwise decode as
-   instructions. A Thumb branch through a register goes where the code put
+   Thumb). On x86-64 it needs only these instructions. On Thumb it also
+   skips the literal pools, jump tables, tables of addresses that
+   `ldr.w pc` jumps through and constants that `adr` points at inside
+   functions, which would otherwise decode as instructions. A Thumb branch
+   through a register goes where the code put
    an address in the register, as for a long call: in each function that
    branches through a register, `arch/thumb/values/` follows what each
    register and each word of the function's stack may hold, along every
@@ -911,15 +912,28 @@ tree -e normal` lists them on Linux, each once; its release build from
 33 s to about 46 s on 4 CPUs. `cargo build --no-default-features` builds
 elfq without them, and then `browse` says so.
 
+`browse` prints Thumb code with `thumb-asm`, a disassembler with no
+dependencies of its own, behind the same feature: elfq's own decoder says
+what an instruction does, not how to write it. Only `arch/listing.rs`
+uses it, and only to print the lines that elfq's sweep cuts the code into
+(`arch::thumb::layout`), so the lines start where the references that
+elfq finds are. It is pinned to one version, since another may write some
+instructions differently, and the tests check its text, against
+objdump's for the samples' code, in `testdata/tests/thumb`. It takes
+elfq to 92 crates and its release build from 5.0 MB to 5.3 MB on x86-64
+Linux, and adds no time that we could measure to a clean release build,
+about 47 s on 4 CPUs.
+
 ## Status and roadmap
 
 The overview, `top`, `retained`, `why`, `callers`, `callees` and `reach`
 work on x86-64 and Cortex-M executables, with or without symbols and DWARF,
 and `inlined` works on any file with DWARF that isn't compressed. The
 overview, `callers`, `callees` and `reach` also work on x86-64 shared
-libraries. `browse` prints x86-64 code; in Thumb code, its pages list
-only the lines that use another item, until elfq prints Thumb
-instructions. The pull requests and the git log record how elfq got here.
+libraries. `browse` prints x86-64 code and the Thumb code of Cortex-M
+cores up to Armv7E-M; for Armv8-M cores, its pages list only the lines
+that use another item. The pull requests and the git log record how elfq
+got here.
 
 Ideas for later, not yet planned: output that scripts and AI agents can
 read more easily, a check of what startup code copies into RAM, the retained size of a set of
@@ -993,5 +1007,22 @@ function's stack frame), and a query language.
    the functions of stripped firmware by following its code only in files
    linked to run at one address, so in Arm firmware linked with `-pie` and
    stripped it finds only the entry point.
-5. **Compressed DWARF.** `inlined` can't read debug info that the linker
+5. **Thumb text.** `browse` never shows wrong text where elfq knows code
+   from data; where it can't tell, it prints `.word` or `.inst`. It prints
+   the text of Thumb instructions only where elfq's sweep decodes an
+   instruction, so a literal pool, a jump table, a table of addresses and
+   the bytes that the file's `$d` symbols mark print as `.word`, `.short`
+   or `.byte`, and an instruction that thumb-asm can't read prints as
+   `.inst`. Without symbols, the sweep misses some data: in stripped
+   Cortex-M0 code built with `-Os`, the tables of `__gnu_thumb1_case_uhi`
+   and its kind, which follow the call, and a literal pool that only the
+   function before it loads, still print as instructions. On the 105
+   stripped Cortex-M files of the samples and a firmware corpus, 646 of
+   the 247,778 bytes that the same files with symbols mark as data inside
+   functions print as instructions, 32 of them as `.inst`, all in five
+   Cortex-M0 files. Text is shown only for the cores up to Armv7E-M, as
+   the file's build attributes name them: for Armv8-M and Armv8.1-M cores,
+   such as the Cortex-M33 and M55, and files that don't say, a page lists
+   only the lines that use another item.
+6. **Compressed DWARF.** `inlined` can't read debug info that the linker
    compressed (`--compress-debug-sections`).

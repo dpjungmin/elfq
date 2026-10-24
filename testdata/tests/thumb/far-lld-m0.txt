@@ -1,0 +1,165 @@
+0	ldr	r2, [pc, #8]
+2	ldr	r3, [r2, #0]
+4	adds	r3, #7
+6	str	r3, [r2, #0]
+8	bx	lr
+a	nop
+c	.word	0x20000000
+10	push	{r4, lr}
+12	ldr	r4, [pc, #20]
+14	ldr	r3, [r4, #0]
+16	adds	r3, #1
+18	str	r3, [r4, #0]
+1a	bl	0x90
+1e	ldr	r3, [r4, #0]
+20	adds	r3, #1
+22	str	r3, [r4, #0]
+24	pop	{r4, pc}
+26	nop
+28	.word	0x20000000
+2c	push	{r4, lr}
+2e	ldr	r2, [pc, #12]
+30	ldr	r3, [r2, #0]
+32	adds	r3, #1
+34	str	r3, [r2, #0]
+36	bl	0x9c
+3a	pop	{r4, pc}
+3c	.word	0x20000000
+40	push	{r4, lr}
+42	ldr	r4, [pc, #20]
+44	ldr	r3, [r4, #0]
+46	adds	r3, #1
+48	str	r3, [r4, #0]
+4a	bl	0xa8
+4e	ldr	r3, [r4, #0]
+50	adds	r3, #1
+52	str	r3, [r4, #0]
+54	pop	{r4, pc}
+56	nop
+58	.word	0x20000000
+5c	push	{r4, lr}
+5e	ldr	r2, [pc, #12]
+60	ldr	r3, [r2, #0]
+62	adds	r3, #1
+64	str	r3, [r2, #0]
+66	bl	0xa8
+6a	pop	{r4, pc}
+6c	.word	0x20000000
+70	push	{r4, lr}
+72	ldr	r4, [pc, #20]
+74	ldr	r3, [r4, #0]
+76	adds	r3, #1
+78	str	r3, [r4, #0]
+7a	ldr	r3, [pc, #16]
+7c	blx	r3
+7e	ldr	r3, [r4, #0]
+80	adds	r3, #1
+82	str	r3, [r4, #0]
+84	pop	{r4, pc}
+86	nop
+88	.word	0x20000000
+8c	.word	0x30000115
+90	push	{r0, r1}
+92	ldr	r0, [pc, #4]
+94	str	r0, [sp, #4]
+96	pop	{r0, pc}
+98	.word	0x300000bd
+9c	push	{r0, r1}
+9e	ldr	r0, [pc, #4]
+a0	str	r0, [sp, #4]
+a2	pop	{r0, pc}
+a4	.word	0x300000cd
+a8	push	{r0, r1}
+aa	ldr	r0, [pc, #4]
+ac	str	r0, [sp, #4]
+ae	pop	{r0, pc}
+b0	.word	0x1fff0001
+300000bc	ldr	r2, [pc, #8]
+300000be	ldr	r3, [r2, #0]
+300000c0	adds	r3, #3
+300000c2	str	r3, [r2, #0]
+300000c4	bx	lr
+300000c6	nop
+300000c8	.word	0x20000000
+300000cc	ldr	r2, [pc, #8]
+300000ce	ldr	r3, [r2, #0]
+300000d0	adds	r3, #5
+300000d2	str	r3, [r2, #0]
+300000d4	bx	lr
+300000d6	nop
+300000d8	.word	0x20000000
+300000dc	push	{r4, lr}
+300000de	ldr	r4, [pc, #20]
+300000e0	ldr	r3, [r4, #0]
+300000e2	adds	r3, #1
+300000e4	str	r3, [r4, #0]
+300000e6	bl	0x30000144
+300000ea	ldr	r3, [r4, #0]
+300000ec	adds	r3, #1
+300000ee	str	r3, [r4, #0]
+300000f0	pop	{r4, pc}
+300000f2	nop
+300000f4	.word	0x20000000
+300000f8	push	{r4, lr}
+300000fa	ldr	r4, [pc, #20]
+300000fc	ldr	r3, [r4, #0]
+300000fe	adds	r3, #1
+30000100	str	r3, [r4, #0]
+30000102	bl	0x30000150
+30000106	ldr	r3, [r4, #0]
+30000108	adds	r3, #1
+3000010a	str	r3, [r4, #0]
+3000010c	pop	{r4, pc}
+3000010e	nop
+30000110	.word	0x20000000
+30000114	ldr	r2, [pc, #8]
+30000116	ldr	r3, [r2, #0]
+30000118	adds	r3, #9
+3000011a	str	r3, [r2, #0]
+3000011c	bx	lr
+3000011e	nop
+30000120	.word	0x20000000
+30000124	push	{r4, lr}
+30000126	bl	0x3000015c
+3000012a	bl	0x30000168
+3000012e	bl	0x30000174
+30000132	bl	0x30000180
+30000136	bl	0x3000018c
+3000013a	bl	0x300000dc
+3000013e	bl	0x300000f8
+30000142	b.n	0x30000142
+30000144	push	{r0, r1}
+30000146	ldr	r0, [pc, #4]
+30000148	str	r0, [sp, #4]
+3000014a	pop	{r0, pc}
+3000014c	.word	0x00000001
+30000150	push	{r0, r1}
+30000152	ldr	r0, [pc, #4]
+30000154	str	r0, [sp, #4]
+30000156	pop	{r0, pc}
+30000158	.word	0x1fff0001
+3000015c	push	{r0, r1}
+3000015e	ldr	r0, [pc, #4]
+30000160	str	r0, [sp, #4]
+30000162	pop	{r0, pc}
+30000164	.word	0x00000011
+30000168	push	{r0, r1}
+3000016a	ldr	r0, [pc, #4]
+3000016c	str	r0, [sp, #4]
+3000016e	pop	{r0, pc}
+30000170	.word	0x0000002d
+30000174	push	{r0, r1}
+30000176	ldr	r0, [pc, #4]
+30000178	str	r0, [sp, #4]
+3000017a	pop	{r0, pc}
+3000017c	.word	0x00000041
+30000180	push	{r0, r1}
+30000182	ldr	r0, [pc, #4]
+30000184	str	r0, [sp, #4]
+30000186	pop	{r0, pc}
+30000188	.word	0x0000005d
+3000018c	push	{r0, r1}
+3000018e	ldr	r0, [pc, #4]
+30000190	str	r0, [sp, #4]
+30000192	pop	{r0, pc}
+30000194	.word	0x00000071

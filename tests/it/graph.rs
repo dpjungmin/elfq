@@ -589,3 +589,23 @@ fn an_entry_point_runs_on_into_the_next_as_a_tail_call() {
         ])
     );
 }
+
+#[test]
+fn strtod_jumps_through_a_table_that_elfq_cant_follow() {
+    let (binary, graph) = load("c-strtod-nodebug.elf");
+    assert_eq!(
+        callers(&binary, &graph, "strtod"),
+        pairs(&[("Reset_Handler", Call)])
+    );
+    // The switch's ldr.w pc, [r0, r2, lsl #2] is the one jump in _strtod_l
+    // whose target elfq doesn't know.
+    let Node::Item(strtod_l) = node(&binary, "_strtod_l") else {
+        panic!("_strtod_l is an import");
+    };
+    let jumps: Vec<(u64, bool, Option<u64>)> = graph
+        .unresolved_in(strtod_l)
+        .iter()
+        .map(|u| (u.site, u.is_call, u.target))
+        .collect();
+    assert_eq!(jumps, [(0x0800_0084, false, None)]);
+}

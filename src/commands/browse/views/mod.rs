@@ -5,6 +5,8 @@
 mod help;
 mod item;
 mod picker;
+#[cfg(test)]
+mod thumb_text;
 
 use std::ops::Range;
 
@@ -97,6 +99,8 @@ pub struct Cursor {
     offset: usize,
     /// How many rows the screen held when last drawn.
     page: usize,
+    /// Whether the rows have been drawn, so that `page` is known.
+    drawn: bool,
     len: usize,
 }
 
@@ -106,6 +110,7 @@ impl Cursor {
             selected: 0,
             offset: 0,
             page: 1,
+            drawn: false,
             len,
         }
     }
@@ -147,6 +152,13 @@ impl Cursor {
     /// one shows, and the table's state for drawing them.
     pub fn visible(&mut self, height: usize) -> (Range<usize>, TableState) {
         self.page = height.max(1);
+        // A row selected before the first draw, as when a page opens at an
+        // address, comes a third of the way down too, now that the height
+        // is known.
+        if !self.drawn {
+            self.drawn = true;
+            self.offset = self.selected.saturating_sub(self.page / 3);
+        }
         if self.selected < self.offset {
             self.offset = self.selected;
         } else if self.selected >= self.offset + self.page {
@@ -261,6 +273,10 @@ mod tests {
         assert_eq!(cursor.visible(10).0, 90..100);
         assert_eq!(cursor.next(true, |row| row % 7 == 0), Some(0));
         assert_eq!(cursor.next(false, |row| row % 7 == 0), Some(98));
+        // So does a row selected before the screen is drawn.
+        let mut cursor = Cursor::new(100);
+        cursor.select(50);
+        assert_eq!(cursor.visible(10).0, 47..57);
     }
 
     #[test]

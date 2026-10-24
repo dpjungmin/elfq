@@ -503,6 +503,8 @@ mod tests {
             used_by_unwinder: Vec::new(),
             merged_variables: Vec::new(),
             vector_table: None,
+            arm_architecture: None,
+            data_in_code: Vec::new(),
             warnings: Vec::new(),
             code_references: std::collections::HashMap::new(),
             data: [text, data].concat(),

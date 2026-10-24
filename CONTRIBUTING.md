@@ -49,8 +49,8 @@ terminal is as it was; `.github/workflows/ci.yml` has the command.
 | `src/cli.rs` | Command-line arguments, with clap: a `Command` variant for each command, the structs that hold their arguments, and the text of `--help`. |
 | `src/commands/` | One file per command, which looks up SYMBOL, asks `graph` or `debuginfo` and decides what the answer shows. `mod.rs` runs the command the arguments name, after checking arguments that don't go together. The rest are shared: `symbol.rs` works out what a user means by SYMBOL, `retained_tree.rs` builds the trees of retained sizes that the overview, `top` and `retained` show, `ranges.rs` answers `callers` and `callees` for ranges of memory or with `--from` or `--to`, `text.rs` holds the wording that commands share and `json.rs` the JSON shapes. |
 | `src/commands/browse/` | `elfq FILE browse`, with the `tui` feature: `mod.rs` takes over the terminal and runs the event loop, `session.rs` holds the loaded file and asks the commands' code for answers, `keys.rs` is the table of keys, `app.rs` the history of pages, the go-to box and the screen's layout, and `views/` the pages and the go-to box, one file each. |
-| `src/arch/` | Finding the addresses that machine code calls or uses, one module per instruction set (x86-64 and Thumb). Thumb's has three parts: `thumb/mod.rs` reads each instruction on its own, `thumb/decode.rs` says what an instruction does with the registers and the stack, and `thumb/values/` follows the addresses that code puts in registers to where a branch through one goes, as for long calls and veneers. `listing.rs` prints a function's code as text, for `browse`. |
-| `src/binary/` | Reading an ELF file: its functions and data objects ("items") and where they were found, their names, imports, stored pointers and memory blocks. Unnamed data, such as string literals, is found from what code and pointers refer to. Each function's code is scanned once, as the file loads (`Binary::code_references`). |
+| `src/arch/` | Finding the addresses that machine code calls or uses, one module per instruction set (x86-64 and Thumb). Thumb's has three parts: `thumb/mod.rs` reads each instruction on its own, `thumb/decode.rs` says what an instruction does with the registers and the stack, and `thumb/values/` follows the addresses that code puts in registers to where a branch through one goes, as for long calls and veneers. `listing.rs` prints a function's code as text, for `browse`: x86-64 with iced-x86's formatter, and Thumb with thumb-asm, in the lines that `thumb::layout` cuts the code into with the same sweep as `scan`. |
+| `src/binary/` | Reading an ELF file: its functions and data objects ("items") and where they were found, their names, imports, stored pointers and memory blocks, and in Arm files the core the code is for (`attributes.rs`) and the data that `$d` symbols mark among code. Unnamed data, such as string literals, is found from what code and pointers refer to. Each function's code is scanned once, as the file loads (`Binary::code_references`). |
 | `src/graph/` | The reference graph that connects items, the roots where the program starts, the dominator tree that says what is exclusive to what, the shortest paths that `why` and `reach` show, the references that cross the boundary of ranges of memory, and where a linker's veneers jump to. |
 | `src/debuginfo/` | Reading DWARF, when the file has it: the copies of functions that the compiler inlined, for `inlined`, and for the error when SYMBOL names a function that the compiler inlined everywhere. |
 | `src/render/` | Text output: tables, and the trees in their last column (`tree.rs`), which every command shows the same way: as rows that name the row they hang under (in `why`, only where chains branch), or drawn with `--tree`. |
@@ -140,7 +140,7 @@ without making them public. It and `arch/listing.rs` build only with the
 | `symbol.rs` | Looking up SYMBOL |
 | `inlined.rs` | Inlined copies, from DWARF |
 | `damaged.rs` | Damaged and unusual files, made by changing a sample's bytes |
-| `browse.rs` | `browse`'s screens, driven with keys on ratatui's `TestBackend`, a screen in memory; its errors; and on Linux, the program in a terminal that `script` makes. The checks of every line's link and note on every sample need private types, so they are unit tests in `src/commands/browse/views/item.rs` |
+| `browse.rs` | `browse`'s screens, driven with keys on ratatui's `TestBackend`, a screen in memory; its errors; and on Linux, the program in a terminal that `script` makes. The checks of every line's link and note on every sample need private types, so they are unit tests in `src/commands/browse/views/item.rs`, and so are those of the Thumb text, in `views/thumb_text.rs`: against objdump's text for each Cortex-M sample, in `testdata/tests/thumb`, and in each stripped sample, against the `$d` symbols of its twin |
 | `docs.rs` | The `$ elfq` examples in README.md, docs/design.md and docs/examples.md, and that design.md names every JSON key |
 
 Two tests in `cli.rs` run the overview and every command it suggests on
@@ -313,14 +313,21 @@ page, which the capture prints.
 6. **Tests that need code elfq can't read.**
    `a_file_whose_code_elfq_cant_read_says_so` in `tests/it/cli.rs` marks a
    file as AArch64; when that is the one you add, pick another machine.
-7. **Docs.** README.md and docs/design.md say which instruction sets elfq
+7. **Text for `browse`.** An arm in `listing` in `src/arch/listing.rs`
+   prints the code, one line per instruction, starting where `scan`'s
+   references are. Until then, a function's page lists only the lines that
+   use another item.
+8. **Docs.** README.md and docs/design.md say which instruction sets elfq
    reads.
 
 ## Sample binaries
 
 [testdata/README.md](testdata/README.md) lists what each sample contains and
 the answers tests should expect. If you change a sample's source, rebuild with
-`testdata/build.sh` and commit the new files with the source change. Then
+`testdata/build.sh` and commit the new files with the source change. For a
+Cortex-M sample, also run `testdata/thumb-text.sh`, which writes objdump's
+text for its code to `testdata/tests/thumb`, where the tests of `browse`'s
+Thumb text read it, and commit that too. Then
 read docs/examples.md again: it says what the samples' source does, down to
 line numbers in testdata/rust/src/main.rs, and no test checks that.
 

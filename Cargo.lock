@@ -305,6 +305,7 @@ dependencies = [
  "serde",
  "serde_json",
  "signal-hook",
+ "thumb-asm",
 ]
 
 [[package]]
@@ -959,6 +960,12 @@ dependencies = [
  "quote",
  "syn 3.0.8",
 ]
+
+[[package]]
+name = "thumb-asm"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "70056c0c5418af999d865332ecac47816eaeb7dfb9df0b6c0679b88fc9aef45d"
 
 [[package]]
 name = "time"

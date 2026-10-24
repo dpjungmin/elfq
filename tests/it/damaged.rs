@@ -92,6 +92,28 @@ fn replace_section(data: &mut Vec<u8>, section: &str, bytes: &[u8]) {
     set_section_field(data, section, SIZE, bytes.len() as u64);
 }
 
+/// The sample `name`, with build attributes that say only that its code is
+/// for version `version` of the Arm architecture (Tag_CPU_arch), on a
+/// Cortex-M core; or with an empty `.ARM.attributes`, which says nothing,
+/// when `version` is `None`.
+#[cfg(feature = "tui")]
+pub fn for_arm_version(name: &str, version: Option<u8>) -> Vec<u8> {
+    let mut data = sample(name);
+    let mut section = Vec::new();
+    if let Some(version) = version {
+        // Version `A`, then the `aeabi` vendor's attributes, then those of
+        // the whole file (tag 1): Tag_CPU_arch (6) and
+        // Tag_CPU_arch_profile (7), each with its length first.
+        let file = [1, 9, 0, 0, 0, 6, version, 7, b'M'];
+        section.push(b'A');
+        section.extend((file.len() as u32 + 10).to_le_bytes());
+        section.extend(b"aeabi\0");
+        section.extend(file);
+    }
+    replace_section(&mut data, ".ARM.attributes", &section);
+    data
+}
+
 /// `bytes` after their length in 4 bytes, as DWARF starts a unit or a
 /// list of ranges.
 fn with_length(bytes: &[u8]) -> Vec<u8> {
