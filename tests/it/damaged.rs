@@ -273,6 +273,7 @@ fn the_vector_table_ends_where_the_file_holds_no_bytes() {
     let table = binary.vector_table.unwrap();
     assert_eq!((table.address, table.size), (0x0800_0000, 0x10));
     assert_eq!(table.handlers, [0x0800_05a0, 0x0800_059c, 0x0800_059c]);
+    assert_eq!(table.exceptions, [1, 2, 3]);
 }
 
 #[test]
@@ -458,6 +459,42 @@ elfq doesn't know where __memcpy_veneer ends, so it can't read its code.
         assert_eq!(reach["unreadable"][0]["name"], "__memcpy_veneer");
         assert_eq!(reach["complete"], false);
     }
+}
+
+#[test]
+fn the_overview_suggests_reach_for_a_handler_that_runs_in_normal_operation() {
+    // The overview of c-cortex-m4-nodebug.elf with `handler` in the given
+    // entries of the vector table, counted from the stack pointer's.
+    let overview = |handler: &str, entries: &[usize]| {
+        let mut data = sample("c-cortex-m4-nodebug.elf");
+        let file = object::File::parse(&*data).unwrap();
+        let (table, _) = file
+            .section_by_name(".isr_vector")
+            .unwrap()
+            .file_range()
+            .unwrap();
+        let address = file.symbol_by_name(handler).unwrap().address();
+        for &entry in entries {
+            write(&mut data, table as usize + entry * 4, 4, address | 1);
+        }
+        run(&format!("{handler}-in-the-table.elf"), &data, &[]).0
+    };
+    // main reaches more code than SysTick_Handler, but runs from these
+    // entries only when something has gone wrong or while debugging: as
+    // the HardFault handler, as in most firmware; as the handler of every
+    // fault and of DebugMonitor, as in Zephyr's; and as the NMI handler.
+    for entries in [&[3][..], &[3, 4, 5, 6, 12], &[2]] {
+        let stdout = overview("main", entries);
+        assert!(
+            stdout.contains(" reach SysTick_Handler\n"),
+            "{entries:?}: {stdout}"
+        );
+    }
+    let stdout = overview("main", &[3, 15]);
+    assert!(stdout.contains(" reach main\n"), "{stdout}");
+    // Default_Handler, the SysTick handler now too, reaches nothing else.
+    let stdout = overview("Default_Handler", &[15]);
+    assert!(!stdout.contains(" reach "), "{stdout}");
 }
 
 #[test]

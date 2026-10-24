@@ -112,6 +112,7 @@ Try:
   elfq testdata/bin/c-cortex-m4.elf top
   elfq testdata/bin/c-cortex-m4.elf top --tree
   elfq testdata/bin/c-cortex-m4.elf retained main
+  elfq testdata/bin/c-cortex-m4.elf reach SysTick_Handler
   elfq testdata/bin/c-cortex-m4.elf why crc_table
   elfq testdata/bin/c-cortex-m4.elf inlined
 ",
@@ -161,6 +162,7 @@ Try:
   elfq testdata/bin/c-cortex-m4-stripped.elf top
   elfq testdata/bin/c-cortex-m4-stripped.elf top --tree
   elfq testdata/bin/c-cortex-m4-stripped.elf retained entry
+  elfq testdata/bin/c-cortex-m4-stripped.elf reach fn_0x80005ec
   elfq testdata/bin/c-cortex-m4-stripped.elf why .rodata@0x80009e4
 ",
     );

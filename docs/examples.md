@@ -48,6 +48,7 @@ Try:
   elfq testdata/bin/rust-cortex-m4.elf top
   elfq testdata/bin/rust-cortex-m4.elf top --tree
   elfq testdata/bin/rust-cortex-m4.elf retained Reset
+  elfq testdata/bin/rust-cortex-m4.elf reach sys_tick
   elfq testdata/bin/rust-cortex-m4.elf why do_count_chars
   elfq testdata/bin/rust-cortex-m4.elf inlined
 ```
@@ -169,6 +170,7 @@ Try:
   elfq testdata/bin/c-cortex-m7.elf top
   elfq testdata/bin/c-cortex-m7.elf top --tree
   elfq testdata/bin/c-cortex-m7.elf retained main
+  elfq testdata/bin/c-cortex-m7.elf reach SysTick_Handler
   elfq testdata/bin/c-cortex-m7.elf why tx_buffer
   elfq testdata/bin/c-cortex-m7.elf inlined
 ```
@@ -422,6 +424,7 @@ Try:
   elfq testdata/bin/c-cortex-m4-stripped.elf top
   elfq testdata/bin/c-cortex-m4-stripped.elf top --tree
   elfq testdata/bin/c-cortex-m4-stripped.elf retained entry
+  elfq testdata/bin/c-cortex-m4-stripped.elf reach fn_0x80005ec
   elfq testdata/bin/c-cortex-m4-stripped.elf why .rodata@0x80009e4
 ```
 

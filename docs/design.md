@@ -453,7 +453,12 @@ The range forms of `callers` and `callees` look only where the program
 uses its code and data. When the sections sit in several blocks of
 addresses, as firmware's flash and RAMs do, the overview lists the blocks,
 and a `--range` command to try for each block that elfq counts bytes in, so
-the range needn't come from the chip's reference manual. Sizes can take a
+the range needn't come from the chip's reference manual. It also suggests
+`reach` for the handler in the vector table that reaches the most code, to
+show which blocks its code and data are in. It picks from the handlers of
+SVCall, PendSV, SysTick and the chip's interrupts, which run in normal
+operation, and leaves out those that reach nothing else, such as a default
+handler that only loops. Sizes can take a
 unit, in any case: `0x20000000+256K`. Units are powers of 1024, as memory
 sizes usually are. A range typed as other tools write them, `0x0-0x40000`
 or `0x0:0x40000`, is refused with the form to type, `0x0..0x40000`, and
