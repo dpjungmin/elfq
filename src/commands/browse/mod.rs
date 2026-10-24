@@ -12,9 +12,9 @@
 //! - `app.rs`: the pages the user has opened, as a browser's history, and
 //!   the screen's layout around the page on top.
 //! - `views/`: the pages, one file per kind, the tabs of an item's page
-//!   other than its code, and the go-to box. A page draws itself, and
-//!   answers an action by moving, by opening another page, or with a
-//!   message.
+//!   other than its code, the go-to box, and `names.rs`, which shortens
+//!   long names to fit a column. A page draws itself, and answers an
+//!   action by moving, by opening another page, or with a message.
 //!
 //! This file takes the terminal and reads its keys. [`event_loop`] takes
 //! the keys from anywhere and draws on any ratatui backend, so that tests

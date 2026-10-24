@@ -242,11 +242,13 @@ impl<'a> App<'a> {
         .areas(area);
 
         // The trail is cut from the left, so that the page on the screen
-        // shows.
+        // shows, and long names in it are shortened to fit after the
+        // file's name.
         let mut trail = self.session.file_name();
-        for view in &self.history {
+        let room = width.saturating_sub(trail.chars().count() + 3).max(20);
+        for view in &mut self.history {
             trail += " › ";
-            trail += view.title();
+            trail += view.title(room);
         }
         if self.picker.is_some() {
             trail += " › go to";

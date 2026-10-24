@@ -17,7 +17,10 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Row, Table};
 
 use super::callers::Callers;
-use super::{Cursor, Go, View, cut, draw_lines, imported, keep_lines, whereabouts, wrap};
+use super::{
+    Cursor, Go, View, cut, draw_lines, fit_name, imported, keep_lines, name_fitter, whereabouts,
+    wrap,
+};
 use crate::arch::{self, CodeReferenceKind, Refers};
 use crate::binary::{Binary, Item, ItemKind, Source};
 use crate::commands::browse::{keys::Action, session::Session};
@@ -99,12 +102,18 @@ struct CodeLine {
 
 pub struct ItemPage {
     /// Its name in the title line's trail.
-    pub title: String,
+    title: String,
+    /// The title shortened, and the columns it was shortened to.
+    short_title: Option<(usize, String)>,
     /// The first line of the header, before it is wrapped: the item's
-    /// name, what SYMBOL said about it, and where it is.
-    identity: String,
+    /// name, then what SYMBOL said about it and where it is, as in
+    /// "Default_Handler" and " (also named NMI_Handler)  function at …".
+    identity: (String, String),
     /// The second line of the header: "used by 2 · uses 3".
     facts: String,
+    /// The header's lines, and the columns and the most lines they were
+    /// made for.
+    header: Option<((usize, usize), Vec<Line<'static>>)>,
     /// The tab on the screen. Each page in the history keeps its own, so
     /// that Back shows the tab that was left.
     tab: Tab,
@@ -124,6 +133,11 @@ impl ItemPage {
     pub fn new(session: &Session, node: Node, at: Option<u64>, lead: &str) -> ItemPage {
         let answer = session.callers(node);
         let used_by = distinct_nodes(&answer.rows).len();
+        let name = node.name(session.binary);
+        let (name, note) = match lead.strip_prefix(name) {
+            Some(note) => (name, note),
+            None => (lead, ""),
+        };
         let (title, (place, facts), code) = match node {
             Node::Item(index) => {
                 let title = session.row_name(index);
@@ -144,8 +158,10 @@ impl ItemPage {
         };
         ItemPage {
             title,
-            identity: format!("{lead}  {place}"),
+            short_title: None,
+            identity: (name.to_string(), format!("{note}  {place}")),
             facts,
+            header: None,
             tab: if code.is_ok() {
                 Tab::Code
             } else {
@@ -163,6 +179,20 @@ impl ItemPage {
             self.tab = tab;
         }
         self
+    }
+
+    /// Its name in the title line's trail, shortened to fit `room`
+    /// columns: once for each room, since the name of a C++ function can
+    /// take thousands of characters.
+    pub fn title(&mut self, room: usize) -> &str {
+        if self
+            .short_title
+            .as_ref()
+            .is_none_or(|&(shortened, _)| shortened != room)
+        {
+            self.short_title = Some((room, fit_name(&self.title, room)));
+        }
+        self.short_title.as_ref().map_or("", |(_, title)| title)
     }
 
     /// The tabs it has, in the order of their numbers.
@@ -208,16 +238,41 @@ impl ItemPage {
 
     /// The header, wrapped to `width`, in at most `most` lines. It wraps,
     /// so that nothing is cut, unless the screen is too short for it, with
-    /// the tab line and two lines of the tab under it. Then what is too
-    /// long is cut, ending in "…", the first line first.
-    fn header_lines(&self, width: usize, most: usize) -> Vec<Line<'static>> {
+    /// the tab line and two lines of the tab under it. Then the item's name
+    /// is shortened as the title line's is, and what is still too long is
+    /// cut, ending in "…". They are made once for each size of screen.
+    fn header_lines(&mut self, width: usize, most: usize) -> Vec<Line<'static>> {
+        if let Some((size, lines)) = &self.header
+            && *size == (width, most)
+        {
+            return lines.clone();
+        }
+        let (name, rest) = &self.identity;
+        let identity = |name: &str| wrap(&format!("{name}{rest}"), width);
         let facts = wrap(&self.facts, width);
-        let first = wrap(&self.identity, width);
-        let first = keep_lines(first, most.saturating_sub(facts.len()).max(1), width);
+        let mut first = identity(name);
+        if first.len() + facts.len() > most {
+            let lines = most.saturating_sub(facts.len()).max(1);
+            // The widest shortened name that leaves the line short enough,
+            // which is no wider than the lines.
+            let fit = name_fitter(name);
+            let (mut fits, mut wider) = (0, name.chars().count().min(lines * width));
+            while fits + 1 < wider {
+                let middle = (fits + wider) / 2;
+                if identity(&fit(middle)).len() <= lines {
+                    fits = middle;
+                } else {
+                    wider = middle;
+                }
+            }
+            first = keep_lines(identity(&fit(fits.max(1))), lines, width);
+        }
         let facts = keep_lines(facts, most.saturating_sub(first.len()), width);
         let first = first.into_iter().map(|line| Line::raw(line).bold());
         let facts = facts.into_iter().map(|line| Line::raw(line).dim());
-        first.chain(facts).collect()
+        let lines: Vec<Line<'static>> = first.chain(facts).collect();
+        self.header = Some(((width, most), lines.clone()));
+        lines
     }
 
     pub fn handle(&mut self, session: &Session, action: Action) -> Option<Go> {

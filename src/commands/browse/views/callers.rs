@@ -13,7 +13,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Row, Table};
 
 use super::item::{ItemPage, Tab};
-use super::{Cursor, Go, View, cut, draw_lines, keep_lines, whereabouts, wrap};
+use super::{Cursor, FittedRows, Go, View, draw_lines, keep_lines, whereabouts, wrap};
 use crate::commands::browse::{keys::Action, session::Session};
 use crate::commands::callers::Answer;
 use crate::commands::{distinct_nodes, text};
@@ -32,6 +32,8 @@ struct CallerRow {
 pub struct Callers {
     rows: Vec<CallerRow>,
     cursor: Cursor,
+    /// The names of the rows on the screen, shortened.
+    fitted: FittedRows,
     /// The widest HOW and AT, worked out once, so that the columns don't
     /// move as the rows scroll.
     widest: (usize, usize),
@@ -75,6 +77,7 @@ impl Callers {
                 widest(|row| row.at.chars().count()),
             ),
             cursor: Cursor::new(rows.len()),
+            fitted: FittedRows::default(),
             rows,
             notes: answer.notes,
             nothing,
@@ -118,14 +121,17 @@ impl Callers {
         let (visible, mut state) = self
             .cursor
             .visible(usize::from(body.height).saturating_sub(1));
-        let how_width = self.widest.0.max("HOW".len());
-        let at_width = self.widest.1.max("AT".len());
-        // What is left for CALLER, after the cursor's "> " and two spaces
-        // after each column.
-        let room = width.saturating_sub(2 + how_width + 2 + at_width + 2);
-        let rows = self.rows[visible]
+        let (how_width, at_width, room) = self.columns(width);
+        // Long names are shortened, the same way on every row shown, and
+        // the selected one is in full on the status line.
+        let rows = &self.rows[visible.clone()];
+        let names = self.fitted.names(visible, room, || {
+            rows.iter().map(|row| row.name.as_str()).collect()
+        });
+        let rows = rows
             .iter()
-            .map(|row| Row::new([row.how.to_string(), row.at.clone(), cut(&row.name, room)]));
+            .zip(names)
+            .map(|(row, name)| Row::new([row.how.to_string(), row.at.clone(), name.clone()]));
         let columns = [
             Constraint::Length(how_width as u16),
             Constraint::Length(at_width as u16),
@@ -137,6 +143,16 @@ impl Callers {
             .row_highlight_style(Style::new().reversed())
             .highlight_symbol("> ");
         frame.render_stateful_widget(table, body, &mut state);
+    }
+
+    /// The widths of HOW and AT, and what is left for CALLER on a screen
+    /// `width` columns wide, after the cursor's "> " and two spaces after
+    /// each column.
+    fn columns(&self, width: usize) -> (usize, usize, usize) {
+        let how_width = self.widest.0.max("HOW".len());
+        let at_width = self.widest.1.max("AT".len());
+        let room = width.saturating_sub(2 + how_width + 2 + at_width + 2);
+        (how_width, at_width, room)
     }
 
     pub fn handle(&mut self, session: &Session, action: Action) -> Option<Go> {
@@ -193,7 +209,8 @@ mod tests {
 
     use clap::Parser;
 
-    use super::super::samples;
+    use super::super::names::alike_in_a_window;
+    use super::super::{fit_name, samples};
     use super::*;
     use crate::binary::Binary;
     use crate::cli::{Cli, Command, Format};
@@ -321,6 +338,39 @@ mod tests {
             }
         }
         assert!(pages > 4500 && cut_pages > 0, "{pages} {cut_pages}");
+    }
+
+    #[test]
+    fn callers_that_would_read_the_same_read_differently_on_the_screen() {
+        // The pages where some callers on the screen would read the same
+        // if each name were shortened by itself.
+        let mut pages = 0;
+        for path in samples() {
+            let binary = Binary::load(&path).unwrap();
+            let session = Session::new(&path, &binary).unwrap();
+            let items = (0..binary.items.len()).map(Node::Item);
+            let imports = (0..binary.imports.len()).map(Node::Import);
+            let nodes = items.chain(imports.filter(|&node| session.page_node(node) == node));
+            for node in nodes {
+                let tab = Callers::new(&session, node, session.callers(node));
+                let names: Vec<&str> = tab.rows.iter().map(|row| row.name.as_str()).collect();
+                for width in [60, 80, 100] {
+                    let (_, _, room) = tab.columns(width);
+                    if let Some((one, other, both)) = alike_in_a_window(&names, room) {
+                        panic!("{one} and {other} both read {both} at {width}");
+                    }
+                    let mut alone: Vec<String> =
+                        names.iter().map(|name| fit_name(name, room)).collect();
+                    alone.sort();
+                    alone.dedup();
+                    let mut distinct = names.clone();
+                    distinct.sort();
+                    distinct.dedup();
+                    pages += usize::from(alone.len() < distinct.len());
+                }
+            }
+        }
+        assert!(pages > 100, "{pages}");
     }
 
     #[test]

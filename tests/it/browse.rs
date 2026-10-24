@@ -356,25 +356,60 @@ memcpy  imported from a shared library: its code isn't in this file
 used by 57
 [3 callers]
   HOW            AT                  CALLER
-> call           0x4cced             <&[u8] as <alloc::ffi::c_str::CString>::ne…
-  call           0x2ebed             <addr2line::lookup::LoopingLookup<core::re…
-  call           0x2d0a6 and 2 more  <alloc::collections::btree::node::Balancin…
-  call           0x2d458 and 2 more  <alloc::collections::btree::node::Balancin…
-  address taken  0x1c8e6             <alloc::collections::btree::node::Balancin…
-  call           0x1cad9             <alloc::collections::btree::node::Balancin…
-  call           0x430f8             <alloc::collections::btree::node::Handle<a…
-  call           0x434ad             <alloc::collections::btree::node::Handle<a…
-  call           0x43f3b, 0x43f53    <alloc::collections::btree::node::Handle<a…
-  call           0x42fbb             <alloc::collections::btree::node::Handle<a…
-  address taken  0x1d1e1             <alloc::collections::btree::node::Handle<a…
-  call           0x1d3bf             <alloc::collections::btree::node::Handle<a…
-  call           0x4cc56             <alloc::string::String as core::convert::F…
-  call           0x3f93f             <alloc::string::String as core::fmt::Write…
+> call           0x4cced             <&[u8] as SpecNewImpl>::spec_new_impl
+  call           0x2ebed             <LoopingLookup<…>>::new_lookup
+  call           0x2d0a6 and 2 more  <BalancingContext<…>>::bulk_steal_left
+  call           0x2d458 and 2 more  <BalancingContext<…>>::bulk_steal_right
+  address taken  0x1c8e6             <BalancingContext<…>>::merge_tracking_chil…
+  call           0x1cad9             <BalancingContext<…>>::merge_tracking_chil…
+  call           0x430f8             …Abbreviation, Internal>, Edge>>::insert::…
+  call           0x434ad             <Handle<NodeRef<…>, KV>>::split::<Global>
+  call           0x43f3b, 0x43f53    <Handle<NodeRef<…>, KV>>::split_leaf_data
+  call           0x42fbb             …Abbreviation, Leaf>, Edge>>::insert::<Glo…
+  address taken  0x1d1e1             <Handle<…>>::remove_leaf_kv::<…>
+  call           0x1d3bf             <Handle<…>>::remove_leaf_kv::<…>
+  call           0x4cc56             <String as From<Cow<str>>>::from
+  call           0x3f93f             <String as Write>::write_str
   call           0x4c87a, 0x4c900    <alloc::string::String>::from_utf8_lossy
-  call           0x3f6db             <alloc::vec::Vec<u8> as std::io::Write>::w…
+  call           0x3f6db             <Vec<u8> as Write>::write
 → <&[u8] as <alloc::ffi::c_str::CString>::new::SpecNewImpl>::spec_new_impl  fun…
 $ elfq testdata/bin/rust-x86_64-nodebug.elf callers memcpy --all
 ↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
+",
+    );
+    assert_output(
+        &screen("rust-x86_64-nodebug.elf", Some("memcpy"), (100, 30), &[]),
+        "\
+rust-x86_64-nodebug.elf › memcpy
+memcpy  imported from a shared library: its code isn't in this file
+used by 57
+[3 callers]
+  HOW            AT                  CALLER
+> call           0x4cced             <&[u8] as SpecNewImpl>::spec_new_impl
+  call           0x2ebed             <LoopingLookup<…>>::new_lookup
+  call           0x2d0a6 and 2 more  <BalancingContext<usize, ThreadInfo>>::bulk_steal_left
+  call           0x2d458 and 2 more  <BalancingContext<usize, ThreadInfo>>::bulk_steal_right
+  address taken  0x1c8e6             <BalancingContext<…>>::merge_tracking_child_edge::<Global>
+  call           0x1cad9             <BalancingContext<…>>::merge_tracking_child_edge::<Global>
+  call           0x430f8             …ef<Mut, u64, Abbreviation, Internal>, Edge>>::insert::<Global>
+  call           0x434ad             <Handle<NodeRef<…>, KV>>::split::<Global>
+  call           0x43f3b, 0x43f53    <Handle<NodeRef<…>, KV>>::split_leaf_data
+  call           0x42fbb             …odeRef<Mut, u64, Abbreviation, Leaf>, Edge>>::insert::<Global>
+  address taken  0x1d1e1             <Handle<…>>::remove_leaf_kv::<remove_kv::{closure#0}, Global>
+  call           0x1d3bf             <Handle<…>>::remove_leaf_kv::<remove_kv::{closure#0}, Global>
+  call           0x4cc56             <String as From<Cow<str>>>::from
+  call           0x3f93f             <alloc::string::String as core::fmt::Write>::write_str
+  call           0x4c87a, 0x4c900    <alloc::string::String>::from_utf8_lossy
+  call           0x3f6db             <alloc::vec::Vec<u8> as std::io::Write>::write
+  call           0x3f74f             <alloc::vec::Vec<u8> as std::io::Write>::write_all
+  call           0x3f65a             <alloc::vec::Vec<u8> as std::io::Write>::write_all_vectored
+  call           0x3f4d1             <alloc::vec::Vec<u8> as std::io::Write>::write_vectored
+  call           0x16bda, 0x16d5a    <OnceCell<…>>::try_init::<get_or_init<…>::{closure#0}, !>
+  call           0x30b2c             <Unit<EndianSlice<LittleEndian>, usize>>::new
+  call           0x195cb and 8 more  <Cache>::with_global::<resolve::{closure#1}>
+→ <&[u8] as <alloc::ffi::c_str::CString>::new::SpecNewImpl>::spec_new_impl  function at 0x4cc90, 30…
+$ elfq testdata/bin/rust-x86_64-nodebug.elf callers memcpy --all
+↑↓ move  enter follow  esc back  tab next link  1 3 tabs  g go to  ? help  q quit
 ",
     );
 }
@@ -553,6 +588,72 @@ Words
   = 0x028f5c28         the constant that a load from a literal pool reads
   in .bss              the section of an item in another block of memory than this function
   ~12  ?               an estimated size, and an unknown size
+
+↑↓ move  enter follow  esc back  g go to  ? help  q quit
+",
+    );
+    // On smaller screens, the lines wrap where they must, and the rest
+    // is a scroll away.
+    assert_output(
+        &screen("c-cortex-m7.elf", Some("app_tick"), (100, 30), &["?"]),
+        "\
+c-cortex-m7.elf › app_tick › help
+Keys
+  ↑ ↓  k j             move
+  PgUp PgDn Space      a page up or down
+  Home End             the first or last line
+  Enter → l            follow the line's link, or open the row
+  Esc ← h Bksp Ctrl-O  back to where you were
+  ]                    forward again
+  Tab Shift-Tab        the next or previous line that uses another item
+  1 3                  tabs: 1 code, 3 callers
+  g                    go to a function, data object or import, by name or address
+  ?                    this help
+  Ctrl-Z               back to the shell; fg returns
+  q Ctrl-C             quit
+Words
+  call                 a direct call, or a call through a register that the code loaded with the
+                       target's address, as a long call does
+  tail call            a jump to the start of a function, which then returns to the caller's caller
+  uses                 code reads or writes data, or loads its address
+  address taken        code loads a function's address, as when passing a function pointer, or an
+                       import's
+  pointer              data holds a pointer to it, as in a table of functions
+  via veneer           through a stub that the linker added; the note names where it ends up
+  via PLT              through a PLT stub that passes the call on to one of the file's own
+                       functions; the note names it
+  jump ↓  jump ↑       a branch to a line further down or up the function, or a case of a table of
+                       jumps; Enter moves there
+  address ↓  address ↑ adr loads the address of a line in this function, such as a table's; Enter
+
+↑↓ move  enter follow  esc back  g go to  ? help  q quit
+",
+    );
+    assert_output(
+        &screen("c-cortex-m7.elf", Some("app_tick"), (80, 24), &["?"]),
+        "\
+c-cortex-m7.elf › app_tick › help
+Keys
+  ↑ ↓  k j             move
+  PgUp PgDn Space      a page up or down
+  Home End             the first or last line
+  Enter → l            follow the line's link, or open the row
+  Esc ← h Bksp Ctrl-O  back to where you were
+  ]                    forward again
+  Tab Shift-Tab        the next or previous line that uses another item
+  1 3                  tabs: 1 code, 3 callers
+  g                    go to a function, data object or import, by name or
+                       address
+  ?                    this help
+  Ctrl-Z               back to the shell; fg returns
+  q Ctrl-C             quit
+Words
+  call                 a direct call, or a call through a register that the code
+                       loaded with the target's address, as a long call does
+  tail call            a jump to the start of a function, which then returns to
+                       the caller's caller
+  uses                 code reads or writes data, or loads its address
+  address taken        code loads a function's address, as when passing a
 
 ↑↓ move  enter follow  esc back  g go to  ? help  q quit
 ",
@@ -1389,6 +1490,35 @@ $ elfq testdata/bin/c-cortex-m7.elf callers log_msg
 ↑↓ move  enter follow  esc back  tab next link  1 3 tabs  g go to  ? help  q quit
 ",
     );
+    assert_output(
+        &screen("c-cortex-m7.elf", Some("log_msg"), (80, 24), &["3"]),
+        "\
+c-cortex-m7.elf › log_msg
+log_msg  function at 0x30000288, 26 bytes, in .text (0x30000000..0x30000edc)
+used by 4 · uses 2
+ 1 code  [3 callers]
+  HOW        AT                      CALLER
+> call       0x30000304              app_tick
+  tail call  0x300002b0              on_button
+  call       0x30000464, 0x3000047a  process_frame
+  call       0x3000053c              report
+
+
+
+
+
+
+
+
+
+
+
+
+→ app_tick  function at 0x300002e4, 60 bytes, in .text
+$ elfq testdata/bin/c-cortex-m7.elf callers log_msg
+↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
+",
+    );
     // A shared library calls its own functions through PLT stubs, and
     // says so under the rows, as `callers` does.
     assert_output(
@@ -1424,6 +1554,104 @@ $ elfq testdata/bin/c-x86_64.so callers log_msg
     assert_eq!(
         screen("c-x86_64.elf", Some("0x162e"), (80, 24), &["3", "1"]),
         screen("c-x86_64.elf", Some("0x162e"), (80, 24), &[])
+    );
+}
+
+#[test]
+fn long_names_are_shortened_where_they_are_listed() {
+    // Inside brackets, paths keep their last part, and brackets become
+    // <…> as the room needs, but the two `split` rows, which differ only
+    // in Internal and Leaf, show where they differ. The status line has
+    // the selected name in full, and the command, SYMBOL as the CLI's
+    // answer names it.
+    assert_output(
+        &screen(
+            "rust-x86_64-nodebug.elf",
+            Some("__rust_dealloc"),
+            (80, 24),
+            &["3"],
+        ),
+        "\
+rust-x86_64-nodebug.elf › __rust_dealloc
+__rustc::__rust_dealloc  function at 0x15260, 5 bytes, in .text
+used by 82 · uses 1
+ 1 code  [3 callers]
+  HOW            AT                   CALLER
+> call           0x4cdb1              <&[u8] as SpecNewImpl>::spec_new_impl
+  call           0x3e877, 0x3e8d5     <DisplayBacktrace as Display>::fmt
+  call           0x2f079              <LoopingLookup<…>>::new_lookup
+  address taken  0x39925, 0x39a37     <IntoIter<u64, Result<…>>>::dying_next
+  call           0x39973, 0x39bd9     <IntoIter<u64, Result<…>>>::dying_next
+  address taken  0x39ce5, 0x39df7     <IntoIter<u64, Abbreviation>>::dying_next
+  call           0x39d33, 0x39f99     <IntoIter<u64, Abbreviation>>::dying_next
+  call           0x1cb93              <BalancingContext<…>>::merge_tracking_chi…
+  call           0x4358d              …Abbreviation, Internal>, KV>>::split::<G…
+  call           0x43401              …Abbreviation, Leaf>, KV>>::split::<Globa…
+  call           0x1d018, 0x1d558     <Handle<…>>::remove_leaf_kv::<…>
+  call           0x42e9e              <NodeRef<…>>::new_internal::<Global>
+  call           0x4cb03, 0x4cb80     <CString>::_from_vec_unchecked
+  tail call      0x43652              <alloc::raw_vec::RawVecInner>::deallocate
+Calls to __rustc::__rust_dealloc through a pointer aren't listed, since elfq
+can't see them.
+→ <&[u8] as <alloc::ffi::c_str::CString>::new::SpecNewImpl>::spec_new_impl  fun…
+$ elfq testdata/bin/rust-x86_64-nodebug.elf callers __rust_dealloc --all
+↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
+",
+    );
+    assert_output(
+        &screen(
+            "rust-x86_64-nodebug.elf",
+            Some("__rust_dealloc"),
+            (100, 30),
+            &["3"],
+        ),
+        "\
+rust-x86_64-nodebug.elf › __rust_dealloc
+__rustc::__rust_dealloc  function at 0x15260, 5 bytes, in .text
+used by 82 · uses 1
+ 1 code  [3 callers]
+  HOW            AT                   CALLER
+> call           0x4cdb1              <&[u8] as SpecNewImpl>::spec_new_impl
+  call           0x3e877, 0x3e8d5     <DisplayBacktrace as Display>::fmt
+  call           0x2f079              <LoopingLookup<…>>::new_lookup
+  address taken  0x39925, 0x39a37     <IntoIter<u64, Result<Arc<Abbreviations>, Error>>>::dying_next
+  call           0x39973, 0x39bd9     <IntoIter<u64, Result<Arc<Abbreviations>, Error>>>::dying_next
+  address taken  0x39ce5, 0x39df7     <IntoIter<u64, Abbreviation>>::dying_next
+  call           0x39d33, 0x39f99     <IntoIter<u64, Abbreviation>>::dying_next
+  call           0x1cb93              <BalancingContext<…>>::merge_tracking_child_edge::<Global>
+  call           0x4358d              …eRef<Mut, u64, Abbreviation, Internal>, KV>>::split::<Global>
+  call           0x43401              …<NodeRef<Mut, u64, Abbreviation, Leaf>, KV>>::split::<Global>
+  call           0x1d018, 0x1d558     <Handle<…>>::remove_leaf_kv::<remove_kv::{closure#0}, Global>
+  call           0x42e9e              <NodeRef<…>>::new_internal::<Global>
+  call           0x4cb03, 0x4cb80     <alloc::ffi::c_str::CString>::_from_vec_unchecked
+  tail call      0x43652              <alloc::raw_vec::RawVecInner>::deallocate
+  call           0x4c9ed              <alloc::string::String>::from_utf8_lossy
+  tail call      0x39461              <Arc<Abbreviations>>::drop_slow
+  call           0x39489              <Arc<Abbreviations>>::drop_slow
+  tail call      0x39393              <Arc<Dwarf<EndianSlice<LittleEndian>>>>::drop_slow
+  call           0x393d2              <Arc<Dwarf<EndianSlice<LittleEndian>>>>::drop_slow
+  call           0x393fb              <Arc<Mutex<Vec<u8>>>>::drop_slow
+  tail call      0x39421              <Arc<Mutex<Vec<u8>>>>::drop_slow
+Calls to __rustc::__rust_dealloc through a pointer aren't listed, since elfq can't see them.
+→ <&[u8] as <alloc::ffi::c_str::CString>::new::SpecNewImpl>::spec_new_impl  function at 0x4cc90, 30…
+$ elfq testdata/bin/rust-x86_64-nodebug.elf callers __rust_dealloc --all
+↑↓ move  enter follow  esc back  tab next link  1 3 tabs  g go to  ? help  q quit
+",
+    );
+    // A page's name in the title is shortened to fit after the file's,
+    // and the trail is cut from the left.
+    let script = [
+        "3", "Down", "Down", "Down", "Down", "Down", "Down", "Down", "Down", "Enter",
+    ];
+    let page = screen(
+        "rust-x86_64-nodebug.elf",
+        Some("__rust_dealloc"),
+        (80, 24),
+        &script,
+    );
+    assert_eq!(
+        page.lines().next().unwrap(),
+        "…t-x86_64-nodebug.elf › __rust_dealloc › Handle<NodeRef<…>, KV>::split::<Global>"
     );
 }
 
@@ -2123,17 +2351,17 @@ fn go_to_ignores_case_and_says_how_many_it_leaves_out() {
         "\
 rust-x86_64-nodebug.elf › main › go to
   ADDRESS   SIZE  KIND      SECTION             ITEM
-> 0x18c00  15332  function  .text               <std::backtrace_rs::symbolize::gimli::Cache>::with_…
+> 0x18c00  15332  function  .text               <Cache>::with_global::<resolve::{closure#1}>
   0x336a3  12242  function  .text               <std::backtrace_rs::symbolize::gimli::Context>::new
-  0x2f760   9301  function  .text               <gimli::read::dwarf::Unit<gimli::read::endian_slice…
-  0x16b20   8244  function  .text               <core::cell::once::OnceCell<core::result::Result<ad…
+  0x2f760   9301  function  .text               <Unit<EndianSlice<LittleEndian>, usize>>::new
+  0x16b20   8244  function  .text               <OnceCell<Result<Lines, Error>>>::try_init::<get_or…
   0x49d5d   6210  function  .text               miniz_oxide::inflate::core::decompress
-  0x20b10   5196  function  .text               gimli::read::unit::parse_attribute::<gimli::read::e…
-  0x2d960   4538  function  .text               <addr2line::function::Function<gimli::read::endian_…
-  0x3c8c0   4161  function  .text               std::sys::pal::unix::stack_overflow::thread_info::s…
-  0x37c50   3972  function  .text               <gimli::read::rnglists::RngListIter<gimli::read::en…
-  0x15ba0   3964  function  .text               <core::cell::once::OnceCell<core::result::Result<ad…
-  0x2b940   3222  function  .text               <std::backtrace_rs::symbolize::gimli::Mapping>::new…
+  0x20b10   5196  function  .text               unit::parse_attribute::<EndianSlice<LittleEndian>>
+  0x2d960   4538  function  .text               <Function<EndianSlice<…>>>::parse_children
+  0x3c8c0   4161  function  .text               thread_info::set_current_info
+  0x37c50   3972  function  .text               <RngListIter<EndianSlice<LittleEndian>>>::next
+  0x15ba0   3964  function  .text               <OnceCell<Result<Functions<EndianSlice<LittleEndian…
+  0x2b940   3222  function  .text               <Mapping>::new_debug
 and 433 more; type more of the name
 go to: e▏
 ↑↓ move  enter open  esc cancel

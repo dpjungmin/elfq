@@ -53,7 +53,7 @@ terminal is as it was; `.github/workflows/ci.yml` has the command.
 | `src/lib.rs` | Declares the modules below. elfq is a library plus that small program; the library exists for the program and its tests. |
 | `src/cli.rs` | Command-line arguments, with clap: a `Command` variant for each command, the structs that hold their arguments, and the text of `--help`. |
 | `src/commands/` | One file per command, which looks up SYMBOL, asks `graph` or `debuginfo` and decides what the answer shows. `mod.rs` runs the command the arguments name, after checking arguments that don't go together. The rest are shared: `symbol.rs` works out what a user means by SYMBOL, `retained_tree.rs` builds the trees of retained sizes that the overview, `top` and `retained` show, `ranges.rs` answers `callers` and `callees` for ranges of memory or with `--from` or `--to`, `text.rs` holds the wording that commands share and `json.rs` the JSON shapes. `mod.rs` also has `Kept`, which leaves what a command keeps until it has answered for the system to take back when elfq ends (`end_after_answer`). |
-| `src/commands/browse/` | `elfq FILE browse`, with the `tui` feature: `mod.rs` takes over the terminal and runs the event loop, `session.rs` holds the loaded file and asks the commands' code for answers, `keys.rs` is the table of keys, `app.rs` the history of pages, the go-to box and the screen's layout, and `views/` the pages, the go-to box and the tabs of an item's page other than its code, one file each. |
+| `src/commands/browse/` | `elfq FILE browse`, with the `tui` feature: `mod.rs` takes over the terminal and runs the event loop, `session.rs` holds the loaded file and asks the commands' code for answers, `keys.rs` is the table of keys, `app.rs` the history of pages, the go-to box and the screen's layout, and `views/` the pages, the go-to box and the tabs of an item's page other than its code, one file each, and `names.rs`, which shortens long C++ and Rust names to fit a column. |
 | `src/arch/` | Finding the addresses that machine code calls or uses, one module per instruction set (x86-64 and Thumb). Thumb's has three parts: `thumb/mod.rs` reads each instruction on its own, `thumb/decode.rs` says what an instruction does with the registers and the stack, and `thumb/values/` follows the addresses that code puts in registers to where a branch through one goes, as for long calls and veneers. `listing.rs` prints a function's code as text, for `browse`: x86-64 with iced-x86's formatter, and Thumb with thumb-asm, in the lines that `thumb::layout` cuts the code into with the same sweep as `scan`. |
 | `src/binary/` | Reading an ELF file: its functions and data objects ("items") and where they were found, their names, imports, stored pointers and memory blocks, and in Arm files the core the code is for (`attributes.rs`) and the data that `$d` symbols mark among code. Unnamed data, such as string literals, is found from what code and pointers refer to. Each function's code is scanned once, as the file loads (`Binary::code_references`). |
 | `src/graph/` | The reference graph that connects items, the roots where the program starts, the dominator tree that says what is exclusive to what, the shortest paths that `why` and `reach` show, the references that cross the boundary of ranges of memory, and where a linker's veneers jump to. |
@@ -153,7 +153,10 @@ The checks of `browse` that need its private types are unit tests in
 
 - `views/item.rs`: every line's link and note, on every sample.
 - `views/callers.rs`: the callers tab of every page of every sample,
-  against what the command under it prints.
+  against what the command under it prints, and that no two callers on
+  the screen read the same once their names are shortened.
+- `views/picker.rs`: that no two rows of the go-to box read the same.
+- `views/names.rs`: each step of shortening a name.
 - `app.rs`: that a callers tab keeps its table's header and selected row
   on a small screen.
 - `views/thumb_text.rs`: the Thumb text, against objdump's text for each
@@ -276,7 +279,11 @@ page, `item.rs`, is the one to copy; `help.rs` is a short one.
    which scrolls them and draws only those on the screen. Following a
    link returns `Go::Open` with the page to open, and `Go::Say` puts a
    line on the status line. Pages ask `Session` and the commands' code for
-   their answers, rather than working them out again.
+   their answers, rather than working them out again. A column of names
+   shortens the names on the screen with a `FittedRows`, which keeps rows
+   that would read the same apart, and fits them again only when other
+   rows show or the column's width changes, since long C++ names take a
+   while; `preview` names the selected one in full.
 2. **Wiring, in `views/mod.rs`.** Add `mod <name>;`, a variant to `View`,
    and its arm in each of `View`'s functions; the compiler asks for them.
    `title` names the page in the title line's trail, `preview` says what

@@ -17,8 +17,8 @@ use ratatui::style::{Style, Stylize};
 use ratatui::text::{Line, Text};
 use ratatui::widgets::{HighlightSpacing, Row, Table};
 
-use super::{Cursor, cut, wrap};
-use crate::binary::{ItemKind, hex_number};
+use super::{Cursor, FittedRows, cut, wrap};
+use crate::binary::{Binary, ItemKind, hex_number};
 use crate::commands::browse::{keys::Action, session::Session};
 use crate::commands::symbol::Needle;
 use crate::commands::text;
@@ -50,6 +50,8 @@ pub struct Picker {
     /// Why no item has it, in the CLI's words, when none does.
     nothing: Option<String>,
     cursor: Cursor,
+    /// The names of the rows on the screen, shortened.
+    fitted: FittedRows,
     /// What the commands said about SYMBOL, with the SYMBOL, shown until
     /// the text changes.
     note: Option<(String, String)>,
@@ -68,6 +70,7 @@ impl Picker {
             more: 0,
             nothing: None,
             cursor: Cursor::new(0),
+            fitted: FittedRows::default(),
             note: None,
             changed: false,
         };
@@ -178,6 +181,7 @@ impl Picker {
             })
             .collect();
         self.cursor = Cursor::new(self.found.len());
+        self.fitted = FittedRows::default();
     }
 
     pub fn handle(&mut self, session: &Session, action: Action) {
@@ -212,48 +216,8 @@ impl Picker {
             return;
         }
 
-        // The columns are as wide as the rows found need, so that they
-        // don't move while the cursor does.
-        let rows: Vec<[String; 5]> = self
-            .found
-            .iter()
-            .map(|found| {
-                let name = found
-                    .lead
-                    .clone()
-                    .unwrap_or_else(|| found.node.name(binary).to_string());
-                let Node::Item(index) = found.node else {
-                    // An import has no address, size or section here.
-                    let blank = String::new;
-                    return [blank(), blank(), "import".to_string(), blank(), name];
-                };
-                let item = &binary.items[index];
-                let kind = match item.kind {
-                    ItemKind::Function => "function",
-                    ItemKind::Data => "data",
-                };
-                [
-                    format!("{:#x}", item.address),
-                    text::size_text(item),
-                    kind.to_string(),
-                    binary.sections[item.section].name.clone(),
-                    name,
-                ]
-            })
-            .collect();
+        let (rows, widths, room) = self.cells(session, width);
         let header = ["ADDRESS", "SIZE", "KIND", "SECTION", "ITEM"];
-        let widths: Vec<usize> = (0..4)
-            .map(|column| {
-                rows.iter()
-                    .map(|row| row[column].chars().count())
-                    .chain([header[column].len()])
-                    .max()
-                    .unwrap_or(0)
-            })
-            .collect();
-        // What is left for ITEM, after the cursor's "> " and two spaces
-        // after each column.
-        let room = width.saturating_sub(2 + widths.iter().map(|width| width + 2).sum::<usize>());
 
         // Under the rows, how many more there are, or under the header,
         // why there are none, unless the note over them says so.
@@ -277,29 +241,93 @@ impl Picker {
             .cursor
             .visible(usize::from(area.height.saturating_sub(1)));
         let size_width = widths[1];
-        let line = |row: &[String; 5]| {
+        let line = |row: &[String; 5], name: String| {
             Row::new([
                 row[0].clone(),
                 format!("{:>size_width$}", row[1]),
                 row[2].clone(),
                 row[3].clone(),
-                cut(&row[4], room),
+                name,
             ])
         };
-        let header = line(&header.map(str::to_string)).bold();
+        let header = header.map(str::to_string);
+        let header = line(&header, header[4].clone()).bold();
         let constraints = widths
             .iter()
             .map(|&width| Constraint::Length(width as u16))
             .chain([Constraint::Fill(1)]);
+        // Long names are shortened the same way on every row shown, and
+        // what SYMBOL said about the row it finds, such as "(also named
+        // NMI_Handler)", goes after its name, cut to what is left.
+        let rows = &rows[visible.clone()];
+        let names = self.fitted.names(visible.clone(), room, || {
+            rows.iter().map(|row| row[4].as_str()).collect()
+        });
+        let items = (names.iter().zip(&self.found[visible])).map(|(name, found)| {
+            match found.note(binary) {
+                Some(note) => cut(&format!("{name}{note}"), room),
+                None => name.clone(),
+            }
+        });
         // The cursor's column stays when no row is selected, so that the
         // header doesn't move.
-        let table = Table::new(rows[visible].iter().map(line), constraints)
-            .column_spacing(2)
-            .header(header)
-            .row_highlight_style(Style::new().reversed())
-            .highlight_symbol("> ")
-            .highlight_spacing(HighlightSpacing::Always);
+        let table = Table::new(
+            rows.iter().zip(items).map(|(row, item)| line(row, item)),
+            constraints,
+        )
+        .column_spacing(2)
+        .header(header)
+        .row_highlight_style(Style::new().reversed())
+        .highlight_symbol("> ")
+        .highlight_spacing(HighlightSpacing::Always);
         frame.render_stateful_widget(table, area, &mut state);
+    }
+
+    /// The cells of every row found, with the name of its item or import
+    /// for ITEM, the widths of the columns before ITEM, and the columns
+    /// left for ITEM on a screen `width` columns wide. The columns are as
+    /// wide as the rows found need, so that they don't move while the
+    /// cursor does.
+    fn cells(&self, session: &Session, width: usize) -> (Vec<[String; 5]>, Vec<usize>, usize) {
+        let binary = session.binary;
+        let rows: Vec<[String; 5]> = self
+            .found
+            .iter()
+            .map(|found| {
+                let name = found.node.name(binary).to_string();
+                let Node::Item(index) = found.node else {
+                    // An import has no address, size or section here.
+                    let blank = String::new;
+                    return [blank(), blank(), "import".to_string(), blank(), name];
+                };
+                let item = &binary.items[index];
+                let kind = match item.kind {
+                    ItemKind::Function => "function",
+                    ItemKind::Data => "data",
+                };
+                [
+                    format!("{:#x}", item.address),
+                    text::size_text(item),
+                    kind.to_string(),
+                    binary.sections[item.section].name.clone(),
+                    name,
+                ]
+            })
+            .collect();
+        let header = ["ADDRESS", "SIZE", "KIND", "SECTION"];
+        let widths: Vec<usize> = (0..4)
+            .map(|column| {
+                rows.iter()
+                    .map(|row| row[column].chars().count())
+                    .chain([header[column].len()])
+                    .max()
+                    .unwrap_or(0)
+            })
+            .collect();
+        // What is left for ITEM, after the cursor's "> " and two spaces
+        // after each column.
+        let room = width.saturating_sub(2 + widths.iter().map(|width| width + 2).sum::<usize>());
+        (rows, widths, room)
     }
 
     /// Whether the note over the rows shows.
@@ -307,6 +335,16 @@ impl Picker {
         self.note
             .as_ref()
             .is_some_and(|(text, _)| *text == self.text)
+    }
+}
+
+impl Found {
+    /// What SYMBOL said about the item it finds, after its name: " (also
+    /// named NMI_Handler)".
+    fn note<'a>(&'a self, binary: &Binary) -> Option<&'a str> {
+        let lead = self.lead.as_deref()?;
+        lead.strip_prefix(self.node.name(binary))
+            .filter(|note| !note.is_empty())
     }
 }
 
@@ -330,4 +368,33 @@ fn lines(text: &str, width: usize) -> Vec<Line<'static>> {
         wrapped.push(cut(&rest, width));
     }
     wrapped.into_iter().map(Line::raw).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::names::alike_in_a_window;
+    use super::super::samples;
+    use super::*;
+    use crate::binary::Binary;
+
+    #[test]
+    fn rows_that_would_read_the_same_read_differently_on_the_screen() {
+        for path in samples() {
+            let binary = Binary::load(&path).unwrap();
+            let session = Session::new(&path, &binary).unwrap();
+            for text in ["_", "vtable", "closure", "split", "drop", "new", "log"] {
+                let picker = Picker::new(&session, text);
+                for width in [60, 80, 100] {
+                    let (rows, _, room) = picker.cells(&session, width);
+                    let names: Vec<&str> = rows.iter().map(|row| row[4].as_str()).collect();
+                    if let Some((one, other, both)) = alike_in_a_window(&names, room) {
+                        panic!(
+                            "{}, {text}: {one} and {other} both read {both} at {width}",
+                            path.display()
+                        );
+                    }
+                }
+            }
+        }
+    }
 }

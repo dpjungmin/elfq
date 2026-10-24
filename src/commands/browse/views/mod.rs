@@ -1,11 +1,12 @@
 //! The pages, one file each, the tabs of an item's page other than its
-//! code, and the go-to box. [`View`] lists the pages, so that `app.rs` can
-//! keep any of them in its history, and each `match` on it shows every
-//! page's part.
+//! code, the go-to box, and how long names are shortened to fit a column
+//! (`names.rs`). [`View`] lists the pages, so that `app.rs` can keep any
+//! of them in its history, and each `match` on it shows every page's part.
 
 mod callers;
 mod help;
 mod item;
+mod names;
 mod picker;
 #[cfg(test)]
 mod thumb_text;
@@ -25,6 +26,7 @@ use crate::graph::Node;
 
 pub use help::Help;
 pub use item::{ItemPage, PageCode};
+pub use names::{FittedRows, fit_name, name_fitter};
 pub use picker::{Picker, first_line};
 
 /// Where an action takes the user.
@@ -44,10 +46,11 @@ pub enum View {
 }
 
 impl View {
-    /// Its name in the title line's trail.
-    pub fn title(&self) -> &str {
+    /// Its name in the title line's trail, shortened to fit `room`
+    /// columns.
+    pub fn title(&mut self, room: usize) -> &str {
         match self {
-            View::Item(page) => &page.title,
+            View::Item(page) => page.title(room),
             View::Help(_) => "help",
         }
     }
