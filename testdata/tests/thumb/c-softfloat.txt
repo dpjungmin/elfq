@@ -1,0 +1,418 @@
+8000008	push	{r7, lr}
+800000a	ldr	r5, [pc, #84]
+800000c	ldr	r4, [pc, #84]
+800000e	ldr.w	sl, [pc, #88]
+8000012	ldr.w	r9, [pc, #88]
+8000016	ldr.w	r8, [pc, #88]
+800001a	ldr	r7, [pc, #88]
+800001c	ldr	r6, [pc, #88]
+800001e	ldrd	r0, r1, [r5]
+8000022	ldrd	r2, r3, [r4]
+8000026	bl	0x8000088
+800002a	strd	r0, r1, [sl]
+800002e	ldrd	r0, r1, [r5]
+8000032	ldrd	r2, r3, [r4]
+8000036	bl	0x8000084
+800003a	strd	r0, r1, [r9]
+800003e	ldrd	r0, r1, [r8]
+8000042	bl	0x8000388
+8000046	strd	r0, r1, [r7]
+800004a	ldrd	r0, r1, [r5]
+800004e	ldrd	r2, r3, [r4]
+8000052	bl	0x80004b4
+8000056	subs	r0, #0
+8000058	it	ne
+800005a	movne	r0, #1
+800005c	str	r0, [r6, #0]
+800005e	b.n	0x800001e
+8000060	.word	0x20000030
+8000064	.word	0x20000028
+8000068	.word	0x20000020
+800006c	.word	0x20000018
+8000070	.word	0x20000008
+8000074	.word	0x20000010
+8000078	.word	0x20000000
+800007c	eor.w	r1, r1, #2147483648
+8000080	b.n	0x8000088
+8000082	nop
+8000084	eor.w	r3, r3, #2147483648
+8000088	push	{r4, r5, lr}
+800008a	mov.w	r4, r1, lsl #1
+800008e	mov.w	r5, r3, lsl #1
+8000092	teq	r4, r5
+8000096	it	eq
+8000098	teqeq	r0, r2
+800009c	itttt	ne
+800009e	orrsne.w	ip, r4, r0
+80000a2	orrsne.w	ip, r5, r2
+80000a6	mvnsne.w	ip, r4, asr #21
+80000aa	mvnsne.w	ip, r5, asr #21
+80000ae	beq.w	0x8000276
+80000b2	mov.w	r4, r4, lsr #21
+80000b6	rsbs	r5, r4, r5, lsr #21
+80000ba	it	lt
+80000bc	neglt	r5, r5
+80000be	ble.n	0x80000da
+80000c0	add	r4, r5
+80000c2	eor.w	r2, r0, r2
+80000c6	eor.w	r3, r1, r3
+80000ca	eor.w	r0, r2, r0
+80000ce	eor.w	r1, r3, r1
+80000d2	eor.w	r2, r0, r2
+80000d6	eor.w	r3, r1, r3
+80000da	cmp	r5, #54
+80000dc	it	hi
+80000de	pophi	{r4, r5, pc}
+80000e0	tst.w	r1, #2147483648
+80000e4	mov.w	r1, r1, lsl #12
+80000e8	mov.w	ip, #1048576
+80000ec	orr.w	r1, ip, r1, lsr #12
+80000f0	beq.n	0x80000f8
+80000f2	negs	r0, r0
+80000f4	sbc.w	r1, r1, r1, lsl #1
+80000f8	tst.w	r3, #2147483648
+80000fc	mov.w	r3, r3, lsl #12
+8000100	orr.w	r3, ip, r3, lsr #12
+8000104	beq.n	0x800010c
+8000106	negs	r2, r2
+8000108	sbc.w	r3, r3, r3, lsl #1
+800010c	teq	r4, r5
+8000110	beq.w	0x8000262
+8000114	sub.w	r4, r4, #1
+8000118	rsbs	lr, r5, #32
+800011c	blt.n	0x800013a
+800011e	lsl.w	ip, r2, lr
+8000122	lsr.w	r2, r2, r5
+8000126	adds	r0, r0, r2
+8000128	adc.w	r1, r1, #0
+800012c	lsl.w	r2, r3, lr
+8000130	adds	r0, r0, r2
+8000132	asr.w	r3, r3, r5
+8000136	adcs	r1, r3
+8000138	b.n	0x8000158
+800013a	sub.w	r5, r5, #32
+800013e	add.w	lr, lr, #32
+8000142	cmp	r2, #1
+8000144	lsl.w	ip, r3, lr
+8000148	it	cs
+800014a	orrcs.w	ip, ip, #2
+800014e	asr.w	r3, r3, r5
+8000152	adds	r0, r0, r3
+8000154	adcs.w	r1, r1, r3, asr #31
+8000158	and.w	r5, r1, #2147483648
+800015c	bpl.n	0x800016e
+800015e	mov.w	lr, #0
+8000162	rsbs	ip, ip, #0
+8000166	sbcs.w	r0, lr, r0
+800016a	sbc.w	r1, lr, r1
+800016e	cmp.w	r1, #1048576
+8000172	bcc.n	0x80001ac
+8000174	cmp.w	r1, #2097152
+8000178	bcc.n	0x8000194
+800017a	lsrs	r1, r1, #1
+800017c	movs.w	r0, r0, rrx
+8000180	mov.w	ip, ip, rrx
+8000184	add.w	r4, r4, #1
+8000188	mov.w	r2, r4, lsl #21
+800018c	cmn.w	r2, #4194304
+8000190	bcs.w	0x80002c8
+8000194	cmp.w	ip, #2147483648
+8000198	it	eq
+800019a	movseq.w	ip, r0, lsr #1
+800019e	adcs.w	r0, r0, #0
+80001a2	adc.w	r1, r1, r4, lsl #20
+80001a6	orr.w	r1, r1, r5
+80001aa	pop	{r4, r5, pc}
+80001ac	movs.w	ip, ip, lsl #1
+80001b0	adcs	r0, r0
+80001b2	adc.w	r1, r1, r1
+80001b6	subs	r4, #1
+80001b8	it	cs
+80001ba	cmpcs.w	r1, #1048576
+80001be	bcs.n	0x8000194
+80001c0	teq	r1, #0
+80001c4	itt	eq
+80001c6	moveq	r1, r0
+80001c8	moveq	r0, #0
+80001ca	clz	r3, r1
+80001ce	it	eq
+80001d0	addeq	r3, #32
+80001d2	sub.w	r3, r3, #11
+80001d6	subs.w	r2, r3, #32
+80001da	bge.n	0x80001f6
+80001dc	adds	r2, #12
+80001de	ble.n	0x80001f2
+80001e0	add.w	ip, r2, #20
+80001e4	rsb	r2, r2, #12
+80001e8	lsl.w	r0, r1, ip
+80001ec	lsr.w	r1, r1, r2
+80001f0	b.n	0x800020c
+80001f2	add.w	r2, r2, #20
+80001f6	it	le
+80001f8	rsble	ip, r2, #32
+80001fc	lsl.w	r1, r1, r2
+8000200	lsr.w	ip, r0, ip
+8000204	itt	le
+8000206	orrle.w	r1, r1, ip
+800020a	lslle	r0, r2
+800020c	subs	r4, r4, r3
+800020e	ittt	ge
+8000210	addge.w	r1, r1, r4, lsl #20
+8000214	orrge	r1, r5
+8000216	popge	{r4, r5, pc}
+8000218	mvn.w	r4, r4
+800021c	subs	r4, #31
+800021e	bge.n	0x800025a
+8000220	adds	r4, #12
+8000222	bgt.n	0x8000242
+8000224	add.w	r4, r4, #20
+8000228	rsb	r2, r4, #32
+800022c	lsr.w	r0, r0, r4
+8000230	lsl.w	r3, r1, r2
+8000234	orr.w	r0, r0, r3
+8000238	lsr.w	r3, r1, r4
+800023c	orr.w	r1, r5, r3
+8000240	pop	{r4, r5, pc}
+8000242	rsb	r4, r4, #12
+8000246	rsb	r2, r4, #32
+800024a	lsr.w	r0, r0, r2
+800024e	lsl.w	r3, r1, r4
+8000252	orr.w	r0, r0, r3
+8000256	mov	r1, r5
+8000258	pop	{r4, r5, pc}
+800025a	lsr.w	r0, r1, r4
+800025e	mov	r1, r5
+8000260	pop	{r4, r5, pc}
+8000262	teq	r4, #0
+8000266	eor.w	r3, r3, #1048576
+800026a	itte	eq
+800026c	eoreq.w	r1, r1, #1048576
+8000270	addeq	r4, #1
+8000272	subne	r5, #1
+8000274	b.n	0x8000114
+8000276	mvns.w	ip, r4, asr #21
+800027a	it	ne
+800027c	mvnsne.w	ip, r5, asr #21
+8000280	beq.n	0x80002d6
+8000282	teq	r4, r5
+8000286	it	eq
+8000288	teqeq	r0, r2
+800028c	beq.n	0x800029a
+800028e	orrs.w	ip, r4, r0
+8000292	itt	eq
+8000294	moveq	r1, r3
+8000296	moveq	r0, r2
+8000298	pop	{r4, r5, pc}
+800029a	teq	r1, r3
+800029e	ittt	ne
+80002a0	movne	r1, #0
+80002a2	movne	r0, #0
+80002a4	popne	{r4, r5, pc}
+80002a6	movs.w	ip, r4, lsr #21
+80002aa	bne.n	0x80002b8
+80002ac	lsls	r0, r0, #1
+80002ae	adcs	r1, r1
+80002b0	it	cs
+80002b2	orrcs.w	r1, r1, #2147483648
+80002b6	pop	{r4, r5, pc}
+80002b8	adds.w	r4, r4, #4194304
+80002bc	itt	cc
+80002be	addcc.w	r1, r1, #1048576
+80002c2	popcc	{r4, r5, pc}
+80002c4	and.w	r5, r1, #2147483648
+80002c8	orr.w	r1, r5, #2130706432
+80002cc	orr.w	r1, r1, #15728640
+80002d0	mov.w	r0, #0
+80002d4	pop	{r4, r5, pc}
+80002d6	mvns.w	ip, r4, asr #21
+80002da	itte	ne
+80002dc	movne	r1, r3
+80002de	movne	r0, r2
+80002e0	mvnseq.w	ip, r5, asr #21
+80002e4	itt	ne
+80002e6	movne	r3, r1
+80002e8	movne	r2, r0
+80002ea	orrs.w	r4, r0, r1, lsl #12
+80002ee	itte	eq
+80002f0	orrseq.w	r5, r2, r3, lsl #12
+80002f4	teqeq	r1, r3
+80002f8	orrne.w	r1, r1, #524288
+80002fc	pop	{r4, r5, pc}
+80002fe	nop
+8000300	teq	r0, #0
+8000304	itt	eq
+8000306	moveq	r1, #0
+8000308	bxeq	lr
+800030a	push	{r4, r5, lr}
+800030c	mov.w	r4, #1024
+8000310	add.w	r4, r4, #50
+8000314	mov.w	r5, #0
+8000318	mov.w	r1, #0
+800031c	b.n	0x80001c0
+800031e	nop
+8000320	teq	r0, #0
+8000324	itt	eq
+8000326	moveq	r1, #0
+8000328	bxeq	lr
+800032a	push	{r4, r5, lr}
+800032c	mov.w	r4, #1024
+8000330	add.w	r4, r4, #50
+8000334	ands.w	r5, r0, #2147483648
+8000338	it	mi
+800033a	negmi	r0, r0
+800033c	mov.w	r1, #0
+8000340	b.n	0x80001c0
+8000342	nop
+8000344	lsls	r2, r0, #1
+8000346	mov.w	r1, r2, asr #3
+800034a	mov.w	r1, r1, rrx
+800034e	mov.w	r0, r2, lsl #28
+8000352	itttt	ne
+8000354	andsne.w	r3, r2, #4278190080
+8000358	teqne	r3, #4278190080
+800035c	eorne.w	r1, r1, #939524096
+8000360	bxne	lr
+8000362	bics.w	r2, r2, #4278190080
+8000366	it	eq
+8000368	bxeq	lr
+800036a	teq	r3, #4278190080
+800036e	itt	eq
+8000370	orreq.w	r1, r1, #524288
+8000374	bxeq	lr
+8000376	push	{r4, r5, lr}
+8000378	mov.w	r4, #896
+800037c	and.w	r5, r1, #2147483648
+8000380	bic.w	r1, r1, #2147483648
+8000384	b.n	0x80001c0
+8000386	nop
+8000388	orrs.w	r2, r0, r1
+800038c	it	eq
+800038e	bxeq	lr
+8000390	push	{r4, r5, lr}
+8000392	mov.w	r5, #0
+8000396	b.n	0x80003ae
+8000398	orrs.w	r2, r0, r1
+800039c	it	eq
+800039e	bxeq	lr
+80003a0	push	{r4, r5, lr}
+80003a2	ands.w	r5, r1, #2147483648
+80003a6	bpl.n	0x80003ae
+80003a8	negs	r0, r0
+80003aa	sbc.w	r1, r1, r1, lsl #1
+80003ae	mov.w	r4, #1024
+80003b2	add.w	r4, r4, #50
+80003b6	movs.w	ip, r1, lsr #22
+80003ba	beq.w	0x800016e
+80003be	mov.w	r2, #3
+80003c2	movs.w	ip, ip, lsr #3
+80003c6	it	ne
+80003c8	addne	r2, #3
+80003ca	movs.w	ip, ip, lsr #3
+80003ce	it	ne
+80003d0	addne	r2, #3
+80003d2	add.w	r2, r2, ip, lsr #3
+80003d6	rsb	r3, r2, #32
+80003da	lsl.w	ip, r0, r3
+80003de	lsr.w	r0, r0, r2
+80003e2	lsl.w	lr, r1, r3
+80003e6	orr.w	r0, r0, lr
+80003ea	lsr.w	r1, r1, r2
+80003ee	add	r4, r2
+80003f0	b.n	0x800016e
+80003f2	nop
+80003f4	mov.w	ip, #4294967295
+80003f8	b.n	0x8000408
+80003fa	nop
+80003fc	mov.w	ip, #1
+8000400	b.n	0x8000408
+8000402	nop
+8000404	mov.w	ip, #1
+8000408	str.w	ip, [sp, #-4]!
+800040c	mov.w	ip, r1, lsl #1
+8000410	mvns.w	ip, ip, asr #21
+8000414	mov.w	ip, r3, lsl #1
+8000418	it	ne
+800041a	mvnsne.w	ip, ip, asr #21
+800041e	beq.n	0x8000458
+8000420	add	sp, #4
+8000422	orrs.w	ip, r0, r1, lsl #1
+8000426	ite	eq
+8000428	orrseq.w	ip, r2, r3, lsl #1
+800042c	teqne	r1, r3
+8000430	ittt	eq
+8000432	teqeq	r0, r2
+8000436	moveq	r0, #0
+8000438	bxeq	lr
+800043a	cmn.w	r0, #0
+800043e	teq	r1, r3
+8000442	it	pl
+8000444	cmppl	r1, r3
+8000446	it	eq
+8000448	cmpeq	r0, r2
+800044a	ite	cs
+800044c	asrcs	r0, r3, #31
+800044e	mvncc.w	r0, r3, asr #31
+8000452	orr.w	r0, r0, #1
+8000456	bx	lr
+8000458	mov.w	ip, r1, lsl #1
+800045c	mvns.w	ip, ip, asr #21
+8000460	bne.n	0x8000468
+8000462	orrs.w	ip, r0, r1, lsl #12
+8000466	bne.n	0x8000478
+8000468	mov.w	ip, r3, lsl #1
+800046c	mvns.w	ip, ip, asr #21
+8000470	bne.n	0x8000420
+8000472	orrs.w	ip, r2, r3, lsl #12
+8000476	beq.n	0x8000420
+8000478	ldr.w	r0, [sp], #4
+800047c	bx	lr
+800047e	nop
+8000480	mov	ip, r0
+8000482	mov	r0, r2
+8000484	mov	r2, ip
+8000486	mov	ip, r1
+8000488	mov	r1, r3
+800048a	mov	r3, ip
+800048c	b.n	0x8000490
+800048e	nop
+8000490	push	{r0, lr}
+8000492	bl	0x8000404
+8000496	cmp	r0, #0
+8000498	it	mi
+800049a	cmnmi.w	r0, #0
+800049e	pop	{r0, pc}
+80004a0	str.w	lr, [sp, #-8]!
+80004a4	bl	0x8000490
+80004a8	ite	eq
+80004aa	moveq	r0, #1
+80004ac	movne	r0, #0
+80004ae	ldr.w	pc, [sp], #8
+80004b2	nop
+80004b4	str.w	lr, [sp, #-8]!
+80004b8	bl	0x8000490
+80004bc	ite	cc
+80004be	movcc	r0, #1
+80004c0	movcs	r0, #0
+80004c2	ldr.w	pc, [sp], #8
+80004c6	nop
+80004c8	str.w	lr, [sp, #-8]!
+80004cc	bl	0x8000490
+80004d0	ite	ls
+80004d2	movls	r0, #1
+80004d4	movhi	r0, #0
+80004d6	ldr.w	pc, [sp], #8
+80004da	nop
+80004dc	str.w	lr, [sp, #-8]!
+80004e0	bl	0x8000480
+80004e4	ite	ls
+80004e6	movls	r0, #1
+80004e8	movhi	r0, #0
+80004ea	ldr.w	pc, [sp], #8
+80004ee	nop
+80004f0	str.w	lr, [sp, #-8]!
+80004f4	bl	0x8000480
+80004f8	ite	cc
+80004fa	movcc	r0, #1
+80004fc	movcs	r0, #0
+80004fe	ldr.w	pc, [sp], #8
+8000502	nop

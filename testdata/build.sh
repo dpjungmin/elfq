@@ -83,6 +83,27 @@ arm-none-eabi-gcc $cflags \
 arm-none-eabi-strip --strip-debug -o "$out/c-softfloat-nodebug.elf" "$out/c-softfloat.elf"
 rm "$out/c-softfloat.elf"
 
+# Conditional VFP instructions in IT blocks, as `vmovgt.f32`, for browse's
+# Thumb text.
+echo "C, Cortex-M4 with its FPU"
+arm-none-eabi-gcc $cflags \
+    -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 \
+    -ffunction-sections -fdata-sections -nostdlib \
+    -T c/cortex-m4.ld -Wl,--gc-sections \
+    -o "$out/c-vfp.elf" c/vfp.c
+variants arm-none-eabi-strip c-vfp
+
+# newlib's strtod, whose switch jumps through a table of addresses with
+# `ldr.w pc`, for browse's Thumb text and the sweep that finds such tables.
+echo "C, Cortex-M4, newlib's strtod"
+arm-none-eabi-gcc $cflags \
+    -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 \
+    -ffunction-sections -fdata-sections \
+    -nostartfiles --specs=nano.specs --specs=nosys.specs \
+    -T c/cortex-m4.ld -Wl,--gc-sections \
+    -o "$out/c-strtod.elf" c/strtod.c
+variants arm-none-eabi-strip c-strtod
+
 # Calls too far for one branch instruction, through the veneers that GNU ld
 # and LLD add for Cortex-M, all but two of LLD's (see README.md), and through a
 # register (see c/far.c). Only the variants without DWARF, which has nothing to add here.

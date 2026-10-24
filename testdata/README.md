@@ -7,11 +7,13 @@ known answers.
 
 ```
 testdata/
-├── build.sh     Rebuilds everything in bin/ from the sources.
-├── bin/         The built files (committed).
-├── c/           C samples: app.c plus a platform file per target, deep.c, plt.c, far.c and softfloat.c.
-├── cpp/         C++ sample: the kinds of names C++ compilers make.
-└── rust/        Rust sample: the same program, plus Rust-only patterns.
+├── build.sh       Rebuilds everything in bin/ from the sources.
+├── thumb-text.sh  Writes objdump's text for the Cortex-M samples' code to tests/thumb/.
+├── bin/           The built files (committed).
+├── tests/         objdump's text for the Cortex-M samples' code (committed).
+├── c/             C samples: app.c plus a platform file per target, deep.c, plt.c, far.c, softfloat.c, vfp.c and strtod.c.
+├── cpp/           C++ sample: the kinds of names C++ compilers make.
+└── rust/          Rust sample: the same program, plus Rust-only patterns.
 ```
 
 ## Files in bin/
@@ -27,6 +29,8 @@ testdata/
 | `c-deep.elf` | C | x86-64 Linux, PIE, with calls and inlined code nested 20 deep |
 | `far-*.elf` | C | Cortex-M0 and M4 bare metal, with calls too far for one branch instruction, linked by GNU ld or LLD |
 | `c-softfloat-nodebug.elf` | C | Cortex-M4 bare metal without its FPU, with libgcc's routines for doubles |
+| `c-vfp*.elf` | C | Cortex-M4 bare metal with its FPU, whose code picks between floats in IT blocks |
+| `c-strtod*.elf` | C | Cortex-M4 bare metal with its FPU, newlib-nano's `strtod` |
 | `cpp-x86_64*.elf` | C++ | x86-64 Linux, PIE, dynamically linked against glibc and libstdc++ |
 | `cpp-x86_64.so` | C++ | x86-64 Linux, the same code as a shared library |
 | `rust-x86_64*.elf` | Rust | x86-64 Linux, std |
@@ -196,6 +200,32 @@ starts:
 | `__gedf2`, `__ledf2` | Each sets a register and jumps into `__cmpdf2`, which both their symbols cover. | 8 bytes each, which tail-call `__cmpdf2`. Nothing reaches them. |
 | `__aeabi_cdrcmple` | Swaps its arguments and jumps to `__aeabi_cdcmpeq`, which its symbol covers. | 16 bytes, which tail-call `__aeabi_cdcmpeq`. Nothing reaches it. |
 
+### VFP sample ([c/vfp.c](c/vfp.c))
+
+Small functions on floats, built for a Cortex-M4 with its FPU, which GCC
+compiles to conditional VFP instructions in IT blocks, for `browse`'s
+Thumb text:
+
+| Function | Shape | Expected answer |
+|---|---|---|
+| `pick` | `ite gt`, then `vmovgt.f32` and `vmovle.f32`. | `browse pick` writes the condition before the data type, as objdump does: `vmovgt.f32`, not `vmov.f32gt`. |
+| `step_toward` | `ite gt`, then `vsubgt.f32` and `vaddle.f32`. | The same. |
+| `clampf`, `maxf`, `positive_sum` | One conditional `vmov` each; `positive_sum` loads 0.0 from a literal pool with `vldr`. | `positive_sum`'s pool word prints as `.word 0x00000000`, and the `vldr` that loads it notes `= 0x00000000`. |
+| `signf` | `ite gt` and `ite mi` around `mov`s. | |
+
+### strtod sample ([c/strtod.c](c/strtod.c))
+
+A call to newlib-nano's `strtod`, built for a Cortex-M4 with its FPU, with
+a heap of its own (`_sbrk`). `_strtod_l` starts with a switch on the
+first character that GCC built as a table of addresses that
+`ldr.w pc, [r0, r2, lsl #2]` jumps through, rather than with `tbb` or
+`tbh`:
+
+| Item | Expected answer |
+|---|---|
+| `_strtod_l` | Its table, the 46 words after `ldr.w pc` at 0x8000084, is data: `browse _strtod_l` prints each word as `.word`, with a note `jump ↓` or `jump ↑` that goes to its case, and `callees _strtod_l` lists the `ldr.w pc` as a jump through a pointer that elfq can't follow. The stripped file gives the same lines. |
+| `strtod` | Called by `Reset_Handler`; keeps `_strtod_l`, which keeps most of the file. |
+
 ### Deep sample ([c/deep.c](c/deep.c))
 
 Calls and inlined code nested deeper than `--tree` draws a tree in one
@@ -252,6 +282,17 @@ This needs `gcc` and `g++`, `arm-none-eabi-gcc` with newlib, `ld.lld`, and
 names, with the `thumbv7em-none-eabihf` target. The committed files were
 built with GCC 13.3.0 (Ubuntu 24.04), arm-none-eabi-gcc 13.2.1 with newlib
 4.4.0, LLD 18.1.3, and rustc 1.97.0.
+
+After rebuilding a Cortex-M sample, run
+
+```sh
+./testdata/thumb-text.sh
+```
+
+which writes `arm-none-eabi-objdump -d`'s text for the code of each
+Cortex-M sample with symbols to `tests/thumb/NAME.txt`, and commit those
+files too: the tests check `browse`'s Thumb text against them, so that
+they need no objdump. The committed ones come from GNU objdump 2.42.
 
 Builds are reproducible: the same toolchains give byte-identical files from
 any checkout path. Other toolchain versions produce different addresses and

@@ -1,0 +1,95 @@
+8000008	vcmpe.f32	s0, s1
+800000c	vmrs	APSR_nzcv, fpscr
+8000010	bmi.n	0x8000022
+8000012	vcmpe.f32	s0, s2
+8000016	vmrs	APSR_nzcv, fpscr
+800001a	it	gt
+800001c	vmovgt.f32	s0, s2
+8000020	bx	lr
+8000022	vmov.f32	s0, s1
+8000026	bx	lr
+8000028	vcmp.f32	s0, s1
+800002c	vmrs	APSR_nzcv, fpscr
+8000030	it	le
+8000032	vmovle.f32	s0, s1
+8000036	bx	lr
+8000038	vcmpe.f32	s0, #0.0
+800003c	vmrs	APSR_nzcv, fpscr
+8000040	ite	gt
+8000042	movgt	r0, #1
+8000044	movle	r0, #0
+8000046	ite	mi
+8000048	movmi	r3, #1
+800004a	movpl	r3, #0
+800004c	subs	r0, r0, r3
+800004e	bx	lr
+8000050	vmov.f32	s15, s0
+8000054	vcmpe.f32	s15, #0.0
+8000058	vmrs	APSR_nzcv, fpscr
+800005c	vadd.f32	s0, s0, s1
+8000060	bpl.n	0x8000074
+8000062	vldr	s15, [pc, #20]
+8000066	vcmp.f32	s1, s15
+800006a	vmrs	APSR_nzcv, fpscr
+800006e	it	mi
+8000070	vmovmi.f32	s0, s15
+8000074	bx	lr
+8000076	nop
+8000078	.word	0x00000000
+800007c	vcmp.f32	s0, s1
+8000080	vmrs	APSR_nzcv, fpscr
+8000084	ite	gt
+8000086	vmovgt.f32	s0, s2
+800008a	vmovle.f32	s0, s3
+800008e	bx	lr
+8000090	vcmpe.f32	s0, s2
+8000094	vmrs	APSR_nzcv, fpscr
+8000098	ite	gt
+800009a	vsubgt.f32	s0, s0, s1
+800009e	vaddle.f32	s0, s0, s1
+80000a2	bx	lr
+80000a4	push	{r7, lr}
+80000a6	ldr	r2, [pc, #120]
+80000a8	ldr	r6, [pc, #120]
+80000aa	ldr	r5, [pc, #124]
+80000ac	ldr	r1, [pc, #124]
+80000ae	ldr	r4, [pc, #128]
+80000b0	ldr	r7, [pc, #128]
+80000b2	vldr	s0, [r2]
+80000b6	vldr	s1, [r6]
+80000ba	vldr	s2, [r5]
+80000be	bl	0x8000008
+80000c2	vstr	s0, [r1]
+80000c6	vldr	s0, [r2]
+80000ca	vldr	s1, [r4]
+80000ce	bl	0x8000028
+80000d2	vstr	s0, [r1]
+80000d6	vldr	s0, [r2]
+80000da	vldr	s1, [r4]
+80000de	bl	0x8000050
+80000e2	vstr	s0, [r1]
+80000e6	vldr	s0, [r2]
+80000ea	bl	0x8000038
+80000ee	str	r0, [r7, #0]
+80000f0	vldr	s0, [r2]
+80000f4	vldr	s1, [r4]
+80000f8	vldr	s2, [r6]
+80000fc	vldr	s3, [r5]
+8000100	bl	0x800007c
+8000104	vstr	s0, [r1]
+8000108	vldr	s0, [r2]
+800010c	vldr	s1, [r4]
+8000110	vldr	s2, [r5]
+8000114	bl	0x8000090
+8000118	vstr	s0, [r1]
+800011c	b.n	0x80000b2
+800011e	nop
+8000120	.word	0x20000014
+8000124	.word	0x20000004
+8000128	.word	0x20000000
+800012c	.word	0x2000000c
+8000130	.word	0x20000010
+8000134	.word	0x20000008
+8000138	push	{r3, lr}
+800013a	bl	0x80000a4
+800013e	nop

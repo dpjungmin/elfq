@@ -20,7 +20,7 @@ mod thumb;
 mod x86_64;
 
 #[cfg(feature = "tui")]
-pub use listing::{Line, listing};
+pub use listing::{Line, Refers, listing};
 
 use object::{Architecture, Endianness};
 

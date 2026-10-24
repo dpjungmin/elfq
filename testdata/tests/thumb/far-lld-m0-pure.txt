@@ -1,0 +1,275 @@
+0	movs	r2, #32
+2	lsls	r2, r2, #8
+4	adds	r2, #0
+6	lsls	r2, r2, #8
+8	adds	r2, #0
+a	lsls	r2, r2, #8
+c	adds	r2, #0
+e	ldr	r3, [r2, #0]
+10	adds	r3, #7
+12	str	r3, [r2, #0]
+14	bx	lr
+16	nop
+18	push	{r4, lr}
+1a	movs	r4, #32
+1c	lsls	r4, r4, #8
+1e	adds	r4, #0
+20	lsls	r4, r4, #8
+22	adds	r4, #0
+24	lsls	r4, r4, #8
+26	adds	r4, #0
+28	ldr	r3, [r4, #0]
+2a	adds	r3, #1
+2c	str	r3, [r4, #0]
+2e	bl	0xc8
+32	ldr	r3, [r4, #0]
+34	adds	r3, #1
+36	str	r3, [r4, #0]
+38	pop	{r4, pc}
+3a	nop
+3c	push	{r4, lr}
+3e	movs	r2, #32
+40	lsls	r2, r2, #8
+42	adds	r2, #0
+44	lsls	r2, r2, #8
+46	adds	r2, #0
+48	lsls	r2, r2, #8
+4a	adds	r2, #0
+4c	ldr	r3, [r2, #0]
+4e	adds	r3, #1
+50	str	r3, [r2, #0]
+52	bl	0xdc
+56	pop	{r4, pc}
+58	push	{r4, lr}
+5a	movs	r4, #32
+5c	lsls	r4, r4, #8
+5e	adds	r4, #0
+60	lsls	r4, r4, #8
+62	adds	r4, #0
+64	lsls	r4, r4, #8
+66	adds	r4, #0
+68	ldr	r3, [r4, #0]
+6a	adds	r3, #1
+6c	str	r3, [r4, #0]
+6e	bl	0xf0
+72	ldr	r3, [r4, #0]
+74	adds	r3, #1
+76	str	r3, [r4, #0]
+78	pop	{r4, pc}
+7a	nop
+7c	push	{r4, lr}
+7e	movs	r2, #32
+80	lsls	r2, r2, #8
+82	adds	r2, #0
+84	lsls	r2, r2, #8
+86	adds	r2, #0
+88	lsls	r2, r2, #8
+8a	adds	r2, #0
+8c	ldr	r3, [r2, #0]
+8e	adds	r3, #1
+90	str	r3, [r2, #0]
+92	bl	0xf0
+96	pop	{r4, pc}
+98	push	{r4, lr}
+9a	movs	r4, #32
+9c	lsls	r4, r4, #8
+9e	adds	r4, #0
+a0	lsls	r4, r4, #8
+a2	adds	r4, #0
+a4	lsls	r4, r4, #8
+a6	adds	r4, #0
+a8	ldr	r3, [r4, #0]
+aa	adds	r3, #1
+ac	str	r3, [r4, #0]
+ae	movs	r3, #48
+b0	lsls	r3, r3, #8
+b2	adds	r3, #0
+b4	lsls	r3, r3, #8
+b6	adds	r3, #1
+b8	lsls	r3, r3, #8
+ba	adds	r3, #133
+bc	blx	r3
+be	ldr	r3, [r4, #0]
+c0	adds	r3, #1
+c2	str	r3, [r4, #0]
+c4	pop	{r4, pc}
+c6	nop
+c8	push	{r0, r1}
+ca	movs	r0, #48
+cc	lsls	r0, r0, #8
+ce	adds	r0, #0
+d0	lsls	r0, r0, #8
+d2	adds	r0, #1
+d4	lsls	r0, r0, #8
+d6	adds	r0, #13
+d8	str	r0, [sp, #4]
+da	pop	{r0, pc}
+dc	push	{r0, r1}
+de	movs	r0, #48
+e0	lsls	r0, r0, #8
+e2	adds	r0, #0
+e4	lsls	r0, r0, #8
+e6	adds	r0, #1
+e8	lsls	r0, r0, #8
+ea	adds	r0, #37
+ec	str	r0, [sp, #4]
+ee	pop	{r0, pc}
+f0	push	{r0, r1}
+f2	movs	r0, #31
+f4	lsls	r0, r0, #8
+f6	adds	r0, #255
+f8	lsls	r0, r0, #8
+fa	adds	r0, #0
+fc	lsls	r0, r0, #8
+fe	adds	r0, #1
+100	str	r0, [sp, #4]
+102	pop	{r0, pc}
+3000010c	movs	r2, #32
+3000010e	lsls	r2, r2, #8
+30000110	adds	r2, #0
+30000112	lsls	r2, r2, #8
+30000114	adds	r2, #0
+30000116	lsls	r2, r2, #8
+30000118	adds	r2, #0
+3000011a	ldr	r3, [r2, #0]
+3000011c	adds	r3, #3
+3000011e	str	r3, [r2, #0]
+30000120	bx	lr
+30000122	nop
+30000124	movs	r2, #32
+30000126	lsls	r2, r2, #8
+30000128	adds	r2, #0
+3000012a	lsls	r2, r2, #8
+3000012c	adds	r2, #0
+3000012e	lsls	r2, r2, #8
+30000130	adds	r2, #0
+30000132	ldr	r3, [r2, #0]
+30000134	adds	r3, #5
+30000136	str	r3, [r2, #0]
+30000138	bx	lr
+3000013a	nop
+3000013c	push	{r4, lr}
+3000013e	movs	r4, #32
+30000140	lsls	r4, r4, #8
+30000142	adds	r4, #0
+30000144	lsls	r4, r4, #8
+30000146	adds	r4, #0
+30000148	lsls	r4, r4, #8
+3000014a	adds	r4, #0
+3000014c	ldr	r3, [r4, #0]
+3000014e	adds	r3, #1
+30000150	str	r3, [r4, #0]
+30000152	bl	0x300001bc
+30000156	ldr	r3, [r4, #0]
+30000158	adds	r3, #1
+3000015a	str	r3, [r4, #0]
+3000015c	pop	{r4, pc}
+3000015e	nop
+30000160	push	{r4, lr}
+30000162	movs	r4, #32
+30000164	lsls	r4, r4, #8
+30000166	adds	r4, #0
+30000168	lsls	r4, r4, #8
+3000016a	adds	r4, #0
+3000016c	lsls	r4, r4, #8
+3000016e	adds	r4, #0
+30000170	ldr	r3, [r4, #0]
+30000172	adds	r3, #1
+30000174	str	r3, [r4, #0]
+30000176	bl	0x300001d0
+3000017a	ldr	r3, [r4, #0]
+3000017c	adds	r3, #1
+3000017e	str	r3, [r4, #0]
+30000180	pop	{r4, pc}
+30000182	nop
+30000184	movs	r2, #32
+30000186	lsls	r2, r2, #8
+30000188	adds	r2, #0
+3000018a	lsls	r2, r2, #8
+3000018c	adds	r2, #0
+3000018e	lsls	r2, r2, #8
+30000190	adds	r2, #0
+30000192	ldr	r3, [r2, #0]
+30000194	adds	r3, #9
+30000196	str	r3, [r2, #0]
+30000198	bx	lr
+3000019a	nop
+3000019c	push	{r4, lr}
+3000019e	bl	0x300001e4
+300001a2	bl	0x300001f8
+300001a6	bl	0x3000020c
+300001aa	bl	0x30000220
+300001ae	bl	0x30000234
+300001b2	bl	0x3000013c
+300001b6	bl	0x30000160
+300001ba	b.n	0x300001ba
+300001bc	push	{r0, r1}
+300001be	movs	r0, #0
+300001c0	lsls	r0, r0, #8
+300001c2	adds	r0, #0
+300001c4	lsls	r0, r0, #8
+300001c6	adds	r0, #0
+300001c8	lsls	r0, r0, #8
+300001ca	adds	r0, #1
+300001cc	str	r0, [sp, #4]
+300001ce	pop	{r0, pc}
+300001d0	push	{r0, r1}
+300001d2	movs	r0, #31
+300001d4	lsls	r0, r0, #8
+300001d6	adds	r0, #255
+300001d8	lsls	r0, r0, #8
+300001da	adds	r0, #0
+300001dc	lsls	r0, r0, #8
+300001de	adds	r0, #1
+300001e0	str	r0, [sp, #4]
+300001e2	pop	{r0, pc}
+300001e4	push	{r0, r1}
+300001e6	movs	r0, #0
+300001e8	lsls	r0, r0, #8
+300001ea	adds	r0, #0
+300001ec	lsls	r0, r0, #8
+300001ee	adds	r0, #0
+300001f0	lsls	r0, r0, #8
+300001f2	adds	r0, #25
+300001f4	str	r0, [sp, #4]
+300001f6	pop	{r0, pc}
+300001f8	push	{r0, r1}
+300001fa	movs	r0, #0
+300001fc	lsls	r0, r0, #8
+300001fe	adds	r0, #0
+30000200	lsls	r0, r0, #8
+30000202	adds	r0, #0
+30000204	lsls	r0, r0, #8
+30000206	adds	r0, #61
+30000208	str	r0, [sp, #4]
+3000020a	pop	{r0, pc}
+3000020c	push	{r0, r1}
+3000020e	movs	r0, #0
+30000210	lsls	r0, r0, #8
+30000212	adds	r0, #0
+30000214	lsls	r0, r0, #8
+30000216	adds	r0, #0
+30000218	lsls	r0, r0, #8
+3000021a	adds	r0, #89
+3000021c	str	r0, [sp, #4]
+3000021e	pop	{r0, pc}
+30000220	push	{r0, r1}
+30000222	movs	r0, #0
+30000224	lsls	r0, r0, #8
+30000226	adds	r0, #0
+30000228	lsls	r0, r0, #8
+3000022a	adds	r0, #0
+3000022c	lsls	r0, r0, #8
+3000022e	adds	r0, #125
+30000230	str	r0, [sp, #4]
+30000232	pop	{r0, pc}
+30000234	push	{r0, r1}
+30000236	movs	r0, #0
+30000238	lsls	r0, r0, #8
+3000023a	adds	r0, #0
+3000023c	lsls	r0, r0, #8
+3000023e	adds	r0, #0
+30000240	lsls	r0, r0, #8
+30000242	adds	r0, #153
+30000244	str	r0, [sp, #4]
+30000246	pop	{r0, pc}

@@ -388,9 +388,9 @@ fn index(items: usize, node: Node) -> usize {
     }
 }
 
-/// The item that starts at `address`. On Arm, a pointer to a Thumb function
-/// is its address plus 1.
-fn item_starting_at(binary: &Binary, address: u64) -> Option<usize> {
+/// The item that starts at `address`, as a pointer stored in data names
+/// it. On Arm, a pointer to a Thumb function is its address plus 1.
+pub fn item_starting_at(binary: &Binary, address: u64) -> Option<usize> {
     let starts_at = |address| {
         let index = binary.item_at(address)?;
         (binary.items[index].address == address).then_some(index)

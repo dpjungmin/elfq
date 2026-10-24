@@ -7,6 +7,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
+use object::{Architecture, Endian};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style, Stylize};
@@ -14,11 +15,11 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Row, Table};
 
 use super::{Cursor, Go, View, cut, imported, wrap};
-use crate::arch::{self, CodeReferenceKind};
-use crate::binary::{Item, ItemKind, Source};
+use crate::arch::{self, CodeReferenceKind, Refers};
+use crate::binary::{Binary, Item, ItemKind, Source};
 use crate::commands::browse::{keys::Action, session::Session};
 use crate::commands::{readable_item, text};
-use crate::graph::{Node, Reference, Unresolved, VeneerTarget};
+use crate::graph::{Node, Reference, Unresolved, VeneerTarget, item_starting_at};
 
 /// The most columns that the instructions take, and the fewest they give
 /// way to when the notes after them need room.
@@ -45,7 +46,7 @@ struct CodeLine {
     address: u64,
     /// The instruction, with the name of the item it calls or jumps to in
     /// place of its address: `call    strlen@plt`. Empty where elfq doesn't
-    /// print the instruction set's code.
+    /// print the code.
     instruction: String,
     /// What the line does with another item, or where it jumps.
     note: String,
@@ -98,19 +99,15 @@ impl ItemPage {
                 page.lines = lines;
                 page.instructions = true;
             }
-            Ok(Code::Links(lines)) if lines.is_empty() => {
+            Ok(Code::Links(lines, why)) if lines.is_empty() => {
                 page.empty = Some(format!(
-                    "elfq doesn't print Thumb instructions yet, and no line of {} uses another item.",
+                    "{why}. No line of {} uses another item.",
                     page.title
                 ));
             }
-            Ok(Code::Links(lines)) => {
+            Ok(Code::Links(lines, why)) => {
                 page.lines = lines;
-                page.footnote = Some(
-                    "elfq doesn't print Thumb instructions yet: these are the lines that use \
-                     another item."
-                        .to_string(),
-                );
+                page.footnote = Some(format!("{why}: these are the lines that use another item."));
             }
             Err(why) => page.empty = Some(why),
         }
@@ -406,11 +403,52 @@ fn header(session: &Session, index: usize, lead: &str) -> Vec<String> {
 
 /// What a function's page lists.
 enum Code {
-    /// Every instruction.
+    /// Every instruction, and the data among them.
     Instructions(Vec<CodeLine>),
     /// Only the lines that use another item, or that elfq can't follow,
-    /// for an instruction set whose code elfq doesn't print yet.
-    Links(Vec<CodeLine>),
+    /// where elfq doesn't print the code, and why it doesn't.
+    Links(Vec<CodeLine>, String),
+}
+
+/// Why elfq doesn't print the instructions of `binary`, or `None` when it
+/// does. elfq prints Thumb code only for the Cortex-M cores up to Armv7E-M:
+/// the printer reads some instructions of later cores as others.
+fn no_text(binary: &Binary) -> Option<String> {
+    if binary.architecture != Architecture::Arm {
+        return None;
+    }
+    match binary.arm_architecture {
+        Some(architecture) if architecture.is_cortex_m_up_to_v7() => None,
+        Some(architecture) => Some(format!(
+            "elfq prints only the instructions of Cortex-M cores up to Armv7E-M, and this file \
+             is for {}",
+            architecture.name()
+        )),
+        None => Some(
+            "This file doesn't say which Arm core its code is for, so elfq doesn't print its \
+             instructions"
+                .to_string(),
+        ),
+    }
+}
+
+/// The lines of `item`'s code, whose bytes are `bytes`, as `arch` prints
+/// them, with the data that the file marks there (see
+/// [`Binary::data_in_code`]); `None` for an instruction set that elfq
+/// doesn't print.
+pub(super) fn listing(binary: &Binary, item: &Item, bytes: &[u8]) -> Option<Vec<arch::Line>> {
+    // The marks, as offsets into `bytes`.
+    let marked: Vec<std::ops::Range<usize>> = binary
+        .data_in_code(item.address, item.size)
+        .map(|(start, end)| (start - item.address) as usize..(end - item.address) as usize)
+        .collect();
+    arch::listing(
+        binary.architecture,
+        binary.endianness,
+        bytes,
+        item.address,
+        &marked,
+    )
 }
 
 /// The lines of item `index`'s code, or why there are none to show.
@@ -433,26 +471,22 @@ fn code(session: &Session, index: usize) -> Result<Code, String> {
         ));
     };
     let notes = Notes::new(session, index);
-    match arch::listing(binary.architecture, bytes, item.address) {
-        Some(listing) => Ok(Code::Instructions(
-            listing
-                .iter()
-                .map(|line| notes.line(line.address, Some(line)))
-                .collect(),
-        )),
-        None => {
-            let mut sites: Vec<u64> = notes.references.keys().copied().collect();
-            sites.extend(notes.unresolved.keys());
-            sites.sort_unstable();
-            sites.dedup();
-            Ok(Code::Links(
-                sites
-                    .into_iter()
-                    .map(|site| notes.line(site, None))
-                    .collect(),
-            ))
-        }
-    }
+    let why = match no_text(binary) {
+        None => match listing(binary, item, bytes) {
+            Some(listing) => return Ok(Code::Instructions(notes.lines(&listing))),
+            None => "elfq doesn't print this code".to_string(),
+        },
+        Some(why) => why,
+    };
+    let mut sites: Vec<u64> = notes.references.keys().copied().collect();
+    sites.extend(notes.unresolved.keys());
+    sites.sort_unstable();
+    sites.dedup();
+    let lines = sites
+        .into_iter()
+        .map(|site| notes.line(site, None))
+        .collect();
+    Ok(Code::Links(lines, why))
 }
 
 /// What the graph knows about one function's code, by site, to write the
@@ -499,11 +533,65 @@ impl<'s, 'a> Notes<'s, 'a> {
         }
     }
 
+    /// The lines of `listing`, each with its note.
+    fn lines(&self, listing: &[arch::Line]) -> Vec<CodeLine> {
+        let mut lines: Vec<CodeLine> = listing
+            .iter()
+            .map(|printed| self.line(printed.address, Some(printed)))
+            .collect();
+        // A word that a load from a literal pool reads links where the
+        // load does, as `ldr r3, [pc, #8]` uses systick_count, and its word
+        // holds systick_count's address.
+        let mut loaded = HashMap::new();
+        for (printed, line) in listing.iter().zip(&lines) {
+            if let Some(Refers::Literal {
+                address: word,
+                size: 4,
+            }) = printed.refers
+                && let Some(link @ Link::Node { .. }) = line.link
+            {
+                loaded.entry(word).or_insert(link);
+            }
+        }
+        for (printed, line) in listing.iter().zip(&mut lines) {
+            if let Some(Refers::Word(value)) = printed.refers
+                && line.link.is_none()
+            {
+                self.word(line, value, loaded.get(&printed.address).copied());
+            }
+        }
+        lines
+    }
+
+    /// Gives a `.word` that holds `value` its link and note: `link`, where
+    /// a load reads it, or else the item that starts at `value`, as a
+    /// pointer stored in data names it.
+    fn word(&self, line: &mut CodeLine, value: u64, link: Option<Link>) {
+        let binary = self.session.binary;
+        let link = link.or_else(|| {
+            let index = item_starting_at(binary, value)?;
+            let at = binary.items[index].address;
+            Some(Link::Node {
+                node: Node::Item(index),
+                at,
+                via: None,
+            })
+        });
+        let Some(link @ Link::Node { node, at, .. }) = link else {
+            return;
+        };
+        line.note = match node {
+            Node::Item(index) => self.name_at(index, at),
+            Node::Import(_) => self.name(node),
+        };
+        line.elsewhere = self.elsewhere(link);
+        line.link = Some(link);
+    }
+
     /// The line at `address`, with its instruction `printed`, if elfq
     /// prints it.
     fn line(&self, address: u64, printed: Option<&arch::Line>) -> CodeLine {
         let binary = self.session.binary;
-        let item = &binary.items[self.index];
         let mut line = CodeLine {
             address,
             instruction: printed.map_or(String::new(), |printed| self.instruction(printed)),
@@ -535,14 +623,40 @@ impl<'s, 'a> Notes<'s, 'a> {
                 Some(target) => format!("{what} {target:#x}, outside any function"),
                 None => format!("{what} through a pointer: elfq can't follow"),
             };
-        } else if let Some(target) = printed.and_then(|printed| printed.target)
-            && item.contains(target)
-        {
-            let arrow = if target <= address { "↑" } else { "↓" };
-            line.note = format!("jump {arrow}");
-            line.link = Some(Link::Here(target));
+        } else if let Some(refers) = printed.and_then(|printed| printed.refers) {
+            line.note = self.inside(&mut line, refers);
         }
         line
+    }
+
+    /// The note of a line that refers to an address in this function, or
+    /// to a constant: `jump ↓`, `address ↑`, or `= 0x028f5c28` for the
+    /// word or double that a load from a literal pool reads. It links to
+    /// the line it refers to, if any.
+    fn inside(&self, line: &mut CodeLine, refers: Refers) -> String {
+        let binary = self.session.binary;
+        let item = &binary.items[self.index];
+        let (what, target) = match refers {
+            Refers::Branch(target) | Refers::Case(target) => ("jump", target),
+            Refers::Address(target) => ("address", target),
+            Refers::Literal { address, size } => {
+                let endianness = binary.endianness;
+                return match binary.bytes(address, size as u64) {
+                    Some(&[a, b, c, d]) => format!("= {:#010x}", endianness.read_u32([a, b, c, d])),
+                    Some(&[a, b, c, d, e, f, g, h]) => {
+                        format!("= {:#018x}", endianness.read_u64([a, b, c, d, e, f, g, h]))
+                    }
+                    _ => String::new(),
+                };
+            }
+            Refers::Word(_) => return String::new(),
+        };
+        if !item.contains(target) {
+            return String::new();
+        }
+        line.link = Some(Link::Here(target));
+        let arrow = if target <= line.address { "↑" } else { "↓" };
+        format!("{what} {arrow}")
     }
 
     /// The instruction's text, with the mnemonic in 7 columns, and the
@@ -551,7 +665,7 @@ impl<'s, 'a> Notes<'s, 'a> {
     fn instruction(&self, printed: &arch::Line) -> String {
         let binary = self.session.binary;
         let mut operands = printed.operands.clone();
-        if let Some(target) = printed.target
+        if let Some(Refers::Branch(target)) = printed.refers
             && !binary.items[self.index].contains(target)
             && let Some(index) = binary.item_at(target)
             && let Some(before) = operands.strip_suffix(&format!("{target:#x}"))
@@ -711,18 +825,19 @@ mod tests {
 
     fn lines(code: &Code) -> &[CodeLine] {
         match code {
-            Code::Instructions(lines) | Code::Links(lines) => lines,
+            Code::Instructions(lines) | Code::Links(lines, _) => lines,
         }
     }
 
     #[test]
-    fn every_use_that_elfq_finds_starts_a_line_of_x86_64_code() {
-        let mut functions = 0;
+    fn every_use_that_elfq_finds_starts_a_line_of_code() {
+        // Functions with lines, by architecture.
+        let mut functions: HashMap<Architecture, usize> = HashMap::new();
         every_function(|session, index, code| {
             let Code::Instructions(lines) = code else {
                 return;
             };
-            functions += 1;
+            *functions.entry(session.binary.architecture).or_default() += 1;
             let graph = &session.graph;
             let sites = (graph.references_from(index).iter().map(|r| r.site))
                 .chain(graph.unresolved_in(index).iter().map(|u| u.site));
@@ -733,7 +848,8 @@ mod tests {
                 assert!(!line.note.is_empty(), "{site:#x} in {name} has no note");
             }
         });
-        assert!(functions > 1000, "{functions}");
+        assert!(functions[&Architecture::X86_64] > 1000, "{functions:?}");
+        assert!(functions[&Architecture::Arm] > 500, "{functions:?}");
     }
 
     #[test]

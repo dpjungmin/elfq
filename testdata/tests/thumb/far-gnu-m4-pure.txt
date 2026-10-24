@@ -1,0 +1,167 @@
+0	movw	r3, #0
+4	movt	r3, #8192
+8	ldr	r2, [r3, #0]
+a	adds	r2, #7
+c	str	r2, [r3, #0]
+e	bx	lr
+10	movw	r1, #0
+14	movt	r1, #8192
+18	push	{r3, lr}
+1a	ldr	r3, [r1, #0]
+1c	adds	r3, #1
+1e	str	r3, [r1, #0]
+20	bl	0xa2
+24	ldr	r3, [r1, #0]
+26	adds	r3, #1
+28	str	r3, [r1, #0]
+2a	pop	{r3, pc}
+2c	movw	r3, #0
+30	movt	r3, #8192
+34	ldr	r2, [r3, #0]
+36	adds	r2, #1
+38	str	r2, [r3, #0]
+3a	b.w	0xac
+3e	nop
+40	push	{r4, lr}
+42	movw	r4, #0
+46	movt	r4, #8192
+4a	ldr	r3, [r4, #0]
+4c	adds	r3, #1
+4e	str	r3, [r4, #0]
+50	bl	0x98
+54	ldr	r3, [r4, #0]
+56	adds	r3, #1
+58	str	r3, [r4, #0]
+5a	pop	{r4, pc}
+5c	movw	r3, #0
+60	movt	r3, #8192
+64	ldr	r2, [r3, #0]
+66	adds	r2, #1
+68	str	r2, [r3, #0]
+6a	b.w	0x98
+6e	nop
+70	movw	r1, #0
+74	movt	r1, #8192
+78	push	{r3, lr}
+7a	ldr	r2, [r1, #0]
+7c	movw	r3, #297
+80	movt	r3, #12288
+84	adds	r2, #1
+86	str	r2, [r1, #0]
+88	blx	r3
+8a	ldr	r3, [r1, #0]
+8c	adds	r3, #1
+8e	str	r3, [r1, #0]
+90	pop	{r3, pc}
+92	nop
+94	movs	r0, r0
+96	movs	r0, r0
+98	movw	ip, #1
+9c	movt	ip, #8191
+a0	bx	ip
+a2	movw	ip, #209
+a6	movt	ip, #12288
+aa	bx	ip
+ac	movw	ip, #225
+b0	movt	ip, #12288
+b4	bx	ip
+b6	movs	r0, r0
+b8	movs	r0, r0
+ba	movs	r0, r0
+bc	movs	r0, r0
+be	movs	r0, r0
+c0	movs	r0, r0
+c2	movs	r0, r0
+c4	movs	r0, r0
+c6	movs	r0, r0
+300000d0	movw	r3, #0
+300000d4	movt	r3, #8192
+300000d8	ldr	r2, [r3, #0]
+300000da	adds	r2, #3
+300000dc	str	r2, [r3, #0]
+300000de	bx	lr
+300000e0	movw	r3, #0
+300000e4	movt	r3, #8192
+300000e8	ldr	r2, [r3, #0]
+300000ea	adds	r2, #5
+300000ec	str	r2, [r3, #0]
+300000ee	bx	lr
+300000f0	movw	r1, #0
+300000f4	movt	r1, #8192
+300000f8	push	{r3, lr}
+300000fa	ldr	r3, [r1, #0]
+300000fc	adds	r3, #1
+300000fe	str	r3, [r1, #0]
+30000100	bl	0x30000194
+30000104	ldr	r3, [r1, #0]
+30000106	adds	r3, #1
+30000108	str	r3, [r1, #0]
+3000010a	pop	{r3, pc}
+3000010c	push	{r4, lr}
+3000010e	movw	r4, #0
+30000112	movt	r4, #8192
+30000116	ldr	r3, [r4, #0]
+30000118	adds	r3, #1
+3000011a	str	r3, [r4, #0]
+3000011c	bl	0x30000162
+30000120	ldr	r3, [r4, #0]
+30000122	adds	r3, #1
+30000124	str	r3, [r4, #0]
+30000126	pop	{r4, pc}
+30000128	movw	r3, #0
+3000012c	movt	r3, #8192
+30000130	ldr	r2, [r3, #0]
+30000132	adds	r2, #9
+30000134	str	r2, [r3, #0]
+30000136	bx	lr
+30000138	push	{r3, lr}
+3000013a	bl	0x30000180
+3000013e	bl	0x30000176
+30000142	bl	0x30000158
+30000146	bl	0x3000016c
+3000014a	bl	0x3000018a
+3000014e	bl	0x300000f0
+30000152	bl	0x3000010c
+30000156	b.n	0x30000156
+30000158	movw	ip, #65
+3000015c	movt	ip, #0
+30000160	bx	ip
+30000162	movw	ip, #1
+30000166	movt	ip, #8191
+3000016a	bx	ip
+3000016c	movw	ip, #93
+30000170	movt	ip, #0
+30000174	bx	ip
+30000176	movw	ip, #45
+3000017a	movt	ip, #0
+3000017e	bx	ip
+30000180	movw	ip, #17
+30000184	movt	ip, #0
+30000188	bx	ip
+3000018a	movw	ip, #113
+3000018e	movt	ip, #0
+30000192	bx	ip
+30000194	movw	ip, #1
+30000198	movt	ip, #0
+3000019c	bx	ip
+3000019e	movs	r0, r0
+300001a0	movs	r0, r0
+300001a2	movs	r0, r0
+300001a4	movs	r0, r0
+300001a6	movs	r0, r0
+300001a8	movs	r0, r0
+300001aa	movs	r0, r0
+300001ac	movs	r0, r0
+300001ae	movs	r0, r0
+300001b0	movs	r0, r0
+300001b2	movs	r0, r0
+300001b4	movs	r0, r0
+300001b6	movs	r0, r0
+300001b8	movs	r0, r0
+300001ba	movs	r0, r0
+300001bc	movs	r0, r0
+300001be	movs	r0, r0
+300001c0	movs	r0, r0
+300001c2	movs	r0, r0
+300001c4	movs	r0, r0
+300001c6	movs	r0, r0
