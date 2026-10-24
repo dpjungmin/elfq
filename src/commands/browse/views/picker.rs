@@ -51,6 +51,10 @@ pub struct Picker {
     /// What the commands said about SYMBOL, with the SYMBOL, shown until
     /// the text changes.
     note: Option<(String, String)>,
+    /// Whether the text has changed since the items were listed. They are
+    /// listed again only when they are needed, so that keys typed all at
+    /// once, as a paste types them, list them once.
+    changed: bool,
 }
 
 impl Picker {
@@ -63,6 +67,7 @@ impl Picker {
             nothing: None,
             cursor: Cursor::new(0),
             note: None,
+            changed: false,
         };
         picker.find(session);
         picker
@@ -77,14 +82,23 @@ impl Picker {
     }
 
     /// Types `c`, or with `None`, takes the last character back.
-    pub fn type_char(&mut self, session: &Session, c: Option<char>) {
+    pub fn type_char(&mut self, c: Option<char>) {
         match c {
             Some(c) => self.text.push(c),
             None => {
                 self.text.pop();
             }
         }
-        self.find(session);
+        self.changed = true;
+    }
+
+    /// Lists the items for the text typed, if it has changed since they
+    /// were listed.
+    fn catch_up(&mut self, session: &Session) {
+        if self.changed {
+            self.changed = false;
+            self.find(session);
+        }
     }
 
     /// Lists the items for the text typed.
@@ -169,16 +183,19 @@ impl Picker {
         self.cursor = Cursor::new(self.found.len());
     }
 
-    pub fn handle(&mut self, action: Action) {
+    pub fn handle(&mut self, session: &Session, action: Action) {
+        self.catch_up(session);
         self.cursor.handle(action);
     }
 
     /// The selected row.
-    pub fn selected(&self) -> Option<&Found> {
+    pub fn selected(&mut self, session: &Session) -> Option<&Found> {
+        self.catch_up(session);
         self.found.get(self.cursor.selected)
     }
 
     pub fn draw(&mut self, session: &Session, frame: &mut Frame, area: Rect) {
+        self.catch_up(session);
         let binary = session.binary;
         let width = usize::from(area.width);
         let note = (self.note.as_ref())
