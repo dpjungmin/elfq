@@ -6,6 +6,7 @@
 //! such as `callers::answer` for "used by N", so that a page says what the
 //! commands print.
 
+use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -30,6 +31,18 @@ pub struct Session<'a> {
     /// The blocks of memory that the sections occupy, as the overview
     /// lists them.
     pub(super) blocks: Vec<MemoryBlock>,
+    /// Every item's names in lowercase, for the go-to box, made the first
+    /// time it looks for a name.
+    lowercase: OnceCell<LowercaseNames>,
+}
+
+/// The names of every item in lowercase, the names of each item side by
+/// side, so that the go-to box needn't lowercase them for every key.
+struct LowercaseNames {
+    names: Vec<String>,
+    /// Where each item's names start in `names`, and after the last item,
+    /// where they end.
+    starts: Vec<usize>,
 }
 
 impl<'a> Session<'a> {
@@ -51,7 +64,25 @@ impl<'a> Session<'a> {
             names: Names::new(binary),
             veneers,
             blocks: memory_blocks(&binary.sections),
+            lowercase: OnceCell::new(),
         })
+    }
+
+    /// Whether one of the names of item `index`, lowercased, has `text`,
+    /// which is lowercase too.
+    pub(super) fn name_has(&self, index: usize, text: &str) -> bool {
+        let lowercase = self.lowercase.get_or_init(|| {
+            let mut names = Vec::new();
+            let mut starts = Vec::with_capacity(self.binary.items.len() + 1);
+            for item in &self.binary.items {
+                starts.push(names.len());
+                names.extend(item.names().map(str::to_lowercase));
+            }
+            starts.push(names.len());
+            LowercaseNames { names, starts }
+        });
+        let names = &lowercase.names[lowercase.starts[index]..lowercase.starts[index + 1]];
+        names.iter().any(|name| name.contains(text))
     }
 
     /// How many items use `node`: the callers that `callers SYMBOL` lists.

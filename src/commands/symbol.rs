@@ -184,12 +184,7 @@ impl<'a> Names<'a> {
         }
 
         match self.nodes(query) {
-            &[node] => Ok(Symbol {
-                node,
-                note: self
-                    .other_name(node, query)
-                    .map(|name| format!("also named {name}")),
-            }),
+            &[node] => Ok(self.found(node, query)),
             [] => {
                 let mut message = format!("no function or data object is named `{query}`");
                 if let Some(reason) = self.unnamed().or_else(|| self.inlined_everywhere(query)) {
@@ -202,6 +197,32 @@ impl<'a> Names<'a> {
                 bail!("{message}");
             }
             nodes => bail!("{}", self.choices(query, nodes)),
+        }
+    }
+
+    /// What `query` finds when it finds one item or import, as
+    /// [`Names::find`] finds it, or `None`. Unlike `find`, it doesn't work
+    /// out why `query` finds several or none, which can take seconds in a
+    /// large file.
+    #[cfg(feature = "tui")]
+    pub(super) fn find_one(&self, query: &str) -> Option<Symbol> {
+        // An address finds its item without looking up a name.
+        if hex_number(query).is_some() {
+            return self.find(query).ok();
+        }
+        match self.nodes(query) {
+            &[node] => Some(self.found(node, query)),
+            _ => None,
+        }
+    }
+
+    /// The answer for `query` when it finds only `node`.
+    fn found(&self, node: Node, query: &str) -> Symbol {
+        Symbol {
+            node,
+            note: self
+                .other_name(node, query)
+                .map(|name| format!("also named {name}")),
         }
     }
 

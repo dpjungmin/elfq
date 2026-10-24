@@ -7,6 +7,9 @@
 //! It isn't a page: it opens over the page on the screen, and Esc closes
 //! it, so that what is typed into it can't open pages by itself.
 
+use std::cmp::Reverse;
+use std::collections::HashSet;
+
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Style, Stylize};
@@ -89,6 +92,7 @@ impl Picker {
         let binary = session.binary;
         let text = self.text.trim();
         let mut found: Vec<usize> = Vec::new();
+        let mut listed: HashSet<usize> = HashSet::new();
         let mut at = None;
         self.more = 0;
         self.nothing = None;
@@ -97,47 +101,58 @@ impl Picker {
                 && let Some(index) = binary.item_at(address)
             {
                 found.push(index);
+                listed.insert(index);
                 at = Some((index, address));
             }
             // Imports have no page yet.
             for &node in session.names.nodes(text) {
                 if let Node::Item(index) = node
-                    && !found.contains(&index)
+                    && listed.insert(index)
                 {
                     found.push(index);
                 }
             }
             let lower = text.to_lowercase();
             let mut others: Vec<usize> = (0..binary.items.len())
-                .filter(|index| !found.contains(index))
-                .filter(|&index| {
-                    binary.items[index]
-                        .names()
-                        .any(|name| name.to_lowercase().contains(&lower))
-                })
+                .filter(|index| !listed.contains(index))
+                .filter(|&index| session.name_has(index, &lower))
                 .collect();
-            others.sort_by_key(|&index| std::cmp::Reverse(binary.items[index].size));
+            self.more = (found.len() + others.len()).saturating_sub(MOST);
+            // Largest first, and of the same size, first in the file. Only
+            // the rows listed are sorted, which saves time when the text
+            // is in most names.
+            let order = |&index: &usize| (Reverse(binary.items[index].size), index);
+            let room = MOST.saturating_sub(found.len());
+            if others.len() > room {
+                if room > 0 {
+                    others.select_nth_unstable_by_key(room - 1, order);
+                }
+                others.truncate(room);
+            }
+            others.sort_unstable_by_key(order);
             found.extend(others);
-            self.more = found.len().saturating_sub(MOST);
             found.truncate(MOST);
         }
-        // What SYMBOL finds is named as the CLI's answer names it, and
-        // when nothing is found, the CLI's error says why.
-        let symbol = (!text.is_empty()).then(|| session.names.find(text));
-        let lead = match &symbol {
-            Some(Ok(symbol)) => match symbol.node {
-                Node::Item(index) => Some((index, symbol.lead_name(binary))),
-                Node::Import(_) => None,
-            },
-            _ => None,
-        };
-        if found.is_empty() {
+        // What SYMBOL finds is named as the CLI's answer names it.
+        let symbol = (!text.is_empty())
+            .then(|| session.names.find_one(text))
+            .flatten();
+        let lead = symbol.as_ref().and_then(|symbol| match symbol.node {
+            Node::Item(index) => Some((index, symbol.lead_name(binary))),
+            Node::Import(_) => None,
+        });
+        // When nothing is found, the CLI's error says why. Working that
+        // out takes a while in a large file, so it is done only then.
+        if found.is_empty() && !text.is_empty() {
             self.nothing = match symbol {
-                Some(Ok(symbol)) if matches!(symbol.node, Node::Import(_)) => {
-                    Some(imported(session, symbol.node))
+                Some(symbol) => {
+                    matches!(symbol.node, Node::Import(_)).then(|| imported(session, symbol.node))
                 }
-                Some(Err(error)) => Some(first_line(&error)),
-                _ => None,
+                None => session
+                    .names
+                    .find(text)
+                    .err()
+                    .map(|error| first_line(&error)),
             };
         }
         self.found = found
