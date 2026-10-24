@@ -189,3 +189,42 @@ fn drop_containers(candidates: &mut Vec<Candidate>) -> Vec<(u64, u64)> {
     candidates.retain(|_| keep.next().unwrap_or(true));
     containers
 }
+
+/// The stretches of code that the file's `$d` symbols mark as data, as
+/// `(start, end)`, sorted. Arm's ELF ABI has assemblers mark where Thumb
+/// code starts with a `$t` symbol, Arm code with `$a`, and data among code,
+/// such as a literal pool, with `$d`; each stretch runs to the next such
+/// symbol in its section, or to the section's end. Stripping removes them.
+pub(super) fn data_in_code(file: &object::File, sections: &[Section]) -> Vec<(u64, u64)> {
+    if file.architecture() != object::Architecture::Arm {
+        return Vec::new();
+    }
+    // Each mapping symbol, as (section, address, whether it marks data).
+    let mut marks: Vec<(usize, u64, bool)> = file
+        .symbols()
+        .filter_map(|symbol| {
+            let name = symbol.name_bytes().ok()?;
+            let kind = name.get(..2)?;
+            if !matches!(kind, b"$d" | b"$t" | b"$a") || !matches!(name.get(2), None | Some(b'.')) {
+                return None;
+            }
+            Some((symbol.section_index()?.0, symbol.address(), kind == b"$d"))
+        })
+        .collect();
+    marks.sort_unstable();
+    let mut stretches = Vec::new();
+    for (index, &(section, start, data)) in marks.iter().enumerate() {
+        let Some(info) = sections.get(section).filter(|info| info.allocated) else {
+            continue;
+        };
+        let end = match marks.get(index + 1) {
+            Some(&(next_section, next, _)) if next_section == section => next,
+            _ => info.address + info.size,
+        };
+        if data && start < end {
+            stretches.push((start, end));
+        }
+    }
+    stretches.sort_unstable();
+    stretches
+}

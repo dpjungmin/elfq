@@ -25,6 +25,7 @@
 //! it imports from shared libraries, and in Cortex-M firmware the vector
 //! table (see `vector_table.rs`).
 
+mod attributes;
 mod eh_frame;
 mod names;
 mod plt;
@@ -35,6 +36,7 @@ mod unnamed_data;
 mod unnamed_functions;
 mod vector_table;
 
+pub use attributes::ArmArchitecture;
 pub use names::{demangle, short_names};
 pub use range::{AddressRange, MemoryBlock, hex_number, memory_blocks, range_hint};
 pub use vector_table::VectorTable;
@@ -110,6 +112,14 @@ pub struct Binary {
     pub merged_variables: Vec<(u64, u64)>,
     /// The Cortex-M vector table, in Thumb files that have one.
     pub vector_table: Option<VectorTable>,
+    /// For 32-bit Arm, the version of the architecture that the code is
+    /// built for, as the build attributes in `.ARM.attributes` say.
+    pub arm_architecture: Option<ArmArchitecture>,
+    /// The stretches of code that the file's `$d` symbols mark as data,
+    /// such as literal pools, as `(start, end)`, sorted. Only 32-bit Arm
+    /// files have them, unless they are stripped (see
+    /// [`Binary::data_in_code`]).
+    data_in_code: Vec<(u64, u64)>,
     /// Problems that did not stop loading but may make answers incomplete.
     pub warnings: Vec<String>,
     /// The references in each function's code, by its address and size;
@@ -327,6 +337,8 @@ impl Binary {
             used_by_unwinder: Vec::new(),
             merged_variables: Vec::new(),
             vector_table: None,
+            arm_architecture: None,
+            data_in_code: Vec::new(),
             warnings,
             code_references: HashMap::new(),
             data,
@@ -337,6 +349,10 @@ impl Binary {
         (binary.imports, binary.relocations) = relocations::read(&file, architecture);
         if binary.thumb {
             binary.vector_table = vector_table::find(&binary);
+        }
+        if architecture == Architecture::Arm {
+            binary.arm_architecture = attributes::arm_architecture(&file);
+            binary.data_in_code = symbols::data_in_code(&file, &binary.sections);
         }
 
         let (mut items, merged_variables) = symbols::items(&file, &binary.sections);
@@ -390,6 +406,21 @@ impl Binary {
         self.code_references
             .get(&(function.address, function.size))
             .map_or(&[], Vec::as_slice)
+    }
+
+    /// The stretches of the `size` bytes at `address` that the file's `$d`
+    /// symbols mark as data among code, as `(start, end)`, in order. Arm's
+    /// ELF ABI has assemblers mark data, such as a literal pool, with `$d`,
+    /// and code again with `$t` or `$a`. Stripped files have none.
+    pub fn data_in_code(&self, address: u64, size: u64) -> impl Iterator<Item = (u64, u64)> + '_ {
+        let end = address.saturating_add(size);
+        let first = self
+            .data_in_code
+            .partition_point(|&(_, stretch_end)| stretch_end <= address);
+        self.data_in_code[first..]
+            .iter()
+            .take_while(move |&&(start, _)| start < end)
+            .map(move |&(start, stretch_end)| (start.max(address), stretch_end.min(end)))
     }
 
     /// The bytes at `address`, or `None` if the file doesn't hold all `size`
@@ -1231,6 +1262,8 @@ mod tests {
             used_by_unwinder: Vec::new(),
             merged_variables: Vec::new(),
             vector_table: None,
+            arm_architecture: None,
+            data_in_code: Vec::new(),
             warnings: Vec::new(),
             code_references: HashMap::new(),
             data: code,

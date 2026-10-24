@@ -114,9 +114,10 @@ placeholder for now.
 `callers`, `callees` and `reach` work on x86-64 and Cortex-M executables,
 with readable Rust and C++ names, and `inlined` works on any file with DWARF
 debug info that isn't compressed. The overview, `callers`, `callees` and
-`reach` also work on x86-64 shared libraries. `browse` prints x86-64 code;
-in Thumb code, its pages list only the lines that use another item, until
-elfq prints Thumb instructions.
+`reach` also work on x86-64 shared libraries. `browse` prints x86-64 code
+and the Thumb code of Cortex-M cores up to Armv7E-M (M0, M0+, M3, M4, M7);
+for Armv8-M cores, such as the M33, its pages list only the lines that use
+another item.
 See [docs/design.md](docs/design.md) for how elfq works and what comes next,
 [docs/survey.md](docs/survey.md) for how existing tools compare, and
 [CONTRIBUTING.md](CONTRIBUTING.md) to build it.

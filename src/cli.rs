@@ -395,8 +395,9 @@ A function's page shows its code, one line per instruction, and a line
 that calls, jumps to or uses another item ends with a note that names it,
 in the words of the HOW column. Enter follows the selected line's link to
 that item's page, Esc goes back, and ] goes forward again; g goes to any
-function or data object, and ? lists every key. elfq prints x86-64 code;
-in Thumb code, a page lists only the lines that use another item, for now.
+function or data object, and ? lists every key. elfq prints x86-64 code,
+and the Thumb code of Cortex-M cores up to Armv7E-M (M0, M0+, M3, M4, M7);
+for other Arm cores, a page lists only the lines that use another item.
 
 browse needs a terminal, and takes no --json, --tree or --range. For
 scripts, callers and callees print the same links, with --json, and

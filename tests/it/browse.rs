@@ -516,7 +516,7 @@ used by 5 · uses 2
 #[test]
 fn question_mark_opens_the_help() {
     assert_output(
-        &screen("c-cortex-m7.elf", Some("app_tick"), (100, 30), &["?"]),
+        &screen("c-cortex-m7.elf", Some("app_tick"), (100, 34), &["?"]),
         "\
 c-cortex-m7.elf › app_tick › help
 Keys
@@ -542,7 +542,11 @@ Words
   via veneer           through a stub that the linker added; the note names where it ends up
   via PLT              through a PLT stub that passes the call on to one of the file's own
                        functions; the note names it
-  jump ↓  jump ↑       a branch to a line further down or up the function; Enter moves there
+  jump ↓  jump ↑       a branch to a line further down or up the function, or a case of a table of
+                       jumps; Enter moves there
+  address ↓  address ↑ adr loads the address of a line in this function, such as a table's; Enter
+                       moves there
+  = 0x028f5c28         the constant that a load from a literal pool reads
   in .bss              the section of an item in another block of memory than this function
   ~12  ?               an estimated size, and an unknown size
 
@@ -554,6 +558,10 @@ Words
     let end = screen("c-x86_64.elf", None, (60, 16), &["?", "End"]);
     assert!(
         end.contains("\n  ~12  ?               an estimated size, and an unknown\n"),
+        "{end}"
+    );
+    assert!(
+        end.contains("\n  address ↓  address ↑ adr loads the address of a line in\n"),
         "{end}"
     );
     let back = screen("c-x86_64.elf", None, (80, 24), &["?", "Esc"]);
@@ -680,9 +688,143 @@ used by 1 · uses 7 · 1 call elfq can't follow
 }
 
 #[test]
-fn thumb_code_lists_only_the_lines_that_use_another_item() {
+fn thumb_code_shows_its_instructions_and_the_data_among_them() {
+    // A word of a literal pool links to what it holds the address of.
     assert_output(
         &screen("c-cortex-m7.elf", Some("SysTick_Handler"), (80, 24), &[]),
+        "\
+c-cortex-m7.elf › SysTick_Handler
+SysTick_Handler  function at 0x0, 16 bytes, in .itcm (0x00000000..0x000000e0),
+copied there from 0x30000040
+root: vector table · used by 1 · uses 2
+  ADDRESS  INSTRUCTION
+> 0x0      ldr     r3, [pc, #8]       uses systick_count in .bss
+  0x2      ldr     r0, [r3]
+  0x4      adds    r0, #1
+  0x6      str     r0, [r3]
+  0x8      b.w     __app_tick_veneer  tail call via veneer → app_tick in .text
+  0xc      .word   0x20000444         systick_count in .bss
+
+
+
+
+
+
+
+
+
+
+
+→ systick_count  data object at 0x20000444, 4 bytes, in .bss
+↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
+",
+    );
+    // A load of a word that holds no item's address shows the value, and
+    // a jump to another line of the function says which way it goes.
+    assert_output(
+        &screen("c-cortex-m7.elf", Some("app_tick"), (100, 30), &[]),
+        "\
+c-cortex-m7.elf › app_tick
+app_tick  function at 0x300002e4, 60 bytes, in .text (0x30000000..0x30000edc)
+used by 2 · uses 3
+  ADDRESS     INSTRUCTION
+> 0x300002e4  ldr     r3, [pc, #44]   = 0xc28f5c29
+  0x300002e6  ldr     r2, [pc, #48]   = 0x028f5c28
+  0x300002e8  mul     r3, r0, r3
+  0x300002ec  cmp.w   r2, r3, ror #2
+  0x300002f0  push    {r4, lr}
+  0x300002f2  mov     r4, r0
+  0x300002f4  bhs     0x30000302      jump ↓
+  0x300002f6  mov     r1, r4
+  0x300002f8  movs    r0, #0
+  0x300002fa  pop.w   {r4, lr}
+  0x300002fe  b.w     dispatch_event  tail call
+  0x30000302  ldr     r0, [pc, #24]   uses .rodata@0x30000de8 \"tick\\n\"
+  0x30000304  bl      log_msg         call
+  0x30000308  mov     r1, r4
+  0x3000030a  movs    r0, #0
+  0x3000030c  pop.w   {r4, lr}
+  0x30000310  b.w     dispatch_event  tail call
+  0x30000314  .word   0xc28f5c29
+  0x30000318  .word   0x028f5c28
+  0x3000031c  .word   0x30000de8      .rodata@0x30000de8
+
+
+
+
+
+↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
+",
+    );
+    assert_output(
+        &screen("c-cortex-m7.elf", Some("NMI_Handler"), (80, 24), &[]),
+        "\
+c-cortex-m7.elf › Default_Handler
+Default_Handler (also named NMI_Handler)  function at 0x300005f4, 2 bytes, in
+.text (0x30000000..0x30000edc)
+root: vector table · used by 1 · uses 0
+  ADDRESS     INSTRUCTION
+> 0x300005f4  b       0x300005f4  jump ↑
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+→ 0x300005f4, in this function
+↑↓ move  enter follow  esc back  g go to  ? help  q quit
+",
+    );
+}
+
+#[test]
+fn a_word_that_holds_an_items_address_links_to_it() {
+    // Reset_Handler's literal pool: no load of these words links to stats
+    // or config_sum, but the words that hold their addresses do. No item
+    // starts at 0x08000dec, where the copy of .data starts in flash, or at
+    // 0x20000048, where .bss ends.
+    assert_output(
+        &screen("c-cortex-m4.elf", Some("0x80005d8"), (100, 16), &[]),
+        "\
+c-cortex-m4.elf › Reset_Handler
+Reset_Handler (which holds 0x80005d8)  function at 0x80005a0, 76 bytes, in .text
+(0x08000000..0x08000e0c)
+root: entry point · used by 1 · uses 3
+  ADDRESS    INSTRUCTION
+  0x80005cc  movs    r1, #0
+  0x80005ce  bl      memset         call
+  0x80005d2  bl      main           call
+  0x80005d6  b       0x80005d6      jump ↑
+> 0x80005d8  .word   0x20000000     stats in .data
+  0x80005dc  .word   0x20000020     config_sum in .bss
+  0x80005e0  .word   0x08000dec
+  0x80005e4  .word   0x20000020     config_sum in .bss
+  0x80005e8  .word   0x20000048
+→ stats  data object at 0x20000000, 32 bytes, in .data
+↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
+",
+    );
+}
+
+#[test]
+fn thumb_code_of_other_cores_lists_only_the_lines_that_use_another_item() {
+    // The sample as if it were built for a Cortex-M33, whose instructions
+    // elfq doesn't print.
+    let data = damaged::for_arm_version("c-cortex-m7.elf", Some(17));
+    let binary = Binary::parse(&data).unwrap();
+    let page = |symbol| browse("c-cortex-m7.elf", &binary, Some(symbol), (80, 24), &[]).0;
+    assert_output(
+        &page("SysTick_Handler"),
         "\
 c-cortex-m7.elf › SysTick_Handler
 SysTick_Handler  function at 0x0, 16 bytes, in .itcm (0x00000000..0x000000e0),
@@ -704,58 +846,22 @@ root: vector table · used by 1 · uses 2
 
 
 
-elfq doesn't print Thumb instructions yet: these are the lines that use another
-item.
+elfq prints only the instructions of Cortex-M cores up to Armv7E-M, and this
+file is for Armv8-M Mainline: these are the lines that use another item.
 → systick_count  data object at 0x20000444, 4 bytes, in .bss
-↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
-",
-    );
-    // An item in another block of memory has its section after it.
-    assert_output(
-        &screen("c-cortex-m7.elf", Some("process_frame"), (100, 30), &[]),
-        "\
-c-cortex-m7.elf › process_frame
-process_frame  function at 0x30000320, 376 bytes, in .text (0x30000000..0x30000edc)
-used by 1 · uses 10
-  ADDRESS
-> 0x3000032c  call decode_header
-  0x3000034c  call via veneer → crc32 in .itcm
-  0x30000386  call via veneer → apply_filter in .itcm
-  0x3000038a  uses stats in .data
-  0x30000438  call dispatch_event
-  0x3000043c  uses frames_ok in .bss
-  0x30000454  call via veneer → apply_filter in .itcm
-  0x3000045a  uses frames_bad in .bss
-  0x3000045c  uses .rodata@0x30000df0 \"bad header\\n\"
-  0x30000464  call log_msg
-  0x30000470  uses frames_bad in .bss
-  0x30000472  uses .rodata@0x30000dfc \"bad crc\\n\"
-  0x3000047a  call log_msg
-
-
-
-
-
-
-
-
-
-
-elfq doesn't print Thumb instructions yet: these are the lines that use another item.
-→ decode_header  function at 0x30000160, 40 bytes, in .text
 ↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
 ",
     );
     // And a function that uses nothing says so.
     assert_output(
-        &screen("c-cortex-m7.elf", Some("NMI_Handler"), (80, 24), &[]),
+        &page("NMI_Handler"),
         "\
 c-cortex-m7.elf › Default_Handler
 Default_Handler (also named NMI_Handler)  function at 0x300005f4, 2 bytes, in
 .text (0x30000000..0x30000edc)
 root: vector table · used by 1 · uses 0
-elfq doesn't print Thumb instructions yet, and no line of Default_Handler uses
-another item.
+elfq prints only the instructions of Cortex-M cores up to Armv7E-M, and this
+file is for Armv8-M Mainline. No line of Default_Handler uses another item.
 
 
 
@@ -774,6 +880,45 @@ another item.
 
 
 ↑↓ move  enter follow  esc back  g go to  ? help  q quit
+",
+    );
+    // A file that doesn't say which core it is for.
+    let data = damaged::for_arm_version("c-cortex-m7.elf", None);
+    let binary = Binary::parse(&data).unwrap();
+    assert_output(
+        &browse(
+            "c-cortex-m7.elf",
+            &binary,
+            Some("SysTick_Handler"),
+            (80, 24),
+            &[],
+        )
+        .0,
+        "\
+c-cortex-m7.elf › SysTick_Handler
+SysTick_Handler  function at 0x0, 16 bytes, in .itcm (0x00000000..0x000000e0),
+copied there from 0x30000040
+root: vector table · used by 1 · uses 2
+  ADDRESS
+> 0x0      uses systick_count in .bss
+  0x8      tail call via veneer → app_tick in .text
+
+
+
+
+
+
+
+
+
+
+
+
+
+This file doesn't say which Arm core its code is for, so elfq doesn't print its
+instructions: these are the lines that use another item.
+→ systick_count  data object at 0x20000444, 4 bytes, in .bss
+↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
 ",
     );
 }
@@ -815,9 +960,13 @@ root: entry point · used by nothing · uses 2
 c-cortex-m7-stripped.elf › fn_0x0
 fn_0x0  function at 0x0, ~16 bytes, in .itcm (0x00000000..0x000000e0), copied there from 0x30000040
 found by following the code · root: vector table · used by 1 · uses 2
-  ADDRESS
-> 0x0      uses .bss@0x20000444 in .bss
-  0x8      tail call via veneer → fn_0x300002e4 in .text
+  ADDRESS  INSTRUCTION
+> 0x0      ldr     r3, [pc, #8]  uses .bss@0x20000444 in .bss
+  0x2      ldr     r0, [r3]
+  0x4      adds    r0, #1
+  0x6      str     r0, [r3]
+  0x8      b.w     fn_0xd0       tail call via veneer → fn_0x300002e4 in .text
+  0xc      .word   0x20000444    .bss@0x20000444 in .bss
 
 
 
@@ -836,10 +985,6 @@ found by following the code · root: vector table · used by 1 · uses 2
 
 
 
-
-
-
-elfq doesn't print Thumb instructions yet: these are the lines that use another item.
 → .bss@0x20000444  data object at 0x20000444, ~4 bytes, in .bss
 ↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
 ",
@@ -1001,8 +1146,10 @@ fn a_long_chain_of_calls_can_be_followed() {
 long-chain.elf › entry › fn_0x8113870 › fn_0x8113868 › fn_0x8113860
 fn_0x8113860  function at 0x8113860, ~8 bytes, in .text (0x08100000..0x08113880)
 found by following the code · used by 1 · uses 1
-  ADDRESS
-> 0x8113862  call fn_0x8113858
+  ADDRESS    INSTRUCTION
+> 0x8113860  push    {lr}
+  0x8113862  bl      fn_0x8113858  call
+  0x8113866  pop     {pc}
 
 
 
@@ -1018,9 +1165,7 @@ found by following the code · used by 1 · uses 1
 
 
 
-elfq doesn't print Thumb instructions yet: these are the lines that use another
-item.
-→ fn_0x8113858  function at 0x8113858, ~8 bytes, in .text
+
 ↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
 ",
     );

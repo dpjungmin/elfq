@@ -13,7 +13,7 @@ use crate::commands::browse::keys::{self, Action};
 
 /// The words that the notes use besides the HOW column's, with what they
 /// mean.
-const WORDS: [(&str, &str); 5] = [
+const WORDS: [(&str, &str); 7] = [
     (
         "via veneer",
         "through a stub that the linker added; the note names where it ends up",
@@ -25,7 +25,17 @@ const WORDS: [(&str, &str); 5] = [
     ),
     (
         "jump ↓  jump ↑",
-        "a branch to a line further down or up the function; Enter moves there",
+        "a branch to a line further down or up the function, or a case of a table of \
+         jumps; Enter moves there",
+    ),
+    (
+        "address ↓  address ↑",
+        "adr loads the address of a line in this function, such as a table's; Enter \
+         moves there",
+    ),
+    (
+        "= 0x028f5c28",
+        "the constant that a load from a literal pool reads",
     ),
     (
         "in .bss",

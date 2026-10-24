@@ -917,9 +917,10 @@ The overview, `top`, `retained`, `why`, `callers`, `callees` and `reach`
 work on x86-64 and Cortex-M executables, with or without symbols and DWARF,
 and `inlined` works on any file with DWARF that isn't compressed. The
 overview, `callers`, `callees` and `reach` also work on x86-64 shared
-libraries. `browse` prints x86-64 code; in Thumb code, its pages list
-only the lines that use another item, until elfq prints Thumb
-instructions. The pull requests and the git log record how elfq got here.
+libraries. `browse` prints x86-64 code and the Thumb code of Cortex-M
+cores up to Armv7E-M; for Armv8-M cores, its pages list only the lines
+that use another item. The pull requests and the git log record how elfq
+got here.
 
 Ideas for later, not yet planned: output that scripts and AI agents can
 read more easily, a check of what startup code copies into RAM, the retained size of a set of
