@@ -817,6 +817,92 @@ root: entry point · used by 1 · uses 3
 }
 
 #[test]
+fn a_table_of_addresses_lists_the_cases_it_jumps_to() {
+    // _strtod_l's switch on the first character: adr loads the address of
+    // the table, ldr.w pc jumps through it, and each word of the table
+    // holds the Thumb address of a case. The stripped file, which has no
+    // $d symbols, gives the same lines.
+    assert_output(
+        &screen("c-strtod.elf", Some("0x8000082"), (100, 16), &[]),
+        "\
+c-strtod.elf › _strtod_l
+_strtod_l (which holds 0x8000082)  function at 0x8000058, 4084 bytes, in .text
+(0x08000000..0x08005324)
+used by 5 · uses 42 · 1 jump elfq can't follow
+  ADDRESS    INSTRUCTION
+> 0x8000082  adr     r0, 0x8000088         address ↓
+  0x8000084  ldr.w   pc, [r0, r2, lsl #2]  jump through a pointer: elfq can't follow
+  0x8000088  .word   0x0800025b            jump ↓
+  0x800008c  .word   0x08000141            jump ↓
+  0x8000090  .word   0x08000141            jump ↓
+  0x8000094  .word   0x08000141            jump ↓
+  0x8000098  .word   0x08000141            jump ↓
+  0x800009c  .word   0x08000141            jump ↓
+  0x80000a0  .word   0x08000141            jump ↓
+→ 0x8000088, in this function
+↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
+",
+    );
+    assert_output(
+        &screen("c-strtod-stripped.elf", Some("0x8000082"), (100, 16), &[]),
+        "\
+c-strtod-stripped.elf › fn_0x8000058
+fn_0x8000058 (which holds 0x8000082)  function at 0x8000058, ~4124 bytes, in .text
+(0x08000000..0x08005324)
+found by following the code · used by 1 · uses 44 · 1 jump elfq can't follow
+  ADDRESS    INSTRUCTION
+> 0x8000082  adr     r0, 0x8000088         address ↓
+  0x8000084  ldr.w   pc, [r0, r2, lsl #2]  jump through a pointer: elfq can't follow
+  0x8000088  .word   0x0800025b            jump ↓
+  0x800008c  .word   0x08000141            jump ↓
+  0x8000090  .word   0x08000141            jump ↓
+  0x8000094  .word   0x08000141            jump ↓
+  0x8000098  .word   0x08000141            jump ↓
+  0x800009c  .word   0x08000141            jump ↓
+  0x80000a0  .word   0x08000141            jump ↓
+→ 0x8000088, in this function
+↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
+",
+    );
+    // Enter on a word goes to its case, which here comes before the table,
+    // and Esc comes back.
+    let down = vec!["Down"; 11];
+    let word = "> 0x80000ac  .word   0x08000077            jump ↑";
+    assert_eq!(
+        selected_and_status(&screen("c-strtod.elf", Some("0x8000082"), (100, 16), &down)),
+        (word, "→ 0x8000076, in this function")
+    );
+    let case = screen(
+        "c-strtod.elf",
+        Some("0x8000082"),
+        (100, 16),
+        &[&down[..], &["Enter"]].concat(),
+    );
+    assert_eq!(
+        selected_and_status(&case).0,
+        "> 0x8000076  str     r1, [sp, #92]"
+    );
+    let back = [&down[..], &["Enter", "Esc"]].concat();
+    let back = screen("c-strtod.elf", Some("0x8000082"), (100, 16), &back);
+    assert_eq!(selected_and_status(&back).0, word);
+}
+
+#[test]
+fn a_load_from_a_literal_pool_notes_what_it_reads() {
+    // A word, as a float, and a double.
+    let float = screen("c-vfp.elf", Some("0x8000062"), (100, 24), &[]);
+    assert_eq!(
+        selected_and_status(&float).0,
+        "> 0x8000062  vldr    s15, [pc, #20]    = 0x00000000"
+    );
+    let double = screen("c-strtod.elf", Some("0x800025c"), (100, 16), &[]);
+    assert_eq!(
+        selected_and_status(&double).0,
+        "> 0x800025c  vldr    d8, [pc, #496]        = 0x0000000000000000"
+    );
+}
+
+#[test]
 fn thumb_code_of_other_cores_lists_only_the_lines_that_use_another_item() {
     // The sample as if it were built for a Cortex-M33, whose instructions
     // elfq doesn't print.

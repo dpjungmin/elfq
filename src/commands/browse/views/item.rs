@@ -432,6 +432,25 @@ fn no_text(binary: &Binary) -> Option<String> {
     }
 }
 
+/// The lines of `item`'s code, whose bytes are `bytes`, as `arch` prints
+/// them, with the data that the file marks there (see
+/// [`Binary::data_in_code`]); `None` for an instruction set that elfq
+/// doesn't print.
+pub(super) fn listing(binary: &Binary, item: &Item, bytes: &[u8]) -> Option<Vec<arch::Line>> {
+    // The marks, as offsets into `bytes`.
+    let marked: Vec<std::ops::Range<usize>> = binary
+        .data_in_code(item.address, item.size)
+        .map(|(start, end)| (start - item.address) as usize..(end - item.address) as usize)
+        .collect();
+    arch::listing(
+        binary.architecture,
+        binary.endianness,
+        bytes,
+        item.address,
+        &marked,
+    )
+}
+
 /// The lines of item `index`'s code, or why there are none to show.
 fn code(session: &Session, index: usize) -> Result<Code, String> {
     let binary = session.binary;
@@ -452,33 +471,22 @@ fn code(session: &Session, index: usize) -> Result<Code, String> {
         ));
     };
     let notes = Notes::new(session, index);
-    // The bytes that the file marks as data, as offsets into `bytes`.
-    let marked: Vec<std::ops::Range<usize>> = binary
-        .data_in_code(item.address, item.size)
-        .map(|(start, end)| (start - item.address) as usize..(end - item.address) as usize)
+    let why = match no_text(binary) {
+        None => match listing(binary, item, bytes) {
+            Some(listing) => return Ok(Code::Instructions(notes.lines(&listing))),
+            None => "elfq doesn't print this code".to_string(),
+        },
+        Some(why) => why,
+    };
+    let mut sites: Vec<u64> = notes.references.keys().copied().collect();
+    sites.extend(notes.unresolved.keys());
+    sites.sort_unstable();
+    sites.dedup();
+    let lines = sites
+        .into_iter()
+        .map(|site| notes.line(site, None))
         .collect();
-    let listing = arch::listing(
-        binary.architecture,
-        binary.endianness,
-        bytes,
-        item.address,
-        &marked,
-    );
-    match (listing, no_text(binary)) {
-        (Some(listing), None) => Ok(Code::Instructions(notes.lines(&listing))),
-        (_, why) => {
-            let mut sites: Vec<u64> = notes.references.keys().copied().collect();
-            sites.extend(notes.unresolved.keys());
-            sites.sort_unstable();
-            sites.dedup();
-            let lines = sites
-                .into_iter()
-                .map(|site| notes.line(site, None))
-                .collect();
-            let why = why.unwrap_or_else(|| "elfq doesn't print this code".to_string());
-            Ok(Code::Links(lines, why))
-        }
-    }
+    Ok(Code::Links(lines, why))
 }
 
 /// What the graph knows about one function's code, by site, to write the

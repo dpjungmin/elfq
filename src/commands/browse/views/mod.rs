@@ -5,6 +5,8 @@
 mod help;
 mod item;
 mod picker;
+#[cfg(test)]
+mod thumb_text;
 
 use std::ops::Range;
 
