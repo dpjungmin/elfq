@@ -346,33 +346,34 @@ used by 5 · uses 2
 ↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
 ",
     );
-    // An import has no page: its code is in a shared library.
+    // An import without a PLT stub has a page of its own, with what calls
+    // it.
     assert_output(
         &screen("rust-x86_64-nodebug.elf", Some("memcpy"), (80, 24), &[]),
         "\
-rust-x86_64-nodebug.elf › main
-main  function at 0x15220, 46 bytes, in .text
-used by 1 · uses 4
-[1 code]  3 callers
-  ADDRESS  INSTRUCTION
-> 0x15220  push    rax
-  0x15221  mov     rcx, rsi
-  0x15224  movzx   eax, byte ptr [rip-0xade3]  uses __rustc_debug_gdb_scripts_s…
-  0x1522b  movsxd  rdx, edi
-  0x1522e  lea     rax, [rip-0x695]            address taken elfq_sample::main
-  0x15235  mov     [rsp], rax
-  0x15239  lea     rsi, [rip+0x3dab8]          uses .data.rel.ro@0x52cf8
-  0x15240  mov     rdi, rsp
-  0x15243  xor     r8d, r8d
-  0x15246  call    qword ptr [rip+0x3f924]     call lang_start_internal
-  0x1524c  pop     rcx
-  0x1524d  ret
-
-
-
-
-
-memcpy is imported from a shared library: its code isn't in this file
+rust-x86_64-nodebug.elf › memcpy
+memcpy  imported from a shared library: its code isn't in this file
+used by 57
+[3 callers]
+  HOW            AT                  CALLER
+> call           0x4cced             <&[u8] as <alloc::ffi::c_str::CString>::ne…
+  call           0x2ebed             <addr2line::lookup::LoopingLookup<core::re…
+  call           0x2d0a6 and 2 more  <alloc::collections::btree::node::Balancin…
+  call           0x2d458 and 2 more  <alloc::collections::btree::node::Balancin…
+  address taken  0x1c8e6             <alloc::collections::btree::node::Balancin…
+  call           0x1cad9             <alloc::collections::btree::node::Balancin…
+  call           0x430f8             <alloc::collections::btree::node::Handle<a…
+  call           0x434ad             <alloc::collections::btree::node::Handle<a…
+  call           0x43f3b, 0x43f53    <alloc::collections::btree::node::Handle<a…
+  call           0x42fbb             <alloc::collections::btree::node::Handle<a…
+  address taken  0x1d1e1             <alloc::collections::btree::node::Handle<a…
+  call           0x1d3bf             <alloc::collections::btree::node::Handle<a…
+  call           0x4cc56             <alloc::string::String as core::convert::F…
+  call           0x3f93f             <alloc::string::String as core::fmt::Write…
+  call           0x4c87a, 0x4c900    <alloc::string::String>::from_utf8_lossy
+  call           0x3f6db             <alloc::vec::Vec<u8> as std::io::Write>::w…
+→ <&[u8] as <alloc::ffi::c_str::CString>::new::SpecNewImpl>::spec_new_impl  fun…
+$ elfq testdata/bin/rust-x86_64-nodebug.elf callers memcpy --all
 ↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
 ",
     );
@@ -530,7 +531,7 @@ Keys
   ]                    forward again
   Tab Shift-Tab        the next or previous line that uses another item
   1 3                  tabs: 1 code, 3 callers
-  g                    go to a function or data object, by name or address
+  g                    go to a function, data object or import, by name or address
   ?                    this help
   Ctrl-Z               back to the shell; fg returns
   q Ctrl-C             quit
@@ -1645,6 +1646,139 @@ fn the_command_under_the_callers_runs_in_a_shell() {
 }
 
 #[test]
+fn an_import_opens_as_its_stub_or_on_a_page_of_its_own() {
+    // Go to lists imports, and one with a PLT stub as the stub.
+    assert_output(
+        &screen("rust-x86_64-nodebug.elf", None, (80, 24), &["g", "cxa_"]),
+        "\
+rust-x86_64-nodebug.elf › main › go to
+  ADDRESS  SIZE  KIND      SECTION  ITEM
+> 0x51ca0    16  function  .plt     __cxa_finalize@plt
+                 import             __cxa_thread_atexit_impl
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+go to: cxa_▏
+↑↓ move  enter open  esc cancel
+",
+    );
+    let page = screen(
+        "rust-x86_64-nodebug.elf",
+        None,
+        (80, 24),
+        &["g", "memcpy", "Enter"],
+    );
+    assert_eq!(
+        page.lines().take(4).collect::<Vec<_>>(),
+        [
+            "rust-x86_64-nodebug.elf › main › memcpy",
+            "memcpy  imported from a shared library: its code isn't in this file",
+            "used by 57",
+            "[3 callers]",
+        ]
+    );
+    // Its page has no code, and 1 says why.
+    let page = screen("rust-x86_64-nodebug.elf", Some("memcpy"), (80, 24), &["1"]);
+    let (_, status) = selected_and_status(&page);
+    assert_eq!(
+        status,
+        "memcpy is imported from a shared library: its code isn't in this file"
+    );
+    // A call through the global offset table, as code built with -fno-plt
+    // makes, opens the import's page.
+    let page = screen("c-x86_64.elf", Some("_start"), (80, 24), &["Tab", "Tab"]);
+    assert_eq!(
+        selected_and_status(&page),
+        (
+            "> 0x118f   call    qword ptr [rip+0x2e3b]   call __libc_start_main",
+            "→ __libc_start_main  imported from a shared library"
+        )
+    );
+    assert_output(
+        &screen(
+            "c-x86_64.elf",
+            Some("_start"),
+            (80, 24),
+            &["Tab", "Tab", "Enter"],
+        ),
+        "\
+c-x86_64.elf › _start › __libc_start_main
+__libc_start_main  imported from a shared library: its code isn't in this file
+used by 1
+[3 callers]
+  HOW   AT      CALLER
+> call  0x118f  _start
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+→ _start  function at 0x1170, 38 bytes, in .text
+$ elfq testdata/bin/c-x86_64.elf callers __libc_start_main
+↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
+",
+    );
+    // And when the import has a stub, the stub's page, as its name finds
+    // the stub as SYMBOL. On the stub's page, its jump to the import goes
+    // nowhere else.
+    let page = screen(
+        "rust-x86_64-nodebug.elf",
+        Some("__do_global_dtors_aux"),
+        (80, 24),
+        &["Tab", "Tab"],
+    );
+    assert_eq!(
+        selected_and_status(&page),
+        (
+            "> 0x1426e  cmp     qword ptr [rip+0x40892], 0  address taken __cxa_finalize",
+            "→ __cxa_finalize@plt  function at 0x51ca0, 16 bytes, in .plt"
+        )
+    );
+    let page = screen(
+        "rust-x86_64-nodebug.elf",
+        Some("__do_global_dtors_aux"),
+        (80, 24),
+        &["Tab", "Tab", "Enter", "Enter"],
+    );
+    assert!(
+        page.starts_with("rust-x86_64-nodebug.elf › __do_global_dtors_aux › __cxa_finalize@plt\n"),
+        "{page}"
+    );
+    assert_eq!(
+        selected_and_status(&page),
+        (
+            "> 0x51ca0  jmp     qword ptr [rip+0x36d2]  tail call __cxa_finalize",
+            "__cxa_finalize is imported from a shared library: its code isn't in this file"
+        )
+    );
+}
+
+#[test]
 fn the_keys_move_as_the_help_says() {
     let selected = |sample, symbol, script: &[&str]| {
         let page = screen(sample, Some(symbol), (80, 24), script);
@@ -1932,11 +2066,6 @@ go to: mainz▏
 ↑↓ move  enter open  esc cancel
 ",
     );
-    let import = screen("rust-x86_64-nodebug.elf", None, (80, 24), &["g", "memcpy"]);
-    assert_eq!(
-        import.lines().nth(2),
-        Some("memcpy is imported from a shared library: its code isn't in this file"),
-    );
 }
 
 #[test]
@@ -2005,7 +2134,7 @@ rust-x86_64-nodebug.elf › main › go to
   0x37c50   3972  function  .text               <gimli::read::rnglists::RngListIter<gimli::read::en…
   0x15ba0   3964  function  .text               <core::cell::once::OnceCell<core::result::Result<ad…
   0x2b940   3222  function  .text               <std::backtrace_rs::symbolize::gimli::Mapping>::new…
-and 389 more; type more of the name
+and 433 more; type more of the name
 go to: e▏
 ↑↓ move  enter open  esc cancel
 ",

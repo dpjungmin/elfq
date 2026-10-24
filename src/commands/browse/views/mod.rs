@@ -210,7 +210,7 @@ impl Cursor {
     }
 }
 
-/// Says that `node`, an import, has no page: its code is in a shared
+/// Says that `node`, an import, has no code here: its code is in a shared
 /// library.
 pub fn imported(session: &Session, node: Node) -> String {
     format!(

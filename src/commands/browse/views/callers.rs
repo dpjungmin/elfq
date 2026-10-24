@@ -157,11 +157,8 @@ impl Callers {
             // Its code is already at the place where it uses the item.
             Action::Open => {
                 let row = self.rows.get(self.cursor.selected)?;
-                let Node::Item(index) = row.caller else {
-                    return None;
-                };
-                let name = &session.binary.items[index].name;
-                let page = ItemPage::new(session, index, Some(row.site), name);
+                let name = row.caller.name(session.binary);
+                let page = ItemPage::new(session, row.caller, Some(row.site), name);
                 Some(Go::Open(View::Item(Box::new(page.on(Tab::Callers)))))
             }
             _ => None,
@@ -297,8 +294,11 @@ mod tests {
         for path in samples() {
             let binary = Binary::load(&path).unwrap();
             let session = Session::new(&path, &binary).unwrap();
-            for index in 0..binary.items.len() {
-                let node = Node::Item(index);
+            // Every item, and every import that has a page of its own.
+            let items = (0..binary.items.len()).map(Node::Item);
+            let imports = (0..binary.imports.len()).map(Node::Import);
+            let nodes = items.chain(imports.filter(|&node| session.page_node(node) == node));
+            for node in nodes {
                 let tab = Callers::new(&session, node, session.callers(node));
                 let name = path.display();
                 // The command parses as elfq's arguments, after the shell

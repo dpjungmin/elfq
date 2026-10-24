@@ -138,7 +138,7 @@ pub const BINDINGS: &[Binding] = &[
     },
     Binding {
         label: "g",
-        what: "go to a function or data object, by name or address",
+        what: "go to a function, data object or import, by name or address",
         hint: Some(("g go to", 1)),
         keys: &[(KeyCode::Char('g'), NONE, Action::GoTo)],
     },

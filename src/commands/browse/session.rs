@@ -89,6 +89,22 @@ impl<'a> Session<'a> {
         )
     }
 
+    /// The node whose page stands for `node`: for an import, its PLT stub
+    /// when it has one, since the import's name finds the stub as SYMBOL,
+    /// in every command. So code that uses the import through the global
+    /// offset table, as code built with `-fno-plt` calls it, leads to the
+    /// same page as code that calls the stub. An import without a stub
+    /// has a page of its own.
+    pub(super) fn page_node(&self, node: Node) -> Node {
+        match node {
+            Node::Import(index) => match self.names.nodes(&self.binary.imports[index]) {
+                &[found] => found,
+                _ => node,
+            },
+            Node::Item(_) => node,
+        }
+    }
+
     /// The memory block that holds `address`, as an index into `blocks`.
     pub(super) fn block_of(&self, address: u64) -> Option<usize> {
         self.blocks

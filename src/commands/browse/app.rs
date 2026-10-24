@@ -14,8 +14,7 @@ use super::Stop;
 use super::keys::{self, Action};
 use super::session::Session;
 use super::views::{
-    Go, Help, ItemPage, Picker, View, cut, cut_left, draw_lines, first_line, imported, keep_lines,
-    wrap,
+    Go, Help, ItemPage, Picker, View, cut, cut_left, draw_lines, first_line, keep_lines, wrap,
 };
 use crate::binary::hex_number;
 use crate::commands::{found_functions, overview, text};
@@ -48,10 +47,10 @@ impl<'a> App<'a> {
     /// else the entry point, else the largest function. When `symbol`
     /// finds several items or none, that page opens with the go-to box
     /// over it, `symbol` typed in. The file's first warning is on the
-    /// status line, unless something about `symbol` is.
+    /// status line.
     pub fn new(session: Session<'a>, symbol: Option<&str>) -> Result<App<'a>> {
         let warnings = &session.binary.warnings;
-        let mut message = warnings.first().map(|first| match warnings.len() {
+        let message = warnings.first().map(|first| match warnings.len() {
             1 => format!("warning: {first}"),
             more => format!(
                 "warning: {first}; and {} more, printed when you quit",
@@ -62,15 +61,12 @@ impl<'a> App<'a> {
         let mut picker = None;
         if let Some(query) = symbol {
             match session.names.find(query) {
-                Ok(found) => match found.node {
-                    Node::Item(index) => {
-                        // An address selects the line that holds it.
-                        let at = hex_number(query).and_then(Result::ok);
-                        let lead = found.lead_name(session.binary);
-                        first = Some(ItemPage::new(&session, index, at, &lead));
-                    }
-                    Node::Import(_) => message = Some(imported(&session, found.node)),
-                },
+                Ok(found) => {
+                    // An address selects the line that holds it.
+                    let at = hex_number(query).and_then(Result::ok);
+                    let lead = found.lead_name(session.binary);
+                    first = Some(ItemPage::new(&session, found.node, at, &lead));
+                }
                 // The CLI's error goes over the rows.
                 Err(error) => {
                     picker = Some(Picker::noted(&session, query, first_line(&error)));
@@ -157,9 +153,9 @@ impl<'a> App<'a> {
                     // The header names the item as SYMBOL's answer does,
                     // with what holds an address typed, or the other name
                     // that found it.
-                    let name = &session.binary.items[found.index].name;
-                    let lead = found.lead.as_ref().unwrap_or(name);
-                    let page = ItemPage::new(session, found.index, found.at, lead);
+                    let name = found.node.name(session.binary);
+                    let lead = found.lead.as_deref().unwrap_or(name);
+                    let page = ItemPage::new(session, found.node, found.at, lead);
                     self.picker = None;
                     self.message = None;
                     self.open(View::Item(Box::new(page)));
@@ -296,12 +292,8 @@ fn starting_page(session: &Session) -> Result<ItemPage> {
         }
         bail!("elfq found no function with code in the file to start from; give browse a SYMBOL");
     };
-    Ok(ItemPage::new(
-        session,
-        index,
-        None,
-        &binary.items[index].name,
-    ))
+    let name = &binary.items[index].name;
+    Ok(ItemPage::new(session, Node::Item(index), None, name))
 }
 
 #[cfg(test)]
@@ -341,13 +333,15 @@ mod tests {
                 message: None,
                 picker: None,
             };
-            let items = (0..binary.items.len()).filter(|&index| {
-                let name = Node::Item(index).name(&binary);
-                name.chars().count() > 100
-            });
-            for index in items {
-                let name = &binary.items[index].name;
-                let mut page = ItemPage::new(&app.session, index, None, name);
+            let items = (0..binary.items.len()).map(Node::Item);
+            let imports = (0..binary.imports.len()).map(Node::Import);
+            let nodes: Vec<Node> = (items.chain(imports))
+                .filter(|&node| app.session.page_node(node) == node)
+                .filter(|node| node.name(&binary).chars().count() > 100)
+                .collect();
+            for node in nodes {
+                let name = node.name(&binary);
+                let mut page = ItemPage::new(&app.session, node, None, name);
                 page.handle(&app.session, Action::Tab(3));
                 app.history = vec![View::Item(Box::new(page))];
                 for (width, height) in [(80, 24), (60, 16)] {

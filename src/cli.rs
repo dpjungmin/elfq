@@ -395,7 +395,7 @@ A function's page shows its code, one line per instruction, and a line
 that calls, jumps to or uses another item ends with a note that names it,
 in the words of the HOW column. Enter follows the selected line's link to
 that item's page, Esc goes back, and ] goes forward again; g goes to any
-function or data object, and ? lists every key. elfq prints x86-64 code,
+function, data object or import, and ? lists every key. elfq prints x86-64 code,
 and the Thumb code of Cortex-M cores up to Armv7E-M (M0, M0+, M3, M4, M7);
 for other Arm cores, a page lists only the lines that use another item.
 
@@ -403,7 +403,9 @@ for other Arm cores, a page lists only the lines that use another item.
 every row, and under them that command, ready to paste; 1 shows the code
 again. Enter on a row opens the caller's page on its callers too, so that
 Enter after Enter walks up the callers, and its code is already at the
-call. A data object's page opens on its callers.
+call. The pages of data objects and imports open on their callers; an
+import that has a PLT stub opens as the stub's page, since its name finds
+the stub as SYMBOL.
 
 browse needs a terminal, and takes no --json, --tree or --range. For
 scripts, callers and callees print the same links, with --json, and
@@ -557,8 +559,8 @@ pub struct ReachArgs {
 
 #[derive(Debug, Args)]
 pub struct BrowseArgs {
-    /// The function or data object to open first: its name, the end of its
-    /// name, or an address in it
+    /// The function, data object or import to open first: its name, the
+    /// end of its name, or an address in it
     pub symbol: Option<String>,
 }
 

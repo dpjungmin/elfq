@@ -116,18 +116,31 @@ pub struct ItemPage {
 }
 
 impl ItemPage {
-    /// The page of item `index`, with the line that holds `at` selected.
-    /// The header names the item as `lead`, which may say what SYMBOL gave,
-    /// as in "Default_Handler (also named NMI_Handler)". A function's page
-    /// opens on its code, and a data object's on its callers.
-    pub fn new(session: &Session, index: usize, at: Option<u64>, lead: &str) -> ItemPage {
-        let node = Node::Item(index);
-        let title = session.row_name(index);
+    /// The page of `node`, an item or an import, with the line that holds
+    /// `at` selected. The header names it as `lead`, which may say what
+    /// SYMBOL gave, as in "Default_Handler (also named NMI_Handler)". A
+    /// function's page opens on its code, and the page of a data object or
+    /// an import, which have none, on their callers.
+    pub fn new(session: &Session, node: Node, at: Option<u64>, lead: &str) -> ItemPage {
         let answer = session.callers(node);
-        let (place, facts) = header(session, index, distinct_nodes(&answer.rows).len());
-        let code = match session.binary.items[index].kind {
-            ItemKind::Function => Ok(CodeTab::new(session, index, at)),
-            ItemKind::Data => Err(format!("{title} is a data object: it has no code")),
+        let used_by = distinct_nodes(&answer.rows).len();
+        let (title, (place, facts), code) = match node {
+            Node::Item(index) => {
+                let title = session.row_name(index);
+                let code = match session.binary.items[index].kind {
+                    ItemKind::Function => Ok(CodeTab::new(session, index, at)),
+                    ItemKind::Data => Err(format!("{title} is a data object: it has no code")),
+                };
+                (title, header(session, index, used_by), code)
+            }
+            Node::Import(_) => {
+                let header = (
+                    "imported from a shared library: its code isn't in this file".to_string(),
+                    used_by_text(used_by),
+                );
+                let title = node.name(session.binary).to_string();
+                (title, header, Err(imported(session, node)))
+            }
         };
         ItemPage {
             title,
@@ -263,6 +276,8 @@ impl ItemPage {
 
 /// Tab 1: a function's code.
 struct CodeTab {
+    /// The function, by its index.
+    index: usize,
     code: Rc<PageCode>,
     cursor: Cursor,
     /// The rows the cursor was on before each jump inside the function,
@@ -291,6 +306,7 @@ impl CodeTab {
     fn new(session: &Session, index: usize, at: Option<u64>) -> CodeTab {
         let code = session.page_code(index);
         let mut tab = CodeTab {
+            index,
             cursor: Cursor::new(code.lines.len()),
             code,
             jumps: Vec::new(),
@@ -401,16 +417,19 @@ impl CodeTab {
                 None
             }
             Action::Open => match self.code.lines.get(selected)?.link? {
-                Link::Node {
-                    node: Node::Item(index),
-                    at,
-                    ..
-                } => {
-                    let name = &session.binary.items[index].name;
-                    let page = ItemPage::new(session, index, Some(at), name);
+                Link::Node { node, at, .. } => {
+                    // An import's page is its PLT stub's, when it has one,
+                    // and on the stub's own page, the jump to the import
+                    // has nowhere else to go.
+                    let opened = session.page_node(node);
+                    if self.is_own_import(node, opened) {
+                        return Some(Go::Say(imported(session, node)));
+                    }
+                    let at = (opened == node).then_some(at);
+                    let name = opened.name(session.binary);
+                    let page = ItemPage::new(session, opened, at, name);
                     Some(Go::Open(View::Item(Box::new(page))))
                 }
-                Link::Node { node, .. } => Some(Go::Say(imported(session, node))),
                 // A jump inside the function moves the cursor, and Back
                 // brings it back.
                 Link::Here(address) => {
@@ -441,27 +460,31 @@ impl CodeTab {
         let binary = session.binary;
         let link = self.code.lines.get(self.cursor.selected)?.link?;
         Some(match link {
-            Link::Node {
-                node: Node::Item(index),
-                via,
-                ..
-            } => {
-                let through = match via {
-                    Some(veneer) => format!(", through {}", binary.items[veneer].name),
-                    None => String::new(),
-                };
-                let item = &binary.items[index];
-                format!(
-                    "→ {}  {}{through}",
-                    item.name,
-                    whereabouts(item, &binary.sections[item.section].name)
-                )
-            }
-            Link::Node { node, .. } => {
-                format!("→ {}  imported from a shared library", node.name(binary))
-            }
+            // What Enter opens, which for an import is its PLT stub when it
+            // has one, unless that is this function.
+            Link::Node { node, via, .. } => match session.page_node(node) {
+                Node::Item(index) if !self.is_own_import(node, Node::Item(index)) => {
+                    let through = match via {
+                        Some(veneer) => format!(", through {}", binary.items[veneer].name),
+                        None => String::new(),
+                    };
+                    let item = &binary.items[index];
+                    format!(
+                        "→ {}  {}{through}",
+                        item.name,
+                        whereabouts(item, &binary.sections[item.section].name)
+                    )
+                }
+                _ => format!("→ {}  imported from a shared library", node.name(binary)),
+            },
             Link::Here(address) => format!("→ {address:#x}, in this function"),
         })
+    }
+
+    /// Whether `node` is the import that this function, its PLT stub,
+    /// jumps to, given `page`, the node of the page that stands for it.
+    fn is_own_import(&self, node: Node, page: Node) -> bool {
+        matches!(node, Node::Import(_)) && page == Node::Item(self.index)
     }
 
     /// Whether some line links to another item.
@@ -1020,8 +1043,41 @@ mod tests {
     }
 
     #[test]
+    fn the_status_line_names_what_enter_opens() {
+        // Lines that link to the function they are in, as a recursive
+        // call does, and to an import through its own PLT stub.
+        let (mut to_itself, mut to_own_import) = (0, 0);
+        every_function(|session, index, _| {
+            let binary = session.binary;
+            let mut tab = CodeTab::new(session, index, None);
+            for row in 0..tab.code.lines.len() {
+                let Some(Link::Node { node, via, .. }) = tab.code.lines[row].link else {
+                    continue;
+                };
+                tab.cursor.select(row);
+                let preview = tab.preview(session).unwrap();
+                let opened = session.page_node(node);
+                let name = match opened {
+                    _ if tab.is_own_import(node, opened) => {
+                        to_own_import += 1;
+                        format!("{}  imported", node.name(binary))
+                    }
+                    Node::Item(index) => format!("{}  ", binary.items[index].name),
+                    Node::Import(_) => format!("{}  imported", node.name(binary)),
+                };
+                to_itself += usize::from(node == Node::Item(index) && via.is_none());
+                assert!(preview.starts_with(&format!("→ {name}")), "{preview}");
+            }
+        });
+        assert!(
+            to_itself > 50 && to_own_import > 30,
+            "{to_itself} {to_own_import}"
+        );
+    }
+
+    #[test]
     fn every_link_names_what_it_opens() {
-        let mut links = 0;
+        let (mut links, mut imports) = (0, 0);
         every_function(|session, _, code| {
             for line in lines(code) {
                 let shown = format!("{} {}", line.instruction, line.note);
@@ -1044,6 +1100,11 @@ mod tests {
                     Some(Link::Node { node, .. }) => {
                         let name = node.name(session.binary);
                         assert!(shown.contains(name), "{shown:?} doesn't name {name}");
+                        // An import opens what its name finds as SYMBOL:
+                        // its PLT stub, when it has one.
+                        let found = session.names.find(name).unwrap().node;
+                        assert_eq!(session.page_node(node), found, "{name}");
+                        imports += 1;
                     }
                     Some(Link::Here(address)) => {
                         assert!(lines(code).iter().any(|line| line.address == address));
@@ -1052,6 +1113,6 @@ mod tests {
                 }
             }
         });
-        assert!(links > 5000, "{links}");
+        assert!(links > 5000 && imports > 100, "{links} {imports}");
     }
 }

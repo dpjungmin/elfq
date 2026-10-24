@@ -1,8 +1,9 @@
-//! The go-to box: the functions and data objects whose names have what the
-//! user types, listed as they type. First the item that holds a typed
-//! address, then what the text finds as SYMBOL (a name, or the end of
-//! one), then every other item with a name that has the text, ignoring
-//! case, largest first.
+//! The go-to box: the functions, data objects and imports whose names
+//! have what the user types, listed as they type. First the item that
+//! holds a typed address, then what the text finds as SYMBOL (a name, or
+//! the end of one), then every other item or import with a name that has
+//! the text, ignoring case, largest first. An import that has a PLT stub
+//! is listed as the stub, whose page is the import's.
 //!
 //! It isn't a page: it opens over the page on the screen, and Esc closes
 //! it, so that what is typed into it can't open pages by itself.
@@ -16,7 +17,7 @@ use ratatui::style::{Style, Stylize};
 use ratatui::text::{Line, Text};
 use ratatui::widgets::{HighlightSpacing, Row, Table};
 
-use super::{Cursor, cut, imported, wrap};
+use super::{Cursor, cut, wrap};
 use crate::binary::{ItemKind, hex_number};
 use crate::commands::browse::{keys::Action, session::Session};
 use crate::commands::symbol::Needle;
@@ -30,8 +31,8 @@ const NOTE_LINES: usize = 3;
 
 /// One row of the box.
 pub struct Found {
-    /// The item, by its index.
-    pub index: usize,
+    /// The item or import.
+    pub node: Node,
     /// The address typed, when the item holds it.
     pub at: Option<u64>,
     /// For the item that the text finds as SYMBOL, its name as the CLI's
@@ -93,8 +94,8 @@ impl Picker {
         self.changed = true;
     }
 
-    /// Lists the items for the text typed, if it has changed since they
-    /// were listed.
+    /// Lists the items and imports for the text typed, if it has changed
+    /// since they were listed.
     fn catch_up(&mut self, session: &Session) {
         if self.changed {
             self.changed = false;
@@ -102,12 +103,12 @@ impl Picker {
         }
     }
 
-    /// Lists the items for the text typed.
+    /// Lists the items and imports for the text typed.
     fn find(&mut self, session: &Session) {
         let binary = session.binary;
         let text = self.text.trim();
-        let mut found: Vec<usize> = Vec::new();
-        let mut listed: HashSet<usize> = HashSet::new();
+        let mut found: Vec<Node> = Vec::new();
+        let mut listed: HashSet<Node> = HashSet::new();
         let mut at = None;
         self.more = 0;
         self.nothing = None;
@@ -115,29 +116,31 @@ impl Picker {
             if let Some(Ok(address)) = hex_number(text)
                 && let Some(index) = binary.item_at(address)
             {
-                found.push(index);
-                listed.insert(index);
-                at = Some((index, address));
+                found.push(Node::Item(index));
+                listed.insert(Node::Item(index));
+                at = Some((Node::Item(index), address));
             }
-            // Imports have no page yet.
             for &node in session.names.nodes(text) {
-                if let Node::Item(index) = node
-                    && listed.insert(index)
-                {
-                    found.push(index);
+                if listed.insert(node) {
+                    found.push(node);
                 }
             }
+            // Imports with a stub are there as the stub.
             let lower = text.to_lowercase();
             let needle = Needle::new(&lower);
-            let mut others: Vec<usize> = (0..binary.items.len())
-                .filter(|index| !listed.contains(index))
-                .filter(|&index| session.names.name_has(index, &needle))
+            let items = (0..binary.items.len()).map(Node::Item);
+            let imports = (0..binary.imports.len()).map(Node::Import);
+            let mut others: Vec<Node> = items
+                .chain(imports)
+                .filter(|node| !listed.contains(node))
+                .filter(|&node| session.names.name_has(node, &needle))
+                .filter(|&node| session.page_node(node) == node)
                 .collect();
             self.more = (found.len() + others.len()).saturating_sub(MOST);
-            // Largest first, and of the same size, first in the file. Only
-            // the rows listed are sorted, which saves time when the text
-            // is in most names.
-            let order = |&index: &usize| (Reverse(binary.items[index].size), index);
+            // Largest first, and of the same size, first in the file, then
+            // the imports. Only the rows listed are sorted, which saves time
+            // when the text is in most names.
+            let order = |&node: &Node| (Reverse(node.size(binary)), node);
             let room = MOST.saturating_sub(found.len());
             if others.len() > room {
                 if room > 0 {
@@ -153,32 +156,24 @@ impl Picker {
         let symbol = (!text.is_empty())
             .then(|| session.names.find_one(text))
             .flatten();
-        let lead = symbol.as_ref().and_then(|symbol| match symbol.node {
-            Node::Item(index) => Some((index, symbol.lead_name(binary))),
-            Node::Import(_) => None,
-        });
+        let lead = symbol.map(|symbol| (symbol.node, symbol.lead_name(binary)));
         // When nothing is found, the CLI's error says why. Working that
         // out takes a while in a large file, so it is done only then.
         if found.is_empty() && !text.is_empty() {
-            self.nothing = match symbol {
-                Some(symbol) => {
-                    matches!(symbol.node, Node::Import(_)).then(|| imported(session, symbol.node))
-                }
-                None => session
-                    .names
-                    .find(text)
-                    .err()
-                    .map(|error| first_line(&error)),
-            };
+            self.nothing = session
+                .names
+                .find(text)
+                .err()
+                .map(|error| first_line(&error));
         }
         self.found = found
             .into_iter()
-            .map(|index| Found {
-                index,
-                at: at.filter(|&(held, _)| held == index).map(|(_, at)| at),
+            .map(|node| Found {
+                node,
+                at: at.filter(|&(held, _)| held == node).map(|(_, at)| at),
                 lead: lead
                     .as_ref()
-                    .filter(|&&(named, _)| named == index)
+                    .filter(|&&(named, _)| named == node)
                     .map(|(_, lead)| lead.clone()),
             })
             .collect();
@@ -223,7 +218,16 @@ impl Picker {
             .found
             .iter()
             .map(|found| {
-                let item = &binary.items[found.index];
+                let name = found
+                    .lead
+                    .clone()
+                    .unwrap_or_else(|| found.node.name(binary).to_string());
+                let Node::Item(index) = found.node else {
+                    // An import has no address, size or section here.
+                    let blank = String::new;
+                    return [blank(), blank(), "import".to_string(), blank(), name];
+                };
+                let item = &binary.items[index];
                 let kind = match item.kind {
                     ItemKind::Function => "function",
                     ItemKind::Data => "data",
@@ -233,7 +237,7 @@ impl Picker {
                     text::size_text(item),
                     kind.to_string(),
                     binary.sections[item.section].name.clone(),
-                    found.lead.clone().unwrap_or_else(|| item.name.clone()),
+                    name,
                 ]
             })
             .collect();
