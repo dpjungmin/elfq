@@ -10,7 +10,8 @@
 //! counter. The scanner reports the address each such load reads, and marks
 //! the constant as data, so that it doesn't decode it as an instruction when
 //! it gets there. It does the same for the jump tables of `tbb` and `tbh`,
-//! and reports a jump to each of their targets.
+//! and reports a jump to each of their targets, and for the tables of
+//! addresses that `ldr.w pc` jumps through.
 //!
 //! This sweep reads each instruction on its own. Then the `values` module
 //! follows the addresses that code puts in registers, using what `decode`
@@ -481,9 +482,10 @@ struct Scanner<'a> {
     /// For each register, the value of its last `movw`, which a `movt`
     /// completes into a 32-bit address.
     low_halves: [Option<u32>; 16],
-    /// The last two instructions decoded, as (offset, first halfword,
-    /// second halfword or 0), which can say how long a jump table is.
-    previous: [Option<(usize, u16, u16)>; 2],
+    /// The last three instructions decoded, the last one last, as
+    /// (offset, first halfword, second halfword or 0), which can say how
+    /// long a jump table is.
+    previous: [Option<(usize, u16, u16)>; 3],
     /// The instructions decoded so far, when they are kept, for following
     /// the registers through them.
     instructions: Option<Vec<Instruction>>,
@@ -498,7 +500,7 @@ impl<'a> Scanner<'a> {
             references: Vec::new(),
             data: BTreeMap::new(),
             low_halves: [None; 16],
-            previous: [None; 2],
+            previous: [None; 3],
             instructions: None,
         }
     }
@@ -512,7 +514,11 @@ impl<'a> Scanner<'a> {
         } else {
             (self.narrow(offset, first), 2, 0)
         };
-        self.previous = [self.previous[1], Some((offset, first, second))];
+        self.previous = [
+            self.previous[1],
+            self.previous[2],
+            Some((offset, first, second)),
+        ];
         if let Some(instructions) = &mut self.instructions {
             instructions.push(Instruction {
                 offset,
@@ -644,6 +650,7 @@ impl<'a> Scanner<'a> {
         // ldr pc, [register, ...]: a jump through memory, or a return when
         // it pops the stack.
         if (first & 0xfff0 == 0xf8d0 || first & 0xfff0 == 0xf850) && rt == PC {
+            self.address_table(offset, first, second);
             return (first & 0xf != SP).then_some(IndirectJump);
         }
         // tbb [pc, register] and tbh [pc, register, lsl #1]: a jump table,
@@ -656,15 +663,107 @@ impl<'a> Scanner<'a> {
         None
     }
 
+    /// Marks the table of addresses that `ldr.w pc, [rX, rY, lsl #2]` at
+    /// `offset` jumps through as data, when the instruction just before it
+    /// is `adr rX, table`. GCC builds a switch this way where `tbb` and `tbh`
+    /// can't reach its cases:
+    ///
+    /// ```text
+    /// adr   r0, table
+    /// ldr.w pc, [r0, r2, lsl #2]
+    /// table: .word case0 + 1, .word case1 + 1, ...
+    /// ```
+    ///
+    /// GCC puts `cmp rY, #n` and `bhi` before the `adr`, which say that the
+    /// table has n + 1 words. The table runs on while its words are the
+    /// Thumb addresses (odd) of code in this function, up to that many, or
+    /// without the `cmp`, up to the first case after it. No jump to the
+    /// cases is reported: the code there keeps what reading each
+    /// instruction on its own finds, as before.
+    fn address_table(&mut self, offset: usize, first: u16, second: u16) {
+        // The register form, with lsl #2.
+        if first & 0xfff0 != 0xf850 || second & 0x0fc0 != 0 || (second >> 4) & 3 != 2 {
+            return;
+        }
+        let base = first & 0xf;
+        let [cmp, bhi, Some((adr, adr_first, adr_second))] = self.previous else {
+            return;
+        };
+        let pc = self.pc(adr);
+        // adr and adr.w, forward, into the base register, right before.
+        let (table, size) = if adr_first & 0xf800 == 0xa000 && (adr_first >> 8) & 7 == base {
+            (align(pc) + u64::from(adr_first & 0xff) * 4, 2)
+        } else if adr_first & 0xfbff == 0xf20f
+            && adr_second & 0x8000 == 0
+            && (adr_second >> 8) & 0xf == base
+        {
+            let imm12 = u32::from((adr_first >> 10) & 1) << 11
+                | u32::from((adr_second >> 12) & 7) << 8
+                | u32::from(adr_second & 0xff);
+            (align(pc) + u64::from(imm12), 4)
+        } else {
+            return;
+        };
+        let Some(start) = table.checked_sub(self.address) else {
+            return;
+        };
+        let Ok(start) = usize::try_from(start) else {
+            return;
+        };
+        if adr + size != offset || start < offset + 4 {
+            return;
+        }
+        let function_end = self.address + self.code.len() as u64;
+        // Where the table ends: after its n + 1 words, or else where the
+        // first case after it starts, as far as the words read so far say.
+        let mut first_case = match Self::entries(cmp, bhi, adr, second & 0xf) {
+            Some(entries) => start + entries * 4,
+            None => self.code.len(),
+        };
+        let mut at = start;
+        while at + 4 <= first_case {
+            let Some(word) = self.code.get(at..at + 4).and_then(|b| b.try_into().ok()) else {
+                break;
+            };
+            let word = u64::from(self.endianness.read_u32(word));
+            let case = word & !1;
+            if word & 1 == 0 || case < self.address || case >= function_end {
+                break;
+            }
+            // Cases can come before the table, but not inside it.
+            let case = (case - self.address) as usize;
+            if (start..at + 4).contains(&case) {
+                break;
+            }
+            if case > at {
+                first_case = first_case.min(case);
+            }
+            at += 4;
+        }
+        if at > start {
+            let end = self.data.entry(start).or_insert(at);
+            *end = (*end).max(at);
+        }
+    }
+
     /// How many entries the jump table of a `tbb` or `tbh` on `register`
     /// at `offset` has, when the two instructions before it say so: `cmp
     /// register, #n` and then `bhi`, which leaves n + 1.
     fn table_entries(&self, offset: usize, register: u16) -> Option<usize> {
-        let [
-            Some((cmp, first, second)),
-            Some((bhi, branch, branch_second)),
-        ] = self.previous
-        else {
+        let [_, cmp, bhi] = self.previous;
+        Self::entries(cmp, bhi, offset, register)
+    }
+
+    /// How many entries a table on `register` has when the instructions
+    /// `cmp` and `bhi`, which end right before `next`, are `cmp register,
+    /// #n` and `bhi`: n + 1.
+    fn entries(
+        cmp: Option<(usize, u16, u16)>,
+        bhi: Option<(usize, u16, u16)>,
+        next: usize,
+        register: u16,
+    ) -> Option<usize> {
+        let (Some((cmp, first, second)), Some((bhi, branch, branch_second))) = (cmp, bhi) else {
             return None;
         };
         let bhi_size = if branch & 0xff00 == 0xd800 {
@@ -682,7 +781,7 @@ impl<'a> Scanner<'a> {
         } else {
             return None;
         };
-        (cmp + cmp_size == bhi && bhi + bhi_size == offset && cmp_register == register)
+        (cmp + cmp_size == bhi && bhi + bhi_size == next && cmp_register == register)
             .then_some(usize::from(n) + 1)
     }
 
@@ -1076,6 +1175,80 @@ mod tests {
         assert_eq!(
             kinds(&code, 0),
             [(2, Jump(0xa)), (4, Jump(0xe)), (4, Jump(0x10))]
+        );
+    }
+
+    #[test]
+    fn tables_of_addresses_are_skipped() {
+        // adr r0, 0xe008; ldr.w pc, [r0, r2, lsl #2]; nop; then a table of
+        // three cases, as GCC makes for a switch, and the cases, bx lr. The
+        // last word, 0xe019, would otherwise decode as b.n 0xe046.
+        let code = [
+            0x01, 0xa0, 0x50, 0xf8, 0x22, 0xf0, 0x00, 0xbf, 0x15, 0xe0, 0x00, 0x00, 0x17, 0xe0,
+            0x00, 0x00, 0x19, 0xe0, 0x00, 0x00, 0x70, 0x47, 0x70, 0x47, 0x70, 0x47,
+        ];
+        assert_eq!(
+            kinds(&code, 0xe000),
+            [(0xe000, Address(0xe008)), (0xe002, IndirectJump)]
+        );
+        // The same with adr into another register than the load's: the
+        // words are instructions.
+        let mut other = code;
+        other[1] = 0xa1;
+        assert!(kinds(&other, 0xe000).contains(&(0xe010, Jump(0xe046))));
+    }
+
+    #[test]
+    fn a_table_of_addresses_ends_before_its_first_case_after_it() {
+        // adr r0, 0xe008; ldr.w pc, [r0, r2, lsl #2]; nop; a table of two
+        // words that both hold 0xe011, then that case at 0xe010: b.n 0xe03e,
+        // whose first word, 0x0000e015, is also the Thumb address of code
+        // in the function. Then bx lr up to 0xe040.
+        let mut code = vec![
+            0x01, 0xa0, 0x50, 0xf8, 0x22, 0xf0, 0x00, 0xbf, 0x11, 0xe0, 0x00, 0x00, 0x11, 0xe0,
+            0x00, 0x00, 0x15, 0xe0, 0x00, 0x00,
+        ];
+        while code.len() < 0x40 {
+            code.extend_from_slice(&[0x70, 0x47]);
+        }
+        assert_eq!(
+            kinds(&code, 0xe000),
+            [
+                (0xe000, Address(0xe008)),
+                (0xe002, IndirectJump),
+                (0xe010, Jump(0xe03e))
+            ]
+        );
+    }
+
+    #[test]
+    fn a_table_of_addresses_has_as_many_words_as_its_cmp_says() {
+        // Code in RAM: a switch on r2 whose two cases, at 0x20004800 and
+        // 0x20004802, come before its table, and after the table, code that
+        // is no case: ldr r1, [pc, #260]; movs r0, #0; bx r1. Its first
+        // word, 0x20004941, is also the Thumb address of code in the
+        // function, but cmp r2, #1 says that the table has two words.
+        let mut code = vec![
+            0x01, 0x20, 0x70, 0x47, // movs r0, #1; bx lr
+            0x01, 0x2a, 0xfc, 0xd8, // cmp r2, #1; bhi 0x20004802
+            0x01, 0xa0, // adr r0, 0x20004810
+            0x50, 0xf8, 0x22, 0xf0, 0x00, 0xbf, // ldr.w pc, [r0, r2, lsl #2]; nop
+            0x01, 0x48, 0x00, 0x20, 0x03, 0x48, 0x00, 0x20, // the table
+            0x41, 0x49, 0x00, 0x20, 0x08, 0x47, // ldr r1, [pc, #260]; movs r0, #0; bx r1
+        ];
+        while code.len() < 0x120 {
+            code.extend_from_slice(&[0x00, 0xbf]);
+        }
+        // The word that the ldr reads, then bx lr up to 0x20004950.
+        code.extend_from_slice(&[0x01, 0x01, 0x00, 0x08]);
+        while code.len() < 0x150 {
+            code.extend_from_slice(&[0x70, 0x47]);
+        }
+        let found = kinds(&code, 0x2000_4800);
+        assert!(found.contains(&(0x2000_480a, IndirectJump)), "{found:x?}");
+        assert!(
+            found.contains(&(0x2000_4818, Address(0x0800_0101))),
+            "{found:x?}"
         );
     }
 
