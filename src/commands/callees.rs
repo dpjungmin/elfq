@@ -8,10 +8,10 @@ use serde::Serialize;
 
 use super::ranges::{self, Direction, RangeCheck};
 use super::symbol::{self, Subject};
-use super::{Kept, Outcome, json, text};
+use super::{Kept, Outcome, Row, json, text};
 use crate::binary::{AddressRange, Binary};
 use crate::cli::Format;
-use crate::graph::{Graph, Node, Reference, Unresolved};
+use crate::graph::{Graph, Node, Unresolved};
 
 #[derive(Serialize)]
 struct Callees<'a> {
@@ -83,7 +83,7 @@ pub fn run(
 /// answer's first line gives it (see [`Symbol::lead_name`]).
 ///
 /// [`Symbol::lead_name`]: symbol::Symbol::lead_name
-fn callees(
+pub(super) fn callees(
     binary: &Binary,
     graph: &Graph,
     index: usize,
@@ -93,17 +93,18 @@ fn callees(
     out: &mut dyn Write,
 ) -> Result<()> {
     let node = Node::Item(index);
-
-    // The text and JSON word some uses differently ("uses" for both
-    // "access" and "address taken" on data), so each gets its own rows.
-    let rows = |how: &dyn Fn(&Reference) -> &'static str| {
-        super::rows(graph.references_from(index), |reference| reference.to, how)
-    };
-    let unresolved = graph.unresolved_in(index);
     if format == Format::Json {
+        // The JSON words some uses differently from the text ("uses" for
+        // both "access" and "address taken" on data).
+        let rows = super::rows(
+            graph.references_from(index),
+            |reference| reference.to,
+            |reference| json::how_field(reference.kind),
+        );
+        let unresolved = graph.unresolved_in(index);
         let callees = Callees {
             symbol: json::Symbol::new(binary, node),
-            callees: json::uses(binary, &rows(&|reference| json::how_field(reference.kind))),
+            callees: json::uses(binary, &rows),
             unresolved: unresolved
                 .iter()
                 .map(|u| UnresolvedJson {
@@ -116,28 +117,55 @@ fn callees(
         };
         return json::write(&callees, out);
     }
-    let rows = rows(&|reference| text::how_column(binary, reference.to, reference.kind));
-    if rows.is_empty() && unresolved.is_empty() {
-        writeln!(out, "{name} doesn't call or use anything.")?;
-        return Ok(());
-    }
-
-    let listed = !rows.is_empty();
-    if listed {
-        let callees = super::distinct_nodes(&rows);
+    let answer = answer(binary, graph, index, name, all);
+    if !answer.rows.is_empty() {
+        let callees = super::distinct_nodes(&answer.rows);
         writeln!(out, "{name} uses {}:", text::count_text(binary, &callees))?;
         writeln!(out)?;
-        super::write_uses_table(binary, rows, "CALLEE", text::shown(all), out)?;
-    }
-    if !unresolved.is_empty() {
-        if listed {
+        super::write_uses_table(binary, answer.rows, "CALLEE", text::shown(all), out)?;
+        if !answer.notes.is_empty() {
             writeln!(out)?;
         }
-        for line in unresolved_lines(name, unresolved, listed, all) {
-            writeln!(out, "{line}")?;
-        }
+    }
+    for line in answer.notes {
+        writeln!(out, "{line}")?;
     }
     Ok(())
+}
+
+/// What `callees SYMBOL` lists about an item, as its text says it, but for
+/// its first line.
+pub(super) struct Answer {
+    /// Each callee's uses, with HOW in the text's words, every one.
+    pub rows: Vec<Row>,
+    /// What the text says under the table, or in its place when there are
+    /// no rows: the calls and jumps that elfq can't follow, or that the
+    /// item calls or uses nothing.
+    pub notes: Vec<String>,
+}
+
+/// What the item at `index`, `name` as the answer's first line gives it,
+/// calls or uses, as the text of `callees SYMBOL` lists it, with the first
+/// few sites of what elfq can't follow, or with `all`, every one.
+pub(super) fn answer(
+    binary: &Binary,
+    graph: &Graph,
+    index: usize,
+    name: &str,
+    all: bool,
+) -> Answer {
+    let rows = super::rows(
+        graph.references_from(index),
+        |reference| reference.to,
+        |reference| text::how_column(binary, reference.to, reference.kind),
+    );
+    let unresolved = graph.unresolved_in(index);
+    let notes = if rows.is_empty() && unresolved.is_empty() {
+        vec![format!("{name} doesn't call or use anything.")]
+    } else {
+        unresolved_lines(name, unresolved, !rows.is_empty(), all)
+    };
+    Answer { rows, notes }
 }
 
 /// Sentences about the calls and jumps in `name` that elfq can't follow,
