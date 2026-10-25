@@ -136,7 +136,15 @@ pub fn run(
     format: Format,
     out: &mut dyn Write,
 ) -> Result<Outcome> {
-    let reach = Kept::new(Reach::find(binary, symbol, to, all)?);
+    super::check_code_is_readable(binary)?;
+    let names = Kept::new(Names::new(binary));
+    let symbol = names.find(symbol)?;
+    let index = super::readable_item(binary, symbol.node)?;
+    let lead_name = symbol.lead_name(binary);
+    let graph = Kept::new(Graph::build(binary));
+    let reach = Kept::new(Reach::find(
+        binary, &graph, &names, index, lead_name, to, all,
+    )?);
     match format {
         Format::Json => reach.write_json(out)?,
         Format::Text => reach.write_text(false, out)?,
@@ -146,10 +154,11 @@ pub fn run(
 }
 
 /// What SYMBOL reaches.
-struct Reach<'a> {
+struct Reach<'n, 'a> {
     binary: &'a Binary,
-    graph: Graph,
-    names: Names<'a>,
+    graph: &'n Graph,
+    /// The names that find each item, for the short names of the rows.
+    names: &'n Names<'a>,
     /// SYMBOL's item, as an index into [`Binary::items`].
     index: usize,
     /// SYMBOL's name as the answer's first line gives it (see
@@ -218,24 +227,32 @@ struct Use {
     veneer: Option<usize>,
 }
 
-impl<'a> Reach<'a> {
-    /// Finds SYMBOL's item and everything it reaches, keeping only the calls
-    /// and jumps that elfq can't follow that may go to `to`, the ranges of
-    /// `--to`, if there are any.
-    fn find(binary: &'a Binary, symbol: &str, to: &[AddressRange], all: bool) -> Result<Reach<'a>> {
-        super::check_code_is_readable(binary)?;
-        let names = Kept::new(Names::new(binary));
-        let symbol = names.find(symbol)?;
-        let index = super::readable_item(binary, symbol.node)?;
-        let lead_name = symbol.lead_name(binary);
-        let graph = Kept::new(Graph::build(binary));
-        let code_outside = ranges::code_outside(&graph);
+impl<'n, 'a> Reach<'n, 'a> {
+    /// Finds everything that SYMBOL, the item at `index`, reaches in
+    /// `graph`, the file's reference graph, keeping only the calls and
+    /// jumps that elfq can't follow that may go to `to`, the ranges of
+    /// `--to`, if there are any. `lead_name` is SYMBOL's name as the
+    /// answer's first line gives it. SYMBOL must be an item whose code elfq
+    /// can read (see [`readable_item`]): of a function whose end elfq
+    /// doesn't know, the answer would be that it reaches nothing.
+    ///
+    /// [`readable_item`]: super::readable_item
+    fn find(
+        binary: &'a Binary,
+        graph: &'n Graph,
+        names: &'n Names<'a>,
+        index: usize,
+        lead_name: String,
+        to: &[AddressRange],
+        all: bool,
+    ) -> Result<Reach<'n, 'a>> {
+        let code_outside = ranges::code_outside(graph);
         for &range in to {
             ranges::check_to_range(binary, range, &code_outside)?;
         }
         let start = Node::Item(index);
-        let paths = ShortestPaths::from(binary, &graph, start);
-        let veneers = Veneers::new(binary, &graph);
+        let paths = ShortestPaths::from(binary, graph, start);
+        let veneers = Veneers::new(binary, graph);
         let blocks = memory_blocks(&binary.sections);
         let to_itself: Vec<&Reference> = graph
             .references_from(index)
@@ -311,7 +328,7 @@ impl<'a> Reach<'a> {
                 next.extend(nodes.iter().rev().map(|&child| (child, Some(step))));
             }
         }
-        let called = called(&graph, &steps);
+        let called = called(graph, &steps);
         for step in &mut steps[1..] {
             step.through_pointer = match step.node {
                 Node::Item(index) => {
@@ -342,7 +359,7 @@ impl<'a> Reach<'a> {
         }
         let plt_header = is_plt_header(start);
         if !to.is_empty() {
-            let through_pointer = !Boundary::new(binary, &graph, to)
+            let through_pointer = !Boundary::new(binary, graph, to)
                 .callable_through_pointer()
                 .is_empty();
             let may_go_to = |jump: &Unresolved| ranges::may_go_to(jump, to, through_pointer);
@@ -351,8 +368,8 @@ impl<'a> Reach<'a> {
         }
         Ok(Reach {
             binary,
-            graph: graph.into_inner(),
-            names: names.into_inner(),
+            graph,
+            names,
             index,
             lead_name,
             self_use,
@@ -1059,7 +1076,7 @@ impl<'a> Reach<'a> {
 /// to the items in its ranges, and to the calls and jumps that may go
 /// there, through pointers too.
 struct Tree<'r, 'a> {
-    reach: &'r Reach<'a>,
+    reach: &'r Reach<'r, 'a>,
     /// The steps under each step, in the order that it first uses them.
     children: Vec<Vec<usize>>,
     /// The calls and jumps that elfq can't follow in each step that get
@@ -1071,7 +1088,7 @@ struct Tree<'r, 'a> {
 }
 
 impl<'r, 'a> Tree<'r, 'a> {
-    fn new(reach: &'r Reach<'a>) -> Tree<'r, 'a> {
+    fn new(reach: &'r Reach<'r, 'a>) -> Tree<'r, 'a> {
         let steps = &reach.steps;
         let mut children = vec![Vec::new(); steps.len()];
         for (step, row) in steps.iter().enumerate().skip(1) {
