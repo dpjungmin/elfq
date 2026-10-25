@@ -1129,6 +1129,86 @@ fn reach_to_has_the_chains_to_what_is_in_its_ranges() {
 }
 
 #[test]
+fn reach_without_symbol_has_each_start() {
+    // Each start is a line, with its bytes in each block apart, and every
+    // exception that it handles.
+    let output = elfq(&[TCM_SAMPLE, "reach", "--json"]);
+    let text = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 6, "{text}");
+    assert_eq!(lines[0], r#"{"starts":["#);
+    assert_eq!(lines[5], r#"],"unreadable":[]}"#);
+    let starts: Value = serde_json::from_str(&text).unwrap();
+    let starts = &starts["starts"];
+    assert_eq!(
+        names(starts),
+        [
+            "main",
+            "Reset_Handler",
+            "Default_Handler",
+            "SysTick_Handler"
+        ]
+    );
+    assert_eq!(starts[0]["root"], Value::Null);
+    assert_eq!(starts[1]["root"], "entry point");
+    assert_eq!(starts[1]["exceptions"], json!(["Reset"]));
+    assert_eq!(starts[2]["root"], "listed in the vector table");
+    assert_eq!(
+        starts[2]["exceptions"],
+        json!([
+            "NMI",
+            "HardFault",
+            "MemManage",
+            "BusFault",
+            "UsageFault",
+            "SVCall",
+            "DebugMonitor",
+            "PendSV"
+        ])
+    );
+    assert_eq!(
+        starts[3],
+        json!({
+            "name": "SysTick_Handler",
+            "kind": "function",
+            "section": ".itcm",
+            "address": "0x0",
+            "size": 16,
+            "size_estimated": false,
+            "root": "listed in the vector table",
+            "exceptions": ["SysTick"],
+            "code_bytes": 446,
+            "data_bytes": 4128,
+            "blocks": [
+                {"start": "0x0", "end": "0xe0", "code_bytes": 24, "data_bytes": 0},
+                {"start": "0x20000000", "end": "0x20000450", "code_bytes": 0, "data_bytes": 24},
+                {"start": "0x20240000", "end": "0x20241000", "code_bytes": 0, "data_bytes": 4096},
+                {"start": "0x30000000", "end": "0x30000edc", "code_bytes": 422, "data_bytes": 8}
+            ],
+            "complete": false
+        })
+    );
+    assert_eq!(starts[2]["complete"], true);
+
+    // The roots whose end elfq doesn't know are listed apart.
+    let library = elfq_json(&[LIBRARY_SAMPLE, "reach"]);
+    assert_eq!(
+        names(&library["starts"]),
+        ["frame_dummy", "__do_global_dtors_aux"]
+    );
+    assert_eq!(names(&library["unreadable"]), ["_init", "_fini"]);
+    assert_eq!(library["starts"][0]["root"], "listed in .init_array");
+    assert_eq!(library["starts"][0]["exceptions"], json!([]));
+    let stripped = elfq_json(&["testdata/bin/c-cortex-m7-stripped.elf", "reach"]);
+    assert_eq!(
+        names(&stripped["starts"]),
+        ["entry", "fn_0x300005f4", "fn_0x0"]
+    );
+    assert_eq!(stripped["starts"][0]["root"], "entry point");
+    assert_eq!(stripped["starts"][0]["exceptions"], json!(["Reset"]));
+}
+
+#[test]
 fn debug_commands_print_only_text() {
     let output = elfq(&[SAMPLE, "debug", "items", "--json"]);
     assert_eq!(output.status.code(), Some(2));

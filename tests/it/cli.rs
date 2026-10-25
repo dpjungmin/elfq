@@ -411,7 +411,7 @@ fn only_trees_are_drawn() {
     ] {
         assert_output(
             &stderr(args, 2),
-            "error: only the overview, top, retained, why, reach and inlined SYMBOL take --tree\n",
+            "error: only the overview, top, retained, why, reach SYMBOL and inlined SYMBOL take --tree\n",
         );
     }
 }
@@ -3222,6 +3222,127 @@ fn reach_needs_an_item_whose_code_elfq_can_read() {
 }
 
 #[test]
+fn reach_without_symbol_lists_where_the_program_starts() {
+    // Each block's cell is code and data together, as `reach START` counts
+    // them: SysTick_Handler's are its MEMORY table's. Default_Handler, which
+    // only loops, takes 2 bytes itself, and its WHY names the exceptions it
+    // handles.
+    assert_output(
+        &stdout(&[TCM_SAMPLE, "reach"]),
+        "\
+Where testdata/bin/c-cortex-m7.elf starts, and the bytes of code and data that each reaches in each block of memory:
+
+0x00000000  0x20000000  0x20240000  0x30000000  WHY                        START
+       200        1100        4096        2071  main function              main (may reach more)
+       200        1100        4096        2345  Reset (entry point)        Reset_Handler (may reach more)
+         0           0           0           2  NMI, HardFault and 6 more  Default_Handler
+        24          24        4096         430  SysTick                    SysTick_Handler (may reach more)
+
+The starts marked (may reach more) reach calls or jumps that elfq can't follow; reach START names them.
+",
+    );
+    // WHY comes before the name, so it keeps its cut, as AT does; --json
+    // names every exception.
+    assert_output(
+        &stdout(&[TCM_SAMPLE, "reach", "--all"]),
+        &stdout(&[TCM_SAMPLE, "reach"]),
+    );
+    // One block, so CODE and DATA. The startup and exit arrays' functions
+    // come in the order the program runs the arrays. _init and _fini are
+    // roots, but elfq can't read them, and the PLT's header only jumps to
+    // the dynamic loader.
+    assert_output(
+        &stdout(&[SAMPLE, "reach"]),
+        "\
+Where testdata/bin/c-x86_64.elf starts, and the bytes of code and data that each reaches:
+
+CODE  DATA  WHY                    START
+2218  1379  main function          main (may reach more)
+2256  1379  entry point            _start (may reach more)
+  80     1  listed in .init_array  frame_dummy (may reach more)
+ 128    25  listed in .fini_array  __do_global_dtors_aux (may reach more)
+
+The starts marked (may reach more) reach calls or jumps that elfq can't follow; reach START names them.
+_init and _fini are starts too, but elfq doesn't know where they end, so it can't count what they reach.
+",
+    );
+    // A shared library's main is where no program starts.
+    assert_output(
+        &stdout(&[LIBRARY_SAMPLE, "reach"]),
+        "\
+Where testdata/bin/c-x86_64.so starts, and the bytes of code and data that each reaches:
+
+CODE  DATA  WHY                    START
+  80     1  listed in .init_array  frame_dummy (may reach more)
+ 128    33  listed in .fini_array  __do_global_dtors_aux (may reach more)
+
+The starts marked (may reach more) reach calls or jumps that elfq can't follow; reach START names them.
+_init and _fini are starts too, but elfq doesn't know where they end, so it can't count what they reach.
+elfq doesn't count a shared library's exported functions as starting points yet.
+",
+    );
+    // Stripped, the same firmware has no main, and the functions elfq
+    // finds by following the code are named by address.
+    assert_output(
+        &stdout(&["testdata/bin/c-cortex-m7-stripped.elf", "reach"]),
+        "\
+Where testdata/bin/c-cortex-m7-stripped.elf starts, and the bytes of code and data that each reaches in each block of memory:
+
+0x00000000  0x20000000  0x20240000  0x30000000  WHY                        START
+       200        1100        4096        2354  Reset (entry point)        entry (may reach more)
+         0           0           0           2  NMI, HardFault and 6 more  fn_0x300005f4
+        24          24        4096         430  SysTick                    fn_0x0 (may reach more)
+
+The starts marked (may reach more) reach calls or jumps that elfq can't follow; reach START names them.
+",
+    );
+}
+
+#[test]
+fn reach_without_symbol_refuses_what_needs_one() {
+    // --to, --range and --tree need SYMBOL. The command that each refusal
+    // suggests names the function that the overview starts from, as its
+    // Try line does, keeps the other options, and answers.
+    for (args, expected) in [
+        (
+            &[TCM_SAMPLE, "reach", "--to", "0x0+1K", "--json"][..],
+            "error: reach --to needs a SYMBOL, such as elfq testdata/bin/c-cortex-m7.elf reach \
+             main --to 0x00000000..0x00000400 --json\n",
+        ),
+        (
+            &[
+                "testdata/bin/c-cortex-m7-stripped.elf",
+                "reach",
+                "--tree",
+                "--all",
+            ],
+            "error: reach --tree needs a SYMBOL, such as elfq \
+             testdata/bin/c-cortex-m7-stripped.elf reach entry --all --tree\n",
+        ),
+        (
+            &[
+                "testdata/bin/c-x86_64-stripped.elf",
+                "reach",
+                "--range",
+                "0x1000+4K",
+                "--tree",
+            ],
+            "error: reach takes --to, not --range, to list only what a SYMBOL reaches in a \
+             range, such as elfq testdata/bin/c-x86_64-stripped.elf reach fn_0x1170 --to \
+             0x00001000..0x00002000 --tree\n",
+        ),
+    ] {
+        assert_output(&stderr(args, 2), expected);
+        let (_, suggested) = expected.trim_end().split_once("such as elfq ").unwrap();
+        let output = elfq(&suggested.split(' ').collect::<Vec<&str>>());
+        assert!(
+            matches!(output.status.code(), Some(0 | 1)),
+            "{suggested}: {output:?}"
+        );
+    }
+}
+
+#[test]
 fn a_reader_that_stops_early_keeps_the_exit_status() {
     // As in `elfq ... | head`, in a shell with `set -o pipefail`. Each
     // answer is larger than a pipe holds, so elfq writes after the reader
@@ -3652,7 +3773,7 @@ fn arguments_that_dont_go_together_are_refused_before_the_file_is_read() {
         ),
         (
             &["missing.elf", "inlined", "--tree"],
-            "error: only the overview, top, retained, why, reach and inlined SYMBOL take --tree\n",
+            "error: only the overview, top, retained, why, reach SYMBOL and inlined SYMBOL take --tree\n",
         ),
         (
             &["missing.elf", "reach", "main", "--tree", "--json"],
@@ -3758,6 +3879,7 @@ elfq can't yet read Aarch64 code to tell what calls what.
         &[path, "callers", "no_such_function"],
         &[path, "callees", "no_such_function"],
         &[path, "reach", "no_such_function"],
+        &[path, "reach"],
         &[
             path,
             "callers",

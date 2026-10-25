@@ -178,6 +178,7 @@ except `inlined`, which reads DWARF instead of machine code.
 | `elfq FILE callers SYMBOL` | What calls or uses SYMBOL directly, and how (call, tail call, uses, address taken, pointer)? |
 | `elfq FILE callees SYMBOL` | What does SYMBOL call or use directly? |
 | `elfq FILE reach SYMBOL` | What does SYMBOL call or use at any depth, and how many bytes of code and data does that take in each block of memory, such as ITCM, DTCM and flash? |
+| `elfq FILE reach` | Where does the program start, and how many bytes of code and data does each start reach in each block of memory? |
 | `elfq FILE reach SYMBOL --to RANGE` | What does SYMBOL reach in one range of memory, such as flash, and which code uses each item there? |
 | `elfq FILE callees RANGE...` | What do the code and data in these ranges of memory use outside them, such as code in ITCM that calls a function in flash? `callers RANGE...` asks the reverse. |
 | `elfq FILE callers RANGE... --from RANGE` | What in one range of memory uses these ranges, such as code in ITCM that uses data in DTCM? `callees RANGE... --to RANGE` asks what these ranges use in that one, and either takes SYMBOL in place of the ranges. |
@@ -259,22 +260,24 @@ sides of the edge, and elfq says so.
 
 All commands print a table for people by default, with one row per line. A
 table puts its short cells, such as sizes, HOW and AT, first and the name
-last, so that a long name that the terminal wraps moves no column. Where an
-answer is a tree, as in the overview, `top`, `retained`, `why`, `reach` and
-`inlined SYMBOL`, each row then names the row it hangs under by a short
-name, as in `crc_table, kept by crc32`, so that a row that grep finds still
-says where it is; in `why`, only where chains branch. `--tree` draws such
-answers as trees instead. AT shows where an item is used: every site when
-there are one or two, else the first and how many more. `callers SYMBOL`
-and `callees SYMBOL` list the 30 items with the largest own sizes, callers
-in order of name and callees in the order SYMBOL first uses them, and a
-last row such as `70 more` counts the rest; with ranges, `--from` or
-`--to`, they list every crossing. `reach` lists the 30 largest items, and a
-row such as `9 more data objects in 0x20000000..0x20000450` sums up the
-rest of a block's; with `--to`, it lists every item in its ranges. `--all` lifts every such cut in an answer but AT's: it
-shows every item in a table or tree, every chain in `why`, and every name
-and address in a sentence, where a long list otherwise ends with "and 48
-more".
+last, so that a long name that the terminal wraps moves no column. Where
+an answer is a tree, as in the overview, `top`, `retained`, `why`, `reach
+SYMBOL` and `inlined SYMBOL`, each row then names the row it hangs under
+by a short name, as in `crc_table, kept by crc32`, so that a row that grep
+finds still says where it is; in `why`, only where chains branch. `--tree`
+draws such answers as trees instead. AT shows where an item is used: every
+site when there are one or two, else the first and how many more. `callers
+SYMBOL` and `callees SYMBOL` list the 30 items with the largest own sizes,
+callers in order of name and callees in the order SYMBOL first uses them,
+and a last row such as `70 more` counts the rest; with ranges, `--from` or
+`--to`, they list every crossing. `reach` lists the 30 largest items, and
+a row such as `9 more data objects in 0x20000000..0x20000450` sums up the
+rest of a block's; with `--to`, it lists every item in its ranges. Without
+SYMBOL, it lists 30 starts, and a row such as `650 more` counts the rest
+of a kind. `--all` lifts every such cut in an answer but those of AT and
+of `reach`'s WHY, cells before the name that stay short: it shows every
+item in a table or tree, every chain in `why`, and every name and address
+in a sentence, where a long list otherwise ends with "and 48 more".
 
 For example:
 
@@ -409,6 +412,46 @@ the call through it. Code that elfq can't read may reach the ranges, so it
 too makes the exit status 1. With `--tree`, only the chains from SYMBOL to
 what is in the ranges, and to the calls and jumps that elfq can't follow
 that may go there, are drawn, and the JSON has the items on those chains.
+
+`reach` without SYMBOL lists where the program starts: `main`, but not a
+shared library's; then each root that is a function whose code elfq can
+read, but for the PLT's header, which only jumps to the dynamic loader:
+the entry point; the handlers in the vector table, in the order of their
+first entries; the functions that `.preinit_array`, `.init_array` and
+`.fini_array` list, in that order and each in its array's; then the
+others, such as personality routines, by kind and by address. Each row has
+the bytes of code and data that its start reaches, as `reach START`
+counts them: with several memory blocks, both together in a column for
+each block, headed by its start, and with one, in CODE and DATA. It lists
+`main`, the entry point and the handlers, and of the other starts, those
+that reach the most bytes, 30 rows in all, and a row such as `650 more`
+after the starts of a kind counts those it leaves out, as in a large C++
+library, whose `.init_array` lists hundreds of functions. WHY says why the
+program starts there, naming a handler's exceptions as Arm's manuals do
+for the file's architecture, but not the reserved entries that list it,
+since the processor takes none of them: the first two and how many more.
+A start marked "(may reach more)" reaches calls or jumps that elfq can't
+follow, or code that it can't read, which `reach START` names, and the
+roots whose end elfq doesn't know, such as `_init`, are named below the
+table. A large program has many starts, so for each, one search through
+the graph only adds up the bytes, without the chains that `reach START`
+keeps:
+
+```
+$ elfq testdata/bin/c-cortex-m7.elf reach
+Where testdata/bin/c-cortex-m7.elf starts, and the bytes of code and data that each reaches in each block of memory:
+
+0x00000000  0x20000000  0x20240000  0x30000000  WHY                        START
+       200        1100        4096        2071  main function              main (may reach more)
+       200        1100        4096        2345  Reset (entry point)        Reset_Handler (may reach more)
+         0           0           0           2  NMI, HardFault and 6 more  Default_Handler
+        24          24        4096         430  SysTick                    SysTick_Handler (may reach more)
+
+The starts marked (may reach more) reach calls or jumps that elfq can't follow; reach START names them.
+```
+
+A start's own bytes count, so `Default_Handler`, which only loops, has the
+2 bytes of its one instruction.
 
 `inlined` ranks the functions that the compiler copied into their callers
 by the bytes all their copies take, which ddbug shows only one function at
@@ -643,6 +686,13 @@ several.
 | `unreadable` | the functions that SYMBOL reaches whose end elfq doesn't know, so it can't read their code |
 | `complete` | whether `items` has everything SYMBOL reaches, or with `--to`, in its ranges, as far as elfq can tell, as [below](#calls-elfq-cant-follow) |
 
+**`reach`**, without SYMBOL:
+
+| Key | Value |
+|---|---|
+| `starts` | where the program starts, every one, in the text's order, each an item with: `root`, why it is a root, as `why`'s `root` says it, or `null` for `main`; `exceptions`, the exceptions that it handles, as WHY names them but every one, such as `["NMI","HardFault"]`, and `[]` for a function that isn't a handler; `code_bytes` and `data_bytes`, the bytes of the functions and of the data objects among the start and what it reaches; `blocks`, every memory block that the overview's `memory` lists, each a range with the `code_bytes` and `data_bytes` in it; and `complete`. Each is what `reach START --json` has for the start |
+| `unreadable` | the roots that are functions whose end elfq doesn't know, such as `_init`, so it can't tell what they reach |
+
 ### Calls elfq can't follow
 
 Calls through pointers leave some answers incomplete, and elfq says so
@@ -655,11 +705,14 @@ other items.
 pointer, since SYMBOL may reach more through it, or with `--to`, lists
 those calls and jumps as `callees` does, and names the functions whose end
 elfq doesn't know, since it can't read what they use.
+Without SYMBOL, `reach` marks a start "(may reach more)" when its answer
+would name such code.
 In JSON, `callers`, `callees` and `reach` have `complete`, and `retained`
 has `indirect_calls`. Without `--to`, `reach`'s is `false` when
-`unresolved` or `unreadable` isn't empty. For ranges, and with `--from` or
-`--to`, `complete` is `false` when `callees` or `reach` lists a call it
-can't follow, other than, with `--to`, one to a known address in its
+`unresolved` or `unreadable` isn't empty, and without SYMBOL, each
+start's is `reach START`'s. For ranges, and with `--from` or `--to`,
+`complete` is `false` when `callees` or `reach` lists a call it can't
+follow, other than, with `--to`, one to a known address in its
 ranges, or a function whose end it doesn't know, or when `callers` notes
 calls through a pointer to a function in the ranges, whose address is
 taken or stored other than in the vector table, which only the processor
@@ -804,7 +857,10 @@ that do this.
    around SYMBOL itself. Of equally short chains it takes the one with the
    most calls, and then the one that the breadth-first search found first,
    so the answer is always the same. `reach` searches from SYMBOL the same
-   way, for the shortest chain to every item.
+   way, for the shortest chain to every item. Without SYMBOL, it only adds
+   up the bytes that each start reaches, in one search from each, with no
+   chains (`reach::Totals`), which the overview also uses to pick the
+   handler that reaches the most code.
    `callers` and `callees` read edges. `callers` counts a call to the stub
    for one of the file's own functions, such as `log_msg@plt` in a shared
    library, as a call to the function, and says so.

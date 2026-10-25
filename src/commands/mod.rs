@@ -169,9 +169,10 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<Outcome> {
             format,
             out,
         ),
-        Some(Command::Reach(args)) => {
-            reach::run(&binary, &args.symbol, &args.to, args.all, format, out)
-        }
+        Some(Command::Reach(args)) => match &args.symbol {
+            Some(symbol) => reach::run(&binary, symbol, &args.to, args.all, format, out),
+            None => reach::run_starts(&cli.file, &binary, &args.to, range, args.all, format, out),
+        },
         Some(Command::Debug(DebugCommand::Items)) => answered(debug_items::run(&binary, out)),
         Some(Command::Browse(_)) => unreachable!("browse has run above"),
     }
@@ -242,6 +243,7 @@ fn check_arguments(cli: &Cli) -> Result<()> {
     }
     match &cli.command {
         None | Some(Command::Top(_) | Command::Retained(_)) => Ok(()),
+        Some(Command::Reach(args)) if args.symbol.is_none() => Ok(()),
         Some(_) if cli.range.is_some() => bail!("{RANGE_REFUSED}"),
         Some(Command::Debug(_)) if cli.format() == Format::Json => {
             bail!("the debug commands print only text")
@@ -251,22 +253,28 @@ fn check_arguments(cli: &Cli) -> Result<()> {
 }
 
 /// Refuses what `reach` doesn't take: `--from`, ranges in place of SYMBOL,
-/// and `--range`, each with what to type instead.
+/// and `--range`, each with what to type instead. Without SYMBOL, `--to`,
+/// `--range` and `--tree` wait for the file to load, so that the command to
+/// type instead can name a function in it (see `reach::run_starts`).
 fn check_reach_arguments(cli: &Cli, args: &ReachArgs) -> Result<()> {
     if !args.misplaced_from.is_empty() {
         bail!("--from goes with callers; reach takes --to to list only what it reaches in a range")
     }
+    let Some(query) = &args.symbol else {
+        return Ok(());
+    };
     let file = text::shell_quote(&cli.file.display().to_string());
     let json = if cli.json { " --json" } else { "" };
+    let all = if args.all { " --all" } else { "" };
     let to: String = args
         .to
         .iter()
         .map(|&range| format!(" --to {}", text::range_argument(range)))
         .collect();
-    if symbol::is_range(&args.symbol) {
+    if symbol::is_range(query) {
         // What a range uses outside it, or in other ranges, is a range
         // check, which callees has.
-        let callees = match args.symbol.parse::<AddressRange>() {
+        let callees = match query.parse::<AddressRange>() {
             Ok(range) => {
                 let what = if to.is_empty() {
                     "what a range uses outside it"
@@ -283,12 +291,11 @@ fn check_reach_arguments(cli: &Cli, args: &ReachArgs) -> Result<()> {
         bail!("reach takes one SYMBOL, not ranges{callees}")
     }
     if let Some(range) = cli.range {
-        let all = if args.all { " --all" } else { "" };
         let tree = if cli.tree { " --tree" } else { "" };
         bail!(
             "reach takes --to, not --range, to list only what it reaches in a range: elfq {file} \
              reach {}{to} --to {}{all}{tree}{json}",
-            text::shell_quote(&args.symbol),
+            text::shell_quote(query),
             text::range_argument(range)
         )
     }
@@ -308,7 +315,9 @@ fn check_tree(cli: &Cli) -> Result<()> {
         }
         Some(Command::Inlined(args)) if args.symbol.is_some() => Ok(()),
         Some(_) => {
-            bail!("only the overview, top, retained, why, reach and inlined SYMBOL take --tree")
+            bail!(
+                "only the overview, top, retained, why, reach SYMBOL and inlined SYMBOL take --tree"
+            )
         }
     }
 }

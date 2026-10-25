@@ -80,15 +80,7 @@ pub(super) fn find(binary: &Binary) -> Vec<Root> {
             add(items_in_section(binary, index), RootKind::InSection(index));
         }
         if STARTUP_ARRAYS.contains(&name) {
-            // From the array's first byte, aligned or not, as the program
-            // reads it.
-            let slots = binary.words(section.address, section.address + section.size);
-            add(
-                slots
-                    .filter_map(|(slot, value)| stored_pointer(binary, slot, value))
-                    .collect(),
-                RootKind::ListedIn(index),
-            );
+            add(listed_in(binary, index), RootKind::ListedIn(index));
         }
     }
     // PLT headers are named after their section; the stubs after what they
@@ -119,6 +111,17 @@ fn items_in_section(binary: &Binary, section: usize) -> Vec<Node> {
     (0..binary.items.len())
         .filter(|&index| binary.items[index].section == section)
         .map(Node::Item)
+        .collect()
+}
+
+/// What the startup or exit array `section`, an index into
+/// [`Binary::sections`], points to, in the array's order.
+pub fn listed_in(binary: &Binary, section: usize) -> Vec<Node> {
+    let section = &binary.sections[section];
+    // From the array's first byte, aligned or not, as the program reads it.
+    let slots = binary.words(section.address, section.address + section.size);
+    slots
+        .filter_map(|(slot, value)| stored_pointer(binary, slot, value))
         .collect()
 }
 

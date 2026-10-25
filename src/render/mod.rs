@@ -20,7 +20,7 @@ pub enum Align {
 /// separated by two spaces.
 #[derive(Debug)]
 pub struct Table {
-    headers: Vec<&'static str>,
+    headers: Vec<String>,
     /// How each column's cells line up.
     aligns: Vec<Align>,
     /// The rows added so far, each with one cell per column.
@@ -30,9 +30,12 @@ pub struct Table {
 impl Table {
     /// An empty table with these columns: each a header, and how its cells
     /// line up.
-    pub fn new(columns: &[(&'static str, Align)]) -> Table {
+    pub fn new(columns: &[(impl AsRef<str>, Align)]) -> Table {
         Table {
-            headers: columns.iter().map(|&(header, _)| header).collect(),
+            headers: columns
+                .iter()
+                .map(|(header, _)| header.as_ref().to_string())
+                .collect(),
             aligns: columns.iter().map(|&(_, align)| align).collect(),
             rows: Vec::new(),
         }
@@ -53,8 +56,7 @@ impl Table {
                 *width = (*width).max(cell.chars().count());
             }
         }
-        let headers: Vec<String> = self.headers.iter().map(|h| h.to_string()).collect();
-        for row in std::iter::once(&headers).chain(&self.rows) {
+        for row in std::iter::once(&self.headers).chain(&self.rows) {
             let mut line = String::new();
             for (column, cell) in row.iter().enumerate() {
                 if column > 0 {

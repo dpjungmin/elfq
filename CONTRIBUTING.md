@@ -141,7 +141,7 @@ without making them public. It and `arch/listing.rs` build only with the
 | `graph.rs` | The reference graph: callers, callees, pointers in data, veneers |
 | `retained.rs` | Roots, and what is exclusive to what |
 | `why.rs` | The shortest chains |
-| `reach.rs` | `reach` on every item of the Cortex-M samples, against `callees`, `retained` and its own `--tree`, and with `--to` against `reach` without it and `callees --to`, and on every function of each stripped one against its twin with symbols |
+| `reach.rs` | `reach` on every item of the Cortex-M samples, against `callees`, `retained` and its own `--tree`, and with `--to` against `reach` without it and `callees --to`, and on every function of each stripped one against its twin with symbols; and without SYMBOL, each start of every sample against `reach START` |
 | `symbol.rs` | Looking up SYMBOL |
 | `inlined.rs` | Inlined copies, from DWARF |
 | `damaged.rs` | Damaged and unusual files, made by changing a sample's bytes |

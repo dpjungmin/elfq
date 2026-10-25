@@ -37,7 +37,7 @@ mod veneers;
 pub use boundary::{Boundary, Crossing, Unfollowed};
 pub use dominators::DominatorTree;
 pub use paths::ShortestPaths;
-pub use roots::{Root, RootKind};
+pub use roots::{Root, RootKind, listed_in};
 pub use veneers::{VeneerTarget, Veneers};
 
 use std::collections::HashSet;

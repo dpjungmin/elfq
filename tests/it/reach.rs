@@ -1,7 +1,8 @@
 //! What `reach` lists, checked for every item of the Cortex-M samples
 //! against `retained`, `callees` and the tree that `--tree` draws, with
 //! `--to` against `reach` without it and `callees --to`, and for every
-//! function of each stripped one against its twin with symbols.
+//! function of each stripped one against its twin with symbols; and
+//! without SYMBOL, for each start of every sample, against `reach START`.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -12,7 +13,7 @@ use elfq::binary::{AddressRange, Binary, ItemKind};
 use elfq::cli::Cli;
 use elfq::commands::Outcome;
 
-use crate::support::{load_sample, sample_path};
+use crate::support::{load_sample, sample_path, samples};
 
 /// The Cortex-M samples with symbols, whose every item the checks run on:
 /// the C and Rust samples, and each build with veneers to and from RAM and
@@ -108,6 +109,32 @@ fn item(item: &Value) -> (String, String) {
         item["name"].as_str().unwrap().to_string(),
         item["address"].to_string(),
     )
+}
+
+#[test]
+fn each_start_reaches_what_reach_start_counts() {
+    let mut checked = 0;
+    for path in samples() {
+        let sample = path.strip_prefix("testdata/bin/").unwrap();
+        let starts = answer(sample, &["reach"]);
+        for start in starts["starts"].as_array().unwrap() {
+            let address = start["address"].as_str().unwrap();
+            let reach = answer(sample, &["reach", address]);
+            let context = format!("{sample} reach {address}");
+            assert_eq!(item(&reach["symbol"]), item(start), "{context}");
+            for key in ["code_bytes", "data_bytes", "complete"] {
+                assert_eq!(reach[key], start[key], "{context}: {key}");
+            }
+            // The bytes in each block, without the sections that hold them.
+            let mut blocks = reach["blocks"].clone();
+            for block in blocks.as_array_mut().unwrap() {
+                block.as_object_mut().unwrap().remove("sections");
+            }
+            assert_eq!(blocks, start["blocks"], "{context}");
+            checked += 1;
+        }
+    }
+    assert!(checked >= 90, "{checked}");
 }
 
 #[test]

@@ -31,8 +31,8 @@ pub struct Cli {
     /// Print the answer as JSON, for scripts
     #[arg(long, global = true)]
     pub json: bool,
-    /// Draw the overview, top, retained, why, reach and inlined SYMBOL as
-    /// trees
+    /// Draw the overview, top, retained, why, reach SYMBOL and inlined
+    /// SYMBOL as trees
     #[arg(long, global = true)]
     pub tree: bool,
     /// Count only the bytes in one range of memory, such as ITCM: START..END
@@ -132,6 +132,7 @@ Examples:
   elfq app.elf callers log_msg            What calls or uses log_msg
   elfq app.elf callees main               What main calls or uses
   elfq app.elf callees 0x0+256K           What the first 256 KiB uses outside it
+  elfq app.elf reach                      Where the program starts, and the bytes each start reaches
   elfq app.elf reach SysTick_Handler      What SysTick_Handler runs and uses, and where
   elfq app.elf browse log_msg             Read log_msg's code, its calls and its callers
 
@@ -383,6 +384,25 @@ table. --tree draws the chains from SYMBOL to what is in the ranges and to
 those calls and jumps, and --json has the items on them, with in_to
 saying which are in the ranges.
 
+Without SYMBOL, reach lists where the program starts, and what each start
+reaches, as reach START counts it: main, the entry point, the handlers in
+the vector table, in the order of their first entries, the functions that
+.preinit_array, .init_array and .fini_array list, in that order and each
+in its array's, then the other roots, such as personality routines, but
+not the PLT's header. It shows main, the entry point, the handlers, and of
+the other starts, those that reach the most bytes, 30 rows in all, and
+rows such as \"650 more\" count the rest of a kind; --all shows every row.
+Starts whose end elfq doesn't know, such as _init, are named below the
+table. A shared library's main isn't a start, nor yet are the functions it
+exports. With several blocks of memory, each block has a column, headed by
+its start, with the bytes of code and data together; otherwise CODE and
+DATA have them, and --json has both for each block. WHY names the
+exceptions that a handler handles, but not the entries that the
+architecture reserves, the first two and how many more, even with --all;
+--json has every one. A start marked \"(may reach more)\" reaches calls or
+jumps that elfq can't follow, or code that it can't read, which reach START
+names. --to and --tree need SYMBOL.
+
 Exit status, with --to: 1 if the answer lists an item, or code that elfq
 can't follow or read; 0 if not; and 2 for an error.";
 
@@ -548,8 +568,10 @@ pub struct CalleesArgs {
 #[derive(Debug, Args)]
 pub struct ReachArgs {
     /// A function or data object: its name, the end of its name
-    /// (process_frame for app::process_frame), or an address such as 0x1700
-    pub symbol: String,
+    /// (process_frame for app::process_frame), or an address such as 0x1700.
+    /// Without it, reach lists where the program starts, and what each
+    /// start reaches
+    pub symbol: Option<String>,
     /// List only what SYMBOL reaches in this range of memory, START..END or
     /// START+SIZE; give it again for more
     #[arg(long, value_name = "RANGE", value_parser = to_range)]
