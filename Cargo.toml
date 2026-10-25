@@ -41,6 +41,13 @@ tui = ["dep:ratatui", "dep:rustix", "dep:signal-hook", "dep:thumb-asm", "iced-x8
 [lints.rust]
 unsafe_code = "forbid"
 
+# Debug builds, which `cargo run` and the tests use, are optimized a little:
+# unoptimized, elfq takes five or six times as long on a large file, and the
+# tests four times as long. They still check arithmetic for overflow and keep
+# all their debug info.
+[profile.dev]
+opt-level = 1
+
 # gimli adds a size in DW_AT_high_pc to DW_AT_low_pc without a check. When
 # damaged debug info makes the sum overflow, a release build wraps it, and
 # elfq drops the range, which then ends before it starts. Debug builds, which

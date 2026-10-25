@@ -16,6 +16,11 @@ cargo run -- testdata/bin/c-x86_64.elf
 cargo run -- testdata/bin/c-x86_64.elf callers log_msg
 ```
 
+Debug builds are optimized a little (`opt-level = 1` in Cargo.toml), so that
+`cargo run` on a large file and `cargo test` take seconds. A clean build
+takes about twice as long as it would unoptimized, but a build after a
+change takes about as long.
+
 `elfq FILE debug items` lists every function and data object elfq found and
 where it found it. It is hidden from `--help` because it is only for
 developing elfq.
@@ -356,7 +361,7 @@ files):
 - a big Go program, such as `docker` (45 MB), for `callers` of a range,
   such as `callers 0x400000+1M`;
 - a program of 200 MB, such as `pandoc`, for peak memory;
-- `target/debug/elfq`, a 79 MB file that is mostly DWARF, for `inlined`;
+- `target/debug/elfq`, a 90 MB file that is mostly DWARF, for `inlined`;
 - stripped Cortex-M firmware, for finding functions without symbols.
 
 Compare the time, the peak memory (`/usr/bin/time -v` on Linux, `-l` on

@@ -946,7 +946,7 @@ that use another item. The pull requests and the git log record how elfq
 got here.
 
 On a 4-CPU x86-64 machine, a release build gives the overview of elfq's
-own debug build (79 MB) in about half a second, of cargo (43 MB) in under
+own debug build (90 MB) in under half a second, of cargo (43 MB) in under
 a second, and of librustc_driver (158 MB) and libLLVM (199 MB) in 3 to 4
 seconds, most of it reading the file: decoding its code and demangling
 its names. `browse` shows its first screen in about the same time. Each
