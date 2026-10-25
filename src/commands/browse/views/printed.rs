@@ -13,7 +13,8 @@ use ratatui::widgets::{Row, Table};
 
 use super::item::Tab;
 use super::{
-    Cursor, FittedRows, Go, cut, draw_lines, fit_name, follow, keep_lines, link_preview, wrap,
+    Cursor, FittedRows, Go, cut, draw_lines, fit_name, follow, has_ignoring_case, keep_lines,
+    link_preview, wrap,
 };
 use crate::commands::browse::{keys::Action, session::Session};
 use crate::commands::reach;
@@ -381,6 +382,22 @@ impl Printed {
     /// Whether some row opens an item.
     pub fn has_links(&self) -> bool {
         self.rows.iter().any(|row| row.link.is_some())
+    }
+
+    pub fn cursor(&mut self) -> &mut Cursor {
+        &mut self.cursor
+    }
+
+    /// The rows that have `lowercase` in a cell, or in the last one's name
+    /// in full or what follows it, ignoring case.
+    pub fn rows_with(&self, lowercase: &str) -> Vec<usize> {
+        let has = |text: &str| has_ignoring_case(text, lowercase);
+        (self.rows.iter().enumerate())
+            .filter(|(_, row)| {
+                row.cells.iter().any(|cell| has(cell)) || has(&row.name) || has(&row.rest)
+            })
+            .map(|(index, _)| index)
+            .collect()
     }
 }
 

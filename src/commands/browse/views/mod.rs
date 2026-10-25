@@ -142,6 +142,52 @@ impl View {
             View::Help(_) => None,
         }
     }
+
+    /// The cursor over the page's rows, which find moves: the lines of a
+    /// function's code, or the rows of a table. The help has none, and
+    /// nor does a table without rows.
+    pub fn cursor(&mut self) -> Option<&mut Cursor> {
+        match self {
+            View::Start(start) => Some(start.as_mut()?.cursor()),
+            View::Item(page) => page.cursor(),
+            View::Help(_) => None,
+        }
+        .filter(|cursor| !cursor.is_empty())
+    }
+
+    /// What find calls the page's rows: "line" on a function's code, and
+    /// "row" in a table.
+    pub fn row_noun(&self) -> &'static str {
+        match self {
+            View::Item(page) => page.row_noun(),
+            View::Start(_) | View::Help(_) => "row",
+        }
+    }
+
+    /// The rows that have `lowercase`, text in lower case, ignoring case,
+    /// in order. A row's columns are looked in one at a time, as the page
+    /// shows them, but with names in full.
+    pub fn rows_with(&self, lowercase: &str) -> Vec<usize> {
+        match self {
+            View::Start(start) => {
+                (start.as_ref()).map_or_else(Vec::new, |start| start.rows_with(lowercase))
+            }
+            View::Item(page) => page.rows_with(lowercase),
+            View::Help(_) => Vec::new(),
+        }
+    }
+}
+
+/// Whether `text` has `lowercase`, text in lower case, ignoring case. Text
+/// in ASCII, as most is, is compared where it is, without making a copy in
+/// lower case, since find looks through every line of a function.
+pub fn has_ignoring_case(text: &str, lowercase: &str) -> bool {
+    if text.is_ascii() && lowercase.is_ascii() {
+        let (text, wanted) = (text.as_bytes(), lowercase.as_bytes());
+        return wanted.is_empty()
+            || (text.windows(wanted.len())).any(|window| window.eq_ignore_ascii_case(wanted));
+    }
+    text.to_lowercase().contains(lowercase)
 }
 
 /// Which row of a list is selected, and which rows are on the screen. A
@@ -167,6 +213,11 @@ impl Cursor {
             drawn: false,
             len,
         }
+    }
+
+    /// Whether there are no rows to move over.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
     }
 
     /// Selects `row`. When it is off the screen, it comes to a third of

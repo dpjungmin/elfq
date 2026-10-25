@@ -4,6 +4,8 @@
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use super::Stop;
+
 /// What the user asked for. Every page gets the same actions, so a key
 /// means the same everywhere.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,6 +27,11 @@ pub enum Action {
     PreviousLink,
     /// Show the page's tab with this number, as `3` shows the callers.
     Tab(u8),
+    /// Type text to find in the page's rows.
+    Find,
+    /// The next or previous row that has the text found last.
+    FindNext,
+    FindPrevious,
     /// Type a name or an address to go to.
     GoTo,
     /// The help page.
@@ -131,12 +138,27 @@ pub const BINDINGS: &[Binding] = &[
     Binding {
         label: "1 2 3 4",
         what: "tabs: 1 code, 2 callees, 3 callers, 4 reach",
-        hint: Some(("tabs", 3)),
+        hint: Some(("tabs", 4)),
         keys: &[
             (KeyCode::Char('1'), NONE, Action::Tab(1)),
             (KeyCode::Char('2'), NONE, Action::Tab(2)),
             (KeyCode::Char('3'), NONE, Action::Tab(3)),
             (KeyCode::Char('4'), NONE, Action::Tab(4)),
+        ],
+    },
+    Binding {
+        label: "/",
+        what: "find text in the page's rows, ignoring case",
+        hint: Some(("/ find", 3)),
+        keys: &[(KeyCode::Char('/'), NONE, Action::Find)],
+    },
+    Binding {
+        label: "n N",
+        what: "the next or previous row that has the text found",
+        hint: None,
+        keys: &[
+            (KeyCode::Char('n'), NONE, Action::FindNext),
+            (KeyCode::Char('N'), NONE, Action::FindPrevious),
         ],
     },
     Binding {
@@ -188,12 +210,14 @@ pub fn action(key: KeyEvent) -> Option<Action> {
 
 /// The hint line for a screen `width` columns wide: the hints that fit,
 /// leaving out the least needed first. `links` says whether the page has
-/// lines that link, for Tab, and `tabs` gives the numbers of its tabs,
-/// whose keys are named when there are two or more.
-pub fn hints(width: usize, links: bool, tabs: &[u8]) -> String {
+/// lines that link, for Tab, `tabs` gives the numbers of its tabs, whose
+/// keys are named when there are two or more, and `rows` says whether it
+/// has rows, for find.
+pub fn hints(width: usize, links: bool, tabs: &[u8], rows: bool) -> String {
     let numbers: Vec<String> = tabs.iter().map(u8::to_string).collect();
     let hints: Vec<(String, u8)> = bindings()
         .filter(|binding| links || !binding.does(Action::NextLink))
+        .filter(|binding| rows || !binding.does(Action::Find))
         .filter(|binding| tabs.len() > 1 || !binding.does(Action::Tab(1)))
         .filter_map(|binding| {
             let (hint, level) = binding.hint?;
@@ -219,13 +243,26 @@ pub fn hints(width: usize, links: bool, tabs: &[u8]) -> String {
     line
 }
 
-/// The action for `key` while text is typed, as into the go-to box: only
-/// Ctrl-C and Ctrl-Z, since other keys type.
-pub fn while_typing(key: KeyEvent) -> Option<Action> {
+/// How `key` stops the browser while text is typed, as into the go-to
+/// box: only Ctrl-C and Ctrl-Z do, since other keys type.
+pub fn while_typing(key: KeyEvent) -> Option<Stop> {
     if !key.modifiers.contains(CONTROL) {
         return None;
     }
-    action(key).filter(|&action| matches!(action, Action::Quit | Action::Suspend))
+    match action(key)? {
+        Action::Quit => Some(Stop::Quit),
+        Action::Suspend => Some(Stop::Suspend),
+        _ => None,
+    }
+}
+
+/// The character that `key` types into a box, if it types one: other Ctrl
+/// and Alt keys type nothing.
+pub fn typed_char(key: KeyEvent) -> Option<char> {
+    match key.code {
+        KeyCode::Char(c) if !key.modifiers.intersects(CONTROL | KeyModifiers::ALT) => Some(c),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -261,35 +298,48 @@ mod tests {
     #[test]
     fn the_hint_line_leaves_out_what_is_needed_least() {
         let tabs = &[1, 2, 3, 4];
-        let all = "↑↓ move  enter follow  esc back  tab next link  1 2 3 4 tabs  g go to  ? help  \
-                   q quit";
-        assert_eq!(hints(100, true, tabs), all);
+        let all = "↑↓ move  enter follow  esc back  tab next link  1 2 3 4 tabs  / find  g go to  \
+                   ? help  q quit";
+        assert_eq!(hints(100, true, tabs, true), all);
         // The keys of the tabs that the page has.
         assert_eq!(
-            hints(100, true, &[1, 3]),
+            hints(100, true, &[1, 3], true),
             all.replace("1 2 3 4 tabs", "1 3 tabs")
         );
         let without_tabs =
-            "↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit";
-        assert_eq!(hints(all.chars().count() - 1, true, tabs), without_tabs);
-        assert_eq!(hints(100, true, &[]), without_tabs);
+            "↑↓ move  enter follow  esc back  tab next link  / find  g go to  ? help  q quit";
+        assert_eq!(
+            hints(all.chars().count() - 1, true, tabs, true),
+            without_tabs
+        );
+        assert_eq!(hints(100, true, &[], true), without_tabs);
         // One tab needs no key.
-        assert_eq!(hints(100, true, &[3]), without_tabs);
+        assert_eq!(hints(100, true, &[3], true), without_tabs);
+        let without_find =
+            "↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit";
+        assert_eq!(
+            hints(without_tabs.chars().count() - 1, true, tabs, true),
+            without_find
+        );
+        assert_eq!(hints(100, true, &[], false), without_find);
         let without_tab = "↑↓ move  enter follow  esc back  g go to  ? help  q quit";
         assert_eq!(
-            hints(without_tabs.chars().count() - 1, true, tabs),
+            hints(without_find.chars().count() - 1, true, tabs, true),
             without_tab
         );
-        assert_eq!(hints(100, false, &[]), without_tab);
+        assert_eq!(hints(100, false, &[], false), without_tab);
         let least = "↑↓ move  enter follow  esc back  ? help  q quit";
-        assert_eq!(hints(without_tab.chars().count() - 1, true, tabs), least);
+        assert_eq!(
+            hints(without_tab.chars().count() - 1, true, tabs, true),
+            least
+        );
     }
 
     #[test]
     fn only_ctrl_c_and_ctrl_z_work_while_typing() {
         let typing = |code, modifiers| while_typing(KeyEvent::new(code, modifiers));
-        assert_eq!(typing(KeyCode::Char('c'), CONTROL), Some(Action::Quit));
-        assert_eq!(typing(KeyCode::Char('z'), CONTROL), Some(Action::Suspend));
+        assert_eq!(typing(KeyCode::Char('c'), CONTROL), Some(Stop::Quit));
+        assert_eq!(typing(KeyCode::Char('z'), CONTROL), Some(Stop::Suspend));
         assert_eq!(typing(KeyCode::Char('q'), NONE), None);
         assert_eq!(typing(KeyCode::Char('o'), CONTROL), None);
     }

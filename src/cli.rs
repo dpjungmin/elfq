@@ -434,6 +434,11 @@ imports open on their callers, and a tab that an item can't have says why,
 as its command does; an import that has a PLT stub opens as the stub's
 page, since its name finds the stub as SYMBOL.
 
+/ finds text in the page's rows, ignoring case: Enter selects the first
+line that has it, from the selected one on, and n and N the next and the
+one before, going round the end; the status line says which of how many it
+is. Esc closes the prompt.
+
 Long C++ and Rust names are shortened to fit the screen: paths inside
 brackets keep their last part, and brackets become <…> or (…), but rows
 that would then read the same show where they differ. The line under the

@@ -11,6 +11,7 @@
 //! since what an item reaches can take a while to find in a large file.
 
 use std::collections::{BTreeSet, HashMap};
+use std::fmt::Write;
 use std::rc::Rc;
 
 use object::{Architecture, Endian};
@@ -22,8 +23,8 @@ use ratatui::widgets::{Row, Table};
 
 use super::printed::Printed;
 use super::{
-    Cursor, Go, cut, draw_lines, fit_name, follow, imported, keep_lines, link_preview, name_fitter,
-    whereabouts, wrap,
+    Cursor, Go, cut, draw_lines, fit_name, follow, has_ignoring_case, imported, keep_lines,
+    link_preview, name_fitter, whereabouts, wrap,
 };
 use crate::arch::{self, CodeReferenceKind, Refers};
 use crate::binary::{Binary, Item, ItemKind, Source};
@@ -399,6 +400,30 @@ impl ItemPage {
         }
     }
 
+    /// The cursor over the tab's lines or rows.
+    pub fn cursor(&mut self) -> Option<&mut Cursor> {
+        if self.tab == Tab::Code {
+            return self.code.as_mut().ok().map(|code| &mut code.cursor);
+        }
+        self.printed_mut().map(Printed::cursor)
+    }
+
+    /// What find calls the tab's rows: "line" on the code tab.
+    pub fn row_noun(&self) -> &'static str {
+        match self.tab {
+            Tab::Code => "line",
+            _ => "row",
+        }
+    }
+
+    /// The tab's lines or rows that have `lowercase`, ignoring case.
+    pub fn rows_with(&self, lowercase: &str) -> Vec<usize> {
+        match (self.tab, &self.code) {
+            (Tab::Code, Ok(code)) => code.rows_with(lowercase),
+            _ => (self.printed()).map_or_else(Vec::new, |printed| printed.rows_with(lowercase)),
+        }
+    }
+
     /// The command that prints what the tab on the screen shows, if one
     /// does: the code tab has none.
     pub fn command(&self) -> Option<&str> {
@@ -595,6 +620,24 @@ impl CodeTab {
             .lines
             .iter()
             .any(|line| matches!(line.link, Some(Link::Node { .. })))
+    }
+
+    /// The lines that have `lowercase` in their address, instruction or
+    /// note, or the section that the note names, ignoring case.
+    fn rows_with(&self, lowercase: &str) -> Vec<usize> {
+        let has = |text: &str| has_ignoring_case(text, lowercase);
+        let mut address = String::new();
+        (self.code.lines.iter().enumerate())
+            .filter(|(_, line)| {
+                address.clear();
+                write!(address, "{:#x}", line.address).expect("writing to a string");
+                has(&address)
+                    || has(&line.instruction)
+                    || has(&line.note)
+                    || line.elsewhere.as_deref().is_some_and(has)
+            })
+            .map(|(index, _)| index)
+            .collect()
     }
 }
 

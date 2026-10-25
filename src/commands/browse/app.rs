@@ -1,9 +1,10 @@
 //! The browser's state: the pages the user has opened, kept as a web
 //! browser keeps its history, so that Back and Forward move through them,
-//! the go-to box, and how the screen is laid out around the page on top.
+//! the go-to box, find's prompt, and how the screen is laid out around the
+//! page on top.
 
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::Stylize;
 use ratatui::text::Line;
@@ -25,6 +26,8 @@ const MIN_HEIGHT: u16 = 16;
 /// long: two lines of the item's name and where it is, its facts, the tab
 /// line, and the header and one row of a table.
 const PAGE_LINES: usize = 6;
+/// What find says on a page without rows, such as the help.
+const NO_ROWS: &str = "this page has no rows to find in";
 
 /// The browser: the loaded file and the pages opened on it.
 pub struct App<'a> {
@@ -37,6 +40,20 @@ pub struct App<'a> {
     message: Option<String>,
     /// The go-to box, while it is open.
     picker: Option<Picker>,
+    /// What is typed after /, while find's prompt is open.
+    finding: Option<String>,
+    /// The text that find looked for last, for n and N.
+    searched: Option<String>,
+}
+
+/// Where find looks from the selected row.
+#[derive(Clone, Copy)]
+enum FindFrom {
+    /// The first row that has the text, from the selected one on.
+    Here,
+    /// The next or previous one, after or before the selected one.
+    Next,
+    Previous,
 }
 
 impl<'a> App<'a> {
@@ -77,6 +94,8 @@ impl<'a> App<'a> {
             forward: Vec::new(),
             message,
             picker,
+            finding: None,
+            searched: None,
         };
         app.work();
         app
@@ -125,12 +144,29 @@ impl<'a> App<'a> {
         if self.picker.is_some() {
             return self.key_to_picker(key);
         }
+        if self.finding.is_some() {
+            return self.key_to_find(key);
+        }
         let action = keys::action(key)?;
         self.message = None;
         match action {
             Action::Quit => return Some(Stop::Quit),
             Action::Suspend => return Some(Stop::Suspend),
             Action::GoTo => self.picker = Some(Picker::new(&self.session, "")),
+            Action::Find => match self.page().cursor() {
+                Some(_) => self.finding = Some(String::new()),
+                None => self.message = Some(NO_ROWS.to_string()),
+            },
+            Action::FindNext | Action::FindPrevious => match self.searched.clone() {
+                Some(text) => {
+                    let from = match action {
+                        Action::FindNext => FindFrom::Next,
+                        _ => FindFrom::Previous,
+                    };
+                    self.find(&text, from);
+                }
+                None => self.message = Some("press / to find text first".to_string()),
+            },
             Action::Help => {
                 if !matches!(self.page(), View::Help(_)) {
                     self.open(View::Help(Help::new()));
@@ -156,12 +192,12 @@ impl<'a> App<'a> {
     }
 
     /// Whether `key` can be handled before the screen shows the keys
-    /// before it: text typed into the go-to box, Backspace and Esc there,
-    /// and a key that quits or suspends. Every other key moves by what the
-    /// screen shows, such as PageDown by a screenful, so it is handled
-    /// once the screen is drawn.
+    /// before it: text typed into the go-to box or find's prompt,
+    /// Backspace and Esc there, and a key that quits or suspends. Every
+    /// other key moves by what the screen shows, such as PageDown by a
+    /// screenful, so it is handled once the screen is drawn.
     pub fn can_wait_to_draw(&self, key: KeyEvent) -> bool {
-        if self.picker.is_some() {
+        if self.picker.is_some() || self.finding.is_some() {
             return matches!(
                 key.code,
                 KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Esc
@@ -173,10 +209,8 @@ impl<'a> App<'a> {
     /// Does what `key` asks of the go-to box. Keys type into it, so only
     /// Ctrl-C and Ctrl-Z do what they do elsewhere.
     fn key_to_picker(&mut self, key: KeyEvent) -> Option<Stop> {
-        match keys::while_typing(key) {
-            Some(Action::Quit) => return Some(Stop::Quit),
-            Some(Action::Suspend) => return Some(Stop::Suspend),
-            _ => {}
+        if let Some(stop) = keys::while_typing(key) {
+            return Some(stop);
         }
         let picker = self.picker.as_mut()?;
         let session = &self.session;
@@ -202,17 +236,71 @@ impl<'a> App<'a> {
             KeyCode::Home => picker.handle(session, Action::First),
             KeyCode::End => picker.handle(session, Action::Last),
             KeyCode::Backspace => picker.type_char(None),
-            // Other Ctrl and Alt keys type nothing.
-            KeyCode::Char(c)
-                if !key
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-            {
-                picker.type_char(Some(c));
+            _ => {
+                if let Some(c) = keys::typed_char(key) {
+                    picker.type_char(Some(c));
+                }
             }
-            _ => {}
         }
         None
+    }
+
+    /// Does what `key` asks of find's prompt. Keys type into it, so only
+    /// Ctrl-C and Ctrl-Z do what they do elsewhere.
+    fn key_to_find(&mut self, key: KeyEvent) -> Option<Stop> {
+        if let Some(stop) = keys::while_typing(key) {
+            return Some(stop);
+        }
+        let typed = self.finding.as_mut()?;
+        match key.code {
+            KeyCode::Esc => self.finding = None,
+            KeyCode::Enter => {
+                let text = std::mem::take(typed);
+                self.finding = None;
+                if !text.is_empty() {
+                    self.find(&text, FindFrom::Here);
+                    self.searched = Some(text);
+                }
+            }
+            KeyCode::Backspace => {
+                typed.pop();
+            }
+            _ => {
+                if let Some(c) = keys::typed_char(key) {
+                    typed.push(c);
+                }
+            }
+        }
+        None
+    }
+
+    /// Selects a row of the page that has `text`, ignoring case, looking
+    /// `from` the selected one and going round the end, and says which of
+    /// how many it is, or that none has it.
+    fn find(&mut self, text: &str, from: FindFrom) {
+        let lowercase = text.to_lowercase();
+        let page = self.page();
+        let (rows, noun) = (page.rows_with(&lowercase), page.row_noun());
+        let Some(cursor) = page.cursor() else {
+            self.message = Some(NO_ROWS.to_string());
+            return;
+        };
+        if rows.is_empty() {
+            self.message = Some(format!("no {noun} has \"{text}\""));
+            return;
+        }
+        let at = cursor.selected;
+        let count = rows.len();
+        let index = match from {
+            FindFrom::Here => rows.partition_point(|&row| row < at) % count,
+            FindFrom::Next => rows.partition_point(|&row| row <= at) % count,
+            FindFrom::Previous => (rows.partition_point(|&row| row < at) + count - 1) % count,
+        };
+        cursor.select(rows[index]);
+        self.message = Some(match count {
+            1 => format!("the only {noun} with \"{text}\""),
+            _ => format!("{} of {count} {noun}s with \"{text}\"", index + 1),
+        });
     }
 
     /// Opens `view` after the page on the screen, as following a link
@@ -307,10 +395,12 @@ impl<'a> App<'a> {
             .last_mut()
             .expect("the first page is never closed");
         view.draw(frame, body);
-        let status_line = match (waiting, &self.message) {
-            (Some(waiting), _) => Line::raw(cut(&waiting, width)),
-            (None, Some(message)) => Line::raw(cut(message, width)),
-            (None, None) => {
+        let status_line = match (waiting, &self.finding, &self.message) {
+            (Some(waiting), _, _) => Line::raw(cut(&waiting, width)),
+            // What is typed is cut from the left, so that its end shows.
+            (None, Some(typed), _) => Line::raw(cut_left(&format!("find: {typed}▏"), width)),
+            (None, None, Some(message)) => Line::raw(cut(message, width)),
+            (None, None, None) => {
                 Line::raw(cut(&view.preview(&self.session).unwrap_or_default(), width)).dim()
             }
         };
@@ -320,7 +410,15 @@ impl<'a> App<'a> {
             command_area,
             command.into_iter().map(Line::raw).collect(),
         );
-        let hint = keys::hints(width, view.has_links(), &view.tabs());
+        let hint = match self.finding {
+            Some(_) => "enter find  esc cancel".to_string(),
+            None => keys::hints(
+                width,
+                view.has_links(),
+                &view.tabs(),
+                view.cursor().is_some(),
+            ),
+        };
         frame.render_widget(Line::raw(hint).dim(), hints);
     }
 }
@@ -329,6 +427,7 @@ impl<'a> App<'a> {
 mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use ratatui::crossterm::event::KeyModifiers;
 
     use super::super::views::samples;
     use super::*;
@@ -378,6 +477,8 @@ mod tests {
                 forward: Vec::new(),
                 message: None,
                 picker: None,
+                finding: None,
+                searched: None,
             };
             let items = (0..binary.items.len()).map(Node::Item);
             let imports = (0..binary.imports.len()).map(Node::Import);

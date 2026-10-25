@@ -25,8 +25,8 @@
 //! the keys from anywhere and draws on any ratatui backend, so that tests
 //! drive the browser with keys and read what it draws, without a terminal.
 //! Keys that come faster than a large file's answers, as a paste's do,
-//! aren't each answered and drawn in turn: what is typed into go to waits
-//! for the next draw, which comes when no key is left waiting. A page or
+//! aren't each answered and drawn in turn: what is typed into go to or
+//! find's prompt waits for the next draw, which comes when no key is left waiting. A page or
 //! tab that takes a while to work out, as the start page of a large
 //! program, or everything its main reaches, is drawn first with a status
 //! line that says so.
