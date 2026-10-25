@@ -15,8 +15,9 @@ use anyhow::Result;
 
 use super::views::PageCode;
 use crate::binary::{Binary, ItemKind, MemoryBlock, memory_blocks};
+use crate::commands::callers::{self, Answer};
 use crate::commands::symbol::Names;
-use crate::commands::{callers, distinct_nodes, reference_graph};
+use crate::commands::{reference_graph, text};
 use crate::graph::{Graph, Node, VeneerTarget, Veneers};
 
 /// A loaded file, with what every page needs.
@@ -68,10 +69,40 @@ impl<'a> Session<'a> {
         })
     }
 
-    /// How many items use `node`: the callers that `callers SYMBOL` lists.
-    pub(super) fn used_by(&self, node: Node) -> usize {
-        let answer = callers::answer(self.binary, &self.graph, node);
-        distinct_nodes(&answer.rows).len()
+    /// What uses `node`, as `callers SYMBOL` lists it: its rows, with every
+    /// caller, and the notes under them.
+    pub(super) fn callers(&self, node: Node) -> Answer {
+        callers::answer(self.binary, &self.graph, node)
+    }
+
+    /// The command that prints what a page shows about `node`, ready to
+    /// paste into a shell, as in `$ elfq testdata/bin/cpp-x86_64.elf
+    /// callers 'log(unsigned int)'`: the file as the user typed it, and
+    /// the shortest name that finds `node` as SYMBOL, both quoted for the
+    /// shell, then `--all` when `all` asks for it.
+    pub(super) fn command(&self, command: &str, node: Node, all: bool) -> String {
+        let all = if all { " --all" } else { "" };
+        format!(
+            "$ elfq {} {command} {}{all}",
+            text::shell_quote(&self.path.display().to_string()),
+            text::shell_quote(&self.names.query_for(node))
+        )
+    }
+
+    /// The node whose page stands for `node`: for an import, its PLT stub
+    /// when it has one, since the import's name finds the stub as SYMBOL,
+    /// in every command. So code that uses the import through the global
+    /// offset table, as code built with `-fno-plt` calls it, leads to the
+    /// same page as code that calls the stub. An import without a stub
+    /// has a page of its own.
+    pub(super) fn page_node(&self, node: Node) -> Node {
+        match node {
+            Node::Import(index) => match self.names.nodes(&self.binary.imports[index]) {
+                &[found] => found,
+                _ => node,
+            },
+            Node::Item(_) => node,
+        }
     }
 
     /// The memory block that holds `address`, as an index into `blocks`.

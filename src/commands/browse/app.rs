@@ -13,7 +13,9 @@ use ratatui::widgets::{Paragraph, Wrap};
 use super::Stop;
 use super::keys::{self, Action};
 use super::session::Session;
-use super::views::{Go, Help, ItemPage, Picker, View, cut, cut_left, first_line, imported};
+use super::views::{
+    Go, Help, ItemPage, Picker, View, cut, cut_left, draw_lines, first_line, keep_lines, wrap,
+};
 use crate::binary::hex_number;
 use crate::commands::{found_functions, overview, text};
 use crate::graph::Node;
@@ -21,6 +23,10 @@ use crate::graph::Node;
 /// The smallest screen the browser draws on.
 const MIN_WIDTH: u16 = 60;
 const MIN_HEIGHT: u16 = 16;
+/// The fewest lines that the page keeps when the command under it is
+/// long: two lines of the item's name and where it is, its facts, the tab
+/// line, and the header and one row of a table.
+const PAGE_LINES: usize = 6;
 
 /// The browser: the loaded file and the pages opened on it.
 pub struct App<'a> {
@@ -41,10 +47,10 @@ impl<'a> App<'a> {
     /// else the entry point, else the largest function. When `symbol`
     /// finds several items or none, that page opens with the go-to box
     /// over it, `symbol` typed in. The file's first warning is on the
-    /// status line, unless something about `symbol` is.
+    /// status line.
     pub fn new(session: Session<'a>, symbol: Option<&str>) -> Result<App<'a>> {
         let warnings = &session.binary.warnings;
-        let mut message = warnings.first().map(|first| match warnings.len() {
+        let message = warnings.first().map(|first| match warnings.len() {
             1 => format!("warning: {first}"),
             more => format!(
                 "warning: {first}; and {} more, printed when you quit",
@@ -55,15 +61,12 @@ impl<'a> App<'a> {
         let mut picker = None;
         if let Some(query) = symbol {
             match session.names.find(query) {
-                Ok(found) => match found.node {
-                    Node::Item(index) => {
-                        // An address selects the line that holds it.
-                        let at = hex_number(query).and_then(Result::ok);
-                        let lead = found.lead_name(session.binary);
-                        first = Some(ItemPage::new(&session, index, at, &lead));
-                    }
-                    Node::Import(_) => message = Some(imported(&session, found.node)),
-                },
+                Ok(found) => {
+                    // An address selects the line that holds it.
+                    let at = hex_number(query).and_then(Result::ok);
+                    let lead = found.lead_name(session.binary);
+                    first = Some(ItemPage::new(&session, found.node, at, &lead));
+                }
                 // The CLI's error goes over the rows.
                 Err(error) => {
                     picker = Some(Picker::noted(&session, query, first_line(&error)));
@@ -150,9 +153,9 @@ impl<'a> App<'a> {
                     // The header names the item as SYMBOL's answer does,
                     // with what holds an address typed, or the other name
                     // that found it.
-                    let name = &session.binary.items[found.index].name;
-                    let lead = found.lead.as_ref().unwrap_or(name);
-                    let page = ItemPage::new(session, found.index, found.at, lead);
+                    let name = found.node.name(session.binary);
+                    let lead = found.lead.as_deref().unwrap_or(name);
+                    let page = ItemPage::new(session, found.node, found.at, lead);
                     self.picker = None;
                     self.message = None;
                     self.open(View::Item(Box::new(page)));
@@ -209,7 +212,8 @@ impl<'a> App<'a> {
 
     /// Draws the screen: the title line, with the file's name and the
     /// pages that led here, the page or the go-to box, the status line,
-    /// and the hints.
+    /// the command that prints what the page shows, if one does, and the
+    /// hints.
     pub fn draw(&mut self, frame: &mut Frame) {
         let area = frame.area();
         if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
@@ -219,20 +223,32 @@ impl<'a> App<'a> {
             return;
         }
         let width = usize::from(area.width);
-        let [title, body, status, hints] = Layout::vertical([
+        // The command wraps, rather than being cut, so that all of it
+        // can be copied, unless that leaves the page fewer than
+        // PAGE_LINES lines.
+        let command = match (&self.picker, self.history.last()) {
+            (None, Some(view)) => view.command().map_or(Vec::new(), |line| wrap(line, width)),
+            _ => Vec::new(),
+        };
+        let most = usize::from(area.height).saturating_sub(3 + PAGE_LINES);
+        let command = keep_lines(command, most.max(1), width);
+        let [title, body, status, command_area, hints] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Fill(1),
             Constraint::Length(1),
+            Constraint::Length(command.len() as u16),
             Constraint::Length(1),
         ])
         .areas(area);
 
         // The trail is cut from the left, so that the page on the screen
-        // shows.
+        // shows, and long names in it are shortened to fit after the
+        // file's name.
         let mut trail = self.session.file_name();
-        for view in &self.history {
+        let room = width.saturating_sub(trail.chars().count() + 3).max(20);
+        for view in &mut self.history {
             trail += " › ";
-            trail += view.title();
+            trail += view.title(room);
         }
         if self.picker.is_some() {
             trail += " › go to";
@@ -258,7 +274,13 @@ impl<'a> App<'a> {
             None => Line::raw(cut(&view.preview(&self.session).unwrap_or_default(), width)).dim(),
         };
         frame.render_widget(status_line, status);
-        frame.render_widget(Line::raw(keys::hints(width, view.has_links())).dim(), hints);
+        draw_lines(
+            frame,
+            command_area,
+            command.into_iter().map(Line::raw).collect(),
+        );
+        let hint = keys::hints(width, view.has_links(), view.has_tabs());
+        frame.render_widget(Line::raw(hint).dim(), hints);
     }
 }
 
@@ -272,10 +294,75 @@ fn starting_page(session: &Session) -> Result<ItemPage> {
         }
         bail!("elfq found no function with code in the file to start from; give browse a SYMBOL");
     };
-    Ok(ItemPage::new(
-        session,
-        index,
-        None,
-        &binary.items[index].name,
-    ))
+    let name = &binary.items[index].name;
+    Ok(ItemPage::new(session, Node::Item(index), None, name))
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use super::super::views::samples;
+    use super::*;
+    use crate::binary::Binary;
+
+    /// The screen as lines of text.
+    fn lines(terminal: &Terminal<TestBackend>) -> Vec<String> {
+        let buffer = terminal.backend().buffer();
+        let area = buffer.area;
+        (0..area.height)
+            .map(|row| {
+                (0..area.width)
+                    .map(|column| buffer[(column, row)].symbol())
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_callers_tab_shows_its_selected_row_on_a_small_screen() {
+        // Long names make long headers, notes and commands, which leave
+        // the tab few lines.
+        let mut pages = 0;
+        for path in samples() {
+            let binary = Binary::load(&path).unwrap();
+            let session = Session::new(&path, &binary).unwrap();
+            let mut app = App {
+                session,
+                history: Vec::new(),
+                forward: Vec::new(),
+                message: None,
+                picker: None,
+            };
+            let items = (0..binary.items.len()).map(Node::Item);
+            let imports = (0..binary.imports.len()).map(Node::Import);
+            let nodes: Vec<Node> = (items.chain(imports))
+                .filter(|&node| app.session.page_node(node) == node)
+                .filter(|node| node.name(&binary).chars().count() > 100)
+                .collect();
+            for node in nodes {
+                let name = node.name(&binary);
+                let mut page = ItemPage::new(&app.session, node, None, name);
+                page.handle(&app.session, Action::Tab(3));
+                app.history = vec![View::Item(Box::new(page))];
+                for (width, height) in [(80, 24), (60, 16)] {
+                    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                    terminal.draw(|frame| app.draw(frame)).unwrap();
+                    let lines = lines(&terminal);
+                    let shown = |text: &str| lines.iter().any(|line| line.contains(text));
+                    // The table's header and the selected row, or what
+                    // the command says when nothing uses the item, and
+                    // the header's facts.
+                    let rows = shown("Nothing in the file")
+                        || shown("HOW") && lines.iter().any(|line| line.starts_with("> "));
+                    let screen = lines.join("\n");
+                    assert!(rows, "{}, {name}:\n{screen}", path.display());
+                    assert!(shown("used by"), "{}, {name}:\n{screen}", path.display());
+                }
+                pages += 1;
+            }
+        }
+        assert!(pages > 100, "{pages}");
+    }
 }

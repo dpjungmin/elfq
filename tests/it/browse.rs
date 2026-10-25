@@ -87,14 +87,15 @@ fn screen(sample: &str, symbol: Option<&str>, size: (u16, u16), script: &[&str])
 }
 
 /// The selected line of `screen`, and its status line, the one before
-/// the hints.
+/// the command under the page, if there is one, and the hints.
 fn selected_and_status(screen: &str) -> (&str, &str) {
     let lines: Vec<&str> = screen.lines().collect();
     let selected = lines
         .iter()
         .find(|line| line.starts_with("> "))
         .unwrap_or(&"");
-    (selected, lines[lines.len() - 2])
+    let command = lines.iter().position(|line| line.starts_with("$ elfq "));
+    (selected, lines[command.unwrap_or(lines.len() - 1) - 1])
 }
 
 #[test]
@@ -105,6 +106,7 @@ fn a_function_shows_its_code_and_what_each_line_uses() {
 c-x86_64.elf › log_msg
 log_msg  function at 0x1610, 51 bytes, in .text
 used by 5 · uses 2
+[1 code]  3 callers
   ADDRESS  INSTRUCTION
 > 0x1610   endbr64
   0x1614   push    rbx
@@ -130,8 +132,7 @@ used by 5 · uses 2
 
 
 
-
-↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
+↑↓ move  enter follow  esc back  tab next link  1 3 tabs  g go to  ? help  q quit
 ",
     );
     // Tab goes to the next line that uses another item, and the status
@@ -142,6 +143,7 @@ used by 5 · uses 2
 c-x86_64.elf › log_msg
 log_msg  function at 0x1610, 51 bytes, in .text
 used by 5 · uses 2
+[1 code]  3 callers
   ADDRESS  INSTRUCTION
   0x1610   endbr64
   0x1614   push    rbx
@@ -160,7 +162,6 @@ used by 5 · uses 2
   0x163d   pop     rbx
   0x163e   jmp     platform_write     tail call
 
-
 → strlen@plt  function at 0x1080, 16 bytes, in .plt.sec
 ↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
 ",
@@ -176,13 +177,13 @@ fn enter_follows_a_call_and_esc_comes_back_to_it() {
 c-x86_64.elf › log_msg › platform_write
 platform_write  function at 0x1ac0, 20 bytes, in .text
 used by 1 · uses 1
+[1 code]  3 callers
   ADDRESS  INSTRUCTION
 > 0x1ac0   endbr64
   0x1ac4   mov     rdx, rsi
   0x1ac7   mov     rsi, rdi
   0x1aca   mov     edi, 1
   0x1acf   jmp     write@plt  tail call
-
 
 
 
@@ -287,6 +288,7 @@ fn without_symbol_the_function_that_the_overview_starts_from_opens() {
 c-x86_64.elf › main
 main  function at 0x10a0, 195 bytes, in .text
 used by 1 · uses 13
+[1 code]  3 callers
   ADDRESS  INSTRUCTION
 > 0x10a0   endbr64
   0x10a4   sub     rsp, 8
@@ -305,7 +307,6 @@ used by 1 · uses 13
   0x10e6   mov     esi, 0x19
   0x10eb   lea     rdi, [rip+0xfbe]  uses frame_a
   0x10f2   call    process_frame     call
-  0x10f7   mov     esi, 0x11
 
 ↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
 ",
@@ -322,6 +323,7 @@ fn symbol_is_found_as_the_commands_find_it() {
 c-x86_64.elf › log_msg
 log_msg (which holds 0x162e)  function at 0x1610, 51 bytes, in .text
 used by 5 · uses 2
+[1 code]  3 callers
   ADDRESS  INSTRUCTION
   0x1610   endbr64
   0x1614   push    rbx
@@ -340,39 +342,74 @@ used by 5 · uses 2
   0x163d   pop     rbx
   0x163e   jmp     platform_write     tail call
 
-
 → platform_write  function at 0x1ac0, 20 bytes, in .text
 ↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
 ",
     );
-    // An import has no page: its code is in a shared library.
+    // An import without a PLT stub has a page of its own, with what calls
+    // it.
     assert_output(
         &screen("rust-x86_64-nodebug.elf", Some("memcpy"), (80, 24), &[]),
         "\
-rust-x86_64-nodebug.elf › main
-main  function at 0x15220, 46 bytes, in .text
-used by 1 · uses 4
-  ADDRESS  INSTRUCTION
-> 0x15220  push    rax
-  0x15221  mov     rcx, rsi
-  0x15224  movzx   eax, byte ptr [rip-0xade3]  uses __rustc_debug_gdb_scripts_s…
-  0x1522b  movsxd  rdx, edi
-  0x1522e  lea     rax, [rip-0x695]            address taken elfq_sample::main
-  0x15235  mov     [rsp], rax
-  0x15239  lea     rsi, [rip+0x3dab8]          uses .data.rel.ro@0x52cf8
-  0x15240  mov     rdi, rsp
-  0x15243  xor     r8d, r8d
-  0x15246  call    qword ptr [rip+0x3f924]     call lang_start_internal
-  0x1524c  pop     rcx
-  0x1524d  ret
-
-
-
-
-
-
-memcpy is imported from a shared library: its code isn't in this file
+rust-x86_64-nodebug.elf › memcpy
+memcpy  imported from a shared library: its code isn't in this file
+used by 57
+[3 callers]
+  HOW            AT                  CALLER
+> call           0x4cced             <&[u8] as SpecNewImpl>::spec_new_impl
+  call           0x2ebed             <LoopingLookup<…>>::new_lookup
+  call           0x2d0a6 and 2 more  <BalancingContext<…>>::bulk_steal_left
+  call           0x2d458 and 2 more  <BalancingContext<…>>::bulk_steal_right
+  address taken  0x1c8e6             <BalancingContext<…>>::merge_tracking_chil…
+  call           0x1cad9             <BalancingContext<…>>::merge_tracking_chil…
+  call           0x430f8             …Abbreviation, Internal>, Edge>>::insert::…
+  call           0x434ad             <Handle<NodeRef<…>, KV>>::split::<Global>
+  call           0x43f3b, 0x43f53    <Handle<NodeRef<…>, KV>>::split_leaf_data
+  call           0x42fbb             …Abbreviation, Leaf>, Edge>>::insert::<Glo…
+  address taken  0x1d1e1             <Handle<…>>::remove_leaf_kv::<…>
+  call           0x1d3bf             <Handle<…>>::remove_leaf_kv::<…>
+  call           0x4cc56             <String as From<Cow<str>>>::from
+  call           0x3f93f             <String as Write>::write_str
+  call           0x4c87a, 0x4c900    <alloc::string::String>::from_utf8_lossy
+  call           0x3f6db             <Vec<u8> as Write>::write
+→ <&[u8] as <alloc::ffi::c_str::CString>::new::SpecNewImpl>::spec_new_impl  fun…
+$ elfq testdata/bin/rust-x86_64-nodebug.elf callers memcpy --all
 ↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
+",
+    );
+    assert_output(
+        &screen("rust-x86_64-nodebug.elf", Some("memcpy"), (100, 30), &[]),
+        "\
+rust-x86_64-nodebug.elf › memcpy
+memcpy  imported from a shared library: its code isn't in this file
+used by 57
+[3 callers]
+  HOW            AT                  CALLER
+> call           0x4cced             <&[u8] as SpecNewImpl>::spec_new_impl
+  call           0x2ebed             <LoopingLookup<…>>::new_lookup
+  call           0x2d0a6 and 2 more  <BalancingContext<usize, ThreadInfo>>::bulk_steal_left
+  call           0x2d458 and 2 more  <BalancingContext<usize, ThreadInfo>>::bulk_steal_right
+  address taken  0x1c8e6             <BalancingContext<…>>::merge_tracking_child_edge::<Global>
+  call           0x1cad9             <BalancingContext<…>>::merge_tracking_child_edge::<Global>
+  call           0x430f8             …ef<Mut, u64, Abbreviation, Internal>, Edge>>::insert::<Global>
+  call           0x434ad             <Handle<NodeRef<…>, KV>>::split::<Global>
+  call           0x43f3b, 0x43f53    <Handle<NodeRef<…>, KV>>::split_leaf_data
+  call           0x42fbb             …odeRef<Mut, u64, Abbreviation, Leaf>, Edge>>::insert::<Global>
+  address taken  0x1d1e1             <Handle<…>>::remove_leaf_kv::<remove_kv::{closure#0}, Global>
+  call           0x1d3bf             <Handle<…>>::remove_leaf_kv::<remove_kv::{closure#0}, Global>
+  call           0x4cc56             <String as From<Cow<str>>>::from
+  call           0x3f93f             <alloc::string::String as core::fmt::Write>::write_str
+  call           0x4c87a, 0x4c900    <alloc::string::String>::from_utf8_lossy
+  call           0x3f6db             <alloc::vec::Vec<u8> as std::io::Write>::write
+  call           0x3f74f             <alloc::vec::Vec<u8> as std::io::Write>::write_all
+  call           0x3f65a             <alloc::vec::Vec<u8> as std::io::Write>::write_all_vectored
+  call           0x3f4d1             <alloc::vec::Vec<u8> as std::io::Write>::write_vectored
+  call           0x16bda, 0x16d5a    <OnceCell<…>>::try_init::<get_or_init<…>::{closure#0}, !>
+  call           0x30b2c             <Unit<EndianSlice<LittleEndian>, usize>>::new
+  call           0x195cb and 8 more  <Cache>::with_global::<resolve::{closure#1}>
+→ <&[u8] as <alloc::ffi::c_str::CString>::new::SpecNewImpl>::spec_new_impl  function at 0x4cc90, 30…
+$ elfq testdata/bin/rust-x86_64-nodebug.elf callers memcpy --all
+↑↓ move  enter follow  esc back  tab next link  1 3 tabs  g go to  ? help  q quit
 ",
     );
 }
@@ -470,6 +507,7 @@ go to: crc▏
 c-x86_64.elf › main › log_msg
 log_msg (which holds 0x162e)  function at 0x1610, 51 bytes, in .text
 used by 5 · uses 2
+[1 code]  3 callers
   ADDRESS  INSTRUCTION
   0x1610   endbr64
   0x1614   push    rbx
@@ -487,7 +525,6 @@ used by 5 · uses 2
   0x163b   xor     esi, esi
   0x163d   pop     rbx
   0x163e   jmp     platform_write     tail call
-
 
 → platform_write  function at 0x1ac0, 20 bytes, in .text
 ↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
@@ -524,11 +561,12 @@ Keys
   ↑ ↓  k j             move
   PgUp PgDn Space      a page up or down
   Home End             the first or last line
-  Enter → l            follow the line's link
+  Enter → l            follow the line's link, or open the row
   Esc ← h Bksp Ctrl-O  back to where you were
   ]                    forward again
   Tab Shift-Tab        the next or previous line that uses another item
-  g                    go to a function or data object, by name or address
+  1 3                  tabs: 1 code, 3 callers
+  g                    go to a function, data object or import, by name or address
   ?                    this help
   Ctrl-Z               back to the shell; fg returns
   q Ctrl-C             quit
@@ -551,6 +589,71 @@ Words
   in .bss              the section of an item in another block of memory than this function
   ~12  ?               an estimated size, and an unknown size
 
+↑↓ move  enter follow  esc back  g go to  ? help  q quit
+",
+    );
+    // On smaller screens, the lines wrap where they must, and the rest
+    // is a scroll away.
+    assert_output(
+        &screen("c-cortex-m7.elf", Some("app_tick"), (100, 30), &["?"]),
+        "\
+c-cortex-m7.elf › app_tick › help
+Keys
+  ↑ ↓  k j             move
+  PgUp PgDn Space      a page up or down
+  Home End             the first or last line
+  Enter → l            follow the line's link, or open the row
+  Esc ← h Bksp Ctrl-O  back to where you were
+  ]                    forward again
+  Tab Shift-Tab        the next or previous line that uses another item
+  1 3                  tabs: 1 code, 3 callers
+  g                    go to a function, data object or import, by name or address
+  ?                    this help
+  Ctrl-Z               back to the shell; fg returns
+  q Ctrl-C             quit
+Words
+  call                 a direct call, or a call through a register that the code loaded with the
+                       target's address, as a long call does
+  tail call            a jump to the start of a function, which then returns to the caller's caller
+  uses                 code reads or writes data, or loads its address
+  address taken        code loads a function's address, as when passing a function pointer, or an
+                       import's
+  pointer              data holds a pointer to it, as in a table of functions
+  via veneer           through a stub that the linker added; the note names where it ends up
+  via PLT              through a PLT stub that passes the call on to one of the file's own
+                       functions; the note names it
+  jump ↓  jump ↑       a branch to a line further down or up the function, or a case of a table of
+                       jumps; Enter moves there
+  address ↓  address ↑ adr loads the address of a line in this function, such as a table's; Enter
+
+↑↓ move  enter follow  esc back  g go to  ? help  q quit
+",
+    );
+    assert_output(
+        &screen("c-cortex-m7.elf", Some("app_tick"), (80, 24), &["?"]),
+        "\
+c-cortex-m7.elf › app_tick › help
+Keys
+  ↑ ↓  k j             move
+  PgUp PgDn Space      a page up or down
+  Home End             the first or last line
+  Enter → l            follow the line's link, or open the row
+  Esc ← h Bksp Ctrl-O  back to where you were
+  ]                    forward again
+  Tab Shift-Tab        the next or previous line that uses another item
+  1 3                  tabs: 1 code, 3 callers
+  g                    go to a function, data object or import, by name or
+                       address
+  ?                    this help
+  Ctrl-Z               back to the shell; fg returns
+  q Ctrl-C             quit
+Words
+  call                 a direct call, or a call through a register that the code
+                       loaded with the target's address, as a long call does
+  tail call            a jump to the start of a function, which then returns to
+                       the caller's caller
+  uses                 code reads or writes data, or loads its address
+  address taken        code loads a function's address, as when passing a
 
 ↑↓ move  enter follow  esc back  g go to  ? help  q quit
 ",
@@ -577,6 +680,7 @@ fn a_shared_library_calls_its_own_functions_through_plt_stubs() {
 c-x86_64.so › app_tick
 app_tick  function at 0x1770, 62 bytes, in .text
 used by 1 · uses 3
+[1 code]  3 callers
   ADDRESS  INSTRUCTION
 > 0x1770   endbr64
   0x1774   imul    eax, edi, 0xc28f5c29
@@ -602,8 +706,7 @@ used by 1 · uses 3
 
 
 
-
-↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
+↑↓ move  enter follow  esc back  tab next link  1 3 tabs  g go to  ? help  q quit
 ",
     );
     // Through the stub, to the function.
@@ -618,6 +721,7 @@ used by 1 · uses 3
 c-x86_64.so › app_tick › log_msg
 log_msg  function at 0x16c0, 51 bytes, in .text
 used by 5 · uses 2
+[1 code]  3 callers
   ADDRESS  INSTRUCTION
 > 0x16c0   endbr64
   0x16c4   push    rbx
@@ -643,8 +747,7 @@ used by 5 · uses 2
 
 
 
-
-↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
+↑↓ move  enter follow  esc back  tab next link  1 3 tabs  g go to  ? help  q quit
 ",
     );
 }
@@ -657,6 +760,7 @@ fn a_cpp_function_names_what_it_calls() {
 cpp-x86_64.elf › process_frame
 app::process_frame(app::Frame const&, app::Stage&)  function at 0x15c0, 254 bytes, in .text
 used by 1 · uses 7 · 1 call elfq can't follow
+[1 code]  3 callers
   ADDRESS  INSTRUCTION
 > 0x15c0   endbr64
   0x15c4   sub     rsp, 0x58
@@ -681,9 +785,8 @@ used by 1 · uses 7 · 1 call elfq can't follow
   0x161a   jbe     0x1680                      jump ↓
   0x161c   mov     r9d, 0x20
   0x1622   xor     eax, eax
-  0x1624   mov     rdi, rsp
 
-↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
+↑↓ move  enter follow  esc back  tab next link  1 3 tabs  g go to  ? help  q quit
 ",
     );
 }
@@ -698,6 +801,7 @@ c-cortex-m7.elf › SysTick_Handler
 SysTick_Handler  function at 0x0, 16 bytes, in .itcm (0x00000000..0x000000e0),
 copied there from 0x30000040
 root: vector table · used by 1 · uses 2
+[1 code]  3 callers
   ADDRESS  INSTRUCTION
 > 0x0      ldr     r3, [pc, #8]       uses systick_count in .bss
   0x2      ldr     r0, [r3]
@@ -705,7 +809,6 @@ root: vector table · used by 1 · uses 2
   0x6      str     r0, [r3]
   0x8      b.w     __app_tick_veneer  tail call via veneer → app_tick in .text
   0xc      .word   0x20000444         systick_count in .bss
-
 
 
 
@@ -728,6 +831,7 @@ root: vector table · used by 1 · uses 2
 c-cortex-m7.elf › app_tick
 app_tick  function at 0x300002e4, 60 bytes, in .text (0x30000000..0x30000edc)
 used by 2 · uses 3
+[1 code]  3 callers
   ADDRESS     INSTRUCTION
 > 0x300002e4  ldr     r3, [pc, #44]   = 0xc28f5c29
   0x300002e6  ldr     r2, [pc, #48]   = 0x028f5c28
@@ -753,8 +857,7 @@ used by 2 · uses 3
 
 
 
-
-↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
+↑↓ move  enter follow  esc back  tab next link  1 3 tabs  g go to  ? help  q quit
 ",
     );
     assert_output(
@@ -764,6 +867,7 @@ c-cortex-m7.elf › Default_Handler
 Default_Handler (also named NMI_Handler)  function at 0x300005f4, 2 bytes, in
 .text (0x30000000..0x30000edc)
 root: vector table · used by 1 · uses 0
+[1 code]  3 callers
   ADDRESS     INSTRUCTION
 > 0x300005f4  b       0x300005f4  jump ↑
 
@@ -781,9 +885,8 @@ root: vector table · used by 1 · uses 0
 
 
 
-
 → 0x300005f4, in this function
-↑↓ move  enter follow  esc back  g go to  ? help  q quit
+↑↓ move  enter follow  esc back  1 3 tabs  g go to  ? help  q quit
 ",
     );
 }
@@ -801,8 +904,8 @@ c-cortex-m4.elf › Reset_Handler
 Reset_Handler (which holds 0x80005d8)  function at 0x80005a0, 76 bytes, in .text
 (0x08000000..0x08000e0c)
 root: entry point · used by 1 · uses 3
+[1 code]  3 callers
   ADDRESS    INSTRUCTION
-  0x80005cc  movs    r1, #0
   0x80005ce  bl      memset         call
   0x80005d2  bl      main           call
   0x80005d6  b       0x80005d6      jump ↑
@@ -812,7 +915,7 @@ root: entry point · used by 1 · uses 3
   0x80005e4  .word   0x20000020     config_sum in .bss
   0x80005e8  .word   0x20000048
 → stats  data object at 0x20000000, 32 bytes, in .data
-↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
+↑↓ move  enter follow  esc back  tab next link  1 3 tabs  g go to  ? help  q quit
 ",
     );
 }
@@ -830,8 +933,8 @@ c-strtod.elf › _strtod_l
 _strtod_l (which holds 0x8000082)  function at 0x8000058, 4084 bytes, in .text
 (0x08000000..0x08005324)
 used by 5 · uses 42 · 1 jump elfq can't follow
+[1 code]  3 callers
   ADDRESS    INSTRUCTION
-  0x800007a  ldrb    r2, [r1], #1
   0x800007e  cmp     r2, #0x2d
   0x8000080  bhi     0x8000140             jump ↓
 > 0x8000082  adr     r0, 0x8000088         address ↓
@@ -841,7 +944,7 @@ used by 5 · uses 42 · 1 jump elfq can't follow
   0x8000090  .word   0x08000141            jump ↓
   0x8000094  .word   0x08000141            jump ↓
 → 0x8000088, in this function
-↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
+↑↓ move  enter follow  esc back  tab next link  1 3 tabs  g go to  ? help  q quit
 ",
     );
     assert_output(
@@ -851,8 +954,8 @@ c-strtod-stripped.elf › fn_0x8000058
 fn_0x8000058 (which holds 0x8000082)  function at 0x8000058, ~4124 bytes, in .text
 (0x08000000..0x08005324)
 found by following the code · used by 1 · uses 44 · 1 jump elfq can't follow
+[1 code]  3 callers
   ADDRESS    INSTRUCTION
-  0x800007a  ldrb    r2, [r1], #1
   0x800007e  cmp     r2, #0x2d
   0x8000080  bhi     0x8000140             jump ↓
 > 0x8000082  adr     r0, 0x8000088         address ↓
@@ -862,7 +965,7 @@ found by following the code · used by 1 · uses 44 · 1 jump elfq can't follow
   0x8000090  .word   0x08000141            jump ↓
   0x8000094  .word   0x08000141            jump ↓
 → 0x8000088, in this function
-↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
+↑↓ move  enter follow  esc back  tab next link  1 3 tabs  g go to  ? help  q quit
 ",
     );
     // Enter on a word goes to its case, which here comes before the table,
@@ -899,6 +1002,7 @@ c-cortex-m7.elf › process_frame
 process_frame (which holds 0x3000034c)  function at 0x30000320, 376 bytes, in
 .text (0x30000000..0x30000edc)
 used by 1 · uses 10
+[1 code]  3 callers
   ADDRESS     INSTRUCTION
   0x30000340  cmp     r3, r6
   0x30000342  bhi.w   0x3000045a             jump ↓
@@ -916,7 +1020,6 @@ used by 1 · uses 10
   0x30000362  beq     0x30000450             jump ↓
   0x30000364  adds    r0, r4, #6
   0x30000366  add     r4, sp, #0x20
-  0x30000368  movs    r3, #0
 → crc32  function at 0x10, 48 bytes, in .itcm, through __crc32_veneer
 ↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
 ",
@@ -952,10 +1055,10 @@ c-cortex-m7.elf › SysTick_Handler
 SysTick_Handler  function at 0x0, 16 bytes, in .itcm (0x00000000..0x000000e0),
 copied there from 0x30000040
 root: vector table · used by 1 · uses 2
+[1 code]  3 callers
   ADDRESS
 > 0x0      uses systick_count in .bss
   0x8      tail call via veneer → app_tick in .text
-
 
 
 
@@ -982,6 +1085,7 @@ c-cortex-m7.elf › Default_Handler
 Default_Handler (also named NMI_Handler)  function at 0x300005f4, 2 bytes, in
 .text (0x30000000..0x30000edc)
 root: vector table · used by 1 · uses 0
+[1 code]  3 callers
 elfq prints only the instructions of Cortex-M cores up to Armv7E-M, and this
 file is for Armv8-M Mainline. No line of Default_Handler uses another item.
 
@@ -1000,8 +1104,7 @@ file is for Armv8-M Mainline. No line of Default_Handler uses another item.
 
 
 
-
-↑↓ move  enter follow  esc back  g go to  ? help  q quit
+↑↓ move  enter follow  esc back  1 3 tabs  g go to  ? help  q quit
 ",
     );
     // A file that doesn't say which core it is for.
@@ -1021,10 +1124,10 @@ c-cortex-m7.elf › SysTick_Handler
 SysTick_Handler  function at 0x0, 16 bytes, in .itcm (0x00000000..0x000000e0),
 copied there from 0x30000040
 root: vector table · used by 1 · uses 2
+[1 code]  3 callers
   ADDRESS
 > 0x0      uses systick_count in .bss
   0x8      tail call via veneer → app_tick in .text
-
 
 
 
@@ -1053,6 +1156,7 @@ fn a_stripped_file_names_its_items_by_address() {
 c-x86_64-stripped.elf › fn_0x1170
 fn_0x1170  function at 0x1170, 38 bytes, in .text
 root: entry point · used by nothing · uses 2
+[1 code]  3 callers
   ADDRESS  INSTRUCTION
 > 0x1170   endbr64
   0x1174   xor     ebp, ebp
@@ -1072,7 +1176,6 @@ root: entry point · used by nothing · uses 2
 
 
 
-
 ↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
 ",
     );
@@ -1082,6 +1185,7 @@ root: entry point · used by nothing · uses 2
 c-cortex-m7-stripped.elf › fn_0x0
 fn_0x0  function at 0x0, ~16 bytes, in .itcm (0x00000000..0x000000e0), copied there from 0x30000040
 found by following the code · root: vector table · used by 1 · uses 2
+[1 code]  3 callers
   ADDRESS  INSTRUCTION
 > 0x0      ldr     r3, [pc, #8]  uses .bss@0x20000444 in .bss
   0x2      ldr     r0, [r3]
@@ -1106,9 +1210,8 @@ found by following the code · root: vector table · used by 1 · uses 2
 
 
 
-
 → .bss@0x20000444  data object at 0x20000444, ~4 bytes, in .bss
-↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
+↑↓ move  enter follow  esc back  tab next link  1 3 tabs  g go to  ? help  q quit
 ",
     );
 }
@@ -1121,6 +1224,7 @@ fn a_page_without_code_says_why() {
 c-x86_64.elf › _init
 _init  function at 0x1000, size unknown, in .init
 root: in .init · used by nothing
+[1 code]  3 callers
 elfq doesn't know where _init ends, so it can't read its code
 
 
@@ -1140,17 +1244,20 @@ elfq doesn't know where _init ends, so it can't read its code
 
 
 
-
-↑↓ move  enter follow  esc back  g go to  ? help  q quit
+↑↓ move  enter follow  esc back  1 3 tabs  g go to  ? help  q quit
 ",
     );
+    // A data object's page opens on its callers.
     assert_output(
         &screen("c-x86_64.elf", Some("frames_ok"), (80, 24), &[]),
         "\
 c-x86_64.elf › frames_ok
 frames_ok  data object at 0x4058, 4 bytes, in .bss
 used by 2 · uses 0
-frames_ok is a data object: it has no code
+[3 callers]
+  HOW   AT      CALLER
+> uses  0x1892  process_frame
+  uses  0x1961  report
 
 
 
@@ -1165,14 +1272,15 @@ frames_ok is a data object: it has no code
 
 
 
-
-
-
-
-
-↑↓ move  enter follow  esc back  g go to  ? help  q quit
+→ process_frame  function at 0x1700, 532 bytes, in .text
+$ elfq testdata/bin/c-x86_64.elf callers frames_ok
+↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
 ",
     );
+    // A data object has no code tab, and 1 says why.
+    let page = screen("c-x86_64.elf", Some("frames_ok"), (80, 24), &["1"]);
+    let (_, status) = selected_and_status(&page);
+    assert_eq!(status, "frames_ok is a data object: it has no code");
 }
 
 #[test]
@@ -1197,6 +1305,7 @@ fn a_small_screen_asks_for_more_room() {
 c-x86_64.elf › main
 main  function at 0x10a0, 195 bytes, in .text
 used by 1 · uses 13
+[1 code]  3 callers
   ADDRESS  INSTRUCTION
 > 0x10a0   endbr64
   0x10a4   sub     rsp, 8
@@ -1207,7 +1316,6 @@ used by 1 · uses 13
   0x10bd   mov     edi, 1
   0x10c2   call    register_handler  call
   0x10c7   lea     rsi, [rip+0x1a2]  address taken on_data
-  0x10ce   mov     edi, 2
 
 ↑↓ move  enter follow  esc back  g go to  ? help  q quit
 ",
@@ -1268,11 +1376,11 @@ fn a_long_chain_of_calls_can_be_followed() {
 long-chain.elf › entry › fn_0x8113870 › fn_0x8113868 › fn_0x8113860
 fn_0x8113860  function at 0x8113860, ~8 bytes, in .text (0x08100000..0x08113880)
 found by following the code · used by 1 · uses 1
+[1 code]  3 callers
   ADDRESS    INSTRUCTION
 > 0x8113860  push    {lr}
   0x8113862  bl      fn_0x8113858  call
   0x8113866  pop     {pc}
-
 
 
 
@@ -1346,6 +1454,559 @@ fn used_by_counts_the_callers_that_the_callers_command_lists() {
 }
 
 #[test]
+fn three_lists_the_callers_that_the_callers_command_lists() {
+    assert_output(
+        &screen("c-cortex-m7.elf", Some("log_msg"), (100, 30), &["3"]),
+        "\
+c-cortex-m7.elf › log_msg
+log_msg  function at 0x30000288, 26 bytes, in .text (0x30000000..0x30000edc)
+used by 4 · uses 2
+ 1 code  [3 callers]
+  HOW        AT                      CALLER
+> call       0x30000304              app_tick
+  tail call  0x300002b0              on_button
+  call       0x30000464, 0x3000047a  process_frame
+  call       0x3000053c              report
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+→ app_tick  function at 0x300002e4, 60 bytes, in .text
+$ elfq testdata/bin/c-cortex-m7.elf callers log_msg
+↑↓ move  enter follow  esc back  tab next link  1 3 tabs  g go to  ? help  q quit
+",
+    );
+    assert_output(
+        &screen("c-cortex-m7.elf", Some("log_msg"), (80, 24), &["3"]),
+        "\
+c-cortex-m7.elf › log_msg
+log_msg  function at 0x30000288, 26 bytes, in .text (0x30000000..0x30000edc)
+used by 4 · uses 2
+ 1 code  [3 callers]
+  HOW        AT                      CALLER
+> call       0x30000304              app_tick
+  tail call  0x300002b0              on_button
+  call       0x30000464, 0x3000047a  process_frame
+  call       0x3000053c              report
+
+
+
+
+
+
+
+
+
+
+
+
+→ app_tick  function at 0x300002e4, 60 bytes, in .text
+$ elfq testdata/bin/c-cortex-m7.elf callers log_msg
+↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
+",
+    );
+    // A shared library calls its own functions through PLT stubs, and
+    // says so under the rows, as `callers` does.
+    assert_output(
+        &screen("c-x86_64.so", Some("log_msg"), (80, 24), &["3"]),
+        "\
+c-x86_64.so › log_msg
+log_msg  function at 0x16c0, 51 bytes, in .text
+used by 5 · uses 2
+ 1 code  [3 callers]
+  HOW        AT              CALLER
+> call       0x179f          app_tick
+  call       0x1b5f          debug_dump
+  tail call  0x1711          on_button
+  call       0x199e, 0x19b8  process_frame
+  call       0x1b22          report
+
+
+
+
+
+
+
+
+
+
+This includes calls through log_msg@plt.
+→ app_tick  function at 0x1770, 62 bytes, in .text
+$ elfq testdata/bin/c-x86_64.so callers log_msg
+↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
+",
+    );
+    // 1 shows the code again, as it was left.
+    assert_eq!(
+        screen("c-x86_64.elf", Some("0x162e"), (80, 24), &["3", "1"]),
+        screen("c-x86_64.elf", Some("0x162e"), (80, 24), &[])
+    );
+}
+
+#[test]
+fn long_names_are_shortened_where_they_are_listed() {
+    // Inside brackets, paths keep their last part, and brackets become
+    // <…> as the room needs, but the two `split` rows, which differ only
+    // in Internal and Leaf, show where they differ. The status line has
+    // the selected name in full, and the command, SYMBOL as the CLI's
+    // answer names it.
+    assert_output(
+        &screen(
+            "rust-x86_64-nodebug.elf",
+            Some("__rust_dealloc"),
+            (80, 24),
+            &["3"],
+        ),
+        "\
+rust-x86_64-nodebug.elf › __rust_dealloc
+__rustc::__rust_dealloc  function at 0x15260, 5 bytes, in .text
+used by 82 · uses 1
+ 1 code  [3 callers]
+  HOW            AT                   CALLER
+> call           0x4cdb1              <&[u8] as SpecNewImpl>::spec_new_impl
+  call           0x3e877, 0x3e8d5     <DisplayBacktrace as Display>::fmt
+  call           0x2f079              <LoopingLookup<…>>::new_lookup
+  address taken  0x39925, 0x39a37     <IntoIter<u64, Result<…>>>::dying_next
+  call           0x39973, 0x39bd9     <IntoIter<u64, Result<…>>>::dying_next
+  address taken  0x39ce5, 0x39df7     <IntoIter<u64, Abbreviation>>::dying_next
+  call           0x39d33, 0x39f99     <IntoIter<u64, Abbreviation>>::dying_next
+  call           0x1cb93              <BalancingContext<…>>::merge_tracking_chi…
+  call           0x4358d              …Abbreviation, Internal>, KV>>::split::<G…
+  call           0x43401              …Abbreviation, Leaf>, KV>>::split::<Globa…
+  call           0x1d018, 0x1d558     <Handle<…>>::remove_leaf_kv::<…>
+  call           0x42e9e              <NodeRef<…>>::new_internal::<Global>
+  call           0x4cb03, 0x4cb80     <CString>::_from_vec_unchecked
+  tail call      0x43652              <alloc::raw_vec::RawVecInner>::deallocate
+Calls to __rustc::__rust_dealloc through a pointer aren't listed, since elfq
+can't see them.
+→ <&[u8] as <alloc::ffi::c_str::CString>::new::SpecNewImpl>::spec_new_impl  fun…
+$ elfq testdata/bin/rust-x86_64-nodebug.elf callers __rust_dealloc --all
+↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
+",
+    );
+    assert_output(
+        &screen(
+            "rust-x86_64-nodebug.elf",
+            Some("__rust_dealloc"),
+            (100, 30),
+            &["3"],
+        ),
+        "\
+rust-x86_64-nodebug.elf › __rust_dealloc
+__rustc::__rust_dealloc  function at 0x15260, 5 bytes, in .text
+used by 82 · uses 1
+ 1 code  [3 callers]
+  HOW            AT                   CALLER
+> call           0x4cdb1              <&[u8] as SpecNewImpl>::spec_new_impl
+  call           0x3e877, 0x3e8d5     <DisplayBacktrace as Display>::fmt
+  call           0x2f079              <LoopingLookup<…>>::new_lookup
+  address taken  0x39925, 0x39a37     <IntoIter<u64, Result<Arc<Abbreviations>, Error>>>::dying_next
+  call           0x39973, 0x39bd9     <IntoIter<u64, Result<Arc<Abbreviations>, Error>>>::dying_next
+  address taken  0x39ce5, 0x39df7     <IntoIter<u64, Abbreviation>>::dying_next
+  call           0x39d33, 0x39f99     <IntoIter<u64, Abbreviation>>::dying_next
+  call           0x1cb93              <BalancingContext<…>>::merge_tracking_child_edge::<Global>
+  call           0x4358d              …eRef<Mut, u64, Abbreviation, Internal>, KV>>::split::<Global>
+  call           0x43401              …<NodeRef<Mut, u64, Abbreviation, Leaf>, KV>>::split::<Global>
+  call           0x1d018, 0x1d558     <Handle<…>>::remove_leaf_kv::<remove_kv::{closure#0}, Global>
+  call           0x42e9e              <NodeRef<…>>::new_internal::<Global>
+  call           0x4cb03, 0x4cb80     <alloc::ffi::c_str::CString>::_from_vec_unchecked
+  tail call      0x43652              <alloc::raw_vec::RawVecInner>::deallocate
+  call           0x4c9ed              <alloc::string::String>::from_utf8_lossy
+  tail call      0x39461              <Arc<Abbreviations>>::drop_slow
+  call           0x39489              <Arc<Abbreviations>>::drop_slow
+  tail call      0x39393              <Arc<Dwarf<EndianSlice<LittleEndian>>>>::drop_slow
+  call           0x393d2              <Arc<Dwarf<EndianSlice<LittleEndian>>>>::drop_slow
+  call           0x393fb              <Arc<Mutex<Vec<u8>>>>::drop_slow
+  tail call      0x39421              <Arc<Mutex<Vec<u8>>>>::drop_slow
+Calls to __rustc::__rust_dealloc through a pointer aren't listed, since elfq can't see them.
+→ <&[u8] as <alloc::ffi::c_str::CString>::new::SpecNewImpl>::spec_new_impl  function at 0x4cc90, 30…
+$ elfq testdata/bin/rust-x86_64-nodebug.elf callers __rust_dealloc --all
+↑↓ move  enter follow  esc back  tab next link  1 3 tabs  g go to  ? help  q quit
+",
+    );
+    // A page's name in the title is shortened to fit after the file's,
+    // and the trail is cut from the left.
+    let script = [
+        "3", "Down", "Down", "Down", "Down", "Down", "Down", "Down", "Down", "Enter",
+    ];
+    let page = screen(
+        "rust-x86_64-nodebug.elf",
+        Some("__rust_dealloc"),
+        (80, 24),
+        &script,
+    );
+    assert_eq!(
+        page.lines().next().unwrap(),
+        "…t-x86_64-nodebug.elf › __rust_dealloc › Handle<NodeRef<…>, KV>::split::<Global>"
+    );
+}
+
+#[test]
+fn enter_on_a_caller_opens_its_callers_with_its_code_at_the_call() {
+    // A link opens a page on the same tab, so Enter after Enter walks up
+    // the callers: from log_msg to process_frame, then to main.
+    let script = ["3", "Down", "Down", "Down", "Enter"];
+    assert_output(
+        &screen("c-x86_64.elf", Some("log_msg"), (100, 30), &script),
+        "\
+c-x86_64.elf › log_msg › process_frame
+process_frame  function at 0x1700, 532 bytes, in .text
+used by 1 · uses 11
+ 1 code  [3 callers]
+  HOW   AT                 CALLER
+> call  0x10f2 and 2 more  main
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+→ main  function at 0x10a0, 195 bytes, in .text
+$ elfq testdata/bin/c-x86_64.elf callers process_frame
+↑↓ move  enter follow  esc back  tab next link  1 3 tabs  g go to  ? help  q quit
+",
+    );
+    assert_output(
+        &screen(
+            "c-x86_64.elf",
+            Some("log_msg"),
+            (100, 30),
+            &[&script[..], &["Enter"]].concat(),
+        ),
+        "\
+c-x86_64.elf › log_msg › process_frame › main
+main  function at 0x10a0, 195 bytes, in .text
+used by 1 · uses 13
+ 1 code  [3 callers]
+  HOW            AT      CALLER
+> address taken  0x1188  _start
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Calls to main through a pointer aren't listed, since elfq can't see them.
+→ _start  function at 0x1170, 38 bytes, in .text
+$ elfq testdata/bin/c-x86_64.elf callers main
+↑↓ move  enter follow  esc back  tab next link  1 3 tabs  g go to  ? help  q quit
+",
+    );
+    // process_frame calls log_msg at 0x18ee and 0x1908; the first is
+    // selected on its code tab.
+    assert_output(
+        &screen(
+            "c-x86_64.elf",
+            Some("log_msg"),
+            (100, 30),
+            &[&script[..], &["1"]].concat(),
+        ),
+        "\
+c-x86_64.elf › log_msg › process_frame
+process_frame  function at 0x1700, 532 bytes, in .text
+used by 1 · uses 11
+[1 code]  3 callers
+  ADDRESS  INSTRUCTION
+  0x18b3   pop     r13
+  0x18b5   pop     r14
+  0x18b7   pop     r15
+  0x18b9   ret
+  0x18ba   nop     [rax+rax]
+  0x18c0   mov     ebx, 0x20
+  0x18c5   jmp     0x1778                      jump ↑
+  0x18ca   nop     [rax+rax]
+  0x18d0   xor     esi, esi
+  0x18d2   lea     rdi, [rsp+0x10]
+  0x18d7   call    apply_filter                call
+  0x18dc   xor     esi, esi
+  0x18de   jmp     0x1873                      jump ↑
+  0x18e0   lea     rdi, [rip+0x72b]            uses .rodata@0x2012 \"bad header\\n\"
+  0x18e7   add     dword ptr [rip+0x2766], 1   uses frames_bad
+> 0x18ee   call    log_msg                     call
+  0x18f3   mov     ebp, 0xffffffff
+  0x18f8   jmp     0x1899                      jump ↑
+  0x18fa   lea     rdi, [rip+0x71d]            uses .rodata@0x201e \"bad crc\\n\"
+  0x1901   add     dword ptr [rip+0x274c], 1   uses frames_bad
+  0x1908   call    log_msg                     call
+  0x190d   jmp     0x18f3                      jump ↑
+  0x190f   call    __stack_chk_fail@plt        call
+→ log_msg  function at 0x1610, 51 bytes, in .text
+↑↓ move  enter follow  esc back  tab next link  1 3 tabs  g go to  ? help  q quit
+",
+    );
+    // Esc comes back to the row, on the callers tab.
+    let back = screen(
+        "c-x86_64.elf",
+        Some("log_msg"),
+        (100, 30),
+        &[&script[..], &["Esc"]].concat(),
+    );
+    assert_eq!(
+        back,
+        screen("c-x86_64.elf", Some("log_msg"), (100, 30), &script[..4])
+    );
+    // Tab goes from row to row, round the end.
+    let page = screen(
+        "c-x86_64.elf",
+        Some("log_msg"),
+        (100, 30),
+        &["3", "BackTab"],
+    );
+    let (selected, _) = selected_and_status(&page);
+    assert_eq!(selected, "> call       0x1a72          report");
+}
+
+#[test]
+fn each_page_keeps_its_tab_and_each_tab_its_row() {
+    let screen = |script: &[&str]| screen("c-x86_64.elf", Some("log_msg"), (80, 24), script);
+    // The callers tab keeps its row while the code is on the screen.
+    assert_eq!(
+        screen(&["3", "Down", "Down", "1", "3"]),
+        screen(&["3", "Down", "Down"])
+    );
+    // Forward brings a page back on the tab it was left on.
+    let script = ["3", "Down", "Down", "Down", "Enter", "1"];
+    assert_eq!(
+        screen(&[&script[..], &["Esc", "]"]].concat()),
+        screen(&script)
+    );
+}
+
+/// The command under a page, which may take several lines.
+fn command_under(screen: &str) -> String {
+    let lines: Vec<&str> = screen.lines().collect();
+    let first = lines
+        .iter()
+        .position(|line| line.starts_with("$ elfq "))
+        .unwrap();
+    lines[first..lines.len() - 1].join(" ")
+}
+
+#[test]
+#[cfg(unix)]
+fn the_command_under_the_callers_runs_in_a_shell() {
+    // Names with spaces, brackets and quotes, which the command quotes.
+    let pages = [
+        ("cpp-x86_64.elf", "log(unsigned int)", "'log(unsigned int)'"),
+        ("cpp-x86_64.elf", "vtable for Gain", "'vtable for Gain'"),
+        ("cpp-x86_64.so", "log(unsigned int)", "'log(unsigned int)'"),
+        (
+            "rust-x86_64-nodebug.elf",
+            "0x1e260",
+            r"'drop_glue::<alloc::boxed::Box<dyn for<'\''a, '\''b> core::ops::function::Fn<(&'\''a std::panic::PanicHookInfo<'\''b>,), Output = ()> + core::marker::Sync + core::marker::Send>>'",
+        ),
+    ];
+    for (sample, symbol, quoted) in pages {
+        let page = screen(sample, Some(symbol), (100, 30), &["3"]);
+        let command = command_under(&page);
+        assert_eq!(
+            command,
+            format!("$ elfq testdata/bin/{sample} callers {quoted}")
+        );
+        // Run by the shell, as when pasted, it lists the page's rows.
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("elfq() {{ \"$ELFQ\" \"$@\"; }}; {}", &command[2..]))
+            .env("ELFQ", env!("CARGO_BIN_EXE_elfq"))
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .output()
+            .unwrap();
+        let printed = String::from_utf8(output.stdout).unwrap();
+        assert!(output.status.success(), "{command}: {printed}");
+        let rows: Vec<&str> = page
+            .lines()
+            .skip_while(|line| !line.starts_with("  HOW "))
+            .take_while(|line| line.starts_with("  ") || line.starts_with("> "))
+            .map(|line| &line[2..])
+            .collect();
+        let printed_rows: Vec<&str> = printed
+            .lines()
+            .skip_while(|line| !line.starts_with("HOW "))
+            .take_while(|line| !line.is_empty())
+            .map(str::trim_end)
+            .collect();
+        assert!(rows.len() > 1, "{page}");
+        assert_eq!(rows, printed_rows, "{command}");
+    }
+}
+
+#[test]
+fn an_import_opens_as_its_stub_or_on_a_page_of_its_own() {
+    // Go to lists imports, and one with a PLT stub as the stub.
+    assert_output(
+        &screen("rust-x86_64-nodebug.elf", None, (80, 24), &["g", "cxa_"]),
+        "\
+rust-x86_64-nodebug.elf › main › go to
+  ADDRESS  SIZE  KIND      SECTION  ITEM
+> 0x51ca0    16  function  .plt     __cxa_finalize@plt
+                 import             __cxa_thread_atexit_impl
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+go to: cxa_▏
+↑↓ move  enter open  esc cancel
+",
+    );
+    let page = screen(
+        "rust-x86_64-nodebug.elf",
+        None,
+        (80, 24),
+        &["g", "memcpy", "Enter"],
+    );
+    assert_eq!(
+        page.lines().take(4).collect::<Vec<_>>(),
+        [
+            "rust-x86_64-nodebug.elf › main › memcpy",
+            "memcpy  imported from a shared library: its code isn't in this file",
+            "used by 57",
+            "[3 callers]",
+        ]
+    );
+    // Its page has no code, and 1 says why.
+    let page = screen("rust-x86_64-nodebug.elf", Some("memcpy"), (80, 24), &["1"]);
+    let (_, status) = selected_and_status(&page);
+    assert_eq!(
+        status,
+        "memcpy is imported from a shared library: its code isn't in this file"
+    );
+    // A call through the global offset table, as code built with -fno-plt
+    // makes, opens the import's page.
+    let page = screen("c-x86_64.elf", Some("_start"), (80, 24), &["Tab", "Tab"]);
+    assert_eq!(
+        selected_and_status(&page),
+        (
+            "> 0x118f   call    qword ptr [rip+0x2e3b]   call __libc_start_main",
+            "→ __libc_start_main  imported from a shared library"
+        )
+    );
+    assert_output(
+        &screen(
+            "c-x86_64.elf",
+            Some("_start"),
+            (80, 24),
+            &["Tab", "Tab", "Enter"],
+        ),
+        "\
+c-x86_64.elf › _start › __libc_start_main
+__libc_start_main  imported from a shared library: its code isn't in this file
+used by 1
+[3 callers]
+  HOW   AT      CALLER
+> call  0x118f  _start
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+→ _start  function at 0x1170, 38 bytes, in .text
+$ elfq testdata/bin/c-x86_64.elf callers __libc_start_main
+↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
+",
+    );
+    // And when the import has a stub, the stub's page, as its name finds
+    // the stub as SYMBOL. On the stub's page, its jump to the import goes
+    // nowhere else.
+    let page = screen(
+        "rust-x86_64-nodebug.elf",
+        Some("__do_global_dtors_aux"),
+        (80, 24),
+        &["Tab", "Tab"],
+    );
+    assert_eq!(
+        selected_and_status(&page),
+        (
+            "> 0x1426e  cmp     qword ptr [rip+0x40892], 0  address taken __cxa_finalize",
+            "→ __cxa_finalize@plt  function at 0x51ca0, 16 bytes, in .plt"
+        )
+    );
+    let page = screen(
+        "rust-x86_64-nodebug.elf",
+        Some("__do_global_dtors_aux"),
+        (80, 24),
+        &["Tab", "Tab", "Enter", "Enter"],
+    );
+    assert!(
+        page.starts_with("rust-x86_64-nodebug.elf › __do_global_dtors_aux › __cxa_finalize@plt\n"),
+        "{page}"
+    );
+    assert_eq!(
+        selected_and_status(&page),
+        (
+            "> 0x51ca0  jmp     qword ptr [rip+0x36d2]  tail call __cxa_finalize",
+            "__cxa_finalize is imported from a shared library: its code isn't in this file"
+        )
+    );
+}
+
+#[test]
 fn the_keys_move_as_the_help_says() {
     let selected = |sample, symbol, script: &[&str]| {
         let page = screen(sample, Some(symbol), (80, 24), script);
@@ -1362,8 +2023,8 @@ fn the_keys_move_as_the_help_says() {
     for script in [&["PageDown"][..], &[" "]] {
         let page = screen("c-x86_64.elf", Some("main"), (80, 24), script);
         let lines: Vec<&str> = page.lines().collect();
-        assert_eq!(lines[3], "  ADDRESS  INSTRUCTION", "{script:?}");
-        assert!(lines[4].starts_with("> 0x10fc "), "{script:?}\n{page}");
+        assert_eq!(lines[4], "  ADDRESS  INSTRUCTION", "{script:?}");
+        assert!(lines[5].starts_with("> 0x10f7 "), "{script:?}\n{page}");
     }
     for script in [&["PageDown", "PageUp"][..], &["End", "Home"]] {
         assert_eq!(
@@ -1406,7 +2067,7 @@ fn only_key_presses_count() {
     assert_eq!(stop, Stop::Quit);
     assert_eq!(events.next(), None);
     let row: String = (0..80)
-        .map(|column| terminal.backend().buffer()[(column, 4)].symbol())
+        .map(|column| terminal.backend().buffer()[(column, 5)].symbol())
         .collect();
     assert!(row.starts_with("> 0x1610 "), "{row}");
 }
@@ -1633,11 +2294,6 @@ go to: mainz▏
 ↑↓ move  enter open  esc cancel
 ",
     );
-    let import = screen("rust-x86_64-nodebug.elf", None, (80, 24), &["g", "memcpy"]);
-    assert_eq!(
-        import.lines().nth(2),
-        Some("memcpy is imported from a shared library: its code isn't in this file"),
-    );
 }
 
 #[test]
@@ -1695,18 +2351,18 @@ fn go_to_ignores_case_and_says_how_many_it_leaves_out() {
         "\
 rust-x86_64-nodebug.elf › main › go to
   ADDRESS   SIZE  KIND      SECTION             ITEM
-> 0x18c00  15332  function  .text               <std::backtrace_rs::symbolize::gimli::Cache>::with_…
+> 0x18c00  15332  function  .text               <Cache>::with_global::<resolve::{closure#1}>
   0x336a3  12242  function  .text               <std::backtrace_rs::symbolize::gimli::Context>::new
-  0x2f760   9301  function  .text               <gimli::read::dwarf::Unit<gimli::read::endian_slice…
-  0x16b20   8244  function  .text               <core::cell::once::OnceCell<core::result::Result<ad…
+  0x2f760   9301  function  .text               <Unit<EndianSlice<LittleEndian>, usize>>::new
+  0x16b20   8244  function  .text               <OnceCell<Result<Lines, Error>>>::try_init::<get_or…
   0x49d5d   6210  function  .text               miniz_oxide::inflate::core::decompress
-  0x20b10   5196  function  .text               gimli::read::unit::parse_attribute::<gimli::read::e…
-  0x2d960   4538  function  .text               <addr2line::function::Function<gimli::read::endian_…
-  0x3c8c0   4161  function  .text               std::sys::pal::unix::stack_overflow::thread_info::s…
-  0x37c50   3972  function  .text               <gimli::read::rnglists::RngListIter<gimli::read::en…
-  0x15ba0   3964  function  .text               <core::cell::once::OnceCell<core::result::Result<ad…
-  0x2b940   3222  function  .text               <std::backtrace_rs::symbolize::gimli::Mapping>::new…
-and 389 more; type more of the name
+  0x20b10   5196  function  .text               unit::parse_attribute::<EndianSlice<LittleEndian>>
+  0x2d960   4538  function  .text               <Function<EndianSlice<…>>>::parse_children
+  0x3c8c0   4161  function  .text               thread_info::set_current_info
+  0x37c50   3972  function  .text               <RngListIter<EndianSlice<LittleEndian>>>::next
+  0x15ba0   3964  function  .text               <OnceCell<Result<Functions<EndianSlice<LittleEndian…
+  0x2b940   3222  function  .text               <Mapping>::new_debug
+and 433 more; type more of the name
 go to: e▏
 ↑↓ move  enter open  esc cancel
 ",
@@ -1771,6 +2427,7 @@ fn rust_and_shared_library_pages_at_the_other_size() {
 rust-x86_64-nodebug.elf › main
 main  function at 0x15220, 46 bytes, in .text
 used by 1 · uses 4
+[1 code]  3 callers
   ADDRESS  INSTRUCTION
 > 0x15220  push    rax
   0x15221  mov     rcx, rsi
@@ -1796,8 +2453,7 @@ used by 1 · uses 4
 
 
 
-
-↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
+↑↓ move  enter follow  esc back  tab next link  1 3 tabs  g go to  ? help  q quit
 ",
     );
     assert_output(
@@ -1806,6 +2462,7 @@ used by 1 · uses 4
 c-x86_64.so › app_tick
 app_tick  function at 0x1770, 62 bytes, in .text
 used by 1 · uses 3
+[1 code]  3 callers
   ADDRESS  INSTRUCTION
 > 0x1770   endbr64
   0x1774   imul    eax, edi, 0xc28f5c29
@@ -1824,7 +2481,6 @@ used by 1 · uses 3
   0x17a4   mov     esi, ebx
   0x17a6   xor     edi, edi
   0x17a8   pop     rbx
-  0x17a9   jmp     dispatch_event@plt    tail call via PLT → dispatch_event
 
 ↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit
 ",

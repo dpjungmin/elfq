@@ -75,8 +75,10 @@ pub fn run(
     }
 }
 
-/// What calls or uses SYMBOL.
-fn callers(
+/// Writes what calls or uses SYMBOL, using `graph`, the file's reference
+/// graph. `browse`'s tests run it on the graph that they build once for
+/// every page of a file.
+pub(super) fn callers(
     binary: &Binary,
     graph: &Graph,
     symbol: &Symbol,

@@ -899,11 +899,13 @@ impl<'a> Names<'a> {
         suggestions
     }
 
-    /// Whether one of the names of item `index`, in lowercase, has `text`,
-    /// which is lowercase too.
+    /// Whether one of the names of `node`, an item or an import, in
+    /// lowercase, has `text`, which is lowercase too.
     #[cfg(feature = "tui")]
-    pub(super) fn name_has(&self, index: usize, text: &Needle) -> bool {
-        self.lowercase().names(index).any(|name| text.is_in(name))
+    pub(super) fn name_has(&self, node: Node, text: &Needle) -> bool {
+        self.lowercase()
+            .names(self.position(node))
+            .any(|name| text.is_in(name))
     }
 
     /// Every name of every item and import in lowercase.

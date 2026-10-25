@@ -26,7 +26,7 @@ elfq app.elf callers log_msg            # what calls or uses log_msg
 elfq app.elf callees main               # what main calls or uses
 elfq app.elf callees 0x0+256K           # what the first 256 KiB uses outside it
 elfq app.elf reach SysTick_Handler      # what SysTick_Handler runs and uses, and where
-elfq app.elf browse log_msg             # read log_msg's code, and follow what it calls
+elfq app.elf browse log_msg             # read log_msg's code, its calls and its callers
 ```
 
 [docs/examples.md](docs/examples.md) asks real questions about the sample

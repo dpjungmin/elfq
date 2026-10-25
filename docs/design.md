@@ -182,7 +182,7 @@ except `inlined`, which reads DWARF instead of machine code.
 | `elfq FILE callees RANGE...` | What do the code and data in these ranges of memory use outside them, such as code in ITCM that calls a function in flash? `callers RANGE...` asks the reverse. |
 | `elfq FILE callers RANGE... --from RANGE` | What in one range of memory uses these ranges, such as code in ITCM that uses data in DTCM? `callees RANGE... --to RANGE` asks what these ranges use in that one, and either takes SYMBOL in place of the ranges. |
 | `elfq FILE inlined [SYMBOL]` | Which inlined functions cost the most bytes across the binary, or inside SYMBOL? Needs DWARF. |
-| `elfq FILE browse [SYMBOL]` | What does SYMBOL's code do, line by line, and where does each call and use lead? Opens in the terminal, and follows the links that the other commands' answers name. |
+| `elfq FILE browse [SYMBOL]` | What does SYMBOL's code do, line by line, where does each call and use lead, and what calls it? Opens in the terminal, follows the links that the other commands' answers name, and shows the answer of `callers SYMBOL` with the command that prints it. |
 
 SYMBOL is a function or data object's name, an import (`write` finds the
 `write@plt` stub that code calls), or an address such as `0x1700`. Names are
