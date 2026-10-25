@@ -19,7 +19,11 @@ use crate::arch::CodeReferenceKind;
 
 /// Returns an item for each unnamed data object, sorted by address.
 pub(super) fn items(binary: &Binary) -> Vec<Item> {
-    let mut starts: Vec<u64> = referenced_addresses(binary)
+    // Code uses the same addresses again and again: each is looked at once.
+    let mut addresses = referenced_addresses(binary);
+    addresses.sort_unstable();
+    addresses.dedup();
+    let starts: Vec<u64> = addresses
         .into_iter()
         // Zero is a null pointer, or just a number.
         .filter(|&address| address != 0 && binary.item_at(address).is_none())
@@ -32,8 +36,6 @@ pub(super) fn items(binary: &Binary) -> Vec<Item> {
             })
         })
         .collect();
-    starts.sort_unstable();
-    starts.dedup();
 
     let mut items = Vec::new();
     for (i, &start) in starts.iter().enumerate() {

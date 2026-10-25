@@ -5,7 +5,7 @@
 //! SYMBOL --from RANGE` come here too, and ask about the range that SYMBOL
 //! occupies.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 
 use anyhow::{Result, bail};
@@ -840,9 +840,10 @@ impl Entering<'_> {
             writeln!(out, "{nothing} directly.")?;
         } else {
             let mut callers = outside_nodes(&groups);
+            let mut seen: HashSet<Node> = callers.iter().copied().collect();
             for row in &self.unfollowed {
                 let caller = Node::Item(row.unresolved.from);
-                if !callers.contains(&caller) {
+                if seen.insert(caller) {
                     callers.push(caller);
                 }
             }

@@ -1013,8 +1013,9 @@ impl<'a> Reach<'a> {
     fn pointer_note(&self, pointers: &[&Unresolved]) -> String {
         let binary = self.binary;
         let mut callers: Vec<usize> = Vec::new();
+        let mut seen: HashSet<usize> = HashSet::new();
         for unresolved in pointers {
-            if !callers.contains(&unresolved.from) {
+            if seen.insert(unresolved.from) {
                 callers.push(unresolved.from);
             }
         }

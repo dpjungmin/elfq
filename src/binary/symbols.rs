@@ -2,6 +2,7 @@
 //! stripping because the dynamic linker needs it.
 
 use std::cmp::Reverse;
+use std::collections::{HashMap, HashSet};
 
 use object::{Object, ObjectSymbol, SymbolKind, SymbolSection};
 
@@ -35,23 +36,45 @@ enum Binding {
 /// sorted by kind, then by address, and the blocks of merged variables, as
 /// `(address, size)`.
 pub(super) fn items(file: &object::File, sections: &[Section]) -> (Vec<Item>, Vec<(u64, u64)>) {
+    // A shared library has most of the symbols in `.dynsym` in `.symtab`
+    // too, and demangling takes a while: each of those is demangled once,
+    // and the second table takes its name from the first.
+    let in_both: HashSet<&[u8]> = file
+        .dynamic_symbols()
+        .filter_map(|symbol| symbol.name_bytes().ok())
+        .collect();
+    let mut names: HashMap<String, String> = HashMap::new();
     let mut candidates: Vec<Candidate> = file
         .symbols()
-        .filter_map(|symbol| candidate(file, &symbol, Source::SymbolTable, sections))
+        .filter_map(|symbol| {
+            let candidate = candidate(file, &symbol, Source::SymbolTable, sections, None)?;
+            if in_both.contains(candidate.symbol.as_bytes()) {
+                names.insert(candidate.symbol.clone(), candidate.name.clone());
+            }
+            Some(candidate)
+        })
         .collect();
-    candidates.extend(
-        file.dynamic_symbols()
-            .filter_map(|symbol| candidate(file, &symbol, Source::DynamicSymbolTable, sections)),
-    );
+    candidates.extend(file.dynamic_symbols().filter_map(|symbol| {
+        candidate(
+            file,
+            &symbol,
+            Source::DynamicSymbolTable,
+            sections,
+            Some(&names),
+        )
+    }));
     let blocks = drop_containers(&mut candidates);
     (merge_aliases(candidates), blocks)
 }
 
+/// The candidate that `symbol` makes, if any. `names` has the readable
+/// names of symbols already demangled, by symbol.
 fn candidate(
     file: &object::File,
     symbol: &object::Symbol,
     source: Source,
     sections: &[Section],
+    names: Option<&HashMap<String, String>>,
 ) -> Option<Candidate> {
     // Other kinds are section and file markers, untyped labels, and
     // thread-local variables, whose "address" is an offset.
@@ -93,7 +116,10 @@ fn candidate(
         Binding::Local
     };
     Some(Candidate {
-        name: demangle(&symbol_name).unwrap_or_else(|| symbol_name.clone()),
+        name: match names.and_then(|names| names.get(&symbol_name)) {
+            Some(name) => name.clone(),
+            None => demangle(&symbol_name).unwrap_or_else(|| symbol_name.clone()),
+        },
         symbol: symbol_name,
         kind,
         address,

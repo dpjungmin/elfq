@@ -19,6 +19,7 @@ use ratatui::widgets::{HighlightSpacing, Row, Table};
 use super::{Cursor, cut, imported, wrap};
 use crate::binary::{ItemKind, hex_number};
 use crate::commands::browse::{keys::Action, session::Session};
+use crate::commands::symbol::Needle;
 use crate::commands::text;
 use crate::graph::Node;
 
@@ -127,9 +128,10 @@ impl Picker {
                 }
             }
             let lower = text.to_lowercase();
+            let needle = Needle::new(&lower);
             let mut others: Vec<usize> = (0..binary.items.len())
                 .filter(|index| !listed.contains(index))
-                .filter(|&index| session.name_has(index, &lower))
+                .filter(|&index| session.names.name_has(index, &needle))
                 .collect();
             self.more = (found.len() + others.len()).saturating_sub(MOST);
             // Largest first, and of the same size, first in the file. Only

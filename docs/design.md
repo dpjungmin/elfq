@@ -945,6 +945,15 @@ cores up to Armv7E-M; for Armv8-M cores, its pages list only the lines
 that use another item. The pull requests and the git log record how elfq
 got here.
 
+On a 4-CPU x86-64 machine, a release build gives the overview of elfq's
+own debug build (79 MB) in about half a second, of cargo (43 MB) in under
+a second, and of librustc_driver (158 MB) and libLLVM (199 MB) in 3 to 4
+seconds, most of it reading the file: decoding its code and demangling
+its names. `browse` shows its first screen in about the same time. Each
+key typed into go to then takes under 0.1 s. The first takes up to 0.2 s
+in those libraries, and the first whose text names nothing takes about
+half a second, as it works out what to suggest.
+
 Ideas for later, not yet planned: output that scripts and AI agents can
 read more easily, a check of what startup code copies into RAM, the retained size of a set of
 items, comparing two builds, the functions that shared libraries export as

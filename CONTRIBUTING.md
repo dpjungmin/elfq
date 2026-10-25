@@ -348,7 +348,7 @@ release binary of `main` and of your branch, and run both on large ELF
 files such as these, from a Linux machine (macOS programs are not ELF
 files):
 
-- a big Rust program, such as `cargo` (40 MB), for the overview and
+- a big Rust program, such as `cargo` (43 MB), for the overview and
   SYMBOL lookups;
 - a big shared library, such as LLVM's (over 100 MB,
   `/usr/lib/*/libLLVM*.so.*` on Debian and Ubuntu), for `debug items`,
@@ -356,7 +356,7 @@ files):
 - a big Go program, such as `docker` (45 MB), for `callers` of a range,
   such as `callers 0x400000+1M`;
 - a program of 200 MB, such as `pandoc`, for peak memory;
-- `target/debug/elfq`, a 45 MB file that is mostly DWARF, for `inlined`;
+- `target/debug/elfq`, a 79 MB file that is mostly DWARF, for `inlined`;
 - stripped Cortex-M firmware, for finding functions without symbols.
 
 Compare the time, the peak memory (`/usr/bin/time -v` on Linux, `-l` on

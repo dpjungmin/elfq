@@ -395,7 +395,11 @@ pub fn item_starting_at(binary: &Binary, address: u64) -> Option<usize> {
         let index = binary.item_at(address)?;
         (binary.items[index].address == address).then_some(index)
     };
-    if address == 0 {
+    // Most words in data aren't pointers: those below the first item or
+    // past the last item's start are passed over without a search.
+    let first = binary.items.first()?.address;
+    let last = binary.items.last()?.address;
+    if address == 0 || address < first || address & !1 > last {
         return None;
     }
     starts_at(address).or_else(|| {
