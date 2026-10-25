@@ -2,7 +2,6 @@
 //! browser keeps its history, so that Back and Forward move through them,
 //! the go-to box, and how the screen is laid out around the page on top.
 
-use anyhow::{Result, bail};
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Layout};
@@ -14,11 +13,10 @@ use super::Stop;
 use super::keys::{self, Action};
 use super::session::Session;
 use super::views::{
-    Go, Help, ItemPage, Picker, View, cut, cut_left, draw_lines, first_line, keep_lines, wrap,
+    Go, Help, ItemPage, Picker, View, cut, cut_left, draw_lines, first_line, keep_lines,
+    start_page, wrap,
 };
 use crate::binary::hex_number;
-use crate::commands::{found_functions, overview, text};
-use crate::graph::Node;
 
 /// The smallest screen the browser draws on.
 const MIN_WIDTH: u16 = 60;
@@ -43,12 +41,11 @@ pub struct App<'a> {
 
 impl<'a> App<'a> {
     /// Opens the page of what `symbol` names, as the commands find it, or
-    /// without one, of the function that the overview starts from: `main`,
-    /// else the entry point, else the largest function. When `symbol`
-    /// finds several items or none, that page opens with the go-to box
-    /// over it, `symbol` typed in. The file's first warning is on the
-    /// status line.
-    pub fn new(session: Session<'a>, symbol: Option<&str>) -> Result<App<'a>> {
+    /// without one, the start page. When `symbol` finds several items or
+    /// none, the go-to box opens with `symbol` typed in, over the start
+    /// page, which is worked out only once the box is closed over it. The
+    /// file's first warning is on the status line.
+    pub fn new(session: Session<'a>, symbol: Option<&str>) -> App<'a> {
         let warnings = &session.binary.warnings;
         let message = warnings.first().map(|first| match warnings.len() {
             1 => format!("warning: {first}"),
@@ -57,7 +54,7 @@ impl<'a> App<'a> {
                 more - 1
             ),
         });
-        let mut first = None;
+        let mut first = View::Start(None);
         let mut picker = None;
         if let Some(query) = symbol {
             match session.names.find(query) {
@@ -65,7 +62,8 @@ impl<'a> App<'a> {
                     // An address selects the line that holds it.
                     let at = hex_number(query).and_then(Result::ok);
                     let lead = found.lead_name(session.binary);
-                    first = Some(ItemPage::new(&session, found.node, at, &lead));
+                    let page = ItemPage::new(&session, found.node, at, &lead);
+                    first = View::Item(Box::new(page));
                 }
                 // The CLI's error goes over the rows.
                 Err(error) => {
@@ -73,21 +71,54 @@ impl<'a> App<'a> {
                 }
             }
         }
-        let first = match first {
-            Some(page) => page,
-            None => starting_page(&session)?,
-        };
-        Ok(App {
+        let mut app = App {
             session,
-            history: vec![View::Item(Box::new(first))],
+            history: vec![first],
             forward: Vec::new(),
             message,
             picker,
-        })
+        };
+        app.work();
+        app
+    }
+
+    /// What the page on the screen has yet to work out, which the status
+    /// line says while it does: the start page, once the go-to box isn't
+    /// over it.
+    fn waiting(&self) -> Option<String> {
+        if self.picker.is_some() {
+            return None;
+        }
+        match self.history.last()? {
+            View::Start(None) => Some(format!(
+                "working out where {} starts…",
+                self.session.file_name()
+            )),
+            _ => None,
+        }
+    }
+
+    /// Whether the page on the screen has something to work out, which
+    /// can take a while in a large file: then the event loop draws the
+    /// screen, which says so, before [`App::work`] does it.
+    pub fn has_work(&self) -> bool {
+        self.waiting().is_some()
+    }
+
+    /// Works out what the page on the screen has yet to.
+    pub fn work(&mut self) {
+        if !self.has_work() {
+            return;
+        }
+        if let Some(View::Start(start)) = self.history.last_mut() {
+            *start = Some(Box::new(start_page(&self.session)));
+        }
     }
 
     /// Does what `key` asks, and says whether the browser should stop.
     pub fn key(&mut self, key: KeyEvent) -> Option<Stop> {
+        // Every key acts on the page as worked out.
+        self.work();
         if self.picker.is_some() {
             return self.key_to_picker(key);
         }
@@ -247,8 +278,11 @@ impl<'a> App<'a> {
         let mut trail = self.session.file_name();
         let room = width.saturating_sub(trail.chars().count() + 3).max(20);
         for view in &mut self.history {
-            trail += " › ";
-            trail += view.title(room);
+            let title = view.title(room);
+            if !title.is_empty() {
+                trail += " › ";
+                trail += title;
+            }
         }
         if self.picker.is_some() {
             trail += " › go to";
@@ -264,14 +298,18 @@ impl<'a> App<'a> {
             frame.render_widget(Line::raw(hint).dim(), hints);
             return;
         }
+        let waiting = self.waiting();
         let view = self
             .history
             .last_mut()
             .expect("the first page is never closed");
         view.draw(frame, body);
-        let status_line = match &self.message {
-            Some(message) => Line::raw(cut(message, width)),
-            None => Line::raw(cut(&view.preview(&self.session).unwrap_or_default(), width)).dim(),
+        let status_line = match (waiting, &self.message) {
+            (Some(waiting), _) => Line::raw(cut(&waiting, width)),
+            (None, Some(message)) => Line::raw(cut(message, width)),
+            (None, None) => {
+                Line::raw(cut(&view.preview(&self.session).unwrap_or_default(), width)).dim()
+            }
         };
         frame.render_widget(status_line, status);
         draw_lines(
@@ -279,23 +317,9 @@ impl<'a> App<'a> {
             command_area,
             command.into_iter().map(Line::raw).collect(),
         );
-        let hint = keys::hints(width, view.has_links(), view.has_tabs());
+        let hint = keys::hints(width, view.has_links(), !view.tabs().is_empty());
         frame.render_widget(Line::raw(hint).dim(), hints);
     }
-}
-
-/// The page that opens when no SYMBOL does: the function that the
-/// overview starts from.
-fn starting_page(session: &Session) -> Result<ItemPage> {
-    let binary = session.binary;
-    let Some(index) = overview::starting_point(binary, &session.names) else {
-        if !found_functions(binary) {
-            bail!("{}", text::NO_FUNCTIONS);
-        }
-        bail!("elfq found no function with code in the file to start from; give browse a SYMBOL");
-    };
-    let name = &binary.items[index].name;
-    Ok(ItemPage::new(session, Node::Item(index), None, name))
 }
 
 #[cfg(test)]
@@ -306,6 +330,7 @@ mod tests {
     use super::super::views::samples;
     use super::*;
     use crate::binary::Binary;
+    use crate::graph::Node;
 
     /// The screen as lines of text.
     fn lines(terminal: &Terminal<TestBackend>) -> Vec<String> {
@@ -318,6 +343,22 @@ mod tests {
                     .collect()
             })
             .collect()
+    }
+
+    #[test]
+    fn the_start_page_under_go_to_is_worked_out_once_the_box_closes() {
+        let path = samples()
+            .into_iter()
+            .find(|path| path.ends_with("c-x86_64.elf"));
+        let path = path.unwrap();
+        let binary = Binary::load(&path).unwrap();
+        let session = Session::new(&path, &binary).unwrap();
+        let mut app = App::new(session, Some("no_such_symbol"));
+        assert!(matches!(app.history[..], [View::Start(None)]) && !app.has_work());
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.has_work());
+        app.work();
+        assert!(matches!(app.history[..], [View::Start(Some(_))]) && !app.has_work());
     }
 
     #[test]

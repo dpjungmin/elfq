@@ -75,17 +75,21 @@ impl<'a> Session<'a> {
         callers::answer(self.binary, &self.graph, node)
     }
 
-    /// The command that prints what a page shows about `node`, ready to
-    /// paste into a shell, as in `$ elfq testdata/bin/cpp-x86_64.elf
-    /// callers 'log(unsigned int)'`: the file as the user typed it, and
-    /// the shortest name that finds `node` as SYMBOL, both quoted for the
-    /// shell, then `--all` when `all` asks for it.
-    pub(super) fn command(&self, command: &str, node: Node, all: bool) -> String {
+    /// The command that prints what a page shows about `node`, or without
+    /// one, about the file, ready to paste into a shell, as in `$ elfq
+    /// testdata/bin/cpp-x86_64.elf callers 'log(unsigned int)'`: the file
+    /// as the user typed it, and the shortest name that finds `node` as
+    /// SYMBOL, both quoted for the shell, then `--all` when `all` asks for
+    /// it.
+    pub(super) fn command(&self, command: &str, node: Option<Node>, all: bool) -> String {
+        let symbol = match node {
+            Some(node) => format!(" {}", text::shell_quote(&self.names.query_for(node))),
+            None => String::new(),
+        };
         let all = if all { " --all" } else { "" };
         format!(
-            "$ elfq {} {command} {}{all}",
+            "$ elfq {} {command}{symbol}{all}",
             text::shell_quote(&self.path.display().to_string()),
-            text::shell_quote(&self.names.query_for(node))
         )
     }
 

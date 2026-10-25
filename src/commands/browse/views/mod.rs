@@ -2,12 +2,16 @@
 //! code, the go-to box, and how long names are shortened to fit a column
 //! (`names.rs`). [`View`] lists the pages, so that `app.rs` can keep any
 //! of them in its history, and each `match` on it shows every page's part.
+//! A page or tab that shows a command's answer, a table whose rows open
+//! items, is a `Printed` (`printed.rs`).
 
 mod callers;
 mod help;
 mod item;
 mod names;
 mod picker;
+mod printed;
+mod start;
 #[cfg(test)]
 mod thumb_text;
 
@@ -23,11 +27,14 @@ use super::session::Session;
 use crate::binary::{Item, ItemKind};
 use crate::commands::text;
 use crate::graph::Node;
+use item::Tab;
 
 pub use help::Help;
 pub use item::{ItemPage, PageCode};
 pub use names::{FittedRows, fit_name, name_fitter};
 pub use picker::{Picker, first_line};
+pub use printed::Printed;
+pub use start::page as start_page;
 
 /// Where an action takes the user.
 pub enum Go {
@@ -39,6 +46,9 @@ pub enum Go {
 
 /// One page of the browser.
 pub enum View {
+    /// Where the program starts, which opens when browse is given no
+    /// SYMBOL, once it is worked out (see `App::work`).
+    Start(Option<Box<Printed>>),
     /// An item's page: a function's code, and what uses the item.
     Item(Box<ItemPage>),
     /// Every key, and the words that the notes use.
@@ -47,9 +57,11 @@ pub enum View {
 
 impl View {
     /// Its name in the title line's trail, shortened to fit `room`
-    /// columns.
+    /// columns: none for the start page, since the trail starts with the
+    /// file's name.
     pub fn title(&mut self, room: usize) -> &str {
         match self {
+            View::Start(_) => "",
             View::Item(page) => page.title(room),
             View::Help(_) => "help",
         }
@@ -57,6 +69,9 @@ impl View {
 
     pub fn draw(&mut self, frame: &mut Frame, area: Rect) {
         match self {
+            View::Start(Some(start)) => start.draw(frame, area),
+            // Nothing yet, while the status line says what is worked out.
+            View::Start(None) => {}
             View::Item(page) => page.draw(frame, area),
             View::Help(help) => help.draw(frame, area),
         }
@@ -64,6 +79,15 @@ impl View {
 
     pub fn handle(&mut self, session: &Session, action: Action) -> Option<Go> {
         match self {
+            // A start's page has the tabs, which the start page hasn't.
+            View::Start(Some(start)) if matches!(action, Action::Tab(_)) => Some(Go::Say(
+                match start.has_links() {
+                    true => "Enter opens the selected start's page, which has the tabs",
+                    false => "the tabs are on an item's page; g goes to one",
+                }
+                .to_string(),
+            )),
+            View::Start(start) => start.as_mut()?.handle(session, action),
             View::Item(page) => page.handle(session, action),
             View::Help(help) => {
                 help.handle(action);
@@ -77,13 +101,14 @@ impl View {
     pub fn back(&mut self) -> bool {
         match self {
             View::Item(page) => page.back(),
-            View::Help(_) => false,
+            View::Start(_) | View::Help(_) => false,
         }
     }
 
     /// A line about the selected row, such as what its link goes to.
     pub fn preview(&self, session: &Session) -> Option<String> {
         match self {
+            View::Start(start) => start.as_ref()?.preview(session),
             View::Item(page) => page.preview(session),
             View::Help(_) => None,
         }
@@ -92,16 +117,17 @@ impl View {
     /// Whether the page has lines that link, which Tab moves between.
     pub fn has_links(&self) -> bool {
         match self {
+            View::Start(start) => start.as_ref().is_some_and(|start| start.has_links()),
             View::Item(page) => page.has_links(),
             View::Help(_) => false,
         }
     }
 
-    /// Whether the page has tabs, which 1 and 3 show.
-    pub fn has_tabs(&self) -> bool {
+    /// The numbers of the page's tabs, whose keys show them.
+    pub fn tabs(&self) -> Vec<u8> {
         match self {
-            View::Item(_) => true,
-            View::Help(_) => false,
+            View::Item(page) => page.tab_numbers(),
+            View::Start(_) | View::Help(_) => Vec::new(),
         }
     }
 
@@ -109,6 +135,7 @@ impl View {
     /// one does.
     pub fn command(&self) -> Option<&str> {
         match self {
+            View::Start(start) => start.as_ref().map(|start| start.command()),
             View::Item(page) => page.command(),
             View::Help(_) => None,
         }
@@ -211,6 +238,56 @@ impl Cursor {
             })
             .find(|&row| wanted(row))
     }
+}
+
+/// What following a link to `node` does, from the page of `this`, if
+/// any, as a tab that opens pages on `tab` follows it: it opens the page
+/// that stands for `node` (see [`Session::page_node`]), with the line that
+/// holds `at` selected when that is `node`'s own page, on `tab` when the
+/// page has that tab. But on the page of an import's PLT stub, a link to
+/// the import has nowhere else to go, and says that its code isn't here.
+pub fn follow(session: &Session, node: Node, at: Option<u64>, this: Option<Node>, tab: Tab) -> Go {
+    let opened = session.page_node(node);
+    if is_own_import(node, opened, this) {
+        return Go::Say(imported(session, node));
+    }
+    let at = at.filter(|_| opened == node);
+    let page = ItemPage::new(session, opened, at, opened.name(session.binary)).on(tab);
+    Go::Open(View::Item(Box::new(page)))
+}
+
+/// What following a link to `node` opens, from the page of `this`, in
+/// full: "→ app_tick  function at 0x300002e4, 60 bytes, in .text", then
+/// the veneer that the code goes through to get there, if any.
+pub fn link_preview(
+    session: &Session,
+    node: Node,
+    this: Option<Node>,
+    through: Option<usize>,
+) -> String {
+    let binary = session.binary;
+    let opened = session.page_node(node);
+    match opened {
+        Node::Item(index) if !is_own_import(node, opened, this) => {
+            let through = match through {
+                Some(veneer) => format!(", through {}", binary.items[veneer].name),
+                None => String::new(),
+            };
+            let item = &binary.items[index];
+            format!(
+                "→ {}  {}{through}",
+                item.name,
+                whereabouts(item, &binary.sections[item.section].name)
+            )
+        }
+        _ => format!("→ {}  imported from a shared library", node.name(binary)),
+    }
+}
+
+/// Whether `node` is an import whose page, `opened`, is `this`: its PLT
+/// stub's page, which has nowhere else to go for it.
+fn is_own_import(node: Node, opened: Node, this: Option<Node>) -> bool {
+    opened != node && Some(opened) == this
 }
 
 /// Says that `node`, an import, has no code here: its code is in a shared
@@ -321,6 +398,29 @@ pub(super) fn samples() -> Vec<std::path::PathBuf> {
     paths
 }
 
+/// `line` split into words as a shell splits it, for the words that
+/// `text::shell_quote` writes: plain, or in single quotes, with `'\''`
+/// for a quote. The tests of each tab split the command under it.
+#[cfg(test)]
+pub(super) fn shell_words(line: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word: Option<String> = None;
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            ' ' => words.extend(word.take()),
+            '\'' => {
+                let word = word.get_or_insert_with(String::new);
+                word.extend(chars.by_ref().take_while(|&c| c != '\''));
+            }
+            '\\' => word.get_or_insert_with(String::new).extend(chars.next()),
+            c => word.get_or_insert_with(String::new).push(c),
+        }
+    }
+    words.extend(word);
+    words
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -378,5 +478,19 @@ mod tests {
         short.visible(10);
         short.handle(Action::PageDown);
         assert_eq!((short.visible(10).0, short.selected), (0..4, 3));
+    }
+
+    #[test]
+    fn shell_words_undo_shell_quote() {
+        for text in [
+            "log_msg",
+            "log(unsigned int)",
+            "vtable for Gain",
+            "<&'a T>",
+            "",
+        ] {
+            let line = format!("elfq {} --all", text::shell_quote(text));
+            assert_eq!(shell_words(&line), ["elfq", text, "--all"], "{line}");
+        }
     }
 }

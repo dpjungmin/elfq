@@ -16,10 +16,10 @@ use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Row, Table};
 
-use super::callers::Callers;
+use super::printed::Printed;
 use super::{
-    Cursor, Go, View, cut, draw_lines, fit_name, imported, keep_lines, name_fitter, whereabouts,
-    wrap,
+    Cursor, Go, cut, draw_lines, fit_name, follow, imported, keep_lines, link_preview, name_fitter,
+    whereabouts, wrap,
 };
 use crate::arch::{self, CodeReferenceKind, Refers};
 use crate::binary::{Binary, Item, ItemKind, Source};
@@ -121,7 +121,7 @@ pub struct ItemPage {
     /// says.
     code: Result<CodeTab, String>,
     /// Tab 3.
-    callers: Callers,
+    callers: Printed,
 }
 
 impl ItemPage {
@@ -168,7 +168,7 @@ impl ItemPage {
                 Tab::Callers
             },
             code,
-            callers: Callers::new(session, node, answer),
+            callers: super::callers::tab(session, node, answer),
         }
     }
 
@@ -193,6 +193,12 @@ impl ItemPage {
             self.short_title = Some((room, fit_name(&self.title, room)));
         }
         self.short_title.as_ref().map_or("", |(_, title)| title)
+    }
+
+    /// The numbers of the tabs it has, in order.
+    pub fn tab_numbers(&self) -> Vec<u8> {
+        let tabs = self.tabs().into_iter();
+        tabs.map(|tab| tab.number_and_name().0).collect()
     }
 
     /// The tabs it has, in the order of their numbers.
@@ -473,17 +479,8 @@ impl CodeTab {
             }
             Action::Open => match self.code.lines.get(selected)?.link? {
                 Link::Node { node, at, .. } => {
-                    // An import's page is its PLT stub's, when it has one,
-                    // and on the stub's own page, the jump to the import
-                    // has nowhere else to go.
-                    let opened = session.page_node(node);
-                    if self.is_own_import(node, opened) {
-                        return Some(Go::Say(imported(session, node)));
-                    }
-                    let at = (opened == node).then_some(at);
-                    let name = opened.name(session.binary);
-                    let page = ItemPage::new(session, opened, at, name);
-                    Some(Go::Open(View::Item(Box::new(page))))
+                    let this = Some(Node::Item(self.index));
+                    Some(follow(session, node, Some(at), this, Tab::Code))
                 }
                 // A jump inside the function moves the cursor, and Back
                 // brings it back.
@@ -512,34 +509,13 @@ impl CodeTab {
     /// Where the selected line's link goes, in full: "→ strlen@plt
     /// function at 0x1080, 16 bytes, in .plt.sec".
     fn preview(&self, session: &Session) -> Option<String> {
-        let binary = session.binary;
         let link = self.code.lines.get(self.cursor.selected)?.link?;
         Some(match link {
-            // What Enter opens, which for an import is its PLT stub when it
-            // has one, unless that is this function.
-            Link::Node { node, via, .. } => match session.page_node(node) {
-                Node::Item(index) if !self.is_own_import(node, Node::Item(index)) => {
-                    let through = match via {
-                        Some(veneer) => format!(", through {}", binary.items[veneer].name),
-                        None => String::new(),
-                    };
-                    let item = &binary.items[index];
-                    format!(
-                        "→ {}  {}{through}",
-                        item.name,
-                        whereabouts(item, &binary.sections[item.section].name)
-                    )
-                }
-                _ => format!("→ {}  imported from a shared library", node.name(binary)),
-            },
+            Link::Node { node, via, .. } => {
+                link_preview(session, node, Some(Node::Item(self.index)), via)
+            }
             Link::Here(address) => format!("→ {address:#x}, in this function"),
         })
-    }
-
-    /// Whether `node` is the import that this function, its PLT stub,
-    /// jumps to, given `page`, the node of the page that stands for it.
-    fn is_own_import(&self, node: Node, page: Node) -> bool {
-        matches!(node, Node::Import(_)) && page == Node::Item(self.index)
     }
 
     /// Whether some line links to another item.
@@ -1113,7 +1089,7 @@ mod tests {
                 let preview = tab.preview(session).unwrap();
                 let opened = session.page_node(node);
                 let name = match opened {
-                    _ if tab.is_own_import(node, opened) => {
+                    _ if matches!(node, Node::Import(_)) && opened == Node::Item(index) => {
                         to_own_import += 1;
                         format!("{}  imported", node.name(binary))
                     }

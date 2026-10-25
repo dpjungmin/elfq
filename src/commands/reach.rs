@@ -230,7 +230,7 @@ pub fn run_starts(
     let starts = starts(binary, &graph, &names);
     match format {
         Format::Json => starts.write_json(out)?,
-        Format::Text | Format::Tree => starts.write_text(path, all, out)?,
+        Format::Text | Format::Tree => starts.answer(path, all).write(out)?,
     }
     Ok(Outcome::Answered)
 }
@@ -1369,6 +1369,83 @@ impl<'r, 'a> Tree<'r, 'a> {
     }
 }
 
+/// The text answer of `reach`, before it is written, which browse shows
+/// too: the lines before its tables, the bytes in each block of
+/// memory, the table of rows, with the item that each row is about, and
+/// the notes under them. An empty line comes before each table, and before
+/// the notes when there is a table of rows.
+#[derive(Default)]
+pub(super) struct Answer {
+    /// The first line, or what the answer says in place of its tables.
+    pub lead: Vec<String>,
+    pub memory: Option<Table>,
+    /// The columns of the table of rows, the last of which names an item.
+    pub columns: Vec<(String, Align)>,
+    /// Empty when the answer has no table of rows.
+    pub rows: Vec<AnswerRow>,
+    pub notes: Vec<String>,
+}
+
+/// A row of [`Answer`]'s table.
+pub(super) struct AnswerRow {
+    /// Every cell but the last.
+    pub cells: Vec<String>,
+    /// The last cell: a name, which may be empty, then what the row says
+    /// about it, such as " (may reach more)" or ", used by main".
+    pub name: String,
+    pub rest: String,
+    /// The item or import that the row is about, if any, which browse
+    /// opens.
+    #[cfg_attr(not(feature = "tui"), expect(dead_code))]
+    pub node: Option<Node>,
+}
+
+impl AnswerRow {
+    fn new(cells: Vec<String>, name: String, node: Option<Node>) -> AnswerRow {
+        AnswerRow {
+            cells,
+            name,
+            rest: String::new(),
+            node,
+        }
+    }
+}
+
+impl Answer {
+    pub(super) fn write(&self, out: &mut dyn Write) -> Result<()> {
+        for line in &self.lead {
+            writeln!(out, "{line}")?;
+        }
+        if let Some(memory) = &self.memory {
+            writeln!(out)?;
+            memory.write(out)?;
+        }
+        let rows = !self.rows.is_empty();
+        if rows {
+            writeln!(out)?;
+            self.table().write(out)?;
+        }
+        if rows && !self.notes.is_empty() {
+            writeln!(out)?;
+        }
+        for note in &self.notes {
+            writeln!(out, "{note}")?;
+        }
+        Ok(())
+    }
+
+    /// The table of rows, as the text writes it.
+    pub(super) fn table(&self) -> Table {
+        let mut table = Table::new(&self.columns);
+        for row in &self.rows {
+            let mut cells = row.cells.clone();
+            cells.push(format!("{}{}", row.name, row.rest));
+            table.row(cells);
+        }
+        table
+    }
+}
+
 /// Where the program starts, and what each start reaches.
 pub(super) struct Starts<'a> {
     binary: &'a Binary,
@@ -1494,25 +1571,25 @@ pub(super) fn starts<'a>(binary: &'a Binary, graph: &Graph, names: &Names) -> St
 }
 
 impl Starts<'_> {
-    /// Writes the starts as a table, then what elfq can't follow or read,
-    /// and for a shared library, that its exported functions aren't counted.
-    fn write_text(&self, path: &Path, all: bool, out: &mut dyn Write) -> Result<()> {
+    /// The answer's text: the starts as a table, then what elfq can't
+    /// follow or read, and for a shared library, that its exported
+    /// functions aren't counted. Each row is about its start.
+    pub(super) fn answer(&self, path: &Path, all: bool) -> Answer {
         let binary = self.binary;
         let file = path.display();
         let several = self.blocks.len() > 1;
         let rows = self.rows(all);
+        let mut answer = Answer::default();
         if !self.starts.is_empty() {
             let each = if several {
                 " in each block of memory"
             } else {
                 ""
             };
-            writeln!(
-                out,
+            answer.lead.push(format!(
                 "Where {file} starts, and the bytes of code and data that each reaches{each}:"
-            )?;
-            writeln!(out)?;
-            let mut columns: Vec<(String, Align)> = if several {
+            ));
+            answer.columns = if several {
                 self.blocks
                     .iter()
                     .map(|block| (text::range_start(block.range), Align::Right))
@@ -1523,18 +1600,18 @@ impl Starts<'_> {
                     ("DATA".to_string(), Align::Right),
                 ]
             };
-            columns.push(("WHY".to_string(), Align::Left));
-            columns.push(("START".to_string(), Align::Left));
-            let numbers = columns.len() - 2;
-            let mut table = Table::new(&columns);
+            answer.columns.push(("WHY".to_string(), Align::Left));
+            answer.columns.push(("START".to_string(), Align::Left));
+            let numbers = answer.columns.len() - 2;
             for row in &rows {
                 let start = match *row {
                     StartRow::Start(start) => &self.starts[start],
                     StartRow::More(kind, count) => {
                         let mut cells = vec![String::new(); numbers];
                         cells.push(text::root_column(binary, kind));
-                        cells.push(format!("{count} more"));
-                        table.row(cells);
+                        answer
+                            .rows
+                            .push(AnswerRow::new(cells, format!("{count} more"), None));
                         continue;
                     }
                 };
@@ -1550,20 +1627,22 @@ impl Starts<'_> {
                     vec![totals.code.to_string(), totals.data.to_string()]
                 };
                 cells.push(start.why(binary));
-                let mark = if totals.complete() {
-                    ""
-                } else {
-                    " (may reach more)"
-                };
-                cells.push(format!("{}{mark}", binary.items[start.index].name));
-                table.row(cells);
+                let mut row = AnswerRow::new(
+                    cells,
+                    binary.items[start.index].name.clone(),
+                    Some(Node::Item(start.index)),
+                );
+                if !totals.complete() {
+                    row.rest = " (may reach more)".to_string();
+                }
+                answer.rows.push(row);
             }
-            table.write(out)?;
         } else if self.unreadable.is_empty() {
-            writeln!(out, "elfq found no place where {file} starts.")?;
+            answer
+                .lead
+                .push(format!("elfq found no place where {file} starts."));
         }
 
-        let mut notes = Vec::new();
         // The marks in the table, of the starts that it shows.
         let shown: Vec<&Totals> = rows
             .iter()
@@ -1583,26 +1662,20 @@ impl Starts<'_> {
             (false, false) => None,
         };
         if let Some(marked) = marked {
-            notes.push(format!(
+            answer.notes.push(format!(
                 "The starts marked (may reach more) reach {marked}; reach START names them."
             ));
         }
         if !self.unreadable.is_empty() {
-            notes.push(self.unreadable_text(path, all));
+            answer.notes.push(self.unreadable_text(path, all));
         }
         if binary.kind == FileKind::SharedLibrary {
-            notes.push(
+            answer.notes.push(
                 "elfq doesn't count a shared library's exported functions as starting points yet."
                     .to_string(),
             );
         }
-        if !self.starts.is_empty() && !notes.is_empty() {
-            writeln!(out)?;
-        }
-        for note in notes {
-            writeln!(out, "{note}")?;
-        }
-        Ok(())
+        answer
     }
 
     /// The rows of the table: every start with `all`; otherwise `main`, the
@@ -2033,7 +2106,8 @@ mod tests {
     fn text(starts: &Starts, all: bool) -> String {
         let mut out = Vec::new();
         starts
-            .write_text(Path::new("app.elf"), all, &mut out)
+            .answer(Path::new("app.elf"), all)
+            .write(&mut out)
             .unwrap();
         String::from_utf8(out).unwrap()
     }

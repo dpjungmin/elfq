@@ -134,6 +134,7 @@ Examples:
   elfq app.elf callees 0x0+256K           What the first 256 KiB uses outside it
   elfq app.elf reach                      Where the program starts, and the bytes each start reaches
   elfq app.elf reach SysTick_Handler      What SysTick_Handler runs and uses, and where
+  elfq app.elf browse                     Where the program starts, each start a page to read
   elfq app.elf browse log_msg             Read log_msg's code, its calls and its callers
 
 The overview's table is the start of the one top shows; elfq help top
@@ -407,9 +408,12 @@ Exit status, with --to: 1 if the answer lists an item, or code that elfq
 can't follow or read; 0 if not; and 2 for an error.";
 
 const BROWSE: &str = "\
-browse opens a page for SYMBOL, or without it, for main, else the entry
-point, else the largest function. When SYMBOL could mean several items, or
-none, the go-to box opens over that page with SYMBOL typed in.
+browse opens a page for SYMBOL, or without it, the start page: what the
+file is and its blocks of memory, as the overview says them, then where the
+program starts, as reach lists it without SYMBOL, with every start and that
+command under them; Enter opens a start's page. When SYMBOL could mean
+several items, or none, the go-to box opens over the start page with SYMBOL
+typed in.
 
 A function's page shows its code, one line per instruction, and a line
 that calls, jumps to or uses another item ends with a note that names it,
