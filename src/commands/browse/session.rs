@@ -75,6 +75,16 @@ impl<'a> Session<'a> {
         callers::answer(self.binary, &self.graph, node)
     }
 
+    /// `node`'s name as the first line of a command's answer about it
+    /// gives it, when the command is given the shortest name that finds it,
+    /// as the command under a tab is: "sniprintf (also named snprintf)".
+    pub(super) fn lead_name(&self, node: Node) -> String {
+        match self.names.find(&self.names.query_for(node)) {
+            Ok(symbol) => symbol.lead_name(self.binary),
+            Err(_) => node.name(self.binary).to_string(),
+        }
+    }
+
     /// The command that prints what a page shows about `node`, or without
     /// one, about the file, ready to paste into a shell, as in `$ elfq
     /// testdata/bin/cpp-x86_64.elf callers 'log(unsigned int)'`: the file

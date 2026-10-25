@@ -1,7 +1,8 @@
 //! `elfq FILE browse [SYMBOL]`: a function's code in the terminal, with a
 //! link on each line that calls, jumps to or uses another item, to follow
 //! as in a web browser: Enter opens the item's page, and Esc comes back.
-//! An item's page also lists what calls or uses it, on its callers tab.
+//! An item's page also lists, on tabs 2, 3 and 4, what the item calls or
+//! uses, what calls or uses it, and everything it reaches.
 //! Without SYMBOL, browse opens on where the program starts, each start a
 //! link to its page.
 //!
@@ -25,9 +26,10 @@
 //! drive the browser with keys and read what it draws, without a terminal.
 //! Keys that come faster than a large file's answers, as a paste's do,
 //! aren't each answered and drawn in turn: what is typed into go to waits
-//! for the next draw, which comes when no key is left waiting. A page that
-//! takes a while to work out, as the start page of a large program, is
-//! drawn first with a status line that says so.
+//! for the next draw, which comes when no key is left waiting. A page or
+//! tab that takes a while to work out, as the start page of a large
+//! program, or everything its main reaches, is drawn first with a status
+//! line that says so.
 
 mod app;
 mod keys;

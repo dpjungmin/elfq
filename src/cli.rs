@@ -135,7 +135,7 @@ Examples:
   elfq app.elf reach                      Where the program starts, and the bytes each start reaches
   elfq app.elf reach SysTick_Handler      What SysTick_Handler runs and uses, and where
   elfq app.elf browse                     Where the program starts, each start a page to read
-  elfq app.elf browse log_msg             Read log_msg's code, its calls and its callers
+  elfq app.elf browse log_msg             Read log_msg's code, what it calls and reaches, and its callers
 
 The overview's table is the start of the one top shows; elfq help top
 explains it.
@@ -189,7 +189,7 @@ pub enum Command {
     /// List everything SYMBOL calls or uses, at any depth, by memory block
     #[command(after_help = format!("{REACH}\n\n{}\n\n{HOW_NOTES}", how_table()))]
     Reach(ReachArgs),
-    /// Read a function's code in the terminal, and follow its calls and callers
+    /// Read a function's code in the terminal, and follow what it calls, reaches and is used by
     #[command(after_help = format!("{BROWSE}\n\n{}", how_table()))]
     Browse(BrowseArgs),
     /// Show elfq's own view of the file (for developing elfq)
@@ -423,13 +423,16 @@ function, data object or import, and ? lists every key. elfq prints x86-64
 code, and the Thumb code of Cortex-M cores up to Armv7E-M (M0, M0+, M3, M4,
 M7); for other Arm cores, a page lists only the lines that use another item.
 
-3 shows what calls or uses the item, as callers SYMBOL lists it, but with
-every row, and under them that command, ready to paste; 1 shows the code
-again. Enter on a row opens the caller's page on its callers too, so that
-Enter after Enter walks up the callers, and its code is already at the
-call. The pages of data objects and imports open on their callers; an
-import that has a PLT stub opens as the stub's page, since its name finds
-the stub as SYMBOL.
+The other tabs show what callees SYMBOL, callers SYMBOL and reach SYMBOL
+print about the item, but with every row, and under them that command,
+ready to paste: 2 what the item calls or uses, 3 what calls or uses it, and
+4 everything it calls or uses at any depth, by block of memory; 1 shows the
+code again. Enter on a row opens that item's page on the same tab, so that
+Enter after Enter walks down the callees or up the callers, and from the
+callers its code is already at the call. The pages of data objects and
+imports open on their callers, and a tab that an item can't have says why,
+as its command does; an import that has a PLT stub opens as the stub's
+page, since its name finds the stub as SYMBOL.
 
 Long C++ and Rust names are shortened to fit the screen: paths inside
 brackets keep their last part, and brackets become <…> or (…), but rows

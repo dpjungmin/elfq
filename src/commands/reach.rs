@@ -38,7 +38,7 @@ use std::path::Path;
 use anyhow::{Result, bail};
 use serde::Serialize;
 
-use super::symbol::Names;
+use super::symbol::{Names, Symbol};
 use super::{Kept, Outcome, callees, json, overview, ranges, text};
 use crate::binary::{
     AddressRange, Binary, FileKind, ItemKind, MemoryBlock, STARTUP_ARRAYS, exception_name,
@@ -190,10 +190,27 @@ pub fn run(
     let names = Kept::new(Names::new(binary));
     let symbol = names.find(symbol)?;
     let index = super::readable_item(binary, symbol.node)?;
-    let lead_name = symbol.lead_name(binary);
     let graph = Kept::new(Graph::build(binary));
+    reach(binary, &graph, &names, &symbol, index, to, all, format, out)
+}
+
+/// Answers `reach SYMBOL` about `symbol`, the item at `index`, whose code
+/// elfq can read, in `graph`, the file's reference graph, as [`run`] does.
+#[expect(clippy::too_many_arguments)]
+pub(super) fn reach<'a>(
+    binary: &'a Binary,
+    graph: &Graph,
+    names: &Names<'a>,
+    symbol: &Symbol,
+    index: usize,
+    to: &[AddressRange],
+    all: bool,
+    format: Format,
+    out: &mut dyn Write,
+) -> Result<Outcome> {
+    let lead_name = symbol.lead_name(binary);
     let reach = Kept::new(Reach::find(
-        binary, &graph, &names, index, lead_name, to, all,
+        binary, graph, names, index, lead_name, to, all,
     )?);
     match format {
         Format::Json => reach.write_json(out)?,
@@ -272,6 +289,28 @@ fn needs_symbol(
         Format::Json => " --json",
     };
     format!("{refused}, such as elfq {file} reach {symbol}{to}{all}{format}")
+}
+
+/// What `reach SYMBOL` writes as text about the item at `index`, which
+/// its first line names `lead_name` (see [`Symbol::lead_name`]): with every
+/// row and every name, as browse shows it, and as the command writes it
+/// without `--all`.
+///
+/// [`Symbol::lead_name`]: super::symbol::Symbol::lead_name
+#[cfg(feature = "tui")]
+pub(super) fn answer<'a>(
+    binary: &'a Binary,
+    graph: &Graph,
+    names: &Names<'a>,
+    index: usize,
+    lead_name: String,
+) -> (Answer, Answer) {
+    let mut reach = Reach::find(binary, graph, names, index, lead_name, &[], true)
+        .expect("without --to, there is no range for reach to refuse");
+    let all = reach.answer(Body::Rows);
+    // The same, but with the rows and names that the command lists.
+    reach.all = false;
+    (all, reach.answer(Body::Rows))
 }
 
 /// What the text answer of `reach SYMBOL` shows under its first lines.
@@ -1474,6 +1513,14 @@ impl Answer {
             writeln!(out, "{note}")?;
         }
         Ok(())
+    }
+
+    /// What [`Answer::write`] writes.
+    #[cfg(feature = "tui")]
+    pub(super) fn written(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        self.write(&mut out).expect("writing to memory");
+        out
     }
 
     /// The table of rows, as the text writes it.

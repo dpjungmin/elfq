@@ -1,8 +1,9 @@
 //! A command's answer as a page or a tab shows it: the lines that the
 //! command prints before its table, the table, each row of which opens the
 //! item that it is about, and the notes under it. The start page and the
-//! callers tab are each one, made from their command's own answer, with
-//! every row, and under them is that command, ready to paste.
+//! callees, callers and reach tabs are each one, made from their command's
+//! own answer, with every row, and under them is that command, ready to
+//! paste.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -74,6 +75,10 @@ pub struct Printed {
     /// The names of the rows on the screen, shortened.
     fitted: FittedRows,
     notes: Vec<String>,
+    /// The notes as the command words them without `--all`, if it needs
+    /// it to print them all: they name fewer, and are shown when the notes
+    /// in full don't fit.
+    brief: Option<Vec<String>>,
     /// The lines before the table and the notes, as last laid out, since
     /// a note can be long.
     laid_out: Option<LaidOut>,
@@ -128,6 +133,7 @@ impl Printed {
             fitted: FittedRows::default(),
             rows,
             notes,
+            brief: None,
             laid_out: None,
             command,
             tab: Tab::Code,
@@ -159,6 +165,13 @@ impl Printed {
         self
     }
 
+    /// The same, but with `brief`, the notes as the command words them
+    /// without `--all`, to show when the notes in full don't fit.
+    pub fn with_brief(mut self, brief: Vec<String>) -> Printed {
+        self.brief = Some(brief);
+        self
+    }
+
     /// The same, but Enter opens a row's item on `tab`, when it has that
     /// tab, as a link opens a page on the tab that it is on. `page` is the
     /// item or import whose page it is on.
@@ -174,8 +187,9 @@ impl Printed {
     }
 
     /// Draws the lines before the table, the table, and the notes under
-    /// it, as [`Printed::lay_out`] lays them out. A row too wide for the screen is cut
-    /// at its edge, ending in "…", rather than any of its numbers.
+    /// it, as [`Printed::lay_out`] lays them out. A row too wide for the
+    /// screen is cut at its edge, ending in "…", rather than any of its
+    /// numbers.
     pub fn draw(&mut self, frame: &mut Frame, area: Rect) {
         let width = usize::from(area.width);
         self.lay_out(width, usize::from(area.height));
@@ -259,7 +273,10 @@ impl Printed {
     /// its header and a few rows, or a third of the lines; the notes take
     /// what the answer's own lines before the table leave of the rest, or
     /// at least a third of it, and the other command's lines, which come
-    /// first, take what is left. What doesn't fit is cut, ending in "…".
+    /// first, take what is left. Notes that don't fit in full are shown as
+    /// the command words them without `--all`, if it does: the end of a
+    /// note that names thousands of functions says what they are. What
+    /// doesn't fit is cut, ending in "…".
     fn lay_out(&mut self, width: usize, height: usize) {
         let size = (width, height);
         if self
@@ -274,17 +291,27 @@ impl Printed {
             let room = height.saturating_sub(table);
             let own = blocks(&self.above, width);
             let own_lines: usize = own.iter().map(|(_, lines)| lines.len()).sum();
-            let notes: Vec<String> = (self.notes.iter())
-                .flat_map(|note| wrap(note, width))
-                .collect();
-            let most = if own_lines + notes.len() <= room {
-                notes.len()
-            } else {
-                room.saturating_sub(own_lines)
-                    .max((room / 3).max(2))
-                    .min(room)
+            let most = (room.saturating_sub(own_lines))
+                .max((room / 3).max(2))
+                .min(room);
+            let wrapped = |notes: &[String]| -> Vec<String> {
+                (notes.iter()).flat_map(|note| wrap(note, width)).collect()
             };
-            let notes = keep_lines(notes, most, width);
+            // Notes with more characters than the lines hold, and the
+            // space that each line can end at, can't fit, and aren't
+            // wrapped only to be cut.
+            let fit = |notes: &Vec<String>| {
+                let length: usize = notes.iter().map(|note| note.chars().count()).sum();
+                let lines = (length <= most * (width + 1)).then(|| wrapped(notes))?;
+                (lines.len() <= most).then_some(lines)
+            };
+            let notes = ([Some(&self.notes), self.brief.as_ref()].into_iter())
+                .flatten()
+                .find_map(fit)
+                .unwrap_or_else(|| {
+                    let shortest = self.brief.as_ref().unwrap_or(&self.notes);
+                    keep_lines(wrapped(shortest), most, width)
+                });
             let room = room.saturating_sub(notes.len());
             let own = keep_blocks(own, room, width);
             let mut above = keep_blocks(blocks(&self.context, width), room - own.len(), width);
@@ -333,6 +360,11 @@ impl Printed {
             }
             Action::Open => {
                 let (node, at) = self.rows.get(self.cursor.selected)?.link?;
+                // The page's own row, as the first of what it reaches.
+                if Some(node) == self.page && session.page_node(node) == node {
+                    let name = node.name(session.binary);
+                    return Some(Go::Say(format!("this is {name}'s page")));
+                }
                 Some(follow(session, node, at, self.page, self.tab))
             }
             _ => None,
@@ -521,6 +553,32 @@ screen."
 elfq can't follow 3 calls through pointers, which this note
 names in full, however many lines that takes on a short scr…"
         );
+    }
+
+    #[test]
+    fn notes_that_dont_fit_are_as_the_command_words_them_without_all() {
+        let handlers: Vec<String> = (0..40).map(|n| format!("handler_{n}")).collect();
+        let note = format!(
+            "{} also call through pointers, which elfq can't follow.",
+            handlers.join(", ")
+        );
+        let brief = "handler_0, handler_1 and 38 more also call through pointers, \
+                     which elfq can't follow.";
+        let mut printed = starts(Vec::new(), &[&note]).with_brief(vec![brief.to_string()]);
+        assert_eq!(
+            drawn(&mut printed, (60, 7)),
+            "  CODE  WHY                   START
+> 2218  main function         main (may reach more)
+  2256  entry point           Reset_Handler (may reach more)
+    80  NMI, HardFault and …  Default_Handler
+
+handler_0, handler_1 and 38 more also call through pointers,
+which elfq can't follow."
+        );
+        // With room for it, the note is in full.
+        let tall = drawn(&mut printed, (60, 16));
+        let end = "handler_39\nalso call through pointers, which elfq can't follow.";
+        assert!(tall.ends_with(end), "{tall}");
     }
 
     #[test]

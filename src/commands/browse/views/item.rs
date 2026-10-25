@@ -3,8 +3,12 @@
 //! or uses another item ends with a note in the words of the CLI's HOW
 //! column, such as `call`, `tail call via PLT → log_msg` or `uses
 //! frames_ok`, and links to that item: Enter opens its page. A jump inside
-//! the function links to the line it goes to. Tab 3 lists what calls or
-//! uses the item, as `callers SYMBOL` does (see `callers.rs`).
+//! the function links to the line it goes to. The other tabs list what the
+//! item calls or uses, as `callees SYMBOL` does (tab 2, `callees.rs`), what
+//! calls or uses it, as `callers SYMBOL` does (tab 3, `callers.rs`), and
+//! everything it calls or uses at any depth, as `reach SYMBOL` does (tab 4,
+//! `reach.rs`). Tabs 2 and 4 are worked out the first time they are shown,
+//! since what an item reaches can take a while to find in a large file.
 
 use std::collections::{BTreeSet, HashMap};
 use std::rc::Rc;
@@ -40,19 +44,25 @@ const NOTE_WIDTH: usize = 16;
 pub enum Tab {
     /// 1: a function's code.
     Code,
+    /// 2: what the item calls or uses.
+    Callees,
     /// 3: what calls or uses the item.
     Callers,
+    /// 4: what the item calls or uses, at any depth.
+    Reach,
 }
 
 impl Tab {
     /// Every tab, in the order of their numbers.
-    const ALL: [Tab; 2] = [Tab::Code, Tab::Callers];
+    const ALL: [Tab; 4] = [Tab::Code, Tab::Callees, Tab::Callers, Tab::Reach];
 
     /// The number of the key that shows it, and its name.
     fn number_and_name(self) -> (u8, &'static str) {
         match self {
             Tab::Code => (1, "code"),
+            Tab::Callees => (2, "callees"),
             Tab::Callers => (3, "callers"),
+            Tab::Reach => (4, "reach"),
         }
     }
 
@@ -101,6 +111,8 @@ struct CodeLine {
 }
 
 pub struct ItemPage {
+    /// The item or import.
+    node: Node,
     /// Its name in the title line's trail.
     title: String,
     /// The title shortened, and the columns it was shortened to.
@@ -120,8 +132,16 @@ pub struct ItemPage {
     /// Tab 1, or for an item that has no code, why not, as pressing 1
     /// says.
     code: Result<CodeTab, String>,
+    /// The item's index, for tabs 2 and 4, or why `callees` and `reach`
+    /// can't read its code, in their words, which pressing 2 or 4 says: it
+    /// is an import, or a function whose end elfq doesn't know.
+    readable: Result<usize, String>,
+    /// Tab 2, once it has been shown.
+    callees: Option<Printed>,
     /// Tab 3.
     callers: Printed,
+    /// Tab 4, once it has been shown.
+    reach: Option<Printed>,
 }
 
 impl ItemPage {
@@ -157,6 +177,7 @@ impl ItemPage {
             }
         };
         ItemPage {
+            node,
             title,
             short_title: None,
             identity: (name.to_string(), format!("{note}  {place}")),
@@ -168,17 +189,76 @@ impl ItemPage {
                 Tab::Callers
             },
             code,
+            readable: readable_item(session.binary, node).map_err(|error| error.to_string()),
+            callees: None,
             callers: super::callers::tab(session, node, answer),
+            reach: None,
         }
     }
 
     /// The page on `tab`, when it has that tab, as a link from that tab
     /// opens it.
-    pub fn on(mut self, tab: Tab) -> ItemPage {
-        if self.tabs().contains(&tab) {
-            self.tab = tab;
+    pub fn on(mut self, session: &Session, tab: Tab) -> ItemPage {
+        if self.why_not(tab).is_none() {
+            self.show(session, tab);
         }
         self
+    }
+
+    /// Why the item doesn't have `tab`, in the words of the command that
+    /// would print it, if it doesn't.
+    fn why_not(&self, tab: Tab) -> Option<&str> {
+        match tab {
+            Tab::Code => self.code.as_ref().err(),
+            Tab::Callees | Tab::Reach => self.readable.as_ref().err(),
+            Tab::Callers => None,
+        }
+        .map(String::as_str)
+    }
+
+    /// Puts `tab`, which the item has, on the screen, working out tab 2
+    /// the first time. Tab 4 can take seconds, so [`ItemPage::work`] works
+    /// it out, once the screen says so.
+    fn show(&mut self, session: &Session, tab: Tab) {
+        if let (Tab::Callees, None, Ok(index)) = (tab, &self.callees, &self.readable) {
+            let name = session.lead_name(self.node);
+            self.callees = Some(super::callees::tab(session, *index, &name));
+        }
+        self.tab = tab;
+    }
+
+    /// What the tab on the screen has yet to work out, which the status
+    /// line says while it does: "working out what main reaches…".
+    pub fn waiting(&self) -> Option<String> {
+        let reach = self.tab == Tab::Reach && self.reach.is_none();
+        reach.then(|| format!("working out what {} reaches…", self.title))
+    }
+
+    /// Works out what the tab on the screen has yet to.
+    pub fn work(&mut self, session: &Session) {
+        if let (Tab::Reach, None, Ok(index)) = (self.tab, &self.reach, &self.readable) {
+            let name = session.lead_name(self.node);
+            self.reach = Some(super::reach::tab(session, *index, &name));
+        }
+    }
+
+    /// The tab on the screen, when it shows a command's answer.
+    fn printed(&self) -> Option<&Printed> {
+        match self.tab {
+            Tab::Code => None,
+            Tab::Callees => self.callees.as_ref(),
+            Tab::Callers => Some(&self.callers),
+            Tab::Reach => self.reach.as_ref(),
+        }
+    }
+
+    fn printed_mut(&mut self) -> Option<&mut Printed> {
+        match self.tab {
+            Tab::Code => None,
+            Tab::Callees => self.callees.as_mut(),
+            Tab::Callers => Some(&mut self.callers),
+            Tab::Reach => self.reach.as_mut(),
+        }
     }
 
     /// Its name in the title line's trail, shortened to fit `room`
@@ -203,10 +283,7 @@ impl ItemPage {
 
     /// The tabs it has, in the order of their numbers.
     fn tabs(&self) -> Vec<Tab> {
-        let has = |tab: &Tab| match tab {
-            Tab::Code => self.code.is_ok(),
-            Tab::Callers => true,
-        };
+        let has = |tab: &Tab| self.why_not(*tab).is_none();
         Tab::ALL.into_iter().filter(has).collect()
     }
 
@@ -222,7 +299,7 @@ impl ItemPage {
         draw_lines(frame, head, top);
 
         // The tabs it has, with the one on the screen in brackets:
-        // " 1 code  [3 callers]".
+        // "[1 code]  2 callees   3 callers   4 reach".
         let mut line = Vec::new();
         for tab in self.tabs() {
             if tab == self.tab {
@@ -234,11 +311,10 @@ impl ItemPage {
         }
         frame.render_widget(Line::from(line), tabs);
 
-        match (self.tab, &mut self.code) {
-            (Tab::Code, Ok(code)) => code.draw(frame, body),
-            // Never on the screen: 1 says why instead.
-            (Tab::Code, Err(why)) => draw_lines(frame, body, vec![Line::raw(why.clone())]),
-            (Tab::Callers, _) => self.callers.draw(frame, body),
+        if let (Tab::Code, Ok(code)) = (self.tab, &mut self.code) {
+            code.draw(frame, body);
+        } else if let Some(printed) = self.printed_mut() {
+            printed.draw(frame, body);
         }
     }
 
@@ -283,18 +359,18 @@ impl ItemPage {
 
     pub fn handle(&mut self, session: &Session, action: Action) -> Option<Go> {
         if let Action::Tab(number) = action {
-            match (Tab::of_key(number)?, &self.code) {
-                // A tab that the item doesn't have says why.
-                (Tab::Code, Err(why)) => return Some(Go::Say(why.clone())),
-                (tab, _) => self.tab = tab,
+            let tab = Tab::of_key(number)?;
+            // A tab that the item doesn't have says why.
+            if let Some(why) = self.why_not(tab) {
+                return Some(Go::Say(why.to_string()));
             }
+            self.show(session, tab);
             return None;
         }
-        match (self.tab, &mut self.code) {
-            (Tab::Code, Ok(code)) => code.handle(session, action),
-            (Tab::Code, Err(_)) => None,
-            (Tab::Callers, _) => self.callers.handle(session, action),
+        if let (Tab::Code, Ok(code)) = (self.tab, &mut self.code) {
+            return code.handle(session, action);
         }
+        self.printed_mut()?.handle(session, action)
     }
 
     /// Goes back to the line before the last jump inside the function, if
@@ -302,7 +378,7 @@ impl ItemPage {
     pub fn back(&mut self) -> bool {
         match (self.tab, &mut self.code) {
             (Tab::Code, Ok(code)) => code.back(),
-            (Tab::Code, Err(_)) | (Tab::Callers, _) => false,
+            _ => false,
         }
     }
 
@@ -311,8 +387,7 @@ impl ItemPage {
     pub fn preview(&self, session: &Session) -> Option<String> {
         match (self.tab, &self.code) {
             (Tab::Code, Ok(code)) => code.preview(session),
-            (Tab::Code, Err(_)) => None,
-            (Tab::Callers, _) => self.callers.preview(session),
+            _ => self.printed()?.preview(session),
         }
     }
 
@@ -320,18 +395,14 @@ impl ItemPage {
     pub fn has_links(&self) -> bool {
         match (self.tab, &self.code) {
             (Tab::Code, Ok(code)) => code.has_links(),
-            (Tab::Code, Err(_)) => false,
-            (Tab::Callers, _) => self.callers.has_links(),
+            _ => self.printed().is_some_and(Printed::has_links),
         }
     }
 
     /// The command that prints what the tab on the screen shows, if one
     /// does: the code tab has none.
     pub fn command(&self) -> Option<&str> {
-        match self.tab {
-            Tab::Code => None,
-            Tab::Callers => Some(self.callers.command()),
-        }
+        self.printed().map(Printed::command)
     }
 }
 

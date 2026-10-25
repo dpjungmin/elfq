@@ -42,7 +42,8 @@ pub struct Binding {
     pub what: &'static str,
     /// What the hint line says about them, if anything, and how much that
     /// matters: 0 is always shown, and the highest goes first when the
-    /// screen is too narrow.
+    /// screen is too narrow. The tab keys' hint follows the numbers of the
+    /// tabs that the page has: "1 3 tabs".
     pub hint: Option<(&'static str, u8)>,
     /// Each key, with what it does.
     pub keys: &'static [(KeyCode, KeyModifiers, Action)],
@@ -128,12 +129,14 @@ pub const BINDINGS: &[Binding] = &[
         ],
     },
     Binding {
-        label: "1 3",
-        what: "tabs: 1 code, 3 callers",
-        hint: Some(("1 3 tabs", 3)),
+        label: "1 2 3 4",
+        what: "tabs: 1 code, 2 callees, 3 callers, 4 reach",
+        hint: Some(("tabs", 3)),
         keys: &[
             (KeyCode::Char('1'), NONE, Action::Tab(1)),
+            (KeyCode::Char('2'), NONE, Action::Tab(2)),
             (KeyCode::Char('3'), NONE, Action::Tab(3)),
+            (KeyCode::Char('4'), NONE, Action::Tab(4)),
         ],
     },
     Binding {
@@ -185,12 +188,20 @@ pub fn action(key: KeyEvent) -> Option<Action> {
 
 /// The hint line for a screen `width` columns wide: the hints that fit,
 /// leaving out the least needed first. `links` says whether the page has
-/// lines that link, for Tab, and `tabs` whether it has tabs, for 1 and 3.
-pub fn hints(width: usize, links: bool, tabs: bool) -> String {
-    let hints: Vec<(&str, u8)> = bindings()
+/// lines that link, for Tab, and `tabs` gives the numbers of its tabs,
+/// whose keys are named when there are two or more.
+pub fn hints(width: usize, links: bool, tabs: &[u8]) -> String {
+    let numbers: Vec<String> = tabs.iter().map(u8::to_string).collect();
+    let hints: Vec<(String, u8)> = bindings()
         .filter(|binding| links || !binding.does(Action::NextLink))
-        .filter(|binding| tabs || !binding.does(Action::Tab(1)))
-        .filter_map(|binding| binding.hint)
+        .filter(|binding| tabs.len() > 1 || !binding.does(Action::Tab(1)))
+        .filter_map(|binding| {
+            let (hint, level) = binding.hint?;
+            Some(match binding.does(Action::Tab(1)) {
+                true => (format!("{} {hint}", numbers.join(" ")), level),
+                false => (hint.to_string(), level),
+            })
+        })
         .collect();
     let most = hints.iter().map(|&(_, level)| level).max().unwrap_or(0);
     let mut line = String::new();
@@ -198,7 +209,7 @@ pub fn hints(width: usize, links: bool, tabs: bool) -> String {
         let shown: Vec<&str> = hints
             .iter()
             .filter(|&&(_, needed)| needed <= level)
-            .map(|&(hint, _)| hint)
+            .map(|(hint, _)| hint.as_str())
             .collect();
         line = shown.join("  ");
         if line.chars().count() <= width {
@@ -249,21 +260,29 @@ mod tests {
 
     #[test]
     fn the_hint_line_leaves_out_what_is_needed_least() {
-        let all =
-            "↑↓ move  enter follow  esc back  tab next link  1 3 tabs  g go to  ? help  q quit";
-        assert_eq!(hints(100, true, true), all);
+        let tabs = &[1, 2, 3, 4];
+        let all = "↑↓ move  enter follow  esc back  tab next link  1 2 3 4 tabs  g go to  ? help  \
+                   q quit";
+        assert_eq!(hints(100, true, tabs), all);
+        // The keys of the tabs that the page has.
+        assert_eq!(
+            hints(100, true, &[1, 3]),
+            all.replace("1 2 3 4 tabs", "1 3 tabs")
+        );
         let without_tabs =
             "↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit";
-        assert_eq!(hints(all.chars().count() - 1, true, true), without_tabs);
-        assert_eq!(hints(100, true, false), without_tabs);
+        assert_eq!(hints(all.chars().count() - 1, true, tabs), without_tabs);
+        assert_eq!(hints(100, true, &[]), without_tabs);
+        // One tab needs no key.
+        assert_eq!(hints(100, true, &[3]), without_tabs);
         let without_tab = "↑↓ move  enter follow  esc back  g go to  ? help  q quit";
         assert_eq!(
-            hints(without_tabs.chars().count() - 1, true, true),
+            hints(without_tabs.chars().count() - 1, true, tabs),
             without_tab
         );
-        assert_eq!(hints(100, false, false), without_tab);
+        assert_eq!(hints(100, false, &[]), without_tab);
         let least = "↑↓ move  enter follow  esc back  ? help  q quit";
-        assert_eq!(hints(without_tab.chars().count() - 1, true, true), least);
+        assert_eq!(hints(without_tab.chars().count() - 1, true, tabs), least);
     }
 
     #[test]

@@ -84,7 +84,7 @@ impl<'a> App<'a> {
 
     /// What the page on the screen has yet to work out, which the status
     /// line says while it does: the start page, once the go-to box isn't
-    /// over it.
+    /// over it, and tab 4 of an item's page, the first time it is shown.
     fn waiting(&self) -> Option<String> {
         if self.picker.is_some() {
             return None;
@@ -94,6 +94,7 @@ impl<'a> App<'a> {
                 "working out where {} starts…",
                 self.session.file_name()
             )),
+            View::Item(page) => page.waiting(),
             _ => None,
         }
     }
@@ -110,8 +111,10 @@ impl<'a> App<'a> {
         if !self.has_work() {
             return;
         }
-        if let Some(View::Start(start)) = self.history.last_mut() {
-            *start = Some(Box::new(start_page(&self.session)));
+        match self.history.last_mut() {
+            Some(View::Start(start)) => *start = Some(Box::new(start_page(&self.session))),
+            Some(View::Item(page)) => page.work(&self.session),
+            _ => {}
         }
     }
 
@@ -317,7 +320,7 @@ impl<'a> App<'a> {
             command_area,
             command.into_iter().map(Line::raw).collect(),
         );
-        let hint = keys::hints(width, view.has_links(), !view.tabs().is_empty());
+        let hint = keys::hints(width, view.has_links(), &view.tabs());
         frame.render_widget(Line::raw(hint).dim(), hints);
     }
 }
@@ -362,9 +365,9 @@ mod tests {
     }
 
     #[test]
-    fn the_callers_tab_shows_its_selected_row_on_a_small_screen() {
+    fn the_tabs_show_their_selected_row_on_a_small_screen() {
         // Long names make long headers, notes and commands, which leave
-        // the tab few lines.
+        // the tabs few lines.
         let mut pages = 0;
         for path in samples() {
             let binary = Binary::load(&path).unwrap();
@@ -382,28 +385,48 @@ mod tests {
                 .filter(|&node| app.session.page_node(node) == node)
                 .filter(|node| node.name(&binary).chars().count() > 100)
                 .collect();
-            for node in nodes {
+            for (node, tab) in nodes
+                .into_iter()
+                .flat_map(|node| [2, 3, 4].map(|tab| (node, tab)))
+            {
                 let name = node.name(&binary);
                 let mut page = ItemPage::new(&app.session, node, None, name);
-                page.handle(&app.session, Action::Tab(3));
+                if page.handle(&app.session, Action::Tab(tab)).is_some() {
+                    // The item doesn't have the tab.
+                    continue;
+                }
                 app.history = vec![View::Item(Box::new(page))];
+                // Tab 4 is worked out once the screen says so.
+                assert_eq!(app.has_work(), tab == 4, "{name}");
+                if app.has_work() {
+                    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+                    terminal.draw(|frame| app.draw(frame)).unwrap();
+                    let lines = lines(&terminal);
+                    let said = lines
+                        .iter()
+                        .any(|line| line.starts_with("working out what "));
+                    assert!(said, "{name}:\n{}", lines.join("\n"));
+                    app.work();
+                }
                 for (width, height) in [(80, 24), (60, 16)] {
                     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
                     terminal.draw(|frame| app.draw(frame)).unwrap();
                     let lines = lines(&terminal);
                     let shown = |text: &str| lines.iter().any(|line| line.contains(text));
-                    // The table's header and the selected row, or what
-                    // the command says when nothing uses the item, and
-                    // the header's facts.
-                    let rows = shown("Nothing in the file")
-                        || shown("HOW") && lines.iter().any(|line| line.starts_with("> "));
+                    // The table's header and the selected row, when the
+                    // tab has rows, each of which opens an item, and the
+                    // header's facts.
+                    let has_rows = app.page().has_links();
+                    let rows = !has_rows
+                        || (shown("HOW") || shown("ADDRESS"))
+                            && lines.iter().any(|line| line.starts_with("> "));
                     let screen = lines.join("\n");
-                    assert!(rows, "{}, {name}:\n{screen}", path.display());
+                    assert!(rows, "{}, {name}, {tab}:\n{screen}", path.display());
                     assert!(shown("used by"), "{}, {name}:\n{screen}", path.display());
                 }
                 pages += 1;
             }
         }
-        assert!(pages > 100, "{pages}");
+        assert!(pages > 300, "{pages}");
     }
 }

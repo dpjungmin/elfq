@@ -5,12 +5,14 @@
 //! A page or tab that shows a command's answer, a table whose rows open
 //! items, is a `Printed` (`printed.rs`).
 
+mod callees;
 mod callers;
 mod help;
 mod item;
 mod names;
 mod picker;
 mod printed;
+mod reach;
 mod start;
 #[cfg(test)]
 mod thumb_text;
@@ -25,7 +27,7 @@ use ratatui::widgets::TableState;
 use super::keys::Action;
 use super::session::Session;
 use crate::binary::{Item, ItemKind};
-use crate::commands::text;
+use crate::commands::{item_in_file, text};
 use crate::graph::Node;
 use item::Tab;
 
@@ -252,7 +254,7 @@ pub fn follow(session: &Session, node: Node, at: Option<u64>, this: Option<Node>
         return Go::Say(imported(session, node));
     }
     let at = at.filter(|_| opened == node);
-    let page = ItemPage::new(session, opened, at, opened.name(session.binary)).on(tab);
+    let page = ItemPage::new(session, opened, at, opened.name(session.binary)).on(session, tab);
     Go::Open(View::Item(Box::new(page)))
 }
 
@@ -290,13 +292,11 @@ fn is_own_import(node: Node, opened: Node, this: Option<Node>) -> bool {
     opened != node && Some(opened) == this
 }
 
-/// Says that `node`, an import, has no code here: its code is in a shared
-/// library.
+/// Says that `node`, an import, has no code here, as the commands say
+/// it: its code is in a shared library.
 pub fn imported(session: &Session, node: Node) -> String {
-    format!(
-        "{} is imported from a shared library: its code isn't in this file",
-        node.name(session.binary)
-    )
+    let error = item_in_file(session.binary, node).expect_err("an import has no item");
+    error.to_string()
 }
 
 /// What and where an item is: "function at 0x1080, 16 bytes, in .plt.sec".

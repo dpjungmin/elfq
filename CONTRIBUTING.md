@@ -155,15 +155,18 @@ The checks of `browse` that need its private types are unit tests in
 - `views/callers.rs`: the callers tab of every page of every sample,
   against what the command under it prints, and that no two callers on
   the screen read the same once their names are shortened.
+- `views/callees.rs` and `views/reach.rs`: the callees and reach tabs of
+  every page of every sample, against what the command under each prints.
 - `views/start.rs`: the start page of every sample, against what the
   overview and the command under it print, and of a file with more starts
   than that command lists.
 - `views/printed.rs`: how a command's answer gives way on a small screen.
 - `views/picker.rs`: that no two rows of the go-to box read the same.
 - `views/names.rs`: each step of shortening a name.
-- `app.rs`: that a callers tab keeps its table's header and selected row
-  on a small screen, and that the start page under the go-to box is worked
-  out only once the box closes.
+- `app.rs`: that the callees, callers and reach tabs keep their table's
+  header and selected row on a small screen, that the reach tab is worked
+  out once the screen says so, and that the start page under the go-to
+  box is worked out only once the box closes.
 - `views/thumb_text.rs`: the Thumb text, against objdump's text for each
   Cortex-M sample, in `testdata/tests/thumb`, and in each stripped
   sample, against the `$d` symbols of its twin.
@@ -307,10 +310,14 @@ page, `item.rs`, is the one to copy; `help.rs` is a short one.
    actions in the same way, but `item.rs` holds it: add it to `Tab` and
    `Tab::ALL`, with its number and the name of the command that prints
    the same answer in `Tab::number_and_name`, and its arm in each of
-   `ItemPage`'s functions; the compiler asks for those, but not for
-   `Tab::ALL`. Its key goes in the "1 3" row of `BINDINGS`, with its help
-   text and hint (step 3). Its rows come from that command's own code, as
-   `callers::answer`, so that they can't drift from what it prints.
+   `ItemPage`'s functions that match on `Tab`, `why_not` for the items
+   that can't have it, `show` for one worked out the first time it is
+   shown, as tab 2 is, or `waiting` and `work` for one that can take
+   seconds, as tab 4 is, and `printed`; the compiler asks for those, but
+   not for `Tab::ALL`. Its key goes in the "1 2 3 4" row of
+   `BINDINGS`, with its help text (step 3). Its rows come from that
+   command's own code, as `callers::answer`, so that they can't drift
+   from what it prints.
 3. **Keys.** A key goes in `BINDINGS` in `keys.rs`, with the new `Action`,
    what the help page says about it, and its hint, if the hint line names
    it. The help page and the hint line are printed from that table, and
