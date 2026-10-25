@@ -13,7 +13,7 @@ use anyhow::{Result, bail};
 use serde::Serialize;
 
 use super::retained_tree::{KeptItem, RetainedTree};
-use super::{json, text};
+use super::{Kept, json, text};
 use crate::binary::{AddressRange, Binary, FileKind};
 use crate::cli::Format;
 use crate::graph::Node;
@@ -57,7 +57,7 @@ pub fn run(
     if binary.kind == FileKind::SharedLibrary {
         bail!("elfq can't yet tell what keeps the most bytes in a shared library");
     }
-    let retained = RetainedTree::build(binary, range)?;
+    let retained = Kept::new(RetainedTree::build(binary, range)?);
     super::check_has_bytes(binary, range)?;
     if format == Format::Json {
         let answer = TopJson {

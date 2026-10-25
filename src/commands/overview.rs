@@ -14,7 +14,7 @@ use serde::Serialize;
 
 use super::retained_tree::RetainedTree;
 use super::symbol::Names;
-use super::{json, text};
+use super::{Kept, json, text};
 use crate::arch;
 use crate::binary::{AddressRange, Binary, FileKind, ItemKind, MemoryBlock, Source, memory_blocks};
 use crate::cli::Format;
@@ -91,7 +91,7 @@ pub fn run(
         writeln!(out, "{}.", text::cannot_read_code(binary))?;
         return Ok(());
     }
-    let graph = Graph::build(binary);
+    let graph = Kept::new(Graph::build(binary));
     if !super::found_functions(binary) {
         writeln!(out, "{}.", text::NO_FUNCTIONS)?;
     }
@@ -121,7 +121,7 @@ pub fn run(
     // yet, so most of its graph is unreachable: there is no tree, and no
     // `top`, `retained` or `why` to suggest.
     if binary.kind == FileKind::SharedLibrary {
-        let names = Names::new(binary);
+        let names = Kept::new(Names::new(binary));
         let examples: Vec<String> = [
             most_used(binary, &graph).map(|item| about(&names, "callers", item)),
             starting_point(binary, &names).map(|item| about(&names, "callees", item)),
@@ -132,7 +132,7 @@ pub fn run(
         .collect();
         return write_try(path, &examples, out);
     }
-    let retained = RetainedTree::from_graph(binary, graph, None);
+    let retained = Kept::new(RetainedTree::from_graph(binary, graph.into_inner(), None));
     let names = retained.names();
     // Without functions, as in a stripped file whose functions elfq can't
     // find, there is nothing to rank.
@@ -176,7 +176,7 @@ fn write_range(
     if binary.kind == FileKind::SharedLibrary {
         bail!("elfq can't yet tell what keeps the bytes of a range in a shared library");
     }
-    let retained = RetainedTree::build(binary, Some(range))?;
+    let retained = Kept::new(RetainedTree::build(binary, Some(range))?);
     super::check_has_bytes(binary, Some(range))?;
     write_file(path, binary, out)?;
     writeln!(
@@ -275,7 +275,7 @@ fn write_json(
         super::check_has_bytes(binary, range)?;
     }
     let readable = arch::is_supported(binary.architecture, binary.thumb);
-    let graph = (readable && range.is_none()).then(|| Graph::build(binary));
+    let graph = Kept::new((readable && range.is_none()).then(|| Graph::build(binary)));
     let answer = OverviewJson {
         file: path.display().to_string(),
         architecture: text::architecture_name(binary.architecture),

@@ -1,9 +1,12 @@
 //! Finding what the user means by SYMBOL.
 
-use elfq::binary::Binary;
+use elfq::binary::{
+    Binary, ends_with_short_name, may_join_words, short_name_key, short_name_keys, short_names,
+    short_names_with_key, words,
+};
 use elfq::commands::symbol;
 
-use crate::support::load_sample;
+use crate::support::{load_sample, samples};
 
 /// The name of what `query` finds.
 fn found(binary: &Binary, query: &str) -> String {
@@ -265,4 +268,98 @@ fn typos_get_suggestions() {
         error(&binary, "aeabi_dad"),
         "no function or data object is named `aeabi_dad`; did you mean __aeabi_dadd?"
     );
+
+    // Of the names that contain the query, those the fewest typos from it
+    // are the ones to suggest: `app::checksum` is two typos from
+    // `app::checks`, closer than the longer names of the three checksum
+    // functions, but finds all three, so nothing is suggested. A name
+    // whose length is more typos away than the query allows counts as one
+    // typo further.
+    let binary = load_sample("cpp-x86_64.elf");
+    for query in ["app::checks", "app::l", "p::log", "p::checksum"] {
+        assert_eq!(
+            error(&binary, query),
+            format!("no function or data object is named `{query}`")
+        );
+    }
+    assert_eq!(
+        error(&binary, "load_defaultsxy"),
+        "no function or data object is named `load_defaultsxy`; did you mean load_defaults?"
+    );
+}
+
+#[test]
+fn every_short_name_has_one_of_its_names_keys() {
+    // To find a short name, elfq works out the short names of only the
+    // items that one of their names files under the short name's key.
+    let mut checked = 0;
+    for sample in samples() {
+        let binary = load_sample(sample.trim_start_matches("testdata/bin/"));
+        for name in binary.items.iter().flat_map(|item| item.names()) {
+            let keys = short_name_keys(name);
+            for short_name in short_names(name) {
+                let key = short_name_key(&short_name);
+                assert!(
+                    key.is_some_and(|key| keys.iter().any(|k| k == key)),
+                    "{sample}: {short_name:?} of {name:?} has key {key:?}, not one of {keys:?}"
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked > 1000, "{checked}");
+}
+
+#[test]
+fn short_names_with_a_key_are_the_short_names_that_have_it() {
+    // Only these are worked out for a key that a query has.
+    for sample in samples() {
+        let binary = load_sample(sample.trim_start_matches("testdata/bin/"));
+        for name in binary.items.iter().flat_map(|item| item.names()) {
+            let short = short_names(name);
+            for key in short_name_keys(name) {
+                let with_key: Vec<&String> = short
+                    .iter()
+                    .filter(|short_name| short_name_key(short_name) == Some(key.as_str()))
+                    .collect();
+                assert_eq!(
+                    short_names_with_key(name, &key).iter().collect::<Vec<_>>(),
+                    with_key,
+                    "{sample}: {name:?}, key {key:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn the_words_of_a_short_name_are_words_of_its_name() {
+    // Whether a short name finds only one item is worked out from only the
+    // items whose names have its words, and of those, first from whether
+    // a name ends with it.
+    let mut checked = 0;
+    for sample in samples() {
+        let binary = load_sample(sample.trim_start_matches("testdata/bin/"));
+        for name in binary.items.iter().flat_map(|item| item.names()) {
+            let short = short_names(name);
+            let of_name: Vec<&str> = words(name).collect();
+            for short_name in short.iter().filter(|_| !may_join_words(name)) {
+                for word in words(short_name) {
+                    assert!(
+                        of_name.contains(&word),
+                        "{sample}: {word:?} of {short_name:?} isn't a word of {name:?}"
+                    );
+                }
+                checked += 1;
+            }
+            for (at, _) in name.char_indices() {
+                let end = &name[at..];
+                assert!(
+                    !ends_with_short_name(name, end) || short.iter().any(|s| s == end),
+                    "{sample}: {end:?} isn't a short name of {name:?}"
+                );
+            }
+        }
+    }
+    assert!(checked > 1000, "{checked}");
 }

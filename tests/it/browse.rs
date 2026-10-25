@@ -3,6 +3,7 @@
 //! 80x24 and 100x30. Errors that come before the screen, such as needing a
 //! terminal, are tested on the elfq program, as other commands' are.
 
+use std::cell::Cell;
 use std::path::Path;
 
 use elfq::binary::Binary;
@@ -66,7 +67,7 @@ fn browse(
     let mut app = App::new(session, symbol).unwrap();
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     let mut events = keys(script).into_iter();
-    let stop = event_loop(&mut terminal, &mut app, || Ok(events.next())).unwrap();
+    let stop = event_loop(&mut terminal, &mut app, || Ok(events.next()), || Ok(false)).unwrap();
     let buffer = terminal.backend().buffer();
     let mut screen = String::new();
     for row in 0..height {
@@ -1400,7 +1401,7 @@ fn only_key_presses_count() {
         ))
     };
     let mut events = [released(KeyCode::Tab), released(KeyCode::Char('q'))].into_iter();
-    let stop = event_loop(&mut terminal, &mut app, || Ok(events.next())).unwrap();
+    let stop = event_loop(&mut terminal, &mut app, || Ok(events.next()), || Ok(false)).unwrap();
     // The keys ran out: q didn't quit.
     assert_eq!(stop, Stop::Quit);
     assert_eq!(events.next(), None);
@@ -1408,6 +1409,103 @@ fn only_key_presses_count() {
         .map(|column| terminal.backend().buffer()[(column, 4)].symbol())
         .collect();
     assert!(row.starts_with("> 0x1610 "), "{row}");
+}
+
+/// The browser on `sample`, as [`browse`] gives it, but with each key
+/// waiting before the browser takes it, as when the user pastes them or
+/// types faster than the screen keeps up: the screen, and how many times
+/// it was drawn.
+fn burst(sample: &str, (width, height): (u16, u16), script: &[&str]) -> (String, usize) {
+    let binary = load_sample(sample);
+    let path = format!("testdata/bin/{sample}");
+    let session = Session::new(Path::new(&path), &binary).unwrap();
+    let mut app = App::new(session, None).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+    let events = keys(script);
+    let taken = Cell::new(0);
+    let next_event = || {
+        taken.set(taken.get() + 1);
+        Ok(events.get(taken.get() - 1).cloned())
+    };
+    let more_waiting = || Ok(taken.get() < events.len());
+    let stop = event_loop(&mut terminal, &mut app, next_event, more_waiting).unwrap();
+    assert_eq!(stop, Stop::Quit);
+    let buffer = terminal.backend().buffer();
+    let mut drawn = String::new();
+    for row in 0..height {
+        let line: String = (0..width)
+            .map(|column| buffer[(column, row)].symbol())
+            .collect();
+        drawn += line.trim_end();
+        drawn.push('\n');
+    }
+    (drawn, terminal.get_frame().count())
+}
+
+#[test]
+fn keys_already_waiting_are_taken_before_drawing() {
+    // As when the user pastes into go to: what is typed waits for the
+    // next draw, so the rows are listed once for it. The screen is drawn
+    // before g, which opens the box, before Down, which moves by what the
+    // screen shows, and at the end.
+    let sample = "c-cortex-m7.elf";
+    let script = ["g", "cr", "x", "Backspace", "c", "Down"];
+    let (drawn, frames) = burst(sample, (100, 16), &script);
+    assert_eq!(frames, 3);
+    assert_output(&drawn, &screen(sample, None, (100, 16), &script));
+    assert!(drawn.contains("\n> 0x10 "), "{drawn}");
+}
+
+#[test]
+fn keys_that_wait_give_the_screen_that_each_key_in_turn_gives() {
+    // A key that moves by what the screen shows, such as PageDown by a
+    // screenful, waits until the screen shows the keys before it: after
+    // text typed into go to, after Enter opens a page, on a help page, and
+    // before the first screen.
+    let scripts: &[(&str, &[&str])] = &[
+        ("rust-x86_64-nodebug.elf", &["g", "e", "PageDown"]),
+        (
+            "rust-x86_64-nodebug.elf",
+            &["g", "e", "PageDown", "PageDown", "PageUp"],
+        ),
+        (
+            "rust-x86_64-nodebug.elf",
+            &[
+                "g", "e", "Down", "Down", "Down", "Down", "Down", "Down", "Down", "Down", "Down",
+                "Down", "Down", "Down", "Down", "Down", "Down", "Down", "Down", "Down", "Down",
+                "Down", "Up", "Up", "Up",
+            ],
+        ),
+        (
+            "rust-x86_64-nodebug.elf",
+            &["g", "main", "Enter", "PageDown"],
+        ),
+        ("rust-x86_64-nodebug.elf", &["PageDown"]),
+        ("rust-x86_64-nodebug.elf", &["g", "e", "End"]),
+        (
+            "rust-x86_64-nodebug.elf",
+            &["Tab", "Enter", "PageDown", "Up"],
+        ),
+        ("c-x86_64.elf", &["?", "End"]),
+        ("c-x86_64.elf", &["?", "Down", "Down"]),
+        ("c-x86_64.elf", &["?", "PageDown"]),
+        ("c-x86_64.elf", &["g", "log_msg", "Enter"]),
+        ("c-x86_64.elf", &["g", "mainz", "Backspace", "Enter"]),
+        ("c-x86_64.elf", &["g", "zzz", "Esc", "PageDown"]),
+        ("cpp-x86_64.elf", &["g", "app", "PageDown", "Enter", "End"]),
+        (
+            "c-cortex-m7.elf",
+            &["g", "a", "Down", "x", "Backspace", "PageDown", "Enter"],
+        ),
+    ];
+    for &(sample, script) in scripts {
+        let (drawn, _) = burst(sample, (100, 16), script);
+        assert_eq!(
+            drawn,
+            screen(sample, None, (100, 16), script),
+            "{sample}: {script:?}"
+        );
+    }
 }
 
 #[test]

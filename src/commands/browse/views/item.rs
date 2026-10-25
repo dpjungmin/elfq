@@ -6,6 +6,7 @@
 //! line it goes to.
 
 use std::collections::{BTreeSet, HashMap};
+use std::rc::Rc;
 
 use object::{Architecture, Endian};
 use ratatui::Frame;
@@ -62,8 +63,17 @@ pub struct ItemPage {
     pub title: String,
     /// The lines of facts above the code, before they are wrapped.
     header: Vec<String>,
-    lines: Vec<CodeLine>,
+    code: Rc<PageCode>,
     cursor: Cursor,
+    /// The rows the cursor was on before each jump inside the function,
+    /// for Back.
+    jumps: Vec<usize>,
+}
+
+/// An item's code as its page shows it. The session keeps it, so that
+/// every page opened on the item shares it, and it is worked out once.
+pub struct PageCode {
+    lines: Vec<CodeLine>,
     /// Whether the lines show their instructions.
     instructions: bool,
     /// The widest address and instruction, worked out once, so that a
@@ -73,9 +83,6 @@ pub struct ItemPage {
     empty: Option<String>,
     /// Said under the code.
     footnote: Option<String>,
-    /// The rows the cursor was on before each jump inside the function,
-    /// for Back.
-    jumps: Vec<usize>,
 }
 
 impl ItemPage {
@@ -83,40 +90,14 @@ impl ItemPage {
     /// The header names the item as `lead`, which may say what SYMBOL gave,
     /// as in "Default_Handler (also named NMI_Handler)".
     pub fn new(session: &Session, index: usize, at: Option<u64>, lead: &str) -> ItemPage {
+        let code = session.page_code(index);
         let mut page = ItemPage {
             title: session.row_name(index),
             header: header(session, index, lead),
-            lines: Vec::new(),
-            cursor: Cursor::new(0),
-            instructions: false,
-            widest: (0, 0),
-            empty: None,
-            footnote: None,
+            cursor: Cursor::new(code.lines.len()),
+            code,
             jumps: Vec::new(),
         };
-        match code(session, index) {
-            Ok(Code::Instructions(lines)) => {
-                page.lines = lines;
-                page.instructions = true;
-            }
-            Ok(Code::Links(lines, why)) if lines.is_empty() => {
-                page.empty = Some(format!(
-                    "{why}. No line of {} uses another item.",
-                    page.title
-                ));
-            }
-            Ok(Code::Links(lines, why)) => {
-                page.lines = lines;
-                page.footnote = Some(format!("{why}: these are the lines that use another item."));
-            }
-            Err(why) => page.empty = Some(why),
-        }
-        page.cursor = Cursor::new(page.lines.len());
-        let widest = |cell: fn(&CodeLine) -> usize| page.lines.iter().map(cell).max().unwrap_or(0);
-        page.widest = (
-            widest(|line| format!("{:#x}", line.address).len()),
-            widest(|line| line.instruction.chars().count()),
-        );
         if let Some(at) = at {
             page.select_address(at);
         }
@@ -125,7 +106,10 @@ impl ItemPage {
 
     /// Selects the line that holds `address`.
     fn select_address(&mut self, address: u64) {
-        let after = self.lines.partition_point(|line| line.address <= address);
+        let after = self
+            .code
+            .lines
+            .partition_point(|line| line.address <= address);
         self.cursor.select(after.saturating_sub(1));
     }
 
@@ -146,6 +130,7 @@ impl ItemPage {
             );
         }
         let bottom: Vec<String> = self
+            .code
             .footnote
             .iter()
             .flat_map(|text| wrap(text, width))
@@ -158,7 +143,7 @@ impl ItemPage {
         .areas(area);
         draw_lines(frame, head, top);
         draw_lines(frame, foot, bottom.into_iter().map(Line::raw).collect());
-        if let Some(text) = &self.empty {
+        if let Some(text) = &self.code.empty {
             draw_lines(
                 frame,
                 body,
@@ -176,13 +161,13 @@ impl ItemPage {
         let (visible, mut state) = self
             .cursor
             .visible(usize::from(area.height).saturating_sub(1));
-        let (widest_address, widest_instruction) = self.widest;
+        let (widest_address, widest_instruction) = self.code.widest;
         let address_width = widest_address.max("ADDRESS".len());
         // Before the notes: the selection's "> ", the columns, and the
         // spaces after each.
         let mut used = 2 + address_width + 2;
         let mut instruction_width = 0;
-        if self.instructions {
+        if self.code.instructions {
             let (most, fewest) = INSTRUCTION_WIDTH;
             instruction_width = widest_instruction.min(most);
             let wanted = used + instruction_width + 2 + NOTE_WIDTH;
@@ -192,9 +177,9 @@ impl ItemPage {
             used += instruction_width + 2;
         }
         let room = width.saturating_sub(used);
-        let rows = self.lines[visible].iter().map(|line| {
+        let rows = self.code.lines[visible].iter().map(|line| {
             let mut cells = vec![Line::raw(format!("{:#x}", line.address))];
-            if self.instructions {
+            if self.code.instructions {
                 cells.push(Line::raw(cut(&line.instruction, instruction_width)));
             }
             cells.push(note_cell(line, room));
@@ -202,7 +187,7 @@ impl ItemPage {
         });
         let mut header = vec!["ADDRESS"];
         let mut columns = vec![Constraint::Length(address_width as u16)];
-        if self.instructions {
+        if self.code.instructions {
             header.push("INSTRUCTION");
             columns.push(Constraint::Length(instruction_width as u16));
         }
@@ -225,7 +210,7 @@ impl ItemPage {
             Action::NextLink | Action::PreviousLink => {
                 // Jumps inside the function don't count: Tab goes from one
                 // use of another item to the next.
-                let lines = &self.lines;
+                let lines = &self.code.lines;
                 let next = self.cursor.next(action == Action::NextLink, |row| {
                     matches!(lines[row].link, Some(Link::Node { .. }))
                 });
@@ -234,7 +219,7 @@ impl ItemPage {
                 }
                 None
             }
-            Action::Open => match self.lines.get(selected)?.link? {
+            Action::Open => match self.code.lines.get(selected)?.link? {
                 Link::Node {
                     node: Node::Item(index),
                     at,
@@ -273,7 +258,7 @@ impl ItemPage {
     /// function at 0x1080, 16 bytes, in .plt.sec".
     pub fn preview(&self, session: &Session) -> Option<String> {
         let binary = session.binary;
-        let link = self.lines.get(self.cursor.selected)?.link?;
+        let link = self.code.lines.get(self.cursor.selected)?.link?;
         Some(match link {
             Link::Node {
                 node: Node::Item(index),
@@ -300,7 +285,8 @@ impl ItemPage {
 
     /// Whether some line links to another item.
     pub fn has_links(&self) -> bool {
-        self.lines
+        self.code
+            .lines
             .iter()
             .any(|line| matches!(line.link, Some(Link::Node { .. })))
     }
@@ -449,6 +435,42 @@ pub(super) fn listing(binary: &Binary, item: &Item, bytes: &[u8]) -> Option<Vec<
         item.address,
         &marked,
     )
+}
+
+impl PageCode {
+    /// Item `index`'s code, as its page shows it.
+    pub fn new(session: &Session, index: usize) -> PageCode {
+        let mut shown = PageCode {
+            lines: Vec::new(),
+            instructions: false,
+            widest: (0, 0),
+            empty: None,
+            footnote: None,
+        };
+        match code(session, index) {
+            Ok(Code::Instructions(lines)) => {
+                shown.lines = lines;
+                shown.instructions = true;
+            }
+            Ok(Code::Links(lines, why)) if lines.is_empty() => {
+                shown.empty = Some(format!(
+                    "{why}. No line of {} uses another item.",
+                    session.row_name(index)
+                ));
+            }
+            Ok(Code::Links(lines, why)) => {
+                shown.lines = lines;
+                shown.footnote = Some(format!("{why}: these are the lines that use another item."));
+            }
+            Err(why) => shown.empty = Some(why),
+        }
+        let widest = |cell: fn(&CodeLine) -> usize| shown.lines.iter().map(cell).max().unwrap_or(0);
+        shown.widest = (
+            widest(|line| format!("{:#x}", line.address).len()),
+            widest(|line| line.instruction.chars().count()),
+        );
+        shown
+    }
 }
 
 /// The lines of item `index`'s code, or why there are none to show.

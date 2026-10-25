@@ -19,7 +19,7 @@ use super::session::Session;
 use crate::graph::Node;
 
 pub use help::Help;
-pub use item::ItemPage;
+pub use item::{ItemPage, PageCode};
 pub use picker::{Picker, first_line};
 
 /// Where an action takes the user.

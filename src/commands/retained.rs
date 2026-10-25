@@ -14,7 +14,7 @@ use serde::Serialize;
 
 use super::retained_tree::{self, KeptItem, RetainedTree};
 use super::symbol::Names;
-use super::{json, text};
+use super::{Kept, json, text};
 use crate::binary::{AddressRange, Binary, FileKind};
 use crate::cli::Format;
 use crate::graph::{Node, Unresolved};
@@ -59,7 +59,7 @@ pub fn run(
     format: Format,
     out: &mut dyn Write,
 ) -> Result<()> {
-    let symbol = SymbolInTree::find(binary, symbol, range)?;
+    let symbol = Kept::new(SymbolInTree::find(binary, symbol, range)?);
     if format == Format::Json {
         return write_json(&symbol, out);
     }
@@ -105,6 +105,7 @@ pub fn run(
     )?;
     writeln!(out)?;
     let shown = retained.largest(&[node], &items, text::shown(all));
+    retained.names().will_name(shown.len());
     let mut table = Table::new(&[
         ("RETAINED", Align::Right),
         ("OWN", Align::Right),
@@ -218,7 +219,7 @@ impl<'a> SymbolInTree<'a> {
         range: Option<AddressRange>,
     ) -> Result<SymbolInTree<'a>> {
         super::check_code_is_readable(binary)?;
-        let names = Names::new(binary);
+        let names = Kept::new(Names::new(binary));
         let symbol = names.find(symbol)?;
         let node = symbol.node;
         let index = super::readable_item(binary, node)?;
@@ -226,7 +227,7 @@ impl<'a> SymbolInTree<'a> {
         if binary.kind == FileKind::SharedLibrary {
             bail!("elfq can't yet tell what only {name} leads to in a shared library");
         }
-        let retained = RetainedTree::build(binary, range)?.with_names(names);
+        let retained = RetainedTree::build(binary, range)?.with_names(names.into_inner());
         Ok(SymbolInTree {
             retained,
             index,

@@ -6,11 +6,14 @@
 //! such as `callers::answer` for "used by N", so that a page says what the
 //! commands print.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::rc::{Rc, Weak};
 
 use anyhow::Result;
 
+use super::views::PageCode;
 use crate::binary::{Binary, ItemKind, MemoryBlock, memory_blocks};
 use crate::commands::symbol::Names;
 use crate::commands::{callers, distinct_nodes, reference_graph};
@@ -30,6 +33,15 @@ pub struct Session<'a> {
     /// The blocks of memory that the sections occupy, as the overview
     /// lists them.
     pub(super) blocks: Vec<MemoryBlock>,
+    /// The name that rows give each item, by its index, worked out the
+    /// first time a row names it: a page names an item on every line that
+    /// uses it.
+    row_names: RefCell<HashMap<usize, String>>,
+    /// Each item's code as its page shows it, by the item's index, shared
+    /// by every page open on the item, so that opening it again, as from
+    /// go to, needn't work it out again. It is freed with the last of
+    /// those pages.
+    page_codes: RefCell<HashMap<usize, Weak<PageCode>>>,
 }
 
 impl<'a> Session<'a> {
@@ -51,6 +63,8 @@ impl<'a> Session<'a> {
             names: Names::new(binary),
             veneers,
             blocks: memory_blocks(&binary.sections),
+            row_names: RefCell::new(HashMap::new()),
+            page_codes: RefCell::new(HashMap::new()),
         })
     }
 
@@ -70,7 +84,24 @@ impl<'a> Session<'a> {
     /// The name that rows give item `index`: the shortest that finds only
     /// it as SYMBOL, as in "crc_table, kept by crc32".
     pub(super) fn row_name(&self, index: usize) -> String {
-        self.names.row_name(index)
+        if let Some(name) = self.row_names.borrow().get(&index) {
+            return name.clone();
+        }
+        let name = self.names.row_name(index);
+        self.row_names.borrow_mut().insert(index, name.clone());
+        name
+    }
+
+    /// Item `index`'s code, as its page shows it.
+    pub(super) fn page_code(&self, index: usize) -> Rc<PageCode> {
+        if let Some(code) = self.page_codes.borrow().get(&index).and_then(Weak::upgrade) {
+            return code;
+        }
+        let code = Rc::new(PageCode::new(self, index));
+        self.page_codes
+            .borrow_mut()
+            .insert(index, Rc::downgrade(&code));
+        code
     }
 
     /// The file's name, without its folders, for the title line.

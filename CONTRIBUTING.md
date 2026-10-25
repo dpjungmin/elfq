@@ -47,7 +47,7 @@ terminal is as it was; `.github/workflows/ci.yml` has the command.
 | `src/main.rs` | The program: parses arguments, runs one command on a thread with a large stack, prints errors and sets the exit status. It also turns `elfq help COMMAND` into `--help`, and suggests the right order when the command comes before the file. |
 | `src/lib.rs` | Declares the modules below. elfq is a library plus that small program; the library exists for the program and its tests. |
 | `src/cli.rs` | Command-line arguments, with clap: a `Command` variant for each command, the structs that hold their arguments, and the text of `--help`. |
-| `src/commands/` | One file per command, which looks up SYMBOL, asks `graph` or `debuginfo` and decides what the answer shows. `mod.rs` runs the command the arguments name, after checking arguments that don't go together. The rest are shared: `symbol.rs` works out what a user means by SYMBOL, `retained_tree.rs` builds the trees of retained sizes that the overview, `top` and `retained` show, `ranges.rs` answers `callers` and `callees` for ranges of memory or with `--from` or `--to`, `text.rs` holds the wording that commands share and `json.rs` the JSON shapes. |
+| `src/commands/` | One file per command, which looks up SYMBOL, asks `graph` or `debuginfo` and decides what the answer shows. `mod.rs` runs the command the arguments name, after checking arguments that don't go together. The rest are shared: `symbol.rs` works out what a user means by SYMBOL, `retained_tree.rs` builds the trees of retained sizes that the overview, `top` and `retained` show, `ranges.rs` answers `callers` and `callees` for ranges of memory or with `--from` or `--to`, `text.rs` holds the wording that commands share and `json.rs` the JSON shapes. `mod.rs` also has `Kept`, which leaves what a command keeps until it has answered for the system to take back when elfq ends (`end_after_answer`). |
 | `src/commands/browse/` | `elfq FILE browse`, with the `tui` feature: `mod.rs` takes over the terminal and runs the event loop, `session.rs` holds the loaded file and asks the commands' code for answers, `keys.rs` is the table of keys, `app.rs` the history of pages, the go-to box and the screen's layout, and `views/` the pages and the go-to box, one file each. |
 | `src/arch/` | Finding the addresses that machine code calls or uses, one module per instruction set (x86-64 and Thumb). Thumb's has three parts: `thumb/mod.rs` reads each instruction on its own, `thumb/decode.rs` says what an instruction does with the registers and the stack, and `thumb/values/` follows the addresses that code puts in registers to where a branch through one goes, as for long calls and veneers. `listing.rs` prints a function's code as text, for `browse`: x86-64 with iced-x86's formatter, and Thumb with thumb-asm, in the lines that `thumb::layout` cuts the code into with the same sweep as `scan`. |
 | `src/binary/` | Reading an ELF file: its functions and data objects ("items") and where they were found, their names, imports, stored pointers and memory blocks, and in Arm files the core the code is for (`attributes.rs`) and the data that `$d` symbols mark among code. Unnamed data, such as string literals, is found from what code and pointers refer to. Each function's code is scanned once, as the file loads (`Binary::code_references`). |
@@ -228,6 +228,15 @@ is a short one to copy.
    a flat list rather than a tree. A tree's rows go in the text's order,
    each with an `id` counting from 0 and the `parent` id of the row it
    hangs under, or `null`, as `RetainedTree::to_json` makes them.
+   Keep what the command builds that is large, such as the graph,
+   `Names` or a `RetainedTree`, in a `commands::Kept` (`let graph =
+   Kept::new(Graph::build(binary));`), so that elfq ends without freeing
+   it a piece at a time. A `Kept` is dropped when it goes out of scope,
+   so the compiler checks that what its value borrows outlives it:
+   declare it after what it borrows, and give a struct that borrows
+   kept values a lifetime for them apart from the file's, as `why`'s
+   `Chains` has. A value kept only until an error return and then moved
+   on, as in `Reach::find`, is taken back out with `into_inner`.
 6. **Tests.** Pin the text output with `assert_output` in
    `tests/it/cli.rs`, and test the JSON in `tests/it/json.rs`. Add the
    command to the tests in `cli.rs` that go through commands one by one:
@@ -339,7 +348,7 @@ release binary of `main` and of your branch, and run both on large ELF
 files such as these, from a Linux machine (macOS programs are not ELF
 files):
 
-- a big Rust program, such as `cargo` (40 MB), for the overview and
+- a big Rust program, such as `cargo` (43 MB), for the overview and
   SYMBOL lookups;
 - a big shared library, such as LLVM's (over 100 MB,
   `/usr/lib/*/libLLVM*.so.*` on Debian and Ubuntu), for `debug items`,
@@ -347,7 +356,7 @@ files):
 - a big Go program, such as `docker` (45 MB), for `callers` of a range,
   such as `callers 0x400000+1M`;
 - a program of 200 MB, such as `pandoc`, for peak memory;
-- `target/debug/elfq`, a 45 MB file that is mostly DWARF, for `inlined`;
+- `target/debug/elfq`, a 79 MB file that is mostly DWARF, for `inlined`;
 - stripped Cortex-M firmware, for finding functions without symbols.
 
 Compare the time, the peak memory (`/usr/bin/time -v` on Linux, `-l` on

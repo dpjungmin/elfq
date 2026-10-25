@@ -8,7 +8,7 @@ use serde::Serialize;
 
 use super::ranges::{self, Direction, RangeCheck};
 use super::symbol::{self, Subject};
-use super::{Outcome, json, text};
+use super::{Kept, Outcome, json, text};
 use crate::binary::{AddressRange, Binary};
 use crate::cli::Format;
 use crate::graph::{Graph, Node, Reference, Unresolved};
@@ -52,7 +52,7 @@ pub fn run(
     match symbol::subject(binary, symbols)? {
         Subject::Symbol(symbol) => {
             let index = super::readable_item(binary, symbol.node)?;
-            let graph = Graph::build(binary);
+            let graph = Kept::new(Graph::build(binary));
             let lead_name = symbol.lead_name(binary);
             if to.is_empty() {
                 callees(binary, &graph, index, &lead_name, all, format, out)?;
@@ -73,7 +73,8 @@ pub fn run(
                 other: to,
                 direction: Direction::Out,
             };
-            ranges::run(binary, &Graph::build(binary), &check, all, format, out)
+            let graph = Kept::new(Graph::build(binary));
+            ranges::run(binary, &graph, &check, all, format, out)
         }
     }
 }

@@ -189,6 +189,7 @@ impl<'a> RetainedTree<'a> {
             .filter(|&index| tree.is_reachable(Node::Item(index)))
             .collect();
         let shown = self.largest(tree.top(), &reachable, count);
+        self.names.will_name(shown.len());
         let mut table = Table::new(&[
             ("RETAINED", Align::Right),
             ("OWN", Align::Right),

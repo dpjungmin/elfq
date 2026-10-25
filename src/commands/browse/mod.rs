@@ -16,6 +16,9 @@
 //! This file takes the terminal and reads its keys. [`event_loop`] takes
 //! the keys from anywhere and draws on any ratatui backend, so that tests
 //! drive the browser with keys and read what it draws, without a terminal.
+//! Keys that come faster than a large file's answers, as a paste's do,
+//! aren't each answered and drawn in turn: what is typed into go to waits
+//! for the next draw, which comes when no key is left waiting.
 
 mod app;
 mod keys;
@@ -27,13 +30,14 @@ pub use session::Session;
 
 use std::io::IsTerminal;
 use std::path::Path;
+use std::time::Duration;
 
 use anyhow::{Result, bail};
 use ratatui::backend::Backend;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use ratatui::{DefaultTerminal, Terminal};
 
-use super::text;
+use super::{Kept, text};
 use crate::binary::Binary;
 
 /// Why the event loop stopped.
@@ -57,7 +61,7 @@ pub fn run(path: &Path, symbol: Option<&str>) -> Result<()> {
     }
     // On elfq's own thread, with its large stack, as for every command:
     // the browser starts no other thread.
-    let binary = Binary::load(path)?;
+    let binary = Kept::new(Binary::load(path)?);
     let result = browse(path, &binary, symbol);
     super::write_warnings(&binary);
     result
@@ -68,7 +72,7 @@ pub fn run(path: &Path, symbol: Option<&str>) -> Result<()> {
 /// start from, it says so before it takes the terminal.
 fn browse(path: &Path, binary: &Binary, symbol: Option<&str>) -> Result<()> {
     let session = Session::new(path, binary)?;
-    let mut app = App::new(session, symbol)?;
+    let mut app = Kept::new(App::new(session, symbol)?);
     // ratatui sets a panic hook that gives the terminal back first.
     let mut terminal = ratatui::try_init()?;
     let result = read_keys(&mut terminal, &mut app);
@@ -79,7 +83,9 @@ fn browse(path: &Path, binary: &Binary, symbol: Option<&str>) -> Result<()> {
 /// Runs the event loop on the real terminal until the user quits,
 /// stepping out for each Ctrl-Z.
 fn read_keys(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
-    while event_loop(terminal, app, || Ok(Some(event::read()?)))? == Stop::Suspend {
+    let next_event = || Ok(Some(event::read()?));
+    let more_waiting = || Ok(event::poll(Duration::ZERO)?);
+    while event_loop(terminal, app, next_event, more_waiting)? == Stop::Suspend {
         suspend(terminal)?;
     }
     Ok(())
@@ -87,17 +93,28 @@ fn read_keys(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
 
 /// Draws `app` on `terminal`, then gives it each key that `next_event`
 /// returns, and draws it again, until the user quits or suspends, or
-/// `next_event` returns `None`.
+/// `next_event` returns `None`. While `more_waiting` says that another
+/// key is already waiting, as when the user pastes or types faster than
+/// the screen keeps up, it takes that key before drawing, if the key can
+/// wait for the draw (see [`App::can_wait_to_draw`]). Any other key is
+/// handled on the screen that the keys before it give, as when each is
+/// drawn in turn, since it moves by what the screen shows.
 pub fn event_loop<B: Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
     mut next_event: impl FnMut() -> Result<Option<Event>>,
+    mut more_waiting: impl FnMut() -> Result<bool>,
 ) -> Result<Stop>
 where
     B::Error: Send + Sync + 'static,
 {
+    // Whether the screen doesn't show the keys taken yet.
+    let mut behind = true;
     loop {
-        terminal.draw(|frame| app.draw(frame))?;
+        if behind && !more_waiting()? {
+            terminal.draw(|frame| app.draw(frame))?;
+            behind = false;
+        }
         let Some(event) = next_event()? else {
             return Ok(Stop::Quit);
         };
@@ -105,10 +122,15 @@ where
         // else, such as a new size, needs only the drawing above.
         if let Event::Key(key) = event
             && key.kind == KeyEventKind::Press
-            && let Some(stop) = app.key(key)
         {
-            return Ok(stop);
+            if behind && !app.can_wait_to_draw(key) {
+                terminal.draw(|frame| app.draw(frame))?;
+            }
+            if let Some(stop) = app.key(key) {
+                return Ok(stop);
+            }
         }
+        behind = true;
     }
 }
 
@@ -118,7 +140,6 @@ where
 fn suspend(terminal: &mut DefaultTerminal) -> Result<()> {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::time::Duration;
 
     use ratatui::crossterm::execute;
     use ratatui::crossterm::terminal::{EnterAlternateScreen, enable_raw_mode};

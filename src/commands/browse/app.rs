@@ -118,6 +118,21 @@ impl<'a> App<'a> {
         None
     }
 
+    /// Whether `key` can be handled before the screen shows the keys
+    /// before it: text typed into the go-to box, Backspace and Esc there,
+    /// and a key that quits or suspends. Every other key moves by what the
+    /// screen shows, such as PageDown by a screenful, so it is handled
+    /// once the screen is drawn.
+    pub fn can_wait_to_draw(&self, key: KeyEvent) -> bool {
+        if self.picker.is_some() {
+            return matches!(
+                key.code,
+                KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Esc
+            );
+        }
+        matches!(keys::action(key), Some(Action::Quit | Action::Suspend))
+    }
+
     /// Does what `key` asks of the go-to box. Keys type into it, so only
     /// Ctrl-C and Ctrl-Z do what they do elsewhere.
     fn key_to_picker(&mut self, key: KeyEvent) -> Option<Stop> {
@@ -131,7 +146,7 @@ impl<'a> App<'a> {
         match key.code {
             KeyCode::Esc => self.picker = None,
             KeyCode::Enter => {
-                if let Some(found) = picker.selected() {
+                if let Some(found) = picker.selected(session) {
                     // The header names the item as SYMBOL's answer does,
                     // with what holds an address typed, or the other name
                     // that found it.
@@ -143,20 +158,20 @@ impl<'a> App<'a> {
                     self.open(View::Item(Box::new(page)));
                 }
             }
-            KeyCode::Up => picker.handle(Action::Up),
-            KeyCode::Down => picker.handle(Action::Down),
-            KeyCode::PageUp => picker.handle(Action::PageUp),
-            KeyCode::PageDown => picker.handle(Action::PageDown),
-            KeyCode::Home => picker.handle(Action::First),
-            KeyCode::End => picker.handle(Action::Last),
-            KeyCode::Backspace => picker.type_char(session, None),
+            KeyCode::Up => picker.handle(session, Action::Up),
+            KeyCode::Down => picker.handle(session, Action::Down),
+            KeyCode::PageUp => picker.handle(session, Action::PageUp),
+            KeyCode::PageDown => picker.handle(session, Action::PageDown),
+            KeyCode::Home => picker.handle(session, Action::First),
+            KeyCode::End => picker.handle(session, Action::Last),
+            KeyCode::Backspace => picker.type_char(None),
             // Other Ctrl and Alt keys type nothing.
             KeyCode::Char(c)
                 if !key
                     .modifiers
                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
             {
-                picker.type_char(session, Some(c));
+                picker.type_char(Some(c));
             }
             _ => {}
         }

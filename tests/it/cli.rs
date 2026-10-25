@@ -4,7 +4,7 @@ use std::path::Path;
 use std::process::Stdio;
 
 use crate::support::{
-    DEEP_SAMPLE, LIBRARY_SAMPLE, SAMPLE, TCM_SAMPLE, assert_output, command, elfq,
+    DEEP_SAMPLE, LIBRARY_SAMPLE, SAMPLE, TCM_SAMPLE, assert_output, command, elfq, samples,
 };
 
 /// Runs elfq, expecting success, and returns what it printed.
@@ -12,20 +12,6 @@ fn stdout(args: &[&str]) -> String {
     let output = elfq(args);
     assert!(output.status.success(), "{output:?}");
     String::from_utf8(output.stdout).unwrap()
-}
-
-/// Every sample file, as a path relative to the crate.
-fn samples() -> Vec<String> {
-    let bin = concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/bin");
-    let mut samples: Vec<String> = std::fs::read_dir(bin)
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-        .filter(|name| name.ends_with(".elf") || name.ends_with(".so"))
-        .map(|name| format!("testdata/bin/{name}"))
-        .collect();
-    samples.sort();
-    assert!(samples.len() > 10);
-    samples
 }
 
 /// Splits a command line into its arguments as a shell would, for the

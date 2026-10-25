@@ -7,6 +7,9 @@
 //! It isn't a page: it opens over the page on the screen, and Esc closes
 //! it, so that what is typed into it can't open pages by itself.
 
+use std::cmp::Reverse;
+use std::collections::HashSet;
+
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Style, Stylize};
@@ -16,6 +19,7 @@ use ratatui::widgets::{HighlightSpacing, Row, Table};
 use super::{Cursor, cut, imported, wrap};
 use crate::binary::{ItemKind, hex_number};
 use crate::commands::browse::{keys::Action, session::Session};
+use crate::commands::symbol::Needle;
 use crate::commands::text;
 use crate::graph::Node;
 
@@ -48,6 +52,10 @@ pub struct Picker {
     /// What the commands said about SYMBOL, with the SYMBOL, shown until
     /// the text changes.
     note: Option<(String, String)>,
+    /// Whether the text has changed since the items were listed. They are
+    /// listed again only when they are needed, so that keys typed all at
+    /// once, as a paste types them, list them once.
+    changed: bool,
 }
 
 impl Picker {
@@ -60,6 +68,7 @@ impl Picker {
             nothing: None,
             cursor: Cursor::new(0),
             note: None,
+            changed: false,
         };
         picker.find(session);
         picker
@@ -74,14 +83,23 @@ impl Picker {
     }
 
     /// Types `c`, or with `None`, takes the last character back.
-    pub fn type_char(&mut self, session: &Session, c: Option<char>) {
+    pub fn type_char(&mut self, c: Option<char>) {
         match c {
             Some(c) => self.text.push(c),
             None => {
                 self.text.pop();
             }
         }
-        self.find(session);
+        self.changed = true;
+    }
+
+    /// Lists the items for the text typed, if it has changed since they
+    /// were listed.
+    fn catch_up(&mut self, session: &Session) {
+        if self.changed {
+            self.changed = false;
+            self.find(session);
+        }
     }
 
     /// Lists the items for the text typed.
@@ -89,6 +107,7 @@ impl Picker {
         let binary = session.binary;
         let text = self.text.trim();
         let mut found: Vec<usize> = Vec::new();
+        let mut listed: HashSet<usize> = HashSet::new();
         let mut at = None;
         self.more = 0;
         self.nothing = None;
@@ -97,47 +116,59 @@ impl Picker {
                 && let Some(index) = binary.item_at(address)
             {
                 found.push(index);
+                listed.insert(index);
                 at = Some((index, address));
             }
             // Imports have no page yet.
             for &node in session.names.nodes(text) {
                 if let Node::Item(index) = node
-                    && !found.contains(&index)
+                    && listed.insert(index)
                 {
                     found.push(index);
                 }
             }
             let lower = text.to_lowercase();
+            let needle = Needle::new(&lower);
             let mut others: Vec<usize> = (0..binary.items.len())
-                .filter(|index| !found.contains(index))
-                .filter(|&index| {
-                    binary.items[index]
-                        .names()
-                        .any(|name| name.to_lowercase().contains(&lower))
-                })
+                .filter(|index| !listed.contains(index))
+                .filter(|&index| session.names.name_has(index, &needle))
                 .collect();
-            others.sort_by_key(|&index| std::cmp::Reverse(binary.items[index].size));
+            self.more = (found.len() + others.len()).saturating_sub(MOST);
+            // Largest first, and of the same size, first in the file. Only
+            // the rows listed are sorted, which saves time when the text
+            // is in most names.
+            let order = |&index: &usize| (Reverse(binary.items[index].size), index);
+            let room = MOST.saturating_sub(found.len());
+            if others.len() > room {
+                if room > 0 {
+                    others.select_nth_unstable_by_key(room - 1, order);
+                }
+                others.truncate(room);
+            }
+            others.sort_unstable_by_key(order);
             found.extend(others);
-            self.more = found.len().saturating_sub(MOST);
             found.truncate(MOST);
         }
-        // What SYMBOL finds is named as the CLI's answer names it, and
-        // when nothing is found, the CLI's error says why.
-        let symbol = (!text.is_empty()).then(|| session.names.find(text));
-        let lead = match &symbol {
-            Some(Ok(symbol)) => match symbol.node {
-                Node::Item(index) => Some((index, symbol.lead_name(binary))),
-                Node::Import(_) => None,
-            },
-            _ => None,
-        };
-        if found.is_empty() {
+        // What SYMBOL finds is named as the CLI's answer names it.
+        let symbol = (!text.is_empty())
+            .then(|| session.names.find_one(text))
+            .flatten();
+        let lead = symbol.as_ref().and_then(|symbol| match symbol.node {
+            Node::Item(index) => Some((index, symbol.lead_name(binary))),
+            Node::Import(_) => None,
+        });
+        // When nothing is found, the CLI's error says why. Working that
+        // out takes a while in a large file, so it is done only then.
+        if found.is_empty() && !text.is_empty() {
             self.nothing = match symbol {
-                Some(Ok(symbol)) if matches!(symbol.node, Node::Import(_)) => {
-                    Some(imported(session, symbol.node))
+                Some(symbol) => {
+                    matches!(symbol.node, Node::Import(_)).then(|| imported(session, symbol.node))
                 }
-                Some(Err(error)) => Some(first_line(&error)),
-                _ => None,
+                None => session
+                    .names
+                    .find(text)
+                    .err()
+                    .map(|error| first_line(&error)),
             };
         }
         self.found = found
@@ -154,16 +185,19 @@ impl Picker {
         self.cursor = Cursor::new(self.found.len());
     }
 
-    pub fn handle(&mut self, action: Action) {
+    pub fn handle(&mut self, session: &Session, action: Action) {
+        self.catch_up(session);
         self.cursor.handle(action);
     }
 
     /// The selected row.
-    pub fn selected(&self) -> Option<&Found> {
+    pub fn selected(&mut self, session: &Session) -> Option<&Found> {
+        self.catch_up(session);
         self.found.get(self.cursor.selected)
     }
 
     pub fn draw(&mut self, session: &Session, frame: &mut Frame, area: Rect) {
+        self.catch_up(session);
         let binary = session.binary;
         let width = usize::from(area.width);
         let note = (self.note.as_ref())

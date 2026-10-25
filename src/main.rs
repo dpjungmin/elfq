@@ -72,6 +72,8 @@ fn run() -> ExitCode {
         }
     };
     let mut out = BufWriter::new(Stdout::default());
+    // elfq ends once the command has answered.
+    elfq::commands::end_after_answer();
     let result = elfq::commands::run(&cli, &mut out).and_then(|outcome| {
         out.flush()?;
         Ok(outcome)
