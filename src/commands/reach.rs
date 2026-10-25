@@ -23,21 +23,31 @@
 //! the rule that `callees --to` keeps them by (see `ranges.rs`), and the
 //! tree and the JSON keep only the chains to what is in the ranges and to
 //! those calls and jumps.
+//!
+//! Without SYMBOL, `elfq FILE reach` lists where the program starts, and
+//! the bytes of code and data that each start reaches in each block, as
+//! `reach START` counts them. Those come from one search from each start
+//! that only adds up bytes (see [`Totals`]), since a large program has many
+//! starts, and the tree of each would take a while.
 
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
+use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use serde::Serialize;
 
 use super::symbol::Names;
-use super::{Kept, Outcome, callees, json, ranges, text};
-use crate::binary::{AddressRange, Binary, ItemKind, MemoryBlock, memory_blocks};
+use super::{Kept, Outcome, callees, json, overview, ranges, text};
+use crate::binary::{
+    AddressRange, Binary, FileKind, ItemKind, MemoryBlock, STARTUP_ARRAYS, exception_name,
+    is_reserved, memory_blocks,
+};
 use crate::cli::Format;
 use crate::graph::{
     Boundary, Graph, Node, Reference, ReferenceKind, RootKind, ShortestPaths, Unfollowed,
-    Unresolved, VeneerTarget, Veneers,
+    Unresolved, VeneerTarget, Veneers, listed_in,
 };
 use crate::render::{Align, Table, TreeRow, TreeShape};
 
@@ -123,6 +133,46 @@ struct UnresolvedJson<'a> {
     target: Option<String>,
 }
 
+/// What `elfq FILE reach` lists without SYMBOL: where the program starts,
+/// and what each start reaches.
+#[derive(Serialize)]
+struct StartsJson<'a> {
+    /// Each start, in the text's order (see [`starts`]).
+    starts: Vec<StartJson<'a>>,
+    /// The functions where the program starts whose end elfq doesn't know,
+    /// so it can't read their code, such as `_init`.
+    unreadable: Vec<json::Item<'a>>,
+}
+
+#[derive(Serialize)]
+struct StartJson<'a> {
+    #[serde(flatten)]
+    item: json::Item<'a>,
+    /// Why it is a root, as `root` in `why --json` says it, or `None` for
+    /// `main`.
+    root: Option<String>,
+    /// The exceptions that it handles, as the WHY column names them, but
+    /// every one.
+    exceptions: Vec<String>,
+    /// As `reach START --json` counts them.
+    code_bytes: u64,
+    data_bytes: u64,
+    /// Every block of memory that the overview's `memory` lists, with the
+    /// bytes in it that the start and what it reaches take.
+    blocks: Vec<BlockBytesJson>,
+    /// Whether elfq can follow everything that the start reaches, as in
+    /// `reach START --json`.
+    complete: bool,
+}
+
+#[derive(Serialize)]
+struct BlockBytesJson {
+    #[serde(flatten)]
+    range: json::Range,
+    code_bytes: u64,
+    data_bytes: u64,
+}
+
 /// Answers `elfq FILE reach SYMBOL`. The text lists SYMBOL and the 30
 /// largest items it reaches, or with `all`, every one, by block, or with
 /// `--tree`, as a tree. `to`, the ranges of `--to`, limits the answer to
@@ -151,6 +201,77 @@ pub fn run(
         Format::Tree => reach.write_text(true, out)?,
     }
     Ok(reach.outcome())
+}
+
+/// Answers `elfq FILE reach` without SYMBOL, for the file at `path`: where
+/// the program starts, and the bytes of code and data that each start
+/// reaches, in each block of memory when there are several. `all` lists
+/// every start, and names every function that elfq can't read. `to`, the
+/// ranges of `--to`, `range`, that of `--range`, and `--tree` need SYMBOL,
+/// and are refused.
+pub fn run_starts(
+    path: &Path,
+    binary: &Binary,
+    to: &[AddressRange],
+    range: Option<AddressRange>,
+    all: bool,
+    format: Format,
+    out: &mut dyn Write,
+) -> Result<Outcome> {
+    super::check_code_is_readable(binary)?;
+    let names = Kept::new(Names::new(binary));
+    if !to.is_empty() || range.is_some() || format == Format::Tree {
+        bail!(
+            "{}",
+            needs_symbol(path, binary, &names, to, range, all, format)
+        );
+    }
+    let graph = Kept::new(Graph::build(binary));
+    let starts = starts(binary, &graph, &names);
+    match format {
+        Format::Json => starts.write_json(out)?,
+        Format::Text | Format::Tree => starts.write_text(path, all, out)?,
+    }
+    Ok(Outcome::Answered)
+}
+
+/// The error for `--to`, `--range` or `--tree` without SYMBOL, with a
+/// command to type instead that answers: about the function that the
+/// overview starts from (see [`overview::starting_point`]), such as `main`,
+/// and with the other options given.
+fn needs_symbol(
+    path: &Path,
+    binary: &Binary,
+    names: &Names,
+    to: &[AddressRange],
+    range: Option<AddressRange>,
+    all: bool,
+    format: Format,
+) -> String {
+    let refused = if range.is_some() {
+        "reach takes --to, not --range, to list only what a SYMBOL reaches in a range"
+    } else if !to.is_empty() {
+        "reach --to needs a SYMBOL"
+    } else {
+        "reach --tree needs a SYMBOL"
+    };
+    let Some(start) = overview::starting_point(binary, names) else {
+        return refused.to_string();
+    };
+    let file = text::shell_quote(&path.display().to_string());
+    let symbol = text::shell_quote(&names.query_for(Node::Item(start)));
+    let to: String = to
+        .iter()
+        .chain(&range)
+        .map(|&range| format!(" --to {}", text::range_argument(range)))
+        .collect();
+    let all = if all { " --all" } else { "" };
+    let format = match format {
+        Format::Text => "",
+        Format::Tree => " --tree",
+        Format::Json => " --json",
+    };
+    format!("{refused}, such as elfq {file} reach {symbol}{to}{all}{format}")
 }
 
 /// What SYMBOL reaches.
@@ -264,12 +385,6 @@ impl<'n, 'a> Reach<'n, 'a> {
             uses if uses.iter().all(|reference| reference.kind.is_call()) => Some("calls"),
             _ => Some("uses"),
         };
-        let is_plt_header = |node| {
-            graph
-                .root(node)
-                .is_some_and(|root| root.kind == RootKind::PltHeader)
-        };
-
         let nodes = (0..binary.items.len())
             .map(Node::Item)
             .chain((0..binary.imports.len()).map(Node::Import))
@@ -349,7 +464,7 @@ impl<'n, 'a> Reach<'n, 'a> {
             if item.kind == ItemKind::Function && item.size == 0 {
                 unreadable.push(index);
             }
-            if is_plt_header(step.node) {
+            if is_plt_header(graph, step.node) {
                 continue;
             }
             for &jump in graph.unresolved_in(index) {
@@ -357,7 +472,7 @@ impl<'n, 'a> Reach<'n, 'a> {
                 unfollowed.push(through_veneer(&paths, &veneers, jump));
             }
         }
-        let plt_header = is_plt_header(start);
+        let plt_header = is_plt_header(graph, start);
         if !to.is_empty() {
             let through_pointer = !Boundary::new(binary, graph, to)
                 .callable_through_pointer()
@@ -1254,6 +1369,479 @@ impl<'r, 'a> Tree<'r, 'a> {
     }
 }
 
+/// Where the program starts, and what each start reaches.
+pub(super) struct Starts<'a> {
+    binary: &'a Binary,
+    /// The starts, in the order of [`starts`].
+    pub starts: Vec<Start>,
+    /// The roots that are functions whose end elfq doesn't know, such as
+    /// `_init`, as indexes into [`Binary::items`]: elfq can't tell what
+    /// they reach.
+    pub unreadable: Vec<usize>,
+    /// The file's blocks of memory, as the overview lists them.
+    pub blocks: Vec<MemoryBlock>,
+}
+
+/// One place where the program starts, and what it reaches.
+pub(super) struct Start {
+    /// The function, as an index into [`Binary::items`].
+    pub index: usize,
+    /// Why it is a root, or `None` for `main`.
+    pub root: Option<RootKind>,
+    /// The entries of the vector table that list it, in the table's order,
+    /// counting the stack pointer's as 0.
+    pub exceptions: Vec<u64>,
+    pub totals: Totals,
+}
+
+/// A row of the table of starts.
+enum StartRow {
+    /// A start, as an index into [`Starts::starts`].
+    Start(usize),
+    /// How many of the starts above, all roots of this kind, the table
+    /// leaves out.
+    More(RootKind, usize),
+}
+
+/// Where the program starts, as `elfq FILE reach` lists it: `main`, but
+/// not a shared library's; then each root that is a function whose code
+/// elfq can read, other than a PLT's header: the entry point; the handlers
+/// in the vector table, in the order of their first entries; the functions
+/// that the startup and exit arrays list, `.preinit_array`, `.init_array`
+/// and `.fini_array` in that order, each in its array's order; then the
+/// others by kind, and by address. Each comes with what it reaches, as
+/// `reach START` counts it.
+pub(super) fn starts<'a>(binary: &'a Binary, graph: &Graph, names: &Names) -> Starts<'a> {
+    let blocks = memory_blocks(&binary.sections);
+    let is_start = |index| overview::is_own_function(binary, index);
+    let table = binary.vector_table.as_ref();
+    let exceptions = |index: usize| -> Vec<u64> {
+        let address = binary.items[index].address;
+        table.map_or_else(Vec::new, |table| table.exceptions_of(address).collect())
+    };
+    let mut roots: Vec<(usize, RootKind)> = Vec::new();
+    let mut unreadable = Vec::new();
+    let mut arrays = Vec::new();
+    for root in &graph.roots {
+        let Node::Item(index) = root.node else {
+            continue;
+        };
+        let item = &binary.items[index];
+        if is_start(index) {
+            roots.push((index, root.kind));
+        } else if item.kind == ItemKind::Function && item.size == 0 {
+            unreadable.push(index);
+        }
+        if let RootKind::ListedIn(array) = root.kind
+            && !arrays.contains(&array)
+        {
+            arrays.push(array);
+        }
+    }
+    // Where each array lists each function, from its first entry.
+    let mut listed: HashMap<(usize, Node), usize> = HashMap::new();
+    for array in arrays {
+        for (position, node) in listed_in(binary, array).into_iter().enumerate() {
+            listed.entry((array, node)).or_insert(position);
+        }
+    }
+    // The roots come by node, so by address: a stable sort keeps that order
+    // among roots of the same kind that no array lists.
+    roots.sort_by_key(|&(index, kind)| match kind {
+        RootKind::Entry => (0, 0, 0, 0),
+        RootKind::Handler => (1, 0, 0, exceptions(index).first().copied().unwrap_or(0)),
+        RootKind::ListedIn(array) => {
+            let name = binary.sections[array].name.as_str();
+            let rank = STARTUP_ARRAYS.iter().position(|&startup| startup == name);
+            let position = listed.get(&(array, Node::Item(index))).copied();
+            (
+                2,
+                rank.unwrap_or(usize::MAX),
+                array,
+                position.unwrap_or(0) as u64,
+            )
+        }
+        RootKind::InSection(section) => (3, 0, section, 0),
+        _ => (4, 0, 0, 0),
+    });
+    // A main that is a root too is listed as one.
+    let main = match names.nodes("main") {
+        [Node::Item(index)]
+            if binary.kind != FileKind::SharedLibrary
+                && is_start(*index)
+                && graph.root(Node::Item(*index)).is_none() =>
+        {
+            Some((*index, None))
+        }
+        _ => None,
+    };
+    let starts = main
+        .into_iter()
+        .chain(roots.into_iter().map(|(index, kind)| (index, Some(kind))))
+        .map(|(index, root)| Start {
+            index,
+            root,
+            exceptions: exceptions(index),
+            totals: Totals::find(binary, graph, index, &blocks),
+        })
+        .collect();
+    Starts {
+        binary,
+        starts,
+        unreadable,
+        blocks,
+    }
+}
+
+impl Starts<'_> {
+    /// Writes the starts as a table, then what elfq can't follow or read,
+    /// and for a shared library, that its exported functions aren't counted.
+    fn write_text(&self, path: &Path, all: bool, out: &mut dyn Write) -> Result<()> {
+        let binary = self.binary;
+        let file = path.display();
+        let several = self.blocks.len() > 1;
+        let rows = self.rows(all);
+        if !self.starts.is_empty() {
+            let each = if several {
+                " in each block of memory"
+            } else {
+                ""
+            };
+            writeln!(
+                out,
+                "Where {file} starts, and the bytes of code and data that each reaches{each}:"
+            )?;
+            writeln!(out)?;
+            let mut columns: Vec<(String, Align)> = if several {
+                self.blocks
+                    .iter()
+                    .map(|block| (text::range_start(block.range), Align::Right))
+                    .collect()
+            } else {
+                vec![
+                    ("CODE".to_string(), Align::Right),
+                    ("DATA".to_string(), Align::Right),
+                ]
+            };
+            columns.push(("WHY".to_string(), Align::Left));
+            columns.push(("START".to_string(), Align::Left));
+            let numbers = columns.len() - 2;
+            let mut table = Table::new(&columns);
+            for row in &rows {
+                let start = match *row {
+                    StartRow::Start(start) => &self.starts[start],
+                    StartRow::More(kind, count) => {
+                        let mut cells = vec![String::new(); numbers];
+                        cells.push(text::root_column(binary, kind));
+                        cells.push(format!("{count} more"));
+                        table.row(cells);
+                        continue;
+                    }
+                };
+                let totals = &start.totals;
+                let mut cells: Vec<String> = if several {
+                    let bytes = |&(code, data): &(u64, u64)| u64::saturating_add(code, data);
+                    totals
+                        .blocks
+                        .iter()
+                        .map(|block| bytes(block).to_string())
+                        .collect()
+                } else {
+                    vec![totals.code.to_string(), totals.data.to_string()]
+                };
+                cells.push(start.why(binary));
+                let mark = if totals.complete() {
+                    ""
+                } else {
+                    " (may reach more)"
+                };
+                cells.push(format!("{}{mark}", binary.items[start.index].name));
+                table.row(cells);
+            }
+            table.write(out)?;
+        } else if self.unreadable.is_empty() {
+            writeln!(out, "elfq found no place where {file} starts.")?;
+        }
+
+        let mut notes = Vec::new();
+        // The marks in the table, of the starts that it shows.
+        let shown: Vec<&Totals> = rows
+            .iter()
+            .filter_map(|row| match *row {
+                StartRow::Start(start) => Some(&self.starts[start].totals),
+                StartRow::More(..) => None,
+            })
+            .collect();
+        let unfollowed = shown.iter().any(|totals| totals.unfollowed);
+        let unreadable = shown.iter().any(|totals| totals.unreadable);
+        let marked = match (unfollowed, unreadable) {
+            (true, false) => Some("calls or jumps that elfq can't follow"),
+            (false, true) => Some("code that elfq can't read"),
+            (true, true) => {
+                Some("calls or jumps that elfq can't follow, or code that it can't read")
+            }
+            (false, false) => None,
+        };
+        if let Some(marked) = marked {
+            notes.push(format!(
+                "The starts marked (may reach more) reach {marked}; reach START names them."
+            ));
+        }
+        if !self.unreadable.is_empty() {
+            notes.push(self.unreadable_text(path, all));
+        }
+        if binary.kind == FileKind::SharedLibrary {
+            notes.push(
+                "elfq doesn't count a shared library's exported functions as starting points yet."
+                    .to_string(),
+            );
+        }
+        if !self.starts.is_empty() && !notes.is_empty() {
+            writeln!(out)?;
+        }
+        for note in notes {
+            writeln!(out, "{note}")?;
+        }
+        Ok(())
+    }
+
+    /// The rows of the table: every start with `all`; otherwise `main`, the
+    /// entry point and the handlers, and of the other starts, those that
+    /// reach the most bytes, up to [`text::shown`] rows in all, with a row
+    /// such as "650 more" after the starts of each kind that it leaves out.
+    /// Of starts that reach as many bytes, the first is kept.
+    fn rows(&self, all: bool) -> Vec<StartRow> {
+        let is_other =
+            |start: &Start| !matches!(start.root, None | Some(RootKind::Entry | RootKind::Handler));
+        let mut others: Vec<usize> = (0..self.starts.len())
+            .filter(|&start| is_other(&self.starts[start]))
+            .collect();
+        let room = text::shown(all).saturating_sub(self.starts.len() - others.len());
+        others.sort_by_key(|&start| Reverse(self.starts[start].totals.bytes()));
+        let left_out: HashSet<usize> = others[text::shown_count(others.len(), room)..]
+            .iter()
+            .copied()
+            .collect();
+        let mut rows = Vec::new();
+        let mut first = 0;
+        for kind in self.starts.chunk_by(|a, b| a.root == b.root) {
+            let starts = first..first + kind.len();
+            first += kind.len();
+            let hidden = starts
+                .clone()
+                .filter(|start| left_out.contains(start))
+                .count();
+            // A row for one start takes no more room than "1 more" would.
+            let hide = |start: &usize| hidden > 1 && left_out.contains(start);
+            rows.extend(starts.filter(|start| !hide(start)).map(StartRow::Start));
+            if let Some(root) = kind[0].root
+                && hidden > 1
+            {
+                rows.push(StartRow::More(root, hidden));
+            }
+        }
+        rows
+    }
+
+    /// Names the roots whose end elfq doesn't know, which the table leaves
+    /// out, as "_init and _fini are starts too, but elfq doesn't know where
+    /// they end, ...", or when they are the only roots, "_start is where
+    /// FILE starts, ...".
+    fn unreadable_text(&self, path: &Path, all: bool) -> String {
+        let binary = self.binary;
+        let names: Vec<&str> = self
+            .unreadable
+            .iter()
+            .map(|&index| binary.items[index].name.as_str())
+            .collect();
+        let one = names.len() == 1;
+        let what = match (self.starts.is_empty(), one) {
+            (true, true) => format!("is where {} starts", path.display()),
+            (true, false) => format!("are where {} starts", path.display()),
+            (false, true) => "is a start too".to_string(),
+            (false, false) => "are starts too".to_string(),
+        };
+        let (it, ends, reaches) = if one {
+            ("it", "ends", "reaches")
+        } else {
+            ("they", "end", "reach")
+        };
+        format!(
+            "{} {what}, but elfq doesn't know where {it} {ends}, so it can't count what {it} \
+             {reaches}.",
+            text::names_text(&names, all)
+        )
+    }
+
+    fn write_json(&self, out: &mut dyn Write) -> Result<()> {
+        let binary = self.binary;
+        let item = |index| json::Item::new(binary, Node::Item(index));
+        let answer = StartsJson {
+            starts: self
+                .starts
+                .iter()
+                .map(|start| StartJson {
+                    item: item(start.index),
+                    root: start.root.map(|kind| json::root_field(binary, kind)),
+                    exceptions: start.exception_names(binary),
+                    code_bytes: start.totals.code,
+                    data_bytes: start.totals.data,
+                    blocks: self
+                        .blocks
+                        .iter()
+                        .zip(&start.totals.blocks)
+                        .map(|(block, &(code_bytes, data_bytes))| BlockBytesJson {
+                            range: json::Range::new(block.range),
+                            code_bytes,
+                            data_bytes,
+                        })
+                        .collect(),
+                    complete: start.totals.complete(),
+                })
+                .collect(),
+            unreadable: self.unreadable.iter().map(|&index| item(index)).collect(),
+        };
+        json::write(&answer, out)
+    }
+}
+
+impl Start {
+    /// Why it is a start, for the WHY column: "main function"; the
+    /// exceptions it handles, as in "NMI, HardFault and 6 more", with
+    /// "(entry point)" after them for the reset handler; or why it is a
+    /// root, as the HOW column of `why` says it.
+    pub(super) fn why(&self, binary: &Binary) -> String {
+        let names = self.exception_names(binary);
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        let exceptions = text::column_names(&names);
+        match self.root {
+            None => "main function".to_string(),
+            Some(RootKind::Entry) if names.is_empty() => "entry point".to_string(),
+            Some(RootKind::Entry) => format!("{exceptions} (entry point)"),
+            Some(RootKind::Handler) => exceptions,
+            Some(kind) => text::root_column(binary, kind),
+        }
+    }
+
+    /// The names of the exceptions it handles, in the vector table's order
+    /// (see [`exception_name`]), but not the reserved entries that list it,
+    /// since the processor takes none of them: "reserved" only for a
+    /// handler that no other entry lists. None for a function that isn't a
+    /// handler.
+    pub(super) fn exception_names(&self, binary: &Binary) -> Vec<String> {
+        let architecture = binary.arm_architecture;
+        let names: Vec<String> = self
+            .exceptions
+            .iter()
+            .filter(|&&number| !is_reserved(number, architecture))
+            .map(|&number| exception_name(number, architecture))
+            .collect();
+        match self.exceptions.first() {
+            Some(&number) if names.is_empty() => vec![exception_name(number, architecture)],
+            _ => names,
+        }
+    }
+}
+
+/// What an item reaches, added up as `reach SYMBOL` counts it, but found
+/// without the tree: one search through the graph that only adds up bytes,
+/// which is quick enough to make for every start of a large program.
+pub(super) struct Totals {
+    /// The bytes of the functions, and of the data objects, among the item
+    /// and what it reaches.
+    pub code: u64,
+    pub data: u64,
+    /// The same, in each of the blocks of memory that [`Totals::find`] was
+    /// given.
+    pub blocks: Vec<(u64, u64)>,
+    /// How many items other than itself it reaches.
+    pub reached: usize,
+    /// Whether the item or what it reaches has a call or jump that elfq
+    /// can't follow, but for the jump in a PLT's header to the dynamic
+    /// loader.
+    pub unfollowed: bool,
+    /// Whether it is, or reaches, a function whose end elfq doesn't know,
+    /// so that it can't read its code.
+    pub unreadable: bool,
+}
+
+impl Totals {
+    /// Adds up what the item at `index` reaches in `graph`, the file's
+    /// reference graph, in all and in each of `blocks`.
+    pub(super) fn find(
+        binary: &Binary,
+        graph: &Graph,
+        index: usize,
+        blocks: &[MemoryBlock],
+    ) -> Totals {
+        let mut totals = Totals {
+            code: 0,
+            data: 0,
+            blocks: vec![(0, 0); blocks.len()],
+            reached: 0,
+            unfollowed: false,
+            unreadable: false,
+        };
+        let mut seen = vec![false; binary.items.len()];
+        seen[index] = true;
+        let mut next = vec![index];
+        while let Some(index) = next.pop() {
+            let item = &binary.items[index];
+            let (code, data) = match item.kind {
+                ItemKind::Function => (item.size, 0),
+                ItemKind::Data => (0, item.size),
+            };
+            totals.code = u64::saturating_add(totals.code, code);
+            totals.data = u64::saturating_add(totals.data, data);
+            if let Some(block) = blocks
+                .iter()
+                .position(|block| block.range.contains(item.address))
+            {
+                let (block_code, block_data) = &mut totals.blocks[block];
+                *block_code = u64::saturating_add(*block_code, code);
+                *block_data = u64::saturating_add(*block_data, data);
+            }
+            if item.kind == ItemKind::Function && item.size == 0 {
+                totals.unreadable = true;
+            }
+            if !graph.unresolved_in(index).is_empty() && !is_plt_header(graph, Node::Item(index)) {
+                totals.unfollowed = true;
+            }
+            // Imports use nothing in the file, and take no bytes in it.
+            for reference in graph.references_from(index) {
+                if let Node::Item(to) = reference.to
+                    && !seen[to]
+                {
+                    seen[to] = true;
+                    totals.reached += 1;
+                    next.push(to);
+                }
+            }
+        }
+        totals
+    }
+
+    /// Whether elfq can follow every call and jump in the item and what it
+    /// reaches, and knows where each function among them ends, as
+    /// `complete` in `reach SYMBOL --json` says.
+    pub(super) fn complete(&self) -> bool {
+        !self.unfollowed && !self.unreadable
+    }
+
+    /// The bytes of code and data together.
+    fn bytes(&self) -> u64 {
+        u64::saturating_add(self.code, self.data)
+    }
+}
+
+/// Whether `node` is a PLT's header, whose one jump goes to the dynamic
+/// loader.
+fn is_plt_header(graph: &Graph, node: Node) -> bool {
+    graph
+        .root(node)
+        .is_some_and(|root| root.kind == RootKind::PltHeader)
+}
+
 /// How the text lists the use that reaches `node`, from `via`: as the call
 /// to a veneer when `via` is the veneer's jump to its target and the veneer
 /// is reached by a call.
@@ -1362,6 +1950,7 @@ fn nothing_reached_lines(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::graph::Root;
 
     #[test]
     fn what_reaches_nothing_says_how_it_uses_itself() {
@@ -1391,6 +1980,217 @@ mod tests {
         assert_eq!(
             lines(None, true, &[]),
             ["f is the PLT header, which jumps only to the dynamic loader."]
+        );
+    }
+
+    /// c-x86_64.elf, whose functions the tests below make starts of.
+    fn sample() -> Binary {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/bin/c-x86_64.elf");
+        Binary::load(&path).unwrap()
+    }
+
+    fn index(binary: &Binary, name: &str) -> usize {
+        binary
+            .items
+            .iter()
+            .position(|item| item.name == name)
+            .unwrap()
+    }
+
+    fn section(binary: &Binary, name: &str) -> usize {
+        binary
+            .sections
+            .iter()
+            .position(|section| section.name == name)
+            .unwrap()
+    }
+
+    /// A start at `name`, a root of `kind` or `main`, that reaches `code`
+    /// bytes of code, and calls or jumps that elfq can't follow if
+    /// `unfollowed`, or code that it can't read if `unreadable`.
+    fn start(
+        binary: &Binary,
+        name: &str,
+        root: Option<RootKind>,
+        code: u64,
+        (unfollowed, unreadable): (bool, bool),
+    ) -> Start {
+        Start {
+            index: index(binary, name),
+            root,
+            exceptions: Vec::new(),
+            totals: Totals {
+                code,
+                data: 0,
+                blocks: vec![(code, 0)],
+                reached: 1,
+                unfollowed,
+                unreadable,
+            },
+        }
+    }
+
+    fn text(starts: &Starts, all: bool) -> String {
+        let mut out = Vec::new();
+        starts
+            .write_text(Path::new("app.elf"), all, &mut out)
+            .unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn the_note_says_why_starts_may_reach_more() {
+        let binary = sample();
+        let note = |marks: &[(bool, bool)]| {
+            let starts = Starts {
+                binary: &binary,
+                starts: marks
+                    .iter()
+                    .map(|&marks| start(&binary, "main", None, 10, marks))
+                    .collect(),
+                unreadable: Vec::new(),
+                blocks: memory_blocks(&binary.sections),
+            };
+            text(&starts, false).lines().last().unwrap().to_string()
+        };
+        assert_eq!(
+            note(&[(true, false)]),
+            "The starts marked (may reach more) reach calls or jumps that elfq can't follow; \
+             reach START names them."
+        );
+        assert_eq!(
+            note(&[(false, true)]),
+            "The starts marked (may reach more) reach code that elfq can't read; reach START \
+             names them."
+        );
+        assert_eq!(
+            note(&[(true, false), (false, true)]),
+            "The starts marked (may reach more) reach calls or jumps that elfq can't follow, or \
+             code that it can't read; reach START names them."
+        );
+        assert_eq!(note(&[(false, false)]), "  10     0  main function  main");
+    }
+
+    #[test]
+    fn starts_whose_end_elfq_doesnt_know_are_named_below_the_table() {
+        let binary = sample();
+        let starts = |starts, unreadable: &[&str]| Starts {
+            binary: &binary,
+            starts,
+            unreadable: unreadable.iter().map(|name| index(&binary, name)).collect(),
+            blocks: memory_blocks(&binary.sections),
+        };
+        let main = || vec![start(&binary, "main", None, 10, (false, false))];
+        assert_eq!(
+            text(&starts(main(), &["_init", "_fini"]), false),
+            "\
+Where app.elf starts, and the bytes of code and data that each reaches:
+
+CODE  DATA  WHY            START
+  10     0  main function  main
+
+_init and _fini are starts too, but elfq doesn't know where they end, so it can't count what they reach.
+"
+        );
+        assert_eq!(
+            text(&starts(main(), &["_init"]), false).lines().last(),
+            Some(
+                "_init is a start too, but elfq doesn't know where it ends, so it can't count \
+                 what it reaches."
+            )
+        );
+        // Without a table, the sentence is the answer.
+        assert_eq!(
+            text(&starts(Vec::new(), &["_init"]), false),
+            "_init is where app.elf starts, but elfq doesn't know where it ends, so it can't \
+             count what it reaches.\n"
+        );
+        assert_eq!(
+            text(&starts(Vec::new(), &[]), false),
+            "elfq found no place where app.elf starts.\n"
+        );
+    }
+
+    #[test]
+    fn the_table_of_starts_shows_the_starts_that_reach_the_most() {
+        let binary = sample();
+        let init_array = RootKind::ListedIn(section(&binary, ".init_array"));
+        let fini_array = RootKind::ListedIn(section(&binary, ".fini_array"));
+        // The entry point, then 31 functions that .init_array lists, each
+        // reaching more than the one before, and 2 that .fini_array lists.
+        let mut all = vec![start(
+            &binary,
+            "_start",
+            Some(RootKind::Entry),
+            1,
+            (false, false),
+        )];
+        for code in 0..31 {
+            all.push(start(
+                &binary,
+                "frame_dummy",
+                Some(init_array),
+                code,
+                (false, false),
+            ));
+        }
+        for code in [100, 0] {
+            let name = "__do_global_dtors_aux";
+            all.push(start(&binary, name, Some(fini_array), code, (false, false)));
+        }
+        let starts = Starts {
+            binary: &binary,
+            starts: all,
+            unreadable: Vec::new(),
+            blocks: memory_blocks(&binary.sections),
+        };
+        // The entry point is always shown. Of the other 33 starts, 29 more
+        // fit: of .init_array's, the 28 that reach the most, and of
+        // .fini_array's, the one that reaches 100 bytes, and the other too,
+        // since a row of its own takes no more room than "1 more".
+        let rows: Vec<String> = starts
+            .rows(false)
+            .iter()
+            .map(|row| match *row {
+                StartRow::Start(start) => starts.starts[start].totals.code.to_string(),
+                StartRow::More(kind, count) => format!("{count} more {kind:?}"),
+            })
+            .collect();
+        let mut expected: Vec<String> = ["1"].into_iter().map(String::from).collect();
+        expected.extend((3..31).map(|code: u64| code.to_string()));
+        expected.push(format!("3 more {init_array:?}"));
+        expected.extend(["100".to_string(), "0".to_string()]);
+        assert_eq!(rows, expected);
+        assert!(text(&starts, false).contains("  listed in .init_array  3 more\n"));
+        assert_eq!(starts.rows(true).len(), 34);
+    }
+
+    #[test]
+    fn a_main_that_is_a_root_is_listed_as_one() {
+        let binary = sample();
+        let mut graph = Graph::build(&binary);
+        let names = Names::new(&binary);
+        // As if the unwinder called main.
+        let main = Node::Item(index(&binary, "main"));
+        graph.roots.push(Root {
+            node: main,
+            kind: RootKind::Personality,
+        });
+        graph.roots.sort_by_key(|root| root.node);
+        let starts = starts(&binary, &graph, &names);
+        let listed: Vec<(&str, String)> = starts
+            .starts
+            .iter()
+            .map(|start| (binary.items[start.index].name.as_str(), start.why(&binary)))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("_start", "entry point".to_string()),
+                ("frame_dummy", "listed in .init_array".to_string()),
+                ("__do_global_dtors_aux", "listed in .fini_array".to_string()),
+                ("main", "used by the unwinder".to_string()),
+            ]
         );
     }
 }

@@ -12,7 +12,7 @@
 
 use object::SectionKind;
 
-use super::{Binary, Item, ItemKind, Source, code_section};
+use super::{ArmArchitecture, Binary, Item, ItemKind, Source, code_section};
 
 /// Where the vector table is and the handlers it lists.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,16 +51,65 @@ impl VectorTable {
     /// (the faults, and NMI, which most chips raise for a hardware error),
     /// while debugging (DebugMonitor), or never (reserved entries).
     pub fn runs_in_normal_operation(&self, address: u64) -> bool {
+        self.exceptions_of(address)
+            .any(|exception| ROUTINE.contains(&exception) || exception >= FIRST_INTERRUPT)
+    }
+
+    /// The exceptions that the code at `address` handles, by their entries'
+    /// numbers, in the table's order: none when no entry lists it.
+    pub fn exceptions_of(&self, address: u64) -> impl Iterator<Item = u64> + '_ {
         self.handlers
             .iter()
             .zip(&self.exceptions)
-            .any(|(&handler, exception)| {
-                handler == address && (ROUTINE.contains(exception) || *exception >= FIRST_INTERRUPT)
-            })
+            .filter(move |&(&handler, _)| handler == address)
+            .map(|(_, &exception)| exception)
     }
 }
 
-/// The entries the architecture reserves, counted from the stack pointer's.
+/// The name of the exception of entry `number`, counting the stack
+/// pointer's as 0, as Arm's manuals name it for `architecture`, which the
+/// file's build attributes give: "Reset", "HardFault", "SysTick",
+/// "reserved" for the entries that the architecture reserves (see
+/// [`is_reserved`]), or "IRQ 3" for the chip's fourth interrupt. Entry 0 is
+/// "initial SP".
+pub fn exception_name(number: u64, architecture: Option<ArmArchitecture>) -> String {
+    if is_reserved(number, architecture) {
+        return "reserved".to_string();
+    }
+    let name = match number {
+        0 => "initial SP",
+        1 => "Reset",
+        2 => "NMI",
+        3 => "HardFault",
+        4 => "MemManage",
+        5 => "BusFault",
+        6 => "UsageFault",
+        7 => "SecureFault",
+        11 => "SVCall",
+        12 => "DebugMonitor",
+        14 => "PendSV",
+        15 => "SysTick",
+        number => return format!("IRQ {}", number - FIRST_INTERRUPT),
+    };
+    name.to_string()
+}
+
+/// Whether `architecture` reserves entry `number` of the vector table,
+/// counting the stack pointer's as 0: entries 7 to 10 and 13 on Armv7-M,
+/// and when the file doesn't say; also 4 to 6 and 12 on Armv6-M and
+/// Armv8-M Baseline, which have no MemManage, BusFault, UsageFault or
+/// DebugMonitor; and not 7 on Armv8-M Mainline, where it is SecureFault.
+pub fn is_reserved(number: u64, architecture: Option<ArmArchitecture>) -> bool {
+    match architecture.map(|architecture| architecture.version) {
+        // Armv6-M, Armv6S-M and Armv8-M Baseline.
+        Some(11 | 12 | 16) => RESERVED.contains(&number) || [4, 5, 6, 12].contains(&number),
+        // Armv8-M Mainline and Armv8.1-M Mainline.
+        Some(17 | 21) => number != 7 && RESERVED.contains(&number),
+        _ => RESERVED.contains(&number),
+    }
+}
+
+/// The entries that Armv7-M reserves, counted from the stack pointer's.
 const RESERVED: [u64; 5] = [7, 8, 9, 10, 13];
 
 /// The entries of SVCall, PendSV and SysTick, the exceptions other than the
@@ -240,5 +289,52 @@ mod tests {
         assert!(!table.runs_in_normal_operation(0x300));
         // No entry lists it.
         assert!(!table.runs_in_normal_operation(0x600));
+    }
+
+    #[test]
+    fn exceptions_are_named_by_their_entries() {
+        let names = |version: Option<u64>| {
+            let architecture = version.map(|version| ArmArchitecture {
+                version,
+                profile: Some(b'M'),
+            });
+            (0..18)
+                .map(|number| exception_name(number, architecture))
+                .collect::<Vec<String>>()
+        };
+        // Armv7E-M, as when the file doesn't say.
+        let armv7 = [
+            "initial SP",
+            "Reset",
+            "NMI",
+            "HardFault",
+            "MemManage",
+            "BusFault",
+            "UsageFault",
+            "reserved",
+            "reserved",
+            "reserved",
+            "reserved",
+            "SVCall",
+            "DebugMonitor",
+            "reserved",
+            "PendSV",
+            "SysTick",
+            "IRQ 0",
+            "IRQ 1",
+        ];
+        assert_eq!(names(Some(13)), armv7);
+        assert_eq!(names(None), armv7);
+        // Armv6S-M, as on a Cortex-M0, has no faults but HardFault, and no
+        // DebugMonitor.
+        let mut armv6 = armv7;
+        for number in [4, 5, 6, 12] {
+            armv6[number] = "reserved";
+        }
+        assert_eq!(names(Some(12)), armv6);
+        // Armv8-M Mainline, as on a Cortex-M33, adds SecureFault.
+        let mut armv8 = armv7;
+        armv8[7] = "SecureFault";
+        assert_eq!(names(Some(17)), armv8);
     }
 }

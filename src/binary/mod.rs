@@ -42,7 +42,7 @@ pub use names::{
     may_join_words, short_name_key, short_name_keys, short_names, short_names_with_key, words,
 };
 pub use range::{AddressRange, MemoryBlock, hex_number, memory_blocks, range_hint};
-pub use vector_table::VectorTable;
+pub use vector_table::{VectorTable, exception_name, is_reserved};
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;

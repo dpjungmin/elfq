@@ -25,6 +25,7 @@ elfq app.elf inlined main               # the inlined code in main
 elfq app.elf callers log_msg            # what calls or uses log_msg
 elfq app.elf callees main               # what main calls or uses
 elfq app.elf callees 0x0+256K           # what the first 256 KiB uses outside it
+elfq app.elf reach                      # where the program starts, and the bytes each start reaches
 elfq app.elf reach SysTick_Handler      # what SysTick_Handler runs and uses, and where
 elfq app.elf browse log_msg             # read log_msg's code, its calls and its callers
 ```
@@ -96,7 +97,9 @@ and `elfq --help` lists the commands.
   memory, such as ITCM and flash: a hot function's whole footprint, and
   what of it isn't where it should be. `--to RANGE` keeps only what it
   reaches in RANGE, with every row, and exits 1 if there is any, or might
-  be.
+  be. Without SYMBOL, `reach` lists where the program starts, such as
+  `main` and each interrupt handler, with the bytes each start reaches in
+  each block.
 - elfq reads the built file, not the source: rebuild before asking again.
 ```
 

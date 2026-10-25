@@ -8,14 +8,15 @@ every `$ elfq` example here and checks that elfq still prints exactly that.
 
 1. [Why is formatting code in Rust firmware?](#why-is-formatting-code-in-rust-firmware)
 2. [Does the code in fast memory use slow memory?](#does-the-code-in-fast-memory-use-slow-memory)
-3. [What does SysTick_Handler run and use, and where?](#what-does-systick_handler-run-and-use-and-where)
-4. [Through which calls does SysTick_Handler reach the RAM at 0x20240000?](#through-which-calls-does-systick_handler-reach-the-ram-at-0x20240000)
-5. [Does SysTick_Handler run or use anything outside TCM?](#does-systick_handler-run-or-use-anything-outside-tcm)
-6. [What is in stripped firmware?](#what-is-in-stripped-firmware)
-7. [Who calls a function, and how?](#who-calls-a-function-and-how)
-8. [What would removing a function save?](#what-would-removing-a-function-save)
-9. [Which inlined functions take the most bytes?](#which-inlined-functions-take-the-most-bytes)
-10. [How do scripts read the answers?](#how-do-scripts-read-the-answers)
+3. [Where does the firmware start, and where does each start run?](#where-does-the-firmware-start-and-where-does-each-start-run)
+4. [What does SysTick_Handler run and use, and where?](#what-does-systick_handler-run-and-use-and-where)
+5. [Through which calls does SysTick_Handler reach the RAM at 0x20240000?](#through-which-calls-does-systick_handler-reach-the-ram-at-0x20240000)
+6. [Does SysTick_Handler run or use anything outside TCM?](#does-systick_handler-run-or-use-anything-outside-tcm)
+7. [What is in stripped firmware?](#what-is-in-stripped-firmware)
+8. [Who calls a function, and how?](#who-calls-a-function-and-how)
+9. [What would removing a function save?](#what-would-removing-a-function-save)
+10. [Which inlined functions take the most bytes?](#which-inlined-functions-take-the-most-bytes)
+11. [How do scripts read the answers?](#how-do-scripts-read-the-answers)
 
 ## Why is formatting code in Rust firmware?
 
@@ -270,6 +271,35 @@ ADDRESS  SIZE  HOW              AT                      CALLEE
 
 `process_frame`, in flash, calls two functions in ITCM, both through
 veneers.
+
+## Where does the firmware start, and where does each start run?
+
+The processor starts the firmware at its reset handler, and runs a
+handler for each exception and interrupt from the vector table. `reach`
+without a symbol lists those starts, and `main`, with the bytes of code
+and data that each reaches in each block of memory, as the overview lists
+the blocks:
+
+```
+$ elfq testdata/bin/c-cortex-m7.elf reach
+Where testdata/bin/c-cortex-m7.elf starts, and the bytes of code and data that each reaches in each block of memory:
+
+0x00000000  0x20000000  0x20240000  0x30000000  WHY                        START
+       200        1100        4096        2071  main function              main (may reach more)
+       200        1100        4096        2345  Reset (entry point)        Reset_Handler (may reach more)
+         0           0           0           2  NMI, HardFault and 6 more  Default_Handler
+        24          24        4096         430  SysTick                    SysTick_Handler (may reach more)
+
+The starts marked (may reach more) reach calls or jumps that elfq can't follow; reach START names them.
+```
+
+`Reset_Handler` calls `main`, so it reaches everything that `main` does,
+and 274 bytes more in flash: its own 112, and the 162 of `memset`, which
+it calls to clear `.bss`. `Default_Handler`, which only loops, handles
+NMI, HardFault and six more exceptions, which `--json` names.
+`SysTick_Handler`, the timer's interrupt handler, is the one to look at:
+it starts in ITCM, but 430 of the bytes it reaches are in flash. With
+`--json`, each block has its code and data apart.
 
 ## What does SysTick_Handler run and use, and where?
 

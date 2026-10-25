@@ -12,13 +12,14 @@ use std::path::Path;
 use anyhow::{Result, bail};
 use serde::Serialize;
 
+use super::reach::Totals;
 use super::retained_tree::RetainedTree;
 use super::symbol::Names;
 use super::{Kept, json, text};
 use crate::arch;
 use crate::binary::{AddressRange, Binary, FileKind, ItemKind, MemoryBlock, Source, memory_blocks};
 use crate::cli::Format;
-use crate::graph::{Graph, Node, RootKind, ShortestPaths};
+use crate::graph::{Graph, Node, RootKind};
 use crate::render::{Align, Table};
 
 /// How many of the largest items the overview's table shows. It is made as
@@ -391,17 +392,9 @@ fn handler_reaching_most_code(binary: &Binary, graph: &Graph) -> Option<usize> {
         })
         .filter(|&index| table.runs_in_normal_operation(binary.items[index].address))
         .filter_map(|handler| {
-            let paths = ShortestPaths::from(binary, graph, Node::Item(handler));
-            let reached: Vec<usize> = (0..binary.items.len())
-                .filter(|&index| index != handler && paths.is_reached(Node::Item(index)))
-                .collect();
-            let code = reached
-                .iter()
-                .map(|&index| &binary.items[index])
-                .filter(|item| item.kind == ItemKind::Function)
-                .map(|item| item.size);
-            let code = super::total(code.chain([binary.items[handler].size]));
-            (!reached.is_empty()).then_some((code, handler))
+            // Only the code counts here, not where it is.
+            let totals = Totals::find(binary, graph, handler, &[]);
+            (totals.reached > 0).then_some((totals.code, handler))
         })
         .max_by_key(|&(code, handler)| (code, std::cmp::Reverse(handler)))
         .map(|(_, handler)| handler)
@@ -455,7 +448,7 @@ pub(super) fn starting_point(binary: &Binary, names: &Names) -> Option<usize> {
 
 /// A function whose code is in this file and readable: not a PLT stub,
 /// whose code is a library's, nor a function of unknown size.
-fn is_own_function(binary: &Binary, index: usize) -> bool {
+pub(super) fn is_own_function(binary: &Binary, index: usize) -> bool {
     let item = &binary.items[index];
     item.kind == ItemKind::Function && item.source != Source::Plt && item.size > 0
 }

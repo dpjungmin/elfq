@@ -109,6 +109,14 @@ fn phrase(words: &[&str], room: usize) -> String {
     }
 }
 
+/// Names for a column, such as the exceptions in `reach`'s WHY: "a", "a and
+/// b", "a, b and c", or for more than three, "a, b and 5 more". The column
+/// comes before the name, so it stays short, even with `--all`; the JSON
+/// has every one.
+pub(super) fn column_names(names: &[&str]) -> String {
+    phrase(names, 2)
+}
+
 /// How many names a list of names in a sentence names before "and 5 more",
 /// unless `--all` asks for every one.
 const NAMED: usize = 10;
@@ -406,7 +414,19 @@ pub(super) fn range_sections_text(binary: &Binary, range: AddressRange, all: boo
 /// A range as `--range` takes it, its addresses padded to 8 hex digits so
 /// that a column of ranges lines up, such as `0x00000000..0x000000e0`.
 pub(super) fn range_argument(range: AddressRange) -> String {
-    range.text(format!("{:x}", range.end).len().max(8))
+    range.text(range_digits(range))
+}
+
+/// Where a block of memory starts, as [`range_argument`] writes it, for a
+/// column's header: "0x20000000".
+pub(super) fn range_start(range: AddressRange) -> String {
+    format!("{:#0width$x}", range.start, width = range_digits(range) + 2)
+}
+
+/// How many hex digits [`range_argument`] gives each address of `range`:
+/// as many as its end needs, and at least 8.
+fn range_digits(range: AddressRange) -> usize {
+    format!("{:x}", range.end).len().max(8)
 }
 
 /// `text` as one shell word: quoted when it holds anything but letters,

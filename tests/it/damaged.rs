@@ -96,7 +96,6 @@ fn replace_section(data: &mut Vec<u8>, section: &str, bytes: &[u8]) {
 /// for version `version` of the Arm architecture (Tag_CPU_arch), on a
 /// Cortex-M core; or with an empty `.ARM.attributes`, which says nothing,
 /// when `version` is `None`.
-#[cfg(feature = "tui")]
 pub fn for_arm_version(name: &str, version: Option<u8>) -> Vec<u8> {
     let mut data = sample(name);
     let mut section = Vec::new();
@@ -913,5 +912,61 @@ fn a_file_with_dwarf_but_no_symbol_table_says_so() {
             "error: no function or data object is named `append`; the file has no symbol table"
         ),
         "{error}"
+    );
+}
+
+#[test]
+fn reach_names_the_exceptions_that_the_architecture_has() {
+    // Default_Handler's exceptions, as `reach --json` names them, in
+    // `data`, a build of c-cortex-m7.elf, where it is in entries 2 to 6, 11,
+    // 12 and 14 of the vector table.
+    let exceptions = |name: &str, data: &[u8]| {
+        let (json, _) = run(name, data, &["reach", "--json"]);
+        let reach: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let starts = reach["starts"].as_array().unwrap();
+        let handler = starts
+            .iter()
+            .find(|start| start["name"] == "Default_Handler")
+            .unwrap();
+        handler["exceptions"].clone()
+    };
+    // In the reserved entries too, which the processor never takes, so
+    // they aren't named or counted.
+    let mut data = sample("c-cortex-m7.elf");
+    let file = object::File::parse(&*data).unwrap();
+    let (table, _) = file
+        .section_by_name(".isr_vector")
+        .unwrap()
+        .file_range()
+        .unwrap();
+    let address = file.symbol_by_name("Default_Handler").unwrap().address();
+    for entry in [7, 8, 9, 10, 13] {
+        write(&mut data, table as usize + entry * 4, 4, address | 1);
+    }
+    let name = "reserved-entries.elf";
+    assert_eq!(
+        exceptions(name, &data),
+        serde_json::json!([
+            "NMI",
+            "HardFault",
+            "MemManage",
+            "BusFault",
+            "UsageFault",
+            "SVCall",
+            "DebugMonitor",
+            "PendSV"
+        ])
+    );
+    let (stdout, _) = run(name, &data, &["reach"]);
+    assert!(
+        stdout.contains("  NMI, HardFault and 6 more  Default_Handler\n"),
+        "{stdout}"
+    );
+    // Armv6S-M, as on a Cortex-M0, has no MemManage, BusFault, UsageFault
+    // or DebugMonitor: their entries are reserved.
+    let data = for_arm_version("c-cortex-m7.elf", Some(12));
+    assert_eq!(
+        exceptions("armv6s-m.elf", &data),
+        serde_json::json!(["NMI", "HardFault", "SVCall", "PendSV"])
     );
 }
