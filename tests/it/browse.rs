@@ -94,7 +94,7 @@ fn selected_and_status(screen: &str) -> (&str, &str) {
         .iter()
         .find(|line| line.starts_with("> "))
         .unwrap_or(&"");
-    let command = lines.iter().position(|line| line.starts_with("$ elfq "));
+    let command = lines.iter().position(|line| line.starts_with("$ "));
     (selected, lines[command.unwrap_or(lines.len() - 1) - 1])
 }
 
@@ -764,7 +764,7 @@ Keys
   Esc ← h Bksp Ctrl-O  back to where you were
   ]                    forward again
   Tab Shift-Tab        the next or previous line that uses another item
-  1 2 3 4 5 6          tabs: 1 code, 2 callees, 3 callers, 4 reach, 5 why, 6 retained
+  1 2 3 4 5 6          tabs: 1 code or contents, 2 callees, 3 callers, 4 reach, 5 why, 6 retained
   u                    the item that keeps this one, which its header names after \"kept by\"
   /                    find text in the page's rows, ignoring case
   n N                  the next or previous row that has the text found
@@ -805,7 +805,7 @@ Keys
   Esc ← h Bksp Ctrl-O  back to where you were
   ]                    forward again
   Tab Shift-Tab        the next or previous line that uses another item
-  1 2 3 4 5 6          tabs: 1 code, 2 callees, 3 callers, 4 reach, 5 why, 6 retained
+  1 2 3 4 5 6          tabs: 1 code or contents, 2 callees, 3 callers, 4 reach, 5 why, 6 retained
   u                    the item that keeps this one, which its header names after \"kept by\"
   /                    find text in the page's rows, ignoring case
   n N                  the next or previous row that has the text found
@@ -840,8 +840,8 @@ Keys
   Esc ← h Bksp Ctrl-O  back to where you were
   ]                    forward again
   Tab Shift-Tab        the next or previous line that uses another item
-  1 2 3 4 5 6          tabs: 1 code, 2 callees, 3 callers, 4 reach, 5 why, 6
-                       retained
+  1 2 3 4 5 6          tabs: 1 code or contents, 2 callees, 3 callers, 4 reach,
+                       5 why, 6 retained
   u                    the item that keeps this one, which its header names
                        after \"kept by\"
   /                    find text in the page's rows, ignoring case
@@ -1446,7 +1446,8 @@ elfq doesn't know where _init ends, so it can't read its code
 ↑↓ move  enter follow  esc back  1 3 5 tabs  g go to  ? help  q quit
 ",
     );
-    // A data object's page opens on its callers.
+    // A data object's page whose contents have no rows opens on its
+    // callers.
     assert_output(
         &screen("c-x86_64.elf", Some("frames_ok"), (80, 24), &[]),
         "\
@@ -1454,7 +1455,7 @@ c-x86_64.elf › frames_ok
 frames_ok  data object at 0x4058, 4 bytes, in .bss
 used by 2 · uses 0 · retained 4, kept by main
 from a root: _start › main › process_frame › frames_ok
- 2 callees  [3 callers]  4 reach   5 why   6 retained
+ 1 contents   2 callees  [3 callers]  4 reach   5 why   6 retained
   HOW   AT      CALLER
 > uses  0x1892  process_frame
   uses  0x1961  report
@@ -1476,10 +1477,6 @@ $ elfq testdata/bin/c-x86_64.elf callers frames_ok
 ↑↓ move  enter follow  esc back  tab next link  / find  g go to  ? help  q quit
 ",
     );
-    // A data object has no code tab, and 1 says why.
-    let page = screen("c-x86_64.elf", Some("frames_ok"), (80, 24), &["1"]);
-    let (_, status) = selected_and_status(&page);
-    assert_eq!(status, "frames_ok is a data object: it has no code");
 }
 
 #[test]
@@ -2066,7 +2063,7 @@ cpp-x86_64.elf › vtable for Gain
 vtable for app::Gain  data object at 0x3d38, 24 bytes, in .data.rel.ro
 used by 1 · uses 2 · retained 116, kept by main
 from a root: _start › main › vtable for Gain
-[2 callees]  3 callers   4 reach   5 why   6 retained
+ 1 contents  [2 callees]  3 callers   4 reach   5 why   6 retained
   HOW      AT      CALLEE
 > pointer  0x3d40  typeinfo for app::Gain
   pointer  0x3d48  app::Gain::run(short*, unsigned long)
@@ -3591,5 +3588,404 @@ fn a_shared_library_has_no_why_or_retained_tab() {
     assert_eq!(
         selected_and_status(&page).1,
         "memcpy is imported from a shared library, so its code isn't in this file"
+    );
+}
+
+#[test]
+fn a_vector_table_lists_its_entries_by_exception() {
+    // Each entry is named by its exception, and a handler's links to it,
+    // with the Thumb bit set in the word: SysTick's handler is at 0, in
+    // ITCM, another block of memory than the table's. Under the entries
+    // is the command that prints the table's bytes.
+    assert_output(
+        &screen("c-cortex-m7.elf", Some("vector_table"), (100, 26), &[]),
+        "\
+c-cortex-m7.elf › vector_table
+vector_table  data object at 0x30000000, 64 bytes, in .isr_vector (0x30000000..0x30000edc)
+root: vector table · used by nothing · uses 3 · retained 64
+[1 contents]  2 callees   3 callers   4 reach   5 why   6 retained
+  ADDRESS     ENTRY         VALUE
+> 0x30000000  initial SP    0x20040000
+  0x30000004  Reset         0x300005f9  pointer Reset_Handler
+  0x30000008  NMI           0x300005f5  pointer Default_Handler
+  0x3000000c  HardFault     0x300005f5  pointer Default_Handler
+  0x30000010  MemManage     0x300005f5  pointer Default_Handler
+  0x30000014  BusFault      0x300005f5  pointer Default_Handler
+  0x30000018  UsageFault    0x300005f5  pointer Default_Handler
+  0x3000001c  reserved      0x00000000
+  0x30000020  reserved      0x00000000
+  0x30000024  reserved      0x00000000
+  0x30000028  reserved      0x00000000
+  0x3000002c  SVCall        0x300005f5  pointer Default_Handler
+  0x30000030  DebugMonitor  0x300005f5  pointer Default_Handler
+  0x30000034  reserved      0x00000000
+  0x30000038  PendSV        0x300005f5  pointer Default_Handler
+  0x3000003c  SysTick       0x00000001  pointer SysTick_Handler in .itcm
+
+
+$ objdump -s -j .isr_vector --start-address=0x30000000 --stop-address=0x30000040
+testdata/bin/c-cortex-m7.elf
+↑↓ move  enter follow  esc back  tab next link  1 2 3 4 5 6 tabs  / find  g go to  ? help  q quit
+",
+    );
+}
+
+#[test]
+fn a_stripped_files_vector_table_lists_the_same_entries() {
+    // Its item is named after its section, and the handlers after their
+    // addresses, but for the reset handler, which is the entry point.
+    let rows = |sample: &str, symbol: &str| -> Vec<String> {
+        let page = screen(sample, Some(symbol), (100, 26), &[]);
+        let rows =
+            (page.lines()).filter(|line| line.get(2..).is_some_and(|row| row.starts_with("0x3")));
+        rows.map(str::to_string).collect()
+    };
+    let named: Vec<String> = rows("c-cortex-m7.elf", "vector_table")
+        .into_iter()
+        .map(|row| {
+            row.replace("Reset_Handler", "entry")
+                .replace("Default_Handler", "fn_0x300005f4")
+                .replace("SysTick_Handler", "fn_0x0")
+        })
+        .collect();
+    assert_eq!(named.len(), 16);
+    assert_eq!(rows("c-cortex-m7-stripped.elf", ".isr_vector"), named);
+}
+
+#[test]
+fn each_part_of_a_split_vector_table_names_its_entries() {
+    // cortex-m-rt splits the table into RESET_VECTOR, EXCEPTIONS and
+    // INTERRUPTS, and no item holds the stack pointer's word. Each part's
+    // entries are counted from the table's start, the reserved ones too.
+    assert_output(
+        &screen("rust-cortex-m4.elf", Some("EXCEPTIONS"), (100, 26), &[]),
+        "\
+rust-cortex-m4.elf › EXCEPTIONS
+EXCEPTIONS  data object at 0x8000008, 56 bytes, in .vector_table (0x08000000..0x080022bc)
+root: vector table · used by nothing · uses 2 · retained 56
+[1 contents]  2 callees   3 callers   4 reach   5 why   6 retained
+  ADDRESS    ENTRY         VALUE
+> 0x8000008  NMI           0x08000cd5  pointer default_handler
+  0x800000c  HardFault     0x08000cd5  pointer default_handler
+  0x8000010  MemManage     0x08000cd5  pointer default_handler
+  0x8000014  BusFault      0x08000cd5  pointer default_handler
+  0x8000018  UsageFault    0x08000cd5  pointer default_handler
+  0x800001c  reserved      0x00000000
+  0x8000020  reserved      0x00000000
+  0x8000024  reserved      0x00000000
+  0x8000028  reserved      0x00000000
+  0x800002c  SVCall        0x08000cd5  pointer default_handler
+  0x8000030  DebugMonitor  0x08000cd5  pointer default_handler
+  0x8000034  reserved      0x00000000
+  0x8000038  PendSV        0x08000cd5  pointer default_handler
+  0x800003c  SysTick       0x08000cdb  pointer sys_tick
+
+
+
+→ elfq_sample::platform::default_handler  function at 0x8000cd4, 6 bytes, in .text
+$ objdump -s -j .vector_table --start-address=0x8000008 --stop-address=0x8000040
+testdata/bin/rust-cortex-m4.elf
+↑↓ move  enter follow  esc back  tab next link  1 2 3 4 5 6 tabs  / find  g go to  ? help  q quit
+",
+    );
+    let page = screen("rust-cortex-m4.elf", Some("RESET_VECTOR"), (100, 16), &[]);
+    assert!(
+        page.contains("\n> 0x8000004  Reset  0x08000041  pointer Reset\n"),
+        "{page}"
+    );
+}
+
+#[test]
+fn enter_on_a_pointer_opens_what_it_points_to_and_esc_comes_back() {
+    // The handler that the vector table's last entry holds, plus 1 for
+    // Thumb, opens on its code.
+    let entry = ["End", "Enter"];
+    let page = screen("c-cortex-m7.elf", Some("vector_table"), (100, 26), &entry);
+    assert!(
+        page.starts_with(
+            "c-cortex-m7.elf › vector_table › SysTick_Handler\n\
+             SysTick_Handler  function at 0x0, 16 bytes, in .itcm"
+        ),
+        "{page}"
+    );
+    // Esc comes back to the entry.
+    assert_eq!(
+        screen(
+            "c-cortex-m7.elf",
+            Some("vector_table"),
+            (100, 26),
+            &[&entry[..], &["Esc"]].concat()
+        ),
+        screen("c-cortex-m7.elf", Some("vector_table"), (100, 26), &["End"])
+    );
+    // A pointer to data that holds pointers opens on its contents, and a
+    // line of code that uses data with none, on its callers, as before.
+    let page = screen("c-x86_64.elf", Some("root"), (100, 16), &["Down", "Enter"]);
+    assert!(page.starts_with("c-x86_64.elf › root › inner\n"), "{page}");
+    assert!(
+        page.contains("\n[1 contents]  2 callees   3 callers")
+            && page.contains("\n> 0x3da0   0x00000000000020e0  pointer leaf_b\n"),
+        "{page}"
+    );
+    let page = screen(
+        "c-x86_64.elf",
+        Some("dispatch_event"),
+        (100, 16),
+        &["Tab", "Enter"],
+    );
+    assert!(
+        page.contains("\n 1 contents   2 callees  [3 callers]  4 reach"),
+        "{page}"
+    );
+    // Find looks in the entries.
+    let found = ["/", "default", "Enter", "n"];
+    let page = screen("c-cortex-m7.elf", Some("vector_table"), (100, 26), &found);
+    assert_eq!(
+        selected_and_status(&page),
+        (
+            "> 0x3000000c  HardFault     0x300005f5  pointer Default_Handler",
+            "2 of 8 rows with \"default\""
+        )
+    );
+}
+
+#[test]
+fn a_string_shows_its_text() {
+    assert_output(
+        &screen("c-cortex-m7.elf", Some("0x30000de8"), (100, 16), &[]),
+        "\
+c-cortex-m7.elf › .rodata@0x30000de8
+.rodata@0x30000de8  data object at 0x30000de8, ~8 bytes, in .rodata (0x30000000..0x30000edc)
+used by 1 · uses 0 · retained 8, kept by app_tick
+from a root: SysTick_Handler › __app_tick_veneer › app_tick › .rodata@0x30000de8
+[1 contents]  2 callees   3 callers   4 reach   5 why   6 retained
+  ADDRESS     VALUE
+> 0x30000de8  .asciz \"tick\\n\"
+
+
+
+
+
+
+$ objdump -s -j .rodata --start-address=0x30000de8 --stop-address=0x30000df0
+testdata/bin/c-cortex-m7.elf
+↑↓ move  enter follow  esc back  1 2 3 4 5 6 tabs  / find  g go to  ? help  q quit
+",
+    );
+}
+
+#[test]
+fn a_table_of_strings_lists_each_one_where_it_starts() {
+    // The 0 bytes after "C" pad it, and have no row.
+    assert_output(
+        &screen("c-strtod.elf", Some("0x8004cc8"), (100, 16), &[]),
+        "\
+c-strtod.elf › .rodata@0x8004cc8
+.rodata@0x8004cc8  data object at 0x8004cc8, ~64 bytes, in .rodata (0x08000000..0x08005324)
+used by 1 · uses 0 · retained 64, kept by __gethex
+from a root: Reset_Handler › strtod › _strtod_l › __gethex › .rodata@0x8004cc8
+[1 contents]  2 callees   3 callers   4 reach   5 why   6 retained
+  ADDRESS    VALUE
+> 0x8004cc8  .asciz \"../../../../../../newlib/libc/stdlib/gdtoa-gethex.c\"
+  0x8004cfc  .asciz \"C\"
+  0x8004d00  .asciz \"POSIX\"
+
+
+
+
+
+$ objdump -s -j .rodata --start-address=0x8004cc8 --stop-address=0x8004d08 testdata/bin/c-strtod.elf
+↑↓ move  enter follow  esc back  1 2 3 4 5 6 tabs  / find  g go to  ? help  q quit
+",
+    );
+}
+
+#[test]
+fn a_string_cut_on_its_row_is_in_full_on_the_status_line() {
+    // The status line takes as many lines as the string needs, and breaks
+    // it where each line ends.
+    assert_output(
+        &screen("rust-x86_64-nodebug.elf", Some("0x5d18"), (80, 24), &[]),
+        "\
+rust-x86_64-nodebug.elf › .rodata@0x5d18
+.rodata@0x5d18  data object at 0x5d18, ~109 bytes, in .rodata
+used by 2 · uses 0 · retained 109, kept by with_global
+from a root: … › with_global › .data.rel.ro@0x532f8 › .rodata@0x5d18
+[1 contents]  2 callees   3 callers   4 reach   5 why   6 retained
+  ADDRESS  VALUE
+> 0x5d18   .asciz \"/rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/st…
+
+
+
+
+
+
+
+
+
+
+
+
+.asciz \"/rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/std/src/../../ba
+cktrace/src/symbolize/gimli/stash.rs\"
+$ objdump -s -j .rodata --start-address=0x5d18 --stop-address=0x5d85
+testdata/bin/rust-x86_64-nodebug.elf
+↑↓ move  enter follow  esc back  / find  g go to  ? help  q quit
+",
+    );
+}
+
+#[test]
+fn data_without_pointers_or_strings_gives_the_command_that_prints_its_bytes() {
+    // The page opens on its callers, and 1 shows the command.
+    let page = screen("c-cortex-m7.elf", Some("crc_table"), (100, 16), &[]);
+    assert!(
+        page.contains("\n 1 contents   2 callees  [3 callers]"),
+        "{page}"
+    );
+    assert_output(
+        &screen("c-cortex-m7.elf", Some("crc_table"), (100, 16), &["1"]),
+        "\
+c-cortex-m7.elf › crc_table
+crc_table  data object at 0x20000000, 1024 bytes, in .data (0x20000000..0x20000450), copied there
+from 0x300009c0
+used by 1 · uses 0 · retained 1024, kept by crc32
+from a root: Reset_Handler › main › process_frame › __crc32_veneer › crc32 › crc_table
+[1 contents]  2 callees   3 callers   4 reach   5 why   6 retained
+crc_table holds no pointers that elfq follows, and isn't made of strings that end in a 0 byte; the
+objdump command below prints its bytes.
+
+
+
+
+
+$ objdump -s -j .data --start-address=0x20000000 --stop-address=0x20000400
+testdata/bin/c-cortex-m7.elf
+↑↓ move  enter follow  esc back  1 2 3 4 5 6 tabs  g go to  ? help  q quit
+",
+    );
+    // A struct whose first int, 53, reads as "5" is no string, here or in
+    // the note of the code that uses it.
+    let says = "fpi.1 holds no pointers that elfq follows, and isn't made of strings";
+    let page = screen("c-strtod.elf", Some("fpi.1"), (100, 16), &["1"]);
+    assert!(page.contains(says), "{page}");
+    let found = ["/", "fpi.1", "Enter"];
+    let page = screen("c-strtod.elf", Some("_strtod_l"), (100, 30), &found);
+    let (selected, _) = selected_and_status(&page);
+    assert!(selected.ends_with("  uses fpi.1"), "{page}");
+    // Nor is a pointer that the dynamic loader writes, whose file bytes,
+    // 60 40 00 00, are printable: __dso_handle's in a shared library.
+    let page = screen("c-x86_64.so", Some("0x4060"), (100, 16), &[]);
+    assert!(
+        page.contains("\n 1 contents   2 callees  [3 callers]"),
+        "{page}"
+    );
+    let page = screen("c-x86_64.so", Some("0x4060"), (100, 16), &["1"]);
+    assert!(
+        page.contains(".data@0x4060 holds no pointers that elfq follows"),
+        "{page}"
+    );
+}
+
+#[test]
+fn data_with_no_bytes_in_the_file_says_so() {
+    // Nor is there a command under it, since there are no bytes to print.
+    assert_output(
+        &screen("c-cortex-m7.elf", Some("tx_buffer"), (100, 16), &["1"]),
+        "\
+c-cortex-m7.elf › tx_buffer
+tx_buffer  data object at 0x20240000, 4096 bytes, in .ocram_bss (0x20240000..0x20241000)
+used by 1 · uses 0 · retained 4096, kept by platform_write
+from a root: SysTick_Handler › __app_tick_veneer › app_tick › log_msg › platform_write › tx_buffer
+[1 contents]  2 callees   3 callers   4 reach   5 why   6 retained
+tx_buffer has no bytes in the file: .ocram_bss takes no room in it.
+
+
+
+
+
+
+
+
+
+↑↓ move  enter follow  esc back  1 2 3 4 5 6 tabs  g go to  ? help  q quit
+",
+    );
+}
+
+#[test]
+fn a_table_of_pointers_links_each_one() {
+    // Each pointer is a row, with what the loader writes there: the file
+    // can run at any address.
+    assert_output(
+        &screen("c-x86_64.elf", Some("root"), (100, 16), &[]),
+        "\
+c-x86_64.elf › root
+root  data object at 0x3d90, 16 bytes, in .data.rel.ro
+used by 1 · uses 2 · retained 80, kept by report
+from a root: _start › main › report › root
+[1 contents]  2 callees   3 callers   4 reach   5 why   6 retained
+  ADDRESS  VALUE
+> 0x3d90   0x00000000000020f0  pointer leaf_a
+  0x3d98   0x0000000000003da0  pointer inner
+
+
+
+
+
+→ leaf_a  data object at 0x20f0, 16 bytes, in .rodata
+$ objdump -s -j .data.rel.ro --start-address=0x3d90 --stop-address=0x3da0 testdata/bin/c-x86_64.elf
+↑↓ move  enter follow  esc back  tab next link  1 2 3 4 5 6 tabs  / find  g go to  ? help  q quit
+",
+    );
+}
+
+#[test]
+fn a_shared_librarys_pointers_show_what_the_loader_writes() {
+    // The dynamic loader writes these pointers, as `readelf -r` lists.
+    assert_output(
+        &screen("c-x86_64.so", Some("root"), (100, 16), &[]),
+        "\
+c-x86_64.so › root
+root  data object at 0x3de0, 16 bytes, in .data.rel.ro
+used by 1 · uses 2
+[1 contents]  2 callees   3 callers   4 reach
+  ADDRESS  VALUE
+> 0x3de0   0x00000000000020f0  pointer leaf_a
+  0x3de8   0x0000000000003df0  pointer inner
+
+
+
+
+
+
+→ leaf_a  data object at 0x20f0, 16 bytes, in .rodata
+$ objdump -s -j .data.rel.ro --start-address=0x3de0 --stop-address=0x3df0 testdata/bin/c-x86_64.so
+↑↓ move  enter follow  esc back  tab next link  1 2 3 4 tabs  / find  g go to  ? help  q quit
+",
+    );
+    // Here the file holds 0 in each, where the loader writes the address
+    // of an import, which has none in this file, or of the file's own
+    // item, and a footnote says so, since objdump prints the 0s.
+    assert_output(
+        &screen("cpp-x86_64.so", Some("typeinfo for Gain"), (100, 16), &[]),
+        "\
+cpp-x86_64.so › typeinfo for Gain
+typeinfo for app::Gain  data object at 0x3d60, 24 bytes, in .data.rel.ro
+used by 1 · uses 3
+[1 contents]  2 callees   3 callers   4 reach
+  ADDRESS  VALUE
+> 0x3d60   imported            pointer vtable for __cxxabiv1::__si_class_type_info
+  0x3d68   0x0000000000002048  pointer typeinfo name for Gain \"N3app4GainE\"
+  0x3d70   0x0000000000003d50  pointer typeinfo for Stage
+
+
+
+Where the dynamic loader writes a pointer, VALUE is what it writes; objdump prints what the file
+holds there, such as 0.
+→ vtable for __cxxabiv1::__si_class_type_info  imported from a shared library
+$ objdump -s -j .data.rel.ro --start-address=0x3d60 --stop-address=0x3d78 testdata/bin/cpp-x86_64.so
+↑↓ move  enter follow  esc back  tab next link  1 2 3 4 tabs  / find  g go to  ? help  q quit
+",
     );
 }

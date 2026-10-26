@@ -3,19 +3,20 @@
 //! or uses another item ends with a note in the words of the CLI's HOW
 //! column, such as `call`, `tail call via PLT → log_msg` or `uses
 //! frames_ok`, and links to that item: Enter opens its page. A jump inside
-//! the function links to the line it goes to. The other tabs list what the
-//! item calls or uses, as `callees SYMBOL` does (tab 2, `callees.rs`), what
-//! calls or uses it, as `callers SYMBOL` does (tab 3, `callers.rs`), and
-//! everything it calls or uses at any depth, as `reach SYMBOL` does (tab 4,
-//! `reach.rs`), the chains from where the program starts that keep it, as
-//! `why SYMBOL` does (tab 5, `why.rs`), and what removing it would save,
-//! as `retained SYMBOL` does (tab 6, `retained.rs`). Tabs 2, 4, 5 and 6
-//! are worked out the first time they are shown, since what an item
-//! reaches can take a while to find in a large file. Once the session has
-//! worked out what keeps each item, the header says what `retained` and
-//! `why` say about the item: what removing it would save, the item that
-//! keeps it, which u opens, and the shortest chain to it from where the
-//! program starts.
+//! the function links to the line it goes to. For a data object, tab 1 is
+//! its contents, as far as elfq reads them, with the same notes and links
+//! (`item/contents.rs`). The other tabs list what the item calls or uses,
+//! as `callees SYMBOL` does (tab 2, `callees.rs`), what calls or uses it,
+//! as `callers SYMBOL` does (tab 3, `callers.rs`), and everything it calls
+//! or uses at any depth, as `reach SYMBOL` does (tab 4, `reach.rs`), the
+//! chains from where the program starts that keep it, as `why SYMBOL` does
+//! (tab 5, `why.rs`), and what removing it would save, as `retained
+//! SYMBOL` does (tab 6, `retained.rs`). Tabs 2, 4, 5 and 6 are worked out
+//! the first time they are shown, since what an item reaches can take a
+//! while to find in a large file. Once the session has worked out what
+//! keeps each item, the header says what `retained` and `why` say about
+//! the item: what removing it would save, the item that keeps it, which u
+//! opens, and the shortest chain to it from where the program starts.
 
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write;
@@ -34,10 +35,12 @@ use super::{
     keep_lines, link_preview, name_fitter, whereabouts, wrap,
 };
 use crate::arch::{self, CodeReferenceKind, Refers};
-use crate::binary::{Binary, Item, ItemKind, Source};
+use crate::binary::{Binary, Item, ItemKind, RelocationTarget, Source};
 use crate::commands::browse::{keys::Action, session::Session};
 use crate::commands::{distinct_nodes, readable_item, retained, text, why};
 use crate::graph::{Node, Reference, Unresolved, VeneerTarget, item_starting_at};
+
+mod contents;
 
 /// The most columns that the instructions take, and the fewest they give
 /// way to when the notes after them need room.
@@ -53,7 +56,7 @@ const KEEPER_WIDTH: usize = 16;
 /// numbers stay the same as more tabs come.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
-    /// 1: a function's code.
+    /// 1: a function's code, or a data object's contents.
     Code,
     /// 2: what the item calls or uses.
     Callees,
@@ -97,9 +100,13 @@ impl Tab {
             .find(|tab| tab.number_and_name().0 == number)
     }
 
-    /// Its name on the tab line: "1 code".
-    fn label(self) -> String {
-        let (number, name) = self.number_and_name();
+    /// Its name on the tab line: "1 code", or on a data object's page,
+    /// "1 contents".
+    fn label(self, data: bool) -> String {
+        let (number, name) = match (self, data) {
+            (Tab::Code, true) => (1, "contents"),
+            _ => self.number_and_name(),
+        };
         format!("{number} {name}")
     }
 }
@@ -118,18 +125,19 @@ enum Link {
     Here(u64),
 }
 
-/// One line of code.
+/// One line of a function's code, or one row of a data object's contents.
 struct CodeLine {
     address: u64,
     /// The instruction, with the name of the item it calls or jumps to in
-    /// place of its address: `call    strlen@plt`. Empty where elfq doesn't
-    /// print the code.
+    /// place of its address: `call    strlen@plt`, or for a data object,
+    /// the value: a word, a vector table's entry and its word, or a string
+    /// (see `contents.rs`). Empty where elfq doesn't print the code.
     instruction: String,
     /// What the line does with another item, or where it jumps.
     note: String,
     /// The section of the item that the link goes to, when that is in
-    /// another block of memory than this function, as in firmware that
-    /// calls from ITCM into flash. It is drawn in yellow.
+    /// another block of memory than this function or data object, as in
+    /// firmware that calls from ITCM into flash. It is drawn in yellow.
     elsewhere: Option<String>,
     link: Option<Link>,
 }
@@ -156,8 +164,8 @@ pub struct ItemPage {
     /// The tab on the screen. Each page in the history keeps its own, so
     /// that Back shows the tab that was left.
     tab: Tab,
-    /// Tab 1, or for an item that has no code, why not, as pressing 1
-    /// says.
+    /// Tab 1, a function's code or a data object's contents, or for an
+    /// import, which has neither here, why not, as pressing 1 says.
     code: Result<CodeTab, String>,
     /// The item's index, for tabs 2 and 4, or why `callees` and `reach`
     /// can't read its code, in their words, which pressing 2 or 4 says: it
@@ -186,8 +194,9 @@ impl ItemPage {
     /// The page of `node`, an item or an import, with the line that holds
     /// `at` selected. The header names it as `lead`, which may say what
     /// SYMBOL gave, as in "Default_Handler (also named NMI_Handler)". A
-    /// function's page opens on its code, and the page of a data object or
-    /// an import, which have none, on their callers.
+    /// function's page opens on its code, and a data object's on its
+    /// contents, when they have rows; otherwise, as for an import, which
+    /// has no code here, the page opens on its callers.
     pub fn new(session: &Session, node: Node, at: Option<u64>, lead: &str) -> ItemPage {
         let answer = session.callers(node);
         let used_by = distinct_nodes(&answer.rows).len();
@@ -199,10 +208,7 @@ impl ItemPage {
         let (title, (place, facts), code) = match node {
             Node::Item(index) => {
                 let title = session.row_name(index);
-                let code = match session.binary.items[index].kind {
-                    ItemKind::Function => Ok(CodeTab::new(session, index, at)),
-                    ItemKind::Data => Err(format!("{title} is a data object: it has no code")),
-                };
+                let code = Ok(CodeTab::new(session, index, at));
                 (title, header(session, index, used_by), code)
             }
             Node::Import(_) => {
@@ -227,10 +233,9 @@ impl ItemPage {
             facts,
             keeping,
             header: None,
-            tab: if code.is_ok() {
-                Tab::Code
-            } else {
-                Tab::Callers
+            tab: match &code {
+                Ok(code) if code.opens_page() => Tab::Code,
+                _ => Tab::Callers,
             },
             code,
             readable: readable_item(session.binary, node).map_err(|error| error.to_string()),
@@ -245,9 +250,15 @@ impl ItemPage {
     }
 
     /// The page on `tab`, when it has that tab, as a link from that tab
-    /// opens it.
+    /// opens it. But a data object whose contents have no rows stays on
+    /// its callers, as its page opens: its tab 1 only says where its bytes
+    /// are.
     pub fn on(mut self, session: &Session, tab: Tab) -> ItemPage {
-        if self.why_not(tab).is_none() {
+        let shown = match tab {
+            Tab::Code => self.code.as_ref().is_ok_and(CodeTab::opens_page),
+            _ => self.why_not(tab).is_none(),
+        };
+        if shown {
             self.show(session, tab);
         }
         self
@@ -399,14 +410,16 @@ impl ItemPage {
     /// them.
     fn tab_line(&self, width: usize) -> Line<'static> {
         let tabs = self.tabs();
-        let wide: usize = tabs.iter().map(|tab| tab.label().chars().count() + 3).sum();
+        let data = self.code.as_ref().is_ok_and(CodeTab::is_data);
+        let label = |tab: Tab| tab.label(data);
+        let wide: usize = tabs.iter().map(|&tab| label(tab).chars().count() + 3).sum();
         let pad = if wide <= width { " " } else { "" };
         let mut line = Vec::new();
         for tab in tabs {
             if tab == self.tab {
-                line.push(Span::raw(format!("[{}]", tab.label())).bold());
+                line.push(Span::raw(format!("[{}]", label(tab))).bold());
             } else {
-                line.push(Span::raw(format!("{pad}{}{pad}", tab.label())));
+                line.push(Span::raw(format!("{pad}{}{pad}", label(tab))));
             }
             line.push(Span::raw(" "));
         }
@@ -534,6 +547,15 @@ impl ItemPage {
         }
     }
 
+    /// The selected row's value, when its row cuts it to fit a screen
+    /// `width` columns wide, as a long string in a data object's contents.
+    pub fn value(&self, width: usize) -> Option<&str> {
+        match (self.tab, &self.code) {
+            (Tab::Code, Ok(code)) => code.value(width),
+            _ => None,
+        }
+    }
+
     /// Whether some line or row links to another item.
     pub fn has_links(&self) -> bool {
         match (self.tab, &self.code) {
@@ -550,10 +572,10 @@ impl ItemPage {
         self.printed_mut().map(Printed::cursor)
     }
 
-    /// What find calls the tab's rows: "line" on the code tab.
+    /// What find calls the tab's rows: "line" on a function's code.
     pub fn row_noun(&self) -> &'static str {
-        match self.tab {
-            Tab::Code => "line",
+        match (self.tab, &self.code) {
+            (Tab::Code, Ok(code)) if !code.is_data() => "line",
             _ => "row",
         }
     }
@@ -567,15 +589,19 @@ impl ItemPage {
     }
 
     /// The command that prints what the tab on the screen shows, if one
-    /// does: the code tab has none.
+    /// does: a function's code has none, and under a data object's
+    /// contents is the objdump command that prints its bytes.
     pub fn command(&self) -> Option<&str> {
-        self.printed().map(Printed::command)
+        match (self.tab, &self.code) {
+            (Tab::Code, Ok(code)) => code.code.command.as_deref(),
+            _ => self.printed().map(Printed::command),
+        }
     }
 }
 
-/// Tab 1: a function's code.
+/// Tab 1: a function's code, or a data object's contents.
 struct CodeTab {
-    /// The function, by its index.
+    /// The item, by its index.
     index: usize,
     code: Rc<PageCode>,
     cursor: Cursor,
@@ -584,24 +610,33 @@ struct CodeTab {
     jumps: Vec<usize>,
 }
 
-/// An item's code as its page shows it. The session keeps it, so that
-/// every page opened on the item shares it, and it is worked out once.
+/// An item's code, or a data object's contents, as its page shows them.
+/// The session keeps it, so that every page opened on the item shares it,
+/// and it is worked out once.
 pub struct PageCode {
+    /// Whether it is a function's code or a data object's contents.
+    kind: ItemKind,
     lines: Vec<CodeLine>,
-    /// Whether the lines show their instructions.
-    instructions: bool,
-    /// The widest address and instruction, worked out once, so that a
-    /// redraw reads only the rows on the screen.
+    /// The header of the column after the addresses, when the lines show
+    /// their instructions, or a data object's values: "INSTRUCTION",
+    /// "VALUE", or for a vector table, "ENTRY" over the entries' names,
+    /// then "VALUE".
+    column: Option<String>,
+    /// The widest address and instruction or value, worked out once, so
+    /// that a redraw reads only the rows on the screen.
     widest: (usize, usize),
     /// Said in place of the code when there is none to show.
     empty: Option<String>,
     /// Said under the code.
     footnote: Option<String>,
+    /// The command under the tab, if any: the objdump command that prints
+    /// a data object's bytes.
+    command: Option<String>,
 }
 
 impl CodeTab {
-    /// The code of function `index`, with the line that holds `at`
-    /// selected.
+    /// The code of function `index`, or the contents of data object
+    /// `index`, with the line that holds `at` selected.
     fn new(session: &Session, index: usize, at: Option<u64>) -> CodeTab {
         let code = session.page_code(index);
         let mut tab = CodeTab {
@@ -614,6 +649,17 @@ impl CodeTab {
             tab.select_address(at);
         }
         tab
+    }
+
+    /// Whether it shows a data object's contents.
+    fn is_data(&self) -> bool {
+        self.code.kind == ItemKind::Data
+    }
+
+    /// Whether the page opens on it: a function's code always does, but a
+    /// data object's contents only when they have rows.
+    fn opens_page(&self) -> bool {
+        !self.is_data() || !self.code.lines.is_empty()
     }
 
     /// Selects the line that holds `address`.
@@ -650,32 +696,25 @@ impl CodeTab {
         self.draw_code(frame, body);
     }
 
-    /// The lines of code, as a table: ADDRESS, INSTRUCTION and the notes.
+    /// The lines of code, as a table: ADDRESS, INSTRUCTION and the notes,
+    /// or for a data object, ADDRESS, VALUE and the notes.
     fn draw_code(&mut self, frame: &mut Frame, area: Rect) {
         let width = usize::from(area.width);
         // The table's header takes a line.
         let (visible, mut state) = self
             .cursor
             .visible(usize::from(area.height).saturating_sub(1));
-        let (widest_address, widest_instruction) = self.code.widest;
-        let address_width = widest_address.max("ADDRESS".len());
+        let (address_width, instruction_width) = self.columns(width);
         // Before the notes: the selection's "> ", the columns, and the
         // spaces after each.
         let mut used = 2 + address_width + 2;
-        let mut instruction_width = 0;
-        if self.code.instructions {
-            let (most, fewest) = INSTRUCTION_WIDTH;
-            instruction_width = widest_instruction.min(most);
-            let wanted = used + instruction_width + 2 + NOTE_WIDTH;
-            if wanted > width {
-                instruction_width = instruction_width.saturating_sub(wanted - width).max(fewest);
-            }
+        if self.code.column.is_some() {
             used += instruction_width + 2;
         }
         let room = width.saturating_sub(used);
         let rows = self.code.lines[visible].iter().map(|line| {
             let mut cells = vec![Line::raw(format!("{:#x}", line.address))];
-            if self.code.instructions {
+            if self.code.column.is_some() {
                 cells.push(Line::raw(cut(&line.instruction, instruction_width)));
             }
             cells.push(note_cell(line, room));
@@ -683,8 +722,8 @@ impl CodeTab {
         });
         let mut header = vec!["ADDRESS"];
         let mut columns = vec![Constraint::Length(address_width as u16)];
-        if self.code.instructions {
-            header.push("INSTRUCTION");
+        if let Some(column) = &self.code.column {
+            header.push(column);
             columns.push(Constraint::Length(instruction_width as u16));
         }
         header.push("");
@@ -695,6 +734,30 @@ impl CodeTab {
             .row_highlight_style(Style::new().reversed())
             .highlight_symbol("> ");
         frame.render_stateful_widget(table, area, &mut state);
+    }
+
+    /// The columns that the addresses and the instructions or values take
+    /// on a screen `width` columns wide. The instructions give way to the
+    /// notes, down to a point. A data object's values are short, or
+    /// strings, which have no note after them (see `contents.rs`), so they
+    /// keep no room for notes.
+    fn columns(&self, width: usize) -> (usize, usize) {
+        let (widest_address, widest_instruction) = self.code.widest;
+        let address_width = widest_address.max("ADDRESS".len());
+        if self.code.column.is_none() {
+            return (address_width, 0);
+        }
+        let ((most, fewest), notes) = match self.code.kind {
+            ItemKind::Function => (INSTRUCTION_WIDTH, NOTE_WIDTH),
+            ItemKind::Data => ((usize::MAX, 0), 0),
+        };
+        let mut instruction_width = widest_instruction.min(most);
+        // The selection's "> ", the columns, and the spaces after each.
+        let wanted = 2 + address_width + 2 + instruction_width + 2 + notes;
+        if wanted > width {
+            instruction_width = instruction_width.saturating_sub(wanted - width).max(fewest);
+        }
+        (address_width, instruction_width)
     }
 
     fn handle(&mut self, session: &Session, action: Action) -> Option<Go> {
@@ -754,6 +817,15 @@ impl CodeTab {
             }
             Link::Here(address) => format!("→ {address:#x}, in this function"),
         })
+    }
+
+    /// The selected row's value, when its row cuts it to fit a screen
+    /// `width` columns wide, as it cuts a long string: the status line
+    /// shows it in full.
+    fn value(&self, width: usize) -> Option<&str> {
+        let line = self.code.lines.get(self.cursor.selected)?;
+        let (_, room) = self.columns(width);
+        (self.is_data() && line.instruction.chars().count() > room).then_some(&line.instruction)
     }
 
     /// Whether some line links to another item.
@@ -1002,19 +1074,25 @@ pub(super) fn listing(binary: &Binary, item: &Item, bytes: &[u8]) -> Option<Vec<
 }
 
 impl PageCode {
-    /// Item `index`'s code, as its page shows it.
+    /// Item `index`'s code, or a data object's contents, as its page shows
+    /// them.
     pub fn new(session: &Session, index: usize) -> PageCode {
+        if session.binary.items[index].kind == ItemKind::Data {
+            return contents::page_code(session, index);
+        }
         let mut shown = PageCode {
+            kind: ItemKind::Function,
             lines: Vec::new(),
-            instructions: false,
+            column: None,
             widest: (0, 0),
             empty: None,
             footnote: None,
+            command: None,
         };
         match code(session, index) {
             Ok(Code::Instructions(lines)) => {
                 shown.lines = lines;
-                shown.instructions = true;
+                shown.column = Some("INSTRUCTION".to_string());
             }
             Ok(Code::Links(lines, why)) if lines.is_empty() => {
                 shown.empty = Some(format!(
@@ -1028,13 +1106,18 @@ impl PageCode {
             }
             Err(why) => shown.empty = Some(why),
         }
-        let widest = |cell: fn(&CodeLine) -> usize| shown.lines.iter().map(cell).max().unwrap_or(0);
-        shown.widest = (
-            widest(|line| format!("{:#x}", line.address).len()),
-            widest(|line| line.instruction.chars().count()),
-        );
+        shown.widest = widest(&shown.lines);
         shown
     }
+}
+
+/// The widest address and instruction of `lines`.
+fn widest(lines: &[CodeLine]) -> (usize, usize) {
+    let widest = |cell: fn(&CodeLine) -> usize| lines.iter().map(cell).max().unwrap_or(0);
+    (
+        widest(|line| format!("{:#x}", line.address).len()),
+        widest(|line| line.instruction.chars().count()),
+    )
 }
 
 /// The lines of item `index`'s code, or why there are none to show.
@@ -1075,15 +1158,15 @@ fn code(session: &Session, index: usize) -> Result<Code, String> {
     Ok(Code::Links(lines, why))
 }
 
-/// What the graph knows about one function's code, by site, to write the
-/// notes on its lines.
+/// What the graph knows about one function's code, or about the pointers
+/// stored in one data object, by site, to write the notes on its lines.
 struct Notes<'s, 'a> {
     session: &'s Session<'a>,
     index: usize,
     references: HashMap<u64, Vec<&'s Reference>>,
     unresolved: HashMap<u64, &'s Unresolved>,
-    /// The address that each instruction uses, which can be inside the
-    /// item it uses: `uses frames+0x8`.
+    /// The address that each instruction uses, or that each pointer
+    /// holds, which can be inside the item it uses: `uses frames+0x8`.
     used: HashMap<u64, u64>,
 }
 
@@ -1102,12 +1185,23 @@ impl<'s, 'a> Notes<'s, 'a> {
             .iter()
             .map(|unresolved| (unresolved.site, unresolved))
             .collect();
+        let binary = session.binary;
+        let item = &binary.items[index];
         let mut used = HashMap::new();
-        for reference in session.binary.code_references(&session.binary.items[index]) {
+        for reference in binary.code_references(item) {
             if let CodeReferenceKind::Address(address) | CodeReferenceKind::Memory(address) =
                 reference.kind
             {
                 used.entry(reference.site).or_insert(address);
+            }
+        }
+        if item.kind == ItemKind::Data {
+            for reference in graph.references_from(index) {
+                if let Some(RelocationTarget::Address(address)) =
+                    contents::stored_at(binary, reference.site)
+                {
+                    used.entry(reference.site).or_insert(address);
+                }
             }
         }
         Notes {
@@ -1313,13 +1407,14 @@ impl<'s, 'a> Notes<'s, 'a> {
         let (name, at) = match reference.to {
             Node::Item(index) => {
                 let item = &binary.items[index];
-                // A use of data can be inside it; a call is to the start.
+                // A use of data, or a pointer to it, can be inside it; a
+                // call, or a pointer to code, is to its start.
                 let at = match self.used.get(&reference.site) {
                     Some(&used) if item.kind == ItemKind::Data && item.contains(used) => used,
                     _ => item.address,
                 };
                 let mut name = self.name_at(index, at);
-                if let Some(string) = string_at(self.session, index) {
+                if let Some(string) = string_at(self.session, index, at) {
                     name += &format!(" {string}");
                 }
                 (name, at)
@@ -1343,7 +1438,7 @@ impl<'s, 'a> Notes<'s, 'a> {
     }
 
     /// The section of the item that `link` goes to, when that item is in
-    /// another block of memory than this function.
+    /// another block of memory than this function or data object.
     fn elsewhere(&self, link: Link) -> Option<String> {
         let Link::Node {
             node: Node::Item(to),
@@ -1359,21 +1454,69 @@ impl<'s, 'a> Notes<'s, 'a> {
     }
 }
 
-/// The text that data object `index` starts with, quoted as Rust writes
-/// strings, when it is a short string of printable text, as a string
-/// literal is: `"tick\n"`.
-fn string_at(session: &Session, index: usize) -> Option<String> {
-    let item = &session.binary.items[index];
-    if item.kind != ItemKind::Data {
+/// The bytes of data object `index`, when it holds strings and nothing
+/// else, as a string literal or a table of them does: printable text from
+/// its first byte on, each string ending in a 0 byte, and no pointer,
+/// neither one that elfq finds nor one that the dynamic loader writes,
+/// whose bytes can look like text.
+fn only_strings<'a>(session: &Session<'a>, index: usize) -> Option<&'a [u8]> {
+    let binary = session.binary;
+    let item = &binary.items[index];
+    if item.kind != ItemKind::Data || !session.graph.references_from(index).is_empty() {
         return None;
     }
-    let bytes = session.binary.bytes(item.address, item.size.min(64))?;
-    let text = &bytes[..bytes.iter().position(|&byte| byte == 0)?];
-    let printable = |byte: &u8| byte.is_ascii_graphic() || b" \t\n".contains(byte);
-    if text.is_empty() || !text.iter().all(printable) {
+    // The relocations are in order of address.
+    let after =
+        (binary.relocations).partition_point(|relocation| relocation.address < item.address);
+    if (binary.relocations.get(after)).is_some_and(|relocation| item.contains(relocation.address)) {
         return None;
     }
-    Some(format!("{:?}", String::from_utf8_lossy(text)))
+    let bytes = binary.bytes(item.address, item.size)?;
+    let text = |&byte: &u8| byte == 0 || printable(byte);
+    let strings = bytes.first() != Some(&0) && bytes.last() == Some(&0) && bytes.iter().all(text);
+    strings.then_some(bytes)
+}
+
+/// The strings that data object `index` holds, each at its address,
+/// quoted as Rust writes strings: `"tick\n"`, when it holds strings and
+/// nothing else (see `only_strings`). The 0 bytes that pad a string have
+/// none.
+fn strings(session: &Session, index: usize) -> Vec<(u64, String)> {
+    let Some(bytes) = only_strings(session, index) else {
+        return Vec::new();
+    };
+    let mut strings = Vec::new();
+    let mut address = session.binary.items[index].address;
+    for text in bytes.split(|&byte| byte == 0) {
+        if !text.is_empty() {
+            strings.push((address, quoted(text)));
+        }
+        address += text.len() as u64 + 1;
+    }
+    strings
+}
+
+/// The string at `at` in data object `index`, as the object's contents
+/// list it, for the note of a line that uses it or points to it: `uses
+/// .rodata@0x30000de8 "tick\n"`.
+fn string_at(session: &Session, index: usize, at: u64) -> Option<String> {
+    let start = usize::try_from(at.checked_sub(session.binary.items[index].address)?).ok()?;
+    let bytes = only_strings(session, index)?;
+    let text = bytes.get(start..)?;
+    let text = &text[..text.iter().position(|&byte| byte == 0)?];
+    let starts = start == 0 || bytes[start - 1] == 0;
+    (starts && !text.is_empty()).then(|| quoted(text))
+}
+
+/// Whether `byte` is printable text: a letter, digit, punctuation, a space,
+/// a tab or a new line.
+fn printable(byte: u8) -> bool {
+    byte.is_ascii_graphic() || b" \t\n".contains(&byte)
+}
+
+/// `text`, printable text, quoted as Rust writes strings.
+fn quoted(text: &[u8]) -> String {
+    format!("{:?}", String::from_utf8_lossy(text))
 }
 
 #[cfg(test)]

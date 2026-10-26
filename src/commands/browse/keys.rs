@@ -139,7 +139,7 @@ pub const BINDINGS: &[Binding] = &[
     },
     Binding {
         label: "1 2 3 4 5 6",
-        what: "tabs: 1 code, 2 callees, 3 callers, 4 reach, 5 why, 6 retained",
+        what: "tabs: 1 code or contents, 2 callees, 3 callers, 4 reach, 5 why, 6 retained",
         hint: Some(("tabs", 4)),
         keys: &[
             (KeyCode::Char('1'), NONE, Action::Tab(1)),

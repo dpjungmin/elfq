@@ -121,7 +121,9 @@ debug info that isn't compressed. The overview, `callers`, `callees` and
 `reach` also work on x86-64 shared libraries. `browse` prints x86-64 code
 and the Thumb code of Cortex-M cores up to Armv7E-M (M0, M0+, M3, M4, M7);
 for Armv8-M cores, such as the M33, its pages list only the lines that use
-another item.
+another item. A data object's page lists the pointers it holds, a vector
+table's entries, or the strings of an object that holds only strings, and
+the `objdump -s` command that prints its bytes.
 See [docs/design.md](docs/design.md) for how elfq works and what comes next,
 [docs/survey.md](docs/survey.md) for how existing tools compare, and
 [CONTRIBUTING.md](CONTRIBUTING.md) to build it.

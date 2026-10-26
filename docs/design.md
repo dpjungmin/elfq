@@ -183,7 +183,7 @@ except `inlined`, which reads DWARF instead of machine code.
 | `elfq FILE callees RANGE...` | What do the code and data in these ranges of memory use outside them, such as code in ITCM that calls a function in flash? `callers RANGE...` asks the reverse. |
 | `elfq FILE callers RANGE... --from RANGE` | What in one range of memory uses these ranges, such as code in ITCM that uses data in DTCM? `callees RANGE... --to RANGE` asks what these ranges use in that one, and either takes SYMBOL in place of the ranges. |
 | `elfq FILE inlined [SYMBOL]` | Which inlined functions cost the most bytes across the binary, or inside SYMBOL? Needs DWARF. |
-| `elfq FILE browse [SYMBOL]` | What does SYMBOL's code do, line by line, where does each call and use lead, and what calls it? Opens in the terminal, follows the links that the other commands' answers name, and shows the answers of `callees`, `callers`, `reach`, `why` and `retained SYMBOL` in tabs, each with the command that prints it, and the retained bytes in each block of memory; a page's header says what `retained` and `why` say about the item, and `u` opens the item that keeps it; `/` finds text in a page's rows. Without SYMBOL, it opens on where the program starts, as `reach` lists it, each start a link to its page. |
+| `elfq FILE browse [SYMBOL]` | What does SYMBOL's code do, line by line, where does each call and use lead, and what calls it? Opens in the terminal, follows the links that the other commands' answers name, and shows the answers of `callees`, `callers`, `reach`, `why` and `retained SYMBOL` in tabs, each with the command that prints it, and the retained bytes in each block of memory; a page's header says what `retained` and `why` say about the item, and `u` opens the item that keeps it; `/` finds text in a page's rows. A data object's page lists its contents as far as elfq reads them: a vector table's entries, named by exception, the pointers it holds, as `callees` lists them, with what the dynamic loader writes in a shared library, or the strings of an object that holds only strings, with the `objdump -s` command that prints its bytes. Without SYMBOL, it opens on where the program starts, as `reach` lists it, each start a link to its page. |
 
 SYMBOL is a function or data object's name, an import (`write` finds the
 `write@plt` stub that code calls), or an address such as `0x1700`. Names are
@@ -1026,7 +1026,10 @@ function's stack frame), and a query language.
   flat size breakdowns. When one of those tools already answers a question
   well, the docs point to it. `browse` shows one item's code at a time, as
   the context for elfq's links: what each line calls or uses, in the words
-  of the other commands.
+  of the other commands. A data object's page lists only the words that
+  hold pointers, a vector table's entries and the strings of an object that
+  holds only strings, and gives the `objdump -s` command that prints its
+  bytes.
 - **A reverse-engineering framework.** `browse` reads code and follows it,
   but it has no patching, renaming, decompiler or graph canvas.
 - **Runtime profiling.** elfq reads the file; it never runs the program.
