@@ -264,7 +264,7 @@ is a short one to copy.
    declare it after what it borrows, and give a struct that borrows
    kept values a lifetime for them apart from the file's, as `why`'s
    `Chains` has. A value kept only until an error return and then moved
-   on, as in `retained`'s `SymbolInTree::find`, is taken back out with
+   on, as `retained::run` keeps its `Names`, is taken back out with
    `into_inner`.
 6. **Tests.** Pin the text output with `assert_output` in
    `tests/it/cli.rs`, and test the JSON in `tests/it/json.rs`. Add the

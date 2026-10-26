@@ -107,7 +107,7 @@ pub fn run(
         .collect();
         return write_try(path, &examples, out);
     }
-    let retained = Kept::new(RetainedTree::from_graph(binary, graph.into_inner(), None));
+    let retained = Kept::new(RetainedTree::new(binary, &graph, None));
     let names = retained.names();
     // Without functions, as in a stripped file whose functions elfq can't
     // find, there is nothing to rank.
@@ -119,7 +119,7 @@ pub fn run(
     // `reach` shows a handler's code and data by block of memory.
     let handler = match blocks.len() {
         0 | 1 => None,
-        _ => handler_reaching_most_code(binary, &retained.graph),
+        _ => handler_reaching_most_code(binary, &graph),
     };
     let examples: Vec<String> = ranges
         .into_iter()
@@ -151,7 +151,8 @@ fn write_range(
     if binary.kind == FileKind::SharedLibrary {
         bail!("elfq can't yet tell what keeps the bytes of a range in a shared library");
     }
-    let retained = Kept::new(RetainedTree::build(binary, Some(range))?);
+    let graph = Kept::new(super::reference_graph(binary)?);
+    let retained = Kept::new(RetainedTree::new(binary, &graph, Some(range)));
     super::check_has_bytes(binary, Some(range))?;
     writeln!(out, "{}", file_text(path, binary))?;
     writeln!(

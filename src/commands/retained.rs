@@ -17,7 +17,7 @@ use super::symbol::Names;
 use super::{Kept, json, text};
 use crate::binary::{AddressRange, Binary, FileKind};
 use crate::cli::Format;
-use crate::graph::{Node, Unresolved};
+use crate::graph::{Graph, Node, Unresolved};
 use crate::render::{Align, Table};
 
 #[derive(Serialize)]
@@ -59,15 +59,28 @@ pub fn run(
     format: Format,
     out: &mut dyn Write,
 ) -> Result<()> {
-    let symbol = Kept::new(SymbolInTree::find(binary, symbol, range)?);
+    super::check_code_is_readable(binary)?;
+    let names = Kept::new(Names::new(binary));
+    let symbol = names.find(symbol)?;
+    let node = symbol.node;
+    let index = super::readable_item(binary, node)?;
+    if binary.kind == FileKind::SharedLibrary {
+        let name = node.name(binary);
+        bail!("elfq can't yet tell what only {name} leads to in a shared library");
+    }
+    let lead_name = symbol.lead_name(binary);
+    let graph = Kept::new(Graph::build(binary));
+    let symbol = Kept::new(SymbolInTree {
+        retained: RetainedTree::new(binary, &graph, range).with_names(names.into_inner()),
+        index,
+        lead_name,
+    });
     if format == Format::Json {
         return write_json(&symbol, out);
     }
     if !symbol.is_reachable() {
         return symbol.write_unreachable(out);
     }
-    let node = symbol.node();
-    let index = symbol.index;
     let name = &symbol.lead_name;
     let retained = &symbol.retained;
     let items = symbol.counted_items();
@@ -199,8 +212,8 @@ fn write_shared(symbol: &SymbolInTree, all: bool, out: &mut dyn Write) -> Result
 
 /// SYMBOL's item, in the tree of retained sizes that says what only it
 /// leads to.
-struct SymbolInTree<'a> {
-    retained: RetainedTree<'a>,
+struct SymbolInTree<'g, 'a> {
+    retained: RetainedTree<'g, 'a>,
     /// SYMBOL's item, as an index into [`Binary::items`].
     index: usize,
     /// The item's name as the answer's first line gives it (see
@@ -210,31 +223,7 @@ struct SymbolInTree<'a> {
     lead_name: String,
 }
 
-impl<'a> SymbolInTree<'a> {
-    /// Finds SYMBOL's item and what is exclusive to it, counting only the
-    /// bytes in `range`, if there is one.
-    fn find(
-        binary: &'a Binary,
-        symbol: &str,
-        range: Option<AddressRange>,
-    ) -> Result<SymbolInTree<'a>> {
-        super::check_code_is_readable(binary)?;
-        let names = Kept::new(Names::new(binary));
-        let symbol = names.find(symbol)?;
-        let node = symbol.node;
-        let index = super::readable_item(binary, node)?;
-        let name = node.name(binary);
-        if binary.kind == FileKind::SharedLibrary {
-            bail!("elfq can't yet tell what only {name} leads to in a shared library");
-        }
-        let retained = RetainedTree::build(binary, range)?.with_names(names.into_inner());
-        Ok(SymbolInTree {
-            retained,
-            index,
-            lead_name: symbol.lead_name(binary),
-        })
-    }
-
+impl SymbolInTree<'_, '_> {
     /// SYMBOL's item, as a node of the graph.
     fn node(&self) -> Node {
         Node::Item(self.index)
@@ -255,7 +244,7 @@ impl<'a> SymbolInTree<'a> {
     /// The calls and jumps through pointers set at run time in SYMBOL and
     /// the items exclusive to it.
     fn indirect_calls(&self) -> Vec<Unresolved> {
-        let graph = &self.retained.graph;
+        let graph = self.retained.graph;
         std::iter::once(self.index)
             .chain(self.items())
             .flat_map(|item| graph.unresolved_in(item))

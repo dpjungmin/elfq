@@ -23,8 +23,8 @@
 //!
 //! [`Graph::roots`] are where the program starts running (see `roots.rs`).
 //! From them, [`DominatorTree`] works out which items are reachable only
-//! through which (see `dominators.rs`), and [`ShortestPaths`] finds the
-//! shortest chain of references to each item (see `paths.rs`).
+//! through which (see `dominators.rs`), and [`ShortestPaths::from_roots`]
+//! finds the shortest chain of references to each item (see `paths.rs`).
 //! [`ShortestPaths::from`] searches from one item instead, and finds the
 //! shortest chain to each item that it uses, directly or not.
 
