@@ -53,7 +53,7 @@ terminal is as it was; `.github/workflows/ci.yml` has the command.
 | `src/lib.rs` | Declares the modules below. elfq is a library plus that small program; the library exists for the program and its tests. |
 | `src/cli.rs` | Command-line arguments, with clap: a `Command` variant for each command, the structs that hold their arguments, and the text of `--help`. |
 | `src/commands/` | One file per command, which looks up SYMBOL, asks `graph` or `debuginfo` and decides what the answer shows. `mod.rs` runs the command the arguments name, after checking arguments that don't go together. The rest are shared: `symbol.rs` works out what a user means by SYMBOL, `retained_tree.rs` builds the trees of retained sizes that the overview, `top` and `retained` show, `ranges.rs` answers `callers` and `callees` for ranges of memory or with `--from` or `--to`, `text.rs` holds the wording that commands share and `json.rs` the JSON shapes. `mod.rs` also has `Kept`, which leaves what a command keeps until it has answered for the system to take back when elfq ends (`end_after_answer`). |
-| `src/commands/browse/` | `elfq FILE browse`, with the `tui` feature: `mod.rs` takes over the terminal and runs the event loop, `session.rs` holds the loaded file and asks the commands' code for answers, `keys.rs` is the table of keys, `app.rs` the history of pages, the go-to box and the screen's layout, and `views/` the pages, the go-to box and the tabs of an item's page other than its code, one file each, and `names.rs`, which shortens long C++ and Rust names to fit a column. |
+| `src/commands/browse/` | `elfq FILE browse`, with the `tui` feature: `mod.rs` takes over the terminal and runs the event loop, `session.rs` holds the loaded file and asks the commands' code for answers, `keys.rs` is the table of keys, `app.rs` the history of pages, the go-to box, find's prompt and the screen's layout, and `views/` the pages, the go-to box and the tabs of an item's page other than its code, one file each, `printed.rs`, which draws a command's answer for the pages and tabs that show one, and `names.rs`, which shortens long C++ and Rust names to fit a column. |
 | `src/arch/` | Finding the addresses that machine code calls or uses, one module per instruction set (x86-64 and Thumb). Thumb's has three parts: `thumb/mod.rs` reads each instruction on its own, `thumb/decode.rs` says what an instruction does with the registers and the stack, and `thumb/values/` follows the addresses that code puts in registers to where a branch through one goes, as for long calls and veneers. `listing.rs` prints a function's code as text, for `browse`: x86-64 with iced-x86's formatter, and Thumb with thumb-asm, in the lines that `thumb::layout` cuts the code into with the same sweep as `scan`. |
 | `src/binary/` | Reading an ELF file: its functions and data objects ("items") and where they were found, their names, imports, stored pointers and memory blocks, and in Arm files the core the code is for (`attributes.rs`) and the data that `$d` symbols mark among code. Unnamed data, such as string literals, is found from what code and pointers refer to. Each function's code is scanned once, as the file loads (`Binary::code_references`). |
 | `src/graph/` | The reference graph that connects items, the roots where the program starts, the dominator tree that says what is exclusive to what, the shortest paths that `why` and `reach` show, the references that cross the boundary of ranges of memory, and where a linker's veneers jump to. |
@@ -155,10 +155,18 @@ The checks of `browse` that need its private types are unit tests in
 - `views/callers.rs`: the callers tab of every page of every sample,
   against what the command under it prints, and that no two callers on
   the screen read the same once their names are shortened.
+- `views/callees.rs` and `views/reach.rs`: the callees and reach tabs of
+  every page of every sample, against what the command under each prints.
+- `views/start.rs`: the start page of every sample, against what the
+  overview and the command under it print, and of a file with more starts
+  than that command lists.
+- `views/printed.rs`: how a command's answer gives way on a small screen.
 - `views/picker.rs`: that no two rows of the go-to box read the same.
 - `views/names.rs`: each step of shortening a name.
-- `app.rs`: that a callers tab keeps its table's header and selected row
-  on a small screen.
+- `app.rs`: that the callees, callers and reach tabs keep their table's
+  header and selected row on a small screen, that the reach tab is worked
+  out once the screen says so, and that the start page under the go-to
+  box is worked out only once the box closes.
 - `views/thumb_text.rs`: the Thumb text, against objdump's text for each
   Cortex-M sample, in `testdata/tests/thumb`, and in each stripped
   sample, against the `$d` symbols of its twin.
@@ -289,17 +297,29 @@ page, `item.rs`, is the one to copy; `help.rs` is a short one.
    and its arm in each of `View`'s functions; the compiler asks for them.
    `title` names the page in the title line's trail, `preview` says what
    the selected row's link opens, `back` goes back within the page, as
-   from a jump inside a function, when it can, and `command` gives the
-   command that prints what the page shows, which goes under it.
+   from a jump inside a function, when it can, `command` gives the
+   command that prints what the page shows, which goes under it, and
+   `cursor`, `rows_with` and `row_noun` give find the page's rows and
+   what to call them.
 
+   A page or tab that shows a command's answer, as the start page and
+   `callers.rs` do, is a `Printed` (`printed.rs`), made from the
+   command's own answer: the lines before its table, the rows, each with
+   the item it opens, and the notes; it draws them and answers the keys.
+   A page that takes a while to work out says so first: `App::work` works
+   it out after a draw that says what it is doing.
    A tab of an item's page, such as `callers.rs`, is drawn and handles
    actions in the same way, but `item.rs` holds it: add it to `Tab` and
    `Tab::ALL`, with its number and the name of the command that prints
    the same answer in `Tab::number_and_name`, and its arm in each of
-   `ItemPage`'s functions; the compiler asks for those, but not for
-   `Tab::ALL`. Its key goes in the "1 3" row of `BINDINGS`, with its help
-   text and hint (step 3). Its rows come from that command's own code, as
-   `callers::answer`, so that they can't drift from what it prints.
+   `ItemPage`'s functions that match on `Tab`, `why_not` for the items
+   that can't have it, `show` for one worked out the first time it is
+   shown, as tab 2 is, or `waiting` and `work` for one that can take
+   seconds, as tab 4 is, and `printed`; the compiler asks for those, but
+   not for `Tab::ALL`. Its key goes in the "1 2 3 4" row of
+   `BINDINGS`, with its help text (step 3). Its rows come from that
+   command's own code, as `callers::answer`, so that they can't drift
+   from what it prints.
 3. **Keys.** A key goes in `BINDINGS` in `keys.rs`, with the new `Action`,
    what the help page says about it, and its hint, if the hint line names
    it. The help page and the hint line are printed from that table, and

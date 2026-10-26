@@ -1,7 +1,10 @@
 //! `elfq FILE browse [SYMBOL]`: a function's code in the terminal, with a
 //! link on each line that calls, jumps to or uses another item, to follow
 //! as in a web browser: Enter opens the item's page, and Esc comes back.
-//! An item's page also lists what calls or uses it, on its callers tab.
+//! An item's page also lists, on tabs 2, 3 and 4, what the item calls or
+//! uses, what calls or uses it, and everything it reaches.
+//! Without SYMBOL, browse opens on where the program starts, each start a
+//! link to its page.
 //!
 //! The parts, each in its own file:
 //!
@@ -12,16 +15,21 @@
 //! - `app.rs`: the pages the user has opened, as a browser's history, and
 //!   the screen's layout around the page on top.
 //! - `views/`: the pages, one file per kind, the tabs of an item's page
-//!   other than its code, the go-to box, and `names.rs`, which shortens
-//!   long names to fit a column. A page draws itself, and answers an
-//!   action by moving, by opening another page, or with a message.
+//!   other than its code, the go-to box, `printed.rs`, which draws a
+//!   command's answer for the pages and tabs that show one, and
+//!   `names.rs`, which shortens long names to fit a column. A page draws
+//!   itself, and answers an action by moving, by opening another page, or
+//!   with a message.
 //!
 //! This file takes the terminal and reads its keys. [`event_loop`] takes
 //! the keys from anywhere and draws on any ratatui backend, so that tests
 //! drive the browser with keys and read what it draws, without a terminal.
 //! Keys that come faster than a large file's answers, as a paste's do,
-//! aren't each answered and drawn in turn: what is typed into go to waits
-//! for the next draw, which comes when no key is left waiting.
+//! aren't each answered and drawn in turn: what is typed into go to or
+//! find's prompt waits for the next draw, which comes when no key is left waiting. A page or
+//! tab that takes a while to work out, as the start page of a large
+//! program, or everything its main reaches, is drawn first with a status
+//! line that says so.
 
 mod app;
 mod keys;
@@ -71,11 +79,11 @@ pub fn run(path: &Path, symbol: Option<&str>) -> Result<()> {
 }
 
 /// Browses `binary`, loaded from `path`, on the real terminal until the
-/// user quits. When elfq can't read the file's code, or finds nothing to
-/// start from, it says so before it takes the terminal.
+/// user quits. When elfq can't read the file's code, it says so before it
+/// takes the terminal.
 fn browse(path: &Path, binary: &Binary, symbol: Option<&str>) -> Result<()> {
     let session = Session::new(path, binary)?;
-    let mut app = Kept::new(App::new(session, symbol)?);
+    let mut app = Kept::new(App::new(session, symbol));
     // ratatui sets a panic hook that gives the terminal back first.
     let mut terminal = ratatui::try_init()?;
     let result = read_keys(&mut terminal, &mut app);
@@ -101,7 +109,9 @@ fn read_keys(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
 /// the screen keeps up, it takes that key before drawing, if the key can
 /// wait for the draw (see [`App::can_wait_to_draw`]). Any other key is
 /// handled on the screen that the keys before it give, as when each is
-/// drawn in turn, since it moves by what the screen shows.
+/// drawn in turn, since it moves by what the screen shows. When a key
+/// leaves the page something to work out, the screen is drawn first, to
+/// say so (see [`App::has_work`]).
 pub fn event_loop<B: Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
@@ -131,6 +141,12 @@ where
             }
             if let Some(stop) = app.key(key) {
                 return Ok(stop);
+            }
+            // What takes a while to work out, as where a large program
+            // starts, is said on the screen first.
+            if app.has_work() {
+                terminal.draw(|frame| app.draw(frame))?;
+                app.work();
             }
         }
         behind = true;

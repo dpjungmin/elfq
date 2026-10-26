@@ -73,41 +73,15 @@ pub fn run(
     if let Some(range) = range {
         return write_range(path, binary, range, format, out);
     }
-    write_file(path, binary, out)?;
-
-    let mut found = items_text(binary, None);
-    // A stripped file may have only its entry point, of unknown size.
-    let bytes = total_bytes(binary, None);
-    if bytes > 0 {
-        found += &format!(", {}", text::bytes_of_items(binary, None));
-    }
-    if !binary.imports.is_empty() {
-        found += &format!(
-            ", plus {}",
-            text::plural(binary.imports.len(), "import", "imports")
-        );
-    }
-    writeln!(out, "{found}")?;
+    writeln!(out, "{}", file_text(path, binary))?;
+    writeln!(out, "{}", found_text(binary))?;
     if !arch::is_supported(binary.architecture, binary.thumb) {
         writeln!(out, "{}.", text::cannot_read_code(binary))?;
         return Ok(());
     }
     let graph = Kept::new(Graph::build(binary));
-    if !super::found_functions(binary) {
-        writeln!(out, "{}.", text::NO_FUNCTIONS)?;
-    }
-    match text::unnamed_items(binary) {
-        Some((function, Some(data))) => writeln!(
-            out,
-            "Items without symbols are named by address, like {} and {}.",
-            function.name, data.name
-        )?,
-        Some((function, None)) => writeln!(
-            out,
-            "Functions without symbols are named by address, like {}.",
-            function.name
-        )?,
-        None => {}
+    for line in found_notes(binary) {
+        writeln!(out, "{line}")?;
     }
     let blocks = write_memory(binary, out)?;
     // Only ranges that hold something: in a stripped file whose functions
@@ -179,7 +153,7 @@ fn write_range(
     }
     let retained = Kept::new(RetainedTree::build(binary, Some(range))?);
     super::check_has_bytes(binary, Some(range))?;
-    write_file(path, binary, out)?;
+    writeln!(out, "{}", file_text(path, binary))?;
     writeln!(
         out,
         "{} in {}, {}",
@@ -202,22 +176,60 @@ fn write_range(
     write_try(path, &examples, out)
 }
 
-/// Writes what the file is, such as "app.elf: x86-64 executable, stripped".
-fn write_file(path: &Path, binary: &Binary, out: &mut dyn Write) -> Result<()> {
+/// What the file is, such as "app.elf: x86-64 executable, stripped".
+pub(super) fn file_text(path: &Path, binary: &Binary) -> String {
     let names = match (binary.has_symbols, binary.has_dwarf) {
         (true, true) => "with symbols and DWARF debug info",
         (true, false) => "with symbols",
         (false, true) => "with DWARF debug info but no symbol table",
         (false, false) => "stripped",
     };
-    writeln!(
-        out,
+    format!(
         "{}: {} {}, {names}",
         path.display(),
         text::architecture_name(binary.architecture),
         binary.kind
-    )?;
-    Ok(())
+    )
+}
+
+/// What elfq found in the file, such as "29 functions and 34 data objects,
+/// 7835 bytes of code and data, plus 2 imports".
+pub(super) fn found_text(binary: &Binary) -> String {
+    let mut found = items_text(binary, None);
+    // A stripped file may have only its entry point, of unknown size.
+    let bytes = total_bytes(binary, None);
+    if bytes > 0 {
+        found += &format!(", {}", text::bytes_of_items(binary, None));
+    }
+    if !binary.imports.is_empty() {
+        found += &format!(
+            ", plus {}",
+            text::plural(binary.imports.len(), "import", "imports")
+        );
+    }
+    found
+}
+
+/// What the overview says under [`found_text`] about what elfq found, in a
+/// file whose code it can read: that it found no functions, or how it
+/// names the items that have no symbols.
+pub(super) fn found_notes(binary: &Binary) -> Vec<String> {
+    let mut notes = Vec::new();
+    if !super::found_functions(binary) {
+        notes.push(format!("{}.", text::NO_FUNCTIONS));
+    }
+    match text::unnamed_items(binary) {
+        Some((function, Some(data))) => notes.push(format!(
+            "Items without symbols are named by address, like {} and {}.",
+            function.name, data.name
+        )),
+        Some((function, None)) => notes.push(format!(
+            "Functions without symbols are named by address, like {}.",
+            function.name
+        )),
+        None => {}
+    }
+    notes
 }
 
 /// Lists the blocks of addresses that the sections and their load images
@@ -225,15 +237,26 @@ fn write_file(path: &Path, binary: &Binary, out: &mut dyn Write) -> Result<()> {
 /// returns them.
 fn write_memory(binary: &Binary, out: &mut dyn Write) -> Result<Vec<MemoryBlock>> {
     let blocks = memory_blocks(&binary.sections);
-    if blocks.len() < 2 {
+    let Some(table) = memory_table(binary, &blocks) else {
         return Ok(Vec::new());
+    };
+    writeln!(out)?;
+    table.write(out)?;
+    Ok(blocks)
+}
+
+/// The table of `blocks`, the blocks of addresses that the sections and
+/// their load images occupy, or `None` when there is only one, or none.
+pub(super) fn memory_table(binary: &Binary, blocks: &[MemoryBlock]) -> Option<Table> {
+    if blocks.len() < 2 {
+        return None;
     }
     let mut table = Table::new(&[
         ("MEMORY", Align::Left),
         ("SIZE", Align::Right),
         ("SECTIONS", Align::Left),
     ]);
-    for block in &blocks {
+    for block in blocks {
         table.row(vec![
             text::range_argument(block.range),
             (block.range.end - block.range.start).to_string(),
@@ -243,9 +266,7 @@ fn write_memory(binary: &Binary, out: &mut dyn Write) -> Result<Vec<MemoryBlock>
             ),
         ]);
     }
-    writeln!(out)?;
-    table.write(out)?;
-    Ok(blocks)
+    Some(table)
 }
 
 /// The sections in a block, then the sections whose load images are in

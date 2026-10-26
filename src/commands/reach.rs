@@ -38,7 +38,7 @@ use std::path::Path;
 use anyhow::{Result, bail};
 use serde::Serialize;
 
-use super::symbol::Names;
+use super::symbol::{Names, Symbol};
 use super::{Kept, Outcome, callees, json, overview, ranges, text};
 use crate::binary::{
     AddressRange, Binary, FileKind, ItemKind, MemoryBlock, STARTUP_ARRAYS, exception_name,
@@ -190,10 +190,27 @@ pub fn run(
     let names = Kept::new(Names::new(binary));
     let symbol = names.find(symbol)?;
     let index = super::readable_item(binary, symbol.node)?;
-    let lead_name = symbol.lead_name(binary);
     let graph = Kept::new(Graph::build(binary));
+    reach(binary, &graph, &names, &symbol, index, to, all, format, out)
+}
+
+/// Answers `reach SYMBOL` about `symbol`, the item at `index`, whose code
+/// elfq can read, in `graph`, the file's reference graph, as [`run`] does.
+#[expect(clippy::too_many_arguments)]
+pub(super) fn reach<'a>(
+    binary: &'a Binary,
+    graph: &Graph,
+    names: &Names<'a>,
+    symbol: &Symbol,
+    index: usize,
+    to: &[AddressRange],
+    all: bool,
+    format: Format,
+    out: &mut dyn Write,
+) -> Result<Outcome> {
+    let lead_name = symbol.lead_name(binary);
     let reach = Kept::new(Reach::find(
-        binary, &graph, &names, index, lead_name, to, all,
+        binary, graph, names, index, lead_name, to, all,
     )?);
     match format {
         Format::Json => reach.write_json(out)?,
@@ -230,7 +247,7 @@ pub fn run_starts(
     let starts = starts(binary, &graph, &names);
     match format {
         Format::Json => starts.write_json(out)?,
-        Format::Text | Format::Tree => starts.write_text(path, all, out)?,
+        Format::Text | Format::Tree => starts.answer(path, all).write(out)?,
     }
     Ok(Outcome::Answered)
 }
@@ -272,6 +289,38 @@ fn needs_symbol(
         Format::Json => " --json",
     };
     format!("{refused}, such as elfq {file} reach {symbol}{to}{all}{format}")
+}
+
+/// What `reach SYMBOL` writes as text about the item at `index`, which
+/// its first line names `lead_name` (see [`Symbol::lead_name`]): with every
+/// row and every name, as browse shows it, and as the command writes it
+/// without `--all`.
+///
+/// [`Symbol::lead_name`]: super::symbol::Symbol::lead_name
+#[cfg(feature = "tui")]
+pub(super) fn answer<'a>(
+    binary: &'a Binary,
+    graph: &Graph,
+    names: &Names<'a>,
+    index: usize,
+    lead_name: String,
+) -> (Answer, Answer) {
+    let mut reach = Reach::find(binary, graph, names, index, lead_name, &[], true)
+        .expect("without --to, there is no range for reach to refuse");
+    let all = reach.answer(Body::Rows);
+    // The same, but with the rows and names that the command lists.
+    reach.all = false;
+    (all, reach.answer(Body::Rows))
+}
+
+/// What the text answer of `reach SYMBOL` shows under its first lines.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Body {
+    /// The rows by block of memory.
+    Rows,
+    /// A tree, with `--tree`, which the answer leaves out for its writer
+    /// to draw.
+    Tree,
 }
 
 /// What SYMBOL reaches.
@@ -680,30 +729,53 @@ impl<'n, 'a> Reach<'n, 'a> {
         if !self.to.is_empty() {
             return self.write_to_text(tree, out);
         }
-        let binary = self.binary;
-        let name = &self.lead_name;
-        let reached = &self.steps[1..];
-        let outside: Vec<Unfollowed> = self
-            .unfollowed
+        let answer = self.answer(if tree { Body::Tree } else { Body::Rows });
+        if !tree || self.reaches_nothing() {
+            return answer.write(out);
+        }
+        answer.write_with(Some(&|out: &mut dyn Write| Tree::new(self).write(out)), out)
+    }
+
+    /// The calls and jumps to code outside every item, which the rows list.
+    fn outside(&self) -> Vec<Unfollowed> {
+        self.unfollowed
             .iter()
             .filter(|unfollowed| unfollowed.unresolved.target.is_some())
             .copied()
-            .collect();
-        if reached.is_empty() && outside.is_empty() {
+            .collect()
+    }
+
+    /// Whether SYMBOL reaches nothing that a row would list, so that the
+    /// answer is a few sentences.
+    fn reaches_nothing(&self) -> bool {
+        self.steps.len() == 1 && self.outside().is_empty()
+    }
+
+    /// The answer as text, without `--to`: what SYMBOL and what it reaches
+    /// take, the bytes in each block of memory when there are several, the
+    /// rows by block, and the notes on what elfq can't follow or read. For
+    /// a tree, it has no rows, since the tree takes their place, and its
+    /// first line counts the calls and jumps as the tree shows them.
+    fn answer(&self, body: Body) -> Answer {
+        let tree = body == Body::Tree;
+        let binary = self.binary;
+        let name = &self.lead_name;
+        if self.reaches_nothing() {
             // Any calls and jumps elfq can't follow are in SYMBOL, through
             // pointers.
-            for line in nothing_reached_lines(
-                name,
-                self.self_use,
-                self.plt_header,
-                &self.unresolved,
-                self.all,
-            ) {
-                writeln!(out, "{line}")?;
-            }
-            return Ok(());
+            return Answer {
+                lead: nothing_reached_lines(
+                    name,
+                    self.self_use,
+                    self.plt_header,
+                    &self.unresolved,
+                    self.all,
+                ),
+                ..Answer::default()
+            };
         }
 
+        let reached = &self.steps[1..];
         let items: Vec<Node> = reached
             .iter()
             .map(|step| step.node)
@@ -736,18 +808,6 @@ impl<'n, 'a> Reach<'n, 'a> {
         if !unfollowed.is_empty() {
             lead += &format!("; elfq can't follow {}", text::calls_and_jumps(unfollowed));
         }
-        writeln!(out, "{lead}:")?;
-
-        if self.blocks.len() > 1 {
-            writeln!(out)?;
-            self.write_memory(out)?;
-        }
-        writeln!(out)?;
-        if tree {
-            Tree::new(self).write(out)?;
-        } else {
-            self.write_rows(&outside, out)?;
-        }
 
         let pointers: Vec<&Unresolved> = self
             .unfollowed
@@ -755,20 +815,32 @@ impl<'n, 'a> Reach<'n, 'a> {
             .map(|unfollowed| &unfollowed.unresolved)
             .filter(|unresolved| unresolved.target.is_none())
             .collect();
-        if !pointers.is_empty() || !self.unreadable.is_empty() {
-            writeln!(out)?;
-        }
+        let mut notes = Vec::new();
         if !pointers.is_empty() {
-            writeln!(out, "{}", self.pointer_note(&pointers))?;
+            notes.push(self.pointer_note(&pointers));
         }
         if !self.unreadable.is_empty() {
-            writeln!(
-                out,
-                "{}",
-                text::unreadable_text(binary, &self.unreadable, self.all)
-            )?;
+            notes.push(text::unreadable_text(binary, &self.unreadable, self.all));
         }
-        Ok(())
+        let (columns, rows) = if tree {
+            (Vec::new(), Vec::new())
+        } else {
+            let columns = [
+                ("ADDRESS", Align::Left),
+                ("SIZE", Align::Right),
+                ("HOW", Align::Left),
+                ("ITEM", Align::Left),
+            ];
+            let columns = columns.map(|(header, align)| (header.to_string(), align));
+            (columns.into(), self.rows(&self.outside()))
+        };
+        Answer {
+            lead: vec![format!("{lead}:")],
+            memory: (self.blocks.len() > 1).then(|| self.memory_table()),
+            columns,
+            rows,
+            notes,
+        }
     }
 
     /// Writes the answer as text with `--to`: what SYMBOL reaches in its
@@ -864,7 +936,7 @@ impl<'n, 'a> Reach<'n, 'a> {
     /// the steps in its ranges; then the calls and jumps that elfq can't
     /// follow that may go there, first, as `callees --to` lists them, since
     /// they may hide more; then the rest of `counted`, in the order of
-    /// [`Reach::write_rows`]. Every row is shown, with the sites of the use
+    /// [`Reach::rows`]. Every row is shown, with the sites of the use
     /// it names in the AT column.
     fn write_to_rows(&self, counted: &[&Step], out: &mut dyn Write) -> Result<()> {
         let mut table = Table::new(&[
@@ -883,14 +955,17 @@ impl<'n, 'a> Reach<'n, 'a> {
             _ => (false, counted),
         };
         if symbol {
-            table.row(with_at(self.symbol_row(), &[]));
+            table.row(with_at(self.symbol_row().into_cells(), &[]));
         }
         for (unfollowed, sites) in ranges::group_unfollowed(&self.unfollowed) {
             let sites = self.unfollowed_sites(&unfollowed, sites);
-            table.row(with_at(self.unfollowed_row(&unfollowed), &sites));
+            table.row(with_at(
+                self.unfollowed_row(&unfollowed).into_cells(),
+                &sites,
+            ));
         }
         for step in self.in_row_order(reached.to_vec()) {
-            table.row(with_at(self.row(step), &self.use_sites(step)));
+            table.row(with_at(self.row(step).into_cells(), &self.use_sites(step)));
         }
         table.write(out)?;
         Ok(())
@@ -935,8 +1010,8 @@ impl<'n, 'a> Reach<'n, 'a> {
             .collect()
     }
 
-    /// Writes the bytes of code and data in each block of memory.
-    fn write_memory(&self, out: &mut dyn Write) -> Result<()> {
+    /// The bytes of code and data in each block of memory.
+    fn memory_table(&self) -> Table {
         let mut table = Table::new(&[
             ("MEMORY", Align::Left),
             ("CODE", Align::Right),
@@ -952,51 +1027,43 @@ impl<'n, 'a> Reach<'n, 'a> {
                 sections.join(" "),
             ]);
         }
-        table.write(out)?;
-        Ok(())
+        table
     }
 
-    /// Writes SYMBOL's row, then a row for each item it reaches, by block,
+    /// SYMBOL's row, then a row for each item it reaches, by block,
     /// functions then data objects, each largest first; then the calls and
     /// jumps to code outside every item in `outside`, and the imports.
     /// Unless the answer shows every row, only the 30 largest items are
     /// shown, and a row such as "9 more data objects in
     /// 0x20000000..0x20000450" sums up the rest of a block's.
-    fn write_rows(&self, outside: &[Unfollowed], out: &mut dyn Write) -> Result<()> {
-        let mut table = Table::new(&[
-            ("ADDRESS", Align::Left),
-            ("SIZE", Align::Right),
-            ("HOW", Align::Left),
-            ("ITEM", Align::Left),
-        ]);
-        table.row(self.symbol_row());
+    fn rows(&self, outside: &[Unfollowed]) -> Vec<AnswerRow> {
+        let mut rows = vec![self.symbol_row()];
         let reached = &self.steps[1..];
         let shown = self.shown(reached);
         let steps = self.in_row_order(reached.iter().collect());
         let imports = steps.partition_point(|step| matches!(step.node, Node::Item(_)));
         let (items, imports) = steps.split_at(imports);
         for steps in items.chunk_by(|a, b| self.group(a) == self.group(b)) {
-            self.add_group(steps, &shown, &mut table);
+            self.add_group(steps, &shown, &mut rows);
         }
         for (unfollowed, _) in ranges::group_unfollowed(outside) {
-            table.row(self.unfollowed_row(&unfollowed));
+            rows.push(self.unfollowed_row(&unfollowed));
         }
         if !imports.is_empty() {
-            self.add_group(imports, &shown, &mut table);
+            self.add_group(imports, &shown, &mut rows);
         }
-        table.write(out)?;
-        Ok(())
+        rows
     }
 
-    /// The cells of SYMBOL's row.
-    fn symbol_row(&self) -> Vec<String> {
+    /// SYMBOL's row.
+    fn symbol_row(&self) -> AnswerRow {
         let item = &self.binary.items[self.index];
-        vec![
+        let cells = vec![
             format!("{:#x}", item.address),
             text::size_text(item),
             String::new(),
-            item.name.clone(),
-        ]
+        ];
+        AnswerRow::new(cells, item.name.clone(), Some(Node::Item(self.index)))
     }
 
     /// Which group of the table `step`'s row is in: each block's functions,
@@ -1028,28 +1095,31 @@ impl<'n, 'a> Reach<'n, 'a> {
         steps
     }
 
-    /// The cells of the row of a call or jump that elfq can't follow, as
-    /// `callees` words it, but for the AT column: to code outside every
-    /// item, at its address, or through a pointer.
-    fn unfollowed_row(&self, unfollowed: &Unfollowed) -> Vec<String> {
+    /// The row of a call or jump that elfq can't follow, as `callees`
+    /// words it, but for the AT column: to code outside every item, at its
+    /// address, or through a pointer. It names no item, and is about the
+    /// item that makes it.
+    fn unfollowed_row(&self, unfollowed: &Unfollowed) -> AnswerRow {
         let unresolved = &unfollowed.unresolved;
         let (address, what) = match unresolved.target {
             Some(target) => (format!("{target:#x}"), "(outside any function)"),
             None => (String::new(), "(through a pointer)"),
         };
-        vec![
+        let cells = vec![
             address,
             String::new(),
             ranges::unfollowed_how(unfollowed).to_string(),
-            format!("{what}, used by {}", self.user_name(unresolved.from)),
-        ]
+        ];
+        let mut row = AnswerRow::new(cells, String::new(), Some(Node::Item(unresolved.from)));
+        row.rest = format!("{what}, used by {}", self.user_name(unresolved.from));
+        row
     }
 
     /// Adds the rows of `steps`, one group of the table, such as a block's
     /// functions: those in `shown`, and a row that sums up the rest. One
     /// that would be left out on its own is shown too, since its row takes
     /// no more room than the sum's.
-    fn add_group(&self, steps: &[&Step], shown: &HashSet<Node>, table: &mut Table) {
+    fn add_group(&self, steps: &[&Step], shown: &HashSet<Node>, rows: &mut Vec<AnswerRow>) {
         let binary = self.binary;
         let hidden: Vec<&Step> = steps
             .iter()
@@ -1058,7 +1128,7 @@ impl<'n, 'a> Reach<'n, 'a> {
             .collect();
         for step in steps {
             if hidden.len() < 2 || shown.contains(&step.node) {
-                table.row(self.row(step));
+                rows.push(self.row(step));
             }
         }
         if hidden.len() < 2 {
@@ -1082,19 +1152,16 @@ impl<'n, 'a> Reach<'n, 'a> {
             }
             _ => String::new(),
         };
-        table.row(vec![
-            String::new(),
-            size,
-            String::new(),
-            format!("{} more {what}{place}", hidden.len()),
-        ]);
+        let cells = vec![String::new(), size, String::new()];
+        let more = format!("{} more {what}{place}", hidden.len());
+        rows.push(AnswerRow::new(cells, more, None));
     }
 
-    /// The cells of an item's or import's row. With `--to`, the row is
+    /// An item's or import's row. With `--to`, the row is
     /// written as `callees --to` writes it, with the whole name of the item
     /// that uses it, and no mark for a function reached through a pointer,
     /// which HOW shows.
-    fn row(&self, step: &Step) -> Vec<String> {
+    fn row(&self, step: &Step) -> AnswerRow {
         let binary = self.binary;
         let (address, size) = match step.node {
             Node::Item(index) => {
@@ -1109,16 +1176,11 @@ impl<'n, 'a> Reach<'n, 'a> {
         } else {
             ""
         };
-        vec![
-            address,
-            size,
-            text::how_via(binary, step.node, used.kind, used.veneer).to_string(),
-            format!(
-                "{}{mark}, used by {}",
-                step.node.name(binary),
-                self.user_name(used.by)
-            ),
-        ]
+        let how = text::how_via(binary, step.node, used.kind, used.veneer);
+        let cells = vec![address, size, how.to_string()];
+        let mut row = AnswerRow::new(cells, step.node.name(binary).to_string(), Some(step.node));
+        row.rest = format!("{mark}, used by {}", self.user_name(used.by));
+        row
     }
 
     /// The name of `index`, an item that uses another, on that item's row:
@@ -1369,6 +1431,110 @@ impl<'r, 'a> Tree<'r, 'a> {
     }
 }
 
+/// The text answer of `reach`, before it is written, which browse shows
+/// too: the lines before its tables, the bytes in each block of
+/// memory, the table of rows, with the item that each row is about, and
+/// the notes under them. An empty line comes before each table, and before
+/// the notes when there is a table of rows.
+#[derive(Default)]
+pub(super) struct Answer {
+    /// The first line, or what the answer says in place of its tables.
+    pub lead: Vec<String>,
+    pub memory: Option<Table>,
+    /// The columns of the table of rows, the last of which names an item.
+    pub columns: Vec<(String, Align)>,
+    /// Empty when the answer has no table of rows.
+    pub rows: Vec<AnswerRow>,
+    pub notes: Vec<String>,
+}
+
+/// A row of [`Answer`]'s table.
+pub(super) struct AnswerRow {
+    /// Every cell but the last.
+    pub cells: Vec<String>,
+    /// The last cell: a name, which may be empty, then what the row says
+    /// about it, such as " (may reach more)" or ", used by main".
+    pub name: String,
+    pub rest: String,
+    /// The item or import that the row is about, if any, which browse
+    /// opens.
+    #[cfg_attr(not(feature = "tui"), expect(dead_code))]
+    pub node: Option<Node>,
+}
+
+impl AnswerRow {
+    fn new(cells: Vec<String>, name: String, node: Option<Node>) -> AnswerRow {
+        AnswerRow {
+            cells,
+            name,
+            rest: String::new(),
+            node,
+        }
+    }
+
+    /// Its cells as the table writes them.
+    fn into_cells(self) -> Vec<String> {
+        let mut cells = self.cells;
+        cells.push(self.name + &self.rest);
+        cells
+    }
+}
+
+/// Writes a table, or what takes its place in an [`Answer`].
+type WriteTable<'a> = dyn Fn(&mut dyn Write) -> Result<()> + 'a;
+
+impl Answer {
+    pub(super) fn write(&self, out: &mut dyn Write) -> Result<()> {
+        if self.rows.is_empty() {
+            return self.write_with(None, out);
+        }
+        let table = self.table();
+        self.write_with(Some(&|out: &mut dyn Write| Ok(table.write(out)?)), out)
+    }
+
+    /// Writes it with what `table` writes, if anything, in place of its
+    /// table of rows, as `--tree` draws a tree there.
+    fn write_with(&self, table: Option<&WriteTable>, out: &mut dyn Write) -> Result<()> {
+        for line in &self.lead {
+            writeln!(out, "{line}")?;
+        }
+        if let Some(memory) = &self.memory {
+            writeln!(out)?;
+            memory.write(out)?;
+        }
+        if let Some(table) = table {
+            writeln!(out)?;
+            table(out)?;
+            if !self.notes.is_empty() {
+                writeln!(out)?;
+            }
+        }
+        for note in &self.notes {
+            writeln!(out, "{note}")?;
+        }
+        Ok(())
+    }
+
+    /// What [`Answer::write`] writes.
+    #[cfg(feature = "tui")]
+    pub(super) fn written(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        self.write(&mut out).expect("writing to memory");
+        out
+    }
+
+    /// The table of rows, as the text writes it.
+    pub(super) fn table(&self) -> Table {
+        let mut table = Table::new(&self.columns);
+        for row in &self.rows {
+            let mut cells = row.cells.clone();
+            cells.push(format!("{}{}", row.name, row.rest));
+            table.row(cells);
+        }
+        table
+    }
+}
+
 /// Where the program starts, and what each start reaches.
 pub(super) struct Starts<'a> {
     binary: &'a Binary,
@@ -1494,25 +1660,25 @@ pub(super) fn starts<'a>(binary: &'a Binary, graph: &Graph, names: &Names) -> St
 }
 
 impl Starts<'_> {
-    /// Writes the starts as a table, then what elfq can't follow or read,
-    /// and for a shared library, that its exported functions aren't counted.
-    fn write_text(&self, path: &Path, all: bool, out: &mut dyn Write) -> Result<()> {
+    /// The answer's text: the starts as a table, then what elfq can't
+    /// follow or read, and for a shared library, that its exported
+    /// functions aren't counted. Each row is about its start.
+    pub(super) fn answer(&self, path: &Path, all: bool) -> Answer {
         let binary = self.binary;
         let file = path.display();
         let several = self.blocks.len() > 1;
         let rows = self.rows(all);
+        let mut answer = Answer::default();
         if !self.starts.is_empty() {
             let each = if several {
                 " in each block of memory"
             } else {
                 ""
             };
-            writeln!(
-                out,
+            answer.lead.push(format!(
                 "Where {file} starts, and the bytes of code and data that each reaches{each}:"
-            )?;
-            writeln!(out)?;
-            let mut columns: Vec<(String, Align)> = if several {
+            ));
+            answer.columns = if several {
                 self.blocks
                     .iter()
                     .map(|block| (text::range_start(block.range), Align::Right))
@@ -1523,18 +1689,18 @@ impl Starts<'_> {
                     ("DATA".to_string(), Align::Right),
                 ]
             };
-            columns.push(("WHY".to_string(), Align::Left));
-            columns.push(("START".to_string(), Align::Left));
-            let numbers = columns.len() - 2;
-            let mut table = Table::new(&columns);
+            answer.columns.push(("WHY".to_string(), Align::Left));
+            answer.columns.push(("START".to_string(), Align::Left));
+            let numbers = answer.columns.len() - 2;
             for row in &rows {
                 let start = match *row {
                     StartRow::Start(start) => &self.starts[start],
                     StartRow::More(kind, count) => {
                         let mut cells = vec![String::new(); numbers];
                         cells.push(text::root_column(binary, kind));
-                        cells.push(format!("{count} more"));
-                        table.row(cells);
+                        answer
+                            .rows
+                            .push(AnswerRow::new(cells, format!("{count} more"), None));
                         continue;
                     }
                 };
@@ -1550,20 +1716,22 @@ impl Starts<'_> {
                     vec![totals.code.to_string(), totals.data.to_string()]
                 };
                 cells.push(start.why(binary));
-                let mark = if totals.complete() {
-                    ""
-                } else {
-                    " (may reach more)"
-                };
-                cells.push(format!("{}{mark}", binary.items[start.index].name));
-                table.row(cells);
+                let mut row = AnswerRow::new(
+                    cells,
+                    binary.items[start.index].name.clone(),
+                    Some(Node::Item(start.index)),
+                );
+                if !totals.complete() {
+                    row.rest = " (may reach more)".to_string();
+                }
+                answer.rows.push(row);
             }
-            table.write(out)?;
         } else if self.unreadable.is_empty() {
-            writeln!(out, "elfq found no place where {file} starts.")?;
+            answer
+                .lead
+                .push(format!("elfq found no place where {file} starts."));
         }
 
-        let mut notes = Vec::new();
         // The marks in the table, of the starts that it shows.
         let shown: Vec<&Totals> = rows
             .iter()
@@ -1583,26 +1751,20 @@ impl Starts<'_> {
             (false, false) => None,
         };
         if let Some(marked) = marked {
-            notes.push(format!(
+            answer.notes.push(format!(
                 "The starts marked (may reach more) reach {marked}; reach START names them."
             ));
         }
         if !self.unreadable.is_empty() {
-            notes.push(self.unreadable_text(path, all));
+            answer.notes.push(self.unreadable_text(path, all));
         }
         if binary.kind == FileKind::SharedLibrary {
-            notes.push(
+            answer.notes.push(
                 "elfq doesn't count a shared library's exported functions as starting points yet."
                     .to_string(),
             );
         }
-        if !self.starts.is_empty() && !notes.is_empty() {
-            writeln!(out)?;
-        }
-        for note in notes {
-            writeln!(out, "{note}")?;
-        }
-        Ok(())
+        answer
     }
 
     /// The rows of the table: every start with `all`; otherwise `main`, the
@@ -2033,7 +2195,8 @@ mod tests {
     fn text(starts: &Starts, all: bool) -> String {
         let mut out = Vec::new();
         starts
-            .write_text(Path::new("app.elf"), all, &mut out)
+            .answer(Path::new("app.elf"), all)
+            .write(&mut out)
             .unwrap();
         String::from_utf8(out).unwrap()
     }

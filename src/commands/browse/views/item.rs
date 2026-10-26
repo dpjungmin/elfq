@@ -3,10 +3,15 @@
 //! or uses another item ends with a note in the words of the CLI's HOW
 //! column, such as `call`, `tail call via PLT → log_msg` or `uses
 //! frames_ok`, and links to that item: Enter opens its page. A jump inside
-//! the function links to the line it goes to. Tab 3 lists what calls or
-//! uses the item, as `callers SYMBOL` does (see `callers.rs`).
+//! the function links to the line it goes to. The other tabs list what the
+//! item calls or uses, as `callees SYMBOL` does (tab 2, `callees.rs`), what
+//! calls or uses it, as `callers SYMBOL` does (tab 3, `callers.rs`), and
+//! everything it calls or uses at any depth, as `reach SYMBOL` does (tab 4,
+//! `reach.rs`). Tabs 2 and 4 are worked out the first time they are shown,
+//! since what an item reaches can take a while to find in a large file.
 
 use std::collections::{BTreeSet, HashMap};
+use std::fmt::Write;
 use std::rc::Rc;
 
 use object::{Architecture, Endian};
@@ -16,10 +21,10 @@ use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Row, Table};
 
-use super::callers::Callers;
+use super::printed::Printed;
 use super::{
-    Cursor, Go, View, cut, draw_lines, fit_name, imported, keep_lines, name_fitter, whereabouts,
-    wrap,
+    Cursor, Go, cut, draw_lines, fit_name, follow, has_ignoring_case, imported, keep_lines,
+    link_preview, name_fitter, whereabouts, wrap,
 };
 use crate::arch::{self, CodeReferenceKind, Refers};
 use crate::binary::{Binary, Item, ItemKind, Source};
@@ -40,19 +45,25 @@ const NOTE_WIDTH: usize = 16;
 pub enum Tab {
     /// 1: a function's code.
     Code,
+    /// 2: what the item calls or uses.
+    Callees,
     /// 3: what calls or uses the item.
     Callers,
+    /// 4: what the item calls or uses, at any depth.
+    Reach,
 }
 
 impl Tab {
     /// Every tab, in the order of their numbers.
-    const ALL: [Tab; 2] = [Tab::Code, Tab::Callers];
+    const ALL: [Tab; 4] = [Tab::Code, Tab::Callees, Tab::Callers, Tab::Reach];
 
     /// The number of the key that shows it, and its name.
     fn number_and_name(self) -> (u8, &'static str) {
         match self {
             Tab::Code => (1, "code"),
+            Tab::Callees => (2, "callees"),
             Tab::Callers => (3, "callers"),
+            Tab::Reach => (4, "reach"),
         }
     }
 
@@ -101,6 +112,8 @@ struct CodeLine {
 }
 
 pub struct ItemPage {
+    /// The item or import.
+    node: Node,
     /// Its name in the title line's trail.
     title: String,
     /// The title shortened, and the columns it was shortened to.
@@ -120,8 +133,16 @@ pub struct ItemPage {
     /// Tab 1, or for an item that has no code, why not, as pressing 1
     /// says.
     code: Result<CodeTab, String>,
+    /// The item's index, for tabs 2 and 4, or why `callees` and `reach`
+    /// can't read its code, in their words, which pressing 2 or 4 says: it
+    /// is an import, or a function whose end elfq doesn't know.
+    readable: Result<usize, String>,
+    /// Tab 2, once it has been shown.
+    callees: Option<Printed>,
     /// Tab 3.
-    callers: Callers,
+    callers: Printed,
+    /// Tab 4, once it has been shown.
+    reach: Option<Printed>,
 }
 
 impl ItemPage {
@@ -157,6 +178,7 @@ impl ItemPage {
             }
         };
         ItemPage {
+            node,
             title,
             short_title: None,
             identity: (name.to_string(), format!("{note}  {place}")),
@@ -168,17 +190,76 @@ impl ItemPage {
                 Tab::Callers
             },
             code,
-            callers: Callers::new(session, node, answer),
+            readable: readable_item(session.binary, node).map_err(|error| error.to_string()),
+            callees: None,
+            callers: super::callers::tab(session, node, answer),
+            reach: None,
         }
     }
 
     /// The page on `tab`, when it has that tab, as a link from that tab
     /// opens it.
-    pub fn on(mut self, tab: Tab) -> ItemPage {
-        if self.tabs().contains(&tab) {
-            self.tab = tab;
+    pub fn on(mut self, session: &Session, tab: Tab) -> ItemPage {
+        if self.why_not(tab).is_none() {
+            self.show(session, tab);
         }
         self
+    }
+
+    /// Why the item doesn't have `tab`, in the words of the command that
+    /// would print it, if it doesn't.
+    fn why_not(&self, tab: Tab) -> Option<&str> {
+        match tab {
+            Tab::Code => self.code.as_ref().err(),
+            Tab::Callees | Tab::Reach => self.readable.as_ref().err(),
+            Tab::Callers => None,
+        }
+        .map(String::as_str)
+    }
+
+    /// Puts `tab`, which the item has, on the screen, working out tab 2
+    /// the first time. Tab 4 can take seconds, so [`ItemPage::work`] works
+    /// it out, once the screen says so.
+    fn show(&mut self, session: &Session, tab: Tab) {
+        if let (Tab::Callees, None, Ok(index)) = (tab, &self.callees, &self.readable) {
+            let name = session.lead_name(self.node);
+            self.callees = Some(super::callees::tab(session, *index, &name));
+        }
+        self.tab = tab;
+    }
+
+    /// What the tab on the screen has yet to work out, which the status
+    /// line says while it does: "working out what main reaches…".
+    pub fn waiting(&self) -> Option<String> {
+        let reach = self.tab == Tab::Reach && self.reach.is_none();
+        reach.then(|| format!("working out what {} reaches…", self.title))
+    }
+
+    /// Works out what the tab on the screen has yet to.
+    pub fn work(&mut self, session: &Session) {
+        if let (Tab::Reach, None, Ok(index)) = (self.tab, &self.reach, &self.readable) {
+            let name = session.lead_name(self.node);
+            self.reach = Some(super::reach::tab(session, *index, &name));
+        }
+    }
+
+    /// The tab on the screen, when it shows a command's answer.
+    fn printed(&self) -> Option<&Printed> {
+        match self.tab {
+            Tab::Code => None,
+            Tab::Callees => self.callees.as_ref(),
+            Tab::Callers => Some(&self.callers),
+            Tab::Reach => self.reach.as_ref(),
+        }
+    }
+
+    fn printed_mut(&mut self) -> Option<&mut Printed> {
+        match self.tab {
+            Tab::Code => None,
+            Tab::Callees => self.callees.as_mut(),
+            Tab::Callers => Some(&mut self.callers),
+            Tab::Reach => self.reach.as_mut(),
+        }
     }
 
     /// Its name in the title line's trail, shortened to fit `room`
@@ -195,12 +276,15 @@ impl ItemPage {
         self.short_title.as_ref().map_or("", |(_, title)| title)
     }
 
+    /// The numbers of the tabs it has, in order.
+    pub fn tab_numbers(&self) -> Vec<u8> {
+        let tabs = self.tabs().into_iter();
+        tabs.map(|tab| tab.number_and_name().0).collect()
+    }
+
     /// The tabs it has, in the order of their numbers.
     fn tabs(&self) -> Vec<Tab> {
-        let has = |tab: &Tab| match tab {
-            Tab::Code => self.code.is_ok(),
-            Tab::Callers => true,
-        };
+        let has = |tab: &Tab| self.why_not(*tab).is_none();
         Tab::ALL.into_iter().filter(has).collect()
     }
 
@@ -216,7 +300,7 @@ impl ItemPage {
         draw_lines(frame, head, top);
 
         // The tabs it has, with the one on the screen in brackets:
-        // " 1 code  [3 callers]".
+        // "[1 code]  2 callees   3 callers   4 reach".
         let mut line = Vec::new();
         for tab in self.tabs() {
             if tab == self.tab {
@@ -228,11 +312,10 @@ impl ItemPage {
         }
         frame.render_widget(Line::from(line), tabs);
 
-        match (self.tab, &mut self.code) {
-            (Tab::Code, Ok(code)) => code.draw(frame, body),
-            // Never on the screen: 1 says why instead.
-            (Tab::Code, Err(why)) => draw_lines(frame, body, vec![Line::raw(why.clone())]),
-            (Tab::Callers, _) => self.callers.draw(frame, body),
+        if let (Tab::Code, Ok(code)) = (self.tab, &mut self.code) {
+            code.draw(frame, body);
+        } else if let Some(printed) = self.printed_mut() {
+            printed.draw(frame, body);
         }
     }
 
@@ -277,18 +360,18 @@ impl ItemPage {
 
     pub fn handle(&mut self, session: &Session, action: Action) -> Option<Go> {
         if let Action::Tab(number) = action {
-            match (Tab::of_key(number)?, &self.code) {
-                // A tab that the item doesn't have says why.
-                (Tab::Code, Err(why)) => return Some(Go::Say(why.clone())),
-                (tab, _) => self.tab = tab,
+            let tab = Tab::of_key(number)?;
+            // A tab that the item doesn't have says why.
+            if let Some(why) = self.why_not(tab) {
+                return Some(Go::Say(why.to_string()));
             }
+            self.show(session, tab);
             return None;
         }
-        match (self.tab, &mut self.code) {
-            (Tab::Code, Ok(code)) => code.handle(session, action),
-            (Tab::Code, Err(_)) => None,
-            (Tab::Callers, _) => self.callers.handle(session, action),
+        if let (Tab::Code, Ok(code)) = (self.tab, &mut self.code) {
+            return code.handle(session, action);
         }
+        self.printed_mut()?.handle(session, action)
     }
 
     /// Goes back to the line before the last jump inside the function, if
@@ -296,7 +379,7 @@ impl ItemPage {
     pub fn back(&mut self) -> bool {
         match (self.tab, &mut self.code) {
             (Tab::Code, Ok(code)) => code.back(),
-            (Tab::Code, Err(_)) | (Tab::Callers, _) => false,
+            _ => false,
         }
     }
 
@@ -305,8 +388,7 @@ impl ItemPage {
     pub fn preview(&self, session: &Session) -> Option<String> {
         match (self.tab, &self.code) {
             (Tab::Code, Ok(code)) => code.preview(session),
-            (Tab::Code, Err(_)) => None,
-            (Tab::Callers, _) => self.callers.preview(session),
+            _ => self.printed()?.preview(session),
         }
     }
 
@@ -314,18 +396,38 @@ impl ItemPage {
     pub fn has_links(&self) -> bool {
         match (self.tab, &self.code) {
             (Tab::Code, Ok(code)) => code.has_links(),
-            (Tab::Code, Err(_)) => false,
-            (Tab::Callers, _) => self.callers.has_links(),
+            _ => self.printed().is_some_and(Printed::has_links),
+        }
+    }
+
+    /// The cursor over the tab's lines or rows.
+    pub fn cursor(&mut self) -> Option<&mut Cursor> {
+        if self.tab == Tab::Code {
+            return self.code.as_mut().ok().map(|code| &mut code.cursor);
+        }
+        self.printed_mut().map(Printed::cursor)
+    }
+
+    /// What find calls the tab's rows: "line" on the code tab.
+    pub fn row_noun(&self) -> &'static str {
+        match self.tab {
+            Tab::Code => "line",
+            _ => "row",
+        }
+    }
+
+    /// The tab's lines or rows that have `lowercase`, ignoring case.
+    pub fn rows_with(&self, lowercase: &str) -> Vec<usize> {
+        match (self.tab, &self.code) {
+            (Tab::Code, Ok(code)) => code.rows_with(lowercase),
+            _ => (self.printed()).map_or_else(Vec::new, |printed| printed.rows_with(lowercase)),
         }
     }
 
     /// The command that prints what the tab on the screen shows, if one
     /// does: the code tab has none.
     pub fn command(&self) -> Option<&str> {
-        match self.tab {
-            Tab::Code => None,
-            Tab::Callers => Some(self.callers.command()),
-        }
+        self.printed().map(Printed::command)
     }
 }
 
@@ -473,17 +575,8 @@ impl CodeTab {
             }
             Action::Open => match self.code.lines.get(selected)?.link? {
                 Link::Node { node, at, .. } => {
-                    // An import's page is its PLT stub's, when it has one,
-                    // and on the stub's own page, the jump to the import
-                    // has nowhere else to go.
-                    let opened = session.page_node(node);
-                    if self.is_own_import(node, opened) {
-                        return Some(Go::Say(imported(session, node)));
-                    }
-                    let at = (opened == node).then_some(at);
-                    let name = opened.name(session.binary);
-                    let page = ItemPage::new(session, opened, at, name);
-                    Some(Go::Open(View::Item(Box::new(page))))
+                    let this = Some(Node::Item(self.index));
+                    Some(follow(session, node, Some(at), this, Tab::Code))
                 }
                 // A jump inside the function moves the cursor, and Back
                 // brings it back.
@@ -512,34 +605,13 @@ impl CodeTab {
     /// Where the selected line's link goes, in full: "→ strlen@plt
     /// function at 0x1080, 16 bytes, in .plt.sec".
     fn preview(&self, session: &Session) -> Option<String> {
-        let binary = session.binary;
         let link = self.code.lines.get(self.cursor.selected)?.link?;
         Some(match link {
-            // What Enter opens, which for an import is its PLT stub when it
-            // has one, unless that is this function.
-            Link::Node { node, via, .. } => match session.page_node(node) {
-                Node::Item(index) if !self.is_own_import(node, Node::Item(index)) => {
-                    let through = match via {
-                        Some(veneer) => format!(", through {}", binary.items[veneer].name),
-                        None => String::new(),
-                    };
-                    let item = &binary.items[index];
-                    format!(
-                        "→ {}  {}{through}",
-                        item.name,
-                        whereabouts(item, &binary.sections[item.section].name)
-                    )
-                }
-                _ => format!("→ {}  imported from a shared library", node.name(binary)),
-            },
+            Link::Node { node, via, .. } => {
+                link_preview(session, node, Some(Node::Item(self.index)), via)
+            }
             Link::Here(address) => format!("→ {address:#x}, in this function"),
         })
-    }
-
-    /// Whether `node` is the import that this function, its PLT stub,
-    /// jumps to, given `page`, the node of the page that stands for it.
-    fn is_own_import(&self, node: Node, page: Node) -> bool {
-        matches!(node, Node::Import(_)) && page == Node::Item(self.index)
     }
 
     /// Whether some line links to another item.
@@ -548,6 +620,24 @@ impl CodeTab {
             .lines
             .iter()
             .any(|line| matches!(line.link, Some(Link::Node { .. })))
+    }
+
+    /// The lines that have `lowercase` in their address, instruction or
+    /// note, or the section that the note names, ignoring case.
+    fn rows_with(&self, lowercase: &str) -> Vec<usize> {
+        let has = |text: &str| has_ignoring_case(text, lowercase);
+        let mut address = String::new();
+        (self.code.lines.iter().enumerate())
+            .filter(|(_, line)| {
+                address.clear();
+                write!(address, "{:#x}", line.address).expect("writing to a string");
+                has(&address)
+                    || has(&line.instruction)
+                    || has(&line.note)
+                    || line.elsewhere.as_deref().is_some_and(has)
+            })
+            .map(|(index, _)| index)
+            .collect()
     }
 }
 
@@ -1113,7 +1203,7 @@ mod tests {
                 let preview = tab.preview(session).unwrap();
                 let opened = session.page_node(node);
                 let name = match opened {
-                    _ if tab.is_own_import(node, opened) => {
+                    _ if matches!(node, Node::Import(_)) && opened == Node::Item(index) => {
                         to_own_import += 1;
                         format!("{}  imported", node.name(binary))
                     }

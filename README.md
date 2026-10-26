@@ -27,7 +27,8 @@ elfq app.elf callees main               # what main calls or uses
 elfq app.elf callees 0x0+256K           # what the first 256 KiB uses outside it
 elfq app.elf reach                      # where the program starts, and the bytes each start reaches
 elfq app.elf reach SysTick_Handler      # what SysTick_Handler runs and uses, and where
-elfq app.elf browse log_msg             # read log_msg's code, its calls and its callers
+elfq app.elf browse                     # where the program starts, each start a page to read
+elfq app.elf browse log_msg             # read log_msg's code, what it calls and reaches, and its callers
 ```
 
 [docs/examples.md](docs/examples.md) asks real questions about the sample

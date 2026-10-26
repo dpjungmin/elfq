@@ -134,7 +134,8 @@ Examples:
   elfq app.elf callees 0x0+256K           What the first 256 KiB uses outside it
   elfq app.elf reach                      Where the program starts, and the bytes each start reaches
   elfq app.elf reach SysTick_Handler      What SysTick_Handler runs and uses, and where
-  elfq app.elf browse log_msg             Read log_msg's code, its calls and its callers
+  elfq app.elf browse                     Where the program starts, each start a page to read
+  elfq app.elf browse log_msg             Read log_msg's code, what it calls and reaches, and its callers
 
 The overview's table is the start of the one top shows; elfq help top
 explains it.
@@ -188,7 +189,7 @@ pub enum Command {
     /// List everything SYMBOL calls or uses, at any depth, by memory block
     #[command(after_help = format!("{REACH}\n\n{}\n\n{HOW_NOTES}", how_table()))]
     Reach(ReachArgs),
-    /// Read a function's code in the terminal, and follow its calls and callers
+    /// Read a function's code in the terminal, and follow what it calls, reaches and is used by
     #[command(after_help = format!("{BROWSE}\n\n{}", how_table()))]
     Browse(BrowseArgs),
     /// Show elfq's own view of the file (for developing elfq)
@@ -407,9 +408,12 @@ Exit status, with --to: 1 if the answer lists an item, or code that elfq
 can't follow or read; 0 if not; and 2 for an error.";
 
 const BROWSE: &str = "\
-browse opens a page for SYMBOL, or without it, for main, else the entry
-point, else the largest function. When SYMBOL could mean several items, or
-none, the go-to box opens over that page with SYMBOL typed in.
+browse opens a page for SYMBOL, or without it, the start page: what the
+file is and its blocks of memory, as the overview says them, then where the
+program starts, as reach lists it without SYMBOL, with every start and that
+command under them; Enter opens a start's page. When SYMBOL could mean
+several items, or none, the go-to box opens over the start page with SYMBOL
+typed in.
 
 A function's page shows its code, one line per instruction, and a line
 that calls, jumps to or uses another item ends with a note that names it,
@@ -419,13 +423,21 @@ function, data object or import, and ? lists every key. elfq prints x86-64
 code, and the Thumb code of Cortex-M cores up to Armv7E-M (M0, M0+, M3, M4,
 M7); for other Arm cores, a page lists only the lines that use another item.
 
-3 shows what calls or uses the item, as callers SYMBOL lists it, but with
-every row, and under them that command, ready to paste; 1 shows the code
-again. Enter on a row opens the caller's page on its callers too, so that
-Enter after Enter walks up the callers, and its code is already at the
-call. The pages of data objects and imports open on their callers; an
-import that has a PLT stub opens as the stub's page, since its name finds
-the stub as SYMBOL.
+The other tabs show what callees SYMBOL, callers SYMBOL and reach SYMBOL
+print about the item, but with every row, and under them that command,
+ready to paste: 2 what the item calls or uses, 3 what calls or uses it, and
+4 everything it calls or uses at any depth, by block of memory; 1 shows the
+code again. Enter on a row opens that item's page on the same tab, so that
+Enter after Enter walks down the callees or up the callers, and from the
+callers its code is already at the call. The pages of data objects and
+imports open on their callers, and a tab that an item can't have says why,
+as its command does; an import that has a PLT stub opens as the stub's
+page, since its name finds the stub as SYMBOL.
+
+/ finds text in the page's rows, ignoring case: Enter selects the first
+line that has it, from the selected one on, and n and N the next and the
+one before, going round the end; the status line says which of how many it
+is. Esc closes the prompt.
 
 Long C++ and Rust names are shortened to fit the screen: paths inside
 brackets keep their last part, and brackets become <…> or (…), but rows
