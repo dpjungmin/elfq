@@ -900,9 +900,10 @@ in order. Its output is the first example under [Commands](#commands).
    Working out the ends of every name takes a while in a large file, so
    `Names` files each item under the last part of the paths that its
    names' ends can have (`short_name_keys`), and works out the ends of
-   only the items filed under `process_frame`. `readable_item` refuses an
-   import, and a function whose end elfq doesn't know. Then `run` refuses
-   a shared library, before it builds the graph.
+   only the items filed under `process_frame`. `retained::refusal` refuses
+   an import, and a function whose end elfq doesn't know
+   (`readable_item`), then a shared library, before `run` builds the
+   graph.
 5. **The graph.** `retained::run` has `graph::Graph::build` turn what
    `arch::scan` found in each function's code into references, or into
    unresolved calls. `Graph::build` then adds the pointers stored in data,
@@ -915,17 +916,18 @@ in order. Its output is the first example under [Commands](#commands).
    retained sizes from the bottom of the tree up.
    `RetainedTree` also notes which functions something calls directly, for
    the "(through a pointer)" mark.
-7. **The answer.** `retained::run` writes the lead line, then
+7. **The answer.** `retained::answer` words the lead line, then
    `RetainedTree::largest` picks the 30 largest items under
    `process_frame`, and the items between them and it, and
    `RetainedTree::tree_row` makes a `render::TreeRow` of each, with the
    short name that the rows under it call it by (`Names::short_name`).
-   `render::Table` puts them in its last column, as rows that each name the
-   row they hang under or, with `--tree`, drawn as a tree (`Table::tree`),
-   and writes the table (`Table::write`). Then `write_shared` names what
-   `process_frame` uses that other code uses too, and `write_indirect_note`
-   notes any calls through pointers in `process_frame` or the items it
-   keeps. With `--json`, `retained::write_json` lists every row of the tree
+   `shared_note` names what `process_frame` uses that other code uses too,
+   and `indirect_note` notes any calls through pointers in `process_frame`
+   or the items it keeps. `TreeAnswer::write` writes the lead line, then
+   `render::Table` puts the rows in its last column, as rows that each name
+   the row they hang under or, with `--tree`, drawn as a tree
+   (`Table::tree`), and writes the table (`Table::write`), then the notes.
+   With `--json`, `retained::write_json` lists every row of the tree
    instead (`RetainedTree::to_json`), and writes them through `json::write`.
 8. **Exit.** `run`, in main.rs, flushes the output and turns the answer into
    the exit status: 0 for an answer, 1 when `callers` or `callees` with
@@ -945,7 +947,7 @@ that run in it:
 ```
 main.rs      1 main, run                                  8 exit status
 commands/    2 commands::run   4 retained::run, symbol::find
-             7 RetainedTree::largest, tree_row, write_shared
+             7 retained::answer, RetainedTree::largest, tree_row
 cli.rs       1 Cli, Command
 render/      7 Table::tree, Table::write
 debuginfo/   (for inlined, and SYMBOL that the compiler inlined)

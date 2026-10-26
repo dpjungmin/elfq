@@ -14,11 +14,11 @@ use serde::Serialize;
 
 use super::retained_tree::{self, KeptItem, RetainedTree};
 use super::symbol::Names;
-use super::{Kept, json, text};
+use super::{Kept, TreeAnswer, json, text};
 use crate::binary::{AddressRange, Binary, FileKind};
 use crate::cli::Format;
 use crate::graph::{Graph, Node, Unresolved};
-use crate::render::{Align, Table};
+use crate::render::Align;
 
 #[derive(Serialize)]
 struct RetainedJson<'a> {
@@ -63,30 +63,54 @@ pub fn run(
     let names = Kept::new(Names::new(binary));
     let symbol = names.find(symbol)?;
     let node = symbol.node;
+    let index = refusal(binary, node)?;
+    let lead_name = symbol.lead_name(binary);
+    let graph = Kept::new(Graph::build(binary));
+    let retained =
+        Kept::new(RetainedTree::new(binary, &graph, range).with_names(names.into_inner()));
+    let symbol = SymbolInTree {
+        retained: &retained,
+        index,
+        lead_name: &lead_name,
+    };
+    if format == Format::Json {
+        return write_json(&symbol, out);
+    }
+    answer(&symbol, all, format).write(out)
+}
+
+/// Why `retained` can't answer about `node`, if it can't: it is an import,
+/// or a function whose end elfq doesn't know, or the file is a shared
+/// library. Otherwise, the index of `node`'s item.
+pub(super) fn refusal(binary: &Binary, node: Node) -> Result<usize> {
     let index = super::readable_item(binary, node)?;
     if binary.kind == FileKind::SharedLibrary {
         let name = node.name(binary);
         bail!("elfq can't yet tell what only {name} leads to in a shared library");
     }
-    let lead_name = symbol.lead_name(binary);
-    let graph = Kept::new(Graph::build(binary));
-    let symbol = Kept::new(SymbolInTree {
-        retained: RetainedTree::new(binary, &graph, range).with_names(names.into_inner()),
-        index,
-        lead_name,
-    });
-    if format == Format::Json {
-        return write_json(&symbol, out);
-    }
+    Ok(index)
+}
+
+/// What `retained SYMBOL` writes as text: what removing SYMBOL would save,
+/// and the tree of the items that only it leads to, the largest 30 or with
+/// `all`, every one, in the shape that `format` asks for, then what it
+/// shares with other code and the calls that elfq can't follow.
+fn answer(symbol: &SymbolInTree, all: bool, format: Format) -> TreeAnswer {
     if !symbol.is_reachable() {
-        return symbol.write_unreachable(out);
+        return TreeAnswer::sentences(vec![text::nothing_reaches(symbol.lead_name)]);
     }
-    let name = &symbol.lead_name;
-    let retained = &symbol.retained;
+    let name = symbol.lead_name;
+    let retained = symbol.retained;
+    let binary = retained.binary;
+    let index = symbol.index;
     let items = symbol.counted_items();
     let own = retained.own(index);
     let own_bytes = text::bytes_text(own);
-    let range = range.map(|range| text::range_text(binary, range, all));
+    let range = (retained.range).map(|range| text::range_text(binary, range, all));
+    let notes: Vec<String> = [shared_note(symbol, all), symbol.indirect_note(all)]
+        .into_iter()
+        .flatten()
+        .collect();
     if items.is_empty() {
         // How many of them are in its load image, if any are.
         let load_image = match retained.load_image(index) {
@@ -94,45 +118,47 @@ pub fn run(
             bytes if bytes == own => ", all in its load image".to_string(),
             bytes => format!(", {bytes} of them in its load image"),
         };
-        match &range {
-            Some(range) if own == 0 => writeln!(
-                out,
-                "Removing {name} would save none of the bytes in {range}."
-            )?,
-            Some(range) => writeln!(
-                out,
-                "Removing {name} would save only its own {own_bytes} in {range}{load_image}."
-            )?,
-            None => writeln!(out, "Removing {name} would save only its own {own_bytes}.")?,
-        }
-        write_shared(&symbol, all, out)?;
-        return symbol.write_indirect_note(all, out);
+        let lead = match &range {
+            Some(range) if own == 0 => {
+                format!("Removing {name} would save none of the bytes in {range}.")
+            }
+            Some(range) => {
+                format!(
+                    "Removing {name} would save only its own {own_bytes} in {range}{load_image}."
+                )
+            }
+            None => format!("Removing {name} would save only its own {own_bytes}."),
+        };
+        return TreeAnswer {
+            notes,
+            ..TreeAnswer::sentences(vec![lead])
+        };
     }
     let in_range = range
         .map(|range| format!(" in {range}"))
         .unwrap_or_default();
-    writeln!(
-        out,
+    let lead = format!(
         "Removing {name} would save {}{in_range}:",
         text::bytes_text(retained.retained(index))
-    )?;
-    writeln!(out)?;
-    let shown = retained.largest(&[node], &items, text::shown(all));
+    );
+    let shown = retained.largest(&[symbol.node()], &items, text::shown(all));
     retained.names().will_name(shown.len());
-    let mut table = Table::new(&[
-        ("RETAINED", Align::Right),
-        ("OWN", Align::Right),
-        ("ITEM", Align::Left),
-    ]);
     let shape = retained_tree::shape(format);
-    table.tree(&[retained.tree_row(&shown, index, shape)], shape);
-    table.write(out)?;
-    write_shared(&symbol, all, out)?;
-    symbol.write_indirect_note(all, out)
+    TreeAnswer {
+        lead: vec![lead],
+        columns: vec![
+            ("RETAINED", Align::Right),
+            ("OWN", Align::Right),
+            ("ITEM", Align::Left),
+        ],
+        rows: vec![retained.tree_row(&shown, index, shape)],
+        shape,
+        notes,
+    }
 }
 
 fn write_json(symbol: &SymbolInTree, out: &mut dyn Write) -> Result<()> {
-    let retained = &symbol.retained;
+    let retained = symbol.retained;
     let binary = retained.binary;
     let node = symbol.node();
     let reachable = symbol.is_reachable();
@@ -189,8 +215,9 @@ fn shared(symbol: &SymbolInTree) -> Vec<Node> {
 
 /// Names what SYMBOL and the items it keeps use that other code uses too,
 /// and so isn't counted, in order of name: as many as [`text::named`] says,
-/// and how many more, or with `all`, every one.
-fn write_shared(symbol: &SymbolInTree, all: bool, out: &mut dyn Write) -> Result<()> {
+/// and how many more, or with `all`, every one. `None` when there is
+/// nothing.
+fn shared_note(symbol: &SymbolInTree, all: bool) -> Option<String> {
     let binary = symbol.retained.binary;
     let mut shared: Vec<&str> = shared(symbol)
         .into_iter()
@@ -198,32 +225,30 @@ fn write_shared(symbol: &SymbolInTree, all: bool, out: &mut dyn Write) -> Result
         .collect();
     shared.dedup();
     if shared.is_empty() {
-        return Ok(());
+        return None;
     }
     let named = text::shown_count(shared.len(), text::named(all));
     let mut names = shared[..named].join(", ");
     if named < shared.len() {
         names += &format!(" and {} more", shared.len() - named);
     }
-    writeln!(out)?;
-    writeln!(out, "Shared with other code, so not counted: {names}.")?;
-    Ok(())
+    Some(format!("Shared with other code, so not counted: {names}."))
 }
 
 /// SYMBOL's item, in the tree of retained sizes that says what only it
 /// leads to.
-struct SymbolInTree<'g, 'a> {
-    retained: RetainedTree<'g, 'a>,
+struct SymbolInTree<'t, 'g, 'a> {
+    retained: &'t RetainedTree<'g, 'a>,
     /// SYMBOL's item, as an index into [`Binary::items`].
     index: usize,
     /// The item's name as the answer's first line gives it (see
     /// [`Symbol::lead_name`]).
     ///
     /// [`Symbol::lead_name`]: super::symbol::Symbol::lead_name
-    lead_name: String,
+    lead_name: &'t str,
 }
 
-impl SymbolInTree<'_, '_> {
+impl SymbolInTree<'_, '_, '_> {
     /// SYMBOL's item, as a node of the graph.
     fn node(&self) -> Node {
         Node::Item(self.index)
@@ -232,13 +257,6 @@ impl SymbolInTree<'_, '_> {
     /// Whether anything reaches SYMBOL from where the program starts.
     fn is_reachable(&self) -> bool {
         self.retained.tree.is_reachable(self.node())
-    }
-
-    /// Says that nothing reaches SYMBOL, so the program never uses it, or
-    /// uses it in a way elfq can't see.
-    fn write_unreachable(&self, out: &mut dyn Write) -> Result<()> {
-        writeln!(out, "{}", text::nothing_reaches(&self.lead_name))?;
-        Ok(())
     }
 
     /// The calls and jumps through pointers set at run time in SYMBOL and
@@ -257,10 +275,10 @@ impl SymbolInTree<'_, '_> {
     /// other items, if it calls anything that way, naming the functions that
     /// do: SYMBOL first, then those that only it leads to, as many as
     /// [`text::names_text`] names, or with `all`, every one.
-    fn write_indirect_note(&self, all: bool, out: &mut dyn Write) -> Result<()> {
+    fn indirect_note(&self, all: bool) -> Option<String> {
         let indirect = self.indirect_calls();
         if indirect.is_empty() {
-            return Ok(());
+            return None;
         }
         let mut callers: Vec<usize> = indirect.iter().map(|u| u.from).collect();
         callers.sort_by_key(|&index| (index != self.index, index));
@@ -277,13 +295,10 @@ impl SymbolInTree<'_, '_> {
         } else {
             ("pointers", "they reach")
         };
-        writeln!(out)?;
-        writeln!(
-            out,
+        Some(format!(
             "{} also {verb} through {through}, so what {reach} may count elsewhere.",
             text::names_text(&names, all)
-        )?;
-        Ok(())
+        ))
     }
 
     /// The items exclusive to SYMBOL that sizes count: all of them, or with

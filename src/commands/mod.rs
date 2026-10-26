@@ -32,7 +32,7 @@ use crate::arch;
 use crate::binary::{AddressRange, Binary, Item, ItemKind, Source, memory_blocks};
 use crate::cli::{BrowseArgs, Cli, Command, DebugCommand, Format, ReachArgs, UsesArgs};
 use crate::graph::{Graph, Node, Reference};
-use crate::render::{Align, Table};
+use crate::render::{Align, Table, TreeRow, TreeShape};
 
 /// The error for `--range` with a command that doesn't take it.
 const RANGE_REFUSED: &str = "only the overview, top and retained take --range";
@@ -676,6 +676,52 @@ fn largest_rows(binary: &Binary, rows: Vec<Row>, count: usize) -> (Vec<Row>, usi
         .filter(|row| kept.contains(&row.node))
         .collect();
     (rows, left_out)
+}
+
+/// The text of an answer whose table holds a tree, as `why` and `retained`
+/// write it: its first lines, the table, and the notes under it, each
+/// after an empty line.
+struct TreeAnswer {
+    /// The first lines, or what the answer says in place of a table.
+    lead: Vec<String>,
+    /// The table's columns, the last of which holds the tree.
+    columns: Vec<(&'static str, Align)>,
+    /// The rows at the top of the tree. Empty when the answer has no table.
+    rows: Vec<TreeRow>,
+    /// How the table shows the tree, which the rows were made for, since
+    /// rows find the short names they show only when the tree isn't drawn.
+    shape: TreeShape,
+    notes: Vec<String>,
+}
+
+impl TreeAnswer {
+    /// An answer of sentences, without a table, whose shape doesn't matter.
+    fn sentences(lead: Vec<String>) -> TreeAnswer {
+        TreeAnswer {
+            lead,
+            columns: Vec::new(),
+            rows: Vec::new(),
+            shape: TreeShape::Drawn,
+            notes: Vec::new(),
+        }
+    }
+
+    fn write(&self, out: &mut dyn Write) -> Result<()> {
+        for line in &self.lead {
+            writeln!(out, "{line}")?;
+        }
+        if !self.rows.is_empty() {
+            writeln!(out)?;
+            let mut table = Table::new(&self.columns);
+            table.tree(&self.rows, self.shape);
+            table.write(out)?;
+        }
+        for note in &self.notes {
+            writeln!(out)?;
+            writeln!(out, "{note}")?;
+        }
+        Ok(())
+    }
 }
 
 /// The sum of `sizes`, which stops at the largest `u64` rather than

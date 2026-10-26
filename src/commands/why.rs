@@ -15,11 +15,11 @@ use anyhow::{Result, bail};
 use serde::Serialize;
 
 use super::symbol::Names;
-use super::{Kept, json, text};
+use super::{Kept, TreeAnswer, json, text};
 use crate::binary::{Binary, FileKind};
 use crate::cli::Format;
 use crate::graph::{DominatorTree, Graph, Node, Reference, Root, ShortestPaths};
-use crate::render::{Align, Table, TreeRow, TreeShape};
+use crate::render::{Align, TreeRow, TreeShape};
 
 /// How many items that keep SYMBOL get their chain shown without `--all`.
 /// An item that would be left out on its own is shown too.
@@ -72,13 +72,10 @@ pub fn run(
     let names = Kept::new(Names::new(binary));
     let symbol = names.find(symbol)?;
     let node = symbol.node;
-    let name = node.name(binary);
     // The name in the answer's first line, which says what SYMBOL gave when
     // it isn't that.
     let lead_name = symbol.lead_name(binary);
-    if binary.kind == FileKind::SharedLibrary {
-        bail!("elfq can't yet tell why {name} is in a shared library");
-    }
+    refusal(binary, node)?;
     let graph = Kept::new(Graph::build(binary));
     if let Some(root) = graph.root(node) {
         if format == Format::Json {
@@ -101,37 +98,19 @@ pub fn run(
         return Ok(());
     }
 
-    let paths = ShortestPaths::avoiding(binary, &graph, node);
     let tree = DominatorTree::build(binary, &graph, None);
-    // References are sorted by the item that makes them, so each user
-    // appears once after `dedup`.
-    let mut users: Vec<usize> = graph.references_to(node).map(|r| r.from).collect();
-    users.dedup();
-    let (mut keeping, others): (Vec<usize>, Vec<usize>) = users
-        .into_iter()
-        .partition(|&user| paths.is_reached(Node::Item(user)));
-    // The other users don't keep SYMBOL: nothing reaches them, or only
-    // SYMBOL leads to them, as when it calls them and they call it back.
-    // SYMBOL using itself goes unsaid.
-    let (unreachable, behind): (Vec<usize>, Vec<usize>) = others
-        .into_iter()
-        .filter(|&user| Node::Item(user) != node)
-        .partition(|&user| !tree.is_reachable(Node::Item(user)));
-    // Those with the shortest chains first, then by name.
-    keeping.sort_by_key(|&user| {
-        let user_node = Node::Item(user);
-        (paths.distance(user_node), user_node.name(binary))
-    });
     if format == Format::Json {
+        let users = Users::new(binary, &graph, &tree, node);
         let item = |node: Node| json::Item::new(binary, node);
         let answer = WhyJson {
             symbol: json::Symbol::new(binary, node),
-            reachable: !keeping.is_empty(),
+            reachable: !users.keeping.is_empty(),
             root: None,
-            chains: keeping
+            chains: users
+                .keeping
                 .iter()
                 .map(|&user| {
-                    chain(binary, &graph, &paths, Node::Item(user), node)
+                    chain(binary, &graph, &users.paths, Node::Item(user), node)
                         .into_iter()
                         .map(|(node, how)| Step {
                             item: item(node),
@@ -140,70 +119,162 @@ pub fn run(
                         .collect()
                 })
                 .collect(),
-            unreachable_users: unreachable
+            unreachable_users: users
+                .unreachable
                 .iter()
                 .map(|&user| item(Node::Item(user)))
                 .collect(),
-            users_it_keeps: behind.iter().map(|&user| item(Node::Item(user))).collect(),
+            users_it_keeps: (users.behind.iter())
+                .map(|&user| item(Node::Item(user)))
+                .collect(),
             on_every_chain: tree.parent(node).map(item),
         };
         return json::write(&answer, out);
     }
+    let users = Users::new(binary, &graph, &tree, node);
+    users.answer(&names, &lead_name, all, format).write(out)
+}
 
-    let names_of = |users: &[usize]| -> Vec<&str> {
-        users
-            .iter()
-            .map(|&user| binary.items[user].name.as_str())
-            .collect()
-    };
-    let unreachable = names_of(&unreachable);
-    let behind = names_of(&behind);
-    if keeping.is_empty() {
-        return write_unreachable(&lead_name, &unreachable, all, out);
-    }
-    let room = if all { usize::MAX } else { SHOWN };
-    let shown = &keeping[..text::shown_count(keeping.len(), room)];
-    writeln!(out, "{}", lead(binary, &lead_name, &keeping, shown.len()))?;
-    writeln!(out)?;
-    let chains = Chains::new(binary, &graph, &names, &paths, node, shown);
-    let mut table = Table::new(&[("HOW", Align::Left), ("ITEM", Align::Left)]);
-    // A chain branches only now and then, so a row names its user only
-    // where it doesn't come right after it.
-    let shape = match format {
-        Format::Tree => TreeShape::Drawn,
-        _ => TreeShape::Chains { words: "used by" },
-    };
-    table.tree(&chains.rows(shape), shape);
-    table.write(out)?;
-
-    if !unreachable.is_empty() {
-        let (verb, pronoun) = verb_and_pronoun(&unreachable);
-        writeln!(out)?;
-        writeln!(
-            out,
-            "{} {verb} {name} too, but nothing reaches {pronoun}.",
-            text::names_text(&unreachable, all),
-        )?;
-    }
-    if !behind.is_empty() {
-        let (verb, pronoun) = verb_and_pronoun(&behind);
-        writeln!(out)?;
-        writeln!(
-            out,
-            "{} {verb} {name} too, but only {name} leads to {pronoun}.",
-            text::names_text(&behind, all),
-        )?;
-    }
-    writeln!(out)?;
-    match tree.parent(node) {
-        Some(parent) => writeln!(
-            out,
-            "Removing {} would remove {name} too.",
-            parent.name(binary)
-        )?,
-        None => writeln!(out, "Removing any single item wouldn't remove {name}.")?,
+/// Why `why` can't answer about `node`, if it can't: not yet in a shared
+/// library.
+pub(super) fn refusal(binary: &Binary, node: Node) -> Result<()> {
+    if binary.kind == FileKind::SharedLibrary {
+        bail!(
+            "elfq can't yet tell why {} is in a shared library",
+            node.name(binary)
+        );
     }
     Ok(())
+}
+
+/// Says that no item that every chain to the item called `name` goes
+/// through keeps it.
+pub(super) fn no_single_keeper(name: &str) -> String {
+    format!("Removing any single item wouldn't remove {name}.")
+}
+
+/// The items that use SYMBOL, and the chains from where the program starts
+/// to those that keep it, in a file's reference graph.
+struct Users<'u, 'a> {
+    binary: &'a Binary,
+    graph: &'u Graph,
+    /// The graph's dominator tree.
+    tree: &'u DominatorTree,
+    /// SYMBOL's item or import.
+    node: Node,
+    /// The shortest chains from where the program starts that don't pass
+    /// through SYMBOL.
+    paths: ShortestPaths,
+    /// The items that keep SYMBOL: those that use it and that a chain
+    /// reaches. Those with the shortest chains come first, then by name.
+    keeping: Vec<usize>,
+    /// The items that use SYMBOL but that nothing reaches.
+    unreachable: Vec<usize>,
+    /// The items that use SYMBOL but that only SYMBOL leads to, as when it
+    /// calls them and they call it back.
+    behind: Vec<usize>,
+}
+
+impl<'u, 'a> Users<'u, 'a> {
+    /// The items that use `node` in `graph`, whose dominator tree is
+    /// `tree`. `node` mustn't be a root.
+    fn new(
+        binary: &'a Binary,
+        graph: &'u Graph,
+        tree: &'u DominatorTree,
+        node: Node,
+    ) -> Users<'u, 'a> {
+        let paths = ShortestPaths::avoiding(binary, graph, node);
+        // References are sorted by the item that makes them, so each user
+        // appears once after `dedup`.
+        let mut users: Vec<usize> = graph.references_to(node).map(|r| r.from).collect();
+        users.dedup();
+        let (mut keeping, others): (Vec<usize>, Vec<usize>) = users
+            .into_iter()
+            .partition(|&user| paths.is_reached(Node::Item(user)));
+        // The other users don't keep SYMBOL: nothing reaches them, or only
+        // SYMBOL leads to them, as when it calls them and they call it back.
+        // SYMBOL using itself goes unsaid.
+        let (unreachable, behind): (Vec<usize>, Vec<usize>) = others
+            .into_iter()
+            .filter(|&user| Node::Item(user) != node)
+            .partition(|&user| !tree.is_reachable(Node::Item(user)));
+        // Those with the shortest chains first, then by name.
+        keeping.sort_by_key(|&user| {
+            let user_node = Node::Item(user);
+            (paths.distance(user_node), user_node.name(binary))
+        });
+        Users {
+            binary,
+            graph,
+            tree,
+            node,
+            paths,
+            keeping,
+            unreachable,
+            behind,
+        }
+    }
+
+    /// What `why SYMBOL` writes as text, whose first line names SYMBOL
+    /// `lead_name` (see [`Symbol::lead_name`]), with `names` for the short
+    /// names of the rows: the shortest chains through the nearest 10 items
+    /// that keep SYMBOL, or with `all`, through every one, in the shape
+    /// that `format` asks for.
+    ///
+    /// [`Symbol::lead_name`]: super::symbol::Symbol::lead_name
+    fn answer(&self, names: &Names<'a>, lead_name: &str, all: bool, format: Format) -> TreeAnswer {
+        let (binary, graph, node) = (self.binary, self.graph, self.node);
+        let names_of = |users: &[usize]| -> Vec<&str> {
+            users
+                .iter()
+                .map(|&user| binary.items[user].name.as_str())
+                .collect()
+        };
+        let unreachable = names_of(&self.unreachable);
+        let behind = names_of(&self.behind);
+        let keeping = &self.keeping;
+        if keeping.is_empty() {
+            return TreeAnswer::sentences(unreachable_lines(lead_name, &unreachable, all));
+        }
+        let room = if all { usize::MAX } else { SHOWN };
+        let shown = &keeping[..text::shown_count(keeping.len(), room)];
+        let chains = Chains::new(binary, graph, names, &self.paths, node, shown);
+        // A chain branches only now and then, so a row names its user only
+        // where it doesn't come right after it.
+        let shape = match format {
+            Format::Tree => TreeShape::Drawn,
+            _ => TreeShape::Chains { words: "used by" },
+        };
+
+        let name = node.name(binary);
+        let mut notes = Vec::new();
+        if !unreachable.is_empty() {
+            let (verb, pronoun) = verb_and_pronoun(&unreachable);
+            notes.push(format!(
+                "{} {verb} {name} too, but nothing reaches {pronoun}.",
+                text::names_text(&unreachable, all),
+            ));
+        }
+        if !behind.is_empty() {
+            let (verb, pronoun) = verb_and_pronoun(&behind);
+            notes.push(format!(
+                "{} {verb} {name} too, but only {name} leads to {pronoun}.",
+                text::names_text(&behind, all),
+            ));
+        }
+        notes.push(match self.tree.parent(node) {
+            Some(parent) => format!("Removing {} would remove {name} too.", parent.name(binary)),
+            None => no_single_keeper(name),
+        });
+        TreeAnswer {
+            lead: vec![lead(binary, lead_name, keeping, shown.len())],
+            columns: vec![("HOW", Align::Left), ("ITEM", Align::Left)],
+            rows: chains.rows(shape),
+            shape,
+            notes,
+        }
+    }
 }
 
 /// The shortest chain from where the program starts, through `user`, to
@@ -239,17 +310,16 @@ fn chain(
 /// Says that nothing reaches SYMBOL, called `name` in this first line of
 /// the answer, nor the items that use it: as many as [`text::names_text`]
 /// names, or with `all`, every one.
-fn write_unreachable(name: &str, users: &[&str], all: bool, out: &mut dyn Write) -> Result<()> {
-    writeln!(out, "{}", text::nothing_reaches(name))?;
+fn unreachable_lines(name: &str, users: &[&str], all: bool) -> Vec<String> {
+    let mut lines = vec![text::nothing_reaches(name)];
     if !users.is_empty() {
         let (verb, pronoun) = verb_and_pronoun(users);
-        writeln!(
-            out,
+        lines.push(format!(
             "{} {verb} it, but nothing reaches {pronoun} either.",
             text::names_text(users, all),
-        )?;
+        ));
     }
-    Ok(())
+    lines
 }
 
 /// The first line of the answer: what keeps SYMBOL, called `name` here,
