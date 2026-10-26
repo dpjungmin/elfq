@@ -706,6 +706,14 @@ impl TreeAnswer {
         }
     }
 
+    /// What [`TreeAnswer::write`] writes.
+    #[cfg(feature = "tui")]
+    fn written(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        self.write(&mut out).expect("writing to memory");
+        out
+    }
+
     fn write(&self, out: &mut dyn Write) -> Result<()> {
         for line in &self.lead {
             writeln!(out, "{line}")?;
@@ -721,6 +729,34 @@ impl TreeAnswer {
             writeln!(out, "{note}")?;
         }
         Ok(())
+    }
+}
+
+/// An answer of `why` or `retained` as a tab of browse shows it.
+#[cfg(feature = "tui")]
+struct TabAnswer {
+    /// The answer with every row and name, as with `--all`.
+    answer: TreeAnswer,
+    /// Its notes as the command words them without `--all`, which name
+    /// fewer items.
+    brief: Vec<String>,
+    /// Its notes naming only the first item of each list, shortened, for a
+    /// screen with little room for them.
+    briefest: Vec<String>,
+    /// Whether the command needs `--all` to print all of `answer`.
+    cut: bool,
+}
+
+#[cfg(feature = "tui")]
+impl TabAnswer {
+    /// An answer of sentences, the same with `--all` and without.
+    fn sentences(lead: Vec<String>) -> TabAnswer {
+        TabAnswer {
+            answer: TreeAnswer::sentences(lead),
+            brief: Vec::new(),
+            briefest: Vec::new(),
+            cut: false,
+        }
     }
 }
 

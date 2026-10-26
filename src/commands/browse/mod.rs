@@ -1,9 +1,10 @@
 //! `elfq FILE browse [SYMBOL]`: a function's code in the terminal, with a
 //! link on each line that calls, jumps to or uses another item, to follow
 //! as in a web browser: Enter opens the item's page, and Esc comes back.
-//! An item's page also lists, on tabs 2, 3 and 4, what the item calls or
-//! uses, what calls or uses it, and everything it reaches, and its header
-//! says what keeps it in the file.
+//! An item's page also lists, on tabs 2 to 6, what the item calls or
+//! uses, what calls or uses it, everything it reaches, why it is in the
+//! file, and what removing it would save, and its header says what keeps
+//! it in the file.
 //! Without SYMBOL, browse opens on where the program starts, each start a
 //! link to its page.
 //!

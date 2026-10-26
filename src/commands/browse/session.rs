@@ -18,6 +18,7 @@ use anyhow::Result;
 use super::views::PageCode;
 use crate::binary::{Binary, FileKind, ItemKind, MemoryBlock, memory_blocks};
 use crate::commands::callers::{self, Answer};
+use crate::commands::retained_tree::RetainedTree;
 use crate::commands::symbol::Names;
 use crate::commands::{reference_graph, text};
 use crate::graph::{DominatorTree, Graph, Node, ShortestPaths, VeneerTarget, Veneers};
@@ -99,6 +100,15 @@ impl<'a> Session<'a> {
     /// about no item.
     pub(super) fn needs_keepers(&self) -> bool {
         self.keepers.is_none() && self.binary.kind != FileKind::SharedLibrary
+    }
+
+    /// The tree of retained sizes that `retained SYMBOL` lists, without a
+    /// range, from what keeps each item, once the session has worked it
+    /// out, and with the session's names.
+    pub(super) fn retained_tree(&self) -> Option<RetainedTree<'_, 'a>> {
+        let keepers = self.keepers()?;
+        let (binary, graph, names) = (self.binary, &self.graph, &self.names);
+        Some(RetainedTree::borrowing(binary, graph, &keepers.tree, names))
     }
 
     /// Works out what keeps each item, and the shortest chain to each from

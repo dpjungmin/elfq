@@ -14,6 +14,7 @@
 //! the table, under a row "NAME (continued)", by the same rule.
 
 use super::Table;
+use crate::graph::Node;
 
 /// How a table shows a tree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,10 +53,69 @@ pub struct TreeRow {
     pub short_name: String,
     /// The rows under it, in the order they are drawn.
     pub children: Vec<TreeRow>,
+    /// The item or import that the row is about, if any, which browse
+    /// opens.
+    #[cfg_attr(not(feature = "tui"), expect(dead_code))]
+    pub node: Option<Node>,
+}
+
+/// A row of a tree shown as rows, one per line (see [`flat_rows`]).
+pub struct FlatRow<'t> {
+    pub row: &'t TreeRow,
+    /// What the last column says after the row's name: its mark, and which
+    /// row it hangs under, as in " (through a pointer), kept by main".
+    pub rest: String,
+    /// Where in `rest` the short name of the row it hangs under starts,
+    /// if it says one, which browse shortens to fit.
+    #[cfg_attr(not(feature = "tui"), expect(dead_code))]
+    pub under: Option<usize>,
+}
+
+/// The rows of the tree that starts with the rows in `top`, one per line,
+/// as `shape` shows them, which mustn't be [`TreeShape::Drawn`]: each row
+/// followed by the rows under it.
+pub fn flat_rows(top: &[TreeRow], shape: TreeShape) -> Vec<FlatRow<'_>> {
+    let (words, every) = match shape {
+        TreeShape::Rows { words } => (words, true),
+        TreeShape::Chains { words } => (words, false),
+        TreeShape::Drawn => panic!("a drawn tree isn't one row per line"),
+    };
+    let mut rows = Vec::new();
+    add_flat_rows(top, None, words, every, &mut rows);
+    rows
+}
+
+/// Adds `rows` and the rows under each to `flat`. Those under `parent`
+/// end with `words` and its short name: every one, or unless `every`, all
+/// but the first, which comes right after it.
+fn add_flat_rows<'t>(
+    rows: &'t [TreeRow],
+    parent: Option<&TreeRow>,
+    words: &str,
+    every: bool,
+    flat: &mut Vec<FlatRow<'t>>,
+) {
+    for (i, row) in rows.iter().enumerate() {
+        let mut rest = match &row.mark {
+            Some(mark) => format!(" {mark}"),
+            None => String::new(),
+        };
+        let mut under = None;
+        if let Some(parent) = parent
+            && (every || i > 0)
+        {
+            rest += &format!(", {words} ");
+            under = Some(rest.len());
+            rest += &parent.short_name;
+        }
+        flat.push(FlatRow { row, rest, under });
+        add_flat_rows(&row.children, Some(row), words, every, flat);
+    }
 }
 
 impl TreeRow {
-    /// A row with no mark, which the rows under it call by its name.
+    /// A row with no mark, which the rows under it call by its name, about
+    /// no item.
     pub fn new(cells: Vec<String>, name: impl Into<String>, children: Vec<TreeRow>) -> TreeRow {
         let name = name.into();
         TreeRow {
@@ -64,6 +124,7 @@ impl TreeRow {
             name,
             mark: None,
             children,
+            node: None,
         }
     }
 
@@ -79,28 +140,14 @@ impl Table {
     /// Adds the rows of a tree that starts with the rows in `top`, in the
     /// shape asked for.
     pub fn tree(&mut self, top: &[TreeRow], shape: TreeShape) {
-        match shape {
-            TreeShape::Rows { words } => self.rows_of(top, None, words, true),
-            TreeShape::Chains { words } => self.rows_of(top, None, words, false),
-            TreeShape::Drawn => self.drawn(top),
+        if shape == TreeShape::Drawn {
+            self.drawn(top);
+            return;
         }
-    }
-
-    /// Adds `rows` and the rows under each, one per line. Those under
-    /// `parent` end with `words` and its short name: every one, or unless
-    /// `every`, all but the first, which comes right after it.
-    fn rows_of(&mut self, rows: &[TreeRow], parent: Option<&TreeRow>, words: &str, every: bool) {
-        for (i, row) in rows.iter().enumerate() {
-            let mut label = row.label();
-            if let Some(parent) = parent
-                && (every || i > 0)
-            {
-                label = format!("{label}, {words} {}", parent.short_name);
-            }
+        for FlatRow { row, rest, .. } in flat_rows(top, shape) {
             let mut cells = row.cells.clone();
-            cells.push(label);
+            cells.push(format!("{}{rest}", row.name));
             self.row(cells);
-            self.rows_of(&row.children, Some(row), words, every);
         }
     }
 

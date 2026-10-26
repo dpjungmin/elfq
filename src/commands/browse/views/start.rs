@@ -7,7 +7,7 @@
 //! command needs it to list them all. Enter opens the selected start's
 //! page. `printed.rs` draws it.
 
-use super::printed::{Above, Printed, table_lines};
+use super::printed::{Lines, Printed, table_lines};
 use crate::commands::browse::session::Session;
 use crate::commands::{overview, reach};
 
@@ -16,12 +16,12 @@ pub fn page(session: &Session) -> Printed {
     let binary = session.binary;
     let path = &session.path;
     let mut overview = vec![
-        Above::Words(overview::file_text(path, binary)),
-        Above::Words(overview::found_text(binary)),
+        Lines::Words(overview::file_text(path, binary)),
+        Lines::Words(overview::found_text(binary)),
     ];
-    overview.extend(overview::found_notes(binary).into_iter().map(Above::Words));
+    overview.extend(overview::found_notes(binary).into_iter().map(Lines::Words));
     if let Some(memory) = overview::memory_table(binary, &session.blocks) {
-        overview.push(Above::Table(table_lines(&memory)));
+        overview.push(Lines::Table(table_lines(&memory)));
     }
     let starts = reach::starts(binary, &session.graph, &session.names);
     let (answer, brief) = (starts.answer(path, true), starts.answer(path, false));

@@ -13,7 +13,7 @@ use crate::commands::browse::keys::{self, Action};
 
 /// The words that the notes and the headers use besides the HOW column's,
 /// with what they mean.
-const WORDS: [(&str, &str); 9] = [
+const WORDS: [(&str, &str); 13] = [
     (
         "via veneer",
         "through a stub that the linker added; the note names where it ends up",
@@ -47,10 +47,26 @@ const WORDS: [(&str, &str); 9] = [
         "an item's own size plus the sizes of the items that only it leads to, from \
          where the program starts: what removing it would save, as retained SYMBOL says",
     ),
+    ("OWN", "an item's own size, without what it keeps"),
     (
         "kept by",
         "the closest item that every path to this one goes through, from where the \
          program starts; u opens it",
+    ),
+    (
+        "(through a pointer)",
+        "nothing calls the function directly, so it counts for the code or data that \
+         holds its address",
+    ),
+    (
+        "block",
+        "a block of memory, as the overview's MEMORY table lists them: sections next to \
+         one another, such as those in flash or in ITCM",
+    ),
+    (
+        "load image",
+        "the copy of an item that the file stores in one block, for startup code to copy \
+         to the block where the program uses it",
     ),
 ];
 

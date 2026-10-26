@@ -7,7 +7,7 @@
 //! call. `printed.rs` draws it.
 
 use super::item::Tab;
-use super::printed::{Above, Printed, PrintedRow};
+use super::printed::{Lines, Printed, PrintedRow};
 use crate::commands::browse::session::Session;
 use crate::commands::callers::Answer;
 use crate::commands::{distinct_nodes, text};
@@ -27,7 +27,7 @@ pub fn tab(session: &Session, node: Node, answer: Answer) -> Printed {
     // command says it.
     let mut above = Vec::new();
     if answer.rows.is_empty() {
-        above.push(Above::Words(format!(
+        above.push(Lines::Words(format!(
             "Nothing in the file calls or uses {}.",
             node.name(binary)
         )));
@@ -37,6 +37,7 @@ pub fn tab(session: &Session, node: Node, answer: Answer) -> Printed {
             cells: vec![row.how.to_string(), text::at_column(&row.sites)],
             name: row.node.name(binary).to_string(),
             rest: String::new(),
+            under: None,
             link: Some((row.node, Some(row.sites[0]))),
         })
         .collect();

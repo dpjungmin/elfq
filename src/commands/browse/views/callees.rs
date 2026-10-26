@@ -8,7 +8,7 @@
 //! opens the selected callee's page on its callees. `printed.rs` draws it.
 
 use super::item::Tab;
-use super::printed::{Above, Printed, PrintedRow};
+use super::printed::{Lines, Printed, PrintedRow};
 use crate::commands::browse::session::Session;
 use crate::commands::{callees, distinct_nodes, text};
 use crate::graph::Node;
@@ -31,7 +31,7 @@ pub fn tab(session: &Session, index: usize, name: &str) -> Printed {
     // What the command says in place of the table, when it has none, is
     // said at the top.
     let (above, notes, brief) = if answer.rows.is_empty() {
-        let above = answer.notes.into_iter().map(Above::Words).collect();
+        let above = answer.notes.into_iter().map(Lines::Words).collect();
         (above, Vec::new(), Vec::new())
     } else {
         (Vec::new(), answer.notes, brief)
@@ -41,6 +41,7 @@ pub fn tab(session: &Session, index: usize, name: &str) -> Printed {
             cells: vec![row.how.to_string(), text::at_column(&row.sites)],
             name: row.node.name(binary).to_string(),
             rest: String::new(),
+            under: None,
             link: Some((row.node, None)),
         })
         .collect();

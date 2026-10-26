@@ -12,8 +12,11 @@ use std::io::Write;
 use anyhow::{Result, bail};
 use serde::Serialize;
 
+#[cfg(feature = "tui")]
+use super::TabAnswer;
 use super::retained_tree::{self, KeptItem, RetainedTree};
 use super::symbol::Names;
+use super::text::Naming;
 use super::{Kept, TreeAnswer, json, text};
 use crate::binary::{AddressRange, Binary, FileKind};
 use crate::cli::Format;
@@ -95,65 +98,36 @@ pub(super) fn refusal(binary: &Binary, node: Node) -> Result<usize> {
 /// and the tree of the items that only it leads to, the largest 30 or with
 /// `all`, every one, in the shape that `format` asks for, then what it
 /// shares with other code and the calls that elfq can't follow.
-fn answer(symbol: &SymbolInTree, all: bool, format: Format) -> TreeAnswer {
+pub(super) fn answer(symbol: &SymbolInTree, all: bool, format: Format) -> TreeAnswer {
     if !symbol.is_reachable() {
         return TreeAnswer::sentences(vec![text::nothing_reaches(symbol.lead_name)]);
     }
-    let name = symbol.lead_name;
-    let retained = symbol.retained;
-    let binary = retained.binary;
-    let index = symbol.index;
-    let items = symbol.counted_items();
-    let own = retained.own(index);
-    let own_bytes = text::bytes_text(own);
-    let range = (retained.range).map(|range| text::range_text(binary, range, all));
-    let notes: Vec<String> = [shared_note(symbol, all), symbol.indirect_note(all)]
-        .into_iter()
-        .flatten()
-        .collect();
-    if items.is_empty() {
-        // How many of them are in its load image, if any are.
-        let load_image = match retained.load_image(index) {
-            0 => String::new(),
-            bytes if bytes == own => ", all in its load image".to_string(),
-            bytes => format!(", {bytes} of them in its load image"),
-        };
-        let lead = match &range {
-            Some(range) if own == 0 => {
-                format!("Removing {name} would save none of the bytes in {range}.")
-            }
-            Some(range) => {
-                format!(
-                    "Removing {name} would save only its own {own_bytes} in {range}{load_image}."
-                )
-            }
-            None => format!("Removing {name} would save only its own {own_bytes}."),
-        };
-        return TreeAnswer {
-            notes,
-            ..TreeAnswer::sentences(vec![lead])
-        };
+    let parts = Parts::new(symbol);
+    parts.answer(&parts.shown(all), all, format)
+}
+
+/// What `retained SYMBOL` writes as text, as tab 6 of browse shows it, for
+/// a tree without a range: with every item, as with `--all`; its notes as
+/// the command writes them without `--all`, and naming only the first item
+/// of each list, as `shorten` writes it; and whether the command needs
+/// `--all` to print it all. What every form shares is worked out once.
+#[cfg(feature = "tui")]
+pub(super) fn answers(symbol: &SymbolInTree, shorten: &dyn Fn(&str) -> String) -> TabAnswer {
+    if !symbol.is_reachable() {
+        let sentence = text::nothing_reaches(symbol.lead_name);
+        return TabAnswer::sentences(vec![sentence]);
     }
-    let in_range = range
-        .map(|range| format!(" in {range}"))
-        .unwrap_or_default();
-    let lead = format!(
-        "Removing {name} would save {}{in_range}:",
-        text::bytes_text(retained.retained(index))
-    );
-    let shown = retained.largest(&[symbol.node()], &items, text::shown(all));
-    retained.names().will_name(shown.len());
-    let shape = retained_tree::shape(format);
-    TreeAnswer {
-        lead: vec![lead],
-        columns: vec![
-            ("RETAINED", Align::Right),
-            ("OWN", Align::Right),
-            ("ITEM", Align::Left),
-        ],
-        rows: vec![retained.tree_row(&shown, index, shape)],
-        shape,
-        notes,
+    let parts = Parts::new(symbol);
+    let (every, largest) = (parts.shown(true), parts.shown(false));
+    let answer = parts.answer(&every, true, Format::Text);
+    let brief = parts.notes(&Naming::of(false));
+    // Without --all, the tree leaves out items, or the notes names.
+    let cut = largest.len() < every.len() || brief != answer.notes;
+    TabAnswer {
+        briefest: parts.notes(&Naming::first(shorten)),
+        brief,
+        cut,
+        answer,
     }
 }
 
@@ -214,26 +188,155 @@ fn shared(symbol: &SymbolInTree) -> Vec<Node> {
     shared
 }
 
-/// Names what SYMBOL and the items it keeps use that other code uses too,
-/// and so isn't counted, in order of name: as many as [`text::named`] says,
-/// and how many more, or with `all`, every one. `None` when there is
-/// nothing.
-fn shared_note(symbol: &SymbolInTree, all: bool) -> Option<String> {
-    let binary = symbol.retained.binary;
-    let mut shared: Vec<&str> = shared(symbol)
-        .into_iter()
-        .map(|node| node.name(binary))
-        .collect();
-    shared.dedup();
-    if shared.is_empty() {
-        return None;
+/// What every form of SYMBOL's answer shares, worked out once: the items
+/// that only SYMBOL leads to, and what its notes name.
+struct Parts<'s, 't, 'g, 'a> {
+    symbol: &'s SymbolInTree<'t, 'g, 'a>,
+    /// The items exclusive to SYMBOL that sizes count (see
+    /// [`SymbolInTree::counted_items`]).
+    items: Vec<usize>,
+    /// What SYMBOL and the items it keeps use that other code uses too
+    /// (see [`shared`]).
+    shared: Vec<Node>,
+    /// The calls and jumps through pointers set at run time in SYMBOL and
+    /// the items exclusive to it.
+    indirect: Vec<Unresolved>,
+}
+
+impl<'s, 't, 'g, 'a> Parts<'s, 't, 'g, 'a> {
+    /// The parts of the answer about `symbol`, which something reaches.
+    fn new(symbol: &'s SymbolInTree<'t, 'g, 'a>) -> Parts<'s, 't, 'g, 'a> {
+        Parts {
+            symbol,
+            items: symbol.counted_items(),
+            shared: shared(symbol),
+            indirect: symbol.indirect_calls(),
+        }
     }
-    let named = text::shown_count(shared.len(), text::named(all));
-    let mut names = shared[..named].join(", ");
-    if named < shared.len() {
-        names += &format!(" and {} more", shared.len() - named);
+
+    /// The items that the tree shows: the largest 30 and the items that
+    /// keep them, or with `all`, every one.
+    fn shown(&self, all: bool) -> HashSet<usize> {
+        let symbol = self.symbol;
+        let shown = text::shown(all);
+        symbol
+            .retained
+            .largest(&[symbol.node()], &self.items, shown)
     }
-    Some(format!("Shared with other code, so not counted: {names}."))
+
+    /// The answer with the rows of the `shown` items, in the shape that
+    /// `format` asks for, and with `all`, every name in the notes.
+    fn answer(&self, shown: &HashSet<usize>, all: bool, format: Format) -> TreeAnswer {
+        let symbol = self.symbol;
+        let name = symbol.lead_name;
+        let retained = symbol.retained;
+        let binary = retained.binary;
+        let index = symbol.index;
+        let own = retained.own(index);
+        let own_bytes = text::bytes_text(own);
+        let range = (retained.range).map(|range| text::range_text(binary, range, all));
+        let notes = self.notes(&Naming::of(all));
+        if self.items.is_empty() {
+            // How many of them are in its load image, if any are.
+            let load_image = match retained.load_image(index) {
+                0 => String::new(),
+                bytes if bytes == own => ", all in its load image".to_string(),
+                bytes => format!(", {bytes} of them in its load image"),
+            };
+            let lead = match &range {
+                Some(range) if own == 0 => {
+                    format!("Removing {name} would save none of the bytes in {range}.")
+                }
+                Some(range) => {
+                    format!(
+                        "Removing {name} would save only its own {own_bytes} in {range}{load_image}."
+                    )
+                }
+                None => format!("Removing {name} would save only its own {own_bytes}."),
+            };
+            return TreeAnswer {
+                notes,
+                ..TreeAnswer::sentences(vec![lead])
+            };
+        }
+        let in_range = range
+            .map(|range| format!(" in {range}"))
+            .unwrap_or_default();
+        let lead = format!(
+            "Removing {name} would save {}{in_range}:",
+            text::bytes_text(retained.retained(index))
+        );
+        retained.names().will_name(shown.len());
+        let shape = retained_tree::shape(format);
+        TreeAnswer {
+            lead: vec![lead],
+            columns: vec![
+                ("RETAINED", Align::Right),
+                ("OWN", Align::Right),
+                ("ITEM", Align::Left),
+            ],
+            rows: vec![retained.tree_row(shown, index, shape)],
+            shape,
+            notes,
+        }
+    }
+
+    /// The notes under the tree, naming the items they list as `naming`
+    /// says: what SYMBOL shares with other code, and the calls that elfq
+    /// can't follow.
+    fn notes(&self, naming: &Naming) -> Vec<String> {
+        [self.shared_note(naming), self.indirect_note(naming)]
+            .into_iter()
+            .flatten()
+            .collect()
+    }
+
+    /// Names what SYMBOL and the items it keeps use that other code uses
+    /// too, and so isn't counted, in order of name, as `naming` names them.
+    /// `None` when there is nothing.
+    fn shared_note(&self, naming: &Naming) -> Option<String> {
+        let binary = self.symbol.retained.binary;
+        let mut shared: Vec<&str> = (self.shared.iter()).map(|node| node.name(binary)).collect();
+        shared.dedup();
+        if shared.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "Shared with other code, so not counted: {}.",
+            naming.list(&shared)
+        ))
+    }
+
+    /// Says that what SYMBOL's code calls through pointers may count for
+    /// other items, if it calls anything that way, naming the functions
+    /// that do, as `naming` names them: SYMBOL first, then those that only
+    /// it leads to.
+    fn indirect_note(&self, naming: &Naming) -> Option<String> {
+        let indirect = &self.indirect;
+        if indirect.is_empty() {
+            return None;
+        }
+        let symbol = self.symbol;
+        let mut callers: Vec<usize> = indirect.iter().map(|u| u.from).collect();
+        callers.sort_by_key(|&index| (index != symbol.index, index));
+        callers.dedup();
+        let binary = symbol.retained.binary;
+        let names: Vec<&str> = callers
+            .iter()
+            .map(|&index| Node::Item(index).name(binary))
+            .collect();
+        let (one, several) = text::call_and_jump_verbs(indirect);
+        let verb = if names.len() == 1 { one } else { several };
+        let (through, reach) = if indirect.len() == 1 {
+            ("a pointer", "that reaches")
+        } else {
+            ("pointers", "they reach")
+        };
+        Some(format!(
+            "{} also {verb} through {through}, so what {reach} may count elsewhere.",
+            naming.phrase(&names)
+        ))
+    }
 }
 
 /// SYMBOL's item, in the tree of retained sizes that says what only it
@@ -270,36 +373,6 @@ impl SymbolInTree<'_, '_, '_> {
             .filter(|unresolved| unresolved.is_indirect())
             .copied()
             .collect()
-    }
-
-    /// Says that what SYMBOL's code calls through pointers may count for
-    /// other items, if it calls anything that way, naming the functions that
-    /// do: SYMBOL first, then those that only it leads to, as many as
-    /// [`text::names_text`] names, or with `all`, every one.
-    fn indirect_note(&self, all: bool) -> Option<String> {
-        let indirect = self.indirect_calls();
-        if indirect.is_empty() {
-            return None;
-        }
-        let mut callers: Vec<usize> = indirect.iter().map(|u| u.from).collect();
-        callers.sort_by_key(|&index| (index != self.index, index));
-        callers.dedup();
-        let binary = self.retained.binary;
-        let names: Vec<&str> = callers
-            .iter()
-            .map(|&index| Node::Item(index).name(binary))
-            .collect();
-        let (one, several) = text::call_and_jump_verbs(&indirect);
-        let verb = if names.len() == 1 { one } else { several };
-        let (through, reach) = if indirect.len() == 1 {
-            ("a pointer", "that reaches")
-        } else {
-            ("pointers", "they reach")
-        };
-        Some(format!(
-            "{} also {verb} through {through}, so what {reach} may count elsewhere.",
-            text::names_text(&names, all)
-        ))
     }
 
     /// The items exclusive to SYMBOL that sizes count: all of them, or with

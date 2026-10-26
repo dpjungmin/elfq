@@ -107,8 +107,8 @@ impl<'a> App<'a> {
     /// What the browser has yet to work out for the screen, which the
     /// status line says while it does, once the go-to box isn't over the
     /// page: the start page; what keeps each item, which the headers of
-    /// items' pages say, once after the first page is drawn; and tab 4 of
-    /// an item's page, the first time it is shown.
+    /// items' pages say, once after the first page is drawn; and tab 4, 5
+    /// or 6 of an item's page, the first time it is shown.
     fn waiting(&self) -> Option<String> {
         if self.picker.is_some() {
             return None;
@@ -518,6 +518,28 @@ mod tests {
     }
 
     #[test]
+    fn tabs_5_and_6_are_worked_out_once_the_screen_says_so() {
+        let path = samples()
+            .into_iter()
+            .find(|path| path.ends_with("c-cortex-m7.elf"));
+        let path = path.unwrap();
+        let binary = Binary::load(&path).unwrap();
+        let session = Session::new(&path, &binary).unwrap();
+        let mut app = App::new(session, Some("main"));
+        app.work();
+        let tabs = [
+            ('5', "working out what keeps main in the file…"),
+            ('6', "working out what only main leads to…"),
+        ];
+        for (key, says) in tabs {
+            app.key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE));
+            assert_eq!(app.waiting().as_deref(), Some(says));
+            app.work();
+            assert!(!app.has_work(), "{key}");
+        }
+    }
+
+    #[test]
     fn the_tabs_show_their_selected_row_on_a_small_screen() {
         // Long names make long headers, notes and commands, which leave
         // the tabs few lines.
@@ -544,7 +566,7 @@ mod tests {
                 .collect();
             for (node, tab) in nodes
                 .into_iter()
-                .flat_map(|node| [2, 3, 4].map(|tab| (node, tab)))
+                .flat_map(|node| [2, 3, 4, 5, 6].map(|tab| (node, tab)))
             {
                 let name = node.name(&binary);
                 let mut page = ItemPage::new(&app.session, node, None, name);
@@ -553,8 +575,8 @@ mod tests {
                     continue;
                 }
                 app.history = vec![View::Item(Box::new(page))];
-                // Tab 4 is worked out once the screen says so.
-                assert_eq!(app.has_work(), tab == 4, "{name}");
+                // Tabs 4, 5 and 6 are worked out once the screen says so.
+                assert_eq!(app.has_work(), tab >= 4, "{name}");
                 if app.has_work() {
                     let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
                     terminal.draw(|frame| app.draw(frame)).unwrap();
@@ -574,9 +596,9 @@ mod tests {
                     // tab has rows, each of which opens an item, and the
                     // header's facts.
                     let has_rows = app.page().has_links();
-                    let rows = !has_rows
-                        || (shown("HOW") || shown("ADDRESS"))
-                            && lines.iter().any(|line| line.starts_with("> "));
+                    let header = ["HOW", "ADDRESS", "RETAINED"].into_iter().any(shown);
+                    let rows =
+                        !has_rows || header && lines.iter().any(|line| line.starts_with("> "));
                     let screen = lines.join("\n");
                     assert!(rows, "{}, {name}, {tab}:\n{screen}", path.display());
                     assert!(shown("used by"), "{}, {name}:\n{screen}", path.display());
@@ -584,6 +606,6 @@ mod tests {
                 pages += 1;
             }
         }
-        assert!(pages > 300, "{pages}");
+        assert!(pages > 500, "{pages}");
     }
 }

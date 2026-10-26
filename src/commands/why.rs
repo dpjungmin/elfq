@@ -14,7 +14,10 @@ use std::io::Write;
 use anyhow::{Result, bail};
 use serde::Serialize;
 
-use super::symbol::Names;
+#[cfg(feature = "tui")]
+use super::TabAnswer;
+use super::symbol::{Names, Symbol};
+use super::text::Naming;
 use super::{Kept, TreeAnswer, json, text};
 use crate::binary::{Binary, FileKind};
 use crate::cli::Format;
@@ -71,12 +74,26 @@ pub fn run(
     super::check_code_is_readable(binary)?;
     let names = Kept::new(Names::new(binary));
     let symbol = names.find(symbol)?;
+    refusal(binary, symbol.node)?;
+    let graph = Kept::new(Graph::build(binary));
+    why(binary, &graph, &names, &symbol, all, format, out)
+}
+
+/// The same, for `symbol`, which `names` found, in `graph`, the file's
+/// reference graph, which the caller built.
+pub(super) fn why<'a>(
+    binary: &'a Binary,
+    graph: &Graph,
+    names: &Names<'a>,
+    symbol: &Symbol,
+    all: bool,
+    format: Format,
+    out: &mut dyn Write,
+) -> Result<()> {
     let node = symbol.node;
     // The name in the answer's first line, which says what SYMBOL gave when
     // it isn't that.
     let lead_name = symbol.lead_name(binary);
-    refusal(binary, node)?;
-    let graph = Kept::new(Graph::build(binary));
     if let Some(root) = graph.root(node) {
         if format == Format::Json {
             let answer = WhyJson {
@@ -98,12 +115,46 @@ pub fn run(
         return Ok(());
     }
 
-    let tree = DominatorTree::build(binary, &graph, None);
+    let tree = DominatorTree::build(binary, graph, None);
     if format == Format::Json {
-        return write_json(binary, &graph, &tree, node, out);
+        return write_json(binary, graph, &tree, node, out);
     }
-    let users = Users::new(binary, &graph, &tree, node);
-    users.answer(&names, &lead_name, all, format).write(out)
+    let users = Users::new(binary, graph, &tree, node);
+    users.answer(names, &lead_name, all, format).write(out)
+}
+
+/// What `why SYMBOL` writes as text about `node`, as tab 5 of browse shows
+/// it, whose first line names it `lead_name` (see [`Symbol::lead_name`]),
+/// with `tree`, the file's dominator tree, and `names` for the short names
+/// of the rows: with every chain, as with `--all`; its notes as the command
+/// writes them without `--all`, and naming only the first item of each
+/// list, as `shorten` writes it; and whether the command needs `--all` to
+/// print it all.
+///
+/// [`Symbol::lead_name`]: super::symbol::Symbol::lead_name
+#[cfg(feature = "tui")]
+pub(super) fn answers<'a>(
+    binary: &'a Binary,
+    graph: &Graph,
+    names: &Names<'a>,
+    tree: &DominatorTree,
+    node: Node,
+    lead_name: &str,
+    shorten: &dyn Fn(&str) -> String,
+) -> TabAnswer {
+    if let Some(root) = graph.root(node) {
+        let sentence = text::root_sentence(binary, lead_name, root.kind);
+        return TabAnswer::sentences(vec![sentence]);
+    }
+    let users = Users::new(binary, graph, tree, node);
+    let answer = |all| users.answer(names, lead_name, all, Format::Text);
+    let (answer, brief) = (answer(true), answer(false));
+    TabAnswer {
+        cut: brief.written() != answer.written(),
+        brief: brief.notes,
+        briefest: users.notes(&Naming::first(shorten)),
+        answer,
+    }
 }
 
 /// Writes what `why SYMBOL --json` writes about `node`, which mustn't be a
@@ -273,16 +324,9 @@ impl<'u, 'a> Users<'u, 'a> {
     /// [`Symbol::lead_name`]: super::symbol::Symbol::lead_name
     fn answer(&self, names: &Names<'a>, lead_name: &str, all: bool, format: Format) -> TreeAnswer {
         let (binary, graph, node) = (self.binary, self.graph, self.node);
-        let names_of = |users: &[usize]| -> Vec<&str> {
-            users
-                .iter()
-                .map(|&user| binary.items[user].name.as_str())
-                .collect()
-        };
-        let unreachable = names_of(&self.unreachable);
-        let behind = names_of(&self.behind);
         let keeping = &self.keeping;
         if keeping.is_empty() {
+            let unreachable = self.names(&self.unreachable);
             return TreeAnswer::sentences(unreachable_lines(lead_name, &unreachable, all));
         }
         let room = if all { usize::MAX } else { SHOWN };
@@ -295,33 +339,50 @@ impl<'u, 'a> Users<'u, 'a> {
             _ => TreeShape::Chains { words: "used by" },
         };
 
-        let name = node.name(binary);
-        let mut notes = Vec::new();
-        if !unreachable.is_empty() {
-            let (verb, pronoun) = verb_and_pronoun(&unreachable);
-            notes.push(format!(
-                "{} {verb} {name} too, but nothing reaches {pronoun}.",
-                text::names_text(&unreachable, all),
-            ));
-        }
-        if !behind.is_empty() {
-            let (verb, pronoun) = verb_and_pronoun(&behind);
-            notes.push(format!(
-                "{} {verb} {name} too, but only {name} leads to {pronoun}.",
-                text::names_text(&behind, all),
-            ));
-        }
-        notes.push(match self.tree.parent(node) {
-            Some(parent) => format!("Removing {} would remove {name} too.", parent.name(binary)),
-            None => no_single_keeper(name),
-        });
         TreeAnswer {
             lead: vec![lead(binary, lead_name, keeping, shown.len())],
             columns: vec![("HOW", Align::Left), ("ITEM", Align::Left)],
             rows: chains.rows(shape),
             shape,
-            notes,
+            notes: self.notes(&Naming::of(all)),
         }
+    }
+
+    /// The notes under the chains, naming the items they list as `naming`
+    /// says: the items that use SYMBOL but that nothing reaches, those
+    /// that only SYMBOL leads to, and the item that keeps SYMBOL.
+    fn notes(&self, naming: &Naming) -> Vec<String> {
+        let binary = self.binary;
+        let name = self.node.name(binary);
+        let mut notes = Vec::new();
+        let unreachable = self.names(&self.unreachable);
+        if !unreachable.is_empty() {
+            let (verb, pronoun) = verb_and_pronoun(&unreachable);
+            notes.push(format!(
+                "{} {verb} {name} too, but nothing reaches {pronoun}.",
+                naming.phrase(&unreachable),
+            ));
+        }
+        let behind = self.names(&self.behind);
+        if !behind.is_empty() {
+            let (verb, pronoun) = verb_and_pronoun(&behind);
+            notes.push(format!(
+                "{} {verb} {name} too, but only {name} leads to {pronoun}.",
+                naming.phrase(&behind),
+            ));
+        }
+        notes.push(match self.tree.parent(self.node) {
+            Some(parent) => format!("Removing {} would remove {name} too.", parent.name(binary)),
+            None => no_single_keeper(name),
+        });
+        notes
+    }
+
+    /// The names of `users`.
+    fn names(&self, users: &[usize]) -> Vec<&'a str> {
+        (users.iter())
+            .map(|&user| self.binary.items[user].name.as_str())
+            .collect()
     }
 }
 
@@ -473,6 +534,7 @@ impl<'n, 'a> Chains<'n, 'a> {
         };
         TreeRow {
             short_name,
+            node: Some(node),
             ..TreeRow::new(vec![how], name, children)
         }
     }

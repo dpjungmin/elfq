@@ -13,9 +13,11 @@ mod names;
 mod picker;
 mod printed;
 mod reach;
+mod retained;
 mod start;
 #[cfg(test)]
 mod thumb_text;
+mod why;
 
 use std::ops::Range;
 

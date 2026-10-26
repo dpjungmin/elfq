@@ -7,12 +7,15 @@
 //! item calls or uses, as `callees SYMBOL` does (tab 2, `callees.rs`), what
 //! calls or uses it, as `callers SYMBOL` does (tab 3, `callers.rs`), and
 //! everything it calls or uses at any depth, as `reach SYMBOL` does (tab 4,
-//! `reach.rs`). Tabs 2 and 4 are worked out the first time they are shown,
-//! since what an item reaches can take a while to find in a large file.
-//! Once the session has worked out what keeps each item, the header says
-//! what `retained` and `why` say about the item: what removing it would
-//! save, the item that keeps it, which u opens, and the shortest chain to
-//! it from where the program starts.
+//! `reach.rs`), the chains from where the program starts that keep it, as
+//! `why SYMBOL` does (tab 5, `why.rs`), and what removing it would save,
+//! as `retained SYMBOL` does (tab 6, `retained.rs`). Tabs 2, 4, 5 and 6
+//! are worked out the first time they are shown, since what an item
+//! reaches can take a while to find in a large file. Once the session has
+//! worked out what keeps each item, the header says what `retained` and
+//! `why` say about the item: what removing it would save, the item that
+//! keeps it, which u opens, and the shortest chain to it from where the
+//! program starts.
 
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write;
@@ -58,11 +61,22 @@ pub enum Tab {
     Callers,
     /// 4: what the item calls or uses, at any depth.
     Reach,
+    /// 5: the chains from where the program starts that keep the item.
+    Why,
+    /// 6: what removing the item would save.
+    Retained,
 }
 
 impl Tab {
     /// Every tab, in the order of their numbers.
-    const ALL: [Tab; 4] = [Tab::Code, Tab::Callees, Tab::Callers, Tab::Reach];
+    const ALL: [Tab; 6] = [
+        Tab::Code,
+        Tab::Callees,
+        Tab::Callers,
+        Tab::Reach,
+        Tab::Why,
+        Tab::Retained,
+    ];
 
     /// The number of the key that shows it, and its name.
     fn number_and_name(self) -> (u8, &'static str) {
@@ -71,6 +85,8 @@ impl Tab {
             Tab::Callees => (2, "callees"),
             Tab::Callers => (3, "callers"),
             Tab::Reach => (4, "reach"),
+            Tab::Why => (5, "why"),
+            Tab::Retained => (6, "retained"),
         }
     }
 
@@ -147,12 +163,12 @@ pub struct ItemPage {
     /// can't read its code, in their words, which pressing 2 or 4 says: it
     /// is an import, or a function whose end elfq doesn't know.
     readable: Result<usize, String>,
-    /// The item's index, or why `retained` can't answer about it, in its
-    /// words, which u says: as for `readable`, or the file is a shared
-    /// library.
-    retained: Result<usize, String>,
-    /// Why `why` can't answer about the item, in its words, if it can't:
+    /// The item's index, for tab 6, or why `retained` can't answer about
+    /// it, in its words, which pressing 6 and u say: as for `readable`, or
     /// the file is a shared library.
+    retainable: Result<usize, String>,
+    /// Why `why` can't answer about the item, in its words, if it can't,
+    /// which pressing 5 says: the file is a shared library.
     why_refused: Option<String>,
     /// Tab 2, once it has been shown.
     callees: Option<Printed>,
@@ -160,6 +176,10 @@ pub struct ItemPage {
     callers: Printed,
     /// Tab 4, once it has been shown.
     reach: Option<Printed>,
+    /// Tab 5, once it has been shown.
+    why: Option<Printed>,
+    /// Tab 6, once it has been shown.
+    retained: Option<Printed>,
 }
 
 impl ItemPage {
@@ -194,10 +214,11 @@ impl ItemPage {
                 (title, header, Err(imported(session, node)))
             }
         };
-        let retained = retained::refusal(session.binary, node).map_err(|error| error.to_string());
+        let retainable = retained::refusal(session.binary, node);
+        let retainable = retainable.map_err(|error| error.to_string());
         let why_refused = why::refusal(session.binary, node).err();
         let why_refused = why_refused.map(|error| error.to_string());
-        let keeping = Keeping::new(session, node, retained.is_ok(), why_refused.is_none());
+        let keeping = Keeping::new(session, node, retainable.is_ok(), why_refused.is_none());
         ItemPage {
             node,
             title,
@@ -213,11 +234,13 @@ impl ItemPage {
             },
             code,
             readable: readable_item(session.binary, node).map_err(|error| error.to_string()),
-            retained,
+            retainable,
             why_refused,
             callees: None,
             callers: super::callers::tab(session, node, answer),
             reach: None,
+            why: None,
+            retained: None,
         }
     }
 
@@ -234,7 +257,7 @@ impl ItemPage {
     /// worked it out, where `retained` or `why` answers about the item.
     pub fn add_keeping(&mut self, session: &Session) {
         if self.keeping.is_none() {
-            let (retained, why) = (self.retained.is_ok(), self.why_refused.is_none());
+            let (retained, why) = (self.retainable.is_ok(), self.why_refused.is_none());
             self.keeping = Keeping::new(session, self.node, retained, why);
             self.header = None;
         }
@@ -247,13 +270,15 @@ impl ItemPage {
             Tab::Code => self.code.as_ref().err(),
             Tab::Callees | Tab::Reach => self.readable.as_ref().err(),
             Tab::Callers => None,
+            Tab::Why => self.why_refused.as_ref(),
+            Tab::Retained => self.retainable.as_ref().err(),
         }
         .map(String::as_str)
     }
 
     /// Puts `tab`, which the item has, on the screen, working out tab 2
-    /// the first time. Tab 4 can take seconds, so [`ItemPage::work`] works
-    /// it out, once the screen says so.
+    /// the first time. Tabs 4, 5 and 6 can take seconds, so
+    /// [`ItemPage::work`] works them out, once the screen says so.
     fn show(&mut self, session: &Session, tab: Tab) {
         if let (Tab::Callees, None, Ok(index)) = (tab, &self.callees, &self.readable) {
             let name = session.lead_name(self.node);
@@ -265,15 +290,36 @@ impl ItemPage {
     /// What the tab on the screen has yet to work out, which the status
     /// line says while it does: "working out what main reaches…".
     pub fn waiting(&self) -> Option<String> {
-        let reach = self.tab == Tab::Reach && self.reach.is_none();
-        reach.then(|| format!("working out what {} reaches…", self.title))
+        let title = &self.title;
+        match self.tab {
+            Tab::Reach if self.reach.is_none() => {
+                Some(format!("working out what {title} reaches…"))
+            }
+            Tab::Why if self.why.is_none() => {
+                Some(format!("working out what keeps {title} in the file…"))
+            }
+            Tab::Retained if self.retained.is_none() => {
+                Some(format!("working out what only {title} leads to…"))
+            }
+            _ => None,
+        }
     }
 
-    /// Works out what the tab on the screen has yet to.
+    /// Works out what the tab on the screen has yet to. Tabs 5 and 6 wait
+    /// for the session to work out what keeps each item.
     pub fn work(&mut self, session: &Session) {
-        if let (Tab::Reach, None, Ok(index)) = (self.tab, &self.reach, &self.readable) {
-            let name = session.lead_name(self.node);
-            self.reach = Some(super::reach::tab(session, *index, &name));
+        let name = session.lead_name(self.node);
+        match (self.tab, &self.readable, &self.retainable) {
+            (Tab::Reach, Ok(index), _) if self.reach.is_none() => {
+                self.reach = Some(super::reach::tab(session, *index, &name));
+            }
+            (Tab::Why, _, _) if self.why.is_none() => {
+                self.why = super::why::tab(session, self.node, &name);
+            }
+            (Tab::Retained, _, Ok(index)) if self.retained.is_none() => {
+                self.retained = super::retained::tab(session, *index, &name);
+            }
+            _ => {}
         }
     }
 
@@ -284,6 +330,8 @@ impl ItemPage {
             Tab::Callees => self.callees.as_ref(),
             Tab::Callers => Some(&self.callers),
             Tab::Reach => self.reach.as_ref(),
+            Tab::Why => self.why.as_ref(),
+            Tab::Retained => self.retained.as_ref(),
         }
     }
 
@@ -293,6 +341,8 @@ impl ItemPage {
             Tab::Callees => self.callees.as_mut(),
             Tab::Callers => Some(&mut self.callers),
             Tab::Reach => self.reach.as_mut(),
+            Tab::Why => self.why.as_mut(),
+            Tab::Retained => self.retained.as_mut(),
         }
     }
 
@@ -333,24 +383,34 @@ impl ItemPage {
         .areas(area);
         draw_lines(frame, head, top);
 
-        // The tabs it has, with the one on the screen in brackets:
-        // "[1 code]  2 callees   3 callers   4 reach".
-        let mut line = Vec::new();
-        for tab in self.tabs() {
-            if tab == self.tab {
-                line.push(Span::raw(format!("[{}]", tab.label())).bold());
-            } else {
-                line.push(Span::raw(format!(" {} ", tab.label())));
-            }
-            line.push(Span::raw(" "));
-        }
-        frame.render_widget(Line::from(line), tabs);
+        frame.render_widget(self.tab_line(width), tabs);
 
         if let (Tab::Code, Ok(code)) = (self.tab, &mut self.code) {
             code.draw(frame, body);
         } else if let Some(printed) = self.printed_mut() {
             printed.draw(frame, body);
         }
+    }
+
+    /// The tabs it has, with the one on the screen in brackets, and as much
+    /// room around the others, so that the names stay where they are as
+    /// the brackets move: "[1 code]  2 callees   3 callers   4 reach". On a
+    /// screen too narrow for that, `width` columns wide, one space parts
+    /// them.
+    fn tab_line(&self, width: usize) -> Line<'static> {
+        let tabs = self.tabs();
+        let wide: usize = tabs.iter().map(|tab| tab.label().chars().count() + 3).sum();
+        let pad = if wide <= width { " " } else { "" };
+        let mut line = Vec::new();
+        for tab in tabs {
+            if tab == self.tab {
+                line.push(Span::raw(format!("[{}]", tab.label())).bold());
+            } else {
+                line.push(Span::raw(format!("{pad}{}{pad}", tab.label())));
+            }
+            line.push(Span::raw(" "));
+        }
+        Line::from(line)
     }
 
     /// The header, wrapped to `width`, in at most `most` lines. It wraps,
@@ -441,7 +501,7 @@ impl ItemPage {
             let name = session.lead_name(node);
             return Go::Say(text::root_sentence(binary, &name, root.kind));
         }
-        if let Err(why) = &self.retained {
+        if let Err(why) = &self.retainable {
             return Go::Say(why.clone());
         }
         let Some(keepers) = session.keepers() else {
