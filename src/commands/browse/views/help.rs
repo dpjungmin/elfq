@@ -11,9 +11,9 @@ use super::wrap;
 use crate::cli::HOW_WORDS;
 use crate::commands::browse::keys::{self, Action};
 
-/// The words that the notes use besides the HOW column's, with what they
-/// mean.
-const WORDS: [(&str, &str); 7] = [
+/// The words that the notes and the headers use besides the HOW column's,
+/// with what they mean.
+const WORDS: [(&str, &str); 9] = [
     (
         "via veneer",
         "through a stub that the linker added; the note names where it ends up",
@@ -42,6 +42,16 @@ const WORDS: [(&str, &str); 7] = [
         "the section of an item in another block of memory than this function",
     ),
     ("~12  ?", "an estimated size, and an unknown size"),
+    (
+        "retained",
+        "an item's own size plus the sizes of the items that only it leads to, from \
+         where the program starts: what removing it would save, as retained SYMBOL says",
+    ),
+    (
+        "kept by",
+        "the closest item that every path to this one goes through, from where the \
+         program starts; u opens it",
+    ),
 ];
 
 /// How far in what a key or a word means starts, and its wrapped lines.

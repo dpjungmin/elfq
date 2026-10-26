@@ -434,6 +434,15 @@ imports open on their callers, and a tab that an item can't have says why,
 as its command does; an import that has a PLT stub opens as the stub's
 page, since its name finds the stub as SYMBOL.
 
+An item's header also says what retained SYMBOL and why SYMBOL say about
+it: what removing it would save, the item that keeps it, after \"kept by\",
+and where the screen has room, the shortest chain to it from where the
+program starts, which leaves out names at its start to fit. u opens the
+page of the item that keeps it, on the same tab. In a large program,
+browse works these out once, after the first page is drawn, and the status
+line says so meanwhile. They aren't there in a shared library, where those
+commands don't answer yet.
+
 / finds text in the page's rows, ignoring case: Enter selects the first
 line that has it, from the selected one on, and n and N the next and the
 one before, going round the end; the status line says which of how many it

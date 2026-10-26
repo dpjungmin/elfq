@@ -27,6 +27,8 @@ pub enum Action {
     PreviousLink,
     /// Show the page's tab with this number, as `3` shows the callers.
     Tab(u8),
+    /// Open the page of the item that keeps this one.
+    Keeper,
     /// Type text to find in the page's rows.
     Find,
     /// The next or previous row that has the text found last.
@@ -145,6 +147,12 @@ pub const BINDINGS: &[Binding] = &[
             (KeyCode::Char('3'), NONE, Action::Tab(3)),
             (KeyCode::Char('4'), NONE, Action::Tab(4)),
         ],
+    },
+    Binding {
+        label: "u",
+        what: "the item that keeps this one, which its header names after \"kept by\"",
+        hint: None,
+        keys: &[(KeyCode::Char('u'), NONE, Action::Keeper)],
     },
     Binding {
         label: "/",

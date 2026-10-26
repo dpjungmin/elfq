@@ -4,7 +4,9 @@
 //! screen switches, on elfq's own thread with its large stack, as for
 //! every command. Pages then ask the commands' own code for their answers,
 //! such as `callers::answer` for "used by N", so that a page says what the
-//! commands print.
+//! commands print. What keeps each item, which the pages' headers say as
+//! `retained` and `why` do, takes a while to work out in a large program,
+//! so it is worked out once, after the first page is drawn.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -14,11 +16,11 @@ use std::rc::{Rc, Weak};
 use anyhow::Result;
 
 use super::views::PageCode;
-use crate::binary::{Binary, ItemKind, MemoryBlock, memory_blocks};
+use crate::binary::{Binary, FileKind, ItemKind, MemoryBlock, memory_blocks};
 use crate::commands::callers::{self, Answer};
 use crate::commands::symbol::Names;
 use crate::commands::{reference_graph, text};
-use crate::graph::{Graph, Node, VeneerTarget, Veneers};
+use crate::graph::{DominatorTree, Graph, Node, ShortestPaths, VeneerTarget, Veneers};
 
 /// A loaded file, with what every page needs.
 pub struct Session<'a> {
@@ -38,11 +40,27 @@ pub struct Session<'a> {
     /// first time a row names it: a page names an item on every line that
     /// uses it.
     row_names: RefCell<HashMap<usize, String>>,
+    /// What rows call each item or import after "kept by" or "used by",
+    /// worked out the first time a header names it.
+    short_names: RefCell<HashMap<Node, String>>,
     /// Each item's code as its page shows it, by the item's index, shared
     /// by every page open on the item, so that opening it again, as from
     /// go to, needn't work it out again. It is freed with the last of
     /// those pages.
     page_codes: RefCell<HashMap<usize, Weak<PageCode>>>,
+    /// What keeps each item, once worked out (see
+    /// [`Session::work_out_keepers`]).
+    keepers: Option<Keepers>,
+}
+
+/// What keeps each item, and the shortest chain to each from where the
+/// program starts, as `retained` and `why` find them.
+pub struct Keepers {
+    /// Which item keeps which: the dominator tree that `retained` builds,
+    /// without a range.
+    pub tree: DominatorTree,
+    /// The shortest chain from where the program starts to each item.
+    pub paths: ShortestPaths,
 }
 
 impl<'a> Session<'a> {
@@ -65,8 +83,34 @@ impl<'a> Session<'a> {
             veneers,
             blocks: memory_blocks(&binary.sections),
             row_names: RefCell::new(HashMap::new()),
+            short_names: RefCell::new(HashMap::new()),
             page_codes: RefCell::new(HashMap::new()),
+            keepers: None,
         })
+    }
+
+    /// What keeps each item, once worked out.
+    pub(super) fn keepers(&self) -> Option<&Keepers> {
+        self.keepers.as_ref()
+    }
+
+    /// Whether the session has yet to work out what keeps each item, which
+    /// it needn't in a shared library, where `retained` and `why` answer
+    /// about no item.
+    pub(super) fn needs_keepers(&self) -> bool {
+        self.keepers.is_none() && self.binary.kind != FileKind::SharedLibrary
+    }
+
+    /// Works out what keeps each item, and the shortest chain to each from
+    /// where the program starts, once. In a large program, this takes a
+    /// while, which the status line says.
+    pub(super) fn work_out_keepers(&mut self) {
+        if self.needs_keepers() {
+            self.keepers = Some(Keepers {
+                tree: DominatorTree::build(self.binary, &self.graph, None),
+                paths: ShortestPaths::from_roots(self.binary, &self.graph),
+            });
+        }
     }
 
     /// What uses `node`, as `callers SYMBOL` lists it: its rows, with every
@@ -134,6 +178,20 @@ impl<'a> Session<'a> {
         }
         let name = self.names.row_name(index);
         self.row_names.borrow_mut().insert(index, name.clone());
+        name
+    }
+
+    /// What the rows of `retained` and `why` call `node` after "kept by"
+    /// or "used by", to name the row they hang under, as in "crc_table,
+    /// kept by crc32": the shortest form of its name that finds only it,
+    /// or failing that, its whole name, where [`Session::row_name`] gives
+    /// an address.
+    pub(super) fn short_name(&self, node: Node) -> String {
+        if let Some(name) = self.short_names.borrow().get(&node) {
+            return name.clone();
+        }
+        let name = self.names.short_name(node);
+        self.short_names.borrow_mut().insert(node, name.clone());
         name
     }
 

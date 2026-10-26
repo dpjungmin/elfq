@@ -100,39 +100,51 @@ pub fn run(
 
     let tree = DominatorTree::build(binary, &graph, None);
     if format == Format::Json {
-        let users = Users::new(binary, &graph, &tree, node);
-        let item = |node: Node| json::Item::new(binary, node);
-        let answer = WhyJson {
-            symbol: json::Symbol::new(binary, node),
-            reachable: !users.keeping.is_empty(),
-            root: None,
-            chains: users
-                .keeping
-                .iter()
-                .map(|&user| {
-                    chain(binary, &graph, &users.paths, Node::Item(user), node)
-                        .into_iter()
-                        .map(|(node, how)| Step {
-                            item: item(node),
-                            how,
-                        })
-                        .collect()
-                })
-                .collect(),
-            unreachable_users: users
-                .unreachable
-                .iter()
-                .map(|&user| item(Node::Item(user)))
-                .collect(),
-            users_it_keeps: (users.behind.iter())
-                .map(|&user| item(Node::Item(user)))
-                .collect(),
-            on_every_chain: tree.parent(node).map(item),
-        };
-        return json::write(&answer, out);
+        return write_json(binary, &graph, &tree, node, out);
     }
     let users = Users::new(binary, &graph, &tree, node);
     users.answer(&names, &lead_name, all, format).write(out)
+}
+
+/// Writes what `why SYMBOL --json` writes about `node`, which mustn't be a
+/// root, given `graph` and its dominator tree.
+pub(super) fn write_json(
+    binary: &Binary,
+    graph: &Graph,
+    tree: &DominatorTree,
+    node: Node,
+    out: &mut dyn Write,
+) -> Result<()> {
+    let users = Users::new(binary, graph, tree, node);
+    let item = |node: Node| json::Item::new(binary, node);
+    let answer = WhyJson {
+        symbol: json::Symbol::new(binary, node),
+        reachable: !users.keeping.is_empty(),
+        root: None,
+        chains: users
+            .keeping
+            .iter()
+            .map(|&user| {
+                chain(binary, graph, &users.paths, Node::Item(user), node)
+                    .into_iter()
+                    .map(|(node, how)| Step {
+                        item: item(node),
+                        how,
+                    })
+                    .collect()
+            })
+            .collect(),
+        unreachable_users: users
+            .unreachable
+            .iter()
+            .map(|&user| item(Node::Item(user)))
+            .collect(),
+        users_it_keeps: (users.behind.iter())
+            .map(|&user| item(Node::Item(user)))
+            .collect(),
+        on_every_chain: tree.parent(node).map(item),
+    };
+    json::write(&answer, out)
 }
 
 /// Why `why` can't answer about `node`, if it can't: not yet in a shared
@@ -145,6 +157,42 @@ pub(super) fn refusal(binary: &Binary, node: Node) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// The shortest chain from where the program starts to `node`, through
+/// the nearest item that keeps it: the first chain that `why SYMBOL --json`
+/// lists, of the items on it, `node` last. `paths` are the shortest chains
+/// from where the program starts ([`ShortestPaths::from_roots`]), so that
+/// one search serves every item. `None` for a root, and for an item that
+/// nothing reaches.
+///
+/// `why` searches without passing through `node`, but a shortest chain to
+/// `node` can't pass through it anyway: the items right before it on one
+/// are the nearest that keep it, which `why` lists first, and the chains to
+/// them are the same in both searches. Of those, `why` takes the name that
+/// sorts first, then the first item.
+#[cfg(feature = "tui")]
+pub(super) fn first_chain(
+    binary: &Binary,
+    graph: &Graph,
+    paths: &ShortestPaths,
+    node: Node,
+) -> Option<Vec<Node>> {
+    if graph.root(node).is_some() {
+        return None;
+    }
+    let before = paths.distance(node)?.checked_sub(1)?;
+    let user = graph
+        .references_to(node)
+        .map(|reference| reference.from)
+        .filter(|&user| paths.distance(Node::Item(user)) == Some(before))
+        .min_by_key(|&user| (Node::Item(user).name(binary), user))?;
+    let path = paths.path_to(Node::Item(user))?;
+    let start = path.first().map_or(user, |reference| reference.from);
+    let mut chain = vec![Node::Item(start)];
+    chain.extend(path.iter().map(|reference| reference.to));
+    chain.push(node);
+    Some(chain)
 }
 
 /// Says that no item that every chain to the item called `name` goes

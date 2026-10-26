@@ -9,6 +9,10 @@
 //! everything it calls or uses at any depth, as `reach SYMBOL` does (tab 4,
 //! `reach.rs`). Tabs 2 and 4 are worked out the first time they are shown,
 //! since what an item reaches can take a while to find in a large file.
+//! Once the session has worked out what keeps each item, the header says
+//! what `retained` and `why` say about the item: what removing it would
+//! save, the item that keeps it, which u opens, and the shortest chain to
+//! it from where the program starts.
 
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write;
@@ -23,13 +27,13 @@ use ratatui::widgets::{Row, Table};
 
 use super::printed::Printed;
 use super::{
-    Cursor, Go, cut, draw_lines, fit_name, follow, has_ignoring_case, imported, keep_lines,
-    link_preview, name_fitter, whereabouts, wrap,
+    Cursor, Go, cut, cut_left, draw_lines, fit_name, follow, has_ignoring_case, imported,
+    keep_lines, link_preview, name_fitter, whereabouts, wrap,
 };
 use crate::arch::{self, CodeReferenceKind, Refers};
 use crate::binary::{Binary, Item, ItemKind, Source};
 use crate::commands::browse::{keys::Action, session::Session};
-use crate::commands::{distinct_nodes, readable_item, text};
+use crate::commands::{distinct_nodes, readable_item, retained, text, why};
 use crate::graph::{Node, Reference, Unresolved, VeneerTarget, item_starting_at};
 
 /// The most columns that the instructions take, and the fewest they give
@@ -37,6 +41,9 @@ use crate::graph::{Node, Reference, Unresolved, VeneerTarget, item_starting_at};
 const INSTRUCTION_WIDTH: (usize, usize) = (48, 24);
 /// The fewest columns that a note is cut to before its section goes.
 const NOTE_WIDTH: usize = 16;
+/// The fewest columns that the header shortens the name of the item that
+/// keeps this one to, to keep its facts on one line.
+const KEEPER_WIDTH: usize = 16;
 
 /// The tabs of an item's page. Each is numbered as the key that shows it,
 /// and named after the command that prints the same answer, so that the
@@ -124,6 +131,9 @@ pub struct ItemPage {
     identity: (String, String),
     /// The second line of the header: "used by 2 · uses 3".
     facts: String,
+    /// What the header says about what keeps the item, once the session
+    /// has worked it out, where `retained` or `why` answers about the item.
+    keeping: Option<Keeping>,
     /// The header's lines, and the columns and the most lines they were
     /// made for.
     header: Option<((usize, usize), Vec<Line<'static>>)>,
@@ -137,6 +147,13 @@ pub struct ItemPage {
     /// can't read its code, in their words, which pressing 2 or 4 says: it
     /// is an import, or a function whose end elfq doesn't know.
     readable: Result<usize, String>,
+    /// The item's index, or why `retained` can't answer about it, in its
+    /// words, which u says: as for `readable`, or the file is a shared
+    /// library.
+    retained: Result<usize, String>,
+    /// Why `why` can't answer about the item, in its words, if it can't:
+    /// the file is a shared library.
+    why_refused: Option<String>,
     /// Tab 2, once it has been shown.
     callees: Option<Printed>,
     /// Tab 3.
@@ -177,12 +194,17 @@ impl ItemPage {
                 (title, header, Err(imported(session, node)))
             }
         };
+        let retained = retained::refusal(session.binary, node).map_err(|error| error.to_string());
+        let why_refused = why::refusal(session.binary, node).err();
+        let why_refused = why_refused.map(|error| error.to_string());
+        let keeping = Keeping::new(session, node, retained.is_ok(), why_refused.is_none());
         ItemPage {
             node,
             title,
             short_title: None,
             identity: (name.to_string(), format!("{note}  {place}")),
             facts,
+            keeping,
             header: None,
             tab: if code.is_ok() {
                 Tab::Code
@@ -191,6 +213,8 @@ impl ItemPage {
             },
             code,
             readable: readable_item(session.binary, node).map_err(|error| error.to_string()),
+            retained,
+            why_refused,
             callees: None,
             callers: super::callers::tab(session, node, answer),
             reach: None,
@@ -204,6 +228,16 @@ impl ItemPage {
             self.show(session, tab);
         }
         self
+    }
+
+    /// Adds what keeps the item to the header, once the session has
+    /// worked it out, where `retained` or `why` answers about the item.
+    pub fn add_keeping(&mut self, session: &Session) {
+        if self.keeping.is_none() {
+            let (retained, why) = (self.retained.is_ok(), self.why_refused.is_none());
+            self.keeping = Keeping::new(session, self.node, retained, why);
+            self.header = None;
+        }
     }
 
     /// Why the item doesn't have `tab`, in the words of the command that
@@ -321,9 +355,13 @@ impl ItemPage {
 
     /// The header, wrapped to `width`, in at most `most` lines. It wraps,
     /// so that nothing is cut, unless the screen is too short for it, with
-    /// the tab line and two lines of the tab under it. Then the item's name
-    /// is shortened as the title line's is, and what is still too long is
-    /// cut, ending in "…". They are made once for each size of screen.
+    /// the tab line and two lines of the tab under it. Then the line with
+    /// the chain from where the program starts goes first, since tab 5
+    /// shows the chain too; then the item's name is shortened as the title
+    /// line's is, but to no less than half a line, and what is still too
+    /// long is cut, ending in "…". The chain is one line, which leaves out
+    /// names at its start, so that its end shows. They are made once for
+    /// each size of screen.
     fn header_lines(&mut self, width: usize, most: usize) -> Vec<Line<'static>> {
         if let Some((size, lines)) = &self.header
             && *size == (width, most)
@@ -332,14 +370,23 @@ impl ItemPage {
         }
         let (name, rest) = &self.identity;
         let identity = |name: &str| wrap(&format!("{name}{rest}"), width);
-        let facts = wrap(&self.facts, width);
+        let mut facts = self.facts.clone();
+        let mut chain = None;
+        if let Some(keeping) = &self.keeping {
+            let more = keeping.facts(&facts, width);
+            facts += &more;
+            chain = keeping.chain_line(width);
+        }
+        let facts = wrap(&facts, width);
         let mut first = identity(name);
         if first.len() + facts.len() > most {
             let lines = most.saturating_sub(facts.len()).max(1);
             // The widest shortened name that leaves the line short enough,
-            // which is no wider than the lines.
+            // which is no wider than the lines, but no narrower than half
+            // a line, after which the rest of the line is cut instead.
             let fit = name_fitter(name);
-            let (mut fits, mut wider) = (0, name.chars().count().min(lines * width));
+            let length = name.chars().count();
+            let (mut fits, mut wider) = (0, length.min(lines * width));
             while fits + 1 < wider {
                 let middle = (fits + wider) / 2;
                 if identity(&fit(middle)).len() <= lines {
@@ -348,17 +395,23 @@ impl ItemPage {
                     wider = middle;
                 }
             }
-            first = keep_lines(identity(&fit(fits.max(1))), lines, width);
+            let fits = fits.max(length.min(width / 2)).max(1);
+            first = keep_lines(identity(&fit(fits)), lines, width);
         }
         let facts = keep_lines(facts, most.saturating_sub(first.len()), width);
+        let chain = chain.filter(|_| first.len() + facts.len() < most);
         let first = first.into_iter().map(|line| Line::raw(line).bold());
-        let facts = facts.into_iter().map(|line| Line::raw(line).dim());
-        let lines: Vec<Line<'static>> = first.chain(facts).collect();
+        let below = facts.into_iter().chain(chain);
+        let below = below.map(|line| Line::raw(line).dim());
+        let lines: Vec<Line<'static>> = first.chain(below).collect();
         self.header = Some(((width, most), lines.clone()));
         lines
     }
 
     pub fn handle(&mut self, session: &Session, action: Action) -> Option<Go> {
+        if action == Action::Keeper {
+            return Some(self.keeper(session));
+        }
         if let Action::Tab(number) = action {
             let tab = Tab::of_key(number)?;
             // A tab that the item doesn't have says why.
@@ -372,6 +425,35 @@ impl ItemPage {
             return code.handle(session, action);
         }
         self.printed_mut()?.handle(session, action)
+    }
+
+    /// Opens the page of the item that keeps this one, on the same tab, as
+    /// u asks: the closest item that every chain from where the program
+    /// starts to it goes through, which `retained`'s rows name after "kept
+    /// by". Where there is none, or `retained` refuses the item, it says
+    /// why, as the commands say it: for a root, as `why` says what it is,
+    /// even where `retained` refuses it, as it does a root whose end elfq
+    /// doesn't know.
+    fn keeper(&self, session: &Session) -> Go {
+        let binary = session.binary;
+        let node = self.node;
+        if let (None, Some(root)) = (&self.why_refused, session.graph.root(node)) {
+            let name = session.lead_name(node);
+            return Go::Say(text::root_sentence(binary, &name, root.kind));
+        }
+        if let Err(why) = &self.retained {
+            return Go::Say(why.clone());
+        }
+        let Some(keepers) = session.keepers() else {
+            return Go::Say("elfq hasn't worked out what keeps each item yet".to_string());
+        };
+        if !keepers.tree.is_reachable(node) {
+            return Go::Say(text::nothing_reaches(&session.lead_name(node)));
+        }
+        match keepers.tree.parent(node) {
+            Some(parent) => follow(session, parent, None, Some(node), self.tab),
+            None => Go::Say(why::no_single_keeper(node.name(binary))),
+        }
     }
 
     /// Goes back to the line before the last jump inside the function, if
@@ -711,6 +793,101 @@ fn used_by_text(used_by: usize) -> String {
     match used_by {
         0 => "used by nothing".to_string(),
         users => format!("used by {users}"),
+    }
+}
+
+/// What the header says about what keeps an item, as `retained` and `why`
+/// say it.
+struct Keeping {
+    /// What removing the item would save, where `retained` answers about it
+    /// and something reaches the item.
+    retained: Option<u64>,
+    /// The name of the item that keeps it, if one does, as `retained`'s
+    /// rows name it after "kept by".
+    kept_by: Option<String>,
+    /// Whether nothing reaches the item from where the program starts.
+    unreached: bool,
+    /// The names on the shortest chain to the item from where the program
+    /// starts, as the first that `why SYMBOL --json` lists, each as rows
+    /// name it after "used by": empty for a root, which the facts already
+    /// say, for an item that nothing reaches, and where `why` refuses the
+    /// item.
+    chain: Vec<String>,
+}
+
+impl Keeping {
+    /// What the header says about what keeps `node`, if the session has
+    /// worked out what keeps each item and `retained` or `why` answers
+    /// about it, as `retained` and `why` say.
+    fn new(session: &Session, node: Node, retained: bool, why: bool) -> Option<Keeping> {
+        let keepers = session.keepers()?;
+        if !retained && !why {
+            return None;
+        }
+        let name = |node: Node| session.short_name(node);
+        let unreached = !keepers.tree.is_reachable(node);
+        let chain = match why {
+            true => why::first_chain(session.binary, &session.graph, &keepers.paths, node),
+            false => None,
+        };
+        Some(Keeping {
+            retained: (retained && !unreached).then(|| keepers.tree.retained(node)),
+            kept_by: (retained.then(|| keepers.tree.parent(node)).flatten()).map(name),
+            unreached,
+            chain: chain.unwrap_or_default().into_iter().map(name).collect(),
+        })
+    }
+
+    /// The facts it adds to the header's second line after `before`, the
+    /// facts there already, on a line `width` columns wide: " · retained
+    /// 1072, kept by __crc32_veneer", or " · nothing reaches it". The name
+    /// of the item that keeps it is shortened to fit what is left of the
+    /// line, so that the facts stay on one, or where less than
+    /// [`KEEPER_WIDTH`] columns are left, to fit a line of its own.
+    fn facts(&self, before: &str, width: usize) -> String {
+        if self.unreached {
+            return " · nothing reaches it".to_string();
+        }
+        let Some(retained) = self.retained else {
+            return String::new();
+        };
+        let facts = format!(" · retained {retained}");
+        let Some(name) = &self.kept_by else {
+            return facts;
+        };
+        let facts = facts + ", kept by ";
+        let used = before.chars().count() + facts.chars().count();
+        let room = match width.saturating_sub(used) {
+            left if left >= KEEPER_WIDTH => left,
+            _ => width,
+        };
+        facts + &fit_name(name, room)
+    }
+
+    /// The header's line with the chain, to fit `width` columns: "from a
+    /// root: Reset_Handler › main › process_frame". Each name is shortened
+    /// to fit half of the line, and where the chain is still too long, the
+    /// names at its start are left out, so that its end shows: "from a
+    /// root: … › process_frame › __crc32_veneer › crc32".
+    fn chain_line(&self, width: usize) -> Option<String> {
+        if self.chain.is_empty() {
+            return None;
+        }
+        let lead = "from a root: ";
+        let room = width.saturating_sub(lead.chars().count()).max(20);
+        let names: Vec<String> = (self.chain.iter())
+            .map(|name| fit_name(name, (room / 2).max(20)))
+            .collect();
+        let chain = |from: usize| match from {
+            0 => names.join(" › "),
+            _ => format!("… › {}", names[from..].join(" › ")),
+        };
+        // The fewest names left out that let it fit, or all but the last,
+        // which is cut from the left where even that doesn't fit.
+        let from = (0..names.len())
+            .find(|&from| chain(from).chars().count() <= room)
+            .unwrap_or(names.len() - 1);
+        Some(format!("{lead}{}", cut_left(&chain(from), room)))
     }
 }
 
@@ -1141,8 +1318,15 @@ fn string_at(session: &Session, index: usize) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
+    use super::super::printed::table_lines;
     use super::super::samples;
     use super::*;
+    use crate::commands::json;
+    use crate::commands::retained_tree::RetainedTree;
+    use crate::graph::DominatorTree;
+    use crate::render::{Align, Table, TreeShape};
 
     /// Calls `check` with the session of every sample and the code of each
     /// of its functions that has some.
@@ -1217,6 +1401,117 @@ mod tests {
         assert!(
             to_itself > 50 && to_own_import > 30,
             "{to_itself} {to_own_import}"
+        );
+    }
+
+    #[test]
+    fn the_header_says_what_retained_and_why_say() {
+        // Items whose header names what keeps them, roots, items with a
+        // chain, and items that nothing reaches.
+        let (mut kept, mut roots, mut chains, mut unreached) = (0, 0, 0, 0);
+        for path in samples() {
+            let binary = Binary::load(&path).unwrap();
+            let mut session = Session::new(&path, &binary).unwrap();
+            session.work_out_keepers();
+            let graph = &session.graph;
+            // A shared library, about whose items `retained` and `why`
+            // don't answer, needn't know what keeps them.
+            let Some(keepers) = session.keepers() else {
+                assert!(retained::refusal(&binary, Node::Item(0)).is_err());
+                assert!(why::refusal(&binary, Node::Item(0)).is_err());
+                continue;
+            };
+            // What the commands write, as they run them, but on the graph
+            // that the session has built.
+            let retained_tree = RetainedTree::new(&binary, graph, None);
+            let tree = DominatorTree::build(&binary, graph, None);
+            let json = |write: &dyn Fn(&mut Vec<u8>) -> anyhow::Result<()>| {
+                let mut out = Vec::new();
+                write(&mut out).unwrap();
+                serde_json::from_slice::<serde_json::Value>(&out).unwrap()
+            };
+            let item = |node: Node| serde_json::to_value(json::Item::new(&binary, node)).unwrap();
+            let items = (0..binary.items.len()).map(Node::Item);
+            for node in items.chain((0..binary.imports.len()).map(Node::Import)) {
+                let shown = format!("{}: {}", path.display(), node.name(&binary));
+                let retained_index = retained::refusal(&binary, node).ok();
+                let why_answers = why::refusal(&binary, node).is_ok();
+                let keeping = Keeping::new(&session, node, retained_index.is_some(), why_answers);
+                let Some(keeping) = keeping else {
+                    assert!(retained_index.is_none() && !why_answers, "{shown}");
+                    continue;
+                };
+                // R is what `retained SYMBOL --json` says removing it would
+                // save, where it answers.
+                if let Some(index) = retained_index {
+                    let symbol = retained::SymbolInTree {
+                        retained: &retained_tree,
+                        index,
+                        lead_name: "",
+                    };
+                    let answer = json(&|out| retained::write_json(&symbol, out));
+                    let reachable = answer["reachable"].as_bool().unwrap();
+                    assert_eq!(keeping.unreached, !reachable, "{shown}");
+                    let saved = reachable.then(|| answer["retained"].as_u64().unwrap());
+                    assert_eq!(keeping.retained, saved, "{shown}");
+                }
+                if graph.root(node).is_some() {
+                    assert!(keeping.kept_by.is_none() && keeping.chain.is_empty());
+                    roots += 1;
+                    continue;
+                }
+                // K is the item on every chain that `why SYMBOL --json`
+                // names, and the chain its first.
+                let answer = json(&|out| why::write_json(&binary, graph, &tree, node, out));
+                let reachable = answer["reachable"].as_bool().unwrap();
+                assert_eq!(keeping.unreached, !reachable, "{shown}");
+                unreached += usize::from(keeping.unreached);
+                let parent = keepers.tree.parent(node);
+                let on_every_chain = parent.map_or(serde_json::Value::Null, item);
+                assert_eq!(answer["on_every_chain"], on_every_chain, "{shown}");
+                if retained_index.is_some() {
+                    assert_eq!(keeping.kept_by.is_some(), parent.is_some(), "{shown}");
+                }
+                if let (Some(index), Some(Node::Item(parent))) = (retained_index, parent) {
+                    // As `retained`'s own rows name it after "kept by": the
+                    // row of this item, which comes right after K's in the
+                    // text of the tree under K, after the columns' names.
+                    let shape = TreeShape::Rows { words: "kept by" };
+                    let with_rows = HashSet::from([parent, index]);
+                    let mut table = Table::new(&[
+                        ("RETAINED", Align::Right),
+                        ("OWN", Align::Right),
+                        ("ITEM", Align::Left),
+                    ]);
+                    table.tree(&[retained_tree.tree_row(&with_rows, parent, shape)], shape);
+                    let row = &table_lines(&table)[2];
+                    let kept_by = format!(", kept by {}", keeping.kept_by.as_ref().unwrap());
+                    assert!(
+                        row.contains(binary.items[index].name.as_str()),
+                        "{shown}: {row}"
+                    );
+                    assert!(row.ends_with(&kept_by), "{shown}: {row}");
+                    kept += 1;
+                }
+                let first = why::first_chain(&binary, graph, &keepers.paths, node);
+                let first = first.unwrap_or_default();
+                let steps: Vec<_> = (answer["chains"].get(0).and_then(|c| c.as_array()))
+                    .map_or(Vec::new(), |steps| {
+                        steps.iter().map(|s| s["item"].clone()).collect()
+                    });
+                let nodes: Vec<_> = first.iter().map(|&node| item(node)).collect();
+                assert_eq!(nodes, steps, "{shown}");
+                // Each named as why's rows name the row they hang under.
+                let names: Vec<String> = (first.into_iter())
+                    .map(|node| session.names.short_name(node))
+                    .collect();
+                assert_eq!(keeping.chain, names, "{shown}");
+                chains += usize::from(!keeping.chain.is_empty());
+            }
+        }
+        assert!(
+            kept > 4000 && roots > 150 && chains > 4000 && unreached > 100,
+            "{kept} {roots} {chains} {unreached}"
         );
     }
 

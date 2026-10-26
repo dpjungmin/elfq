@@ -157,7 +157,8 @@ fn answer(symbol: &SymbolInTree, all: bool, format: Format) -> TreeAnswer {
     }
 }
 
-fn write_json(symbol: &SymbolInTree, out: &mut dyn Write) -> Result<()> {
+/// Writes what `retained SYMBOL --json` writes about the symbol.
+pub(super) fn write_json(symbol: &SymbolInTree, out: &mut dyn Write) -> Result<()> {
     let retained = symbol.retained;
     let binary = retained.binary;
     let node = symbol.node();
@@ -237,15 +238,15 @@ fn shared_note(symbol: &SymbolInTree, all: bool) -> Option<String> {
 
 /// SYMBOL's item, in the tree of retained sizes that says what only it
 /// leads to.
-struct SymbolInTree<'t, 'g, 'a> {
-    retained: &'t RetainedTree<'g, 'a>,
+pub(super) struct SymbolInTree<'t, 'g, 'a> {
+    pub retained: &'t RetainedTree<'g, 'a>,
     /// SYMBOL's item, as an index into [`Binary::items`].
-    index: usize,
+    pub index: usize,
     /// The item's name as the answer's first line gives it (see
     /// [`Symbol::lead_name`]).
     ///
     /// [`Symbol::lead_name`]: super::symbol::Symbol::lead_name
-    lead_name: &'t str,
+    pub lead_name: &'t str,
 }
 
 impl SymbolInTree<'_, '_, '_> {

@@ -151,7 +151,10 @@ without making them public. It and `arch/listing.rs` build only with the
 The checks of `browse` that need its private types are unit tests in
 `src/commands/browse/`:
 
-- `views/item.rs`: every line's link and note, on every sample.
+- `views/item.rs`: every line's link and note, on every sample, and the
+  header of every item and import, against what `retained --json` and
+  `why --json` say about it, with the item that keeps it named as the
+  rows of `retained` name it.
 - `views/callers.rs`: the callers tab of every page of every sample,
   against what the command under it prints, and that no two callers on
   the screen read the same once their names are shortened.
@@ -165,8 +168,9 @@ The checks of `browse` that need its private types are unit tests in
 - `views/names.rs`: each step of shortening a name.
 - `app.rs`: that the callees, callers and reach tabs keep their table's
   header and selected row on a small screen, that the reach tab is worked
-  out once the screen says so, and that the start page under the go-to
-  box is worked out only once the box closes.
+  out once the screen says so, that what keeps each item is worked out
+  once, after the first page is drawn, and that the start page under the
+  go-to box is worked out only once the box closes.
 - `views/thumb_text.rs`: the Thumb text, against objdump's text for each
   Cortex-M sample, in `testdata/tests/thumb`, and in each stripped
   sample, against the `$d` symbols of its twin.
