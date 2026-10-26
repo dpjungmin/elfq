@@ -13,7 +13,7 @@ use crate::commands::browse::keys::{self, Action};
 
 /// The words that the notes and the headers use besides the HOW column's,
 /// with what they mean.
-const WORDS: [(&str, &str); 13] = [
+const WORDS: [(&str, &str); 14] = [
     (
         "via veneer",
         "through a stub that the linker added; the note names where it ends up",
@@ -39,7 +39,12 @@ const WORDS: [(&str, &str); 13] = [
     ),
     (
         "in .bss",
-        "the section of an item in another block of memory than this function",
+        "the section of an item in another block of memory than this function or data \
+         object",
+    ),
+    (
+        ".asciz \"tick\\n\"",
+        "a string in a data object, which ends in a 0 byte, quoted as Rust writes strings",
     ),
     ("~12  ?", "an estimated size, and an unknown size"),
     (

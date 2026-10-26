@@ -423,6 +423,16 @@ function, data object or import, and ? lists every key. elfq prints x86-64
 code, and the Thumb code of Cortex-M cores up to Armv7E-M (M0, M0+, M3, M4,
 M7); for other Arm cores, a page lists only the lines that use another item.
 
+A data object's page shows its contents as far as elfq reads them: a
+vector table's entries, named by exception, each word that holds a pointer,
+as callees SYMBOL lists them, with a note that links to what it points to,
+or, for an object that holds only strings, each string, one a line; the
+status line shows in full a string too long for its line. A pointer's
+value is what the program finds there: in a shared library, the address
+that the dynamic loader writes, which the file may not hold. Under them is
+the objdump -s command that prints its bytes, since elfq prints no hex
+dump, unless its section, such as .bss, takes no room in the file.
+
 The other tabs show what callees SYMBOL, callers SYMBOL, reach SYMBOL, why
 SYMBOL and retained SYMBOL print about the item, but with every row, and
 under them that command, ready to paste: 2 what the item calls or uses, 3
@@ -430,12 +440,13 @@ what calls or uses it, 4 everything it calls or uses at any depth, by block
 of memory, 5 the chains from where the program starts that keep it, and 6
 what removing it would save, with, in a file with several blocks of memory,
 the bytes in each, as retained SYMBOL --range BLOCK counts them; 1 shows
-the code again. Enter on a row opens that item's page on the same tab, so
-that Enter after Enter walks down the callees or up the callers, and from
-the callers its code is already at the call. The pages of data objects and
-imports open on their callers, and a tab that an item can't have says why,
-as its command does; an import that has a PLT stub opens as the stub's
-page, since its name finds the stub as SYMBOL.
+the code or contents again. Enter on a row opens that item's page on the
+same tab, so that Enter after Enter walks down the callees or up the
+callers, and from the callers its code is already at the call. The page of
+a data object whose contents have no rows opens on its callers, as an
+import's does, and a tab that an item can't have says why, as its command
+does; an import that has a PLT stub opens as the stub's page, since its
+name finds the stub as SYMBOL.
 
 An item's header also says what retained SYMBOL and why SYMBOL say about
 it: what removing it would save, the item that keeps it, after \"kept by\",

@@ -357,10 +357,32 @@ impl<'a> App<'a> {
             .expect("the first page is never closed")
     }
 
+    /// The selected row's value, wrapped to `width` columns, when its row
+    /// cuts it, as it cuts a long string, and the status line has nothing
+    /// else to say: the status line shows it in full.
+    fn value_lines(&self, width: usize) -> Vec<String> {
+        let busy = self.waiting().is_some() || self.finding.is_some() || self.message.is_some();
+        match (&self.picker, busy, self.history.last()) {
+            // Broken where each line ends, rather than at spaces, so that
+            // every character shows, as the row would show it.
+            (None, false, Some(view)) => match view.value(width) {
+                Some(value) => {
+                    let characters: Vec<char> = value.chars().collect();
+                    (characters.chunks(width.max(1)))
+                        .map(String::from_iter)
+                        .collect()
+                }
+                None => Vec::new(),
+            },
+            _ => Vec::new(),
+        }
+    }
+
     /// Draws the screen: the title line, with the file's name and the
     /// pages that led here, the page or the go-to box, the status line,
     /// the command that prints what the page shows, if one does, and the
-    /// hints.
+    /// hints. The status line takes more than one line only to show in
+    /// full a value that its row cuts, such as a long string.
     pub fn draw(&mut self, frame: &mut Frame) {
         let area = frame.area();
         if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
@@ -379,10 +401,17 @@ impl<'a> App<'a> {
         };
         let most = usize::from(area.height).saturating_sub(3 + PAGE_LINES);
         let command = keep_lines(command, most.max(1), width);
+        // A value that its row cuts wraps too, in the lines that the
+        // command leaves.
+        let value = keep_lines(
+            self.value_lines(width),
+            (most + 1).saturating_sub(command.len()).max(1),
+            width,
+        );
         let [title, body, status, command_area, hints] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Fill(1),
-            Constraint::Length(1),
+            Constraint::Length(value.len().max(1) as u16),
             Constraint::Length(command.len() as u16),
             Constraint::Length(1),
         ])
@@ -420,16 +449,21 @@ impl<'a> App<'a> {
             .last_mut()
             .expect("the first page is never closed");
         view.draw(frame, body);
-        let status_line = match (waiting, &self.finding, &self.message) {
-            (Some(waiting), _, _) => Line::raw(cut(&waiting, width)),
+        let status_lines = match (waiting, &self.finding, &self.message) {
+            (Some(waiting), _, _) => vec![Line::raw(cut(&waiting, width))],
             // What is typed is cut from the left, so that its end shows.
-            (None, Some(typed), _) => Line::raw(cut_left(&format!("find: {typed}▏"), width)),
-            (None, None, Some(message)) => Line::raw(cut(message, width)),
+            (None, Some(typed), _) => vec![Line::raw(cut_left(&format!("find: {typed}▏"), width))],
+            (None, None, Some(message)) => vec![Line::raw(cut(message, width))],
+            (None, None, None) if !value.is_empty() => value
+                .into_iter()
+                .map(|line| Line::raw(line).dim())
+                .collect(),
             (None, None, None) => {
-                Line::raw(cut(&view.preview(&self.session).unwrap_or_default(), width)).dim()
+                let preview = view.preview(&self.session).unwrap_or_default();
+                vec![Line::raw(cut(&preview, width)).dim()]
             }
         };
-        frame.render_widget(status_line, status);
+        draw_lines(frame, status, status_lines);
         draw_lines(
             frame,
             command_area,

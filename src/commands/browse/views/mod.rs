@@ -121,6 +121,15 @@ impl View {
         }
     }
 
+    /// The selected row's value, when its row cuts it to fit a screen
+    /// `width` columns wide, as a long string in a data object's contents.
+    pub fn value(&self, width: usize) -> Option<&str> {
+        match self {
+            View::Item(page) => page.value(width),
+            View::Start(_) | View::Help(_) => None,
+        }
+    }
+
     /// Whether the page has lines that link, which Tab moves between.
     pub fn has_links(&self) -> bool {
         match self {

@@ -4,7 +4,9 @@
 //! An item's page also lists, on tabs 2 to 6, what the item calls or
 //! uses, what calls or uses it, everything it reaches, why it is in the
 //! file, and what removing it would save, and its header says what keeps
-//! it in the file.
+//! it in the file. A data object's page shows, in place of code, the
+//! pointers it holds, each a link, a vector table's entries, or the strings
+//! of an object that holds only strings.
 //! Without SYMBOL, browse opens on where the program starts, each start a
 //! link to its page.
 //!
