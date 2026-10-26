@@ -6,6 +6,8 @@ use std::io::{self, Write};
 
 mod tree;
 
+#[cfg(feature = "tui")]
+pub use tree::flat_rows;
 pub use tree::{TreeRow, TreeShape};
 
 /// How a column's cells line up.

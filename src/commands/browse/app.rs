@@ -97,13 +97,18 @@ impl<'a> App<'a> {
             finding: None,
             searched: None,
         };
-        app.work();
+        // The start page is worked out before it is first drawn. What
+        // keeps each item waits until the first page is drawn, with a
+        // status line that says so (see `event_loop`).
+        app.work_out_start_page();
         app
     }
 
-    /// What the page on the screen has yet to work out, which the status
-    /// line says while it does: the start page, once the go-to box isn't
-    /// over it, and tab 4 of an item's page, the first time it is shown.
+    /// What the browser has yet to work out for the screen, which the
+    /// status line says while it does, once the go-to box isn't over the
+    /// page: the start page; what keeps each item, which the headers of
+    /// items' pages say, once after the first page is drawn; and tab 4, 5
+    /// or 6 of an item's page, the first time it is shown.
     fn waiting(&self) -> Option<String> {
         if self.picker.is_some() {
             return None;
@@ -113,6 +118,9 @@ impl<'a> App<'a> {
                 "working out where {} starts…",
                 self.session.file_name()
             )),
+            _ if self.session.needs_keepers() => {
+                Some("working out what keeps each item…".to_string())
+            }
             View::Item(page) => page.waiting(),
             _ => None,
         }
@@ -125,15 +133,32 @@ impl<'a> App<'a> {
         self.waiting().is_some()
     }
 
-    /// Works out what the page on the screen has yet to.
+    /// Works out what the screen has yet to (see [`App::has_work`]).
     pub fn work(&mut self) {
-        if !self.has_work() {
-            return;
+        self.work_out_start_page();
+        if self.picker.is_none() && self.session.needs_keepers() {
+            self.session.work_out_keepers();
+            // The pages so far say it in their headers too.
+            for view in self.history.iter_mut().chain(&mut self.forward) {
+                if let View::Item(page) = view {
+                    page.add_keeping(&self.session);
+                }
+            }
         }
-        match self.history.last_mut() {
-            Some(View::Start(start)) => *start = Some(Box::new(start_page(&self.session))),
-            Some(View::Item(page)) => page.work(&self.session),
-            _ => {}
+        if let Some(View::Item(page)) = self.history.last_mut()
+            && page.waiting().is_some()
+        {
+            page.work(&self.session);
+        }
+    }
+
+    /// Works out the start page, if it is on the screen and the go-to box
+    /// isn't over it.
+    fn work_out_start_page(&mut self) {
+        if self.picker.is_none()
+            && let Some(View::Start(start @ None)) = self.history.last_mut()
+        {
+            *start = Some(Box::new(start_page(&self.session)));
         }
     }
 
@@ -464,6 +489,57 @@ mod tests {
     }
 
     #[test]
+    fn what_keeps_each_item_is_worked_out_after_the_first_draw() {
+        let pages = [
+            ("c-x86_64.elf", Some("main")),
+            ("c-x86_64.elf", None),
+            ("c-x86_64.so", Some("log_msg")),
+        ];
+        for (sample, symbol) in pages {
+            let path = samples().into_iter().find(|path| path.ends_with(sample));
+            let path = path.unwrap();
+            let binary = Binary::load(&path).unwrap();
+            let session = Session::new(&path, &binary).unwrap();
+            let mut app = App::new(session, symbol);
+            // Not in a shared library, about whose items `retained` and
+            // `why` don't answer.
+            let waits = !sample.ends_with(".so");
+            let waiting = app.waiting();
+            let says = waiting.as_deref() == Some("working out what keeps each item…");
+            assert_eq!(says, waits, "{sample} {symbol:?}");
+            app.work();
+            assert!(!app.has_work(), "{sample} {symbol:?}");
+            assert_eq!(
+                app.session.keepers().is_some(),
+                waits,
+                "{sample} {symbol:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn tabs_5_and_6_are_worked_out_once_the_screen_says_so() {
+        let path = samples()
+            .into_iter()
+            .find(|path| path.ends_with("c-cortex-m7.elf"));
+        let path = path.unwrap();
+        let binary = Binary::load(&path).unwrap();
+        let session = Session::new(&path, &binary).unwrap();
+        let mut app = App::new(session, Some("main"));
+        app.work();
+        let tabs = [
+            ('5', "working out what keeps main in the file…"),
+            ('6', "working out what only main leads to…"),
+        ];
+        for (key, says) in tabs {
+            app.key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE));
+            assert_eq!(app.waiting().as_deref(), Some(says));
+            app.work();
+            assert!(!app.has_work(), "{key}");
+        }
+    }
+
+    #[test]
     fn the_tabs_show_their_selected_row_on_a_small_screen() {
         // Long names make long headers, notes and commands, which leave
         // the tabs few lines.
@@ -480,6 +556,8 @@ mod tests {
                 finding: None,
                 searched: None,
             };
+            // As after the first page is drawn.
+            app.session.work_out_keepers();
             let items = (0..binary.items.len()).map(Node::Item);
             let imports = (0..binary.imports.len()).map(Node::Import);
             let nodes: Vec<Node> = (items.chain(imports))
@@ -488,7 +566,7 @@ mod tests {
                 .collect();
             for (node, tab) in nodes
                 .into_iter()
-                .flat_map(|node| [2, 3, 4].map(|tab| (node, tab)))
+                .flat_map(|node| [2, 3, 4, 5, 6].map(|tab| (node, tab)))
             {
                 let name = node.name(&binary);
                 let mut page = ItemPage::new(&app.session, node, None, name);
@@ -497,8 +575,8 @@ mod tests {
                     continue;
                 }
                 app.history = vec![View::Item(Box::new(page))];
-                // Tab 4 is worked out once the screen says so.
-                assert_eq!(app.has_work(), tab == 4, "{name}");
+                // Tabs 4, 5 and 6 are worked out once the screen says so.
+                assert_eq!(app.has_work(), tab >= 4, "{name}");
                 if app.has_work() {
                     let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
                     terminal.draw(|frame| app.draw(frame)).unwrap();
@@ -518,9 +596,9 @@ mod tests {
                     // tab has rows, each of which opens an item, and the
                     // header's facts.
                     let has_rows = app.page().has_links();
-                    let rows = !has_rows
-                        || (shown("HOW") || shown("ADDRESS"))
-                            && lines.iter().any(|line| line.starts_with("> "));
+                    let header = ["HOW", "ADDRESS", "RETAINED"].into_iter().any(shown);
+                    let rows =
+                        !has_rows || header && lines.iter().any(|line| line.starts_with("> "));
                     let screen = lines.join("\n");
                     assert!(rows, "{}, {name}, {tab}:\n{screen}", path.display());
                     assert!(shown("used by"), "{}, {name}:\n{screen}", path.display());
@@ -528,6 +606,6 @@ mod tests {
                 pages += 1;
             }
         }
-        assert!(pages > 300, "{pages}");
+        assert!(pages > 500, "{pages}");
     }
 }

@@ -132,6 +132,69 @@ pub(super) fn names_text(names: &[&str], all: bool) -> String {
     phrase(names, named(all))
 }
 
+/// How the notes of `why` and `retained` name the items they list: as the
+/// commands do, [`NAMED`] of them, or with `--all`, every one; or as
+/// browse does on a screen with little room for a note, only the first,
+/// shortened to fit.
+pub(super) struct Naming<'f> {
+    /// How many names it names before "and 5 more".
+    named: usize,
+    /// What it writes for each name, when not the name in full.
+    shorten: Option<&'f dyn Fn(&str) -> String>,
+}
+
+impl<'f> Naming<'f> {
+    /// As the commands name them, every one with `all`.
+    pub(super) fn of(all: bool) -> Naming<'static> {
+        Naming {
+            named: named(all),
+            shorten: None,
+        }
+    }
+
+    /// Only the first, as `shorten` writes it.
+    #[cfg(feature = "tui")]
+    pub(super) fn first(shorten: &'f dyn Fn(&str) -> String) -> Naming<'f> {
+        Naming {
+            named: 1,
+            shorten: Some(shorten),
+        }
+    }
+
+    /// The names joined into a phrase, as [`names_text`] joins them: "a",
+    /// "a and b", "a, b and c", or "a, b, … and 5 more".
+    pub(super) fn phrase(&self, names: &[&str]) -> String {
+        let (shown, more) = self.shown(names);
+        let shown: Vec<&str> = shown.iter().map(String::as_str).collect();
+        match more {
+            0 => phrase(&shown, usize::MAX),
+            more => format!("{} and {more} more", shown.join(", ")),
+        }
+    }
+
+    /// The names as a list: "a, b, c", or "a, b, … and 5 more".
+    pub(super) fn list(&self, names: &[&str]) -> String {
+        let (shown, more) = self.shown(names);
+        match more {
+            0 => shown.join(", "),
+            more => format!("{} and {more} more", shown.join(", ")),
+        }
+    }
+
+    /// The names it names, as it writes them, and how many it leaves out.
+    fn shown(&self, names: &[&str]) -> (Vec<String>, usize) {
+        let shown = shown_count(names.len(), self.named);
+        let write = |name: &&str| match self.shorten {
+            Some(shorten) => shorten(name),
+            None => name.to_string(),
+        };
+        (
+            names[..shown].iter().map(write).collect(),
+            names.len() - shown,
+        )
+    }
+}
+
 /// Addresses for a sentence: "0x1795", "0x1795 and 0x17d4", or for more
 /// than four, "0x1795, 0x17d4, 0x17e0 and 3 more" unless `all`.
 pub(super) fn addresses_text(sites: &[u64], all: bool) -> String {

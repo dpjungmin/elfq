@@ -272,7 +272,7 @@ pub(super) fn memory_table(binary: &Binary, blocks: &[MemoryBlock]) -> Option<Ta
 
 /// The sections in a block, then the sections whose load images are in
 /// it, such as ".isr_vector .text .rodata, load image of .data".
-fn sections_text(sections: &[&str], load_images: &[&str]) -> String {
+pub(super) fn sections_text(sections: &[&str], load_images: &[&str]) -> String {
     let mut text = sections.join(" ");
     if !load_images.is_empty() {
         if !text.is_empty() {

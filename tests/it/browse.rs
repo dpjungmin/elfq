@@ -105,8 +105,9 @@ fn a_function_shows_its_code_and_what_each_line_uses() {
         "\
 c-x86_64.elf › log_msg
 log_msg  function at 0x1610, 51 bytes, in .text
-used by 5 · uses 2
-[1 code]  2 callees   3 callers   4 reach
+used by 5 · uses 2 · retained 103, kept by main
+from a root: _start › main › app_tick › log_msg
+[1 code]  2 callees   3 callers   4 reach   5 why   6 retained
   ADDRESS  INSTRUCTION
 > 0x1610   endbr64
   0x1614   push    rbx
@@ -131,8 +132,7 @@ used by 5 · uses 2
 
 
 
-
-↑↓ move  enter follow  esc back  tab next link  1 2 3 4 tabs  / find  g go to  ? help  q quit
+↑↓ move  enter follow  esc back  tab next link  1 2 3 4 5 6 tabs  / find  g go to  ? help  q quit
 ",
     );
     // Tab goes to the next line that uses another item, and the status
@@ -142,8 +142,9 @@ used by 5 · uses 2
         "\
 c-x86_64.elf › log_msg
 log_msg  function at 0x1610, 51 bytes, in .text
-used by 5 · uses 2
-[1 code]  2 callees   3 callers   4 reach
+used by 5 · uses 2 · retained 103, kept by main
+from a root: _start › main › app_tick › log_msg
+[1 code]  2 callees   3 callers   4 reach   5 why   6 retained
   ADDRESS  INSTRUCTION
   0x1610   endbr64
   0x1614   push    rbx
@@ -161,7 +162,6 @@ used by 5 · uses 2
   0x163b   xor     esi, esi
   0x163d   pop     rbx
   0x163e   jmp     platform_write     tail call
-
 → strlen@plt  function at 0x1080, 16 bytes, in .plt.sec
 ↑↓ move  enter follow  esc back  tab next link  / find  g go to  ? help  q quit
 ",
@@ -176,15 +176,15 @@ fn enter_follows_a_call_and_esc_comes_back_to_it() {
         "\
 c-x86_64.elf › log_msg › platform_write
 platform_write  function at 0x1ac0, 20 bytes, in .text
-used by 1 · uses 1
-[1 code]  2 callees   3 callers   4 reach
+used by 1 · uses 1 · retained 36, kept by log_msg
+from a root: _start › main › process_frame › log_msg › platform_write
+[1 code]  2 callees   3 callers   4 reach   5 why   6 retained
   ADDRESS  INSTRUCTION
 > 0x1ac0   endbr64
   0x1ac4   mov     rdx, rsi
   0x1ac7   mov     rsi, rdi
   0x1aca   mov     edi, 1
   0x1acf   jmp     write@plt  tail call
-
 
 
 
@@ -415,8 +415,8 @@ fn enter_opens_a_start_and_esc_comes_back_to_the_start_page() {
 c-cortex-m7.elf › SysTick_Handler
 SysTick_Handler  function at 0x0, 16 bytes, in .itcm (0x00000000..0x000000e0), copied there from
 0x30000040
-root: vector table · used by 1 · uses 2
-[1 code]  2 callees   3 callers   4 reach
+root: vector table · used by 1 · uses 2 · retained 28
+[1 code]  2 callees   3 callers   4 reach   5 why   6 retained
   ADDRESS  INSTRUCTION
 > 0x0      ldr     r3, [pc, #8]       uses systick_count in .bss
   0x2      ldr     r0, [r3]
@@ -435,7 +435,7 @@ root: vector table · used by 1 · uses 2
 
 
 → systick_count  data object at 0x20000444, 4 bytes, in .bss
-↑↓ move  enter follow  esc back  tab next link  1 2 3 4 tabs  / find  g go to  ? help  q quit
+↑↓ move  enter follow  esc back  tab next link  1 2 3 4 5 6 tabs  / find  g go to  ? help  q quit
 ",
     );
     assert_eq!(
@@ -508,8 +508,9 @@ fn symbol_is_found_as_the_commands_find_it() {
         "\
 c-x86_64.elf › log_msg
 log_msg (which holds 0x162e)  function at 0x1610, 51 bytes, in .text
-used by 5 · uses 2
-[1 code]  2 callees   3 callers   4 reach
+used by 5 · uses 2 · retained 103, kept by main
+from a root: _start › main › app_tick › log_msg
+[1 code]  2 callees   3 callers   4 reach   5 why   6 retained
   ADDRESS  INSTRUCTION
   0x1610   endbr64
   0x1614   push    rbx
@@ -527,7 +528,6 @@ used by 5 · uses 2
   0x163b   xor     esi, esi
   0x163d   pop     rbx
   0x163e   jmp     platform_write     tail call
-
 → platform_write  function at 0x1ac0, 20 bytes, in .text
 ↑↓ move  enter follow  esc back  tab next link  / find  g go to  ? help  q quit
 ",
@@ -540,7 +540,8 @@ used by 5 · uses 2
 rust-x86_64-nodebug.elf › memcpy
 memcpy  imported from a shared library: its code isn't in this file
 used by 57
-[3 callers]
+from a root: _start › main › lang_start_internal › set_current_info › memcpy
+[3 callers]  5 why
   HOW            AT                  CALLER
 > call           0x4cced             <&[u8] as SpecNewImpl>::spec_new_impl
   call           0x2ebed             <LoopingLookup<…>>::new_lookup
@@ -557,7 +558,6 @@ used by 57
   call           0x4cc56             <String as From<Cow<str>>>::from
   call           0x3f93f             <String as Write>::write_str
   call           0x4c87a, 0x4c900    <alloc::string::String>::from_utf8_lossy
-  call           0x3f6db             <Vec<u8> as Write>::write
 → <&[u8] as <alloc::ffi::c_str::CString>::new::SpecNewImpl>::spec_new_impl  fun…
 $ elfq testdata/bin/rust-x86_64-nodebug.elf callers memcpy --all
 ↑↓ move  enter follow  esc back  tab next link  / find  g go to  ? help  q quit
@@ -569,7 +569,8 @@ $ elfq testdata/bin/rust-x86_64-nodebug.elf callers memcpy --all
 rust-x86_64-nodebug.elf › memcpy
 memcpy  imported from a shared library: its code isn't in this file
 used by 57
-[3 callers]
+from a root: _start › main › lang_start_internal › set_current_info › memcpy
+[3 callers]  5 why
   HOW            AT                  CALLER
 > call           0x4cced             <&[u8] as SpecNewImpl>::spec_new_impl
   call           0x2ebed             <LoopingLookup<…>>::new_lookup
@@ -592,10 +593,9 @@ used by 57
   call           0x3f4d1             <alloc::vec::Vec<u8> as std::io::Write>::write_vectored
   call           0x16bda, 0x16d5a    <OnceCell<…>>::try_init::<get_or_init<…>::{closure#0}, !>
   call           0x30b2c             <Unit<EndianSlice<LittleEndian>, usize>>::new
-  call           0x195cb and 8 more  <Cache>::with_global::<resolve::{closure#1}>
 → <&[u8] as <alloc::ffi::c_str::CString>::new::SpecNewImpl>::spec_new_impl  function at 0x4cc90, 30…
 $ elfq testdata/bin/rust-x86_64-nodebug.elf callers memcpy --all
-↑↓ move  enter follow  esc back  tab next link  / find  g go to  ? help  q quit
+↑↓ move  enter follow  esc back  tab next link  3 5 tabs  / find  g go to  ? help  q quit
 ",
     );
 }
@@ -700,8 +700,9 @@ go to: crc▏
         "\
 c-x86_64.elf › main › log_msg
 log_msg (which holds 0x162e)  function at 0x1610, 51 bytes, in .text
-used by 5 · uses 2
-[1 code]  2 callees   3 callers   4 reach
+used by 5 · uses 2 · retained 103, kept by main
+from a root: _start › main › app_tick › log_msg
+[1 code]  2 callees   3 callers   4 reach   5 why   6 retained
   ADDRESS  INSTRUCTION
   0x1610   endbr64
   0x1614   push    rbx
@@ -719,7 +720,6 @@ used by 5 · uses 2
   0x163b   xor     esi, esi
   0x163d   pop     rbx
   0x163e   jmp     platform_write     tail call
-
 → platform_write  function at 0x1ac0, 20 bytes, in .text
 ↑↓ move  enter follow  esc back  tab next link  / find  g go to  ? help  q quit
 ",
@@ -764,7 +764,8 @@ Keys
   Esc ← h Bksp Ctrl-O  back to where you were
   ]                    forward again
   Tab Shift-Tab        the next or previous line that uses another item
-  1 2 3 4              tabs: 1 code, 2 callees, 3 callers, 4 reach
+  1 2 3 4 5 6          tabs: 1 code, 2 callees, 3 callers, 4 reach, 5 why, 6 retained
+  u                    the item that keeps this one, which its header names after \"kept by\"
   /                    find text in the page's rows, ignoring case
   n N                  the next or previous row that has the text found
   g                    go to a function, data object or import, by name or address
@@ -786,7 +787,6 @@ Words
                        jumps; Enter moves there
   address ↓  address ↑ adr loads the address of a line in this function, such as a table's; Enter
                        moves there
-  = 0x028f5c28         the constant that a load from a literal pool reads
 
 ↑↓ move  enter follow  esc back  g go to  ? help  q quit
 ",
@@ -805,7 +805,8 @@ Keys
   Esc ← h Bksp Ctrl-O  back to where you were
   ]                    forward again
   Tab Shift-Tab        the next or previous line that uses another item
-  1 2 3 4              tabs: 1 code, 2 callees, 3 callers, 4 reach
+  1 2 3 4 5 6          tabs: 1 code, 2 callees, 3 callers, 4 reach, 5 why, 6 retained
+  u                    the item that keeps this one, which its header names after \"kept by\"
   /                    find text in the page's rows, ignoring case
   n N                  the next or previous row that has the text found
   g                    go to a function, data object or import, by name or address
@@ -823,7 +824,6 @@ Words
   via veneer           through a stub that the linker added; the note names where it ends up
   via PLT              through a PLT stub that passes the call on to one of the file's own
                        functions; the note names it
-  jump ↓  jump ↑       a branch to a line further down or up the function, or a case of a table of
 
 ↑↓ move  enter follow  esc back  g go to  ? help  q quit
 ",
@@ -840,7 +840,10 @@ Keys
   Esc ← h Bksp Ctrl-O  back to where you were
   ]                    forward again
   Tab Shift-Tab        the next or previous line that uses another item
-  1 2 3 4              tabs: 1 code, 2 callees, 3 callers, 4 reach
+  1 2 3 4 5 6          tabs: 1 code, 2 callees, 3 callers, 4 reach, 5 why, 6
+                       retained
+  u                    the item that keeps this one, which its header names
+                       after \"kept by\"
   /                    find text in the page's rows, ignoring case
   n N                  the next or previous row that has the text found
   g                    go to a function, data object or import, by name or
@@ -850,9 +853,6 @@ Keys
   q Ctrl-C             quit
 Words
   call                 a direct call, or a call through a register that the code
-                       loaded with the target's address, as a long call does
-  tail call            a jump to the start of a function, which then returns to
-                       the caller's caller
 
 ↑↓ move  enter follow  esc back  g go to  ? help  q quit
 ",
@@ -860,11 +860,11 @@ Words
     // It scrolls, and Esc goes back.
     let end = screen("c-x86_64.elf", Some("main"), (60, 16), &["?", "End"]);
     assert!(
-        end.contains("\n  ~12  ?               an estimated size, and an unknown\n"),
+        end.contains("\n  (through a pointer)  nothing calls the function directly,\n"),
         "{end}"
     );
     assert!(
-        end.contains("\n  address ↓  address ↑ adr loads the address of a line in\n"),
+        end.contains("\n  load image           the copy of an item that the file\n"),
         "{end}"
     );
     let back = screen("c-x86_64.elf", Some("main"), (80, 24), &["?", "Esc"]);
@@ -958,8 +958,9 @@ fn a_cpp_function_names_what_it_calls() {
         "\
 cpp-x86_64.elf › process_frame
 app::process_frame(app::Frame const&, app::Stage&)  function at 0x15c0, 254 bytes, in .text
-used by 1 · uses 7 · 1 call elfq can't follow
-[1 code]  2 callees   3 callers   4 reach
+used by 1 · uses 7 · 1 call elfq can't follow · retained 1362, kept by main
+from a root: _start › main › process_frame
+[1 code]  2 callees   3 callers   4 reach   5 why   6 retained
   ADDRESS  INSTRUCTION
 > 0x15c0   endbr64
   0x15c4   sub     rsp, 0x58
@@ -983,9 +984,8 @@ used by 1 · uses 7 · 1 call elfq can't follow
   0x1616   cmp     r9, 0x3f
   0x161a   jbe     0x1680                      jump ↓
   0x161c   mov     r9d, 0x20
-  0x1622   xor     eax, eax
 
-↑↓ move  enter follow  esc back  tab next link  1 2 3 4 tabs  / find  g go to  ? help  q quit
+↑↓ move  enter follow  esc back  tab next link  1 2 3 4 5 6 tabs  / find  g go to  ? help  q quit
 ",
     );
 }
@@ -999,8 +999,8 @@ fn thumb_code_shows_its_instructions_and_the_data_among_them() {
 c-cortex-m7.elf › SysTick_Handler
 SysTick_Handler  function at 0x0, 16 bytes, in .itcm (0x00000000..0x000000e0),
 copied there from 0x30000040
-root: vector table · used by 1 · uses 2
-[1 code]  2 callees   3 callers   4 reach
+root: vector table · used by 1 · uses 2 · retained 28
+[1 code]  2 callees   3 callers   4 reach   5 why   6 retained
   ADDRESS  INSTRUCTION
 > 0x0      ldr     r3, [pc, #8]       uses systick_count in .bss
   0x2      ldr     r0, [r3]
@@ -1029,8 +1029,9 @@ root: vector table · used by 1 · uses 2
         "\
 c-cortex-m7.elf › app_tick
 app_tick  function at 0x300002e4, 60 bytes, in .text (0x30000000..0x30000edc)
-used by 2 · uses 3
-[1 code]  2 callees   3 callers   4 reach
+used by 2 · uses 3 · retained 68
+from a root: SysTick_Handler › __app_tick_veneer › app_tick
+[1 code]  2 callees   3 callers   4 reach   5 why   6 retained
   ADDRESS     INSTRUCTION
 > 0x300002e4  ldr     r3, [pc, #44]   = 0xc28f5c29
   0x300002e6  ldr     r2, [pc, #48]   = 0x028f5c28
@@ -1055,8 +1056,7 @@ used by 2 · uses 3
 
 
 
-
-↑↓ move  enter follow  esc back  tab next link  1 2 3 4 tabs  / find  g go to  ? help  q quit
+↑↓ move  enter follow  esc back  tab next link  1 2 3 4 5 6 tabs  / find  g go to  ? help  q quit
 ",
     );
     assert_output(
@@ -1065,8 +1065,8 @@ used by 2 · uses 3
 c-cortex-m7.elf › Default_Handler
 Default_Handler (also named NMI_Handler)  function at 0x300005f4, 2 bytes, in
 .text (0x30000000..0x30000edc)
-root: vector table · used by 1 · uses 0
-[1 code]  2 callees   3 callers   4 reach
+root: vector table · used by 1 · uses 0 · retained 2
+[1 code]  2 callees   3 callers   4 reach   5 why   6 retained
   ADDRESS     INSTRUCTION
 > 0x300005f4  b       0x300005f4  jump ↑
 
@@ -1085,7 +1085,7 @@ root: vector table · used by 1 · uses 0
 
 
 → 0x300005f4, in this function
-↑↓ move  enter follow  esc back  1 2 3 4 tabs  / find  g go to  ? help  q quit
+↑↓ move  enter follow  esc back  / find  g go to  ? help  q quit
 ",
     );
 }
@@ -1102,8 +1102,8 @@ fn a_word_that_holds_an_items_address_links_to_it() {
 c-cortex-m4.elf › Reset_Handler
 Reset_Handler (which holds 0x80005d8)  function at 0x80005a0, 76 bytes, in .text
 (0x08000000..0x08000e0c)
-root: entry point · used by 1 · uses 3
-[1 code]  2 callees   3 callers   4 reach
+root: entry point · used by 1 · uses 3 · retained 3111
+[1 code]  2 callees   3 callers   4 reach   5 why   6 retained
   ADDRESS    INSTRUCTION
   0x80005ce  bl      memset         call
   0x80005d2  bl      main           call
@@ -1114,7 +1114,7 @@ root: entry point · used by 1 · uses 3
   0x80005e4  .word   0x20000020     config_sum in .bss
   0x80005e8  .word   0x20000048
 → stats  data object at 0x20000000, 32 bytes, in .data
-↑↓ move  enter follow  esc back  tab next link  1 2 3 4 tabs  / find  g go to  ? help  q quit
+↑↓ move  enter follow  esc back  tab next link  1 2 3 4 5 6 tabs  / find  g go to  ? help  q quit
 ",
     );
 }
@@ -1131,8 +1131,9 @@ fn a_table_of_addresses_lists_the_cases_it_jumps_to() {
 c-strtod.elf › _strtod_l
 _strtod_l (which holds 0x8000082)  function at 0x8000058, 4084 bytes, in .text
 (0x08000000..0x08005324)
-used by 5 · uses 42 · 1 jump elfq can't follow
-[1 code]  2 callees   3 callers   4 reach
+used by 5 · uses 42 · 1 jump elfq can't follow · retained 21300, kept by strtod
+from a root: Reset_Handler › strtod › _strtod_l
+[1 code]  2 callees   3 callers   4 reach   5 why   6 retained
   ADDRESS    INSTRUCTION
   0x800007e  cmp     r2, #0x2d
   0x8000080  bhi     0x8000140             jump ↓
@@ -1141,9 +1142,8 @@ used by 5 · uses 42 · 1 jump elfq can't follow
   0x8000088  .word   0x0800025b            jump ↓
   0x800008c  .word   0x08000141            jump ↓
   0x8000090  .word   0x08000141            jump ↓
-  0x8000094  .word   0x08000141            jump ↓
 → 0x8000088, in this function
-↑↓ move  enter follow  esc back  tab next link  1 2 3 4 tabs  / find  g go to  ? help  q quit
+↑↓ move  enter follow  esc back  tab next link  1 2 3 4 5 6 tabs  / find  g go to  ? help  q quit
 ",
     );
     assert_output(
@@ -1152,8 +1152,10 @@ used by 5 · uses 42 · 1 jump elfq can't follow
 c-strtod-stripped.elf › fn_0x8000058
 fn_0x8000058 (which holds 0x8000082)  function at 0x8000058, ~4124 bytes, in .text
 (0x08000000..0x08005324)
-found by following the code · used by 1 · uses 44 · 1 jump elfq can't follow
-[1 code]  2 callees   3 callers   4 reach
+found by following the code · used by 1 · uses 44 · 1 jump elfq can't follow · retained 23908, kept
+by fn_0x8001074
+from a root: entry › fn_0x8001074 › fn_0x8000058
+[1 code]  2 callees   3 callers   4 reach   5 why   6 retained
   ADDRESS    INSTRUCTION
   0x800007e  cmp     r2, #0x2d
   0x8000080  bhi     0x8000140             jump ↓
@@ -1161,10 +1163,8 @@ found by following the code · used by 1 · uses 44 · 1 jump elfq can't follow
   0x8000084  ldr.w   pc, [r0, r2, lsl #2]  jump through a pointer: elfq can't follow
   0x8000088  .word   0x0800025b            jump ↓
   0x800008c  .word   0x08000141            jump ↓
-  0x8000090  .word   0x08000141            jump ↓
-  0x8000094  .word   0x08000141            jump ↓
 → 0x8000088, in this function
-↑↓ move  enter follow  esc back  tab next link  1 2 3 4 tabs  / find  g go to  ? help  q quit
+↑↓ move  enter follow  esc back  tab next link  1 2 3 4 5 6 tabs  / find  g go to  ? help  q quit
 ",
     );
     // Enter on a word goes to its case, which here comes before the table,
@@ -1200,8 +1200,9 @@ fn a_page_opened_at_an_address_shows_the_lines_before_it() {
 c-cortex-m7.elf › process_frame
 process_frame (which holds 0x3000034c)  function at 0x30000320, 376 bytes, in
 .text (0x30000000..0x30000edc)
-used by 1 · uses 10
-[1 code]  2 callees   3 callers   4 reach
+used by 1 · uses 10 · retained 1712, kept by main
+from a root: Reset_Handler › main › process_frame
+[1 code]  2 callees   3 callers   4 reach   5 why   6 retained
   ADDRESS     INSTRUCTION
   0x30000340  cmp     r3, r6
   0x30000342  bhi.w   0x3000045a             jump ↓
@@ -1218,7 +1219,6 @@ used by 1 · uses 10
   0x30000360  lsrs    r5, r5, #1
   0x30000362  beq     0x30000450             jump ↓
   0x30000364  adds    r0, r4, #6
-  0x30000366  add     r4, sp, #0x20
 → crc32  function at 0x10, 48 bytes, in .itcm, through __crc32_veneer
 ↑↓ move  enter follow  esc back  tab next link  / find  g go to  ? help  q quit
 ",
@@ -1253,8 +1253,8 @@ fn thumb_code_of_other_cores_lists_only_the_lines_that_use_another_item() {
 c-cortex-m7.elf › SysTick_Handler
 SysTick_Handler  function at 0x0, 16 bytes, in .itcm (0x00000000..0x000000e0),
 copied there from 0x30000040
-root: vector table · used by 1 · uses 2
-[1 code]  2 callees   3 callers   4 reach
+root: vector table · used by 1 · uses 2 · retained 28
+[1 code]  2 callees   3 callers   4 reach   5 why   6 retained
   ADDRESS
 > 0x0      uses systick_count in .bss
   0x8      tail call via veneer → app_tick in .text
@@ -1283,8 +1283,8 @@ file is for Armv8-M Mainline: these are the lines that use another item.
 c-cortex-m7.elf › Default_Handler
 Default_Handler (also named NMI_Handler)  function at 0x300005f4, 2 bytes, in
 .text (0x30000000..0x30000edc)
-root: vector table · used by 1 · uses 0
-[1 code]  2 callees   3 callers   4 reach
+root: vector table · used by 1 · uses 0 · retained 2
+[1 code]  2 callees   3 callers   4 reach   5 why   6 retained
 elfq prints only the instructions of Cortex-M cores up to Armv7E-M, and this
 file is for Armv8-M Mainline. No line of Default_Handler uses another item.
 
@@ -1303,7 +1303,7 @@ file is for Armv8-M Mainline. No line of Default_Handler uses another item.
 
 
 
-↑↓ move  enter follow  esc back  1 2 3 4 tabs  g go to  ? help  q quit
+↑↓ move  enter follow  esc back  1 2 3 4 5 6 tabs  g go to  ? help  q quit
 ",
     );
     // A file that doesn't say which core it is for.
@@ -1322,8 +1322,8 @@ file is for Armv8-M Mainline. No line of Default_Handler uses another item.
 c-cortex-m7.elf › SysTick_Handler
 SysTick_Handler  function at 0x0, 16 bytes, in .itcm (0x00000000..0x000000e0),
 copied there from 0x30000040
-root: vector table · used by 1 · uses 2
-[1 code]  2 callees   3 callers   4 reach
+root: vector table · used by 1 · uses 2 · retained 28
+[1 code]  2 callees   3 callers   4 reach   5 why   6 retained
   ADDRESS
 > 0x0      uses systick_count in .bss
   0x8      tail call via veneer → app_tick in .text
@@ -1354,8 +1354,8 @@ fn a_stripped_file_names_its_items_by_address() {
         "\
 c-x86_64-stripped.elf › fn_0x1170
 fn_0x1170  function at 0x1170, 38 bytes, in .text
-root: entry point · used by nothing · uses 2
-[1 code]  2 callees   3 callers   4 reach
+root: entry point · used by nothing · uses 2 · retained 3676
+[1 code]  2 callees   3 callers   4 reach   5 why   6 retained
   ADDRESS  INSTRUCTION
 > 0x1170   endbr64
   0x1174   xor     ebp, ebp
@@ -1383,8 +1383,8 @@ root: entry point · used by nothing · uses 2
         "\
 c-cortex-m7-stripped.elf › fn_0x0
 fn_0x0  function at 0x0, ~16 bytes, in .itcm (0x00000000..0x000000e0), copied there from 0x30000040
-found by following the code · root: vector table · used by 1 · uses 2
-[1 code]  2 callees   3 callers   4 reach
+found by following the code · root: vector table · used by 1 · uses 2 · retained 28
+[1 code]  2 callees   3 callers   4 reach   5 why   6 retained
   ADDRESS  INSTRUCTION
 > 0x0      ldr     r3, [pc, #8]  uses .bss@0x20000444 in .bss
   0x2      ldr     r0, [r3]
@@ -1410,7 +1410,7 @@ found by following the code · root: vector table · used by 1 · uses 2
 
 
 → .bss@0x20000444  data object at 0x20000444, ~4 bytes, in .bss
-↑↓ move  enter follow  esc back  tab next link  1 2 3 4 tabs  / find  g go to  ? help  q quit
+↑↓ move  enter follow  esc back  tab next link  1 2 3 4 5 6 tabs  / find  g go to  ? help  q quit
 ",
     );
 }
@@ -1423,7 +1423,7 @@ fn a_page_without_code_says_why() {
 c-x86_64.elf › _init
 _init  function at 0x1000, size unknown, in .init
 root: in .init · used by nothing
-[1 code]  3 callers
+[1 code]  3 callers   5 why
 elfq doesn't know where _init ends, so it can't read its code
 
 
@@ -1443,7 +1443,7 @@ elfq doesn't know where _init ends, so it can't read its code
 
 
 
-↑↓ move  enter follow  esc back  1 3 tabs  g go to  ? help  q quit
+↑↓ move  enter follow  esc back  1 3 5 tabs  g go to  ? help  q quit
 ",
     );
     // A data object's page opens on its callers.
@@ -1452,12 +1452,12 @@ elfq doesn't know where _init ends, so it can't read its code
         "\
 c-x86_64.elf › frames_ok
 frames_ok  data object at 0x4058, 4 bytes, in .bss
-used by 2 · uses 0
- 2 callees  [3 callers]  4 reach
+used by 2 · uses 0 · retained 4, kept by main
+from a root: _start › main › process_frame › frames_ok
+ 2 callees  [3 callers]  4 reach   5 why   6 retained
   HOW   AT      CALLER
 > uses  0x1892  process_frame
   uses  0x1961  report
-
 
 
 
@@ -1503,8 +1503,9 @@ fn a_small_screen_asks_for_more_room() {
         "\
 c-x86_64.elf › main
 main  function at 0x10a0, 195 bytes, in .text
-used by 1 · uses 13
-[1 code]  2 callees   3 callers   4 reach
+used by 1 · uses 13 · retained 3597, kept by _start
+from a root: _start › main
+[1 code] 2 callees 3 callers 4 reach 5 why 6 retained
   ADDRESS  INSTRUCTION
 > 0x10a0   endbr64
   0x10a4   sub     rsp, 8
@@ -1514,7 +1515,6 @@ used by 1 · uses 13
   0x10b6   lea     rsi, [rip+0x593]  address taken on_button
   0x10bd   mov     edi, 1
   0x10c2   call    register_handler  call
-  0x10c7   lea     rsi, [rip+0x1a2]  address taken on_data
 
 ↑↓ move  enter follow  esc back  g go to  ? help  q quit
 ",
@@ -1574,14 +1574,14 @@ fn a_long_chain_of_calls_can_be_followed() {
         "\
 long-chain.elf › entry › fn_0x8113870 › fn_0x8113868 › fn_0x8113860
 fn_0x8113860  function at 0x8113860, ~8 bytes, in .text (0x08100000..0x08113880)
-found by following the code · used by 1 · uses 1
-[1 code]  2 callees   3 callers   4 reach
+found by following the code · used by 1 · uses 1 · retained 79970, kept by
+fn_0x8113868
+from a root: entry › fn_0x8113870 › fn_0x8113868 › fn_0x8113860
+[1 code]  2 callees   3 callers   4 reach   5 why   6 retained
   ADDRESS    INSTRUCTION
 > 0x8113860  push    {lr}
   0x8113862  bl      fn_0x8113858  call
   0x8113866  pop     {pc}
-
-
 
 
 
@@ -1649,7 +1649,7 @@ fn used_by_counts_the_callers_that_the_callers_command_lists() {
         &[],
     );
     let facts = page.lines().find(|line| line.starts_with("used by"));
-    assert_eq!(facts, Some("used by 82 · uses 1"), "{page}");
+    assert_eq!(facts, Some("used by 82 · uses 1 · retained 11"), "{page}");
 }
 
 #[test]
@@ -1659,14 +1659,14 @@ fn three_lists_the_callers_that_the_callers_command_lists() {
         "\
 c-cortex-m7.elf › log_msg
 log_msg  function at 0x30000288, 26 bytes, in .text (0x30000000..0x30000edc)
-used by 4 · uses 2
- 1 code   2 callees  [3 callers]  4 reach
+used by 4 · uses 2 · retained 4442
+from a root: SysTick_Handler › __app_tick_veneer › app_tick › log_msg
+ 1 code   2 callees  [3 callers]  4 reach   5 why   6 retained
   HOW        AT                      CALLER
 > call       0x30000304              app_tick
   tail call  0x300002b0              on_button
   call       0x30000464, 0x3000047a  process_frame
   call       0x3000053c              report
-
 
 
 
@@ -1686,7 +1686,7 @@ used by 4 · uses 2
 
 → app_tick  function at 0x300002e4, 60 bytes, in .text
 $ elfq testdata/bin/c-cortex-m7.elf callers log_msg
-↑↓ move  enter follow  esc back  tab next link  1 2 3 4 tabs  / find  g go to  ? help  q quit
+↑↓ move  enter follow  esc back  tab next link  1 2 3 4 5 6 tabs  / find  g go to  ? help  q quit
 ",
     );
     assert_output(
@@ -1694,14 +1694,14 @@ $ elfq testdata/bin/c-cortex-m7.elf callers log_msg
         "\
 c-cortex-m7.elf › log_msg
 log_msg  function at 0x30000288, 26 bytes, in .text (0x30000000..0x30000edc)
-used by 4 · uses 2
- 1 code   2 callees  [3 callers]  4 reach
+used by 4 · uses 2 · retained 4442
+from a root: SysTick_Handler › __app_tick_veneer › app_tick › log_msg
+ 1 code   2 callees  [3 callers]  4 reach   5 why   6 retained
   HOW        AT                      CALLER
 > call       0x30000304              app_tick
   tail call  0x300002b0              on_button
   call       0x30000464, 0x3000047a  process_frame
   call       0x3000053c              report
-
 
 
 
@@ -1773,8 +1773,9 @@ fn long_names_are_shortened_where_they_are_listed() {
         "\
 rust-x86_64-nodebug.elf › __rust_dealloc
 __rustc::__rust_dealloc  function at 0x15260, 5 bytes, in .text
-used by 82 · uses 1
- 1 code   2 callees  [3 callers]  4 reach
+used by 82 · uses 1 · retained 11
+from a root: _start › main › lang_start_internal › __rust_dealloc
+ 1 code   2 callees  [3 callers]  4 reach   5 why   6 retained
   HOW            AT                   CALLER
 > call           0x4cdb1              <&[u8] as SpecNewImpl>::spec_new_impl
   call           0x3e877, 0x3e8d5     <DisplayBacktrace as Display>::fmt
@@ -1789,7 +1790,6 @@ used by 82 · uses 1
   call           0x1d018, 0x1d558     <Handle<…>>::remove_leaf_kv::<…>
   call           0x42e9e              <NodeRef<…>>::new_internal::<Global>
   call           0x4cb03, 0x4cb80     <CString>::_from_vec_unchecked
-  tail call      0x43652              <alloc::raw_vec::RawVecInner>::deallocate
 Calls to __rustc::__rust_dealloc through a pointer aren't listed, since elfq
 can't see them.
 → <&[u8] as <alloc::ffi::c_str::CString>::new::SpecNewImpl>::spec_new_impl  fun…
@@ -1807,8 +1807,9 @@ $ elfq testdata/bin/rust-x86_64-nodebug.elf callers __rust_dealloc --all
         "\
 rust-x86_64-nodebug.elf › __rust_dealloc
 __rustc::__rust_dealloc  function at 0x15260, 5 bytes, in .text
-used by 82 · uses 1
- 1 code   2 callees  [3 callers]  4 reach
+used by 82 · uses 1 · retained 11
+from a root: _start › main › lang_start_internal › __rust_dealloc
+ 1 code   2 callees  [3 callers]  4 reach   5 why   6 retained
   HOW            AT                   CALLER
 > call           0x4cdb1              <&[u8] as SpecNewImpl>::spec_new_impl
   call           0x3e877, 0x3e8d5     <DisplayBacktrace as Display>::fmt
@@ -1830,11 +1831,10 @@ used by 82 · uses 1
   tail call      0x39393              <Arc<Dwarf<EndianSlice<LittleEndian>>>>::drop_slow
   call           0x393d2              <Arc<Dwarf<EndianSlice<LittleEndian>>>>::drop_slow
   call           0x393fb              <Arc<Mutex<Vec<u8>>>>::drop_slow
-  tail call      0x39421              <Arc<Mutex<Vec<u8>>>>::drop_slow
 Calls to __rustc::__rust_dealloc through a pointer aren't listed, since elfq can't see them.
 → <&[u8] as <alloc::ffi::c_str::CString>::new::SpecNewImpl>::spec_new_impl  function at 0x4cc90, 30…
 $ elfq testdata/bin/rust-x86_64-nodebug.elf callers __rust_dealloc --all
-↑↓ move  enter follow  esc back  tab next link  1 2 3 4 tabs  / find  g go to  ? help  q quit
+↑↓ move  enter follow  esc back  tab next link  1 2 3 4 5 6 tabs  / find  g go to  ? help  q quit
 ",
     );
     // A page's name in the title is shortened to fit after the file's,
@@ -1864,8 +1864,9 @@ fn enter_on_a_caller_opens_its_callers_with_its_code_at_the_call() {
         "\
 c-x86_64.elf › log_msg › process_frame
 process_frame  function at 0x1700, 532 bytes, in .text
-used by 1 · uses 11
- 1 code   2 callees  [3 callers]  4 reach
+used by 1 · uses 11 · retained 2068, kept by main
+from a root: _start › main › process_frame
+ 1 code   2 callees  [3 callers]  4 reach   5 why   6 retained
   HOW   AT                 CALLER
 > call  0x10f2 and 2 more  main
 
@@ -1888,10 +1889,9 @@ used by 1 · uses 11
 
 
 
-
 → main  function at 0x10a0, 195 bytes, in .text
 $ elfq testdata/bin/c-x86_64.elf callers process_frame
-↑↓ move  enter follow  esc back  tab next link  1 2 3 4 tabs  / find  g go to  ? help  q quit
+↑↓ move  enter follow  esc back  tab next link  1 2 3 4 5 6 tabs  / find  g go to  ? help  q quit
 ",
     );
     assert_output(
@@ -1904,11 +1904,11 @@ $ elfq testdata/bin/c-x86_64.elf callers process_frame
         "\
 c-x86_64.elf › log_msg › process_frame › main
 main  function at 0x10a0, 195 bytes, in .text
-used by 1 · uses 13
- 1 code   2 callees  [3 callers]  4 reach
+used by 1 · uses 13 · retained 3597, kept by _start
+from a root: _start › main
+ 1 code   2 callees  [3 callers]  4 reach   5 why   6 retained
   HOW            AT      CALLER
 > address taken  0x1188  _start
-
 
 
 
@@ -1931,7 +1931,7 @@ used by 1 · uses 13
 Calls to main through a pointer aren't listed, since elfq can't see them.
 → _start  function at 0x1170, 38 bytes, in .text
 $ elfq testdata/bin/c-x86_64.elf callers main
-↑↓ move  enter follow  esc back  tab next link  1 2 3 4 tabs  / find  g go to  ? help  q quit
+↑↓ move  enter follow  esc back  tab next link  1 2 3 4 5 6 tabs  / find  g go to  ? help  q quit
 ",
     );
     // process_frame calls log_msg at 0x18ee and 0x1908; the first is
@@ -1946,10 +1946,10 @@ $ elfq testdata/bin/c-x86_64.elf callers main
         "\
 c-x86_64.elf › log_msg › process_frame
 process_frame  function at 0x1700, 532 bytes, in .text
-used by 1 · uses 11
-[1 code]  2 callees   3 callers   4 reach
+used by 1 · uses 11 · retained 2068, kept by main
+from a root: _start › main › process_frame
+[1 code]  2 callees   3 callers   4 reach   5 why   6 retained
   ADDRESS  INSTRUCTION
-  0x18b3   pop     r13
   0x18b5   pop     r14
   0x18b7   pop     r15
   0x18b9   ret
@@ -1973,7 +1973,7 @@ used by 1 · uses 11
   0x190d   jmp     0x18f3                      jump ↑
   0x190f   call    __stack_chk_fail@plt        call
 → log_msg  function at 0x1610, 51 bytes, in .text
-↑↓ move  enter follow  esc back  tab next link  1 2 3 4 tabs  / find  g go to  ? help  q quit
+↑↓ move  enter follow  esc back  tab next link  1 2 3 4 5 6 tabs  / find  g go to  ? help  q quit
 ",
     );
     // Esc comes back to the row, on the callers tab.
@@ -2028,8 +2028,9 @@ fn two_lists_what_the_callees_command_lists() {
         "\
 c-x86_64.elf › main
 main  function at 0x10a0, 195 bytes, in .text
-used by 1 · uses 13
- 1 code  [2 callees]  3 callers   4 reach
+used by 1 · uses 13 · retained 3597, kept by _start
+from a root: _start › main
+ 1 code  [2 callees]  3 callers   4 reach   5 why   6 retained
   HOW            AT                 CALLEE
 > address taken  0x10a8             on_timer
   call           0x10b1 and 2 more  register_handler
@@ -2052,10 +2053,9 @@ used by 1 · uses 13
 
 
 
-
 → on_timer  function at 0x1260, 11 bytes, in .text
 $ elfq testdata/bin/c-x86_64.elf callees main
-↑↓ move  enter follow  esc back  tab next link  1 2 3 4 tabs  / find  g go to  ? help  q quit
+↑↓ move  enter follow  esc back  tab next link  1 2 3 4 5 6 tabs  / find  g go to  ? help  q quit
 ",
     );
     // A data object's callees are what it holds the addresses of.
@@ -2064,12 +2064,12 @@ $ elfq testdata/bin/c-x86_64.elf callees main
         "\
 cpp-x86_64.elf › vtable for Gain
 vtable for app::Gain  data object at 0x3d38, 24 bytes, in .data.rel.ro
-used by 1 · uses 2
-[2 callees]  3 callers   4 reach
+used by 1 · uses 2 · retained 116, kept by main
+from a root: _start › main › vtable for Gain
+[2 callees]  3 callers   4 reach   5 why   6 retained
   HOW      AT      CALLEE
 > pointer  0x3d40  typeinfo for app::Gain
   pointer  0x3d48  app::Gain::run(short*, unsigned long)
-
 
 
 
@@ -2099,12 +2099,12 @@ fn enter_on_a_callee_opens_its_callees_and_esc_comes_back() {
         "\
 c-x86_64.elf › main › parse_value
 parse_value  function at 0x1460, 84 bytes, in .text
-used by 2 · uses 2
- 1 code  [2 callees]  3 callers   4 reach
+used by 2 · uses 2 · retained 187, kept by main
+from a root: _start › main › parse_value
+ 1 code  [2 callees]  3 callers   4 reach   5 why   6 retained
   HOW        AT      CALLEE
 > uses       0x149a  config_sum
   tail call  0x14a8  parse_list
-
 
 
 
@@ -2138,8 +2138,9 @@ fn four_lists_what_the_reach_command_lists() {
         "\
 c-cortex-m7.elf › main
 main  function at 0x30000570, 132 bytes, in .text (0x30000000..0x30000edc)
-used by 1 · uses 13
- 1 code   2 callees   3 callers  [4 reach]
+used by 1 · uses 13 · retained 2613, kept by Reset_Handler
+from a root: Reset_Handler › main
+ 1 code   2 callees   3 callers  [4 reach]  5 why   6 retained
 main and the 55 items it reaches take 2036 bytes of code and 5431 bytes of data; elfq can't follow 1
 jump:
   MEMORY                  CODE  DATA  SECTIONS
@@ -2160,12 +2161,11 @@ jump:
   0x20000420     4  uses             config_sum, used by parse_value
   0x2000042c     4  uses             data_events, used by on_data
   0x20000424     4  uses             frames_bad, used by process_frame
-  0x20000428     4  uses             frames_ok, used by process_frame
 dispatch_event also jumps through a pointer, at 0x300002da, which elfq can't follow, so main may
 reach more.
 → main  function at 0x30000570, 132 bytes, in .text
 $ elfq testdata/bin/c-cortex-m7.elf reach main --all
-↑↓ move  enter follow  esc back  tab next link  1 2 3 4 tabs  / find  g go to  ? help  q quit
+↑↓ move  enter follow  esc back  tab next link  1 2 3 4 5 6 tabs  / find  g go to  ? help  q quit
 ",
     );
     assert_output(
@@ -2208,8 +2208,9 @@ fn enter_on_a_row_of_reach_opens_what_that_item_reaches_and_esc_comes_back() {
         "\
 c-x86_64.elf › main › process_frame
 process_frame  function at 0x1700, 532 bytes, in .text
-used by 1 · uses 11
- 1 code   2 callees   3 callers  [4 reach]
+used by 1 · uses 11 · retained 2068, kept by main
+from a root: _start › main › process_frame
+ 1 code   2 callees   3 callers  [4 reach]  5 why   6 retained
 process_frame and the 18 items it reaches take 1143 bytes of code and 1141 bytes
 of data, plus 3 imports; elfq can't follow 1 jump:
   ADDRESS  SIZE  HOW        ITEM
@@ -2224,7 +2225,6 @@ of data, plus 3 imports; elfq can't follow 1 jump:
   0x1090     16  call       __stack_chk_fail@plt, used by process_frame
   0x1080     16  call       strlen@plt, used by log_msg
   0x1070     16  tail call  write@plt, used by platform_write
-  0x2120   1024  uses       crc_table, used by crc32
 dispatch_event also jumps through a pointer, at 0x16ad, which elfq can't follow,
 so process_frame may reach more.
 → process_frame  function at 0x1700, 532 bytes, in .text
@@ -2283,7 +2283,7 @@ $ elfq testdata/bin/c-x86_64.elf reach process_frame
     );
     // On the same tab.
     assert!(
-        opened.lines().any(|line| line.ends_with("[4 reach]")),
+        opened.lines().any(|line| line.contains("[4 reach]")),
         "{opened}"
     );
 }
@@ -2301,12 +2301,12 @@ fn the_reach_tab_on_a_small_screen_keeps_its_selected_row() {
 c-cortex-m7.elf › main
 main  function at 0x30000570, 132 bytes, in .text
 (0x30000000..0x30000edc)
-used by 1 · uses 13
- 1 code   2 callees   3 callers  [4 reach]
+used by 1 · uses 13 · retained 2613, kept by Reset_Handler
+from a root: Reset_Handler › main
+1 code 2 callees 3 callers [4 reach] 5 why 6 retained
 main and the 55 items it reaches take 2036 bytes of code and
 5431 bytes of data; elfq can't follow 1 jump: …
   ADDRESS     SIZE  HOW         ITEM
-  0x30000570   132              main
   0x74          92  call via …  apply_filter, used by proce…
 > 0x40          52  call        filter_tap, used by apply_f…
 dispatch_event also jumps through a pointer, at 0x300002da,
@@ -2467,12 +2467,13 @@ go to: cxa_▏
         &["g", "memcpy", "Enter"],
     );
     assert_eq!(
-        page.lines().take(4).collect::<Vec<_>>(),
+        page.lines().take(5).collect::<Vec<_>>(),
         [
             "rust-x86_64-nodebug.elf › main › memcpy",
             "memcpy  imported from a shared library: its code isn't in this file",
             "used by 57",
-            "[3 callers]",
+            "from a root: _start › main › lang_start_internal › set_current_info › memcpy",
+            "[3 callers]  5 why",
         ]
     );
     // Its page has no code, and 1 says why.
@@ -2503,10 +2504,10 @@ go to: cxa_▏
 c-x86_64.elf › _start › __libc_start_main
 __libc_start_main  imported from a shared library: its code isn't in this file
 used by 1
-[3 callers]
+from a root: _start › __libc_start_main
+[3 callers]  5 why
   HOW   AT      CALLER
 > call  0x118f  _start
-
 
 
 
@@ -2570,8 +2571,9 @@ fn slash_finds_text_in_the_rows_and_n_and_shift_n_go_round_them() {
         "\
 c-x86_64.elf › main
 main  function at 0x10a0, 195 bytes, in .text
-used by 1 · uses 13
-[1 code]  2 callees   3 callers   4 reach
+used by 1 · uses 13 · retained 3597, kept by _start
+from a root: _start › main
+[1 code]  2 callees   3 callers   4 reach   5 why   6 retained
   ADDRESS  INSTRUCTION
 > 0x10a0   endbr64
   0x10a4   sub     rsp, 8
@@ -2595,7 +2597,6 @@ used by 1 · uses 13
   0x1103   call    process_frame     call
   0x1108   mov     esi, 5
   0x110d   lea     rdi, [rip+0xf6c]  uses frame_c
-  0x1114   call    process_frame     call
 find: Call▏
 enter find  esc cancel
 ",
@@ -2607,8 +2608,9 @@ enter find  esc cancel
         "\
 c-x86_64.elf › main
 main  function at 0x10a0, 195 bytes, in .text
-used by 1 · uses 13
-[1 code]  2 callees   3 callers   4 reach
+used by 1 · uses 13 · retained 3597, kept by _start
+from a root: _start › main
+[1 code]  2 callees   3 callers   4 reach   5 why   6 retained
   ADDRESS  INSTRUCTION
   0x10a0   endbr64
   0x10a4   sub     rsp, 8
@@ -2632,9 +2634,8 @@ used by 1 · uses 13
   0x1103   call    process_frame     call
   0x1108   mov     esi, 5
   0x110d   lea     rdi, [rip+0xf6c]  uses frame_c
-  0x1114   call    process_frame     call
 1 of 14 lines with \"Call\"
-↑↓ move  enter follow  esc back  tab next link  1 2 3 4 tabs  / find  g go to  ? help  q quit
+↑↓ move  enter follow  esc back  tab next link  1 2 3 4 5 6 tabs  / find  g go to  ? help  q quit
 ",
     );
     let found = |script: &[&str]| {
@@ -2722,8 +2723,8 @@ fn the_keys_move_as_the_help_says() {
     for script in [&["PageDown"][..], &[" "]] {
         let page = screen("c-x86_64.elf", Some("main"), (80, 24), script);
         let lines: Vec<&str> = page.lines().collect();
-        assert_eq!(lines[4], "  ADDRESS  INSTRUCTION", "{script:?}");
-        assert!(lines[5].starts_with("> 0x10f7 "), "{script:?}\n{page}");
+        assert_eq!(lines[5], "  ADDRESS  INSTRUCTION", "{script:?}");
+        assert!(lines[6].starts_with("> 0x10f2 "), "{script:?}\n{page}");
     }
     for script in [&["PageDown", "PageUp"][..], &["End", "Home"]] {
         assert_eq!(
@@ -2766,7 +2767,7 @@ fn only_key_presses_count() {
     assert_eq!(stop, Stop::Quit);
     assert_eq!(events.next(), None);
     let row: String = (0..80)
-        .map(|column| terminal.backend().buffer()[(column, 5)].symbol())
+        .map(|column| terminal.backend().buffer()[(column, 6)].symbol())
         .collect();
     assert!(row.starts_with("> 0x1610 "), "{row}");
 }
@@ -3144,8 +3145,9 @@ fn rust_and_shared_library_pages_at_the_other_size() {
         "\
 rust-x86_64-nodebug.elf › main
 main  function at 0x15220, 46 bytes, in .text
-used by 1 · uses 4
-[1 code]  2 callees   3 callers   4 reach
+used by 1 · uses 4 · retained 28855, kept by _start
+from a root: _start › main
+[1 code]  2 callees   3 callers   4 reach   5 why   6 retained
   ADDRESS  INSTRUCTION
 > 0x15220  push    rax
   0x15221  mov     rcx, rsi
@@ -3170,8 +3172,7 @@ used by 1 · uses 4
 
 
 
-
-↑↓ move  enter follow  esc back  tab next link  1 2 3 4 tabs  / find  g go to  ? help  q quit
+↑↓ move  enter follow  esc back  tab next link  1 2 3 4 5 6 tabs  / find  g go to  ? help  q quit
 ",
     );
     assert_output(
@@ -3202,5 +3203,393 @@ used by 1 · uses 3
 
 ↑↓ move  enter follow  esc back  tab next link  / find  g go to  ? help  q quit
 ",
+    );
+}
+
+#[test]
+fn the_header_says_what_keeps_the_item() {
+    // As `retained crc32` and `why crc32` say: removing crc32 would save
+    // 1072 bytes, removing __crc32_veneer would remove it too, and the
+    // first chain to it.
+    assert_output(
+        &screen(
+            "c-cortex-m7.elf",
+            Some("process_frame"),
+            (100, 18),
+            &["/", "crc32_veneer", "Enter", "Enter"],
+        ),
+        "\
+c-cortex-m7.elf › process_frame › crc32
+crc32  function at 0x10, 48 bytes, in .itcm (0x00000000..0x000000e0), copied there from 0x30000050
+used by 1 · uses 1 · retained 1072, kept by __crc32_veneer
+from a root: Reset_Handler › main › process_frame › __crc32_veneer › crc32
+[1 code]  2 callees   3 callers   4 reach   5 why   6 retained
+  ADDRESS  INSTRUCTION
+> 0x10     cbz     r1, 0x38              jump ↓
+  0x12     subs    r2, r0, #1
+  0x14     mov.w   r12, #0xffffffff
+  0x18     ldr     r0, [pc, #32]         uses crc_table in .data
+  0x1a     add     r1, r2
+  0x1c     ldrb    r3, [r2, #1]!
+  0x20     eor.w   r3, r3, r12
+  0x24     cmp     r1, r2
+  0x26     uxtb    r3, r3
+  0x28     ldr.w   r3, [r0, r3, lsl #2]
+→ 0x38, in this function
+↑↓ move  enter follow  esc back  tab next link  1 2 3 4 5 6 tabs  / find  g go to  ? help  q quit
+",
+    );
+    let header = |sample, symbol| {
+        let page = screen(sample, Some(symbol), (100, 16), &[]);
+        let mut lines = page.lines().skip_while(|line| !line.contains("used by"));
+        lines.by_ref().take(2).collect::<Vec<_>>().join("\n")
+    };
+    // A stripped firmware names them by address.
+    assert_eq!(
+        header("c-cortex-m7-stripped.elf", "0x10"),
+        "found by following the code · used by 1 · uses 1 · retained 1072, kept by fn_0x300009b0\nfrom a root: entry › fn_0x30000570 › fn_0x30000320 › fn_0x300009b0 › fn_0x10"
+    );
+    // Where another item has the name of the one that keeps it, the header
+    // names that one in full, as the rows of `retained` do.
+    assert_eq!(
+        header("rust-x86_64-nodebug.elf", "0x4423d"),
+        "used by 1 · uses 1 · retained 16, kept by core::ptr::drop_glue::<alloc::string::String>\nfrom a root: … › render_file › path_push › core::ptr::drop_glue::<String> › RawVec::drop"
+    );
+    // An item that nothing reaches says so, with no chain.
+    assert_eq!(
+        header("c-x86_64.elf", "debug_dump"),
+        "used by nothing · uses 3 · nothing reaches it\n[1 code]  2 callees   3 callers   4 reach   5 why   6 retained"
+    );
+    // An import has the chain, but not what `retained` refuses to say.
+    assert_eq!(
+        header("c-x86_64.elf", "__libc_start_main"),
+        "used by 1\nfrom a root: _start › __libc_start_main"
+    );
+}
+
+#[test]
+fn a_shared_librarys_header_leaves_out_what_keeps_the_item() {
+    // `retained` and `why` don't answer about the items of a shared
+    // library, and u says so as `retained` does.
+    let page = screen("c-x86_64.so", Some("process_frame"), (100, 16), &["u"]);
+    let lines: Vec<&str> = page.lines().collect();
+    assert_eq!(
+        lines[..4],
+        [
+            "c-x86_64.so › process_frame",
+            "process_frame  function at 0x17b0, 532 bytes, in .text",
+            "used by 1 · uses 11",
+            "[1 code]  2 callees   3 callers   4 reach",
+        ]
+    );
+    let status = lines[lines.len() - 2];
+    assert_eq!(
+        status,
+        "elfq can't yet tell what only process_frame leads to in a shared library"
+    );
+}
+
+#[test]
+fn u_opens_the_item_that_keeps_this_one_on_the_same_tab() {
+    assert_output(
+        &screen("c-cortex-m7.elf", Some("crc32"), (100, 16), &["3", "u"]),
+        "\
+c-cortex-m7.elf › crc32 › __crc32_veneer
+__crc32_veneer  function at 0x300009b0, 8 bytes, in .text (0x30000000..0x30000edc)
+used by 1 · uses 1 · retained 1080, kept by process_frame
+from a root: Reset_Handler › main › process_frame › __crc32_veneer
+ 1 code   2 callees  [3 callers]  4 reach   5 why   6 retained
+  HOW   AT          CALLER
+> call  0x3000034c  process_frame
+
+
+
+
+
+
+→ process_frame  function at 0x30000320, 376 bytes, in .text
+$ elfq testdata/bin/c-cortex-m7.elf callers __crc32_veneer
+↑↓ move  enter follow  esc back  tab next link  1 2 3 4 5 6 tabs  / find  g go to  ? help  q quit
+",
+    );
+    // Esc comes back.
+    let back = screen(
+        "c-cortex-m7.elf",
+        Some("crc32"),
+        (100, 16),
+        &["3", "u", "Esc"],
+    );
+    assert!(back.starts_with("c-cortex-m7.elf › crc32\n"), "{back}");
+    assert!(
+        back.contains("\n 1 code   2 callees  [3 callers]  4 reach   5 why   6 retained\n"),
+        "{back}"
+    );
+    // Where no item keeps this one, u says why, as `why` and `retained` do.
+    let said = |sample, symbol| {
+        let page = screen(sample, Some(symbol), (100, 16), &["u"]);
+        selected_and_status(&page).1.to_string()
+    };
+    assert_eq!(
+        said("c-cortex-m7.elf", "Reset_Handler"),
+        "Reset_Handler is the entry point, where the program starts."
+    );
+    assert_eq!(
+        said("c-cortex-m7.elf", "log_msg"),
+        "Removing any single item wouldn't remove log_msg."
+    );
+    assert_eq!(
+        said("c-x86_64.elf", "debug_dump"),
+        "Nothing reaches debug_dump: the program never uses it, or elfq can't see how."
+    );
+    // A root says what it is, as `why` does, though `retained` refuses
+    // this one, whose end elfq doesn't know.
+    assert_eq!(
+        said("c-x86_64.elf", "_init"),
+        "_init is in .init, which the program uses when it starts."
+    );
+    assert_eq!(
+        said("c-x86_64.elf", "__libc_start_main"),
+        "__libc_start_main is imported from a shared library, so its code isn't in this file"
+    );
+}
+
+#[test]
+fn the_header_on_a_small_screen_keeps_the_end_of_the_chain() {
+    assert_output(
+        &screen("c-cortex-m7.elf", Some("crc32"), (60, 16), &[]),
+        "\
+c-cortex-m7.elf › crc32
+crc32  function at 0x10, 48 bytes, in .itcm
+(0x00000000..0x000000e0), copied there from 0x30000050
+used by 1 · uses 1 · retained 1072, kept by __crc32_veneer
+from a root: … › process_frame › __crc32_veneer › crc32
+[1 code] 2 callees 3 callers 4 reach 5 why 6 retained
+  ADDRESS  INSTRUCTION
+> 0x10     cbz     r1, 0x38              jump ↓
+  0x12     subs    r2, r0, #1
+  0x14     mov.w   r12, #0xffffffff
+  0x18     ldr     r0, [pc, #32]         uses crc_table
+  0x1a     add     r1, r2
+  0x1c     ldrb    r3, [r2, #1]!
+  0x20     eor.w   r3, r3, r12
+→ 0x38, in this function
+↑↓ move  enter follow  esc back  g go to  ? help  q quit
+",
+    );
+    assert_output(
+        &screen("rust-x86_64-nodebug.elf", Some("memcpy"), (60, 16), &[]),
+        "\
+rust-x86_64-nodebug.elf › memcpy
+memcpy  imported from a shared library: its code isn't in
+this file
+used by 57
+from a root: … › set_current_info › memcpy
+[3 callers]  5 why
+  HOW         AT                  CALLER
+> call        0x4cced             <&[u8] as SpecNewImpl>::s…
+  call        0x2ebed             <LoopingLookup<…>>::new_l…
+  call        0x2d0a6 and 2 more  …adInfo>>::bulk_steal_left
+  call        0x2d458 and 2 more  …dInfo>>::bulk_steal_right
+  address t…  0x1c8e6             <BalancingContext<…>>::me…
+→ <&[u8] as <alloc::ffi::c_str::CString>::new::SpecNewImpl>…
+$ elfq testdata/bin/rust-x86_64-nodebug.elf callers memcpy
+--all
+↑↓ move  enter follow  esc back  g go to  ? help  q quit
+",
+    );
+}
+
+#[test]
+fn five_shows_why_the_item_is_in_the_file() {
+    // As `why crc32` prints it, with the command under it.
+    assert_output(
+        &screen("c-cortex-m7.elf", Some("crc32"), (100, 24), &["5"]),
+        "\
+c-cortex-m7.elf › crc32
+crc32  function at 0x10, 48 bytes, in .itcm (0x00000000..0x000000e0), copied there from 0x30000050
+used by 1 · uses 1 · retained 1072, kept by __crc32_veneer
+from a root: Reset_Handler › main › process_frame › __crc32_veneer › crc32
+ 1 code   2 callees   3 callers   4 reach  [5 why]  6 retained
+crc32 is used by __crc32_veneer, through this chain:
+  HOW          ITEM
+> entry point  Reset_Handler
+  call         main
+  call         process_frame
+  call         __crc32_veneer
+  tail call    crc32
+
+
+
+
+
+
+
+
+Removing __crc32_veneer would remove crc32 too.
+→ Reset_Handler  function at 0x300005f8, 112 bytes, in .text
+$ elfq testdata/bin/c-cortex-m7.elf why crc32
+↑↓ move  enter follow  esc back  tab next link  1 2 3 4 5 6 tabs  / find  g go to  ? help  q quit
+",
+    );
+    // Enter opens the selected row's item on the same tab, and Esc comes
+    // back.
+    let opened = screen(
+        "c-cortex-m7.elf",
+        Some("crc32"),
+        (100, 24),
+        &["5", "Down", "Enter"],
+    );
+    assert!(
+        opened.starts_with("c-cortex-m7.elf › crc32 › main\n"),
+        "{opened}"
+    );
+    assert!(opened.contains("[5 why]"), "{opened}");
+    assert!(
+        opened.contains("\n$ elfq testdata/bin/c-cortex-m7.elf why main\n"),
+        "{opened}"
+    );
+    let back = screen(
+        "c-cortex-m7.elf",
+        Some("crc32"),
+        (100, 24),
+        &["5", "Down", "Enter", "Esc"],
+    );
+    let (selected, _) = selected_and_status(&back);
+    assert_eq!(selected, "> call         main");
+    // Where the command shows only the chains through the nearest 10, the
+    // tab shows every one, and the command under it has --all.
+    let sample = "rust-x86_64-nodebug.elf";
+    let page = screen(sample, Some("__rust_dealloc"), (100, 30), &["5"]);
+    let all = "\n$ elfq testdata/bin/rust-x86_64-nodebug.elf why __rust_dealloc --all\n";
+    assert!(page.contains(all), "{page}");
+    assert!(
+        page.contains("is used by 82 functions, through these chains:"),
+        "{page}"
+    );
+}
+
+#[test]
+fn six_shows_what_removing_the_item_would_save_and_where() {
+    // As `retained process_frame --all` prints it, with the bytes it would
+    // save in each block of memory under it, as `retained process_frame
+    // --range BLOCK` says.
+    assert_output(
+        &screen("c-cortex-m7.elf", Some("process_frame"), (100, 30), &["6"]),
+        "\
+c-cortex-m7.elf › process_frame
+process_frame  function at 0x30000320, 376 bytes, in .text (0x30000000..0x30000edc)
+used by 1 · uses 10 · retained 1712, kept by main
+from a root: Reset_Handler › main › process_frame
+ 1 code   2 callees   3 callers   4 reach   5 why  [6 retained]
+Removing process_frame would save 1712 bytes:
+  RETAINED   OWN  ITEM
+>     1712   376  process_frame
+      1080     8  __crc32_veneer, kept by process_frame
+      1072    48  crc32, kept by __crc32_veneer
+      1024  1024  crc_table, kept by crc32
+       192     8  __apply_filter_veneer, kept by process_frame
+       184    92  apply_filter, kept by __apply_filter_veneer
+        84    52  filter_tap, kept by apply_filter
+        32    32  fir_coeffs, kept by filter_tap
+         8     8  __memcpy_veneer, kept by apply_filter
+        40    40  decode_header, kept by process_frame
+        12   ~12  .rodata@0x30000df0, kept by process_frame
+        12   ~12  .rodata@0x30000dfc, kept by process_frame
+Shared with other code, so not counted: dispatch_event, frames_bad, frames_ok, log_msg, memcpy,
+stats.
+Keeps by block, as retained --range MEMORY counts it:
+  MEMORY                  RETAINED  SECTIONS
+  0x00000000..0x000000e0       200  .itcm
+  0x20000000..0x20000450      1024  .data .bss
+  0x20240000..0x20241000         0  .ocram_bss
+  0x30000000..0x30000edc      1712  .isr_vector .text .rodata .ARM.exidx, load images of .itcm .data
+→ process_frame  function at 0x30000320, 376 bytes, in .text
+$ elfq testdata/bin/c-cortex-m7.elf retained process_frame
+↑↓ move  enter follow  esc back  tab next link  1 2 3 4 5 6 tabs  / find  g go to  ? help  q quit
+",
+    );
+    // Where `retained` lists only the 30 largest items, with rows such as
+    // "41 more, kept by main", the tab lists every one, and the command
+    // under it has --all.
+    let page = screen("c-x86_64.elf", Some("main"), (100, 30), &["6"]);
+    assert!(!page.contains(" more"), "{page}");
+    assert!(
+        page.contains("\n$ elfq testdata/bin/c-x86_64.elf retained main --all\n"),
+        "{page}"
+    );
+    // Enter opens the selected row's item on the same tab, and u the item
+    // that keeps the page's.
+    let opened = screen(
+        "c-cortex-m7.elf",
+        Some("process_frame"),
+        (100, 30),
+        &["6", "Down", "Enter"],
+    );
+    assert!(
+        opened.starts_with("c-cortex-m7.elf › process_frame › __crc32_veneer\n"),
+        "{opened}"
+    );
+    assert!(opened.contains("[6 retained]"), "{opened}");
+    let up = screen(
+        "c-cortex-m7.elf",
+        Some("crc32"),
+        (100, 30),
+        &["6", "u", "u"],
+    );
+    assert!(
+        up.starts_with("c-cortex-m7.elf › crc32 › __crc32_veneer › process_frame\n"),
+        "{up}"
+    );
+    assert!(up.contains("[6 retained]"), "{up}");
+    // On a small screen, the bytes by block that don't fit are left out,
+    // with "…", and the tabs are one space apart.
+    assert_output(
+        &screen("c-cortex-m7.elf", Some("process_frame"), (60, 16), &["6"]),
+        "\
+c-cortex-m7.elf › process_frame
+process_frame  function at 0x30000320, 376 bytes, in .text
+(0x30000000..0x30000edc)
+used by 1 · uses 10 · retained 1712, kept by main
+from a root: Reset_Handler › main › process_frame
+1 code 2 callees 3 callers 4 reach 5 why [6 retained]
+Removing process_frame would save 1712 bytes:
+  RETAINED   OWN  ITEM
+>     1712   376  process_frame
+      1080     8  __crc32_veneer, kept by process_frame
+Shared with other code, so not counted: dispatch_event,
+frames_bad, frames_ok, log_msg, memcpy, stats.
+Keeps by block, as retained --range MEMORY counts it: …
+→ process_frame  function at 0x30000320, 376 bytes, in .text
+$ elfq testdata/bin/c-cortex-m7.elf retained process_frame
+↑↓ move  enter follow  esc back  g go to  ? help  q quit
+",
+    );
+}
+
+#[test]
+fn a_shared_library_has_no_why_or_retained_tab() {
+    // `why` and `retained` don't answer there yet, and 5 and 6 say so, as
+    // they do.
+    let said = |key| {
+        let page = screen("c-x86_64.so", Some("process_frame"), (100, 16), &[key]);
+        assert!(
+            page.contains("\n[1 code]  2 callees   3 callers   4 reach\n"),
+            "{page}"
+        );
+        selected_and_status(&page).1.to_string()
+    };
+    assert_eq!(
+        said("5"),
+        "elfq can't yet tell why process_frame is in a shared library"
+    );
+    assert_eq!(
+        said("6"),
+        "elfq can't yet tell what only process_frame leads to in a shared library"
+    );
+    // An import has a why tab, but not a retained one.
+    let page = screen("rust-x86_64-nodebug.elf", Some("memcpy"), (100, 16), &["6"]);
+    assert_eq!(
+        selected_and_status(&page).1,
+        "memcpy is imported from a shared library, so its code isn't in this file"
     );
 }

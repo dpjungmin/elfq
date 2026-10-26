@@ -1,8 +1,10 @@
 //! `elfq FILE browse [SYMBOL]`: a function's code in the terminal, with a
 //! link on each line that calls, jumps to or uses another item, to follow
 //! as in a web browser: Enter opens the item's page, and Esc comes back.
-//! An item's page also lists, on tabs 2, 3 and 4, what the item calls or
-//! uses, what calls or uses it, and everything it reaches.
+//! An item's page also lists, on tabs 2 to 6, what the item calls or
+//! uses, what calls or uses it, everything it reaches, why it is in the
+//! file, and what removing it would save, and its header says what keeps
+//! it in the file.
 //! Without SYMBOL, browse opens on where the program starts, each start a
 //! link to its page.
 //!
@@ -29,7 +31,8 @@
 //! find's prompt waits for the next draw, which comes when no key is left waiting. A page or
 //! tab that takes a while to work out, as the start page of a large
 //! program, or everything its main reaches, is drawn first with a status
-//! line that says so.
+//! line that says so, and so is the first page, before the session works
+//! out what keeps each item, which the headers of items' pages say.
 
 mod app;
 mod keys;
@@ -111,7 +114,8 @@ fn read_keys(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
 /// handled on the screen that the keys before it give, as when each is
 /// drawn in turn, since it moves by what the screen shows. When a key
 /// leaves the page something to work out, the screen is drawn first, to
-/// say so (see [`App::has_work`]).
+/// say so (see [`App::has_work`]), and so is the first page, before what
+/// keeps each item is worked out for its header.
 pub fn event_loop<B: Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
@@ -127,6 +131,14 @@ where
         if behind && !more_waiting()? {
             terminal.draw(|frame| app.draw(frame))?;
             behind = false;
+            // What the screen leaves to work out, as what keeps each item
+            // once the first page is drawn, is done after a draw that says
+            // so, as above.
+            if app.has_work() {
+                app.work();
+                behind = true;
+                continue;
+            }
         }
         let Some(event) = next_event()? else {
             return Ok(Stop::Quit);

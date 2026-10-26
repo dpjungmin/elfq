@@ -135,7 +135,7 @@ Examples:
   elfq app.elf reach                      Where the program starts, and the bytes each start reaches
   elfq app.elf reach SysTick_Handler      What SysTick_Handler runs and uses, and where
   elfq app.elf browse                     Where the program starts, each start a page to read
-  elfq app.elf browse log_msg             Read log_msg's code, what it calls and reaches, and its callers
+  elfq app.elf browse log_msg             Read log_msg's code, what it calls and reaches, its callers, and what keeps it
 
 The overview's table is the start of the one top shows; elfq help top
 explains it.
@@ -423,16 +423,28 @@ function, data object or import, and ? lists every key. elfq prints x86-64
 code, and the Thumb code of Cortex-M cores up to Armv7E-M (M0, M0+, M3, M4,
 M7); for other Arm cores, a page lists only the lines that use another item.
 
-The other tabs show what callees SYMBOL, callers SYMBOL and reach SYMBOL
-print about the item, but with every row, and under them that command,
-ready to paste: 2 what the item calls or uses, 3 what calls or uses it, and
-4 everything it calls or uses at any depth, by block of memory; 1 shows the
-code again. Enter on a row opens that item's page on the same tab, so that
-Enter after Enter walks down the callees or up the callers, and from the
-callers its code is already at the call. The pages of data objects and
+The other tabs show what callees SYMBOL, callers SYMBOL, reach SYMBOL, why
+SYMBOL and retained SYMBOL print about the item, but with every row, and
+under them that command, ready to paste: 2 what the item calls or uses, 3
+what calls or uses it, 4 everything it calls or uses at any depth, by block
+of memory, 5 the chains from where the program starts that keep it, and 6
+what removing it would save, with, in a file with several blocks of memory,
+the bytes in each, as retained SYMBOL --range BLOCK counts them; 1 shows
+the code again. Enter on a row opens that item's page on the same tab, so
+that Enter after Enter walks down the callees or up the callers, and from
+the callers its code is already at the call. The pages of data objects and
 imports open on their callers, and a tab that an item can't have says why,
 as its command does; an import that has a PLT stub opens as the stub's
 page, since its name finds the stub as SYMBOL.
+
+An item's header also says what retained SYMBOL and why SYMBOL say about
+it: what removing it would save, the item that keeps it, after \"kept by\",
+and where the screen has room, the shortest chain to it from where the
+program starts, which leaves out names at its start to fit. u opens the
+page of the item that keeps it, on the same tab. In a large program,
+browse works these out once, after the first page is drawn, and the status
+line says so meanwhile. They aren't there in a shared library, where those
+commands don't answer yet, and nor are tabs 5 and 6.
 
 / finds text in the page's rows, ignoring case: Enter selects the first
 line that has it, from the selected one on, and n and N the next and the

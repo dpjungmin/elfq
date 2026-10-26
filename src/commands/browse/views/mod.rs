@@ -13,9 +13,11 @@ mod names;
 mod picker;
 mod printed;
 mod reach;
+mod retained;
 mod start;
 #[cfg(test)]
 mod thumb_text;
+mod why;
 
 use std::ops::Range;
 
@@ -88,6 +90,9 @@ impl View {
                     false => "the tabs are on an item's page; g goes to one",
                 }
                 .to_string(),
+            )),
+            View::Start(_) if action == Action::Keeper => Some(Go::Say(
+                "u opens the item that keeps an item, from that item's page".to_string(),
             )),
             View::Start(start) => start.as_mut()?.handle(session, action),
             View::Item(page) => page.handle(session, action),

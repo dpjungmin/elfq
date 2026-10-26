@@ -7,6 +7,7 @@
 
 use std::collections::HashSet;
 use std::io::Write;
+use std::ops::Deref;
 
 use anyhow::Result;
 use serde::Serialize;
@@ -52,7 +53,7 @@ pub(super) struct KeptItem<'a> {
 pub(super) struct RetainedTree<'g, 'a> {
     pub binary: &'a Binary,
     pub graph: &'g Graph,
-    pub tree: DominatorTree,
+    pub tree: Held<'g, DominatorTree>,
     /// The range of memory that sizes count, if not all of it.
     pub range: Option<AddressRange>,
     /// The items that something calls directly, rather than only through a
@@ -60,7 +61,26 @@ pub(super) struct RetainedTree<'g, 'a> {
     called: HashSet<usize>,
     /// The names that find each item, which rows use to name the item that
     /// keeps them.
-    names: Names<'a>,
+    names: Held<'g, Names<'a>>,
+}
+
+/// What a tree owns, or borrows from whoever worked it out before, as
+/// browse's session does.
+pub(super) enum Held<'g, T> {
+    Owned(T),
+    #[cfg_attr(not(feature = "tui"), expect(dead_code))]
+    Borrowed(&'g T),
+}
+
+impl<T> Deref for Held<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        match self {
+            Held::Owned(value) => value,
+            Held::Borrowed(value) => value,
+        }
+    }
 }
 
 impl<'g, 'a> RetainedTree<'g, 'a> {
@@ -71,29 +91,43 @@ impl<'g, 'a> RetainedTree<'g, 'a> {
         range: Option<AddressRange>,
     ) -> RetainedTree<'g, 'a> {
         let tree = DominatorTree::build(binary, graph, range);
-        let called = graph
-            .references
-            .iter()
-            .filter(|r| r.kind.is_call())
-            .filter_map(|r| match r.to {
-                Node::Item(index) => Some(index),
-                Node::Import(_) => None,
-            })
-            .collect();
         RetainedTree {
             binary,
             graph,
-            tree,
+            tree: Held::Owned(tree),
             range,
-            called,
-            names: Names::new(binary),
+            called: called(graph),
+            names: Held::Owned(Names::new(binary)),
+        }
+    }
+
+    /// The same tree, without a range, from `tree`, the dominator tree of
+    /// `graph` that the caller built before, with `names` to name items by,
+    /// so that neither is worked out again.
+    #[cfg(feature = "tui")]
+    pub fn borrowing(
+        binary: &'a Binary,
+        graph: &'g Graph,
+        tree: &'g DominatorTree,
+        names: &'g Names<'a>,
+    ) -> RetainedTree<'g, 'a> {
+        RetainedTree {
+            binary,
+            graph,
+            tree: Held::Borrowed(tree),
+            range: None,
+            called: called(graph),
+            names: Held::Borrowed(names),
         }
     }
 
     /// The tree, with `names` to name items by: those that found SYMBOL, so
     /// that the work of finding names is done only once.
     pub fn with_names(self, names: Names<'a>) -> RetainedTree<'g, 'a> {
-        RetainedTree { names, ..self }
+        RetainedTree {
+            names: Held::Owned(names),
+            ..self
+        }
     }
 
     /// The names that find each item, as SYMBOL takes them.
@@ -271,6 +305,7 @@ impl<'g, 'a> RetainedTree<'g, 'a> {
             mark: self.mark(index),
             short_name,
             children,
+            node: Some(Node::Item(index)),
         }
     }
 
@@ -333,6 +368,20 @@ impl<'g, 'a> RetainedTree<'g, 'a> {
     pub fn retained(&self, index: usize) -> u64 {
         self.tree.retained(Node::Item(index))
     }
+}
+
+/// The items that something calls directly, rather than only through a
+/// pointer, in `graph`.
+fn called(graph: &Graph) -> HashSet<usize> {
+    graph
+        .references
+        .iter()
+        .filter(|r| r.kind.is_call())
+        .filter_map(|r| match r.to {
+            Node::Item(index) => Some(index),
+            Node::Import(_) => None,
+        })
+        .collect()
 }
 
 /// How the overview, `top` and `retained` show their trees: drawn with
