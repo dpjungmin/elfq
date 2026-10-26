@@ -57,7 +57,8 @@ pub fn run(
     if binary.kind == FileKind::SharedLibrary {
         bail!("elfq can't yet tell what keeps the most bytes in a shared library");
     }
-    let retained = Kept::new(RetainedTree::build(binary, range)?);
+    let graph = Kept::new(super::reference_graph(binary)?);
+    let retained = Kept::new(RetainedTree::new(binary, &graph, range));
     super::check_has_bytes(binary, range)?;
     if format == Format::Json {
         let answer = TopJson {
@@ -173,7 +174,7 @@ mod tests {
             .references
             .retain(|reference| reference.to != Node::Item(stats));
         let flash = "0x30000000..0x30000edc".parse().unwrap();
-        let retained = RetainedTree::from_graph(&binary, graph, Some(flash));
+        let retained = RetainedTree::new(&binary, &graph, Some(flash));
         assert_eq!(
             unreachable_text(&retained, false).unwrap(),
             "Nothing reaches stats (load image), 32 bytes: the program never uses it, or elfq \

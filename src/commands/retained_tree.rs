@@ -49,9 +49,9 @@ pub(super) struct KeptItem<'a> {
 }
 
 /// A binary's graph and dominator tree.
-pub(super) struct RetainedTree<'a> {
+pub(super) struct RetainedTree<'g, 'a> {
     pub binary: &'a Binary,
-    pub graph: Graph,
+    pub graph: &'g Graph,
     pub tree: DominatorTree,
     /// The range of memory that sizes count, if not all of it.
     pub range: Option<AddressRange>,
@@ -63,24 +63,14 @@ pub(super) struct RetainedTree<'a> {
     names: Names<'a>,
 }
 
-impl<'a> RetainedTree<'a> {
-    /// Builds the graph and its dominator tree, or explains why elfq can't
-    /// yet.
-    pub fn build(binary: &'a Binary, range: Option<AddressRange>) -> Result<RetainedTree<'a>> {
-        Ok(RetainedTree::from_graph(
-            binary,
-            super::reference_graph(binary)?,
-            range,
-        ))
-    }
-
-    /// Builds the dominator tree of a graph already built.
-    pub fn from_graph(
+impl<'g, 'a> RetainedTree<'g, 'a> {
+    /// Builds the dominator tree of `graph`, the file's reference graph.
+    pub fn new(
         binary: &'a Binary,
-        graph: Graph,
+        graph: &'g Graph,
         range: Option<AddressRange>,
-    ) -> RetainedTree<'a> {
-        let tree = DominatorTree::build(binary, &graph, range);
+    ) -> RetainedTree<'g, 'a> {
+        let tree = DominatorTree::build(binary, graph, range);
         let called = graph
             .references
             .iter()
@@ -102,7 +92,7 @@ impl<'a> RetainedTree<'a> {
 
     /// The tree, with `names` to name items by: those that found SYMBOL, so
     /// that the work of finding names is done only once.
-    pub fn with_names(self, names: Names<'a>) -> RetainedTree<'a> {
+    pub fn with_names(self, names: Names<'a>) -> RetainedTree<'g, 'a> {
         RetainedTree { names, ..self }
     }
 
@@ -381,7 +371,7 @@ mod tests {
                 }
             }
             let range = range.parse().unwrap();
-            RetainedTree::from_graph(&binary, graph, Some(range)).mark(filter_tap)
+            RetainedTree::new(&binary, &graph, Some(range)).mark(filter_tap)
         };
         assert_eq!(
             mark("0x30000000..0x30000edc").as_deref(),

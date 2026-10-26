@@ -42,6 +42,20 @@ fn crc_table_is_kept_by_the_chain_through_process_frame() {
 }
 
 #[test]
+fn a_chain_from_the_roots_ends_at_the_item_itself() {
+    // Where `why crc_table` ends its chain at crc32, which keeps it.
+    let (binary, graph) = load("c-cortex-m4.elf");
+    let paths = ShortestPaths::from_roots(&binary, &graph);
+    let path = paths.path_to(node(&binary, "crc_table")).unwrap();
+    let names: Vec<&str> = path
+        .iter()
+        .map(|reference| binary.items[reference.from].name.as_str())
+        .collect();
+    assert_eq!(names, ["Reset_Handler", "main", "process_frame", "crc32"]);
+    assert_eq!(paths.path_to(node(&binary, "Reset_Handler")).unwrap(), []);
+}
+
+#[test]
 fn an_interrupt_is_the_shortest_way_to_app_tick_on_cortex_m() {
     let (binary, graph) = load("c-cortex-m4.elf");
     assert_eq!(
