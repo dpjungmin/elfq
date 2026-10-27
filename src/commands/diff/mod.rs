@@ -9,10 +9,12 @@
 //! worked out once over both files (see `blocks.rs`). When the memory
 //! differs, and both files have a symbol table, it loads both, each with
 //! its graph and, unless either is a shared library, its dominator tree,
-//! pairs their items (`pairing.rs`) and works out what changed (`rows.rs`).
-//! `text.rs` and `json.rs` write the answer.
+//! pairs their items (`pairing.rs`) and works out what changed (`rows.rs`),
+//! and which calls and other uses between blocks are new or gone
+//! (`crossings.rs`). `text.rs` and `json.rs` write the answer.
 
 mod blocks;
+mod crossings;
 mod json;
 mod pairing;
 mod rows;
@@ -34,6 +36,7 @@ use crate::binary::{Binary, FileKind, LoadedMemory, same_memory};
 use crate::cli::Format;
 use crate::graph::{DominatorTree, Graph};
 use blocks::{Block, Differs};
+use crossings::Crossing;
 use rows::Items;
 
 /// What diff found, for the text and the JSON to write.
@@ -54,10 +57,12 @@ struct Answer<'a> {
     items: Option<Compared<'a>>,
 }
 
-/// The items that diff compared, and the names that the text calls them
-/// by.
+/// The items that diff compared, the uses between blocks that are new or
+/// gone, and the names that the text calls the items by.
 struct Compared<'a> {
     items: Items<'a>,
+    /// The uses between blocks that are new or gone: none with one block.
+    crossings: Vec<Crossing>,
     old_names: Kept<Names<'a>>,
     new_names: Kept<Names<'a>>,
 }
@@ -120,8 +125,14 @@ pub fn run(
     let new_names = Kept::new(Names::new(&new_build.binary));
     let mut answer = Answer::new(old_path, new_path, &old, &new, false);
     let items = rows::compare(&old_build, &new_build, &answer.blocks);
+    let crossings = if answer.blocks.len() > 1 {
+        crossings::compare(&items, &answer.blocks)
+    } else {
+        Vec::new()
+    };
     answer.items = Some(Compared {
         items,
+        crossings,
         old_names,
         new_names,
     });

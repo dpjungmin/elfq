@@ -1,9 +1,10 @@
 //! diff's answer as JSON: whether the builds load the same memory, the
 //! sections that differ, a row for each block of memory, with each section
 //! and load image in it and how the items, the sections without items and
-//! the padding make up its change, and a row for each item that changed.
-//! The keys that count items are `null`, and the items empty, when diff
-//! compared none, as `items_compared` says.
+//! the padding make up its change, a row for each item that changed, and
+//! one for each use between blocks that is new or gone. The keys that count
+//! items are `null`, and the items and uses empty, when diff compared none,
+//! as `items_compared` says.
 
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
@@ -19,6 +20,7 @@ use super::rows::{Change, Status};
 use super::{Answer, Build, Compared};
 use crate::binary::Binary;
 use crate::commands::json::{self, address};
+use crate::commands::ranges::{self, CalleeJson};
 use crate::commands::total;
 use crate::graph::Node;
 
@@ -49,6 +51,8 @@ struct DiffJson<'c, 'a> {
     blocks: Vec<BlockJson<'a>>,
     /// The items that changed, largest change first.
     items: ItemsJson<'c, 'a>,
+    /// The uses between blocks that are new, then those that are gone.
+    crossings: Vec<CrossingJson<'a>>,
 }
 
 #[derive(Serialize)]
@@ -141,6 +145,16 @@ struct Side<'a> {
     retained: Option<u64>,
 }
 
+/// A use between blocks that is new or gone, as `callees BLOCK --json`
+/// lists it in the build that has it.
+#[derive(Serialize)]
+struct CrossingJson<'a> {
+    /// `new` or `gone`.
+    status: &'static str,
+    #[serde(flatten)]
+    row: CalleeJson<'a>,
+}
+
 #[derive(Serialize)]
 struct KeptBy<'a> {
     name: &'a str,
@@ -182,6 +196,20 @@ pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
             .map(|block| block_json(answer, block, &holds_items))
             .collect(),
         items: ItemsJson::new(compared, &answer.blocks),
+        crossings: compared.map_or_else(Vec::new, |compared| {
+            compared
+                .crossings
+                .iter()
+                .map(|crossing| CrossingJson {
+                    status: crossing.status.word(),
+                    row: ranges::callee_json(
+                        &crossing.build(&compared.items).binary,
+                        Node::Item(crossing.callee),
+                        &crossing.row,
+                    ),
+                })
+                .collect()
+        }),
     };
     json::write(&diff, out)
 }

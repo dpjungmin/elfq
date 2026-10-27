@@ -1,8 +1,10 @@
 //! diff's answer as text: a line that says whether the builds load the same
 //! memory, and what changed; for several blocks of memory, the MEMORY
 //! table, or for one, a line on how its size changed; the MOVED and CHANGE
-//! tables of the items that changed; and when no row says why the memory
-//! differs, a line that names the sections that differ.
+//! tables of the items that changed; for several blocks, the calls between
+//! blocks that are new or gone, and a line that counts the other uses; and
+//! when no row says why the memory differs, a line that names the sections
+//! that differ.
 
 use std::cell::RefCell;
 use std::cmp::Reverse;
@@ -12,12 +14,14 @@ use std::io::Write;
 use anyhow::Result;
 
 use super::blocks::{Block, SectionChange};
+use super::crossings::Crossing;
 use super::pairing::{self, is_made_name, same_but_numbers};
 use super::rows::{Change, ChangeRow, MovedRow, Status};
 use super::{Answer, Build, Compared};
 use crate::binary::{FileKind, Item};
 use crate::commands::json::address;
 use crate::commands::overview::sections_text;
+use crate::commands::ranges::{self, Direction};
 use crate::commands::symbol::Names;
 use crate::commands::text::{
     cannot_read_code, named, names_text, plural, range_argument, range_start, shell_quote,
@@ -95,6 +99,10 @@ pub(super) fn write(answer: &Answer, all: bool, out: &mut dyn Write) -> Result<(
         writeln!(out)?;
         rows.change_table(answer, &changes).write(out)?;
     }
+    if blocks.len() > 1 {
+        writeln!(out)?;
+        write_crossings(compared, out)?;
+    }
     let mut closing = Vec::new();
     if items.unchanged > 0 {
         closing.push(format!(
@@ -119,6 +127,62 @@ pub(super) fn write(answer: &Answer, all: bool, out: &mut dyn Write) -> Result<(
             out,
             "  elfq {} why {query}",
             shell_quote(&new_path.to_string())
+        )?;
+    }
+    Ok(())
+}
+
+/// The calls between blocks that are new or gone, as `callees BLOCK` lists
+/// them, with whether each is new or gone in front, and a line that counts
+/// the other uses between blocks that are new or gone, of data and of
+/// functions' addresses, of which a relink of data to another memory makes
+/// many.
+fn write_crossings(compared: &Compared, out: &mut dyn Write) -> Result<()> {
+    let crossings = &compared.crossings;
+    let calls: Vec<&Crossing> = crossings.iter().filter(|c| c.is_call()).collect();
+    let listed = !calls.is_empty();
+    if listed {
+        writeln!(out, "Calls between blocks, new or gone:")?;
+        writeln!(out)?;
+        let columns = [("STATUS", Align::Left)]
+            .into_iter()
+            .chain(ranges::crossings_columns(Direction::Out));
+        let mut table = Table::new(&columns.collect::<Vec<_>>());
+        for crossing in calls {
+            let binary = &crossing.build(&compared.items).binary;
+            let callee = Node::Item(crossing.callee);
+            let mut cells = vec![crossing.status.word().to_string()];
+            cells.extend(ranges::row_cells(
+                binary,
+                callee,
+                &crossing.row,
+                Direction::Out,
+            ));
+            table.row(cells);
+        }
+        table.write(out)?;
+    } else {
+        writeln!(out, "No call between blocks is new or gone.")?;
+    }
+    let uses = |status| {
+        let count = crossings
+            .iter()
+            .filter(|c| !c.is_call() && c.status == status)
+            .count();
+        (count > 0).then(|| format!("{count} {}", status.word()))
+    };
+    let uses: Vec<String> = [Status::New, Status::Gone]
+        .into_iter()
+        .filter_map(uses)
+        .collect();
+    if !uses.is_empty() {
+        if listed {
+            writeln!(out)?;
+        }
+        writeln!(
+            out,
+            "Other uses between blocks: {}; --json lists them.",
+            uses.join(" and ")
         )?;
     }
     Ok(())

@@ -4092,6 +4092,8 @@ fn diff(old: &str, new: &str, options: &[&str]) -> (i32, String) {
 fn firmware_shows_each_block_of_memory_and_the_items_that_changed() {
     // filter_tap left the ITCM through a new veneer, and crc32 there grew
     // by a call to log_msg, through another, with its message in .rodata.
+    // So apply_filter calls filter_tap in flash, and crc32 log_msg, and
+    // filter_tap no longer uses fir_coeffs from the ITCM.
     let (status, text) = diff(TCM_SAMPLE, TCM_MOVED_SAMPLE, &[]);
     assert_eq!(status, 1);
     assert_output(
@@ -4114,11 +4116,37 @@ CHANGE  OLD  NEW  ADDRESS     ITEM
     +8         8  0xb8        __log_msg_veneer (new), kept by crc32
    +16       ~16  0x30000de0  .rodata@0x30000de0 (new), kept by crc32
 
+Calls between blocks, new or gone:
+
+STATUS  ADDRESS     SIZE  HOW              AT    CALLEE
+new     0x30000188    52  call via veneer  0x36  filter_tap, used by apply_filter
+new     0x300002bc    26  call via veneer  0x9a  log_msg, used by crc32
+
+Other uses between blocks: 1 new and 1 gone; --json lists them.
+
 61 other items are the same size, in the same block.
 
 Try:
   elfq testdata/bin/c-cortex-m7-moved.elf why __filter_tap_veneer
 ",
+    );
+    // --all lists the same calls: every one is listed already.
+    let calls = |text: &str| -> String {
+        let (_, calls) = text.split_once("new or gone:\n").unwrap();
+        calls.split_once("\n\n").unwrap().1.to_string()
+    };
+    let (_, all) = diff(TCM_SAMPLE, TCM_MOVED_SAMPLE, &["--all"]);
+    assert_eq!(calls(&all), calls(&text));
+    // The other way round, the calls are gone, and the uses of data swap.
+    let (_, back) = diff(TCM_MOVED_SAMPLE, TCM_SAMPLE, &[]);
+    assert!(
+        back.contains(
+            "\ngone    0x30000188    52  call via veneer  0x36  filter_tap, used by apply_filter\n\
+             gone    0x300002bc    26  call via veneer  0x9a  log_msg, used by crc32\n\
+             \n\
+             Other uses between blocks: 1 new and 1 gone; --json lists them.\n"
+        ),
+        "{back}"
     );
 }
 
@@ -4216,6 +4244,9 @@ MEMORY                          OLD   NEW  CHANGE  SECTIONS
 
  OLD   NEW  FROM        TO          MOVED
 1104  1104  0x20000000  0x80000000  all 12 items of .data and .bss
+
+No call between blocks is new or gone.
+Other uses between blocks: 17 new and 17 gone; --json lists them.
 
 51 other items are the same size, in the same block.
 ",

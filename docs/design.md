@@ -184,7 +184,7 @@ except `inlined`, which reads DWARF instead of machine code.
 | `elfq FILE callers RANGE... --from RANGE` | What in one range of memory uses these ranges, such as code in ITCM that uses data in DTCM? `callees RANGE... --to RANGE` asks what these ranges use in that one, and either takes SYMBOL in place of the ranges. |
 | `elfq FILE inlined [SYMBOL]` | Which inlined functions cost the most bytes across the binary, or inside SYMBOL? Needs DWARF. |
 | `elfq FILE browse [SYMBOL]` | What does SYMBOL's code do, line by line, where does each call and use lead, and what calls it? Opens in the terminal, follows the links that the other commands' answers name, and shows the answers of `callees`, `callers`, `reach`, `why` and `retained SYMBOL` in tabs, each with the command that prints it, and the retained bytes in each block of memory; a page's header says what `retained` and `why` say about the item, and `u` opens the item that keeps it; `/` finds text in a page's rows. A data object's page lists its contents as far as elfq reads them: a vector table's entries, named by exception, the pointers it holds, as `callees` lists them, with what the dynamic loader writes in a shared library, or the strings of an object that holds only strings, with the `objdump -s` command that prints its bytes. Without SYMBOL, it opens on where the program starts, as `reach` lists it, each start a link to its page. |
-| `elfq FILE diff NEW` | Do two builds of one program load the same bytes at the same addresses? If not, in which blocks of memory do the bytes differ, which sections changed size there, and which functions and data objects moved to another block, are new or gone, or changed size, each with what keeps it? |
+| `elfq FILE diff NEW` | Do two builds of one program load the same bytes at the same addresses? If not, in which blocks of memory do the bytes differ, which sections changed size there, which functions and data objects moved to another block, are new or gone, or changed size, each with what keeps it, and which calls between blocks are new or gone? |
 
 SYMBOL is a function or data object's name, an import (`write` finds the
 `write@plt` stub that code calls), or an address such as `0x1700`. Names are
@@ -622,6 +622,25 @@ line asks `why` of the new item that heads the subtree of new items with
 the most new bytes, when something keeps it, rather than it being a
 place where the program starts, and it has a name of its own.
 
+With more than one block, diff lists the uses between blocks that are
+new or gone (`commands/diff/crossings.rs`), so a CI job can check that
+code in ITCM doesn't start calling flash. In each build, they are the
+rows that `callees BLOCK` lists for each block, of the items that start
+in it, of items in other blocks, imports left out, as they are in no
+block: a call through a veneer is one row, "call via veneer", as there.
+A use is the same in both builds when it is between partners, in the
+same way, through a veneer in both or in neither, and both items are in
+the same blocks as before; every use by or of an item without a partner
+is new or gone. So when an item moves to another block, each of its uses
+between blocks before is gone, and each after is new: a relink of data
+to another memory makes many, and so does one of code, as when flash
+starts at another address. The table lists every call and tail call
+between blocks that is new or gone, the new first, each block's in the
+order and columns of `callees BLOCK`, with STATUS in front, or says "No
+call between blocks is new or gone."; a line counts the other uses, of
+data and of functions' addresses, which JSON lists. The exit status and
+the first line don't count them.
+
 When no row says why the memory differs, as when no item changed
 because only a build ID or `.tbss` differs, or when either file has no
 symbol table, the last line names every section whose address, size,
@@ -822,6 +841,7 @@ several.
 | `sections_that_differ` | the names of the sections whose address, size, load image or bytes differ, or that only one file has, in address order, `.tbss` among them, as the text's last line names them when no row says why, but every one and always; empty when `same_bytes` is `true` |
 | `blocks` | the memory blocks, worked out over both files, in address order, each a range with: `old_size` and `new_size`, each file's bytes in it, from its first section or load image there to the end of its last, gaps included, or `null` when it has none there; `change`, `new_size` less `old_size`, counting `null` as 0; `same_bytes`, whether both put the same bytes at the same addresses in it; `item_bytes`, `section_bytes` and `padding_bytes`, how much of `change` the items that start in it, the sections and load images that hold none, and the bytes between them make up, which add up to `change`, unless an item lies inside another, whose bytes `item_bytes` then counts twice, `null` while `items_compared` is `false`; `item_bytes` is also what the `items` change it by, a moved item taking its `old_size` from its `old_block` and adding its `new_size` to its `new_block`; and `sections`, the sections and load images in it, in address order, but not `.tbss`, each with its `name`, `load_image`, whether it is the section's load image, `holds_items`, whether items are in it in either file, `null` while `items_compared` is `false`, and `old_address`, `old_size`, `new_address` and `new_size`, `null` for a file that doesn't have it in the block |
 | `items` | every item that changed, largest change first, and of the same change, by name, each with: `name`, the new file's, or for a gone item, the old file's; `was`, the old name when the new file names it otherwise, or `null`; `kind`; `status`, `moved`, `new`, `gone`, `grew` or `shrank`; `paired_by`, the rule that paired it, `name`, `bytes`, `uses` or `place`, or `null` for a new or gone item; `change`, `new_size` less `old_size`, counting `null` as 0; in each file, `null` for a file that doesn't have it, `old_address` and `new_address`, `old_size` and `new_size`, `old_section` and `new_section`, `old_block` and `new_block`, the `start` of its block, `old_kept_by` and `new_kept_by`, the `name` and `address` of the item that keeps it, its parent in the dominator tree, or `null` when several of the places where the program starts keep it, when nothing reaches it, when either file is a shared library, or when elfq can't read the code, and `old_retained` and `new_retained`, its retained bytes, as `top` gives them, or `null` when nothing reaches it or there is no tree; `size_estimated`, whether elfq estimated its size in either file; and `inlined_into`, for a gone function that the new file's DWARF says the compiler inlined everywhere, and whose name finds nothing in the new file, the functions it inlined it into, or `null`. `old_kept_by` and `new_kept_by` are the only keys that name an item's parent by name and address rather than by an `id`, since the rows aren't a tree; `[]` when `items_compared` is `false` |
+| `crossings` | every use between blocks that is new, then every one that is gone, block by block, each a row of `callees BLOCK --json` in the file that has it, the new file for a new one, with its `status`, `new` or `gone`, in front: the `item` in another block, the `caller`, `how`, the `veneer` and the `sites`. Every way of use is there: `call`, `tail call`, `address taken`, `access` and `pointer`. `[]` when `items_compared` is `false`, or with one block |
 
 **`reach`**, without SYMBOL:
 
@@ -1141,7 +1161,8 @@ libraries. `browse` prints x86-64 code and the Thumb code of Cortex-M
 cores up to Armv7E-M; for Armv8-M cores, its pages list only the lines
 that use another item. `diff` compares any two builds of one program that
 have section headers, by block of memory, and their functions and data
-objects when both have a symbol table. The pull requests and the git
+objects, with the calls between blocks that are new or gone, when both
+have a symbol table. The pull requests and the git
 log record how elfq got here.
 
 On a 4-CPU x86-64 machine, a release build gives the overview of elfq's
@@ -1153,7 +1174,8 @@ key typed into go to then takes under 0.1 s. The first takes up to 0.2 s
 in those libraries, and the first whose text names nothing takes about
 half a second, as it works out what to suggest.
 
-Next, `diff` lists the calls between blocks that are new or gone.
+Next, `diff` says which items of the same size changed their code or
+data.
 
 Ideas for later, not yet planned: output that scripts and AI agents can
 read more easily, a check of what startup code copies into RAM, the

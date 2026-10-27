@@ -511,16 +511,21 @@ changed fold into one row per block, and so do new and gone items of one
 name. It shows 30 rows, the largest of each block among them, and a row
 that counts the items in the rest of each block; --all shows every item.
 A row ends with what keeps the item, as top's rows do, and says where the
-compiler inlined a gone function when NEW's DWARF says. When no item
-changed, or a file has no symbol table, so that no row says why the
-memory differs, the last line names every section whose address, size,
-load image or bytes differ, or that only one file has, such as one with a
-new build ID: 10 of them, or with --all, every one.
+compiler inlined a gone function when NEW's DWARF says. With several
+blocks, a table lists every call between blocks that is new or gone, as
+callees BLOCK lists it in the file that has it, and a line counts the
+other uses between blocks that are new or gone, of data and of functions'
+addresses: an item that moved to another block has its uses between
+blocks before gone, and those after new. When no item changed, or a file
+has no symbol table, so that no row says why the memory differs, the last
+line names every section whose address, size, load image or bytes differ,
+or that only one file has, such as one with a new build ID: 10 of them,
+or with --all, every one.
 
 --json has every block, with each section and load image in it and the
 bytes of its items, of its sections without items and of its padding,
-which add up to its change; every section that differs; and every item
-that changed.
+which add up to its change; every section that differs; every item that
+changed; and every use between blocks that is new or gone.
 
 Exit status: 0 when FILE and NEW load the same bytes at the same
 addresses, 1 when they don't, and 2 for an error, as when a file is a
