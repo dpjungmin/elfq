@@ -588,13 +588,13 @@ the copies inside one function.
 
 ## What changed between two builds?
 
-`diff` compares two builds of one program by the memory they load. In
-`c-cortex-m7-moved.elf`, `filter_tap` is no longer in ITCM, and `crc32`
-logs an empty frame:
+`diff` compares two builds of one program by the memory they load, and
+their functions and data objects. In `c-cortex-m7-moved.elf`, `filter_tap`
+is no longer in ITCM, and `crc32` logs an empty frame:
 
 ```
 $ elfq testdata/bin/c-cortex-m7.elf diff testdata/bin/c-cortex-m7-moved.elf
-From testdata/bin/c-cortex-m7.elf to testdata/bin/c-cortex-m7-moved.elf: the bytes differ in 2 of 4 blocks.
+From testdata/bin/c-cortex-m7.elf to testdata/bin/c-cortex-m7-moved.elf: 1 moved, 3 new, 1 grew.
 
 MEMORY                   OLD   NEW  CHANGE  SECTIONS
 0x00000000..0x000000e0   224   208     -16  .itcm -16
@@ -602,26 +602,39 @@ MEMORY                   OLD   NEW  CHANGE  SECTIONS
 0x20240000..0x20241000  4096  4096       0
 0x30000000..0x30000eec  3804  3820     +16  load image of .itcm -16, .rodata +16
 
-Sections that differ: .itcm, .isr_vector, .text, .rodata and .ARM.exidx.
+OLD  NEW  FROM  TO          MOVED
+ 52   52  0x40  0x30000188  filter_tap (.itcm to .text), kept by __filter_tap_veneer
+
+CHANGE  OLD  NEW  ADDRESS     ITEM
+   +16   48   64  0x6c        crc32, kept by __crc32_veneer
+    +8         8  0xb0        __filter_tap_veneer (new), kept by apply_filter
+    +8         8  0xb8        __log_msg_veneer (new), kept by crc32
+   +16       ~16  0x30000de0  .rodata@0x30000de0 (new), kept by crc32
+
+61 other items are the same size, in the same block.
+
+Try:
+  elfq testdata/bin/c-cortex-m7-moved.elf why __filter_tap_veneer
 ```
 
 The blocks are the overview's, worked out over both files, so that both
-have the same blocks. ITCM is 16 bytes smaller: `filter_tap` left it,
-`crc32` grew, and the linker added veneers for the calls from ITCM to
-`filter_tap` and `log_msg` in flash. Flash holds ITCM's load image, which
-shrank with it, and the new message in `.rodata`. The last line names
-every section that differs: `filter_tap` is now in flash's `.text`, whose
-bytes differ though its size doesn't, the vector table points to code
-that moved, and `.ARM.exidx` moved after `.rodata`. The exit status is 1.
+have the same blocks. ITCM is 16 bytes smaller: `filter_tap` moved to
+flash, `crc32` grew, and the linker added veneers for the calls from ITCM
+to `filter_tap` and `log_msg` in flash, each kept by its caller. Flash
+holds ITCM's load image, which shrank with it, and the new message in
+`.rodata`. Each row ends with what keeps the item, as `top`'s rows do, in
+the new build, or for a gone item, in the old. Other sections' bytes
+changed too, as the vector table points to code that moved, but the rows
+say why. The exit status is 1.
 
 Moving `.data` and `.bss` from DTCM to RAM at 0x80000000 leaves a block
-that only the old build has and one that only the new one has. The code in
-ITCM and flash didn't change size, but its bytes did, since it holds the
-addresses of the data:
+that only the old build has and one that only the new one has, and every
+item in them moved, so they are one row. The code in ITCM and flash didn't
+change size, but its bytes did, since it holds the addresses of the data:
 
 ```
 $ elfq testdata/bin/c-cortex-m7.elf diff testdata/bin/c-cortex-m7-sdram.elf
-From testdata/bin/c-cortex-m7.elf to testdata/bin/c-cortex-m7-sdram.elf: the bytes differ in 4 of 5 blocks.
+From testdata/bin/c-cortex-m7.elf to testdata/bin/c-cortex-m7-sdram.elf: 12 moved.
 
 MEMORY                          OLD   NEW  CHANGE  SECTIONS
 0x00000000..0x000000e0          224   224       0  bytes differ
@@ -630,7 +643,29 @@ MEMORY                          OLD   NEW  CHANGE  SECTIONS
 0x30000000..0x30000edc         3804  3804       0  bytes differ
 0x80000000..0x80000450 (new)      -  1104   +1104  .data .bss
 
-Sections that differ: .itcm, .data, .bss, .isr_vector and .text.
+ OLD   NEW  FROM        TO          MOVED
+1104  1104  0x20000000  0x80000000  all 12 items of .data and .bss
+
+51 other items are the same size, in the same block.
+```
+
+`--all` lists each of the 12. A function that the compiler inlined
+everywhere is gone, and the new build's DWARF says where it went:
+
+```
+$ elfq testdata/bin/c-cortex-m7.elf diff testdata/bin/c-cortex-m7-inlined.elf
+From testdata/bin/c-cortex-m7.elf to testdata/bin/c-cortex-m7-inlined.elf: 1 gone.
+
+MEMORY                   OLD   NEW  CHANGE  SECTIONS
+0x00000000..0x000000e0   224   224       0  bytes differ
+0x20000000..0x20000450  1104  1104       0
+0x20240000..0x20241000  4096  4096       0
+0x30000000..0x30000edc  3804  3740     -64  .text -64
+
+CHANGE  OLD  NEW  ADDRESS     ITEM
+   -40   40       0x30000160  decode_header (gone, inlined into process_frame)
+
+62 other items are the same size, in the same block.
 ```
 
 Symbols, debug info and where the file keeps its bytes don't count, so a
@@ -646,14 +681,34 @@ of a table:
 
 ```
 $ elfq testdata/bin/c-x86_64.elf diff testdata/bin/c-x86_64-moved.elf
-From testdata/bin/c-x86_64.elf to testdata/bin/c-x86_64-moved.elf: the bytes differ.
+From testdata/bin/c-x86_64.elf to testdata/bin/c-x86_64-moved.elf: 1 new, 2 grew, 1 shrank.
+The memory stays at 15728 bytes (.text +16, .eh_frame +8).
+
+CHANGE  OLD  NEW  ADDRESS  ITEM
+   +20   59   79  0x1610   crc32, kept by process_frame
+   +13       ~13  0x2004   .rodata@0x2004 (new), kept by crc32
+   -13  ~34  ~21  0x206b   .rodata@0x206b, kept by main
+    +3   19   22  0x1660   on_button, kept by main
+
+65 other items are the same size, in the same block.
+```
+
+The strings that elfq finds only from the code that uses them have no
+names, and estimated sizes, marked `~`, that end where the next one
+starts: the new message took 13 bytes from the one after it. Without a
+symbol table, diff compares only the bytes, and no row says why the memory
+differs, so the last line names every section that differs, as it does
+when no item changed. The build ID in `.note.gnu.build-id` is among them:
+it is loaded too, and the linker makes it from the whole file, so it
+changes with any change to the file, even one only in debug info:
+
+```
+$ elfq testdata/bin/c-x86_64-stripped.elf diff testdata/bin/c-x86_64-moved-stripped.elf
+From testdata/bin/c-x86_64-stripped.elf to testdata/bin/c-x86_64-moved-stripped.elf: the bytes differ.
+testdata/bin/c-x86_64-stripped.elf has no symbol table, so diff compares only bytes, not functions and data.
 The memory stays at 15728 bytes (.text +16, .eh_frame +8).
 Sections that differ: .note.gnu.build-id, .text, .fini, .rodata, .eh_frame_hdr, .eh_frame and .dynamic.
 ```
-
-The build ID in `.note.gnu.build-id` is loaded too, and the linker makes
-it from the whole file, so it changes with any change to the file, even
-one only in debug info.
 
 ## How do scripts read the answers?
 

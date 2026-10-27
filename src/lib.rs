@@ -27,3 +27,14 @@ pub mod commands;
 pub mod debuginfo;
 pub mod graph;
 pub(crate) mod render;
+
+/// The stack for the thread that runs elfq, and for the one on which `diff`
+/// loads its second file. Trees are built, drawn and listed for JSON
+/// recursively, as deep as the file nests them: the retained tree as deep
+/// as the longest chain of calls, and the tree of inlined copies as deep as
+/// the copies nest; C++ names are demangled recursively too. The main
+/// thread's stack, usually 8 MiB, runs out at a chain of some 10,000 calls,
+/// and of fewer in a debug build; this one holds 32 times as many. The
+/// thread's memory grows only as far as its stack is used, but all of its
+/// addresses are set aside from the start.
+pub const STACK_SIZE: usize = 256 << 20;

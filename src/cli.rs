@@ -146,12 +146,13 @@ first, and the name last. A name after \"kept by\" or \"used by\" works as
 SYMBOL, and a why row without \"used by\" is used by the row above, or
 starts a chain. The tables of top, retained, callers, callees and reach
 show the 30 largest items, inlined the 30 largest functions, why the
-chains through the 10 nearest users, and diff the 3 sections that changed
-most in each block; --all shows every row and section, and makes
-sentences name everything they would cut short. With ranges, --from or
---to, callers, callees and reach show every row. --json has every item,
-site and chain, one row per line, but the overview's JSON leaves its
-table to top's. Scripts that read why's chains should use --json.
+chains through the 10 nearest users, and diff the 30 largest changes and
+the 3 sections that changed most in each block; --all shows every row and
+section, and makes sentences name everything they would cut short. With
+ranges, --from or --to, callers, callees and reach show every row. --json
+has every item, site and chain, one row per line, but the overview's JSON
+leaves its table to top's. Scripts that read why's chains should use
+--json.
 
 Exit status: 0 for an answer, 1 when callers or callees with ranges, --from
 or --to finds something that crosses, or might, reach --to finds something
@@ -488,21 +489,38 @@ from the whole file, debug info included. .tbss, which each thread has a
 copy of, counts by its name, address and size.
 
 When both load the same bytes at the same addresses, diff says so, and
-nothing else. Otherwise it says in how many blocks of memory the bytes
-differ, and the MEMORY table lists the blocks, as the overview does, but
-worked out over both files, so that both have the same blocks. OLD and NEW
-are each file's bytes in the block, from its first section or load image
-there to the end of its last, gaps included, and CHANGE is NEW less OLD.
-SECTIONS names the 3 sections or load images whose size changed the most,
-in address order, each with its change, or says \"bytes differ\" when none
-changed size but bytes did. A block that only one file has is marked (new)
-or (gone), and SECTIONS names what is in it. For files with one block, a
-line says how its size changed instead. The last line names the sections
-whose address, size, load image or bytes differ, or that only one file
-has: 10 of them, or with --all, every one.
+nothing else. Otherwise the MEMORY table lists the blocks of memory, as
+the overview does, but worked out over both files, so that both have the
+same blocks. OLD and NEW are each file's bytes in the block, from its
+first section or load image there to the end of its last, gaps included,
+and CHANGE is NEW less OLD. SECTIONS names the 3 sections or load images
+whose size changed the most, in address order, each with its change, or
+says \"bytes differ\" when none changed size but bytes did. A block that
+only one file has is marked (new) or (gone), and SECTIONS names what is
+in it. For files with one block, a line says how its size changed instead.
 
---json has every block, with each section and load image in it, and every
-section that differs.
+When both files have a symbol table, diff pairs their functions and data
+objects, by name, by bytes, by what uses them or by where they are, and
+the first line counts those that moved to another block, are new or gone,
+or grew or shrank. MOVED lists those that moved, but all the items of
+whole sections that moved together are one row. CHANGE lists the rest by
+block, largest first: a new item and the new items in its block that only
+it keeps are one row, as are a gone item and the gone items in its block
+that only it kept; data objects without a name whose estimated size
+changed fold into one row per block, and so do new and gone items of one
+name. It shows 30 rows, the largest of each block among them, and a row
+that counts the items in the rest of each block; --all shows every item.
+A row ends with what keeps the item, as top's rows do, and says where the
+compiler inlined a gone function when NEW's DWARF says. When no item
+changed, or a file has no symbol table, so that no row says why the
+memory differs, the last line names every section whose address, size,
+load image or bytes differ, or that only one file has, such as one with a
+new build ID: 10 of them, or with --all, every one.
+
+--json has every block, with each section and load image in it and the
+bytes of its items, of its sections without items and of its padding,
+which add up to its change; every section that differs; and every item
+that changed.
 
 Exit status: 0 when FILE and NEW load the same bytes at the same
 addresses, 1 when they don't, and 2 for an error, as when a file is a
@@ -671,8 +689,7 @@ pub struct DiffArgs {
     /// The other build of the program, to compare with FILE
     #[arg(value_name = "NEW")]
     pub new: PathBuf,
-    /// Name every section that changed, not only those that changed the
-    /// most
+    /// Show every item and section that changed, not only the largest
     #[arg(long)]
     pub all: bool,
 }

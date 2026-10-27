@@ -382,9 +382,14 @@ fn diff_names_the_file_that_a_warning_is_about() {
         &String::from_utf8(output.stderr).unwrap(),
         &format!("warning: {path}: section .plt runs past the end of the file\n"),
     );
+    // The new build has no bytes for .plt, so the item that elfq makes of
+    // it is gone, and the function that the unwind table finds there new.
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(
-        stdout.ends_with("Sections that differ: .plt.\n"),
+        stdout.contains(
+            "\n   -64   64       0x1020   .plt (gone)\n   \
+             +64        64  0x1020   fn_0x1020 (new), which nothing reaches\n"
+        ),
         "{stdout}"
     );
 }
@@ -411,8 +416,8 @@ fn file_range(data: &[u8], section: &str) -> (usize, usize) {
 
 #[test]
 fn diff_names_a_section_whose_bytes_alone_differ() {
-    // Another build ID, as after a change only in debug info: the memory
-    // keeps its size, and the last line says where it differs.
+    // Another build ID, as after a change only in debug info: no item
+    // changed, and the last line says where the bytes differ.
     let mut data = sample("c-x86_64.elf");
     let (offset, size) = file_range(&data, ".note.gnu.build-id");
     data[offset + size - 1] ^= 1;
@@ -420,7 +425,11 @@ fn diff_names_a_section_whose_bytes_alone_differ() {
     assert_eq!(status, 1);
     assert!(
         text.ends_with(
-            "\nThe memory stays at 15728 bytes.\nSections that differ: .note.gnu.build-id.\n"
+            ": no item changed size or block, but bytes differ.\n\
+             The memory stays at 15728 bytes.\n\
+             \n\
+             68 other items are the same size, in the same block.\n\
+             Sections that differ: .note.gnu.build-id.\n"
         ),
         "{text}"
     );
@@ -440,7 +449,70 @@ fn diff_names_a_section_whose_bytes_alone_differ() {
         "{text}"
     );
     assert!(
-        text.ends_with("\n\nSections that differ: .rodata.\n"),
+        text.ends_with(
+            "\n\n63 other items are the same size, in the same block.\n\
+             Sections that differ: .rodata.\n"
+        ),
+        "{text}"
+    );
+    // In a shared library, with no row, nothing says that rows can't say
+    // what keeps items.
+    let mut data = sample("c-x86_64.so");
+    let (offset, _) = file_range(&data, ".rodata");
+    data[offset + 0x10] ^= 1;
+    let (status, text, _) = diff("c-x86_64.so", "rodata-byte.so", &data, &[]);
+    assert_eq!(status, 1);
+    assert!(
+        text.ends_with(
+            ": no item changed size or block, but bytes differ.\n\
+             The memory stays at 15936 bytes.\n\
+             \n\
+             72 other items are the same size, in the same block.\n\
+             Sections that differ: .rodata.\n"
+        ),
+        "{text}"
+    );
+}
+
+#[test]
+fn diff_says_where_a_gone_function_was_inlined_only_when_its_name_finds_nothing() {
+    // The build where decode_header is inlined, with its variable
+    // systick_count named decode_header: a gone function's name that finds
+    // an item names no function that is only inlined.
+    let mut data = sample("c-cortex-m7-inlined.elf");
+    let (offset, size) = file_range(&data, ".strtab");
+    let strtab = &mut data[offset..offset + size];
+    let at = strtab
+        .windows(14)
+        .position(|name| name == b"systick_count\0")
+        .unwrap();
+    strtab[at..at + 13].copy_from_slice(b"decode_header");
+    let (status, text, _) = diff("c-cortex-m7.elf", "renamed.elf", &data, &[]);
+    assert_eq!(status, 1);
+    assert!(
+        text.contains("  decode_header (gone), kept by process_frame\n"),
+        "{text}"
+    );
+}
+
+#[test]
+fn diff_says_when_only_blocks_differ() {
+    // .ARM.exidx, which holds no item, at an address of its own: a new
+    // block, and the old one ends sooner, but every item is where it was.
+    let mut data = sample("c-cortex-m7.elf");
+    set_section_field(&mut data, ".ARM.exidx", ADDRESS, 0x6000_0000);
+    let (status, text, _) = diff("c-cortex-m7.elf", "exidx-elsewhere.elf", &data, &[]);
+    assert_eq!(status, 1);
+    assert!(
+        text.contains(": no item changed, but the blocks of memory differ.\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("\n0x60000000..0x60000008 (new)     -     8      +8  .ARM.exidx\n"),
+        "{text}"
+    );
+    assert!(
+        text.ends_with("\nSections that differ: .ARM.exidx.\n"),
         "{text}"
     );
 }

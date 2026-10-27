@@ -2,11 +2,11 @@
 //! out once over both builds' sections and load images together, so that
 //! both builds share each block's edges, and what changed in each block.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use object::SectionKind;
 
-use crate::binary::{AddressRange, LoadedMemory, memory_blocks, same_bytes_in};
+use crate::binary::{AddressRange, Binary, LoadedMemory, memory_blocks, same_bytes_in};
 
 /// A block of memory that the two builds share, such as an ITCM or flash.
 #[derive(Debug)]
@@ -195,6 +195,77 @@ impl Block {
     }
 }
 
+/// How a build's bytes in a block split up, as the overview counts a
+/// block's bytes, from the start of its first section or load image to the
+/// end of its last.
+#[derive(Debug, Default, Clone, Copy)]
+pub(super) struct Parts {
+    /// The bytes of the items in the block.
+    pub items: u64,
+    /// The bytes of the load images, and of the sections that hold no
+    /// items in either build, but `.relro_padding`, which is padding.
+    pub sections: u64,
+    /// The rest: the bytes between them.
+    pub padding: u64,
+}
+
+impl Block {
+    /// How the old build's bytes in the block split up, when `old` is
+    /// true, or the new build's, each of whose sections and items `memory`
+    /// and `binary` hold: all 0 when the build has nothing in the block.
+    /// `holds_items` names the sections that hold items in either build.
+    pub fn parts(
+        &self,
+        old: bool,
+        memory: &LoadedMemory,
+        binary: &Binary,
+        holds_items: &HashSet<&str>,
+    ) -> Parts {
+        let (places, span) = match old {
+            true => (&self.old, self.old_size()),
+            false => (&self.new, self.new_size()),
+        };
+        let Some(span) = span else {
+            return Parts::default();
+        };
+        let range = self.range;
+        // What the items and the sections without items cover, as
+        // (start, end).
+        let mut covered: Vec<(u64, u64)> = Vec::new();
+        let mut parts = Parts::default();
+        let first = binary
+            .items
+            .partition_point(|item| item.address < range.start);
+        for item in binary.items[first..]
+            .iter()
+            .take_while(|item| item.address < range.end)
+        {
+            let end = item.address.saturating_add(item.size).min(range.end);
+            parts.items += end - item.address;
+            covered.push((item.address, end));
+        }
+        for place in places {
+            let name = memory.sections[place.section].name.as_str();
+            if place.load_image || !(holds_items.contains(name) || name == ".relro_padding") {
+                parts.sections += place.size;
+                covered.push((place.address, place.address.saturating_add(place.size)));
+            }
+        }
+        covered.sort_unstable();
+        let mut union = 0;
+        let mut reached = 0;
+        for (start, end) in covered {
+            let start = start.max(reached);
+            if end > start {
+                union += end - start;
+                reached = end;
+            }
+        }
+        parts.padding = span.saturating_sub(union);
+        parts
+    }
+}
+
 impl SectionChange<'_> {
     /// How many bytes it grew by: less than 0 when it shrank, and all of
     /// its bytes when only one build has it.
@@ -215,16 +286,25 @@ fn span(places: &[Place]) -> Option<u64> {
     Some(end - start)
 }
 
-/// The names of the allocated sections whose address, size, load image or
-/// bytes differ between the builds, or that only one has, in address order,
-/// by the lower of a section's two addresses, as in a block. As in a block,
-/// the first of a name in one build goes with the first in the other.
-/// `.tbss` counts by its address and size, and sections of no size don't
-/// count, as they hold no memory.
+/// A section whose address, size, load image or bytes differ between the
+/// builds, or that only one has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Differs<'a> {
+    pub name: &'a str,
+    /// Whether only the address of its load image differs.
+    pub only_load_image: bool,
+}
+
+/// The allocated sections whose address, size, load image or bytes differ
+/// between the builds, or that only one has, in address order, by the lower
+/// of a section's two addresses, as in a block. As in a block, the first of
+/// a name in one build goes with the first in the other. `.tbss` counts by
+/// its address and size, and sections of no size don't count, as they hold
+/// no memory.
 pub(super) fn sections_that_differ<'a>(
     old: &'a LoadedMemory,
     new: &'a LoadedMemory,
-) -> Vec<&'a str> {
+) -> Vec<Differs<'a>> {
     let allocated = |memory: &'a LoadedMemory| {
         (0..memory.sections.len())
             .filter(|&index| memory.sections[index].allocated && memory.sections[index].size > 0)
@@ -240,26 +320,33 @@ pub(super) fn sections_that_differ<'a>(
             .push_back(index);
     }
     // Each section that differs, with the address it is listed by.
-    let mut differ: Vec<(u64, &str)> = Vec::new();
+    let mut differ: Vec<(u64, Differs)> = Vec::new();
+    let only = |name: &'a str| Differs {
+        name,
+        only_load_image: false,
+    };
     for new_index in allocated(new) {
         let section = &new.sections[new_index];
         let paired = unpaired
             .get_mut(section.name.as_str())
             .and_then(VecDeque::pop_front);
         let Some(old_index) = paired else {
-            differ.push((section.address, section.name.as_str()));
+            differ.push((section.address, only(section.name.as_str())));
             continue;
         };
         let old_section = &old.sections[old_index];
-        let same = old_section.address == section.address
+        let same_section = old_section.address == section.address
             && old_section.size == section.size
-            && old_section.load_address == section.load_address
             && thread_local(old_section.kind) == thread_local(section.kind)
             && old.bytes(old_index).same_as(new.bytes(new_index));
-        if !same {
+        let same_load_image = old_section.load_address == section.load_address;
+        if !(same_section && same_load_image) {
             differ.push((
                 old_section.address.min(section.address),
-                section.name.as_str(),
+                Differs {
+                    name: &section.name,
+                    only_load_image: same_section,
+                },
             ));
         }
     }
@@ -268,10 +355,10 @@ pub(super) fn sections_that_differ<'a>(
     gone.sort_unstable();
     for index in gone {
         let section = &old.sections[index];
-        differ.push((section.address, section.name.as_str()));
+        differ.push((section.address, only(section.name.as_str())));
     }
     differ.sort_by_key(|&(address, _)| address);
-    differ.into_iter().map(|(_, name)| name).collect()
+    differ.into_iter().map(|(_, differs)| differs).collect()
 }
 
 #[cfg(test)]
@@ -380,13 +467,21 @@ mod tests {
         );
     }
 
+    /// The names of the sections that differ.
+    fn names<'a>(old: &'a LoadedMemory, new: &'a LoadedMemory) -> Vec<&'a str> {
+        sections_that_differ(old, new)
+            .into_iter()
+            .map(|differs| differs.name)
+            .collect()
+    }
+
     #[test]
     fn sections_differ_by_address_size_or_bytes() {
         let (old, new) = (sample("c-x86_64.elf"), sample("c-x86_64-moved.elf"));
         let old = LoadedMemory::read(&old).unwrap();
         let new = LoadedMemory::read(&new).unwrap();
         assert_eq!(
-            sections_that_differ(&old, &new),
+            names(&old, &new),
             [
                 ".note.gnu.build-id",
                 ".text",
@@ -401,7 +496,7 @@ mod tests {
         let (old, new) = (sample("c-x86_64.elf"), sample("c-x86_64.so"));
         let old = LoadedMemory::read(&old).unwrap();
         let new = LoadedMemory::read(&new).unwrap();
-        let differ = sections_that_differ(&old, &new);
+        let differ = names(&old, &new);
         assert_eq!(
             differ[..5],
             [
@@ -413,5 +508,19 @@ mod tests {
             ]
         );
         assert!(sections_that_differ(&old, &old).is_empty());
+        // Only the load image of .data moved, as .text shrank before it.
+        let (old, new) = (sample("c-cortex-m7.elf"), sample("c-cortex-m7-inlined.elf"));
+        let old = LoadedMemory::read(&old).unwrap();
+        let new = LoadedMemory::read(&new).unwrap();
+        let data = sections_that_differ(&old, &new)
+            .into_iter()
+            .find(|differs| differs.name == ".data");
+        assert_eq!(
+            data,
+            Some(Differs {
+                name: ".data",
+                only_load_image: true
+            })
+        );
     }
 }
