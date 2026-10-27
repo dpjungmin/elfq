@@ -26,7 +26,7 @@ testdata/
 | `c-cortex-m4*.elf` | C | Cortex-M4 bare metal, newlib-nano, `--gc-sections` |
 | `c-cortex-m4-cmsis*.elf` | C | The same, laid out as CMSIS's linker script template does |
 | `c-cortex-m7*.elf` | C | Cortex-M7 bare metal, with code and data in TCM, OCRAM and flash |
-| `c-cortex-m7-moved*.elf`, `c-cortex-m7-sdram.elf`, `c-x86_64-moved*` | C | The Cortex-M7 and x86-64 builds again, each with one change, for `diff` |
+| `c-cortex-m7-moved*.elf`, `c-cortex-m7-sdram.elf`, `c-cortex-m7-inlined.elf`, `c-x86_64-moved*` | C | The Cortex-M7 and x86-64 builds again, each with one change, for `diff` |
 | `c-deep.elf` | C | x86-64 Linux, PIE, with calls and inlined code nested 20 deep |
 | `far-*.elf` | C | Cortex-M0 and M4 bare metal, with calls too far for one branch instruction, linked by GNU ld or LLD |
 | `c-softfloat-nodebug.elf` | C | Cortex-M4 bare metal without its FPU, with libgcc's routines for doubles |
@@ -39,8 +39,9 @@ testdata/
 
 Each comes in up to three variants, matching what people usually have
 (`c-deep.elf`, `c-x86_64.so`, `c-x86_64-moved.so`, `c-cortex-m7-sdram.elf`,
-`cpp-x86_64.so` and `c-plt.so` only in the first, `c-softfloat` only in the
-second, `c-cortex-m4-cmsis` and `far-*` only in the last two):
+`c-cortex-m7-inlined.elf`, `cpp-x86_64.so` and `c-plt.so` only in the
+first, `c-softfloat` only in the second, `c-cortex-m4-cmsis` and `far-*`
+only in the last two):
 
 | Suffix | Symbols | DWARF | Typical of |
 |---|---|---|---|
@@ -151,6 +152,7 @@ change with a `-D` flag for app.c (see the end of
 | `c-cortex-m7-moved*.elf` | `filter_tap` is linked in flash, not in ITCM, and with `-DDIFF_MOVED`, `crc32` logs an empty frame. | `.itcm` shrinks by 16 bytes: `filter_tap` leaves it, while `crc32` grows by 16 and the linker adds two veneers to reach flash, `__filter_tap_veneer` and `__log_msg_veneer`. `.rodata` grows by 16, for `"empty frame\n"`. Of the four blocks of memory, the bytes differ in ITCM and flash. |
 | `c-x86_64-moved*.elf`, `c-x86_64-moved.so` | With `-DDIFF_MOVED`, `crc32` logs an empty frame. | One block of memory, which stays at the same size: `.text` grows by 16 bytes and `.eh_frame` by 8, into what was padding. |
 | `c-cortex-m7-sdram.elf` | DTCM is at 0x80000000, not 0x20000000. | `.data` and `.bss` leave the block at 0x20000000 for a new one at 0x80000000. The bytes in ITCM and flash differ only in the words that hold an address in DTCM: those that code loads, and the vector table's first, the initial stack pointer. |
+| `c-cortex-m7-inlined.elf` | With `-DDIFF_INLINED`, `decode_header` is always inlined. | `decode_header` is gone: its DWARF says the compiler inlined it into `process_frame`, its only caller, which keeps its size. `.text` shrinks by 64 bytes, and the code after it moves. |
 
 The stripped and `-nodebug` files hold the same memory as the builds with
 DWARF, so `diff` finds them the same.

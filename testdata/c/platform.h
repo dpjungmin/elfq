@@ -11,13 +11,19 @@ void platform_write(const char *buf, size_t len);
 void app_tick(uint32_t now);
 
 /* For the builds that diff compares with this sample's (see build.sh): with
-   -DDIFF_MOVED, crc32 logs an empty frame. It is here, at the end of this
-   file, and expands to nothing otherwise, so that app.c's lines, and the
+   -DDIFF_MOVED, crc32 logs an empty frame, and with -DDIFF_INLINED, the
+   compiler inlines decode_header. They are here, at the end of this file,
+   and change nothing otherwise, so that app.c's lines and columns, and the
    other builds' bytes, stay as they are. */
 #ifdef DIFF_MOVED
 #define LOG_EMPTY_FRAME(len) if ((len) == 0) log_msg("empty frame\n");
 #else
 #define LOG_EMPTY_FRAME(len)
+#endif
+#ifdef DIFF_INLINED
+#define DIFF_INLINED_FN ALWAYS_INLINE
+#else
+#define DIFF_INLINED_FN NOINLINE static
 #endif
 
 #endif

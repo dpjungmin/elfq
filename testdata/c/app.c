@@ -111,7 +111,7 @@ struct header {
 #define CRC_SIZE 4u
 #define MAX_SAMPLES 32u
 
-NOINLINE static int decode_header(const uint8_t *buf, size_t len, struct header *out)
+DIFF_INLINED_FN int decode_header(const uint8_t *buf, size_t len, struct header *out)
 {
     if (len < HEADER_SIZE)
         return -1;
