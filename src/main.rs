@@ -78,11 +78,11 @@ fn run() -> ExitCode {
         out.flush()?;
         Ok(outcome)
     });
-    // As with diff: 0 for an answer, 1 for one that a script may want to
+    // As with diff(1): 0 for an answer, 1 for one that a script may want to
     // act on, and 2 for an error, as for clap's errors in the arguments.
     match result {
         Ok(Outcome::Answered) => ExitCode::SUCCESS,
-        Ok(Outcome::Crossed) => ExitCode::from(1),
+        Ok(Outcome::Crossed | Outcome::Differs) => ExitCode::from(1),
         Err(err) => {
             report(&format!("error: {err:#}"));
             ExitCode::from(2)

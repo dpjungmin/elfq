@@ -16,7 +16,8 @@ every `$ elfq` example here and checks that elfq still prints exactly that.
 8. [Who calls a function, and how?](#who-calls-a-function-and-how)
 9. [What would removing a function save?](#what-would-removing-a-function-save)
 10. [Which inlined functions take the most bytes?](#which-inlined-functions-take-the-most-bytes)
-11. [How do scripts read the answers?](#how-do-scripts-read-the-answers)
+11. [What changed between two builds?](#what-changed-between-two-builds)
+12. [How do scripts read the answers?](#how-do-scripts-read-the-answers)
 
 ## Why is formatting code in Rust firmware?
 
@@ -584,6 +585,75 @@ A copy of 0 bytes is one the compiler merged into the code around it.
 BYTES counts what all the copies of a function take, and COPIES how many
 there are: `append` has 6 copies, all in `report`. `inlined SYMBOL` lists
 the copies inside one function.
+
+## What changed between two builds?
+
+`diff` compares two builds of one program by the memory they load. In
+`c-cortex-m7-moved.elf`, `filter_tap` is no longer in ITCM, and `crc32`
+logs an empty frame:
+
+```
+$ elfq testdata/bin/c-cortex-m7.elf diff testdata/bin/c-cortex-m7-moved.elf
+From testdata/bin/c-cortex-m7.elf to testdata/bin/c-cortex-m7-moved.elf: the bytes differ in 2 of 4 blocks.
+
+MEMORY                   OLD   NEW  CHANGE  SECTIONS
+0x00000000..0x000000e0   224   208     -16  .itcm -16
+0x20000000..0x20000450  1104  1104       0
+0x20240000..0x20241000  4096  4096       0
+0x30000000..0x30000eec  3804  3820     +16  load image of .itcm -16, .rodata +16
+
+Sections that differ: .itcm, .isr_vector, .text, .rodata and .ARM.exidx.
+```
+
+The blocks are the overview's, worked out over both files, so that both
+have the same blocks. ITCM is 16 bytes smaller: `filter_tap` left it,
+`crc32` grew, and the linker added veneers for the calls from ITCM to
+`filter_tap` and `log_msg` in flash. Flash holds ITCM's load image, which
+shrank with it, and the new message in `.rodata`. The last line names
+every section that differs: `filter_tap` is now in flash's `.text`, whose
+bytes differ though its size doesn't, the vector table points to code
+that moved, and `.ARM.exidx` moved after `.rodata`. The exit status is 1.
+
+Moving `.data` and `.bss` from DTCM to RAM at 0x80000000 leaves a block
+that only the old build has and one that only the new one has. The code in
+ITCM and flash didn't change size, but its bytes did, since it holds the
+addresses of the data:
+
+```
+$ elfq testdata/bin/c-cortex-m7.elf diff testdata/bin/c-cortex-m7-sdram.elf
+From testdata/bin/c-cortex-m7.elf to testdata/bin/c-cortex-m7-sdram.elf: the bytes differ in 4 of 5 blocks.
+
+MEMORY                          OLD   NEW  CHANGE  SECTIONS
+0x00000000..0x000000e0          224   224       0  bytes differ
+0x20000000..0x20000450 (gone)  1104     -   -1104  .data .bss
+0x20240000..0x20241000         4096  4096       0
+0x30000000..0x30000edc         3804  3804       0  bytes differ
+0x80000000..0x80000450 (new)      -  1104   +1104  .data .bss
+
+Sections that differ: .itcm, .data, .bss, .isr_vector and .text.
+```
+
+Symbols, debug info and where the file keeps its bytes don't count, so a
+build and its stripped copy load the same memory, and the exit status is 0:
+
+```
+$ elfq testdata/bin/c-cortex-m7.elf diff testdata/bin/c-cortex-m7-stripped.elf
+testdata/bin/c-cortex-m7.elf and testdata/bin/c-cortex-m7-stripped.elf hold the same bytes at the same addresses.
+```
+
+A program for an operating system has one block, which gets a line instead
+of a table:
+
+```
+$ elfq testdata/bin/c-x86_64.elf diff testdata/bin/c-x86_64-moved.elf
+From testdata/bin/c-x86_64.elf to testdata/bin/c-x86_64-moved.elf: the bytes differ.
+The memory stays at 15728 bytes (.text +16, .eh_frame +8).
+Sections that differ: .note.gnu.build-id, .text, .fini, .rodata, .eh_frame_hdr, .eh_frame and .dynamic.
+```
+
+The build ID in `.note.gnu.build-id` is loaded too, and the linker makes
+it from the whole file, so it changes with any change to the file, even
+one only in debug info.
 
 ## How do scripts read the answers?
 

@@ -29,6 +29,7 @@ elfq app.elf reach                      # where the program starts, and the byte
 elfq app.elf reach SysTick_Handler      # what SysTick_Handler runs and uses, and where
 elfq app.elf browse                     # where the program starts, each start a page to read
 elfq app.elf browse log_msg             # read log_msg's code, what it calls and reaches, its callers, and what keeps it
+elfq old.elf diff new.elf               # what changed from old.elf to new.elf
 ```
 
 [docs/examples.md](docs/examples.md) asks real questions about the sample
@@ -68,6 +69,13 @@ elfq app.elf reach SysTick_Handler --to 0x20240000+1M --to 0x30000000+16M \
 jq -e 'all(.items[]; .in_to | not) and all(.unresolved[]; .target == null)' reach.json
 ```
 
+`elfq old.elf diff new.elf` compares two builds of one program: its exit
+status is 0 when both load the same bytes at the same addresses, as a build
+and its stripped copy do, and 1 when they don't, with the blocks of memory
+whose bytes differ, the sections that changed size in each, and the
+sections that differ. A CI job can check that a change leaves the
+firmware's memory as it was.
+
 **For AI agents:** paste this into a project's AGENTS.md or CLAUDE.md to
 tell its agents about elfq:
 
@@ -101,6 +109,10 @@ and `elfq --help` lists the commands.
   be. Without SYMBOL, `reach` lists where the program starts, such as
   `main` and each interrupt handler, with the bytes each start reaches in
   each block.
+- `elfq OLD.elf diff NEW.elf` exits 0 when both builds load the same bytes
+  at the same addresses, and 1 when they don't, with the blocks of memory
+  whose bytes differ, the sections that changed size in each, and the
+  sections that differ; another build ID alone makes them differ.
 - elfq reads the built file, not the source: rebuild before asking again.
 ```
 
@@ -123,7 +135,8 @@ and the Thumb code of Cortex-M cores up to Armv7E-M (M0, M0+, M3, M4, M7);
 for Armv8-M cores, such as the M33, its pages list only the lines that use
 another item. A data object's page lists the pointers it holds, a vector
 table's entries, or the strings of an object that holds only strings, and
-the `objdump -s` command that prints its bytes.
+the `objdump -s` command that prints its bytes. `diff` compares any two
+builds of one program that have section headers, by block of memory.
 See [docs/design.md](docs/design.md) for how elfq works and what comes next,
 [docs/survey.md](docs/survey.md) for how existing tools compare, and
 [CONTRIBUTING.md](CONTRIBUTING.md) to build it.

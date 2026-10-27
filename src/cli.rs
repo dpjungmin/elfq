@@ -136,6 +136,7 @@ Examples:
   elfq app.elf reach SysTick_Handler      What SysTick_Handler runs and uses, and where
   elfq app.elf browse                     Where the program starts, each start a page to read
   elfq app.elf browse log_msg             Read log_msg's code, what it calls and reaches, its callers, and what keeps it
+  elfq old.elf diff new.elf               What changed from old.elf to new.elf
 
 The overview's table is the start of the one top shows; elfq help top
 explains it.
@@ -144,17 +145,18 @@ Tables have one row per line: short cells such as sizes, HOW and AT come
 first, and the name last. A name after \"kept by\" or \"used by\" works as
 SYMBOL, and a why row without \"used by\" is used by the row above, or
 starts a chain. The tables of top, retained, callers, callees and reach
-show the 30 largest items, inlined the 30 largest functions, and why the
-chains through the 10 nearest users; --all shows every row, and makes
+show the 30 largest items, inlined the 30 largest functions, why the
+chains through the 10 nearest users, and diff the 3 sections that changed
+most in each block; --all shows every row and section, and makes
 sentences name everything they would cut short. With ranges, --from or
 --to, callers, callees and reach show every row. --json has every item,
 site and chain, one row per line, but the overview's JSON leaves its
 table to top's. Scripts that read why's chains should use --json.
 
 Exit status: 0 for an answer, 1 when callers or callees with ranges, --from
-or --to finds something that crosses, or might, or reach --to finds
-something in its ranges, or might, and 2 for an error, which goes to stderr
-with nothing on stdout.";
+or --to finds something that crosses, or might, reach --to finds something
+in its ranges, or might, or diff finds that NEW's memory differs from
+FILE's, and 2 for an error, which goes to stderr with nothing on stdout.";
 
 // One variant per command. Each variant's `///` line is its line in
 // `elfq --help`.
@@ -192,6 +194,9 @@ pub enum Command {
     /// Read a function's code in the terminal, and follow what it calls, reaches and is used by
     #[command(after_help = format!("{BROWSE}\n\n{}", how_table()))]
     Browse(BrowseArgs),
+    /// Show what changed from FILE to NEW, by block of memory
+    #[command(after_help = DIFF)]
+    Diff(DiffArgs),
     /// Show elfq's own view of the file (for developing elfq)
     #[command(subcommand, hide = true)]
     Debug(DebugCommand),
@@ -471,6 +476,41 @@ browse needs a terminal, and takes no --json, --tree or --range. For
 scripts, callers and callees print the same links, with --json, and
 objdump --start-address prints the instructions.";
 
+const DIFF: &str = "\
+diff compares the memory that FILE and NEW load: each section that the
+program has in memory, at its address, with a section such as .bss, which
+the file doesn't store, as zeros, and each load image, the bytes that the
+file stores for startup code to copy to a section, at its address. Symbols,
+debug info and where the file keeps its bytes don't count, so a build
+holds the same memory as its stripped copy. Notes that the program loads,
+such as .note.gnu.build-id, do count, and the linker makes the build ID
+from the whole file, debug info included. .tbss, which each thread has a
+copy of, counts by its name, address and size.
+
+When both load the same bytes at the same addresses, diff says so, and
+nothing else. Otherwise it says in how many blocks of memory the bytes
+differ, and the MEMORY table lists the blocks, as the overview does, but
+worked out over both files, so that both have the same blocks. OLD and NEW
+are each file's bytes in the block, from its first section or load image
+there to the end of its last, gaps included, and CHANGE is NEW less OLD.
+SECTIONS names the 3 sections or load images whose size changed the most,
+in address order, each with its change, or says \"bytes differ\" when none
+changed size but bytes did. A block that only one file has is marked (new)
+or (gone), and SECTIONS names what is in it. For files with one block, a
+line says how its size changed instead. The last line names the sections
+whose address, size, load image or bytes differ, or that only one file
+has: 10 of them, or with --all, every one.
+
+--json has every block, with each section and load image in it, and every
+section that differs.
+
+Exit status: 0 when FILE and NEW load the same bytes at the same
+addresses, 1 when they don't, and 2 for an error, as when a file is a
+separate debug file, which doesn't store the program's code. For the JSON
+whatever the answer, as in CI:
+
+  elfq old.elf diff new.elf --json > diff.json || [ $? -eq 1 ]";
+
 const WHY: &str = "\
 The chains start where the program does, as HOW says: at the entry point, a
 function the C runtime runs at startup, or a handler in the vector table.
@@ -624,6 +664,17 @@ pub struct BrowseArgs {
     /// The function, data object or import to open first: its name, the
     /// end of its name, or an address in it
     pub symbol: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct DiffArgs {
+    /// The other build of the program, to compare with FILE
+    #[arg(value_name = "NEW")]
+    pub new: PathBuf,
+    /// Name every section that changed, not only those that changed the
+    /// most
+    #[arg(long)]
+    pub all: bool,
 }
 
 #[derive(Debug, Args)]

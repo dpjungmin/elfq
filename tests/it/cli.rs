@@ -4,7 +4,8 @@ use std::path::Path;
 use std::process::Stdio;
 
 use crate::support::{
-    DEEP_SAMPLE, LIBRARY_SAMPLE, SAMPLE, TCM_SAMPLE, assert_output, command, elfq, samples,
+    DEEP_SAMPLE, LIBRARY_SAMPLE, MOVED_SAMPLE, SAMPLE, TCM_MOVED_SAMPLE, TCM_SAMPLE,
+    TCM_SDRAM_SAMPLE, assert_output, command, elfq, samples,
 };
 
 /// Runs elfq, expecting success, and returns what it printed.
@@ -3776,6 +3777,14 @@ fn arguments_that_dont_go_together_are_refused_before_the_file_is_read() {
             "error: only the overview, top, retained, why, reach SYMBOL and inlined SYMBOL take --tree\n",
         ),
         (
+            &["missing.elf", "diff", "missing-too.elf", "--tree"],
+            "error: only the overview, top, retained, why, reach SYMBOL and inlined SYMBOL take --tree\n",
+        ),
+        (
+            &["missing.elf", "diff", "missing-too.elf", "--range", "0+1K"],
+            "error: only the overview, top and retained take --range\n",
+        ),
+        (
             &["missing.elf", "reach", "main", "--tree", "--json"],
             "error: --tree draws trees in the text, so it doesn't go with --json\n",
         ),
@@ -4018,6 +4027,11 @@ fn a_command_typed_before_the_file_gets_a_hint() {
         "error: the file comes before the command, as in: \
          elfq testdata/bin/c-x86_64.elf callers log_msg\n",
     );
+    // diff's two files go on either side of it.
+    assert_output(
+        &stderr(&["diff", "a.elf", "b.elf"], 2),
+        "error: the file comes before the command, as in: elfq a.elf diff b.elf\n",
+    );
 }
 
 #[test]
@@ -4062,5 +4076,219 @@ fn no_arguments_prints_help() {
     assert!(
         help.contains("Usage: elfq [OPTIONS] <FILE> [COMMAND]"),
         "{help}"
+    );
+}
+
+/// Runs `elfq OLD diff NEW` with `options`, expecting nothing on stderr,
+/// and returns its exit status and what it printed.
+fn diff(old: &str, new: &str, options: &[&str]) -> (i32, String) {
+    let output = elfq(&[&[old, "diff", new], options].concat());
+    assert!(output.stderr.is_empty(), "{output:?}");
+    let status = output.status.code().unwrap();
+    (status, String::from_utf8(output.stdout).unwrap())
+}
+
+#[test]
+fn firmware_shows_each_block_of_memory() {
+    // filter_tap left the ITCM, and crc32 there grew by a call to log_msg:
+    // the ITCM's load image in flash shrank with it, and the message is in
+    // .rodata.
+    let (status, text) = diff(TCM_SAMPLE, TCM_MOVED_SAMPLE, &[]);
+    assert_eq!(status, 1);
+    assert_output(
+        &text,
+        "\
+From testdata/bin/c-cortex-m7.elf to testdata/bin/c-cortex-m7-moved.elf: the bytes differ in 2 of 4 blocks.
+
+MEMORY                   OLD   NEW  CHANGE  SECTIONS
+0x00000000..0x000000e0   224   208     -16  .itcm -16
+0x20000000..0x20000450  1104  1104       0
+0x20240000..0x20241000  4096  4096       0
+0x30000000..0x30000eec  3804  3820     +16  load image of .itcm -16, .rodata +16
+
+Sections that differ: .itcm, .isr_vector, .text, .rodata and .ARM.exidx.
+",
+    );
+    // Without symbols or debug info, the memory is the same, and so is the
+    // answer.
+    let (status, stripped) = diff(
+        "testdata/bin/c-cortex-m7-stripped.elf",
+        "testdata/bin/c-cortex-m7-moved-stripped.elf",
+        &[],
+    );
+    assert_eq!(status, 1);
+    assert_eq!(
+        stripped.lines().skip(1).collect::<Vec<_>>(),
+        text.lines().skip(1).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn one_block_of_memory_gets_a_line() {
+    // crc32 grew by 16 bytes, which moved the code after it, and the
+    // addresses and unwind info that point to it.
+    let (status, text) = diff(SAMPLE, MOVED_SAMPLE, &[]);
+    assert_eq!(status, 1);
+    assert_output(
+        &text,
+        "\
+From testdata/bin/c-x86_64.elf to testdata/bin/c-x86_64-moved.elf: the bytes differ.
+The memory stays at 15728 bytes (.text +16, .eh_frame +8).
+Sections that differ: .note.gnu.build-id, .text, .fini, .rodata, .eh_frame_hdr, .eh_frame and .dynamic.
+",
+    );
+    // The other way round, the changes are the other way round.
+    let (_, back) = diff(MOVED_SAMPLE, SAMPLE, &[]);
+    assert!(
+        back.contains("The memory stays at 15728 bytes (.text -16, .eh_frame -8).\n"),
+        "{back}"
+    );
+}
+
+#[test]
+fn data_moved_to_another_memory_is_a_gone_and_a_new_block() {
+    // DTCM linked at 0x80000000: the code and flash hold its addresses.
+    let (status, text) = diff(TCM_SAMPLE, TCM_SDRAM_SAMPLE, &[]);
+    assert_eq!(status, 1);
+    assert_output(
+        &text,
+        "\
+From testdata/bin/c-cortex-m7.elf to testdata/bin/c-cortex-m7-sdram.elf: the bytes differ in 4 of 5 blocks.
+
+MEMORY                          OLD   NEW  CHANGE  SECTIONS
+0x00000000..0x000000e0          224   224       0  bytes differ
+0x20000000..0x20000450 (gone)  1104     -   -1104  .data .bss
+0x20240000..0x20241000         4096  4096       0
+0x30000000..0x30000edc         3804  3804       0  bytes differ
+0x80000000..0x80000450 (new)      -  1104   +1104  .data .bss
+
+Sections that differ: .itcm, .data, .bss, .isr_vector and .text.
+",
+    );
+}
+
+#[test]
+fn all_names_every_change() {
+    // A program and its shared library: many sections changed size.
+    let library = "testdata/bin/c-x86_64.so";
+    let (status, text) = diff(SAMPLE, library, &[]);
+    assert_eq!(status, 1);
+    assert_output(
+        &text,
+        "\
+From testdata/bin/c-x86_64.elf to testdata/bin/c-x86_64.so: the bytes differ.
+The memory went from 15728 to 15936 bytes (.dynsym +192, .rela.plt +168, .plt +112 and 15 more).
+Sections that differ: .note.gnu.property, .note.gnu.build-id, .gnu.hash, .interp, .dynsym, .note.ABI-tag, .dynstr, .gnu.version, .gnu.version_r, .rela.dyn and 18 more.
+",
+    );
+    let (_, all) = diff(SAMPLE, library, &["--all"]);
+    assert_output(
+        &all,
+        "\
+From testdata/bin/c-x86_64.elf to testdata/bin/c-x86_64.so: the bytes differ.
+The memory went from 15728 to 15936 bytes (.note.gnu.property -16, .gnu.hash +36, .interp -28, .dynsym +192, .note.ABI-tag -32, .dynstr +66, .gnu.version +16, .gnu.version_r -16, .rela.dyn -24, .rela.plt +168, .plt +112, .plt.sec +112, .text -48, .eh_frame_hdr -8, .eh_frame -24, .dynamic -48, .got -56, .got.plt +104).
+Sections that differ: .note.gnu.property, .note.gnu.build-id, .gnu.hash, .interp, .dynsym, .note.ABI-tag, .dynstr, .gnu.version, .gnu.version_r, .rela.dyn, .rela.plt, .init, .plt, .plt.got, .plt.sec, .text, .fini, .rodata, .eh_frame_hdr, .eh_frame, .init_array, .fini_array, .data.rel.ro, .dynamic, .got, .got.plt, .data and .bss.
+",
+    );
+    // Two programs for other chips: blocks that only one has name what is
+    // in them, as the overview does, whole.
+    let (_, firmware) = diff("testdata/bin/c-cortex-m4.elf", TCM_SAMPLE, &[]);
+    assert!(
+        firmware.contains(
+            "0x08000000..0x08000e0c (gone)  3596     -   -3596  .isr_vector .text .rodata \
+             .ARM.exidx, load image of .data\n"
+        ),
+        "{firmware}"
+    );
+    assert!(
+        firmware.contains(
+            "0x30000000..0x30000edc (new)      -  3804   +3804  .isr_vector .text .rodata \
+             .ARM.exidx, load images of .itcm .data\n"
+        ),
+        "{firmware}"
+    );
+}
+
+#[test]
+fn builds_that_load_the_same_memory_exit_0() {
+    // Symbols, debug info and where the file keeps its bytes don't count.
+    // rust-x86_64's .tbss shares its addresses with .fini_array, .init_array
+    // and .data.rel.ro.
+    for (old, new) in [
+        ("c-cortex-m7-nodebug.elf", "c-cortex-m7-stripped.elf"),
+        ("c-cortex-m7.elf", "c-cortex-m7-stripped.elf"),
+        (
+            "c-cortex-m7-moved-nodebug.elf",
+            "c-cortex-m7-moved-stripped.elf",
+        ),
+        ("c-x86_64-nodebug.elf", "c-x86_64-stripped.elf"),
+        ("c-x86_64-moved.elf", "c-x86_64-moved-stripped.elf"),
+        ("rust-x86_64-nodebug.elf", "rust-x86_64-stripped.elf"),
+        ("c-x86_64.so", "c-x86_64.so"),
+    ] {
+        let (old, new) = (format!("testdata/bin/{old}"), format!("testdata/bin/{new}"));
+        let (status, text) = diff(&old, &new, &[]);
+        assert_eq!(status, 0, "{old} {new}: {text}");
+        assert_output(
+            &text,
+            &format!("{old} and {new} hold the same bytes at the same addresses.\n"),
+        );
+    }
+    // Each file holds the same memory as itself.
+    for sample in samples() {
+        let (status, text) = diff(&sample, &sample, &[]);
+        assert_eq!(status, 0, "{sample}: {text}");
+    }
+}
+
+#[test]
+fn builds_that_load_other_memory_exit_1() {
+    for (old, new) in [
+        (TCM_SAMPLE, TCM_MOVED_SAMPLE),
+        (TCM_MOVED_SAMPLE, TCM_SAMPLE),
+        (TCM_SAMPLE, TCM_SDRAM_SAMPLE),
+        (SAMPLE, MOVED_SAMPLE),
+        ("testdata/bin/c-x86_64.so", "testdata/bin/c-x86_64-moved.so"),
+        (
+            "testdata/bin/c-x86_64-nodebug.elf",
+            "testdata/bin/c-x86_64-moved-nodebug.elf",
+        ),
+    ] {
+        let (status, text) = diff(old, new, &[]);
+        assert_eq!(status, 1, "{old} {new}: {text}");
+        assert_eq!(diff(old, new, &["--json"]).0, 1, "{old} {new}");
+    }
+}
+
+#[test]
+fn diff_needs_two_builds_of_one_program_with_section_headers() {
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "diff", SAMPLE], 2),
+        "error: testdata/bin/c-cortex-m7.elf is 32-bit Arm and testdata/bin/c-x86_64.elf is \
+         x86-64; diff compares two builds of one program\n",
+    );
+    // The firmware, with no section headers: e_shoff, e_shnum and
+    // e_shstrndx are 0.
+    let mut data = std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join(TCM_SAMPLE)).unwrap();
+    data[0x20..0x24].fill(0);
+    data[0x30..0x34].fill(0);
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("c-cortex-m7-no-section-headers.elf");
+    std::fs::write(&path, data).unwrap();
+    let path = path.to_str().unwrap();
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "diff", path], 2),
+        &format!("error: {path} has no section headers, which diff needs to find its memory\n"),
+    );
+    assert_output(
+        &stderr(&[path, "diff", TCM_SAMPLE, "--json"], 2),
+        &format!("error: {path} has no section headers, which diff needs to find its memory\n"),
+    );
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "diff", "Cargo.toml"], 2),
+        "error: cannot load Cargo.toml: not an ELF file\n",
+    );
+    assert_output(
+        &stderr(&["missing.elf", "diff", TCM_SAMPLE], 2),
+        "error: cannot read missing.elf: No such file or directory (os error 2)\n",
     );
 }

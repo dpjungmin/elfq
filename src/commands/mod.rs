@@ -8,6 +8,7 @@ pub mod browse;
 mod callees;
 mod callers;
 mod debug_items;
+mod diff;
 mod inlined;
 mod json;
 mod overview;
@@ -47,6 +48,10 @@ pub enum Outcome {
     /// its ranges, or may: exit status 1, so that a script can check that
     /// code in a range stays in it.
     Crossed,
+    /// `diff` finds that the two builds load different memory: exit status
+    /// 1, so that a script can check that a change leaves a build's memory
+    /// as it was.
+    Differs,
 }
 
 /// Whether the process ends once the command has answered, as the elfq
@@ -118,6 +123,11 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<Outcome> {
     if let Some(Command::Browse(args)) = &cli.command {
         return run_browse(cli, args).map(|()| Outcome::Answered);
     }
+    // diff reads two files, and needs only their headers and the bytes of
+    // their sections.
+    if let Some(Command::Diff(args)) = &cli.command {
+        return diff::run(&cli.file, &args.new, args.all, cli.format(), out);
+    }
     let binary = Kept::new(Binary::load(&cli.file)?);
     write_warnings(&binary);
     // `check_arguments` leaves `--range` with `callers` and `callees` until
@@ -175,6 +185,7 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<Outcome> {
         },
         Some(Command::Debug(DebugCommand::Items)) => answered(debug_items::run(&binary, out)),
         Some(Command::Browse(_)) => unreachable!("browse has run above"),
+        Some(Command::Diff(_)) => unreachable!("diff has run above"),
     }
 }
 
@@ -463,6 +474,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::Callees(_) => "callees",
         Command::Reach(_) => "reach",
         Command::Browse(_) => "browse",
+        Command::Diff(_) => "diff",
         Command::Debug(_) => "debug",
     }
 }

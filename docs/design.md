@@ -184,6 +184,7 @@ except `inlined`, which reads DWARF instead of machine code.
 | `elfq FILE callers RANGE... --from RANGE` | What in one range of memory uses these ranges, such as code in ITCM that uses data in DTCM? `callees RANGE... --to RANGE` asks what these ranges use in that one, and either takes SYMBOL in place of the ranges. |
 | `elfq FILE inlined [SYMBOL]` | Which inlined functions cost the most bytes across the binary, or inside SYMBOL? Needs DWARF. |
 | `elfq FILE browse [SYMBOL]` | What does SYMBOL's code do, line by line, where does each call and use lead, and what calls it? Opens in the terminal, follows the links that the other commands' answers name, and shows the answers of `callees`, `callers`, `reach`, `why` and `retained SYMBOL` in tabs, each with the command that prints it, and the retained bytes in each block of memory; a page's header says what `retained` and `why` say about the item, and `u` opens the item that keeps it; `/` finds text in a page's rows. A data object's page lists its contents as far as elfq reads them: a vector table's entries, named by exception, the pointers it holds, as `callees` lists them, with what the dynamic loader writes in a shared library, or the strings of an object that holds only strings, with the `objdump -s` command that prints its bytes. Without SYMBOL, it opens on where the program starts, as `reach` lists it, each start a link to its page. |
+| `elfq FILE diff NEW` | Do two builds of one program load the same bytes at the same addresses? If not, in which blocks of memory do the bytes differ, and which sections changed size there? |
 
 SYMBOL is a function or data object's name, an import (`write` finds the
 `write@plt` stub that code calls), or an address such as `0x1700`. Names are
@@ -227,7 +228,7 @@ else. elfq's exit status is then 1 when anything crosses, or might:
 through a call elfq can't follow, through a pointer to a function in the
 ranges, or in a function in them whose end elfq doesn't know. A CI job can
 then check that code in ITCM stays there, or that code run from RAM never
-touches flash. As with `diff`, the exit status is 0 otherwise, and 2 for
+touches flash. As with diff(1), the exit status is 0 otherwise, and 2 for
 any error, with or without ranges. When the reader stops early, as `head`
 does, elfq still finishes and exits with the answer's status, and an error
 that nothing reads still exits with 2.
@@ -508,6 +509,56 @@ sizes usually are. A range typed as other tools write them, `0x0-0x40000`
 or `0x0:0x40000`, is refused with the form to type, `0x0..0x40000`, and
 `--range` takes one range, not a list.
 
+`elfq FILE diff NEW` compares two builds of one program, FILE the old and
+NEW the new, by the memory they load: each allocated section at its
+address, with a section that the file doesn't store, such as `.bss`, as
+zeros, and each load image at its load address. Symbols, debug info, where
+the file keeps its bytes, and the bytes of loadable segments outside any
+section, such as the ELF header, don't count, so a build and its stripped
+copy load the same memory. Notes that the program loads, such as
+`.note.gnu.build-id`, do count: the linker makes the build ID from the
+whole file, debug info included, so two builds that differ only in debug
+info, as when they were built in other folders, can differ there, and the
+last line, below, names the note. `.tbss` isn't in memory at its
+addresses, which other sections share, so its name, address and size are
+compared apart. How the bytes are split into sections doesn't count
+either, only which byte is at which address, even where sections overlap;
+bytes that a damaged header puts past the end of the file are the same
+only as bytes missing in the same place. diff reads only the headers and
+the sections' bytes (`binary::LoadedMemory`), not the items, so it answers
+at once even for a large file. The exit status is 0 when both load the
+same bytes at the same addresses, and diff then says only that; 1 when
+they don't; and 2 for an error, as for two files for different
+architectures, a file without section headers, which diff needs to find
+its memory, or a file that puts nothing in memory. A separate debug file,
+as `objcopy --only-keep-debug` makes, keeps the headers of the sections
+that hold code, but not their bytes, so diff refuses it too, rather than
+compare its code as zeros. Warnings about a file start with its name,
+since there are two.
+
+When the memory differs, the blocks are the overview's, worked out once
+over both files' sections and load images together, so that both have the
+same edges: data that moved from DTCM to SDRAM leaves a block marked
+"(gone)" and one marked "(new)". The MEMORY table gives each build's bytes
+in each block, from its first section or load image there to the end of
+its last, gaps included, as the overview counts a block, and NEW less OLD.
+So CHANGE can be more than the changes in SECTIONS add up to: data linked
+within 64 KiB of another memory shares its block, gap and all, as when
+`.data` and `.bss` move from DTCM to just below OCRAM, and OCRAM's block
+grows by 65536 bytes, 1104 of them theirs. SECTIONS has the sections and
+load images whose size changed, with the change: the 3 that changed the
+most, in address order, and "and 2 more", unless `--all`. A section that
+only one build has in the block counts with all its bytes. When no
+section changed size, but bytes did, SECTIONS says "bytes differ", and a
+block that only one build has names what is in it, as the overview's
+table does. A pair of files with one block, as most programs for an
+operating system are, gets a line on its size in place of the table. The
+last line names the sections whose address, size, load image or bytes
+differ, or that only one build has, in address order, so that exit
+status 1 always has a reason in what diff prints, even when only a build
+ID or `.tbss` differs, which the table shows at most as "bytes differ".
+diff doesn't yet compare the functions and data objects.
+
 ### JSON
 
 `--json` prints the same answer for scripts, as one object, for every
@@ -685,6 +736,17 @@ several.
 | `unresolved` | the calls and jumps in SYMBOL and what it reaches that elfq can't follow, each with the `caller` it is in, and as in `callees SYMBOL`, its `site`, `how` and `target`; not the jump in a PLT's header to the dynamic loader. With `--to`, only those that may go to its ranges, as `callees --to` keeps them |
 | `unreadable` | the functions that SYMBOL reaches whose end elfq doesn't know, so it can't read their code |
 | `complete` | whether `items` has everything SYMBOL reaches, or with `--to`, in its ranges, as far as elfq can tell, as [below](#calls-elfq-cant-follow) |
+
+**`diff`**:
+
+| Key | Value |
+|---|---|
+| `old`, `new` | the files' paths, as given |
+| `same_bytes` | whether both load the same bytes at the same addresses, which exit status 0 says |
+| `items_compared` | whether diff compared the functions and data objects: `false` for now |
+| `old_bytes`, `new_bytes`, `unchanged` | the bytes of the functions and data objects in each file, as the overview's `bytes`, and how many are the same; `null` while `items_compared` is `false` |
+| `sections_that_differ` | the names of the sections whose address, size, load image or bytes differ, or that only one file has, in address order, `.tbss` among them, as the text's last line names them, but every one; empty when `same_bytes` is `true` |
+| `blocks` | the memory blocks, worked out over both files, in address order, each a range with: `old_size` and `new_size`, each file's bytes in it, from its first section or load image there to the end of its last, gaps included, or `null` when it has none there; `change`, `new_size` less `old_size`, counting `null` as 0; `same_bytes`, whether both put the same bytes at the same addresses in it; `item_bytes`, `section_bytes` and `padding_bytes`, how much of `change` the items, the sections and load images that hold none, and the bytes between them make up, `null` while `items_compared` is `false`; and `sections`, the sections and load images in it, in address order, but not `.tbss`, each with its `name`, `load_image`, whether it is the section's load image, `holds_items`, whether items are in it, `null` while `items_compared` is `false`, and `old_address`, `old_size`, `new_address` and `new_size`, `null` for a file that doesn't have it in the block |
 
 **`reach`**, without SYMBOL:
 
@@ -931,8 +993,9 @@ in order. Its output is the first example under [Commands](#commands).
    instead (`RetainedTree::to_json`), and writes them through `json::write`.
 8. **Exit.** `run`, in main.rs, flushes the output and turns the answer into
    the exit status: 0 for an answer, 1 when `callers` or `callees` with
-   ranges, `--from` or `--to` finds something that crosses, or may, or
-   `reach --to` finds something in its ranges, or may, and 2 for an error,
+   ranges, `--from` or `--to` finds something that crosses, or may,
+   `reach --to` finds something in its ranges, or may, or `diff` finds
+   that the builds load different memory, and 2 for an error,
    which it prints after `error:`. What the command keeps until it has
    answered, such as the loaded file, its graph and `Names`, isn't freed:
    the commands keep it in a `Kept`, which leaves it for the system to
@@ -1001,8 +1064,9 @@ and `inlined` works on any file with DWARF that isn't compressed. The
 overview, `callers`, `callees` and `reach` also work on x86-64 shared
 libraries. `browse` prints x86-64 code and the Thumb code of Cortex-M
 cores up to Armv7E-M; for Armv8-M cores, its pages list only the lines
-that use another item. The pull requests and the git log record how elfq
-got here.
+that use another item. `diff` compares any two builds of one program that
+have section headers, by block of memory. The pull requests and the git
+log record how elfq got here.
 
 On a 4-CPU x86-64 machine, a release build gives the overview of elfq's
 own debug build (90 MB) in under half a second, of cargo (43 MB) in under
@@ -1013,11 +1077,16 @@ key typed into go to then takes under 0.1 s. The first takes up to 0.2 s
 in those libraries, and the first whose text names nothing takes about
 half a second, as it works out what to suggest.
 
+Next, `diff` pairs the two builds' functions and data objects, to list
+those that moved to another block, are new or gone, or changed size, each
+with what keeps it, and then the calls between blocks that are new or
+gone.
+
 Ideas for later, not yet planned: output that scripts and AI agents can
-read more easily, a check of what startup code copies into RAM, the retained size of a set of
-items, comparing two builds, the functions that shared libraries export as
-roots, `--root SYMBOL`, worst-case stack depth (the call graph plus each
-function's stack frame), and a query language.
+read more easily, a check of what startup code copies into RAM, the
+retained size of a set of items, the functions that shared libraries
+export as roots, `--root SYMBOL`, worst-case stack depth (the call graph
+plus each function's stack frame), and a query language.
 
 ## Non-goals
 
