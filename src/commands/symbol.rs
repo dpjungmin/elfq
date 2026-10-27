@@ -189,7 +189,20 @@ struct Inlined {
     /// The function with each name, as an index into `functions`.
     by_name: HashMap<String, usize>,
     /// The functions that each key files (see [`short_name_key`]).
-    filed: HashMap<String, Vec<usize>>,
+    filed: HashMap<String, FiledFunctions>,
+    /// The names of the functions that the compiler kept part of out of
+    /// line, by the names of the items it kept: GCC names them after the
+    /// function, as `checksum.part.0`, or in C++, `checksum(char const*)
+    /// [clone .part.0]`. Each name before a dot is among them.
+    kept_out_of_line: HashSet<String>,
+}
+
+/// The inlined functions that one key files, and once worked out, those
+/// with each short name with that key: diff looks up thousands of names.
+#[derive(Default)]
+struct FiledFunctions {
+    functions: Vec<usize>,
+    by_short_name: OnceCell<HashMap<String, Vec<usize>>>,
 }
 
 /// Every name of every item and import in lowercase, one after another,
@@ -344,15 +357,7 @@ impl<'a> Names<'a> {
         }
         let inlined = self.inlined()?;
         let (name, copies) = &inlined.functions[inlined.only_function(query)?];
-        // GCC names what it keeps out of line after the function, as
-        // `checksum.part.0`, or in C++, `checksum(char const*) [clone
-        // .part.0]`.
-        let kept = self.binary.items.iter().any(|item| {
-            item.name
-                .strip_prefix(name.as_str())
-                .is_some_and(|rest| rest.starts_with('.') || rest.starts_with(" [clone ."))
-        });
-        if kept {
+        if inlined.kept_out_of_line.contains(name) {
             return None;
         }
         // The functions that hold the copies, those with the most first.
@@ -424,10 +429,20 @@ impl<'a> Names<'a> {
                 });
                 functions[function].1.push(index);
             }
-            let mut filed: HashMap<String, Vec<usize>> = HashMap::new();
+            let mut filed: HashMap<String, FiledFunctions> = HashMap::new();
             for (function, (name, _)) in functions.iter().enumerate() {
                 for key in short_name_keys(name) {
-                    filed.entry(key).or_default().push(function);
+                    filed.entry(key).or_default().functions.push(function);
+                }
+            }
+            let mut kept_out_of_line = HashSet::new();
+            for item in &self.binary.items {
+                let name = &item.name;
+                for (at, _) in name
+                    .match_indices('.')
+                    .chain(name.match_indices(" [clone ."))
+                {
+                    kept_out_of_line.insert(name[..at].to_string());
                 }
             }
             Some(Inlined {
@@ -435,6 +450,7 @@ impl<'a> Names<'a> {
                 functions,
                 by_name,
                 filed,
+                kept_out_of_line,
             })
         });
         inlined.as_ref()
@@ -1054,15 +1070,17 @@ impl Inlined {
         if let Some(key) = short_name_key(query)
             && let Some(filed) = self.filed.get(key)
         {
-            for &function in filed {
-                if found.contains(&function) {
-                    continue;
+            let by_short_name = filed.by_short_name.get_or_init(|| {
+                let mut by_short_name: HashMap<String, Vec<usize>> = HashMap::new();
+                for &function in &filed.functions {
+                    for short_name in short_names_with_key(&self.functions[function].0, key) {
+                        add_index(by_short_name.entry(short_name).or_default(), function);
+                    }
                 }
-                let (name, _) = &self.functions[function];
-                if short_names_with_key(name, key)
-                    .iter()
-                    .any(|short_name| short_name == query)
-                {
+                by_short_name
+            });
+            for &function in by_short_name.get(query).into_iter().flatten() {
+                if !found.contains(&function) {
                     found.push(function);
                 }
             }
