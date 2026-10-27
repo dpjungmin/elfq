@@ -4,7 +4,10 @@ use serde_json::{Value, json};
 
 use elfq::binary::{ItemKind, Source};
 
-use crate::support::{DEEP_SAMPLE, LIBRARY_SAMPLE, SAMPLE, TCM_SAMPLE, command, elfq, load_sample};
+use crate::support::{
+    DEEP_SAMPLE, LIBRARY_SAMPLE, MOVED_SAMPLE, SAMPLE, TCM_MOVED_SAMPLE, TCM_SAMPLE,
+    TCM_SDRAM_SAMPLE, command, elfq, load_sample,
+};
 
 /// Runs elfq with `--json`, expecting success, and parses what it printed.
 fn elfq_json(args: &[&str]) -> Value {
@@ -1216,4 +1219,188 @@ fn debug_commands_print_only_text() {
         String::from_utf8(output.stderr).unwrap(),
         "error: the debug commands print only text\n"
     );
+}
+
+/// Runs `elfq OLD diff NEW --json`, expecting nothing on stderr, and
+/// returns its exit status and the answer.
+fn diff_json(old: &str, new: &str) -> (i32, Value) {
+    let output = elfq(&[old, "diff", new, "--json"]);
+    assert!(output.stderr.is_empty(), "{output:?}");
+    let answer = serde_json::from_slice(&output.stdout).unwrap();
+    (output.status.code().unwrap(), answer)
+}
+
+#[test]
+fn diff_has_each_block_and_its_sections() {
+    let (status, answer) = diff_json(TCM_SAMPLE, TCM_MOVED_SAMPLE);
+    assert_eq!(status, 1);
+    let blocks = answer["blocks"].as_array().unwrap();
+    assert_eq!(blocks.len(), 4);
+    // Items aren't compared, so what counts them is null. The sections that
+    // differ are named in address order, those whose size or bytes differ,
+    // and .ARM.exidx, which moved.
+    let mut head = answer.clone();
+    head.as_object_mut().unwrap().remove("blocks");
+    assert_eq!(
+        head,
+        json!({
+            "old": TCM_SAMPLE,
+            "new": TCM_MOVED_SAMPLE,
+            "same_bytes": false,
+            "items_compared": false,
+            "old_bytes": null,
+            "new_bytes": null,
+            "unchanged": null,
+            "sections_that_differ": [".itcm", ".isr_vector", ".text", ".rodata", ".ARM.exidx"],
+        })
+    );
+    assert_eq!(
+        blocks[0],
+        json!({
+            "start": "0x0",
+            "end": "0xe0",
+            "old_size": 224,
+            "new_size": 208,
+            "change": -16,
+            "same_bytes": false,
+            "item_bytes": null,
+            "section_bytes": null,
+            "padding_bytes": null,
+            "sections": [{
+                "name": ".itcm",
+                "load_image": false,
+                "holds_items": null,
+                "old_address": "0x0",
+                "old_size": 224,
+                "new_address": "0x0",
+                "new_size": 208
+            }]
+        })
+    );
+    assert_eq!(blocks[1]["same_bytes"], true);
+    // .rodata grew, so .ARM.exidx after it moved, but kept its size.
+    assert_eq!(
+        blocks[3]["sections"][5],
+        json!({
+            "name": ".ARM.exidx",
+            "load_image": false,
+            "holds_items": null,
+            "old_address": "0x30000ed4",
+            "old_size": 8,
+            "new_address": "0x30000ee4",
+            "new_size": 8
+        })
+    );
+    // A block that only one build has.
+    let (_, answer) = diff_json(TCM_SAMPLE, TCM_SDRAM_SAMPLE);
+    let gone = &answer["blocks"][1];
+    assert_eq!(
+        [
+            &gone["start"],
+            &gone["old_size"],
+            &gone["new_size"],
+            &gone["change"]
+        ],
+        [
+            &json!("0x20000000"),
+            &json!(1104),
+            &Value::Null,
+            &json!(-1104)
+        ]
+    );
+    assert_eq!(gone["sections"][0]["new_address"], Value::Null);
+    // The same memory has its blocks too, and each row is a line.
+    let stripped = "testdata/bin/c-cortex-m7-stripped.elf";
+    let output = elfq(&[TCM_SAMPLE, "diff", stripped, "--json"]);
+    assert_eq!(output.status.code(), Some(0));
+    let text = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 6, "{text}");
+    assert_eq!(
+        lines[0],
+        r#"{"old":"testdata/bin/c-cortex-m7.elf","new":"testdata/bin/c-cortex-m7-stripped.elf","#
+            .to_string()
+            + r#""same_bytes":true,"items_compared":false,"old_bytes":null,"new_bytes":null,"#
+            + r#""unchanged":null,"sections_that_differ":[],"blocks":["#
+    );
+    for line in &lines[1..5] {
+        let row: Value = serde_json::from_str(line.trim_end_matches(',')).unwrap();
+        assert_eq!(row["same_bytes"], true, "{line}");
+    }
+    assert_eq!(lines[5], "]}");
+}
+
+#[test]
+fn diff_has_the_blocks_that_the_overview_lists() {
+    // The blocks are worked out over both builds, so one can hold several
+    // of one build's, but no build's block is split.
+    for (old, new) in [
+        (TCM_SAMPLE, TCM_MOVED_SAMPLE),
+        (TCM_SAMPLE, TCM_SDRAM_SAMPLE),
+        ("testdata/bin/c-cortex-m4.elf", TCM_SAMPLE),
+        (SAMPLE, MOVED_SAMPLE),
+        (SAMPLE, LIBRARY_SAMPLE),
+        (
+            "testdata/bin/rust-x86_64-nodebug.elf",
+            "testdata/bin/rust-x86_64-stripped.elf",
+        ),
+        (
+            "testdata/bin/far-gnu-m4-nodebug.elf",
+            "testdata/bin/far-lld-m4-nodebug.elf",
+        ),
+    ] {
+        let (_, answer) = diff_json(old, new);
+        for (path, side) in [(old, "old"), (new, "new")] {
+            let overview = elfq_json(&[path]);
+            let mut overview_blocks = overview["memory"].as_array().unwrap().iter().peekable();
+            for block in answer["blocks"].as_array().unwrap() {
+                let (start, end) = (hex(&block["start"]), hex(&block["end"]));
+                // This build's blocks in this one.
+                let mut inside = Vec::new();
+                while let Some(next) = overview_blocks.next_if(|next| hex(&next["start"]) < end) {
+                    assert!(hex(&next["start"]) >= start && hex(&next["end"]) <= end);
+                    inside.push(next);
+                }
+                let size = &block[format!("{side}_size")];
+                let (Some(first), Some(last)) = (inside.first(), inside.last()) else {
+                    assert_eq!(size, &Value::Null, "{old} {new} {block}");
+                    continue;
+                };
+                let span = hex(&last["end"]) - hex(&first["start"]);
+                assert_eq!(size, &json!(span), "{old} {new} {block}");
+                // The same sections and load images, in the same order, but
+                // .tbss, which isn't in memory at its addresses.
+                let listed = |key: &str| -> Vec<&str> {
+                    inside
+                        .iter()
+                        .flat_map(|block| block[key].as_array().unwrap())
+                        .map(|name| name.as_str().unwrap())
+                        .filter(|&name| name != ".tbss")
+                        .collect()
+                };
+                let in_block = |load_image: bool| -> Vec<&str> {
+                    let address = format!("{side}_address");
+                    let mut sections: Vec<(u64, &str)> = block["sections"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .filter(|section| section["load_image"] == load_image)
+                        .filter(|section| !section[&address].is_null())
+                        .map(|section| (hex(&section[&address]), section["name"].as_str().unwrap()))
+                        .collect();
+                    sections.sort_by_key(|&(address, _)| address);
+                    sections.into_iter().map(|(_, name)| name).collect()
+                };
+                assert_eq!(in_block(false), listed("sections"), "{old} {new} {block}");
+                assert_eq!(in_block(true), listed("load_images"), "{old} {new} {block}");
+            }
+            assert!(overview_blocks.next().is_none(), "{path}");
+        }
+    }
+}
+
+/// An address that the JSON writes in hex, such as "0x20000000".
+fn hex(address: &Value) -> u64 {
+    let address = address.as_str().unwrap();
+    u64::from_str_radix(address.trim_start_matches("0x"), 16).unwrap()
 }

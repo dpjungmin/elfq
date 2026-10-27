@@ -16,6 +16,12 @@ pub const TCM_SAMPLE: &str = "testdata/bin/c-cortex-m7.elf";
 pub const DEEP_SAMPLE: &str = "testdata/bin/c-deep.elf";
 /// The C sample for x86-64 Linux, built as a shared library.
 pub const LIBRARY_SAMPLE: &str = "testdata/bin/c-x86_64.so";
+/// [`SAMPLE`] with one change, for diff: crc32 logs an empty frame.
+pub const MOVED_SAMPLE: &str = "testdata/bin/c-x86_64-moved.elf";
+/// [`TCM_SAMPLE`] with the same change, and filter_tap out of ITCM.
+pub const TCM_MOVED_SAMPLE: &str = "testdata/bin/c-cortex-m7-moved.elf";
+/// [`TCM_SAMPLE`] with DTCM linked at 0x80000000.
+pub const TCM_SDRAM_SAMPLE: &str = "testdata/bin/c-cortex-m7-sdram.elf";
 
 /// The path of the sample `name` in testdata/bin.
 pub fn sample_path(name: &str) -> PathBuf {

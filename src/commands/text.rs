@@ -18,6 +18,15 @@ pub(super) fn bytes_text(n: u64) -> String {
     format!("{n} {}", if n == 1 { "byte" } else { "bytes" })
 }
 
+/// A change in a number of bytes, with its sign: "+16", "-16", or "0".
+pub(super) fn signed(change: i128) -> String {
+    if change > 0 {
+        format!("+{change}")
+    } else {
+        change.to_string()
+    }
+}
+
 /// The bytes of every item, or with a range, those in it, and what they
 /// are: "200 bytes of code", "16 bytes of data" or "216 bytes of code and
 /// data".

@@ -24,9 +24,14 @@
 //! say where the program stores pointers and which functions and variables
 //! it imports from shared libraries, and in Cortex-M firmware the vector
 //! table (see `vector_table.rs`).
+//!
+//! [`LoadedMemory`] reads only a file's section headers, and the bytes that
+//! its sections put in memory, which `diff` compares before it needs any
+//! item (see `memory.rs`).
 
 mod attributes;
 mod eh_frame;
+mod memory;
 mod names;
 mod plt;
 mod range;
@@ -37,6 +42,7 @@ mod unnamed_functions;
 mod vector_table;
 
 pub use attributes::ArmArchitecture;
+pub use memory::{Bytes, LoadedMemory, same_bytes_in, same_memory};
 pub use names::{
     can_be_shorter, demangle, ends_with_short_name, for_each_short_name, has_short_name,
     may_join_words, short_name_key, short_name_keys, short_names, short_names_with_key, words,
@@ -298,25 +304,7 @@ impl Binary {
     /// Parses an ELF file, keeping `data` as the file's bytes rather than a
     /// copy of them, since a large file takes hundreds of megabytes.
     fn from_vec(data: Vec<u8>) -> Result<Binary> {
-        if !data.starts_with(b"\x7fELF") {
-            bail!("not an ELF file");
-        }
-        let file = object::File::parse(data.as_slice()).context("malformed ELF file")?;
-        let kind = match file.kind() {
-            ObjectKind::Executable => FileKind::Executable,
-            // Both are position-independent; only executables name the
-            // dynamic loader that starts them.
-            ObjectKind::Dynamic if file.section_by_name(".interp").is_some() => {
-                FileKind::PositionIndependentExecutable
-            }
-            ObjectKind::Dynamic => FileKind::SharedLibrary,
-            ObjectKind::Relocatable => {
-                bail!("this is an object file, not a linked program or library")
-            }
-            ObjectKind::Core => bail!("core dumps are not supported"),
-            _ => bail!("unknown ELF file type"),
-        };
-
+        let (file, kind) = parse_program(&data)?;
         let architecture = file.architecture();
         let mut warnings = Vec::new();
         let mut binary = Binary {
@@ -701,6 +689,30 @@ fn word(bytes: &[u8], endianness: Endianness) -> u64 {
         word[..bytes.len()].copy_from_slice(bytes);
         u64::from_le_bytes(word)
     }
+}
+
+/// Parses `data` as an ELF file that holds a linked program or library,
+/// and says which kind.
+fn parse_program(data: &[u8]) -> Result<(object::File<'_>, FileKind)> {
+    if !data.starts_with(b"\x7fELF") {
+        bail!("not an ELF file");
+    }
+    let file = object::File::parse(data).context("malformed ELF file")?;
+    let kind = match file.kind() {
+        ObjectKind::Executable => FileKind::Executable,
+        // Both are position-independent; only executables name the
+        // dynamic loader that starts them.
+        ObjectKind::Dynamic if file.section_by_name(".interp").is_some() => {
+            FileKind::PositionIndependentExecutable
+        }
+        ObjectKind::Dynamic => FileKind::SharedLibrary,
+        ObjectKind::Relocatable => {
+            bail!("this is an object file, not a linked program or library")
+        }
+        ObjectKind::Core => bail!("core dumps are not supported"),
+        _ => bail!("unknown ELF file type"),
+    };
+    Ok((file, kind))
 }
 
 /// The file's sections. An allocated section, whose addresses and bytes

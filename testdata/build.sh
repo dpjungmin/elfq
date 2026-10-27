@@ -37,6 +37,13 @@ variants strip c-x86_64
 echo "C, x86-64 Linux shared library"
 gcc $cflags -shared -fPIC -o "$out/c-x86_64.so" c/app.c c/platform_host.c
 
+# For diff to compare with c-x86_64.elf and c-x86_64.so: with -DDIFF_MOVED,
+# crc32 logs an empty frame (see c/platform.h), as in c-cortex-m7-moved.elf.
+echo "C, x86-64 Linux, crc32 logs an empty frame"
+gcc $cflags -DDIFF_MOVED -o "$out/c-x86_64-moved.elf" c/app.c c/platform_host.c
+variants strip c-x86_64-moved
+gcc $cflags -DDIFF_MOVED -shared -fPIC -o "$out/c-x86_64-moved.so" c/app.c c/platform_host.c
+
 # Without Intel CET, GNU ld lays out the PLT the older way, with 8-byte
 # entries in .plt.got.
 echo "C, x86-64 Linux shared library without CET"
@@ -63,14 +70,40 @@ arm-none-eabi-gcc $cflags \
 variants arm-none-eabi-strip c-cortex-m4-cmsis
 rm "$out/c-cortex-m4-cmsis.elf"
 
+# cortex_m7 NAME SCRIPT FLAGS... builds the C sample for the Cortex-M7 as
+# NAME.elf, linked with SCRIPT and compiled with FLAGS too.
+cortex_m7() {
+    name=$1
+    script=$2
+    shift 2
+    arm-none-eabi-gcc $cflags "$@" \
+        -mcpu=cortex-m7 -mthumb -mfloat-abi=hard -mfpu=fpv5-d16 \
+        -ffunction-sections -fdata-sections \
+        -nostartfiles --specs=nano.specs --specs=nosys.specs \
+        -T "$script" -Wl,--gc-sections \
+        -o "$out/$name.elf" c/app.c c/platform_cortexm7.c
+}
+
 echo "C, Cortex-M7 with TCMs"
-arm-none-eabi-gcc $cflags \
-    -mcpu=cortex-m7 -mthumb -mfloat-abi=hard -mfpu=fpv5-d16 \
-    -ffunction-sections -fdata-sections \
-    -nostartfiles --specs=nano.specs --specs=nosys.specs \
-    -T c/cortex-m7.ld -Wl,--gc-sections \
-    -o "$out/c-cortex-m7.elf" c/app.c c/platform_cortexm7.c
+cortex_m7 c-cortex-m7 c/cortex-m7.ld
 variants arm-none-eabi-strip c-cortex-m7
+
+# Builds for diff to compare with c-cortex-m7.elf, each with one change.
+# Their linker scripts are cortex-m7.ld with one line changed. "moved"
+# links filter_tap in flash rather than in ITCM, and with -DDIFF_MOVED,
+# crc32 logs an empty frame (see c/platform.h).
+echo "C, Cortex-M7 with TCMs, filter_tap in flash"
+sed 's/ \.text\.filter_tap)/)/' c/cortex-m7.ld >"$out/cortex-m7-moved.ld"
+cortex_m7 c-cortex-m7-moved "$out/cortex-m7-moved.ld" -DDIFF_MOVED
+rm "$out/cortex-m7-moved.ld"
+variants arm-none-eabi-strip c-cortex-m7-moved
+
+# Only the full build: DTCM at 0x80000000, so that .data and .bss move to
+# another block of memory.
+echo "C, Cortex-M7 with TCMs, DTCM at 0x80000000"
+sed 's/^\( *DTCM .*ORIGIN = \)0x20000000/\10x80000000/' c/cortex-m7.ld >"$out/cortex-m7-sdram.ld"
+cortex_m7 c-cortex-m7-sdram "$out/cortex-m7-sdram.ld"
+rm "$out/cortex-m7-sdram.ld"
 
 # Only the variant with symbols and no DWARF: this sample is for libgcc's
 # routines for doubles, which have no DWARF of their own.

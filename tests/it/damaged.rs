@@ -373,6 +373,147 @@ fn a_section_that_runs_past_the_end_of_the_file_keeps_its_addresses() {
 }
 
 #[test]
+fn diff_names_the_file_that_a_warning_is_about() {
+    let path = save("plt-offset-diff.elf", &past_the_end(&[".plt"]));
+    let old = sample_path("c-x86_64.elf");
+    let output = elfq(&[old.to_str().unwrap(), "diff", &path]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_output(
+        &String::from_utf8(output.stderr).unwrap(),
+        &format!("warning: {path}: section .plt runs past the end of the file\n"),
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.ends_with("Sections that differ: .plt.\n"),
+        "{stdout}"
+    );
+}
+
+/// Runs `elfq SAMPLE diff NEW`, with `data` saved as `name` for NEW, and
+/// returns its exit status, and what it printed and printed as an error.
+fn diff(sample: &str, name: &str, data: &[u8], options: &[&str]) -> (i32, String, String) {
+    let old = sample_path(sample);
+    let output = elfq(&[&[old.to_str().unwrap(), "diff", &save(name, data)], options].concat());
+    let text = |bytes: Vec<u8>| String::from_utf8(bytes).unwrap();
+    (
+        output.status.code().unwrap(),
+        text(output.stdout),
+        text(output.stderr),
+    )
+}
+
+/// Where the bytes of `section` are in the file.
+fn file_range(data: &[u8], section: &str) -> (usize, usize) {
+    let file = object::File::parse(data).unwrap();
+    let (offset, size) = file.section_by_name(section).unwrap().file_range().unwrap();
+    (offset as usize, size as usize)
+}
+
+#[test]
+fn diff_names_a_section_whose_bytes_alone_differ() {
+    // Another build ID, as after a change only in debug info: the memory
+    // keeps its size, and the last line says where it differs.
+    let mut data = sample("c-x86_64.elf");
+    let (offset, size) = file_range(&data, ".note.gnu.build-id");
+    data[offset + size - 1] ^= 1;
+    let (status, text, _) = diff("c-x86_64.elf", "build-id.elf", &data, &[]);
+    assert_eq!(status, 1);
+    assert!(
+        text.ends_with(
+            "\nThe memory stays at 15728 bytes.\nSections that differ: .note.gnu.build-id.\n"
+        ),
+        "{text}"
+    );
+    let (_, json, _) = diff("c-x86_64.elf", "build-id.elf", &data, &["--json"]);
+    assert!(
+        json.contains("\"sections_that_differ\":[\n\".note.gnu.build-id\"\n],"),
+        "{json}"
+    );
+    // In firmware, the block's row says only that bytes differ.
+    let mut data = sample("c-cortex-m7.elf");
+    let (offset, _) = file_range(&data, ".rodata");
+    data[offset] ^= 1;
+    let (status, text, _) = diff("c-cortex-m7.elf", "rodata-byte.elf", &data, &[]);
+    assert_eq!(status, 1);
+    assert!(
+        text.contains("\n0x30000000..0x30000edc  3804  3804       0  bytes differ\n"),
+        "{text}"
+    );
+    assert!(
+        text.ends_with("\n\nSections that differ: .rodata.\n"),
+        "{text}"
+    );
+}
+
+#[test]
+fn diff_counts_the_bytes_that_sections_overlap_on_once() {
+    // .rodata, grown by 8 bytes, holds the bytes of .ARM.exidx after it
+    // too, at the same addresses.
+    let mut data = sample("c-cortex-m7.elf");
+    set_section_field(&mut data, ".rodata", SIZE, 0xf4 + 8);
+    let (status, text, _) = diff("c-cortex-m7.elf", "rodata-over-exidx.elf", &data, &[]);
+    assert_eq!(status, 0, "{text}");
+    assert!(text.ends_with(" hold the same bytes at the same addresses.\n"));
+}
+
+/// The offset of each section header in a 32-bit file, with the section's
+/// `sh_flags`.
+fn section_headers_32(data: &[u8]) -> Vec<(usize, u32)> {
+    let number = |at: usize, width: usize| {
+        let mut bytes = [0; 4];
+        bytes[..width].copy_from_slice(&data[at..at + width]);
+        u32::from_le_bytes(bytes) as usize
+    };
+    // `e_shoff`, `e_shentsize` and `e_shnum`.
+    let (headers, size, count) = (number(0x20, 4), number(0x2e, 2), number(0x30, 2));
+    (0..count)
+        .map(|index| headers + index * size)
+        .map(|header| (header, number(header + 8, 4) as u32))
+        .collect()
+}
+
+/// `SHF_ALLOC`, set in the flags of a section that the program loads.
+const ALLOCATED: u32 = 0x2;
+
+#[test]
+fn diff_refuses_a_separate_debug_file() {
+    // objcopy --only-keep-debug keeps the header of each section that the
+    // program loads, but makes it take no room in the file, as .bss does.
+    let mut data = sample("c-cortex-m7.elf");
+    for (header, flags) in section_headers_32(&data) {
+        if flags & ALLOCATED != 0 {
+            // `sh_type`, as SHT_NOBITS.
+            write(&mut data, header + 4, 4, 8);
+        }
+    }
+    let path = save("c-cortex-m7.debug", &data);
+    let (status, _, error) = diff("c-cortex-m7.elf", "c-cortex-m7.debug", &data, &[]);
+    assert_eq!(status, 2);
+    assert_output(
+        &error,
+        &format!(
+            "error: {path} stores none of its code, as a separate debug file doesn't; diff \
+             needs the program itself\n"
+        ),
+    );
+}
+
+#[test]
+fn diff_refuses_a_file_that_puts_nothing_in_memory() {
+    let mut data = sample("c-cortex-m7.elf");
+    for (header, flags) in section_headers_32(&data) {
+        write(&mut data, header + 8, 4, u64::from(flags & !ALLOCATED));
+    }
+    let path = save("c-cortex-m7-unallocated.elf", &data);
+    let (status, _, error) = diff("c-cortex-m7.elf", "c-cortex-m7-unallocated.elf", &data, &[]);
+    assert_eq!(status, 2);
+    assert_output(
+        &error,
+        &format!("error: {path} puts nothing in memory, so diff has nothing to compare\n"),
+    );
+}
+
+#[test]
 fn a_function_whose_size_would_end_past_the_last_address_gets_another() {
     let mut data = sample("c-x86_64.elf");
     set_symbol_size(&mut data, "main", u64::MAX);
