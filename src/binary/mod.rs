@@ -45,7 +45,8 @@ pub use attributes::ArmArchitecture;
 pub use memory::{Bytes, LoadedMemory, same_bytes_in, same_memory};
 pub use names::{
     can_be_shorter, demangle, ends_with_short_name, for_each_short_name, has_short_name,
-    may_join_words, short_name_key, short_name_keys, short_names, short_names_with_key, words,
+    may_join_words, short_name_key, short_name_keys, short_names, short_names_with_key,
+    without_copy_suffixes, words,
 };
 pub use range::{AddressRange, MemoryBlock, hex_number, memory_blocks, range_hint};
 pub use vector_table::{VectorTable, exception_name, is_reserved};
@@ -303,7 +304,7 @@ impl Binary {
 
     /// Parses an ELF file, keeping `data` as the file's bytes rather than a
     /// copy of them, since a large file takes hundreds of megabytes.
-    fn from_vec(data: Vec<u8>) -> Result<Binary> {
+    pub(crate) fn from_vec(data: Vec<u8>) -> Result<Binary> {
         let (file, kind) = parse_program(&data)?;
         let architecture = file.architecture();
         let mut warnings = Vec::new();
@@ -1136,6 +1137,36 @@ fn estimate_missing_sizes(items: &mut [Item], sections: &[Section]) {
     }
 }
 
+impl Binary {
+    /// An x86-64 executable for unit tests, with `sections` and `items`,
+    /// whose file is `data`.
+    #[cfg(test)]
+    pub(crate) fn for_tests(sections: Vec<Section>, items: Vec<Item>, data: Vec<u8>) -> Binary {
+        Binary {
+            architecture: Architecture::X86_64,
+            pointer_size: 8,
+            kind: FileKind::Executable,
+            entry: 0x1000,
+            thumb: false,
+            endianness: Endianness::Little,
+            has_symbols: true,
+            has_dwarf: false,
+            sections,
+            items,
+            imports: Vec::new(),
+            relocations: Vec::new(),
+            used_by_unwinder: Vec::new(),
+            merged_variables: Vec::new(),
+            vector_table: None,
+            arm_architecture: None,
+            data_in_code: Vec::new(),
+            warnings: Vec::new(),
+            code_references: HashMap::new(),
+            data,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1258,31 +1289,11 @@ mod tests {
             file_range: Some((0, code.len() as u64)),
             ..text_section()
         };
-        Binary {
-            architecture: Architecture::X86_64,
-            pointer_size: 8,
-            kind: FileKind::Executable,
-            entry: 0x1000,
-            thumb: false,
-            endianness: Endianness::Little,
-            has_symbols: true,
-            has_dwarf: false,
-            sections: vec![null_section(), text],
-            items: items
-                .into_iter()
-                .map(|item| Item { section: 1, ..item })
-                .collect(),
-            imports: Vec::new(),
-            relocations: Vec::new(),
-            used_by_unwinder: Vec::new(),
-            merged_variables: Vec::new(),
-            vector_table: None,
-            arm_architecture: None,
-            data_in_code: Vec::new(),
-            warnings: Vec::new(),
-            code_references: HashMap::new(),
-            data: code,
-        }
+        let items = items
+            .into_iter()
+            .map(|item| Item { section: 1, ..item })
+            .collect();
+        Binary::for_tests(vec![null_section(), text], items, code)
     }
 
     #[test]
