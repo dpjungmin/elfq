@@ -45,8 +45,9 @@ struct LeavingJson<'a> {
     complete: bool,
 }
 
+/// A row of `callees RANGE --json`.
 #[derive(Serialize)]
-struct CalleeJson<'a> {
+pub(super) struct CalleeJson<'a> {
     /// The item or import outside the ranges.
     item: json::Item<'a>,
     /// The item in the ranges that uses it.
@@ -636,20 +637,12 @@ impl Leaving<'_> {
     fn write_json(&self, out: &mut dyn Write) -> Result<()> {
         let binary = self.binary;
         let item = |node: Node| json::Item::new(binary, node);
-        let groups = groups(binary, &self.crossings, Direction::Out, |crossing| {
-            json::how_field(crossing.kind)
-        });
         let leaving = LeavingJson {
             ranges: json_ranges(self.check.ranges),
             to: json_other(self.check.other),
-            callees: each_row(groups)
-                .map(|(outside, row)| CalleeJson {
-                    item: item(outside),
-                    caller: item(row.inside),
-                    how: row.how,
-                    veneer: row.veneer.map(|veneer| item(Node::Item(veneer))),
-                    sites: json::addresses(&row.sites),
-                })
+            callees: callee_rows(binary, &self.crossings)
+                .iter()
+                .map(|(outside, row)| callee_json(binary, *outside, row))
                 .collect(),
             unresolved: unresolved_json(binary, &self.unfollowed),
             unreadable: self
@@ -795,7 +788,7 @@ impl Entering<'_> {
                 .map(|(outside, row)| CallerJson {
                     item: item(outside),
                     callee: item(row.inside),
-                    how: row.how,
+                    how: json::how_field(row.kind),
                     veneer: row.veneer.map(|veneer| item(Node::Item(veneer))),
                     sites: json::addresses(&row.sites),
                 })
@@ -931,18 +924,51 @@ struct Group {
     rows: Vec<CrossingRow>,
 }
 
-/// The crossings between one item in the ranges and the one outside, with
-/// the same words and veneer.
-struct CrossingRow {
-    inside: Node,
-    how: &'static str,
-    veneer: Option<usize>,
-    sites: Vec<u64>,
+/// The crossings between one item in the ranges and the one outside, said
+/// in the same words, with the same veneer.
+pub(super) struct CrossingRow {
+    pub inside: Node,
+    /// How the first of them uses what it uses. Its words are those of all
+    /// of them (see [`groups`]).
+    pub kind: ReferenceKind,
+    pub veneer: Option<usize>,
+    pub sites: Vec<u64>,
+}
+
+/// The rows of `callees RANGE --json` for `crossings`, which leave the
+/// ranges: for each item or import outside them, largest first, a row for
+/// each item in them that uses it in one way, through one veneer or none,
+/// with the item outside.
+pub(super) fn callee_rows(binary: &Binary, crossings: &[Crossing]) -> Vec<(Node, CrossingRow)> {
+    let groups = groups(binary, crossings, Direction::Out, |crossing| {
+        json::how_field(crossing.kind)
+    });
+    each_row(groups).collect()
+}
+
+/// The JSON of a row of `callees RANGE`, in which an item in the ranges
+/// uses `outside`.
+pub(super) fn callee_json<'a>(
+    binary: &'a Binary,
+    outside: Node,
+    row: &CrossingRow,
+) -> CalleeJson<'a> {
+    let item = |node: Node| json::Item::new(binary, node);
+    CalleeJson {
+        item: item(outside),
+        caller: item(row.inside),
+        how: json::how_field(row.kind),
+        veneer: row.veneer.map(|veneer| item(Node::Item(veneer))),
+        sites: json::addresses(&row.sites),
+    }
 }
 
 /// Groups `crossings` by the item or import outside the ranges, largest
-/// first, and each group's rows by the item inside, `how` it is used and
-/// the veneer, in the order of their first site.
+/// first, and each group's rows by the item inside, how it uses the other
+/// in the words that `how` gives, and the veneer, in the order of their
+/// first site. Where the words are the same for two kinds of use, as the
+/// HOW column says "uses" both for reading data and for taking its address,
+/// so is the row.
 fn groups(
     binary: &Binary,
     crossings: &[Crossing],
@@ -973,7 +999,7 @@ fn groups(
             .or_insert_with(|| {
                 rows.push(CrossingRow {
                     inside,
-                    how,
+                    kind: crossing.kind,
                     veneer: crossing.veneer,
                     sites: Vec::new(),
                 });
@@ -1015,22 +1041,27 @@ fn json_ranges(ranges: &[AddressRange]) -> Vec<json::Range> {
         .collect()
 }
 
-/// The table for a range check's rows: the address and size of the item
+/// The table for a range check's rows (see [`crossings_columns`]).
+fn crossings_table(direction: Direction) -> Table {
+    Table::new(&crossings_columns(direction))
+}
+
+/// The columns of a range check's rows: the address and size of the item
 /// outside the ranges, how one item uses the other and where, then both
 /// names, as [`names_cell`] writes them. The names come last, so that a
 /// long one that wraps moves no column.
-fn crossings_table(direction: Direction) -> Table {
+pub(super) fn crossings_columns(direction: Direction) -> [(&'static str, Align); 5] {
     let names = match direction {
         Direction::Out => "CALLEE",
         Direction::In => "CALLER",
     };
-    Table::new(&[
+    [
         ("ADDRESS", Align::Left),
         ("SIZE", Align::Right),
         ("HOW", Align::Left),
         ("AT", Align::Left),
         (names, Align::Left),
-    ])
+    ]
 }
 
 /// The last cell of a range check's row: the item outside the ranges, then
@@ -1044,28 +1075,43 @@ fn names_cell(outside: &str, direction: Direction, inside: &str) -> String {
     format!("{outside}, {relation} {inside}")
 }
 
-/// Adds a line to `table` for each row of `groups`. Every line names both
-/// items, so that each stands alone, as when `grep` picks it out.
+/// Adds a line to `table` for each row of `groups`.
 fn write_groups(binary: &Binary, groups: &[Group], direction: Direction, table: &mut Table) {
     for group in groups {
-        let (address, size) = match group.outside {
-            Node::Item(item) => {
-                let item = &binary.items[item];
-                (format!("{:#x}", item.address), text::size_text(item))
-            }
-            Node::Import(_) => (String::new(), String::new()),
-        };
-        let outside = group.outside.name(binary);
         for row in &group.rows {
-            table.row(vec![
-                address.clone(),
-                size.clone(),
-                row.how.to_string(),
-                text::at_column(&row.sites),
-                names_cell(outside, direction, row.inside.name(binary)),
-            ]);
+            table.row(row_cells(binary, group.outside, row, direction));
         }
     }
+}
+
+/// The cells of a range check's row, in [`crossings_columns`], where an
+/// item in the ranges uses `outside`, or `outside` uses one in them. Every
+/// line names both items, so that each stands alone, as when `grep` picks
+/// it out.
+pub(super) fn row_cells(
+    binary: &Binary,
+    outside: Node,
+    row: &CrossingRow,
+    direction: Direction,
+) -> Vec<String> {
+    let (address, size) = match outside {
+        Node::Item(item) => {
+            let item = &binary.items[item];
+            (format!("{:#x}", item.address), text::size_text(item))
+        }
+        Node::Import(_) => (String::new(), String::new()),
+    };
+    let used = match direction {
+        Direction::Out => outside,
+        Direction::In => row.inside,
+    };
+    vec![
+        address,
+        size,
+        text::how_via(binary, used, row.kind, row.veneer).to_string(),
+        text::at_column(&row.sites),
+        names_cell(outside.name(binary), direction, row.inside.name(binary)),
+    ]
 }
 
 /// How a crossing uses what is on the other side, for the HOW column, with
