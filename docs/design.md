@@ -629,17 +629,27 @@ rows that `callees BLOCK` lists for each block, of the items that start
 in it, of items in other blocks, imports left out, as they are in no
 block: a call through a veneer is one row, "call via veneer", as there.
 A use is the same in both builds when it is between partners, in the
-same way, through a veneer in both or in neither, and both items are in
-the same blocks as before; every use by or of an item without a partner
-is new or gone. So when an item moves to another block, each of its uses
-between blocks before is gone, and each after is new: a relink of data
-to another memory makes many, and so does one of code, as when flash
-starts at another address. The table lists every call and tail call
-between blocks that is new or gone, the new first, each block's in the
-order and columns of `callees BLOCK`, with STATUS in front, or says "No
-call between blocks is new or gone."; a line counts the other uses, of
-data and of functions' addresses, which JSON lists. The exit status and
-the first line don't count them.
+same way, and both items are in the same blocks as before, where a call
+and a tail call, direct or through a veneer or PLT stub, are one way;
+every use by or of an item without a partner is new or gone. So a call
+that only becomes a tail call or stops being one, or gains or loses a
+veneer or PLT stub in the caller's or the callee's block, is neither new
+nor gone. When the caller and the callee share a block and the stub is
+in another, as a PLT can be in a library with two blocks of code, the
+call to the stub crosses blocks itself, and is new or gone with the
+stub. When an item moves to another block, each of its uses between
+blocks before is gone, and each after is new: code that calls flash and
+moves from OCRAM into ITCM has its calls to flash new from ITCM, a
+relink of data to another memory makes many, and so does one of code to
+another block, as when flash starts at 0x60000000 rather than
+0x30000000. A smaller relink, which leaves the two builds' flash
+overlapping or less than 64 KiB apart, keeps one block for both, and
+the uses of what is in it stay the same. The table lists every
+call and tail call between blocks that is new or gone, the new first,
+each block's in the order and columns of `callees BLOCK`, with STATUS in
+front, or says "No call between blocks is new or gone."; a line counts
+the other uses, of data and of functions' addresses, which JSON lists.
+The exit status and the first line don't count them.
 
 When no row says why the memory differs, as when no item changed
 because only a build ID or `.tbss` differs, or when either file has no

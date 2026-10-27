@@ -86,13 +86,21 @@ jq -e '(.same_bytes or .items_compared) and ([.crossings[] | select(.status=="ne
 ```
 
 The check counts calls and tail calls only. A use of data from another
-block is new each time a relink moves the data, and a pointer is any
-word of data that holds an address, so a constant that happens to equal
-a function's address reads as one. The check still fails when a call
-between blocks only changes how it is made, as when it becomes a tail
-call or loses its veneer, or when a relink moves the code at either end
-to another block, as when flash starts at another address: diff lists
-such a call as gone, and as new the way it is now. Both builds need a
+block is new each time a relink moves the data to another block, and a
+pointer is any word of data that holds an address, so a constant that
+happens to equal a function's address reads as one. A call between
+blocks is the same in both builds when the same function calls the same
+one from and to the same blocks, so the check passes when a call only
+becomes a tail call or stops being one, or gains or loses a veneer in
+the caller's or the callee's block. It still fails when the code at
+either end of a call between blocks moves to a third block, as when
+code that calls flash moves from OCRAM into ITCM, or when a relink moves
+it to another block, as when flash starts at 0x60000000 rather than
+0x30000000: diff lists such a call as gone, and as new between the
+blocks it is between now. As diff works out the blocks over both builds
+together, a smaller relink, which leaves the two builds' flash
+overlapping or less than 64 KiB apart, as a 32 KiB bootloader offset
+does, keeps one block, and its calls stay the same. Both builds need a
 symbol table: without one, diff compares no items, so the check fails
 unless the memory is the same.
 
