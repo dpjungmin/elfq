@@ -94,7 +94,7 @@ static const uint32_t crc_table[256] = {
 NOINLINE static uint32_t crc32(const uint8_t *data, size_t len)
 {
     uint32_t crc = 0xffffffffu;
-
+    LOG_EMPTY_FRAME(len)
     for (size_t i = 0; i < len; i++)
         crc = crc_table[(crc ^ data[i]) & 0xffu] ^ (crc >> 8);
     return ~crc;
