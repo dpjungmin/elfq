@@ -16,13 +16,15 @@ use std::cmp::Ordering;
 use anyhow::Result;
 use object::{Architecture, Object, ObjectSection, SectionFlags, SectionKind};
 
-use super::{AddressRange, Section, parse_program, read_sections};
+use super::{AddressRange, FileKind, Section, parse_program, read_sections};
 
 /// A file's sections, and the bytes they put in memory.
 #[derive(Debug)]
 pub struct LoadedMemory<'data> {
     /// The instruction set, such as x86-64 or 32-bit Arm.
     pub architecture: Architecture,
+    /// What the file is, as [`Binary::kind`](super::Binary::kind) says.
+    pub kind: FileKind,
     /// The file's sections, indexed by section number, as
     /// [`Binary::sections`](super::Binary::sections) holds them. Empty when
     /// the file has no section headers.
@@ -36,6 +38,9 @@ pub struct LoadedMemory<'data> {
     /// so what it puts in memory says nothing of the program. True for a
     /// file with no code.
     pub stores_code: bool,
+    /// Whether the file has a symbol table (`.symtab`), as
+    /// [`Binary::has_symbols`](super::Binary::has_symbols) says.
+    pub has_symbols: bool,
     /// The whole file.
     data: &'data [u8],
 }
@@ -72,7 +77,7 @@ impl<'data> LoadedMemory<'data> {
     /// Reads the headers of the ELF file in `data`, which must hold a linked
     /// program or library.
     pub fn read(data: &'data [u8]) -> Result<LoadedMemory<'data>> {
-        let (file, _) = parse_program(data)?;
+        let (file, kind) = parse_program(data)?;
         let mut warnings = Vec::new();
         let sections = read_sections(&file, data.len() as u64, &mut warnings);
         let mut code = file
@@ -89,9 +94,11 @@ impl<'data> LoadedMemory<'data> {
             code.peek().is_none() || code.any(|section| section.file_range().is_some());
         Ok(LoadedMemory {
             architecture: file.architecture(),
+            kind,
             sections,
             warnings,
             stores_code,
+            has_symbols: file.symbol_table().is_some(),
             data,
         })
     }

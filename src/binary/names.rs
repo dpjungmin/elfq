@@ -443,6 +443,44 @@ fn without_clone_suffix(path: &str) -> Option<String> {
     Some(path[..at].to_string())
 }
 
+/// The suffixes that compilers add to the name of a copy of a C function,
+/// each with an optional number after it, as in `dev_read.constprop.0`.
+const COPY_SUFFIXES: [&str; 8] = [
+    "constprop",
+    "isra",
+    "part",
+    "cold",
+    "lto_priv",
+    "localalias",
+    "clone",
+    "llvm",
+];
+
+/// A function's name without the suffixes that compilers add to their
+/// copies of it, so that a copy and the function have one name:
+/// `dev_read.constprop.0` and `dev_read.llvm.4123` become `dev_read`, and
+/// `log(unsigned int) [clone .isra.0]` becomes `log(unsigned int)`. LLVM's
+/// `.llvm.` number changes with every build.
+pub fn without_copy_suffixes(name: &str) -> &str {
+    let mut name = &name[..clone_suffix_at(name).unwrap_or(name.len())];
+    loop {
+        // The numbers after the suffix, as in `.isra.0.1`.
+        let mut rest = name;
+        while let Some((before, number)) = rest.rsplit_once('.')
+            && !number.is_empty()
+            && number.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            rest = before;
+        }
+        match rest.rsplit_once('.') {
+            Some((before, suffix)) if !before.is_empty() && COPY_SUFFIXES.contains(&suffix) => {
+                name = before;
+            }
+            _ => return name,
+        }
+    }
+}
+
 /// Where the suffix that GCC adds to its copies of a function starts in
 /// `name`, if it has one.
 fn clone_suffix_at(name: &str) -> Option<usize> {
@@ -687,6 +725,25 @@ fn operator_end(bytes: &[u8], at: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copy_suffixes_come_off() {
+        for (name, without) in [
+            ("dev_read.constprop.0", "dev_read"),
+            ("scale.llvm.123", "scale"),
+            ("std::sort(int*) [clone .isra.0]", "std::sort(int*)"),
+            ("f.constprop.0.isra.0", "f"),
+            ("f.part.0", "f"),
+            ("f.cold", "f"),
+            // A static variable's number, alone, stays: blanks.1 and
+            // blanks.2 are two variables.
+            ("blanks.1", "blanks.1"),
+            (".constprop.0", ".constprop.0"),
+            ("main", "main"),
+        ] {
+            assert_eq!(without_copy_suffixes(name), without, "{name}");
+        }
+    }
 
     #[test]
     fn rust_symbols_are_demangled_without_hashes() {

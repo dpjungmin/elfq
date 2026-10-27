@@ -6,7 +6,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
-use crate::support::{SAMPLE, TCM_MOVED_SAMPLE, TCM_SAMPLE, assert_output, elfq};
+use crate::support::{
+    SAMPLE, TCM_INLINED_SAMPLE, TCM_MOVED_SAMPLE, TCM_SAMPLE, assert_output, elfq,
+};
 
 /// The docs that can hold examples, relative to the crate's root.
 const DOCS: [&str; 3] = ["README.md", "docs/design.md", "docs/examples.md"];
@@ -42,7 +44,7 @@ fn the_examples_in_the_docs_show_what_elfq_prints() {
 /// Answers that between them have every key that elfq's JSON has. A key
 /// shows only in an object that is there, so for each key that holds a
 /// list, one of them has an entry in it, which the test checks.
-const JSON_ANSWERS: [&[&str]; 21] = [
+const JSON_ANSWERS: [&[&str]; 22] = [
     &[TCM_SAMPLE],
     &[SAMPLE, "top"],
     &[SAMPLE, "retained", "process_frame"],
@@ -76,6 +78,7 @@ const JSON_ANSWERS: [&[&str]; 21] = [
         "0x30000000+16M",
     ],
     &[TCM_SAMPLE, "diff", TCM_MOVED_SAMPLE],
+    &[TCM_SAMPLE, "diff", TCM_INLINED_SAMPLE],
 ];
 
 #[test]

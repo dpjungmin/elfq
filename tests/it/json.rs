@@ -1,12 +1,14 @@
 //! `--json`: the same answers as the text, in a shape scripts can read.
 
+use std::collections::BTreeMap;
+
 use serde_json::{Value, json};
 
 use elfq::binary::{ItemKind, Source};
 
 use crate::support::{
-    DEEP_SAMPLE, LIBRARY_SAMPLE, MOVED_SAMPLE, SAMPLE, TCM_MOVED_SAMPLE, TCM_SAMPLE,
-    TCM_SDRAM_SAMPLE, command, elfq, load_sample,
+    DEEP_SAMPLE, LIBRARY_SAMPLE, MOVED_SAMPLE, SAMPLE, TCM_INLINED_SAMPLE, TCM_MOVED_SAMPLE,
+    TCM_SAMPLE, TCM_SDRAM_SAMPLE, command, elfq, load_sample,
 };
 
 /// Runs elfq with `--json`, expecting success, and parses what it printed.
@@ -1236,24 +1238,26 @@ fn diff_has_each_block_and_its_sections() {
     assert_eq!(status, 1);
     let blocks = answer["blocks"].as_array().unwrap();
     assert_eq!(blocks.len(), 4);
-    // Items aren't compared, so what counts them is null. The sections that
-    // differ are named in address order, those whose size or bytes differ,
-    // and .ARM.exidx, which moved.
+    // The sections that differ are named in address order, those whose
+    // size or bytes differ, and .ARM.exidx, which moved.
     let mut head = answer.clone();
     head.as_object_mut().unwrap().remove("blocks");
+    head.as_object_mut().unwrap().remove("items");
     assert_eq!(
         head,
         json!({
             "old": TCM_SAMPLE,
             "new": TCM_MOVED_SAMPLE,
             "same_bytes": false,
-            "items_compared": false,
-            "old_bytes": null,
-            "new_bytes": null,
-            "unchanged": null,
+            "items_compared": true,
+            "old_bytes": 7835,
+            "new_bytes": 7883,
+            "unchanged": 61,
             "sections_that_differ": [".itcm", ".isr_vector", ".text", ".rodata", ".ARM.exidx"],
         })
     );
+    // The ITCM's items lost 20 bytes: filter_tap's 52 left, crc32 grew by
+    // 16, and two veneers came in; the padding after them grew by 4.
     assert_eq!(
         blocks[0],
         json!({
@@ -1263,13 +1267,13 @@ fn diff_has_each_block_and_its_sections() {
             "new_size": 208,
             "change": -16,
             "same_bytes": false,
-            "item_bytes": null,
-            "section_bytes": null,
-            "padding_bytes": null,
+            "item_bytes": -20,
+            "section_bytes": 0,
+            "padding_bytes": 4,
             "sections": [{
                 "name": ".itcm",
                 "load_image": false,
-                "holds_items": null,
+                "holds_items": true,
                 "old_address": "0x0",
                 "old_size": 224,
                 "new_address": "0x0",
@@ -1284,7 +1288,7 @@ fn diff_has_each_block_and_its_sections() {
         json!({
             "name": ".ARM.exidx",
             "load_image": false,
-            "holds_items": null,
+            "holds_items": false,
             "old_address": "0x30000ed4",
             "old_size": 8,
             "new_address": "0x30000ee4",
@@ -1327,7 +1331,167 @@ fn diff_has_each_block_and_its_sections() {
         let row: Value = serde_json::from_str(line.trim_end_matches(',')).unwrap();
         assert_eq!(row["same_bytes"], true, "{line}");
     }
-    assert_eq!(lines[5], "]}");
+    assert_eq!(lines[5], "],\"items\":[]}");
+}
+
+#[test]
+fn diff_has_each_item_that_changed() {
+    let (_, answer) = diff_json(TCM_SAMPLE, TCM_MOVED_SAMPLE);
+    let items = answer["items"].as_array().unwrap();
+    // Largest change first, and of the same change, by name.
+    let names: Vec<&str> = items
+        .iter()
+        .map(|item| item["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            ".rodata@0x30000de0",
+            "crc32",
+            "__filter_tap_veneer",
+            "__log_msg_veneer",
+            "filter_tap"
+        ]
+    );
+    assert_eq!(
+        items[1],
+        json!({
+            "name": "crc32",
+            "was": null,
+            "kind": "function",
+            "status": "grew",
+            "paired_by": "name",
+            "change": 16,
+            "old_address": "0x10",
+            "old_size": 48,
+            "old_section": ".itcm",
+            "old_block": "0x0",
+            "old_kept_by": {"name": "__crc32_veneer", "address": "0x300009b0"},
+            "old_retained": 1072,
+            "new_address": "0x6c",
+            "new_size": 64,
+            "new_section": ".itcm",
+            "new_block": "0x0",
+            "new_kept_by": {"name": "__crc32_veneer", "address": "0x300009b8"},
+            "new_retained": 1112,
+            "size_estimated": false,
+            "inlined_into": null
+        })
+    );
+    assert_eq!(items[4]["status"], "moved");
+    assert_eq!(items[4]["new_block"], "0x30000000");
+    // A gone function says where the new build's DWARF says the compiler
+    // inlined it.
+    let (_, answer) = diff_json(TCM_SAMPLE, TCM_INLINED_SAMPLE);
+    let gone = &answer["items"][0];
+    assert_eq!(gone["name"], "decode_header");
+    assert_eq!(gone["status"], "gone");
+    assert_eq!(gone["new_address"], Value::Null);
+    assert_eq!(gone["old_kept_by"]["name"], "process_frame");
+    assert_eq!(gone["inlined_into"], json!(["process_frame"]));
+}
+
+/// Pairs of builds to compare, of every kind that diff sees.
+const DIFF_PAIRS: [(&str, &str); 10] = [
+    (TCM_SAMPLE, TCM_MOVED_SAMPLE),
+    (TCM_SAMPLE, TCM_SDRAM_SAMPLE),
+    (TCM_SAMPLE, TCM_INLINED_SAMPLE),
+    (SAMPLE, MOVED_SAMPLE),
+    (LIBRARY_SAMPLE, "testdata/bin/c-x86_64-moved.so"),
+    (SAMPLE, LIBRARY_SAMPLE),
+    ("testdata/bin/c-cortex-m4.elf", TCM_SAMPLE),
+    ("testdata/bin/c-cortex-m4.elf", "testdata/bin/c-strtod.elf"),
+    (
+        "testdata/bin/c-cortex-m4.elf",
+        "testdata/bin/rust-cortex-m4.elf",
+    ),
+    (SAMPLE, "testdata/bin/cpp-x86_64.elf"),
+];
+
+#[test]
+fn diff_blocks_add_up() {
+    for (old, new) in DIFF_PAIRS
+        .iter()
+        .flat_map(|&(old, new)| [(old, new), (new, old)])
+    {
+        let (_, answer) = diff_json(old, new);
+        // What each item changed its block's items' bytes by: a moved item
+        // leaves its old block and comes into its new one.
+        let mut credits: BTreeMap<&str, i64> = BTreeMap::new();
+        for item in answer["items"].as_array().unwrap() {
+            let size = |side: &str| item[format!("{side}_size")].as_i64().unwrap_or(0);
+            for (side, sign) in [("old", -1), ("new", 1)] {
+                if let Some(block) = item[format!("{side}_block")].as_str() {
+                    *credits.entry(block).or_default() += sign * size(side);
+                }
+            }
+        }
+        for block in answer["blocks"].as_array().unwrap() {
+            let part = |key: &str| block[key].as_i64().unwrap();
+            let start = block["start"].as_str().unwrap();
+            assert_eq!(
+                part("change"),
+                part("item_bytes") + part("section_bytes") + part("padding_bytes"),
+                "{old} {new} {start}"
+            );
+            assert_eq!(
+                part("item_bytes"),
+                credits.get(start).copied().unwrap_or(0),
+                "{old} {new} {start}"
+            );
+        }
+    }
+}
+
+#[test]
+fn diff_says_what_keeps_an_item_as_top_does() {
+    for (old, new) in DIFF_PAIRS {
+        let (_, answer) = diff_json(old, new);
+        if old.ends_with(".so") || new.ends_with(".so") {
+            // With a shared library on either side, neither build has a
+            // tree.
+            for item in answer["items"].as_array().unwrap() {
+                assert_eq!(item["old_kept_by"], Value::Null, "{old} {new}");
+                assert_eq!(item["new_kept_by"], Value::Null, "{old} {new}");
+                assert_eq!(item["new_retained"], Value::Null, "{old} {new}");
+            }
+            continue;
+        }
+        for (side, path) in [("old", old), ("new", new)] {
+            let top: Value =
+                serde_json::from_slice(&elfq(&[path, "top", "--all", "--json"]).stdout).unwrap();
+            let rows = top["items"].as_array().unwrap();
+            let by_address: BTreeMap<&str, &Value> = rows
+                .iter()
+                .map(|row| (row["address"].as_str().unwrap(), row))
+                .collect();
+            for item in answer["items"].as_array().unwrap() {
+                let Some(address) = item[format!("{side}_address")].as_str() else {
+                    continue;
+                };
+                let kept_by = &item[format!("{side}_kept_by")];
+                let retained = &item[format!("{side}_retained")];
+                match by_address.get(address) {
+                    // Something reaches it: its parent in top's tree keeps it.
+                    Some(row) => {
+                        let parent = match row["parent"].as_u64() {
+                            Some(id) => {
+                                let parent = &rows[id as usize];
+                                json!({"name": parent["name"], "address": parent["address"]})
+                            }
+                            None => Value::Null,
+                        };
+                        assert_eq!(kept_by, &parent, "{path} {address}");
+                        assert_eq!(retained, &row["retained"], "{path} {address}");
+                    }
+                    None => {
+                        assert_eq!(kept_by, &Value::Null, "{path} {address}");
+                        assert_eq!(retained, &Value::Null, "{path} {address}");
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[test]

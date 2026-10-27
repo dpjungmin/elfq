@@ -7,18 +7,9 @@ use std::io::{self, BufWriter, ErrorKind, Write};
 use std::process::ExitCode;
 
 use clap::Parser;
+use elfq::STACK_SIZE;
 use elfq::cli::{self, Cli};
 use elfq::commands::Outcome;
-
-/// The stack for the thread that runs elfq. Trees are built, drawn and
-/// listed for JSON recursively, as deep as the file nests them: the retained
-/// tree as deep as the longest chain of calls, and the tree of inlined
-/// copies as deep as the copies nest. The main thread's stack, usually
-/// 8 MiB, runs out at a chain of some 10,000 calls, and of fewer in a debug
-/// build; this one holds 32 times as many. The thread's memory grows only as
-/// far as its stack is used, but all of its addresses are set aside from the
-/// start.
-const STACK_SIZE: usize = 256 << 20;
 
 fn main() -> ExitCode {
     // Under a limit on address space, as `ulimit -v` sets, the stack's

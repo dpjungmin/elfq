@@ -98,6 +98,11 @@ cortex_m7 c-cortex-m7-moved "$out/cortex-m7-moved.ld" -DDIFF_MOVED
 rm "$out/cortex-m7-moved.ld"
 variants arm-none-eabi-strip c-cortex-m7-moved
 
+# Only the full build: with -DDIFF_INLINED, the compiler inlines
+# decode_header into process_frame, as its DWARF says.
+echo "C, Cortex-M7 with TCMs, decode_header inlined"
+cortex_m7 c-cortex-m7-inlined c/cortex-m7.ld -DDIFF_INLINED
+
 # Only the full build: DTCM at 0x80000000, so that .data and .bss move to
 # another block of memory.
 echo "C, Cortex-M7 with TCMs, DTCM at 0x80000000"

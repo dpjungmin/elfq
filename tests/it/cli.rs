@@ -4,8 +4,8 @@ use std::path::Path;
 use std::process::Stdio;
 
 use crate::support::{
-    DEEP_SAMPLE, LIBRARY_SAMPLE, MOVED_SAMPLE, SAMPLE, TCM_MOVED_SAMPLE, TCM_SAMPLE,
-    TCM_SDRAM_SAMPLE, assert_output, command, elfq, samples,
+    DEEP_SAMPLE, LIBRARY_SAMPLE, MOVED_SAMPLE, SAMPLE, TCM_INLINED_SAMPLE, TCM_MOVED_SAMPLE,
+    TCM_SAMPLE, TCM_SDRAM_SAMPLE, assert_output, command, elfq, samples,
 };
 
 /// Runs elfq, expecting success, and returns what it printed.
@@ -4089,16 +4089,53 @@ fn diff(old: &str, new: &str, options: &[&str]) -> (i32, String) {
 }
 
 #[test]
-fn firmware_shows_each_block_of_memory() {
-    // filter_tap left the ITCM, and crc32 there grew by a call to log_msg:
-    // the ITCM's load image in flash shrank with it, and the message is in
-    // .rodata.
+fn firmware_shows_each_block_of_memory_and_the_items_that_changed() {
+    // filter_tap left the ITCM through a new veneer, and crc32 there grew
+    // by a call to log_msg, through another, with its message in .rodata.
     let (status, text) = diff(TCM_SAMPLE, TCM_MOVED_SAMPLE, &[]);
     assert_eq!(status, 1);
     assert_output(
         &text,
         "\
-From testdata/bin/c-cortex-m7.elf to testdata/bin/c-cortex-m7-moved.elf: the bytes differ in 2 of 4 blocks.
+From testdata/bin/c-cortex-m7.elf to testdata/bin/c-cortex-m7-moved.elf: 1 moved, 3 new, 1 grew.
+
+MEMORY                   OLD   NEW  CHANGE  SECTIONS
+0x00000000..0x000000e0   224   208     -16  .itcm -16
+0x20000000..0x20000450  1104  1104       0
+0x20240000..0x20241000  4096  4096       0
+0x30000000..0x30000eec  3804  3820     +16  load image of .itcm -16, .rodata +16
+
+OLD  NEW  FROM  TO          MOVED
+ 52   52  0x40  0x30000188  filter_tap (.itcm to .text), kept by __filter_tap_veneer
+
+CHANGE  OLD  NEW  ADDRESS     ITEM
+   +16   48   64  0x6c        crc32, kept by __crc32_veneer
+    +8         8  0xb0        __filter_tap_veneer (new), kept by apply_filter
+    +8         8  0xb8        __log_msg_veneer (new), kept by crc32
+   +16       ~16  0x30000de0  .rodata@0x30000de0 (new), kept by crc32
+
+61 other items are the same size, in the same block.
+
+Try:
+  elfq testdata/bin/c-cortex-m7-moved.elf why __filter_tap_veneer
+",
+    );
+}
+
+#[test]
+fn a_build_without_symbols_is_compared_by_its_bytes() {
+    // The memory is the same as with symbols, but nothing names the items.
+    let (status, text) = diff(
+        "testdata/bin/c-cortex-m7-stripped.elf",
+        "testdata/bin/c-cortex-m7-moved-stripped.elf",
+        &[],
+    );
+    assert_eq!(status, 1);
+    assert_output(
+        &text,
+        "\
+From testdata/bin/c-cortex-m7-stripped.elf to testdata/bin/c-cortex-m7-moved-stripped.elf: the bytes differ in 2 of 4 blocks.
+testdata/bin/c-cortex-m7-stripped.elf has no symbol table, so diff compares only bytes, not functions and data.
 
 MEMORY                   OLD   NEW  CHANGE  SECTIONS
 0x00000000..0x000000e0   224   208     -16  .itcm -16
@@ -4109,17 +4146,19 @@ MEMORY                   OLD   NEW  CHANGE  SECTIONS
 Sections that differ: .itcm, .isr_vector, .text, .rodata and .ARM.exidx.
 ",
     );
-    // Without symbols or debug info, the memory is the same, and so is the
-    // answer.
-    let (status, stripped) = diff(
-        "testdata/bin/c-cortex-m7-stripped.elf",
+    // Only the new build without: it is the one named.
+    let (status, text) = diff(
+        TCM_SAMPLE,
         "testdata/bin/c-cortex-m7-moved-stripped.elf",
         &[],
     );
     assert_eq!(status, 1);
-    assert_eq!(
-        stripped.lines().skip(1).collect::<Vec<_>>(),
-        text.lines().skip(1).collect::<Vec<_>>()
+    assert!(
+        text.contains(
+            "\ntestdata/bin/c-cortex-m7-moved-stripped.elf has no symbol table, so diff \
+             compares only bytes, not functions and data.\n"
+        ),
+        "{text}"
     );
 }
 
@@ -4132,28 +4171,41 @@ fn one_block_of_memory_gets_a_line() {
     assert_output(
         &text,
         "\
-From testdata/bin/c-x86_64.elf to testdata/bin/c-x86_64-moved.elf: the bytes differ.
+From testdata/bin/c-x86_64.elf to testdata/bin/c-x86_64-moved.elf: 1 new, 2 grew, 1 shrank.
 The memory stays at 15728 bytes (.text +16, .eh_frame +8).
-Sections that differ: .note.gnu.build-id, .text, .fini, .rodata, .eh_frame_hdr, .eh_frame and .dynamic.
+
+CHANGE  OLD  NEW  ADDRESS  ITEM
+   +20   59   79  0x1610   crc32, kept by process_frame
+   +13       ~13  0x2004   .rodata@0x2004 (new), kept by crc32
+   -13  ~34  ~21  0x206b   .rodata@0x206b, kept by main
+    +3   19   22  0x1660   on_button, kept by main
+
+65 other items are the same size, in the same block.
 ",
     );
-    // The other way round, the changes are the other way round.
+    // The other way round, the changes are the other way round, and what
+    // was new is gone.
     let (_, back) = diff(MOVED_SAMPLE, SAMPLE, &[]);
     assert!(
         back.contains("The memory stays at 15728 bytes (.text -16, .eh_frame -8).\n"),
+        "{back}"
+    );
+    assert!(
+        back.contains("\n   -13  ~13       0x2004   .rodata@0x2004 (gone), kept by crc32\n"),
         "{back}"
     );
 }
 
 #[test]
 fn data_moved_to_another_memory_is_a_gone_and_a_new_block() {
-    // DTCM linked at 0x80000000: the code and flash hold its addresses.
+    // DTCM linked at 0x80000000: every item of .data and .bss moved by one
+    // offset, and the code and flash hold their addresses.
     let (status, text) = diff(TCM_SAMPLE, TCM_SDRAM_SAMPLE, &[]);
     assert_eq!(status, 1);
     assert_output(
         &text,
         "\
-From testdata/bin/c-cortex-m7.elf to testdata/bin/c-cortex-m7-sdram.elf: the bytes differ in 4 of 5 blocks.
+From testdata/bin/c-cortex-m7.elf to testdata/bin/c-cortex-m7-sdram.elf: 12 moved.
 
 MEMORY                          OLD   NEW  CHANGE  SECTIONS
 0x00000000..0x000000e0          224   224       0  bytes differ
@@ -4162,33 +4214,104 @@ MEMORY                          OLD   NEW  CHANGE  SECTIONS
 0x30000000..0x30000edc         3804  3804       0  bytes differ
 0x80000000..0x80000450 (new)      -  1104   +1104  .data .bss
 
-Sections that differ: .itcm, .data, .bss, .isr_vector and .text.
+ OLD   NEW  FROM        TO          MOVED
+1104  1104  0x20000000  0x80000000  all 12 items of .data and .bss
+
+51 other items are the same size, in the same block.
+",
+    );
+    // --all lists each, largest first.
+    let (_, all) = diff(TCM_SAMPLE, TCM_SDRAM_SAMPLE, &["--all"]);
+    let (_, moved) = all.split_once("TO          MOVED\n").unwrap();
+    let (moved, _) = moved.split_once("\n\n").unwrap();
+    let rows: Vec<&str> = moved.lines().collect();
+    assert_eq!(rows.len(), 12, "{all}");
+    assert_eq!(
+        rows[0],
+        "1024  1024  0x20000000  0x80000000  crc_table, kept by main"
+    );
+}
+
+#[test]
+fn a_shared_library_has_no_kept_by() {
+    let (status, text) = diff(LIBRARY_SAMPLE, "testdata/bin/c-x86_64-moved.so", &[]);
+    assert_eq!(status, 1);
+    assert_output(
+        &text,
+        "\
+From testdata/bin/c-x86_64.so to testdata/bin/c-x86_64-moved.so: 1 new, 1 grew, 1 shrank.
+The memory stays at 15936 bytes (.text +16, .eh_frame +8).
+elfq can't yet tell what keeps items in a shared library, so rows don't say.
+
+CHANGE  OLD  NEW  ADDRESS  ITEM
+   +20   59   79  0x16c0   crc32
+   +13       ~13  0x2000   .rodata@0x2000 (new)
+   -13  ~38  ~25  0x2067   .rodata@0x2067
+
+70 other items are the same size, in the same block.
 ",
     );
 }
 
 #[test]
 fn all_names_every_change() {
-    // A program and its shared library: many sections changed size.
-    let library = "testdata/bin/c-x86_64.so";
-    let (status, text) = diff(SAMPLE, library, &[]);
+    // A program and its shared library: many sections changed size, and
+    // the rows say what keeps an item in neither build.
+    let (status, text) = diff(SAMPLE, LIBRARY_SAMPLE, &[]);
     assert_eq!(status, 1);
-    assert_output(
-        &text,
-        "\
-From testdata/bin/c-x86_64.elf to testdata/bin/c-x86_64.so: the bytes differ.
-The memory went from 15728 to 15936 bytes (.dynsym +192, .rela.plt +168, .plt +112 and 15 more).
-Sections that differ: .note.gnu.property, .note.gnu.build-id, .gnu.hash, .interp, .dynsym, .note.ABI-tag, .dynstr, .gnu.version, .gnu.version_r, .rela.dyn and 18 more.
-",
+    assert!(
+        text.contains(
+            "\nThe memory went from 15728 to 15936 bytes (.dynsym +192, .rela.plt +168, .plt \
+             +112 and 15 more).\nelfq can't yet tell what keeps items in a shared library, so \
+             rows don't say.\n"
+        ),
+        "{text}"
     );
-    let (_, all) = diff(SAMPLE, library, &["--all"]);
-    assert_output(
-        &all,
-        "\
-From testdata/bin/c-x86_64.elf to testdata/bin/c-x86_64.so: the bytes differ.
-The memory went from 15728 to 15936 bytes (.note.gnu.property -16, .gnu.hash +36, .interp -28, .dynsym +192, .note.ABI-tag -32, .dynstr +66, .gnu.version +16, .gnu.version_r -16, .rela.dyn -24, .rela.plt +168, .plt +112, .plt.sec +112, .text -48, .eh_frame_hdr -8, .eh_frame -24, .dynamic -48, .got -56, .got.plt +104).
-Sections that differ: .note.gnu.property, .note.gnu.build-id, .gnu.hash, .interp, .dynsym, .note.ABI-tag, .dynstr, .gnu.version, .gnu.version_r, .rela.dyn, .rela.plt, .init, .plt, .plt.got, .plt.sec, .text, .fini, .rodata, .eh_frame_hdr, .eh_frame, .init_array, .fini_array, .data.rel.ro, .dynamic, .got, .got.plt, .data and .bss.
-",
+    assert!(
+        text.contains("\n    -4    4       0x2000   _IO_stdin_used (gone)\n"),
+        "{text}"
+    );
+    let (_, all) = diff(SAMPLE, LIBRARY_SAMPLE, &["--all"]);
+    assert!(
+        all.contains(
+            "\nThe memory went from 15728 to 15936 bytes (.note.gnu.property -16, .gnu.hash +36, \
+             .interp -28, .dynsym +192, .note.ABI-tag -32, .dynstr +66, .gnu.version +16, \
+             .gnu.version_r -16, .rela.dyn -24, .rela.plt +168, .plt +112, .plt.sec +112, .text \
+             -48, .eh_frame_hdr -8, .eh_frame -24, .dynamic -48, .got -56, .got.plt +104).\n"
+        ),
+        "{all}"
+    );
+    // With --all, nothing folds: the two objects without a name that the
+    // text folds into one row each have one.
+    assert!(
+        text.contains("\n   +12                     2 data objects without a name changed size\n"),
+        "{text}"
+    );
+    assert!(
+        all.contains("\n    +8  ~24  ~32  0x4060   .data@0x4060\n"),
+        "{all}"
+    );
+    // Without a symbol table, no row says why the memory differs, and the
+    // last line names the sections that differ: 10, or every one.
+    let stripped = "testdata/bin/c-x86_64-stripped.elf";
+    let (_, text) = diff(stripped, LIBRARY_SAMPLE, &[]);
+    assert!(
+        text.ends_with(
+            "\nSections that differ: .note.gnu.property, .note.gnu.build-id, .gnu.hash, .interp, \
+             .dynsym, .note.ABI-tag, .dynstr, .gnu.version, .gnu.version_r, .rela.dyn and 18 \
+             more.\n"
+        ),
+        "{text}"
+    );
+    let (_, all) = diff(stripped, LIBRARY_SAMPLE, &["--all"]);
+    assert!(
+        all.ends_with(
+            "\nSections that differ: .note.gnu.property, .note.gnu.build-id, .gnu.hash, .interp, \
+             .dynsym, .note.ABI-tag, .dynstr, .gnu.version, .gnu.version_r, .rela.dyn, .rela.plt, \
+             .init, .plt, .plt.got, .plt.sec, .text, .fini, .rodata, .eh_frame_hdr, .eh_frame, \
+             .init_array, .fini_array, .data.rel.ro, .dynamic, .got, .got.plt, .data and .bss.\n"
+        ),
+        "{all}"
     );
     // Two programs for other chips: blocks that only one has name what is
     // in them, as the overview does, whole.
@@ -4207,6 +4330,89 @@ Sections that differ: .note.gnu.property, .note.gnu.build-id, .gnu.hash, .interp
         ),
         "{firmware}"
     );
+}
+
+#[test]
+fn a_gone_function_says_where_the_compiler_inlined_it() {
+    // decode_header, inlined into process_frame, its only caller: so the
+    // row doesn't say that process_frame kept it too.
+    let (status, text) = diff(TCM_SAMPLE, TCM_INLINED_SAMPLE, &[]);
+    assert_eq!(status, 1);
+    assert!(
+        text.contains(
+            "\nCHANGE  OLD  NEW  ADDRESS     ITEM\n   \
+             -40   40       0x30000160  decode_header (gone, inlined into process_frame)\n\n"
+        ),
+        "{text}"
+    );
+}
+
+#[test]
+fn the_change_table_shows_the_largest_rows_of_every_block() {
+    // A program with newlib's strtod in place of the sample's code: more
+    // rows than the table has room for, in two blocks.
+    let (status, text) = diff(
+        "testdata/bin/c-cortex-m4.elf",
+        "testdata/bin/c-strtod.elf",
+        &[],
+    );
+    assert_eq!(status, 1);
+    let (_, table) = text.split_once("ADDRESS     ITEM\n").unwrap();
+    let (table, _) = table.split_once("\n\n").unwrap();
+    let rows: Vec<&str> = table.lines().collect();
+    // 30 rows, and a row for the rest of each block, with how many items
+    // they stand for and their sum.
+    assert_eq!(rows.len(), 32, "{text}");
+    assert_eq!(
+        rows[0],
+        "+16744        16744  0x8001074   strtod (new, with 114 new items it keeps), kept by Reset_Handler"
+    );
+    assert_eq!(
+        rows[26],
+        "  +460                           30 more in 0x08000000"
+    );
+    assert_eq!(
+        rows[27],
+        " +4096         4096  0x200001d0  heap.0 (new), kept by _sbrk"
+    );
+    assert_eq!(
+        rows[31],
+        "   -24                           18 more in 0x20000000"
+    );
+    // The other way round, strtod is gone, and OLD gives its bytes and
+    // those of the gone items it kept, so that NEW less OLD is CHANGE.
+    let (_, back) = diff(
+        "testdata/bin/c-strtod.elf",
+        "testdata/bin/c-cortex-m4.elf",
+        &[],
+    );
+    assert!(
+        back.contains(
+            "\n-16744  16744        0x8001074   strtod (gone, with 114 gone items it kept), kept \
+             by Reset_Handler\n"
+        ),
+        "{back}"
+    );
+    // Each block's rows add up to what its items' bytes changed by.
+    let (_, json) = diff(
+        "testdata/bin/c-cortex-m4.elf",
+        "testdata/bin/c-strtod.elf",
+        &["--json"],
+    );
+    let answer: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let change = |rows: &[&str]| -> i64 {
+        rows.iter()
+            .map(|row| {
+                row.split_whitespace()
+                    .next()
+                    .unwrap()
+                    .parse::<i64>()
+                    .unwrap()
+            })
+            .sum()
+    };
+    assert_eq!(change(&rows[..27]), answer["blocks"][0]["item_bytes"]);
+    assert_eq!(change(&rows[27..]), answer["blocks"][1]["item_bytes"]);
 }
 
 #[test]
@@ -4253,6 +4459,11 @@ fn builds_that_load_other_memory_exit_1() {
             "testdata/bin/c-x86_64-nodebug.elf",
             "testdata/bin/c-x86_64-moved-nodebug.elf",
         ),
+        (
+            "testdata/bin/c-cortex-m7-stripped.elf",
+            "testdata/bin/c-cortex-m7-moved-stripped.elf",
+        ),
+        (TCM_SAMPLE, TCM_INLINED_SAMPLE),
     ] {
         let (status, text) = diff(old, new, &[]);
         assert_eq!(status, 1, "{old} {new}: {text}");

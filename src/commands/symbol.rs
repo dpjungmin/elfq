@@ -170,6 +170,17 @@ pub(super) struct Names<'a> {
     suggestable: OnceCell<Suggestable>,
 }
 
+/// Where the compiler inlined every copy of a function, as the DWARF says.
+pub(super) struct InlinedEverywhere<'n> {
+    /// The function's name, as the DWARF gives it.
+    pub name: &'n str,
+    /// How many copies of it there are.
+    pub copies: usize,
+    /// The functions that hold them, as indices into the items, those that
+    /// hold the most first, then by name.
+    pub into: Vec<usize>,
+}
+
 /// The copies of functions that the compiler inlined, by function.
 struct Inlined {
     copies: Vec<InlinedCopy>,
@@ -178,7 +189,20 @@ struct Inlined {
     /// The function with each name, as an index into `functions`.
     by_name: HashMap<String, usize>,
     /// The functions that each key files (see [`short_name_key`]).
-    filed: HashMap<String, Vec<usize>>,
+    filed: HashMap<String, FiledFunctions>,
+    /// The names of the functions that the compiler kept part of out of
+    /// line, by the names of the items it kept: GCC names them after the
+    /// function, as `checksum.part.0`, or in C++, `checksum(char const*)
+    /// [clone .part.0]`. Each name before a dot is among them.
+    kept_out_of_line: HashSet<String>,
+}
+
+/// The inlined functions that one key files, and once worked out, those
+/// with each short name with that key: diff looks up thousands of names.
+#[derive(Default)]
+struct FiledFunctions {
+    functions: Vec<usize>,
+    by_short_name: OnceCell<HashMap<String, Vec<usize>>>,
 }
 
 /// Every name of every item and import in lowercase, one after another,
@@ -283,7 +307,7 @@ impl<'a> Names<'a> {
             &[node] => Ok(self.found(node, query)),
             [] => {
                 let mut message = format!("no function or data object is named `{query}`");
-                if let Some(reason) = self.unnamed().or_else(|| self.inlined_everywhere(query)) {
+                if let Some(reason) = self.unnamed().or_else(|| self.inlined_reason(query)) {
                     message += &format!("; {reason}");
                 }
                 let similar = self.similar(query);
@@ -327,52 +351,52 @@ impl<'a> Names<'a> {
     /// `None` without DWARF, when `query` ends the names of several inlined
     /// functions, or when the compiler kept part of the function out of
     /// line, as `checksum.part.0` for `checksum`.
-    fn inlined_everywhere(&self, query: &str) -> Option<String> {
+    pub(super) fn inlined_everywhere(&self, query: &str) -> Option<InlinedEverywhere<'_>> {
         if !self.binary.has_dwarf {
             return None;
         }
         let inlined = self.inlined()?;
-        let all_copies = &inlined.copies;
         let (name, copies) = &inlined.functions[inlined.only_function(query)?];
-        let copies: Vec<&InlinedCopy> = copies.iter().map(|&copy| &all_copies[copy]).collect();
-        // GCC names what it keeps out of line after the function, as
-        // `checksum.part.0`, or in C++, `checksum(char const*) [clone
-        // .part.0]`.
-        let kept = self.binary.items.iter().any(|item| {
-            item.name
-                .strip_prefix(name.as_str())
-                .is_some_and(|rest| rest.starts_with('.') || rest.starts_with(" [clone ."))
-        });
-        if kept {
+        if inlined.kept_out_of_line.contains(name) {
             return None;
         }
         // The functions that hold the copies, those with the most first.
         let mut into: BTreeMap<usize, usize> = BTreeMap::new();
-        for copy in &copies {
-            *into.entry(copy.into).or_default() += 1;
+        for &copy in copies {
+            *into.entry(inlined.copies[copy].into).or_default() += 1;
         }
-        let mut into: Vec<(usize, Node)> = into
-            .into_iter()
-            .map(|(index, count)| (count, Node::Item(index)))
-            .collect();
-        into.sort_by_key(|&(count, node)| (Reverse(count), node.name(self.binary)));
+        let mut into: Vec<(usize, usize)> = into.into_iter().collect();
+        into.sort_by_key(|&(index, count)| (Reverse(count), &self.binary.items[index].name));
+        Some(InlinedEverywhere {
+            name,
+            copies: copies.len(),
+            into: into.into_iter().map(|(index, _)| index).collect(),
+        })
+    }
+
+    /// The reason that `query` finds nothing when the compiler inlined
+    /// every copy of the function it names (see
+    /// [`Names::inlined_everywhere`]): where, and the `inlined` command
+    /// that lists the copies.
+    fn inlined_reason(&self, query: &str) -> Option<String> {
+        let InlinedEverywhere { name, copies, into } = self.inlined_everywhere(query)?;
         let names: Vec<String> = into
             .iter()
-            .map(|&(_, node)| self.short_name(node))
+            .map(|&index| self.short_name(Node::Item(index)))
             .collect();
         let names: Vec<&str> = names.iter().map(String::as_str).collect();
         // `inlined` lists the largest of what a function holds, which can
         // leave this one out without `--all`.
-        let (_, first) = into[0];
-        let all = match first {
-            Node::Item(index) if !super::inlined::shows(all_copies, index, name) => " --all",
-            _ => "",
+        let first = into[0];
+        let all = match super::inlined::shows(&self.inlined()?.copies, first, name) {
+            true => "",
+            false => " --all",
         };
         let command = format!(
             "`inlined {}{all}`",
-            text::shell_quote(&self.query_for(first))
+            text::shell_quote(&self.query_for(Node::Item(first)))
         );
-        let copies = match copies.len() {
+        let copies = match copies {
             1 => "its one copy".to_string(),
             2 => "both copies of it".to_string(),
             count => format!("all {count} copies of it"),
@@ -405,10 +429,20 @@ impl<'a> Names<'a> {
                 });
                 functions[function].1.push(index);
             }
-            let mut filed: HashMap<String, Vec<usize>> = HashMap::new();
+            let mut filed: HashMap<String, FiledFunctions> = HashMap::new();
             for (function, (name, _)) in functions.iter().enumerate() {
                 for key in short_name_keys(name) {
-                    filed.entry(key).or_default().push(function);
+                    filed.entry(key).or_default().functions.push(function);
+                }
+            }
+            let mut kept_out_of_line = HashSet::new();
+            for item in &self.binary.items {
+                let name = &item.name;
+                for (at, _) in name
+                    .match_indices('.')
+                    .chain(name.match_indices(" [clone ."))
+                {
+                    kept_out_of_line.insert(name[..at].to_string());
                 }
             }
             Some(Inlined {
@@ -416,6 +450,7 @@ impl<'a> Names<'a> {
                 functions,
                 by_name,
                 filed,
+                kept_out_of_line,
             })
         });
         inlined.as_ref()
@@ -1035,15 +1070,17 @@ impl Inlined {
         if let Some(key) = short_name_key(query)
             && let Some(filed) = self.filed.get(key)
         {
-            for &function in filed {
-                if found.contains(&function) {
-                    continue;
+            let by_short_name = filed.by_short_name.get_or_init(|| {
+                let mut by_short_name: HashMap<String, Vec<usize>> = HashMap::new();
+                for &function in &filed.functions {
+                    for short_name in short_names_with_key(&self.functions[function].0, key) {
+                        add_index(by_short_name.entry(short_name).or_default(), function);
+                    }
                 }
-                let (name, _) = &self.functions[function];
-                if short_names_with_key(name, key)
-                    .iter()
-                    .any(|short_name| short_name == query)
-                {
+                by_short_name
+            });
+            for &function in by_short_name.get(query).into_iter().flatten() {
+                if !found.contains(&function) {
                     found.push(function);
                 }
             }
