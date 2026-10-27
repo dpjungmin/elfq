@@ -170,6 +170,17 @@ pub(super) struct Names<'a> {
     suggestable: OnceCell<Suggestable>,
 }
 
+/// Where the compiler inlined every copy of a function, as the DWARF says.
+pub(super) struct InlinedEverywhere<'n> {
+    /// The function's name, as the DWARF gives it.
+    pub name: &'n str,
+    /// How many copies of it there are.
+    pub copies: usize,
+    /// The functions that hold them, as indices into the items, those that
+    /// hold the most first, then by name.
+    pub into: Vec<usize>,
+}
+
 /// The copies of functions that the compiler inlined, by function.
 struct Inlined {
     copies: Vec<InlinedCopy>,
@@ -283,7 +294,7 @@ impl<'a> Names<'a> {
             &[node] => Ok(self.found(node, query)),
             [] => {
                 let mut message = format!("no function or data object is named `{query}`");
-                if let Some(reason) = self.unnamed().or_else(|| self.inlined_everywhere(query)) {
+                if let Some(reason) = self.unnamed().or_else(|| self.inlined_reason(query)) {
                     message += &format!("; {reason}");
                 }
                 let similar = self.similar(query);
@@ -327,14 +338,12 @@ impl<'a> Names<'a> {
     /// `None` without DWARF, when `query` ends the names of several inlined
     /// functions, or when the compiler kept part of the function out of
     /// line, as `checksum.part.0` for `checksum`.
-    fn inlined_everywhere(&self, query: &str) -> Option<String> {
+    pub(super) fn inlined_everywhere(&self, query: &str) -> Option<InlinedEverywhere<'_>> {
         if !self.binary.has_dwarf {
             return None;
         }
         let inlined = self.inlined()?;
-        let all_copies = &inlined.copies;
         let (name, copies) = &inlined.functions[inlined.only_function(query)?];
-        let copies: Vec<&InlinedCopy> = copies.iter().map(|&copy| &all_copies[copy]).collect();
         // GCC names what it keeps out of line after the function, as
         // `checksum.part.0`, or in C++, `checksum(char const*) [clone
         // .part.0]`.
@@ -348,31 +357,41 @@ impl<'a> Names<'a> {
         }
         // The functions that hold the copies, those with the most first.
         let mut into: BTreeMap<usize, usize> = BTreeMap::new();
-        for copy in &copies {
-            *into.entry(copy.into).or_default() += 1;
+        for &copy in copies {
+            *into.entry(inlined.copies[copy].into).or_default() += 1;
         }
-        let mut into: Vec<(usize, Node)> = into
-            .into_iter()
-            .map(|(index, count)| (count, Node::Item(index)))
-            .collect();
-        into.sort_by_key(|&(count, node)| (Reverse(count), node.name(self.binary)));
+        let mut into: Vec<(usize, usize)> = into.into_iter().collect();
+        into.sort_by_key(|&(index, count)| (Reverse(count), &self.binary.items[index].name));
+        Some(InlinedEverywhere {
+            name,
+            copies: copies.len(),
+            into: into.into_iter().map(|(index, _)| index).collect(),
+        })
+    }
+
+    /// The reason that `query` finds nothing when the compiler inlined
+    /// every copy of the function it names (see
+    /// [`Names::inlined_everywhere`]): where, and the `inlined` command
+    /// that lists the copies.
+    fn inlined_reason(&self, query: &str) -> Option<String> {
+        let InlinedEverywhere { name, copies, into } = self.inlined_everywhere(query)?;
         let names: Vec<String> = into
             .iter()
-            .map(|&(_, node)| self.short_name(node))
+            .map(|&index| self.short_name(Node::Item(index)))
             .collect();
         let names: Vec<&str> = names.iter().map(String::as_str).collect();
         // `inlined` lists the largest of what a function holds, which can
         // leave this one out without `--all`.
-        let (_, first) = into[0];
-        let all = match first {
-            Node::Item(index) if !super::inlined::shows(all_copies, index, name) => " --all",
-            _ => "",
+        let first = into[0];
+        let all = match super::inlined::shows(&self.inlined()?.copies, first, name) {
+            true => "",
+            false => " --all",
         };
         let command = format!(
             "`inlined {}{all}`",
-            text::shell_quote(&self.query_for(first))
+            text::shell_quote(&self.query_for(Node::Item(first)))
         );
-        let copies = match copies.len() {
+        let copies = match copies {
             1 => "its one copy".to_string(),
             2 => "both copies of it".to_string(),
             count => format!("all {count} copies of it"),
