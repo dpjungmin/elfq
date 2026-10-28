@@ -106,7 +106,7 @@ struct header {
     uint8_t kind;
 };
 
-#define FRAME_MAGIC 0xE1F0u
+#define FRAME_MAGIC EDITED(0xE1F0u, 0xE1F2u)
 #define HEADER_SIZE 5u
 #define CRC_SIZE 4u
 #define MAX_SAMPLES 32u
@@ -137,7 +137,7 @@ ALWAYS_INLINE int16_t saturate(int32_t v)
 
 static const int16_t fir_coeffs[16] = {
     -120, -340, 210, 1830, 4100, 6620, 8300, 8900,
-    8300, 6620, 4100, 1830, 210, -340, -120, 40,
+    8300, 6620, 4100, 1830, 210, -340, -120, EDITED(40, 42),
 };
 
 /* Only called by apply_filter, so it is exclusive to process_frame too. */
