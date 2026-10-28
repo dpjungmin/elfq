@@ -22,6 +22,8 @@
 //! function (see `veneers.rs`). When the stub also jumps to the header that
 //! lazy binding uses, that jump is reported as the stub's own.
 
+use std::cell::OnceCell;
+
 use crate::binary::{AddressRange, Binary, ItemKind};
 
 use super::{Graph, Node, Reference, ReferenceKind, RootKind, Unresolved, VeneerTarget, Veneers};
@@ -69,6 +71,10 @@ pub struct Boundary<'a> {
     inside: Vec<bool>,
     /// The veneers, and where each jumps to.
     veneers: Veneers<'a>,
+    /// The calls in the graph, by the item they call: worked out the first
+    /// time a veneer's jump crosses the boundary, as the calls to the veneer
+    /// then take its place.
+    calls_to: OnceCell<CallsTo>,
 }
 
 impl<'a> Boundary<'a> {
@@ -82,6 +88,7 @@ impl<'a> Boundary<'a> {
             ranges,
             inside,
             veneers: Veneers::new(binary, graph),
+            calls_to: OnceCell::new(),
         }
     }
 
@@ -259,9 +266,15 @@ impl<'a> Boundary<'a> {
             return Vec::new();
         }
         let side = self.inside[item];
-        self.graph
-            .references_to(Node::Item(item))
-            .filter(|reference| reference.kind.is_call() && self.inside[reference.from] == side)
+        let references = &self.graph.references;
+        let calls_to = self
+            .calls_to
+            .get_or_init(|| CallsTo::new(references, self.binary.items.len()));
+        calls_to
+            .of(item)
+            .iter()
+            .map(|&index| &references[index])
+            .filter(|reference| self.inside[reference.from] == side)
             .collect()
     }
 
@@ -281,6 +294,50 @@ impl<'a> Boundary<'a> {
             }
             _ => None,
         }
+    }
+}
+
+/// The calls among some references, by the item they call, so that finding
+/// the calls to a veneer doesn't read every reference again for each one.
+struct CallsTo {
+    /// For each item, where its calls start in `calls`, and after the last
+    /// item, where they end.
+    starts: Vec<usize>,
+    /// The calls, as indices into the references: those to the first item,
+    /// then those to the next, each item's in the order of the references.
+    calls: Vec<usize>,
+}
+
+impl CallsTo {
+    /// Sorts the calls in `references` to `items` items by the item they
+    /// call, counting the calls to each first, so that it takes one pass
+    /// over the references for each step.
+    fn new(references: &[Reference], items: usize) -> CallsTo {
+        let callee = |reference: &Reference| match reference.to {
+            Node::Item(index) if reference.kind.is_call() => Some(index),
+            _ => None,
+        };
+        let mut starts = vec![0; items + 1];
+        for index in references.iter().filter_map(callee) {
+            starts[index + 1] += 1;
+        }
+        for item in 0..items {
+            starts[item + 1] += starts[item];
+        }
+        let mut next = starts.clone();
+        let mut calls = vec![0; starts[items]];
+        for (index, reference) in references.iter().enumerate() {
+            if let Some(callee) = callee(reference) {
+                calls[next[callee]] = index;
+                next[callee] += 1;
+            }
+        }
+        CallsTo { starts, calls }
+    }
+
+    /// The calls to `item`, as indices into the references, in their order.
+    fn of(&self, item: usize) -> &[usize] {
+        &self.calls[self.starts[item]..self.starts[item + 1]]
     }
 }
 

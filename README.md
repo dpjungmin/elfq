@@ -74,9 +74,27 @@ status is 0 when both load the same bytes at the same addresses, as a build
 and its stripped copy do, and 1 when they don't, with the blocks of memory
 whose bytes differ, the sections that changed size in each, the functions
 and data objects that moved to another block, are new or gone, or changed
-size, each with what keeps it, and when none did, the sections that
-differ. A CI job can check that a change leaves the firmware's memory as
-it was.
+size, each with what keeps it, the calls between blocks that are new or
+gone, and when no item changed, the sections that differ. A CI job can
+check that a change leaves the firmware's memory as it was, or with the
+JSON, only that no call between blocks is new, such as from ITCM to
+flash:
+
+```sh
+elfq old.elf diff new.elf --json > diff.json || [ $? -eq 1 ]
+jq -e '(.same_bytes or .items_compared) and ([.crossings[] | select(.status=="new" and (.how=="call" or .how=="tail call"))] | length == 0)' diff.json
+```
+
+The check counts calls and tail calls only. A use of data from another
+block is new each time a relink moves the data, and a pointer is any
+word of data that holds an address, so a constant that happens to equal
+a function's address reads as one. The check still fails when a call
+between blocks only changes how it is made, as when it becomes a tail
+call or loses its veneer, or when a relink moves the code at either end
+to another block, as when flash starts at another address: diff lists
+such a call as gone, and as new the way it is now. Both builds need a
+symbol table: without one, diff compares no items, so the check fails
+unless the memory is the same.
 
 **For AI agents:** paste this into a project's AGENTS.md or CLAUDE.md to
 tell its agents about elfq:
@@ -115,8 +133,9 @@ and `elfq --help` lists the commands.
   at the same addresses, and 1 when they don't, with the blocks of memory
   whose bytes differ, the sections that changed size in each, the
   functions and data objects that moved to another block, are new or gone,
-  or changed size, each with what keeps it, and when none did, the
-  sections that differ; another build ID alone makes them differ.
+  or changed size, each with what keeps it, the calls between blocks that
+  are new or gone, and when no item changed, the sections that differ;
+  another build ID alone makes them differ.
 - elfq reads the built file, not the source: rebuild before asking again.
 ```
 

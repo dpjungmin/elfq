@@ -611,6 +611,14 @@ CHANGE  OLD  NEW  ADDRESS     ITEM
     +8         8  0xb8        __log_msg_veneer (new), kept by crc32
    +16       ~16  0x30000de0  .rodata@0x30000de0 (new), kept by crc32
 
+Calls between blocks, new or gone:
+
+STATUS  ADDRESS     SIZE  HOW              AT    CALLEE
+new     0x30000188    52  call via veneer  0x36  filter_tap, used by apply_filter
+new     0x300002bc    26  call via veneer  0x9a  log_msg, used by crc32
+
+Other uses between blocks: 1 new and 1 gone; --json lists them.
+
 61 other items are the same size, in the same block.
 
 Try:
@@ -626,6 +634,30 @@ holds ITCM's load image, which shrank with it, and the new message in
 the new build, or for a gone item, in the old. Other sections' bytes
 changed too, as the vector table points to code that moved, but the rows
 say why. The exit status is 1.
+
+The two calls from ITCM to flash are new, as `elfq
+testdata/bin/c-cortex-m7-moved.elf callees 0x0..0xe0` lists them. So is
+`crc32`'s use of its message in flash, and `filter_tap`'s use of
+`fir_coeffs`, in flash too, is gone, as `filter_tap` is there now: the
+JSON lists these uses of data. A CI job that should fail when code starts
+calling across blocks checks the JSON with `jq`:
+
+```sh
+elfq old.elf diff new.elf --json > diff.json || [ $? -eq 1 ]
+jq -e '(.same_bytes or .items_compared) and ([.crossings[] | select(.status=="new" and (.how=="call" or .how=="tail call"))] | length == 0)' diff.json
+```
+
+On this pair, `jq` prints `false` and exits 1, for the two new calls.
+Uses of data don't count: the next pair moves data to another memory,
+which makes every use of it from another block gone and new. Nor do
+pointers: elfq reads any word of data that holds an address as one, so
+a constant in a table that happens to equal a function's address is
+listed as a pointer. The check does fail on a call between blocks that
+only changes how it is made, as when it becomes a tail call or loses its
+veneer, since diff lists it gone and new, and on each call between
+blocks when a relink moves the code at either end to another block. Both
+builds need a symbol table: without one, diff compares no items, so the
+check fails unless the memory is the same.
 
 Moving `.data` and `.bss` from DTCM to RAM at 0x80000000 leaves a block
 that only the old build has and one that only the new one has, and every
@@ -646,11 +678,17 @@ MEMORY                          OLD   NEW  CHANGE  SECTIONS
  OLD   NEW  FROM        TO          MOVED
 1104  1104  0x20000000  0x80000000  all 12 items of .data and .bss
 
+No call between blocks is new or gone.
+Other uses between blocks: 17 new and 17 gone; --json lists them.
+
 51 other items are the same size, in the same block.
 ```
 
-`--all` lists each of the 12. A function that the compiler inlined
-everywhere is gone, and the new build's DWARF says where it went:
+`--all` lists each of the 12. Every use of them from the code now reaches
+the new block at 0x80000000, so each is gone and new, but no call is, and
+the `jq` check above prints `true` and exits 0. A function that the
+compiler inlined everywhere is gone, and the new build's DWARF says where
+it went:
 
 ```
 $ elfq testdata/bin/c-cortex-m7.elf diff testdata/bin/c-cortex-m7-inlined.elf
@@ -664,6 +702,8 @@ MEMORY                   OLD   NEW  CHANGE  SECTIONS
 
 CHANGE  OLD  NEW  ADDRESS     ITEM
    -40   40       0x30000160  decode_header (gone, inlined into process_frame)
+
+No call between blocks is new or gone.
 
 62 other items are the same size, in the same block.
 ```

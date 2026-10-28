@@ -1243,6 +1243,7 @@ fn diff_has_each_block_and_its_sections() {
     let mut head = answer.clone();
     head.as_object_mut().unwrap().remove("blocks");
     head.as_object_mut().unwrap().remove("items");
+    head.as_object_mut().unwrap().remove("crossings");
     assert_eq!(
         head,
         json!({
@@ -1331,7 +1332,7 @@ fn diff_has_each_block_and_its_sections() {
         let row: Value = serde_json::from_str(line.trim_end_matches(',')).unwrap();
         assert_eq!(row["same_bytes"], true, "{line}");
     }
-    assert_eq!(lines[5], "],\"items\":[]}");
+    assert_eq!(lines[5], "],\"items\":[],\"crossings\":[]}");
 }
 
 #[test]
@@ -1389,6 +1390,93 @@ fn diff_has_each_item_that_changed() {
     assert_eq!(gone["new_address"], Value::Null);
     assert_eq!(gone["old_kept_by"]["name"], "process_frame");
     assert_eq!(gone["inlined_into"], json!(["process_frame"]));
+}
+
+#[test]
+fn diff_has_each_use_between_blocks_that_is_new_or_gone() {
+    let (_, answer) = diff_json(TCM_SAMPLE, TCM_MOVED_SAMPLE);
+    let crossings = answer["crossings"].as_array().unwrap();
+    // Two calls from the ITCM to flash are new, through veneers, and so is
+    // crc32's use of its new message; filter_tap, now in flash, no longer
+    // uses fir_coeffs from the ITCM.
+    let rows: Vec<[&str; 4]> = crossings
+        .iter()
+        .map(|row| {
+            ["status", "how"]
+                .map(|key| row[key].as_str().unwrap())
+                .into_iter()
+                .chain(["caller", "item"].map(|key| row[key]["name"].as_str().unwrap()))
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ["new", "call", "apply_filter", "filter_tap"],
+            ["new", "call", "crc32", "log_msg"],
+            ["new", "address taken", "crc32", ".rodata@0x30000de0"],
+            ["gone", "address taken", "filter_tap", "fir_coeffs"],
+        ]
+    );
+    // Each is a row of `callees BLOCK --json` for its caller's block, in
+    // the build that has it.
+    for row in crossings {
+        let build = match row["status"].as_str() {
+            Some("new") => TCM_MOVED_SAMPLE,
+            _ => TCM_SAMPLE,
+        };
+        let caller = hex(&row["caller"]["address"]);
+        let block = answer["blocks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|block| hex(&block["start"]) <= caller && caller < hex(&block["end"]))
+            .unwrap();
+        let range = format!(
+            "{}..{}",
+            block["start"].as_str().unwrap(),
+            block["end"].as_str().unwrap()
+        );
+        let output = elfq(&[build, "callees", &range, "--json"]);
+        let callees: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let mut listed = row.clone();
+        listed.as_object_mut().unwrap().remove("status");
+        assert!(
+            callees["callees"].as_array().unwrap().contains(&listed),
+            "{row}"
+        );
+    }
+    // The docs' check for CI fails on the new calls, but passes when only
+    // data moved, and when calls are only gone.
+    assert!(!passes_ci_check(&answer));
+    assert!(passes_ci_check(&diff_json(TCM_SAMPLE, TCM_SDRAM_SAMPLE).1));
+    assert!(passes_ci_check(&diff_json(TCM_MOVED_SAMPLE, TCM_SAMPLE).1));
+    // None in one block, nor without a symbol table.
+    let stripped = "testdata/bin/c-cortex-m7-moved-stripped.elf";
+    for (old, new) in [
+        (SAMPLE, MOVED_SAMPLE),
+        (LIBRARY_SAMPLE, "testdata/bin/c-x86_64-moved.so"),
+        (TCM_SAMPLE, stripped),
+    ] {
+        assert_eq!(diff_json(old, new).1["crossings"], json!([]), "{old} {new}");
+    }
+    // So without a symbol table, the check fails, though it finds no new
+    // call, unless the memory is the same.
+    assert!(!passes_ci_check(&diff_json(TCM_SAMPLE, stripped).1));
+    let same = "testdata/bin/c-cortex-m7-stripped.elf";
+    assert!(passes_ci_check(&diff_json(TCM_SAMPLE, same).1));
+}
+
+/// Whether the check for CI in the docs passes, as jq works it out:
+/// `(.same_bytes or .items_compared) and ([.crossings[] | select(.status==
+/// "new" and (.how=="call" or .how=="tail call"))] | length == 0)`.
+fn passes_ci_check(answer: &Value) -> bool {
+    let new_call =
+        |row: &Value| row["status"] == "new" && (row["how"] == "call" || row["how"] == "tail call");
+    (answer["same_bytes"] == true || answer["items_compared"] == true)
+        && !answer["crossings"].as_array().unwrap().iter().any(new_call)
 }
 
 /// Pairs of builds to compare, of every kind that diff sees.
