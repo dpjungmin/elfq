@@ -184,7 +184,7 @@ except `inlined`, which reads DWARF instead of machine code.
 | `elfq FILE callers RANGE... --from RANGE` | What in one range of memory uses these ranges, such as code in ITCM that uses data in DTCM? `callees RANGE... --to RANGE` asks what these ranges use in that one, and either takes SYMBOL in place of the ranges. |
 | `elfq FILE inlined [SYMBOL]` | Which inlined functions cost the most bytes across the binary, or inside SYMBOL? Needs DWARF. |
 | `elfq FILE browse [SYMBOL]` | What does SYMBOL's code do, line by line, where does each call and use lead, and what calls it? Opens in the terminal, follows the links that the other commands' answers name, and shows the answers of `callees`, `callers`, `reach`, `why` and `retained SYMBOL` in tabs, each with the command that prints it, and the retained bytes in each block of memory; a page's header says what `retained` and `why` say about the item, and `u` opens the item that keeps it; `/` finds text in a page's rows. A data object's page lists its contents as far as elfq reads them: a vector table's entries, named by exception, the pointers it holds, as `callees` lists them, with what the dynamic loader writes in a shared library, or the strings of an object that holds only strings, with the `objdump -s` command that prints its bytes. Without SYMBOL, it opens on where the program starts, as `reach` lists it, each start a link to its page. |
-| `elfq FILE diff NEW` | Do two builds of one program load the same bytes at the same addresses? If not, in which blocks of memory do the bytes differ, which sections changed size there, which functions and data objects moved to another block, are new or gone, or changed size, each with what keeps it, and which calls between blocks are new or gone? |
+| `elfq FILE diff NEW` | Do two builds of one program load the same bytes at the same addresses? If not, in which blocks of memory do the bytes differ, which sections changed size there, which functions and data objects moved to another block, are new or gone, changed size, or kept their size but changed, each with what keeps it, and which calls between blocks are new or gone? |
 
 SYMBOL is a function or data object's name, an import (`write` finds the
 `write@plt` stub that code calls), or an address such as `0x1700`. Names are
@@ -583,44 +583,101 @@ a function is added before it.
 A wrong pair never changes a total or the exit status, which come
 from the bytes in each block, only what a row calls an item.
 
-A paired item that is in another block moved; one in the same block
-grew or shrank, or is the same. The first line counts them, with the new
-and gone items. MOVED has a row for each item that moved, with its sizes
-and where it starts in each build, largest first, but one row for all the
-items of whole sections that moved by one offset between the same two
-blocks, as "all 12 items of .data and .bss", unless `--all`; it is never
-cut. CHANGE has the rest, grouped by block in MEMORY's order, largest
-change first. A new item and the new items in its block that only it
-keeps, below it in the new build's dominator tree, are one row, as
-"strtod (new, with 114 new items it keeps)", whose NEW is their bytes;
-likewise a gone item and the gone items in its block that only it kept,
-in the old build's tree, as "(gone, with 3 gone items it kept)". Data
-objects without a
-name whose estimated size changed, as it does when what follows them
-moves, fold into one row per block, and so do new and gone items of one
-name, each with their sum. The table has 30 rows, unless `--all`, which
-also leaves out the subtrees and folds: every block that changed shows at
-least its largest row, and a row for the rest of each, as "24 more in
-0x08000000", counts the items in them and gives their sum, but where one
-row is left, the block shows it, as it takes no more room. So a block's
-rows add up to the change of its items that stayed in it; MOVED has the
-rest. A row ends with what keeps the item, as `top`'s rows do: ",
-kept by X", its parent in the dominator tree, in the old build for a
-gone item, nothing when several of the places where the program starts
-keep it, or ", which nothing reaches". "(was NAME)" gives the old name of
-an item whose name changed, as a compiler's copy's does, when neither
-name is made, the two share no name, as an item and its alias do, and the
-names differ in more than the numbers that change with every build,
-ThinLTO's, as in `f.llvm.123`, and GCC's. When the new build's DWARF says that the compiler inlined every copy
-of a gone function, and its name finds nothing in the new build, as for
-`why`, its row says where, as "(gone, inlined into process_frame)", and
-then doesn't say that process_frame kept it too. elfq can't yet tell what
-keeps items in a shared library, so when either build is one, a line
-above the tables says so and rows don't, and the same when elfq can't
-read the code. A line counts the items that are the same, and the Try
-line asks `why` of the new item that heads the subtree of new items with
-the most new bytes, when something keeps it, rather than it being a
-place where the program starts, and it has a name of its own.
+A paired item that is in another block moved; one in the same block grew
+or shrank, or at the same size, is edited or the same (see below). The
+first line counts them, with the new and gone items. MOVED has a row for
+each item that moved, with its sizes and where it starts in each build,
+largest first, but one row for all the items of whole sections that
+moved by one offset between the same two blocks, as "all 12 items of
+.data and .bss", unless `--all`; it is never cut. CHANGE has the rest,
+grouped by block in MEMORY's order, largest change first, and of the
+same change, edited items last. A new item and the new items in its
+block that only it keeps, below it in the new build's dominator tree,
+are one row, as "strtod (new, with 114 new items it keeps)", whose NEW
+is their bytes; likewise a gone item and the gone items in its block
+that only it kept, in the old build's tree, as "(gone, with 3 gone items
+it kept)". Data objects without a name whose estimated size changed, as
+it does when what follows them moves, fold into one row per block, and
+so do new and gone items of one name, each with their sum. The table has
+30 rows, unless `--all`, which also leaves out the subtrees and folds:
+every block that changed shows at least its largest row, and a row for
+the rest of each, as "24 more in 0x08000000", counts the items in them
+and gives their sum, but where one row is left, the block shows it, as
+it takes no more room. So a block's rows add up to the change of its
+items that stayed in it; MOVED has the rest. A row ends with what keeps
+the item, as `top`'s rows do: ", kept by X", its parent in the dominator
+tree, in the old build for a gone item, nothing when several of the
+places where the program starts keep it, or ", which nothing reaches".
+"(was NAME)" gives the old name of an item whose name changed, as a
+compiler's copy's does, when neither name is made, the two share no
+name, as an item and its alias do, and the names differ in more than the
+numbers that change with every build, ThinLTO's, as in `f.llvm.123`, and
+GCC's. When the new build's DWARF says that the compiler inlined every
+copy of a gone function, and its name finds nothing in the new build, as
+for `why`, its row says where, as "(gone, inlined into process_frame)",
+and then doesn't say that process_frame kept it too. elfq can't yet tell
+what keeps items in a shared library, so when either build is one, a
+line above the tables says so and rows don't, and the same when elfq
+can't read the code. A line counts the items that are the same: of the
+same size, in the same block, and not edited. The Try line asks `why` of
+the new item that heads the subtree of new items with the most new
+bytes, when something keeps it, rather than it being a place where the
+program starts, and it has a name of its own.
+
+An item of the same size, in the same block, is edited when its bytes
+changed other than where they say where something is, or when its code
+now uses different items than before (`commands/diff/edited.rs`). Only
+partners whose bytes differ are compared, as the program starts with
+them: the file's bytes, with the addresses and imports that the loader
+writes at relocations, since LLD leaves 0 in the file there for a
+library or a program linked to run at any address. Partners whose bytes
+are the same are the same, unless their code reads another import from
+a global offset table entry. When something moves, the bytes that hold
+its address, or the distance to it, change in every item that uses it,
+though nothing else in them does. So where the partners' bytes differ, a
+byte is no edit when it is in one of these:
+
+- The distance in an instruction to what it calls, jumps to, loads or
+  takes the address of outside the function (`arch::operands`): on
+  x86-64, the rel32 of a call or jump and an operand relative to `rip`,
+  which iced-x86 finds; on Thumb, the distance in `bl`, `b`, `b<cond>`,
+  `cbz`, `cbnz`, `adr` and a load from a literal pool, each in its 16-
+  and 32-bit forms. A distance to a place inside the function, as in a
+  loop, is compared as it is, since it doesn't change when the function
+  moves.
+- A word of data, or of Thumb code, which keeps constants and tables of
+  addresses among its instructions, at an address that is a multiple of
+  its size; a number that `movw` and `movt` put together; or an entry of
+  a jump table in x86-64 data, which compilers write as a 32-bit distance
+  from the table to the code; whose values in the two builds correspond.
+  They correspond when they (a) point into partners at the same offset, a
+  function's Thumb bit and all, or just past the end of partners, as a
+  pointer to the end of an array does; (b) both point into items that
+  only one build has, which have rows of their own; (c) point into
+  sections of the same name at the same text, a whole string that ends
+  in a 0 byte or at least 3 characters, as a Rust string has no 0 byte,
+  and often no item; or (d) are the same start or end of a section of the
+  same name or of its load image, as the symbols that a linker script
+  defines for startup code, such as `_sidata` and `_ebss`, are.
+
+Any other number is compared as it is, such as one that an x86-64
+instruction compares with or adds. Then, where a distance in the code
+leads to places that aren't the same place in partners, as a call to a
+veneer that only one build has, or a load from a global offset table
+entry, which no item holds, the code there must use the partners of the
+items it used, in the same ways, where a call through a veneer, or
+through a library's PLT stub for its own function, is a call to the
+function, and the same imports, by name. A use of an item without a
+partner, which has a row of its own, doesn't count. What the words and
+numbers above point at isn't compared again as a use: they are compared
+already, and the graph takes a pointer to the end of an array for a use
+of whatever follows it. So a relink of data to another memory edits only
+the items that hold an address that corresponds to nothing, as the
+vector table's first word does, the stack pointer that the processor
+starts with, which went from the end of DTCM to an address where no
+section ends; and a constant changed in a table or in an instruction is
+an edit, and so is code that the compiler wrote otherwise at the same
+size, as with other registers.
 
 With more than one block, diff lists the uses between blocks that are
 new or gone (`commands/diff/crossings.rs`), so a CI job can check that
@@ -847,10 +904,10 @@ several.
 | `old`, `new` | the files' paths, as given |
 | `same_bytes` | whether both load the same bytes at the same addresses, which exit status 0 says |
 | `items_compared` | whether diff compared the functions and data objects: not when the memory is the same, nor when either file has no symbol table |
-| `old_bytes`, `new_bytes`, `unchanged` | the bytes of the functions and data objects in each file, as the overview's `bytes`, and how many paired items have the same size, in the same block; `null` while `items_compared` is `false` |
+| `old_bytes`, `new_bytes`, `unchanged` | the bytes of the functions and data objects in each file, as the overview's `bytes`, and how many paired items are the same: of the same size, in the same block, and not edited; `null` while `items_compared` is `false` |
 | `sections_that_differ` | the names of the sections whose address, size, load image or bytes differ, or that only one file has, in address order, `.tbss` among them, as the text's last line names them when no row says why, but every one and always; empty when `same_bytes` is `true` |
 | `blocks` | the memory blocks, worked out over both files, in address order, each a range with: `old_size` and `new_size`, each file's bytes in it, from its first section or load image there to the end of its last, gaps included, or `null` when it has none there; `change`, `new_size` less `old_size`, counting `null` as 0; `same_bytes`, whether both put the same bytes at the same addresses in it; `item_bytes`, `section_bytes` and `padding_bytes`, how much of `change` the items that start in it, the sections and load images that hold none, and the bytes between them make up, which add up to `change`, unless an item lies inside another, whose bytes `item_bytes` then counts twice, `null` while `items_compared` is `false`; `item_bytes` is also what the `items` change it by, a moved item taking its `old_size` from its `old_block` and adding its `new_size` to its `new_block`; and `sections`, the sections and load images in it, in address order, but not `.tbss`, each with its `name`, `load_image`, whether it is the section's load image, `holds_items`, whether items are in it in either file, `null` while `items_compared` is `false`, and `old_address`, `old_size`, `new_address` and `new_size`, `null` for a file that doesn't have it in the block |
-| `items` | every item that changed, largest change first, and of the same change, by name, each with: `name`, the new file's, or for a gone item, the old file's; `was`, the old name when the new file names it otherwise, or `null`; `kind`; `status`, `moved`, `new`, `gone`, `grew` or `shrank`; `paired_by`, the rule that paired it, `name`, `bytes`, `uses` or `place`, or `null` for a new or gone item; `change`, `new_size` less `old_size`, counting `null` as 0; in each file, `null` for a file that doesn't have it, `old_address` and `new_address`, `old_size` and `new_size`, `old_section` and `new_section`, `old_block` and `new_block`, the `start` of its block, `old_kept_by` and `new_kept_by`, the `name` and `address` of the item that keeps it, its parent in the dominator tree, or `null` when several of the places where the program starts keep it, when nothing reaches it, when either file is a shared library, or when elfq can't read the code, and `old_retained` and `new_retained`, its retained bytes, as `top` gives them, or `null` when nothing reaches it or there is no tree; `size_estimated`, whether elfq estimated its size in either file; and `inlined_into`, for a gone function that the new file's DWARF says the compiler inlined everywhere, and whose name finds nothing in the new file, the functions it inlined it into, or `null`. `old_kept_by` and `new_kept_by` are the only keys that name an item's parent by name and address rather than by an `id`, since the rows aren't a tree; `[]` when `items_compared` is `false` |
+| `items` | every item that changed, largest change first, and of the same change, by name, each with: `name`, the new file's, or for a gone item, the old file's; `was`, the old name when the new file names it otherwise, or `null`; `kind`; `status`, `moved`, `new`, `gone`, `grew`, `shrank` or `edited`; `paired_by`, the rule that paired it, `name`, `bytes`, `uses` or `place`, or `null` for a new or gone item; `change`, `new_size` less `old_size`, counting `null` as 0; in each file, `null` for a file that doesn't have it, `old_address` and `new_address`, `old_size` and `new_size`, `old_section` and `new_section`, `old_block` and `new_block`, the `start` of its block, `old_kept_by` and `new_kept_by`, the `name` and `address` of the item that keeps it, its parent in the dominator tree, or `null` when several of the places where the program starts keep it, when nothing reaches it, when either file is a shared library, or when elfq can't read the code, and `old_retained` and `new_retained`, its retained bytes, as `top` gives them, or `null` when nothing reaches it or there is no tree; `size_estimated`, whether elfq estimated its size in either file; and `inlined_into`, for a gone function that the new file's DWARF says the compiler inlined everywhere, and whose name finds nothing in the new file, the functions it inlined it into, or `null`. `old_kept_by` and `new_kept_by` are the only keys that name an item's parent by name and address rather than by an `id`, since the rows aren't a tree; `[]` when `items_compared` is `false` |
 | `crossings` | every use between blocks that is new, then every one that is gone, block by block, each a row of `callees BLOCK --json` in the file that has it, the new file for a new one, with its `status`, `new` or `gone`, in front: the `item` in another block, the `caller`, `how`, the `veneer` and the `sites`. Every way of use is there: `call`, `tail call`, `address taken`, `access` and `pointer`. `[]` when `items_compared` is `false`, or with one block |
 
 **`reach`**, without SYMBOL:
@@ -1171,9 +1228,9 @@ libraries. `browse` prints x86-64 code and the Thumb code of Cortex-M
 cores up to Armv7E-M; for Armv8-M cores, its pages list only the lines
 that use another item. `diff` compares any two builds of one program that
 have section headers, by block of memory, and their functions and data
-objects, with the calls between blocks that are new or gone, when both
-have a symbol table. The pull requests and the git
-log record how elfq got here.
+objects, with the calls between blocks that are new or gone and the
+items of the same size that changed, when both have a symbol table. The
+pull requests and the git log record how elfq got here.
 
 On a 4-CPU x86-64 machine, a release build gives the overview of elfq's
 own debug build (90 MB) in under half a second, of cargo (43 MB) in under
@@ -1183,9 +1240,6 @@ its names. `browse` shows its first screen in about the same time. Each
 key typed into go to then takes under 0.1 s. The first takes up to 0.2 s
 in those libraries, and the first whose text names nothing takes about
 half a second, as it works out what to suggest.
-
-Next, `diff` says which items of the same size changed their code or
-data.
 
 Ideas for later, not yet planned: output that scripts and AI agents can
 read more easily, a check of what startup code copies into RAM, the
@@ -1281,3 +1335,25 @@ plus each function's stack frame), and a query language.
    only the lines that use another item.
 6. **Compressed DWARF.** `inlined` can't read debug info that the linker
    compressed (`--compress-debug-sections`).
+7. **What `diff` calls edited.** Two different numbers that each happen
+   to point into partners at the same offset, or both into items that
+   only one build has, read as the same, and so can two instructions of
+   Thumb code, which diff also reads as words. Partners whose bytes are
+   the same are the same, even when an address they hold is now another
+   item's, as when the function that the code calls and another swap
+   places. The other way, two pointers into items that aren't partners,
+   or at another offset in them, as when the linker merged strings
+   another way, are an edit unless both point at the same text: three
+   printable characters in common, or a whole string. Rust's format
+   strings start with a byte that holds the length of their first piece,
+   so two pointers to one that moved, which no item holds, read as the
+   same text only when that byte is a printable character, as a length of
+   32 to 126 is, or a tab, newline or carriage return; otherwise they are
+   an edit.
+8. **Instructions that `diff` doesn't decode.** A distance in an
+   instruction that `arch::operands` doesn't know shows as an edit when
+   what it points to moves. On Thumb, a table of addresses in the code,
+   as some switches jump through, is read as words, as data is, and on
+   x86-64 a jump table in data as 32-bit distances from the table, but
+   one in x86-64 code is not. On instruction sets other than x86-64 and
+   Thumb, any byte of a function that changed is an edit.

@@ -181,8 +181,6 @@ pub fn scan_instructions(
 /// `movt` put together. Thumb code is swept as [`scan`] sweeps it, so the
 /// constants and jump tables it reads hold no distances. Nothing for other
 /// instruction sets.
-// diff, which uses them, comes in a later commit.
-#[allow(dead_code)]
 pub fn operands(
     architecture: Architecture,
     endianness: Endianness,

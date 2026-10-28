@@ -1,6 +1,6 @@
-//! What changed, item by item: each paired item that moved to another block
-//! or changed size, and each item that is new or gone; and the rows that
-//! the text shows for them, in the MOVED and CHANGE tables.
+//! What changed, item by item: each paired item that moved to another block,
+//! changed size or is edited, and each item that is new or gone; and the
+//! rows that the text shows for them, in the MOVED and CHANGE tables.
 
 use std::borrow::Cow;
 use std::cmp::Reverse;
@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::Build;
 use super::blocks::Block;
+use super::edited::Edits;
 use super::pairing::{self, PairedBy, Pairing, Side};
 use crate::binary::{Binary, Item, ItemKind};
 use crate::commands::symbol::Names;
@@ -27,6 +28,10 @@ pub(super) enum Status {
     Grew,
     /// It is smaller, in the same block.
     Shrank,
+    /// It has the same size, in the same block, but its bytes changed other
+    /// than where they say where something is, or its code now uses
+    /// different items than before (see `edited.rs`).
+    Edited,
 }
 
 impl Status {
@@ -39,6 +44,7 @@ impl Status {
             Status::Gone => "gone",
             Status::Grew => "grew",
             Status::Shrank => "shrank",
+            Status::Edited => "edited",
         }
     }
 }
@@ -67,7 +73,8 @@ pub(super) struct Items<'a> {
     /// The items that changed, in the order of the old build's items, then
     /// the new items.
     pub changes: Vec<Change>,
-    /// How many paired items have the same size, in the same block.
+    /// How many paired items are the same: the same size, in the same
+    /// block, and not edited.
     pub unchanged: usize,
 }
 
@@ -80,6 +87,7 @@ pub(super) fn compare<'a>(old: &'a Build, new: &'a Build, blocks: &[Block]) -> I
     let pairing = pairing::pair(side(old), side(new));
     let old_blocks = item_blocks(&old.binary, blocks);
     let new_blocks = item_blocks(&new.binary, blocks);
+    let edits = Edits::new(old, new, &pairing);
     let mut changes = Vec::new();
     let mut unchanged = 0;
     for (index, partner) in pairing.old_to_new.iter().enumerate() {
@@ -98,6 +106,8 @@ pub(super) fn compare<'a>(old: &'a Build, new: &'a Build, blocks: &[Block]) -> I
             Status::Grew
         } else if new_size < old_size {
             Status::Shrank
+        } else if edits.edited(index, partner) {
+            Status::Edited
         } else {
             unchanged += 1;
             continue;
@@ -397,10 +407,16 @@ impl<'a> Items<'a> {
             .into_iter()
             .map(|row| (row.change().abs(), block(&row), row))
             .collect();
-        // Largest first, and of the same size, by name.
+        // Largest first, and of the same size, edited items last, then by
+        // name.
+        let edited = |row: &ChangeRow| match row {
+            ChangeRow::Item { change, .. } => self.changes[*change].status == Status::Edited,
+            _ => false,
+        };
         let rank = |(a, _, a_row): &(i128, Option<usize>, ChangeRow),
                     (b, _, b_row): &(i128, Option<usize>, ChangeRow)| {
             b.cmp(a)
+                .then_with(|| edited(a_row).cmp(&edited(b_row)))
                 .then_with(|| self.row_name(a_row).cmp(&self.row_name(b_row)))
         };
         let shown_rows = shown(all);
@@ -832,6 +848,23 @@ mod tests {
                 ),
                 (2, "main".to_string())
             ]
+        );
+    }
+
+    #[test]
+    fn edited_rows_come_last_of_the_same_change() {
+        // An edited function, and a new one of no size, which its name
+        // would put after it.
+        let old = build(&[(&["b_edited"], 4)]);
+        let new = build(&[(&["b_edited"], 4), (&["c_empty"], 0)]);
+        let changes = vec![
+            change(Status::Edited, Some(0), Some(0)),
+            change(Status::New, None, Some(1)),
+        ];
+        let items = changed(&old, &new, changes);
+        assert_eq!(
+            table(&items, &[0, 1]),
+            [(0, "c_empty".to_string()), (0, "b_edited".to_string())]
         );
     }
 

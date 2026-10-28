@@ -619,7 +619,7 @@ new     0x300002bc    26  call via veneer  0x9a  log_msg, used by crc32
 
 Other uses between blocks: 1 new and 1 gone; --json lists them.
 
-61 other items are the same size, in the same block.
+61 other items are the same.
 
 Try:
   elfq testdata/bin/c-cortex-m7-moved.elf why __filter_tap_veneer
@@ -633,7 +633,9 @@ holds ITCM's load image, which shrank with it, and the new message in
 `.rodata`. Each row ends with what keeps the item, as `top`'s rows do, in
 the new build, or for a gone item, in the old. Other sections' bytes
 changed too, as the vector table points to code that moved, but the rows
-say why. The exit status is 1.
+say why. An item whose bytes changed only where they hold the address of
+something that moved, or the distance to it, as in `apply_filter`'s call
+to `filter_tap`, is the same. The exit status is 1.
 
 The two calls from ITCM to flash are new, as `elfq
 testdata/bin/c-cortex-m7-moved.elf callees 0x0..0xe0` lists them. So is
@@ -673,7 +675,7 @@ change size, but its bytes did, since it holds the addresses of the data:
 
 ```
 $ elfq testdata/bin/c-cortex-m7.elf diff testdata/bin/c-cortex-m7-sdram.elf
-From testdata/bin/c-cortex-m7.elf to testdata/bin/c-cortex-m7-sdram.elf: 12 moved.
+From testdata/bin/c-cortex-m7.elf to testdata/bin/c-cortex-m7-sdram.elf: 12 moved, 1 edited.
 
 MEMORY                          OLD   NEW  CHANGE  SECTIONS
 0x00000000..0x000000e0          224   224       0  bytes differ
@@ -685,21 +687,29 @@ MEMORY                          OLD   NEW  CHANGE  SECTIONS
  OLD   NEW  FROM        TO          MOVED
 1104  1104  0x20000000  0x80000000  all 12 items of .data and .bss
 
+CHANGE  OLD  NEW  ADDRESS     ITEM
+     0   64   64  0x30000000  vector_table (edited)
+
 No call between blocks is new or gone.
 Other uses between blocks: 17 new and 17 gone; --json lists them.
 
-51 other items are the same size, in the same block.
+50 other items are the same.
 ```
 
-`--all` lists each of the 12. Every use of them from the code now reaches
-the new block at 0x80000000, so each is gone and new, but no call is, and
-the `jq` check above prints `true` and exits 0. A function that the
-compiler inlined everywhere is gone, and the new build's DWARF says where
-it went:
+`--all` lists each of the 12. The code holds the data's new addresses
+where it held the old ones, so it is the same, but the vector table is
+edited: its first word, the stack pointer that the processor starts
+with, went from 0x20040000, the end of DTCM, to 0x80040000; neither is
+the start or end of a section, so diff can't tell that the two
+correspond. Every use of the data from the code now reaches the new
+block at 0x80000000, so each is gone and new, but no call is, and the
+`jq` check above prints `true` and exits 0. A function that the compiler
+inlined everywhere is gone, and the new build's DWARF says where it
+went:
 
 ```
 $ elfq testdata/bin/c-cortex-m7.elf diff testdata/bin/c-cortex-m7-inlined.elf
-From testdata/bin/c-cortex-m7.elf to testdata/bin/c-cortex-m7-inlined.elf: 1 gone.
+From testdata/bin/c-cortex-m7.elf to testdata/bin/c-cortex-m7-inlined.elf: 1 gone, 1 edited.
 
 MEMORY                   OLD   NEW  CHANGE  SECTIONS
 0x00000000..0x000000e0   224   224       0  bytes differ
@@ -709,11 +719,41 @@ MEMORY                   OLD   NEW  CHANGE  SECTIONS
 
 CHANGE  OLD  NEW  ADDRESS     ITEM
    -40   40       0x30000160  decode_header (gone, inlined into process_frame)
+     0  376  376  0x300002f8  process_frame (edited), kept by main
 
 No call between blocks is new or gone.
 
-62 other items are the same size, in the same block.
+61 other items are the same.
 ```
+
+`process_frame` holds `decode_header`'s code now, at the same size, so
+it is edited: an item of the same size, in the same block, whose bytes
+changed other than where they say where something is, or that now uses
+different items than before. A constant changed in place is an edit too,
+as when the number that `decode_header` compares a frame with and the
+last of `fir_coeffs` change:
+
+```
+$ elfq testdata/bin/c-cortex-m7.elf diff testdata/bin/c-cortex-m7-edited.elf
+From testdata/bin/c-cortex-m7.elf to testdata/bin/c-cortex-m7-edited.elf: 2 edited.
+
+MEMORY                   OLD   NEW  CHANGE  SECTIONS
+0x00000000..0x000000e0   224   224       0
+0x20000000..0x20000450  1104  1104       0
+0x20240000..0x20241000  4096  4096       0
+0x30000000..0x30000edc  3804  3804       0  bytes differ
+
+CHANGE  OLD  NEW  ADDRESS     ITEM
+     0   40   40  0x30000160  decode_header (edited), kept by process_frame
+     0   32   32  0x30000eb4  fir_coeffs (edited), kept by filter_tap
+
+No call between blocks is new or gone.
+
+61 other items are the same.
+```
+
+Edited rows come last in their block, and `--json` gives them the status
+`edited`.
 
 Symbols, debug info and where the file keeps its bytes don't count, so a
 build and its stripped copy load the same memory, and the exit status is 0:
@@ -728,7 +768,7 @@ of a table:
 
 ```
 $ elfq testdata/bin/c-x86_64.elf diff testdata/bin/c-x86_64-moved.elf
-From testdata/bin/c-x86_64.elf to testdata/bin/c-x86_64-moved.elf: 1 new, 2 grew, 1 shrank.
+From testdata/bin/c-x86_64.elf to testdata/bin/c-x86_64-moved.elf: 1 new, 2 grew, 1 shrank, 1 edited.
 The memory stays at 15728 bytes (.text +16, .eh_frame +8).
 
 CHANGE  OLD  NEW  ADDRESS  ITEM
@@ -736,18 +776,21 @@ CHANGE  OLD  NEW  ADDRESS  ITEM
    +13       ~13  0x2004   .rodata@0x2004 (new), kept by crc32
    -13  ~34  ~21  0x206b   .rodata@0x206b, kept by main
     +3   19   22  0x1660   on_button, kept by main
+     0  532  532  0x1710   process_frame (edited), kept by main
 
-65 other items are the same size, in the same block.
+64 other items are the same.
 ```
 
 The strings that elfq finds only from the code that uses them have no
 names, and estimated sizes, marked `~`, that end where the next one
-starts: the new message took 13 bytes from the one after it. Without a
-symbol table, diff compares only the bytes, and no row says why the memory
-differs, so the last line names every section that differs, as it does
-when no item changed. The build ID in `.note.gnu.build-id` is among them:
-it is loaded too, and the linker makes it from the whole file, so it
-changes with any change to the file, even one only in debug info:
+starts: the new message took 13 bytes from the one after it.
+`process_frame` kept its size, but the compiler keeps the frame it reads
+in another register, so it is edited. Without a symbol table, diff
+compares only the bytes, and no row says why the memory differs, so the
+last line names every section that differs, as it does when no item
+changed. The build ID in `.note.gnu.build-id` is among them: it is
+loaded too, and the linker makes it from the whole file, so it changes
+with any change to the file, even one only in debug info:
 
 ```
 $ elfq testdata/bin/c-x86_64-stripped.elf diff testdata/bin/c-x86_64-moved-stripped.elf

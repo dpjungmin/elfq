@@ -423,6 +423,17 @@ impl Binary {
         (bytes.len() as u64 == size).then_some(bytes)
     }
 
+    /// The bytes of `item`, as [`Binary::bytes`] reads them, but from the
+    /// section that holds it, without looking for it among all of them.
+    pub fn item_bytes(&self, item: &Item) -> Option<&[u8]> {
+        let section = &self.sections[item.section];
+        if !(section.in_memory() && section.contains(item.address)) {
+            return self.bytes(item.address, item.size);
+        }
+        let bytes = self.section_bytes(section, item.address, item.size)?;
+        (bytes.len() as u64 == item.size).then_some(bytes)
+    }
+
     /// The pointer stored at `address`, as the file holds it before the
     /// program runs.
     pub fn pointer_at(&self, address: u64) -> Option<u64> {
@@ -577,6 +588,15 @@ impl Binary {
         Some(&self.relocations[index])
     }
 
+    /// The relocations that store pointers in the `size` bytes at
+    /// `address`, in address order.
+    pub fn relocations_in(&self, address: u64, size: u64) -> &[Relocation] {
+        let start = self.relocations.partition_point(|r| r.address < address);
+        let end = address.saturating_add(size);
+        let count = self.relocations[start..].partition_point(|r| r.address < end);
+        &self.relocations[start..start + count]
+    }
+
     /// The PLT stubs for functions in this file, each with its function, as
     /// indices into [`Binary::items`]. A shared library calls the functions
     /// it exports through stubs such as `log_msg@plt`, and any file calls an
@@ -681,7 +701,7 @@ fn code_address(architecture: Architecture, address: u64) -> u64 {
 }
 
 /// The number in `bytes`, a pointer of up to 8 bytes.
-fn word(bytes: &[u8], endianness: Endianness) -> u64 {
+pub(crate) fn word(bytes: &[u8], endianness: Endianness) -> u64 {
     let mut word = [0; 8];
     if endianness == Endianness::Big {
         word[8 - bytes.len()..].copy_from_slice(bytes);

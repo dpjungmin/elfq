@@ -428,7 +428,7 @@ fn diff_names_a_section_whose_bytes_alone_differ() {
             ": no item changed size or block, but bytes differ.\n\
              The memory stays at 15728 bytes.\n\
              \n\
-             68 other items are the same size, in the same block.\n\
+             68 other items are the same.\n\
              Sections that differ: .note.gnu.build-id.\n"
         ),
         "{text}"
@@ -438,11 +438,12 @@ fn diff_names_a_section_whose_bytes_alone_differ() {
         json.contains("\"sections_that_differ\":[\n\".note.gnu.build-id\"\n],"),
         "{json}"
     );
-    // In firmware, the block's row says only that bytes differ.
+    // In firmware, the block's row says only that bytes differ. A byte of
+    // the unwind table, which holds no item, edits none.
     let mut data = sample("c-cortex-m7.elf");
-    let (offset, _) = file_range(&data, ".rodata");
+    let (offset, _) = file_range(&data, ".ARM.exidx");
     data[offset] ^= 1;
-    let (status, text, _) = diff("c-cortex-m7.elf", "rodata-byte.elf", &data, &[]);
+    let (status, text, _) = diff("c-cortex-m7.elf", "exidx-byte.elf", &data, &[]);
     assert_eq!(status, 1);
     assert!(
         text.contains("\n0x30000000..0x30000edc  3804  3804       0  bytes differ\n"),
@@ -450,25 +451,25 @@ fn diff_names_a_section_whose_bytes_alone_differ() {
     );
     assert!(
         text.ends_with(
-            "\n\n63 other items are the same size, in the same block.\n\
-             Sections that differ: .rodata.\n"
+            "\n\n63 other items are the same.\n\
+             Sections that differ: .ARM.exidx.\n"
         ),
         "{text}"
     );
     // In a shared library, with no row, nothing says that rows can't say
     // what keeps items.
     let mut data = sample("c-x86_64.so");
-    let (offset, _) = file_range(&data, ".rodata");
+    let (offset, _) = file_range(&data, ".eh_frame_hdr");
     data[offset + 0x10] ^= 1;
-    let (status, text, _) = diff("c-x86_64.so", "rodata-byte.so", &data, &[]);
+    let (status, text, _) = diff("c-x86_64.so", "eh-frame-hdr-byte.so", &data, &[]);
     assert_eq!(status, 1);
     assert!(
         text.ends_with(
             ": no item changed size or block, but bytes differ.\n\
              The memory stays at 15936 bytes.\n\
              \n\
-             72 other items are the same size, in the same block.\n\
-             Sections that differ: .rodata.\n"
+             72 other items are the same.\n\
+             Sections that differ: .eh_frame_hdr.\n"
         ),
         "{text}"
     );
