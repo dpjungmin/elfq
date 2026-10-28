@@ -516,11 +516,13 @@ blocks, a table lists every call between blocks that is new or gone, as
 callees BLOCK lists it in the file that has it, and a line counts the
 other uses between blocks that are new or gone, of data and of functions'
 addresses: an item that moved to another block has its uses between
-blocks before gone, and those after new. When no item changed, or a file
-has no symbol table, so that no row says why the memory differs, the last
-line names every section whose address, size, load image or bytes differ,
-or that only one file has, such as one with a new build ID: 10 of them,
-or with --all, every one.
+blocks before gone, and those after new, but a call stays the same when
+it only becomes a tail call or stops being one, or gains or loses a
+veneer or PLT stub in the caller's or the callee's block. When no item
+changed, or a file has no symbol table, so that no row says why the
+memory differs, the last line names every section whose address, size,
+load image or bytes differ, or that only one file has, such as one with
+a new build ID: 10 of them, or with --all, every one.
 
 --json has every block, with each section and load image in it and the
 bytes of its items, of its sections without items and of its padding,

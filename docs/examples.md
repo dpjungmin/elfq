@@ -652,12 +652,19 @@ Uses of data don't count: the next pair moves data to another memory,
 which makes every use of it from another block gone and new. Nor do
 pointers: elfq reads any word of data that holds an address as one, so
 a constant in a table that happens to equal a function's address is
-listed as a pointer. The check does fail on a call between blocks that
-only changes how it is made, as when it becomes a tail call or loses its
-veneer, since diff lists it gone and new, and on each call between
-blocks when a relink moves the code at either end to another block. Both
-builds need a symbol table: without one, diff compares no items, so the
-check fails unless the memory is the same.
+listed as a pointer. A call between blocks that only changes how it is
+made, as when it becomes a tail call or stops being one, or gains or
+loses a veneer in the caller's or the callee's block, is neither new nor
+gone. The check does fail on each call between blocks whose code at
+either end moves to a third block, as when code that calls flash moves
+from OCRAM into ITCM, or when a relink moves it to another block, as
+when flash starts at 0x60000000 rather than 0x30000000, since diff lists
+such a call as gone, and as new between the blocks it is between now. A
+smaller relink, which leaves the two builds' flash overlapping or less
+than 64 KiB apart, as a 32 KiB bootloader offset does, keeps one block,
+and its calls stay the same. Both builds need a symbol table: without
+one, diff compares no items, so the check fails unless the memory is the
+same.
 
 Moving `.data` and `.bss` from DTCM to RAM at 0x80000000 leaves a block
 that only the old build has and one that only the new one has, and every
