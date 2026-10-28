@@ -502,27 +502,30 @@ in it. For files with one block, a line says how its size changed instead.
 When both files have a symbol table, diff pairs their functions and data
 objects, by name, by bytes, by what uses them or by where they are, and
 the first line counts those that moved to another block, are new or gone,
-or grew or shrank. MOVED lists those that moved, but all the items of
-whole sections that moved together are one row. CHANGE lists the rest by
-block, largest first: a new item and the new items in its block that only
-it keeps are one row, as are a gone item and the gone items in its block
-that only it kept; data objects without a name whose estimated size
-changed fold into one row per block, and so do new and gone items of one
-name. It shows 30 rows, the largest of each block among them, and a row
-that counts the items in the rest of each block; --all shows every item.
-A row ends with what keeps the item, as top's rows do, and says where the
-compiler inlined a gone function when NEW's DWARF says. With several
-blocks, a table lists every call between blocks that is new or gone, as
-callees BLOCK lists it in the file that has it, and a line counts the
-other uses between blocks that are new or gone, of data and of functions'
-addresses: an item that moved to another block has its uses between
-blocks before gone, and those after new, but a call stays the same when
-it only becomes a tail call or stops being one, or gains or loses a
-veneer or PLT stub in the caller's or the callee's block. When no item
-changed, or a file has no symbol table, so that no row says why the
-memory differs, the last line names every section whose address, size,
-load image or bytes differ, or that only one file has, such as one with
-a new build ID: 10 of them, or with --all, every one.
+grew or shrank, or are edited: an item of the same size, in the same
+block, whose bytes changed other than where they say where something is,
+such as the distance in a call to a function that moved, or that now uses
+different items than before. MOVED lists those that moved, but all the
+items of whole sections that moved together are one row. CHANGE lists the
+rest by block, largest first, edited items last: a new item and the new
+items in its block that only it keeps are one row, as are a gone item and
+the gone items in its block that only it kept; data objects without a
+name whose estimated size changed fold into one row per block, and so do
+new and gone items of one name. It shows 30 rows, the largest of each
+block among them, and a row that counts the items in the rest of each
+block; --all shows every item. A row ends with what keeps the item, as
+top's rows do, and says where the compiler inlined a gone function when
+NEW's DWARF says. With several blocks, a table lists every call between
+blocks that is new or gone, as callees BLOCK lists it in the file that has
+it, and a line counts the other uses between blocks that are new or gone,
+of data and of functions' addresses: an item that moved to another block
+has its uses between blocks before gone, and those after new, but a call
+stays the same when it only becomes a tail call or stops being one, or
+gains or loses a veneer or PLT stub in the caller's or the callee's block.
+When no item changed, or a file has no symbol table, so that no row says
+why the memory differs, the last line names every section whose address,
+size, load image or bytes differ, or that only one file has, such as one
+with a new build ID: 10 of them, or with --all, every one.
 
 --json has every block, with each section and load image in it and the
 bytes of its items, of its sections without items and of its padding,

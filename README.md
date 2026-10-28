@@ -73,12 +73,13 @@ jq -e 'all(.items[]; .in_to | not) and all(.unresolved[]; .target == null)' reac
 status is 0 when both load the same bytes at the same addresses, as a build
 and its stripped copy do, and 1 when they don't, with the blocks of memory
 whose bytes differ, the sections that changed size in each, the functions
-and data objects that moved to another block, are new or gone, or changed
-size, each with what keeps it, the calls between blocks that are new or
-gone, and when no item changed, the sections that differ. A CI job can
-check that a change leaves the firmware's memory as it was, or with the
-JSON, only that no call between blocks is new, such as from ITCM to
-flash:
+and data objects that moved to another block, are new or gone, changed
+size, or are edited, which is to say they kept their size and block but
+changed in more than the addresses of what moved, each with what keeps
+it, the calls between blocks that are new or gone, and when no item
+changed, the sections that differ. A CI job can check that a change
+leaves the firmware's memory as it was, or with the JSON, only that no
+call between blocks is new, such as from ITCM to flash:
 
 ```sh
 elfq old.elf diff new.elf --json > diff.json || [ $? -eq 1 ]
@@ -141,9 +142,10 @@ and `elfq --help` lists the commands.
   at the same addresses, and 1 when they don't, with the blocks of memory
   whose bytes differ, the sections that changed size in each, the
   functions and data objects that moved to another block, are new or gone,
-  or changed size, each with what keeps it, the calls between blocks that
-  are new or gone, and when no item changed, the sections that differ;
-  another build ID alone makes them differ.
+  changed size, or are edited (changed in place), each with what keeps
+  it, the calls between blocks that are new or gone, and when no item
+  changed, the sections that differ; another build ID alone makes them
+  differ.
 - elfq reads the built file, not the source: rebuild before asking again.
 ```
 

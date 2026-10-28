@@ -1,7 +1,8 @@
 //! `elfq OLD diff NEW`: whether two builds of a program load the same
 //! memory, and if not, in which blocks of memory the bytes differ, and
 //! which functions and data objects moved to another block, are new or
-//! gone, or changed size, each with what keeps it.
+//! gone, changed size, or kept their size but changed, each with what keeps
+//! it.
 //!
 //! diff first reads only the files' headers and the bytes that their
 //! sections put in memory (see [`LoadedMemory`]), so it answers at once
@@ -10,11 +11,13 @@
 //! differs, and both files have a symbol table, it loads both, each with
 //! its graph and, unless either is a shared library, its dominator tree,
 //! pairs their items (`pairing.rs`) and works out what changed (`rows.rs`),
-//! and which calls and other uses between blocks are new or gone
-//! (`crossings.rs`). `text.rs` and `json.rs` write the answer.
+//! with which items of the same size are edited (`edited.rs`), and which
+//! calls and other uses between blocks are new or gone (`crossings.rs`).
+//! `text.rs` and `json.rs` write the answer.
 
 mod blocks;
 mod crossings;
+mod edited;
 mod json;
 mod pairing;
 mod rows;

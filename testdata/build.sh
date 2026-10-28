@@ -103,6 +103,12 @@ variants arm-none-eabi-strip c-cortex-m7-moved
 echo "C, Cortex-M7 with TCMs, decode_header inlined"
 cortex_m7 c-cortex-m7-inlined c/cortex-m7.ld -DDIFF_INLINED
 
+# Only the full build: with -DDIFF_EDITED, the constant that decode_header
+# compares with and one of the filter's coefficients change, and no item
+# changes size.
+echo "C, Cortex-M7 with TCMs, two constants changed"
+cortex_m7 c-cortex-m7-edited c/cortex-m7.ld -DDIFF_EDITED
+
 # Only the full build: DTCM at 0x80000000, so that .data and .bss move to
 # another block of memory.
 echo "C, Cortex-M7 with TCMs, DTCM at 0x80000000"

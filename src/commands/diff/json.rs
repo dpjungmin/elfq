@@ -40,7 +40,8 @@ struct DiffJson<'c, 'a> {
     /// overview's `bytes`.
     old_bytes: Option<u64>,
     new_bytes: Option<u64>,
-    /// How many paired items have the same size, in the same block.
+    /// How many paired items are the same: the same size, in the same
+    /// block, and not edited.
     unchanged: Option<usize>,
     /// The sections whose address, size, load image or bytes differ, or
     /// that only one build has, in address order, `.tbss` among them: none
@@ -100,7 +101,7 @@ struct ItemJson<'a> {
     /// The old build's name, when the new build names the item otherwise.
     was: Option<&'a str>,
     kind: String,
-    /// `moved`, `new`, `gone`, `grew` or `shrank`.
+    /// `moved`, `new`, `gone`, `grew`, `shrank` or `edited`.
     status: &'static str,
     /// The rule that paired the items: `name`, `bytes`, `uses` or `place`.
     paired_by: Option<PairedBy>,

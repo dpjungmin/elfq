@@ -2,7 +2,7 @@
 
 use iced_x86::{Decoder, DecoderOptions, FlowControl, Instruction, Mnemonic, OpKind};
 
-use super::{CodeReference, CodeReferenceKind};
+use super::{CodeReference, CodeReferenceKind, Operands};
 
 /// The references in the x86-64 code `code`, which starts at `address`, in
 /// the order of their instructions.
@@ -20,6 +20,53 @@ pub(super) fn scan(code: &[u8], address: u64) -> Vec<CodeReference> {
         }
     }
     references
+}
+
+/// The bits of the x86-64 code `code`, which starts at `address`, that say
+/// where something is (see `arch::operands`): the distance of a call or jump
+/// to its target, and of an operand relative to the instruction pointer,
+/// each from the end of its instruction, when it leads outside the code,
+/// and where each leads.
+pub(super) fn operands(code: &[u8], address: u64) -> Operands {
+    let mut decoder = Decoder::with_ip(64, code, address, DecoderOptions::NONE);
+    let mut instruction = Instruction::default();
+    let mut relative = vec![0; code.len()];
+    let mut targets = Vec::new();
+    while decoder.can_decode() {
+        decoder.decode_out(&mut instruction);
+        // Where the distance leads, when it leads outside the code.
+        let (target, branch) = if let Some(target) = branch_target(&instruction) {
+            (target, true)
+        } else if instruction.is_ip_rel_memory_operand() {
+            (instruction.ip_rel_memory_address(), false)
+        } else {
+            continue;
+        };
+        if target.wrapping_sub(address) < code.len() as u64 {
+            continue;
+        }
+        // Where the distance is in the instruction: a branch's is its
+        // immediate.
+        let constants = decoder.get_constant_offsets(&instruction);
+        let (offset, size) = if branch {
+            (constants.immediate_offset(), constants.immediate_size())
+        } else {
+            (
+                constants.displacement_offset(),
+                constants.displacement_size(),
+            )
+        };
+        let site = (instruction.ip() - address) as usize;
+        if let Some(bits) = relative.get_mut(site + offset..site + offset + size) {
+            bits.fill(0xff);
+        }
+        targets.push((site, target));
+    }
+    Operands {
+        relative,
+        targets,
+        split: Vec::new(),
+    }
 }
 
 /// The address of the last instruction in the x86-64 code `code`, which
@@ -150,6 +197,38 @@ mod tests {
         assert_eq!(runs_on(&[0x0f, 0x0b], 0x1000), None);
         // Padding alone.
         assert_eq!(runs_on(&[0x90, 0xcc], 0x1000), None);
+    }
+
+    fn relative_bits(code: &[u8]) -> Vec<u8> {
+        operands(code, 0x1000).relative
+    }
+
+    #[test]
+    fn a_call_holds_its_distance_in_its_rel32() {
+        // call 0x1700
+        let code = [0xe8, 0xfb, 0x06, 0x00, 0x00];
+        assert_eq!(relative_bits(&code), [0, 0xff, 0xff, 0xff, 0xff]);
+        assert_eq!(operands(&code, 0x1000).targets, [(0, 0x1700)]);
+    }
+
+    #[test]
+    fn an_operand_relative_to_rip_holds_its_distance_in_its_disp32() {
+        // lea rdi, [rip + 0x100]
+        assert_eq!(
+            relative_bits(&[0x48, 0x8d, 0x3d, 0x00, 0x01, 0x00, 0x00]),
+            [0, 0, 0, 0xff, 0xff, 0xff, 0xff]
+        );
+        // mov dword ptr [rip + 0x100], 5: the immediate is a number.
+        assert_eq!(
+            relative_bits(&[0xc7, 0x05, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00]),
+            [0, 0, 0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0]
+        );
+    }
+
+    #[test]
+    fn a_jump_inside_the_code_is_left_out() {
+        // jmp 0x1002; ret
+        assert_eq!(relative_bits(&[0xeb, 0x00, 0xc3]), [0, 0, 0]);
     }
 
     #[test]

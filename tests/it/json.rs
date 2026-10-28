@@ -7,8 +7,8 @@ use serde_json::{Value, json};
 use elfq::binary::{ItemKind, Source};
 
 use crate::support::{
-    DEEP_SAMPLE, LIBRARY_SAMPLE, MOVED_SAMPLE, SAMPLE, TCM_INLINED_SAMPLE, TCM_MOVED_SAMPLE,
-    TCM_SAMPLE, TCM_SDRAM_SAMPLE, command, elfq, load_sample,
+    DEEP_SAMPLE, LIBRARY_SAMPLE, MOVED_SAMPLE, SAMPLE, TCM_EDITED_SAMPLE, TCM_INLINED_SAMPLE,
+    TCM_MOVED_SAMPLE, TCM_SAMPLE, TCM_SDRAM_SAMPLE, command, elfq, load_sample,
 };
 
 /// Runs elfq with `--json`, expecting success, and parses what it printed.
@@ -1390,6 +1390,27 @@ fn diff_has_each_item_that_changed() {
     assert_eq!(gone["new_address"], Value::Null);
     assert_eq!(gone["old_kept_by"]["name"], "process_frame");
     assert_eq!(gone["inlined_into"], json!(["process_frame"]));
+    // An edited item keeps its size, and `unchanged` counts only the items
+    // that are the same.
+    let (_, answer) = diff_json(TCM_SAMPLE, TCM_EDITED_SAMPLE);
+    let edited: Vec<(&str, &str, i64)> = answer["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| {
+            let text = |key: &str| item[key].as_str().unwrap();
+            (
+                text("name"),
+                text("status"),
+                item["change"].as_i64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        edited,
+        [("decode_header", "edited", 0), ("fir_coeffs", "edited", 0)]
+    );
+    assert_eq!(answer["unchanged"], 61);
 }
 
 #[test]
@@ -1480,10 +1501,11 @@ fn passes_ci_check(answer: &Value) -> bool {
 }
 
 /// Pairs of builds to compare, of every kind that diff sees.
-const DIFF_PAIRS: [(&str, &str); 10] = [
+const DIFF_PAIRS: [(&str, &str); 11] = [
     (TCM_SAMPLE, TCM_MOVED_SAMPLE),
     (TCM_SAMPLE, TCM_SDRAM_SAMPLE),
     (TCM_SAMPLE, TCM_INLINED_SAMPLE),
+    (TCM_SAMPLE, TCM_EDITED_SAMPLE),
     (SAMPLE, MOVED_SAMPLE),
     (LIBRARY_SAMPLE, "testdata/bin/c-x86_64-moved.so"),
     (SAMPLE, LIBRARY_SAMPLE),

@@ -12,6 +12,9 @@
 //! end, so the Thumb module also tells the padding between functions apart
 //! and how a stretch of code ends.
 //!
+//! `diff` needs to know which bits of a function's code say where something
+//! is, since those change whenever code or data moves (see [`operands`]).
+//!
 //! `listing.rs` prints a function's code as text, for `elfq FILE browse`.
 
 #[cfg(feature = "tui")]
@@ -89,6 +92,37 @@ pub enum Ending {
     Stops,
 }
 
+/// The bits of one function's code that say where something is, as
+/// [`operands`] finds them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Operands {
+    /// For each byte of the code, the bits of it that hold the distance from
+    /// an instruction to an address outside the code: the target of a call
+    /// or jump, or the address of a constant that a load reads or of
+    /// something whose address the code takes. They change whenever the
+    /// function or what it uses moves. A distance to a place inside the
+    /// code, as a loop's jump, doesn't change when the function moves, and
+    /// isn't here.
+    pub relative: Vec<u8>,
+    /// Where each of those distances leads, as (the offset of its
+    /// instruction in the code, the address), in the order of the
+    /// instructions.
+    pub targets: Vec<(usize, u64)>,
+    /// The numbers that two instructions put together, as an address mostly.
+    pub split: Vec<SplitNumber>,
+}
+
+/// A 32-bit number that a pair of instructions puts together in a
+/// register, as Thumb's `movw` and `movt` do, the first with the low 16
+/// bits and the second with the high 16.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SplitNumber {
+    pub value: u64,
+    /// The bits of the code that hold it, as (offset into the code, bits of
+    /// the byte there).
+    pub bits: Vec<(usize, u8)>,
+}
+
 /// Whether elfq can read a file's code yet: x86-64, or 32-bit Arm when the
 /// code is Thumb, which is what Cortex-M runs. Code in the older Arm (A32)
 /// instruction set isn't read.
@@ -133,6 +167,34 @@ pub fn scan_instructions(
         Architecture::X86_64 => x86_64::scan(code, address),
         Architecture::Arm => thumb::scan_instructions(code, address, endianness),
         _ => Vec::new(),
+    }
+}
+
+/// The bits of one function's code, which starts at `address`, that say
+/// where something is, and where each distance leads, for `diff` to tell
+/// apart the bytes of two builds of a function that differ because things
+/// moved from those that differ because the code changed: on x86-64, the
+/// distance in a call or jump and in an operand relative to the instruction
+/// pointer, as in `lea rdi, [rip + 0x2f3e]`; on Thumb, the distance in
+/// `bl`, `b`, `b<cond>`, `cbz`, `cbnz`, `adr` and a load from a literal
+/// pool, each in its 16- and 32-bit forms, and the numbers that `movw` and
+/// `movt` put together. Thumb code is swept as [`scan`] sweeps it, so the
+/// constants and jump tables it reads hold no distances. Nothing for other
+/// instruction sets.
+pub fn operands(
+    architecture: Architecture,
+    endianness: Endianness,
+    code: &[u8],
+    address: u64,
+) -> Operands {
+    match architecture {
+        Architecture::X86_64 => x86_64::operands(code, address),
+        Architecture::Arm => thumb::operands(code, address, endianness),
+        _ => Operands {
+            relative: vec![0; code.len()],
+            targets: Vec::new(),
+            split: Vec::new(),
+        },
     }
 }
 

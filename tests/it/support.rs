@@ -24,6 +24,9 @@ pub const TCM_MOVED_SAMPLE: &str = "testdata/bin/c-cortex-m7-moved.elf";
 pub const TCM_SDRAM_SAMPLE: &str = "testdata/bin/c-cortex-m7-sdram.elf";
 /// [`TCM_SAMPLE`] with decode_header inlined into process_frame.
 pub const TCM_INLINED_SAMPLE: &str = "testdata/bin/c-cortex-m7-inlined.elf";
+/// [`TCM_SAMPLE`] with two constants changed: one that decode_header
+/// compares with, and one of fir_coeffs.
+pub const TCM_EDITED_SAMPLE: &str = "testdata/bin/c-cortex-m7-edited.elf";
 
 /// The path of the sample `name` in testdata/bin.
 pub fn sample_path(name: &str) -> PathBuf {

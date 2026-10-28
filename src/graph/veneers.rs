@@ -54,15 +54,16 @@ impl<'a> Veneers<'a> {
             return Some(VeneerTarget::Node(Node::Item(function)));
         }
         let function = &self.binary.items[item];
-        let code = self.binary.bytes(function.address, function.size)?;
+        if function.kind != ItemKind::Function {
+            return None;
+        }
+        let code = self.binary.item_bytes(function)?;
         let symbol = matches!(
             function.source,
             Source::SymbolTable | Source::DynamicSymbolTable
         )
         .then_some(function.name.as_str());
-        if function.kind != ItemKind::Function
-            || !arch::is_veneer(self.binary.architecture, code, symbol)
-        {
+        if !arch::is_veneer(self.binary.architecture, code, symbol) {
             return None;
         }
         match (

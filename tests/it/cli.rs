@@ -4,8 +4,8 @@ use std::path::Path;
 use std::process::Stdio;
 
 use crate::support::{
-    DEEP_SAMPLE, LIBRARY_SAMPLE, MOVED_SAMPLE, SAMPLE, TCM_INLINED_SAMPLE, TCM_MOVED_SAMPLE,
-    TCM_SAMPLE, TCM_SDRAM_SAMPLE, assert_output, command, elfq, samples,
+    DEEP_SAMPLE, LIBRARY_SAMPLE, MOVED_SAMPLE, SAMPLE, TCM_EDITED_SAMPLE, TCM_INLINED_SAMPLE,
+    TCM_MOVED_SAMPLE, TCM_SAMPLE, TCM_SDRAM_SAMPLE, assert_output, command, elfq, samples,
 };
 
 /// Runs elfq, expecting success, and returns what it printed.
@@ -4124,7 +4124,7 @@ new     0x300002bc    26  call via veneer  0x9a  log_msg, used by crc32
 
 Other uses between blocks: 1 new and 1 gone; --json lists them.
 
-61 other items are the same size, in the same block.
+61 other items are the same.
 
 Try:
   elfq testdata/bin/c-cortex-m7-moved.elf why __filter_tap_veneer
@@ -4193,13 +4193,16 @@ Sections that differ: .itcm, .isr_vector, .text, .rodata and .ARM.exidx.
 #[test]
 fn one_block_of_memory_gets_a_line() {
     // crc32 grew by 16 bytes, which moved the code after it, and the
-    // addresses and unwind info that point to it.
+    // addresses and unwind info that point to it. process_frame keeps its
+    // size, but keeps the frame in r12 rather than r8 across its call to
+    // crc32: GCC knew the old crc32 left r8 alone, and the new one calls
+    // log_msg.
     let (status, text) = diff(SAMPLE, MOVED_SAMPLE, &[]);
     assert_eq!(status, 1);
     assert_output(
         &text,
         "\
-From testdata/bin/c-x86_64.elf to testdata/bin/c-x86_64-moved.elf: 1 new, 2 grew, 1 shrank.
+From testdata/bin/c-x86_64.elf to testdata/bin/c-x86_64-moved.elf: 1 new, 2 grew, 1 shrank, 1 edited.
 The memory stays at 15728 bytes (.text +16, .eh_frame +8).
 
 CHANGE  OLD  NEW  ADDRESS  ITEM
@@ -4207,8 +4210,9 @@ CHANGE  OLD  NEW  ADDRESS  ITEM
    +13       ~13  0x2004   .rodata@0x2004 (new), kept by crc32
    -13  ~34  ~21  0x206b   .rodata@0x206b, kept by main
     +3   19   22  0x1660   on_button, kept by main
+     0  532  532  0x1710   process_frame (edited), kept by main
 
-65 other items are the same size, in the same block.
+64 other items are the same.
 ",
     );
     // The other way round, the changes are the other way round, and what
@@ -4227,13 +4231,15 @@ CHANGE  OLD  NEW  ADDRESS  ITEM
 #[test]
 fn data_moved_to_another_memory_is_a_gone_and_a_new_block() {
     // DTCM linked at 0x80000000: every item of .data and .bss moved by one
-    // offset, and the code and flash hold their addresses.
+    // offset, and the code and flash hold their addresses. Only the vector
+    // table is edited: its first word, the initial stack pointer, went from
+    // the end of DTCM at 0x20040000 to 0x80040000, where no section ends.
     let (status, text) = diff(TCM_SAMPLE, TCM_SDRAM_SAMPLE, &[]);
     assert_eq!(status, 1);
     assert_output(
         &text,
         "\
-From testdata/bin/c-cortex-m7.elf to testdata/bin/c-cortex-m7-sdram.elf: 12 moved.
+From testdata/bin/c-cortex-m7.elf to testdata/bin/c-cortex-m7-sdram.elf: 12 moved, 1 edited.
 
 MEMORY                          OLD   NEW  CHANGE  SECTIONS
 0x00000000..0x000000e0          224   224       0  bytes differ
@@ -4245,10 +4251,13 @@ MEMORY                          OLD   NEW  CHANGE  SECTIONS
  OLD   NEW  FROM        TO          MOVED
 1104  1104  0x20000000  0x80000000  all 12 items of .data and .bss
 
+CHANGE  OLD  NEW  ADDRESS     ITEM
+     0   64   64  0x30000000  vector_table (edited)
+
 No call between blocks is new or gone.
 Other uses between blocks: 17 new and 17 gone; --json lists them.
 
-51 other items are the same size, in the same block.
+50 other items are the same.
 ",
     );
     // --all lists each, largest first.
@@ -4264,13 +4273,41 @@ Other uses between blocks: 17 new and 17 gone; --json lists them.
 }
 
 #[test]
+fn an_item_that_changed_but_kept_its_size_is_edited() {
+    // The number in decode_header's movw and the last of fir_coeffs
+    // changed, and nothing moved.
+    let (status, text) = diff(TCM_SAMPLE, TCM_EDITED_SAMPLE, &[]);
+    assert_eq!(status, 1);
+    assert_output(
+        &text,
+        "\
+From testdata/bin/c-cortex-m7.elf to testdata/bin/c-cortex-m7-edited.elf: 2 edited.
+
+MEMORY                   OLD   NEW  CHANGE  SECTIONS
+0x00000000..0x000000e0   224   224       0
+0x20000000..0x20000450  1104  1104       0
+0x20240000..0x20241000  4096  4096       0
+0x30000000..0x30000edc  3804  3804       0  bytes differ
+
+CHANGE  OLD  NEW  ADDRESS     ITEM
+     0   40   40  0x30000160  decode_header (edited), kept by process_frame
+     0   32   32  0x30000eb4  fir_coeffs (edited), kept by filter_tap
+
+No call between blocks is new or gone.
+
+61 other items are the same.
+",
+    );
+}
+
+#[test]
 fn a_shared_library_has_no_kept_by() {
     let (status, text) = diff(LIBRARY_SAMPLE, "testdata/bin/c-x86_64-moved.so", &[]);
     assert_eq!(status, 1);
     assert_output(
         &text,
         "\
-From testdata/bin/c-x86_64.so to testdata/bin/c-x86_64-moved.so: 1 new, 1 grew, 1 shrank.
+From testdata/bin/c-x86_64.so to testdata/bin/c-x86_64-moved.so: 1 new, 1 grew, 1 shrank, 1 edited.
 The memory stays at 15936 bytes (.text +16, .eh_frame +8).
 elfq can't yet tell what keeps items in a shared library, so rows don't say.
 
@@ -4278,8 +4315,9 @@ CHANGE  OLD  NEW  ADDRESS  ITEM
    +20   59   79  0x16c0   crc32
    +13       ~13  0x2000   .rodata@0x2000 (new)
    -13  ~38  ~25  0x2067   .rodata@0x2067
+     0  532  532  0x17c0   process_frame (edited)
 
-70 other items are the same size, in the same block.
+69 other items are the same.
 ",
     );
 }
@@ -4366,13 +4404,15 @@ fn all_names_every_change() {
 #[test]
 fn a_gone_function_says_where_the_compiler_inlined_it() {
     // decode_header, inlined into process_frame, its only caller: so the
-    // row doesn't say that process_frame kept it too.
+    // row doesn't say that process_frame kept it too. process_frame, which
+    // holds its code now, kept its size, and is edited.
     let (status, text) = diff(TCM_SAMPLE, TCM_INLINED_SAMPLE, &[]);
     assert_eq!(status, 1);
     assert!(
         text.contains(
             "\nCHANGE  OLD  NEW  ADDRESS     ITEM\n   \
-             -40   40       0x30000160  decode_header (gone, inlined into process_frame)\n\n"
+             -40   40       0x30000160  decode_header (gone, inlined into process_frame)\n     \
+             0  376  376  0x300002f8  process_frame (edited), kept by main\n\n"
         ),
         "{text}"
     );

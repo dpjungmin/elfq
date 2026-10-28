@@ -106,7 +106,7 @@ pub(super) fn write(answer: &Answer, all: bool, out: &mut dyn Write) -> Result<(
     let mut closing = Vec::new();
     if items.unchanged > 0 {
         closing.push(format!(
-            "{} the same size, in the same block.",
+            "{} the same.",
             plural(items.unchanged, "other item is", "other items are")
         ));
     }
@@ -189,8 +189,9 @@ fn write_crossings(compared: &Compared, out: &mut dyn Write) -> Result<()> {
 }
 
 /// What the first line says after "From OLD to NEW: ": how many items
-/// moved, are new or gone, grew or shrank, as "1 moved, 3 new, 1 grew.",
-/// or when diff compared no items, in how many blocks the bytes differ.
+/// moved, are new or gone, grew, shrank or are edited, as "1 moved, 3 new,
+/// 1 grew.", or when diff compared no items, in how many blocks the bytes
+/// differ.
 fn lead(answer: &Answer) -> String {
     let blocks = &answer.blocks;
     let Some(compared) = &answer.items else {
@@ -211,6 +212,7 @@ fn lead(answer: &Answer) -> String {
         Status::Gone,
         Status::Grew,
         Status::Shrank,
+        Status::Edited,
     ]
     .into_iter()
     .map(|status| {
@@ -457,10 +459,10 @@ impl<'c, 'a> Rows<'c, 'a> {
     }
 
     /// What a row says of an item that changed: its name, then in
-    /// parentheses its old name, the sections it moved between, and whether
-    /// it is new or gone, with the `kept` new or gone items that only it
-    /// keeps, or the functions that the compiler inlined it into; then what
-    /// keeps it, as "crc_table (gone), kept by crc32".
+    /// parentheses its old name, the sections it moved between, whether it
+    /// is edited, and whether it is new or gone, with the `kept` new or gone
+    /// items that only it keeps, or the functions that the compiler inlined
+    /// it into; then what keeps it, as "crc_table (gone), kept by crc32".
     fn item_text(&self, change: &Change, kept: usize) -> String {
         let items = &self.compared.items;
         let (old, new) = (&items.old.binary, &items.new.binary);
@@ -487,6 +489,9 @@ impl<'c, 'a> Rows<'c, 'a> {
             if from != to {
                 marks.push(format!("{from} to {to}"));
             }
+        }
+        if change.status == Status::Edited {
+            marks.push("edited".to_string());
         }
         let mut ending = match (change.status, change.old, change.new) {
             (Status::Gone, Some(index), _) => self.old.kept_by(index),
