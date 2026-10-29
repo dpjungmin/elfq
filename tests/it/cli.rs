@@ -3339,6 +3339,10 @@ The starts marked (may reach more) reach calls or jumps that elfq can't follow; 
 ",
     );
     assert!(!stdout(&[stripped, "top"]).contains("Nothing reaches"));
+    assert_eq!(
+        stdout(&[TCM_ENTRY_MAIN_SAMPLE, "why", "Reset_Handler"]),
+        "Reset_Handler is the reset handler in the vector table: the processor runs it first, at reset.\n"
+    );
 }
 
 #[test]

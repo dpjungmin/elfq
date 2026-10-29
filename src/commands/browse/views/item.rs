@@ -512,7 +512,7 @@ impl ItemPage {
         let node = self.node;
         if let (None, Some(root)) = (&self.why_refused, session.graph.root(node)) {
             let name = session.lead_name(node);
-            return Go::Say(text::root_sentence(binary, &name, root.kind));
+            return Go::Say(text::root_sentence(binary, &name, root));
         }
         if let Err(why) = &self.retainable {
             return Go::Say(why.clone());

@@ -164,7 +164,7 @@ pub(super) fn answer(binary: &Binary, graph: &Graph, node: Node) -> Answer {
     // Some calls can't be listed: the system's, to where the program starts,
     // and those through a pointer.
     match graph.root(node) {
-        Some(root) => notes.push(text::root_sentence(binary, name, root.kind)),
+        Some(root) => notes.push(text::root_sentence(binary, name, root)),
         None if through_pointer => notes.push(format!(
             "Calls to {name} through a pointer aren't listed, since elfq can't see them."
         )),

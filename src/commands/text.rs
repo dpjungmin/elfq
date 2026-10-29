@@ -6,7 +6,7 @@ use object::Architecture;
 
 use super::json;
 use crate::binary::{AddressRange, Binary, Item, ItemKind, Section, Source};
-use crate::graph::{Node, ReferenceKind, RootKind, Unresolved};
+use crate::graph::{Node, ReferenceKind, Root, RootKind, Unresolved};
 
 /// "1 function", "2 functions".
 pub(super) fn plural(n: usize, one: &str, many: &str) -> String {
@@ -341,8 +341,8 @@ pub(super) fn nothing_reaches(name: &str) -> String {
     format!("Nothing reaches {name}: the program never uses it, or elfq can't see how.")
 }
 
-/// Why the item called `name` is a root of `kind`, as a sentence.
-pub(super) fn root_sentence(binary: &Binary, name: &str, kind: RootKind) -> String {
+/// Why `root`, called `name`, is one, as a sentence.
+pub(super) fn root_sentence(binary: &Binary, name: &str, root: &Root) -> String {
     // Whether the program uses a startup section when it starts or exits.
     let when = |section: usize| {
         let section = &binary.sections[section].name;
@@ -352,7 +352,7 @@ pub(super) fn root_sentence(binary: &Binary, name: &str, kind: RootKind) -> Stri
             "starts"
         }
     };
-    match kind {
+    match root.kind {
         RootKind::Entry => format!("{name} is the entry point, where the program starts."),
         RootKind::InSection(section)
             if binary.sections[section].kind == object::SectionKind::Note =>
@@ -381,10 +381,21 @@ pub(super) fn root_sentence(binary: &Binary, name: &str, kind: RootKind) -> Stri
         RootKind::VectorTable => {
             format!("{name} holds the vector table, where the processor finds its handlers.")
         }
+        // The reset handler, when it isn't the entry point.
+        RootKind::Handler if is_reset_handler(binary, root.node) => format!(
+            "{name} is the reset handler in the vector table: the processor runs it first, at reset."
+        ),
         RootKind::Handler => format!(
             "{name} is in the vector table: the processor runs it on an interrupt or exception."
         ),
     }
+}
+
+/// Whether `node` is the item where the vector table's reset handler
+/// starts.
+fn is_reset_handler(binary: &Binary, node: Node) -> bool {
+    let reset = (binary.vector_table.as_ref()).and_then(|table| table.reset_handler());
+    matches!(node, Node::Item(index) if Some(binary.items[index].address) == reset)
 }
 
 /// Why a root is one, for the HOW column: as [`json::root_field`] says

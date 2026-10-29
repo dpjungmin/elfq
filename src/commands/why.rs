@@ -107,11 +107,7 @@ pub(super) fn why<'a>(
             };
             return json::write(&answer, out);
         }
-        writeln!(
-            out,
-            "{}",
-            text::root_sentence(binary, &lead_name, root.kind)
-        )?;
+        writeln!(out, "{}", text::root_sentence(binary, &lead_name, root))?;
         return Ok(());
     }
 
@@ -143,7 +139,7 @@ pub(super) fn answers<'a>(
     shorten: &dyn Fn(&str) -> String,
 ) -> TabAnswer {
     if let Some(root) = graph.root(node) {
-        let sentence = text::root_sentence(binary, lead_name, root.kind);
+        let sentence = text::root_sentence(binary, lead_name, root);
         return TabAnswer::sentences(vec![sentence]);
     }
     let users = Users::new(binary, graph, tree, node);

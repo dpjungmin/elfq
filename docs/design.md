@@ -137,10 +137,12 @@ Thumb code, but not the older 32-bit Arm (A32) code. (`binary::Binary::thumb`)
 reads at reset and on each interrupt or exception: the initial stack
 pointer, then the reset handler, which is usually the entry point, then
 the other handlers. elfq finds it by its shape rather than its section's
-name: where a word holds the entry point's address, or in firmware whose
-entry point is another function, such as `main`, at the start of the first
-section, by address, that begins with a stack pointer, the address of
-code, and two more that are code or 0. (`binary::VectorTable`)
+name: where a section begins with a stack pointer and then the entry
+point's address. Otherwise, as when a linker script names `main` as the
+entry point, or none, it is at the start of the first section of code or
+data, by address, that begins with a stack pointer, the address of code,
+and two more that are code or 0; sections that startup code copies into
+place come last. (`binary::VectorTable`)
 
 **Veneer.** A few instructions that a linker adds when a call's target is
 too far away for the call instruction, as between flash and ITCM: the code
@@ -1312,8 +1314,9 @@ plus each function's stack frame), and a query language.
    shows as its address, since the symbol has no section. An assembly
    function whose symbol has no size, last in its section, counts as
    empty, so its calls are missing; the same file without symbols has
-   them. Startup code that copies sections outside the entry function, or
-   reads a table of them as CMSIS does, adds rows to `callers`.
+   them. Startup code that copies sections outside the entry function and
+   the Cortex-M reset handler, such as in a function they call, or reads a
+   table of them as CMSIS does, adds rows to `callers`.
 4. **Shared libraries.** The functions that a library exports aren't roots
    yet, so `top`, `retained` and `why` refuse libraries, and also programs
    linked with `-static-pie`, which elfq takes for libraries. elfq finds
