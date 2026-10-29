@@ -1073,7 +1073,9 @@ that do this.
    because addresses are large numbers.
 5. **Find roots**, where the program starts running. An item is a root
    when:
-   1. it holds the ELF entry point;
+   1. it holds the ELF entry point, unless the entry point is in the
+      vector table, as in firmware linked with no entry point whose
+      `.text` begins with the table (see 6);
    2. it is in `.init` or `.fini`, which the dynamic loader runs, in a
       startup or exit array, or in a note section, such as `__abi_tag`,
       which the system reads;

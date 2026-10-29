@@ -348,6 +348,12 @@ fn an_entry_point_in_the_vector_table_is_no_function() {
     let (stdout, _) = run("entry-in-table.elf", &data, &["reach"]);
     assert!(!stdout.contains("entry point"), "{stdout}");
     assert!(stdout.contains("Reset "), "{stdout}");
+    // It is a root as the vector table, not as the entry point.
+    let (stdout, _) = run("entry-in-table.elf", &data, &["why", ".text@0x8000000"]);
+    assert_output(
+        &stdout,
+        ".text@0x8000000 holds the vector table, where the processor finds its handlers.\n",
+    );
 }
 
 #[test]

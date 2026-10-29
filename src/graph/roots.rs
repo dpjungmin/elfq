@@ -2,7 +2,7 @@
 //! the graph begins at one, and the program never uses an item that no path
 //! reaches, or uses it in a way elfq can't see.
 //!
-//! - the entry point;
+//! - the entry point, unless it is in the vector table below;
 //! - the functions in the startup and exit arrays, such as `.init_array`,
 //!   which the C runtime calls before and after `main`, and the code in the
 //!   `.init` and `.fini` sections, which the dynamic loader runs;
