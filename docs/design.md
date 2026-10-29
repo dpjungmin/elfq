@@ -135,9 +135,12 @@ Thumb code, but not the older 32-bit Arm (A32) code. (`binary::Binary::thumb`)
 
 **Vector table.** On Cortex-M, the list of addresses that the processor
 reads at reset and on each interrupt or exception: the initial stack
-pointer, then the reset handler, which is the entry point, then the other
-handlers. elfq finds it by its shape rather than its section's name.
-(`binary::VectorTable`)
+pointer, then the reset handler, which is usually the entry point, then
+the other handlers. elfq finds it by its shape rather than its section's
+name: where a word holds the entry point's address, or in firmware whose
+entry point is another function, such as `main`, at the start of the first
+section, by address, that begins with a stack pointer, the address of
+code, and two more that are code or 0. (`binary::VectorTable`)
 
 **Veneer.** A few instructions that a linker adds when a call's target is
 too far away for the call instruction, as between flash and ITCM: the code
@@ -1041,11 +1044,12 @@ that do this.
    its own finds; when that code joins code elfq follows, the whole
    function does. elfq scans each function once, as it loads the file
    (`Binary::code_references`).
-   The entry point's code is a special case: startup code copies or clears
-   whole sections such as `.data` and `.bss`, loading where each starts and
-   ends through symbols that the linker script defines, such as `_sdata`
-   and `_edata`. When the entry point loads both ends of a section, those
-   addresses aren't uses of the items that start there.
+   Startup code is a special case: it copies or clears whole sections such
+   as `.data` and `.bss`, loading where each starts and ends through
+   symbols that the linker script defines, such as `_sdata` and `_edata`.
+   When the entry point, or a Cortex-M reset handler that isn't the entry
+   point, loads both ends of a section, those addresses aren't uses of the
+   items that start there.
    LLVM may merge small variables into one block (`.L_MergedGlobals`),
    which code uses through the block's address; that address counts as a
    use of each variable in the block.

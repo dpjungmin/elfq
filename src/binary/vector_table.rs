@@ -3,16 +3,16 @@
 //! exception and interrupt.
 //!
 //! The table is a list of words: the initial stack pointer, then the
-//! address of the reset handler, which is the entry point (plus 1, for
-//! Thumb), then the other handlers. Reserved entries are 0, or on some parts
-//! another word, such as the checksum that NXP's LPC boot ROM checks in
-//! entry 7. Linker scripts name its section differently (`.isr_vector`,
+//! address of the reset handler, which is usually the entry point (plus 1,
+//! for Thumb), then the other handlers. Reserved entries are 0, or on some
+//! parts another word, such as the checksum that NXP's LPC boot ROM checks
+//! in entry 7. Linker scripts name its section differently (`.isr_vector`,
 //! `.vector_table`) or put it first in `.text`, so `find` finds it by its
 //! shape, and its entries tell where it ends (see `VectorTable::size`).
 
 use object::SectionKind;
 
-use super::{ArmArchitecture, Binary, Item, ItemKind, Source, code_section};
+use super::{ArmArchitecture, Binary, FileKind, Item, ItemKind, Section, Source, code_section};
 
 /// Where the vector table is and the handlers it lists.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,8 +35,8 @@ pub struct VectorTable {
     ///    entry's section.
     pub size: u64,
     /// Where each handler's code starts, without the Thumb bit, in the
-    /// table's order: first the reset handler, which is the entry point. A
-    /// handler for several exceptions is listed once for each.
+    /// table's order: first the reset handler, which is usually the entry
+    /// point. A handler for several exceptions is listed once for each.
     pub handlers: Vec<u64>,
     /// The exception of each of `handlers`, by its entry's number, counting
     /// the stack pointer's as 0: 1 for reset, 3 for HardFault, 15 for
@@ -53,6 +53,17 @@ impl VectorTable {
     pub fn runs_in_normal_operation(&self, address: u64) -> bool {
         self.exceptions_of(address)
             .any(|exception| ROUTINE.contains(&exception) || exception >= FIRST_INTERRUPT)
+    }
+
+    /// Where the reset handler's code starts: the code the processor runs
+    /// first. `None` when the reset entry doesn't hold the address of Thumb
+    /// code, as when the entry point is in data.
+    pub fn reset_handler(&self) -> Option<u64> {
+        let position = self
+            .exceptions
+            .iter()
+            .position(|&exception| exception == 1)?;
+        Some(self.handlers[position])
     }
 
     /// The exceptions that the code at `address` handles, by their entries'
@@ -129,26 +140,13 @@ const FIRST_INTERRUPT: u64 = 16;
 /// 3. The first word that holds the entry point's Thumb address, the entry
 ///    point plus 1, is the reset entry, and the table starts one word
 ///    before it.
-/// 4. The entries from there tell where it ends (see `VectorTable::size`).
+/// 4. When no word holds it, as in firmware whose entry point is `main` or
+///    another function, the table is at the start of a section that begins
+///    like one (see [`at_section_start`]).
+/// 5. The entries from there tell where it ends (see `VectorTable::size`).
 pub(super) fn find(binary: &Binary) -> Option<VectorTable> {
     let size = binary.pointer_size;
-    let (section, reset) = binary.sections.iter().find_map(|section| {
-        if !section.allocated {
-            return None;
-        }
-        // The reset entry follows the stack pointer, so it can't be first.
-        let first = section.address.next_multiple_of(size) + size;
-        let mut end = section.address + section.size;
-        // In code, only there, so that no constant in a function is taken
-        // for it.
-        if section.kind == SectionKind::Text {
-            end = end.min(first + size);
-        }
-        let (slot, _) = binary
-            .words(first, end)
-            .find(|&(_, value)| value == binary.entry | 1)?;
-        Some((section, slot))
-    })?;
+    let (section, reset) = holding_entry(binary).or_else(|| at_section_start(binary))?;
 
     let address = reset - size;
     let section_end = section.address + section.size;
@@ -179,6 +177,74 @@ pub(super) fn find(binary: &Binary) -> Option<VectorTable> {
         size: end - address,
         handlers,
         exceptions,
+    })
+}
+
+/// The section that holds the vector table and its reset entry, where a
+/// word holds the entry point's Thumb address (steps 1 to 3 of [`find`]).
+fn holding_entry(binary: &Binary) -> Option<(&Section, u64)> {
+    let size = binary.pointer_size;
+    binary.sections.iter().find_map(|section| {
+        if !section.allocated {
+            return None;
+        }
+        // The reset entry follows the stack pointer, so it can't be first.
+        let first = section.address.next_multiple_of(size) + size;
+        let mut end = section.address + section.size;
+        // In code, only there, so that no constant in a function is taken
+        // for it.
+        if section.kind == SectionKind::Text {
+            end = end.min(first + size);
+        }
+        let (slot, _) = binary
+            .words(first, end)
+            .find(|&(_, value)| value == binary.entry | 1)?;
+        Some((section, slot))
+    })
+}
+
+/// The section that holds the vector table and its reset entry, for
+/// firmware whose entry point isn't its reset handler: a linker script can
+/// name `main` as the entry point, or none, and pico-sdk's names code that
+/// runs before the reset handler. The table is at the start of the first
+/// allocated section, by address, that the file holds bytes for and that
+/// begins like a table:
+///
+/// 1. the initial stack pointer, a multiple of 4;
+/// 2. the reset handler's Thumb address: odd, and in a code section once
+///    bit 0 is cleared;
+/// 3. NMI's and HardFault's, each a Thumb address or 0.
+///
+/// Only in an executable that runs at a fixed address, as firmware does: a
+/// program that an operating system loads has no vector table.
+fn at_section_start(binary: &Binary) -> Option<(&Section, u64)> {
+    if binary.kind != FileKind::Executable {
+        return None;
+    }
+    let size = binary.pointer_size;
+    let thumb_code =
+        |value: u64| value & 1 == 1 && code_section(&binary.sections, value & !1).is_some();
+    let mut sections: Vec<&Section> = (binary.sections.iter())
+        .filter(|section| section.allocated && section.file_range.is_some())
+        .collect();
+    sections.sort_by_key(|section| section.address);
+    sections.into_iter().find_map(|section| {
+        let start = section.address;
+        if start % size != 0 || section.size < 4 * size {
+            return None;
+        }
+        let words: Vec<u64> = (binary.words(start, start + 4 * size))
+            .map(|(_, value)| value)
+            .collect();
+        let [stack, reset, nmi, hard_fault] = words[..] else {
+            return None;
+        };
+        let table = stack % 4 == 0
+            && thumb_code(reset)
+            && [nmi, hard_fault]
+                .iter()
+                .all(|&value| value == 0 || thumb_code(value));
+        table.then_some((section, start + size))
     })
 }
 
@@ -220,37 +286,39 @@ mod tests {
     use object::{Architecture, Endianness};
 
     use super::*;
-    use crate::binary::{FileKind, Section};
 
-    #[test]
-    fn a_short_table_in_code_ends_at_its_last_handler() {
-        // The stack pointer, then the reset handler and five fault handlers,
-        // all at 0x1030. Five words of code follow, where entries 7 to 10
-        // would be reserved, and then the reset handler's code.
-        let mut words = vec![0x2000_1000_u32];
-        words.extend([0x1031; 6]);
-        words.extend([0xbf00_bf00; 5]);
-        words.push(0xe7fe_e7fe);
-        let text: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
-        let binary = Binary {
+    /// A Thumb executable whose entry point is `entry`, with `sections`:
+    /// each a name, an address, a kind and the words it holds, which the
+    /// file stores one section after another.
+    fn firmware(entry: u64, sections: &[(&str, u64, SectionKind, Vec<u32>)]) -> Binary {
+        let mut data = Vec::new();
+        let sections = (sections.iter())
+            .map(|(name, address, kind, words)| {
+                let offset = data.len() as u64;
+                data.extend(words.iter().flat_map(|word| word.to_le_bytes()));
+                let size = data.len() as u64 - offset;
+                Section {
+                    name: name.to_string(),
+                    address: *address,
+                    size,
+                    kind: *kind,
+                    allocated: true,
+                    file_range: Some((offset, size)),
+                    entry_size: 0,
+                    load_address: None,
+                }
+            })
+            .collect();
+        Binary {
             architecture: Architecture::Arm,
             pointer_size: 4,
             kind: FileKind::Executable,
-            entry: 0x1030,
+            entry,
             thumb: true,
             endianness: Endianness::Little,
             has_symbols: false,
             has_dwarf: false,
-            sections: vec![Section {
-                name: ".text".to_string(),
-                address: 0x1000,
-                size: text.len() as u64,
-                kind: SectionKind::Text,
-                allocated: true,
-                file_range: Some((0, text.len() as u64)),
-                entry_size: 0,
-                load_address: None,
-            }],
+            sections,
             items: Vec::new(),
             imports: Vec::new(),
             relocations: Vec::new(),
@@ -261,8 +329,20 @@ mod tests {
             data_in_code: Vec::new(),
             warnings: Vec::new(),
             code_references: std::collections::HashMap::new(),
-            data: text,
-        };
+            data,
+        }
+    }
+
+    #[test]
+    fn a_short_table_in_code_ends_at_its_last_handler() {
+        // The stack pointer, then the reset handler and five fault handlers,
+        // all at 0x1030. Five words of code follow, where entries 7 to 10
+        // would be reserved, and then the reset handler's code.
+        let mut words = vec![0x2000_1000_u32];
+        words.extend([0x1031; 6]);
+        words.extend([0xbf00_bf00; 5]);
+        words.push(0xe7fe_e7fe);
+        let binary = firmware(0x1030, &[(".text", 0x1000, SectionKind::Text, words)]);
         let table = VectorTable {
             address: 0x1000,
             size: 28,
@@ -270,6 +350,90 @@ mod tests {
             exceptions: vec![1, 2, 3, 4, 5, 6],
         };
         assert_eq!(find(&binary), Some(table));
+    }
+
+    /// Firmware whose entry point, 0x1050, isn't its reset handler, 0x1040,
+    /// as when a linker script names `main` as the entry point. `.isr` holds
+    /// the vector table, with NMI's entry 0; `.rodata`, which the file lists
+    /// first and whose address comes first, begins like a table but for a
+    /// stack pointer that isn't a multiple of 4, as an array of Thumb
+    /// addresses would.
+    fn entry_point_is_main(kind: FileKind) -> Binary {
+        let mut binary = firmware(
+            0x1050,
+            &[
+                (
+                    ".rodata",
+                    0x800,
+                    SectionKind::ReadOnlyData,
+                    vec![0x1041, 0x1041, 0x1041, 0x1041],
+                ),
+                (
+                    ".isr",
+                    0x900,
+                    SectionKind::ReadOnlyData,
+                    vec![0x2000_1000, 0x1041, 0, 0x1045],
+                ),
+                (".text", 0x1000, SectionKind::Text, vec![0xbf00_bf00; 32]),
+            ],
+        );
+        binary.kind = kind;
+        binary
+    }
+
+    #[test]
+    fn a_table_that_does_not_hold_the_entry_point_is_at_a_section_start() {
+        let table = VectorTable {
+            address: 0x900,
+            size: 16,
+            handlers: vec![0x1040, 0x1044],
+            exceptions: vec![1, 3],
+        };
+        let binary = entry_point_is_main(FileKind::Executable);
+        assert_eq!(find(&binary), Some(table));
+        assert_eq!(find(&binary).unwrap().reset_handler(), Some(0x1040));
+    }
+
+    #[test]
+    fn a_section_starts_a_table_only_if_its_first_four_words_could() {
+        let starts = |words: Vec<u32>| {
+            let code = vec![0xbf00_bf00; 32];
+            let sections = [
+                (".isr", 0x900, SectionKind::ReadOnlyData, words),
+                (".text", 0x1000, SectionKind::Text, code),
+            ];
+            find(&firmware(0x1050, &sections)).is_some()
+        };
+        assert!(starts(vec![0x2000_1000, 0x1041, 0x1041, 0x1041]));
+        // The stack pointer isn't a multiple of 4.
+        assert!(!starts(vec![0x2000_1002, 0x1041, 0x1041, 0x1041]));
+        // The reset entry is 0, or an even address.
+        assert!(!starts(vec![0x2000_1000, 0, 0x1041, 0x1041]));
+        assert!(!starts(vec![0x2000_1000, 0x1040, 0x1041, 0x1041]));
+        // HardFault's entry is odd, but outside code.
+        assert!(!starts(vec![0x2000_1000, 0x1041, 0x1041, 0x0801]));
+        // Too short to hold four words.
+        assert!(!starts(vec![0x2000_1000, 0x1041, 0x1041]));
+    }
+
+    #[test]
+    fn only_firmware_has_a_table_that_does_not_hold_the_entry_point() {
+        let binary = entry_point_is_main(FileKind::PositionIndependentExecutable);
+        assert_eq!(find(&binary), None);
+    }
+
+    #[test]
+    fn the_reset_handler_is_the_code_its_entry_holds() {
+        let table = |exceptions: Vec<u64>| VectorTable {
+            address: 0,
+            size: 16,
+            handlers: vec![0x100, 0x200],
+            exceptions,
+        };
+        assert_eq!(table(vec![1, 3]).reset_handler(), Some(0x100));
+        // The reset entry holds no address of code, as when the entry point
+        // is in data.
+        assert_eq!(table(vec![2, 3]).reset_handler(), None);
     }
 
     #[test]

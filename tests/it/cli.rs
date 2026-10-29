@@ -4,8 +4,9 @@ use std::path::Path;
 use std::process::Stdio;
 
 use crate::support::{
-    DEEP_SAMPLE, LIBRARY_SAMPLE, MOVED_SAMPLE, SAMPLE, TCM_EDITED_SAMPLE, TCM_INLINED_SAMPLE,
-    TCM_MOVED_SAMPLE, TCM_SAMPLE, TCM_SDRAM_SAMPLE, assert_output, command, elfq, samples,
+    DEEP_SAMPLE, LIBRARY_SAMPLE, MOVED_SAMPLE, SAMPLE, TCM_EDITED_SAMPLE, TCM_ENTRY_MAIN_SAMPLE,
+    TCM_INLINED_SAMPLE, TCM_MOVED_SAMPLE, TCM_SAMPLE, TCM_SDRAM_SAMPLE, assert_output, command,
+    elfq, samples,
 };
 
 /// Runs elfq, expecting success, and returns what it printed.
@@ -3297,6 +3298,47 @@ Where testdata/bin/c-cortex-m7-stripped.elf starts, and the bytes of code and da
 The starts marked (may reach more) reach calls or jumps that elfq can't follow; reach START names them.
 ",
     );
+}
+
+#[test]
+fn reach_finds_the_vector_table_when_main_is_the_entry_point() {
+    // No word of the vector table holds the entry point, so elfq takes the
+    // table at the start of .isr_vector, the first section by address that
+    // begins like one. Reset_Handler is startup code all the same: its
+    // copies of .itcm and .data aren't uses of the items there, so it
+    // reaches what it reaches as the entry point of c-cortex-m7.elf.
+    assert_output(
+        &stdout(&[TCM_ENTRY_MAIN_SAMPLE, "reach"]),
+        "\
+Where testdata/bin/c-cortex-m7-entry-main.elf starts, and the bytes of code and data that each reaches in each block of memory:
+
+0x00000000  0x20000000  0x20240000  0x30000000  WHY                        START
+       200        1100        4096        2071  entry point                main (may reach more)
+       200        1100        4096        2345  Reset                      Reset_Handler (may reach more)
+         0           0           0           2  NMI, HardFault and 6 more  Default_Handler
+        24          24        4096         430  SysTick                    SysTick_Handler (may reach more)
+
+The starts marked (may reach more) reach calls or jumps that elfq can't follow; reach START names them.
+",
+    );
+    // Stripped, elfq finds the handlers' code from the table too, so
+    // nothing is left unreached.
+    let stripped = "testdata/bin/c-cortex-m7-entry-main-stripped.elf";
+    assert_output(
+        &stdout(&[stripped, "reach"]),
+        "\
+Where testdata/bin/c-cortex-m7-entry-main-stripped.elf starts, and the bytes of code and data that each reaches in each block of memory:
+
+0x00000000  0x20000000  0x20240000  0x30000000  WHY                        START
+       200        1100        4096        2080  entry point                entry (may reach more)
+       200        1100        4096        2354  Reset                      fn_0x300005f8 (may reach more)
+         0           0           0           2  NMI, HardFault and 6 more  fn_0x300005f4
+        24          24        4096         430  SysTick                    fn_0x0 (may reach more)
+
+The starts marked (may reach more) reach calls or jumps that elfq can't follow; reach START names them.
+",
+    );
+    assert!(!stdout(&[stripped, "top"]).contains("Nothing reaches"));
 }
 
 #[test]

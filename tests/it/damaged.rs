@@ -300,13 +300,16 @@ fn the_vector_table_ends_where_the_file_holds_no_bytes() {
 #[test]
 fn the_search_for_the_vector_table_skips_a_huge_bss() {
     // With an entry point that no vector table lists, elfq looks for one
-    // in every section, `.bss` too, and finds none.
+    // in every section, `.bss` too, and finds none. It then finds the table
+    // at the start of `.isr_vector`, by how the table begins.
     let mut data = sample("c-cortex-m4.elf");
     // `e_entry`, in the file's header.
     write(&mut data, 0x18, 4, 0x0800_0001);
     set_section_field(&mut data, ".bss", SIZE, 0xffff_0000);
     let (binary, _) = parse_quickly(data);
-    assert_eq!(binary.vector_table, None);
+    let table = binary.vector_table.unwrap();
+    assert_eq!(table.address, 0x0800_0000);
+    assert_eq!(table.reset_handler(), Some(0x0800_05a0));
 }
 
 #[test]

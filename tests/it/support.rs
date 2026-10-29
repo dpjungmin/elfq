@@ -27,6 +27,9 @@ pub const TCM_INLINED_SAMPLE: &str = "testdata/bin/c-cortex-m7-inlined.elf";
 /// [`TCM_SAMPLE`] with two constants changed: one that decode_header
 /// compares with, and one of fir_coeffs.
 pub const TCM_EDITED_SAMPLE: &str = "testdata/bin/c-cortex-m7-edited.elf";
+/// [`TCM_SAMPLE`] linked with `main` as its entry point, so that no word of
+/// its vector table holds the entry point.
+pub const TCM_ENTRY_MAIN_SAMPLE: &str = "testdata/bin/c-cortex-m7-entry-main.elf";
 
 /// The path of the sample `name` in testdata/bin.
 pub fn sample_path(name: &str) -> PathBuf {
