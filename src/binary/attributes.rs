@@ -230,14 +230,29 @@ mod tests {
         for (version, profile) in others {
             assert!(!architecture(version, profile).is_cortex_m_up_to_v7());
         }
-        // Armv8-M Baseline and Armv8.1-M Mainline are Cortex-M too, and
-        // Armv7 is when the profile is M.
-        let cortex_m = [(16, None), (21, None), (13, None), (10, Some(b'M'))];
+    }
+
+    #[test]
+    fn cortex_m_cores_run_only_thumb() {
+        let architecture = |version, profile| ArmArchitecture { version, profile };
+        // Armv6-M to Armv8.1-M Mainline are Cortex-M with no profile, and
+        // any version is with profile M.
+        let cortex_m = [
+            (11, None),
+            (12, None),
+            (13, None),
+            (16, None),
+            (17, None),
+            (21, None),
+            (10, Some(b'M')),
+            (40, Some(b'M')),
+        ];
         for (version, profile) in cortex_m {
-            assert!(architecture(version, profile).is_cortex_m());
+            assert!(architecture(version, profile).is_cortex_m(), "{version}");
         }
+        // Armv7 with profile A or none, and Armv8-A, aren't.
         for (version, profile) in [(10, Some(b'A')), (10, None), (14, None)] {
-            assert!(!architecture(version, profile).is_cortex_m());
+            assert!(!architecture(version, profile).is_cortex_m(), "{version}");
         }
     }
 

@@ -315,11 +315,12 @@ fn the_search_for_the_vector_table_skips_a_huge_bss() {
 #[test]
 fn stripped_cortex_m_firmware_is_thumb_though_its_entry_point_is_even() {
     // Linked with no entry point, firmware's entry point is where `.text`
-    // starts, such as main's even address. Stripped, it has no symbols
-    // either, but its build attributes name a Cortex-M core.
+    // starts, an even address: here on_timer's, as ld sets it. Stripped,
+    // it has no symbols either, but its build attributes name a Cortex-M
+    // core.
     let mut data = sample("c-cortex-m7-entry-main-stripped.elf");
     // `e_entry`, in the file's header.
-    write(&mut data, 0x18, 4, 0x3000_0570);
+    write(&mut data, 0x18, 4, 0x3000_0140);
     let (binary, _) = parse(&data);
     assert!(binary.thumb);
     let table = binary.vector_table.unwrap();
