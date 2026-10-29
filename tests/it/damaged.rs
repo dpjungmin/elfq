@@ -327,6 +327,29 @@ fn stripped_cortex_m_firmware_is_thumb_though_its_entry_point_is_even() {
 }
 
 #[test]
+fn an_entry_point_in_the_vector_table_is_no_function() {
+    // Linked with no entry point, firmware whose `.text` begins with the
+    // vector table has its entry point there. The table is data all the
+    // same: no function starts there, and nothing reads it as code.
+    let mut data = sample("c-cortex-m4-cmsis-stripped.elf");
+    write(&mut data, 0x18, 4, 0x0800_0000);
+    let (binary, _) = parse(&data);
+    let table = binary.vector_table.clone().unwrap();
+    assert_eq!(
+        (table.address, table.reset_handler()),
+        (0x0800_0000, Some(0x0800_05a0))
+    );
+    let item = &binary.items[binary.item_at(0x0800_0000).unwrap()];
+    assert_eq!(
+        (item.name.as_str(), item.size),
+        (".text@0x8000000", table.size)
+    );
+    let (stdout, _) = run("entry-in-table.elf", &data, &["reach"]);
+    assert!(!stdout.contains("entry point"), "{stdout}");
+    assert!(stdout.contains("Reset "), "{stdout}");
+}
+
+#[test]
 fn a_section_that_would_end_past_the_last_address_is_ignored() {
     let mut data = sample("c-x86_64.elf");
     set_section_field(&mut data, ".fini_array", SIZE, u64::MAX - 15);

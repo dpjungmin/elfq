@@ -993,8 +993,10 @@ that do this.
       even in stripped files. One that starts where a function does gives
       it a size if it has none; one that starts inside a function, at 0 or
       is empty adds nothing; any other in code is a new function.
-   5. The entry point, as a function named `entry`, when it is in code and
-      no function covers it.
+   5. The entry point, as a function named `entry`, when it is in code, no
+      function covers it, and it isn't in the vector table, as it is in
+      firmware linked with no entry point whose `.text` begins with the
+      table.
    6. The Cortex-M vector table, when no item covers any of it, named after
       its section, or after the section and address (`.text@0x8000000`)
       when it is only part of it.

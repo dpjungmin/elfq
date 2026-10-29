@@ -375,7 +375,9 @@ impl Binary {
                 .warnings
                 .push(format!("cannot read .eh_frame: {err}")),
         }
-        add_entry_item(&mut items, binary.entry, &binary.sections);
+        if !binary.entry_in_vector_table() {
+            add_entry_item(&mut items, binary.entry, &binary.sections);
+        }
         items.extend(vector_table::item(&binary, &items));
         let listed = items
             .iter()
@@ -519,6 +521,13 @@ impl Binary {
             .data
             .get(usize::try_from(offset.checked_add(start)?).ok()?..)?;
         Some(&rest[..rest.len().min(usize::try_from(len).unwrap_or(usize::MAX))])
+    }
+
+    /// Whether the entry point is in the vector table, as in firmware linked
+    /// with no entry point, which is where `.text` starts, when `.text`
+    /// begins with the table. It is data then, not code.
+    pub fn entry_in_vector_table(&self) -> bool {
+        (self.vector_table.as_ref()).is_some_and(|table| table.contains(self.entry))
     }
 
     /// The section that holds `address` when the program runs, as an index

@@ -60,13 +60,16 @@ const STARTUP_CODE: [&str; 2] = [".init", ".fini"];
 
 /// Returns the roots, sorted by node. A node that is a root for several
 /// reasons appears once, with the reason found first, so the entry point is
-/// always [`RootKind::Entry`].
+/// always [`RootKind::Entry`], unless it is in the vector table (see
+/// [`Binary::entry_in_vector_table`]).
 pub(super) fn find(binary: &Binary) -> Vec<Root> {
     let mut roots = Vec::new();
     let mut add = |nodes: Vec<Node>, kind| {
         roots.extend(nodes.into_iter().map(|node| Root { node, kind }));
     };
-    let entry = binary.item_at(binary.entry).map(Node::Item);
+    let entry = (binary.item_at(binary.entry))
+        .filter(|_| !binary.entry_in_vector_table())
+        .map(Node::Item);
     add(entry.into_iter().collect(), RootKind::Entry);
     for (index, section) in binary.sections.iter().enumerate() {
         if !section.allocated {

@@ -67,6 +67,11 @@ impl VectorTable {
         Some(self.handlers[position])
     }
 
+    /// Whether the table holds `address`.
+    pub fn contains(&self, address: u64) -> bool {
+        (self.address..self.address + self.size).contains(&address)
+    }
+
     /// The exceptions that the code at `address` handles, by their entries'
     /// numbers, in the table's order: none when no entry lists it.
     pub fn exceptions_of(&self, address: u64) -> impl Iterator<Item = u64> + '_ {
