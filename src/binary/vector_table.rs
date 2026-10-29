@@ -137,10 +137,13 @@ const ROUTINE: [u64; 3] = [11, 14, 15];
 const FIRST_INTERRUPT: u64 = 16;
 
 /// The kinds of section that can hold the vector table: code or data, not
-/// a Linux program's version tables or an unwinder's `.ARM.exidx`.
-const CODE_OR_DATA: [SectionKind; 3] = [
+/// a Linux program's version tables or an unwinder's `.ARM.exidx`. LLD
+/// marks a section of read-only data that holds any strings as one of
+/// strings, so the table can begin one.
+const CODE_OR_DATA: [SectionKind; 4] = [
     SectionKind::Text,
     SectionKind::ReadOnlyData,
+    SectionKind::ReadOnlyString,
     SectionKind::Data,
 ];
 
@@ -526,6 +529,26 @@ mod tests {
         // than a wrong one.
         let binary = firmware(0x1040, &sections(SectionKind::Text));
         assert_eq!(find(&binary), None);
+    }
+
+    #[test]
+    fn a_table_can_begin_read_only_data_that_holds_strings() {
+        // LLD marks an output section as one of strings when any section it
+        // holds is, so `.rodata` that begins with the table and holds
+        // string literals is one.
+        let rodata = vec![0x2000_1000, 0x1041, 0x1045, 0x1045, 0x6c6c_6568, 0x6f];
+        let sections = [
+            (".rodata", 0x800, SectionKind::ReadOnlyString, rodata),
+            (".text", 0x1000, SectionKind::Text, vec![0xbf00_bf00; 32]),
+        ];
+        // The entry point is the reset handler, or `main`.
+        for entry in [0x1040, 0x1050] {
+            let table = find(&firmware(entry, &sections)).unwrap();
+            assert_eq!(
+                (table.address, table.reset_handler()),
+                (0x800, Some(0x1040))
+            );
+        }
     }
 
     #[test]
