@@ -3339,9 +3339,18 @@ The starts marked (may reach more) reach calls or jumps that elfq can't follow; 
 ",
     );
     assert!(!stdout(&[stripped, "top"]).contains("Nothing reaches"));
+    // The overview starts from the reset handler, not from main, which
+    // the stripped file doesn't name.
+    let overview = stdout(&[stripped]);
+    assert!(overview.contains(&format!("elfq {stripped} retained fn_0x300005f8\n")));
     assert_eq!(
         stdout(&[TCM_ENTRY_MAIN_SAMPLE, "why", "Reset_Handler"]),
-        "Reset_Handler is the reset handler in the vector table: the processor runs it first, at reset.\n"
+        "Reset_Handler is the reset handler in the vector table: the processor runs it at reset.\n"
+    );
+    assert_eq!(
+        stdout(&[TCM_ENTRY_MAIN_SAMPLE, "why", "main"]),
+        "main is the entry point that the ELF header names, but at reset the processor runs the \
+         reset handler in the vector table.\n"
     );
 }
 

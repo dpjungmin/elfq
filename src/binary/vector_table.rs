@@ -56,7 +56,7 @@ impl VectorTable {
     }
 
     /// Where the reset handler's code starts: the code the processor runs
-    /// first. `None` when the reset entry doesn't hold the address of Thumb
+    /// at reset. `None` when the reset entry doesn't hold the address of Thumb
     /// code, which happens only when the word taken for it holds the
     /// address of an entry point that isn't code.
     pub fn reset_handler(&self) -> Option<u64> {

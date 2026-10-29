@@ -159,6 +159,21 @@ change with a `-D` flag for app.c (see the end of
 The stripped and `-nodebug` files hold the same memory as the builds with
 DWARF, so `diff` finds them the same.
 
+### Entry-point sample
+
+`c-cortex-m7-entry-main*.elf` is the Cortex-M7 sample linked with
+`ENTRY(main)`. It differs from `c-cortex-m7.elf` only in the ELF header's
+entry point, so no word of its vector table holds the entry point. elfq
+finds the table at the start of `.isr_vector`, the first section by
+address that begins like one. `reach` lists `main` as the entry point and
+`Reset_Handler` as `Reset`, with the same bytes as the `Reset (entry
+point)` row of `c-cortex-m7.elf`: `Reset_Handler` is startup code all the
+same, which calls only `main`, `memcpy` and `memset`. `why Reset_Handler`
+says the processor runs it at reset, and `why main` that the processor
+runs the reset handler, not `main`, at reset. In the stripped file,
+nothing is left unreached, and the overview suggests `retained
+fn_0x300005f8`, the reset handler.
+
 ### CMSIS layout sample ([c/cortex-m4-cmsis.ld](c/cortex-m4-cmsis.ld))
 
 The Cortex-M4 C sample again, linked the way CMSIS's `gcc_arm.ld` template

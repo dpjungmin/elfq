@@ -353,6 +353,12 @@ pub(super) fn root_sentence(binary: &Binary, name: &str, root: &Root) -> String 
         }
     };
     match root.kind {
+        // Where the reset handler isn't the entry point, as when a linker
+        // script names `main` as the entry point, the processor starts at
+        // the reset handler all the same.
+        RootKind::Entry if reset_handler_elsewhere(binary, root.node) => format!(
+            "{name} is the entry point that the ELF header names, but at reset the processor runs the reset handler in the vector table."
+        ),
         RootKind::Entry => format!("{name} is the entry point, where the program starts."),
         RootKind::InSection(section)
             if binary.sections[section].kind == object::SectionKind::Note =>
@@ -383,7 +389,7 @@ pub(super) fn root_sentence(binary: &Binary, name: &str, root: &Root) -> String 
         }
         // The reset handler, when it isn't the entry point.
         RootKind::Handler if is_reset_handler(binary, root.node) => format!(
-            "{name} is the reset handler in the vector table: the processor runs it first, at reset."
+            "{name} is the reset handler in the vector table: the processor runs it at reset."
         ),
         RootKind::Handler => format!(
             "{name} is in the vector table: the processor runs it on an interrupt or exception."
@@ -396,6 +402,15 @@ pub(super) fn root_sentence(binary: &Binary, name: &str, root: &Root) -> String 
 fn is_reset_handler(binary: &Binary, node: Node) -> bool {
     let reset = (binary.vector_table.as_ref()).and_then(|table| table.reset_handler());
     matches!(node, Node::Item(index) if Some(binary.items[index].address) == reset)
+}
+
+/// Whether the vector table has a reset handler, and `node` doesn't hold
+/// it.
+fn reset_handler_elsewhere(binary: &Binary, node: Node) -> bool {
+    let reset = (binary.vector_table.as_ref()).and_then(|table| table.reset_handler());
+    reset.is_some_and(
+        |reset| !matches!(node, Node::Item(index) if binary.items[index].contains(reset)),
+    )
 }
 
 /// Why a root is one, for the HOW column: as [`json::root_field`] says
