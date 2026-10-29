@@ -140,12 +140,13 @@ reads at reset and on each interrupt or exception: the initial stack
 pointer, then the reset handler, which is usually the entry point, then
 the other handlers. elfq finds it by its shape rather than its section's
 name: where a section of code or data begins with a word that could be the
-stack pointer, which is not 0 and not in code or read-only data, and then
-the entry point's address. Otherwise, as when a linker script names `main`
-as the entry point, or none, it is at the start of the first section of
-code or data, by address, that begins with such a stack pointer, the
-address of code, and two more that are code or 0; sections that startup
-code copies into place come last. Failing both, it is where a word in a
+stack pointer, a multiple of 4 other than 0 just above a word that isn't
+in code or read-only data, and then the entry point's address. Otherwise,
+as when a linker script names `main` as the entry point, or none, it is at
+the start of the first section of code or data, by address, that begins
+with such a stack pointer and then the addresses of the reset, NMI and
+HardFault handlers' code; sections that startup code copies into place
+come last. Failing both, it is where a word in a
 section of data, after one that could be the stack pointer, holds the
 entry point's address, as when a header comes before the table.
 (`binary::VectorTable`)
@@ -1336,7 +1337,9 @@ plus each function's stack frame), and a query language.
    section doesn't begin with, and whose reset entry doesn't hold the
    entry point, or that sits in the middle of a section of code, isn't
    found. Zephyr firmware built to start after a boot loader, which begins
-   its code with 0s and then the table, is one.
+   its code with 0s and then the table, is one. Where the table isn't
+   found, a section that begins like one, with a pointer to RAM and then
+   three addresses of code, can pass for it.
 6. **Thumb text.** `browse` never shows wrong text where elfq knows code
    from data; where it can't tell, it prints `.word` or `.inst`. It prints
    the text of Thumb instructions only where elfq's sweep decodes an
