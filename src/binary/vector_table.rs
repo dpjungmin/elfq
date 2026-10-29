@@ -131,17 +131,26 @@ const ROUTINE: [u64; 3] = [11, 14, 15];
 /// The entry of the chip's first interrupt.
 const FIRST_INTERRUPT: u64 = 16;
 
+/// The kinds of section that can hold the vector table: code or data, not
+/// a Linux program's version tables or an unwinder's `.ARM.exidx`.
+const CODE_OR_DATA: [SectionKind; 3] = [
+    SectionKind::Text,
+    SectionKind::ReadOnlyData,
+    SectionKind::Data,
+];
+
 /// Finds the vector table in a Thumb file, if it has one, by its shape:
 ///
-/// 1. Allocated sections are tried in the order the file lists them.
+/// 1. Sections of code or data are tried in the order the file lists
+///    them.
 /// 2. In each, the words at multiples of the pointer size are read from the
 ///    second one on, since the stack pointer comes first. In a code section,
 ///    only that second word is read, so that no constant in a function is
 ///    taken for the reset entry.
 /// 3. The first word that holds the entry point's Thumb address, the entry
-///    point plus 1, and follows one that could be the stack pointer, a
-///    multiple of 4 other than 0, is the reset entry, and the table starts
-///    one word before it.
+///    point plus 1, and follows one that could be the stack pointer (see
+///    [`could_be_stack_pointer`]), is the reset entry, and the table
+///    starts one word before it.
 /// 4. Unless that word is its section's second, a section that begins like
 ///    a table comes first (see [`at_section_start`]), as in firmware whose
 ///    entry point is `main`, or none: no word holds the entry point there,
@@ -195,10 +204,10 @@ fn holding_entry(binary: &Binary) -> Option<(&Section, u64)> {
         let mut before = binary.words(slot - size, slot);
         before
             .next()
-            .is_some_and(|(_, stack)| stack != 0 && stack.is_multiple_of(4))
+            .is_some_and(|(_, stack)| could_be_stack_pointer(binary, stack))
     };
     binary.sections.iter().find_map(|section| {
-        if !section.allocated {
+        if !section.allocated || !CODE_OR_DATA.contains(&section.kind) {
             return None;
         }
         // The reset entry follows the stack pointer, so it can't be first.
@@ -223,7 +232,7 @@ fn holding_entry(binary: &Binary) -> Option<(&Section, u64)> {
 /// section of code or data, by address, that the file holds bytes for and
 /// that begins like a table:
 ///
-/// 1. the initial stack pointer, a multiple of 4;
+/// 1. the initial stack pointer (see [`could_be_stack_pointer`]);
 /// 2. the reset handler's Thumb address (see [`thumb_code`]);
 /// 3. NMI's and HardFault's, each a Thumb address or 0.
 ///
@@ -232,23 +241,18 @@ fn holding_entry(binary: &Binary) -> Option<(&Section, u64)> {
 /// where RAM comes before flash, as on an i.MX RT, `.data` can begin with
 /// a pointer and three callbacks.
 ///
-/// Only in an executable linked to run at one address, as firmware is:
-/// position-independent executables and shared libraries have no vector
-/// table. A Linux program linked at one address is tried too, but only its
-/// sections of code or data, not its version or symbol tables.
+/// Only in an executable linked to run at one address, as firmware usually
+/// is. Position-independent files are mostly Linux programs and libraries,
+/// so in firmware linked with `-pie`, the table is found only where a word
+/// holds the entry point.
 fn at_section_start(binary: &Binary) -> Option<(&Section, u64)> {
     if binary.kind != FileKind::Executable {
         return None;
     }
     let size = binary.pointer_size;
-    let code_or_data = [
-        SectionKind::Text,
-        SectionKind::ReadOnlyData,
-        SectionKind::Data,
-    ];
     let mut sections: Vec<&Section> = (binary.sections.iter())
         .filter(|section| section.allocated && section.file_range.is_some())
-        .filter(|section| code_or_data.contains(&section.kind))
+        .filter(|section| CODE_OR_DATA.contains(&section.kind))
         .collect();
     sections.sort_by_key(|section| (section.load_address.is_some(), section.address));
     sections.into_iter().find_map(|section| {
@@ -262,13 +266,33 @@ fn at_section_start(binary: &Binary) -> Option<(&Section, u64)> {
         let [stack, reset, nmi, hard_fault] = words[..] else {
             return None;
         };
-        let table = stack.is_multiple_of(4)
+        let table = could_be_stack_pointer(binary, stack)
             && thumb_code(binary, reset)
             && [nmi, hard_fault]
                 .iter()
                 .all(|&value| value == 0 || thumb_code(binary, value));
         table.then_some((section, start + size))
     })
+}
+
+/// Whether `value` could be the initial stack pointer: a multiple of 4
+/// other than 0, whose stack's first word isn't in code or read-only data
+/// that the file holds, as the stack is in RAM. So a table of pairs of an
+/// argument and a handler, such as Zephyr's `_sw_isr_table`, doesn't pass
+/// for the vector table when its first argument is 0 or a pointer to a
+/// constant.
+fn could_be_stack_pointer(binary: &Binary, value: u64) -> bool {
+    let read_only = [
+        SectionKind::Text,
+        SectionKind::ReadOnlyData,
+        SectionKind::ReadOnlyString,
+    ];
+    let in_read_only = |address| {
+        (binary.section_at(address))
+            .is_some_and(|index| read_only.contains(&binary.sections[index].kind))
+            && binary.pointer_at(address).is_some()
+    };
+    value != 0 && value.is_multiple_of(4) && !in_read_only(value - 4)
 }
 
 /// Whether `value` is the address of Thumb code: odd, and in a code section
@@ -424,6 +448,82 @@ mod tests {
     }
 
     #[test]
+    fn only_executables_linked_at_one_address_have_a_table_found_by_how_it_begins() {
+        for kind in [
+            FileKind::PositionIndependentExecutable,
+            FileKind::SharedLibrary,
+        ] {
+            assert_eq!(find(&entry_point_is_main(kind)), None);
+        }
+    }
+
+    #[test]
+    fn a_table_can_begin_a_section_of_code() {
+        // As in pico-sdk, `.text` begins with the table, and the entry
+        // point is code after it.
+        let mut text = vec![0x2000_1000, 0x1015, 0x1019, 0x1019];
+        text.extend([0xbf00_bf00; 8]);
+        let binary = firmware(0x1010, &[(".text", 0x1000, SectionKind::Text, text)]);
+        let table = find(&binary).unwrap();
+        assert_eq!(
+            (table.address, table.reset_handler()),
+            (0x1000, Some(0x1014))
+        );
+    }
+
+    #[test]
+    fn an_unwind_table_does_not_hold_the_reset_entry() {
+        // Linked by LLD with no entry point, firmware's entry point is 0,
+        // and `.ARM.exidx` can begin with an entry that says a function
+        // can't be unwound: an offset, then 1, the Thumb address of 0.
+        let mut text = vec![0x2000_1000, 0x41, 0x45, 0x45];
+        text.extend([0xbf00_bf00; 16]);
+        let binary = firmware(
+            0,
+            &[
+                (".text", 0, SectionKind::Text, text),
+                (
+                    ".ARM.exidx",
+                    0x100,
+                    SectionKind::Unknown,
+                    vec![0x7fff_ff5c, 1],
+                ),
+            ],
+        );
+        let table = find(&binary).unwrap();
+        assert_eq!((table.address, table.reset_handler()), (0, Some(0x40)));
+    }
+
+    #[test]
+    fn a_table_of_handlers_and_their_arguments_does_not_pass_for_one() {
+        // Built to start after a boot loader, Zephyr firmware begins with
+        // 0s and then the vector table. `_sw_isr_table`, after it, holds
+        // each interrupt's argument and handler: for an interrupt that
+        // isn't used, 0 and a handler that reports it.
+        let mut rom_start = vec![0; 4];
+        rom_start.extend([0x2000_1000, 0x1041, 0x1045, 0x1045]);
+        let sections = |kind| {
+            [
+                ("rom_start", 0x800, kind, rom_start.clone()),
+                (
+                    "sw_isr_table",
+                    0x900,
+                    SectionKind::ReadOnlyData,
+                    vec![0, 0x1049, 0, 0x1049],
+                ),
+                (".text", 0x1000, SectionKind::Text, vec![0xbf00_bf00; 32]),
+            ]
+        };
+        // In data, the word that holds the entry point is the reset entry.
+        let binary = firmware(0x1040, &sections(SectionKind::ReadOnlyData));
+        assert_eq!(find(&binary).map(|table| table.address), Some(0x810));
+        // In code, that word isn't read, and elfq finds no table rather
+        // than a wrong one.
+        let binary = firmware(0x1040, &sections(SectionKind::Text));
+        assert_eq!(find(&binary), None);
+    }
+
+    #[test]
     fn a_section_starts_a_table_only_if_its_first_four_words_could() {
         // `.isr` ends where `.text` starts, and `.text` begins with 0s, so
         // that the words after a short `.isr` would do for NMI's and
@@ -437,14 +537,17 @@ mod tests {
             find(&firmware(0x1050, &sections)).is_some()
         };
         assert!(starts(vec![0x2000_1000, 0x1041, 0x1041, 0x1041]));
-        // The stack pointer isn't a multiple of 4.
+        // The stack pointer isn't a multiple of 4, is 0, or points into
+        // code, as a pointer to a constant in flash would, not into RAM.
         assert!(!starts(vec![0x2000_1002, 0x1041, 0x1041, 0x1041]));
+        assert!(!starts(vec![0, 0x1041, 0, 0x1041]));
+        assert!(!starts(vec![0x1004, 0x1041, 0x1041, 0x1041]));
         // The reset entry is 0, or an even address.
         assert!(!starts(vec![0x2000_1000, 0, 0x1041, 0x1041]));
         assert!(!starts(vec![0x2000_1000, 0x1040, 0x1041, 0x1041]));
-        // NMI's or HardFault's entry is odd, but outside code.
-        assert!(!starts(vec![0x2000_1000, 0x1041, 0x0801, 0x1041]));
-        assert!(!starts(vec![0x2000_1000, 0x1041, 0x1041, 0x0801]));
+        // NMI's or HardFault's entry is odd, but outside code: in `.isr`.
+        assert!(!starts(vec![0x2000_1000, 0x1041, 0x0ff1, 0x1041]));
+        assert!(!starts(vec![0x2000_1000, 0x1041, 0x1041, 0x0ff1]));
         // Too short to hold four words.
         assert!(!starts(vec![0x2000_1000, 0x1041, 0x1041]));
     }
@@ -558,9 +661,10 @@ mod tests {
     #[test]
     fn the_reset_entry_follows_a_word_that_could_be_the_stack_pointer() {
         // The entry point is NMI's handler, as when a linker script names
-        // none and `.text` begins with it. NMI's entry follows the reset
-        // entry, and entry 11 a reserved entry that holds 0, so neither is
-        // the reset entry, and the table is where it begins `.isr`.
+        // none and `.text` begins with it. NMI's and HardFault's entries
+        // follow odd words, the reset entry's and NMI's, and entry 11
+        // follows a reserved entry that holds 0, so none is the reset
+        // entry, and the table is where it begins `.isr`.
         let mut isr = vec![0x2000_1000, 0x1045, 0x1041, 0x1041];
         isr.extend([0; 7]);
         isr.push(0x1041);

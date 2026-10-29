@@ -139,12 +139,16 @@ not the older 32-bit Arm (A32) code. (`binary::Binary::thumb`)
 reads at reset and on each interrupt or exception: the initial stack
 pointer, then the reset handler, which is usually the entry point, then
 the other handlers. elfq finds it by its shape rather than its section's
-name: where a section begins with a stack pointer and then the entry
-point's address. Otherwise, as when a linker script names `main` as the
-entry point, or none, it is at the start of the first section of code or
-data, by address, that begins with a stack pointer, the address of code,
-and two more that are code or 0; sections that startup code copies into
-place come last. (`binary::VectorTable`)
+name: where a section of code or data begins with a word that could be the
+stack pointer, which is not 0 and not in code or read-only data, and then
+the entry point's address. Otherwise, as when a linker script names `main`
+as the entry point, or none, it is at the start of the first section of
+code or data, by address, that begins with such a stack pointer, the
+address of code, and two more that are code or 0; sections that startup
+code copies into place come last. Failing both, it is where a word in a
+section of data, after one that could be the stack pointer, holds the
+entry point's address, as when a header comes before the table.
+(`binary::VectorTable`)
 
 **Veneer.** A few instructions that a linker adds when a call's target is
 too far away for the call instruction, as between flash and ITCM: the code
@@ -1324,8 +1328,14 @@ plus each function's stack frame), and a query language.
    linked with `-static-pie`, which elfq takes for libraries. elfq finds
    the functions of stripped firmware by following its code only in files
    linked to run at one address, so in Arm firmware linked with `-pie` and
-   stripped it finds only the entry point.
-5. **Thumb text.** `browse` never shows wrong text where elfq knows code
+   stripped it finds only the entry point. In such firmware, elfq finds
+   the vector table only where a word of it holds the entry point.
+5. **Vector tables that elfq doesn't find.** A vector table that a
+   section doesn't begin with, and whose reset entry doesn't hold the
+   entry point, or that sits in the middle of a section of code, isn't
+   found. Zephyr firmware built to start after a boot loader, which begins
+   its code with 0s and then the table, is one.
+6. **Thumb text.** `browse` never shows wrong text where elfq knows code
    from data; where it can't tell, it prints `.word` or `.inst`. It prints
    the text of Thumb instructions only where elfq's sweep decodes an
    instruction, so a literal pool, a jump table, a table of addresses and
@@ -1342,9 +1352,9 @@ plus each function's stack frame), and a query language.
    the file's build attributes name them: for Armv8-M and Armv8.1-M cores,
    such as the Cortex-M33 and M55, and files that don't say, a page lists
    only the lines that use another item.
-6. **Compressed DWARF.** `inlined` can't read debug info that the linker
+7. **Compressed DWARF.** `inlined` can't read debug info that the linker
    compressed (`--compress-debug-sections`).
-7. **What `diff` calls edited.** Two different numbers that each happen
+8. **What `diff` calls edited.** Two different numbers that each happen
    to point into partners at the same offset, or both into items that
    only one build has, read as the same, and so can two instructions of
    Thumb code, which diff also reads as words. Partners whose bytes are
@@ -1359,7 +1369,7 @@ plus each function's stack frame), and a query language.
    same text only when that byte is a printable character, as a length of
    32 to 126 is, or a tab, newline or carriage return; otherwise they are
    an edit.
-8. **Instructions that `diff` doesn't decode.** A distance in an
+9. **Instructions that `diff` doesn't decode.** A distance in an
    instruction that `arch::operands` doesn't know shows as an edit when
    what it points to moves. On Thumb, a table of addresses in the code,
    as some switches jump through, is read as words, as data is, and on

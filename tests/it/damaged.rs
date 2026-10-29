@@ -281,15 +281,15 @@ fn words_come_from_a_section_that_starts_inside_another() {
 #[test]
 fn the_vector_table_ends_where_the_file_holds_no_bytes() {
     // `.isr_vector` now covers 8 bytes in the middle of the table, which
-    // the file doesn't hold, and `.ARM.exidx` the whole table. The table
-    // ends before them, though the file holds the entries after them.
+    // the file doesn't hold, and `.rodata` the whole table. The table ends
+    // before them, though the file holds the entries after them.
     let mut data = sample("c-cortex-m4-stripped.elf");
     set_section_field(&mut data, ".isr_vector", ADDRESS, 0x0800_0010);
     set_section_field(&mut data, ".isr_vector", OFFSET, 0x10_0000);
     set_section_field(&mut data, ".isr_vector", SIZE, 8);
-    set_section_field(&mut data, ".ARM.exidx", ADDRESS, 0x0800_0000);
-    set_section_field(&mut data, ".ARM.exidx", OFFSET, 0x1000);
-    set_section_field(&mut data, ".ARM.exidx", SIZE, 0x40);
+    set_section_field(&mut data, ".rodata", ADDRESS, 0x0800_0000);
+    set_section_field(&mut data, ".rodata", OFFSET, 0x1000);
+    set_section_field(&mut data, ".rodata", SIZE, 0x40);
     let (binary, _) = parse(&data);
     let table = binary.vector_table.unwrap();
     assert_eq!((table.address, table.size), (0x0800_0000, 0x10));
