@@ -11,7 +11,7 @@ testdata/
 ├── thumb-text.sh  Writes objdump's text for the Cortex-M samples' code to tests/thumb/.
 ├── bin/           The built files (committed).
 ├── tests/         objdump's text for the Cortex-M samples' code (committed).
-├── c/             C samples: app.c plus a platform file per target, deep.c, plt.c, far.c, softfloat.c, vfp.c and strtod.c.
+├── c/             C samples: app.c plus a platform file per target, deep.c, plt.c, far.c, softfloat.c, vfp.c, strtod.c, sysinit.c and steps.c.
 ├── cpp/           C++ sample: the kinds of names C++ compilers make.
 └── rust/          Rust sample: the same program, plus Rust-only patterns.
 ```
@@ -28,6 +28,9 @@ testdata/
 | `c-cortex-m7*.elf` | C | Cortex-M7 bare metal, with code and data in TCM, OCRAM and flash |
 | `c-cortex-m7-moved*.elf`, `c-cortex-m7-sdram.elf`, `c-cortex-m7-inlined.elf`, `c-cortex-m7-edited.elf`, `c-x86_64-moved*` | C | The Cortex-M7 and x86-64 builds again, each with one change, for `diff` |
 | `c-cortex-m7-entry-main*.elf` | C | The Cortex-M7 build linked with `main` as its entry point, so that no word of its vector table holds the entry point |
+| `c-cortex-m7-trap*.elf`, `c-cortex-m7-reset-itcm*.elf` | C | The Cortex-M7 build again, each with one mistake in its linker script, for `startup` |
+| `c-cortex-m7-sysinit*.elf` | C | Cortex-M7 bare metal, whose reset handler runs code in ITCM before it copies it there, for `startup` |
+| `c-cortex-m7-steps.elf` | C | Cortex-M7 bare metal, whose reset handler makes more steps than `startup`'s table shows without `--all` |
 | `c-deep.elf` | C | x86-64 Linux, PIE, with calls and inlined code nested 20 deep |
 | `far-*.elf` | C | Cortex-M0 and M4 bare metal, with calls too far for one branch instruction, linked by GNU ld or LLD |
 | `c-softfloat-nodebug.elf` | C | Cortex-M4 bare metal without its FPU, with libgcc's routines for doubles |
@@ -173,6 +176,29 @@ says the processor runs it at reset, and `why main` that the processor
 runs the reset handler, not `main`, at reset. In the stripped file,
 nothing is left unreached, and the overview suggests `retained
 fn_0x300005f8`, the reset handler.
+
+### Startup samples
+
+`startup` reads what the reset handler does before `main`, and these
+samples each make one mistake there, which it finds, with exit status 1:
+
+| File | Mistake | Expected answer |
+|---|---|---|
+| `c-cortex-m7-trap*.elf` | The linker script links newlib's `memcpy` into ITCM, with the code that `Reset_Handler` copies there. | Step 1 calls `memcpy`, in `.itcm`, to copy `.itcm`, so it runs whatever ITCM holds at reset, and the steps after it may never run. |
+| `c-cortex-m7-reset-itcm*.elf` | The linker script links `Reset_Handler` itself into ITCM. | `Reset_Handler` runs in `.itcm` before anything copies it there. Its calls to flash go through veneers. |
+| `c-cortex-m7-sysinit*.elf` ([c/sysinit.c](c/sysinit.c)) | `Reset_Handler` calls `SystemInit` before it copies `.itcm`, and `SystemInit` calls `clock_setup`, in `.itcm`. | Step 1, `SystemInit`, calls `clock_setup` in `.itcm` before step 2 copies `.itcm`. GCC sets r0 for that copy before it calls `SystemInit`, which doesn't use it, and in the stripped file, `main` is the last call, though `memset` leaves its first argument in r0 for it. |
+
+`c-cortex-m7-steps.elf` ([c/steps.c](c/steps.c)) makes no mistake, but
+its `Reset_Handler` makes 37 steps, more than the table shows without
+`--all`, and one of them calls a hook through a pointer, which elfq can't
+follow and which may zero `.ocram_bss`: a note says so, with exit status
+0, since `.ocram_bss` may be meant to keep what it holds.
+
+Of the other Cortex-M samples, these exit with 1 too: `c-strtod*` and
+`c-vfp*`, whose reset handlers copy and zero nothing,
+`c-softfloat-nodebug.elf`, which zeroes nothing, `far-*`, which call
+code in `.ram` that nothing copies, and `rust-cortex-m4*`, which zero
+`.bss` in a loop that `startup` can't follow yet.
 
 ### CMSIS layout sample ([c/cortex-m4-cmsis.ld](c/cortex-m4-cmsis.ld))
 

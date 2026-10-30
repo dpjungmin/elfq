@@ -124,6 +124,46 @@ cortex_m7 c-cortex-m7-entry-main "$out/cortex-m7-entry-main.ld"
 rm "$out/cortex-m7-entry-main.ld"
 variants arm-none-eabi-strip c-cortex-m7-entry-main
 
+# Builds for startup, each with one mistake in its linker script. "trap"
+# links memcpy into ITCM, where Reset_Handler calls it to copy .itcm before
+# .itcm holds it. "reset-itcm" links Reset_Handler itself into ITCM, where
+# the processor starts it before anything is copied there.
+echo "C, Cortex-M7 with TCMs, memcpy in ITCM"
+sed 's/^\( *\)\*(\.itcm_text\*)/&\n\1*_nano.a:libc_a-memcpy.o(.text .text.*)/' c/cortex-m7.ld \
+    >"$out/cortex-m7-trap.ld"
+cortex_m7 c-cortex-m7-trap "$out/cortex-m7-trap.ld"
+rm "$out/cortex-m7-trap.ld"
+variants arm-none-eabi-strip c-cortex-m7-trap
+
+echo "C, Cortex-M7 with TCMs, Reset_Handler in ITCM"
+sed 's/^\( *\)\*(\.itcm_text\*)/&\n\1*(.text.Reset_Handler)/' c/cortex-m7.ld \
+    >"$out/cortex-m7-reset-itcm.ld"
+cortex_m7 c-cortex-m7-reset-itcm "$out/cortex-m7-reset-itcm.ld"
+rm "$out/cortex-m7-reset-itcm.ld"
+variants arm-none-eabi-strip c-cortex-m7-reset-itcm
+
+# A startup with a mistake in its code rather than in its linker script:
+# Reset_Handler calls SystemInit, which calls code in ITCM, before it
+# copies .itcm (see c/sysinit.c).
+echo "C, Cortex-M7 with TCMs, SystemInit calls code in ITCM"
+arm-none-eabi-gcc $cflags \
+    -mcpu=cortex-m7 -mthumb -mfloat-abi=hard -mfpu=fpv5-d16 \
+    -ffunction-sections -fdata-sections \
+    -nostartfiles --specs=nano.specs --specs=nosys.specs \
+    -T c/cortex-m7.ld -Wl,--gc-sections \
+    -o "$out/c-cortex-m7-sysinit.elf" c/sysinit.c
+variants arm-none-eabi-strip c-cortex-m7-sysinit
+
+# Only the full build: a startup with more steps than startup's table shows
+# without --all, and a call through a pointer (see c/steps.c).
+echo "C, Cortex-M7 with TCMs, startup with many steps"
+arm-none-eabi-gcc $cflags \
+    -mcpu=cortex-m7 -mthumb -mfloat-abi=hard -mfpu=fpv5-d16 \
+    -ffunction-sections -fdata-sections \
+    -nostartfiles --specs=nano.specs --specs=nosys.specs \
+    -T c/cortex-m7.ld -Wl,--gc-sections \
+    -o "$out/c-cortex-m7-steps.elf" c/steps.c
+
 # Only the variant with symbols and no DWARF: this sample is for libgcc's
 # routines for doubles, which have no DWARF of their own.
 echo "C, Cortex-M4 without its FPU"
