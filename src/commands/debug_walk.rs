@@ -86,8 +86,14 @@ pub fn run(binary: &Binary, out: &mut dyn Write) -> Result<()> {
                     1 => "1 byte".to_string(),
                     size => format!("{size} bytes"),
                 };
+                let from = match store.source {
+                    Some(source) => {
+                        format!(", loaded from {:#x} at {:#x}", source.address, source.site)
+                    }
+                    None => String::new(),
+                };
                 let what = format!(
-                    "store {} {place}, {size}{}",
+                    "store {} {place}, {size}{from}{}",
                     number(store.value),
                     if store.conditional {
                         ", conditional"
@@ -103,6 +109,36 @@ pub fn run(binary: &Binary, out: &mut dyn Write) -> Result<()> {
                     1 => format!("loop back from {:#x} over the row above", l.back),
                     n => format!("loop back from {:#x} over the {n} rows above", l.back),
                 };
+                let mut what = match l.passes {
+                    Some(1) => format!("{what}, runs once"),
+                    Some(passes) => format!("{what}, runs {passes} times"),
+                    None => what,
+                };
+                // What each of its stores does over all the times it runs:
+                // where it stores the first time, and how far that moves.
+                for store in l.stores.iter().flatten() {
+                    let size = match store.size {
+                        1 => "1 byte".to_string(),
+                        size => format!("{size} bytes"),
+                    };
+                    let times = match store.times {
+                        1 => "once".to_string(),
+                        times => format!("{times} times"),
+                    };
+                    let at = |address: u32, step: i32| match store.times {
+                        1 => format!("{address:#x}"),
+                        _ => format!("{address:#x} {step:+}n"),
+                    };
+                    let from = match store.source {
+                        Some((address, step)) => format!(", from {}", at(address, step)),
+                        None => format!(", of {}", number(store.value)),
+                    };
+                    what = format!(
+                        "{what}; {:#x} stores {size} at {} {times}{from}",
+                        store.site,
+                        at(store.address, store.step)
+                    );
+                }
                 let what = match l.end {
                     Some(end) => format!(
                         "{what}; its code stops short: {} at {:#x}",

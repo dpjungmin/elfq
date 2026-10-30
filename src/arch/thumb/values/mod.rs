@@ -639,6 +639,8 @@ impl<'a> Function<'a> {
             | Operation::Compare { .. }
             | Operation::CompareRegisters { .. }
             | Operation::Subtract { .. }
+            | Operation::AddShifted { .. }
+            | Operation::Negate { .. }
             | Operation::AndConstant { .. }
             | Operation::And { .. }
             | Operation::ShiftRight { .. }
@@ -1387,6 +1389,8 @@ const UNREACHED: Effect = Effect {
     flow: Flow::Stop,
     sets_flags: false,
     writeback: None,
+    index: None,
+    words: None,
 };
 
 /// The index in `instructions` of the one at `target`, if there is one.

@@ -9,16 +9,16 @@
 //! memory is at the addresses the code uses, the stack among them.
 
 use std::collections::hash_map::Entry;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
 use object::{Endian, Endianness};
 
-use super::decode::{self, Effect, Flow, LowBit, Operation, Registers, When};
+use super::decode::{self, Effect, Flow, LowBit, Operation, Registers, When, Words};
 use super::{LR, PC, SP, Scanner, branch, is_wide, literal, sweep};
 use crate::arch::CodeReferenceKind;
 use crate::arch::startup::{
-    Call, DEPTH, End, Event, How, Loop, Program, Start, Store, Through, Walk,
+    Call, DEPTH, End, Event, How, Loop, LoopStore, Program, Source, Start, Store, Through, Walk,
 };
 /// How many instructions the walk goes through, in all.
 const BUDGET: usize = 20_000;
@@ -29,6 +29,14 @@ const CALL_LIMIT: usize = 300;
 const LOOP_LIMIT: usize = 60;
 /// How many loops inside loops it walks the code of.
 const NESTING: u32 = 8;
+/// How many times at most a loop that the walk can tell runs: more is
+/// not a loop of startup code.
+const MOST_PASSES: u32 = 1 << 24;
+/// How many instructions it goes through in all to count how many times
+/// loops run, on top of [`BUDGET`].
+const COUNT_BUDGET: usize = 50_000;
+/// How many of the times a loop may leave, as its compares tell, it tries.
+const CANDIDATES: usize = 12;
 
 /// ip (r12), the scratch register that veneers and long calls use.
 const IP: u16 = 12;
@@ -46,6 +54,8 @@ pub(in crate::arch) fn walk(endianness: Endianness, program: &dyn Program, start
         main: start.main,
         events: Vec::new(),
         budget: BUDGET,
+        count_budget: COUNT_BUDGET,
+        counting: None,
         data: HashMap::new(),
         clobbers: HashMap::new(),
     };
@@ -57,6 +67,7 @@ pub(in crate::arch) fn walk(endianness: Endianness, program: &dyn Program, start
         limit: RESET_LIMIT,
         stop: None,
         nesting: 0,
+        pass: false,
     };
     let (end, _) = walker.walk(start.address & !1, frame, path);
     Walk {
@@ -91,6 +102,22 @@ struct Path {
     /// only read keeps what the caller put there, as code built with GCC's
     /// `-fipa-ra` counts on for its next call.
     results: u8,
+    /// Where the word in each register was loaded from, when the walk can
+    /// tell and code hasn't changed the register since (see
+    /// [`Store::source`]).
+    sources: [Option<Source>; 16],
+    /// The compares in one time through a loop's code that the walk
+    /// counts (see [`Walker::count`]).
+    compares: Vec<Compare>,
+}
+
+/// The two numbers that an instruction that sets the flags compares, each
+/// when the walk can tell it: the flags say how the first compares with
+/// the second.
+#[derive(Debug, Clone, Copy)]
+struct Compare {
+    site: u64,
+    numbers: [Option<u32>; 2],
 }
 
 type Memory = Rc<BTreeMap<u32, Option<u32>>>;
@@ -112,6 +139,10 @@ struct Visit {
     memory: Memory,
     /// How many events the walk had found.
     events: usize,
+    /// How many instructions the walk had gone through (see `Run::order`).
+    order: usize,
+    /// See `Path::forks`.
+    forks: bool,
 }
 
 /// A branch whose condition the walk couldn't tell, and what it knew there,
@@ -140,6 +171,10 @@ struct Frame {
     stop: Option<u64>,
     /// How many loops' code it is in.
     nesting: u32,
+    /// Whether it is one time through the code of a loop that the walk
+    /// counts, which stops where the loop goes back or leaves (see
+    /// [`Counting`]).
+    pass: bool,
 }
 
 /// Where one walk is.
@@ -191,6 +226,10 @@ struct Walker<'a> {
     events: Vec<Event>,
     /// How many more instructions the walk may go through.
     budget: usize,
+    /// How many more it may go through to count how many times loops run.
+    count_budget: usize,
+    /// The loop that the walk is counting.
+    counting: Option<Counting>,
     /// The data in each function the walk got to, by where the function
     /// starts: the constants and jump tables its code reads, as offsets
     /// from its start.
@@ -198,6 +237,57 @@ struct Walker<'a> {
     /// What [`Walker::clobbers`] found for each function, by where it
     /// starts.
     clobbers: HashMap<u64, (Registers, u8)>,
+}
+
+/// A loop whose code the walk goes through time by time to count how many
+/// times it runs (see [`Walker::count`]).
+struct Counting {
+    /// The branch back.
+    back: u64,
+    /// The instruction after it, where the loop leaves when it doesn't go
+    /// back.
+    next: u64,
+    /// The instructions it went through the first time, and where the
+    /// branches it didn't take then go: a later time that goes elsewhere
+    /// leaves there, or goes a way the walk can't tell. Before the first
+    /// time, the walk's own way through the code, when it went through it
+    /// in the same run; otherwise empty, and the first time leaves past
+    /// `back`.
+    code: HashSet<u64>,
+    ways_out: Vec<u64>,
+    /// Where the time through the code stopped, and whether it goes back
+    /// to the loop's head from there, when the walk can tell.
+    stopped: Option<(u64, Option<bool>)>,
+}
+
+/// One time through a loop's code (see [`Walker::pass`]).
+struct Pass {
+    /// What the walk knows at the end.
+    path: Path,
+    stores: Vec<Store>,
+    /// Whether it makes calls, which the walk doesn't follow, or goes
+    /// into loops, which it doesn't count: then `stores` aren't all that
+    /// the time stores.
+    others: bool,
+    compares: Vec<Compare>,
+    /// Whether the loop goes back to its head after it, rather than
+    /// leaving.
+    again: bool,
+    /// Where the loop goes when it leaves after it.
+    exit: u64,
+    /// The instructions it went through, and where the branches it
+    /// didn't take go.
+    order: Vec<u64>,
+    ways_out: Vec<u64>,
+}
+
+/// What a loop leaves, as the walk counted it.
+struct Counted {
+    passes: u32,
+    /// What the walk knows where the loop leaves, and where that is.
+    path: Path,
+    exit: u64,
+    stores: Option<Vec<LoopStore>>,
 }
 
 /// What code may change, as far as the walk can tell without going
@@ -217,6 +307,13 @@ impl Walker<'_> {
     /// loop's code, until it gets to `frame.stop`. Returns how it ended,
     /// or `None` when it got there, and what it knew then.
     fn walk(&mut self, start: u64, frame: Frame, path: Path) -> (Option<End>, Path) {
+        let (end, run) = self.run(start, frame, path);
+        (end, run.path)
+    }
+
+    /// Walks as [`Walker::walk`] does, and returns how it ended and where
+    /// it went.
+    fn run(&mut self, start: u64, frame: Frame, path: Path) -> (Option<End>, Run) {
         let mut run = Run {
             path,
             order: Vec::new(),
@@ -235,7 +332,7 @@ impl Walker<'_> {
                     address = next;
                     continue;
                 }
-                Step::Stopped => return (None, run.path),
+                Step::Stopped => return (None, run),
                 Step::Final(end) => end,
                 Step::End(end) => match self.backtrack(&mut run, frame, end) {
                     Some(target) => {
@@ -245,13 +342,35 @@ impl Walker<'_> {
                     None => end,
                 },
             };
-            return (Some(end), run.path);
+            return (Some(end), run);
         }
     }
 
     /// Runs the instruction at `address`.
     fn step(&mut self, run: &mut Run, frame: Frame, address: u64) -> Step {
-        if frame.stop.is_some_and(|stop| address >= stop) {
+        if frame.pass
+            && let Some(counting) = &self.counting
+        {
+            // At the branch back, or where the loop leaves: past it the
+            // first time, and elsewhere than the code of the first time
+            // later.
+            let back = counting.back;
+            let leaves = match counting.code.is_empty() {
+                true => address > back,
+                false => !counting.code.contains(&address),
+            };
+            if address == back || leaves {
+                let again = match address == back {
+                    true => self.goes_back(run, back),
+                    false => (counting.code.is_empty() || counting.ways_out.contains(&address))
+                        .then_some(false),
+                };
+                if let Some(counting) = &mut self.counting {
+                    counting.stopped = Some((address, again));
+                }
+                return Step::Stopped;
+            }
+        } else if frame.stop.is_some_and(|stop| address >= stop) {
             return Step::Stopped;
         }
         if run.leaves(address) {
@@ -273,6 +392,8 @@ impl Walker<'_> {
                 registers: run.path.registers,
                 memory: Rc::clone(&run.path.memory),
                 events: self.events.len(),
+                order: run.order.len(),
+                forks: run.path.forks,
             }),
         };
         run.order.push(address);
@@ -341,6 +462,15 @@ impl Walker<'_> {
                 Step::Next(next)
             }
             Flow::Branch { target, when } => {
+                if let (When::Zero(register) | When::NotZero(register), Some(_)) =
+                    (when, &self.counting)
+                {
+                    let number = self.register(&run.path, register, address);
+                    run.path.compares.push(Compare {
+                        site: address,
+                        numbers: [number, Some(0)],
+                    });
+                }
                 let taken = match when {
                     When::Always => runs,
                     When::Flags(condition) => holds(condition, run.path.flags),
@@ -446,8 +576,8 @@ impl Walker<'_> {
         }
         if let Some(visit) = run.visits.get(&target).filter(|_| target < site) {
             let visit = visit.clone();
-            self.close_loop(run, frame, target, site, &visit, None);
-            return match run.way_out(target, site) {
+            let exit = self.close_loop(run, frame, target, site, &visit, None, true);
+            return match exit.or_else(|| run.way_out(target, site)) {
                 Some(exit) => Step::Next(exit),
                 None => Step::End(End::Loops(site)),
             };
@@ -494,8 +624,8 @@ impl Walker<'_> {
             // A loop: the walk goes through its code once. When the code
             // was jumped over to the test at its end, it is walked from
             // here, with what the walk knows at the test.
-            let (visit, end) = match run.visits.get(&target) {
-                Some(visit) => (visit.clone(), None),
+            let (visit, end, runs) = match run.visits.get(&target) {
+                Some(visit) => (visit.clone(), None, true),
                 // The code was jumped over to a test that doesn't go back:
                 // the loop runs no times, as for an empty section.
                 _ if taken == Some(false) => return Step::Next(next),
@@ -503,12 +633,12 @@ impl Walker<'_> {
                     let before = run.visit(self.events.len());
                     match self.loop_body(run, frame, target, site) {
                         Some(End::Main(at)) => return Step::Final(End::Main(at)),
-                        end => (before, end),
+                        end => (before, end, taken == Some(true)),
                     }
                 }
             };
-            self.close_loop(run, frame, target, site, &visit, end);
-            return Step::Next(next);
+            let exit = self.close_loop(run, frame, target, site, &visit, end, runs);
+            return Step::Next(exit.unwrap_or(next));
         }
         if taken == Some(true) {
             run.pending.push((site, next));
@@ -523,7 +653,7 @@ impl Walker<'_> {
                 if let Some(End::Main(at)) = end {
                     return Step::Final(End::Main(at));
                 }
-                self.close_loop(run, frame, target, back, &before, end);
+                self.close_loop(run, frame, target, back, &before, end, false);
                 return Step::Next(next);
             }
             run.alternatives.push(Alternative {
@@ -568,16 +698,21 @@ impl Walker<'_> {
             limit: LOOP_LIMIT,
             stop: Some(back),
             nesting: frame.nesting + 1,
+            pass: false,
         };
         let (end, path) = self.walk(head, body, run.path.clone());
         run.path = path;
         end
     }
 
-    /// Records the loop from `head` to `back`, and forgets what its code
-    /// changed since `before`, at its head. When the walk of its code
-    /// stopped short, at `end`, it forgets too what the rest of the code
-    /// may change.
+    /// Records the loop from `head` to `back`, whose code the walk went
+    /// through from `before`, and goes on with what it knows where the
+    /// loop leaves, when the walk can count how many times it runs, which
+    /// it tries when its code `runs` at least once: then it returns where
+    /// that is. Otherwise it goes on with what the code writes unknown,
+    /// and when the walk of the code stopped short, at `end`, the words in
+    /// memory too.
+    #[allow(clippy::too_many_arguments)]
     fn close_loop(
         &mut self,
         run: &mut Run,
@@ -586,28 +721,265 @@ impl Walker<'_> {
         back: u64,
         before: &Visit,
         end: Option<End>,
-    ) {
+        runs: bool,
+    ) -> Option<u64> {
+        let counted = match (end, runs) {
+            (None, true) => self.count(run, frame, head, back, before),
+            _ => None,
+        };
+        let exit = counted.as_ref().map(|counted| counted.exit);
+        let (passes, stores) = match counted {
+            Some(Counted {
+                passes,
+                path,
+                stores,
+                ..
+            }) => {
+                let first = std::mem::replace(
+                    &mut run.path,
+                    Path {
+                        forks: before.forks,
+                        ..path
+                    },
+                );
+                // What code that the times through the loop don't follow,
+                // as a call, stored the first time.
+                if stores.is_none() {
+                    forget_words(&mut run.path, stored_since(&first.memory, &before.memory));
+                }
+                forget_stored(&mut run.path, passes, stores.as_deref(), before);
+                (Some(passes), stores)
+            }
+            None => {
+                forget_changes(&mut run.path, &before.registers, &before.memory);
+                let Changes {
+                    registers,
+                    stores,
+                    results,
+                } = self.writes(head, back, false);
+                set_unknown(&mut run.path, registers & !(1 << SP));
+                run.path.results |= results;
+                if end.is_some() && stores && run.path.memory.values().any(Option::is_some) {
+                    (Rc::make_mut(&mut run.path.memory).values_mut()).for_each(|word| *word = None);
+                }
+                run.path.flags = Flags::default();
+                (None, None)
+            }
+        };
         self.events.push(Event::Loop(Loop {
             head,
             back,
             depth: frame.depth,
             first_event: before.events,
             end,
+            passes,
+            stores,
         }));
-        forget_changes(&mut run.path, &before.registers, &before.memory);
-        if end.is_some() {
-            let Changes {
-                registers,
-                stores,
-                results,
-            } = self.writes(head, back, false);
-            set_unknown(&mut run.path, registers & !(1 << SP));
-            run.path.results |= results;
-            if stores && run.path.memory.values().any(Option::is_some) {
-                (Rc::make_mut(&mut run.path.memory).values_mut()).for_each(|word| *word = None);
+        exit
+    }
+
+    /// How many times the loop from `head` to the branch back at `back`
+    /// runs, what it leaves, and what its stores do, when the walk can
+    /// tell. It goes through the loop's code from what it knew at the
+    /// head, `before`, the first three times, as the processor would. Then
+    /// each compare whose numbers move by the same amount each time tells
+    /// when it may hold the other way, and the loop may leave; the first
+    /// such time that the walk finds the loop leaves, going through the
+    /// code that time from where each number would be, and goes back the
+    /// time before, is when it leaves. Only a loop whose branch back goes
+    /// to its head, as one with its code after the function's other code
+    /// doesn't; the walk doesn't follow its calls, nor count loops inside
+    /// it, and then can't tell what its stores do.
+    fn count(
+        &mut self,
+        run: &Run,
+        frame: Frame,
+        head: u64,
+        back: u64,
+        before: &Visit,
+    ) -> Option<Counted> {
+        if self.counting.is_some() || self.count_budget == 0 {
+            return None;
+        }
+        let (first, _, effect) = self.decode(back)?;
+        match effect.flow {
+            Flow::Branch { target, .. } if target == head => {}
+            _ => return None,
+        }
+        // The code the walk went through from the head, which may lie
+        // past the branch back, as GCC -Os puts a loop's test.
+        let walked = match run.order.get(before.order) == Some(&head) {
+            true => &run.order[before.order..],
+            false => &[],
+        };
+        let code: HashSet<u64> = walked.iter().copied().collect();
+        let ways_out = (run.pending.iter())
+            .filter(|(from, to)| code.contains(from) && !code.contains(to))
+            .map(|&(_, to)| to)
+            .collect();
+        self.counting = Some(Counting {
+            back,
+            next: back + if is_wide(first) { 4 } else { 2 },
+            code,
+            ways_out,
+            stopped: None,
+        });
+        let budget = self.budget;
+        let counted = self.count_passes(run, frame, head, before);
+        self.budget = budget;
+        self.counting = None;
+        counted
+    }
+
+    /// Goes through the code of the loop that the walk counts from
+    /// `head`, from what the walk knew there the first time, `before`, as
+    /// [`Walker::count`] says.
+    fn count_passes(
+        &mut self,
+        run: &Run,
+        frame: Frame,
+        head: u64,
+        before: &Visit,
+    ) -> Option<Counted> {
+        let mut start = Path {
+            registers: before.registers,
+            memory: Rc::clone(&before.memory),
+            sources: [None; 16],
+            flags: Flags::default(),
+            forks: false,
+            compares: Vec::new(),
+            ..run.path.clone()
+        };
+        let mut walked: Vec<(u32, Pass)> = Vec::new();
+        for n in 1..=3 {
+            let pass = self.pass(frame, head, start)?;
+            if n == 1
+                && let Some(counting) = &mut self.counting
+            {
+                counting.code = pass.order.iter().copied().collect();
+                counting.ways_out = pass.ways_out.clone();
+            }
+            let again = pass.again;
+            start = pass.path.clone();
+            walked.push((n, pass));
+            if !again {
+                return Some(counted(walked, n));
             }
         }
-        run.path.flags = Flags::default();
+        let line = Line::new(&walked[0].1.path, &walked[1].1.path, &walked[2].1.path)?;
+        let (second, third) = (&walked[1].1, &walked[2].1);
+        for n in leaving_times(second, third) {
+            if !keeps_order(second, third, n - 1) {
+                return None;
+            }
+            // The time before goes back, from where the line says.
+            let before = match n {
+                4 => None,
+                _ => match self.pass(frame, head, line.start(n - 1)) {
+                    Some(before) if before.again => Some(before),
+                    _ => continue,
+                },
+            };
+            // Where the time before ends, which the line must go through.
+            let line_start = line.start(n);
+            let ends = before
+                .as_ref()
+                .map_or(&walked[2].1.path, |before| &before.path);
+            let on_line =
+                |r: usize| line_start.registers[r].is_none_or(|n| ends.registers[r] == Some(n));
+            if !(0..16).all(on_line) {
+                continue;
+            }
+            match self.pass(frame, head, ends.clone()) {
+                Some(last) if !last.again => {
+                    walked.extend(before.map(|before| (n - 1, before)));
+                    walked.push((n, last));
+                    return Some(counted(walked, n));
+                }
+                _ => continue,
+            }
+        }
+        None
+    }
+
+    /// Goes through a loop's code once from `head`, from `path`, as one
+    /// time the loop runs, while the walk counts it, where it stops at the
+    /// branch back or where the loop leaves (see [`Counting`]), without
+    /// following calls: `None` when it goes past a branch that the walk
+    /// can't tell, or the walk can't tell whether the loop goes back after
+    /// it. Its events and instructions don't count for the walk.
+    fn pass(&mut self, frame: Frame, head: u64, path: Path) -> Option<Pass> {
+        let events = self.events.len();
+        let lowest = self.lowest;
+        let body = Frame {
+            depth: frame.depth,
+            follow: 0,
+            limit: LOOP_LIMIT.min(self.count_budget),
+            stop: None,
+            nesting: frame.nesting + 1,
+            pass: true,
+        };
+        self.budget = usize::MAX;
+        let (end, run) = self.run(head, body, path);
+        self.count_budget = self.count_budget.saturating_sub(run.count);
+        self.lowest = lowest;
+        let events: Vec<Event> = self.events.split_off(events);
+        let counting = self.counting.as_mut()?;
+        let stopped = counting.stopped.take();
+        let (Some((at, Some(again))), None, false) = (stopped, end, run.path.forks) else {
+            return None;
+        };
+        let exit = if at == counting.back {
+            counting.next
+        } else {
+            at
+        };
+        let mut stores = Vec::new();
+        let mut others = false;
+        for event in events {
+            match event {
+                Event::Store(store) if store.conditional => return None,
+                Event::Store(store) => stores.push(store),
+                _ => others = true,
+            }
+        }
+        let mut path = run.path;
+        let compares = std::mem::take(&mut path.compares);
+        Some(Pass {
+            path,
+            stores,
+            others,
+            compares,
+            again,
+            exit,
+            order: run.order,
+            ways_out: run.pending.iter().map(|&(_, to)| to).collect(),
+        })
+    }
+
+    /// Whether the branch back at `back` goes back to the loop's head, as
+    /// the walk is there at the end of `run`, when it can tell.
+    fn goes_back(&self, run: &Run, back: u64) -> Option<bool> {
+        let (_, _, effect) = self.decode(back)?;
+        let Flow::Branch { when, .. } = effect.flow else {
+            return None;
+        };
+        // In an `it` block, as `blt` at the end of `ittt lt` is.
+        let runs = match run.it & 0xf {
+            0 => Some(true),
+            _ => holds(u16::from(run.it >> 4), run.path.flags),
+        };
+        let taken = match when {
+            When::Always => Some(true),
+            When::Flags(condition) => holds(condition, run.path.flags),
+            When::Zero(register) => self.register(&run.path, register, back).map(|n| n == 0),
+            When::NotZero(register) => self.register(&run.path, register, back).map(|n| n != 0),
+        };
+        match (runs, taken) {
+            (Some(false), _) | (_, Some(false)) => Some(false),
+            (Some(true), Some(true)) => Some(true),
+            _ => None,
+        }
     }
 
     /// What the code from `start` up to `end` may change, as far as the
@@ -754,6 +1126,7 @@ impl Walker<'_> {
             limit: CALL_LIMIT,
             stop: None,
             nesting: 0,
+            pass: false,
         };
         let (end, _) = self.walk(target, frame, run.path.clone());
         self.events.truncate(events);
@@ -804,6 +1177,7 @@ impl Walker<'_> {
                     limit: CALL_LIMIT,
                     stop: None,
                     nesting: 0,
+                    pass: false,
                 };
                 // The call puts the address to return to in lr, which the
                 // walk doesn't follow.
@@ -971,15 +1345,12 @@ impl Walker<'_> {
     ) {
         path.results |= results(effect);
         path.left &= !(effect.writes & 0xf) as u8;
-        let operation = with_writeback_offset(effect);
-        if let Operation::Store {
-            register,
-            base,
-            offset,
-            size,
-        } = operation
-        {
-            self.store(path, site, depth, register, base, offset, size, conditional);
+        let at = self.access(path, site, effect);
+        if let Operation::Store { .. } = effect.operation {
+            self.store(path, site, depth, effect, at, conditional);
+        }
+        if changes_flags {
+            self.compare(path, site, effect.operation);
         }
         let flags = match (changes_flags, conditional) {
             (false, _) => path.flags,
@@ -991,9 +1362,29 @@ impl Walker<'_> {
             path.flags = flags;
             return;
         }
-        let result = self.result(path, site, operation);
+        let result = self.result(path, site, effect.operation, at);
+        let source = match effect.operation {
+            Operation::Copy { source, .. } if source != PC => path.sources[usize::from(source)],
+            Operation::Load {
+                register: Some(_), ..
+            } => at.map(|address| Source { site, address }),
+            _ => None,
+        };
+        // The words that `ldm` and `ldrd` load, with where from.
+        let words: Vec<(u16, Option<u32>, Option<Source>)> = match effect.operation {
+            Operation::Load { .. } => (effect.words.into_iter().flat_map(word_registers))
+                .enumerate()
+                .map(|(n, register)| {
+                    let address = at.map(|at| at.wrapping_add(4 * n as u32));
+                    let word = address.and_then(|address| self.load(path, address, false));
+                    let source = address.map(|address| Source { site, address });
+                    (register, word, source)
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
         // The base register after a load or store that adds to it.
-        let moved = match (operation, effect.writeback) {
+        let moved = match (effect.operation, effect.writeback) {
             (Operation::Load { base, .. } | Operation::Store { base, .. }, Some(writeback)) => {
                 let after = self.register(path, base, site);
                 Some((base, after.map(|n| n.wrapping_add_signed(writeback.amount))))
@@ -1033,6 +1424,13 @@ impl Walker<'_> {
             }
             _ => {}
         }
+        if let Some((register, _)) = result {
+            path.sources[usize::from(register)] = source;
+        }
+        for (register, word, source) in words {
+            path.registers[usize::from(register)] = word;
+            path.sources[usize::from(register)] = source;
+        }
         for (register, number) in result.into_iter().chain(moved) {
             if register != PC {
                 path.registers[usize::from(register)] = number;
@@ -1045,8 +1443,14 @@ impl Walker<'_> {
     }
 
     /// The register that `operation` writes a number to, and the number,
-    /// when the walk can tell it.
-    fn result(&self, path: &Path, site: u64, operation: Operation) -> Option<(u16, Option<u32>)> {
+    /// when the walk can tell it. A load loads it from `at`.
+    fn result(
+        &self,
+        path: &Path,
+        site: u64,
+        operation: Operation,
+        at: Option<u32>,
+    ) -> Option<(u16, Option<u32>)> {
         let get = |register| self.register(path, register, site);
         let number = |register, number| Some((register, number));
         match operation {
@@ -1069,6 +1473,23 @@ impl Walker<'_> {
             }
             Operation::Subtract { register, a, b } => {
                 number(register, get(a).zip(get(b)).map(|(a, b)| a.wrapping_sub(b)))
+            }
+            Operation::AddShifted {
+                register,
+                a,
+                b,
+                shift,
+                subtract,
+            } => {
+                let b = get(b).map(|b| b << shift);
+                let result = get(a).zip(b).map(|(a, b)| match subtract {
+                    true => a.wrapping_sub(b),
+                    false => a.wrapping_add(b),
+                });
+                number(register, result)
+            }
+            Operation::Negate { register, source } => {
+                number(register, get(source).map(u32::wrapping_neg))
             }
             Operation::AndConstant {
                 register,
@@ -1094,12 +1515,8 @@ impl Walker<'_> {
             } => number(register, get(source).map(|n| shift_right(n, shift, signed))),
             Operation::Load {
                 register: Some(register),
-                base,
-                offset: Some(offset),
-            } => {
-                let at = get(base).map(|base| base.wrapping_add_signed(offset));
-                number(register, at.and_then(|at| self.load(path, at, false)))
-            }
+                ..
+            } => number(register, at.and_then(|at| self.load(path, at, false))),
             Operation::Nothing
             | Operation::Load { .. }
             | Operation::Store { .. }
@@ -1126,6 +1543,21 @@ impl Walker<'_> {
                 subtract(get(a), get(b))
             }
             Operation::Add { a, b, .. } => add(get(a), get(b)),
+            Operation::AddShifted {
+                a,
+                b,
+                shift,
+                subtract: minus,
+                ..
+            } => {
+                let b = get(b).map(|b| b << shift);
+                if minus {
+                    subtract(get(a), b)
+                } else {
+                    add(get(a), b)
+                }
+            }
+            Operation::Negate { source, .. } => subtract(Some(0), get(source)),
             // `adds` and `subs` both come as an amount to add, and set the
             // carry flag apart only for 0, and the overflow flag only for
             // 0x80000000.
@@ -1177,41 +1609,53 @@ impl Walker<'_> {
         }
     }
 
-    /// Records a store at `site` of `size` bytes at `base` + `offset`, from
-    /// `register` for a word, and changes the memory that `path` knows.
-    #[allow(clippy::too_many_arguments)]
+    /// Records the store at `site`, which does what `effect` says, at
+    /// `address` when the walk can tell it, and changes the memory that
+    /// `path` knows.
     fn store(
         &mut self,
         path: &mut Path,
         site: u64,
         depth: u32,
-        register: Option<u16>,
-        base: u16,
-        offset: Option<i32>,
-        size: u32,
+        effect: &Effect,
+        address: Option<u32>,
         conditional: bool,
     ) {
+        let Operation::Store {
+            register,
+            base,
+            size,
+            ..
+        } = effect.operation
+        else {
+            return;
+        };
         let from = self.register(path, base, site);
-        let address = from
-            .zip(offset)
-            .map(|(from, offset)| from.wrapping_add_signed(offset));
-        let value = register.and_then(|register| self.register(path, register, site));
+        // The registers whose words it stores, in order: none for part of
+        // a word.
+        let registers: Vec<u16> = match (effect.words, register) {
+            (Some(words), _) => word_registers(words),
+            (None, Some(register)) => vec![register],
+            (None, None) => Vec::new(),
+        };
+        let words: Vec<Option<u32>> = (registers.iter())
+            .map(|&register| self.register(path, register, site))
+            .collect();
         if let Some(address) = address {
             let memory = Rc::make_mut(&mut path.memory);
-            match register {
-                Some(_) if size == 4 && address.is_multiple_of(4) && !conditional => {
-                    memory.insert(address, value);
+            if !words.is_empty() && address.is_multiple_of(4) && !conditional {
+                for (n, &word) in words.iter().enumerate() {
+                    memory.insert(address.wrapping_add(4 * n as u32), word);
                 }
-                // Part of a word, more than one, or what the walk can't
-                // tell: the words it stores in are unknown.
-                _ => {
-                    let last = address.wrapping_add(size.max(1) - 1) & !3;
-                    let mut word = address & !3;
+            } else {
+                // Part of a word, or what the walk can't tell: the words
+                // it stores in are unknown.
+                let last = address.wrapping_add(size.max(1) - 1) & !3;
+                let mut word = address & !3;
+                memory.insert(word, None);
+                while word != last {
+                    word = word.wrapping_add(4);
                     memory.insert(word, None);
-                    while word != last {
-                        word = word.wrapping_add(4);
-                        memory.insert(word, None);
-                    }
                 }
             }
         }
@@ -1220,6 +1664,21 @@ impl Walker<'_> {
         // its locals in r7.
         let stack = base == SP || self.is_stack(address.or(from));
         if !stack {
+            let value = match words.split_first() {
+                Some((&first, rest)) if rest.iter().all(|&word| word == first) => first,
+                _ => None,
+            };
+            // Of several words, only when it loaded them one after another.
+            let sources: Vec<Option<Source>> = (registers.iter())
+                .map(|&r| path.sources[usize::from(r)])
+                .collect();
+            let source = sources.first().copied().flatten().filter(|first| {
+                (sources.iter().enumerate()).all(|(n, source)| {
+                    source.is_some_and(|source| {
+                        source.address == first.address.wrapping_add(4 * n as u32)
+                    })
+                })
+            });
             self.events.push(Event::Store(Store {
                 site,
                 depth,
@@ -1227,9 +1686,80 @@ impl Walker<'_> {
                 base: from,
                 size,
                 value,
+                source,
                 conditional,
             }));
         }
+    }
+
+    /// The address of the first word that a load or store at `site` that
+    /// does what `effect` says reads or writes, when the walk can tell it.
+    fn access(&self, path: &Path, site: u64, effect: &Effect) -> Option<u32> {
+        let (Operation::Load { base, offset, .. } | Operation::Store { base, offset, .. }) =
+            effect.operation
+        else {
+            return None;
+        };
+        // `ldrd` from pc reads from the instruction's address + 4, rounded
+        // down to a word.
+        let base = match base {
+            PC => (site as u32).wrapping_add(4) & !3,
+            _ => self.register(path, base, site)?,
+        };
+        if let Some(index) = effect.index {
+            let added = self.register(path, index.register, site)?;
+            return Some(base.wrapping_add(added << index.shift));
+        }
+        let offset = match (effect.words, effect.writeback) {
+            (Some(Words::List { registers, down }), _) => match down {
+                true => -4 * registers.count_ones() as i32,
+                false => 0,
+            },
+            (Some(Words::Pair { offset, .. }), _) => offset,
+            // `[base, #imm]!` adds before it loads or stores, `[base],
+            // #imm` after.
+            (None, Some(writeback)) if writeback.before => writeback.amount,
+            (None, Some(_)) => 0,
+            (None, None) => offset?,
+        };
+        Some(base.wrapping_add_signed(offset))
+    }
+
+    /// Records the numbers that an instruction that does `operation` and
+    /// sets the flags compares, while the walk counts a loop (see
+    /// [`Walker::count`]): `cmp a, b` compares `a` and `b`; `adds` and
+    /// `subs` compare what they add to with what they add, negated, as
+    /// the carry tells, and what they leave with 0; and any other
+    /// instruction compares what it leaves with 0, as the negative and
+    /// zero flags tell.
+    fn compare(&self, path: &mut Path, site: u64, operation: Operation) {
+        if self.counting.is_none() {
+            return;
+        }
+        let get = |register| self.register(path, register, site);
+        let left = || match self.result(path, site, operation, None) {
+            Some((_, number)) => [Some([number, Some(0)]), None],
+            None => [None, None],
+        };
+        let compares = match operation {
+            Operation::Compare { register, value } => [Some([get(register), Some(value)]), None],
+            Operation::CompareRegisters { a, b } => [Some([get(a), get(b)]), None],
+            Operation::Subtract { a, b, .. } => {
+                let difference = get(a).zip(get(b)).map(|(a, b)| a.wrapping_sub(b));
+                [Some([get(a), get(b)]), Some([difference, Some(0)])]
+            }
+            Operation::AddConstant { source, amount, .. } => {
+                let sum = get(source).map(|n| n.wrapping_add(amount));
+                [
+                    Some([get(source), Some(amount.wrapping_neg())]),
+                    Some([sum, Some(0)]),
+                ]
+            }
+            _ => left(),
+        };
+        let compares = compares.into_iter().flatten();
+        path.compares
+            .extend(compares.map(|numbers| Compare { site, numbers }));
     }
 
     /// Whether `address` is on the stack: from the lowest the stack pointer
@@ -1243,18 +1773,21 @@ impl Walker<'_> {
 
     /// The word at `address`: what code stored there on the way, or what
     /// is there at reset. A literal pool is read as the code is, when
-    /// `literal`, as if copied into place.
+    /// `literal`, as if copied into place, unless code stored a word the
+    /// walk knows there.
     fn load(&self, path: &Path, address: u32, literal: bool) -> Option<u32> {
         if !address.is_multiple_of(4) {
             return None;
         }
-        if let Some(&word) = path.memory.get(&address) {
-            return word;
-        }
         let code = self.program.code(u64::from(address)).filter(|_| literal);
-        match code.and_then(|bytes| bytes.get(..4)) {
-            Some(bytes) => Some(self.endianness.read_u32(bytes.try_into().ok()?)),
-            None => self.program.word_at_reset(u64::from(address)),
+        match (
+            path.memory.get(&address),
+            code.and_then(|bytes| bytes.get(..4)),
+        ) {
+            (Some(&Some(word)), _) => Some(word),
+            (_, Some(bytes)) => Some(self.endianness.read_u32(bytes.try_into().ok()?)),
+            (Some(None), None) => None,
+            (None, None) => self.program.word_at_reset(u64::from(address)),
         }
     }
 
@@ -1310,6 +1843,8 @@ impl Run {
             registers: self.path.registers,
             memory: Rc::clone(&self.path.memory),
             events,
+            order: self.order.len(),
+            forks: self.path.forks,
         }
     }
 
@@ -1467,62 +2002,362 @@ fn results(effect: &Effect) -> u8 {
     (effect.writes & 0xf) as u8 | u8::from(reads_r0)
 }
 
+/// Where what a loop's code changes is at the start of each time it runs,
+/// from the second on, as the ends of the first three times tell: each
+/// register, address a register's word was loaded from, and word in
+/// memory either stays, or moves by the same amount each time, or the walk
+/// can't tell it, as a word that code loaded into a register.
+struct Line {
+    /// What the walk knows at the start of the second time.
+    start: Path,
+    /// How far each register moves each time, when by the same amount.
+    registers: [Option<u32>; 16],
+    /// How far the address each register's word was loaded from moves
+    /// each time, when by the same amount (see `Path::sources`).
+    sources: [Option<u32>; 16],
+    /// The words in memory that change, and how far each moves each time,
+    /// when by the same amount.
+    memory: Vec<(u32, Option<u32>)>,
+}
+
+impl Line {
+    /// The line through the ends of the first three times: `None` when
+    /// the stack pointer moves.
+    fn new(first: &Path, second: &Path, third: &Path) -> Option<Line> {
+        let sp = usize::from(SP);
+        if first.registers[sp] != second.registers[sp]
+            || second.registers[sp] != third.registers[sp]
+        {
+            return None;
+        }
+        // A word that code loaded moves as the memory it came from does,
+        // not by the same amount each time.
+        let registers = std::array::from_fn(|r| {
+            let loaded = [first, second, third]
+                .iter()
+                .any(|path| path.sources[r].is_some());
+            let [a, b, c] = [first, second, third].map(|path| path.registers[r]);
+            if loaded { None } else { moves(a, b, c) }
+        });
+        let sources = std::array::from_fn(|r| {
+            let [a, b, c] = [first, second, third].map(|path| path.sources[r]);
+            match (a, b, c) {
+                (Some(a), Some(b), Some(c)) if a.site == b.site && b.site == c.site => {
+                    moves(Some(a.address), Some(b.address), Some(c.address))
+                }
+                _ => None,
+            }
+        });
+        let mut memory = Vec::new();
+        if !(Rc::ptr_eq(&first.memory, &second.memory) && Rc::ptr_eq(&second.memory, &third.memory))
+        {
+            let addresses: BTreeSet<u32> = [first, second, third]
+                .iter()
+                .flat_map(|path| path.memory.keys().copied())
+                .collect();
+            for address in addresses {
+                let [a, b, c] =
+                    [first, second, third].map(|path| path.memory.get(&address).copied());
+                if a == b && b == c {
+                    continue;
+                }
+                let by = match (a, b, c) {
+                    (Some(a), Some(b), Some(c)) => moves(a, b, c),
+                    _ => None,
+                };
+                memory.push((address, by));
+            }
+        }
+        let mut start = first.clone();
+        if !(first.flags == second.flags && second.flags == third.flags) {
+            start.flags = Flags::default();
+        }
+        Some(Line {
+            start,
+            registers,
+            sources,
+            memory,
+        })
+    }
+
+    /// What the walk knows at the start of the `n`th time, from the
+    /// second on.
+    fn start(&self, n: u32) -> Path {
+        let times = n - 2;
+        let at =
+            |from: Option<u32>, by: Option<u32>| Some(from?.wrapping_add(by?.wrapping_mul(times)));
+        let mut path = self.start.clone();
+        for r in 0..16 {
+            path.registers[r] = at(path.registers[r], self.registers[r]);
+            path.sources[r] = path.sources[r].and_then(|source| {
+                let address = at(Some(source.address), self.sources[r])?;
+                Some(Source { address, ..source })
+            });
+        }
+        if !self.memory.is_empty() {
+            let memory = Rc::make_mut(&mut path.memory);
+            for &(address, by) in &self.memory {
+                let word = memory.get(&address).copied().flatten();
+                memory.insert(address, at(word, by));
+            }
+        }
+        path
+    }
+}
+
+/// How far `a`, `b` and `c` move each time, when by the same amount: 0
+/// when the walk can tell none of them.
+fn moves(a: Option<u32>, b: Option<u32>, c: Option<u32>) -> Option<u32> {
+    match (a, b, c) {
+        (None, None, None) => Some(0),
+        (Some(a), Some(b), Some(c)) if b.wrapping_sub(a) == c.wrapping_sub(b) => {
+            Some(b.wrapping_sub(a))
+        }
+        _ => None,
+    }
+}
+
+/// The numbers that each compare of `second` and `third`, two times in a
+/// row through a loop's code, compares, with what they are the first of
+/// those times and how far they move each time, as numbers with no sign
+/// or, with `signed`, with one, when the walk can tell them: those of the
+/// compares that both times make in the same order.
+fn compared(second: &Pass, third: &Pass, signed: bool) -> Vec<[(i64, i64); 2]> {
+    let view = |n: u32| match signed {
+        true => i64::from(n as i32),
+        false => i64::from(n),
+    };
+    let same = |(a, b): &(&Compare, &Compare)| a.site == b.site;
+    let pairs = second.compares.iter().zip(&third.compares);
+    pairs
+        .take_while(same)
+        .filter_map(|(a, b)| {
+            let ([Some(a1), Some(b1)], [Some(a2), Some(b2)]) = (a.numbers, b.numbers) else {
+                return None;
+            };
+            let by = |from: u32, to: u32| i64::from(to.wrapping_sub(from) as i32);
+            Some([(view(a1), by(a1, a2)), (view(b1), by(b1, b2))])
+        })
+        .collect()
+}
+
+/// When a loop may leave, from the fourth time on, as the compares of the
+/// second and third times through its code tell: around each time when
+/// one of them may hold the other way, as the gap between its two
+/// numbers closes, taken with no sign or with one. At most [`CANDIDATES`]
+/// of them, the earliest first.
+fn leaving_times(second: &Pass, third: &Pass) -> Vec<u32> {
+    let mut times = BTreeSet::new();
+    for signed in [false, true] {
+        for [(a, a_by), (b, b_by)] in compared(second, third, signed) {
+            let (gap, closes) = (a - b, b_by - a_by);
+            // The gap closes after `gap / closes` times from the second.
+            if closes == 0 || gap.signum() != closes.signum() {
+                continue;
+            }
+            let Ok(after) = u32::try_from(gap / closes) else {
+                continue;
+            };
+            let crossing = after.saturating_add(2);
+            for n in crossing.saturating_sub(1)..=crossing.saturating_add(2) {
+                if (4..=MOST_PASSES).contains(&n) {
+                    times.insert(n);
+                }
+            }
+        }
+    }
+    times.into_iter().take(CANDIDATES).collect()
+}
+
+/// Whether the numbers that each compare of `second` and `third`, the
+/// second and third times through a loop's code, compares keep moving
+/// without wrapping round up to the `last`th time, with no sign and with
+/// one: then each compare's flags change only where the gap between its
+/// numbers closes, where [`leaving_times`] looks.
+fn keeps_order(second: &Pass, third: &Pass, last: u32) -> bool {
+    let times = i64::from(last - 2);
+    [
+        (false, 0, u32::MAX as i64),
+        (true, i32::MIN as i64, i32::MAX as i64),
+    ]
+    .into_iter()
+    .all(|(signed, low, high)| {
+        compared(second, third, signed).into_iter().all(|numbers| {
+            numbers.into_iter().all(|(from, by)| {
+                let to = from + by * times;
+                (low..=high).contains(&to)
+            })
+        })
+    })
+}
+
+/// What a loop leaves after it runs `passes` times, with the times through
+/// its code that the walk went through, `walked`, by number, the last one
+/// last.
+fn counted(walked: Vec<(u32, Pass)>, passes: u32) -> Counted {
+    let stores = summaries(&walked, passes);
+    let (_, last) = walked.into_iter().next_back().expect("the last time");
+    Counted {
+        passes,
+        path: last.path,
+        exit: last.exit,
+        stores,
+    }
+}
+
+/// What each store of a loop that runs `passes` times does over all the
+/// times, from those that the walk went through, `walked`: when each time
+/// but the last stores with the same instructions as the first, and the
+/// last with the first of them, and the walk can tell where each stores,
+/// which moves by the same amount each time.
+fn summaries(walked: &[(u32, Pass)], passes: u32) -> Option<Vec<LoopStore>> {
+    if walked.iter().any(|(_, pass)| pass.others) {
+        return None;
+    }
+    let first = &walked.first()?.1.stores;
+    let sites = |pass: &Pass| {
+        pass.stores
+            .iter()
+            .map(|store| store.site)
+            .collect::<Vec<_>>()
+    };
+    let all = sites(&walked[0].1);
+    let same = walked.iter().all(|(n, pass)| match *n == passes {
+        true => all.starts_with(&sites(pass)),
+        false => sites(pass) == all,
+    });
+    if !same {
+        return None;
+    }
+    (first.iter().enumerate())
+        .map(|(i, store)| {
+            let each: Vec<(u32, &Store)> = (walked.iter())
+                .filter_map(|(n, pass)| Some((*n, pass.stores.get(i)?)))
+                .collect();
+            let (address, step) = line_through(each.iter().map(|&(n, store)| (n, store.address)))?;
+            if each.iter().any(|(_, other)| other.size != store.size) || store.size == 0 {
+                return None;
+            }
+            let value = (each.iter())
+                .all(|(_, other)| other.value == store.value)
+                .then_some(store.value)
+                .flatten();
+            let source_at = |store: &Store| store.source.map(|source| source.address);
+            let loaded = !each
+                .iter()
+                .all(|(_, other)| source_at(other) == source_at(store));
+            let source = line_through(each.iter().map(|&(n, store)| (n, source_at(store))));
+            let last = walked
+                .last()
+                .map(|(_, pass)| pass.stores.len())
+                .unwrap_or(0);
+            Some(LoopStore {
+                site: store.site,
+                address,
+                step,
+                size: store.size,
+                times: passes - 1 + u32::from(i < last),
+                value,
+                source,
+                loaded,
+            })
+        })
+        .collect()
+}
+
+/// Where `points`, the `n`th time's number for some `n`, the first first,
+/// start and how far they move each time, when the walk can tell each and
+/// they move by the same amount.
+fn line_through(mut points: impl Iterator<Item = (u32, Option<u32>)>) -> Option<(u32, i32)> {
+    let (1, Some(first)) = points.next()? else {
+        return None;
+    };
+    let mut step = None;
+    for (n, number) in points {
+        let number = number?;
+        let times = (n - 1) as i32;
+        let by = *step.get_or_insert_with(|| number.wrapping_sub(first) as i32 / times);
+        if first.wrapping_add_signed(by.wrapping_mul(times)) != number {
+            return None;
+        }
+    }
+    Some((first, step.unwrap_or(0)))
+}
+
+/// Forgets the words in memory that a loop that runs `passes` times may
+/// have stored to on the times that the walk didn't go through, from the
+/// fourth to the one before the one before the last: those that its
+/// `stores` cover, or when the walk can't tell them, those that changed
+/// since `before`, at its head.
+fn forget_stored(path: &mut Path, passes: u32, stores: Option<&[LoopStore]>, before: &Visit) {
+    if passes <= 5 {
+        return;
+    }
+    let Some(stores) = stores else {
+        let registers = path.registers;
+        forget_changes(path, &registers, &before.memory);
+        return;
+    };
+    for store in stores {
+        let span = i64::from(store.step) * i64::from(store.times - 1);
+        let ends = [i64::from(store.address), i64::from(store.address) + span];
+        let low = ends[0].min(ends[1]) & !3;
+        let high = ends[0].max(ends[1]) + i64::from(store.size) - 1;
+        let (Ok(low), Ok(high)) = (u32::try_from(low), u32::try_from(high)) else {
+            continue;
+        };
+        let words: Vec<u32> = path
+            .memory
+            .range(low..=high)
+            .map(|(&address, _)| address)
+            .collect();
+        if !words.is_empty() {
+            let memory = Rc::make_mut(&mut path.memory);
+            words
+                .into_iter()
+                .for_each(|address| _ = memory.insert(address, None));
+        }
+    }
+}
+
 /// Forgets what changed in `path`, but for the stack pointer, since it
-/// held `registers` and `memory`.
+/// held `registers` and `memory`, and where words were loaded from.
 fn forget_changes(path: &mut Path, registers: &[Option<u32>; 16], memory: &Memory) {
+    path.sources = [None; 16];
     for register in (0..16).filter(|&register| register != usize::from(SP)) {
         if path.registers[register] != registers[register] {
             path.registers[register] = None;
         }
     }
-    if Rc::ptr_eq(&path.memory, memory) {
-        return;
-    }
-    let changed: Vec<u32> = (path.memory.iter())
-        .filter(|&(address, &word)| memory.get(address) != Some(&word))
-        .map(|(&address, _)| address)
-        .chain(
-            (memory.keys())
-                .filter(|address| !path.memory.contains_key(address))
-                .copied(),
-        )
-        .collect();
-    let words = Rc::make_mut(&mut path.memory);
-    for address in changed {
-        words.insert(address, None);
-    }
+    let changed = stored_since(&path.memory, memory);
+    forget_words(path, changed);
 }
 
-/// What `effect` does, where a load or store that adds to its base
-/// register gives the offset it loads or stores at: what it adds when it
-/// adds first, or else 0.
-fn with_writeback_offset(effect: &Effect) -> Operation {
-    let Some(writeback) = effect.writeback else {
-        return effect.operation;
-    };
-    let offset = Some(if writeback.before {
-        writeback.amount
-    } else {
-        0
-    });
-    match effect.operation {
-        Operation::Load { register, base, .. } => Operation::Load {
-            register,
-            base,
-            offset,
-        },
-        Operation::Store {
-            register,
-            base,
-            size,
-            ..
-        } => Operation::Store {
-            register,
-            base,
-            offset,
-            size,
-        },
-        operation => operation,
+/// The words that code stored from when memory held `before` to when it
+/// held `after`.
+fn stored_since(after: &Memory, before: &Memory) -> Vec<u32> {
+    if Rc::ptr_eq(after, before) {
+        return Vec::new();
+    }
+    (after.iter())
+        .filter(|&(address, &word)| before.get(address) != Some(&word))
+        .map(|(&address, _)| address)
+        .chain(
+            (before.keys())
+                .filter(|address| !after.contains_key(address))
+                .copied(),
+        )
+        .collect()
+}
+
+/// Forgets the words at `addresses` in `path`.
+fn forget_words(path: &mut Path, addresses: Vec<u32>) {
+    if addresses.is_empty() {
+        return;
+    }
+    let words = Rc::make_mut(&mut path.memory);
+    for address in addresses {
+        words.insert(address, None);
     }
 }
 
@@ -1530,6 +2365,16 @@ fn with_writeback_offset(effect: &Effect) -> Operation {
 fn set_unknown(path: &mut Path, registers: Registers) {
     for register in each(registers) {
         path.registers[usize::from(register)] = None;
+        path.sources[usize::from(register)] = None;
+    }
+}
+
+/// The registers whose words a load or store of more than one word loads
+/// or stores, in order.
+fn word_registers(words: Words) -> Vec<u16> {
+    match words {
+        Words::List { registers, .. } => each(registers).collect(),
+        Words::Pair { first, second, .. } => vec![first, second],
     }
 }
 
@@ -1608,7 +2453,7 @@ mod tests {
     use object::Endianness::Little;
 
     use super::{Flags, add, holds, subtract, walk};
-    use crate::arch::startup::{DEPTH, Event, How, Program, Start};
+    use crate::arch::startup::{DEPTH, Event, How, Program, Start, Walk};
 
     /// Where the code of each test is, as in flash.
     const FLASH: u64 = 0x0800_0000;
@@ -1647,13 +2492,9 @@ mod tests {
         walk_lines_following(units, functions, main, DEPTH)
     }
 
-    /// As `walk_lines`, for a walk that follows calls `follow` deep.
-    fn walk_lines_following(
-        units: &[u16],
-        functions: &[u64],
-        main: Option<u64>,
-        follow: u32,
-    ) -> Vec<String> {
+    /// The walk from 0x8000000 through `units`, as `walk_lines` says, that
+    /// follows calls `follow` deep.
+    fn walk_units(units: &[u16], functions: &[u64], main: Option<u64>, follow: u32) -> Walk {
         let code: Vec<u8> = units.iter().flat_map(|unit| unit.to_le_bytes()).collect();
         let end = FLASH + code.len() as u64;
         let ends = functions.iter().skip(1).copied().chain([end]);
@@ -1667,7 +2508,47 @@ mod tests {
             main,
             follow,
         };
-        let walk = walk(Little, &flash, &start);
+        walk(Little, &flash, &start)
+    }
+
+    /// What the stores of each loop that the walk through `units` counts
+    /// do, as `walk_lines` says: a line for each, as "0x8000010: 4 bytes
+    /// at 0x20000000 +4n, 4 times, of ?, from 0x8000100 +4n, loaded".
+    fn loop_stores(units: &[u16], functions: &[u64], main: Option<u64>) -> Vec<String> {
+        let walk = walk_units(units, functions, main, DEPTH);
+        let number = |number: Option<u32>| number.map_or("?".to_string(), |n| format!("{n:#x}"));
+        (walk.events.iter())
+            .filter_map(|event| match event {
+                Event::Loop(l) => l.stores.as_ref(),
+                _ => None,
+            })
+            .flatten()
+            .map(|store| {
+                let source = store.source.map_or(String::new(), |(address, step)| {
+                    format!(", from {address:#x} {step:+}n")
+                });
+                let loaded = if store.loaded { ", loaded" } else { "" };
+                format!(
+                    "{:#x}: {} bytes at {:#x} {:+}n, {} times, of {}{source}{loaded}",
+                    store.site,
+                    store.size,
+                    store.address,
+                    store.step,
+                    store.times,
+                    number(store.value)
+                )
+            })
+            .collect()
+    }
+
+    /// As `walk_lines`, for a walk that follows calls `follow` deep.
+    fn walk_lines_following(
+        units: &[u16],
+        functions: &[u64],
+        main: Option<u64>,
+        follow: u32,
+    ) -> Vec<String> {
+        let walk = walk_units(units, functions, main, follow);
         let number = |number: Option<u32>| number.map_or("?".to_string(), |n| format!("{n:#x}"));
         let mut lines: Vec<String> = (walk.events.iter())
             .map(|event| match event {
@@ -1709,15 +2590,21 @@ mod tests {
                     let value = number(store.value);
                     let size = store.size;
                     let condition = if store.conditional { ", if" } else { "" };
+                    let source = store.source.map_or(String::new(), |source| {
+                        format!(", loaded from {:#x} at {:#x}", source.address, source.site)
+                    });
                     let (depth, site) = (store.depth, store.site);
-                    format!("{depth} {site:#x} store {value} at {place}, {size} bytes{condition}")
+                    format!(
+                        "{depth} {site:#x} store {value} at {place}, {size} bytes{condition}{source}"
+                    )
                 }
                 Event::Loop(l) => {
                     let end = l
                         .end
                         .map_or(String::new(), |end| format!(", stops {end:x?}"));
+                    let passes = l.passes.map_or(String::new(), |n| format!(", runs {n:#x} times"));
                     format!(
-                        "{} {:#x} loop back at {:#x}, from event {}{end}",
+                        "{} {:#x} loop back at {:#x}, from event {}{passes}{end}",
                         l.depth, l.head, l.back, l.first_event
                     )
                 }
@@ -1735,7 +2622,9 @@ mod tests {
 
     #[test]
     fn a_copy_loop_and_a_call_to_zero_memory() {
-        // The loop is entered at its test, at the end of its code:
+        // The loop is entered at its test, at the end of its code, and runs
+        // 4 times, which leaves 0x10 in r3; this memset leaves the end in
+        // r0:
         //   8000000: f04f 5000  mov.w r0, #0x20000000
         //   8000004: 4908       ldr   r1, [pc, #32]  ; 0x20000010
         //   8000006: 4a09       ldr   r2, [pc, #36]  ; 0x8000100
@@ -1773,13 +2662,20 @@ mod tests {
         assert_eq!(
             walk_lines(&code, &functions, Some(0x0800_003e)),
             [
-                "0 0x800000e store ? at 0x20000000 on, 4 bytes",
-                "0 0x800000c loop back at 0x8000016, from event 0",
-                "0 0x800001e call 0x8000030 (0x20000010 0x0 0x20 ?)",
+                "0 0x800000e store ? at 0x20000000, 4 bytes, loaded from 0x8000100 at 0x800000c",
+                "0 0x800000c loop back at 0x8000016, from event 0, runs 0x4 times",
+                "0 0x800001e call 0x8000030 (0x20000010 0x0 0x20 0x10)",
                 "1 0x8000036 store ? at 0x20000010, 1 bytes",
-                "1 0x8000032 loop back at 0x800003a, from event 3",
-                "0 0x8000022 call 0x800003e (? 0x0 0x20000030 ?), left by a call: r2",
+                "1 0x8000032 loop back at 0x800003a, from event 3, runs 0x21 times",
+                "0 0x8000022 call 0x800003e (0x20000030 0x0 0x20000030 0x10), left by a call: r0 r2",
                 "end Main(8000022)",
+            ]
+        );
+        assert_eq!(
+            loop_stores(&code, &functions, Some(0x0800_003e)),
+            [
+                "0x800000e: 4 bytes at 0x20000000 +4n, 4 times, of ?, from 0x8000100 +4n, loaded",
+                "0x8000036: 1 bytes at 0x20000010 +1n, 32 times, of ?"
             ]
         );
     }
@@ -1827,7 +2723,7 @@ mod tests {
     #[test]
     fn a_compare_that_skips_a_loop_for_an_empty_section() {
         // The first loop is skipped, since r0 and r1 hold the same address;
-        // the second runs:
+        // the second runs twice, up to r1:
         //   8000000: f04f 5000  mov.w r0, #0x20000000
         //   8000004: f04f 5100  mov.w r1, #0x20000000
         //   8000008: 2200       movs  r2, #0
@@ -1857,8 +2753,8 @@ mod tests {
             walk_lines(&code, &functions, Some(0x0800_0030)),
             [
                 "0 0x8000020 store 0x0 at 0x20000000, 4 bytes",
-                "0 0x8000020 loop back at 0x8000026, from event 0",
-                "0 0x8000028 call 0x8000030 (? 0x20000008 0x0 ?)",
+                "0 0x8000020 loop back at 0x8000026, from event 0, runs 0x2 times",
+                "0 0x8000028 call 0x8000030 (0x20000008 0x20000008 0x0 ?)",
                 "end Main(8000028)",
             ]
         );
@@ -2230,8 +3126,9 @@ mod tests {
     fn a_pointer_on_the_stack_that_two_loops_share() {
         // As GCC -O0 builds `for (p = &_sdata; p < &_edata;) *p++ = 1;
         // for (; p < &_ebss;) *p++ = 0;`: the second loop starts where the
-        // first ends, which the walk can't tell, not at 0x20000000. Stores
-        // through r7 to the stack aren't listed:
+        // first ends, at 0x20000010, as the walk tells from the pointer on
+        // the stack, which moves by 4 up to the bound it is compared with.
+        // Stores through r7 to the stack aren't listed:
         //   8000000: b580       push  {r7, lr}
         //   8000002: b082       sub   sp, #8
         //   8000004: af00       add   r7, sp, #0
@@ -2272,10 +3169,10 @@ mod tests {
             walk_lines(&code, &functions, Some(0x0800_0040)),
             [
                 "0 0x8000016 store 0x1 at 0x20000000, 4 bytes",
-                "0 0x800000e loop back at 0x800001e, from event 0",
-                "0 0x800002a store 0x0 at ?, 4 bytes",
-                "0 0x8000022 loop back at 0x8000032, from event 2",
-                "0 0x8000034 call 0x8000040 (? ? 0x20000020 ?)",
+                "0 0x800000e loop back at 0x800001e, from event 0, runs 0x4 times",
+                "0 0x800002a store 0x0 at 0x20000010, 4 bytes",
+                "0 0x8000022 loop back at 0x8000032, from event 2, runs 0x4 times",
+                "0 0x8000034 call 0x8000040 (? ? 0x20000020 0x20000020)",
                 "end Main(8000034)",
             ]
         );
@@ -2322,8 +3219,10 @@ mod tests {
     #[test]
     fn a_region_table_loop_that_calls_through_a_register() {
         // As Arm Compiler 6's __scatterload goes through its table of
-        // regions, calling a function for each to copy or zero it, which
-        // the walk can't tell:
+        // regions, calling a function for each to copy or zero it: the
+        // walk reads the first row, with the function, and the loop runs
+        // once, up to the table's end, where the registers hold the row,
+        // since the function changes none of them:
         //   8000000: a404       adr   r4, 8000014 <table>
         //   8000002: a508       adr   r5, 8000024 <table_end>
         //   8000004: e001       b.n   800000a
@@ -2336,20 +3235,22 @@ mod tests {
         //   8000014: 08000100   .word
         //   8000018: 20000000   .word
         //   800001c: 00000010   .word
-        //   8000020: 08000041   .word
+        //   8000020: 08000027   .word
         // main:
         //   8000024: e7fe       b.n   8000024
+        // copy:
+        //   8000026: 4770       bx    lr
         let code = [
             0xa404, 0xa508, 0xe001, 0xcc0f, 0x4798, 0x42ac, 0xd3fb, 0xf000, 0xf809, 0xbf00, 0x0100,
-            0x0800, 0x0000, 0x2000, 0x0010, 0x0000, 0x0041, 0x0800, 0xe7fe,
+            0x0800, 0x0000, 0x2000, 0x0010, 0x0000, 0x0027, 0x0800, 0xe7fe, 0x4770,
         ];
-        let functions = [0x0800_0000, 0x0800_0024];
+        let functions = [0x0800_0000, 0x0800_0024, 0x0800_0026];
         assert_eq!(
             walk_lines(&code, &functions, Some(0x0800_0024)),
             [
-                "0 0x8000008 call through r3 ? (? ? ? ?)",
-                "0 0x8000006 loop back at 0x800000c, from event 0",
-                "0 0x800000e call 0x8000024 (? ? ? ?)",
+                "0 0x8000008 call through r3 0x8000026 (0x8000100 0x20000000 0x10 0x8000027)",
+                "0 0x8000006 loop back at 0x800000c, from event 0, runs 0x1 times",
+                "0 0x800000e call 0x8000024 (0x8000100 0x20000000 0x10 0x8000027)",
                 "end Main(800000e)",
             ]
         );
@@ -2472,8 +3373,8 @@ mod tests {
         assert_eq!(
             walk_lines(&code, &functions, Some(0x0800_0028)),
             [
-                "0 0x8000008 store 0x100 at 0x20000004, 4 bytes",
-                "0 0x8000012 store ? at 0x20000008, 4 bytes",
+                "0 0x8000008 store 0x100 at 0x20000004, 4 bytes, loaded from 0x8000024 at 0x8000004",
+                "0 0x8000012 store ? at 0x20000008, 4 bytes, loaded from 0x20000000 at 0x8000010",
                 "0 0x8000014 call 0x8000028 (0x8000020 0x20000000 0x100 0x100)",
                 "end Main(8000014)",
             ]
@@ -3047,7 +3948,7 @@ mod tests {
         assert_eq!(
             walk_lines(&code, &[FLASH], None),
             [
-                "0 0x8000006 store ? at 0x20000004, 4 bytes",
+                "0 0x8000006 store ? at 0x20000004, 4 bytes, loaded from 0x20000000 at 0x8000004",
                 "0 0x8000004 loop back at 0x8000008, from event 0",
                 "end Loops(8000008)",
             ]
@@ -3113,6 +4014,352 @@ mod tests {
             [
                 "0 0x8000010 call 0x8000014 (0x1 0x2 0x0 ?)",
                 "end Main(8000010)"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_loop_that_copies_two_words_at_a_time_with_ldm_and_stm() {
+        // The loop runs twice, and leaves r0 and r2 past what it copied:
+        //   8000000: f04f 5000  mov.w r0, #0x20000000
+        //   8000004: 4903       ldr   r1, [pc, #12]  ; 0x20000010
+        //   8000006: 4a04       ldr   r2, [pc, #16]  ; 0x8000100
+        //   8000008: ca18       ldmia r2!, {r3, r4}
+        //   800000a: c018       stmia r0!, {r3, r4}
+        //   800000c: 4288       cmp   r0, r1
+        //   800000e: d3fb       bcc.n 8000008
+        //   8000010: f000 f804  bl    800001c <main>
+        //   8000014: 20000010   .word
+        //   8000018: 08000100   .word
+        // main:
+        //   800001c: e7fe       b.n   800001c
+        let code = [
+            0xf04f, 0x5000, 0x4903, 0x4a04, 0xca18, 0xc018, 0x4288, 0xd3fb, 0xf000, 0xf804, 0x0010,
+            0x2000, 0x0100, 0x0800, 0xe7fe, 0xbf00,
+        ];
+        let functions = [0x0800_0000, 0x0800_001c];
+        assert_eq!(
+            walk_lines(&code, &functions, Some(0x0800_001c)),
+            [
+                "0 0x800000a store ? at 0x20000000, 8 bytes, loaded from 0x8000100 at 0x8000008",
+                "0 0x8000008 loop back at 0x800000e, from event 0, runs 0x2 times",
+                "0 0x8000010 call 0x800001c (0x20000010 0x20000010 0x8000110 ?)",
+                "end Main(8000010)",
+            ]
+        );
+        assert_eq!(
+            loop_stores(&code, &functions, Some(0x0800_001c)),
+            ["0x800000a: 8 bytes at 0x20000000 +8n, 2 times, of ?, from 0x8000100 +8n, loaded"]
+        );
+    }
+
+    #[test]
+    fn a_loop_that_counts_down_to_zero() {
+        // r3 counts the bytes left, from 16 down to 0, and the loop copies
+        // the last word first:
+        //   8000000: 4904       ldr   r1, [pc, #16]  ; 0x8000100
+        //   8000002: f04f 5200  mov.w r2, #0x20000000
+        //   8000006: 2310       movs  r3, #16
+        //   8000008: 3b04       subs  r3, #4
+        //   800000a: 58c8       ldr   r0, [r1, r3]
+        //   800000c: 50d0       str   r0, [r2, r3]
+        //   800000e: dcfb       bgt.n 8000008
+        //   8000010: f000 f802  bl    8000018 <main>
+        //   8000014: 08000100   .word
+        // main:
+        //   8000018: e7fe       b.n   8000018
+        let code = [
+            0x4904, 0xf04f, 0x5200, 0x2310, 0x3b04, 0x58c8, 0x50d0, 0xdcfb, 0xf000, 0xf802, 0x0100,
+            0x0800, 0xe7fe, 0xbf00,
+        ];
+        let functions = [0x0800_0000, 0x0800_0018];
+        assert_eq!(
+            walk_lines(&code, &functions, Some(0x0800_0018)),
+            [
+                "0 0x800000c store ? at 0x2000000c, 4 bytes, loaded from 0x800010c at 0x800000a",
+                "0 0x8000008 loop back at 0x800000e, from event 0, runs 0x4 times",
+                "0 0x8000010 call 0x8000018 (? 0x8000100 0x20000000 0x0)",
+                "end Main(8000010)",
+            ]
+        );
+        assert_eq!(
+            loop_stores(&code, &functions, Some(0x0800_0018)),
+            ["0x800000c: 4 bytes at 0x2000000c -4n, 4 times, of ?, from 0x800010c -4n, loaded"]
+        );
+    }
+
+    #[test]
+    fn two_loops_that_share_the_register_they_copy_from() {
+        // The second loop copies from where the first left r1, as startup
+        // code does when one load image follows the other:
+        //   8000000: 490a       ldr   r1, [pc, #40]  ; 0x8000100
+        //   8000002: f04f 5200  mov.w r2, #0x20000000
+        //   8000006: 4b0a       ldr   r3, [pc, #40]  ; 0x20000008
+        //   8000008: 429a       cmp   r2, r3
+        //   800000a: bfbe       ittt  lt
+        //   800000c: f851 0b04  ldrlt.w r0, [r1], #4
+        //   8000010: f842 0b04  strlt.w r0, [r2], #4
+        //   8000014: e7f8       blt.n 8000008
+        //   8000016: 4a07       ldr   r2, [pc, #28]  ; 0x20000100
+        //   8000018: 4b07       ldr   r3, [pc, #28]  ; 0x2000010c
+        //   800001a: 429a       cmp   r2, r3
+        //   800001c: bfbe       ittt  lt
+        //   800001e: f851 0b04  ldrlt.w r0, [r1], #4
+        //   8000022: f842 0b04  strlt.w r0, [r2], #4
+        //   8000026: e7f8       blt.n 800001a
+        //   8000028: f000 f808  bl    800003c <main>
+        //   800002c: 08000100 20000008 20000100 2000010c   .word
+        // main:
+        //   800003c: e7fe       b.n   800003c
+        let code = [
+            0x490a, 0xf04f, 0x5200, 0x4b0a, 0x429a, 0xbfbe, 0xf851, 0x0b04, 0xf842, 0x0b04, 0xe7f8,
+            0x4a07, 0x4b07, 0x429a, 0xbfbe, 0xf851, 0x0b04, 0xf842, 0x0b04, 0xe7f8, 0xf000, 0xf808,
+            0x0100, 0x0800, 0x0008, 0x2000, 0x0100, 0x2000, 0x010c, 0x2000, 0xe7fe, 0xbf00,
+        ];
+        let functions = [0x0800_0000, 0x0800_003c];
+        assert_eq!(
+            walk_lines(&code, &functions, Some(0x0800_003c)),
+            [
+                "0 0x8000010 store ? at 0x20000000, 4 bytes, loaded from 0x8000100 at 0x800000c",
+                "0 0x8000008 loop back at 0x8000014, from event 0, runs 0x3 times",
+                "0 0x8000022 store ? at 0x20000100, 4 bytes, loaded from 0x8000108 at 0x800001e",
+                "0 0x800001a loop back at 0x8000026, from event 2, runs 0x4 times",
+                "0 0x8000028 call 0x800003c (? 0x8000114 0x2000010c 0x2000010c)",
+                "end Main(8000028)",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_loop_that_runs_too_many_times_to_count() {
+        // r0 counts up to 0xffffffff, more times than elfq counts, so the
+        // walk can't tell what the loop leaves in it:
+        //   8000000: f04f 5200  mov.w r2, #0x20000000
+        //   8000004: 2000       movs  r0, #0
+        //   8000006: f04f 31ff  mov.w r1, #0xffffffff
+        //   800000a: 6010       str   r0, [r2, #0]
+        //   800000c: 3001       adds  r0, #1
+        //   800000e: 4288       cmp   r0, r1
+        //   8000010: d1fb       bne.n 800000a
+        //   8000012: f000 f800  bl    8000016 <main>
+        // main:
+        //   8000016: e7fe       b.n   8000016
+        let code = [
+            0xf04f, 0x5200, 0x2000, 0xf04f, 0x31ff, 0x6010, 0x3001, 0x4288, 0xd1fb, 0xf000, 0xf800,
+            0xe7fe,
+        ];
+        let functions = [0x0800_0000, 0x0800_0016];
+        assert_eq!(
+            walk_lines(&code, &functions, Some(0x0800_0016)),
+            [
+                "0 0x800000a store 0x0 at 0x20000000, 4 bytes",
+                "0 0x800000a loop back at 0x8000010, from event 0",
+                "0 0x8000012 call 0x8000016 (? 0xffffffff 0x20000000 ?)",
+                "end Main(8000012)",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_table_loop_whose_test_is_past_its_branch_back() {
+        // As CMSIS 5.9's __cmsis_start goes through its copy table, built
+        // with GCC -Os, which puts the test of the loop over the table's
+        // rows after the branch back: the table has one row, which copies
+        // 4 words, and the loop leaves the second time:
+        // reset:
+        //   8000000: 4b0a       ldr	r3, [pc, #40]	@ (800002c <body+0x6>)
+        //   8000002: 490b       ldr	r1, [pc, #44]	@ (8000030 <body+0xa>)
+        //   8000004: b510       push	{r4, lr}
+        // outer:
+        //   8000006: 428b       cmp	r3, r1
+        //   8000008: d30d       bcc.n	8000026 <body>
+        //   800000a: f000 f819  bl	8000040 <main>
+        // inner:
+        //   800000e: 6818       ldr	r0, [r3, #0]
+        //   8000010: f850 4022  ldr.w	r4, [r0, r2, lsl #2]
+        //   8000014: 6858       ldr	r0, [r3, #4]
+        //   8000016: f840 4022  str.w	r4, [r0, r2, lsl #2]
+        //   800001a: 3201       adds	r2, #1
+        // test:
+        //   800001c: 6898       ldr	r0, [r3, #8]
+        //   800001e: 4290       cmp	r0, r2
+        //   8000020: d8f5       bhi.n	800000e <inner>
+        //   8000022: 330c       adds	r3, #12
+        //   8000024: e7ef       b.n	8000006 <outer>
+        // body:
+        //   8000026: 2200       movs	r2, #0
+        //   8000028: e7f8       b.n	800001c <test>
+        //   800002c: 08000034   .word	0x08000034
+        //   8000030: 08000040   .word	0x08000040
+        // table:
+        //   8000034: 08000100   .word	0x08000100
+        //   8000038: 20000000   .word	0x20000000
+        //   800003c: 00000004   .word	0x00000004
+        // main:
+        //   8000040: e7fe       b.n	8000040 <main>
+        let code = [
+            0x4b0a, 0x490b, 0xb510, 0x428b, 0xd30d, 0xf000, 0xf819, 0x6818, 0xf850, 0x4022, 0x6858,
+            0xf840, 0x4022, 0x3201, 0x6898, 0x4290, 0xd8f5, 0x330c, 0xe7ef, 0x2200, 0xe7f8, 0xbf00,
+            0x0034, 0x0800, 0x0040, 0x0800, 0x0100, 0x0800, 0x0000, 0x2000, 0x0004, 0x0000, 0xe7fe,
+            0xbf00,
+        ];
+        let functions = [0x0800_0000, 0x0800_0040];
+        assert_eq!(
+            walk_lines(&code, &functions, Some(0x0800_0040)),
+            [
+                "0 0x8000016 store ? at 0x20000000, 4 bytes, loaded from 0x8000100 at 0x8000010",
+                "0 0x800000e loop back at 0x8000020, from event 0, runs 0x4 times",
+                "0 0x8000006 loop back at 0x8000024, from event 0, runs 0x2 times",
+                "0 0x800000a call 0x8000040 (? 0x8000040 ? 0x8000040)",
+                "end Main(800000a)",
+            ]
+        );
+        assert_eq!(
+            loop_stores(&code, &functions, Some(0x0800_0040)),
+            ["0x8000016: 4 bytes at 0x20000000 +4n, 4 times, of ?, from 0x8000100 +4n, loaded"]
+        );
+    }
+
+    #[test]
+    fn a_loop_that_leaves_with_cbz_at_its_head() {
+        // r3 counts the bytes left down to 0, which `cbz` tests before the
+        // loop copies each word:
+        // reset:
+        //   8000000: 4906       ldr	r1, [pc, #24]	@ (800001c <done+0x6>)
+        //   8000002: f04f 5200  mov.w	r2, #536870912	@ 0x20000000
+        //   8000006: 2310       movs	r3, #16
+        // loop:
+        //   8000008: b12b       cbz	r3, 8000016 <done>
+        //   800000a: f851 0b04  ldr.w	r0, [r1], #4
+        //   800000e: f842 0b04  str.w	r0, [r2], #4
+        //   8000012: 3b04       subs	r3, #4
+        //   8000014: e7f8       b.n	8000008 <loop>
+        // done:
+        //   8000016: f000 f803  bl	8000020 <main>
+        //   800001c: 08000100   .word	0x08000100
+        // main:
+        //   8000020: e7fe       b.n	8000020 <main>
+        let code = [
+            0x4906, 0xf04f, 0x5200, 0x2310, 0xb12b, 0xf851, 0x0b04, 0xf842, 0x0b04, 0x3b04, 0xe7f8,
+            0xf000, 0xf803, 0xbf00, 0x0100, 0x0800, 0xe7fe, 0xbf00,
+        ];
+        let functions = [0x0800_0000, 0x0800_0020];
+        assert_eq!(
+            walk_lines(&code, &functions, Some(0x0800_0020)),
+            [
+                "0 0x800000e store ? at 0x20000000, 4 bytes, loaded from 0x8000100 at 0x800000a",
+                "0 0x8000008 loop back at 0x8000014, from event 0, runs 0x5 times",
+                "0 0x8000016 call 0x8000020 (? 0x8000110 0x20000010 0x0)",
+                "end Main(8000016)",
+            ]
+        );
+        assert_eq!(
+            loop_stores(&code, &functions, Some(0x0800_0020)),
+            ["0x800000e: 4 bytes at 0x20000000 +4n, 4 times, of ?, from 0x8000100 +4n, loaded"]
+        );
+    }
+
+    #[test]
+    fn a_loop_counts_without_the_words_it_loads() {
+        // The words the loop copies run 1, 2, 3, 4, then 9: the walk
+        // doesn't take the word in r0 to move on by 1 each time, as the
+        // registers that count do:
+        // reset:
+        //   8000000: a106       add	r1, pc, #24	@ (adr r1, 800001c <data>)
+        //   8000002: f04f 5200  mov.w	r2, #536870912	@ 0x20000000
+        //   8000006: 4b04       ldr	r3, [pc, #16]	@ (8000018 <loop+0x10>)
+        // loop:
+        //   8000008: f851 0b04  ldr.w	r0, [r1], #4
+        //   800000c: f842 0b04  str.w	r0, [r2], #4
+        //   8000010: 429a       cmp	r2, r3
+        //   8000012: d3f9       bcc.n	8000008 <loop>
+        //   8000014: f000 f80e  bl	8000034 <main>
+        //   8000018: 20000018   .word	0x20000018
+        // data:
+        //   800001c: 00000001   .word	0x00000001
+        //   8000020: 00000002   .word	0x00000002
+        //   8000024: 00000003   .word	0x00000003
+        //   8000028: 00000004   .word	0x00000004
+        //   800002c: 00000009   .word	0x00000009
+        //   8000030: 00000006   .word	0x00000006
+        // main:
+        //   8000034: e7fe       b.n	8000034 <main>
+        let code = [
+            0xa106, 0xf04f, 0x5200, 0x4b04, 0xf851, 0x0b04, 0xf842, 0x0b04, 0x429a, 0xd3f9, 0xf000,
+            0xf80e, 0x0018, 0x2000, 0x0001, 0x0000, 0x0002, 0x0000, 0x0003, 0x0000, 0x0004, 0x0000,
+            0x0009, 0x0000, 0x0006, 0x0000, 0xe7fe, 0xbf00,
+        ];
+        let functions = [0x0800_0000, 0x0800_0034];
+        assert_eq!(
+            walk_lines(&code, &functions, Some(0x0800_0034)),
+            [
+                "0 0x800000c store 0x1 at 0x20000000, 4 bytes, loaded from 0x800001c at 0x8000008",
+                "0 0x8000008 loop back at 0x8000012, from event 0, runs 0x6 times",
+                "0 0x8000014 call 0x8000034 (0x6 0x8000034 0x20000018 0x20000018)",
+                "end Main(8000014)",
+            ]
+        );
+        assert_eq!(
+            loop_stores(&code, &functions, Some(0x0800_0034)),
+            ["0x800000c: 4 bytes at 0x20000000 +4n, 6 times, of ?, from 0x800001c +4n, loaded"]
+        );
+    }
+
+    #[test]
+    fn numbers_from_adds_of_shifted_registers_and_negs() {
+        // reset:
+        //   8000000: 2103       movs	r1, #3
+        //   8000002: f04f 5200  mov.w	r2, #536870912	@ 0x20000000
+        //   8000006: eb02 0081  add.w	r0, r2, r1, lsl #2
+        //   800000a: 424b       negs	r3, r1
+        //   800000c: 6003       str	r3, [r0, #0]
+        //   800000e: eba0 0081  sub.w	r0, r0, r1, lsl #2
+        //   8000012: 6001       str	r1, [r0, #0]
+        //   8000014: f000 f800  bl	8000018 <main>
+        // main:
+        //   8000018: e7fe       b.n	8000018 <main>
+        let code = [
+            0x2103, 0xf04f, 0x5200, 0xeb02, 0x0081, 0x424b, 0x6003, 0xeba0, 0x0081, 0x6001, 0xf000,
+            0xf800, 0xe7fe,
+        ];
+        let functions = [0x0800_0000, 0x0800_0018];
+        assert_eq!(
+            walk_lines(&code, &functions, Some(0x0800_0018)),
+            [
+                "0 0x800000c store 0xfffffffd at 0x2000000c, 4 bytes",
+                "0 0x8000012 store 0x3 at 0x20000000, 4 bytes",
+                "0 0x8000014 call 0x8000018 (0x20000000 0x3 0x20000000 0xfffffffd)",
+                "end Main(8000014)",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_store_of_several_words_copies_only_words_loaded_one_after_another() {
+        //   8000000: 4905       ldr   r1, [pc, #20]  ; 0x8000100
+        //   8000002: f04f 5000  mov.w r0, #0x20000000
+        //   8000006: 680b       ldr   r3, [r1, #0]
+        //   8000008: 688c       ldr   r4, [r1, #8]
+        //   800000a: c018       stmia r0!, {r3, r4}
+        //   800000c: 684b       ldr   r3, [r1, #4]
+        //   800000e: 688c       ldr   r4, [r1, #8]
+        //   8000010: c018       stmia r0!, {r3, r4}
+        //   8000012: f000 f803  bl    800001c <main>
+        //   8000018: 08000100   .word
+        // main:
+        //   800001c: e7fe       b.n   800001c
+        let code = [
+            0x4905, 0xf04f, 0x5000, 0x680b, 0x688c, 0xc018, 0x684b, 0x688c, 0xc018, 0xf000, 0xf803,
+            0xbf00, 0x0100, 0x0800, 0xe7fe, 0xbf00,
+        ];
+        let functions = [0x0800_0000, 0x0800_001c];
+        assert_eq!(
+            walk_lines(&code, &functions, Some(0x0800_001c)),
+            [
+                "0 0x800000a store ? at 0x20000000, 8 bytes",
+                "0 0x8000010 store ? at 0x20000008, 8 bytes, loaded from 0x8000104 at 0x800000c",
+                "0 0x8000012 call 0x800001c (0x20000010 0x8000100 ? ?)",
+                "end Main(8000012)",
             ]
         );
     }
