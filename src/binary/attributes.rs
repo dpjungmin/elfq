@@ -65,6 +65,13 @@ impl ArmArchitecture {
         name.to_string()
     }
 
+    /// Whether it is the architecture of a Cortex-M core, which runs only
+    /// Thumb code: the profile is M, or the version is one that only
+    /// Cortex-M cores have, Armv6-M to Armv8.1-M Mainline.
+    pub fn is_cortex_m(&self) -> bool {
+        self.profile == Some(b'M') || matches!(self.version, 11..=13 | 16 | 17 | 21)
+    }
+
     /// Whether it is the architecture of a Cortex-M core up to Armv7E-M:
     /// Armv6-M (Cortex-M0 and M0+, M1), Armv6S-M, Armv7-M (Cortex-M3) or
     /// Armv7E-M (Cortex-M4 and M7). Armv8-M cores, such as the Cortex-M33,
@@ -222,6 +229,30 @@ mod tests {
         ];
         for (version, profile) in others {
             assert!(!architecture(version, profile).is_cortex_m_up_to_v7());
+        }
+    }
+
+    #[test]
+    fn cortex_m_cores_run_only_thumb() {
+        let architecture = |version, profile| ArmArchitecture { version, profile };
+        // Armv6-M to Armv8.1-M Mainline are Cortex-M with no profile, and
+        // any version is with profile M.
+        let cortex_m = [
+            (11, None),
+            (12, None),
+            (13, None),
+            (16, None),
+            (17, None),
+            (21, None),
+            (10, Some(b'M')),
+            (40, Some(b'M')),
+        ];
+        for (version, profile) in cortex_m {
+            assert!(architecture(version, profile).is_cortex_m(), "{version}");
+        }
+        // Armv7 with profile A or none, and Armv8-A, aren't.
+        for (version, profile) in [(10, Some(b'A')), (10, None), (14, None)] {
+            assert!(!architecture(version, profile).is_cortex_m(), "{version}");
         }
     }
 

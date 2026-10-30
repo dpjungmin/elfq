@@ -281,15 +281,15 @@ fn words_come_from_a_section_that_starts_inside_another() {
 #[test]
 fn the_vector_table_ends_where_the_file_holds_no_bytes() {
     // `.isr_vector` now covers 8 bytes in the middle of the table, which
-    // the file doesn't hold, and `.ARM.exidx` the whole table. The table
-    // ends before them, though the file holds the entries after them.
+    // the file doesn't hold, and `.rodata` the whole table. The table ends
+    // before them, though the file holds the entries after them.
     let mut data = sample("c-cortex-m4-stripped.elf");
     set_section_field(&mut data, ".isr_vector", ADDRESS, 0x0800_0010);
     set_section_field(&mut data, ".isr_vector", OFFSET, 0x10_0000);
     set_section_field(&mut data, ".isr_vector", SIZE, 8);
-    set_section_field(&mut data, ".ARM.exidx", ADDRESS, 0x0800_0000);
-    set_section_field(&mut data, ".ARM.exidx", OFFSET, 0x1000);
-    set_section_field(&mut data, ".ARM.exidx", SIZE, 0x40);
+    set_section_field(&mut data, ".rodata", ADDRESS, 0x0800_0000);
+    set_section_field(&mut data, ".rodata", OFFSET, 0x1000);
+    set_section_field(&mut data, ".rodata", SIZE, 0x40);
     let (binary, _) = parse(&data);
     let table = binary.vector_table.unwrap();
     assert_eq!((table.address, table.size), (0x0800_0000, 0x10));
@@ -300,13 +300,60 @@ fn the_vector_table_ends_where_the_file_holds_no_bytes() {
 #[test]
 fn the_search_for_the_vector_table_skips_a_huge_bss() {
     // With an entry point that no vector table lists, elfq looks for one
-    // in every section, `.bss` too, and finds none.
+    // in every section, `.bss` too, and finds none. It then finds the table
+    // at the start of `.isr_vector`, by how the table begins.
     let mut data = sample("c-cortex-m4.elf");
     // `e_entry`, in the file's header.
     write(&mut data, 0x18, 4, 0x0800_0001);
     set_section_field(&mut data, ".bss", SIZE, 0xffff_0000);
     let (binary, _) = parse_quickly(data);
-    assert_eq!(binary.vector_table, None);
+    let table = binary.vector_table.unwrap();
+    assert_eq!(table.address, 0x0800_0000);
+    assert_eq!(table.reset_handler(), Some(0x0800_05a0));
+}
+
+#[test]
+fn stripped_cortex_m_firmware_is_thumb_though_its_entry_point_is_even() {
+    // Linked with no entry point, firmware's entry point is where `.text`
+    // starts, an even address: here on_timer's, as ld sets it. Stripped,
+    // it has no symbols either, but its build attributes name a Cortex-M
+    // core.
+    let mut data = sample("c-cortex-m7-entry-main-stripped.elf");
+    // `e_entry`, in the file's header.
+    write(&mut data, 0x18, 4, 0x3000_0140);
+    let (binary, _) = parse(&data);
+    assert!(binary.thumb);
+    let table = binary.vector_table.unwrap();
+    assert_eq!(table.reset_handler(), Some(0x3000_05f8));
+}
+
+#[test]
+fn an_entry_point_in_the_vector_table_is_no_function() {
+    // Linked with no entry point, firmware whose `.text` begins with the
+    // vector table has its entry point there. The table is data all the
+    // same: no function starts there, and nothing reads it as code.
+    let mut data = sample("c-cortex-m4-cmsis-stripped.elf");
+    write(&mut data, 0x18, 4, 0x0800_0000);
+    let (binary, _) = parse(&data);
+    let table = binary.vector_table.clone().unwrap();
+    assert_eq!(
+        (table.address, table.reset_handler()),
+        (0x0800_0000, Some(0x0800_05a0))
+    );
+    let item = &binary.items[binary.item_at(0x0800_0000).unwrap()];
+    assert_eq!(
+        (item.name.as_str(), item.size),
+        (".text@0x8000000", table.size)
+    );
+    let (stdout, _) = run("entry-in-table.elf", &data, &["reach"]);
+    assert!(!stdout.contains("entry point"), "{stdout}");
+    assert!(stdout.contains("Reset "), "{stdout}");
+    // It is a root as the vector table, not as the entry point.
+    let (stdout, _) = run("entry-in-table.elf", &data, &["why", ".text@0x8000000"]);
+    assert_output(
+        &stdout,
+        ".text@0x8000000 holds the vector table, where the processor finds its handlers.\n",
+    );
 }
 
 #[test]

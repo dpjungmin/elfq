@@ -116,6 +116,14 @@ sed 's/^\( *DTCM .*ORIGIN = \)0x20000000/\10x80000000/' c/cortex-m7.ld >"$out/co
 cortex_m7 c-cortex-m7-sdram "$out/cortex-m7-sdram.ld"
 rm "$out/cortex-m7-sdram.ld"
 
+# ENTRY(main), so that the entry point isn't the reset handler, and elfq
+# finds the vector table by how it begins.
+echo "C, Cortex-M7 with TCMs, main as the entry point"
+sed 's/^ENTRY(Reset_Handler)/ENTRY(main)/' c/cortex-m7.ld >"$out/cortex-m7-entry-main.ld"
+cortex_m7 c-cortex-m7-entry-main "$out/cortex-m7-entry-main.ld"
+rm "$out/cortex-m7-entry-main.ld"
+variants arm-none-eabi-strip c-cortex-m7-entry-main
+
 # Only the variant with symbols and no DWARF: this sample is for libgcc's
 # routines for doubles, which have no DWARF of their own.
 echo "C, Cortex-M4 without its FPU"

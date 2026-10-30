@@ -449,19 +449,22 @@ fn most_used(binary: &Binary, graph: &Graph) -> Option<usize> {
 }
 
 /// `main` if there is one, or else the function where the program starts,
-/// such as firmware's reset handler, since every reader knows where those
-/// fit; otherwise the largest function.
+/// the vector table's reset handler or the entry point, since every reader
+/// knows where those fit; otherwise the largest function.
 pub(super) fn starting_point(binary: &Binary, names: &Names) -> Option<usize> {
     // `main` as SYMBOL would find it, so also `app::main` in Rust.
     let main = match names.nodes("main") {
         [Node::Item(index)] => Some(*index),
         _ => None,
     };
+    let reset = (binary.vector_table.as_ref())
+        .and_then(|table| table.reset_handler())
+        .and_then(|address| binary.item_at(address));
     let entry = binary.item_at(binary.entry);
     let largest = (0..binary.items.len())
         .filter(|&index| is_own_function(binary, index))
         .max_by_key(|&index| binary.items[index].size);
-    [main, entry]
+    [main, reset, entry]
         .into_iter()
         .flatten()
         .find(|&index| is_own_function(binary, index))

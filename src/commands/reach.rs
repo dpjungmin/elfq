@@ -1870,8 +1870,9 @@ impl Starts<'_> {
 impl Start {
     /// Why it is a start, for the WHY column: "main function"; the
     /// exceptions it handles, as in "NMI, HardFault and 6 more", with
-    /// "(entry point)" after them for the reset handler; or why it is a
-    /// root, as the HOW column of `why` says it.
+    /// "(entry point)" after them for the handler that is the entry point,
+    /// usually the reset handler; or why it is a root, as the HOW column of
+    /// `why` says it.
     pub(super) fn why(&self, binary: &Binary) -> String {
         let names = self.exception_names(binary);
         let names: Vec<&str> = names.iter().map(String::as_str).collect();

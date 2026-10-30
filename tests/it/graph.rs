@@ -270,6 +270,13 @@ fn startup_code_copies_whole_sections_without_using_their_first_items() {
         callees(&binary, &graph, "Reset_Handler"),
         pairs(&[("main", Call), ("memcpy", Call), ("memset", Call)])
     );
+
+    // And for the reset handler when the entry point is main.
+    let (binary, graph) = load("c-cortex-m7-entry-main.elf");
+    assert_eq!(
+        callees(&binary, &graph, "Reset_Handler"),
+        pairs(&[("main", Call), ("memcpy", Call), ("memset", Call)])
+    );
 }
 
 #[test]

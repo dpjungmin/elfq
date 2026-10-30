@@ -130,13 +130,25 @@ inside and the other isn't. The help calls the boundary the ranges' edge.
 instructions. Arm sets bit 0 of a Thumb function's address wherever the
 address is stored: in symbols, the entry point, pointers and the vector
 table. elfq clears it, so the addresses it prints for functions are even.
-elfq reads
-Thumb code, but not the older 32-bit Arm (A32) code. (`binary::Binary::thumb`)
+A file's code is Thumb when bit 0 is set in its entry point or a
+function's symbol, or when its build attributes name a Cortex-M core, as
+in stripped firmware whose entry point is even. elfq reads Thumb code, but
+not the older 32-bit Arm (A32) code. (`binary::Binary::thumb`)
 
 **Vector table.** On Cortex-M, the list of addresses that the processor
 reads at reset and on each interrupt or exception: the initial stack
-pointer, then the reset handler, which is the entry point, then the other
-handlers. elfq finds it by its shape rather than its section's name.
+pointer, then the reset handler, which is usually the entry point, then
+the other handlers. elfq finds it by its shape rather than its section's
+name: where a section of code or data begins with a word that could be the
+stack pointer, a multiple of 4 other than 0 just above a word that isn't
+in code or read-only data, and then the entry point's address. Otherwise,
+as when a linker script names `main` as the entry point, or none, it is at
+the start of the first section of code or data, by address, that begins
+with such a stack pointer and then the addresses of the reset, NMI and
+HardFault handlers' code; sections that startup code copies into place
+come last. Failing both, it is where a word in a
+section of data, after one that could be the stack pointer, holds the
+entry point's address, as when a header comes before the table.
 (`binary::VectorTable`)
 
 **Veneer.** A few instructions that a linker adds when a call's target is
@@ -982,8 +994,10 @@ that do this.
       even in stripped files. One that starts where a function does gives
       it a size if it has none; one that starts inside a function, at 0 or
       is empty adds nothing; any other in code is a new function.
-   5. The entry point, as a function named `entry`, when it is in code and
-      no function covers it.
+   5. The entry point, as a function named `entry`, when it is in code, no
+      function covers it, and it isn't in the vector table, as it is in
+      firmware linked with no entry point whose `.text` begins with the
+      table.
    6. The Cortex-M vector table, when no item covers any of it, named after
       its section, or after the section and address (`.text@0x8000000`)
       when it is only part of it.
@@ -1041,11 +1055,12 @@ that do this.
    its own finds; when that code joins code elfq follows, the whole
    function does. elfq scans each function once, as it loads the file
    (`Binary::code_references`).
-   The entry point's code is a special case: startup code copies or clears
-   whole sections such as `.data` and `.bss`, loading where each starts and
-   ends through symbols that the linker script defines, such as `_sdata`
-   and `_edata`. When the entry point loads both ends of a section, those
-   addresses aren't uses of the items that start there.
+   Startup code is a special case: it copies or clears whole sections such
+   as `.data` and `.bss`, loading where each starts and ends through
+   symbols that the linker script defines, such as `_sdata` and `_edata`.
+   When the entry point, or a Cortex-M reset handler that isn't the entry
+   point, loads both ends of a section, those addresses aren't uses of the
+   items that start there.
    LLVM may merge small variables into one block (`.L_MergedGlobals`),
    which code uses through the block's address; that address counts as a
    use of each variable in the block.
@@ -1058,7 +1073,9 @@ that do this.
    because addresses are large numbers.
 5. **Find roots**, where the program starts running. An item is a root
    when:
-   1. it holds the ELF entry point;
+   1. it holds the ELF entry point, unless the entry point is in the
+      vector table, as in firmware linked with no entry point whose
+      `.text` begins with the table (see 6);
    2. it is in `.init` or `.fini`, which the dynamic loader runs, in a
       startup or exit array, or in a note section, such as `__abi_tag`,
       which the system reads;
@@ -1308,15 +1325,24 @@ plus each function's stack frame), and a query language.
    shows as its address, since the symbol has no section. An assembly
    function whose symbol has no size, last in its section, counts as
    empty, so its calls are missing; the same file without symbols has
-   them. Startup code that copies sections outside the entry function, or
-   reads a table of them as CMSIS does, adds rows to `callers`.
+   them. Startup code that copies sections outside the entry function and
+   the Cortex-M reset handler, such as in a function they call, or reads a
+   table of them as CMSIS does, adds rows to `callers`.
 4. **Shared libraries.** The functions that a library exports aren't roots
    yet, so `top`, `retained` and `why` refuse libraries, and also programs
    linked with `-static-pie`, which elfq takes for libraries. elfq finds
    the functions of stripped firmware by following its code only in files
    linked to run at one address, so in Arm firmware linked with `-pie` and
-   stripped it finds only the entry point.
-5. **Thumb text.** `browse` never shows wrong text where elfq knows code
+   stripped it finds only the entry point. In such firmware, elfq finds
+   the vector table only where a word of it holds the entry point.
+5. **Vector tables that elfq doesn't find.** A vector table that a
+   section doesn't begin with, and whose reset entry doesn't hold the
+   entry point, or that sits in the middle of a section of code, isn't
+   found. Zephyr firmware built to start after a boot loader, which begins
+   its code with 0s and then the table, is one. Where the table isn't
+   found, a section that begins like one, with a pointer to RAM and then
+   three addresses of code, can pass for it.
+6. **Thumb text.** `browse` never shows wrong text where elfq knows code
    from data; where it can't tell, it prints `.word` or `.inst`. It prints
    the text of Thumb instructions only where elfq's sweep decodes an
    instruction, so a literal pool, a jump table, a table of addresses and
@@ -1333,9 +1359,9 @@ plus each function's stack frame), and a query language.
    the file's build attributes name them: for Armv8-M and Armv8.1-M cores,
    such as the Cortex-M33 and M55, and files that don't say, a page lists
    only the lines that use another item.
-6. **Compressed DWARF.** `inlined` can't read debug info that the linker
+7. **Compressed DWARF.** `inlined` can't read debug info that the linker
    compressed (`--compress-debug-sections`).
-7. **What `diff` calls edited.** Two different numbers that each happen
+8. **What `diff` calls edited.** Two different numbers that each happen
    to point into partners at the same offset, or both into items that
    only one build has, read as the same, and so can two instructions of
    Thumb code, which diff also reads as words. Partners whose bytes are
@@ -1350,7 +1376,7 @@ plus each function's stack frame), and a query language.
    same text only when that byte is a printable character, as a length of
    32 to 126 is, or a tab, newline or carriage return; otherwise they are
    an edit.
-8. **Instructions that `diff` doesn't decode.** A distance in an
+9. **Instructions that `diff` doesn't decode.** A distance in an
    instruction that `arch::operands` doesn't know shows as an edit when
    what it points to moves. On Thumb, a table of addresses in the code,
    as some switches jump through, is read as words, as data is, and on

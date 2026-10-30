@@ -89,7 +89,8 @@ pub struct Binary {
     pub entry: u64,
     /// For 32-bit Arm, whether the code is Thumb, the instruction set that
     /// Cortex-M runs, rather than the older Arm (A32) instruction set. Thumb
-    /// functions have bit 0 set in their symbols and in the entry point.
+    /// functions have bit 0 set in their symbols and in the entry point, and
+    /// a file built for a Cortex-M core holds only Thumb code.
     pub thumb: bool,
     /// The order of the bytes in the numbers the file holds. In big-endian
     /// Arm firmware (BE8), only data is big-endian: instructions are still
@@ -307,6 +308,11 @@ impl Binary {
     pub(crate) fn from_vec(data: Vec<u8>) -> Result<Binary> {
         let (file, kind) = parse_program(&data)?;
         let architecture = file.architecture();
+        let arm_architecture = if architecture == Architecture::Arm {
+            attributes::arm_architecture(&file)
+        } else {
+            None
+        };
         let mut warnings = Vec::new();
         let mut binary = Binary {
             architecture,
@@ -314,7 +320,9 @@ impl Binary {
             kind,
             entry: code_address(architecture, file.entry()),
             // Only a damaged header puts 32-bit Arm code in a 64-bit file.
-            thumb: architecture == Architecture::Arm && !file.is_64() && is_thumb(&file),
+            thumb: architecture == Architecture::Arm
+                && !file.is_64()
+                && is_thumb(&file, arm_architecture),
             endianness: if file.is_little_endian() {
                 Endianness::Little
             } else {
@@ -329,7 +337,7 @@ impl Binary {
             used_by_unwinder: Vec::new(),
             merged_variables: Vec::new(),
             vector_table: None,
-            arm_architecture: None,
+            arm_architecture,
             data_in_code: Vec::new(),
             warnings,
             code_references: HashMap::new(),
@@ -343,7 +351,6 @@ impl Binary {
             binary.vector_table = vector_table::find(&binary);
         }
         if architecture == Architecture::Arm {
-            binary.arm_architecture = attributes::arm_architecture(&file);
             binary.data_in_code = symbols::data_in_code(&file, &binary.sections);
         }
 
@@ -368,7 +375,9 @@ impl Binary {
                 .warnings
                 .push(format!("cannot read .eh_frame: {err}")),
         }
-        add_entry_item(&mut items, binary.entry, &binary.sections);
+        if !binary.entry_in_vector_table() {
+            add_entry_item(&mut items, binary.entry, &binary.sections);
+        }
         items.extend(vector_table::item(&binary, &items));
         let listed = items
             .iter()
@@ -512,6 +521,13 @@ impl Binary {
             .data
             .get(usize::try_from(offset.checked_add(start)?).ok()?..)?;
         Some(&rest[..rest.len().min(usize::try_from(len).unwrap_or(usize::MAX))])
+    }
+
+    /// Whether the entry point is in the vector table, as in firmware linked
+    /// with no entry point, which is where `.text` starts, when `.text`
+    /// begins with the table. It is data then, not code.
+    pub fn entry_in_vector_table(&self) -> bool {
+        (self.vector_table.as_ref()).is_some_and(|table| table.contains(self.entry))
     }
 
     /// The section that holds `address` when the program runs, as an index
@@ -682,9 +698,12 @@ fn sort_items(items: &mut [Item]) {
 }
 
 /// Whether a 32-bit Arm file's code is Thumb: its entry point or any
-/// function symbol has bit 0 set.
-fn is_thumb(file: &object::File) -> bool {
-    file.entry() & 1 == 1
+/// function symbol has bit 0 set, or its build attributes name a Cortex-M
+/// architecture, which runs only Thumb code, as stripped firmware whose
+/// linker script names no entry point does.
+fn is_thumb(file: &object::File, architecture: Option<ArmArchitecture>) -> bool {
+    architecture.is_some_and(|architecture| architecture.is_cortex_m())
+        || file.entry() & 1 == 1
         || file
             .symbols()
             .any(|symbol| symbol.kind() == SymbolKind::Text && symbol.address() & 1 == 1)

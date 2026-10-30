@@ -195,7 +195,10 @@ impl Graph {
     fn add_code_references(&mut self, binary: &Binary, function: usize) {
         let item = &binary.items[function];
         let references = binary.code_references(item);
-        let bounds = if item.contains(binary.entry) {
+        let reset = (binary.vector_table.as_ref()).and_then(|table| table.reset_handler());
+        let startup =
+            item.contains(binary.entry) || reset.is_some_and(|reset| item.contains(reset));
+        let bounds = if startup {
             section_bounds(binary, references)
         } else {
             HashSet::new()
@@ -351,14 +354,16 @@ impl Node {
 }
 
 /// The addresses where a section starts and ends, for each section whose
-/// start and end addresses the entry point's code both loads. Startup code
-/// does that to copy or clear a whole section, such as `.data` or `.bss`,
-/// through symbols that the linker script defines. The section's first item
-/// starts at the same address, but the code means the section, not the item.
+/// start and end addresses the startup code both loads: the entry point's,
+/// or the Cortex-M reset handler's when that isn't the entry point. Startup
+/// code does that to copy or clear a whole section, such as `.data` or
+/// `.bss`, through symbols that the linker script defines. The section's
+/// first item starts at the same address, but the code means the section,
+/// not the item.
 ///
 /// Other code can load the same addresses to use the items there, such as
 /// a function that reads the first variable in `.data` and the first one in
-/// `.bss`, which starts where `.data` ends. So only the entry point gets
+/// `.bss`, which starts where `.data` ends. So only the startup code gets
 /// this treatment, and only for addresses it loads, not ones it reads or
 /// writes.
 fn section_bounds(binary: &Binary, references: &[CodeReference]) -> HashSet<u64> {
