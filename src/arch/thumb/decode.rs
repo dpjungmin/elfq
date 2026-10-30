@@ -62,11 +62,38 @@ pub(super) enum Operation {
     },
     /// `register` = `a` + `b`: `add` with registers. Either can be pc.
     Add { register: u16, a: u16, b: u16 },
+    /// `register` = `a` - `b`, wrapping: `subs` and `sub.w` with registers.
+    Subtract { register: u16, a: u16, b: u16 },
+    /// `register` = `source` & `mask`: `and` with an immediate, and `bic`,
+    /// whose mask is the immediate's complement.
+    AndConstant {
+        register: u16,
+        source: u16,
+        mask: u32,
+    },
+    /// `register` = `a` & `b`, or with `complement`, `a` & !`b`: `ands`,
+    /// `and.w`, `bics` and `bic.w` with registers, as Cortex-M0 code, which
+    /// has no `bic` with an immediate, rounds a length to words.
+    And {
+        register: u16,
+        a: u16,
+        b: u16,
+        complement: bool,
+    },
     /// `register` = `source` << `shift`: `lsls` with an immediate.
     ShiftLeft {
         register: u16,
         source: u16,
         shift: u32,
+    },
+    /// `register` = `source` >> `shift`, from 1 to 32: `lsrs`, `lsr.w`,
+    /// `asrs` and `asr.w` with an immediate. `signed` for `asr`, which
+    /// shifts in copies of the top bit, where `lsr` shifts in zeros.
+    ShiftRight {
+        register: u16,
+        source: u16,
+        shift: u32,
+        signed: bool,
     },
     /// Loads from `base` + `offset`, or when `offset` is `None`, from
     /// somewhere from `base` on: `ldr`, `ldrb`, `ldrh`, `ldrd`, `ldm`, the
@@ -97,6 +124,9 @@ pub(super) enum Operation {
     /// Compares `register` with `value`, setting the flags: `cmp` with an
     /// immediate. Nothing changes in the registers.
     Compare { register: u16, value: u32 },
+    /// Compares `a` with `b`, setting the flags as `a` - `b` does: `cmp`
+    /// and `cmp.w` with registers. Nothing changes in the registers.
+    CompareRegisters { a: u16, b: u16 },
 }
 
 /// When a branch goes to its target, rather than on to the next
@@ -196,6 +226,17 @@ fn bit(register: u16) -> Registers {
     1 << register
 }
 
+/// `register` = `source` >> `shift`, as `lsr` does, or `asr` when `signed`.
+/// A `shift` of 0, as the encodings give it, means 32.
+fn shift_right(register: u16, source: u16, shift: u32, signed: bool) -> Operation {
+    Operation::ShiftRight {
+        register,
+        source,
+        shift: if shift == 0 { 32 } else { shift },
+        signed,
+    }
+}
+
 /// The instruction made of `first` and, when it is 32 bits long, `second`,
 /// at `address`. `None` when this module doesn't know it.
 pub(super) fn decode(address: u64, first: u16, second: u16) -> Option<Effect> {
@@ -218,14 +259,15 @@ fn narrow(address: u64, op: u16) -> Option<Effect> {
         // lsls, lsrs and asrs with an immediate; lsls #0 is movs register.
         0b00000..=0b00010 => {
             let effect = Effect::new(bit(middle), bit(low));
+            let shift = u32::from((op >> 6) & 0x1f);
             if op >> 11 == 0 {
                 effect.operation(Operation::ShiftLeft {
                     register: low,
                     source: middle,
-                    shift: u32::from((op >> 6) & 0x1f),
+                    shift,
                 })
             } else {
-                effect
+                effect.operation(shift_right(low, middle, shift, op >> 11 == 0b00010))
             }
         }
         // adds and subs, with a register or a 3-bit immediate.
@@ -237,7 +279,13 @@ fn narrow(address: u64, op: u16) -> Option<Effect> {
                     a: middle,
                     b: top,
                 }),
-                0b01 => Effect::new(bit(middle) | bit(top), bit(low)),
+                0b01 => {
+                    Effect::new(bit(middle) | bit(top), bit(low)).operation(Operation::Subtract {
+                        register: low,
+                        a: middle,
+                        b: top,
+                    })
+                }
                 0b10 => effect.operation(Operation::AddConstant {
                     register: low,
                     source: middle,
@@ -357,7 +405,7 @@ fn narrow(address: u64, op: u16) -> Option<Effect> {
             register: None,
             base: high,
             offset: None,
-            size: 0,
+            size: u32::from(op & 0xff).count_ones() * 4,
         }),
         // ldmia register!, {registers}; the register is written back
         // unless it is in the list.
@@ -395,8 +443,22 @@ fn data_processing(op: u16) -> Effect {
     let source = (op >> 3) & 7;
     let reads = bit(register) | bit(source);
     match (op >> 6) & 0xf {
-        // tst, cmp and cmn only set the flags.
-        0b1000 | 0b1010 | 0b1011 => Effect::new(reads, 0).sets_flags(true),
+        // ands and bics
+        kind @ (0b0000 | 0b1110) => Effect::new(reads, bit(register)).operation(Operation::And {
+            register,
+            a: register,
+            b: source,
+            complement: kind == 0b1110,
+        }),
+        // cmp
+        0b1010 => Effect::new(reads, 0)
+            .operation(Operation::CompareRegisters {
+                a: register,
+                b: source,
+            })
+            .sets_flags(true),
+        // tst and cmn only set the flags.
+        0b1000 | 0b1011 => Effect::new(reads, 0).sets_flags(true),
         _ => Effect::new(reads, bit(register)),
     }
 }
@@ -414,7 +476,12 @@ fn special(op: u16) -> Effect {
             a: register,
             b: source,
         }),
-        0b01 => Effect::new(bit(register) | bit(source), 0).sets_flags(true),
+        0b01 => Effect::new(bit(register) | bit(source), 0)
+            .operation(Operation::CompareRegisters {
+                a: register,
+                b: source,
+            })
+            .sets_flags(true),
         // mov register, source: into pc it jumps.
         0b10 if register == PC => match source {
             LR => Effect::new(bit(LR), 0).flow(Flow::Return),
@@ -725,9 +792,16 @@ fn shifted_register(first: u16, second: u16) -> Option<Effect> {
     if second & 0x8000 != 0 || rm == PC || (s && rm == SP) {
         return None;
     }
+    // The second register as it is, not shifted.
+    let plain = kind == 0 && shift == 0;
     let tests = rd == PC && s && matches!(op, 0b0000 | 0b0100 | 0b1000 | 0b1101);
     if tests {
-        return Some(Effect::new(reads(&[rn, rm]), 0).sets_flags(true));
+        let effect = Effect::new(reads(&[rn, rm]), 0).sets_flags(true);
+        // cmp.w
+        return Some(match op {
+            0b1101 if plain => effect.operation(Operation::CompareRegisters { a: rn, b: rm }),
+            _ => effect,
+        });
     }
     if rd == PC {
         return None;
@@ -740,7 +814,23 @@ fn shifted_register(first: u16, second: u16) -> Option<Effect> {
             source: rm,
             shift,
         }),
-        0b1000 if kind == 0 && shift == 0 => effect.operation(Operation::Add {
+        // lsr.w and asr.w with an immediate, where 0 means 32.
+        0b0010 if rn == PC && (kind == 1 || kind == 2) => {
+            effect.operation(shift_right(rd, rm, shift, kind == 2))
+        }
+        // and.w and bic.w
+        0b0000 | 0b0001 if plain => effect.operation(Operation::And {
+            register: rd,
+            a: rn,
+            b: rm,
+            complement: op == 0b0001,
+        }),
+        0b1000 if plain => effect.operation(Operation::Add {
+            register: rd,
+            a: rn,
+            b: rm,
+        }),
+        0b1101 if plain => effect.operation(Operation::Subtract {
             register: rd,
             a: rn,
             b: rm,
@@ -785,6 +875,17 @@ fn modified_immediate(first: u16, second: u16) -> Option<Effect> {
     }
     let effect = Effect::new(reads(&[rn]), bit(rd)).sets_flags(s);
     Some(match op {
+        // and and bic
+        0b0000 => effect.operation(Operation::AndConstant {
+            register: rd,
+            source: rn,
+            mask: value,
+        }),
+        0b0001 => effect.operation(Operation::AndConstant {
+            register: rd,
+            source: rn,
+            mask: !value,
+        }),
         // mov.w and mvn
         0b0010 if rn == PC => effect.operation(Operation::Constant {
             register: rd,
@@ -1585,6 +1686,16 @@ mod tests {
         // ldr.w r3, [r2, r3, lsl #2]
         let load = effect(0, &[0x52, 0xf8, 0x23, 0x30]);
         assert_eq!((load.reads, load.writes), (bit(2) | bit(3), bit(3)));
+        // stmia r0!, {r3, r4} stores two words from r0 on.
+        assert_eq!(
+            operation(&[0x18, 0xc0]),
+            Operation::Store {
+                register: None,
+                base: 0,
+                offset: None,
+                size: 8
+            }
+        );
         // ldmia.w sp!, {r7, lr}
         let pop = effect(0, &[0xbd, 0xe8, 0x80, 0x40]);
         assert_eq!(pop.writes, bit(7) | bit(LR) | bit(SP));
@@ -1635,6 +1746,225 @@ mod tests {
             Operation::Compare {
                 register: 0,
                 value: u32::MAX
+            }
+        );
+    }
+
+    #[test]
+    fn instructions_that_work_out_lengths_and_compare_them() {
+        // subs r2, r2, r0 and sub.w r2, r3, r1
+        assert_eq!(
+            operation(&[0x12, 0x1a]),
+            Operation::Subtract {
+                register: 2,
+                a: 2,
+                b: 0
+            }
+        );
+        assert_eq!(
+            operation(&[0xa3, 0xeb, 0x01, 0x02]),
+            Operation::Subtract {
+                register: 2,
+                a: 3,
+                b: 1
+            }
+        );
+        // lsrs r2, r2, #2, asrs r1, r0, #31 and lsrs r0, r1, #32
+        assert_eq!(
+            operation(&[0x92, 0x08]),
+            Operation::ShiftRight {
+                register: 2,
+                source: 2,
+                shift: 2,
+                signed: false
+            }
+        );
+        assert_eq!(
+            operation(&[0xc1, 0x17]),
+            Operation::ShiftRight {
+                register: 1,
+                source: 0,
+                shift: 31,
+                signed: true
+            }
+        );
+        assert_eq!(
+            operation(&[0x08, 0x08]),
+            Operation::ShiftRight {
+                register: 0,
+                source: 1,
+                shift: 32,
+                signed: false
+            }
+        );
+        // lsr.w r2, r2, #2 and asr.w r0, r1, #1
+        assert_eq!(
+            operation(&[0x4f, 0xea, 0x92, 0x02]),
+            Operation::ShiftRight {
+                register: 2,
+                source: 2,
+                shift: 2,
+                signed: false
+            }
+        );
+        assert_eq!(
+            operation(&[0x4f, 0xea, 0x61, 0x00]),
+            Operation::ShiftRight {
+                register: 0,
+                source: 1,
+                shift: 1,
+                signed: true
+            }
+        );
+        // and r0, r1, #7, and bic r0, r0, #3, which keeps the other bits.
+        assert_eq!(
+            operation(&[0x01, 0xf0, 0x07, 0x00]),
+            Operation::AndConstant {
+                register: 0,
+                source: 1,
+                mask: 7
+            }
+        );
+        assert_eq!(
+            operation(&[0x20, 0xf0, 0x03, 0x00]),
+            Operation::AndConstant {
+                register: 0,
+                source: 0,
+                mask: !3
+            }
+        );
+        // ands r2, r2, #0xff sets the flags.
+        let and = effect(0, &[0x12, 0xf0, 0xff, 0x02]);
+        assert!(and.sets_flags);
+        assert_eq!(
+            and.operation,
+            Operation::AndConstant {
+                register: 2,
+                source: 2,
+                mask: 0xff
+            }
+        );
+        // bics r2, r1 and ands r2, r1, as Cortex-M0 code rounds a length,
+        // and bic.w r0, r1, r2 and and.w r0, r1, r2.
+        assert_eq!(
+            operation(&[0x8a, 0x43]),
+            Operation::And {
+                register: 2,
+                a: 2,
+                b: 1,
+                complement: true
+            }
+        );
+        assert_eq!(
+            operation(&[0x0a, 0x40]),
+            Operation::And {
+                register: 2,
+                a: 2,
+                b: 1,
+                complement: false
+            }
+        );
+        assert_eq!(
+            operation(&[0x21, 0xea, 0x02, 0x00]),
+            Operation::And {
+                register: 0,
+                a: 1,
+                b: 2,
+                complement: true
+            }
+        );
+        assert_eq!(
+            operation(&[0x01, 0xea, 0x02, 0x00]),
+            Operation::And {
+                register: 0,
+                a: 1,
+                b: 2,
+                complement: false
+            }
+        );
+        // ands.w r0, r1, r2, lsl #2 and sub.w r2, r3, r1, lsl #2 work on
+        // a shifted register, which isn't followed.
+        assert_eq!(operation(&[0x11, 0xea, 0x82, 0x00]), Operation::Nothing);
+        assert_eq!(operation(&[0xa3, 0xeb, 0x81, 0x02]), Operation::Nothing);
+        // Inside an `it` block, the 16-bit ands, bics, subs, lsrs and asrs
+        // leave the flags as they are.
+        for bytes in [
+            [0x0a, 0x40],
+            [0x8a, 0x43],
+            [0x12, 0x1a],
+            [0x92, 0x08],
+            [0xc1, 0x17],
+        ] {
+            assert!(!effect(0, &bytes).sets_flags);
+        }
+        // cmp r0, r1, cmp r8, r1 and cmp.w r0, r1 set the flags and write
+        // nothing.
+        for bytes in [&[0x88, 0x42][..], &[0x88, 0x45], &[0xb0, 0xeb, 0x01, 0x0f]] {
+            let compare = effect(0, bytes);
+            assert!(compare.sets_flags);
+            assert_eq!(compare.writes, 0);
+        }
+        assert_eq!(
+            operation(&[0x88, 0x42]),
+            Operation::CompareRegisters { a: 0, b: 1 }
+        );
+        assert_eq!(
+            operation(&[0x88, 0x45]),
+            Operation::CompareRegisters { a: 8, b: 1 }
+        );
+        assert_eq!(
+            operation(&[0xb0, 0xeb, 0x01, 0x0f]),
+            Operation::CompareRegisters { a: 0, b: 1 }
+        );
+        // cmp.w r0, r1, lsl #2 compares with a shifted register, which
+        // isn't followed.
+        assert_eq!(operation(&[0xb0, 0xeb, 0x81, 0x0f]), Operation::Nothing);
+    }
+
+    #[test]
+    fn a_guard_on_a_length_and_a_test_of_two_addresses() {
+        // GCC -Os guards a length: subs r1, r0, #3; cmp r1, r3; it hi;
+        // movhi r2, #0.
+        let guard: Vec<Effect> = [[0xc1, 0x1e], [0x99, 0x42], [0x88, 0xbf], [0x00, 0x22]]
+            .iter()
+            .map(|bytes| effect(0, bytes))
+            .collect();
+        assert_eq!(
+            guard[0].operation,
+            Operation::AddConstant {
+                register: 1,
+                source: 0,
+                amount: 3u32.wrapping_neg()
+            }
+        );
+        assert_eq!(
+            guard[1].operation,
+            Operation::CompareRegisters { a: 1, b: 3 }
+        );
+        assert_eq!(
+            guard[2].flow,
+            Flow::It {
+                firstcond: 0x8,
+                mask: 0x8
+            }
+        );
+        assert_eq!(
+            guard[3].operation,
+            Operation::Constant {
+                register: 2,
+                value: 0
+            }
+        );
+        // An empty section's loop is skipped: cmp r0, r1; bcs past it.
+        assert_eq!(
+            operation(&[0x88, 0x42]),
+            Operation::CompareRegisters { a: 0, b: 1 }
+        );
+        assert_eq!(
+            effect(10, &[0x00, 0xd2]).flow,
+            Flow::Branch {
+                target: 14,
+                when: When::Flags(2)
             }
         );
     }
