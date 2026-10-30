@@ -599,8 +599,10 @@ fn the_json_gives_the_steps_the_sections_and_the_problems() {
 #[test]
 fn every_arm_sample_gets_an_answer_and_the_exit_status_it_means() {
     let problems = [
+        "c-cortex-m7-loops",
         "c-cortex-m7-reset-itcm",
         "c-cortex-m7-sysinit",
+        "c-cortex-m7-tables",
         "c-cortex-m7-trap",
         "c-softfloat",
         "c-strtod",
