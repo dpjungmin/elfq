@@ -17,6 +17,7 @@ mod ranges;
 mod reach;
 mod retained;
 mod retained_tree;
+mod startup;
 pub mod symbol;
 mod text;
 mod top;
@@ -53,6 +54,10 @@ pub enum Outcome {
     /// 1, so that a script can check that a change leaves a build's memory
     /// as it was.
     Differs,
+    /// `startup` finds a problem in what the reset code does before
+    /// `main`, or code it can't follow that may be one: exit status 1, so
+    /// that a script can check that a build still starts.
+    Problems,
 }
 
 /// Whether the process ends once the command has answered, as the elfq
@@ -129,6 +134,11 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<Outcome> {
     if let Some(Command::Diff(args)) = &cli.command {
         return diff::run(&cli.file, &args.new, args.all, cli.format(), out);
     }
+    // startup refuses what isn't Cortex-M firmware from the file's headers,
+    // before it loads the rest.
+    if let Some(Command::Startup(_)) = &cli.command {
+        startup::check_header(&cli.file)?;
+    }
     let binary = Kept::new(Binary::load(&cli.file)?);
     write_warnings(&binary);
     // `check_arguments` leaves `--range` with `callers` and `callees` until
@@ -184,6 +194,7 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<Outcome> {
             Some(symbol) => reach::run(&binary, symbol, &args.to, args.all, format, out),
             None => reach::run_starts(&cli.file, &binary, &args.to, range, args.all, format, out),
         },
+        Some(Command::Startup(args)) => startup::run(&cli.file, &binary, args.all, format, out),
         Some(Command::Debug(DebugCommand::Items)) => answered(debug_items::run(&binary, out)),
         Some(Command::Debug(DebugCommand::Walk)) => answered(debug_walk::run(&binary, out)),
         Some(Command::Browse(_)) => unreachable!("browse has run above"),
@@ -477,6 +488,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::Reach(_) => "reach",
         Command::Browse(_) => "browse",
         Command::Diff(_) => "diff",
+        Command::Startup(_) => "startup",
         Command::Debug(_) => "debug",
     }
 }

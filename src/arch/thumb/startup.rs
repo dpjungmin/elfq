@@ -17,10 +17,9 @@ use object::{Endian, Endianness};
 use super::decode::{self, Effect, Flow, LowBit, Operation, Registers, When};
 use super::{LR, PC, SP, Scanner, branch, is_wide, literal, sweep};
 use crate::arch::CodeReferenceKind;
-use crate::arch::startup::{Call, End, Event, How, Loop, Program, Start, Store, Through, Walk};
-
-/// How many calls deep the walk follows.
-const DEPTH: u32 = 3;
+use crate::arch::startup::{
+    Call, DEPTH, End, Event, How, Loop, Program, Start, Store, Through, Walk,
+};
 /// How many instructions the walk goes through, in all.
 const BUDGET: usize = 20_000;
 /// How many it goes through in the reset handler's own code, in each
@@ -54,7 +53,7 @@ pub(in crate::arch) fn walk(endianness: Endianness, program: &dyn Program, start
     path.registers[usize::from(SP)] = start.stack_pointer;
     let frame = Frame {
         depth: 0,
-        follow: DEPTH,
+        follow: start.follow.min(DEPTH),
         limit: RESET_LIMIT,
         stop: None,
         nesting: 0,
@@ -81,6 +80,17 @@ struct Path {
     /// Whether the walk went past a branch or return whose condition it
     /// couldn't tell, so that what it knows holds only on the way it went.
     forks: bool,
+    /// Of r0 to r3, as bits, those that hold what a call left there (see
+    /// `results`), which code hasn't written since.
+    left: u8,
+    /// Of r0 to r3, as bits, those that may hold what the call it is in
+    /// leaves, since the walk of that call began, in the function or in
+    /// what it called: those that code wrote, and r0 when code read it
+    /// other than to push it, as a function such as `memset` returns its
+    /// first argument there without writing it. A register that the call
+    /// only read keeps what the caller put there, as code built with GCC's
+    /// `-fipa-ra` counts on for its next call.
+    results: u8,
 }
 
 type Memory = Rc<BTreeMap<u32, Option<u32>>>;
@@ -187,7 +197,19 @@ struct Walker<'a> {
     data: HashMap<u64, BTreeMap<usize, usize>>,
     /// What [`Walker::clobbers`] found for each function, by where it
     /// starts.
-    clobbers: HashMap<u64, Registers>,
+    clobbers: HashMap<u64, (Registers, u8)>,
+}
+
+/// What code may change, as far as the walk can tell without going
+/// through it (see [`Walker::writes`]).
+struct Changes {
+    /// The registers its instructions write.
+    registers: Registers,
+    /// Whether it stores, or calls a function that may.
+    stores: bool,
+    /// Of r0 to r3, those that may hold what it leaves (see
+    /// `Path::results`).
+    results: u8,
 }
 
 impl Walker<'_> {
@@ -263,6 +285,12 @@ impl Walker<'_> {
         else {
             return no_code(address, after_call);
         };
+        // `bkpt` straight after a call, as after the call to `exit` in the
+        // Pico SDK's startup, which faults without a debugger, but for
+        // `bkpt 0xab`, which asks a debugger for semihosting.
+        if after_call && first & 0xff00 == 0xbe00 && first & 0xff != 0xab {
+            return no_code(address, after_call);
+        }
         let next = address + if is_wide(first) { 4 } else { 2 };
         if let Flow::It { firstcond, mask } = effect.flow {
             run.it = (firstcond << 4 | mask) as u8;
@@ -453,7 +481,9 @@ impl Walker<'_> {
                         target: Some(target),
                         how: How::Jump,
                         arguments: arguments(&run.path),
+                        left: run.path.left,
                         conditional: true,
+                        followed: false,
                     }));
                     run.path.forks = true;
                     Step::Next(next)
@@ -566,8 +596,13 @@ impl Walker<'_> {
         }));
         forget_changes(&mut run.path, &before.registers, &before.memory);
         if end.is_some() {
-            let (registers, stores) = self.writes(head, back, false);
+            let Changes {
+                registers,
+                stores,
+                results,
+            } = self.writes(head, back, false);
             set_unknown(&mut run.path, registers & !(1 << SP));
+            run.path.results |= results;
             if stores && run.path.memory.values().any(Option::is_some) {
                 (Rc::make_mut(&mut run.path.memory).values_mut()).for_each(|word| *word = None);
             }
@@ -576,12 +611,15 @@ impl Walker<'_> {
     }
 
     /// What the code from `start` up to `end` may change, as far as the
-    /// walk can tell without going through it: the registers its
-    /// instructions write, and whether it stores, or calls a function that
-    /// may. With `whole`, the code is a function's, and a jump out of it
-    /// goes to another function, which may change r0 to r3, ip and lr.
-    fn writes(&mut self, start: u64, end: u64, whole: bool) -> (Registers, bool) {
-        let (mut registers, mut stores) = (0, false);
+    /// walk can tell without going through it. With `whole`, the code is a
+    /// function's, and a jump out of it goes to another function, which may
+    /// change r0 to r3, ip and lr.
+    fn writes(&mut self, start: u64, end: u64, whole: bool) -> Changes {
+        let mut changes = Changes {
+            registers: 0,
+            stores: false,
+            results: 0,
+        };
         let mut address = start;
         while address < end {
             if whole && self.is_data(Some((start, end)), address) {
@@ -589,9 +627,14 @@ impl Walker<'_> {
                 continue;
             }
             let Some((first, _, effect)) = self.decode(address) else {
-                return (Registers::MAX, true);
+                return Changes {
+                    registers: Registers::MAX,
+                    stores: true,
+                    results: 0xf,
+                };
             };
-            registers |= effect.writes;
+            changes.registers |= effect.writes;
+            changes.results |= results(&effect);
             let leaves = match effect.flow {
                 Flow::Call | Flow::CallRegister(..) => true,
                 Flow::Branch { target, .. } => whole && !(start..end).contains(&target),
@@ -599,34 +642,36 @@ impl Walker<'_> {
                 _ => false,
             };
             if leaves {
-                registers |= CLOBBERED;
-                stores = true;
+                changes.registers |= CLOBBERED;
+                changes.results = 0xf;
+                changes.stores = true;
             }
-            stores |= matches!(
+            changes.stores |= matches!(
                 effect.operation,
                 Operation::Store { .. } | Operation::Push { .. }
             );
             address += if is_wide(first) { 4 } else { 2 };
         }
-        (registers, stores)
+        changes
     }
 
-    /// The registers that a call to `target` may change, when the walk
-    /// doesn't follow it to a return: of r0 to r3, ip and lr, those that
-    /// the function's code writes, as code built with GCC's `-fipa-ra`
-    /// counts on, or all of them.
-    fn clobbers(&mut self, target: Option<u64>) -> Registers {
+    /// What a call to `target` may change, when the walk doesn't follow it
+    /// to a return: of r0 to r3, ip and lr, the registers that the
+    /// function's code writes, as code built with GCC's `-fipa-ra` counts
+    /// on, or all of them; and of r0 to r3, those that may hold what it
+    /// leaves (see `Path::results`).
+    fn clobbers(&mut self, target: Option<u64>) -> (Registers, u8) {
         let function = target.and_then(|target| self.program.function_at(target));
         let Some((start, end)) = function.filter(|&(start, _)| Some(start) == target) else {
-            return CLOBBERED;
+            return (CLOBBERED, 0xf);
         };
-        if let Some(&registers) = self.clobbers.get(&start) {
-            return registers;
+        if let Some(&clobbers) = self.clobbers.get(&start) {
+            return clobbers;
         }
-        let (registers, _) = self.writes(start, end, true);
-        let registers = (registers | 1 << LR) & CLOBBERED;
-        self.clobbers.insert(start, registers);
-        registers
+        let changes = self.writes(start, end, true);
+        let clobbers = ((changes.registers | 1 << LR) & CLOBBERED, changes.results);
+        self.clobbers.insert(start, clobbers);
+        clobbers
     }
 
     /// A branch or jump at `site` to `to`, through what `through` says,
@@ -658,16 +703,29 @@ impl Walker<'_> {
             target: Some(target),
             how: How::Jump,
             arguments: arguments(&run.path),
+            left: run.path.left,
             conditional: false,
+            followed: frame.follow > 0,
         }));
         if self.main == Some(target) {
             return Step::Final(End::Main(site));
         }
         if frame.follow == 0 {
+            // In the code that a walk following no calls starts from, a
+            // jump to code that ends where the walk can't read on is a dead
+            // end, as core 1's way past the Pico SDK's check of which core
+            // runs is: the walk goes back to a branch it couldn't tell.
+            if frame.depth == 0
+                && frame.stop.is_none()
+                && let Some(end) = self.dead_end(run, site, target)
+            {
+                return Step::End(end);
+            }
             // It returns with what the function it jumps to leaves in the
             // registers that pass arguments and results.
-            let clobbers = self.clobbers(Some(target));
+            let (clobbers, results) = self.clobbers(Some(target));
             set_unknown(&mut run.path, clobbers);
+            run.path.results |= results;
             return Step::End(End::Returns(site));
         }
         if self.program.code(target).is_none() {
@@ -675,6 +733,32 @@ impl Walker<'_> {
         }
         run.bounds = self.program.function_at(target);
         Step::Next(target)
+    }
+
+    /// How the code that the jump at `site` to `target` goes to ends, when
+    /// it ends where the walk can't read on and the walk has a branch it
+    /// couldn't tell to go back to: walked as a function the walk calls,
+    /// whose events are then dropped.
+    fn dead_end(&mut self, run: &Run, site: u64, target: u64) -> Option<End> {
+        let untried = |alternative: &Alternative| !run.visits.contains_key(&alternative.target);
+        if !run.alternatives.iter().any(untried) {
+            return None;
+        }
+        if self.program.code(target).is_none() {
+            return Some(End::LeavesFile { site, target });
+        }
+        let (events, budget, lowest) = (self.events.len(), self.budget, self.lowest);
+        let frame = Frame {
+            depth: 1,
+            follow: 0,
+            limit: CALL_LIMIT,
+            stop: None,
+            nesting: 0,
+        };
+        let (end, _) = self.walk(target, frame, run.path.clone());
+        self.events.truncate(events);
+        (self.budget, self.lowest) = (budget, lowest);
+        end.filter(|end| end.is_dead())
     }
 
     /// Records a call at `site`, which runs only when the flags say so
@@ -693,19 +777,22 @@ impl Walker<'_> {
         how: How,
         conditional: bool,
     ) -> Option<End> {
+        let follows = target.is_some() && frame.follow > 0 && !conditional;
         self.events.push(Event::Call(Call {
             site,
             depth: frame.depth,
             target,
             how,
             arguments: arguments(&run.path),
+            left: run.path.left,
             conditional,
+            followed: follows,
         }));
         if target.is_some() && self.main == target {
             return Some(End::Main(site));
         }
         let mut after = None;
-        if let Some(target) = target.filter(|_| frame.follow > 0 && !conditional) {
+        if let Some(target) = target.filter(|_| follows) {
             let depth = frame.depth + 1;
             if self.program.code(target).is_none() {
                 let end = End::LeavesFile { site, target };
@@ -722,6 +809,7 @@ impl Walker<'_> {
                 // walk doesn't follow.
                 let mut path = run.path.clone();
                 path.registers[usize::from(LR)] = None;
+                path.results = 0;
                 let (end, path) = self.walk(target, callee, path);
                 match end {
                     Some(End::Main(at)) => return Some(End::Main(at)),
@@ -737,30 +825,38 @@ impl Walker<'_> {
             }
         }
         let sp = run.path.registers[usize::from(SP)];
-        match after {
+        let results = run.path.results;
+        // Of r0 to r3, those that may hold what the call leaves.
+        let called = match after {
             Some((mut path, true)) => {
                 if path.forks {
                     forget_changes(&mut path, &run.path.registers, &run.path.memory);
                     path.flags = Flags::default();
                 }
+                let called = path.results;
                 path.forks = run.path.forks;
                 run.path = path;
                 run.path.registers[usize::from(SP)] = sp;
                 run.path.registers[usize::from(LR)] = None;
+                called
             }
             Some((mut path, false)) => {
                 forget_changes(&mut path, &run.path.registers, &run.path.memory);
                 run.path.memory = path.memory;
-                let clobbers = self.clobbers(target);
+                let (clobbers, called) = self.clobbers(target);
                 set_unknown(&mut run.path, clobbers);
                 run.path.flags = Flags::default();
+                called
             }
             None => {
-                let clobbers = self.clobbers(target);
+                let (clobbers, called) = self.clobbers(target);
                 set_unknown(&mut run.path, clobbers);
                 run.path.flags = Flags::default();
+                called
             }
-        }
+        };
+        run.path.results = results | called;
+        run.path.left |= called;
         None
     }
 
@@ -873,12 +969,15 @@ impl Walker<'_> {
         conditional: bool,
         depth: u32,
     ) {
+        path.results |= results(effect);
+        path.left &= !(effect.writes & 0xf) as u8;
+        let operation = with_writeback_offset(effect);
         if let Operation::Store {
             register,
             base,
             offset,
             size,
-        } = effect.operation
+        } = operation
         {
             self.store(path, site, depth, register, base, offset, size, conditional);
         }
@@ -892,7 +991,15 @@ impl Walker<'_> {
             path.flags = flags;
             return;
         }
-        let result = self.result(path, site, effect.operation);
+        let result = self.result(path, site, operation);
+        // The base register after a load or store that adds to it.
+        let moved = match (operation, effect.writeback) {
+            (Operation::Load { base, .. } | Operation::Store { base, .. }, Some(writeback)) => {
+                let after = self.register(path, base, site);
+                Some((base, after.map(|n| n.wrapping_add_signed(writeback.amount))))
+            }
+            _ => None,
+        };
         let sp = path.registers[usize::from(SP)];
         let mut pushed = Vec::new();
         if let (Operation::Push { registers, size }, Some(sp)) = (effect.operation, sp) {
@@ -926,10 +1033,10 @@ impl Walker<'_> {
             }
             _ => {}
         }
-        if let Some((register, number)) = result
-            && register != PC
-        {
-            path.registers[usize::from(register)] = number;
+        for (register, number) in result.into_iter().chain(moved) {
+            if register != PC {
+                path.registers[usize::from(register)] = number;
+            }
         }
         if let (Some(lowest), Some(sp)) = (self.lowest, path.registers[usize::from(SP)]) {
             self.lowest = Some(lowest.min(sp));
@@ -1162,11 +1269,7 @@ impl Walker<'_> {
 
     /// The instruction at `address`: its two halves and what it does.
     fn decode(&self, address: u64) -> Option<(u16, u16, Effect)> {
-        let code = self.program.code(address)?;
-        let half = |at: usize| Some(u16::from_le_bytes([*code.get(at)?, *code.get(at + 1)?]));
-        let first = half(0)?;
-        let second = if is_wide(first) { half(2)? } else { 0 };
-        Some((first, second, decode::decode(address, first, second)?))
+        decode_at(self.program, address)
     }
 
     /// Whether `address`, in the function at `bounds`, holds data that the
@@ -1192,7 +1295,7 @@ impl Walker<'_> {
 /// How the walk ends at `address`, where there is no code it can run:
 /// data, `udf` or an instruction elfq can't decode. Straight after a call,
 /// the call can't return, as compilers put `udf` or a literal pool after a
-/// call to a function that doesn't.
+/// call to a function that doesn't, and hand-written code `bkpt`.
 fn no_code(address: u64, after_call: bool) -> Step {
     match after_call {
         true => Step::Final(End::RunsOff(address)),
@@ -1356,6 +1459,14 @@ fn arguments(path: &Path) -> [Option<u32>; 4] {
     [0, 1, 2, 3].map(|register| path.registers[register])
 }
 
+/// Of r0 to r3, as bits, those that may hold what a call leaves after an
+/// instruction that does what `effect` says (see `Path::results`): those
+/// it writes, and r0 when it reads it, other than to push it.
+fn results(effect: &Effect) -> u8 {
+    let reads_r0 = effect.reads & 1 != 0 && !matches!(effect.operation, Operation::Push { .. });
+    (effect.writes & 0xf) as u8 | u8::from(reads_r0)
+}
+
 /// Forgets what changed in `path`, but for the stack pointer, since it
 /// held `registers` and `memory`.
 fn forget_changes(path: &mut Path, registers: &[Option<u32>; 16], memory: &Memory) {
@@ -1382,6 +1493,39 @@ fn forget_changes(path: &mut Path, registers: &[Option<u32>; 16], memory: &Memor
     }
 }
 
+/// What `effect` does, where a load or store that adds to its base
+/// register gives the offset it loads or stores at: what it adds when it
+/// adds first, or else 0.
+fn with_writeback_offset(effect: &Effect) -> Operation {
+    let Some(writeback) = effect.writeback else {
+        return effect.operation;
+    };
+    let offset = Some(if writeback.before {
+        writeback.amount
+    } else {
+        0
+    });
+    match effect.operation {
+        Operation::Load { register, base, .. } => Operation::Load {
+            register,
+            base,
+            offset,
+        },
+        Operation::Store {
+            register,
+            base,
+            size,
+            ..
+        } => Operation::Store {
+            register,
+            base,
+            offset,
+            size,
+        },
+        operation => operation,
+    }
+}
+
 /// Forgets what `registers` hold.
 fn set_unknown(path: &mut Path, registers: Registers) {
     for register in each(registers) {
@@ -1394,12 +1538,77 @@ fn each(set: Registers) -> impl Iterator<Item = u16> {
     (0..16).filter(move |register| set & (1 << register) != 0)
 }
 
+/// See `arch::startup::passes_result`.
+pub(in crate::arch) fn passes_result(program: &dyn Program, first: u64, second: u64) -> bool {
+    if !(first < second && second - first <= 16) {
+        return false;
+    }
+    let Some((first_half, _, _)) = decode_at(program, first) else {
+        return false;
+    };
+    let mut address = first + if is_wide(first_half) { 4 } else { 2 };
+    // The registers that hold what the first call returns in r0.
+    let mut result: u16 = 1;
+    while address < second {
+        let Some((half, _, effect)) = decode_at(program, address) else {
+            return false;
+        };
+        match effect.operation {
+            Operation::Copy { register, source } if register < 16 && source < 16 => {
+                match result & 1 << source {
+                    0 => result &= !(1 << register),
+                    _ => result |= 1 << register,
+                }
+            }
+            Operation::Literal { register, .. } if register < 16 => result &= !(1 << register),
+            _ => return false,
+        }
+        if effect.flow != Flow::Next {
+            return false;
+        }
+        address += if is_wide(half) { 4 } else { 2 };
+    }
+    address == second && result & 1 != 0
+}
+
+/// See `arch::startup::branches_past`.
+pub(in crate::arch) fn branches_past(program: &dyn Program, start: u64, call: u64) -> bool {
+    let Some((half, _, _)) = decode_at(program, call) else {
+        return false;
+    };
+    let after = call + if is_wide(half) { 4 } else { 2 };
+    let mut address = start;
+    while address < call {
+        let Some((half, _, effect)) = decode_at(program, address) else {
+            address += 2;
+            continue;
+        };
+        if let Flow::Branch { target, .. } = effect.flow
+            && target == after
+        {
+            return true;
+        }
+        address += if is_wide(half) { 4 } else { 2 };
+    }
+    false
+}
+
+/// The instruction at `address` in `program`: its two halves and what it
+/// does.
+fn decode_at(program: &dyn Program, address: u64) -> Option<(u16, u16, Effect)> {
+    let code = program.code(address)?;
+    let half = |at: usize| Some(u16::from_le_bytes([*code.get(at)?, *code.get(at + 1)?]));
+    let first = half(0)?;
+    let second = if is_wide(first) { half(2)? } else { 0 };
+    Some((first, second, decode::decode(address, first, second)?))
+}
+
 #[cfg(test)]
 mod tests {
     use object::Endianness::Little;
 
     use super::{Flags, add, holds, subtract, walk};
-    use crate::arch::startup::{Event, How, Program, Start};
+    use crate::arch::startup::{DEPTH, Event, How, Program, Start};
 
     /// Where the code of each test is, as in flash.
     const FLASH: u64 = 0x0800_0000;
@@ -1435,6 +1644,16 @@ mod tests {
     /// of the code for the last one: a line for each event, with its depth
     /// first, and one for how the walk ends.
     fn walk_lines(units: &[u16], functions: &[u64], main: Option<u64>) -> Vec<String> {
+        walk_lines_following(units, functions, main, DEPTH)
+    }
+
+    /// As `walk_lines`, for a walk that follows calls `follow` deep.
+    fn walk_lines_following(
+        units: &[u16],
+        functions: &[u64],
+        main: Option<u64>,
+        follow: u32,
+    ) -> Vec<String> {
         let code: Vec<u8> = units.iter().flat_map(|unit| unit.to_le_bytes()).collect();
         let end = FLASH + code.len() as u64;
         let ends = functions.iter().skip(1).copied().chain([end]);
@@ -1446,6 +1665,7 @@ mod tests {
             address: FLASH | 1,
             stack_pointer: Some(0x2000_1000),
             main,
+            follow,
         };
         let walk = walk(Little, &flash, &start);
         let number = |number: Option<u32>| number.map_or("?".to_string(), |n| format!("{n:#x}"));
@@ -1462,9 +1682,21 @@ mod tests {
                         call.arguments.iter().map(|&n| number(n)).collect();
                     let target = call.target.map_or("?".to_string(), |n| format!("{n:#x}"));
                     let arguments = arguments.join(" ");
-                    let condition = if call.conditional { ", if" } else { "" };
+                    let condition = match (call.conditional, call.followed) {
+                        (true, _) => ", if",
+                        (false, false) if call.target.is_some() => ", not followed",
+                        _ => "",
+                    };
+                    let left: Vec<String> = (0..4)
+                        .filter(|&n| call.left & 1 << n != 0 && call.arguments[n].is_some())
+                        .map(|n| format!(" r{n}"))
+                        .collect();
+                    let left = match left.is_empty() {
+                        true => String::new(),
+                        false => format!(", left by a call:{}", left.concat()),
+                    };
                     format!(
-                        "{} {:#x} {how} {target} ({arguments}){condition}",
+                        "{} {:#x} {how} {target} ({arguments}){condition}{left}",
                         call.depth, call.site
                     )
                 }
@@ -1544,9 +1776,9 @@ mod tests {
                 "0 0x800000e store ? at 0x20000000 on, 4 bytes",
                 "0 0x800000c loop back at 0x8000016, from event 0",
                 "0 0x800001e call 0x8000030 (0x20000010 0x0 0x20 ?)",
-                "1 0x8000036 store ? at 0x20000010 on, 1 bytes",
+                "1 0x8000036 store ? at 0x20000010, 1 bytes",
                 "1 0x8000032 loop back at 0x800003a, from event 3",
-                "0 0x8000022 call 0x800003e (? 0x0 0x20000030 ?)",
+                "0 0x8000022 call 0x800003e (? 0x0 0x20000030 ?), left by a call: r2",
                 "end Main(8000022)",
             ]
         );
@@ -1624,7 +1856,7 @@ mod tests {
         assert_eq!(
             walk_lines(&code, &functions, Some(0x0800_0030)),
             [
-                "0 0x8000020 store 0x0 at 0x20000000 on, 4 bytes",
+                "0 0x8000020 store 0x0 at 0x20000000, 4 bytes",
                 "0 0x8000020 loop back at 0x8000026, from event 0",
                 "0 0x8000028 call 0x8000030 (? 0x20000008 0x0 ?)",
                 "end Main(8000028)",
@@ -1657,7 +1889,7 @@ mod tests {
                 "0 0x8000000 call 0x8000006 (? ? ? ?)",
                 "1 0x800000c tail call 0x800000e (0x1 0x20000000 ? ?)",
                 "1 0x800000e store 0x1 at 0x20000000, 4 bytes",
-                "0 0x8000004 tail call 0x8000012 (0x1 0x20000000 ? ?)",
+                "0 0x8000004 tail call 0x8000012 (0x1 0x20000000 ? ?), left by a call: r0 r1",
                 "end Main(8000004)",
             ]
         );
@@ -1693,6 +1925,27 @@ mod tests {
             [
                 "0 0x8000000 call 0x8000006 (? ? ? ?)",
                 "end RunsOff(8000004)"
+            ]
+        );
+        // So does a bkpt, as some compilers put after a call to abort, but
+        // not bkpt 0xab, which asks a debugger to do semihosting, and after
+        // which the walk goes on, here into fatal's code:
+        //   8000004: be00       bkpt  0x0000
+        let code = [0xf000, 0xf801, 0xbe00, 0xe7fe];
+        assert_eq!(
+            walk_lines(&code, &functions, None),
+            [
+                "0 0x8000000 call 0x8000006 (? ? ? ?)",
+                "end RunsOff(8000004)"
+            ]
+        );
+        //   8000004: beab       bkpt  0x00ab
+        let code = [0xf000, 0xf801, 0xbeab, 0xe7fe];
+        assert_eq!(
+            walk_lines(&code, &functions, None),
+            [
+                "0 0x8000000 call 0x8000006 (? ? ? ?)",
+                "end RunsOff(8000006)"
             ]
         );
         // The walk doesn't run the literal pool's first word, a store, as
@@ -1746,7 +1999,7 @@ mod tests {
             [
                 "0 0x8000002 call 0x800000a (0x5 ? ? ?)",
                 "1 0x8000010 tail call 0x8000018 (0x5 ? ? ?)",
-                "0 0x8000006 call 0x800001a (0x5 ? ? ?)",
+                "0 0x8000006 call 0x800001a (0x5 ? ? ?), left by a call: r0",
                 "end Main(8000006)"
             ]
         );
@@ -1812,6 +2065,99 @@ mod tests {
     }
 
     #[test]
+    fn a_call_leaves_what_its_code_uses_in_r0_to_r3() {
+        // init doesn't use r0, so it still holds what the reset handler
+        // set for copy, as code built with GCC's -fipa-ra counts on; copy
+        // reads r0 and writes r3, which main then finds there:
+        //   8000000: 4803       ldr   r0, [pc, #12]  ; 0x20000000
+        //   8000002: f000 f807  bl    8000014 <init>
+        //   8000006: 2210       movs  r2, #16
+        //   8000008: f000 f806  bl    8000018 <copy>
+        //   800000c: f000 f806  bl    800001c <main>
+        //   8000010: 20000000   .word
+        // init:
+        //   8000014: 2301       movs  r3, #1
+        //   8000016: 4770       bx    lr
+        // copy:
+        //   8000018: 4603       mov   r3, r0
+        //   800001a: 4770       bx    lr
+        // main:
+        //   800001c: e7fe       b.n   800001c
+        let code = [
+            0x4803, 0xf000, 0xf807, 0x2210, 0xf000, 0xf806, 0xf000, 0xf806, 0x0000, 0x2000, 0x2301,
+            0x4770, 0x4603, 0x4770, 0xe7fe,
+        ];
+        let functions = [0x0800_0000, 0x0800_0014, 0x0800_0018, 0x0800_001c];
+        assert_eq!(
+            walk_lines(&code, &functions, Some(0x0800_001c)),
+            [
+                "0 0x8000002 call 0x8000014 (0x20000000 ? ? ?)",
+                "0 0x8000008 call 0x8000018 (0x20000000 ? 0x10 0x1), left by a call: r3",
+                "0 0x800000c call 0x800001c (0x20000000 ? 0x10 0x20000000), left by a call: r0 r3",
+                "end Main(800000c)"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_register_that_a_call_only_reads_isnt_left_by_it() {
+        // check reads r1 and writes r2, so main finds the 5 the reset
+        // handler put in r1, and 6 in r2 that check left:
+        //   8000000: 2105       movs  r1, #5
+        //   8000002: f000 f803  bl    800000c <check>
+        //   8000006: f000 f803  bl    8000010 <main>
+        //   800000a: bf00       nop
+        // check:
+        //   800000c: 1c4a       adds  r2, r1, #1
+        //   800000e: 4770       bx    lr
+        // main:
+        //   8000010: e7fe       b.n   8000010
+        let code = [
+            0x2105, 0xf000, 0xf803, 0xf000, 0xf803, 0xbf00, 0x1c4a, 0x4770, 0xe7fe,
+        ];
+        let functions = [0x0800_0000, 0x0800_000c, 0x0800_0010];
+        assert_eq!(
+            walk_lines(&code, &functions, Some(0x0800_0010)),
+            [
+                "0 0x8000002 call 0x800000c (? 0x5 ? ?)",
+                "0 0x8000006 call 0x8000010 (? 0x5 0x6 ?), left by a call: r2",
+                "end Main(8000006)"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_tail_call_to_a_dead_end_takes_the_other_way_without_following_calls() {
+        // As in Pico SDK's crt0, core 1 tail-calls code that branches
+        // through a register, and core 0 takes the beq. A walk that doesn't
+        // follow calls still looks where the tail call goes, to go back
+        // to the beq:
+        //   8000000: 6800       ldr   r0, [r0, #0]
+        //   8000002: 2800       cmp   r0, #0
+        //   8000004: d001       beq.n 800000a
+        //   8000006: 2000       movs  r0, #0
+        //   8000008: e003       b.n   8000012 <enter>
+        //   800000a: f000 f801  bl    8000010 <main>
+        //   800000e: e7fe       b.n   800000e
+        // main:
+        //   8000010: e7fe       b.n   8000010
+        // enter:
+        //   8000012: 4710       bx    r2
+        let code = [
+            0x6800, 0x2800, 0xd001, 0x2000, 0xe003, 0xf000, 0xf801, 0xe7fe, 0xe7fe, 0x4710,
+        ];
+        let functions = [0x0800_0000, 0x0800_0010, 0x0800_0012];
+        assert_eq!(
+            walk_lines_following(&code, &functions, None, 0),
+            [
+                "0 0x8000004 back to 0x800000a, since Branches { site: 8000012, through: Register(2) }",
+                "0 0x800000a call 0x8000010 (? ? ? ?), not followed",
+                "end Spins(800000e)"
+            ]
+        );
+    }
+
+    #[test]
     fn the_walk_goes_through_so_many_instructions() {
         // 700 nops in the reset handler.
         let code = [0xbf00; 700];
@@ -1872,7 +2218,7 @@ mod tests {
         assert_eq!(
             walk_lines(&code, &functions, Some(0x0800_001a)),
             [
-                "0 0x8000014 store 0x0 at 0x20000000 on, 4 bytes",
+                "0 0x8000014 store 0x0 at 0x20000000, 4 bytes",
                 "0 0x8000014 loop back at 0x8000018, from event 0",
                 "0 0x8000010 call 0x800001a (? ? 0x0 0x40000000)",
                 "end Main(8000010)",
@@ -2010,6 +2356,38 @@ mod tests {
     }
 
     #[test]
+    fn a_table_of_functions_read_with_a_load_that_moves_its_base() {
+        // As newlib's __libc_init_array calls the functions in .init_array.
+        // main's r0 is what init left there:
+        //   8000000: 4d03       ldr   r5, [pc, #12]  ; 0x8000010
+        //   8000002: f855 3b04  ldr.w r3, [r5], #4
+        //   8000006: 4798       blx   r3
+        //   8000008: 4629       mov   r1, r5
+        //   800000a: f000 f807  bl    800001c <main>
+        //   800000e: bf00       nop
+        //   8000010: 08000014   .word  ; the table
+        //   8000014: 08000019   .word  ; init + 1
+        // init:
+        //   8000018: 2001       movs  r0, #1
+        //   800001a: 4770       bx    lr
+        // main:
+        //   800001c: e7fe       b.n   800001c
+        let code = [
+            0x4d03, 0xf855, 0x3b04, 0x4798, 0x4629, 0xf000, 0xf807, 0xbf00, 0x0014, 0x0800, 0x0019,
+            0x0800, 0x2001, 0x4770, 0xe7fe,
+        ];
+        let functions = [0x0800_0000, 0x0800_0018, 0x0800_001c];
+        assert_eq!(
+            walk_lines(&code, &functions, Some(0x0800_001c)),
+            [
+                "0 0x8000006 call through r3 0x8000018 (? ? ? 0x8000019)",
+                "0 0x800000a call 0x800001c (0x1 0x8000018 ? 0x8000019), left by a call: r0",
+                "end Main(800000a)",
+            ]
+        );
+    }
+
+    #[test]
     fn calls_are_followed_three_deep() {
         // d, four calls deep, isn't followed, so its store isn't listed. A
         // function the walk can't follow to its end stops there:
@@ -2056,7 +2434,7 @@ mod tests {
                 "0 0x8000000 call 0x800000c (? ? ? ?)",
                 "1 0x800000e call 0x8000014 (? ? ? ?)",
                 "2 0x8000016 call 0x800001c (? ? ? ?)",
-                "3 0x800001e call 0x8000024 (? ? ? ?)",
+                "3 0x800001e call 0x8000024 (? ? ? ?), not followed",
                 "0 0x8000004 call 0x800002c (? ? ? ?)",
                 "1 0x8000004 stop: Undecoded(800002c)",
                 "0 0x8000008 call 0x800002e (? ? ? ?)",
@@ -2145,7 +2523,7 @@ mod tests {
             [
                 "0 0x8000004 call 0x8000014 (0x20000ff8 ? ? ?)",
                 "1 0x800001e store 0x7 at 0x20000000, 4 bytes",
-                "0 0x8000010 call 0x8000026 (0x2 0x3 0x7 0x9)",
+                "0 0x8000010 call 0x8000026 (0x2 0x3 0x7 0x9), left by a call: r0 r1",
                 "end Main(8000010)",
             ]
         );
@@ -2223,7 +2601,7 @@ mod tests {
                 "1 0x8000016 tail call 0x800001c (? 0x0 0x2 ?), if",
                 "0 0x8000006 call 0x8000020 (? ? ? ?)",
                 "1 0x8000024 tail call 0x800001c (? 0x0 ? ?)",
-                "0 0x800000a call 0x8000026 (? 0x0 ? 0x1)",
+                "0 0x800000a call 0x8000026 (? 0x0 ? 0x1), left by a call: r1 r3",
                 "end Main(800000a)",
             ]
         );
@@ -2706,7 +3084,7 @@ mod tests {
             [
                 "0 0x8000002 call 0x800000c (0x3 ? ? ?)",
                 "1 0x800000c tail call 0x8000014 (0x3 ? ? ?)",
-                "0 0x8000006 call 0x8000018 (0x3 0x4 ? ?)",
+                "0 0x8000006 call 0x8000018 (0x3 0x4 ? ?), left by a call: r1",
                 "end Main(8000006)",
             ]
         );

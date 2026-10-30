@@ -56,13 +56,23 @@ pub fn run(binary: &Binary, out: &mut dyn Write) -> Result<()> {
                     .collect();
                 let condition = if call.conditional {
                     ", conditional"
+                } else if call.target.is_some() && !call.followed {
+                    ", not followed"
                 } else {
                     ""
+                };
+                let left: Vec<String> = (0..4)
+                    .filter(|&n| call.left & 1 << n != 0 && call.arguments[n].is_some())
+                    .map(|n| format!(" r{n}"))
+                    .collect();
+                let left = match left.is_empty() {
+                    true => String::new(),
+                    false => format!(", left by a call:{}", left.concat()),
                 };
                 (
                     call.site,
                     call.depth,
-                    format!("{what} ({}){condition}", arguments.join(" ")),
+                    format!("{what} ({}){condition}{left}", arguments.join(" ")),
                 )
             }
             Event::Store(store) => {
@@ -148,6 +158,7 @@ fn start(binary: &Binary) -> Start {
         address: reset.unwrap_or(binary.entry),
         stack_pointer: stack_pointer.map(|word| word as u32),
         main: main.map(|item| item.address),
+        follow: startup::DEPTH,
     }
 }
 

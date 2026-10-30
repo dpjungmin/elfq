@@ -13,6 +13,7 @@ mod items;
 mod json;
 mod reach;
 mod retained;
+mod startup;
 mod support;
 mod symbol;
 mod why;

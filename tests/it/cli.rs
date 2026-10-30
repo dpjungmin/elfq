@@ -3936,7 +3936,7 @@ fn debug_walk_lists_what_the_code_run_from_reset_does() {
             "0x3000060e      0  call memcpy (0x3000087c) (r0=0x0 r1=0x30000040 r2=0xe0 r3=0xdf)",
             "0x30000626      0  call memcpy (0x3000087c) (r0=0x20000000 r1=0x300009c0 r2=0x420 r3=0x41f)",
             "0x3000063e      0  call memset (0x300007d8) (r0=0x20000420 r1=0x0 r2=0x30 r3=0x2f)",
-            "0x30000642      0  call main (0x30000570) (r0=0x20000420 r1=0x0 r2=? r3=?)",
+            "0x30000642      0  call main (0x30000570) (r0=0x20000420 r1=0x0 r2=? r3=?), left by a call: r0",
         ]
     );
     assert_eq!(
