@@ -1386,6 +1386,7 @@ const UNREACHED: Effect = Effect {
     operation: Operation::Nothing,
     flow: Flow::Stop,
     sets_flags: false,
+    writeback: None,
 };
 
 /// The index in `instructions` of the one at `target`, if there is one.

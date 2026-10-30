@@ -34,6 +34,19 @@ pub(super) struct Effect {
     /// 16-bit instructions that set the flags elsewhere, such as `adds`,
     /// don't inside one.
     pub sets_flags: bool,
+    /// For a load or store of one register that adds an immediate to its
+    /// base register, as `ldr.w r3, [r5], #4` and `str.w r3, [r2, #4]!`
+    /// do, what it adds and when. Its `Load` or `Store` gives no `offset`.
+    pub writeback: Option<Writeback>,
+}
+
+/// What a load or store adds to its base register.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Writeback {
+    pub amount: i32,
+    /// Whether it adds it before it loads or stores, as `[base, #imm]!`
+    /// does, or after, as `[base], #imm` does.
+    pub before: bool,
 }
 
 /// What an instruction does with the numbers in the registers, as far as
@@ -203,6 +216,7 @@ impl Effect {
             operation: Operation::Nothing,
             flow: Flow::Next,
             sets_flags: false,
+            writeback: None,
         }
     }
 
@@ -218,6 +232,11 @@ impl Effect {
 
     fn sets_flags(mut self, sets_flags: bool) -> Effect {
         self.sets_flags = sets_flags;
+        self
+    }
+
+    fn writeback(mut self, writeback: Option<Writeback>) -> Effect {
+        self.writeback = writeback;
         self
     }
 }
@@ -1031,7 +1050,8 @@ fn store(first: u16, second: u16) -> Option<Effect> {
     }
     let size = 1 << ((first >> 5) & 3);
     let mut reads = bit(rn) | bit(rt);
-    let (offset, writeback) = match addressing(first, second)? {
+    let addressing = addressing(first, second)?;
+    let (offset, writeback) = match addressing {
         Addressing::Offset(offset) => (Some(offset), 0),
         Addressing::Register(rm) => {
             reads |= bit(rm);
@@ -1046,12 +1066,13 @@ fn store(first: u16, second: u16) -> Option<Effect> {
         }
         Addressing::Before(_) | Addressing::After(_) => (None, bit(rn)),
     };
-    Some(Effect::new(reads, writeback).operation(Operation::Store {
+    let effect = Effect::new(reads, writeback).operation(Operation::Store {
         register: (size == 4).then_some(rt),
         base: rn,
         offset,
         size,
-    }))
+    });
+    Some(effect.writeback(addressing.writeback()))
 }
 
 /// How a 32-bit load or store of a byte, halfword or word gets its
@@ -1066,6 +1087,23 @@ enum Addressing {
     Before(i32),
     /// The base, which then gets the immediate added: `[base], #imm`.
     After(i32),
+}
+
+impl Addressing {
+    /// What it adds to the base register, when it does.
+    fn writeback(&self) -> Option<Writeback> {
+        match *self {
+            Addressing::Before(amount) => Some(Writeback {
+                amount,
+                before: true,
+            }),
+            Addressing::After(amount) => Some(Writeback {
+                amount,
+                before: false,
+            }),
+            Addressing::Offset(_) | Addressing::Register(_) => None,
+        }
+    }
 }
 
 /// The addressing of the load or store made of `first` and `second`,
@@ -1121,7 +1159,8 @@ fn load(pc: u64, first: u16, second: u16) -> Option<Effect> {
         });
     }
     let mut reads = bit(rn);
-    let (offset, writeback) = match addressing(first, second)? {
+    let addressing = addressing(first, second)?;
+    let (offset, writeback) = match addressing {
         Addressing::Offset(offset) => (Some(offset), 0),
         Addressing::Register(rm) => {
             reads |= bit(rm);
@@ -1149,6 +1188,7 @@ fn load(pc: u64, first: u16, second: u16) -> Option<Effect> {
     if rt == PC {
         // A byte or halfword into pc is a preload hint.
         let effect = Effect::new(reads, writeback).operation(load(None));
+        let effect = effect.writeback(addressing.writeback());
         return Some(match word {
             true => effect.flow(Flow::JumpMemory),
             false => effect,
@@ -1157,7 +1197,8 @@ fn load(pc: u64, first: u16, second: u16) -> Option<Effect> {
     if writeback & bit(rt) != 0 {
         return None;
     }
-    Some(Effect::new(reads, bit(rt) | writeback).operation(load(word.then_some(rt))))
+    let effect = Effect::new(reads, bit(rt) | writeback).operation(load(word.then_some(rt)));
+    Some(effect.writeback(addressing.writeback()))
 }
 
 /// The floating-point instructions, with Armv8.1-M's loads and stores of
@@ -1687,6 +1728,27 @@ mod tests {
         // ldr.w r3, [r2, r3, lsl #2]
         let load = effect(0, &[0x52, 0xf8, 0x23, 0x30]);
         assert_eq!((load.reads, load.writes), (bit(2) | bit(3), bit(3)));
+        assert_eq!(load.writeback, None);
+        // ldr.w r3, [r5], #4 loads from r5 and then adds 4 to it; strb.w
+        // r1, [r0, #-1]! subtracts 1 first.
+        let load = effect(0, &[0x55, 0xf8, 0x04, 0x3b]);
+        assert_eq!((load.reads, load.writes), (bit(5), bit(3) | bit(5)));
+        assert_eq!(
+            load.writeback,
+            Some(Writeback {
+                amount: 4,
+                before: false
+            })
+        );
+        let store = effect(0, &[0x00, 0xf8, 0x01, 0x1d]);
+        assert_eq!((store.reads, store.writes), (bit(0) | bit(1), bit(0)));
+        assert_eq!(
+            store.writeback,
+            Some(Writeback {
+                amount: -1,
+                before: true
+            })
+        );
         // stmia r0!, {r3, r4} stores two words from r0 on.
         assert_eq!(
             operation(&[0x18, 0xc0]),

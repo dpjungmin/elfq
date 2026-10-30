@@ -45,7 +45,13 @@ pub struct Start {
     /// Where `main` starts. The walk ends at a call to it, or when it gets
     /// there, as where a compiler inlined `main` into the reset handler.
     pub main: Option<u64>,
+    /// How many calls deep the walk follows, at most [`DEPTH`]: 0 walks
+    /// only the code at `address`, and what it jumps to.
+    pub follow: u32,
 }
+
+/// How many calls deep a walk follows at most.
+pub const DEPTH: u32 = 3;
 
 /// What a walk found, in the order the code runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,10 +106,19 @@ pub struct Call {
     /// The numbers in r0 to r3, which pass the first four arguments, when
     /// the walk can tell.
     pub arguments: [Option<u32>; 4],
+    /// Of r0 to r3, as bits, those that hold what an earlier call left
+    /// there, which code hasn't written since: those that the code it ran
+    /// wrote, and r0 when it read it, as a function such as `memset`
+    /// returns its first argument there.
+    pub left: u8,
     /// Whether it runs only when condition flags that the walk can't tell
     /// are set: a call in an `it` block, or a branch to another function.
     /// The walk doesn't follow it.
     pub conditional: bool,
+    /// Whether the walk went through the code it calls, or found it outside
+    /// the file: not for a call through a register it can't tell, a
+    /// conditional one, or one [`DEPTH`] calls deep.
+    pub followed: bool,
 }
 
 /// How code calls a function.
@@ -131,9 +146,8 @@ pub struct Store {
     /// The address in its base register, when the walk can tell: where
     /// it stores from on, when `address` is `None` because the walk
     /// doesn't know what it adds to the base, as with an offset in a
-    /// register, or a store of several registers. A store that moves its
-    /// base first, as `strb r3, [r0, #1]!` does, or that stores below it,
-    /// as `stmdb` does, stores that far off from it.
+    /// register, or a store of several registers. One that stores below
+    /// it, as `stmdb` does, stores that far off from it.
     pub base: Option<u32>,
     /// How many bytes it stores, when one instruction stores a known
     /// number of them; 0 when it doesn't say, as for the floating-point
@@ -251,19 +265,19 @@ impl End {
 ///   processor would. Where it can't tell, a branch is taken later, if the
 ///   way on doesn't go on (see [`Event::Backtrack`]); an instruction in an
 ///   `it` block leaves what it writes unknown.
-/// - Calls, up to 3 deep, never into `main`. A called function starts
-///   with the caller's registers and memory. Where it returns, the caller
-///   goes on with what the function left in the registers, in memory and
-///   in the flags, as a result in r0 and r1 or what code built with GCC's
-///   `-fipa-ra` counts on staying in r2 and r3, but with its own stack
-///   pointer and lr unknown. If the function got to the return past a
-///   branch that the walk couldn't tell, all it changed is unknown. A
-///   call that the walk doesn't follow, or that doesn't get to a return,
-///   leaves unknown the flags and those of r0 to r3, ip and lr that the
-///   function writes (all of them if it calls on, or the walk can't tell
-///   where its code is), and, for one it followed, the words it changed
-///   in memory. It doesn't follow a call that it can't tell runs: one in an
-///   `it` block, or a branch to another function (see
+/// - Calls, up to [`Start::follow`] deep, never into `main`. A called
+///   function starts with the caller's registers and memory. Where it
+///   returns, the caller goes on with what the function left in the
+///   registers, in memory and in the flags, as a result in r0 and r1 or
+///   what code built with GCC's `-fipa-ra` counts on staying in r2 and r3,
+///   but with its own stack pointer and lr unknown. If the function got to
+///   the return past a branch that the walk couldn't tell, all it changed
+///   is unknown. A call that the walk doesn't follow, or that doesn't get
+///   to a return, leaves unknown the flags and those of r0 to r3, ip and
+///   lr that the function writes (all of them if it calls on, or the walk
+///   can't tell where its code is), and, for one it followed, the words it
+///   changed in memory. It doesn't follow a call that it can't tell runs:
+///   one in an `it` block, or a branch to another function (see
 ///   [`Call::conditional`]).
 /// - Code that runs on past the end of a function: after a call, the call
 ///   can't return (see [`End::RunsOff`]); otherwise, the code goes on into
