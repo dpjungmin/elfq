@@ -30,6 +30,7 @@ elfq app.elf reach SysTick_Handler      # what SysTick_Handler runs and uses, an
 elfq app.elf browse                     # where the program starts, each start a page to read
 elfq app.elf browse log_msg             # read log_msg's code, what it calls and reaches, its callers, and what keeps it
 elfq old.elf diff new.elf               # what changed from old.elf to new.elf
+elfq app.elf startup                    # whether the reset code copies and zeroes memory before it uses it
 ```
 
 [docs/examples.md](docs/examples.md) asks real questions about the sample
@@ -105,6 +106,23 @@ does, keeps one block, and its calls stay the same. Both builds need a
 symbol table: without one, diff compares no items, so the check fails
 unless the memory is the same.
 
+`elfq app.elf startup` reads what the reset code of Cortex-M firmware
+does before `main`, in order: each copy of a load image, such as `.data`
+or code that runs from ITCM, from where the file stores it, and each
+zeroing of a section such as `.bss`. Its exit status is 1 when code runs
+from a load image before its copy, as when `memcpy` itself is linked into
+ITCM, when a load image isn't copied in full, or `.bss` isn't zeroed in
+full, and when elfq can't follow code that may set one up, such as a
+loop of the startup code's own, which it can't follow yet. It reads only
+the file, so it can't know what a boot ROM or a debugger loads, how the
+chip's memory is set up, or what interrupts and other cores do. To fail
+only on what elfq is sure of, let exit status 1 through:
+
+```sh
+elfq app.elf startup --json > startup.json || [ $? -eq 1 ]
+jq -e '.problems_certain == 0' startup.json
+```
+
 **For AI agents:** paste this into a project's AGENTS.md or CLAUDE.md to
 tell its agents about elfq:
 
@@ -146,6 +164,12 @@ and `elfq --help` lists the commands.
   it, the calls between blocks that are new or gone, and when no item
   changed, the sections that differ; another build ID alone makes them
   differ.
+- `elfq FILE.elf startup` lists what the reset code of Cortex-M firmware
+  copies and zeroes before `main`, in order, and exits 1 if code runs
+  from a load image, such as code in ITCM, before it is copied, if a load
+  image isn't copied or `.bss` isn't zeroed in full, or if elfq can't
+  follow code that may set one up; the JSON's `problems_certain` counts
+  the problems it is sure of.
 - elfq reads the built file, not the source: rebuild before asking again.
 ```
 
@@ -170,6 +194,8 @@ another item. A data object's page lists the pointers it holds, a vector
 table's entries, or the strings of an object that holds only strings, and
 the `objdump -s` command that prints its bytes. `diff` compares any two
 builds of one program that have section headers, by block of memory.
+`startup` reads Cortex-M reset code that copies and zeroes memory through
+calls, such as to `memcpy` and `memset`, but not yet in loops of its own.
 See [docs/design.md](docs/design.md) for how elfq works and what comes next,
 [docs/survey.md](docs/survey.md) for how existing tools compare, and
 [CONTRIBUTING.md](CONTRIBUTING.md) to build it.

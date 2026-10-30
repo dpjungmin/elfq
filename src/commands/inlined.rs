@@ -615,6 +615,7 @@ mod tests {
         InlinedCopy {
             name: name.to_string(),
             into: 0,
+            entry: 0,
             size,
             own: size,
             parent,

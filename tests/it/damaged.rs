@@ -16,14 +16,14 @@ use crate::support::{assert_output, elfq, load_sample, sample_path};
 
 /// Where a field is in a section header: in a 64-bit file, and in a
 /// 32-bit one.
-type Field = (usize, usize);
+pub type Field = (usize, usize);
 
 /// `sh_addr`, the section's address.
 const ADDRESS: Field = (0x10, 0x0c);
 /// `sh_offset`, where the section's bytes are in the file.
 const OFFSET: Field = (0x18, 0x10);
 /// `sh_size`, the section's size.
-const SIZE: Field = (0x20, 0x14);
+pub const SIZE: Field = (0x20, 0x14);
 
 /// The sample `name`, as bytes to change.
 fn sample(name: &str) -> Vec<u8> {
@@ -58,7 +58,7 @@ fn section_header(data: &[u8], section: &str) -> (usize, bool) {
 }
 
 /// Sets `field` in the header of `section` to `value`.
-fn set_section_field(data: &mut [u8], section: &str, field: Field, value: u64) {
+pub fn set_section_field(data: &mut [u8], section: &str, field: Field, value: u64) {
     let (header, is_64) = section_header(data, section);
     let (at, width) = if is_64 { (field.0, 8) } else { (field.1, 4) };
     write(data, header + at, width, value);

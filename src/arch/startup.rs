@@ -121,6 +121,24 @@ pub struct Call {
     pub followed: bool,
 }
 
+impl Call {
+    /// The numbers it passes, as far as elfq takes them to be: `arguments`,
+    /// but not those that an earlier call left, which a function that
+    /// takes fewer arguments finds there too, as memset leaves the start
+    /// of what it zeroed in r0. A number that code set before an earlier
+    /// call that didn't write it counts, as code built with GCC's
+    /// `-fipa-ra` keeps one there for the next call.
+    pub fn passes(&self) -> [Option<u32>; 4] {
+        let mut numbers = self.arguments;
+        for (n, number) in numbers.iter_mut().enumerate() {
+            if self.left & 1 << n != 0 {
+                *number = None;
+            }
+        }
+        numbers
+    }
+}
+
 /// How code calls a function.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum How {
@@ -298,5 +316,37 @@ pub fn walk(
     match architecture {
         Architecture::Arm => Some(thumb::startup::walk(endianness, program, start)),
         _ => None,
+    }
+}
+
+/// Whether the code after the call at `first` and before the call at
+/// `second` only copies registers, or loads words from a literal pool, and
+/// leaves in r0 what `first` returns there, so that `second` gets it, as in
+/// `exit(main())`: `bl main; mov r3, r0; mov r0, r3; bl exit`. False when
+/// the calls are more than 16 bytes apart.
+pub fn passes_result(
+    architecture: Architecture,
+    program: &dyn Program,
+    first: u64,
+    second: u64,
+) -> bool {
+    match architecture {
+        Architecture::Arm => thumb::startup::passes_result(program, first, second),
+        _ => false,
+    }
+}
+
+/// Whether a branch in the code from `start` up to the call at `call` goes
+/// to the instruction after the call: then the call doesn't return, and
+/// the compiler put other code after it, such as a loop's.
+pub fn branches_past(
+    architecture: Architecture,
+    program: &dyn Program,
+    start: u64,
+    call: u64,
+) -> bool {
+    match architecture {
+        Architecture::Arm => thumb::startup::branches_past(program, start, call),
+        _ => false,
     }
 }

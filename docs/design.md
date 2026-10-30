@@ -197,6 +197,7 @@ except `inlined`, which reads DWARF instead of machine code.
 | `elfq FILE inlined [SYMBOL]` | Which inlined functions cost the most bytes across the binary, or inside SYMBOL? Needs DWARF. |
 | `elfq FILE browse [SYMBOL]` | What does SYMBOL's code do, line by line, where does each call and use lead, and what calls it? Opens in the terminal, follows the links that the other commands' answers name, and shows the answers of `callees`, `callers`, `reach`, `why` and `retained SYMBOL` in tabs, each with the command that prints it, and the retained bytes in each block of memory; a page's header says what `retained` and `why` say about the item, and `u` opens the item that keeps it; `/` finds text in a page's rows. A data object's page lists its contents as far as elfq reads them: a vector table's entries, named by exception, the pointers it holds, as `callees` lists them, with what the dynamic loader writes in a shared library, or the strings of an object that holds only strings, with the `objdump -s` command that prints its bytes. Without SYMBOL, it opens on where the program starts, as `reach` lists it, each start a link to its page. |
 | `elfq FILE diff NEW` | Do two builds of one program load the same bytes at the same addresses? If not, in which blocks of memory do the bytes differ, which sections changed size there, which functions and data objects moved to another block, are new or gone, changed size, or kept their size but changed, each with what keeps it, and which calls between blocks are new or gone? |
+| `elfq FILE startup` | Does the reset code of Cortex-M firmware set up its memory before it uses it: which load images, such as `.data` and code that runs from ITCM, does it copy, and which sections without contents, such as `.bss`, does it zero, in what order, and does code run from a load image before its copy? |
 
 SYMBOL is a function or data object's name, an import (`write` finds the
 `write@plt` stub that code calls), or an address such as `0x1700`. Names are
@@ -731,6 +732,91 @@ out: the sections it would add are mostly tables of pointers, such as a
 vector table or `.ARM.exidx`, whose bytes changed only because what they
 point to moved, which the rows already say.
 
+`elfq FILE startup` reads what the reset code of Cortex-M firmware does
+before `main`, in the order it runs (`commands/startup/`): each copy of
+a load image, such as `.data` or code that runs from ITCM, each zeroing
+of a section without contents, such as `.bss`, and the calls between
+them. It reads from the reset handler that the vector table gives, or
+without a table, or when the reset handler it gives is in no function,
+from the entry point, and a note says which, and when they differ.
+Startup ends at the symbol `main`, or where DWARF says a compiler
+inlined `main` into the reset handler. Without a symbol named `main`, as
+in a stripped file, `main` is the function that the reset handler calls
+last, marked "(taken as main)", but the call before it when the last
+can't return and only takes its result, as in `exit(main())`, and that
+call doesn't copy or zero a section; and when the last sets up a section
+that the reset handler hasn't, as newlib's `_mainCRTStartup` does, it is
+the C runtime, and `main` the last function it calls that sets up
+nothing. When a loop goes back over the reset handler's last call, the
+reset handler is the program, and startup ends at its endless loop.
+
+The walk (`arch::startup`, for Thumb in `arch/thumb/startup.rs`) goes
+one way through the code, as the processor would, keeping the numbers
+that it can work out in registers, on the stack and in the memory that
+the code writes, and the condition flags, so that it takes a branch the
+way the processor would when it can tell, and it follows calls 3 deep.
+It reads at most 600 instructions of the reset handler, 300 of each
+function it calls, 60 of a loop's code and 20,000 in all, and code past
+that budget is a step that elfq can't follow. `elfq FILE debug walk`
+lists what it finds. A step is a call that passes the start of a section
+in r0 and a size in r2, as `memcpy(to, from, size)` and `memset(to, 0,
+size)` take them: a copy when the section has a load image and r1 is
+where the file stores bytes, as in flash, and a zeroing when the section
+has no contents and r1 is 0. So the steps don't need symbols; only where
+startup ends may. A number in r0 to r3 that the code of an earlier call
+wrote doesn't count, nor one in r0 that it read, as memset returns its
+first argument there, which a function that takes no arguments doesn't
+use. But one that code set before a call that only read it, or didn't
+use it, does, as code built with GCC's `-fipa-ra` keeps it there for the
+next call; for a call that it doesn't go through, the walk looks for
+which registers the function writes. A loop, a call through a register,
+a call that the walk doesn't go through, as one that runs only when the
+condition flags say or one deeper than it follows, and code where the
+walk can't read on are steps that elfq can't follow (`unread`), which
+may set up any section not set up yet; elfq can't yet follow loops, so
+startup code that copies and zeroes in loops of its own, as
+cortex-m-rt's does, ends in such a step.
+
+Code runs from a load image before its copy when code in it runs before
+the step that copies it: the reset handler itself, or a function that a
+call before the copy runs, at any depth, through calls and tail calls,
+as when `memcpy` is linked into ITCM, or `SystemInit` calls code there.
+Then the processor runs whatever that memory held at reset, so nothing
+after it can be counted on, and a note says that the steps after it may
+never run; a section that only they set up is "not reached". The
+problems are code that runs from a load image before its copy; a load
+image that nothing copies, or that a step copies short or from somewhere
+other than where the file stores it; `.bss` or `.sbss` that nothing
+zeroes in full, the names that the ELF specification and toolchains give
+sections that a program counts on being zeroed; and a load image, `.bss`
+or `.sbss` that no step sets up, but a step that elfq can't follow may.
+When such a step comes before code that runs from a load image, it may
+copy it first, which the problem's sentence says. Other sections without
+contents, such as `.noinit`, may be meant to keep what they hold, so a
+note says when nothing zeroes them, or a step zeroes them in part.
+
+The first line counts the problems, which follow it one to a line, or
+says what the reset code sets up, in order, and how it ends: calling
+`main`, or spinning, returning, looping for good, or at code that elfq
+can't follow. The table has a row for each step: DOES is `copy`, `zero`,
+`call` or `unread`; FROM, TO and SIZE are the numbers that a copy or
+zeroing passes; AT is the call, or the code elfq can't follow; and WHAT
+names the section and the function that sets it up, as ".itcm, by memcpy
+via veneer" for a call through a linker's veneer, or the function
+called. It has 30 rows, and WHAT, the sentences about code that runs
+from a load image, and the notes name 10 sections, functions or data
+objects, unless `--all`; the first line and the other sentences name
+every section. When a problem's code runs inside a call, not in the
+reset handler's own code, the Try line gives the `reach --to` command
+for the first step's function, which shows the chain of calls to the
+code, unless that function is the code itself. The exit status is 1 when
+there is a problem, even one that elfq can't be sure of, and 2 for an
+error, as for a file that the ELF header and program headers say isn't
+Cortex-M firmware: another processor's, an object file, a shared
+library, a program that an operating system loads, or a file without
+section headers. elfq refuses those before it loads the file, so that a
+large program costs nothing.
+
 ### JSON
 
 `--json` prints the same answer for scripts, as one object, for every
@@ -928,6 +1014,22 @@ several.
 |---|---|
 | `starts` | where the program starts, every one, in the text's order, each an item with: `root`, why it is a root, as `why`'s `root` says it, or `null` for `main`; `exceptions`, the exceptions that it handles, as WHY names them but every one, such as `["NMI","HardFault"]`, and `[]` for a function that isn't a handler; `code_bytes` and `data_bytes`, the bytes of the functions and of the data objects among the start and what it reaches; `blocks`, every memory block that the overview's `memory` lists, each a range with the `code_bytes` and `data_bytes` in it; and `complete`. Each is what `reach START --json` has for the start |
 | `unreadable` | the roots that are functions whose end elfq doesn't know, such as `_init`, so it can't tell what they reach |
+
+**`startup`**:
+
+| Key | Value |
+|---|---|
+| `file` | the file's path, as given |
+| `entry` | the reset handler's item, or without a vector table, or one whose reset handler is in no function, the entry point's |
+| `main` | `main`'s item, or `null` when the compiler inlined it into the reset handler, when startup ends at the reset handler's endless loop, or when the walk ends before |
+| `main_at` | where startup ends: `main`, where the code of an inlined `main` starts, or the head of the loop; `null` when the walk ends before |
+| `main_from` | how elfq knows `main_at`: `symbol`, `debug info`, `guess`, as "(taken as main)" says, `loop`, or `null` |
+| `complete` | whether elfq followed all the code before `main`: `false` when a step is `unread`, or when the walk ends where it can't read on, though what comes after may set up nothing |
+| `problems_certain` | how many `problems` are `certain`: to fail only on those, check that it is 0 and let exit status 1 through, as the README shows |
+| `steps` | every row of the table, in order, each with: `step`, its number; `site`, the call, or the code elfq can't follow; `does`, `copy`, `zero`, `call` or `unread`; `how`, `call`, `tail call`, `inlined`, `loop`, `register call`, `supervisor call`, `conditional call`, one that runs only when the condition flags say, `deep call`, one deeper than the walk follows, or `stop`, where the walk can't read on; `register`, the one a `register call` goes through, or `null`; `function`, the item called, or for a `loop` or `stop`, the function whose code elfq can't follow, or `null`; `veneer`, the address of the linker's veneer that the call goes through, or `null`; `inside`, the function that the step is in; `from`, `to` and `size`, the numbers that a copy or zeroing passes, else `null`; `sections`, the sections that it copies or zeroes; `table`, `null` for now; and `may_set_up`, the sections that an `unread` step may set up |
+| `sections` | every load image and section without contents, in address order, each a range with its `name`, `size` and `load_address`, where the file stores it, or `null` for a section without contents; `status` when `main` starts, `copied`, `partly copied`, `copied from elsewhere`, `zeroed`, `partly zeroed`, `not copied`, `not zeroed`, `unknown`, when an `unread` step may set it up, or `not reached`, when only steps after code that runs from a load image before its copy set it up; `step`, the number of the step that sets it up, or `null`; and `bytes`, how many of its bytes that step sets up, or `null` while `unknown` |
+| `problems` | one row for each sentence of the text, in its order, each with: `kind`, `runs before copy`, `not copied`, `not zeroed`, `partly copied`, `partly zeroed`, `copied from elsewhere` or `can't follow`; `certain`, `false` for `can't follow`, and for code that runs from a load image after a step that elfq can't follow that may copy it first; `steps`, the numbers of the steps it is about; `sections`; `items`, the functions that run from the load image too early; `chain`, the names of the functions that a step's call goes through to the first of them; `before_step`, the step that copies the load image, or `null` when none does; `bytes`, how many bytes a step copies or zeroes of a section it sets up in part, or `null`; `from`, where a step copies from that isn't where the file stores the load image, or `null`; `sites`, the calls that run the functions, or the reset handler's own address when it is in the load image; and `text`, the sentence |
+| `notes` | one row for each note of the text, each with `kind`, `no vector table`, `reset in no function`, `entry differs`, `branch`, `not reached`, `not zeroed`, `partly zeroed` or `can't tell`; `sections`; `items`, empty for now; and `text`, the sentence |
 
 ### Calls elfq can't follow
 
@@ -1173,8 +1275,9 @@ in order. Its output is the first example under [Commands](#commands).
 8. **Exit.** `run`, in main.rs, flushes the output and turns the answer into
    the exit status: 0 for an answer, 1 when `callers` or `callees` with
    ranges, `--from` or `--to` finds something that crosses, or may,
-   `reach --to` finds something in its ranges, or may, or `diff` finds
-   that the builds load different memory, and 2 for an error,
+   `reach --to` finds something in its ranges, or may, `diff` finds
+   that the builds load different memory, or `startup` finds a problem
+   in what the reset code does, or may, and 2 for an error,
    which it prints after `error:`. What the command keeps until it has
    answered, such as the loaded file, its graph and `Names`, isn't freed:
    the commands keep it in a `Kept`, which leaves it for the system to
@@ -1246,8 +1349,12 @@ cores up to Armv7E-M; for Armv8-M cores, its pages list only the lines
 that use another item. `diff` compares any two builds of one program that
 have section headers, by block of memory, and their functions and data
 objects, with the calls between blocks that are new or gone and the
-items of the same size that changed, when both have a symbol table. The
-pull requests and the git log record how elfq got here.
+items of the same size that changed, when both have a symbol table.
+`startup` reads the reset code of Cortex-M firmware that copies and
+zeroes its memory through calls, such as to `memcpy` and `memset`, and
+can't yet follow the loops and tables of addresses that other startup
+code copies and zeroes with. The pull requests and the git log record
+how elfq got here.
 
 On a 4-CPU x86-64 machine, a release build gives the overview of elfq's
 own debug build (90 MB) in under half a second, of cargo (43 MB) in under
@@ -1258,11 +1365,14 @@ key typed into go to then takes under 0.1 s. The first takes up to 0.2 s
 in those libraries, and the first whose text names nothing takes about
 half a second, as it works out what to suggest.
 
+Next: `startup` follows loops, then tables of sections to copy and
+zero, as CMSIS's and NXP's startup code reads.
+
 Ideas for later, not yet planned: output that scripts and AI agents can
-read more easily, a check of what startup code copies into RAM, the
-retained size of a set of items, the functions that shared libraries
-export as roots, `--root SYMBOL`, worst-case stack depth (the call graph
-plus each function's stack frame), and a query language.
+read more easily, the retained size of a set of items, the functions
+that shared libraries export as roots, `--root SYMBOL`, worst-case stack
+depth (the call graph plus each function's stack frame), and a query
+language.
 
 ## Non-goals
 
@@ -1383,3 +1493,17 @@ plus each function's stack frame), and a query language.
    x86-64 a jump table in data as 32-bit distances from the table, but
    one in x86-64 code is not. On instruction sets other than x86-64 and
    Thumb, any byte of a function that changed is an edit.
+10. **What `startup` reads.** It reads only the file, so it can't know
+    what a boot ROM or a debugger loads, how the chip's memory is set up,
+    such as an i.MX RT's FlexRAM, ECC or SDRAM, or what interrupts and
+    other cores do. It follows only what one way through the code does,
+    so a copy on a way it didn't take, as after a branch whose condition
+    it can't tell, isn't there; it takes the branch whose other way ends
+    in code it can't follow, and a note says where. It goes through
+    calls 3 deep, but not a call that runs only when the condition flags
+    say, and reads at most 600 instructions of the reset handler, 300 of
+    each function it calls, 60 of a loop's code and 20,000 in all: code
+    past those, or a call it doesn't go through, is a step that it can't
+    follow, which may set up any section. Numbers that code loads with
+    `ldm` or `ldrd`, rather than one word at a time, are unknown to it,
+    so a copy that passes them is a call that may set up any section.

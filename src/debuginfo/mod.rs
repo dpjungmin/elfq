@@ -24,6 +24,9 @@ pub struct InlinedCopy {
     /// The function whose code holds the copy, as an index into
     /// [`Binary::items`].
     pub into: usize,
+    /// Where the code of the copy starts running: the entry that DWARF
+    /// gives, or the start of the first of its ranges.
+    pub entry: u64,
     /// The bytes of code the copy takes, including the copies inlined into
     /// it.
     pub size: u64,
@@ -159,8 +162,17 @@ impl<'a, 'd> Walk<'a, 'd> {
                 start = self.dwarf.attr_address(unit, address)?;
             }
         }
-        let Some(into) = start.and_then(|start| self.binary.item_at(start)) else {
+        let Some(start) = start else {
             return Ok(None);
+        };
+        let Some(into) = self.binary.item_at(start) else {
+            return Ok(None);
+        };
+        // DWARF 5 may give the entry as an offset from the start, which
+        // `attr_address` doesn't read: the start is taken then.
+        let entry_pc = match entry.attr_value(gimli::DW_AT_entry_pc) {
+            Some(address) => self.dwarf.attr_address(unit, address)?,
+            None => None,
         };
         let name = match self.origin(unit, entry) {
             Some(origin) => match self.names.get(&origin) {
@@ -177,6 +189,7 @@ impl<'a, 'd> Walk<'a, 'd> {
         Ok(Some(InlinedCopy {
             name,
             into,
+            entry: entry_pc.unwrap_or(start),
             size,
             own: size,
             parent,

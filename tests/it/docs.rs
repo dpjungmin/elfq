@@ -44,7 +44,7 @@ fn the_examples_in_the_docs_show_what_elfq_prints() {
 /// Answers that between them have every key that elfq's JSON has. A key
 /// shows only in an object that is there, so for each key that holds a
 /// list, one of them has an entry in it, which the test checks.
-const JSON_ANSWERS: [&[&str]; 22] = [
+const JSON_ANSWERS: [&[&str]; 24] = [
     &[TCM_SAMPLE],
     &[SAMPLE, "top"],
     &[SAMPLE, "retained", "process_frame"],
@@ -79,6 +79,8 @@ const JSON_ANSWERS: [&[&str]; 22] = [
     ],
     &[TCM_SAMPLE, "diff", TCM_MOVED_SAMPLE],
     &[TCM_SAMPLE, "diff", TCM_INLINED_SAMPLE],
+    &["testdata/bin/c-cortex-m7-sysinit.elf", "startup"],
+    &["testdata/bin/rust-cortex-m4-nodebug.elf", "startup"],
 ];
 
 #[test]
@@ -91,8 +93,9 @@ fn design_md_names_every_json_key() {
     let mut lists = BTreeMap::new();
     for args in JSON_ANSWERS {
         let output = elfq(&[args, &["--json"]].concat());
-        // Range checks exit with 1 when something crosses the ranges, and
-        // diff when the memory differs.
+        // Range checks exit with 1 when something crosses the ranges,
+        // diff when the memory differs, and startup when it finds a
+        // problem.
         assert!(matches!(output.status.code(), Some(0 | 1)), "{output:?}");
         let mut keys = BTreeSet::new();
         add_keys(

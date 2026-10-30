@@ -137,6 +137,7 @@ Examples:
   elfq app.elf browse                     Where the program starts, each start a page to read
   elfq app.elf browse log_msg             Read log_msg's code, what it calls and reaches, its callers, and what keeps it
   elfq old.elf diff new.elf               What changed from old.elf to new.elf
+  elfq app.elf startup                    Whether the reset code copies and zeroes memory before it uses it
 
 The overview's table is the start of the one top shows; elfq help top
 explains it.
@@ -146,8 +147,9 @@ first, and the name last. A name after \"kept by\" or \"used by\" works as
 SYMBOL, and a why row without \"used by\" is used by the row above, or
 starts a chain. The tables of top, retained, callers, callees and reach
 show the 30 largest items, inlined the 30 largest functions, why the
-chains through the 10 nearest users, and diff the 30 largest changes and
-the 3 sections that changed most in each block; --all shows every row and
+chains through the 10 nearest users, diff the 30 largest changes and the
+3 sections that changed most in each block, and startup the first 30
+steps; --all shows every row and
 section, and makes sentences name everything they would cut short. With
 ranges, --from or --to, callers, callees and reach show every row. --json
 has every item, site and chain, one row per line, but the overview's JSON
@@ -156,8 +158,10 @@ leaves its table to top's. Scripts that read why's chains should use
 
 Exit status: 0 for an answer, 1 when callers or callees with ranges, --from
 or --to finds something that crosses, or might, reach --to finds something
-in its ranges, or might, or diff finds that NEW's memory differs from
-FILE's, and 2 for an error, which goes to stderr with nothing on stdout.";
+in its ranges, or might, diff finds that NEW's memory differs from
+FILE's, or startup finds a problem in what the reset code does before
+main, or might, and 2 for an error, which goes to stderr with nothing on
+stdout.";
 
 // One variant per command. Each variant's `///` line is its line in
 // `elfq --help`.
@@ -198,6 +202,9 @@ pub enum Command {
     /// Show what changed from FILE to NEW, by block of memory
     #[command(after_help = DIFF)]
     Diff(DiffArgs),
+    /// Check that the reset code copies and zeroes memory before it uses it
+    #[command(after_help = STARTUP)]
+    Startup(StartupArgs),
     /// Show elfq's own view of the file (for developing elfq)
     #[command(subcommand, hide = true)]
     Debug(DebugCommand),
@@ -539,6 +546,49 @@ whatever the answer, as in CI:
 
   elfq old.elf diff new.elf --json > diff.json || [ $? -eq 1 ]";
 
+const STARTUP: &str = "\
+startup reads the code that a Cortex-M processor runs from reset, in a
+linked firmware file, as far as main, and lists what it does there, in
+order: each copy of a load image, such as .data or code that runs from
+RAM or ITCM, from where the file stores it to where it runs, and each
+zeroing of a section without contents, such as .bss. FROM, TO and SIZE
+are the numbers the code passes to memcpy or memset. The other rows are
+the reset handler's own calls, and code elfq can't follow, such as a call
+through a register, a call deeper than it follows, or a loop, which may
+set up any section not set up yet. The table shows the first 30 steps.
+
+It names a problem when code runs from a load image before the step that
+copies it, as when memcpy itself is placed in ITCM: the reset handler
+itself, or any function that a call before the copy runs, at any depth.
+Once that happens, nothing after it can be counted on, so the steps after
+it may never run. It names a problem too when a load image isn't copied,
+or is copied short or from somewhere other than where the file stores it,
+and when .bss or .sbss isn't zeroed in full; other sections without
+contents, such as .noinit, may be meant to keep what they hold, and get a
+note. When no step sets up a load image, .bss or .sbss, and code elfq
+can't follow may, that is a problem it can't rule out.
+
+main is the symbol main, or where the file's DWARF says main was inlined
+into the reset handler. Without a symbol named main, as in a stripped
+file, it is the function the reset handler calls last, marked (taken as
+main), and when a loop goes back over that call, the reset handler's own
+endless loop. Without a vector table, startup reads from the entry point.
+
+It reads only the file, so it can't know what a boot ROM or a debugger
+loads, how the chip's memory is set up, or what interrupts and other
+cores do.
+
+--json has every step, the state of every section when main starts, and
+every problem with the steps, sections, functions and call sites it is
+about. To fail only on the problems that elfq is sure of:
+
+  elfq app.elf startup --json > startup.json || [ $? -eq 1 ]
+  jq -e '.problems_certain == 0' startup.json
+
+Exit status: 0 when startup finds no problem, 1 when it finds one, or code
+it can't follow that may be one (certain is false in the JSON), and 2 for
+an error, as for a file that isn't Cortex-M firmware.";
+
 const WHY: &str = "\
 The chains start where the program does, as HOW says: at the entry point, a
 function the C runtime runs at startup, or a handler in the vector table.
@@ -700,6 +750,14 @@ pub struct DiffArgs {
     #[arg(value_name = "NEW")]
     pub new: PathBuf,
     /// Show every item and section that changed, not only the largest
+    #[arg(long)]
+    pub all: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct StartupArgs {
+    /// Show every step, not only the first 30, and name every function in
+    /// sentences
     #[arg(long)]
     pub all: bool,
 }
