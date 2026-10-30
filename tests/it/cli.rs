@@ -3916,6 +3916,41 @@ fn debug_items_lists_each_item() {
 }
 
 #[test]
+fn debug_walk_lists_what_the_code_run_from_reset_does() {
+    let output = stdout(&[TCM_SAMPLE, "debug", "walk"]);
+    let mut lines = output.lines();
+    assert_eq!(
+        lines.next().unwrap(),
+        "from Reset_Handler (0x300005f8), stack pointer 0x20040000, main 0x30000570"
+    );
+    // The calls of the reset handler's own code: the copies of .itcm and
+    // .data, the zeroing of .bss, and main, with what memset left in the
+    // registers: its first argument in r0.
+    let calls: Vec<&str> = lines
+        .clone()
+        .filter(|line| line.contains(" 0  call "))
+        .collect();
+    assert_eq!(
+        calls,
+        [
+            "0x3000060e      0  call memcpy (0x3000087c) (r0=0x0 r1=0x30000040 r2=0xe0 r3=0xdf)",
+            "0x30000626      0  call memcpy (0x3000087c) (r0=0x20000000 r1=0x300009c0 r2=0x420 r3=0x41f)",
+            "0x3000063e      0  call memset (0x300007d8) (r0=0x20000420 r1=0x0 r2=0x30 r3=0x2f)",
+            "0x30000642      0  call main (0x30000570) (r0=0x20000420 r1=0x0 r2=? r3=?)",
+        ]
+    );
+    assert_eq!(
+        lines.last().unwrap(),
+        "0x30000642         ends: reaches main"
+    );
+    // Only Thumb code.
+    assert_output(
+        &stderr(&[SAMPLE, "debug", "walk"], 2),
+        "error: elfq walks only Thumb code, which Cortex-M processors run\n",
+    );
+}
+
+#[test]
 fn a_file_whose_code_elfq_cant_read_says_so() {
     // The x86-64 sample, marked as AArch64 code, which elfq can't read yet.
     let mut data = std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join(SAMPLE)).unwrap();

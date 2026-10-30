@@ -718,6 +718,8 @@ pub struct InlinedArgs {
 pub enum DebugCommand {
     /// List the functions and data objects elfq found, and where it found each
     Items,
+    /// List what the code run from reset does before main: calls, stores and loops
+    Walk,
 }
 
 /// The names of the commands, for reading `elfq help COMMAND` and for

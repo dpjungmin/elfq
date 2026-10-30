@@ -2,7 +2,8 @@
 //! which it writes, where the processor goes next, and, for the few that put
 //! a number elfq can follow into a register, what number. The `values`
 //! module uses this to follow the addresses that code puts in a register
-//! and then branches through.
+//! and then branches through, and `startup` to follow the code that runs
+//! from reset, with the numbers it passes to the functions it calls.
 //!
 //! The encodings are those of the Armv7-M and Armv8-M architecture reference
 //! manuals: sections A5.2 (16-bit) and A5.3 (32-bit) in Armv7-M. An
