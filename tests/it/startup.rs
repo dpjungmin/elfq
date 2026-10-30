@@ -22,6 +22,17 @@ const SYSINIT_SAMPLE: &str = "testdata/bin/c-cortex-m7-sysinit.elf";
 /// A reset handler that calls 32 functions, then one through a pointer,
 /// after it sets up the memory: more steps than the table shows.
 const STEPS_SAMPLE: &str = "testdata/bin/c-cortex-m7-steps.elf";
+/// A reset handler in assembly that copies and zeroes in loops.
+const LOOPS_SAMPLE: &str = "testdata/bin/c-cortex-m7-loops.elf";
+/// A reset handler in C, built without optimization, that copies and
+/// zeroes in loops.
+const LOOPS_O0_SAMPLE: &str = "testdata/bin/c-cortex-m7-loops-O0.elf";
+/// A reset handler that copies the sections that a table lists, in a loop
+/// over its rows.
+const TABLES_SAMPLE: &str = "testdata/bin/c-cortex-m7-tables.elf";
+/// A reset handler that calls a function that sets up the memory and
+/// doesn't return, as Zephyr's does.
+const NORETURN_SAMPLE: &str = "testdata/bin/c-cortex-m7-noreturn.elf";
 
 /// Runs `elfq FILE startup` with `options`, expecting nothing on stderr,
 /// and returns its exit status and what it printed.
@@ -299,30 +310,120 @@ STEP  DOES  FROM  TO  SIZE  AT         WHAT
 
 #[test]
 fn code_that_elfq_cant_follow_may_be_a_problem() {
-    // cortex-m-rt zeroes .bss and copies .data in loops, which elfq can't
-    // follow yet; with nothing to copy, .data has no section.
-    let (status, text) = startup("testdata/bin/rust-cortex-m4-nodebug.elf", &[]);
+    // The loop over the copy table's rows: elfq reads the copy of the first
+    // row, .itcm, but not what the loop does after it. The loop over the
+    // zero table's one row zeroes .bss.
+    let (status, text) = startup(TABLES_SAMPLE, &[]);
     assert_eq!(status, 1);
     assert_output(
         &text,
         "\
-1 problem in what Reset does before it calls elfq_sample::app_main (taken as main):
+1 problem in what Reset_Handler does before it calls main:
 
-  elfq can't follow step 1 (a loop), which may zero .bss.
+  Nothing copies .data, 4 bytes at 0x20000000 stored at 0x300000e8, unless step 2 (a loop) does.
 
-STEP  DOES    FROM  TO  SIZE  AT         WHAT
-   1  unread                  0x80000a0  a loop in Reset
-   2  call                    0x80000c0  elfq_sample::app_main (taken as main)
+STEP  DOES    FROM        TO          SIZE  AT          WHAT
+   1  copy    0x30000008  0x0           12  0x30000076  .itcm, by a loop in Reset_Handler
+   2  unread                                0x30000060  a loop in Reset_Handler
+   3  zero                0x20000004     4  0x300000ba  .bss, by a loop in Reset_Handler
+   4  call                                  0x300000cc  main
 ",
     );
     // That problem may not be one.
-    let (status, answer) = answer("testdata/bin/rust-cortex-m4-nodebug.elf");
+    let (status, answer) = answer(TABLES_SAMPLE);
     assert_eq!(status, 1);
     assert_eq!(answer["problems_certain"], 0);
     assert_eq!(answer["complete"], false);
     assert_eq!(answer["problems"][0]["kind"], "can't follow");
     assert_eq!(answer["problems"][0]["certain"], false);
-    assert_eq!(answer["sections"][0]["status"], "unknown");
+    assert_eq!(answer["problems"][0]["sections"], json!([".data"]));
+    assert_eq!(answer["steps"][1]["may_set_up"], json!([".data"]));
+    assert_eq!(answer["sections"][1]["status"], "unknown");
+}
+
+#[test]
+fn loops_that_copy_and_zero_are_steps() {
+    // Loops of conditional instructions in assembly, the second going on
+    // from where the first left its source, and one that counts down.
+    let (status, text) = startup(LOOPS_SAMPLE, &[]);
+    assert_eq!(status, 0);
+    assert_output(
+        &text,
+        "\
+No problems: Reset_Handler copies .itcm and .data, zeroes .bss, then calls main.
+
+STEP  DOES  FROM        TO          SIZE  AT          WHAT
+   1  copy  0x30000098  0x0           12  0x30000016  .itcm, by a loop in Reset_Handler
+   2  copy  0x300000a4  0x20000000    12  0x30000028  .data, by a loop in Reset_Handler
+   3  zero              0x2000000c    12  0x3000003a  .bss, by a loop in Reset_Handler
+   4  call                                0x3000003e  main
+",
+    );
+    // Loops in C without optimization, whose pointers are on the stack, the
+    // zeroing going on from where the copy left its destination.
+    let (status, text) = startup(LOOPS_O0_SAMPLE, &[]);
+    assert_eq!(status, 0);
+    assert_output(
+        &text,
+        "\
+No problems: Reset_Handler copies .itcm and .data, zeroes .bss, then calls main.
+
+STEP  DOES  FROM        TO          SIZE  AT          WHAT
+   1  copy  0x30000008  0x0           24  0x3000007e  .itcm, by a loop in Reset_Handler
+   2  copy  0x300000f0  0x20000000    12  0x300000a0  .data, by a loop in Reset_Handler
+   3  zero              0x2000000c    12  0x300000b4  .bss, by a loop in Reset_Handler
+   4  call                                0x300000be  main
+",
+    );
+    let (_, answer) = answer(LOOPS_SAMPLE);
+    assert_eq!(answer["complete"], true);
+    assert_eq!(answer["steps"][0]["how"], "loop");
+    assert_eq!(answer["steps"][0]["function"]["name"], "Reset_Handler");
+}
+
+#[test]
+fn the_walk_tells_how_often_each_loop_runs_and_what_it_stores() {
+    // Each loop's row says how many times its head runs, the last time
+    // being the one that leaves, and what each store in it stores those
+    // times after the first, which the row above shows.
+    let output = elfq(&[LOOPS_SAMPLE, "debug", "walk"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_output(
+        &String::from_utf8(output.stdout).unwrap(),
+        "\
+from Reset_Handler (0x30000008), stack pointer 0x20040000, main 0x30000060
+
+      SITE  DEPTH  WHAT
+0x30000016      0  store 0x4380f04f at 0x0, 4 bytes, loaded from 0x30000098 at 0x30000012
+0x3000000e      0  loop back from 0x3000001a over the row above, runs 4 times; 0x30000016 stores 4 bytes at 0x0 +4n 3 times, from 0x30000098 +4n
+0x30000028      0  store 0x1 at 0x20000000, 4 bytes, loaded from 0x300000a4 at 0x30000024
+0x30000020      0  loop back from 0x3000002c over the row above, runs 4 times; 0x30000028 stores 4 bytes at 0x20000000 +4n 3 times, from 0x300000a4 +4n
+0x3000003a      0  store 0x0 at 0x20000014, 4 bytes
+0x30000038      0  loop back from 0x3000003c over the row above, runs 3 times; 0x3000003a stores 4 bytes at 0x20000014 -4n 3 times, of 0x0
+0x3000003e      0  call main (0x30000060) (r0=0x0 r1=0x2000000c r2=0x0 r3=0x2000000c)
+0x3000003e         ends: reaches main
+",
+    );
+}
+
+#[test]
+fn setup_in_a_call_that_doesnt_return_is_what_that_call_does() {
+    // prep copies and zeroes, then starts the program's threads, which
+    // call main through a pointer.
+    let (status, text) = startup(NORETURN_SAMPLE, &[]);
+    assert_eq!(status, 0);
+    assert_output(
+        &text,
+        "\
+No problems: Reset_Handler calls prep, which copies .itcm and .data, zeroes .bss and doesn't return.
+
+STEP  DOES  FROM        TO          SIZE  AT          WHAT
+   1  call                                0x30000092  prep
+   2  copy  0x30000008  0x0           12  0x3000004e  .itcm, by memcpy, in prep
+   3  copy  0x30000278  0x20000000     8  0x3000005a  .data, by memcpy, in prep
+   4  zero              0x20000008     4  0x30000066  .bss, by memset, in prep
+",
+    );
 }
 
 #[test]
@@ -599,7 +700,6 @@ fn the_json_gives_the_steps_the_sections_and_the_problems() {
 #[test]
 fn every_arm_sample_gets_an_answer_and_the_exit_status_it_means() {
     let problems = [
-        "c-cortex-m7-loops",
         "c-cortex-m7-reset-itcm",
         "c-cortex-m7-sysinit",
         "c-cortex-m7-tables",
@@ -608,7 +708,6 @@ fn every_arm_sample_gets_an_answer_and_the_exit_status_it_means() {
         "c-strtod",
         "c-vfp",
         "far-",
-        "rust-cortex-m4",
     ];
     for sample in samples() {
         let name = sample.trim_start_matches("testdata/bin/");
