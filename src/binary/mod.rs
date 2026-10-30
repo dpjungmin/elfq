@@ -36,6 +36,7 @@ mod names;
 mod plt;
 mod range;
 mod relocations;
+mod startup;
 mod symbols;
 mod unnamed_data;
 mod unnamed_functions;

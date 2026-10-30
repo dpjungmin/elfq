@@ -22,8 +22,10 @@ takes about twice as long as it would unoptimized, but a build after a
 change takes about as long.
 
 `elfq FILE debug items` lists every function and data object elfq found and
-where it found it. It is hidden from `--help` because it is only for
-developing elfq.
+where it found it, and `elfq FILE debug walk` lists what the code that a
+Cortex-M processor runs from reset does before `main`, as elfq follows it:
+calls with their arguments, stores, loops and how it ends. They are hidden
+from `--help` because they are only for developing elfq.
 
 The tests read the prebuilt sample binaries in `testdata/bin`, so you need no
 cross compilers. Before opening a pull request, run what CI runs:

@@ -633,8 +633,15 @@ impl<'a> Function<'a> {
         let mut leaks = false;
         // What it puts in a register, worked out before it writes any.
         let result = match effect.operation {
+            // No number, or one that isn't an address built in a way this
+            // module follows (see its header).
             Operation::Nothing
             | Operation::Compare { .. }
+            | Operation::CompareRegisters { .. }
+            | Operation::Subtract { .. }
+            | Operation::AndConstant { .. }
+            | Operation::And { .. }
+            | Operation::ShiftRight { .. }
             | Operation::Push { .. }
             | Operation::Pop { .. } => None,
             Operation::Constant { register, value } => {

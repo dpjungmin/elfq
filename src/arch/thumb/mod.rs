@@ -17,8 +17,13 @@
 //! follows the addresses that code puts in registers, using what `decode`
 //! says each instruction does with them, to find where a branch through a
 //! register goes.
+//!
+//! `startup` walks the code from reset, one way through as the processor
+//! runs it, using the same `decode`, to work out what startup code does
+//! (see `arch::startup`).
 
 mod decode;
+pub(super) mod startup;
 mod values;
 
 use std::collections::BTreeMap;

@@ -8,6 +8,7 @@ pub mod browse;
 mod callees;
 mod callers;
 mod debug_items;
+mod debug_walk;
 mod diff;
 mod inlined;
 mod json;
@@ -184,6 +185,7 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<Outcome> {
             None => reach::run_starts(&cli.file, &binary, &args.to, range, args.all, format, out),
         },
         Some(Command::Debug(DebugCommand::Items)) => answered(debug_items::run(&binary, out)),
+        Some(Command::Debug(DebugCommand::Walk)) => answered(debug_walk::run(&binary, out)),
         Some(Command::Browse(_)) => unreachable!("browse has run above"),
         Some(Command::Diff(_)) => unreachable!("diff has run above"),
     }

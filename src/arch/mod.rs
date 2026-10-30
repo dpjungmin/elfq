@@ -16,9 +16,14 @@
 //! is, since those change whenever code or data moves (see [`operands`]).
 //!
 //! `listing.rs` prints a function's code as text, for `elfq FILE browse`.
+//!
+//! `startup` follows the code that a Cortex-M processor runs from reset to
+//! `main`, keeping the numbers in its registers and memory, to tell what
+//! the startup code copies and zeroes.
 
 #[cfg(feature = "tui")]
 mod listing;
+pub mod startup;
 mod thumb;
 mod x86_64;
 
