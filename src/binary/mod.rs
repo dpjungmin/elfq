@@ -31,6 +31,7 @@
 
 mod attributes;
 mod eh_frame;
+mod header;
 mod memory;
 mod names;
 mod plt;
@@ -43,6 +44,7 @@ mod unnamed_functions;
 mod vector_table;
 
 pub use attributes::ArmArchitecture;
+pub use header::ElfHeader;
 pub use memory::{Bytes, LoadedMemory, same_bytes_in, same_memory};
 pub use names::{
     can_be_shorter, demangle, ends_with_short_name, for_each_short_name, has_short_name,
