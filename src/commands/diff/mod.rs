@@ -29,6 +29,7 @@ use std::sync::{Mutex, PoisonError};
 use std::thread;
 
 use anyhow::{Context, Result, bail};
+use object::Architecture;
 
 use super::symbol::Names;
 use super::text::architecture_name;
@@ -107,9 +108,12 @@ pub fn run(
     let same_memory = same_memory(&old, &new);
     if same_memory || !old.has_symbols || !new.has_symbols {
         let mut answer = Answer::new(old_path, new_path, &old, &new, same_memory);
-        // Only load the new build when a load image differs.
+        // Only load the new build when a load image differs and its
+        // headers say startup may read it.
         answer.try_startup = format != Format::Json
             && answer.load_image_differs()
+            && new.architecture == Architecture::Arm
+            && startup::check_header(new_path).is_ok()
             && Binary::parse(&new_data).is_ok_and(|binary| startup::reads(new_path, &binary));
         return write(&answer, all, format, out);
     }
