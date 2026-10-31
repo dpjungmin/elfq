@@ -503,8 +503,10 @@ pub(super) struct Cover {
 pub(super) struct Events<'w> {
     pub list: &'w [Event],
     /// How many calls deep from the reset handler each event is, counting
-    /// a tail call as a call, where the walk counts the function it jumps
-    /// to at the depth of the one that jumps.
+    /// a tail call that the walk went into as a call, where the walk counts
+    /// the function it jumps to at the depth of the one that jumps. A
+    /// branch to another function that the walk didn't follow, when a flag
+    /// is set, opens no level: the walk goes on in the same function.
     levels: Vec<u32>,
     /// Whether each event is the jump of a veneer that a call goes to,
     /// which the call's step stands for.
@@ -550,6 +552,7 @@ impl<'w> Events<'w> {
                 let level = depth + open.len() as u32;
                 if let Event::Call(call) = event
                     && call.how == How::Jump
+                    && call.followed
                     && !veneer_jumps[k]
                 {
                     open.push(call.depth);
@@ -2095,6 +2098,45 @@ mod tests {
             conditional: false,
             followed: true,
         })
+    }
+
+    #[test]
+    fn only_a_tail_call_that_the_walk_went_into_opens_a_level() {
+        let binary = binary();
+        let graph = Graph::default();
+        let firmware = Firmware::new(&binary, &graph);
+        // A branch to another function when a flag is set, as Clang makes
+        // of `if (a) f(); else g();`, then a copy.
+        let branch = |followed| {
+            Event::Call(Call {
+                site: 0x800_0008,
+                depth: 0,
+                target: Some(0x800_0300),
+                how: How::Jump,
+                arguments: [None; 4],
+                left: 0,
+                conditional: true,
+                followed,
+            })
+        };
+        // When the walk doesn't follow the branch, it goes on in the reset
+        // handler, which makes the copy.
+        let list = [
+            branch(false),
+            called(0x800_0010, [0x2000_0000, 0x800_0400, 0x20]),
+        ];
+        let events = Events::new(&firmware, &list);
+        assert_eq!((events.level(0), events.level(1)), (0, 0));
+        assert!(
+            steps(&binary, &list).contains(&"copy 0x20000000 32 by a call: .data 32".to_string())
+        );
+        // When it follows it, the function it jumps to makes the copy.
+        let list = [
+            branch(true),
+            called(0x800_0010, [0x2000_0000, 0x800_0400, 0x20]),
+        ];
+        let events = Events::new(&firmware, &list);
+        assert_eq!((events.level(0), events.level(1)), (0, 1));
     }
 
     #[test]
