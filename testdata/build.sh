@@ -70,18 +70,29 @@ arm-none-eabi-gcc $cflags \
 variants arm-none-eabi-strip c-cortex-m4-cmsis
 rm "$out/c-cortex-m4-cmsis.elf"
 
+# cortex_m7_from NAME SCRIPT SOURCES FLAGS... builds SOURCES, a list split
+# by spaces, for the Cortex-M7 as NAME.elf, linked with SCRIPT and compiled
+# with FLAGS too.
+cortex_m7_from() {
+    name=$1
+    script=$2
+    sources=$3
+    shift 3
+    arm-none-eabi-gcc $cflags "$@" \
+        -mcpu=cortex-m7 -mthumb -mfloat-abi=hard -mfpu=fpv5-d16 \
+        -ffunction-sections -fdata-sections \
+        -nostartfiles --specs=nano.specs --specs=nosys.specs \
+        -T "$script" -Wl,--gc-sections \
+        -o "$out/$name.elf" $sources
+}
+
 # cortex_m7 NAME SCRIPT FLAGS... builds the C sample for the Cortex-M7 as
 # NAME.elf, linked with SCRIPT and compiled with FLAGS too.
 cortex_m7() {
     name=$1
     script=$2
     shift 2
-    arm-none-eabi-gcc $cflags "$@" \
-        -mcpu=cortex-m7 -mthumb -mfloat-abi=hard -mfpu=fpv5-d16 \
-        -ffunction-sections -fdata-sections \
-        -nostartfiles --specs=nano.specs --specs=nosys.specs \
-        -T "$script" -Wl,--gc-sections \
-        -o "$out/$name.elf" c/app.c c/platform_cortexm7.c
+    cortex_m7_from "$name" "$script" "c/app.c c/platform_cortexm7.c" "$@"
 }
 
 echo "C, Cortex-M7 with TCMs"
@@ -146,23 +157,51 @@ variants arm-none-eabi-strip c-cortex-m7-reset-itcm
 # Reset_Handler calls SystemInit, which calls code in ITCM, before it
 # copies .itcm (see c/sysinit.c).
 echo "C, Cortex-M7 with TCMs, SystemInit calls code in ITCM"
-arm-none-eabi-gcc $cflags \
-    -mcpu=cortex-m7 -mthumb -mfloat-abi=hard -mfpu=fpv5-d16 \
-    -ffunction-sections -fdata-sections \
-    -nostartfiles --specs=nano.specs --specs=nosys.specs \
-    -T c/cortex-m7.ld -Wl,--gc-sections \
-    -o "$out/c-cortex-m7-sysinit.elf" c/sysinit.c
+cortex_m7_from c-cortex-m7-sysinit c/cortex-m7.ld c/sysinit.c
 variants arm-none-eabi-strip c-cortex-m7-sysinit
 
 # Only the full build: a startup with more steps than startup's table shows
 # without --all, and a call through a pointer (see c/steps.c).
 echo "C, Cortex-M7 with TCMs, startup with many steps"
-arm-none-eabi-gcc $cflags \
-    -mcpu=cortex-m7 -mthumb -mfloat-abi=hard -mfpu=fpv5-d16 \
-    -ffunction-sections -fdata-sections \
-    -nostartfiles --specs=nano.specs --specs=nosys.specs \
-    -T c/cortex-m7.ld -Wl,--gc-sections \
-    -o "$out/c-cortex-m7-steps.elf" c/steps.c
+cortex_m7_from c-cortex-m7-steps c/cortex-m7.ld c/steps.c
+
+# Startup code that copies and zeroes with loops of its own rather than
+# memcpy and memset (see c/loops.c, c/loops-O0.c and c/tables.c). "loops"
+# moves .text before .itcm, so that .data's load image follows .itcm's.
+echo "C, Cortex-M7 with TCMs, startup loops in assembly"
+sed -e '/^    \.text : /d' -e '/^    \.isr_vector : /a\    .text : { *(.text*) } > FLASH' \
+    c/cortex-m7.ld >"$out/cortex-m7-loops.ld"
+cortex_m7_from c-cortex-m7-loops "$out/cortex-m7-loops.ld" c/loops.c
+rm "$out/cortex-m7-loops.ld"
+variants arm-none-eabi-strip c-cortex-m7-loops
+
+echo "C, Cortex-M7 with TCMs, startup loops in C without optimization"
+cortex_m7_from c-cortex-m7-loops-O0 c/cortex-m7.ld c/loops-O0.c -O0
+variants arm-none-eabi-strip c-cortex-m7-loops-O0
+
+# "tables" adds the tables of sections to copy and zero before .text.
+echo "C, Cortex-M7 with TCMs, startup tables"
+sed 's/^    \.text : /    .copy.table : {\
+        __copy_table_start__ = .;\
+        LONG(LOADADDR(.itcm)) LONG(ADDR(.itcm)) LONG(SIZEOF(.itcm) \/ 4)\
+        LONG(LOADADDR(.data)) LONG(ADDR(.data)) LONG(SIZEOF(.data) \/ 4)\
+        __copy_table_end__ = .;\
+    } > FLASH\
+    .zero.table : {\
+        __zero_table_start__ = .;\
+        LONG(ADDR(.bss)) LONG(SIZEOF(.bss) \/ 4)\
+        __zero_table_end__ = .;\
+    } > FLASH\
+&/' c/cortex-m7.ld >"$out/cortex-m7-tables.ld"
+cortex_m7_from c-cortex-m7-tables "$out/cortex-m7-tables.ld" c/tables.c
+rm "$out/cortex-m7-tables.ld"
+variants arm-none-eabi-strip c-cortex-m7-tables
+
+# Only the full build: a startup laid out as Zephyr's, whose reset handler
+# calls a function that sets up the memory and doesn't return (see
+# c/noreturn.c).
+echo "C, Cortex-M7 with TCMs, setup in a call that doesn't return"
+cortex_m7_from c-cortex-m7-noreturn c/cortex-m7.ld c/noreturn.c
 
 # Only the variant with symbols and no DWARF: this sample is for libgcc's
 # routines for doubles, which have no DWARF of their own.

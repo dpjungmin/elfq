@@ -80,7 +80,7 @@ const JSON_ANSWERS: [&[&str]; 24] = [
     &[TCM_SAMPLE, "diff", TCM_MOVED_SAMPLE],
     &[TCM_SAMPLE, "diff", TCM_INLINED_SAMPLE],
     &["testdata/bin/c-cortex-m7-sysinit.elf", "startup"],
-    &["testdata/bin/rust-cortex-m4-nodebug.elf", "startup"],
+    &["testdata/bin/c-cortex-m7-tables.elf", "startup"],
 ];
 
 #[test]

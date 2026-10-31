@@ -769,13 +769,40 @@ first argument there, which a function that takes no arguments doesn't
 use. But one that code set before a call that only read it, or didn't
 use it, does, as code built with GCC's `-fipa-ra` keeps it there for the
 next call; for a call that it doesn't go through, the walk looks for
-which registers the function writes. A loop, a call through a register,
-a call that the walk doesn't go through, as one that runs only when the
-condition flags say or one deeper than it follows, and code where the
-walk can't read on are steps that elfq can't follow (`unread`), which
-may set up any section not set up yet; elfq can't yet follow loops, so
-startup code that copies and zeroes in loops of its own, as
-cortex-m-rt's does, ends in such a step.
+which registers the function writes. A loop that elfq can't match, a
+call through a register, a call that the walk doesn't go through, as one
+that runs only when the condition flags say or one deeper than it
+follows, and code where the walk can't read on are steps that elfq can't
+follow (`unread`), which may set up any section not set up yet.
+
+A loop of the code's own is a step too, as in cortex-m-rt's startup code
+and the startup files in assembly of NXP's and ST's SDKs. The walk
+counts how many times a loop runs as the processor would: it goes
+through the loop's code three more times, and then a compare in it that
+holds a number that moves by the same amount each time against a bound,
+or against 0, tells when the loop leaves, which the walk checks by going
+through the code the time before and that time, from where each number
+would be. It goes on from where the loop leaves, with what the loop
+leaves in the registers and memory, as when a second loop copies on from
+where the first left its source. From the times it went through, it
+tells what each of the loop's stores does over all of them: where it
+stores the first time, how far that moves each time, and how many times
+it stores. When they store bytes of sections one after another, the loop
+copies them when each stores words that it loads from as far after where
+it stores them, and zeroes them when they store 0, which they don't
+load. Such bytes make a step as the numbers that a call passes do: a
+copy of the load images that start in them, from where they were loaded,
+or a zeroing of the sections without contents that start in them. Stores
+outside loops make one too, joined to the bytes of a loop next to them
+in the same function, as of the words that a loop's last time leaves to
+code after it; alone, only when they cover whole sections, copied from
+where the file stores them. The walk follows `ldm`, `stm`, `ldrd` and
+`strd`, which move several words, and addresses that add a register to
+the base. A loop it can't count, as one whose bound it can't tell, or
+whose stores it can't tell, as one that calls a function, is a step that
+elfq can't follow, and so is a loop that goes back over one it matched,
+as a loop over a table of sections does over the copy of its first row,
+for the sections of that kind not set up yet.
 
 Code runs from a load image before its copy when code in it runs before
 the step that copies it: the reset handler itself, or a function that a
@@ -789,7 +816,10 @@ image that nothing copies, or that a step copies short or from somewhere
 other than where the file stores it; `.bss` or `.sbss` that nothing
 zeroes in full, the names that the ELF specification and toolchains give
 sections that a program counts on being zeroed; and a load image, `.bss`
-or `.sbss` that no step sets up, but a step that elfq can't follow may.
+or `.sbss` that no step sets up, but a step that elfq can't follow may,
+which the sentence says as "Nothing copies .data, 4 bytes at 0x20000000
+stored at 0x300000e8, unless step 2 (a loop) does"; a note names the
+other sections that such steps may set up.
 When such a step comes before code that runs from a load image, it may
 copy it first, which the problem's sentence says. Other sections without
 contents, such as `.noinit`, may be meant to keep what they hold, so a
@@ -798,11 +828,15 @@ note says when nothing zeroes them, or a step zeroes them in part.
 The first line counts the problems, which follow it one to a line, or
 says what the reset code sets up, in order, and how it ends: calling
 `main`, or spinning, returning, looping for good, or at code that elfq
-can't follow. The table has a row for each step: DOES is `copy`, `zero`,
-`call` or `unread`; FROM, TO and SIZE are the numbers that a copy or
-zeroing passes; AT is the call, or the code elfq can't follow; and WHAT
-names the section and the function that sets it up, as ".itcm, by memcpy
-via veneer" for a call through a linker's veneer, or the function
+can't follow; or when its last call doesn't return and sets up the
+memory, as Zephyr's `z_prep_c` does, that the call does it. The table
+has a row for each step: DOES is `copy`, `zero`, `call` or `unread`;
+FROM, TO and SIZE are the numbers that a copy or zeroing passes, or what
+a loop or stores copy or zero; AT is the call, the first store of such a
+loop or stores, or the code elfq can't follow; and WHAT names the section
+and the function that sets it up, as ".itcm, by memcpy via veneer" for a
+call through a linker's veneer, ".data, by a loop in Reset_Handler" or
+".data, by a store in Reset_Handler", or the function
 called. It has 30 rows, and WHAT, the sentences about code that runs
 from a load image, and the notes name 10 sections, functions or data
 objects, unless `--all`; the first line and the other sentences name
@@ -1026,7 +1060,7 @@ several.
 | `main_from` | how elfq knows `main_at`: `symbol`, `debug info`, `guess`, as "(taken as main)" says, `loop`, or `null` |
 | `complete` | whether elfq followed all the code before `main`: `false` when a step is `unread`, or when the walk ends where it can't read on, though what comes after may set up nothing |
 | `problems_certain` | how many `problems` are `certain`: to fail only on those, check that it is 0 and let exit status 1 through, as the README shows |
-| `steps` | every row of the table, in order, each with: `step`, its number; `site`, the call, or the code elfq can't follow; `does`, `copy`, `zero`, `call` or `unread`; `how`, `call`, `tail call`, `inlined`, `loop`, `register call`, `supervisor call`, `conditional call`, one that runs only when the condition flags say, `deep call`, one deeper than the walk follows, or `stop`, where the walk can't read on; `register`, the one a `register call` goes through, or `null`; `function`, the item called, or for a `loop` or `stop`, the function whose code elfq can't follow, or `null`; `veneer`, the address of the linker's veneer that the call goes through, or `null`; `inside`, the function that the step is in; `from`, `to` and `size`, the numbers that a copy or zeroing passes, else `null`; `sections`, the sections that it copies or zeroes; `table`, `null` for now; and `may_set_up`, the sections that an `unread` step may set up |
+| `steps` | every row of the table, in order, each with: `step`, its number; `site`, the call, the first store of a loop or stores that copy or zero, or the code elfq can't follow; `does`, `copy`, `zero`, `call` or `unread`; `how`, `call`, `tail call`, `inlined`, `loop`, `store`, for stores outside loops, `register call`, `supervisor call`, `conditional call`, one that runs only when the condition flags say, `deep call`, one deeper than the walk follows, or `stop`, where the walk can't read on; `register`, the one a `register call` goes through, or `null`; `function`, the item called, or for a `loop`, `store` or `stop`, the function whose code holds it, or `null`; `veneer`, the address of the linker's veneer that the call goes through, or `null`; `inside`, the function that the step is in; `from`, `to` and `size`, the numbers that a copy or zeroing passes, or what a loop or stores copy or zero, else `null`; `sections`, the sections that it copies or zeroes; `table`, `null` for now; and `may_set_up`, the sections that an `unread` step may set up |
 | `sections` | every load image and section without contents, in address order, each a range with its `name`, `size` and `load_address`, where the file stores it, or `null` for a section without contents; `status` when `main` starts, `copied`, `partly copied`, `copied from elsewhere`, `zeroed`, `partly zeroed`, `not copied`, `not zeroed`, `unknown`, when an `unread` step may set it up, or `not reached`, when only steps after code that runs from a load image before its copy set it up; `step`, the number of the step that sets it up, or `null`; and `bytes`, how many of its bytes that step sets up, or `null` while `unknown` |
 | `problems` | one row for each sentence of the text, in its order, each with: `kind`, `runs before copy`, `not copied`, `not zeroed`, `partly copied`, `partly zeroed`, `copied from elsewhere` or `can't follow`; `certain`, `false` for `can't follow`, and for code that runs from a load image after a step that elfq can't follow that may copy it first; `steps`, the numbers of the steps it is about; `sections`; `items`, the functions that run from the load image too early; `chain`, the names of the functions that a step's call goes through to the first of them; `before_step`, the step that copies the load image, or `null` when none does; `bytes`, how many bytes a step copies or zeroes of a section it sets up in part, or `null`; `from`, where a step copies from that isn't where the file stores the load image, or `null`; `sites`, the calls that run the functions, or the reset handler's own address when it is in the load image; and `text`, the sentence |
 | `notes` | one row for each note of the text, each with `kind`, `no vector table`, `reset in no function`, `entry differs`, `branch`, `not reached`, `not zeroed`, `partly zeroed` or `can't tell`; `sections`; `items`, empty for now; and `text`, the sentence |
@@ -1351,10 +1385,10 @@ have section headers, by block of memory, and their functions and data
 objects, with the calls between blocks that are new or gone and the
 items of the same size that changed, when both have a symbol table.
 `startup` reads the reset code of Cortex-M firmware that copies and
-zeroes its memory through calls, such as to `memcpy` and `memset`, and
-can't yet follow the loops and tables of addresses that other startup
-code copies and zeroes with. The pull requests and the git log record
-how elfq got here.
+zeroes its memory through calls, such as to `memcpy` and `memset`, or in
+loops of its own, and can't yet follow the tables of sections that other
+startup code copies and zeroes with. The pull requests and the git log
+record how elfq got here.
 
 On a 4-CPU x86-64 machine, a release build gives the overview of elfq's
 own debug build (90 MB) in under half a second, of cargo (43 MB) in under
@@ -1365,8 +1399,8 @@ key typed into go to then takes under 0.1 s. The first takes up to 0.2 s
 in those libraries, and the first whose text names nothing takes about
 half a second, as it works out what to suggest.
 
-Next: `startup` follows loops, then tables of sections to copy and
-zero, as CMSIS's and NXP's startup code reads.
+Next: `startup` follows tables of sections to copy and zero, as
+CMSIS's and NXP's startup code reads.
 
 Ideas for later, not yet planned: output that scripts and AI agents can
 read more easily, the retained size of a set of items, the functions
@@ -1504,6 +1538,9 @@ language.
     say, and reads at most 600 instructions of the reset handler, 300 of
     each function it calls, 60 of a loop's code and 20,000 in all: code
     past those, or a call it doesn't go through, is a step that it can't
-    follow, which may set up any section. Numbers that code loads with
-    `ldm` or `ldrd`, rather than one word at a time, are unknown to it,
-    so a copy that passes them is a call that may set up any section.
+    follow, which may set up any section. It counts the times a loop runs
+    only when a number that moves by the same amount each time tells when
+    it leaves, going through at most 50,000 instructions more to count
+    loops, and doesn't follow calls the times after the first; so a loop
+    over a table of sections reads as the copy or zeroing of its first
+    row, and then a loop that may set up the sections of that kind.

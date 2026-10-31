@@ -134,16 +134,51 @@ fn lead(answer: &Answer) -> String {
     };
     ordered.sort_by_key(|&x| first(x));
     let status = |x| answer.judged.status(answer.steps, memory, x).0;
-    let mut parts = Vec::new();
-    for (verb, wanted) in [("copies", Status::Copied), ("zeroes", Status::Zeroed)] {
-        let names: Vec<&str> = (ordered.iter().copied())
-            .filter(|&x| status(x) == wanted)
-            .map(|x| memory.name(x))
-            .collect();
-        if !names.is_empty() {
-            parts.push(format!("{verb} {}", names_text(&names, true)));
+    // What the steps from event `from` up to `to` copy and zero.
+    let parts = |from: usize, to: usize| {
+        let by = |x: usize| {
+            (answer.steps.iter())
+                .find(|step| step.covers.iter().any(|cover| cover.section == x))
+                .is_some_and(|step| (from..to).contains(&step.event))
+        };
+        let mut parts = Vec::new();
+        for (verb, wanted) in [("copies", Status::Copied), ("zeroes", Status::Zeroed)] {
+            let names: Vec<&str> = (ordered.iter().copied())
+                .filter(|&x| status(x) == wanted && by(x))
+                .map(|x| memory.name(x))
+                .collect();
+            if !names.is_empty() {
+                parts.push(format!("{verb} {}", names_text(&names, true)));
+            }
+        }
+        parts
+    };
+    let events = answer.events;
+    // The last call the reset handler makes, when it doesn't return: it may
+    // do the copies and zeroings itself, as Zephyr's z_prep_c does.
+    let last = match answer.walk.end {
+        End::RunsOff(_) => (0..events.list.len())
+            .rev()
+            .filter(|&k| events.level(k) == 0)
+            .find_map(|k| events.target(k).map(|target| (k, target))),
+        _ => None,
+    };
+    if let Some((k, last)) = last {
+        let before = parts(0, k);
+        let inside = parts(k, events.list.len());
+        if !inside.is_empty() {
+            let inside = format!("{} and", inside.join(", "));
+            let before = match before.is_empty() {
+                true => String::new(),
+                false => format!("{}, then ", before.join(", ")),
+            };
+            return format!(
+                "No problems: {boot} {before}calls {}, which {inside} doesn't return.",
+                firmware.name(last)
+            );
         }
     }
+    let parts = parts(0, usize::MAX);
     let what = if parts.is_empty() {
         "copies and zeroes nothing".to_string()
     } else {
@@ -159,19 +194,12 @@ fn lead(answer: &Answer) -> String {
         match answer.walk.end {
             End::Spins(_) => "then spins".to_string(),
             End::Returns(_) => "then returns".to_string(),
-            End::RunsOff(_) => {
-                let events = answer.events;
-                let last = (0..events.list.len())
-                    .rev()
-                    .filter(|&k| events.level(k) == 0)
-                    .find_map(|k| events.target(k));
-                match last {
-                    Some(last) => {
-                        format!("then calls {}, which doesn't return", firmware.name(last))
-                    }
-                    None => "then stops".to_string(),
+            End::RunsOff(_) => match last {
+                Some((_, last)) => {
+                    format!("then calls {}, which doesn't return", firmware.name(last))
                 }
-            }
+                None => "then stops".to_string(),
+            },
             End::Loops(site) => {
                 let head = answer
                     .walk
@@ -294,16 +322,7 @@ pub(super) fn sentence(answer: &Answer, p: &Problem) -> String {
                 unless(answer, p)
             )
         }
-        Kind::NotCopied => format!(
-            "Nothing copies {name}, {} bytes at {:#x} stored at {:#x}.",
-            section.size,
-            section.address,
-            memory.load_address(x)
-        ),
-        Kind::NotZeroed => format!(
-            "Nothing zeroes {name}, {} bytes at {:#x}.",
-            section.size, section.address
-        ),
+        Kind::NotCopied | Kind::NotZeroed => format!("Nothing {}.", set_up_text(memory, x)),
         Kind::PartlyCopied => format!(
             "Step {step} copies {} of {name}'s {} bytes.",
             p.bytes.unwrap_or(0),
@@ -319,11 +338,18 @@ pub(super) fn sentence(answer: &Answer, p: &Problem) -> String {
             p.from.unwrap_or(0),
             memory.load_address(x)
         ),
-        Kind::CantFollow => format!(
-            "elfq can't follow {}, which may {}.",
-            unread_text(steps, &p.steps),
-            may_text(memory, &p.sections)
-        ),
+        Kind::CantFollow => {
+            // The steps may set up what the problem says nothing does.
+            let what = match p.sections[..] {
+                [x] => set_up_text(memory, x),
+                _ => does_text(memory, &p.sections, ["copies", "zeroes"], " or "),
+            };
+            let verb = if p.steps.len() == 1 { "does" } else { "do" };
+            format!(
+                "Nothing {what}, unless {} {verb}.",
+                unread_text(steps, &p.steps)
+            )
+        }
     }
 }
 
@@ -372,10 +398,12 @@ fn row(answer: &Answer, step: &Step) -> Vec<String> {
             let names: Vec<&str> = (step.covers.iter())
                 .map(|cover| answer.memory.name(cover.section))
                 .collect();
-            in_inside(format!(
-                "{}, by {function}{via}",
-                names_text(&names, answer.all)
-            ))
+            let names = names_text(&names, answer.all);
+            match step.way {
+                Way::Loop => format!("{names}, by a loop in {function}"),
+                Way::Store => format!("{names}, by a store in {function}"),
+                _ => in_inside(format!("{names}, by {function}{via}")),
+            }
         }
         Does::Call if step.way == Way::Inlined => {
             format!("main, inlined into {}", name(step.inside))
@@ -425,7 +453,7 @@ fn row(answer: &Answer, step: &Step) -> Vec<String> {
                 End::Undecoded(_) => format!("code in {function} that elfq can't decode"),
                 _ => format!("code in {function} past elfq's budget"),
             },
-            Way::Call | Way::TailCall | Way::Inlined => function,
+            Way::Call | Way::TailCall | Way::Inlined | Way::Store => function,
         },
     };
     let hex = |value: Option<u64>| value.map_or(String::new(), |value| format!("{value:#x}"));
@@ -602,7 +630,10 @@ pub(super) fn unread_text(steps: &[Step], numbers: &[usize]) -> String {
                     "code elfq can't decode".to_string(),
                     "code elfq can't decode",
                 ),
-                _ => ("the end of its budget".to_string(), "the end of its budget"),
+                _ => (
+                    "code past elfq's budget".to_string(),
+                    "code past elfq's budget",
+                ),
             },
             _ => continue,
         };
@@ -634,25 +665,41 @@ pub(super) fn unread_text(steps: &[Step], numbers: &[usize]) -> String {
     )
 }
 
+/// How startup code sets up section `x`, with where it is: "copies .data,
+/// 4 bytes at 0x20000000 stored at 0x8001000" or "zeroes .bss, 56 bytes
+/// at 0x20000004".
+fn set_up_text(memory: &Memory, x: usize) -> String {
+    let section = memory.section(x);
+    let (name, size, address) = (memory.name(x), section.size, section.address);
+    match memory.is_load(x) {
+        true => format!(
+            "copies {name}, {size} bytes at {address:#x} stored at {:#x}",
+            memory.load_address(x)
+        ),
+        false => format!("zeroes {name}, {size} bytes at {address:#x}"),
+    }
+}
+
+/// What a copy and a zeroing, by the `verbs` that say so, do to `sections`,
+/// joined by `joiner`: "copies .data or zeroes .bss".
+fn does_text(memory: &Memory, sections: &[usize], verbs: [&str; 2], joiner: &str) -> String {
+    let mut parts = Vec::new();
+    for (verb, load) in verbs.into_iter().zip([true, false]) {
+        let names: Vec<&str> = (sections.iter().copied())
+            .filter(|&x| memory.is_load(x) == load)
+            .map(|x| memory.name(x))
+            .collect();
+        if !names.is_empty() {
+            parts.push(format!("{verb} {}", names_text(&names, true)));
+        }
+    }
+    parts.join(joiner)
+}
+
 /// What code elfq can't follow may do to `sections`: "copy .data and zero
 /// .bss".
 pub(super) fn may_text(memory: &Memory, sections: &[usize]) -> String {
-    let copies: Vec<&str> = (sections.iter().copied())
-        .filter(|&x| memory.is_load(x))
-        .map(|x| memory.name(x))
-        .collect();
-    let zeroes: Vec<&str> = (sections.iter().copied())
-        .filter(|&x| !memory.is_load(x))
-        .map(|x| memory.name(x))
-        .collect();
-    let mut parts = Vec::new();
-    if !copies.is_empty() {
-        parts.push(format!("copy {}", names_text(&copies, true)));
-    }
-    if !zeroes.is_empty() {
-        parts.push(format!("zero {}", names_text(&zeroes, true)));
-    }
-    parts.join(" and ")
+    does_text(memory, sections, ["copy", "zero"], " and ")
 }
 
 /// How the way the walk didn't take ended, for the note on a branch it
@@ -742,5 +789,46 @@ mod tests {
             text(&[8, 9, 10]),
             "steps 8 to 10 (a supervisor call, a conditional call and a call outside the file)"
         );
+    }
+
+    #[test]
+    fn what_is_done_to_sections_names_copies_then_zeroes() {
+        use object::SectionKind;
+
+        use crate::binary::{Binary, Section};
+
+        let section = |name: &str, address, kind, load_address: Option<u64>| Section {
+            name: name.to_string(),
+            address,
+            size: 0x10,
+            kind,
+            allocated: true,
+            file_range: (kind != SectionKind::UninitializedData).then_some((0x1000, 0x10)),
+            entry_size: 0,
+            load_address,
+        };
+        let bss = SectionKind::UninitializedData;
+        let binary = Binary::for_tests(
+            vec![
+                section(".text", 0x800_0000, SectionKind::Text, None),
+                section(".data", 0x2000_0000, SectionKind::Data, Some(0x800_0010)),
+                section(".bss", 0x2000_0010, bss, None),
+                section(".sbss", 0x2000_0020, bss, None),
+            ],
+            Vec::new(),
+            Vec::new(),
+        );
+        let memory = Memory::new(&binary);
+        let x = |name: &str| (memory.ram.iter().copied()).find(|&x| memory.name(x) == name);
+        let (data, bss, sbss) = (x(".data").unwrap(), x(".bss").unwrap(), x(".sbss").unwrap());
+        let nothing =
+            |sections: &[usize]| does_text(&memory, sections, ["copies", "zeroes"], " or ");
+        assert_eq!(nothing(&[data]), "copies .data");
+        assert_eq!(nothing(&[bss, sbss]), "zeroes .bss and .sbss");
+        assert_eq!(
+            nothing(&[sbss, data, bss]),
+            "copies .data or zeroes .sbss and .bss"
+        );
+        assert_eq!(may_text(&memory, &[data, bss]), "copy .data and zero .bss");
     }
 }

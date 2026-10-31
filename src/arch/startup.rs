@@ -172,11 +172,23 @@ pub struct Store {
     /// `vstm`.
     pub size: u32,
     /// The word it stores, when it stores one from a register and the walk
-    /// can tell what that holds.
+    /// can tell what that holds, or stores several that all hold it.
     pub value: Option<u32>,
+    /// Where the code loaded the first word it stores from, when it loaded
+    /// it from an address the walk can tell and hasn't changed the
+    /// register since: for a copy, where it copies from.
+    pub source: Option<Source>,
     /// Whether it stores only when condition flags that the walk can't
     /// tell are set, in an `it` block.
     pub conditional: bool,
+}
+
+/// Where a word in a register came from: the load instruction, and the
+/// address it loaded the word from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Source {
+    pub site: u64,
+    pub address: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -195,6 +207,36 @@ pub struct Loop {
     /// walk goes on knowing nothing of the registers and memory but the
     /// stack pointer.
     pub end: Option<End>,
+    /// How many times the loop's code runs from its head, the last time to
+    /// where it leaves, when the walk can tell (see [`walk`]).
+    pub passes: Option<u32>,
+    /// What each store of the loop's own code does over all the times it
+    /// runs, in the order of the first time, when the walk can tell how
+    /// many times the loop runs and what each store does each time.
+    pub stores: Option<Vec<LoopStore>>,
+}
+
+/// A store in a loop's code, over all the times the loop runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LoopStore {
+    /// The store instruction.
+    pub site: u64,
+    /// Where it stores the first time.
+    pub address: u32,
+    /// How far that moves each time.
+    pub step: i32,
+    /// How many bytes it stores each time.
+    pub size: u32,
+    /// How many times it stores: one fewer than the loop runs when it
+    /// doesn't store the last time, as when the loop leaves first.
+    pub times: u32,
+    /// The word it stores, when it is the same each time.
+    pub value: Option<u32>,
+    /// Where it loads the first word it stores from, the first time, and
+    /// how far that moves each time, when the walk can tell.
+    pub source: Option<(u32, i32)>,
+    /// Whether it stores a word that the loop's code loaded.
+    pub loaded: bool,
 }
 
 /// Where a walk stops: the instruction it stopped at, and why.
@@ -276,8 +318,10 @@ impl End {
 ///   literal pool or built with `adr`, `movw` and `movt`, and what
 ///   adding, subtracting, shifting and masking makes of them.
 /// - Words that code stores at an address the walk can tell, as on the
-///   stack, and loads back. A load from anywhere else reads what is there
-///   at reset (see [`Program::word_at_reset`]).
+///   stack, and loads back, a word or several at once, and where each
+///   word in a register was loaded from (see [`Store::source`]). A load
+///   from anywhere else reads what is there at reset (see
+///   [`Program::word_at_reset`]).
 /// - The condition flags that compares, `adds` and `subs` set, so that it
 ///   takes a branch, and runs an instruction in an `it` block, as the
 ///   processor would. Where it can't tell, a branch is taken later, if the
@@ -301,12 +345,21 @@ impl End {
 ///   can't return (see [`End::RunsOff`]); otherwise, the code goes on into
 ///   the next function.
 ///
-/// It goes through a loop's code once, and then counts every register and
-/// word the loop changes as unknown, since it can't tell how many times
-/// the loop runs. It stops after 20,000 instructions in all and 600 in the
-/// reset handler's own code. It goes through 300 in each function it
-/// calls, and 60 in a loop's code, 8 loops deep, and then goes on after
-/// the call or the loop (see [`Event::Stop`] and [`Loop::end`]).
+/// It goes through a loop's code, and then counts how many times the loop
+/// runs as the processor would, when it can: it goes through the code
+/// again, the first three times, and then a compare in it tells when a
+/// number that moves by the same amount each time gets to where the loop
+/// leaves, which it checks by going through the code the time before and
+/// that time, from where each number would be (see [`Loop::passes`]). The
+/// walk then goes on from where the loop leaves, and the loop's events
+/// are those of the first time. The times after the first don't follow
+/// calls or count loops inside, so it can't tell what the stores of such
+/// a loop do (see [`Loop::stores`]). A loop it can't count, as one whose
+/// bound it can't tell, leaves what its code writes unknown. It stops
+/// after 20,000 instructions in all and 600 in the reset handler's own
+/// code. It goes through 300 in each function it calls, and 60 in a
+/// loop's code, 8 loops deep, and then goes on after the call or the loop
+/// (see [`Event::Stop`] and [`Loop::end`]).
 pub fn walk(
     architecture: Architecture,
     endianness: Endianness,

@@ -1,10 +1,12 @@
 //! The steps of startup: each copy of a load image and each zeroing of a
 //! section without contents, matched by the numbers that a call passes in
 //! r0 to r2, as `memcpy(to, from, size)` and `memset(to, 0, size)` take
-//! them; the calls that the reset handler makes around them; and the code
-//! that elfq can't follow, which may set up any section not set up yet:
-//! a call through a register, a call the walk doesn't go through, a
-//! loop, and code the walk can't read on in.
+//! them, or by the bytes that a loop of the code's own, or stores outside
+//! loops, store into the section; the calls that the reset handler makes
+//! around them; and the code that elfq can't follow, which may set up any
+//! section not set up yet: a call through a register, a call the walk
+//! doesn't go through, a loop it can't match, and code the walk can't read
+//! on in.
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -13,7 +15,7 @@ use object::SectionKind;
 
 use super::Firmware;
 use super::start::{Main, MainFrom, Reset};
-use crate::arch::startup::{Call, End, Event, How, Loop, Store};
+use crate::arch::startup::{Call, End, Event, How, Loop, LoopStore, Store};
 use crate::binary::{Binary, ItemKind, Section};
 
 /// The names that the ELF specification gives sections of memory that
@@ -136,31 +138,107 @@ impl<'a> Memory<'a> {
             return None;
         }
         let (to, size) = (u64::from(to), u64::from(size));
-        if let Some(from) = from.map(u64::from)
-            && self.loads.iter().any(|&x| self.section(x).address == to)
-            && self.stored(from)
-        {
-            return Some(Match {
-                does: Does::Copy,
-                to,
-                from: Some(from),
-                size,
-                covers: self.cover(&self.loads, to, size, Some(from)),
-            });
-        }
-        if from == Some(0) && self.starts_section(to) {
-            let covers = self.cover(&self.zeros, to, size, None);
-            if !covers.is_empty() {
-                return Some(Match {
-                    does: Does::Zero,
-                    to,
-                    from: None,
-                    size,
-                    covers,
-                });
+        let from = from.map(u64::from);
+        (from.and_then(|from| self.matched(Does::Copy, to, Some(from), size)))
+            .or_else(|| (from == Some(0)).then(|| self.matched(Does::Zero, to, None, size))?)
+    }
+
+    /// What code does that copies `size` bytes to `to` from `from`, or
+    /// zeroes them: a copy of load images, when one starts at `to` and the
+    /// file stores bytes at `from`, or a zeroing of the sections without
+    /// contents that start in them, when a section starts at `to`.
+    fn matched(&self, does: Does, to: u64, from: Option<u64>, size: u64) -> Option<Match> {
+        let covers = match does {
+            Does::Copy => {
+                let from = from?;
+                let starts = self.loads.iter().any(|&x| self.section(x).address == to);
+                if !(starts && self.stored(from)) {
+                    return None;
+                }
+                self.cover(&self.loads, to, size, Some(from))
             }
+            Does::Zero if self.starts_section(to) => self.cover(&self.zeros, to, size, None),
+            _ => return None,
+        };
+        if covers.is_empty() {
+            return None;
         }
-        None
+        Some(Match {
+            does,
+            to,
+            from,
+            size,
+            covers,
+        })
+    }
+
+    /// The bytes that the loop `l` copies or zeroes, when the walk can
+    /// tell what each of its stores does each time it runs (see
+    /// [`Loop::stores`]): those that its stores into the sections cover
+    /// all of, one after another, each time the next ones up or down (see
+    /// [`tiled`]). A copy stores each time words that it loads from as far
+    /// after or before where it stores them; a zeroing stores 0 each time,
+    /// which it doesn't load.
+    fn loop_piece(&self, l: &Loop) -> Option<Piece> {
+        let stores: Vec<&LoopStore> = (l.stores.as_ref()?.iter())
+            .filter(|store| store.times > 0 && self.overlaps(stored_bytes(store)))
+            .collect();
+        let first = *stores.first()?;
+        let (to, size) = tiled(&stores)?;
+        // How far after each store a copy loads its words from.
+        let gap = |store: &LoopStore| {
+            let (from, step) = store.source?;
+            (step == store.step).then(|| from.wrapping_sub(store.address))
+        };
+        let copies = (gap(first)).filter(|&by| stores.iter().all(|&store| gap(store) == Some(by)));
+        let zeroes = (stores.iter()).all(|store| store.value == Some(0) && !store.loaded);
+        let does = match copies {
+            Some(_) => Does::Copy,
+            None if zeroes => Does::Zero,
+            None => return None,
+        };
+        Some(Piece {
+            does,
+            to,
+            size,
+            gap: copies,
+            home: (0, 0),
+            site: first.site,
+            way: Way::Loop,
+            step: None,
+        })
+    }
+
+    /// The bytes that `store`, outside loops, copies or zeroes: a copy
+    /// when the walk can tell where it loaded its words from, or a zeroing
+    /// when it stores 0.
+    fn store_piece(&self, store: &Store) -> Option<Piece> {
+        let address = store.address?;
+        let (to, size) = (u64::from(address), u64::from(store.size));
+        if store.conditional || size == 0 || !self.overlaps(to..to + size) {
+            return None;
+        }
+        let (does, gap) = match store.source {
+            Some(source) => (Does::Copy, Some(source.address.wrapping_sub(address))),
+            None if store.value == Some(0) => (Does::Zero, None),
+            None => return None,
+        };
+        Some(Piece {
+            does,
+            to,
+            size,
+            gap,
+            home: (0, 0),
+            site: store.site,
+            way: Way::Store,
+            step: None,
+        })
+    }
+
+    /// Whether any byte from `bytes` is in a section that startup code
+    /// sets up.
+    fn overlaps(&self, bytes: Range<u64>) -> bool {
+        (self.ram.iter()).any(|&x| self.section(x).address < bytes.end && bytes.start < self.end(x))
     }
 
     /// The sections of `sections` that start in the `size` bytes from
@@ -207,6 +285,172 @@ impl<'a> Memory<'a> {
             run.push(y);
         }
         run
+    }
+}
+
+/// Bytes that code copies or zeroes one after another: a loop's, or a
+/// store's outside loops, or those of several of them next to each other
+/// in the same function, as of a loop and of the stores that copy the
+/// words its last time leaves to code after it.
+#[derive(Debug, Clone, Copy)]
+struct Piece {
+    does: Does,
+    to: u64,
+    size: u64,
+    /// For a copy, how far after where it stores each word it loads it
+    /// from, wrapping round.
+    gap: Option<u32>,
+    /// The level and function of the code.
+    home: (u32, u64),
+    /// Its first store, of the loop's when there is a loop.
+    site: u64,
+    /// [`Way::Loop`] when there is a loop, or else [`Way::Store`].
+    way: Way,
+    /// The step that copies or zeroes its bytes, as an index into the
+    /// steps.
+    step: Option<usize>,
+}
+
+impl Piece {
+    fn end(&self) -> u64 {
+        self.to + self.size
+    }
+
+    /// Whether `other` does what this does with the bytes next to its
+    /// own, in the same function.
+    fn next_to(&self, other: &Piece) -> bool {
+        self.home == other.home
+            && self.does == other.does
+            && self.gap == other.gap
+            && (self.end() == other.to || other.end() == self.to)
+            && !(self.step.is_some() && other.step.is_some())
+    }
+}
+
+/// The pieces found so far, which steps copy or zero, or may when code
+/// after them stores the bytes next to them.
+#[derive(Default)]
+struct Pieces(Vec<Piece>);
+
+impl Pieces {
+    /// Adds `piece`, of the event at `k`, joined with those next to it,
+    /// and makes a step of the bytes, or extends the step of a piece it
+    /// joins, when [`Memory::matched`] matches them: for the bytes of
+    /// stores alone, only when they cover whole sections, copied from
+    /// their load images. Returns whether a step stands for `piece`.
+    fn add(
+        &mut self,
+        memory: &Memory,
+        piece: Piece,
+        k: usize,
+        steps: &mut Vec<Step>,
+        ready: &mut HashSet<usize>,
+    ) -> bool {
+        let mut joined = piece;
+        let mut taken: Vec<usize> = Vec::new();
+        while let Some(i) =
+            (0..self.0.len()).find(|&i| !taken.contains(&i) && self.0[i].next_to(&joined))
+        {
+            let other = self.0[i];
+            joined.to = joined.to.min(other.to);
+            joined.size += other.size;
+            joined.step = joined.step.or(other.step);
+            if other.way == Way::Loop && joined.way != Way::Loop {
+                (joined.way, joined.site) = (Way::Loop, other.site);
+            }
+            taken.push(i);
+        }
+        let from = (joined.gap).map(|gap| u64::from((joined.to as u32).wrapping_add(gap)));
+        let matched = memory
+            .matched(joined.does, joined.to, from, joined.size)
+            .filter(|matched| {
+                joined.step.is_some()
+                    || joined.way == Way::Loop
+                    || matched.covers.iter().all(|cover| {
+                        cover.bytes == memory.section(cover.section).size
+                            && (cover.from)
+                                .is_none_or(|from| from == memory.load_address(cover.section))
+                    })
+            });
+        let Some(matched) = matched else {
+            if piece.way == Way::Store {
+                self.0.push(piece);
+            }
+            return false;
+        };
+        let index = match joined.step {
+            Some(index) => index,
+            None => {
+                let (level, function) = joined.home;
+                let mut step = Step::new(k, joined.site, joined.does, joined.way, function, level);
+                step.function = Some(function);
+                steps.push(step);
+                steps.len() - 1
+            }
+        };
+        let step = &mut steps[index];
+        step.to = Some(matched.to);
+        step.from = matched.from;
+        step.size = Some(matched.size);
+        ready.extend(matched.covers.iter().map(|cover| cover.section));
+        step.covers = matched.covers;
+        taken.sort_unstable();
+        for i in taken.into_iter().rev() {
+            self.0.remove(i);
+        }
+        self.0.push(Piece {
+            step: Some(index),
+            ..joined
+        });
+        true
+    }
+
+    /// Takes in `store`, outside loops, of the code at `home`, which goes
+    /// through a pointer into a section, at an offset that the walk can't
+    /// tell: when a step of the same code covers only part of that
+    /// section, as when the store is of a word that a loop's last time
+    /// leaves to code after it, that step becomes code that elfq can't
+    /// follow, which may set up the sections it covered and those that
+    /// follow the section with no gap.
+    fn unsure(
+        &mut self,
+        memory: &Memory,
+        store: &Store,
+        home: (u32, u64),
+        steps: &mut [Step],
+        ready: &mut HashSet<usize>,
+    ) {
+        if store.address.is_some() || store.conditional {
+            return;
+        }
+        let Some(x) = store.base.and_then(|base| memory.holding(u64::from(base))) else {
+            return;
+        };
+        let part = |index: usize| {
+            (steps[index].covers.iter())
+                .any(|cover| cover.section == x && cover.bytes < memory.section(x).size)
+        };
+        let Some(i) =
+            (self.0.iter()).position(|piece| piece.home == home && piece.step.is_some_and(part))
+        else {
+            return;
+        };
+        let Some(index) = self.0.remove(i).step else {
+            return;
+        };
+        let step = &mut steps[index];
+        let mut may: Vec<usize> = step.covers.iter().map(|cover| cover.section).collect();
+        for y in memory.run_from(x) {
+            if !may.contains(&y) {
+                may.push(y);
+            }
+        }
+        step.does = Does::Unread;
+        (step.covers, step.may) = (Vec::new(), may);
+        (step.to, step.from, step.size) = (None, None, None);
+        *ready = (steps.iter())
+            .flat_map(|step| step.covers.iter().map(|cover| cover.section))
+            .collect();
     }
 }
 
@@ -365,8 +609,11 @@ pub(super) enum Way {
     TailCall,
     /// `main`'s code, which a compiler inlined into the reset handler.
     Inlined,
-    /// A loop that elfq can't follow.
+    /// A loop of the code's own: one that copies or zeroes, or one that
+    /// elfq can't follow.
     Loop,
+    /// Stores outside loops.
+    Store,
     /// A call through a register whose number the walk can't tell.
     RegisterCall(u16),
     /// A supervisor call, `svc`.
@@ -394,6 +641,7 @@ impl Way {
             Way::TailCall => "tail call",
             Way::Inlined => "inlined",
             Way::Loop => "loop",
+            Way::Store => "store",
             Way::RegisterCall(_) => "register call",
             Way::SupervisorCall => "supervisor call",
             Way::Conditional => "conditional call",
@@ -489,6 +737,14 @@ pub(super) fn build(
     };
     // Inside a call that copies or zeroes: its own code.
     let mut skip_to = 0;
+    // The events of loops' code, whose stores the loops' steps stand for.
+    let mut in_loop = vec![false; events.list.len()];
+    for (k, event) in events.list.iter().enumerate() {
+        if let Event::Loop(l) = event {
+            in_loop[l.first_event..k].fill(true);
+        }
+    }
+    let mut pieces = Pieces::default();
     for (k, event) in events.list.iter().enumerate() {
         if k < skip_to {
             continue;
@@ -519,7 +775,16 @@ pub(super) fn build(
                 if target.is_some() && target == main_function {
                     step.main = true;
                     steps.push(step);
-                } else if let Some(matched) = memory.match_call(&call.passes()) {
+                } else if let Some(matched) = memory
+                    .match_call(&call.passes())
+                    // A copy of 0 bytes, as of an empty section that has
+                    // no bytes in memory, where a section that an earlier
+                    // step set up starts, doesn't set that one up.
+                    .filter(|matched| {
+                        matched.size > 0
+                            || !(matched.covers.iter()).all(|cover| ready.contains(&cover.section))
+                    })
+                {
                     step.does = matched.does;
                     step.to = Some(matched.to);
                     step.from = matched.from;
@@ -558,7 +823,20 @@ pub(super) fn build(
             }
             Event::Loop(walked) => {
                 let function = at(&holder, l);
-                let mut may = loop_targets(memory, events, k, walked, &ready);
+                let piece = (memory.loop_piece(walked)).map(|piece| Piece {
+                    home: (level, function),
+                    ..piece
+                });
+                if let Some(piece) = piece
+                    && pieces.add(memory, piece, k, &mut steps, &mut ready)
+                {
+                    continue;
+                }
+                let stores = own_stores(events, k, walked);
+                let mut may = loop_targets(memory, &stores, &ready);
+                if may.is_empty() {
+                    may = loop_repeats(memory, &steps, walked, &ready);
+                }
                 if may.is_empty() {
                     may = loop_calls(memory, events, k, walked, &ready);
                 }
@@ -589,6 +867,16 @@ pub(super) fn build(
                 step.may = not_ready(&ready);
                 if !step.may.is_empty() {
                     steps.push(step);
+                }
+            }
+            Event::Store(store) if !in_loop[k] => {
+                let home = (level, at(&holder, l));
+                match memory.store_piece(store) {
+                    Some(piece) => {
+                        let piece = Piece { home, ..piece };
+                        pieces.add(memory, piece, k, &mut steps, &mut ready);
+                    }
+                    None => pieces.unsure(memory, store, home, &mut steps, &mut ready),
                 }
             }
             Event::Store(_) | Event::Backtrack { .. } => {}
@@ -641,54 +929,130 @@ pub(super) fn build(
     steps
 }
 
+/// The bytes that a loop's store covers over all the times it stores.
+fn stored_bytes(store: &LoopStore) -> Range<u64> {
+    let first = i64::from(store.address);
+    let last = first + i64::from(store.step) * i64::from(store.times.saturating_sub(1));
+    let start = first.min(last).max(0) as u64;
+    start..(first.max(last) + i64::from(store.size)).max(0) as u64
+}
+
+/// Where the bytes that `stores`, a loop's stores, cover start, and how
+/// many there are, when they cover all of them once, one after another:
+/// each time the loop runs, its stores store the bytes next to those of
+/// the time before, all up or all down, and the last time, when the loop
+/// leaves part way through, those next to them.
+fn tiled(stores: &[&LoopStore]) -> Option<(u64, u64)> {
+    let mut each: Vec<(i64, i64)> = (stores.iter())
+        .map(|store| (i64::from(store.address), i64::from(store.size)))
+        .collect();
+    each.sort_unstable();
+    let low = each.first()?.0;
+    let size: i64 = each.iter().map(|&(_, size)| size).sum();
+    let mut end = low;
+    for &(start, size) in &each {
+        if start != end {
+            return None;
+        }
+        end += size;
+    }
+    // How many times all of them store, and those that store once more,
+    // the last time.
+    let most = stores.iter().map(|store| store.times).max()?;
+    let all = stores.iter().all(|store| store.times == most);
+    let full = i64::from(if all { most } else { most - 1 });
+    let last: Vec<&&LoopStore> = (stores.iter())
+        .filter(|store| !all && store.times == most)
+        .collect();
+    let moving: Vec<i64> = (stores.iter())
+        .filter(|store| store.times > 1)
+        .map(|store| i64::from(store.step))
+        .collect();
+    let step = match moving.first() {
+        None => size,
+        Some(&step) if step.abs() == size && moving.iter().all(|&other| other == step) => step,
+        Some(_) => return None,
+    };
+    // The bytes that the last time stores, at one end of its stores'.
+    let extra: i64 = last.iter().map(|store| i64::from(store.size)).sum();
+    let (from, to) = match step > 0 {
+        true => (low, low + extra),
+        false => (low + size - extra, low + size),
+    };
+    let mut ends: Vec<(i64, i64)> = (last.iter())
+        .map(|store| {
+            (
+                i64::from(store.address),
+                i64::from(store.address) + i64::from(store.size),
+            )
+        })
+        .collect();
+    ends.sort_unstable();
+    let mut at = from;
+    for (start, end) in ends {
+        if start != at {
+            return None;
+        }
+        at = end;
+    }
+    if at != to {
+        return None;
+    }
+    let start = match step > 0 {
+        true => low,
+        false => low - (full - 1) * size - extra,
+    };
+    Some((
+        u64::try_from(start).ok()?,
+        u64::try_from(full * size + extra).ok()?,
+    ))
+}
+
 /// The sections a loop that elfq can't follow may set up: the run of
 /// sections that its stores start in, or when it stores through a pointer
 /// the walk can't tell, any not set up yet, or only those without
 /// contents when it stores only zeros. None when it stores only elsewhere,
 /// as to peripherals.
-fn loop_targets(
-    memory: &Memory,
-    events: &Events,
-    k: usize,
-    l: &Loop,
-    ready: &HashSet<usize>,
-) -> Vec<usize> {
-    let level = events.level(k);
-    // Its own stores, not those of a loop inside it, nor of what it calls.
-    let inner: Vec<Range<usize>> = (l.first_event..k)
-        .filter_map(|j| match &events.list[j] {
-            Event::Loop(inner) if events.level(j) == level => Some(inner.first_event..j),
-            _ => None,
-        })
-        .collect();
-    let stores: Vec<&Store> = (l.first_event..k)
-        .filter(|&j| events.level(j) == level && !inner.iter().any(|range| range.contains(&j)))
-        .filter_map(|j| match &events.list[j] {
-            Event::Store(store) => Some(store),
-            _ => None,
-        })
-        .collect();
+fn loop_targets(memory: &Memory, stores: &[&Store], ready: &HashSet<usize>) -> Vec<usize> {
     let mut may: Vec<usize> = Vec::new();
-    for store in &stores {
-        match store.base.or(store.address) {
-            None => {
-                let zeros_only = stores.iter().all(|store| store.value == Some(0));
-                return (memory.ram.iter().copied())
-                    .filter(|x| !ready.contains(x) && (!zeros_only || !memory.is_load(*x)))
-                    .collect();
-            }
-            Some(at) => {
-                if let Some(x) = memory.holding(u64::from(at)) {
-                    for y in memory.run_from(x) {
-                        if !ready.contains(&y) && !may.contains(&y) {
-                            may.push(y);
-                        }
+    for store in stores {
+        if store.base.is_none() && store.address.is_none() {
+            let zeros_only = stores.iter().all(|store| store.value == Some(0));
+            return (memory.ram.iter().copied())
+                .filter(|x| !ready.contains(x) && (!zeros_only || !memory.is_load(*x)))
+                .collect();
+        }
+        // The pointer, and where the store goes, which may be past it.
+        for at in [store.base, store.address].into_iter().flatten() {
+            if let Some(x) = memory.holding(u64::from(at)) {
+                for y in memory.run_from(x) {
+                    if !ready.contains(&y) && !may.contains(&y) {
+                        may.push(y);
                     }
                 }
             }
         }
     }
     may
+}
+
+/// The stores of the loop `l`, whose event is at `k`: its own, not those
+/// of a loop inside it, nor of what it calls.
+fn own_stores<'w>(events: &Events<'w>, k: usize, l: &Loop) -> Vec<&'w Store> {
+    let level = events.level(k);
+    let inner: Vec<Range<usize>> = (l.first_event..k)
+        .filter_map(|j| match &events.list[j] {
+            Event::Loop(inner) if events.level(j) == level => Some(inner.first_event..j),
+            _ => None,
+        })
+        .collect();
+    (l.first_event..k)
+        .filter(|&j| events.level(j) == level && !inner.iter().any(|range| range.contains(&j)))
+        .filter_map(|j| match &events.list[j] {
+            Event::Store(store) => Some(store),
+            _ => None,
+        })
+        .collect()
 }
 
 /// When a loop's code calls a function that copies, zeroes, or stores
@@ -724,9 +1088,33 @@ fn loop_calls(
         .collect()
 }
 
+/// When the code of a loop that elfq can't follow has a loop that copies
+/// or zeroes, as a loop over a table of sections does for its first row,
+/// the sections of that kind not set up yet, which the loop's next times
+/// may set up.
+fn loop_repeats(memory: &Memory, steps: &[Step], l: &Loop, ready: &HashSet<usize>) -> Vec<usize> {
+    let mut may: Vec<usize> = Vec::new();
+    let inner = (steps.iter()).filter(|step| step.way == Way::Loop && step.event >= l.first_event);
+    for step in inner {
+        let sections = match step.does {
+            Does::Copy => &memory.loads,
+            Does::Zero => &memory.zeros,
+            _ => continue,
+        };
+        for &x in &memory.ram {
+            if sections.contains(&x) && !ready.contains(&x) && !may.contains(&x) {
+                may.push(x);
+            }
+        }
+    }
+    may
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::arch::startup::Source;
+    use crate::graph::Graph;
 
     /// Firmware with code in flash at 0x8000000, and in RAM at 0x20000000:
     /// two load images, stored in flash one after the other, and two
@@ -863,5 +1251,393 @@ mod tests {
             .map(|x| memory.name(x))
             .collect();
         assert_eq!(run, [".data"]);
+    }
+
+    /// A store of a loop's code at 0x8000018, over all the times the loop
+    /// runs: of `size` bytes at `address` the first time, `step` bytes on
+    /// each time, `times` times, of `value`.
+    fn each(address: u32, step: i32, size: u32, times: u32, value: Option<u32>) -> LoopStore {
+        LoopStore {
+            site: 0x800_0018,
+            address,
+            step,
+            size,
+            times,
+            value,
+            source: None,
+            loaded: false,
+        }
+    }
+
+    /// As `each`, of words that the loop loads from `from` the first
+    /// time, and from as far on each time.
+    fn copied(address: u32, from: u32, step: i32, size: u32, times: u32) -> LoopStore {
+        LoopStore {
+            source: Some((from, step)),
+            loaded: true,
+            ..each(address, step, size, times, None)
+        }
+    }
+
+    /// The loop from 0x8000010 to 0x8000020 with `stores`.
+    fn walked(stores: Vec<LoopStore>) -> Loop {
+        Loop {
+            head: 0x800_0010,
+            back: 0x800_0020,
+            depth: 0,
+            first_event: 0,
+            end: None,
+            passes: stores.iter().map(|store| store.times).max(),
+            stores: Some(stores),
+        }
+    }
+
+    /// What the loop with `stores` does, as "copy 0x20000000 32 from
+    /// 0x8000400".
+    fn piece(memory: &Memory, stores: Vec<LoopStore>) -> Option<String> {
+        let piece = memory.loop_piece(&walked(stores))?;
+        let from =
+            (piece.gap).map(|gap| format!(" from {:#x}", (piece.to as u32).wrapping_add(gap)));
+        Some(format!(
+            "{} {:#x} {}{}",
+            piece.does.word(),
+            piece.to,
+            piece.size,
+            from.unwrap_or_default()
+        ))
+    }
+
+    #[test]
+    fn a_loop_s_stores_cover_its_bytes_one_time_after_another() {
+        let tiled = |stores: &[LoopStore]| tiled(&stores.iter().collect::<Vec<_>>());
+        // A word each time, up, or down from the last word; or once.
+        assert_eq!(
+            tiled(&[each(0x2000_0000, 4, 4, 8, None)]),
+            Some((0x2000_0000, 32))
+        );
+        assert_eq!(
+            tiled(&[each(0x2000_001c, -4, 4, 8, None)]),
+            Some((0x2000_0000, 32))
+        );
+        assert_eq!(
+            tiled(&[each(0x2000_0000, 0, 4, 1, None)]),
+            Some((0x2000_0000, 4))
+        );
+        // Two words each time, as `strd` stores them, or two stores.
+        assert_eq!(
+            tiled(&[each(0x2000_0000, 8, 8, 4, None)]),
+            Some((0x2000_0000, 32))
+        );
+        let two = [
+            each(0x2000_0004, 8, 4, 4, None),
+            each(0x2000_0000, 8, 4, 4, None),
+        ];
+        assert_eq!(tiled(&two), Some((0x2000_0000, 32)));
+        // The last time, the loop leaves after the first store: the next
+        // word up, or down.
+        let up = [
+            each(0x2000_0000, 8, 4, 4, None),
+            each(0x2000_0004, 8, 4, 3, None),
+        ];
+        assert_eq!(tiled(&up), Some((0x2000_0000, 28)));
+        let down = [
+            each(0x2000_001c, -8, 4, 4, None),
+            each(0x2000_0018, -8, 4, 3, None),
+        ];
+        assert_eq!(tiled(&down), Some((0x2000_0004, 28)));
+        // Every other word; stores with a gap between them; and a last
+        // time that leaves a gap.
+        assert_eq!(tiled(&[each(0x2000_0000, 8, 4, 4, None)]), None);
+        let gap = [
+            each(0x2000_0000, 8, 4, 4, None),
+            each(0x2000_0008, 8, 4, 4, None),
+        ];
+        assert_eq!(tiled(&gap), None);
+        let short = [
+            each(0x2000_0000, 8, 4, 3, None),
+            each(0x2000_0004, 8, 4, 4, None),
+        ];
+        assert_eq!(tiled(&short), None);
+    }
+
+    #[test]
+    fn a_loop_copies_words_it_loads_as_far_on_and_zeroes_with_0() {
+        let binary = binary();
+        let memory = Memory::new(&binary);
+        // .data and .ramfunc from their load images, a word at a time or
+        // 16 bytes, as `ldm` and `stm` copy them.
+        assert_eq!(
+            piece(&memory, vec![copied(0x2000_0000, 0x800_0400, 4, 4, 12)]).as_deref(),
+            Some("copy 0x20000000 48 from 0x8000400")
+        );
+        assert_eq!(
+            piece(&memory, vec![copied(0x2000_0000, 0x800_0400, 16, 16, 2)]).as_deref(),
+            Some("copy 0x20000000 32 from 0x8000400")
+        );
+        // .bss from its last word down, beside a store to a peripheral
+        // each time, which sets up nothing.
+        let zero = vec![
+            each(0x2000_006c, -4, 4, 16, Some(0)),
+            each(0x4000_0000, 0, 4, 16, Some(1)),
+        ];
+        assert_eq!(piece(&memory, zero).as_deref(), Some("zero 0x20000030 64"));
+        // Not of words from a table that moves otherwise, or as far on
+        // for each store; nor of a 0 that the loop loaded, nor of words it
+        // can't tell; nor of a loop that stores only elsewhere.
+        let mut table = copied(0x2000_0000, 0x800_0400, 4, 4, 8);
+        table.source = Some((0x800_0400, 8));
+        assert_eq!(piece(&memory, vec![table]), None);
+        let apart = vec![
+            copied(0x2000_0000, 0x800_0400, 8, 4, 4),
+            copied(0x2000_0004, 0x800_0500, 8, 4, 4),
+        ];
+        assert_eq!(piece(&memory, apart), None);
+        let loaded = LoopStore {
+            loaded: true,
+            ..each(0x2000_0030, 4, 4, 16, Some(0))
+        };
+        assert_eq!(piece(&memory, vec![loaded]), None);
+        assert_eq!(
+            piece(&memory, vec![each(0x2000_0030, 4, 4, 16, None)]),
+            None
+        );
+        assert_eq!(
+            piece(&memory, vec![each(0x4000_0000, 4, 4, 16, Some(0))]),
+            None
+        );
+    }
+
+    /// The steps of startup code whose walk found `list`, as "copy
+    /// 0x20000000 32 by a loop: .data 32", one a line.
+    fn steps(binary: &Binary, list: &[Event]) -> Vec<String> {
+        let graph = Graph::default();
+        let firmware = Firmware::new(binary, &graph);
+        let memory = Memory::new(binary);
+        let events = Events::new(&firmware, list);
+        let reset = Reset {
+            address: 0x800_0000,
+            stack_pointer: None,
+            table: None,
+            outside: None,
+        };
+        let end = End::Returns(0x800_0100);
+        (build(&firmware, &memory, &events, &reset, None, end).iter())
+            .map(|step| {
+                let covers: Vec<String> = (step.covers.iter())
+                    .map(|cover| format!("{} {}", memory.name(cover.section), cover.bytes))
+                    .chain(step.may.iter().map(|&x| memory.name(x).to_string()))
+                    .collect();
+                format!(
+                    "{} {:#x} {} by a {}: {}",
+                    step.does.word(),
+                    step.to.unwrap_or_default(),
+                    step.size.unwrap_or_default(),
+                    step.way.field(),
+                    covers.join(", ")
+                )
+            })
+            .collect()
+    }
+
+    /// A store at `site`, outside loops, of a word loaded from `from`, or
+    /// of `value`, at `address`, or past a pointer to `base` that the
+    /// walk can tell when it can't tell `address`.
+    fn alone(
+        site: u64,
+        address: Option<u32>,
+        base: u32,
+        from: Option<u32>,
+        value: Option<u32>,
+    ) -> Event {
+        Event::Store(Store {
+            site,
+            depth: 0,
+            address,
+            base: Some(base),
+            size: 4,
+            value,
+            source: from.map(|address| Source {
+                site: site - 2,
+                address,
+            }),
+            conditional: false,
+        })
+    }
+
+    /// The event of the loop with `stores`, whose code has the `events`
+    /// events before it.
+    fn closed(stores: Vec<LoopStore>, first_event: usize) -> Event {
+        Event::Loop(Loop {
+            first_event,
+            ..walked(stores)
+        })
+    }
+
+    #[test]
+    fn stores_after_a_loop_extend_its_step_and_alone_copy_only_whole_sections() {
+        let binary = binary();
+        // A loop that copies .data 8 bytes at a time, and leaves the last
+        // word to a store after it, as GCC unrolls a copy.
+        let list = [
+            closed(vec![copied(0x2000_0000, 0x800_0400, 8, 8, 3)], 0),
+            alone(
+                0x800_0030,
+                Some(0x2000_0018),
+                0x2000_0018,
+                Some(0x800_0418),
+                None,
+            ),
+            alone(
+                0x800_0034,
+                Some(0x2000_001c),
+                0x2000_0018,
+                Some(0x800_041c),
+                None,
+            ),
+        ];
+        assert_eq!(
+            steps(&binary, &list),
+            ["copy 0x20000000 32 by a loop: .data 32"]
+        );
+        // Stores alone, of all of .ramfunc from its load image; but not of
+        // part of it, nor from elsewhere, which may be code that sets a
+        // variable.
+        let whole: Vec<Event> = (0..4)
+            .map(|n| {
+                let address = 0x2000_0020 + 4 * n;
+                alone(
+                    0x800_0030 + 4 * u64::from(n),
+                    Some(address),
+                    address,
+                    Some(0x800_0400 + address - 0x2000_0000),
+                    None,
+                )
+            })
+            .collect();
+        assert_eq!(
+            steps(&binary, &whole),
+            ["copy 0x20000020 16 by a store: .ramfunc 16"]
+        );
+        assert_eq!(steps(&binary, &whole[..3]), Vec::<String>::new());
+        let elsewhere = [alone(
+            0x800_0030,
+            Some(0x2000_0000),
+            0x2000_0000,
+            Some(0x800_0300),
+            None,
+        )];
+        assert_eq!(steps(&binary, &elsewhere), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_store_through_a_pointer_after_a_loop_that_sets_up_part_of_a_section_makes_it_unread() {
+        let binary = binary();
+        // A loop that zeroes all of .bss but its last word, which a store
+        // through a pointer to .bss at an offset the walk can't tell may
+        // zero, or not.
+        let list = [
+            closed(vec![each(0x2000_0030, 4, 4, 15, Some(0))], 0),
+            alone(0x800_0030, None, 0x2000_0030, None, Some(0)),
+        ];
+        assert_eq!(
+            steps(&binary, &list),
+            ["unread 0x0 0 by a loop: .bss, .noinit"]
+        );
+        // When the loop zeroes all of .bss, the store changes nothing.
+        let list = [
+            closed(vec![each(0x2000_0030, 4, 4, 16, Some(0))], 0),
+            alone(0x800_0030, None, 0x2000_0030, None, Some(0)),
+        ];
+        assert_eq!(
+            steps(&binary, &list),
+            ["zero 0x20000030 64 by a loop: .bss 64"]
+        );
+    }
+
+    /// A call at `site` of the function at 0x8000200 with `arguments` in
+    /// r0 to r2.
+    fn called(site: u64, arguments: [u32; 3]) -> Event {
+        Event::Call(Call {
+            site,
+            depth: 0,
+            target: Some(0x800_0200),
+            how: How::Direct,
+            arguments: [
+                Some(arguments[0]),
+                Some(arguments[1]),
+                Some(arguments[2]),
+                None,
+            ],
+            left: 0,
+            conditional: false,
+            followed: true,
+        })
+    }
+
+    #[test]
+    fn a_copy_of_0_bytes_where_a_section_set_up_before_starts_is_only_a_call() {
+        let binary = binary();
+        // As of an empty section, which has no bytes in memory, where
+        // .data starts, after the copy of .data.
+        let list = [
+            called(0x800_0010, [0x2000_0000, 0x800_0400, 0x20]),
+            called(0x800_0014, [0x2000_0000, 0x800_0420, 0]),
+        ];
+        assert_eq!(
+            steps(&binary, &list),
+            [
+                "copy 0x20000000 32 by a call: .data 32",
+                "call 0x0 0 by a call: "
+            ]
+        );
+        // Before it, the copy names .data.
+        let list = [
+            called(0x800_0010, [0x2000_0000, 0x800_0400, 0]),
+            called(0x800_0014, [0x2000_0000, 0x800_0400, 0x20]),
+        ];
+        assert_eq!(
+            steps(&binary, &list),
+            [
+                "copy 0x20000000 0 by a call: .data 0",
+                "copy 0x20000000 32 by a call: .data 32"
+            ]
+        );
+    }
+
+    /// A word that the code at 0x8000018 stores at `address`, and that it
+    /// loaded at `loaded` from `from`, or else holds `value`.
+    fn stored(address: u32, value: Option<u32>, loaded: Option<(u64, u32)>) -> Store {
+        Store {
+            site: 0x800_0018,
+            depth: 0,
+            address: Some(address),
+            base: Some(address),
+            size: 4,
+            value,
+            source: loaded.map(|(site, address)| Source { site, address }),
+            conditional: false,
+        }
+    }
+
+    #[test]
+    fn a_loop_elfq_cant_match_may_set_up_where_its_stores_go() {
+        let binary = binary();
+        let memory = Memory::new(&binary);
+        // A store 4 bytes past a pointer into .ramfunc goes to .bss.
+        let mut store = stored(0x2000_0030, None, None);
+        store.base = Some(0x2000_002c);
+        let names = |stores: &[&Store]| -> Vec<&str> {
+            (loop_targets(&memory, stores, &HashSet::new()).into_iter())
+                .map(|x| memory.name(x))
+                .collect()
+        };
+        assert_eq!(names(&[&store]), [".ramfunc", ".bss", ".noinit"]);
+        // Through a pointer the walk can't tell, any section not set up
+        // yet, or only those without contents for a store of 0.
+        store.base = None;
+        store.address = None;
+        assert_eq!(names(&[&store]), [".data", ".ramfunc", ".bss", ".noinit"]);
+        store.value = Some(0);
+        assert_eq!(names(&[&store]), [".bss", ".noinit"]);
     }
 }

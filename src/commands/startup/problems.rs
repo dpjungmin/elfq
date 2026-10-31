@@ -352,8 +352,9 @@ pub(super) fn judge(
             .collect();
         numbers.sort_unstable();
         numbers.dedup();
+        // The problem names only what it is about; the rest gets a note.
         let sections = (unknown.iter().copied())
-            .filter(|x| (judged.unknown[x].iter()).any(|&s| numbers.contains(&steps[s].number)))
+            .filter(|&x| memory.required(x))
             .collect();
         let mut p = Problem::new(Kind::CantFollow, sections);
         p.certain = false;
@@ -726,8 +727,8 @@ fn notes(
             ));
         }
     }
-    // Sections without contents that the can't-follow problem doesn't
-    // name.
+    // Sections that the can't-follow problem doesn't name, which code elfq
+    // can't follow may set up too.
     let in_problem: Vec<usize> = (judged.problems.iter())
         .filter(|p| p.kind == Kind::CantFollow)
         .flat_map(|p| p.sections.iter().copied())
