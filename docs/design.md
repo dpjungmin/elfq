@@ -516,7 +516,9 @@ the range needn't come from the chip's reference manual. It also suggests
 show which blocks its code and data are in. It picks from the handlers of
 SVCall, PendSV, SysTick and the chip's interrupts, which run in normal
 operation, and leaves out those that reach nothing else, such as a default
-handler that only loops. Sizes can take a
+handler that only loops. For Cortex-M firmware with a load image or a
+section without contents, it suggests `startup` after the `--range`
+commands, when `startup` would read the file. Sizes can take a
 unit, in any case: `0x20000000+256K`. Units are powers of 1024, as memory
 sizes usually are. A range typed as other tools write them, `0x0-0x40000`
 or `0x0:0x40000`, is refused with the form to type, `0x0..0x40000`, and
@@ -632,10 +634,15 @@ and then doesn't say that process_frame kept it too. elfq can't yet tell
 what keeps items in a shared library, so when either build is one, a
 line above the tables says so and rows don't, and the same when elfq
 can't read the code. A line counts the items that are the same: of the
-same size, in the same block, and not edited. The Try line asks `why` of
+same size, in the same block, and not edited. The Try list asks `why` of
 the new item that heads the subtree of new items with the most new
 bytes, when something keeps it, rather than it being a place where the
-program starts, and it has a name of its own.
+program starts, and it has a name of its own. It asks for `startup` of
+the new build when `startup` reads it, and a section with a load image
+in either build differs, or an item moved to another block: either may
+change what the startup code must copy before the code it runs, as when
+`memcpy` moves into ITCM. diff doesn't run the check itself, and its
+JSON has no Try list.
 
 An item of the same size, in the same block, is edited when its bytes
 changed other than where they say where something is, or when its code
@@ -1447,8 +1454,10 @@ items of the same size that changed, when both have a symbol table.
 zeroes its memory through calls, such as to `memcpy` and `memset`, in
 loops of its own, and through tables of sections, as the startup code of
 CMSIS, MCUXpresso IDE and the Pico SDK does; it was checked on what GCC
-builds, but not on what Arm Compiler 6 or IAR builds. The pull requests
-and the git log record how elfq got here.
+builds, but not on what Arm Compiler 6 or IAR builds. Its JSON says
+which functions must stay out of each load image of code, and the
+overview and `diff` suggest it where it helps. The pull requests and the
+git log record how elfq got here.
 
 On a 4-CPU x86-64 machine, a release build gives the overview of elfq's
 own debug build (90 MB) in under half a second, of cargo (43 MB) in under
@@ -1458,9 +1467,6 @@ its names. `browse` shows its first screen in about the same time. Each
 key typed into go to then takes under 0.1 s. The first takes up to 0.2 s
 in those libraries, and the first whose text names nothing takes about
 half a second, as it works out what to suggest.
-
-Next: the JSON of `startup` says what must stay out of each load image
-of code, and the overview and `diff` suggest `startup` where it helps.
 
 Ideas for later, not yet planned: output that scripts and AI agents can
 read more easily, the retained size of a set of items, the functions

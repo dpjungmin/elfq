@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use object::SectionKind;
 
-use crate::binary::{AddressRange, Binary, LoadedMemory, memory_blocks, same_bytes_in};
+use crate::binary::{AddressRange, Binary, LoadedMemory, Section, memory_blocks, same_bytes_in};
 
 /// A block of memory that the two builds share, such as an ITCM or flash.
 #[derive(Debug)]
@@ -293,6 +293,9 @@ pub(super) struct Differs<'a> {
     pub name: &'a str,
     /// Whether only the address of its load image differs.
     pub only_load_image: bool,
+    /// Whether it has a load image in either build, which startup code
+    /// copies.
+    pub load_image: bool,
 }
 
 /// The allocated sections whose address, size, load image or bytes differ
@@ -321,9 +324,10 @@ pub(super) fn sections_that_differ<'a>(
     }
     // Each section that differs, with the address it is listed by.
     let mut differ: Vec<(u64, Differs)> = Vec::new();
-    let only = |name: &'a str| Differs {
-        name,
+    let only = |section: &'a Section| Differs {
+        name: &section.name,
         only_load_image: false,
+        load_image: section.load_address.is_some(),
     };
     for new_index in allocated(new) {
         let section = &new.sections[new_index];
@@ -331,7 +335,7 @@ pub(super) fn sections_that_differ<'a>(
             .get_mut(section.name.as_str())
             .and_then(VecDeque::pop_front);
         let Some(old_index) = paired else {
-            differ.push((section.address, only(section.name.as_str())));
+            differ.push((section.address, only(section)));
             continue;
         };
         let old_section = &old.sections[old_index];
@@ -346,6 +350,8 @@ pub(super) fn sections_that_differ<'a>(
                 Differs {
                     name: &section.name,
                     only_load_image: same_section,
+                    load_image: old_section.load_address.is_some()
+                        || section.load_address.is_some(),
                 },
             ));
         }
@@ -355,7 +361,7 @@ pub(super) fn sections_that_differ<'a>(
     gone.sort_unstable();
     for index in gone {
         let section = &old.sections[index];
-        differ.push((section.address, only(section.name.as_str())));
+        differ.push((section.address, only(section)));
     }
     differ.sort_by_key(|&(address, _)| address);
     differ.into_iter().map(|(_, differs)| differs).collect()
@@ -519,8 +525,26 @@ mod tests {
             data,
             Some(Differs {
                 name: ".data",
-                only_load_image: true
+                only_load_image: true,
+                load_image: true,
             })
+        );
+        // ITCM's code has a load image, the vector table none.
+        let (old, new) = (sample("c-cortex-m7.elf"), sample("c-cortex-m7-moved.elf"));
+        let old = LoadedMemory::read(&old).unwrap();
+        let new = LoadedMemory::read(&new).unwrap();
+        let load_images: Vec<(&str, bool)> = (sections_that_differ(&old, &new).iter())
+            .map(|differs| (differs.name, differs.load_image))
+            .collect();
+        assert_eq!(
+            load_images,
+            [
+                (".itcm", true),
+                (".isr_vector", false),
+                (".text", false),
+                (".rodata", false),
+                (".ARM.exidx", false)
+            ]
         );
     }
 }

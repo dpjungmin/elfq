@@ -184,6 +184,18 @@ impl Header {
     }
 }
 
+/// Whether `elfq FILE startup` reads the file at `path`, loaded as
+/// `binary`, and has something to say about it, for a Try line: Cortex-M
+/// firmware with a load image or a section without contents, whose reset
+/// handler elfq finds.
+pub(super) fn reads(path: &Path, binary: &Binary) -> bool {
+    binary.architecture == Architecture::Arm
+        && check_code_is_readable(binary).is_ok()
+        && !Memory::new(binary).ram.is_empty()
+        && check_header(path).is_ok()
+        && Reset::find(path, binary).is_ok()
+}
+
 /// Answers `elfq FILE startup`: [`Outcome::Problems`] when it finds a
 /// problem, or code it can't follow that may be one.
 pub(super) fn run(

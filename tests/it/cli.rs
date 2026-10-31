@@ -97,6 +97,7 @@ RETAINED   OWN  ITEM
 Try:
   elfq testdata/bin/c-cortex-m4.elf --range 0x08000000..0x08000e0c
   elfq testdata/bin/c-cortex-m4.elf --range 0x20000000..0x20000048
+  elfq testdata/bin/c-cortex-m4.elf startup
   elfq testdata/bin/c-cortex-m4.elf top
   elfq testdata/bin/c-cortex-m4.elf top --tree
   elfq testdata/bin/c-cortex-m4.elf retained main
@@ -147,6 +148,7 @@ RETAINED    OWN  ITEM
 Try:
   elfq testdata/bin/c-cortex-m4-stripped.elf --range 0x08000000..0x08000e0c
   elfq testdata/bin/c-cortex-m4-stripped.elf --range 0x20000000..0x20000048
+  elfq testdata/bin/c-cortex-m4-stripped.elf startup
   elfq testdata/bin/c-cortex-m4-stripped.elf top
   elfq testdata/bin/c-cortex-m4-stripped.elf top --tree
   elfq testdata/bin/c-cortex-m4-stripped.elf retained entry
@@ -206,7 +208,12 @@ fn every_command_the_overview_suggests_works() {
             args.extend(shell_words(line));
             let args: Vec<&str> = args.iter().map(String::as_str).collect();
             let output = elfq(&args);
-            assert!(output.status.success(), "{args:?}\n{output:?}");
+            // startup exits 1 for a problem it finds.
+            let problems = line == "startup" && output.status.code() == Some(1);
+            assert!(
+                (output.status.success() || problems) && output.stderr.is_empty(),
+                "{args:?}\n{output:?}"
+            );
         }
     }
 }
@@ -441,6 +448,7 @@ Try:
   elfq testdata/bin/c-cortex-m7.elf --range 0x20000000..0x20000450
   elfq testdata/bin/c-cortex-m7.elf --range 0x20240000..0x20241000
   elfq testdata/bin/c-cortex-m7.elf --range 0x30000000..0x30000edc
+  elfq testdata/bin/c-cortex-m7.elf startup
   elfq testdata/bin/c-cortex-m7.elf top
 "
         ),
@@ -4218,6 +4226,7 @@ Other uses between blocks: 1 new and 1 gone; --json lists them.
 
 Try:
   elfq testdata/bin/c-cortex-m7-moved.elf why __filter_tap_veneer
+  elfq testdata/bin/c-cortex-m7-moved.elf startup
 ",
     );
     // --all lists the same calls: every one is listed already.
@@ -4262,6 +4271,9 @@ MEMORY                   OLD   NEW  CHANGE  SECTIONS
 0x30000000..0x30000eec  3804  3820     +16  load image of .itcm -16, .rodata +16
 
 Sections that differ: .itcm, .isr_vector, .text, .rodata and .ARM.exidx.
+
+Try:
+  elfq testdata/bin/c-cortex-m7-moved-stripped.elf startup
 ",
     );
     // Only the new build without: it is the one named.
@@ -4348,6 +4360,9 @@ No call between blocks is new or gone.
 Other uses between blocks: 17 new and 17 gone; --json lists them.
 
 50 other items are the same.
+
+Try:
+  elfq testdata/bin/c-cortex-m7-sdram.elf startup
 ",
     );
     // --all lists each, largest first.

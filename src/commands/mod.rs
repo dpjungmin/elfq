@@ -821,8 +821,12 @@ elfq can't yet find functions without symbols or an unwind table.
 MEMORY                  SIZE  SECTIONS
 0x08000000..0x08000e0c  3596  .isr_vector .text .rodata .ARM.exidx, load image of .data
 0x20000000..0x20000048    72  .data .bss
+
+Try:
+  elfq testdata/bin/c-cortex-m4-stripped.elf startup
 "
         );
+        // startup reads the code from the reset handler all the same.
         let error = top::run(&binary, None, false, Format::Text, &mut Vec::new()).unwrap_err();
         assert_eq!(
             error.to_string(),

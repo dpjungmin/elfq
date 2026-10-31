@@ -73,7 +73,7 @@ pub(super) fn write(answer: &Answer, all: bool, out: &mut dyn Write) -> Result<(
             writeln!(out)?;
         }
         writeln!(out, "{}", sections_line(answer, all))?;
-        return Ok(());
+        return write_try(answer, None, out);
     };
     let items = &compared.items;
     if !items.changes.is_empty()
@@ -120,14 +120,26 @@ pub(super) fn write(answer: &Answer, all: bool, out: &mut dyn Write) -> Result<(
             writeln!(out, "{line}")?;
         }
     }
-    if let Some(query) = try_why(compared, &heads) {
+    write_try(answer, try_why(compared, &heads), out)
+}
+
+/// The Try list: `why` with `query`, and `startup` when a change may
+/// change what the new build's startup code must do.
+fn write_try(answer: &Answer, query: Option<String>, out: &mut dyn Write) -> Result<()> {
+    let new_path = shell_quote(&answer.new_path.display().to_string());
+    let lines: Vec<String> = [
+        query.map(|query| format!("why {query}")),
+        answer.try_startup.then(|| "startup".to_string()),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if !lines.is_empty() {
         writeln!(out)?;
         writeln!(out, "Try:")?;
-        writeln!(
-            out,
-            "  elfq {} why {query}",
-            shell_quote(&new_path.to_string())
-        )?;
+        for line in lines {
+            writeln!(out, "  elfq {new_path} {line}")?;
+        }
     }
     Ok(())
 }
@@ -763,6 +775,7 @@ mod tests {
             blocks: shared_blocks(old, new, same_memory),
             sections_that_differ: sections_that_differ(old, new),
             items: None,
+            try_startup: false,
         };
         let mut out = Vec::new();
         write(&answer, false, &mut out).unwrap();

@@ -2,7 +2,8 @@
 //! its sections are, which items keep the most bytes, and what to ask next:
 //! for firmware with several blocks of memory, that includes `reach` for
 //! the interrupt handler that reaches the most code, to show which blocks
-//! its code and data are in.
+//! its code and data are in, and for Cortex-M firmware with a load image
+//! or a section without contents, `startup`.
 //! With `--range`, what elfq found in the range and which items keep the
 //! most of its bytes.
 
@@ -15,7 +16,7 @@ use serde::Serialize;
 use super::reach::Totals;
 use super::retained_tree::RetainedTree;
 use super::symbol::Names;
-use super::{Kept, json, text};
+use super::{Kept, json, startup, text};
 use crate::arch;
 use crate::binary::{AddressRange, Binary, FileKind, ItemKind, MemoryBlock, Source, memory_blocks};
 use crate::cli::Format;
@@ -125,6 +126,7 @@ pub fn run(
         .into_iter()
         .chain(
             [
+                startup::reads(path, binary).then(|| "startup".to_string()),
                 (kept > 0).then(|| "top".to_string()),
                 (kept > 0).then(|| "top --tree".to_string()),
                 starting_point(binary, names).map(|item| about(names, "retained", item)),
