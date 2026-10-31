@@ -65,6 +65,7 @@ terminal is as it was; `.github/workflows/ci.yml` has the command.
 | `src/render/` | Text output: tables, and the trees in their last column (`tree.rs`), which every command shows the same way: as rows that name the row they hang under (in `why`, only where chains branch), or drawn with `--tree`. |
 | `tests/it/` | Integration tests, built as one test program (`main.rs` lists its modules). See [Tests](#tests). |
 | `testdata/` | The sample programs and the ELF files built from them. See [Sample binaries](#sample-binaries). |
+| `scripts/` | `same-output.sh`, which checks that two builds of elfq print the same answers, and times them. See [Checking that output didn't change](#checking-that-output-didnt-change). |
 | `docs/` | `design.md`, how elfq works and what comes next; `examples.md`, real questions about the sample binaries, each with the command that answers it and what elfq prints; and `survey.md`, how existing tools compare, written before elfq existed. |
 
 ## Rules that keep it approachable
@@ -415,6 +416,35 @@ Thumb text read it, and commit that too. Then
 read docs/examples.md again: it says what the samples' source does, down to
 line numbers in testdata/rust/src/main.rs, and no test checks that.
 
+## Checking that output didn't change
+
+A change that shouldn't change what elfq prints, such as a cleanup or a
+speed-up, needs more than the tests: run `scripts/same-output.sh` with a
+release build of `main` and one of your branch, on as many ELF files as you
+can find.
+
+```sh
+git worktree add ../elfq-main main
+(cd ../elfq-main && cargo build --release)
+cargo build --release
+scripts/same-output.sh ../elfq-main/target/release/elfq target/release/elfq \
+    testdata/bin /usr/bin --pairs pairs.txt
+```
+
+It runs every command, with and without `--json`, `--all` and `--tree`, on
+each file, the SYMBOL commands on the first three items that `top` lists,
+and the range commands on the first two blocks of memory that the overview
+lists. It also runs every `--help`, and `diff` on each pair of files listed
+in `pairs.txt`, one pair a line. It prints each command whose stdout,
+stderr or exit status differs, with the first lines that differ, and exits
+with status 1 if one does. On the samples alone it runs about 5,800
+commands, in about 15 seconds on four processors.
+
+The samples are small and similar, so add other files too: programs from
+`/usr/bin`, a Rust build of elfq itself, and firmware, which `testdata/build.sh`
+and the SDKs of chip makers can build. A pull request that says its output
+didn't change should say what files it was checked on.
+
 ## Checking performance
 
 The samples are too small to show how fast elfq is. Before changing how it
@@ -434,8 +464,12 @@ files):
 - `target/debug/elfq`, a 90 MB file that is mostly DWARF, for `inlined`;
 - stripped Cortex-M firmware, for finding functions without symbols.
 
-Compare the time, the peak memory (`/usr/bin/time -v` on Linux, `-l` on
-macOS) and the output, which should not change unless you mean it to.
+`scripts/same-output.sh --time OLD NEW FILE...` runs the overview, `top`,
+`inlined`, `reach`, `startup` and the SYMBOL commands on each file 9 times
+with each build, taking turns so that a busy moment slows both alike, and
+prints the median times side by side, in milliseconds. Compare the peak memory too (`/usr/bin/time -v` on Linux,
+`-l` on macOS), and the output, which should not change unless you mean
+it to.
 
 ## Pull requests
 
