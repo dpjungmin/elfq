@@ -801,8 +801,28 @@ where the file stores them. The walk follows `ldm`, `stm`, `ldrd` and
 the base. A loop it can't count, as one whose bound it can't tell, or
 whose stores it can't tell, as one that calls a function, is a step that
 elfq can't follow, and so is a loop that goes back over one it matched,
-as a loop over a table of sections does over the copy of its first row,
 for the sections of that kind not set up yet.
+
+A loop over a table of sections, as CMSIS's `__cmsis_start` goes through
+`__copy_table_start__` and `__zero_table_start__`, MCUXpresso IDE's
+`ResetISR` through `__data_section_table` and `__bss_section_table`,
+calling `data_init` and `bss_init` for each row, and the Pico SDK's
+`crt0.S` through `data_cpy_table` up to a row of zeros, does a step each
+time. So when a loop runs at most 16 times and its stores are ones the
+walk can't tell from three times through its code, as when it calls a
+function or has loops inside, the walk goes through its code each time,
+following its calls and counting the loops inside, and each time's
+copies and zeroings are steps. WHAT names the row that a time reads, the
+first word it loads that it doesn't copy, as ".data, by data_init, from
+table 0x30000014". A call that makes one step and nothing else, as
+`data_init` does, is that step, by the function, at the call; but one to
+code of the same function, as the Pico SDK's `data_cpy` is, a loop in
+it. A loop that calls another function through a register each time is
+one over a table of functions, as `__libc_init_array` calls the
+constructors in `.init_array`, which set up no sections, so the walk goes
+through it once. A branch back to code just before a function's start
+that runs on into it, as `data_cpy_loop` does, is a loop, not a tail
+call.
 
 Code runs from a load image before its copy when code in it runs before
 the step that copies it: the reset handler itself, or a function that a
@@ -1060,7 +1080,7 @@ several.
 | `main_from` | how elfq knows `main_at`: `symbol`, `debug info`, `guess`, as "(taken as main)" says, `loop`, or `null` |
 | `complete` | whether elfq followed all the code before `main`: `false` when a step is `unread`, or when the walk ends where it can't read on, though what comes after may set up nothing |
 | `problems_certain` | how many `problems` are `certain`: to fail only on those, check that it is 0 and let exit status 1 through, as the README shows |
-| `steps` | every row of the table, in order, each with: `step`, its number; `site`, the call, the first store of a loop or stores that copy or zero, or the code elfq can't follow; `does`, `copy`, `zero`, `call` or `unread`; `how`, `call`, `tail call`, `inlined`, `loop`, `store`, for stores outside loops, `register call`, `supervisor call`, `conditional call`, one that runs only when the condition flags say, `deep call`, one deeper than the walk follows, or `stop`, where the walk can't read on; `register`, the one a `register call` goes through, or `null`; `function`, the item called, or for a `loop`, `store` or `stop`, the function whose code holds it, or `null`; `veneer`, the address of the linker's veneer that the call goes through, or `null`; `inside`, the function that the step is in; `from`, `to` and `size`, the numbers that a copy or zeroing passes, or what a loop or stores copy or zero, else `null`; `sections`, the sections that it copies or zeroes; `table`, `null` for now; and `may_set_up`, the sections that an `unread` step may set up |
+| `steps` | every row of the table, in order, each with: `step`, its number; `site`, the call, the first store of a loop or stores that copy or zero, or the code elfq can't follow; `does`, `copy`, `zero`, `call` or `unread`; `how`, `call`, `tail call`, `inlined`, `loop`, `store`, for stores outside loops, `register call`, `supervisor call`, `conditional call`, one that runs only when the condition flags say, `deep call`, one deeper than the walk follows, or `stop`, where the walk can't read on; `register`, the one a `register call` goes through, or `null`; `function`, the item called, or for a `loop`, `store` or `stop`, the function whose code holds it, or `null`; `veneer`, the address of the linker's veneer that the call goes through, or `null`; `inside`, the function that the step is in; `from`, `to` and `size`, the numbers that a copy or zeroing passes, or what a loop or stores copy or zero, else `null`; `sections`, the sections that it copies or zeroes; `table`, the address of the row of a table of sections that the time of a loop that does the step reads, else `null`; and `may_set_up`, the sections that an `unread` step may set up |
 | `sections` | every load image and section without contents, in address order, each a range with its `name`, `size` and `load_address`, where the file stores it, or `null` for a section without contents; `status` when `main` starts, `copied`, `partly copied`, `copied from elsewhere`, `zeroed`, `partly zeroed`, `not copied`, `not zeroed`, `unknown`, when an `unread` step may set it up, or `not reached`, when only steps after code that runs from a load image before its copy set it up; `step`, the number of the step that sets it up, or `null`; and `bytes`, how many of its bytes that step sets up, or `null` while `unknown` |
 | `problems` | one row for each sentence of the text, in its order, each with: `kind`, `runs before copy`, `not copied`, `not zeroed`, `partly copied`, `partly zeroed`, `copied from elsewhere` or `can't follow`; `certain`, `false` for `can't follow`, and for code that runs from a load image after a step that elfq can't follow that may copy it first; `steps`, the numbers of the steps it is about; `sections`; `items`, the functions that run from the load image too early; `chain`, the names of the functions that a step's call goes through to the first of them; `before_step`, the step that copies the load image, or `null` when none does; `bytes`, how many bytes a step copies or zeroes of a section it sets up in part, or `null`; `from`, where a step copies from that isn't where the file stores the load image, or `null`; `sites`, the calls that run the functions, or the reset handler's own address when it is in the load image; and `text`, the sentence |
 | `notes` | one row for each note of the text, each with `kind`, `no vector table`, `reset in no function`, `entry differs`, `branch`, `not reached`, `not zeroed`, `partly zeroed` or `can't tell`; `sections`; `items`, empty for now; and `text`, the sentence |
@@ -1385,10 +1405,11 @@ have section headers, by block of memory, and their functions and data
 objects, with the calls between blocks that are new or gone and the
 items of the same size that changed, when both have a symbol table.
 `startup` reads the reset code of Cortex-M firmware that copies and
-zeroes its memory through calls, such as to `memcpy` and `memset`, or in
-loops of its own, and can't yet follow the tables of sections that other
-startup code copies and zeroes with. The pull requests and the git log
-record how elfq got here.
+zeroes its memory through calls, such as to `memcpy` and `memset`, in
+loops of its own, and through tables of sections, as the startup code of
+CMSIS, MCUXpresso IDE and the Pico SDK does; it was checked on what GCC
+builds, but not on what Arm Compiler 6 or IAR builds. The pull requests
+and the git log record how elfq got here.
 
 On a 4-CPU x86-64 machine, a release build gives the overview of elfq's
 own debug build (90 MB) in under half a second, of cargo (43 MB) in under
@@ -1399,8 +1420,8 @@ key typed into go to then takes under 0.1 s. The first takes up to 0.2 s
 in those libraries, and the first whose text names nothing takes about
 half a second, as it works out what to suggest.
 
-Next: `startup` follows tables of sections to copy and zero, as
-CMSIS's and NXP's startup code reads.
+Next: the JSON of `startup` says what must stay out of each load image
+of code, and the overview and `diff` suggest `startup` where it helps.
 
 Ideas for later, not yet planned: output that scripts and AI agents can
 read more easily, the retained size of a set of items, the functions
@@ -1541,6 +1562,8 @@ language.
     follow, which may set up any section. It counts the times a loop runs
     only when a number that moves by the same amount each time tells when
     it leaves, going through at most 50,000 instructions more to count
-    loops, and doesn't follow calls the times after the first; so a loop
-    over a table of sections reads as the copy or zeroing of its first
-    row, and then a loop that may set up the sections of that kind.
+    loops. It goes through each time of a loop that runs at most 16
+    times, as one over a table of sections, but only once one that calls
+    another function through a register each time, so code that sets up
+    memory through a table of functions, as Arm Compiler 6's and IAR's
+    does, is a step that it can't follow.

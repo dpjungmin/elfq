@@ -595,7 +595,7 @@ fn enclosing(events: &Events, k: usize) -> Vec<u64> {
 fn step_at(steps: &[Step], k: usize) -> Option<&Step> {
     (steps.iter())
         .rev()
-        .find(|step| step.event <= k && step.level == 0)
+        .find(|step| step.begins <= k && step.level == 0)
 }
 
 /// The notes under the steps: where the walk starts, branches it took,

@@ -113,7 +113,7 @@ zeroing of a section such as `.bss`. Its exit status is 1 when code runs
 from a load image before its copy, as when `memcpy` itself is linked into
 ITCM, when a load image isn't copied in full, or `.bss` isn't zeroed in
 full, and when elfq can't follow code that may set one up, such as a
-call through a pointer, or a loop over a table of sections. It reads only
+call through a pointer. It reads only
 the file, so it can't know what a boot ROM or a debugger loads, how the
 chip's memory is set up, or what interrupts and other cores do. To fail
 only on what elfq is sure of, let exit status 1 through:
@@ -195,8 +195,10 @@ table's entries, or the strings of an object that holds only strings, and
 the `objdump -s` command that prints its bytes. `diff` compares any two
 builds of one program that have section headers, by block of memory.
 `startup` reads Cortex-M reset code that copies and zeroes memory through
-calls, such as to `memcpy` and `memset`, or in loops of its own, but not
-yet in a loop over a table of sections.
+calls, such as to `memcpy` and `memset`, in loops of its own, and through
+tables of sections, as the startup code of CMSIS, MCUXpresso IDE and the
+Pico SDK does; it was checked on what GCC builds, not Arm Compiler 6 or
+IAR.
 See [docs/design.md](docs/design.md) for how elfq works and what comes next,
 [docs/survey.md](docs/survey.md) for how existing tools compare, and
 [CONTRIBUTING.md](CONTRIBUTING.md) to build it.

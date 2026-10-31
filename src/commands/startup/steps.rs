@@ -15,7 +15,7 @@ use object::SectionKind;
 
 use super::Firmware;
 use super::start::{Main, MainFrom, Reset};
-use crate::arch::startup::{Call, End, Event, How, Loop, LoopStore, Store};
+use crate::arch::startup::{Call, End, Event, How, Loop, LoopStore, Store, Time};
 use crate::binary::{Binary, ItemKind, Section};
 
 /// The names that the ELF specification gives sections of memory that
@@ -202,7 +202,7 @@ impl<'a> Memory<'a> {
             to,
             size,
             gap: copies,
-            home: (0, 0),
+            home: (0, 0, None),
             site: first.site,
             way: Way::Loop,
             step: None,
@@ -228,7 +228,7 @@ impl<'a> Memory<'a> {
             to,
             size,
             gap,
-            home: (0, 0),
+            home: (0, 0, None),
             site: store.site,
             way: Way::Store,
             step: None,
@@ -288,6 +288,10 @@ impl<'a> Memory<'a> {
     }
 }
 
+/// The level and function of code, and the time it is in (see
+/// [`Piece::home`]).
+type Home = (u32, u64, Option<usize>);
+
 /// Bytes that code copies or zeroes one after another: a loop's, or a
 /// store's outside loops, or those of several of them next to each other
 /// in the same function, as of a loop and of the stores that copy the
@@ -300,8 +304,10 @@ struct Piece {
     /// For a copy, how far after where it stores each word it loads it
     /// from, wrapping round.
     gap: Option<u32>,
-    /// The level and function of the code.
-    home: (u32, u64),
+    /// The level and function of the code, and the time through a loop
+    /// that the walk went through each time that it is in (see
+    /// [`Times`]): the bytes of one time aren't joined with another's.
+    home: Home,
     /// Its first store, of the loop's when there is a loop.
     site: u64,
     /// [`Way::Loop`] when there is a loop, or else [`Way::Store`].
@@ -381,7 +387,7 @@ impl Pieces {
         let index = match joined.step {
             Some(index) => index,
             None => {
-                let (level, function) = joined.home;
+                let (level, function, _) = joined.home;
                 let mut step = Step::new(k, joined.site, joined.does, joined.way, function, level);
                 step.function = Some(function);
                 steps.push(step);
@@ -416,7 +422,7 @@ impl Pieces {
         &mut self,
         memory: &Memory,
         store: &Store,
-        home: (u32, u64),
+        home: Home,
         steps: &mut [Step],
         ready: &mut HashSet<usize>,
     ) {
@@ -683,6 +689,14 @@ pub(super) struct Step {
     pub may: Vec<usize>,
     /// For a call, where the events of the code it runs end.
     pub span: Option<usize>,
+    /// Where the step begins in the walk's events: at `event`, or for a
+    /// call to a function that copies or zeroes, whose step stands for
+    /// the call, at the call's (see [`helpers`]).
+    pub begins: usize,
+    /// For a copy or zeroing in a time through a loop over a table of
+    /// sections, where the time reads its row of the table (see
+    /// [`Time::row`]).
+    pub table: Option<u64>,
 }
 
 impl Step {
@@ -711,6 +725,8 @@ impl Step {
             size: None,
             may: Vec::new(),
             span: None,
+            begins: event,
+            table: None,
         }
     }
 }
@@ -737,13 +753,18 @@ pub(super) fn build(
     };
     // Inside a call that copies or zeroes: its own code.
     let mut skip_to = 0;
-    // The events of loops' code, whose stores the loops' steps stand for.
+    // The events of loops' code, whose stores the loops' steps stand for,
+    // but for loops that the walk went through each time, whose events
+    // are those of every time.
     let mut in_loop = vec![false; events.list.len()];
     for (k, event) in events.list.iter().enumerate() {
-        if let Event::Loop(l) = event {
+        if let Event::Loop(l) = event
+            && l.times.is_empty()
+        {
             in_loop[l.first_event..k].fill(true);
         }
     }
+    let times = Times::new(events.list);
     let mut pieces = Pieces::default();
     for (k, event) in events.list.iter().enumerate() {
         if k < skip_to {
@@ -764,10 +785,11 @@ pub(super) fn build(
                     }
                     holder[l + 1] = target;
                 }
-                let way = if call.how == How::Jump {
-                    Way::TailCall
-                } else {
-                    Way::Call
+                let way = match (call.how, target) {
+                    (How::Jump, _) => Way::TailCall,
+                    (How::Register(register), None) => Way::RegisterCall(register),
+                    (How::Supervisor, None) => Way::SupervisorCall,
+                    _ => Way::Call,
                 };
                 let mut step = Step::new(k, call.site, Does::Call, way, inside, level);
                 step.function = target;
@@ -794,12 +816,10 @@ pub(super) fn build(
                     steps.push(step);
                     skip_to = events.span(k);
                 } else if target.is_none() {
+                    if matches!(call.how, How::Direct | How::Jump) {
+                        continue;
+                    }
                     step.does = Does::Unread;
-                    step.way = match call.how {
-                        How::Register(register) => Way::RegisterCall(register),
-                        How::Supervisor => Way::SupervisorCall,
-                        How::Direct | How::Jump => continue,
-                    };
                     step.may = not_ready(&ready);
                     if !step.may.is_empty() {
                         steps.push(step);
@@ -821,10 +841,12 @@ pub(super) fn build(
                     steps.push(step);
                 }
             }
+            // Its times' events are steps of their own.
+            Event::Loop(walked) if !walked.times.is_empty() => {}
             Event::Loop(walked) => {
                 let function = at(&holder, l);
                 let piece = (memory.loop_piece(walked)).map(|piece| Piece {
-                    home: (level, function),
+                    home: (level, function, times.of(k)),
                     ..piece
                 });
                 if let Some(piece) = piece
@@ -870,7 +892,7 @@ pub(super) fn build(
                 }
             }
             Event::Store(store) if !in_loop[k] => {
-                let home = (level, at(&holder, l));
+                let home = (level, at(&holder, l), times.of(k));
                 match memory.store_piece(store) {
                     Some(piece) => {
                         let piece = Piece { home, ..piece };
@@ -923,10 +945,121 @@ pub(super) fn build(
         }
     }
     steps.retain(|step| step.does != Does::Unread || !step.may.is_empty());
+    for step in &mut steps {
+        if matches!(step.does, Does::Copy | Does::Zero) {
+            step.table = times.row(step.event).map(u64::from);
+        }
+    }
+    let mut steps = helpers(firmware, steps);
+    // A call that a loop over a table makes each time is listed once, but
+    // for the times that it copies or zeroes, as a row that copies none.
+    let mut sites: HashSet<u64> = HashSet::new();
+    steps.retain(|step| {
+        let again = !sites.insert(step.site);
+        !(again && step.does == Does::Call && !step.main && times.of(step.begins).is_some())
+    });
     for (n, step) in steps.iter_mut().enumerate() {
         step.number = n + 1;
     }
     steps
+}
+
+/// The times through the code of loops that the walk went through each
+/// time (see [`Loop::times`]), by event.
+struct Times {
+    /// For each event, the innermost time it is in, as the first event of
+    /// that time, with the time's row of a table.
+    of: Vec<Option<(usize, Option<u32>)>>,
+}
+
+impl Times {
+    fn new(list: &[Event]) -> Times {
+        let mut of = vec![None; list.len()];
+        // A loop inside another closes first, so its times come first.
+        for (k, event) in list.iter().enumerate() {
+            let Event::Loop(l) = event else {
+                continue;
+            };
+            for (n, &Time { first_event, row }) in l.times.iter().enumerate() {
+                let end = l.times.get(n + 1).map_or(k, |next| next.first_event);
+                for time in &mut of[first_event..end] {
+                    time.get_or_insert((first_event, row));
+                }
+            }
+        }
+        Times { of }
+    }
+
+    /// The time that the event at `k` is in, by its first event.
+    fn of(&self, k: usize) -> Option<usize> {
+        self.of.get(k).copied().flatten().map(|(first, _)| first)
+    }
+
+    /// Where the time that the event at `k` is in reads its row of a
+    /// table.
+    fn row(&self, k: usize) -> Option<u32> {
+        self.of.get(k).copied().flatten().and_then(|(_, row)| row)
+    }
+}
+
+/// `steps`, with each call that the reset handler makes to a function
+/// that does one step and no other, a copy or a zeroing, as MCUXpresso's
+/// `data_init` and `bss_init` do, made that step, as a call to `memcpy`
+/// is: the call's, by the function, at its site. A call to code in the
+/// function that makes it, as Pico SDK's `data_cpy` is, which isn't a
+/// function of its own, keeps how the step does it, as a loop in that
+/// function.
+fn helpers(firmware: &Firmware, steps: Vec<Step>) -> Vec<Step> {
+    // For each step, whether it is such a call, and so the step after
+    // it, the one it does, goes.
+    let merged: Vec<bool> = (0..steps.len())
+        .map(|i| {
+            let step = &steps[i];
+            let (Does::Call, false, Some(span)) = (step.does, step.main, step.span) else {
+                return false;
+            };
+            let inside = |j: usize| steps.get(j).is_some_and(|other| other.event < span);
+            inside(i + 1)
+                && !inside(i + 2)
+                && matches!(steps[i + 1].does, Does::Copy | Does::Zero)
+                && steps[i + 1].level > step.level
+        })
+        .collect();
+    let local = |call: &Step| {
+        let item = firmware.item(call.inside);
+        item.is_some() && call.function.map(|function| firmware.item(function)) == Some(item)
+    };
+    let mut out: Vec<Step> = Vec::with_capacity(steps.len());
+    let mut call: Option<Step> = None;
+    for (step, merged) in steps.into_iter().zip(merged) {
+        if merged {
+            call = Some(step);
+            continue;
+        }
+        match call.take() {
+            Some(call) if local(&call) => out.push(Step {
+                site: call.site,
+                inside: call.inside,
+                level: call.level,
+                span: call.span,
+                begins: call.event,
+                ..step
+            }),
+            Some(call) => out.push(Step {
+                site: call.site,
+                way: call.way,
+                function: call.function,
+                veneer: call.veneer,
+                inside: call.inside,
+                level: call.level,
+                span: call.span,
+                begins: call.event,
+                ..step
+            }),
+            None => out.push(step),
+        }
+    }
+    out
 }
 
 /// The bytes that a loop's store covers over all the times it stores.
@@ -1289,6 +1422,7 @@ mod tests {
             end: None,
             passes: stores.iter().map(|store| store.times).max(),
             stores: Some(stores),
+            times: Vec::new(),
         }
     }
 

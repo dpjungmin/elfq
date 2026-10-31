@@ -399,10 +399,24 @@ fn row(answer: &Answer, step: &Step) -> Vec<String> {
                 .map(|cover| answer.memory.name(cover.section))
                 .collect();
             let names = names_text(&names, answer.all);
-            match step.way {
+            let what = match step.way {
                 Way::Loop => format!("{names}, by a loop in {function}"),
                 Way::Store => format!("{names}, by a store in {function}"),
+                // A call whose function the walk can't tell, which passes
+                // what a copy or a zeroing of the sections would.
+                Way::RegisterCall(register) => format!(
+                    "{names}, by a call through {} in {}",
+                    register_name(register),
+                    name(step.inside)
+                ),
+                Way::SupervisorCall => {
+                    format!("{names}, by a supervisor call in {}", name(step.inside))
+                }
                 _ => in_inside(format!("{names}, by {function}{via}")),
+            };
+            match step.table {
+                Some(table) => format!("{what}, from table {table:#x}"),
+                None => what,
             }
         }
         Does::Call if step.way == Way::Inlined => {

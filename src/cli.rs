@@ -553,11 +553,12 @@ order: each copy of a load image, such as .data or code that runs from
 RAM or ITCM, from where the file stores it to where it runs, and each
 zeroing of a section without contents, such as .bss. FROM, TO and SIZE
 are the numbers the code passes to memcpy or memset, or that a loop of
-its own copies or zeroes. The other rows are the reset handler's own
-calls, and code elfq can't follow, such as a call through a register, a
-call deeper than it follows, or a loop it can't match to a section, as
-one over a table of sections, which may set up any section not set up
-yet. The table shows the first 30 steps.
+its own copies or zeroes, as each time through a loop over a table of
+sections does, which WHAT says the row of. The other rows are the reset
+handler's own calls, and code elfq can't follow, such as a call through a
+register, a call deeper than it follows, or a loop it can't match to a
+section, which may set up any section not set up yet. The table shows
+the first 30 steps.
 
 It names a problem when code runs from a load image before the step that
 copies it, as when memcpy itself is placed in ITCM: the reset handler

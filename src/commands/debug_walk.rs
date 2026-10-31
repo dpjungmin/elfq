@@ -114,6 +114,20 @@ pub fn run(binary: &Binary, out: &mut dyn Write) -> Result<()> {
                     Some(passes) => format!("{what}, runs {passes} times"),
                     None => what,
                 };
+                // The walk went through its code each time, and where the
+                // times read the rows of a table from.
+                if !l.times.is_empty() {
+                    what = format!("{what}, each time walked");
+                    let rows: Vec<u32> = l.times.iter().filter_map(|time| time.row).collect();
+                    match rows[..] {
+                        [] => {}
+                        [row] => what = format!("{what}, reading a row at {row:#x}"),
+                        [first, second, ..] => {
+                            let step = second.wrapping_sub(first) as i32;
+                            what = format!("{what}, reading rows at {first:#x} {step:+}n");
+                        }
+                    }
+                }
                 // What each of its stores does over all the times it runs:
                 // where it stores the first time, and how far that moves.
                 for store in l.stores.iter().flatten() {
