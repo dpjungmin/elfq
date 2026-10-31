@@ -16,7 +16,7 @@ mod validate;
 
 pub(super) use rows::{
     CalleeJson, CrossingRow, callee_json, callee_rows, crossings_columns, group_unfollowed,
-    json_other, ranges_text, row_cells, unfollowed_how,
+    json_far_side, ranges_text, row_cells, unfollowed_how,
 };
 pub(super) use validate::check_to_range;
 
@@ -27,17 +27,43 @@ use anyhow::Result;
 use super::Outcome;
 use crate::binary::{AddressRange, Binary};
 use crate::cli::Format;
-use crate::graph::{Boundary, Graph, ItemsInRanges};
+use crate::graph::Graph;
 use crossing::{Entering, Leaving};
-use validate::{check_holds_items, check_other_side, has_address};
 
-/// Which way the references cross the boundary.
+/// Which way the references cross the boundary: out of the ranges for
+/// `callees`, into them for `callers`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
     /// Out of the ranges: what the items in them use outside them.
     Out,
     /// Into the ranges: what uses the items in them from outside.
     In,
+}
+
+impl Direction {
+    /// The command that asks about crossings this way.
+    pub fn command(self) -> &'static str {
+        match self {
+            Direction::Out => "callees",
+            Direction::In => "callers",
+        }
+    }
+
+    /// The option that gives the ranges on the far side.
+    pub fn option(self) -> &'static str {
+        match self {
+            Direction::Out => "--to",
+            Direction::In => "--from",
+        }
+    }
+
+    /// The other way.
+    pub fn other(self) -> Direction {
+        match self {
+            Direction::Out => Direction::In,
+            Direction::In => Direction::Out,
+        }
+    }
 }
 
 /// What a range check asks.
@@ -47,8 +73,8 @@ pub struct RangeCheck<'a> {
     /// SYMBOL, as the answer names it, when `ranges` is its range.
     pub name: Option<String>,
     /// The ranges of `--from` or `--to`: when there are any, only the uses
-    /// whose other end is in them count.
-    pub other: &'a [AddressRange],
+    /// whose far end is in them count.
+    pub far_side: &'a [AddressRange],
     pub direction: Direction,
 }
 
@@ -71,14 +97,6 @@ impl RangeCheck<'_> {
     fn it(&self) -> &'static str {
         if self.one() { "it" } else { "them" }
     }
-
-    /// The option that gives `other`.
-    fn option(&self) -> &'static str {
-        match self.direction {
-            Direction::Out => "--to",
-            Direction::In => "--from",
-        }
-    }
 }
 
 /// Lists what crosses the boundary of the ranges that `check` asks about,
@@ -93,84 +111,23 @@ pub fn run(
     format: Format,
     out: &mut dyn Write,
 ) -> Result<Outcome> {
-    let code_outside = graph.code_outside_items();
-    for &range in check.ranges {
-        if check.direction == Direction::In && has_address(&code_outside, range) {
-            continue;
-        }
-        check_holds_items(binary, range)?;
-    }
-    check_other_side(binary, check, &code_outside)?;
-    let boundary = Boundary::new(binary, graph, check.ranges);
-    let nothing_crosses = match check.direction {
+    validate::check(binary, graph, check)?;
+    let crosses = match check.direction {
         Direction::Out => {
-            let crossings = boundary.leaving_to(check.other);
-            let leaving = Leaving {
-                binary,
-                check,
-                crossings: crossings.uses,
-                unfollowed: crossings.unfollowed,
-                unreadable: boundary.items().unreadable(),
-                all,
-            };
-            match format {
-                Format::Json => leaving.write_json(out)?,
-                // `--tree` is refused: there is no tree.
-                Format::Text | Format::Tree => leaving.write_text(out)?,
-            }
-            leaving.crossings.is_empty()
-                && leaving.unfollowed.is_empty()
-                && leaving.unreadable.is_empty()
+            let answer = Leaving::find(binary, graph, check, all);
+            answer.write(format, out)?;
+            answer.crosses()
         }
         Direction::In => {
-            let from = ItemsInRanges::new(binary, check.other);
-            let in_ranges = |index: usize| boundary.items().contains_item(index);
-            // Code in the `--from` ranges that elfq can't read may use the
-            // ranges in any way.
-            let unreadable: Vec<usize> = from
-                .unreadable()
-                .into_iter()
-                .filter(|&index| !in_ranges(index))
-                .collect();
-            // Code anywhere may call through a pointer passed to it, but
-            // with `--from`, only code in its ranges counts.
-            let calls_through_pointer = || {
-                graph.unresolved.iter().any(|unresolved| {
-                    unresolved.is_indirect()
-                        && from.contains_item(unresolved.from)
-                        && !in_ranges(unresolved.from)
-                })
-            };
-            let through_pointer =
-                if check.other.is_empty() || !unreadable.is_empty() || calls_through_pointer() {
-                    boundary.items().callable_through_pointer(graph)
-                } else {
-                    Vec::new()
-                };
-            let crossings = boundary.entering_from(check.other);
-            let entering = Entering {
-                binary,
-                check,
-                crossings: crossings.uses,
-                unfollowed: crossings.unfollowed,
-                through_pointer,
-                unreadable,
-                all,
-            };
-            match format {
-                Format::Json => entering.write_json(out)?,
-                Format::Text | Format::Tree => entering.write_text(out)?,
-            }
-            entering.crossings.is_empty()
-                && entering.unfollowed.is_empty()
-                && entering.through_pointer.is_empty()
-                && entering.unreadable.is_empty()
+            let answer = Entering::find(binary, graph, check, all);
+            answer.write(format, out)?;
+            answer.crosses()
         }
     };
-    if nothing_crosses {
-        Ok(Outcome::Answered)
-    } else {
+    if crosses {
         Ok(Outcome::Crossed)
+    } else {
+        Ok(Outcome::Answered)
     }
 }
 
@@ -198,21 +155,21 @@ mod tests {
             .unwrap()
     }
 
-    /// The text answer to the range check of `ranges`, with `other` for
+    /// The text answer to the range check of `ranges`, with `far_side` for
     /// `--from` or `--to`.
     fn answer(
         binary: &Binary,
         graph: &Graph,
         ranges: &[&str],
-        other: &[&str],
+        far_side: &[&str],
         direction: Direction,
     ) -> (Outcome, String) {
         let ranges: Vec<AddressRange> = ranges.iter().map(|r| r.parse().unwrap()).collect();
-        let other: Vec<AddressRange> = other.iter().map(|r| r.parse().unwrap()).collect();
+        let far_side: Vec<AddressRange> = far_side.iter().map(|r| r.parse().unwrap()).collect();
         let check = RangeCheck {
             ranges: &ranges,
             name: None,
-            other: &other,
+            far_side: &far_side,
             direction,
         };
         let mut out = Vec::new();

@@ -6,9 +6,26 @@
 use anyhow::{Result, bail};
 
 use super::{Direction, RangeCheck};
-use crate::binary::{AddressRange, Binary};
+use crate::binary::{AddressRange, Binary, Item};
 use crate::commands::checks::empty_place;
 use crate::commands::text;
+use crate::graph::Graph;
+
+/// Checks the ranges that `check` asks about, and those of `--from` or
+/// `--to`, in `binary`, whose graph is `graph`.
+pub(super) fn check(binary: &Binary, graph: &Graph, check: &RangeCheck) -> Result<()> {
+    let code_outside = graph.code_outside_items();
+    for &range in check.ranges {
+        // `callers` can ask what calls code outside every item, as in a
+        // chip's ROM.
+        if check.direction == Direction::In && has_address(&code_outside, range) {
+            continue;
+        }
+        check_holds_items(binary, range)?;
+    }
+    check_far_side(binary, check, &code_outside)?;
+    check_nothing_shared(binary, check, &code_outside)
+}
 
 /// Whether `address` is in one of `ranges`.
 fn contains(ranges: &[AddressRange], address: u64) -> bool {
@@ -16,13 +33,13 @@ fn contains(ranges: &[AddressRange], address: u64) -> bool {
 }
 
 /// Whether one of `addresses` is in `range`.
-pub(super) fn has_address(addresses: &[u64], range: AddressRange) -> bool {
+fn has_address(addresses: &[u64], range: AddressRange) -> bool {
     addresses.iter().any(|&address| range.contains(address))
 }
 
 /// Explains that no item is in `range`, as for a mistyped range, unless
 /// one is.
-pub(super) fn check_holds_items(binary: &Binary, range: AddressRange) -> Result<()> {
+fn check_holds_items(binary: &Binary, range: AddressRange) -> Result<()> {
     if binary.items.iter().any(|item| item.is_in(&[range])) {
         return Ok(());
     }
@@ -49,19 +66,12 @@ pub(super) fn check_holds_items(binary: &Binary, range: AddressRange) -> Result<
     bail!("elfq found no functions or data in {place}");
 }
 
-/// Checks the ranges of `--from` or `--to`. Each must hold an item outside
-/// the ranges that `check` asks about, since the other end of each use is
+/// Checks the ranges of `--from` or `--to`: each must hold an item outside
+/// the ranges that `check` asks about, since the far end of each use is
 /// outside them, or for `--to`, code outside every item and outside those
 /// ranges that the file calls or jumps to, at one of `code_outside`, as in
-/// a chip's ROM. Else it is most likely mistyped. And when the ranges hold
-/// something outside them, nothing may be in both, since each end of a use
-/// would then be on either side.
-pub(super) fn check_other_side(
-    binary: &Binary,
-    check: &RangeCheck,
-    code_outside: &[u64],
-) -> Result<()> {
-    let option = check.option();
+/// a chip's ROM. Else it is most likely mistyped.
+fn check_far_side(binary: &Binary, check: &RangeCheck, code_outside: &[u64]) -> Result<()> {
     let it = check.it();
     let lists = match check.direction {
         Direction::Out => format!(
@@ -70,19 +80,7 @@ pub(super) fn check_other_side(
         ),
         Direction::In => format!("callers lists only what uses {it} from outside"),
     };
-    let inside = || match &check.name {
-        Some(name) => name.clone(),
-        None => {
-            let texts: Vec<String> = check
-                .ranges
-                .iter()
-                .map(|&range| text::range_argument(range))
-                .collect();
-            let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
-            text::names_text(&texts, true)
-        }
-    };
-    for &range in check.other {
+    for &range in check.far_side {
         let called = check.direction == Direction::Out && has_address(code_outside, range);
         match check.direction {
             Direction::Out => check_to_range(binary, range, code_outside)?,
@@ -98,55 +96,98 @@ pub(super) fn check_other_side(
                 .any(|&address| range.contains(address) && !contains(check.ranges, address));
         if !item_outside && !code_outside_them {
             bail!(
-                "{option} {} holds nothing outside {}, and {lists}",
+                "{} {} holds nothing outside {}, and {lists}",
+                check.direction.option(),
                 text::range_argument(range),
-                inside()
+                asked_about(check)
             );
         }
     }
-    // What the ranges hold, items and code outside every item that the file
-    // calls, each with the range of the option that holds it too, if any.
+    Ok(())
+}
+
+/// What the ranges that a range check asks about hold: an item, or code
+/// outside every item that the file calls or jumps to, as in a chip's ROM.
+#[derive(Clone, Copy)]
+enum Held<'a> {
+    Item(&'a Item),
+    Code(u64),
+}
+
+impl Held<'_> {
+    fn is_in(self, range: AddressRange) -> bool {
+        match self {
+            Held::Item(item) => item.is_in(&[range]),
+            Held::Code(address) => range.contains(address),
+        }
+    }
+}
+
+/// Checks that, when the ranges that `check` asks about hold something
+/// outside the ranges of `--from` or `--to`, nothing is in both, since each
+/// end of a use would then be on either side. `code_outside` is where the
+/// file calls or jumps to code outside every item.
+fn check_nothing_shared(binary: &Binary, check: &RangeCheck, code_outside: &[u64]) -> Result<()> {
+    // What the ranges hold, with the range of the option that holds it too,
+    // if any.
     let items = binary
         .items
         .iter()
         .filter(|item| item.is_in(check.ranges))
-        .map(|item| (Some(item), item.address));
+        .map(Held::Item);
     let code = code_outside
         .iter()
         .filter(|&&address| contains(check.ranges, address))
-        .map(|&address| (None, address));
+        .map(|&address| Held::Code(address));
     let mut shared = None;
     let mut outside = false;
-    for (item, address) in items.chain(code) {
-        let other = check.other.iter().copied().find(|&range| match item {
-            Some(item) => item.is_in(&[range]),
-            None => range.contains(address),
-        });
-        match other {
+    for held in items.chain(code) {
+        match check
+            .far_side
+            .iter()
+            .copied()
+            .find(|&range| held.is_in(range))
+        {
             Some(range) => {
-                shared.get_or_insert((item, address, range));
+                shared.get_or_insert((held, range));
             }
             None => outside = true,
         }
     }
-    if outside && let Some((item, address, other)) = shared {
-        let (what, range) = match item {
-            Some(item) => (
-                item.name.clone(),
-                check.ranges.iter().find(|&&range| item.is_in(&[range])),
-            ),
-            None => (
-                format!("the code at {address:#x}"),
-                check.ranges.iter().find(|range| range.contains(address)),
-            ),
+    if outside && let Some((held, far_range)) = shared {
+        let what = match held {
+            Held::Item(item) => item.name.clone(),
+            Held::Code(address) => format!("the code at {address:#x}"),
         };
-        let range = range.map_or_else(inside, |&range| text::range_argument(range));
+        let range = check
+            .ranges
+            .iter()
+            .find(|&&range| held.is_in(range))
+            .map_or_else(|| asked_about(check), |&range| text::range_argument(range));
         bail!(
-            "{option} {} and {range} both hold {what}; give ranges that don't share it",
-            text::range_argument(other)
+            "{} {} and {range} both hold {what}; give ranges that don't share it",
+            check.direction.option(),
+            text::range_argument(far_range)
         );
     }
     Ok(())
+}
+
+/// The ranges that `check` asks about, as its errors name them: SYMBOL, or
+/// the ranges as arguments.
+fn asked_about(check: &RangeCheck) -> String {
+    match &check.name {
+        Some(name) => name.clone(),
+        None => {
+            let texts: Vec<String> = check
+                .ranges
+                .iter()
+                .map(|&range| text::range_argument(range))
+                .collect();
+            let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
+            text::names_text(&texts, true)
+        }
+    }
 }
 
 /// Explains that `range`, given to `--to`, holds nothing that code can use,

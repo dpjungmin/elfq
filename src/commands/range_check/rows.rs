@@ -26,8 +26,8 @@ pub(crate) struct CalleeJson<'a> {
 }
 
 /// The ranges of `--to` or `--from` for JSON, or `None` when there are none.
-pub(crate) fn json_other(other: &[AddressRange]) -> Option<Vec<json::Range>> {
-    (!other.is_empty()).then(|| json_ranges(other))
+pub(crate) fn json_far_side(far_side: &[AddressRange]) -> Option<Vec<json::Range>> {
+    (!far_side.is_empty()).then(|| json_ranges(far_side))
 }
 
 /// The crossings with one item or import outside the ranges.

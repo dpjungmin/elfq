@@ -20,9 +20,9 @@
 //! USER --to RANGE` lists for that code, so that it names the code to
 //! change, but for a veneer whose target is in the ranges too, which
 //! `callees` steps over. The calls and jumps that elfq can't follow stay by
-//! the rule that `callees --to` keeps them by (see `ranges.rs`), and the
-//! tree and the JSON keep only the chains to what is in the ranges and to
-//! those calls and jumps.
+//! the rule that `callees --to` keeps them by (see `Unresolved::may_go_to`
+//! in `graph`), and the tree and the JSON keep only the chains to what is
+//! in the ranges and to those calls and jumps.
 //!
 //! Without SYMBOL, `elfq FILE reach` lists where the program starts, and
 //! the bytes of code and data that each start reaches in each block, as
@@ -128,13 +128,8 @@ struct ItemJson<'a> {
 struct UnresolvedJson<'a> {
     /// The function it is in.
     caller: json::Item<'a>,
-    /// The instruction's address.
-    site: String,
-    /// `call` or `jump`.
-    how: &'static str,
-    /// Where it goes, when the code says so but no item is there, or
-    /// `null` when only the running program knows.
-    target: Option<String>,
+    #[serde(flatten)]
+    call: json::Unresolved,
 }
 
 /// What `elfq FILE reach` lists without SYMBOL: where the program starts,
@@ -651,7 +646,7 @@ impl<'n, 'a> Reach<'n, 'a> {
         let followed = |unresolved: &Unresolved| !self.to.is_empty() && unresolved.target.is_some();
         let answer = ReachJson {
             symbol: json::Symbol::new(binary, Node::Item(self.index)),
-            to: range_check::json_other(&self.to),
+            to: range_check::json_far_side(&self.to),
             code_bytes: bytes.code,
             data_bytes: bytes.data,
             blocks,
@@ -661,16 +656,10 @@ impl<'n, 'a> Reach<'n, 'a> {
                 .iter()
                 .map(|unresolved| UnresolvedJson {
                     caller: item(Node::Item(unresolved.from)),
-                    site: json::address(unresolved.site),
-                    how: text::call_or_jump(unresolved),
-                    target: unresolved.target.map(json::address),
+                    call: json::Unresolved::new(unresolved),
                 })
                 .collect(),
-            unreadable: self
-                .unreadable
-                .iter()
-                .map(|&index| item(Node::Item(index)))
-                .collect(),
+            unreadable: json::items(binary, &self.unreadable),
             complete: self.unresolved.iter().all(followed) && self.unreadable.is_empty(),
         };
         json::write(&answer, out)

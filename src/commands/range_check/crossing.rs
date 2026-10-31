@@ -12,13 +12,14 @@ use serde::Serialize;
 
 use super::rows::{
     CalleeJson, callee_json, callee_rows, crossings_table, each_row, group_unfollowed, groups,
-    how_column, json_other, json_ranges, names_cell, outside_nodes, ranges_text, unfollowed_how,
+    how_column, json_far_side, json_ranges, names_cell, outside_nodes, ranges_text, unfollowed_how,
     write_groups,
 };
 use super::{Direction, RangeCheck};
 use crate::binary::{AddressRange, Binary};
+use crate::cli::Format;
 use crate::commands::{json, text};
-use crate::graph::{Crossing, Node, Unfollowed};
+use crate::graph::{Boundary, Crossing, Graph, ItemsInRanges, Node, Unfollowed};
 
 #[derive(Serialize)]
 struct LeavingJson<'a> {
@@ -44,13 +45,8 @@ struct UnresolvedJson<'a> {
     /// The function it is in: for `callees`, in the ranges, and for
     /// `callers`, outside them.
     caller: json::Item<'a>,
-    /// The instruction's address.
-    site: String,
-    /// `call` or `jump`.
-    how: &'static str,
-    /// Where it goes, when the code says so but no item is there, or
-    /// `null` when only the running program knows.
-    target: Option<String>,
+    #[serde(flatten)]
+    call: json::Unresolved,
     /// The linker's veneer that the call goes through, or `null`.
     veneer: Option<json::Item<'a>>,
 }
@@ -94,61 +90,96 @@ struct CallerJson<'a> {
 /// Where the far side of the crossings is, for a sentence: "outside it",
 /// or with `--to` or `--from`, in their ranges, as "in 0x30000000..0x31000000
 /// (.text)". `it` is "it" or "them".
-fn far_side(binary: &Binary, other: &[AddressRange], it: &str, all: bool) -> String {
-    if other.is_empty() {
+fn far_side_text(binary: &Binary, far_side: &[AddressRange], it: &str, all: bool) -> String {
+    if far_side.is_empty() {
         format!("outside {it}")
     } else {
-        format!("in {}", ranges_text(binary, other, all))
+        format!("in {}", ranges_text(binary, far_side, all))
     }
 }
 
 /// What the items in the ranges use outside them: `callees RANGE...`, or
 /// `callees SYMBOL --to RANGE`.
 pub(super) struct Leaving<'a> {
-    pub(super) binary: &'a Binary,
-    pub(super) check: &'a RangeCheck<'a>,
-    pub(super) crossings: Vec<Crossing>,
+    binary: &'a Binary,
+    check: &'a RangeCheck<'a>,
+    crossings: Vec<Crossing>,
     /// The calls and jumps in the ranges that elfq can't follow, and that
     /// may leave them, or with `--to`, may go to its ranges.
-    pub(super) unfollowed: Vec<Unfollowed>,
+    unfollowed: Vec<Unfollowed>,
     /// The functions in the ranges whose code elfq can't read, since it
     /// doesn't know where they end.
-    pub(super) unreadable: Vec<usize>,
+    unreadable: Vec<usize>,
     /// Whether the sentences name every range, section and function, for
     /// `--all`.
-    pub(super) all: bool,
+    all: bool,
 }
 
-impl Leaving<'_> {
-    pub(super) fn write_json(&self, out: &mut dyn Write) -> Result<()> {
+impl<'a> Leaving<'a> {
+    /// What the items in the ranges that `check` asks about use outside
+    /// them, in `binary`, whose graph is `graph`; `all` is for `--all`.
+    pub(super) fn find(
+        binary: &'a Binary,
+        graph: &Graph,
+        check: &'a RangeCheck<'a>,
+        all: bool,
+    ) -> Leaving<'a> {
+        let boundary = Boundary::new(binary, graph, check.ranges);
+        let crossings = boundary.leaving_to(check.far_side);
+        Leaving {
+            binary,
+            check,
+            crossings: crossings.uses,
+            unfollowed: crossings.unfollowed,
+            unreadable: boundary.items().unreadable(),
+            all,
+        }
+    }
+
+    /// Whether the answer lists something, or says that something may
+    /// cross.
+    pub(super) fn crosses(&self) -> bool {
+        !self.crossings.is_empty() || !self.unfollowed.is_empty() || !self.unreadable.is_empty()
+    }
+
+    /// Whether the answer has everything that crosses, as far as elfq can
+    /// tell. With `--to`, a call to a known address in its ranges, as to a
+    /// chip's ROM, is a whole answer, as `callers --from` counts it: only a
+    /// call through a pointer leaves it open.
+    fn complete(&self) -> bool {
+        self.unreadable.is_empty()
+            && self
+                .unfollowed
+                .iter()
+                .all(|row| !self.check.far_side.is_empty() && row.unresolved.target.is_some())
+    }
+
+    /// Writes the answer in `format`.
+    pub(super) fn write(&self, format: Format, out: &mut dyn Write) -> Result<()> {
+        match format {
+            Format::Json => self.write_json(out),
+            // `--tree` is refused: there is no tree.
+            Format::Text | Format::Tree => self.write_text(out),
+        }
+    }
+
+    fn write_json(&self, out: &mut dyn Write) -> Result<()> {
         let binary = self.binary;
-        let item = |node: Node| json::Item::new(binary, node);
         let leaving = LeavingJson {
             ranges: json_ranges(self.check.ranges),
-            to: json_other(self.check.other),
+            to: json_far_side(self.check.far_side),
             callees: callee_rows(binary, &self.crossings)
                 .iter()
                 .map(|(outside, row)| callee_json(binary, *outside, row))
                 .collect(),
             unresolved: unresolved_json(binary, &self.unfollowed),
-            unreadable: self
-                .unreadable
-                .iter()
-                .map(|&index| item(Node::Item(index)))
-                .collect(),
-            // With `--to`, a call to a known address in its ranges, as to a
-            // chip's ROM, is a whole answer, as `callers --from` counts it:
-            // only a call through a pointer leaves it open.
-            complete: self.unreadable.is_empty()
-                && self
-                    .unfollowed
-                    .iter()
-                    .all(|row| !self.check.other.is_empty() && row.unresolved.target.is_some()),
+            unreadable: json::items(binary, &self.unreadable),
+            complete: self.complete(),
         };
         json::write(&leaving, out)
     }
 
-    pub(super) fn write_text(&self, out: &mut dyn Write) -> Result<()> {
+    fn write_text(&self, out: &mut dyn Write) -> Result<()> {
         let binary = self.binary;
         let check = self.check;
         let subject = check.subject(binary, self.all);
@@ -162,7 +193,7 @@ impl Leaving<'_> {
                 .iter()
                 .map(|unfollowed| &unfollowed.unresolved),
         );
-        let far_side = far_side(binary, check.other, check.it(), self.all);
+        let far_side = far_side_text(binary, check.far_side, check.it(), self.all);
         let lead = match (groups.is_empty(), self.unfollowed.is_empty()) {
             (true, true) if self.unreadable.is_empty() => {
                 format!("{subject} {} nothing {far_side}.", verb("uses", "use"))
@@ -172,7 +203,7 @@ impl Leaving<'_> {
                 verb("uses", "use")
             ),
             (false, true) => format!("{subject} {} {used} {far_side}:", verb("uses", "use")),
-            (true, false) if check.other.is_empty() => format!(
+            (true, false) if check.far_side.is_empty() => format!(
                 "{subject} {} {unknown} that elfq can't follow:",
                 verb("makes", "make")
             ),
@@ -193,7 +224,7 @@ impl Leaving<'_> {
                 format!(
                     "{subject} {} {unknown} that elfq can't follow, which {go} to {}:",
                     verb("makes", "make"),
-                    ranges_text(binary, check.other, self.all)
+                    ranges_text(binary, check.far_side, self.all)
                 )
             }
             (false, false) => format!(
@@ -242,26 +273,95 @@ impl Leaving<'_> {
 /// What uses the items in the ranges from outside them: `callers
 /// RANGE...`, or `callers SYMBOL --from RANGE`.
 pub(super) struct Entering<'a> {
-    pub(super) binary: &'a Binary,
-    pub(super) check: &'a RangeCheck<'a>,
-    pub(super) crossings: Vec<Crossing>,
+    binary: &'a Binary,
+    check: &'a RangeCheck<'a>,
+    crossings: Vec<Crossing>,
     /// The calls and jumps from outside into code in the ranges that is
     /// outside every item, as in a chip's ROM.
-    pub(super) unfollowed: Vec<Unfollowed>,
+    unfollowed: Vec<Unfollowed>,
     /// The functions in the ranges that code outside may call through a
     /// pointer, which elfq can't see. With `--from`, only when code in its
     /// ranges calls through a pointer, or elfq can't read it.
-    pub(super) through_pointer: Vec<usize>,
+    through_pointer: Vec<usize>,
     /// The functions in the ranges of `--from`, outside the ranges, whose
     /// code elfq can't read, since it doesn't know where they end.
-    pub(super) unreadable: Vec<usize>,
+    unreadable: Vec<usize>,
     /// Whether the sentences name every range, section and function, for
     /// `--all`.
-    pub(super) all: bool,
+    all: bool,
 }
 
-impl Entering<'_> {
-    pub(super) fn write_json(&self, out: &mut dyn Write) -> Result<()> {
+impl<'a> Entering<'a> {
+    /// What uses the items in the ranges that `check` asks about from
+    /// outside them, in `binary`, whose graph is `graph`; `all` is for
+    /// `--all`.
+    pub(super) fn find(
+        binary: &'a Binary,
+        graph: &Graph,
+        check: &'a RangeCheck<'a>,
+        all: bool,
+    ) -> Entering<'a> {
+        let boundary = Boundary::new(binary, graph, check.ranges);
+        let from = ItemsInRanges::new(binary, check.far_side);
+        let in_ranges = |index: usize| boundary.items().contains_item(index);
+        // Code in the `--from` ranges that elfq can't read may use the
+        // ranges in any way.
+        let unreadable: Vec<usize> = from
+            .unreadable()
+            .into_iter()
+            .filter(|&index| !in_ranges(index))
+            .collect();
+        // Code anywhere may call through a pointer passed to it, but with
+        // `--from`, only code in its ranges counts.
+        let calls_through_pointer = || {
+            graph.unresolved.iter().any(|unresolved| {
+                unresolved.is_indirect()
+                    && from.contains_item(unresolved.from)
+                    && !in_ranges(unresolved.from)
+            })
+        };
+        let through_pointer =
+            if check.far_side.is_empty() || !unreadable.is_empty() || calls_through_pointer() {
+                boundary.items().callable_through_pointer(graph)
+            } else {
+                Vec::new()
+            };
+        let crossings = boundary.entering_from(check.far_side);
+        Entering {
+            binary,
+            check,
+            crossings: crossings.uses,
+            unfollowed: crossings.unfollowed,
+            through_pointer,
+            unreadable,
+            all,
+        }
+    }
+
+    /// Whether the answer lists something, or says that something may
+    /// cross.
+    pub(super) fn crosses(&self) -> bool {
+        !self.crossings.is_empty()
+            || !self.unfollowed.is_empty()
+            || !self.through_pointer.is_empty()
+            || !self.unreadable.is_empty()
+    }
+
+    /// Whether the answer has everything that crosses, as far as elfq can
+    /// tell.
+    fn complete(&self) -> bool {
+        self.through_pointer.is_empty() && self.unreadable.is_empty()
+    }
+
+    /// Writes the answer in `format`.
+    pub(super) fn write(&self, format: Format, out: &mut dyn Write) -> Result<()> {
+        match format {
+            Format::Json => self.write_json(out),
+            Format::Text | Format::Tree => self.write_text(out),
+        }
+    }
+
+    fn write_json(&self, out: &mut dyn Write) -> Result<()> {
         let binary = self.binary;
         let item = |node: Node| json::Item::new(binary, node);
         let groups = groups(binary, &self.crossings, Direction::In, |crossing| {
@@ -269,7 +369,7 @@ impl Entering<'_> {
         });
         let entering = EnteringJson {
             ranges: json_ranges(self.check.ranges),
-            from: json_other(self.check.other),
+            from: json_far_side(self.check.far_side),
             callers: each_row(groups)
                 .map(|(outside, row)| CallerJson {
                     item: item(outside),
@@ -280,22 +380,14 @@ impl Entering<'_> {
                 })
                 .collect(),
             unresolved: unresolved_json(binary, &self.unfollowed),
-            unreadable: self
-                .unreadable
-                .iter()
-                .map(|&index| item(Node::Item(index)))
-                .collect(),
-            through_pointer: self
-                .through_pointer
-                .iter()
-                .map(|&index| item(Node::Item(index)))
-                .collect(),
-            complete: self.through_pointer.is_empty() && self.unreadable.is_empty(),
+            unreadable: json::items(binary, &self.unreadable),
+            through_pointer: json::items(binary, &self.through_pointer),
+            complete: self.complete(),
         };
         json::write(&entering, out)
     }
 
-    pub(super) fn write_text(&self, out: &mut dyn Write) -> Result<()> {
+    fn write_text(&self, out: &mut dyn Write) -> Result<()> {
         let binary = self.binary;
         let check = self.check;
         let subject = check.subject(binary, self.all);
@@ -303,9 +395,9 @@ impl Entering<'_> {
         let groups = groups(binary, &self.crossings, Direction::In, |crossing| {
             how_column(binary, crossing)
         });
-        let far_side = far_side(binary, check.other, it, self.all);
+        let far_side = far_side_text(binary, check.far_side, it, self.all);
         // "Nothing outside X uses it", or "Nothing in Y uses X".
-        let nothing = if check.other.is_empty() {
+        let nothing = if check.far_side.is_empty() {
             format!("Nothing outside {subject} uses {it}")
         } else if self.unreadable.is_empty() {
             format!("Nothing {far_side} uses {subject}")
@@ -395,9 +487,7 @@ fn unresolved_json<'a>(binary: &'a Binary, unfollowed: &[Unfollowed]) -> Vec<Unr
             let unresolved = &unfollowed.unresolved;
             UnresolvedJson {
                 caller: item(unresolved.from),
-                site: json::address(unresolved.site),
-                how: text::call_or_jump(unresolved),
-                target: unresolved.target.map(json::address),
+                call: json::Unresolved::new(unresolved),
                 veneer: unfollowed.veneer.map(item),
             }
         })

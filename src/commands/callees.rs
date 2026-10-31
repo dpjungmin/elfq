@@ -1,5 +1,5 @@
 //! `elfq FILE callees SYMBOL`: what SYMBOL calls or uses. For ranges of
-//! memory in place of SYMBOL, or SYMBOL with `--to`, see `ranges.rs`.
+//! memory in place of SYMBOL, or SYMBOL with `--to`, see `range_check/`.
 
 use std::io::Write;
 
@@ -22,21 +22,10 @@ struct Callees<'a> {
     symbol: json::Symbol<'a>,
     callees: Vec<json::Use<'a>>,
     /// The calls and jumps that elfq can't follow.
-    unresolved: Vec<UnresolvedJson>,
+    unresolved: Vec<json::Unresolved>,
     /// Whether the list has everything SYMBOL calls, as far as elfq can
     /// tell: `false` when `unresolved` isn't empty.
     complete: bool,
-}
-
-#[derive(Serialize)]
-struct UnresolvedJson {
-    /// The instruction's address.
-    site: String,
-    /// `call` or `jump`.
-    how: &'static str,
-    /// Where it goes, when the code says so but no item is there, or
-    /// `null` when only the running program knows.
-    target: Option<String>,
 }
 
 /// Answers `elfq FILE callees SYMBOL`, or with ranges in place of SYMBOL,
@@ -53,34 +42,27 @@ pub fn run(
     out: &mut dyn Write,
 ) -> Result<Outcome> {
     check_code_is_readable(binary)?;
-    match symbol::subject(binary, symbols)? {
+    let (ranges, name) = match symbol::subject(binary, symbols)? {
         Subject::Symbol(symbol) => {
             let index = readable_item(binary, symbol.node)?;
-            let graph = Kept::new(Graph::build(binary));
             let lead_name = symbol.lead_name(binary);
             if to.is_empty() {
+                let graph = Kept::new(Graph::build(binary));
                 callees(binary, &graph, index, &lead_name, all, format, out)?;
                 return Ok(Outcome::Answered);
             }
-            let check = RangeCheck {
-                ranges: &[binary.items[index].range()],
-                name: Some(lead_name),
-                other: to,
-                direction: Direction::Out,
-            };
-            range_check::run(binary, &graph, &check, all, format, out)
+            (vec![binary.items[index].range()], Some(lead_name))
         }
-        Subject::Ranges(ranges) => {
-            let check = RangeCheck {
-                ranges: &ranges,
-                name: None,
-                other: to,
-                direction: Direction::Out,
-            };
-            let graph = Kept::new(Graph::build(binary));
-            range_check::run(binary, &graph, &check, all, format, out)
-        }
-    }
+        Subject::Ranges(ranges) => (ranges, None),
+    };
+    let check = RangeCheck {
+        ranges: &ranges,
+        name,
+        far_side: to,
+        direction: Direction::Out,
+    };
+    let graph = Kept::new(Graph::build(binary));
+    range_check::run(binary, &graph, &check, all, format, out)
 }
 
 /// What the item at `index` calls or uses. `name` is its name as the
@@ -109,14 +91,7 @@ pub(super) fn callees(
         let callees = Callees {
             symbol: json::Symbol::new(binary, node),
             callees: json::uses(binary, &rows),
-            unresolved: unresolved
-                .iter()
-                .map(|u| UnresolvedJson {
-                    site: json::address(u.site),
-                    how: text::call_or_jump(u),
-                    target: u.target.map(json::address),
-                })
-                .collect(),
+            unresolved: unresolved.iter().map(json::Unresolved::new).collect(),
             complete: unresolved.is_empty(),
         };
         return json::write(&callees, out);

@@ -1,5 +1,5 @@
 //! `elfq FILE callers SYMBOL`: what calls or uses SYMBOL. For ranges of
-//! memory in place of SYMBOL, or SYMBOL with `--from`, see `ranges.rs`.
+//! memory in place of SYMBOL, or SYMBOL with `--from`, see `range_check/`.
 
 use std::io::Write;
 
@@ -41,12 +41,11 @@ pub fn run(
     out: &mut dyn Write,
 ) -> Result<Outcome> {
     check_code_is_readable(binary)?;
-    let subject = symbol::subject(binary, symbols)?;
-    match subject {
+    let (ranges, name) = match symbol::subject(binary, symbols)? {
         Subject::Symbol(symbol) if from.is_empty() => {
             let graph = Kept::new(Graph::build(binary));
             callers(binary, &graph, &symbol, all, format, out)?;
-            Ok(Outcome::Answered)
+            return Ok(Outcome::Answered);
         }
         Subject::Symbol(symbol) => {
             let Node::Item(index) = symbol.node else {
@@ -57,26 +56,18 @@ pub fn run(
                 );
             };
             let range = binary.items[index].range();
-            let check = RangeCheck {
-                ranges: &[range],
-                name: Some(symbol.lead_name(binary)),
-                other: from,
-                direction: Direction::In,
-            };
-            let graph = Kept::new(Graph::build(binary));
-            range_check::run(binary, &graph, &check, all, format, out)
+            (vec![range], Some(symbol.lead_name(binary)))
         }
-        Subject::Ranges(ranges) => {
-            let check = RangeCheck {
-                ranges: &ranges,
-                name: None,
-                other: from,
-                direction: Direction::In,
-            };
-            let graph = Kept::new(Graph::build(binary));
-            range_check::run(binary, &graph, &check, all, format, out)
-        }
-    }
+        Subject::Ranges(ranges) => (ranges, None),
+    };
+    let check = RangeCheck {
+        ranges: &ranges,
+        name,
+        far_side: from,
+        direction: Direction::In,
+    };
+    let graph = Kept::new(Graph::build(binary));
+    range_check::run(binary, &graph, &check, all, format, out)
 }
 
 /// Writes what calls or uses SYMBOL, using `graph`, the file's reference
