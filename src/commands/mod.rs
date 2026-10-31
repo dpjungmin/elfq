@@ -4,8 +4,9 @@
 //! things a command needs before it answers, `kept.rs` leaves what a command
 //! builds for the system to free, `uses.rs` holds the table of `callers` and
 //! `callees`, `flat_answer.rs` the answers whose table has one row to a
-//! line, and `tree_answer.rs` those whose table holds a tree. How elfq words
-//! things is in `text.rs`, and the shapes of its JSON in `json.rs`.
+//! line, and `tree_answer.rs` those whose table holds a tree, and how a
+//! tree is cut down to its largest rows. How elfq words things is in
+//! `text.rs`, and the shapes of its JSON in `json.rs`.
 
 mod arguments;
 #[cfg(feature = "tui")]

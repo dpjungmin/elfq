@@ -310,9 +310,12 @@ is a short one to copy.
    which says when SYMBOL gave another of its names or an address inside
    it. A command that needs the roots refuses shared libraries, as `top`,
    `retained` and `why` do.
-5. **The answer.** Work it out first, then write it. Text uses
-   `render::Table`, `TreeRow` for trees, and the shared wording in
-   `text.rs`. JSON is a struct that derives `Serialize`, made of the shapes
+5. **The answer.** Work it out first, then write it. Text is a
+   `FlatAnswer` for a table of one row to a line, or a `TreeAnswer` for a
+   table that holds a tree of `TreeRow`s, as `top` builds one, with the
+   shared wording in `text.rs`. A tree cut down to its largest rows uses
+   the functions at the end of `tree_answer.rs`, as `top` does through
+   `RetainedTree::largest`. JSON is a struct that derives `Serialize`, made of the shapes
    in `json.rs`, such as `json::Symbol` for SYMBOL's item, which adds its
    `aliases`, and `json::Item` for every other item, and written with
    `json::write`. Every key is always there, `null` when it has no value.

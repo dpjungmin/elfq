@@ -199,15 +199,13 @@ impl Printed {
     /// under where the command's does. Each row opens the item it is about.
     fn of_tree(answer: TreeAnswer, command: String) -> Printed {
         let above = answer.lead.into_iter().map(Lines::Words).collect();
-        let columns = (answer.columns.iter())
+        let Some(table) = answer.table else {
+            return Printed::new(above, Vec::new(), Vec::new(), answer.notes, command);
+        };
+        let columns = (table.columns.iter())
             .map(|&(header, align)| (header.to_string(), align))
             .collect();
-        // An answer of sentences has no rows, and no shape to show them in.
-        let rows = match answer.rows.is_empty() {
-            true => Vec::new(),
-            false => flat_rows(&answer.rows, answer.shape),
-        };
-        let rows = (rows.into_iter())
+        let rows = (flat_rows(&table.rows, table.shape).into_iter())
             .map(|flat| PrintedRow {
                 cells: flat.row.cells.clone(),
                 name: flat.row.name.clone(),

@@ -60,7 +60,7 @@ pub struct TreeRow {
 }
 
 /// A row of a tree shown as rows, one per line (see [`flat_rows`]).
-pub struct FlatRow<'t> {
+pub struct FlatTreeRow<'t> {
     pub row: &'t TreeRow,
     /// What the last column says after the row's name: its mark, and which
     /// row it hangs under, as in " (through a pointer), kept by main".
@@ -74,7 +74,7 @@ pub struct FlatRow<'t> {
 /// The rows of the tree that starts with the rows in `top`, one per line,
 /// as `shape` shows them, which mustn't be [`TreeShape::Drawn`]: each row
 /// followed by the rows under it.
-pub fn flat_rows(top: &[TreeRow], shape: TreeShape) -> Vec<FlatRow<'_>> {
+pub fn flat_rows(top: &[TreeRow], shape: TreeShape) -> Vec<FlatTreeRow<'_>> {
     let (words, every) = match shape {
         TreeShape::Rows { words } => (words, true),
         TreeShape::Chains { words } => (words, false),
@@ -93,7 +93,7 @@ fn add_flat_rows<'t>(
     parent: Option<&TreeRow>,
     words: &str,
     every: bool,
-    flat: &mut Vec<FlatRow<'t>>,
+    flat: &mut Vec<FlatTreeRow<'t>>,
 ) {
     for (i, row) in rows.iter().enumerate() {
         let mut rest = match &row.mark {
@@ -108,7 +108,7 @@ fn add_flat_rows<'t>(
             under = Some(rest.len());
             rest += &parent.short_name;
         }
-        flat.push(FlatRow { row, rest, under });
+        flat.push(FlatTreeRow { row, rest, under });
         add_flat_rows(&row.children, Some(row), words, every, flat);
     }
 }
@@ -144,7 +144,7 @@ impl Table {
             self.drawn(top);
             return;
         }
-        for FlatRow { row, rest, .. } in flat_rows(top, shape) {
+        for FlatTreeRow { row, rest, .. } in flat_rows(top, shape) {
             let mut cells = row.cells.clone();
             cells.push(format!("{}{rest}", row.name));
             self.row(cells);

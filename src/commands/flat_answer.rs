@@ -1,6 +1,6 @@
 //! The answer of a command whose table is flat, one row to a line, as
-//! `callers`, `callees` and `reach` write it, and as a tab of browse shows
-//! it. Unlike a [`TreeAnswer`], whose rows hang under one another and
+//! `callers`, `callees`, `reach` and `inlined` write it, and as a tab of
+//! browse shows it. Unlike a [`TreeAnswer`], whose rows hang under one another and
 //! whose notes each follow an empty line, it can have a table of the
 //! blocks of memory before its rows, and its notes follow one empty line
 //! together.
@@ -14,8 +14,8 @@ use anyhow::Result;
 use crate::graph::Node;
 use crate::render::{Align, Table};
 
-/// The text answer of `callers`, `callees` or `reach`, before it is
-/// written, which browse shows too: the lines before its tables, the bytes
+/// The text answer of `callers`, `callees`, `reach` or `inlined`, before
+/// it is written, which browse shows too: the lines before its tables, the bytes
 /// in each block of memory, the table of rows, with the item that each row
 /// is about, and the notes under them. An empty line comes before each
 /// table, and before the notes when there is a table of rows.

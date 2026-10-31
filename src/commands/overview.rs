@@ -122,7 +122,7 @@ fn write_text(path: &Path, binary: &Binary, format: Format, out: &mut dyn Write)
     let kept = retained.kept();
     if kept > 0 {
         writeln!(out)?;
-        retained.write_largest(SHOWN, format, out)?;
+        retained.largest_table(SHOWN, format).write(out)?;
     }
     // `reach` shows a handler's code and data by block of memory.
     let handler = match blocks.len() {
@@ -176,7 +176,7 @@ fn write_range(
     // When nothing reaches the items in the range, there is nothing to rank.
     if retained.kept() > 0 {
         writeln!(out)?;
-        retained.write_largest(SHOWN, format, out)?;
+        retained.largest_table(SHOWN, format).write(out)?;
     }
     let examples: Vec<String> = [
         Some(format!("top --range {}", text::range_argument(range))),

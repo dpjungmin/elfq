@@ -19,12 +19,11 @@ use super::symbol::Names;
 use super::text::Naming;
 #[cfg(feature = "tui")]
 use super::tree_answer::TabAnswer;
-use super::tree_answer::TreeAnswer;
+use super::tree_answer::{TreeAnswer, TreeTable};
 use super::{Outcome, json, text};
 use crate::binary::{AddressRange, Binary, FileKind};
 use crate::cli::Format;
 use crate::graph::{Graph, Node, Unresolved};
-use crate::render::Align;
 
 #[derive(Serialize)]
 struct RetainedJson<'a> {
@@ -72,8 +71,12 @@ pub fn run(
     let index = refusal(binary, node)?;
     let lead_name = symbol.lead_name(binary);
     let graph = Kept::new(Graph::build(binary));
-    let retained =
-        Kept::new(RetainedTree::new(binary, &graph, range).with_names(names.into_inner()));
+    let retained = Kept::new(RetainedTree::naming(
+        binary,
+        &graph,
+        range,
+        names.into_inner(),
+    ));
     let symbol = SymbolInTree {
         retained: &retained,
         index,
@@ -106,7 +109,7 @@ pub(super) fn answer(symbol: &SymbolInTree, all: bool, format: Format) -> TreeAn
     if !symbol.is_reachable() {
         return TreeAnswer::sentences(vec![text::nothing_reaches(symbol.lead_name)]);
     }
-    let parts = Parts::new(symbol);
+    let parts = Parts::new(*symbol);
     parts.answer(&parts.shown(all), all, format)
 }
 
@@ -121,7 +124,7 @@ pub(super) fn answers(symbol: &SymbolInTree, shorten: &dyn Fn(&str) -> String) -
         let sentence = text::nothing_reaches(symbol.lead_name);
         return TabAnswer::sentences(vec![sentence]);
     }
-    let parts = Parts::new(symbol);
+    let parts = Parts::new(*symbol);
     let (every, largest) = (parts.shown(true), parts.shown(false));
     let answer = parts.answer(&every, true, Format::Text);
     let brief = parts.notes(&Naming::of(false));
@@ -141,10 +144,12 @@ pub(super) fn write_json(symbol: &SymbolInTree, out: &mut dyn Write) -> Result<(
     let binary = retained.binary;
     let node = symbol.node();
     let reachable = symbol.is_reachable();
-    let shares = if reachable {
-        shared(symbol)
-    } else {
-        Vec::new()
+    let parts = Parts::new(*symbol);
+    // Nothing is there only because of an item that nothing reaches, so
+    // nothing it uses is shared with what it keeps.
+    let shares = match reachable {
+        true => parts.shared,
+        false => Vec::new(),
     };
     let answer = RetainedJson {
         symbol: json::Symbol::new(binary, node),
@@ -158,21 +163,17 @@ pub(super) fn write_json(symbol: &SymbolInTree, out: &mut dyn Write) -> Result<(
             .into_iter()
             .map(|node| json::Item::new(binary, node))
             .collect(),
-        indirect_calls: symbol.indirect_calls().len(),
+        indirect_calls: parts.indirect.len(),
     };
     json::write(&answer, out)
 }
 
-/// What SYMBOL and the items it keeps use that other code uses too, and so
-/// isn't counted, sorted by name. With a range, only items with bytes in it.
-fn shared(symbol: &SymbolInTree) -> Vec<Node> {
+/// What SYMBOL and `exclusive`, the nodes that only it leads to, use that
+/// other code uses too, and so isn't counted, sorted by name. With a range,
+/// only items with bytes in it.
+fn shared(symbol: &SymbolInTree, exclusive: &[Node]) -> Vec<Node> {
     let binary = symbol.retained.binary;
-    let mut kept: HashSet<Node> = symbol
-        .retained
-        .tree
-        .exclusive(symbol.node())
-        .into_iter()
-        .collect();
+    let mut kept: HashSet<Node> = exclusive.iter().copied().collect();
     kept.insert(symbol.node());
     let mut shared: Vec<Node> = symbol
         .retained
@@ -194,10 +195,11 @@ fn shared(symbol: &SymbolInTree) -> Vec<Node> {
 
 /// What every form of SYMBOL's answer shares, worked out once: the items
 /// that only SYMBOL leads to, and what its notes name.
-struct Parts<'s, 't, 'g, 'a> {
-    symbol: &'s SymbolInTree<'t, 'g, 'a>,
-    /// The items exclusive to SYMBOL that sizes count (see
-    /// [`SymbolInTree::counted_items`]).
+struct Parts<'t, 'g, 'a> {
+    symbol: SymbolInTree<'t, 'g, 'a>,
+    /// The items exclusive to SYMBOL that sizes count: all of them, or with
+    /// a range, those with bytes of their own in it. In no particular
+    /// order.
     items: Vec<usize>,
     /// What SYMBOL and the items it keeps use that other code uses too
     /// (see [`shared`]).
@@ -207,21 +209,42 @@ struct Parts<'s, 't, 'g, 'a> {
     indirect: Vec<Unresolved>,
 }
 
-impl<'s, 't, 'g, 'a> Parts<'s, 't, 'g, 'a> {
-    /// The parts of the answer about `symbol`, which something reaches.
-    fn new(symbol: &'s SymbolInTree<'t, 'g, 'a>) -> Parts<'s, 't, 'g, 'a> {
+impl<'t, 'g, 'a> Parts<'t, 'g, 'a> {
+    /// The parts of the answer about `symbol`, from the nodes that only it
+    /// leads to, which every part starts from.
+    fn new(symbol: SymbolInTree<'t, 'g, 'a>) -> Parts<'t, 'g, 'a> {
+        let retained = symbol.retained;
+        let exclusive = retained.tree.exclusive(symbol.node());
+        // Imports are left out: their code isn't in the file.
+        let items: Vec<usize> = (exclusive.iter())
+            .filter_map(|&node| match node {
+                Node::Item(index) => Some(index),
+                Node::Import(_) => None,
+            })
+            .collect();
+        let graph = retained.graph;
+        let indirect = std::iter::once(symbol.index)
+            .chain(items.iter().copied())
+            .flat_map(|item| graph.unresolved_in(item))
+            .filter(|unresolved| unresolved.is_indirect())
+            .copied()
+            .collect();
         Parts {
             symbol,
-            items: symbol.counted_items(),
-            shared: shared(symbol),
-            indirect: symbol.indirect_calls(),
+            shared: shared(&symbol, &exclusive),
+            indirect,
+            items: (items.into_iter())
+                .filter(|&index| retained.range.is_none() || retained.own(index) > 0)
+                .collect(),
         }
     }
 
     /// The items that the tree shows: the largest 30 and the items that
-    /// keep them, or with `all`, every one.
+    /// keep them, or with `all`, every one. Only items with bytes of their
+    /// own compete for rows; an item that keeps bytes in a range but has
+    /// none there shows only between others and SYMBOL, unlike in `top`.
     fn shown(&self, all: bool) -> HashSet<usize> {
-        let symbol = self.symbol;
+        let symbol = &self.symbol;
         let shown = text::shown(all);
         symbol
             .retained
@@ -231,7 +254,7 @@ impl<'s, 't, 'g, 'a> Parts<'s, 't, 'g, 'a> {
     /// The answer with the rows of the `shown` items, in the shape that
     /// `format` asks for, and with `all`, every name in the notes.
     fn answer(&self, shown: &HashSet<usize>, all: bool, format: Format) -> TreeAnswer {
-        let symbol = self.symbol;
+        let symbol = &self.symbol;
         let name = symbol.lead_name;
         let retained = symbol.retained;
         let binary = retained.binary;
@@ -274,13 +297,11 @@ impl<'s, 't, 'g, 'a> Parts<'s, 't, 'g, 'a> {
         let shape = retained_tree::shape(format);
         TreeAnswer {
             lead: vec![lead],
-            columns: vec![
-                ("RETAINED", Align::Right),
-                ("OWN", Align::Right),
-                ("ITEM", Align::Left),
-            ],
-            rows: vec![retained.tree_row(shown, index, shape)],
-            shape,
+            table: Some(TreeTable {
+                columns: retained_tree::COLUMNS.into(),
+                rows: vec![retained.tree_row(shown, index, shape)],
+                shape,
+            }),
             notes,
         }
     }
@@ -320,7 +341,7 @@ impl<'s, 't, 'g, 'a> Parts<'s, 't, 'g, 'a> {
         if indirect.is_empty() {
             return None;
         }
-        let symbol = self.symbol;
+        let symbol = &self.symbol;
         let mut callers: Vec<usize> = indirect.iter().map(|u| u.from).collect();
         callers.sort_by_key(|&index| (index != symbol.index, index));
         callers.dedup();
@@ -345,6 +366,7 @@ impl<'s, 't, 'g, 'a> Parts<'s, 't, 'g, 'a> {
 
 /// SYMBOL's item, in the tree of retained sizes that says what only it
 /// leads to.
+#[derive(Clone, Copy)]
 pub(super) struct SymbolInTree<'t, 'g, 'a> {
     pub retained: &'t RetainedTree<'g, 'a>,
     /// SYMBOL's item, as an index into [`Binary::items`].
@@ -365,41 +387,5 @@ impl SymbolInTree<'_, '_, '_> {
     /// Whether anything reaches SYMBOL from where the program starts.
     fn is_reachable(&self) -> bool {
         self.retained.tree.is_reachable(self.node())
-    }
-
-    /// The calls and jumps through pointers set at run time in SYMBOL and
-    /// the items exclusive to it.
-    fn indirect_calls(&self) -> Vec<Unresolved> {
-        let graph = self.retained.graph;
-        std::iter::once(self.index)
-            .chain(self.items())
-            .flat_map(|item| graph.unresolved_in(item))
-            .filter(|unresolved| unresolved.is_indirect())
-            .copied()
-            .collect()
-    }
-
-    /// The items exclusive to SYMBOL that sizes count: all of them, or with
-    /// a range, those with bytes in it. In no particular order.
-    fn counted_items(&self) -> Vec<usize> {
-        let retained = &self.retained;
-        self.items()
-            .into_iter()
-            .filter(|&index| retained.range.is_none() || retained.own(index) > 0)
-            .collect()
-    }
-
-    /// The items exclusive to SYMBOL's item, in no particular order.
-    /// Imports are left out: their code isn't in the file.
-    fn items(&self) -> Vec<usize> {
-        self.retained
-            .tree
-            .exclusive(self.node())
-            .into_iter()
-            .filter_map(|node| match node {
-                Node::Item(index) => Some(index),
-                Node::Import(_) => None,
-            })
-            .collect()
     }
 }

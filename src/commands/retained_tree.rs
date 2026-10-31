@@ -6,18 +6,17 @@
 //! and items whose load images are in it are marked.
 
 use std::collections::HashSet;
-use std::io::Write;
 use std::ops::Deref;
 
-use anyhow::Result;
 use serde::Serialize;
 
 use super::symbol::Names;
+use super::tree_answer::{self, TreeTable};
 use super::{json, text};
 use crate::binary::{AddressRange, Binary, ItemKind, total};
 use crate::cli::Format;
 use crate::graph::{DominatorTree, Graph, Node};
-use crate::render::{Align, Table, TreeRow, TreeShape};
+use crate::render::{Align, TreeRow, TreeShape};
 
 /// One row of the tree, for `--json`: an item, and the row of the item that
 /// keeps it.
@@ -90,6 +89,17 @@ impl<'g, 'a> RetainedTree<'g, 'a> {
         graph: &'g Graph,
         range: Option<AddressRange>,
     ) -> RetainedTree<'g, 'a> {
+        RetainedTree::naming(binary, graph, range, Names::new(binary))
+    }
+
+    /// The same, with `names` to name items by, such as those that found
+    /// SYMBOL, so that the work of finding names is done only once.
+    pub fn naming(
+        binary: &'a Binary,
+        graph: &'g Graph,
+        range: Option<AddressRange>,
+        names: Names<'a>,
+    ) -> RetainedTree<'g, 'a> {
         let tree = DominatorTree::build(binary, graph, range);
         RetainedTree {
             binary,
@@ -97,7 +107,7 @@ impl<'g, 'a> RetainedTree<'g, 'a> {
             tree: Held::Owned(tree),
             range,
             called: called(graph),
-            names: Held::Owned(Names::new(binary)),
+            names: Held::Owned(names),
         }
     }
 
@@ -118,15 +128,6 @@ impl<'g, 'a> RetainedTree<'g, 'a> {
             range: None,
             called: called(graph),
             names: Held::Borrowed(names),
-        }
-    }
-
-    /// The tree, with `names` to name items by: those that found SYMBOL, so
-    /// that the work of finding names is done only once.
-    pub fn with_names(self, names: Names<'a>) -> RetainedTree<'g, 'a> {
-        RetainedTree {
-            names: Held::Owned(names),
-            ..self
         }
     }
 
@@ -205,70 +206,45 @@ impl<'g, 'a> RetainedTree<'g, 'a> {
             && self.tree.parent(Node::Item(index)).is_some()
     }
 
-    /// Writes the tree of the `count` items that keep the most bytes, as
-    /// `top` and the overview show it.
-    pub fn write_largest(&self, count: usize, format: Format, out: &mut dyn Write) -> Result<()> {
+    /// The table of the tree of the `count` items that keep the most bytes,
+    /// as `top` and the overview show it, in the shape that `format` asks
+    /// for. Every item that something reaches competes for a row, with a
+    /// range those with no bytes of their own in it too, when they keep
+    /// some. `retained` lets only items with bytes of their own compete.
+    pub fn largest_table(&self, count: usize, format: Format) -> TreeTable {
         let tree = &self.tree;
         let reachable: Vec<usize> = (0..self.binary.items.len())
             .filter(|&index| tree.is_reachable(Node::Item(index)))
             .collect();
         let shown = self.largest(tree.top(), &reachable, count);
         self.names.will_name(shown.len());
-        let mut table = Table::new(&[
-            ("RETAINED", Align::Right),
-            ("OWN", Align::Right),
-            ("ITEM", Align::Left),
-        ]);
         let shape = shape(format);
-        table.tree(&self.rows(&shown, tree.top(), shape), shape);
-        table.write(out)?;
-        Ok(())
+        TreeTable {
+            columns: COLUMNS.into(),
+            rows: self.rows(&shown, tree.top(), shape),
+            shape,
+        }
     }
 
     /// The items to show of a large tree drawn from `roots`: the `count`
-    /// largest of `items`, and every item between each of them and the
-    /// roots, so that the tree holds together. An item that would be left
-    /// out on its own, keeping nothing that gets a row, is shown too, since
-    /// its row takes no more room than "1 more" would.
+    /// largest of `items` that get rows, every item between each of them
+    /// and the roots, and a lone item that would be left out on its own
+    /// (see [`tree_answer::add_lone`]).
     pub fn largest(&self, roots: &[Node], items: &[usize], count: usize) -> HashSet<usize> {
         let is_root: HashSet<Node> = roots.iter().copied().collect();
-        let mut by_size: Vec<usize> = items
-            .iter()
-            .copied()
-            .filter(|&index| self.counts(index))
-            .collect();
-        by_size.sort_by_key(|&index| (std::cmp::Reverse(self.retained(index)), index));
-        let mut shown = HashSet::new();
-        for &index in by_size.iter().take(count) {
-            let mut node = Node::Item(index);
-            while let Node::Item(item) = node {
-                if !shown.insert(item) || is_root.contains(&node) {
-                    break;
-                }
-                match self.tree.parent(node) {
-                    Some(parent) => node = parent,
-                    None => break,
-                }
+        let candidates = items.iter().copied().filter(|&index| self.counts(index));
+        let largest = tree_answer::largest(candidates, |index| self.retained(index), count);
+        let mut shown = tree_answer::with_chains(largest, |index| {
+            let node = Node::Item(index);
+            match self.tree.parent(node) {
+                Some(Node::Item(parent)) if !is_root.contains(&node) => Some(parent),
+                _ => None,
             }
-        }
-        let lone: Vec<usize> = shown
-            .iter()
-            .map(|&index| self.tree.children(Node::Item(index)))
-            .chain([roots])
-            .filter_map(|nodes| self.lone(nodes, &shown))
-            .collect();
-        shown.extend(lone);
+        });
+        tree_answer::add_lone(&mut shown, self.counted(roots), |index| {
+            self.counted_children(index)
+        });
         shown
-    }
-
-    /// The one item in `nodes` that gets a row but isn't in `shown`, if
-    /// there is only one and it keeps nothing that gets a row.
-    fn lone(&self, nodes: &[Node], shown: &HashSet<usize>) -> Option<usize> {
-        let mut hidden = self.counted(nodes).filter(|index| !shown.contains(index));
-        match (hidden.next(), hidden.next()) {
-            (Some(lone), None) if self.kept_items(lone) == 0 => Some(lone),
-            _ => None,
-        }
     }
 
     /// The rows of the shown items in `nodes`, each with the rows of its
@@ -292,12 +268,9 @@ impl<'g, 'a> RetainedTree<'g, 'a> {
         let cells = vec![self.retained(index).to_string(), self.own_text(index)];
         let children = self.rows(shown, self.tree.children(Node::Item(index)), shape);
         let name = &self.binary.items[index].name;
-        // Finding a short name takes a while, so only rows that show it
-        // find it.
-        let short_name = if children.is_empty() || shape == TreeShape::Drawn {
-            name.clone()
-        } else {
-            self.names.short_name(Node::Item(index))
+        let short_name = match tree_answer::is_named_below(&children, shape) {
+            true => self.names.short_name(Node::Item(index)),
+            false => name.clone(),
         };
         TreeRow {
             cells,
@@ -318,11 +291,9 @@ impl<'g, 'a> RetainedTree<'g, 'a> {
         })
     }
 
-    /// How many items the item at `index` keeps that would get rows.
-    fn kept_items(&self, index: usize) -> usize {
+    /// The items that the item at `index` keeps itself that get rows.
+    fn counted_children(&self, index: usize) -> impl Iterator<Item = usize> {
         self.counted(self.tree.children(Node::Item(index)))
-            .map(|child| 1 + self.kept_items(child))
-            .sum()
     }
 
     /// The row that sums up `hidden` items and what they keep, if there are
@@ -332,9 +303,13 @@ impl<'g, 'a> RetainedTree<'g, 'a> {
             return None;
         }
         let bytes = total(hidden.iter().map(|&index| self.retained(index)));
-        let items: usize = hidden.iter().map(|&index| 1 + self.kept_items(index)).sum();
+        let items = tree_answer::with_descendants(hidden, |index| self.counted_children(index));
         let cells = vec![bytes.to_string(), String::new()];
-        Some(TreeRow::new(cells, format!("{items} more"), Vec::new()))
+        Some(TreeRow::new(
+            cells,
+            format!("{} more", items.len()),
+            Vec::new(),
+        ))
     }
 
     /// The rows of the items in `nodes` and of everything they keep, in the
@@ -383,6 +358,13 @@ fn called(graph: &Graph) -> HashSet<usize> {
         })
         .collect()
 }
+
+/// The columns of the trees of the overview, `top` and `retained`.
+pub(super) const COLUMNS: [(&str, Align); 3] = [
+    ("RETAINED", Align::Right),
+    ("OWN", Align::Right),
+    ("ITEM", Align::Left),
+];
 
 /// How the overview, `top` and `retained` show their trees: drawn with
 /// `--tree`, or else as rows that each name the item that keeps them, as

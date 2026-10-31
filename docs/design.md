@@ -1353,7 +1353,8 @@ in order. Its output is the first example under [Commands](#commands).
    from the dynamic relocations or, in a file that runs at a fixed
    address, from the words that hold an item's address, and finds the
    roots with `roots::find`.
-6. **The dominator tree.** `RetainedTree::new` borrows the graph, and
+6. **The dominator tree.** `RetainedTree::naming` borrows the graph and
+   keeps the `Names` that found `process_frame`, and
    `graph::DominatorTree::build` has `petgraph` find each node's closest
    dominator, starting from one node above every root, and adds up the
    retained sizes from the bottom of the tree up.
@@ -1361,9 +1362,11 @@ in order. Its output is the first example under [Commands](#commands).
    the "(through a pointer)" mark.
 7. **The answer.** `retained::answer` words the lead line, then
    `RetainedTree::largest` picks the 30 largest items under
-   `process_frame`, and the items between them and it, and
-   `RetainedTree::tree_row` makes a `render::TreeRow` of each, with the
-   short name that the rows under it call it by (`Names::short_name`).
+   `process_frame`, and the items between them and it, with the
+   functions in `tree_answer.rs` that cut the trees of `top`, `retained`
+   and `inlined` down the same way, and `RetainedTree::tree_row` makes a
+   `render::TreeRow` of each, with the short name that the rows under it
+   call it by (`Names::short_name`).
    `shared_note` names what `process_frame` uses that other code uses too,
    and `indirect_note` notes any calls through pointers in `process_frame`
    or the items it keeps. `TreeAnswer::write` writes the lead line, then
