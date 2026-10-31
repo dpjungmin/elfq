@@ -809,7 +809,14 @@ fn keep_out_names_what_runs_before_each_copy_of_code() {
         names(&rows[0]),
         ["Reset_Handler", "SystemInit", "clock_setup", "memcpy"]
     );
-    // data_init does the copy itself, so only its own code runs before.
+    // prep holds the copy, as it calls memcpy, then memset and
+    // start_threads after it, so only prep and memcpy run before.
+    let (_, noreturn) = answer(NORETURN_SAMPLE);
+    assert_eq!(
+        names(&noreturn["keep_out"][0]),
+        ["Reset_Handler", "prep", "memcpy"]
+    );
+    // data_init does the copy itself, with its own loop.
     let (_, sections) = answer(SECTIONS_SAMPLE);
     assert_eq!(names(&sections["keep_out"][0]), ["ResetISR", "data_init"]);
     // Nothing copies .ram, so nothing that runs before main may be in it.

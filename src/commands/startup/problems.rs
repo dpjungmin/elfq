@@ -494,11 +494,11 @@ impl Runs<'_> {
             .collect()
     }
 
-    /// For each load image that holds code, the functions that startup
-    /// runs before it copies it, which must stay out of it: those that
-    /// would run from it too early if they were in it. The reset handler
-    /// comes first, then the functions in the order the calls run them,
-    /// each once, but no veneer.
+    /// For each load image that holds code, by address, the functions
+    /// that startup runs before it copies it, which must stay out of it:
+    /// those that would run from it too early if they were in it. The
+    /// reset handler comes first, then each call's function and what it
+    /// calls, breadth first, each once, but no veneer.
     fn keep_out(
         &mut self,
         memory: &Memory,
@@ -509,28 +509,33 @@ impl Runs<'_> {
     ) -> Vec<(usize, Vec<usize>)> {
         let firmware = self.firmware;
         let mut rows = Vec::new();
-        for &x in &memory.loads {
-            if memory.section(x).kind != SectionKind::Text {
+        for &x in &memory.ram {
+            if !memory.is_load(x) || memory.section(x).kind != SectionKind::Text {
                 continue;
             }
             let mut functions: Vec<usize> = Vec::new();
-            let mut seen: HashSet<usize> = HashSet::new();
+            let (mut addresses, mut indexes) = (HashSet::new(), HashSet::new());
             let mut add = |address: u64| {
-                if firmware.veneer_target(address).is_some() {
+                if !addresses.insert(address) || firmware.veneer_target(address).is_some() {
                     return;
                 }
                 let Some(index) = firmware.item(address) else {
                     return;
                 };
-                if firmware.binary.items[index].kind == ItemKind::Function && seen.insert(index) {
+                if firmware.binary.items[index].kind == ItemKind::Function && indexes.insert(index)
+                {
                     functions.push(index);
                 }
             };
             add(reset.address);
+            // A function called again adds nothing new, and going through
+            // what it calls each time would take as long as the calls
+            // times all they call.
+            let mut expanded = HashSet::new();
             for (_, target, holds) in self.calls_before(events, steps, judged, x) {
                 if holds {
                     add(target);
-                } else {
+                } else if expanded.insert(target) {
                     for &(address, _) in &self.closure(target).found {
                         add(address);
                     }
