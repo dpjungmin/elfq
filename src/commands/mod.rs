@@ -22,7 +22,7 @@ mod inlined;
 mod json;
 mod kept;
 mod overview;
-mod ranges;
+mod range_check;
 mod reach;
 mod retained;
 mod retained_tree;

@@ -18,7 +18,7 @@ use std::collections::HashSet;
 use super::Build;
 use super::blocks::Block;
 use super::rows::{Items, Status};
-use crate::commands::ranges::{self, CrossingRow};
+use crate::commands::range_check::{self, CrossingRow};
 use crate::graph::{Boundary, Node, ReferenceKind};
 
 /// A use between blocks that only one build has, as a row of `callees
@@ -133,7 +133,7 @@ fn uses(
     let binary = &build.binary;
     for (block, range) in blocks.iter().map(|block| block.range).enumerate() {
         let leaving = Boundary::new(binary, &build.graph, &[range]).leaving();
-        for (callee, row) in ranges::callee_rows(binary, &leaving) {
+        for (callee, row) in range_check::callee_rows(binary, &leaving) {
             let (Node::Item(callee), Node::Item(caller)) = (callee, row.inside) else {
                 continue;
             };

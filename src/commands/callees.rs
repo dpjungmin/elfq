@@ -9,7 +9,7 @@ use serde::Serialize;
 use super::checks::{check_code_is_readable, readable_item};
 use super::flat_answer::FlatAnswer;
 use super::kept::Kept;
-use super::ranges::{self, Direction, RangeCheck};
+use super::range_check::{self, Direction, RangeCheck};
 use super::symbol::{self, Subject};
 use super::uses::{self, End};
 use super::{Outcome, json, text};
@@ -43,7 +43,7 @@ struct UnresolvedJson {
 /// `callees RANGE...`. `to`, the ranges of `--to`, limits either to the
 /// callees in them, and then SYMBOL is asked about as the range it
 /// occupies. For SYMBOL alone, the text lists the 30 largest callees, or
-/// with `all`, every one; for ranges, see [`ranges::run`].
+/// with `all`, every one; for ranges, see [`range_check::run`].
 pub fn run(
     binary: &Binary,
     symbols: &[String],
@@ -68,7 +68,7 @@ pub fn run(
                 other: to,
                 direction: Direction::Out,
             };
-            ranges::run(binary, &graph, &check, all, format, out)
+            range_check::run(binary, &graph, &check, all, format, out)
         }
         Subject::Ranges(ranges) => {
             let check = RangeCheck {
@@ -78,7 +78,7 @@ pub fn run(
                 direction: Direction::Out,
             };
             let graph = Kept::new(Graph::build(binary));
-            ranges::run(binary, &graph, &check, all, format, out)
+            range_check::run(binary, &graph, &check, all, format, out)
         }
     }
 }

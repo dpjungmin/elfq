@@ -43,7 +43,7 @@ use super::flat_answer::{FlatAnswer, FlatRow};
 use super::kept::Kept;
 use super::symbol::{Names, Symbol};
 use super::text::CommandLine;
-use super::{Outcome, json, ranges, text};
+use super::{Outcome, json, range_check, text};
 use crate::binary::{
     AddressRange, Binary, CodeAndData, FileKind, ItemKind, MemoryBlock, STARTUP_ARRAYS,
     exception_name, is_reserved, memory_blocks, total,
@@ -411,7 +411,7 @@ impl<'n, 'a> Reach<'n, 'a> {
     ) -> Result<Reach<'n, 'a>> {
         let code_outside = graph.code_outside_items();
         for &range in to {
-            ranges::check_to_range(binary, range, &code_outside)?;
+            range_check::check_to_range(binary, range, &code_outside)?;
         }
         let start = Node::Item(index);
         let paths = ShortestPaths::from(binary, graph, start);
@@ -651,7 +651,7 @@ impl<'n, 'a> Reach<'n, 'a> {
         let followed = |unresolved: &Unresolved| !self.to.is_empty() && unresolved.target.is_some();
         let answer = ReachJson {
             symbol: json::Symbol::new(binary, Node::Item(self.index)),
-            to: ranges::json_other(&self.to),
+            to: range_check::json_other(&self.to),
             code_bytes: bytes.code,
             data_bytes: bytes.data,
             blocks,
@@ -842,7 +842,7 @@ impl<'n, 'a> Reach<'n, 'a> {
             .map(|step| step.node)
             .collect();
         let bytes = text::code_and_data(self.bytes(counted.iter().copied()));
-        let ranges = ranges::ranges_text(binary, &self.to, self.all);
+        let ranges = range_check::ranges_text(binary, &self.to, self.all);
         // Counted as the rows show them: a tree has the veneers that the
         // other rows step over.
         let unknown: Vec<&Unresolved> = if tree {
@@ -942,7 +942,7 @@ impl<'n, 'a> Reach<'n, 'a> {
         if symbol {
             table.row(with_at(self.symbol_row().into_cells(), &[]));
         }
-        for (unfollowed, sites) in ranges::group_unfollowed(&self.unfollowed) {
+        for (unfollowed, sites) in range_check::group_unfollowed(&self.unfollowed) {
             let sites = self.unfollowed_sites(&unfollowed, sites);
             table.row(with_at(
                 self.unfollowed_row(&unfollowed).into_cells(),
@@ -1031,7 +1031,7 @@ impl<'n, 'a> Reach<'n, 'a> {
         for steps in items.chunk_by(|a, b| self.group(a) == self.group(b)) {
             self.add_group(steps, &shown, &mut rows);
         }
-        for (unfollowed, _) in ranges::group_unfollowed(outside) {
+        for (unfollowed, _) in range_check::group_unfollowed(outside) {
             rows.push(self.unfollowed_row(&unfollowed));
         }
         if !imports.is_empty() {
@@ -1093,7 +1093,7 @@ impl<'n, 'a> Reach<'n, 'a> {
         let cells = vec![
             address,
             String::new(),
-            ranges::unfollowed_how(unfollowed).to_string(),
+            range_check::unfollowed_how(unfollowed).to_string(),
         ];
         let mut row = FlatRow::new(cells, String::new(), Some(Node::Item(unresolved.from)));
         row.rest = format!("{what}, used by {}", self.user_name(unresolved.from));

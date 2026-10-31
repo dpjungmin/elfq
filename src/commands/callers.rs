@@ -9,7 +9,7 @@ use serde::Serialize;
 use super::checks::check_code_is_readable;
 use super::flat_answer::FlatAnswer;
 use super::kept::Kept;
-use super::ranges::{self, Direction, RangeCheck};
+use super::range_check::{self, Direction, RangeCheck};
 use super::symbol::{self, Subject, Symbol};
 use super::uses::{self, End, Row};
 use super::{Outcome, json, text};
@@ -31,7 +31,7 @@ struct Callers<'a> {
 /// `callers RANGE...`. `from`, the ranges of `--from`, limits either to the
 /// callers in them, and then SYMBOL is asked about as the range it
 /// occupies. For SYMBOL alone, the text lists the 30 largest callers, or
-/// with `all`, every one; for ranges, see [`ranges::run`].
+/// with `all`, every one; for ranges, see [`range_check::run`].
 pub fn run(
     binary: &Binary,
     symbols: &[String],
@@ -64,7 +64,7 @@ pub fn run(
                 direction: Direction::In,
             };
             let graph = Kept::new(Graph::build(binary));
-            ranges::run(binary, &graph, &check, all, format, out)
+            range_check::run(binary, &graph, &check, all, format, out)
         }
         Subject::Ranges(ranges) => {
             let check = RangeCheck {
@@ -74,7 +74,7 @@ pub fn run(
                 direction: Direction::In,
             };
             let graph = Kept::new(Graph::build(binary));
-            ranges::run(binary, &graph, &check, all, format, out)
+            range_check::run(binary, &graph, &check, all, format, out)
         }
     }
 }
