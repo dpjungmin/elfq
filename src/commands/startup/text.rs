@@ -305,9 +305,7 @@ pub(super) fn sentence(answer: &Answer, p: &Problem) -> String {
             };
             let mut who = steps_text(&p.steps, true);
             if let [one] = p.steps[..]
-                && let first = &steps[one - 1]
-                && first.does == Does::Call
-                && let Some(function) = first.function
+                && let Some(function) = steps[one - 1].called()
                 && !p.items.contains(&function)
             {
                 who = format!("{who}, {},", firmware.name(function));
@@ -465,6 +463,7 @@ fn row(answer: &Answer, step: &Step) -> Vec<String> {
                 } => format!("a jump table in {function}"),
                 End::LeavesFile { .. } => format!("a jump out of the file in {function}"),
                 End::Undecoded(_) => format!("code in {function} that elfq can't decode"),
+                End::Rejoins(_) => format!("a loop in {function}"),
                 _ => format!("code in {function} past elfq's budget"),
             },
             Way::Call | Way::TailCall | Way::Inlined | Way::Store => function,
@@ -508,11 +507,10 @@ fn try_lines(answer: &Answer) -> Vec<String> {
         let step = &answer.steps[first - 1];
         let x = p.sections[0];
         let section = answer.memory.section(x);
-        let Some(function) = step.function else {
+        let Some(function) = step.called() else {
             continue;
         };
-        if step.does != Does::Call
-            || p.items.contains(&function)
+        if p.items.contains(&function)
             || (section.address..answer.memory.end(x)).contains(&function)
         {
             continue;
@@ -576,7 +574,9 @@ pub(super) fn steps_text(numbers: &[usize], capital: bool) -> String {
 /// through r3)".
 pub(super) fn unread_text(steps: &[Step], numbers: &[usize]) -> String {
     let unread: Vec<&Step> = numbers.iter().map(|&n| &steps[n - 1]).collect();
-    let loops = unread.iter().filter(|step| step.way == Way::Loop).count();
+    let loops = (unread.iter())
+        .filter(|step| matches!(step.way, Way::Loop | Way::Stop(End::Rejoins(_))))
+        .count();
     let registers: Vec<u16> = (unread.iter())
         .filter_map(|step| match step.way {
             Way::RegisterCall(register) => Some(register),
@@ -644,6 +644,7 @@ pub(super) fn unread_text(steps: &[Step], numbers: &[usize]) -> String {
                     "code elfq can't decode".to_string(),
                     "code elfq can't decode",
                 ),
+                End::Rejoins(_) => continue,
                 _ => (
                     "code past elfq's budget".to_string(),
                     "code past elfq's budget",

@@ -1,11 +1,12 @@
 /*
  * Startup code laid out as the Pico SDK's crt0.S for the Raspberry Pi
  * RP2040 lays it out: on core 0, _reset_handler copies the sections that a
- * table of (load image, start, end) rows lists, up to a row of zeros, with
- * a small loop that isn't a function of its own, then zeroes .bss and
- * calls runtime_init and main. Core 1 goes back to the boot ROM, as the
- * entry point does, which is how a debugger starts the program. Linked
- * with pico.ld.
+ * table of (load image, start, end) rows lists, up to a zero word, with a
+ * small loop that isn't a function of its own, then zeroes .bss and calls
+ * runtime_init and main. Scratch Y holds nothing, so its row copies no
+ * bytes, as in most programs built with the SDK. Core 1 goes back to the
+ * boot ROM, as the entry point does, which is how a debugger starts the
+ * program. Linked with pico.ld.
  */
 #include <stdint.h>
 
@@ -13,11 +14,10 @@ extern uint32_t __stack_top;
 
 #define GPIO_OUT (*(volatile uint32_t *)0xd0000010u)
 
-/* In .data, .bss and .scratch_y, so that main reads what _reset_handler
-   sets up. */
+/* In .data and .bss, so that main reads what _reset_handler sets up. */
 volatile uint32_t scale = 3;
 volatile uint32_t counts[8];
-__attribute__((section(".scratch_y.steps"))) volatile uint32_t steps[4] = {1, 2, 3, 4};
+volatile uint32_t steps[4] = {1, 2, 3, 4};
 
 /* Code in scratch X, which _reset_handler copies there, as the SDK's
    __scratch_x functions are. */
@@ -84,7 +84,7 @@ __asm__(
     "    beq   1f\n"
     "    movs  r0, #0\n"
     "    b     enter_vector_table\n"
-    /* Each row of the table, up to the row of zeros. */
+    /* Each row of the table, up to the zero word. */
     "1:  adr   r4, data_cpy_table\n"
     "2:  ldmia r4!, {r1, r2, r3}\n"
     "    cmp   r1, #0\n"

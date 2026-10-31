@@ -250,10 +250,7 @@ pub(super) fn judge(
     }
     // A walk that ends where it can't read on, or stops short, didn't
     // follow what comes after, though that may set up nothing.
-    let stopped = matches!(
-        end,
-        End::Undecoded(_) | End::Branches { .. } | End::LeavesFile { .. } | End::Budget(_)
-    );
+    let stopped = end.stops_short();
     let mut judged = Judged {
         init,
         unknown,

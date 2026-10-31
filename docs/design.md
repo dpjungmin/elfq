@@ -782,7 +782,9 @@ through the loop's code three more times, and then a compare in it that
 holds a number that moves by the same amount each time against a bound,
 or against 0, tells when the loop leaves, which the walk checks by going
 through the code the time before and that time, from where each number
-would be. It goes on from where the loop leaves, with what the loop
+would be; when none does, as in a loop over a table that ends at a zero
+word, it goes on through the code time by time, up to 16 times. It goes
+on from where the loop leaves, with what the loop
 leaves in the registers and memory, as when a second loop copies on from
 where the first left its source. From the times it went through, it
 tells what each of the loop's stores does over all of them: where it
@@ -798,8 +800,9 @@ in the same function, as of the words that a loop's last time leaves to
 code after it; alone, only when they cover whole sections, copied from
 where the file stores them. The walk follows `ldm`, `stm`, `ldrd` and
 `strd`, which move several words, and addresses that add a register to
-the base. A loop it can't count, as one whose bound it can't tell, or
-whose stores it can't tell, as one that calls a function, is a step that
+the base. A loop it can't count, as one whose bound it can't tell that
+runs more than 16 times, or whose stores it can't tell, as one that
+calls a function, is a step that
 elfq can't follow, and so is a loop that goes back over one it matched,
 for the sections of that kind not set up yet.
 
@@ -807,22 +810,36 @@ A loop over a table of sections, as CMSIS's `__cmsis_start` goes through
 `__copy_table_start__` and `__zero_table_start__`, MCUXpresso IDE's
 `ResetISR` through `__data_section_table` and `__bss_section_table`,
 calling `data_init` and `bss_init` for each row, and the Pico SDK's
-`crt0.S` through `data_cpy_table` up to a row of zeros, does a step each
+`crt0.S` through `data_cpy_table` up to a zero word, does a step each
 time. So when a loop runs at most 16 times and its stores are ones the
 walk can't tell from three times through its code, as when it calls a
 function or has loops inside, the walk goes through its code each time,
 following its calls and counting the loops inside, and each time's
-copies and zeroings are steps. WHAT names the row that a time reads, the
-first word it loads that it doesn't copy, as ".data, by data_init, from
-table 0x30000014". A call that makes one step and nothing else, as
+copies and zeroings are steps; past 5,000 instructions in all in such
+times, it goes through the loop once, as through others. The bytes that
+one store stores over the times join, as the words that a loop copies
+with a call, a word each time, but those of a time that make a step
+alone, as the copy of a row, are a step of their own. A step that elfq can't
+follow that each time repeats is listed once, and a call that sets up
+nothing, as the call for a row that copies no bytes, is no step. WHAT
+names the row that a time reads: the lowest address that the code of
+the loop's function loads a word from that time, or that a register
+holds from the time before, other than what the times copy, as ".data,
+by data_init, from table 0x30000020"; none when the rows don't follow
+each other, as far apart each time, or the times read other words of
+them. A call to a function that makes one step and calls no other, as
 `data_init` does, is that step, by the function, at the call; but one to
 code of the same function, as the Pico SDK's `data_cpy` is, a loop in
-it. A loop that calls another function through a register each time is
-one over a table of functions, as `__libc_init_array` calls the
-constructors in `.init_array`, which set up no sections, so the walk goes
-through it once. A branch back to code just before a function's start
-that runs on into it, as `data_cpy_loop` does, is a loop, not a tail
-call.
+it. A loop that calls through a register another function each time, or
+one that the walk can't tell, is one over a table of functions, as
+`__libc_init_array` calls the constructors in `.init_array`, which set
+up no sections, so the walk goes through it once. A branch back to code
+just before a function's start that runs on into it, as `data_cpy_loop`
+does, is a loop, not a tail call. Code that runs back into code that the
+walk went through, other than at a loop's head, as GCC's `-Og` makes of
+`__cmsis_start`, is a loop that elfq can't follow, and so is a store
+whose address the walk can't tell in the code of a loop that it goes
+through each time.
 
 Code runs from a load image before its copy when code in it runs before
 the step that copies it: the reset handler itself, or a function that a
@@ -1560,10 +1577,13 @@ language.
     each function it calls, 60 of a loop's code and 20,000 in all: code
     past those, or a call it doesn't go through, is a step that it can't
     follow, which may set up any section. It counts the times a loop runs
-    only when a number that moves by the same amount each time tells when
-    it leaves, going through at most 50,000 instructions more to count
-    loops. It goes through each time of a loop that runs at most 16
-    times, as one over a table of sections, but only once one that calls
-    another function through a register each time, so code that sets up
-    memory through a table of functions, as Arm Compiler 6's and IAR's
-    does, is a step that it can't follow.
+    when a number that moves by the same amount each time tells when it
+    leaves, or else by going through its code time by time, up to 16
+    times, going through at most 50,000 instructions more to count loops.
+    It goes through each time of a loop that runs at most 16 times and
+    calls functions or has loops inside, as one over a table of sections,
+    up to 5,000 instructions in all, but only once one that calls through
+    a register another function each time, or one it can't tell, so code
+    that sets up memory through a table of functions whose rows name
+    different functions, as Arm Compiler 6's and IAR's does, is read for
+    its first row, and the rest is a step that it can't follow.

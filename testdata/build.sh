@@ -221,7 +221,7 @@ echo "C, Cortex-M7 with TCMs, .data copied by the boot ROM"
 cortex_m7_from c-cortex-m7-rom c/cortex-m7.ld c/rom.c
 
 # A startup laid out as the Pico SDK's for the RP2040, whose table of
-# sections to copy ends with a row of zeros (see c/pico.c and c/pico.ld).
+# sections to copy ends with a zero word (see c/pico.c and c/pico.ld).
 echo "C, Cortex-M0+, laid out as the Pico SDK does"
 arm-none-eabi-gcc $cflags \
     -mcpu=cortex-m0plus -mthumb \

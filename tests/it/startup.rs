@@ -34,7 +34,7 @@ const TABLES_SAMPLE: &str = "testdata/bin/c-cortex-m7-tables.elf";
 /// function that copies or zeroes it, as MCUXpresso IDE's does.
 const SECTIONS_SAMPLE: &str = "testdata/bin/c-cortex-m7-sections.elf";
 /// A reset handler laid out as the Pico SDK's, whose table of sections to
-/// copy ends with a row of zeros.
+/// copy ends with a zero word.
 const PICO_SAMPLE: &str = "testdata/bin/c-cortex-m0-pico.elf";
 /// A reset handler that copies .data with a function from the boot ROM,
 /// which isn't in the file.
@@ -429,23 +429,23 @@ STEP  DOES  FROM        TO          SIZE  AT          WHAT
     assert_eq!(answer["steps"][0]["function"]["name"], "data_init");
     assert_eq!(answer["steps"][0]["table"], "0x30000014");
     assert_eq!(answer["steps"][4]["table"], Value::Null);
-    // A table that ends with a row of zeros, as the Pico SDK's, whose rows
-    // a loop copies that is code of the reset handler's own; the one after
-    // core 1 goes back to the boot ROM.
+    // A table that ends with a zero word, as the Pico SDK's, whose rows a
+    // loop copies that is code of the reset handler's own; the one after
+    // core 1 goes back to the boot ROM. The row of .scratch_y copies no
+    // bytes, and its call to the loop is no step.
     let (status, text) = startup(PICO_SAMPLE, &[]);
     assert_eq!(status, 0);
     assert_output(
         &text,
         "\
-No problems: _reset_handler copies .data, .scratch_x and .scratch_y, zeroes .bss, then calls main.
+No problems: _reset_handler copies .data and .scratch_x, zeroes .bss, then calls main.
 
 STEP  DOES  FROM        TO          SIZE  AT          WHAT
-   1  copy  0x100001e8  0x20000000     4  0x10000132  .data, by a loop in _reset_handler, from table 0x10000160
-   2  copy  0x100001ec  0x20040000    28  0x10000132  .scratch_x, by a loop in _reset_handler, from table 0x1000016c
-   3  copy  0x10000208  0x20041000    16  0x10000132  .scratch_y, by a loop in _reset_handler, from table 0x10000178
-   4  zero              0x20000004    32  0x10000140  .bss, by a loop in _reset_handler
-   5  call                                0x10000148  runtime_init
-   6  call                                0x1000014c  main
+   1  copy  0x100001e8  0x20000000    20  0x10000132  .data, by a loop in _reset_handler, from table 0x10000160
+   2  copy  0x100001fc  0x20040000    28  0x10000132  .scratch_x, by a loop in _reset_handler, from table 0x1000016c
+   3  zero              0x20000014    32  0x10000140  .bss, by a loop in _reset_handler
+   4  call                                0x10000148  runtime_init
+   5  call                                0x1000014c  main
 
 The vector table at 0x10000100 gives _reset_handler for reset, not the entry point _entry_point.
 At 0x10000124 elfq takes the branch, since the other way ends in a branch through r2 at 0x1000011c.
@@ -456,8 +456,17 @@ At 0x10000124 elfq takes the branch, since the other way ends in a branch throug
     let (status, text) = startup("testdata/bin/c-cortex-m0-pico-stripped.elf", &[]);
     assert_eq!(status, 0);
     assert!(
-        text.contains("  1  copy  0x100001e8  0x20000000     4  0x10000132  .data, by fn_0x10000156, from table 0x10000160\n"),
+        text.contains("  1  copy  0x100001e8  0x20000000    20  0x10000132  .data, by fn_0x10000156, from table 0x10000160\n"),
         "{text}"
+    );
+    // The walk goes through the loop over the table each time, the empty
+    // row's and the zero word's too.
+    let output = elfq(&[PICO_SAMPLE, "debug", "walk"]);
+    assert!(output.status.success(), "{output:?}");
+    let walk = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        walk.contains("loop back from 0x10000136 over the 7 rows above, runs 4 times, each time walked, reading rows at 0x10000160 +12n\n"),
+        "{walk}"
     );
 }
 

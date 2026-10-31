@@ -230,9 +230,12 @@ pub struct Time {
     /// loop's, are its own.
     pub first_event: usize,
     /// Where it reads a row of a table from: the lowest address in the
-    /// file, outside the stack, that the loop's own code loads a word from
-    /// that time, but for the words it copies, when the rows of the times
-    /// that load one follow each other, as far apart each time.
+    /// file, outside the stack, that the code of the loop's function loads
+    /// a word from that time, or that a register holds from the time
+    /// before that the time reads, but for the words that the times so far
+    /// copy; when the rows of the times that load one follow each other, as
+    /// far apart each time, and each time reads the same words of its row,
+    /// but the last, which may read fewer.
     pub row: Option<u32>,
 }
 
@@ -271,7 +274,10 @@ pub enum End {
     /// The branch back of a loop that nothing leaves that the walk knows
     /// of.
     Loops(u64),
-    /// Code that the walk already went through, other than a loop's head.
+    /// Code that the walk already went through, other than a loop's head:
+    /// a loop that it can't make out, as one whose code runs on into its
+    /// test at the end, which GCC's `-Og` makes of CMSIS's
+    /// `__cmsis_start`.
     Rejoins(u64),
     /// Where code runs on to after a call that can't return: the end of its
     /// function, or straight after the call, data, such as a literal pool,
@@ -326,6 +332,13 @@ impl End {
             End::Undecoded(_) | End::Branches { .. } | End::LeavesFile { .. }
         )
     }
+
+    /// Whether code goes on past where the walk ended that it didn't go
+    /// through: where it can't follow the code, at its budget, or in a
+    /// loop it can't make out.
+    pub fn stops_short(self) -> bool {
+        self.is_dead() || matches!(self, End::Budget(_) | End::Rejoins(_))
+    }
 }
 
 /// Walks the code from `start`, as [`Start`] says, in a program in Thumb
@@ -379,11 +392,13 @@ impl End {
 /// at most 16 times, as one over a table of sections that copies each
 /// with a function or a loop, it goes through its code each time, with
 /// its calls and the loops inside, and the loop's events are those of
-/// every time (see [`Loop::times`]), but not when it calls another
-/// function through a register each time, as one over a table of
-/// functions does, such as the constructors that `__libc_init_array`
-/// calls. A loop it can't count, as one whose
-/// bound it can't tell, leaves what its code writes unknown. It stops
+/// every time (see [`Loop::times`]), but not when it calls through a
+/// register another function each time, as one over a table of functions
+/// does, such as the constructors that `__libc_init_array` calls, or one
+/// it can't tell, and not past 5,000 instructions in all in such times
+/// and 10,000 more to count the loops inside them. A loop it can't
+/// count, as one whose bound it can't tell, leaves what its code writes
+/// unknown. It stops
 /// after 20,000 instructions in all and 600 in the reset handler's own
 /// code. It goes through 300 in each function it calls, and 60 in a
 /// loop's code, 8 loops deep, and then goes on after the call or the loop
