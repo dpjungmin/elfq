@@ -233,9 +233,10 @@ pub struct Time {
     /// file, outside the stack, that the code of the loop's function loads
     /// a word from that time, or that a register holds from the time
     /// before that the time reads, but for the words that the times so far
-    /// copy; when the rows of the times that load one follow each other, as
-    /// far apart each time, and each time reads the same words of its row,
-    /// but the last, which may read fewer.
+    /// copy; when the register of a load that time points there and none
+    /// points lower, the rows of the times that load one follow each other,
+    /// as far apart each time, and each time reads the same words of its
+    /// row, but the last, which may read fewer.
     pub row: Option<u32>,
 }
 

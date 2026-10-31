@@ -46,13 +46,16 @@ const CANDIDATES: usize = 12;
 /// over a table of sections; and how many times it goes through a loop's
 /// code to count it when its compares don't tell.
 const MOST_TIMES: u32 = 16;
-/// How many instructions the walk goes through in all in the times of the
-/// loops that it goes through each time, and to count the loops inside
-/// them, in place of [`BUDGET`] and [`COUNT_BUDGET`]: a loop that costs
-/// more leaves the rest of the walk as it would be had the walk not gone
-/// through it each time (see [`Walker::walk_times`]).
+/// How many instructions the walk goes through in the times of a loop
+/// that it goes through each time, and to count the loops inside them, in
+/// place of [`BUDGET`] and [`COUNT_BUDGET`]: a loop that costs more is
+/// walked once, as others, and leaves the rest of the walk as it would be
+/// had the walk not tried (see [`Walker::walk_times`]); and how many in
+/// all for such loops, those it tries and gives up on too.
 const TIMES_BUDGET: usize = 5_000;
 const TIMES_COUNT_BUDGET: usize = 10_000;
+const TIMES_TOTAL: usize = 2 * TIMES_BUDGET;
+const TIMES_COUNT_TOTAL: usize = 2 * TIMES_COUNT_BUDGET;
 
 /// ip (r12), the scratch register that veneers and long calls use.
 const IP: u16 = 12;
@@ -71,8 +74,8 @@ pub(in crate::arch) fn walk(endianness: Endianness, program: &dyn Program, start
         events: Vec::new(),
         budget: BUDGET,
         count_budget: COUNT_BUDGET,
-        times_budget: TIMES_BUDGET,
-        times_count_budget: TIMES_COUNT_BUDGET,
+        times_budget: TIMES_TOTAL,
+        times_count_budget: TIMES_COUNT_TOTAL,
         counting: Vec::new(),
         data: HashMap::new(),
         clobbers: HashMap::new(),
@@ -256,9 +259,10 @@ struct Walker<'a> {
     budget: usize,
     /// How many more it may go through to count how many times loops run.
     count_budget: usize,
-    /// What is left of [`TIMES_BUDGET`] and [`TIMES_COUNT_BUDGET`], which
-    /// take the place of `budget` and `count_budget` while the walk goes
-    /// through a loop each time.
+    /// What is left of [`TIMES_TOTAL`] and [`TIMES_COUNT_TOTAL`], from
+    /// which the walk takes [`TIMES_BUDGET`] and [`TIMES_COUNT_BUDGET`] at
+    /// most in place of `budget` and `count_budget` to go through a loop
+    /// each time.
     times_budget: usize,
     times_count_budget: usize,
     /// The loops that the walk goes through time by time, the innermost
@@ -301,10 +305,11 @@ struct Counting {
     /// The addresses that the time through the loop's own code loads words
     /// from, in the file and outside the stack, as a row of a table, when
     /// `walks`, each with the load instruction, so that a loop inside can
-    /// drop its own: with those of the words that registers held at the
-    /// head that it reads, as a loop does whose time loads the start of the
-    /// next row at its end.
-    loads: Vec<(u64, u32)>,
+    /// drop its own, and with where the register it loads through points,
+    /// when lower: with those of the words that registers held at the head
+    /// that it reads, as a loop does whose time loads the start of the next
+    /// row at its end, which point nowhere, `u32::MAX`.
+    loads: Vec<(u64, u32, u32)>,
     /// Where the words that registers held at the head of the time were
     /// loaded from, for those that the time's code hasn't read or written
     /// yet.
@@ -333,8 +338,9 @@ struct Pass {
     order: Vec<u64>,
     ways_out: Vec<u64>,
     /// The addresses that it loaded words from, as [`Counting::loads`]
-    /// says, the lowest first.
-    loads: Vec<u32>,
+    /// says, the lowest first, each with where the register it loaded
+    /// through points, when lower, or `u32::MAX`.
+    loads: Vec<(u32, u32)>,
 }
 
 /// What a loop leaves, as the walk counted it.
@@ -896,7 +902,7 @@ impl Walker<'_> {
         if let Some(index) = frame.rows
             && !knows_sources(stores.as_deref())
         {
-            (self.counting[index].loads).retain(|&(site, _)| !(head..=back).contains(&site));
+            (self.counting[index].loads).retain(|&(site, ..)| !(head..=back).contains(&site));
         }
         self.events.push(Event::Loop(Loop {
             head,
@@ -1077,7 +1083,7 @@ impl Walker<'_> {
     /// another than the first time, as a loop over a table of functions
     /// does, such as the constructors that `__libc_init_array` calls,
     /// which set up no sections, or the times go through more instructions
-    /// than [`TIMES_BUDGET`] leaves; then the walk keeps the events of the
+    /// than [`TIMES_BUDGET`] lets; then the walk keeps the events of the
     /// first time.
     fn walk_times(
         &mut self,
@@ -1094,9 +1100,13 @@ impl Walker<'_> {
         // The times spend budgets of their own, but in a loop inside one
         // that the walk goes through each time.
         let outermost = !self.counting.iter().any(|counting| counting.walks);
+        let walk_budgets = (self.budget, self.count_budget);
+        let given = (
+            TIMES_BUDGET.min(self.times_budget),
+            TIMES_COUNT_BUDGET.min(self.times_count_budget),
+        );
         if outermost {
-            std::mem::swap(&mut self.budget, &mut self.times_budget);
-            std::mem::swap(&mut self.count_budget, &mut self.times_count_budget);
+            (self.budget, self.count_budget) = given;
         }
         self.counting.push(counting);
         let mut path = Path {
@@ -1105,6 +1115,8 @@ impl Walker<'_> {
         };
         let mut times: Vec<Time> = Vec::new();
         let mut loads: Vec<Vec<u32>> = Vec::new();
+        // Whether the walk can tell each time's row.
+        let mut tells = true;
         // What the times so far copy from.
         let mut copied: Vec<(u64, u64)> = Vec::new();
         let mut exit = None;
@@ -1123,18 +1135,27 @@ impl Walker<'_> {
                 break;
             }
             // The words of a row of a table that the time reads: those it
-            // loads, other than what the times so far copy.
+            // loads, other than what the times so far copy. Its row starts
+            // at the lowest, where a register that it loads through must
+            // point: when such a register points lower, as to a row whose
+            // first word the time doesn't read, while it reads the next
+            // row's start, as a loop that tests the next row at its end
+            // does, or none points there, as when registers hold the row's
+            // words from the time before, the walk can't tell where its row
+            // starts.
             copied.extend(self.events[first_event..].iter().flat_map(copied_from));
-            let row: Vec<u32> = (pass.loads.into_iter())
-                .filter(|&at| {
+            let row: Vec<(u32, u32)> = (pass.loads.into_iter())
+                .filter(|&(at, _)| {
                     !(copied.iter()).any(|(start, end)| (start..end).contains(&&u64::from(at)))
                 })
                 .collect();
+            let start = row.first().map(|&(at, _)| at);
+            tells &= row.iter().map(|&(_, pointer)| pointer).min() == start;
             times.push(Time {
                 first_event,
-                row: row.first().copied(),
+                row: start,
             });
-            loads.push(row);
+            loads.push(row.into_iter().map(|(at, _)| at).collect());
             path = pass.path;
             if n == passes {
                 exit = Some(pass.exit);
@@ -1142,8 +1163,13 @@ impl Walker<'_> {
         }
         self.counting.pop();
         if outermost {
-            std::mem::swap(&mut self.budget, &mut self.times_budget);
-            std::mem::swap(&mut self.count_budget, &mut self.times_count_budget);
+            let spent = (
+                given.0.saturating_sub(self.budget),
+                given.1.saturating_sub(self.count_budget),
+            );
+            self.times_budget = self.times_budget.saturating_sub(spent.0);
+            self.times_count_budget = self.times_count_budget.saturating_sub(spent.1);
+            (self.budget, self.count_budget) = walk_budgets;
         }
         let Some(exit) = exit else {
             self.events.truncate(before.events);
@@ -1159,7 +1185,7 @@ impl Walker<'_> {
             Some((_, step)) => step != 0 || rows.len() == 1,
             None => false,
         };
-        if !steady || !same_words(&loads) {
+        if !tells || !steady || !same_words(&loads) {
             times.iter_mut().for_each(|time| time.row = None);
         }
         Some(Walked { path, exit, times })
@@ -1169,15 +1195,25 @@ impl Walker<'_> {
     /// through the code of the loop at `index` in [`Walker::counting`]
     /// that the walk goes through, loads from (see [`Counting::loads`]).
     fn row_load(&mut self, run: &Run, index: usize, site: u64, effect: &Effect) {
-        if !matches!(effect.operation, Operation::Load { .. }) {
+        let Operation::Load { base, .. } = effect.operation else {
             return;
-        }
+        };
         let Some(at) = self.access(&run.path, site, effect) else {
             return;
         };
-        if !self.is_stack(Some(at)) && self.program.word_at_reset(u64::from(at)).is_some() {
-            self.counting[index].loads.push((site, at));
+        if self.is_stack(Some(at)) || self.program.word_at_reset(u64::from(at)).is_none() {
+            return;
         }
+        // Where the register points that the load adds an offset to, as
+        // to the start of a row of a table, but for `[base, #imm]!`, which
+        // moves it there first.
+        let before = effect.writeback.is_some_and(|writeback| writeback.before);
+        let pointer = match effect.index {
+            None if base != PC && !before => self.register(&run.path, base, site),
+            _ => None,
+        };
+        let pointer = pointer.map_or(at, |pointer| pointer.min(at));
+        self.counting[index].loads.push((site, at, pointer));
     }
 
     /// Keeps where the words that registers held at the head of the time
@@ -1206,7 +1242,7 @@ impl Walker<'_> {
                 && !self.is_stack(Some(address))
                 && self.program.word_at_reset(u64::from(address)).is_some()
             {
-                self.counting[index].loads.push((site, address));
+                self.counting[index].loads.push((site, address, u32::MAX));
             }
         }
     }
@@ -1246,7 +1282,9 @@ impl Walker<'_> {
         let stopped = counting.stopped.take();
         let loads = std::mem::take(&mut counting.loads);
         let (back, next) = (counting.back, counting.next);
-        let mut loads: Vec<u32> = loads.into_iter().map(|(_, at)| at).collect();
+        let mut loads: Vec<(u32, u32)> = (loads.into_iter())
+            .map(|(_, at, pointer)| (at, pointer))
+            .collect();
         loads.sort_unstable();
         loads.dedup();
         let mut stores = Vec::new();
@@ -3744,9 +3782,9 @@ mod tests {
     #[test]
     fn a_table_loop_that_loads_the_next_row_at_its_end() {
         // The code loads the first row before the loop, and the next at
-        // the end of each time, which the test then reads: each time's
-        // row is the one that the registers hold at its head, which the
-        // call reads, not the one that it loads:
+        // the end of each time, which the test then reads. Each time's
+        // call reads a row that registers carry over from the time
+        // before, which no register points at, so elfq names no rows:
         // reset:
         //   8000000: 4c08       ldr   r4, [pc, #32]  ; 0x8000024
         //   8000002: cc07       ldmia r4!, {r0, r1, r2}
@@ -3785,7 +3823,7 @@ mod tests {
                 "0 0x8000004 call 0x8000012 (0x8000110 0x20000010 0x10 ?)",
                 "1 0x8000016 store ? at 0x20000010, 4 bytes, loaded from 0x8000110 at 0x8000012",
                 "1 0x8000012 loop back at 0x800001c, from event 4, runs 0x4 times",
-                "0 0x8000004 loop back at 0x800000c, from event 0, runs 0x2 times, times from events 0@0x8000028 3@0x8000034",
+                "0 0x8000004 loop back at 0x800000c, from event 0, runs 0x2 times, times from events 0 3",
                 "0 0x800000e call 0x8000020 (0x0 0x0 0x0 ?)",
                 "end Main(800000e)",
             ]

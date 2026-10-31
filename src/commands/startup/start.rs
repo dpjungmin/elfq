@@ -186,17 +186,26 @@ pub(super) fn find_main(firmware: &Firmware, memory: &Memory, reset: &Reset) -> 
 /// result, as in `exit(main())`, `main` is the call before, unless that
 /// call copies or zeroes a section. When a loop goes back over the last
 /// call, the reset handler is the program, and its loop ends startup.
+/// Code that runs back into code that the walk went through elsewhere is a
+/// loop that elfq can't follow, after which startup may go on: no `main`,
+/// unless the code after the last call runs back into a loop that ran
+/// before it, where the compiler put that loop's code after a call that
+/// doesn't return.
 fn guess(firmware: &Firmware, memory: &Memory, reset: &Reset) -> Option<Main> {
     let binary = firmware.binary;
     let walk = reset.walk(binary, None, 0);
-    let calls: Vec<(&Call, u64)> = (walk.events.iter())
-        .filter_map(|event| match event {
-            Event::Call(call) => Some((call, firmware.resolve(call.target?).0)),
+    let calls: Vec<(usize, &Call, u64)> = (walk.events.iter().enumerate())
+        .filter_map(|(k, event)| match event {
+            Event::Call(call) => Some((k, call, firmware.resolve(call.target?).0)),
             _ => None,
         })
         .collect();
-    let &(last_call, last) = calls.last()?;
+    let &(last_event, last_call, last) = calls.last()?;
     let last_site = last_call.site;
+    let ran_before = |at: u64| {
+        (walk.events[..last_event].iter())
+            .any(|event| matches!(event, Event::Loop(l) if l.head <= at && at <= l.back))
+    };
     let back = match walk.end {
         End::Loops(site) => walk.events.iter().rev().find_map(|event| match event {
             Event::Loop(l) if l.back == site => Some(l.head),
@@ -217,15 +226,14 @@ fn guess(firmware: &Firmware, memory: &Memory, reset: &Reset) -> Option<Main> {
             from: MainFrom::Loop,
         });
     }
-    if !matches!(
-        walk.end,
-        End::Spins(_)
-            | End::Returns(_)
-            | End::Loops(_)
-            | End::Rejoins(_)
-            | End::RunsOff(_)
-            | End::Undecoded(_)
-    ) {
+    let ends = match walk.end {
+        End::Spins(_) | End::Returns(_) | End::Loops(_) | End::RunsOff(_) | End::Undecoded(_) => {
+            true
+        }
+        End::Rejoins(at) => ran_before(at),
+        _ => false,
+    };
+    if !ends {
         return None;
     }
     let mut main = last;
@@ -234,7 +242,7 @@ fn guess(firmware: &Firmware, memory: &Memory, reset: &Reset) -> Option<Main> {
     // that copies or zeroes a section starts a C runtime, as `bl
     // SystemInit; bl _mainCRTStartup` does, rather than exiting.
     if let End::RunsOff(_) = walk.end
-        && let [.., (before_call, before), _] = calls[..]
+        && let [.., (_, before_call, before), _] = calls[..]
         && startup::passes_result(binary.architecture, binary, before_call.site, last_site)
         && memory.match_call(&before_call.passes()).is_none()
         && !sets_up(binary, memory, reset, last)

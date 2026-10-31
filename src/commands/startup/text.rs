@@ -212,7 +212,7 @@ fn lead(answer: &Answer) -> String {
                     });
                 format!("then loops for good at {:#x}", head.unwrap_or(site))
             }
-            End::Rejoins(at) => format!("then loops back to {at:#x}"),
+            End::Rejoins(at) => format!("then runs a loop elfq can't follow at {at:#x}"),
             End::Budget(site) => format!("then goes on past elfq's budget at {site:#x}"),
             end => format!("then {}", other_way(end)),
         }

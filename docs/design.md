@@ -748,7 +748,9 @@ call doesn't copy or zero a section; and when the last sets up a section
 that the reset handler hasn't, as newlib's `_mainCRTStartup` does, it is
 the C runtime, and `main` the last function it calls that sets up
 nothing. When a loop goes back over the reset handler's last call, the
-reset handler is the program, and startup ends at its endless loop.
+reset handler is the program, and startup ends at its endless loop. When
+the walk runs back into code that it went through other than that way,
+startup may go on past it, so elfq takes no `main`.
 
 The walk (`arch::startup`, for Thumb in `arch/thumb/startup.rs`) goes
 one way through the code, as the processor would, keeping the numbers
@@ -815,19 +817,22 @@ time. So when a loop runs at most 16 times and its stores are ones the
 walk can't tell from three times through its code, as when it calls a
 function or has loops inside, the walk goes through its code each time,
 following its calls and counting the loops inside, and each time's
-copies and zeroings are steps; past 5,000 instructions in all in such
-times, it goes through the loop once, as through others. The bytes that
-one store stores over the times join, as the words that a loop copies
-with a call, a word each time, but those of a time that make a step
-alone, as the copy of a row, are a step of their own. A step that elfq can't
-follow that each time repeats is listed once, and a call that sets up
-nothing, as the call for a row that copies no bytes, is no step. WHAT
-names the row that a time reads: the lowest address that the code of
-the loop's function loads a word from that time, or that a register
-holds from the time before, other than what the times copy, as ".data,
-by data_init, from table 0x30000020"; none when the rows don't follow
-each other, as far apart each time, or the times read other words of
-them. A call to a function that makes one step and calls no other, as
+copies and zeroings are steps; past 5,000 instructions in one such
+loop's times, or 10,000 in all of them, it goes through the loop once,
+as through others. The bytes that one store stores over the times join,
+as the words that a loop copies with a call, a word each time, but those
+of a time that make a step alone, as the copy of a row, are a step of
+their own. A call or a step that elfq can't follow that each time
+repeats is listed once, with what it may set up in any time, but a call
+that sets up nothing where it sets up a section in other times, as the
+call for a row that copies no bytes, is no step. WHAT names the row that
+a time reads: the lowest address that the code of the loop's function
+loads a word from that time, other than what the times copy, as ".data,
+by data_init, from table 0x30000020"; none when the rows aren't as far
+apart each time, or the times read other words of them, or the code
+reads a time's row through no register that points at its start, as
+when registers carry its words over from the time before. A call to a
+function that makes one step and calls no other, as
 `data_init` does, is that step, by the function, at the call; but one to
 code of the same function, as the Pico SDK's `data_cpy` is, a loop in
 it. A loop that calls through a register another function each time, or
@@ -837,9 +842,13 @@ up no sections, so the walk goes through it once. A branch back to code
 just before a function's start that runs on into it, as `data_cpy_loop`
 does, is a loop, not a tail call. Code that runs back into code that the
 walk went through, other than at a loop's head, as GCC's `-Og` makes of
-`__cmsis_start`, is a loop that elfq can't follow, and so is a store
-whose address the walk can't tell in the code of a loop that it goes
-through each time.
+`__cmsis_start`, is a loop that elfq can't follow. So is a loop that the
+walk goes through each time when its times store into sections more than
+their steps stand for: as when each time stores words by several stores,
+which don't join across times, or runs a loop inside that the walk goes
+through each time too, or stores through a pointer that the walk can't
+tell, in the loop's code or in a function it calls. Its step then stands
+for the steps of its times that set up part of what it may set up.
 
 Code runs from a load image before its copy when code in it runs before
 the step that copies it: the reset handler itself, or a function that a
@@ -1582,8 +1591,10 @@ language.
     times, going through at most 50,000 instructions more to count loops.
     It goes through each time of a loop that runs at most 16 times and
     calls functions or has loops inside, as one over a table of sections,
-    up to 5,000 instructions in all, but only once one that calls through
-    a register another function each time, or one it can't tell, so code
-    that sets up memory through a table of functions whose rows name
-    different functions, as Arm Compiler 6's and IAR's does, is read for
-    its first row, and the rest is a step that it can't follow.
+    up to 5,000 instructions for each such loop and 10,000 in all, but
+    only once one that calls through a register another function each
+    time, or one it can't tell. So code that sets up memory through a
+    table of functions, as Arm Compiler 6's and IAR's does, is a step that
+    it can't follow: from its second row when it can tell the first row's
+    function, and from its first when it can't, as when Arm Compiler 6's
+    `__scatterload` sets the function's low bit with `orr`.
