@@ -17,7 +17,8 @@ every `$ elfq` example here and checks that elfq still prints exactly that.
 9. [What would removing a function save?](#what-would-removing-a-function-save)
 10. [Which inlined functions take the most bytes?](#which-inlined-functions-take-the-most-bytes)
 11. [What changed between two builds?](#what-changed-between-two-builds)
-12. [How do scripts read the answers?](#how-do-scripts-read-the-answers)
+12. [Can the firmware still start after code moves?](#can-the-firmware-still-start-after-code-moves)
+13. [How do scripts read the answers?](#how-do-scripts-read-the-answers)
 
 ## Why is formatting code in Rust firmware?
 
@@ -47,6 +48,7 @@ RETAINED  OWN  ITEM
 Try:
   elfq testdata/bin/rust-cortex-m4.elf --range 0x08000000..0x080022bc
   elfq testdata/bin/rust-cortex-m4.elf --range 0x20000000..0x20000020
+  elfq testdata/bin/rust-cortex-m4.elf startup
   elfq testdata/bin/rust-cortex-m4.elf top
   elfq testdata/bin/rust-cortex-m4.elf top --tree
   elfq testdata/bin/rust-cortex-m4.elf retained Reset
@@ -169,6 +171,7 @@ Try:
   elfq testdata/bin/c-cortex-m7.elf --range 0x20000000..0x20000450
   elfq testdata/bin/c-cortex-m7.elf --range 0x20240000..0x20241000
   elfq testdata/bin/c-cortex-m7.elf --range 0x30000000..0x30000edc
+  elfq testdata/bin/c-cortex-m7.elf startup
   elfq testdata/bin/c-cortex-m7.elf top
   elfq testdata/bin/c-cortex-m7.elf top --tree
   elfq testdata/bin/c-cortex-m7.elf retained main
@@ -452,6 +455,7 @@ RETAINED    OWN  ITEM
 Try:
   elfq testdata/bin/c-cortex-m4-stripped.elf --range 0x08000000..0x08000e0c
   elfq testdata/bin/c-cortex-m4-stripped.elf --range 0x20000000..0x20000048
+  elfq testdata/bin/c-cortex-m4-stripped.elf startup
   elfq testdata/bin/c-cortex-m4-stripped.elf top
   elfq testdata/bin/c-cortex-m4-stripped.elf top --tree
   elfq testdata/bin/c-cortex-m4-stripped.elf retained entry
@@ -623,6 +627,7 @@ Other uses between blocks: 1 new and 1 gone; --json lists them.
 
 Try:
   elfq testdata/bin/c-cortex-m7-moved.elf why __filter_tap_veneer
+  elfq testdata/bin/c-cortex-m7-moved.elf startup
 ```
 
 The blocks are the overview's, worked out over both files, so that both
@@ -635,7 +640,10 @@ the new build, or for a gone item, in the old. Other sections' bytes
 changed too, as the vector table points to code that moved, but the rows
 say why. An item whose bytes changed only where they hold the address of
 something that moved, or the distance to it, as in `apply_filter`'s call
-to `filter_tap`, is the same. The exit status is 1.
+to `filter_tap`, is the same. The exit status is 1. The Try list has
+`startup`, since ITCM's load image changed, which may change what the
+startup code must copy before the code it runs, as [the next
+question](#can-the-firmware-still-start-after-code-moves) shows.
 
 The two calls from ITCM to flash are new, as `elfq
 testdata/bin/c-cortex-m7-moved.elf callees 0x0..0xe0` lists them. So is
@@ -694,6 +702,9 @@ No call between blocks is new or gone.
 Other uses between blocks: 17 new and 17 gone; --json lists them.
 
 50 other items are the same.
+
+Try:
+  elfq testdata/bin/c-cortex-m7-sdram.elf startup
 ```
 
 `--all` lists each of the 12. The code holds the data's new addresses
@@ -724,6 +735,9 @@ CHANGE  OLD  NEW  ADDRESS     ITEM
 No call between blocks is new or gone.
 
 61 other items are the same.
+
+Try:
+  elfq testdata/bin/c-cortex-m7-inlined.elf startup
 ```
 
 `process_frame` holds `decode_header`'s code now, at the same size, so
@@ -798,6 +812,87 @@ From testdata/bin/c-x86_64-stripped.elf to testdata/bin/c-x86_64-moved-stripped.
 testdata/bin/c-x86_64-stripped.elf has no symbol table, so diff compares only bytes, not functions and data.
 The memory stays at 15728 bytes (.text +16, .eh_frame +8).
 Sections that differ: .note.gnu.build-id, .text, .fini, .rodata, .eh_frame_hdr, .eh_frame and .dynamic.
+```
+
+## Can the firmware still start after code moves?
+
+Code in ITCM runs fast, but ITCM holds nothing at reset: the startup code
+copies the code there from flash before anything runs it. In
+`c-cortex-m7-trap.elf`, the linker script also puts `memcpy` in ITCM, and
+`diff` shows it moving there, with a Try line for `startup`, as a load
+image changed:
+
+```
+$ elfq testdata/bin/c-cortex-m7.elf diff testdata/bin/c-cortex-m7-trap.elf
+From testdata/bin/c-cortex-m7.elf to testdata/bin/c-cortex-m7-trap.elf: 2 moved.
+
+MEMORY                   OLD   NEW  CHANGE  SECTIONS
+0x00000000..0x00000210   224   528    +304  .itcm +304
+0x20000000..0x20000450  1104  1104       0
+0x20240000..0x20241000  4096  4096       0
+0x30000000..0x30000ef4  3804  3828     +24  load image of .itcm +304, .text -296
+
+OLD  NEW  FROM        TO          MOVED
+308  308  0x3000087c  0x10        memcpy (.text to .itcm), kept by Reset_Handler
+  8    8  0xd8        0x300009c0  __memcpy_veneer (.itcm to .text), kept by Reset_Handler
+
+Calls between blocks, new or gone:
+
+STATUS  ADDRESS     SIZE  HOW              AT                      CALLEE
+new     0x10         308  call via veneer  0x3000074e, 0x30000766  memcpy, used by Reset_Handler
+gone    0x3000087c   308  call via veneer  0xbc                    memcpy, used by apply_filter
+
+61 other items are the same.
+
+Try:
+  elfq testdata/bin/c-cortex-m7-trap.elf startup
+```
+
+`startup` follows the reset handler to `main`, and says what goes wrong:
+the startup code copies ITCM with `memcpy`, which is in ITCM, so the
+processor runs whatever ITCM held at reset:
+
+```
+$ elfq testdata/bin/c-cortex-m7-trap.elf startup
+1 problem in what Reset_Handler does before it calls main:
+
+  Step 1 calls memcpy at 0x10 in .itcm, which nothing has copied yet.
+
+STEP  DOES  FROM        TO          SIZE  AT          WHAT
+   1  copy  0x30000040  0x0          528  0x3000074e  .itcm, by memcpy via veneer
+   2  copy  0x300009d8  0x20000000  1056  0x30000766  .data, by memcpy via veneer
+   3  zero              0x20000420    48  0x3000077e  .bss, by memset
+   4  call                                0x30000782  main
+
+Steps 1 to 4 may never run, so .data and .bss may not be set up.
+Not zeroed, which may be intended: .ocram_bss (tx_buffer).
+```
+
+Nothing after that can be counted on, so the other steps may never run.
+`.ocram_bss` holds the UART's transmit buffer, which the code doesn't
+need zeroed, as it reads only the bytes it wrote, so it gets a note
+rather than a problem; only `.bss` and `.sbss` must be zeroed. The exit status is 1, as it is when elfq can't follow code that
+may set up a load image or `.bss`, such as a call through a pointer.
+Such a problem has `certain: false` in the JSON, so a CI job that should
+fail only on what elfq is sure of checks the count of the others:
+
+```sh
+elfq app.elf startup --json > startup.json || [ $? -eq 1 ]
+jq -e '.problems_certain == 0' startup.json
+```
+
+On the trap, `jq` prints `false` and exits 1. A job can check one
+section too, as with `jq -e '.sections[] | select(.name == ".bss") |
+.status == "zeroed"' startup.json`, which prints `false` on the trap,
+since its `.bss` is "not reached": only steps that may never run set it
+up. Before moving code into ITCM, the JSON's `keep_out` says what must
+stay out of it: the reset handler, and every function that runs before
+the copy, here only `memcpy`, so on `c-cortex-m7.elf` this prints
+`true` for `filter_tap`, and `false` for `memcpy`:
+
+```sh
+elfq app.elf startup --json > startup.json || [ $? -eq 1 ]
+jq -e --arg f filter_tap '.keep_out[] | select(.section == ".itcm") | all(.items[]; .name != $f)' startup.json
 ```
 
 ## How do scripts read the answers?

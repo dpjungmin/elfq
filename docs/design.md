@@ -516,7 +516,9 @@ the range needn't come from the chip's reference manual. It also suggests
 show which blocks its code and data are in. It picks from the handlers of
 SVCall, PendSV, SysTick and the chip's interrupts, which run in normal
 operation, and leaves out those that reach nothing else, such as a default
-handler that only loops. Sizes can take a
+handler that only loops. For Cortex-M firmware with a load image or a
+section without contents, it suggests `startup` after the `--range`
+commands, when `startup` would read the file. Sizes can take a
 unit, in any case: `0x20000000+256K`. Units are powers of 1024, as memory
 sizes usually are. A range typed as other tools write them, `0x0-0x40000`
 or `0x0:0x40000`, is refused with the form to type, `0x0..0x40000`, and
@@ -632,10 +634,15 @@ and then doesn't say that process_frame kept it too. elfq can't yet tell
 what keeps items in a shared library, so when either build is one, a
 line above the tables says so and rows don't, and the same when elfq
 can't read the code. A line counts the items that are the same: of the
-same size, in the same block, and not edited. The Try line asks `why` of
+same size, in the same block, and not edited. The Try list asks `why` of
 the new item that heads the subtree of new items with the most new
 bytes, when something keeps it, rather than it being a place where the
-program starts, and it has a name of its own.
+program starts, and it has a name of its own. It asks for `startup` of
+the new build when `startup` reads it, and a section with a load image
+in either build differs, or an item moved to another block: either may
+change what the startup code must copy before the code it runs, as when
+`memcpy` moves into ITCM. diff doesn't run the check itself, and its
+JSON has no Try list.
 
 An item of the same size, in the same block, is edited when its bytes
 changed other than where they say where something is, or when its code
@@ -897,6 +904,18 @@ library, a program that an operating system loads, or a file without
 section headers. elfq refuses those before it loads the file, so that a
 large program costs nothing.
 
+The JSON also says, for each load image that holds code, which functions
+must stay out of it (`keep_out`): those that run before the step that
+copies it, or before `main` when no step does, and so would run from it
+too early if they were linked into it. They are the reset handler, and
+every function that a call before the copy runs, at any depth, as the
+problems count them, but only the function itself of a call that holds
+the copy, as `data_init` does. A function in the list that is linked into
+the load image is a problem that the text names. The list is what elfq
+can follow: when `complete` is `false`, code it can't follow may run more.
+It is for scripts and agents that move code between memories, so the
+text doesn't print it.
+
 ### JSON
 
 `--json` prints the same answer for scripts, as one object, for every
@@ -1110,6 +1129,7 @@ several.
 | `sections` | every load image and section without contents, in address order, each a range with its `name`, `size` and `load_address`, where the file stores it, or `null` for a section without contents; `status` when `main` starts, `copied`, `partly copied`, `copied from elsewhere`, `zeroed`, `partly zeroed`, `not copied`, `not zeroed`, `unknown`, when an `unread` step may set it up, or `not reached`, when only steps after code that runs from a load image before its copy set it up; `step`, the number of the step that sets it up, or `null`; and `bytes`, how many of its bytes that step sets up, or `null` while `unknown` |
 | `problems` | one row for each sentence of the text, in its order, each with: `kind`, `runs before copy`, `not copied`, `not zeroed`, `partly copied`, `partly zeroed`, `copied from elsewhere` or `can't follow`; `certain`, `false` for `can't follow`, and for code that runs from a load image after a step that elfq can't follow that may copy it first; `steps`, the numbers of the steps it is about; `sections`; `items`, the functions that run from the load image too early; `chain`, the names of the functions that a step's call goes through to the first of them; `before_step`, the step that copies the load image, or `null` when none does; `bytes`, how many bytes a step copies or zeroes of a section it sets up in part, or `null`; `from`, where a step copies from that isn't where the file stores the load image, or `null`; `sites`, the calls that run the functions, or the reset handler's own address when it is in the load image; and `text`, the sentence |
 | `notes` | one row for each note of the text, each with `kind`, `no vector table`, `reset in no function`, `entry differs`, `branch`, `not reached`, `not zeroed`, `partly zeroed` or `can't tell`; `sections`; `items`, empty for now; and `text`, the sentence |
+| `keep_out` | one row for each load image that holds code, in address order, each with: `section`, its name; and `items`, the functions that must stay out of it: the reset handler first, then every function that runs before the step that copies it, or before `main` when no step does, each call's function and then what it calls, breadth first, but no linker's veneer. A function in the list that is in the load image is code that runs from it before its copy |
 
 ### Calls elfq can't follow
 
@@ -1434,8 +1454,10 @@ items of the same size that changed, when both have a symbol table.
 zeroes its memory through calls, such as to `memcpy` and `memset`, in
 loops of its own, and through tables of sections, as the startup code of
 CMSIS, MCUXpresso IDE and the Pico SDK does; it was checked on what GCC
-builds, but not on what Arm Compiler 6 or IAR builds. The pull requests
-and the git log record how elfq got here.
+builds, but not on what Arm Compiler 6 or IAR builds. Its JSON says
+which functions must stay out of each load image of code, and the
+overview and `diff` suggest it where it helps. The pull requests and the
+git log record how elfq got here.
 
 On a 4-CPU x86-64 machine, a release build gives the overview of elfq's
 own debug build (90 MB) in under half a second, of cargo (43 MB) in under
@@ -1445,9 +1467,6 @@ its names. `browse` shows its first screen in about the same time. Each
 key typed into go to then takes under 0.1 s. The first takes up to 0.2 s
 in those libraries, and the first whose text names nothing takes about
 half a second, as it works out what to suggest.
-
-Next: the JSON of `startup` says what must stay out of each load image
-of code, and the overview and `diff` suggest `startup` where it helps.
 
 Ideas for later, not yet planned: output that scripts and AI agents can
 read more easily, the retained size of a set of items, the functions

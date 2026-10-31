@@ -29,10 +29,11 @@ use std::sync::{Mutex, PoisonError};
 use std::thread;
 
 use anyhow::{Context, Result, bail};
+use object::Architecture;
 
 use super::symbol::Names;
 use super::text::architecture_name;
-use super::{Kept, Outcome};
+use super::{Kept, Outcome, startup};
 use crate::STACK_SIZE;
 use crate::arch;
 use crate::binary::{Binary, FileKind, LoadedMemory, same_memory};
@@ -40,7 +41,7 @@ use crate::cli::Format;
 use crate::graph::{DominatorTree, Graph};
 use blocks::{Block, Differs};
 use crossings::Crossing;
-use rows::Items;
+use rows::{Items, Status};
 
 /// What diff found, for the text and the JSON to write.
 struct Answer<'a> {
@@ -58,6 +59,11 @@ struct Answer<'a> {
     /// The builds' items, paired, when the memory differs and both builds
     /// have a symbol table.
     items: Option<Compared<'a>>,
+    /// Whether to suggest `elfq NEW startup`: when the new build is
+    /// firmware that startup reads, and a load image differs, or an item
+    /// moved to another block, either of which may change what its startup
+    /// code must copy before it runs what.
+    try_startup: bool,
 }
 
 /// The items that diff compared, the uses between blocks that are new or
@@ -101,7 +107,14 @@ pub fn run(
     check(old_path, &old, new_path, &new)?;
     let same_memory = same_memory(&old, &new);
     if same_memory || !old.has_symbols || !new.has_symbols {
-        let answer = Answer::new(old_path, new_path, &old, &new, same_memory);
+        let mut answer = Answer::new(old_path, new_path, &old, &new, same_memory);
+        // Only load the new build when a load image differs and its
+        // headers say startup may read it.
+        answer.try_startup = format != Format::Json
+            && answer.load_image_differs()
+            && new.architecture == Architecture::Arm
+            && startup::check_header(new_path).is_ok()
+            && Binary::parse(&new_data).is_ok_and(|binary| startup::reads(new_path, &binary));
         return write(&answer, all, format, out);
     }
     // elfq can't yet tell what keeps items in a shared library, and the
@@ -133,6 +146,10 @@ pub fn run(
     } else {
         Vec::new()
     };
+    answer.try_startup = format != Format::Json
+        && (answer.load_image_differs()
+            || (items.changes.iter()).any(|change| change.status == Status::Moved))
+        && startup::reads(new_path, &new_build.binary);
     answer.items = Some(Compared {
         items,
         crossings,
@@ -165,7 +182,13 @@ impl<'a> Answer<'a> {
                 blocks::sections_that_differ(old, new)
             },
             items: None,
+            try_startup: false,
         }
+    }
+
+    /// Whether a section with a load image in either build differs.
+    fn load_image_differs(&self) -> bool {
+        (self.sections_that_differ.iter()).any(|differs| differs.load_image)
     }
 }
 

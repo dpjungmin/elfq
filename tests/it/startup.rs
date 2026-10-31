@@ -4,6 +4,7 @@
 
 use std::path::Path;
 
+use object::{Object, ObjectSection};
 use serde_json::{Value, json};
 
 use crate::damaged::{self, SIZE, set_section_field};
@@ -778,12 +779,122 @@ fn the_json_gives_the_steps_the_sections_and_the_problems() {
             "text": "Not zeroed, which may be intended: .ocram_bss (tx_buffer).",
         })
     );
+    // memcpy must stay out of ITCM, as must the reset handler.
+    assert_eq!(
+        answer["keep_out"],
+        json!([{"section": ".itcm", "items": [answer["entry"], memcpy]}])
+    );
     // One row per line.
     let (_, text) = startup(TRAP_SAMPLE, &["--json"]);
     assert!(
         text.contains("\"steps\":[\n{\"step\":1,") && text.contains("},\n{\"step\":2,"),
         "{text}"
     );
+}
+
+#[test]
+fn keep_out_names_what_runs_before_each_copy_of_code() {
+    let names = |row: &Value| -> Vec<String> {
+        (row["items"].as_array().unwrap().iter())
+            .map(|item| item["name"].as_str().unwrap().to_string())
+            .collect()
+    };
+    // SystemInit calls clock_setup, in ITCM, before the copy, and memcpy
+    // does the copy: each would run from ITCM too early. .data holds no
+    // code.
+    let (_, sysinit) = answer(SYSINIT_SAMPLE);
+    let rows = sysinit["keep_out"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["section"], ".itcm");
+    assert_eq!(
+        names(&rows[0]),
+        ["Reset_Handler", "SystemInit", "clock_setup", "memcpy"]
+    );
+    // prep holds the copy, as it calls memcpy, then memset and
+    // start_threads after it, so only prep and memcpy run before.
+    let (_, noreturn) = answer(NORETURN_SAMPLE);
+    assert_eq!(
+        names(&noreturn["keep_out"][0]),
+        ["Reset_Handler", "prep", "memcpy"]
+    );
+    // data_init does the copy itself, with its own loop.
+    let (_, sections) = answer(SECTIONS_SAMPLE);
+    assert_eq!(names(&sections["keep_out"][0]), ["ResetISR", "data_init"]);
+    // Nothing copies .ram, so nothing that runs before main may be in it.
+    let (_, far) = answer("testdata/bin/far-gnu-m4-nodebug.elf");
+    let row = &far["keep_out"][0];
+    assert_eq!(row["section"], ".ram");
+    assert_eq!(names(row).first().unwrap(), "Reset_Handler");
+    assert!(names(row).contains(&"ram_leaf".to_string()), "{row}");
+    // In every sample, the reset handler comes first, and the functions
+    // that a row lists in its own section are those that a problem says
+    // run from it before its copy.
+    for sample in samples() {
+        let name = sample.trim_start_matches("testdata/bin/");
+        if name.contains("x86_64") || name == "c-deep.elf" || name == "c-plt.so" {
+            continue;
+        }
+        let (_, answer) = answer(&sample);
+        for row in answer["keep_out"].as_array().unwrap() {
+            let section = &row["section"];
+            let items = row["items"].as_array().unwrap();
+            assert_eq!(items[0], answer["entry"], "{sample}: {row}");
+            let mut inside: Vec<&Value> = (items.iter())
+                .filter(|item| &item["section"] == section)
+                .collect();
+            let mut early: Vec<&Value> = (answer["problems"].as_array().unwrap().iter())
+                .filter(|p| p["kind"] == "runs before copy" && p["sections"][0] == *section)
+                .flat_map(|p| p["items"].as_array().unwrap())
+                .collect();
+            let address = |item: &&Value| item["address"].as_str().unwrap().to_string();
+            inside.sort_by_key(address);
+            early.sort_by_key(address);
+            assert_eq!(inside, early, "{sample}: {row}");
+        }
+    }
+}
+
+#[test]
+fn the_overview_suggests_startup_only_for_firmware_that_startup_reads() {
+    let try_startup = |path: &str| {
+        let output = elfq(&[path]);
+        assert!(output.status.success(), "{output:?}");
+        let overview = String::from_utf8(output.stdout).unwrap();
+        overview.contains(&format!("\n  elfq {path} startup\n"))
+    };
+    assert!(try_startup(TCM_SAMPLE));
+    // A first program header that names a dynamic loader, as an operating
+    // system's programs have, which startup refuses on the header.
+    let loaded = changed(
+        TCM_SAMPLE,
+        "c-cortex-m7-overview-interpreter.elf",
+        &|data| {
+            let at = word(data, 0x1c) as usize;
+            set_word(data, at, 3);
+        },
+    );
+    // A reset handler and entry point in no function.
+    let no_reset = changed(TCM_SAMPLE, "c-cortex-m7-overview-no-reset.elf", &|data| {
+        let file = object::File::parse(&**data).unwrap();
+        let (table, _) = (file.section_by_name(".isr_vector").unwrap())
+            .file_range()
+            .unwrap();
+        set_word(data, table as usize + 4, 0x2000_0001);
+        set_word(data, 0x18, 0x2000_0001);
+    });
+    // No load image or section without contents: the sections that were
+    // are no longer allocated, as sh_flags lacks SHF_ALLOC (2) and keeps
+    // SHF_EXECINSTR (4) or SHF_WRITE (1), so startup has nothing to set up.
+    let no_ram = changed(TCM_SAMPLE, "c-cortex-m7-overview-no-ram.elf", &|data| {
+        const FLAGS: damaged::Field = (0x08, 0x08);
+        set_section_field(data, ".itcm", FLAGS, 4);
+        for section in [".data", ".bss", ".ocram_bss"] {
+            set_section_field(data, section, FLAGS, 1);
+        }
+    });
+    for path in [&loaded, &no_reset, &no_ram] {
+        assert!(!try_startup(path), "{path}");
+    }
 }
 
 #[test]

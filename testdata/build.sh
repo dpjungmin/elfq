@@ -127,6 +127,18 @@ sed 's/^\( *DTCM .*ORIGIN = \)0x20000000/\10x80000000/' c/cortex-m7.ld >"$out/co
 cortex_m7 c-cortex-m7-sdram "$out/cortex-m7-sdram.ld"
 rm "$out/cortex-m7-sdram.ld"
 
+# Only the full build: tx_head in .ocram_bss rather than .bss, so that an
+# item moves to another block of memory and no load image changes. The
+# linker puts a section in the first output section that names it, so
+# .ocram_bss comes first, before .bss takes every .bss*. Reset_Handler
+# zeroes only .bss, so tx_head no longer starts as zero.
+echo "C, Cortex-M7 with TCMs, tx_head in OCRAM"
+sed -e '/^ *\.ocram_bss (NOLOAD)/d' \
+    -e 's/^\( *\)\(\.bss (NOLOAD).*\)$/\1.ocram_bss (NOLOAD) : { *(.ocram_bss*) *(.bss.tx_head) } > OCRAM\n\1\2/' \
+    c/cortex-m7.ld >"$out/cortex-m7-ocram.ld"
+cortex_m7 c-cortex-m7-ocram "$out/cortex-m7-ocram.ld"
+rm "$out/cortex-m7-ocram.ld"
+
 # ENTRY(main), so that the entry point isn't the reset handler, and elfq
 # finds the vector table by how it begins.
 echo "C, Cortex-M7 with TCMs, main as the entry point"

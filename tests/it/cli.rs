@@ -5,8 +5,8 @@ use std::process::Stdio;
 
 use crate::support::{
     DEEP_SAMPLE, LIBRARY_SAMPLE, MOVED_SAMPLE, SAMPLE, TCM_EDITED_SAMPLE, TCM_ENTRY_MAIN_SAMPLE,
-    TCM_INLINED_SAMPLE, TCM_MOVED_SAMPLE, TCM_SAMPLE, TCM_SDRAM_SAMPLE, assert_output, command,
-    elfq, samples,
+    TCM_INLINED_SAMPLE, TCM_MOVED_SAMPLE, TCM_OCRAM_SAMPLE, TCM_SAMPLE, TCM_SDRAM_SAMPLE,
+    assert_output, command, elfq, samples,
 };
 
 /// Runs elfq, expecting success, and returns what it printed.
@@ -97,6 +97,7 @@ RETAINED   OWN  ITEM
 Try:
   elfq testdata/bin/c-cortex-m4.elf --range 0x08000000..0x08000e0c
   elfq testdata/bin/c-cortex-m4.elf --range 0x20000000..0x20000048
+  elfq testdata/bin/c-cortex-m4.elf startup
   elfq testdata/bin/c-cortex-m4.elf top
   elfq testdata/bin/c-cortex-m4.elf top --tree
   elfq testdata/bin/c-cortex-m4.elf retained main
@@ -147,6 +148,7 @@ RETAINED    OWN  ITEM
 Try:
   elfq testdata/bin/c-cortex-m4-stripped.elf --range 0x08000000..0x08000e0c
   elfq testdata/bin/c-cortex-m4-stripped.elf --range 0x20000000..0x20000048
+  elfq testdata/bin/c-cortex-m4-stripped.elf startup
   elfq testdata/bin/c-cortex-m4-stripped.elf top
   elfq testdata/bin/c-cortex-m4-stripped.elf top --tree
   elfq testdata/bin/c-cortex-m4-stripped.elf retained entry
@@ -206,7 +208,12 @@ fn every_command_the_overview_suggests_works() {
             args.extend(shell_words(line));
             let args: Vec<&str> = args.iter().map(String::as_str).collect();
             let output = elfq(&args);
-            assert!(output.status.success(), "{args:?}\n{output:?}");
+            // startup exits 1 for a problem it finds.
+            let problems = line == "startup" && output.status.code() == Some(1);
+            assert!(
+                (output.status.success() || problems) && output.stderr.is_empty(),
+                "{args:?}\n{output:?}"
+            );
         }
     }
 }
@@ -441,6 +448,7 @@ Try:
   elfq testdata/bin/c-cortex-m7.elf --range 0x20000000..0x20000450
   elfq testdata/bin/c-cortex-m7.elf --range 0x20240000..0x20241000
   elfq testdata/bin/c-cortex-m7.elf --range 0x30000000..0x30000edc
+  elfq testdata/bin/c-cortex-m7.elf startup
   elfq testdata/bin/c-cortex-m7.elf top
 "
         ),
@@ -4218,6 +4226,7 @@ Other uses between blocks: 1 new and 1 gone; --json lists them.
 
 Try:
   elfq testdata/bin/c-cortex-m7-moved.elf why __filter_tap_veneer
+  elfq testdata/bin/c-cortex-m7-moved.elf startup
 ",
     );
     // --all lists the same calls: every one is listed already.
@@ -4262,6 +4271,9 @@ MEMORY                   OLD   NEW  CHANGE  SECTIONS
 0x30000000..0x30000eec  3804  3820     +16  load image of .itcm -16, .rodata +16
 
 Sections that differ: .itcm, .isr_vector, .text, .rodata and .ARM.exidx.
+
+Try:
+  elfq testdata/bin/c-cortex-m7-moved-stripped.elf startup
 ",
     );
     // Only the new build without: it is the one named.
@@ -4348,6 +4360,9 @@ No call between blocks is new or gone.
 Other uses between blocks: 17 new and 17 gone; --json lists them.
 
 50 other items are the same.
+
+Try:
+  elfq testdata/bin/c-cortex-m7-sdram.elf startup
 ",
     );
     // --all lists each, largest first.
@@ -4359,6 +4374,38 @@ Other uses between blocks: 17 new and 17 gone; --json lists them.
     assert_eq!(
         rows[0],
         "1024  1024  0x20000000  0x80000000  crc_table, kept by main"
+    );
+}
+
+#[test]
+fn an_item_moved_to_another_block_asks_for_startup() {
+    // tx_head moved from .bss to .ocram_bss, which the reset handler
+    // doesn't zero, while no load image changed: the item that moved is
+    // why diff asks for startup.
+    let (status, text) = diff(TCM_SAMPLE, TCM_OCRAM_SAMPLE, &[]);
+    assert_eq!(status, 1);
+    assert_output(
+        &text,
+        "\
+From testdata/bin/c-cortex-m7.elf to testdata/bin/c-cortex-m7-ocram.elf: 1 moved.
+
+MEMORY                   OLD   NEW  CHANGE  SECTIONS
+0x00000000..0x000000e0   224   224       0
+0x20000000..0x20000450  1104  1100      -4  .bss -4
+0x20240000..0x20241004  4096  4100      +4  .ocram_bss +4
+0x30000000..0x30000edc  3804  3804       0  bytes differ
+
+OLD  NEW  FROM        TO          MOVED
+  4    4  0x2000044c  0x20241000  tx_head (.bss to .ocram_bss), kept by platform_write
+
+No call between blocks is new or gone.
+Other uses between blocks: 1 new and 1 gone; --json lists them.
+
+62 other items are the same.
+
+Try:
+  elfq testdata/bin/c-cortex-m7-ocram.elf startup
+",
     );
 }
 
