@@ -53,7 +53,7 @@ terminal is as it was; `.github/workflows/ci.yml` has the command.
 |---|---|
 | `src/main.rs` | The program: parses arguments, runs one command on a thread with a large stack, prints errors and sets the exit status. It also turns `elfq help COMMAND` into `--help`, and suggests the right order when the command comes before the file. |
 | `src/lib.rs` | Declares the modules below. elfq is a library plus that small program; the library exists for the program and its tests. |
-| `src/cli.rs` | Command-line arguments, with clap: a `Command` variant for each command, the structs that hold their arguments, and the text of `--help`. |
+| `src/cli/` | Command-line arguments, with clap: in `mod.rs`, a `Command` variant for each command and the structs that hold their arguments, and in `help.rs`, the text of `--help`. |
 | `src/commands/` | One file per command, which looks up SYMBOL, asks `graph` or `debuginfo` and decides what the answer shows. `mod.rs` runs the command the arguments name. The rest are shared: `arguments.rs` checks which arguments go together, `checks.rs` holds the checks a command makes before it answers, such as `check_code_is_readable`, `symbol/` works out what a user means by SYMBOL (`lookup.rs` finds what a name means and names items for the user in return, and `not_found.rs` and `similar.rs` word the error when it finds several or none), `retained_tree.rs` builds the trees of retained sizes that the overview, `top` and `retained` show, `uses.rs` holds the table of `callers` and `callees` for SYMBOL, `range_check/` answers them for ranges of memory or with `--from` or `--to` (its `validate.rs` checks the ranges, `crossing.rs` holds the answers and `rows.rs` their rows, which `reach` and `diff` print too), `flat_answer.rs` holds the answers whose table has one row to a line and `tree_answer.rs` those whose table holds a tree, `text.rs` the wording that commands share and `json.rs` the JSON shapes. `kept.rs` has `Kept`, which leaves what a command keeps until it has answered for the system to take back when elfq ends (`end_after_answer`). |
 | `src/commands/browse/` | `elfq FILE browse`, with the `tui` feature: `mod.rs` takes over the terminal and runs the event loop, `session.rs` holds the loaded file and asks the commands' code for answers, `keys.rs` is the table of keys, `app.rs` the history of pages, the go-to box, find's prompt and the screen's layout, and `views/` the pages, the go-to box and the tabs of an item's page other than a function's code, one file each (a data object's contents, its tab 1, are in `item/contents.rs`), `printed.rs`, which draws a command's answer for the pages and tabs that show one, and `names.rs`, which shortens long C++ and Rust names to fit a column. |
 | `src/commands/diff/` | `elfq FILE diff NEW`: `mod.rs` reads both files and gives the exit status, `blocks.rs` works out the blocks of memory that both builds share and what changed in each, `pairing.rs` pairs the builds' items, `rows.rs` works out what changed and the rows of MOVED and CHANGE, `edited.rs` which items of the same size are edited, `crossings.rs` the uses between blocks that are new or gone, and `text.rs` and `json.rs` write the answer. |
@@ -75,7 +75,7 @@ Each module uses only the ones below it in this list:
 ```
 main.rs      the program
 commands/    one module per command
-cli.rs       arguments
+cli/         arguments
 render/      tables and trees
 debuginfo/   DWARF
 graph/       references, roots, the dominator tree, paths, crossings, veneers
@@ -280,14 +280,15 @@ one when you make elfq quick to load a file that took far too long.
 Commands take the form `elfq FILE <command> [ARGS]`. `src/commands/top.rs`
 is a short one to copy.
 
-1. **Arguments, in `src/cli.rs`.** Add a variant to `Command`, before the
-   hidden `Debug`. Its name, in lowercase with `-` between words (`SizeOf`
-   is typed `size-of`), is the command's name, and its `///` line is what
-   `elfq --help` lists. Give it an `after_help` with a longer explanation,
-   as the others have, and a line in `EXAMPLES`. Its
-   arguments go in a struct of their own, or in `SymbolArgs` if SYMBOL is
-   all it takes. `--json`, `--tree` and `--range` are global, so don't
-   declare them again. `elfq help COMMAND` and the hint for a command typed before the
+1. **Arguments, in `src/cli/`.** Add a variant to `Command` in `mod.rs`,
+   before the hidden `Debug`. Its name, in lowercase with `-` between
+   words (`SizeOf` is typed `size-of`), is the command's name, and its
+   `///` line is what `elfq --help` lists. Give it an `after_help` with a
+   longer explanation, a constant in `help.rs` in `Command`'s order, as the
+   others have, and a line in `EXAMPLES` there. Its arguments go in a
+   struct of their own, as `RetainedArgs` holds SYMBOL and `--all`.
+   `--json`, `--tree` and `--range` are global, so don't declare them
+   again. `elfq help COMMAND` and the hint for a command typed before the
    file find the new command by themselves.
 2. **The command, in `src/commands/<name>.rs`.** Start with a `//!` line
    that shows how to type it, then a `run` function that takes what it
@@ -304,7 +305,7 @@ is a short one to copy.
    command that takes `--range` gets `range` from its arm in `run`; name
    it in `RANGE_REFUSED`, the error that lists the commands that take
    `--range`, in the tests in `tests/it/cli.rs` that check that error, and
-   in the `--range` help in `cli.rs`, README.md and docs/design.md. A
+   in the `--range` help in `cli/mod.rs`, README.md and docs/design.md. A
    command that shows a tree goes likewise in `check_tree`'s error, its
    tests and the `--tree` help.
 4. **SYMBOL.** If the command reads code, call `check_code_is_readable`

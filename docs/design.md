@@ -1396,7 +1396,7 @@ that run in it:
 main.rs      1 main, run                                  8 exit status
 commands/    2 commands::run   4 retained::run, Names::find
              7 retained::answer, RetainedTree::largest, tree_row
-cli.rs       1 Cli, Command
+cli/         1 Cli, Command
 render/      7 Table::tree, Table::write
 debuginfo/   (for inlined, and SYMBOL that the compiler inlined)
 graph/       5 Graph::build, roots::find   6 DominatorTree::build
