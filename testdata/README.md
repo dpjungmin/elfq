@@ -32,6 +32,8 @@ testdata/
 | `c-cortex-m7-sysinit*.elf` | C | Cortex-M7 bare metal, whose reset handler runs code in ITCM before it copies it there, for `startup` |
 | `c-cortex-m7-steps.elf` | C | Cortex-M7 bare metal, whose reset handler makes more steps than `startup`'s table shows without `--all` |
 | `c-cortex-m7-loops*.elf`, `c-cortex-m7-tables*.elf` | C | Cortex-M7 bare metal, whose reset handler copies and zeroes in loops of its own, for `startup` |
+| `c-cortex-m7-sections*.elf`, `c-cortex-m0-pico*.elf` | C | Cortex-M7 and M0+ bare metal, whose reset handler copies and zeroes the sections that tables list, as MCUXpresso IDE's and the Pico SDK's do, for `startup` |
+| `c-cortex-m7-rom.elf` | C | Cortex-M7 bare metal, whose reset handler copies `.data` and zeroes `.bss` with functions of the boot ROM, outside the file, for `startup` |
 | `c-cortex-m7-noreturn.elf` | C | Cortex-M7 bare metal, whose reset handler calls a function that copies and zeroes and doesn't return, as Zephyr's does |
 | `c-deep.elf` | C | x86-64 Linux, PIE, with calls and inlined code nested 20 deep |
 | `far-*.elf` | C | Cortex-M0 and M4 bare metal, with calls too far for one branch instruction, linked by GNU ld or LLD |
