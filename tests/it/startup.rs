@@ -4,6 +4,7 @@
 
 use std::path::Path;
 
+use object::{Object, ObjectSection};
 use serde_json::{Value, json};
 
 use crate::damaged::{self, SIZE, set_section_field};
@@ -850,6 +851,49 @@ fn keep_out_names_what_runs_before_each_copy_of_code() {
             early.sort_by_key(address);
             assert_eq!(inside, early, "{sample}: {row}");
         }
+    }
+}
+
+#[test]
+fn the_overview_suggests_startup_only_for_firmware_that_startup_reads() {
+    let try_startup = |path: &str| {
+        let output = elfq(&[path]);
+        assert!(output.status.success(), "{output:?}");
+        let overview = String::from_utf8(output.stdout).unwrap();
+        overview.contains(&format!("\n  elfq {path} startup\n"))
+    };
+    assert!(try_startup(TCM_SAMPLE));
+    // A first program header that names a dynamic loader, as an operating
+    // system's programs have, which startup refuses on the header.
+    let loaded = changed(
+        TCM_SAMPLE,
+        "c-cortex-m7-overview-interpreter.elf",
+        &|data| {
+            let at = word(data, 0x1c) as usize;
+            set_word(data, at, 3);
+        },
+    );
+    // A reset handler and entry point in no function.
+    let no_reset = changed(TCM_SAMPLE, "c-cortex-m7-overview-no-reset.elf", &|data| {
+        let file = object::File::parse(&**data).unwrap();
+        let (table, _) = (file.section_by_name(".isr_vector").unwrap())
+            .file_range()
+            .unwrap();
+        set_word(data, table as usize + 4, 0x2000_0001);
+        set_word(data, 0x18, 0x2000_0001);
+    });
+    // No load image or section without contents: the sections that were
+    // are no longer allocated, as sh_flags lacks SHF_ALLOC (2) and keeps
+    // SHF_EXECINSTR (4) or SHF_WRITE (1), so startup has nothing to set up.
+    let no_ram = changed(TCM_SAMPLE, "c-cortex-m7-overview-no-ram.elf", &|data| {
+        const FLAGS: damaged::Field = (0x08, 0x08);
+        set_section_field(data, ".itcm", FLAGS, 4);
+        for section in [".data", ".bss", ".ocram_bss"] {
+            set_section_field(data, section, FLAGS, 1);
+        }
+    });
+    for path in [&loaded, &no_reset, &no_ram] {
+        assert!(!try_startup(path), "{path}");
     }
 }
 

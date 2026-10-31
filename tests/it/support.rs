@@ -22,6 +22,9 @@ pub const MOVED_SAMPLE: &str = "testdata/bin/c-x86_64-moved.elf";
 pub const TCM_MOVED_SAMPLE: &str = "testdata/bin/c-cortex-m7-moved.elf";
 /// [`TCM_SAMPLE`] with DTCM linked at 0x80000000.
 pub const TCM_SDRAM_SAMPLE: &str = "testdata/bin/c-cortex-m7-sdram.elf";
+/// [`TCM_SAMPLE`] with tx_head in OCRAM, which the reset handler doesn't
+/// zero.
+pub const TCM_OCRAM_SAMPLE: &str = "testdata/bin/c-cortex-m7-ocram.elf";
 /// [`TCM_SAMPLE`] with decode_header inlined into process_frame.
 pub const TCM_INLINED_SAMPLE: &str = "testdata/bin/c-cortex-m7-inlined.elf";
 /// [`TCM_SAMPLE`] with two constants changed: one that decode_header

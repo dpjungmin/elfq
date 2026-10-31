@@ -5,8 +5,8 @@ use std::process::Stdio;
 
 use crate::support::{
     DEEP_SAMPLE, LIBRARY_SAMPLE, MOVED_SAMPLE, SAMPLE, TCM_EDITED_SAMPLE, TCM_ENTRY_MAIN_SAMPLE,
-    TCM_INLINED_SAMPLE, TCM_MOVED_SAMPLE, TCM_SAMPLE, TCM_SDRAM_SAMPLE, assert_output, command,
-    elfq, samples,
+    TCM_INLINED_SAMPLE, TCM_MOVED_SAMPLE, TCM_OCRAM_SAMPLE, TCM_SAMPLE, TCM_SDRAM_SAMPLE,
+    assert_output, command, elfq, samples,
 };
 
 /// Runs elfq, expecting success, and returns what it printed.
@@ -4374,6 +4374,38 @@ Try:
     assert_eq!(
         rows[0],
         "1024  1024  0x20000000  0x80000000  crc_table, kept by main"
+    );
+}
+
+#[test]
+fn an_item_moved_to_another_block_asks_for_startup() {
+    // tx_head moved from .bss to .ocram_bss, which the reset handler
+    // doesn't zero, while no load image changed: the item that moved is
+    // why diff asks for startup.
+    let (status, text) = diff(TCM_SAMPLE, TCM_OCRAM_SAMPLE, &[]);
+    assert_eq!(status, 1);
+    assert_output(
+        &text,
+        "\
+From testdata/bin/c-cortex-m7.elf to testdata/bin/c-cortex-m7-ocram.elf: 1 moved.
+
+MEMORY                   OLD   NEW  CHANGE  SECTIONS
+0x00000000..0x000000e0   224   224       0
+0x20000000..0x20000450  1104  1100      -4  .bss -4
+0x20240000..0x20241004  4096  4100      +4  .ocram_bss +4
+0x30000000..0x30000edc  3804  3804       0  bytes differ
+
+OLD  NEW  FROM        TO          MOVED
+  4    4  0x2000044c  0x20241000  tx_head (.bss to .ocram_bss), kept by platform_write
+
+No call between blocks is new or gone.
+Other uses between blocks: 1 new and 1 gone; --json lists them.
+
+62 other items are the same.
+
+Try:
+  elfq testdata/bin/c-cortex-m7-ocram.elf startup
+",
     );
 }
 

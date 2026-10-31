@@ -869,9 +869,9 @@ Not zeroed, which may be intended: .ocram_bss (tx_buffer).
 ```
 
 Nothing after that can be counted on, so the other steps may never run.
-`.ocram_bss` holds a buffer for DMA, which the code doesn't need zeroed,
-so it gets a note rather than a problem; only `.bss` and `.sbss` must be
-zeroed. The exit status is 1, as it is when elfq can't follow code that
+`.ocram_bss` holds the UART's transmit buffer, which the code doesn't
+need zeroed, as it reads only the bytes it wrote, so it gets a note
+rather than a problem; only `.bss` and `.sbss` must be zeroed. The exit status is 1, as it is when elfq can't follow code that
 may set up a load image or `.bss`, such as a call through a pointer.
 Such a problem has `certain: false` in the JSON, so a CI job that should
 fail only on what elfq is sure of checks the count of the others:

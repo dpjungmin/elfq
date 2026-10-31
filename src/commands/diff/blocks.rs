@@ -546,5 +546,25 @@ mod tests {
                 (".ARM.exidx", false)
             ]
         );
+        // So does a section that only one build has: only the Cortex-M7's
+        // has ITCM, either way round.
+        for (old, new) in [
+            (sample("c-cortex-m4.elf"), sample("c-cortex-m7.elf")),
+            (sample("c-cortex-m7.elf"), sample("c-cortex-m4.elf")),
+        ] {
+            let old = LoadedMemory::read(&old).unwrap();
+            let new = LoadedMemory::read(&new).unwrap();
+            let itcm = sections_that_differ(&old, &new)
+                .into_iter()
+                .find(|differs| differs.name == ".itcm");
+            assert_eq!(
+                itcm,
+                Some(Differs {
+                    name: ".itcm",
+                    only_load_image: false,
+                    load_image: true,
+                })
+            );
+        }
     }
 }
