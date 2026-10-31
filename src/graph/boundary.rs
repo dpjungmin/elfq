@@ -449,6 +449,113 @@ mod tests {
         );
     }
 
+    /// The unfollowed calls and jumps as (from, target, veneer), with the
+    /// target in hex.
+    fn unfollowed_names(binary: &Binary, rows: &[Unfollowed]) -> Vec<(String, String, String)> {
+        rows.iter()
+            .map(|row| {
+                (
+                    binary.items[row.unresolved.from].name.clone(),
+                    row.unresolved
+                        .target
+                        .map_or(String::new(), |target| format!("{target:#x}")),
+                    row.veneer
+                        .map_or(String::new(), |veneer| binary.items[veneer].name.clone()),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_veneer_that_jumps_to_a_veneer_is_reported_by_the_first_rule_that_matches() {
+        // As if __app_tick_veneer jumped to __memcpy_veneer, which jumps to
+        // memcpy. SysTick_Handler, at 0x0, tail-calls __app_tick_veneer, at
+        // 0xd0, and __memcpy_veneer is at 0xd8. A veneer's jump is a tail
+        // call, which counts as a call, so the jump to __memcpy_veneer is
+        // both a veneer's jump and a call to a veneer: the order of the
+        // rules decides how it is reported.
+        let (binary, mut graph) = sample();
+        let (first, second) = (
+            index(&binary, "__app_tick_veneer"),
+            index(&binary, "__memcpy_veneer"),
+        );
+        let jump = graph
+            .references
+            .iter_mut()
+            .find(|reference| reference.from == first)
+            .unwrap();
+        jump.to = Node::Item(second);
+        // With the caller: the call to the first veneer takes the place of
+        // its jump, as a call through it to the second veneer.
+        let ranges = [range("0x0..0x10"), range("0xd0..0xd8")];
+        let boundary = Boundary::new(&binary, &graph, &ranges);
+        assert_eq!(
+            names(&binary, &boundary.leaving()),
+            [
+                crossing("SysTick_Handler", "__memcpy_veneer", "__app_tick_veneer"),
+                crossing("SysTick_Handler", "systick_count", ""),
+            ]
+        );
+        // Without the caller, nothing on the first veneer's side calls it,
+        // so its jump is a call to the second veneer's target.
+        let ranges = [range("0xd0..0xd8")];
+        let boundary = Boundary::new(&binary, &graph, &ranges);
+        assert_eq!(
+            names(&binary, &boundary.leaving()),
+            [crossing("__app_tick_veneer", "memcpy", "__memcpy_veneer")]
+        );
+        assert_eq!(
+            names(&binary, &boundary.entering()),
+            [crossing("SysTick_Handler", "__app_tick_veneer", "")]
+        );
+
+        // As if the second veneer jumped to a routine in ROM.
+        let rom = 0x1fff_0000;
+        let site = graph.references_from(second)[0].site;
+        graph
+            .references
+            .retain(|reference| reference.from != second);
+        graph.unresolved.push(Unresolved {
+            from: second,
+            site,
+            is_call: false,
+            target: Some(rom),
+        });
+        graph.unresolved.sort_by_key(|u| (u.from, u.site));
+        // With the caller, the first rule still holds, and the jump is a
+        // call to code outside every item too.
+        let ranges = [range("0x0..0x10"), range("0xd0..0xd8")];
+        let boundary = Boundary::new(&binary, &graph, &ranges);
+        assert_eq!(
+            names(&binary, &boundary.leaving()),
+            [
+                crossing("SysTick_Handler", "__memcpy_veneer", "__app_tick_veneer"),
+                crossing("SysTick_Handler", "systick_count", ""),
+            ]
+        );
+        assert_eq!(
+            unfollowed_names(&binary, &boundary.unfollowed()),
+            [(
+                "__app_tick_veneer".to_string(),
+                format!("{rom:#x}"),
+                "__memcpy_veneer".to_string()
+            )]
+        );
+        // Without the caller, the jump is only a call to code outside every
+        // item.
+        let ranges = [range("0xd0..0xd8")];
+        let boundary = Boundary::new(&binary, &graph, &ranges);
+        assert!(boundary.leaving().is_empty());
+        assert_eq!(
+            unfollowed_names(&binary, &boundary.unfollowed()),
+            [(
+                "__app_tick_veneer".to_string(),
+                format!("{rom:#x}"),
+                "__memcpy_veneer".to_string()
+            )]
+        );
+    }
+
     #[test]
     fn calls_that_may_leave_the_ranges_are_unfollowed() {
         let (binary, mut graph) = sample();
