@@ -250,10 +250,7 @@ pub(super) fn judge(
     }
     // A walk that ends where it can't read on, or stops short, didn't
     // follow what comes after, though that may set up nothing.
-    let stopped = matches!(
-        end,
-        End::Undecoded(_) | End::Branches { .. } | End::LeavesFile { .. } | End::Budget(_)
-    );
+    let stopped = end.stops_short();
     let mut judged = Judged {
         init,
         unknown,
@@ -595,7 +592,7 @@ fn enclosing(events: &Events, k: usize) -> Vec<u64> {
 fn step_at(steps: &[Step], k: usize) -> Option<&Step> {
     (steps.iter())
         .rev()
-        .find(|step| step.event <= k && step.level == 0)
+        .find(|step| step.begins <= k && step.level == 0)
 }
 
 /// The notes under the steps: where the walk starts, branches it took,

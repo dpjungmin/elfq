@@ -197,6 +197,40 @@ cortex_m7_from c-cortex-m7-tables "$out/cortex-m7-tables.ld" c/tables.c
 rm "$out/cortex-m7-tables.ld"
 variants arm-none-eabi-strip c-cortex-m7-tables
 
+# "sections" adds tables laid out as MCUXpresso IDE's, whose rows ResetISR
+# passes to data_init and bss_init (see c/sections.c), before .text.
+echo "C, Cortex-M7 with TCMs, startup tables with a function for each row"
+sed -e 's/^ENTRY(Reset_Handler)/ENTRY(ResetISR)/' -e 's/^    \.text : /    .data_section_table : {\
+        __data_section_table = .;\
+        LONG(LOADADDR(.itcm)) LONG(ADDR(.itcm)) LONG(SIZEOF(.itcm))\
+        LONG(LOADADDR(.data)) LONG(ADDR(.data)) LONG(SIZEOF(.data))\
+        __data_section_table_end = .;\
+        __bss_section_table = .;\
+        LONG(ADDR(.bss)) LONG(SIZEOF(.bss))\
+        LONG(ADDR(.ocram_bss)) LONG(SIZEOF(.ocram_bss))\
+        __bss_section_table_end = .;\
+    } > FLASH\
+&/' c/cortex-m7.ld >"$out/cortex-m7-sections.ld"
+cortex_m7_from c-cortex-m7-sections "$out/cortex-m7-sections.ld" c/sections.c
+rm "$out/cortex-m7-sections.ld"
+variants arm-none-eabi-strip c-cortex-m7-sections
+
+# Only the full build: a startup that copies .data with a function from the
+# boot ROM, which isn't in the file (see c/rom.c).
+echo "C, Cortex-M7 with TCMs, .data copied by the boot ROM"
+cortex_m7_from c-cortex-m7-rom c/cortex-m7.ld c/rom.c
+
+# A startup laid out as the Pico SDK's for the RP2040, whose table of
+# sections to copy ends with a zero word (see c/pico.c and c/pico.ld).
+echo "C, Cortex-M0+, laid out as the Pico SDK does"
+arm-none-eabi-gcc $cflags \
+    -mcpu=cortex-m0plus -mthumb \
+    -ffunction-sections -fdata-sections \
+    -nostartfiles --specs=nano.specs --specs=nosys.specs \
+    -T c/pico.ld -Wl,--gc-sections \
+    -o "$out/c-cortex-m0-pico.elf" c/pico.c
+variants arm-none-eabi-strip c-cortex-m0-pico
+
 # Only the full build: a startup laid out as Zephyr's, whose reset handler
 # calls a function that sets up the memory and doesn't return (see
 # c/noreturn.c).

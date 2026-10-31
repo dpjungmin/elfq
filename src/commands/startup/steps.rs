@@ -15,7 +15,7 @@ use object::SectionKind;
 
 use super::Firmware;
 use super::start::{Main, MainFrom, Reset};
-use crate::arch::startup::{Call, End, Event, How, Loop, LoopStore, Store};
+use crate::arch::startup::{Call, End, Event, How, Loop, LoopStore, Store, Time};
 use crate::binary::{Binary, ItemKind, Section};
 
 /// The names that the ELF specification gives sections of memory that
@@ -202,7 +202,7 @@ impl<'a> Memory<'a> {
             to,
             size,
             gap: copies,
-            home: (0, 0),
+            home: (0, 0, None),
             site: first.site,
             way: Way::Loop,
             step: None,
@@ -228,7 +228,7 @@ impl<'a> Memory<'a> {
             to,
             size,
             gap,
-            home: (0, 0),
+            home: (0, 0, None),
             site: store.site,
             way: Way::Store,
             step: None,
@@ -288,6 +288,10 @@ impl<'a> Memory<'a> {
     }
 }
 
+/// The level and function of code, and the time through a loop it is in,
+/// with the loop, as their events (see [`Piece::home`]).
+type Home = (u32, u64, Option<(usize, usize)>);
+
 /// Bytes that code copies or zeroes one after another: a loop's, or a
 /// store's outside loops, or those of several of them next to each other
 /// in the same function, as of a loop and of the stores that copy the
@@ -300,8 +304,12 @@ struct Piece {
     /// For a copy, how far after where it stores each word it loads it
     /// from, wrapping round.
     gap: Option<u32>,
-    /// The level and function of the code.
-    home: (u32, u64),
+    /// The level and function of the code, and the time through a loop
+    /// that the walk went through each time that it is in (see
+    /// [`Times`]): the bytes of one time are joined with another's only
+    /// when they don't set up a section of their own (see
+    /// [`Pieces::add`]).
+    home: Home,
     /// Its first store, of the loop's when there is a loop.
     site: u64,
     /// [`Way::Loop`] when there is a loop, or else [`Way::Store`].
@@ -317,14 +325,35 @@ impl Piece {
     }
 
     /// Whether `other` does what this does with the bytes next to its
-    /// own, in the same function.
-    fn next_to(&self, other: &Piece) -> bool {
-        self.home == other.home
-            && self.does == other.does
+    /// own, in the same function, and the same time through a loop, or
+    /// `across` another time of the same loop, by the same store.
+    fn next_to(&self, other: &Piece, across: bool) -> bool {
+        let (level, function, time) = self.home;
+        let same_loop = |(l, _): (usize, usize)| other.home.2.is_some_and(|(m, _)| m == l);
+        let home = self.home == other.home
+            || (across
+                && (level, function) == (other.home.0, other.home.1)
+                && time.is_some_and(same_loop)
+                && self.site == other.site);
+        home && self.does == other.does
             && self.gap == other.gap
             && (self.end() == other.to || other.end() == self.to)
             && !(self.step.is_some() && other.step.is_some())
     }
+}
+
+/// What [`Memory::matched`] matches of the bytes of `piece`, when they
+/// make a step (see [`Pieces::add`]).
+fn step_match(memory: &Memory, piece: &Piece) -> Option<Match> {
+    let from = (piece.gap).map(|gap| u64::from((piece.to as u32).wrapping_add(gap)));
+    (memory.matched(piece.does, piece.to, from, piece.size)).filter(|matched| {
+        piece.step.is_some()
+            || piece.way == Way::Loop
+            || matched.covers.iter().all(|cover| {
+                cover.bytes == memory.section(cover.section).size
+                    && (cover.from).is_none_or(|from| from == memory.load_address(cover.section))
+            })
+    })
 }
 
 /// The pieces found so far, which steps copy or zero, or may when code
@@ -337,7 +366,11 @@ impl Pieces {
     /// and makes a step of the bytes, or extends the step of a piece it
     /// joins, when [`Memory::matched`] matches them: for the bytes of
     /// stores alone, only when they cover whole sections, copied from
-    /// their load images. Returns whether a step stands for `piece`.
+    /// their load images. A piece of a time through a loop that the walk
+    /// went through each time joins those of the loop's other times, as
+    /// the word that a loop copies each time with a call does, unless it
+    /// makes a step alone, as the copy of a row of a table does, which is
+    /// a step of its own. Returns whether a step stands for `piece`.
     fn add(
         &mut self,
         memory: &Memory,
@@ -346,10 +379,11 @@ impl Pieces {
         steps: &mut Vec<Step>,
         ready: &mut HashSet<usize>,
     ) -> bool {
+        let across = piece.home.2.is_some() && step_match(memory, &piece).is_none();
         let mut joined = piece;
         let mut taken: Vec<usize> = Vec::new();
         while let Some(i) =
-            (0..self.0.len()).find(|&i| !taken.contains(&i) && self.0[i].next_to(&joined))
+            (0..self.0.len()).find(|&i| !taken.contains(&i) && self.0[i].next_to(&joined, across))
         {
             let other = self.0[i];
             joined.to = joined.to.min(other.to);
@@ -358,21 +392,13 @@ impl Pieces {
             if other.way == Way::Loop && joined.way != Way::Loop {
                 (joined.way, joined.site) = (Way::Loop, other.site);
             }
+            // The bytes of several times are a loop's.
+            if other.home != joined.home {
+                joined.way = Way::Loop;
+            }
             taken.push(i);
         }
-        let from = (joined.gap).map(|gap| u64::from((joined.to as u32).wrapping_add(gap)));
-        let matched = memory
-            .matched(joined.does, joined.to, from, joined.size)
-            .filter(|matched| {
-                joined.step.is_some()
-                    || joined.way == Way::Loop
-                    || matched.covers.iter().all(|cover| {
-                        cover.bytes == memory.section(cover.section).size
-                            && (cover.from)
-                                .is_none_or(|from| from == memory.load_address(cover.section))
-                    })
-            });
-        let Some(matched) = matched else {
+        let Some(matched) = step_match(memory, &joined) else {
             if piece.way == Way::Store {
                 self.0.push(piece);
             }
@@ -381,7 +407,7 @@ impl Pieces {
         let index = match joined.step {
             Some(index) => index,
             None => {
-                let (level, function) = joined.home;
+                let (level, function, _) = joined.home;
                 let mut step = Step::new(k, joined.site, joined.does, joined.way, function, level);
                 step.function = Some(function);
                 steps.push(step);
@@ -416,7 +442,7 @@ impl Pieces {
         &mut self,
         memory: &Memory,
         store: &Store,
-        home: (u32, u64),
+        home: Home,
         steps: &mut [Step],
         ready: &mut HashSet<usize>,
     ) {
@@ -683,6 +709,14 @@ pub(super) struct Step {
     pub may: Vec<usize>,
     /// For a call, where the events of the code it runs end.
     pub span: Option<usize>,
+    /// Where the step begins in the walk's events: at `event`, or for a
+    /// call to a function that copies or zeroes, whose step stands for
+    /// the call, at the call's (see [`helpers`]).
+    pub begins: usize,
+    /// For a copy or zeroing in a time through a loop over a table of
+    /// sections, where the time reads its row of the table (see
+    /// [`Time::row`]).
+    pub table: Option<u64>,
 }
 
 impl Step {
@@ -711,7 +745,16 @@ impl Step {
             size: None,
             may: Vec::new(),
             span: None,
+            begins: event,
+            table: None,
         }
+    }
+
+    /// The function that the step's instruction calls: a call's, or that
+    /// of a call made the step that the function does (see [`helpers`]).
+    pub(super) fn called(&self) -> Option<u64> {
+        let merged = self.begins != self.event && matches!(self.way, Way::Call | Way::TailCall);
+        self.function.filter(|_| self.does == Does::Call || merged)
     }
 }
 
@@ -737,14 +780,24 @@ pub(super) fn build(
     };
     // Inside a call that copies or zeroes: its own code.
     let mut skip_to = 0;
-    // The events of loops' code, whose stores the loops' steps stand for.
+    // The events of loops' code, whose stores the loops' steps stand for,
+    // but for loops that the walk went through each time, whose events
+    // are those of every time.
     let mut in_loop = vec![false; events.list.len()];
     for (k, event) in events.list.iter().enumerate() {
-        if let Event::Loop(l) = event {
+        if let Event::Loop(l) = event
+            && l.times.is_empty()
+        {
             in_loop[l.first_event..k].fill(true);
         }
     }
+    let times = Times::new(events.list);
     let mut pieces = Pieces::default();
+    // The events of calls that copy or zero, whose steps stand for their
+    // code, and each loop that the walk went through each time, outside
+    // loops that it didn't, with the function that runs it.
+    let mut called: Vec<Range<usize>> = Vec::new();
+    let mut walked_loops: Vec<(usize, u64)> = Vec::new();
     for (k, event) in events.list.iter().enumerate() {
         if k < skip_to {
             continue;
@@ -764,10 +817,11 @@ pub(super) fn build(
                     }
                     holder[l + 1] = target;
                 }
-                let way = if call.how == How::Jump {
-                    Way::TailCall
-                } else {
-                    Way::Call
+                let way = match (call.how, target) {
+                    (How::Jump, _) => Way::TailCall,
+                    (How::Register(register), None) => Way::RegisterCall(register),
+                    (How::Supervisor, None) => Way::SupervisorCall,
+                    _ => Way::Call,
                 };
                 let mut step = Step::new(k, call.site, Does::Call, way, inside, level);
                 step.function = target;
@@ -793,13 +847,12 @@ pub(super) fn build(
                     step.covers = matched.covers;
                     steps.push(step);
                     skip_to = events.span(k);
+                    called.push(k..skip_to);
                 } else if target.is_none() {
+                    if matches!(call.how, How::Direct | How::Jump) {
+                        continue;
+                    }
                     step.does = Does::Unread;
-                    step.way = match call.how {
-                        How::Register(register) => Way::RegisterCall(register),
-                        How::Supervisor => Way::SupervisorCall,
-                        How::Direct | How::Jump => continue,
-                    };
                     step.may = not_ready(&ready);
                     if !step.may.is_empty() {
                         steps.push(step);
@@ -821,10 +874,18 @@ pub(super) fn build(
                     steps.push(step);
                 }
             }
+            // Its times' events are steps of their own (see
+            // [`unfollowed_times`]). In a loop that the walk didn't go
+            // through each time, they are those of one time of that loop,
+            // so it is a loop that elfq can't follow, as it would be if the
+            // walk went through it once.
+            Event::Loop(walked) if !walked.times.is_empty() && !in_loop[k] => {
+                walked_loops.push((k, at(&holder, l)));
+            }
             Event::Loop(walked) => {
                 let function = at(&holder, l);
                 let piece = (memory.loop_piece(walked)).map(|piece| Piece {
-                    home: (level, function),
+                    home: (level, function, times.home(k)),
                     ..piece
                 });
                 if let Some(piece) = piece
@@ -870,7 +931,7 @@ pub(super) fn build(
                 }
             }
             Event::Store(store) if !in_loop[k] => {
-                let home = (level, at(&holder, l));
+                let home = (level, at(&holder, l), times.home(k));
                 match memory.store_piece(store) {
                     Some(piece) => {
                         let piece = Piece { home, ..piece };
@@ -882,11 +943,16 @@ pub(super) fn build(
             Event::Store(_) | Event::Backtrack { .. } => {}
         }
     }
+    let skipped = |j: usize| in_loop[j] || called.iter().any(|run| run.contains(&j));
+    unfollowed_times(memory, events, &walked_loops, skipped, &mut steps);
+    ready = (steps.iter())
+        .flat_map(|step| step.covers.iter().map(|cover| cover.section))
+        .collect();
     let k = events.list.len();
     match end {
         // Where the walk can't read on, or stops short, what comes after
         // may set up anything.
-        End::Undecoded(_) | End::Branches { .. } | End::LeavesFile { .. } | End::Budget(_) => {
+        end if end.stops_short() => {
             let site = end.site();
             let function = firmware
                 .item(site)
@@ -923,10 +989,174 @@ pub(super) fn build(
         }
     }
     steps.retain(|step| step.does != Does::Unread || !step.may.is_empty());
+    for step in &mut steps {
+        if matches!(step.does, Does::Copy | Does::Zero) {
+            step.table = times.row(step.event).map(u64::from);
+        }
+    }
+    let steps = helpers(firmware, events, steps);
+    // A call that a loop over a table makes each time is listed once, but
+    // for the times that it copies or zeroes, and not at all when it does
+    // in some, as for a row that copies none; and code that the walk can't
+    // follow in each time, once, with what it may set up any time.
+    let does: HashSet<u64> = (steps.iter())
+        .filter(|step| matches!(step.does, Does::Copy | Does::Zero))
+        .map(|step| step.site)
+        .collect();
+    let mut sites: HashSet<u64> = HashSet::new();
+    let mut kept: Vec<Step> = Vec::with_capacity(steps.len());
+    // The steps of `kept` that elfq can't follow, each the first of its
+    // kind at its site.
+    let mut unread: Vec<usize> = Vec::new();
+    for step in steps {
+        let again = !sites.insert(step.site);
+        let timed = times.of(step.begins).is_some();
+        match step.does {
+            Does::Call if (again || does.contains(&step.site)) && !step.main && timed => continue,
+            Does::Unread => {
+                let key = (step.site, step.way, step.function);
+                let seen = (unread.iter().copied())
+                    .find(|&i| (kept[i].site, kept[i].way, kept[i].function) == key);
+                if let Some(first) = seen
+                    && timed
+                {
+                    let first = &mut kept[first];
+                    for x in step.may {
+                        if !first.may.contains(&x) {
+                            first.may.push(x);
+                        }
+                    }
+                    first.may.sort_by_key(|&x| memory.section(x).address);
+                    continue;
+                }
+                if seen.is_none() {
+                    unread.push(kept.len());
+                }
+            }
+            _ => {}
+        }
+        kept.push(step);
+    }
+    let mut steps = kept;
     for (n, step) in steps.iter_mut().enumerate() {
         step.number = n + 1;
     }
     steps
+}
+
+/// The times through the code of loops that the walk went through each
+/// time (see [`Loop::times`]), by event.
+struct Times {
+    /// For each event, the innermost time it is in, as the first event of
+    /// that time, with the loop's event and the time's row of a table.
+    of: Vec<Option<(usize, usize, Option<u32>)>>,
+}
+
+impl Times {
+    fn new(list: &[Event]) -> Times {
+        let mut of = vec![None; list.len()];
+        // A loop inside another closes first, so its times come first.
+        for (k, event) in list.iter().enumerate() {
+            let Event::Loop(l) = event else {
+                continue;
+            };
+            for (n, &Time { first_event, row }) in l.times.iter().enumerate() {
+                let end = l.times.get(n + 1).map_or(k, |next| next.first_event);
+                for time in &mut of[first_event..end] {
+                    time.get_or_insert((first_event, k, row));
+                }
+            }
+        }
+        Times { of }
+    }
+
+    /// The time that the event at `k` is in, by its first event.
+    fn of(&self, k: usize) -> Option<usize> {
+        self.of.get(k).copied().flatten().map(|(first, _, _)| first)
+    }
+
+    /// The loop and the time that the event at `k` is in, by their events
+    /// (see [`Home`]).
+    fn home(&self, k: usize) -> Option<(usize, usize)> {
+        (self.of.get(k).copied().flatten()).map(|(first, l, _)| (l, first))
+    }
+
+    /// Where the time that the event at `k` is in reads its row of a
+    /// table.
+    fn row(&self, k: usize) -> Option<u32> {
+        self.of
+            .get(k)
+            .copied()
+            .flatten()
+            .and_then(|(_, _, row)| row)
+    }
+}
+
+/// `steps`, with each call that the reset handler makes to a function
+/// that does one step, a copy or a zeroing, and calls nothing else, as
+/// MCUXpresso's `data_init` and `bss_init` do, made that step, as a call
+/// to `memcpy` is: the call's, by the function, at its site. A call to
+/// code in the function that makes it, as Pico SDK's `data_cpy` is, which
+/// isn't a function of its own, keeps how the step does it, as a loop in
+/// that function.
+fn helpers(firmware: &Firmware, events: &Events, steps: Vec<Step>) -> Vec<Step> {
+    // For each step, whether it is such a call, and so the step after
+    // it, the one it does, goes.
+    let merged: Vec<bool> = (0..steps.len())
+        .map(|i| {
+            let step = &steps[i];
+            let (Does::Call, false, Some(span)) = (step.does, step.main, step.span) else {
+                return false;
+            };
+            let inside = |j: usize| steps.get(j).is_some_and(|other| other.event < span);
+            let Some(only) = steps.get(i + 1).filter(|_| inside(i + 1) && !inside(i + 2)) else {
+                return false;
+            };
+            // The events of the step's own call, when it is one.
+            let own = match events.list[only.event] {
+                Event::Call(_) => only.event..events.span(only.event),
+                _ => 0..0,
+            };
+            let calls_else =
+                (step.event + 1..span).any(|j| !own.contains(&j) && events.call(j).is_some());
+            matches!(only.does, Does::Copy | Does::Zero) && only.level > step.level && !calls_else
+        })
+        .collect();
+    let local = |call: &Step| {
+        let item = firmware.item(call.inside);
+        item.is_some() && call.function.map(|function| firmware.item(function)) == Some(item)
+    };
+    let mut out: Vec<Step> = Vec::with_capacity(steps.len());
+    let mut call: Option<Step> = None;
+    for (step, merged) in steps.into_iter().zip(merged) {
+        if merged {
+            call = Some(step);
+            continue;
+        }
+        match call.take() {
+            Some(call) if local(&call) => out.push(Step {
+                site: call.site,
+                inside: call.inside,
+                level: call.level,
+                span: call.span,
+                begins: call.event,
+                ..step
+            }),
+            Some(call) => out.push(Step {
+                site: call.site,
+                way: call.way,
+                function: call.function,
+                veneer: call.veneer,
+                inside: call.inside,
+                level: call.level,
+                span: call.span,
+                begins: call.event,
+                ..step
+            }),
+            None => out.push(step),
+        }
+    }
+    out
 }
 
 /// The bytes that a loop's store covers over all the times it stores.
@@ -1006,6 +1236,87 @@ fn tiled(stores: &[&LoopStore]) -> Option<(u64, u64)> {
         u64::try_from(start).ok()?,
         u64::try_from(full * size + extra).ok()?,
     ))
+}
+
+/// Makes each loop of `walked`, which the walk went through each time,
+/// with the function that runs it, a loop that elfq can't follow, as it is
+/// when the walk goes through it once, when steps don't stand for all its
+/// times' stores into the sections: as when each time stores words by
+/// several stores, which don't join across times, or runs a loop inside
+/// that the walk went through each time too, or stores through a pointer
+/// that it can't tell, in the loop's code or in a function it calls. Then
+/// the loop's step stands for its times' steps that copy or zero part of
+/// what it may set up. Leaves out the stores of events that are
+/// `skipped`, whose own steps stand for them, and the loops inside one
+/// that it makes such a loop.
+fn unfollowed_times(
+    memory: &Memory,
+    events: &Events,
+    walked: &[(usize, u64)],
+    skipped: impl Fn(usize) -> bool,
+    steps: &mut Vec<Step>,
+) {
+    let mut unfollowed: Vec<Range<usize>> = Vec::new();
+    // Outer loops first.
+    let mut walked = walked.to_vec();
+    walked.sort_by_key(|&(k, _)| match &events.list[k] {
+        Event::Loop(l) => (l.first_event, usize::MAX - k),
+        _ => (k, 0),
+    });
+    for (k, function) in walked {
+        let Event::Loop(l) = &events.list[k] else {
+            continue;
+        };
+        if unfollowed.iter().any(|run| run.contains(&l.first_event)) {
+            continue;
+        }
+        let covered = |at: u32, size: u32| {
+            let (at, size) = (u64::from(at), u64::from(size.max(1)));
+            steps.iter().any(|step| {
+                matches!(step.does, Does::Copy | Does::Zero)
+                    && (step.to.zip(step.size))
+                        .is_some_and(|(to, bytes)| to <= at && at + size <= to + bytes)
+            })
+        };
+        let stores: Vec<&Store> = (l.first_event..k)
+            .filter(|&j| !skipped(j))
+            .filter_map(|j| match &events.list[j] {
+                Event::Store(store) if !store.conditional => Some(store),
+                _ => None,
+            })
+            .filter(|store| match store.address {
+                Some(at) => memory.holding(u64::from(at)).is_some() && !covered(at, store.size),
+                None => true,
+            })
+            .collect();
+        let mut may = loop_targets(memory, &stores, &HashSet::new());
+        if may.is_empty() {
+            continue;
+        }
+        let part = |step: &Step| {
+            (l.first_event..k).contains(&step.event)
+                && matches!(step.does, Does::Copy | Does::Zero)
+                && (step.covers.iter()).any(|cover| may.contains(&cover.section))
+        };
+        let parts: Vec<usize> = (steps.iter())
+            .filter(|step| part(step))
+            .flat_map(|step| step.covers.iter().map(|cover| cover.section))
+            .collect();
+        steps.retain(|step| !part(step));
+        for x in parts {
+            if !may.contains(&x) {
+                may.push(x);
+            }
+        }
+        may.sort_by_key(|&x| memory.section(x).address);
+        let level = events.level(k);
+        let mut step = Step::new(k, l.head, Does::Unread, Way::Loop, function, level);
+        step.function = Some(function);
+        step.may = may;
+        let at = steps.partition_point(|step| step.event <= k);
+        steps.insert(at, step);
+        unfollowed.push(l.first_event..k);
+    }
 }
 
 /// The sections a loop that elfq can't follow may set up: the run of
@@ -1289,6 +1600,7 @@ mod tests {
             end: None,
             passes: stores.iter().map(|store| store.times).max(),
             stores: Some(stores),
+            times: Vec::new(),
         }
     }
 
@@ -1410,6 +1722,11 @@ mod tests {
     /// The steps of startup code whose walk found `list`, as "copy
     /// 0x20000000 32 by a loop: .data 32", one a line.
     fn steps(binary: &Binary, list: &[Event]) -> Vec<String> {
+        steps_to(binary, list, End::Returns(0x800_0100))
+    }
+
+    /// As `steps`, for a walk that ended at `end`.
+    fn steps_to(binary: &Binary, list: &[Event], end: End) -> Vec<String> {
         let graph = Graph::default();
         let firmware = Firmware::new(binary, &graph);
         let memory = Memory::new(binary);
@@ -1420,7 +1737,6 @@ mod tests {
             table: None,
             outside: None,
         };
-        let end = End::Returns(0x800_0100);
         (build(&firmware, &memory, &events, &reset, None, end).iter())
             .map(|step| {
                 let covers: Vec<String> = (step.covers.iter())
@@ -1551,6 +1867,213 @@ mod tests {
         assert_eq!(
             steps(&binary, &list),
             ["zero 0x20000030 64 by a loop: .bss 64"]
+        );
+    }
+
+    /// The event of a loop that the walk went through each time, whose
+    /// times start at the events `times`, before it.
+    fn timed(times: &[usize]) -> Event {
+        Event::Loop(Loop {
+            first_event: 0,
+            passes: Some(times.len() as u32),
+            stores: None,
+            times: (times.iter())
+                .map(|&first_event| Time {
+                    first_event,
+                    row: None,
+                })
+                .collect(),
+            ..walked(Vec::new())
+        })
+    }
+
+    #[test]
+    fn the_bytes_that_one_store_stores_over_a_loop_s_times_join() {
+        let binary = binary();
+        // A word of .data each time, as a loop copies with a call.
+        let mut list: Vec<Event> = (0..8)
+            .map(|n| {
+                let address = 0x2000_0000 + 4 * n;
+                alone(
+                    0x800_0030,
+                    Some(address),
+                    address,
+                    Some(0x800_0400 + 4 * n),
+                    None,
+                )
+            })
+            .collect();
+        list.push(timed(&(0..8).collect::<Vec<_>>()));
+        assert_eq!(
+            steps(&binary, &list),
+            ["copy 0x20000000 32 by a loop: .data 32"]
+        );
+        // The same two words each time, by two stores, as of a variable
+        // that the function that copies each row sets: they don't join
+        // into a zeroing, and as they set up part of .bss, the loop may
+        // set up the rest.
+        let twice = |at: u32| -> Vec<Event> {
+            (0..2)
+                .flat_map(|_| {
+                    [
+                        alone(0x800_0030, Some(at), at, None, Some(0)),
+                        alone(0x800_0034, Some(at + 4), at, None, Some(0)),
+                    ]
+                })
+                .collect()
+        };
+        let mut list = twice(0x2000_0030);
+        list.push(timed(&[0, 2]));
+        assert_eq!(
+            steps(&binary, &list),
+            ["unread 0x0 0 by a loop: .bss, .noinit"]
+        );
+        // In .data, which a call copied before: no step.
+        let mut list = vec![called(0x800_0010, [0x2000_0000, 0x800_0400, 0x20])];
+        list.extend(twice(0x2000_0000));
+        list.push(timed(&[1, 3]));
+        assert_eq!(
+            steps(&binary, &list),
+            ["copy 0x20000000 32 by a call: .data 32"]
+        );
+    }
+
+    #[test]
+    fn a_store_through_a_pointer_in_a_loop_walked_each_time_is_unread() {
+        let binary = binary();
+        // Each time stores 0 past a pointer that the walk can't tell, which
+        // may zero any section without contents.
+        let mut list: Vec<Event> = (0..3)
+            .map(|_| {
+                Event::Store(Store {
+                    address: None,
+                    base: None,
+                    ..stored(0, Some(0), None)
+                })
+            })
+            .collect();
+        list.push(timed(&[0, 1, 2]));
+        assert_eq!(
+            steps(&binary, &list),
+            ["unread 0x0 0 by a loop: .bss, .noinit"]
+        );
+    }
+
+    /// The event of a loop that the walk went through each time, from
+    /// 0x8000040 to 0x8000048, whose code starts at the event
+    /// `first_event`, and its times at the events `times`.
+    fn timed_inside(first_event: usize, times: &[usize]) -> Event {
+        let Event::Loop(l) = timed(times) else {
+            unreachable!()
+        };
+        Event::Loop(Loop {
+            head: 0x800_0040,
+            back: 0x800_0048,
+            first_event,
+            ..l
+        })
+    }
+
+    #[test]
+    fn a_loop_walked_each_time_whose_steps_dont_stand_for_its_stores_is_unread() {
+        let binary = binary();
+        // Each time zeroes the first 16 bytes of .bss by a loop, and stores
+        // a word past them: the loop may set up .bss, and what follows it.
+        let row = |first_event: usize| {
+            [
+                closed(vec![each(0x2000_0030, 4, 4, 4, Some(0))], first_event),
+                alone(0x800_0030, Some(0x2000_0050), 0x2000_0050, None, Some(1)),
+            ]
+        };
+        let mut list: Vec<Event> = row(0).into_iter().chain(row(2)).collect();
+        list.push(timed(&[0, 2]));
+        assert_eq!(
+            steps(&binary, &list),
+            ["unread 0x0 0 by a loop: .bss, .noinit"]
+        );
+        // A loop walked each time inside one: only the outer loop is one
+        // that elfq can't follow.
+        let store = || alone(0x800_0030, Some(0x2000_0050), 0x2000_0050, None, Some(1));
+        let list = [
+            store(),
+            store(),
+            timed_inside(0, &[0, 1]),
+            store(),
+            store(),
+            timed_inside(3, &[3, 4]),
+            timed(&[0, 3]),
+        ];
+        assert_eq!(
+            steps(&binary, &list),
+            ["unread 0x0 0 by a loop: .bss, .noinit"]
+        );
+    }
+
+    #[test]
+    fn a_loop_that_elfq_cant_follow_in_each_time_may_set_up_what_it_may_any_time() {
+        let binary = binary();
+        // The first time stores past a pointer to .noinit in a loop, the
+        // second past one to .bss.
+        let row = |first_event: usize, base: u32| {
+            [
+                alone(0x800_0030, None, base, None, None),
+                closed(Vec::new(), first_event),
+            ]
+        };
+        let mut list: Vec<Event> = (row(0, 0x2000_0070).into_iter())
+            .chain(row(2, 0x2000_0030))
+            .collect();
+        list.push(timed(&[0, 2]));
+        assert_eq!(
+            steps(&binary, &list),
+            ["unread 0x0 0 by a loop: .bss, .noinit"]
+        );
+    }
+
+    #[test]
+    fn a_call_in_a_loop_over_a_table_that_sets_up_nothing_is_no_step() {
+        let binary = binary();
+        // A first row that copies no bytes, then one that copies .data, by
+        // a function that copies.
+        let list = [
+            called(0x800_0010, [0x2000_0080, 0x800_0480, 0]),
+            called(0x800_0010, [0x2000_0000, 0x800_0400, 0x20]),
+            timed(&[0, 1]),
+        ];
+        assert_eq!(
+            steps(&binary, &list),
+            ["copy 0x20000000 32 by a call: .data 32"]
+        );
+        // As data_init(load image, start, size) does, with a loop.
+        let list = [
+            called(0x800_0010, [0x800_0480, 0x2000_0080, 0]),
+            called(0x800_0010, [0x800_0400, 0x2000_0000, 0x20]),
+            Event::Loop(Loop {
+                depth: 1,
+                first_event: 2,
+                ..walked(vec![copied(0x2000_0000, 0x800_0400, 4, 4, 8)])
+            }),
+            timed(&[0, 1]),
+        ];
+        assert_eq!(
+            steps(&binary, &list),
+            ["copy 0x20000000 32 by a call: .data 32"]
+        );
+    }
+
+    #[test]
+    fn a_walk_that_runs_back_into_its_code_stops_at_a_loop_it_cant_follow() {
+        let binary = binary();
+        // As GCC's -Og makes of CMSIS's __cmsis_start: after the copy of
+        // .data, code that the walk can't make out a loop of may set up the
+        // rest.
+        let list = [called(0x800_0010, [0x2000_0000, 0x800_0400, 0x20])];
+        assert_eq!(
+            steps_to(&binary, &list, End::Rejoins(0x800_0020)),
+            [
+                "copy 0x20000000 32 by a call: .data 32",
+                "unread 0x0 0 by a stop: .ramfunc, .bss, .noinit"
+            ]
         );
     }
 

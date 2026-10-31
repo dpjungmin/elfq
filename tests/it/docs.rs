@@ -44,7 +44,7 @@ fn the_examples_in_the_docs_show_what_elfq_prints() {
 /// Answers that between them have every key that elfq's JSON has. A key
 /// shows only in an object that is there, so for each key that holds a
 /// list, one of them has an entry in it, which the test checks.
-const JSON_ANSWERS: [&[&str]; 24] = [
+const JSON_ANSWERS: [&[&str]; 25] = [
     &[TCM_SAMPLE],
     &[SAMPLE, "top"],
     &[SAMPLE, "retained", "process_frame"],
@@ -81,6 +81,7 @@ const JSON_ANSWERS: [&[&str]; 24] = [
     &[TCM_SAMPLE, "diff", TCM_INLINED_SAMPLE],
     &["testdata/bin/c-cortex-m7-sysinit.elf", "startup"],
     &["testdata/bin/c-cortex-m7-tables.elf", "startup"],
+    &["testdata/bin/c-cortex-m7-rom.elf", "startup"],
 ];
 
 #[test]

@@ -137,7 +137,7 @@ pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
             sections: (step.covers.iter())
                 .map(|cover| memory.name(cover.section))
                 .collect(),
-            table: None,
+            table: step.table.map(address),
             may_set_up: names(&step.may),
         })
         .collect();

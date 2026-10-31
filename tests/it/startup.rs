@@ -30,6 +30,15 @@ const LOOPS_O0_SAMPLE: &str = "testdata/bin/c-cortex-m7-loops-O0.elf";
 /// A reset handler that copies the sections that a table lists, in a loop
 /// over its rows.
 const TABLES_SAMPLE: &str = "testdata/bin/c-cortex-m7-tables.elf";
+/// A reset handler that passes each row of tables of sections to a
+/// function that copies or zeroes it, as MCUXpresso IDE's does.
+const SECTIONS_SAMPLE: &str = "testdata/bin/c-cortex-m7-sections.elf";
+/// A reset handler laid out as the Pico SDK's, whose table of sections to
+/// copy ends with a zero word.
+const PICO_SAMPLE: &str = "testdata/bin/c-cortex-m0-pico.elf";
+/// A reset handler that copies .data with a function from the boot ROM,
+/// which isn't in the file.
+const ROM_SAMPLE: &str = "testdata/bin/c-cortex-m7-rom.elf";
 /// A reset handler that calls a function that sets up the memory and
 /// doesn't return, as Zephyr's does.
 const NORETURN_SAMPLE: &str = "testdata/bin/c-cortex-m7-noreturn.elf";
@@ -310,34 +319,33 @@ STEP  DOES  FROM  TO  SIZE  AT         WHAT
 
 #[test]
 fn code_that_elfq_cant_follow_may_be_a_problem() {
-    // The loop over the copy table's rows: elfq reads the copy of the first
-    // row, .itcm, but not what the loop does after it. The loop over the
-    // zero table's one row zeroes .bss.
-    let (status, text) = startup(TABLES_SAMPLE, &[]);
+    // The boot ROM's function, which elfq can't read, may copy .data. The
+    // one after it takes what memset would to zero .bss, so it zeroes it.
+    let (status, text) = startup(ROM_SAMPLE, &[]);
     assert_eq!(status, 1);
     assert_output(
         &text,
         "\
 1 problem in what Reset_Handler does before it calls main:
 
-  Nothing copies .data, 4 bytes at 0x20000000 stored at 0x300000e8, unless step 2 (a loop) does.
+  Nothing copies .data, 4 bytes at 0x20000000 stored at 0x300000b8, unless step 2 (a call through r2) does.
 
 STEP  DOES    FROM        TO          SIZE  AT          WHAT
-   1  copy    0x30000008  0x0           12  0x30000076  .itcm, by a loop in Reset_Handler
-   2  unread                                0x30000060  a loop in Reset_Handler
-   3  zero                0x20000004     4  0x300000ba  .bss, by a loop in Reset_Handler
-   4  call                                  0x300000cc  main
+   1  copy    0x30000008  0x0           12  0x30000056  .itcm, by a loop in Reset_Handler
+   2  unread                                0x30000076  a call through r2 in Reset_Handler
+   3  zero                0x20000004     4  0x30000084  .bss, by a call through r3 in Reset_Handler
+   4  call                                  0x30000086  main
 ",
     );
-    // That problem may not be one.
-    let (status, answer) = answer(TABLES_SAMPLE);
+    // That problem may not be one. The first function may zero .bss too.
+    let (status, answer) = answer(ROM_SAMPLE);
     assert_eq!(status, 1);
     assert_eq!(answer["problems_certain"], 0);
     assert_eq!(answer["complete"], false);
     assert_eq!(answer["problems"][0]["kind"], "can't follow");
     assert_eq!(answer["problems"][0]["certain"], false);
     assert_eq!(answer["problems"][0]["sections"], json!([".data"]));
-    assert_eq!(answer["steps"][1]["may_set_up"], json!([".data"]));
+    assert_eq!(answer["steps"][1]["may_set_up"], json!([".data", ".bss"]));
     assert_eq!(answer["sections"][1]["status"], "unknown");
 }
 
@@ -379,6 +387,87 @@ STEP  DOES  FROM        TO          SIZE  AT          WHAT
     assert_eq!(answer["complete"], true);
     assert_eq!(answer["steps"][0]["how"], "loop");
     assert_eq!(answer["steps"][0]["function"]["name"], "Reset_Handler");
+}
+
+#[test]
+fn tables_of_sections_are_read_row_by_row() {
+    // A loop over each table, as CMSIS's startup code in C goes, with a
+    // loop inside for each row.
+    let (status, text) = startup(TABLES_SAMPLE, &[]);
+    assert_eq!(status, 0);
+    assert_output(
+        &text,
+        "\
+No problems: Reset_Handler copies .itcm and .data, zeroes .bss, then calls main.
+
+STEP  DOES  FROM        TO          SIZE  AT          WHAT
+   1  copy  0x30000008  0x0           12  0x30000076  .itcm, by a loop in Reset_Handler, from table 0x30000014
+   2  copy  0x300000e8  0x20000000     4  0x30000076  .data, by a loop in Reset_Handler, from table 0x30000020
+   3  zero              0x20000004     4  0x300000ba  .bss, by a loop in Reset_Handler, from table 0x3000002c
+   4  call                                0x300000cc  main
+",
+    );
+    // A function for each kind of row, which MCUXpresso IDE's startup code
+    // calls with the row: the step is the call's.
+    let (status, text) = startup(SECTIONS_SAMPLE, &[]);
+    assert_eq!(status, 0);
+    assert_output(
+        &text,
+        "\
+No problems: ResetISR copies .itcm and .data, zeroes .bss and .ocram_bss, then calls main.
+
+STEP  DOES  FROM        TO          SIZE  AT          WHAT
+   1  copy  0x30000008  0x0           12  0x300000ac  .itcm, by data_init, from table 0x30000014
+   2  copy  0x300000f0  0x20000000     4  0x300000ac  .data, by data_init, from table 0x30000020
+   3  zero              0x20000004     4  0x300000cc  .bss, by bss_init, from table 0x3000002c
+   4  zero              0x20240000    64  0x300000cc  .ocram_bss, by bss_init, from table 0x30000034
+   5  call                                0x300000d8  main
+",
+    );
+    let (_, answer) = answer(SECTIONS_SAMPLE);
+    assert_eq!(answer["steps"][0]["how"], "call");
+    assert_eq!(answer["steps"][0]["function"]["name"], "data_init");
+    assert_eq!(answer["steps"][0]["table"], "0x30000014");
+    assert_eq!(answer["steps"][4]["table"], Value::Null);
+    // A table that ends with a zero word, as the Pico SDK's, whose rows a
+    // loop copies that is code of the reset handler's own; the one after
+    // core 1 goes back to the boot ROM. The row of .scratch_y copies no
+    // bytes, and its call to the loop is no step.
+    let (status, text) = startup(PICO_SAMPLE, &[]);
+    assert_eq!(status, 0);
+    assert_output(
+        &text,
+        "\
+No problems: _reset_handler copies .data and .scratch_x, zeroes .bss, then calls main.
+
+STEP  DOES  FROM        TO          SIZE  AT          WHAT
+   1  copy  0x100001e8  0x20000000    20  0x10000132  .data, by a loop in _reset_handler, from table 0x10000160
+   2  copy  0x100001fc  0x20040000    28  0x10000132  .scratch_x, by a loop in _reset_handler, from table 0x1000016c
+   3  zero              0x20000014    32  0x10000140  .bss, by a loop in _reset_handler
+   4  call                                0x10000148  runtime_init
+   5  call                                0x1000014c  main
+
+The vector table at 0x10000100 gives _reset_handler for reset, not the entry point _entry_point.
+At 0x10000124 elfq takes the branch, since the other way ends in a branch through r2 at 0x1000011c.
+",
+    );
+    // Without symbols, a function finder takes the loop's test, which the
+    // call goes to, for a function of its own.
+    let (status, text) = startup("testdata/bin/c-cortex-m0-pico-stripped.elf", &[]);
+    assert_eq!(status, 0);
+    assert!(
+        text.contains("  1  copy  0x100001e8  0x20000000    20  0x10000132  .data, by fn_0x10000156, from table 0x10000160\n"),
+        "{text}"
+    );
+    // The walk goes through the loop over the table each time, the empty
+    // row's and the zero word's too.
+    let output = elfq(&[PICO_SAMPLE, "debug", "walk"]);
+    assert!(output.status.success(), "{output:?}");
+    let walk = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        walk.contains("loop back from 0x10000136 over the 7 rows above, runs 4 times, each time walked, reading rows at 0x10000160 +12n\n"),
+        "{walk}"
+    );
 }
 
 #[test]
@@ -701,8 +790,8 @@ fn the_json_gives_the_steps_the_sections_and_the_problems() {
 fn every_arm_sample_gets_an_answer_and_the_exit_status_it_means() {
     let problems = [
         "c-cortex-m7-reset-itcm",
+        "c-cortex-m7-rom",
         "c-cortex-m7-sysinit",
-        "c-cortex-m7-tables",
         "c-cortex-m7-trap",
         "c-softfloat",
         "c-strtod",

@@ -214,6 +214,30 @@ pub struct Loop {
     /// runs, in the order of the first time, when the walk can tell how
     /// many times the loop runs and what each store does each time.
     pub stores: Option<Vec<LoopStore>>,
+    /// When the walk went through the loop's code each time it runs, with
+    /// the calls it makes and the loops inside, as for a loop over a table
+    /// of sections: each time, the last to where the loop leaves. Then the
+    /// loop's events are those of every time, in order, and `stores` is
+    /// `None`. Empty otherwise.
+    pub times: Vec<Time>,
+}
+
+/// One time through the code of a loop that the walk went through each
+/// time it runs (see [`Loop::times`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Time {
+    /// The first of its events: those up to the next time's, or the
+    /// loop's, are its own.
+    pub first_event: usize,
+    /// Where it reads a row of a table from: the lowest address in the
+    /// file, outside the stack, that the code of the loop's function loads
+    /// a word from that time, or that a register holds from the time
+    /// before that the time reads, but for the words that the times so far
+    /// copy; when the register of a load that time points there and none
+    /// points lower, the rows of the times that load one follow each other,
+    /// as far apart each time, and each time reads the same words of its
+    /// row, but the last, which may read fewer.
+    pub row: Option<u32>,
 }
 
 /// A store in a loop's code, over all the times the loop runs.
@@ -251,7 +275,10 @@ pub enum End {
     /// The branch back of a loop that nothing leaves that the walk knows
     /// of.
     Loops(u64),
-    /// Code that the walk already went through, other than a loop's head.
+    /// Code that the walk already went through, other than a loop's head:
+    /// a loop that it can't make out, as one whose code runs on into its
+    /// test at the end, which GCC's `-Og` makes of CMSIS's
+    /// `__cmsis_start`.
     Rejoins(u64),
     /// Where code runs on to after a call that can't return: the end of its
     /// function, or straight after the call, data, such as a literal pool,
@@ -306,6 +333,13 @@ impl End {
             End::Undecoded(_) | End::Branches { .. } | End::LeavesFile { .. }
         )
     }
+
+    /// Whether code goes on past where the walk ended that it didn't go
+    /// through: where it can't follow the code, at its budget, or in a
+    /// loop it can't make out.
+    pub fn stops_short(self) -> bool {
+        self.is_dead() || matches!(self, End::Budget(_) | End::Rejoins(_))
+    }
 }
 
 /// Walks the code from `start`, as [`Start`] says, in a program in Thumb
@@ -350,12 +384,22 @@ impl End {
 /// again, the first three times, and then a compare in it tells when a
 /// number that moves by the same amount each time gets to where the loop
 /// leaves, which it checks by going through the code the time before and
-/// that time, from where each number would be (see [`Loop::passes`]). The
-/// walk then goes on from where the loop leaves, and the loop's events
-/// are those of the first time. The times after the first don't follow
-/// calls or count loops inside, so it can't tell what the stores of such
-/// a loop do (see [`Loop::stores`]). A loop it can't count, as one whose
-/// bound it can't tell, leaves what its code writes unknown. It stops
+/// that time, from where each number would be; or when none does, it goes
+/// on through the code time by time, up to 16 times (see
+/// [`Loop::passes`]). The walk then goes on from where the loop leaves,
+/// and the loop's events are those of the first time. To count, it
+/// doesn't follow calls or count loops inside, so it can't tell what the
+/// stores of such a loop do (see [`Loop::stores`]); when such a loop runs
+/// at most 16 times, as one over a table of sections that copies each
+/// with a function or a loop, it goes through its code each time, with
+/// its calls and the loops inside, and the loop's events are those of
+/// every time (see [`Loop::times`]), but not when it calls through a
+/// register another function each time, as one over a table of functions
+/// does, such as the constructors that `__libc_init_array` calls, or one
+/// it can't tell, and not past 5,000 instructions in all in such times
+/// and 10,000 more to count the loops inside them. A loop it can't
+/// count, as one whose bound it can't tell, leaves what its code writes
+/// unknown. It stops
 /// after 20,000 instructions in all and 600 in the reset handler's own
 /// code. It goes through 300 in each function it calls, and 60 in a
 /// loop's code, 8 loops deep, and then goes on after the call or the loop
