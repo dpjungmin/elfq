@@ -41,6 +41,7 @@ use serde::Serialize;
 use super::checks::{check_code_is_readable, readable_item};
 use super::kept::Kept;
 use super::symbol::{Names, Symbol};
+use super::text::CommandLine;
 use super::{Outcome, json, ranges, text};
 use crate::binary::{
     AddressRange, Binary, CodeAndData, FileKind, ItemKind, MemoryBlock, STARTUP_ARRAYS,
@@ -273,20 +274,13 @@ fn needs_symbol(
     let Some(start) = names.starting_point() else {
         return refused.to_string();
     };
-    let file = text::shell_quote(&path.display().to_string());
-    let symbol = text::shell_quote(&names.query_for(Node::Item(start)));
-    let to: String = to
-        .iter()
-        .chain(&range)
-        .map(|&range| format!(" --to {}", text::range_argument(range)))
-        .collect();
-    let all = if all { " --all" } else { "" };
-    let format = match format {
-        Format::Text => "",
-        Format::Tree => " --tree",
-        Format::Json => " --json",
-    };
-    format!("{refused}, such as elfq {file} reach {symbol}{to}{all}{format}")
+    let command = CommandLine::new(path, "reach")
+        .word(&names.query_for(Node::Item(start)))
+        .ranges("--to", to.iter().copied().chain(range))
+        .flag("--all", all)
+        .flag("--tree", format == Format::Tree)
+        .flag("--json", format == Format::Json);
+    format!("{refused}, such as {command}")
 }
 
 /// What `reach SYMBOL` writes as text about the item at `index`, which

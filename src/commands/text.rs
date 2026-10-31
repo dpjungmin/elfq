@@ -2,6 +2,7 @@
 //! commands write, kept in one place so that every command says them the
 //! same way.
 
+use std::fmt;
 use std::io::Write;
 use std::path::Path;
 
@@ -524,6 +525,68 @@ pub(super) fn shell_quote(text: &str) -> String {
     }
 }
 
+/// The file's path as the user typed it, as one shell word.
+pub(super) fn quoted_path(path: &Path) -> String {
+    shell_quote(&path.display().to_string())
+}
+
+/// An elfq command line to suggest, ready to paste into a shell, such as
+/// `elfq app.elf reach 'log(unsigned int)' --to 0x20000000..0x20001000`.
+/// It is built from words as they are meant, and quotes each one for the
+/// shell as it is added, so no word is quoted twice or not at all.
+pub(super) struct CommandLine {
+    words: Vec<String>,
+}
+
+impl CommandLine {
+    /// `elfq FILE COMMAND`, with the file as the user typed it.
+    pub(super) fn new(path: &Path, command: &str) -> CommandLine {
+        CommandLine {
+            words: vec!["elfq".to_string(), quoted_path(path), shell_quote(command)],
+        }
+    }
+
+    /// Adds `word`, such as a SYMBOL.
+    pub(super) fn word(mut self, word: &str) -> CommandLine {
+        self.words.push(shell_quote(word));
+        self
+    }
+
+    /// Adds each of `words`.
+    pub(super) fn words(self, words: &[String]) -> CommandLine {
+        words.iter().fold(self, |line, word| line.word(word))
+    }
+
+    /// Adds `option` before each of `ranges`, as `--range` takes a range,
+    /// such as `--to 0x20000000..0x20001000`; or with an empty `option`,
+    /// the ranges alone, as callers and callees take them in place of
+    /// SYMBOL.
+    pub(super) fn ranges(
+        mut self,
+        option: &str,
+        ranges: impl IntoIterator<Item = AddressRange>,
+    ) -> CommandLine {
+        for range in ranges {
+            if !option.is_empty() {
+                self = self.word(option);
+            }
+            self = self.word(&range_argument(range));
+        }
+        self
+    }
+
+    /// Adds `flag`, such as `--all`, when `on`.
+    pub(super) fn flag(self, flag: &str, on: bool) -> CommandLine {
+        if on { self.word(flag) } else { self }
+    }
+}
+
+impl fmt::Display for CommandLine {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(&self.words.join(" "))
+    }
+}
+
 /// The sections in a block, then the sections whose load images are in
 /// it, such as ".isr_vector .text .rodata, load image of .data".
 pub(super) fn sections_text(sections: &[&str], load_images: &[&str]) -> String {
@@ -590,7 +653,7 @@ pub(super) fn write_try(path: &Path, commands: &[String], out: &mut dyn Write) -
     if commands.is_empty() {
         return Ok(());
     }
-    let file = shell_quote(&path.display().to_string());
+    let file = quoted_path(path);
     writeln!(out)?;
     writeln!(out, "Try:")?;
     for command in commands {

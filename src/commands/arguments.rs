@@ -15,6 +15,7 @@ use anyhow::{Result, bail};
 
 use super::checks::check_code_is_readable;
 use super::kept::freeing;
+use super::text::CommandLine;
 use super::{Outcome, callees, callers, symbol, text};
 use crate::binary::{AddressRange, Binary};
 use crate::cli::{Cli, Command, Format, ReachArgs, UsesArgs};
@@ -223,41 +224,34 @@ fn check_reach(cli: &Cli, args: &ReachArgs) -> Result<()> {
     let Some(query) = &args.symbol else {
         return Ok(());
     };
-    let file = text::shell_quote(&cli.file.display().to_string());
-    let json = if cli.json { " --json" } else { "" };
-    let all = if args.all { " --all" } else { "" };
-    let to: String = args
-        .to
-        .iter()
-        .map(|&range| format!(" --to {}", text::range_argument(range)))
-        .collect();
     if symbol::is_range(query) {
         // What a range uses outside it, or in other ranges, is a range
         // check, which callees has.
         let callees = match query.parse::<AddressRange>() {
             Ok(range) => {
-                let what = if to.is_empty() {
+                let what = if args.to.is_empty() {
                     "what a range uses outside it"
                 } else {
                     "what a range uses in the --to ranges"
                 };
-                format!(
-                    "; for {what}: elfq {file} callees {}{to}{json}",
-                    text::range_argument(range)
-                )
+                let command = CommandLine::new(&cli.file, "callees")
+                    .ranges("", [range])
+                    .ranges("--to", args.to.iter().copied())
+                    .flag("--json", cli.json);
+                format!("; for {what}: {command}")
             }
             Err(_) => String::new(),
         };
         bail!("reach takes one SYMBOL, not ranges{callees}")
     }
     if let Some(range) = cli.range {
-        let tree = if cli.tree { " --tree" } else { "" };
-        bail!(
-            "reach takes --to, not --range, to list only what it reaches in a range: elfq {file} \
-             reach {}{to} --to {}{all}{tree}{json}",
-            text::shell_quote(query),
-            text::range_argument(range)
-        )
+        let command = CommandLine::new(&cli.file, "reach")
+            .word(query)
+            .ranges("--to", args.to.iter().copied().chain([range]))
+            .flag("--all", args.all)
+            .flag("--tree", cli.tree)
+            .flag("--json", cli.json);
+        bail!("reach takes --to, not --range, to list only what it reaches in a range: {command}")
     }
     Ok(())
 }
@@ -305,41 +299,30 @@ fn range_hint(
 ) -> String {
     let name = uses.name;
     let option = uses.option;
-    let file = text::shell_quote(&cli.file.display().to_string());
-    let command = |args: Vec<String>| {
-        let mut words = vec!["elfq".to_string(), file.clone(), name.to_string()];
-        words.extend(args);
-        if cli.json {
-            words.push("--json".to_string());
-        }
-        words.join(" ")
-    };
     let symbols = &uses.args.symbols;
-    let given: Vec<String> = symbols
-        .iter()
-        .map(|query| text::shell_quote(query))
-        .collect();
-    let kept: Vec<String> = uses
-        .other
-        .iter()
-        .flat_map(|&other| [option.to_string(), text::range_argument(other)])
-        .collect();
-    let range_text = text::range_argument(range);
-    let limited_command =
-        command([&given[..], &kept, &[option.to_string(), range_text.clone()]].concat());
+    let kept = uses.other.iter().copied();
+    let limited_command = CommandLine::new(&cli.file, name)
+        .words(symbols)
+        .ranges(option, kept.clone().chain([range]))
+        .flag("--json", cli.json);
     if !added || !symbols.iter().all(|query| symbol::is_range(query)) {
         return format!(
             "{name} takes {option}, not --range, to list only the {name} in a range: \
              {limited_command}"
         );
     }
-    let added_command = command([&given[..], std::slice::from_ref(&range_text), &kept].concat());
+    let added_command = CommandLine::new(&cli.file, name)
+        .words(symbols)
+        .ranges("", [range])
+        .ranges(option, kept)
+        .flag("--json", cli.json);
     let mut error =
         format!("{name} takes ranges in place of SYMBOL, not with --range: {added_command}");
     // With `--from` or `--to` given, the command that adds `range` to them
     // lists the uses in theirs too.
-    if limited && !given.is_empty() && kept.is_empty() {
-        error += &format!("; to list only the {name} in {range_text}: {limited_command}");
+    if limited && !symbols.is_empty() && uses.other.is_empty() {
+        let range = text::range_argument(range);
+        error += &format!("; to list only the {name} in {range}: {limited_command}");
     }
     error
 }

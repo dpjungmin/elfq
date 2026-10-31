@@ -83,7 +83,7 @@ pub(super) fn page_code(session: &Session, index: usize) -> PageCode {
         text::shell_quote(&section.name),
         item.address,
         item.address + item.size,
-        text::shell_quote(&session.path.display().to_string()),
+        text::quoted_path(&session.path),
     ));
     code.widest = widest(&code.lines);
     code
