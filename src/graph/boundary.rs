@@ -4,8 +4,11 @@
 //! ranges' edge, but in a graph an edge is a reference.
 //!
 //! An item is in the ranges when any of its bytes are, and an import never
-//! is. A reference crosses the boundary when one end is in the ranges and
-//! the other isn't, such as a function in ITCM that calls one in flash.
+//! is (see `items_in_ranges.rs`). A reference crosses the boundary when one
+//! end is in the ranges and the other isn't, such as a function in ITCM
+//! that calls one in flash. With `--to` or `--from`, only the uses whose
+//! far end is in other ranges count: [`Boundary::leaving_to`] and
+//! [`Boundary::entering_from`] narrow the crossings to them.
 //!
 //! When a call is too far for the call instruction, the linker adds a
 //! veneer, which jumps on to the target. A call through a veneer crosses
@@ -15,7 +18,7 @@
 //! target outside every item too, such as a routine in a microcontroller's
 //! ROM, which elfq doesn't read. Only when the caller and the target are on
 //! one side and the veneer is on the other do both hops cross; then each is
-//! reported as it is.
+//! reported as it is. [`Boundary::report`] holds these rules.
 //!
 //! A PLT stub that passes calls on to one of the file's own functions, as
 //! `log_msg@plt` does in a shared library, counts as a veneer for that
@@ -24,9 +27,11 @@
 
 use std::cell::OnceCell;
 
-use crate::binary::{AddressRange, Binary, ItemKind};
+use crate::binary::{AddressRange, Binary};
 
-use super::{Graph, Node, Reference, ReferenceKind, RootKind, Unresolved, VeneerTarget, Veneers};
+use super::{
+    Graph, ItemsInRanges, Node, Reference, ReferenceKind, Unresolved, VeneerTarget, Veneers,
+};
 
 /// One use across the boundary: `from` uses `to`, directly or through a
 /// veneer.
@@ -47,6 +52,20 @@ pub struct Crossing {
     pub veneer: Option<usize>,
 }
 
+impl Crossing {
+    /// `used`, a reference, as a use of `to`: through `veneer`, or
+    /// directly when that is `None`.
+    fn new(used: &Reference, veneer: Option<usize>, to: Node) -> Crossing {
+        Crossing {
+            from: used.from,
+            to,
+            kind: used.kind,
+            site: used.site,
+            veneer,
+        }
+    }
+}
+
 /// A call or jump that elfq can't follow across the boundary: through a
 /// pointer, or to code outside every item, such as a routine in a
 /// microcontroller's ROM.
@@ -60,15 +79,57 @@ pub struct Unfollowed {
     pub veneer: Option<usize>,
 }
 
+impl Unfollowed {
+    /// `call`, a call to `veneer`, as a call or jump that elfq can't
+    /// follow to `target`, where the veneer jumps.
+    pub fn through_veneer(call: &Reference, veneer: usize, target: Option<u64>) -> Unfollowed {
+        Unfollowed {
+            unresolved: Unresolved {
+                from: call.from,
+                site: call.site,
+                is_call: call.kind == ReferenceKind::Call,
+                target,
+            },
+            veneer: Some(veneer),
+        }
+    }
+}
+
+/// What crosses the boundary one way: the uses across it, and the calls
+/// and jumps that elfq can't follow that may cross it.
+#[derive(Debug)]
+pub struct Crossings {
+    /// The uses across it.
+    pub uses: Vec<Crossing>,
+    /// Sorted by the item they are in, then by site.
+    pub unfollowed: Vec<Unfollowed>,
+}
+
+/// How a reference across the boundary is reported, once veneers are seen
+/// through: the rules in the module doc, which [`Boundary::report`] picks
+/// from.
+enum Report<'r> {
+    /// As it is.
+    AsIs,
+    /// It is a veneer's jump, and these calls to the veneer, from the
+    /// veneer's own side, take its place.
+    ByCallsToVeneer(Vec<&'r Reference>),
+    /// It is a call to `veneer`, which jumps on to `target` without
+    /// crossing back: a call to `target` through the veneer.
+    ToTarget { veneer: usize, target: Node },
+    /// It is a call to a veneer that jumps to code outside every item on
+    /// the veneer's side, so it is reported with the calls that elfq can't
+    /// follow (see [`Boundary::unfollowed_from`]).
+    WithUnfollowed,
+}
+
 /// The boundary of some ranges of memory.
 pub struct Boundary<'a> {
     binary: &'a Binary,
-    /// `binary`'s graph, whose roots say where the vector table is.
+    /// `binary`'s graph.
     graph: &'a Graph,
-    /// The ranges as given: an item with any byte in one of them is inside.
-    ranges: &'a [AddressRange],
-    /// For each item, whether it is in the ranges.
-    inside: Vec<bool>,
+    /// The items in the ranges.
+    items: ItemsInRanges<'a>,
     /// The veneers, and where each jumps to.
     veneers: Veneers<'a>,
     /// The calls in the graph, by the item they call: worked out the first
@@ -78,18 +139,20 @@ pub struct Boundary<'a> {
 }
 
 impl<'a> Boundary<'a> {
-    /// Works out which items are in `ranges`: those with any byte in one of
-    /// them, where an item of unknown size counts as its first byte.
+    /// The boundary of `ranges` in `binary`, whose graph is `graph`.
     pub fn new(binary: &'a Binary, graph: &'a Graph, ranges: &'a [AddressRange]) -> Boundary<'a> {
-        let inside = binary.items.iter().map(|item| item.is_in(ranges)).collect();
         Boundary {
             binary,
             graph,
-            ranges,
-            inside,
+            items: ItemsInRanges::new(binary, ranges),
             veneers: Veneers::new(binary, graph),
             calls_to: OnceCell::new(),
         }
+    }
+
+    /// The items in the ranges.
+    pub fn items(&self) -> &ItemsInRanges<'a> {
+        &self.items
     }
 
     /// The uses of the rest of the file by the items in the ranges.
@@ -102,34 +165,174 @@ impl<'a> Boundary<'a> {
         self.crossings(false)
     }
 
+    /// What the items in the ranges use in the rest of the file, with the
+    /// calls and jumps in the ranges that elfq can't follow and that may
+    /// leave them. When `to` has ranges, only what is in them, and what
+    /// elfq can't follow that may go there: to an address in them, or
+    /// through a pointer when a function there, outside the ranges, has its
+    /// address taken or stored.
+    pub fn leaving_to(&self, to: &[AddressRange]) -> Crossings {
+        if to.is_empty() {
+            return Crossings {
+                uses: self.leaving(),
+                unfollowed: self.unfollowed_leaving(),
+            };
+        }
+        let in_to = ItemsInRanges::new(self.binary, to);
+        // A veneer in `to` that a use goes through to something outside
+        // `to`: the use goes into `to` at the veneer, so it is listed as a
+        // use of the veneer.
+        let veneer_in_to = |veneer: Option<usize>| {
+            veneer
+                .filter(|&veneer| in_to.contains_item(veneer) && !self.items.contains_item(veneer))
+        };
+        let mut uses = Vec::new();
+        for crossing in self.leaving() {
+            if in_to.contains(crossing.to) {
+                uses.push(crossing);
+            } else if let Some(veneer) = veneer_in_to(crossing.veneer) {
+                uses.push(Crossing {
+                    to: Node::Item(veneer),
+                    veneer: None,
+                    ..crossing
+                });
+            }
+        }
+        let through_pointer = in_to
+            .callable_through_pointer(self.graph)
+            .into_iter()
+            .any(|function| !self.items.contains_item(function));
+        let mut unfollowed = Vec::new();
+        for row in self.unfollowed_leaving() {
+            let unresolved = row.unresolved;
+            if unresolved.may_go_to(to, through_pointer) {
+                unfollowed.push(row);
+            } else if let Some(veneer) = veneer_in_to(row.veneer) {
+                uses.push(Crossing {
+                    from: unresolved.from,
+                    to: Node::Item(veneer),
+                    kind: if unresolved.is_call {
+                        ReferenceKind::Call
+                    } else {
+                        ReferenceKind::TailCall
+                    },
+                    site: unresolved.site,
+                    veneer: None,
+                });
+            }
+        }
+        Crossings { uses, unfollowed }
+    }
+
+    /// What uses the items in the ranges from the rest of the file, with
+    /// the calls and jumps from there into code in the ranges that is
+    /// outside every item, as in a chip's ROM. When `from` has ranges, only
+    /// what is in them.
+    pub fn entering_from(&self, from: &[AddressRange]) -> Crossings {
+        if from.is_empty() {
+            return Crossings {
+                uses: self.entering(),
+                unfollowed: self.unfollowed_entering(),
+            };
+        }
+        let in_from = ItemsInRanges::new(self.binary, from);
+        let (mut uses, others): (Vec<Crossing>, Vec<Crossing>) = self
+            .entering()
+            .into_iter()
+            .partition(|crossing| in_from.contains_item(crossing.from));
+        let (mut unfollowed, other_rows): (Vec<Unfollowed>, Vec<Unfollowed>) = self
+            .unfollowed_entering()
+            .into_iter()
+            .partition(|row| in_from.contains_item(row.unresolved.from));
+        // A call through a veneer in `from` whose caller is outside `from`:
+        // the veneer's jump is what uses the ranges from `from`, unless a
+        // caller in `from` already has a row for it.
+        let veneer_in_from = |veneer: usize, kept: &[Option<usize>]| {
+            in_from.contains_item(veneer)
+                && !self.items.contains_item(veneer)
+                && !kept.contains(&Some(veneer))
+        };
+        let kept: Vec<Option<usize>> = uses.iter().map(|crossing| crossing.veneer).collect();
+        let mut jumps: Vec<Crossing> = others
+            .iter()
+            .filter(|crossing| {
+                crossing
+                    .veneer
+                    .is_some_and(|veneer| veneer_in_from(veneer, &kept))
+            })
+            .filter_map(|crossing| {
+                let veneer = crossing.veneer?;
+                // A PLT stub has a jump to its header too.
+                let jump = self
+                    .graph
+                    .references_from(veneer)
+                    .iter()
+                    .find(|jump| jump.to == crossing.to)?;
+                Some(Crossing::new(jump, None, jump.to))
+            })
+            .collect();
+        jumps.sort_by_key(|jump| (jump.from, jump.site));
+        jumps.dedup();
+        uses.extend(jumps);
+        let kept: Vec<Option<usize>> = unfollowed.iter().map(|row| row.veneer).collect();
+        let mut jumps: Vec<Unfollowed> = other_rows
+            .iter()
+            .filter(|row| {
+                row.veneer
+                    .is_some_and(|veneer| veneer_in_from(veneer, &kept))
+            })
+            .filter_map(|row| {
+                let veneer = row.veneer?;
+                let jump = self
+                    .graph
+                    .unresolved_in(veneer)
+                    .iter()
+                    .find(|jump| jump.target == row.unresolved.target)?;
+                Some(Unfollowed {
+                    unresolved: *jump,
+                    veneer: None,
+                })
+            })
+            .collect();
+        jumps.sort_by_key(|jump| (jump.unresolved.from, jump.unresolved.site));
+        jumps.dedup();
+        unfollowed.extend(jumps);
+        unfollowed.sort_by_key(|row| (row.unresolved.from, row.unresolved.site));
+        Crossings { uses, unfollowed }
+    }
+
     /// The calls and jumps in the ranges that elfq can't follow, and that
     /// may leave them: through a pointer, or to code outside every item,
     /// directly or through a veneer. Code outside every item may leave the
     /// ranges even when it is in them, since elfq doesn't read it: it may be
     /// a veneer whose symbol was stripped.
-    pub fn unfollowed(&self) -> Vec<Unfollowed> {
+    fn unfollowed_leaving(&self) -> Vec<Unfollowed> {
         self.unfollowed_from(true, |_| true)
     }
 
     /// The calls and jumps from the rest of the file into code in the
     /// ranges that is outside every item, such as a routine in a
     /// microcontroller's ROM, directly or through a veneer.
-    pub fn unfollowed_entering(&self) -> Vec<Unfollowed> {
-        self.unfollowed_from(false, |target| target.is_some_and(|t| self.in_ranges(t)))
+    fn unfollowed_entering(&self) -> Vec<Unfollowed> {
+        self.unfollowed_from(false, |target| {
+            target.is_some_and(|target| self.items.contains_address(target))
+        })
     }
 
     /// The calls and jumps that elfq can't follow from the items on one
     /// side of the boundary, the ranges' side when `from_inside`, whose
-    /// target passes `goes`. In place of a veneer's jump, the calls to the
-    /// veneer from its own side.
+    /// target passes `target_counts`. In place of a veneer's jump, the
+    /// calls to the veneer from its own side.
     fn unfollowed_from(
         &self,
         from_inside: bool,
-        goes: impl Fn(Option<u64>) -> bool,
+        target_counts: impl Fn(Option<u64>) -> bool,
     ) -> Vec<Unfollowed> {
         let mut unfollowed = Vec::new();
         for unresolved in &self.graph.unresolved {
-            if self.inside[unresolved.from] != from_inside || !goes(unresolved.target) {
+            if self.items.contains_item(unresolved.from) != from_inside
+                || !target_counts(unresolved.target)
+            {
                 continue;
             }
             let calls = match unresolved.target {
@@ -146,16 +349,20 @@ impl<'a> Boundary<'a> {
             }
             // A veneer's jump: the calls to the veneer take its place.
             for call in calls {
-                unfollowed.push(through_veneer(call, unresolved.from, unresolved.target));
+                unfollowed.push(Unfollowed::through_veneer(
+                    call,
+                    unresolved.from,
+                    unresolved.target,
+                ));
             }
         }
         // The calls to a veneer on the other side, which jumps to code on
         // its own side.
         for reference in &self.graph.references {
-            if self.inside[reference.from] == from_inside
+            if self.items.contains_item(reference.from) == from_inside
                 && let Some((veneer, target)) = self.call_to_veneer_across(reference)
             {
-                unfollowed.push(through_veneer(reference, veneer, Some(target)));
+                unfollowed.push(Unfollowed::through_veneer(reference, veneer, Some(target)));
             }
         }
         unfollowed
@@ -163,99 +370,56 @@ impl<'a> Boundary<'a> {
         unfollowed
     }
 
-    /// The functions in the ranges whose code elfq can't read, since it
-    /// doesn't know where they end.
-    pub fn unreadable(&self) -> Vec<usize> {
-        self.functions_inside()
-            .filter(|&index| self.binary.items[index].size == 0)
-            .collect()
-    }
-
-    /// The functions in the ranges whose address is taken or stored, so
-    /// that code outside them may call them through a pointer, which elfq
-    /// can't see. A pointer in the vector table doesn't count: only the
-    /// processor calls through it.
-    pub fn callable_through_pointer(&self) -> Vec<usize> {
-        let vector_tables: Vec<Node> = self
-            .graph
-            .roots
-            .iter()
-            .filter(|root| root.kind == RootKind::VectorTable)
-            .map(|root| root.node)
-            .collect();
-        let mut taken = vec![false; self.binary.items.len()];
-        for reference in &self.graph.references {
-            let counts = match reference.kind {
-                ReferenceKind::Address => true,
-                ReferenceKind::Pointer => !vector_tables.contains(&Node::Item(reference.from)),
-                _ => false,
-            };
-            if counts && let Node::Item(index) = reference.to {
-                taken[index] = true;
-            }
-        }
-        self.functions_inside()
-            .filter(|&index| taken[index])
-            .collect()
-    }
-
-    fn functions_inside(&self) -> impl Iterator<Item = usize> {
-        (0..self.binary.items.len()).filter(|&index| {
-            self.inside[index] && self.binary.items[index].kind == ItemKind::Function
-        })
-    }
-
-    fn contains(&self, node: Node) -> bool {
-        match node {
-            Node::Item(index) => self.inside[index],
-            Node::Import(_) => false,
-        }
-    }
-
-    /// Whether `address` is in the ranges.
-    fn in_ranges(&self, address: u64) -> bool {
-        self.ranges.iter().any(|range| range.contains(address))
-    }
-
     /// The uses across the boundary by the items on one side of it: the items
     /// in the ranges when `from_inside`, or else the rest.
     fn crossings(&self, from_inside: bool) -> Vec<Crossing> {
         let mut crossings = Vec::new();
         for reference in &self.graph.references {
-            if self.inside[reference.from] != from_inside
-                || self.contains(reference.to) == from_inside
+            if self.items.contains_item(reference.from) != from_inside
+                || self.items.contains(reference.to) == from_inside
             {
                 continue;
             }
-            let crossing = |used: &Reference, veneer: Option<usize>, to: Node| Crossing {
-                from: used.from,
-                to,
-                kind: used.kind,
-                site: used.site,
-                veneer,
-            };
-            let calls = self.calls_from_its_side(reference.from, VeneerTarget::Node(reference.to));
-            if !calls.is_empty() {
-                // A veneer's jump across: the calls to the veneer take its
-                // place.
-                for call in calls {
-                    crossings.push(crossing(call, Some(reference.from), reference.to));
+            match self.report(reference, from_inside) {
+                Report::AsIs => crossings.push(Crossing::new(reference, None, reference.to)),
+                Report::ByCallsToVeneer(calls) => crossings.extend(
+                    calls
+                        .into_iter()
+                        .map(|call| Crossing::new(call, Some(reference.from), reference.to)),
+                ),
+                Report::ToTarget { veneer, target } => {
+                    crossings.push(Crossing::new(reference, Some(veneer), target));
                 }
-            } else if reference.kind.is_call()
-                && let Node::Item(veneer) = reference.to
-                && let Some(VeneerTarget::Node(target)) = self.veneers.target(veneer)
-                && self.contains(target) != from_inside
-            {
-                // A call across to a veneer, which jumps on without
-                // crossing back.
-                crossings.push(crossing(reference, Some(veneer), target));
-            } else if self.call_to_veneer_across(reference).is_some() {
-                // A call to code outside every item: see `unfollowed_from`.
-            } else {
-                crossings.push(crossing(reference, None, reference.to));
+                Report::WithUnfollowed => {}
             }
         }
         crossings
+    }
+
+    /// How `reference`, which crosses the boundary from the ranges' side
+    /// when `from_inside`, is reported once veneers are seen through.
+    ///
+    /// The rules are tried in this order, and the order decides the answer:
+    /// a veneer's jump is a tail call, which counts as a call, so when one
+    /// veneer jumps to another, the jump matches more than one rule. The
+    /// test `a_veneer_that_jumps_to_a_veneer_is_reported_by_the_first_rule_that_matches`
+    /// pins it.
+    fn report(&self, reference: &'a Reference, from_inside: bool) -> Report<'a> {
+        let calls = self.calls_from_its_side(reference.from, VeneerTarget::Node(reference.to));
+        if !calls.is_empty() {
+            return Report::ByCallsToVeneer(calls);
+        }
+        if reference.kind.is_call()
+            && let Node::Item(veneer) = reference.to
+            && let Some(VeneerTarget::Node(target)) = self.veneers.target(veneer)
+            && self.items.contains(target) != from_inside
+        {
+            return Report::ToTarget { veneer, target };
+        }
+        if self.call_to_veneer_across(reference).is_some() {
+            return Report::WithUnfollowed;
+        }
+        Report::AsIs
     }
 
     /// When `item` is a veneer that jumps to `target`, the calls to it from
@@ -265,7 +429,7 @@ impl<'a> Boundary<'a> {
         if self.veneers.target(item) != Some(target) {
             return Vec::new();
         }
-        let side = self.inside[item];
+        let side = self.items.contains_item(item);
         let references = &self.graph.references;
         let calls_to = self
             .calls_to
@@ -274,7 +438,7 @@ impl<'a> Boundary<'a> {
             .of(item)
             .iter()
             .map(|&index| &references[index])
-            .filter(|reference| self.inside[reference.from] == side)
+            .filter(|reference| self.items.contains_item(reference.from) == side)
             .collect()
     }
 
@@ -285,11 +449,12 @@ impl<'a> Boundary<'a> {
         let Node::Item(veneer) = reference.to else {
             return None;
         };
-        if !reference.kind.is_call() || self.inside[reference.from] == self.inside[veneer] {
+        let side = self.items.contains_item(veneer);
+        if !reference.kind.is_call() || self.items.contains_item(reference.from) == side {
             return None;
         }
         match self.veneers.target(veneer)? {
-            VeneerTarget::Outside(target) if self.in_ranges(target) == self.inside[veneer] => {
+            VeneerTarget::Outside(target) if self.items.contains_address(target) == side => {
                 Some((veneer, target))
             }
             _ => None,
@@ -338,20 +503,6 @@ impl CallsTo {
     /// The calls to `item`, as indices into the references, in their order.
     fn of(&self, item: usize) -> &[usize] {
         &self.calls[self.starts[item]..self.starts[item + 1]]
-    }
-}
-
-/// `call`, a call to `veneer`, as a call or jump that elfq can't follow to
-/// `target`.
-fn through_veneer(call: &Reference, veneer: usize, target: Option<u64>) -> Unfollowed {
-    Unfollowed {
-        unresolved: Unresolved {
-            from: call.from,
-            site: call.site,
-            is_call: call.kind == ReferenceKind::Call,
-            target,
-        },
-        veneer: Some(veneer),
     }
 }
 
@@ -534,7 +685,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            unfollowed_names(&binary, &boundary.unfollowed()),
+            unfollowed_names(&binary, &boundary.unfollowed_leaving()),
             [(
                 "__app_tick_veneer".to_string(),
                 format!("{rom:#x}"),
@@ -547,13 +698,46 @@ mod tests {
         let boundary = Boundary::new(&binary, &graph, &ranges);
         assert!(boundary.leaving().is_empty());
         assert_eq!(
-            unfollowed_names(&binary, &boundary.unfollowed()),
+            unfollowed_names(&binary, &boundary.unfollowed_leaving()),
             [(
                 "__app_tick_veneer".to_string(),
                 format!("{rom:#x}"),
                 "__memcpy_veneer".to_string()
             )]
         );
+    }
+
+    #[test]
+    fn both_ways_agree_on_a_veneer_with_callers_on_both_sides() {
+        // on_timer, outside the flash range below, calls crc32 through the
+        // veneer in it too, as process_frame does.
+        let (binary, mut graph) = sample();
+        let (on_timer, veneer) = (index(&binary, "on_timer"), index(&binary, "__crc32_veneer"));
+        graph.references.push(Reference {
+            from: on_timer,
+            to: Node::Item(veneer),
+            kind: ReferenceKind::Call,
+            site: binary.items[on_timer].address + 4,
+        });
+        graph.references.sort_by_key(|r| (r.from, r.site));
+        let flash = [range("0x30000320..0x300009c0")];
+        let itcm = [range("0x0+256K")];
+        let sites = |uses: &[Crossing]| {
+            let mut sites: Vec<u64> = uses.iter().map(|crossing| crossing.site).collect();
+            sites.sort_unstable();
+            sites
+        };
+        // process_frame's calls, and not the veneer's jump, which a caller
+        // in the flash range already stands for.
+        let entering = Boundary::new(&binary, &graph, &itcm).entering_from(&flash);
+        assert_eq!(
+            sites(&entering.uses),
+            [0x3000_034c, 0x3000_0386, 0x3000_0454]
+        );
+        assert!(entering.uses.iter().all(|crossing| crossing.from != veneer));
+        // The same uses, asked the other way.
+        let leaving = Boundary::new(&binary, &graph, &flash).leaving_to(&itcm);
+        assert_eq!(sites(&leaving.uses), sites(&entering.uses));
     }
 
     #[test]
@@ -576,7 +760,7 @@ mod tests {
         let ranges = [range("0x0+256K")];
         let boundary = Boundary::new(&binary, &graph, &ranges);
         let targets: Vec<Option<u64>> = boundary
-            .unfollowed()
+            .unfollowed_leaving()
             .iter()
             .map(|u| u.unresolved.target)
             .collect();
@@ -587,45 +771,10 @@ mod tests {
         }
         let boundary = Boundary::new(&binary, &graph, &ranges);
         let targets: Vec<Option<u64>> = boundary
-            .unfollowed()
+            .unfollowed_leaving()
             .iter()
             .map(|u| u.unresolved.target)
             .collect();
         assert_eq!(targets, [Some(0x1fff_0000)]);
-    }
-
-    #[test]
-    fn the_vector_table_is_not_a_pointer_that_code_calls_through() {
-        let (binary, mut graph) = sample();
-        // SysTick_Handler is at 0x0, and only the vector table holds its
-        // address.
-        let ranges = [range("0x0+0x10")];
-        let boundary = Boundary::new(&binary, &graph, &ranges);
-        assert!(boundary.callable_through_pointer().is_empty());
-        // Code that takes its address can pass it on.
-        let handler = index(&binary, "SysTick_Handler");
-        let start = graph
-            .references
-            .partition_point(|r| r.from < index(&binary, "main"));
-        graph.references[start] = Reference {
-            from: index(&binary, "main"),
-            to: Node::Item(handler),
-            kind: ReferenceKind::Address,
-            site: graph.references[start].site,
-        };
-        let boundary = Boundary::new(&binary, &graph, &ranges);
-        assert_eq!(boundary.callable_through_pointer(), [handler]);
-        // So can data that holds it, other than the vector table.
-        let (binary, mut graph) = sample();
-        let handlers = index(&binary, "handlers");
-        graph.references.push(Reference {
-            from: handlers,
-            to: Node::Item(handler),
-            kind: ReferenceKind::Pointer,
-            site: binary.items[handlers].address,
-        });
-        graph.references.sort_by_key(|r| (r.from, r.site));
-        let boundary = Boundary::new(&binary, &graph, &ranges);
-        assert_eq!(boundary.callable_through_pointer(), [handler]);
     }
 }

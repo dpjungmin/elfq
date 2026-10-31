@@ -63,7 +63,7 @@ pub fn run(
                 return Ok(Outcome::Answered);
             }
             let check = RangeCheck {
-                ranges: &[ranges::item_range(binary, index)],
+                ranges: &[binary.items[index].range()],
                 name: Some(lead_name),
                 other: to,
                 direction: Direction::Out,

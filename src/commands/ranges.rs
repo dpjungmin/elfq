@@ -4,6 +4,9 @@
 //! other ranges on the far side. `callees SYMBOL --to RANGE` and `callers
 //! SYMBOL --from RANGE` come here too, and ask about the range that SYMBOL
 //! occupies.
+//!
+//! `graph::Boundary` works out what crosses, and how `--from` and `--to`
+//! narrow it; this file checks the ranges and words the answer.
 
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
@@ -15,7 +18,7 @@ use super::checks::empty_place;
 use super::{Outcome, json, text};
 use crate::binary::{AddressRange, Binary};
 use crate::cli::Format;
-use crate::graph::{Boundary, Crossing, Graph, Node, ReferenceKind, Unfollowed, Unresolved};
+use crate::graph::{Boundary, Crossing, Graph, ItemsInRanges, Node, ReferenceKind, Unfollowed};
 use crate::render::{Align, Table};
 
 /// Which way the references cross the boundary.
@@ -164,7 +167,7 @@ pub fn run(
     format: Format,
     out: &mut dyn Write,
 ) -> Result<Outcome> {
-    let code_outside = code_outside(graph);
+    let code_outside = graph.code_outside_items();
     for &range in check.ranges {
         if check.direction == Direction::In && has_address(&code_outside, range) {
             continue;
@@ -175,13 +178,13 @@ pub fn run(
     let boundary = Boundary::new(binary, graph, check.ranges);
     let nothing_crosses = match check.direction {
         Direction::Out => {
-            let (crossings, unfollowed) = leaving_to(binary, graph, &boundary, check);
+            let crossings = boundary.leaving_to(check.other);
             let leaving = Leaving {
                 binary,
                 check,
-                crossings,
-                unfollowed,
-                unreadable: boundary.unreadable(),
+                crossings: crossings.uses,
+                unfollowed: crossings.unfollowed,
+                unreadable: boundary.items().unreadable(),
                 all,
             };
             match format {
@@ -194,34 +197,36 @@ pub fn run(
                 && leaving.unreadable.is_empty()
         }
         Direction::In => {
-            let from = check.other;
+            let from = ItemsInRanges::new(binary, check.other);
+            let in_ranges = |index: usize| boundary.items().contains_item(index);
             // Code in the `--from` ranges that elfq can't read may use the
             // ranges in any way.
-            let unreadable = if from.is_empty() {
-                Vec::new()
-            } else {
-                Boundary::new(binary, graph, from)
-                    .unreadable()
-                    .into_iter()
-                    .filter(|&index| !binary.items[index].is_in(check.ranges))
-                    .collect()
-            };
+            let unreadable: Vec<usize> = from
+                .unreadable()
+                .into_iter()
+                .filter(|&index| !in_ranges(index))
+                .collect();
             // Code anywhere may call through a pointer passed to it, but
             // with `--from`, only code in its ranges counts.
-            let through_pointer = if from.is_empty()
-                || !unreadable.is_empty()
-                || calls_through_pointer(binary, graph, from, check.ranges)
-            {
-                boundary.callable_through_pointer()
-            } else {
-                Vec::new()
+            let calls_through_pointer = || {
+                graph.unresolved.iter().any(|unresolved| {
+                    unresolved.is_indirect()
+                        && from.contains_item(unresolved.from)
+                        && !in_ranges(unresolved.from)
+                })
             };
-            let (crossings, unfollowed) = entering_from(binary, graph, &boundary, check);
+            let through_pointer =
+                if check.other.is_empty() || !unreadable.is_empty() || calls_through_pointer() {
+                    boundary.items().callable_through_pointer(graph)
+                } else {
+                    Vec::new()
+                };
+            let crossings = boundary.entering_from(check.other);
             let entering = Entering {
                 binary,
                 check,
-                crossings,
-                unfollowed,
+                crossings: crossings.uses,
+                unfollowed: crossings.unfollowed,
                 through_pointer,
                 unreadable,
                 all,
@@ -240,208 +245,6 @@ pub fn run(
         Ok(Outcome::Answered)
     } else {
         Ok(Outcome::Crossed)
-    }
-}
-
-/// The range that an item occupies, for `--from` and `--to` with SYMBOL. An
-/// item of unknown size counts as its first byte, as it does in a range
-/// check.
-pub(super) fn item_range(binary: &Binary, index: usize) -> AddressRange {
-    let item = &binary.items[index];
-    AddressRange {
-        start: item.address,
-        end: item.address + item.size.max(1),
-    }
-}
-
-/// What the items in the ranges use outside them, with the calls and jumps
-/// in them that elfq can't follow, and that may leave them. With `--to`,
-/// only what is in its ranges, and what elfq can't follow that may go
-/// there: to an address in them, or through a pointer when a function
-/// there, outside the ranges, has its address taken or stored.
-fn leaving_to(
-    binary: &Binary,
-    graph: &Graph,
-    boundary: &Boundary,
-    check: &RangeCheck,
-) -> (Vec<Crossing>, Vec<Unfollowed>) {
-    let to = check.other;
-    if to.is_empty() {
-        return (boundary.leaving(), boundary.unfollowed());
-    }
-    // A veneer in `to` that a use goes through to something outside `to`:
-    // the use goes into `to` at the veneer, so it is listed as a use of the
-    // veneer.
-    let veneer_in_to = |veneer: Option<usize>| {
-        veneer.filter(|&veneer| {
-            let item = &binary.items[veneer];
-            item.is_in(to) && !item.is_in(check.ranges)
-        })
-    };
-    let mut crossings = Vec::new();
-    for crossing in boundary.leaving() {
-        if node_in(binary, crossing.to, to) {
-            crossings.push(crossing);
-        } else if let Some(veneer) = veneer_in_to(crossing.veneer) {
-            crossings.push(Crossing {
-                to: Node::Item(veneer),
-                veneer: None,
-                ..crossing
-            });
-        }
-    }
-    let through_pointer = Boundary::new(binary, graph, to)
-        .callable_through_pointer()
-        .into_iter()
-        .any(|function| !binary.items[function].is_in(check.ranges));
-    let mut unfollowed = Vec::new();
-    for row in boundary.unfollowed() {
-        let unresolved = row.unresolved;
-        if may_go_to(&unresolved, to, through_pointer) {
-            unfollowed.push(row);
-        } else if let Some(veneer) = veneer_in_to(row.veneer) {
-            crossings.push(Crossing {
-                from: unresolved.from,
-                to: Node::Item(veneer),
-                kind: if unresolved.is_call {
-                    ReferenceKind::Call
-                } else {
-                    ReferenceKind::TailCall
-                },
-                site: unresolved.site,
-                veneer: None,
-            });
-        }
-    }
-    (crossings, unfollowed)
-}
-
-/// What uses the items in the ranges from outside them, with the calls and
-/// jumps from outside into code in them that is outside every item, as in a
-/// chip's ROM. With `--from`, only what is in its ranges.
-fn entering_from(
-    binary: &Binary,
-    graph: &Graph,
-    boundary: &Boundary,
-    check: &RangeCheck,
-) -> (Vec<Crossing>, Vec<Unfollowed>) {
-    let from = check.other;
-    if from.is_empty() {
-        return (boundary.entering(), boundary.unfollowed_entering());
-    }
-    let in_from = |index: usize| binary.items[index].is_in(from);
-    let (mut crossings, others): (Vec<Crossing>, Vec<Crossing>) = boundary
-        .entering()
-        .into_iter()
-        .partition(|crossing| in_from(crossing.from));
-    let (mut unfollowed, other_rows): (Vec<Unfollowed>, Vec<Unfollowed>) = boundary
-        .unfollowed_entering()
-        .into_iter()
-        .partition(|row| in_from(row.unresolved.from));
-    // A call through a veneer in `from` whose caller is outside `from`: the
-    // veneer's jump is what uses the ranges from `from`, unless a caller in
-    // `from` already has a row for it.
-    let veneer_in_from = |veneer: usize, kept: &[Option<usize>]| {
-        let item = &binary.items[veneer];
-        item.is_in(from) && !item.is_in(check.ranges) && !kept.contains(&Some(veneer))
-    };
-    let kept: Vec<Option<usize>> = crossings.iter().map(|crossing| crossing.veneer).collect();
-    let mut jumps: Vec<Crossing> = others
-        .iter()
-        .filter(|crossing| {
-            crossing
-                .veneer
-                .is_some_and(|veneer| veneer_in_from(veneer, &kept))
-        })
-        .filter_map(|crossing| {
-            let veneer = crossing.veneer?;
-            // A PLT stub has a jump to its header too.
-            let jump = graph
-                .references_from(veneer)
-                .iter()
-                .find(|jump| jump.to == crossing.to)?;
-            Some(Crossing {
-                from: veneer,
-                to: jump.to,
-                kind: jump.kind,
-                site: jump.site,
-                veneer: None,
-            })
-        })
-        .collect();
-    jumps.sort_by_key(|jump| (jump.from, jump.site));
-    jumps.dedup();
-    crossings.extend(jumps);
-    let kept: Vec<Option<usize>> = unfollowed.iter().map(|row| row.veneer).collect();
-    let mut jumps: Vec<Unfollowed> = other_rows
-        .iter()
-        .filter(|row| {
-            row.veneer
-                .is_some_and(|veneer| veneer_in_from(veneer, &kept))
-        })
-        .filter_map(|row| {
-            let veneer = row.veneer?;
-            let jump = graph
-                .unresolved_in(veneer)
-                .iter()
-                .find(|jump| jump.target == row.unresolved.target)?;
-            Some(Unfollowed {
-                unresolved: *jump,
-                veneer: None,
-            })
-        })
-        .collect();
-    jumps.sort_by_key(|jump| (jump.unresolved.from, jump.unresolved.site));
-    jumps.dedup();
-    unfollowed.extend(jumps);
-    unfollowed.sort_by_key(|row| (row.unresolved.from, row.unresolved.site));
-    (crossings, unfollowed)
-}
-
-/// Whether code in `from`, outside `ranges`, calls or jumps through a
-/// pointer.
-fn calls_through_pointer(
-    binary: &Binary,
-    graph: &Graph,
-    from: &[AddressRange],
-    ranges: &[AddressRange],
-) -> bool {
-    graph.unresolved.iter().any(|unresolved| {
-        let item = &binary.items[unresolved.from];
-        unresolved.is_indirect() && item.is_in(from) && !item.is_in(ranges)
-    })
-}
-
-/// Whether `unresolved`, a call or jump that elfq can't follow, may go to
-/// `to`, the ranges of `--to`: one to a known address, when the address is
-/// in them, and one through a pointer, when `through_pointer`, since a
-/// function there has its address taken or stored.
-pub(super) fn may_go_to(
-    unresolved: &Unresolved,
-    to: &[AddressRange],
-    through_pointer: bool,
-) -> bool {
-    match unresolved.target {
-        Some(target) => contains(to, target),
-        None => through_pointer,
-    }
-}
-
-/// Where calls and jumps in the file go to code outside every item, as to
-/// a routine in a chip's ROM, which `callers` and `--to` can name.
-pub(super) fn code_outside(graph: &Graph) -> Vec<u64> {
-    graph
-        .unresolved
-        .iter()
-        .filter_map(|unresolved| unresolved.target)
-        .collect()
-}
-
-/// Whether `node` is an item in `ranges`. An import is in none.
-fn node_in(binary: &Binary, node: Node, ranges: &[AddressRange]) -> bool {
-    match node {
-        Node::Item(index) => binary.items[index].is_in(ranges),
-        Node::Import(_) => false,
     }
 }
 
@@ -1172,7 +975,7 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::graph::{Reference, Unresolved};
+    use crate::graph::Unresolved;
 
     /// The Cortex-M7 sample, with code in ITCM at 0x0 and flash at
     /// 0x30000000, and the veneers GNU ld added between them.
@@ -1244,48 +1047,6 @@ mod tests {
             out.ends_with("  0x20  crc32, uses 0x1fff0100 (outside any function)\n"),
             "{out}"
         );
-    }
-
-    #[test]
-    fn both_sides_agree_on_a_veneer_with_callers_on_both() {
-        // on_timer, outside the flash range below, calls crc32 through the
-        // veneer in it too, as process_frame does.
-        let (binary, mut graph) = sample();
-        let on_timer = index(&binary, "on_timer");
-        graph.references.push(Reference {
-            from: on_timer,
-            to: Node::Item(index(&binary, "__crc32_veneer")),
-            kind: ReferenceKind::Call,
-            site: binary.items[on_timer].address + 4,
-        });
-        graph.references.sort_by_key(|r| (r.from, r.site));
-        let flash = ["0x30000320..0x300009c0"];
-        let itcm = ["0x0+256K"];
-        let (outcome, callers) = answer(&binary, &graph, &itcm, &flash, Direction::In);
-        assert_eq!(outcome, Outcome::Crossed);
-        let (outcome, callees) = answer(&binary, &graph, &flash, &itcm, Direction::Out);
-        assert_eq!(outcome, Outcome::Crossed);
-        // process_frame's calls, and not the veneer's jump, which a caller
-        // in the flash range already stands for: the AT column of each row.
-        let sites = |out: &str| -> Vec<String> {
-            out.lines()
-                .skip(3)
-                .map(|line| {
-                    let cells: Vec<&str> =
-                        line.split("  ").filter(|cell| !cell.is_empty()).collect();
-                    cells[3].trim().to_string()
-                })
-                .collect()
-        };
-        assert_eq!(
-            sites(&callers),
-            ["0x3000034c", "0x30000386, 0x30000454"],
-            "{callers}"
-        );
-        assert!(!callers.contains("__crc32_veneer"), "{callers}");
-        let mut callees_sites = sites(&callees);
-        callees_sites.sort();
-        assert_eq!(callees_sites, sites(&callers), "{callees}");
     }
 
     #[test]

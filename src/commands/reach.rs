@@ -50,8 +50,8 @@ use crate::binary::{
 };
 use crate::cli::Format;
 use crate::graph::{
-    Boundary, Graph, Node, Reached, Reference, ReferenceKind, RootKind, ShortestPaths, Unfollowed,
-    Unresolved, VeneerTarget, Veneers, listed_in,
+    Graph, ItemsInRanges, Node, Reached, Reference, ReferenceKind, RootKind, ShortestPaths,
+    Unfollowed, Unresolved, VeneerTarget, Veneers, listed_in,
 };
 use crate::render::{Align, Table, TreeRow, TreeShape};
 
@@ -409,7 +409,7 @@ impl<'n, 'a> Reach<'n, 'a> {
         to: &[AddressRange],
         all: bool,
     ) -> Result<Reach<'n, 'a>> {
-        let code_outside = ranges::code_outside(graph);
+        let code_outside = graph.code_outside_items();
         for &range in to {
             ranges::check_to_range(binary, range, &code_outside)?;
         }
@@ -516,12 +516,11 @@ impl<'n, 'a> Reach<'n, 'a> {
         }
         let plt_header = graph.is_plt_header(start);
         if !to.is_empty() {
-            let through_pointer = !Boundary::new(binary, graph, to)
-                .callable_through_pointer()
+            let through_pointer = !ItemsInRanges::new(binary, to)
+                .callable_through_pointer(graph)
                 .is_empty();
-            let may_go_to = |jump: &Unresolved| ranges::may_go_to(jump, to, through_pointer);
-            unresolved.retain(may_go_to);
-            unfollowed.retain(|row| may_go_to(&row.unresolved));
+            unresolved.retain(|jump| jump.may_go_to(to, through_pointer));
+            unfollowed.retain(|row| row.unresolved.may_go_to(to, through_pointer));
         }
         Ok(Reach {
             binary,
@@ -1793,20 +1792,17 @@ impl Start {
 /// to a veneer when `via` is the veneer's jump to its target and the veneer
 /// is reached by a call.
 fn used(paths: &ShortestPaths, veneers: &Veneers, node: Node, via: Reference) -> Use {
-    if veneers.target(via.from) == Some(VeneerTarget::Node(node))
-        && let Some(call) = paths.via(Node::Item(via.from))
-        && call.kind.is_call()
-    {
-        return Use {
+    match call_to_veneer(paths, veneers, via.from, VeneerTarget::Node(node)) {
+        Some(call) => Use {
             by: call.from,
             kind: call.kind,
             veneer: Some(via.from),
-        };
-    }
-    Use {
-        by: via.from,
-        kind: via.kind,
-        veneer: None,
+        },
+        None => Use {
+            by: via.from,
+            kind: via.kind,
+            veneer: None,
+        },
     }
 }
 
@@ -1814,25 +1810,32 @@ fn used(paths: &ShortestPaths, veneers: &Veneers, node: Node, via: Reference) ->
 /// every item, and a call reaches the veneer, as that call, through the
 /// veneer.
 fn through_veneer(paths: &ShortestPaths, veneers: &Veneers, jump: Unresolved) -> Unfollowed {
-    if let Some(target) = jump.target
-        && veneers.target(jump.from) == Some(VeneerTarget::Outside(target))
-        && let Some(call) = paths.via(Node::Item(jump.from))
-        && call.kind.is_call()
-    {
-        return Unfollowed {
-            unresolved: Unresolved {
-                from: call.from,
-                site: call.site,
-                is_call: call.kind == ReferenceKind::Call,
-                target: Some(target),
-            },
-            veneer: Some(jump.from),
-        };
+    let call = jump.target.and_then(|target| {
+        call_to_veneer(paths, veneers, jump.from, VeneerTarget::Outside(target))
+    });
+    match call {
+        Some(call) => Unfollowed::through_veneer(&call, jump.from, jump.target),
+        None => Unfollowed {
+            unresolved: jump,
+            veneer: None,
+        },
     }
-    Unfollowed {
-        unresolved: jump,
-        veneer: None,
+}
+
+/// When `veneer` is a veneer that jumps to `target`, and the chain from
+/// SYMBOL reaches it by a call, that call.
+fn call_to_veneer(
+    paths: &ShortestPaths,
+    veneers: &Veneers,
+    veneer: usize,
+    target: VeneerTarget,
+) -> Option<Reference> {
+    if veneers.target(veneer) != Some(target) {
+        return None;
     }
+    paths
+        .via(Node::Item(veneer))
+        .filter(|call| call.kind.is_call())
 }
 
 /// The nodes that something in `steps` calls, or that a vector table among

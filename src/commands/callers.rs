@@ -56,7 +56,7 @@ pub fn run(
                     symbol.node.name(binary)
                 );
             };
-            let range = ranges::item_range(binary, index);
+            let range = binary.items[index].range();
             let check = RangeCheck {
                 ranges: &[range],
                 name: Some(symbol.lead_name(binary)),

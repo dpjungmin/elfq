@@ -124,7 +124,7 @@ or `--to`, and for `reach --to`, an item is inside when any of its bytes is
 in one of the ranges, where an item whose size elfq doesn't know counts as
 its first byte, and a reference **crosses** the boundary when one end is
 inside and the other isn't. The help calls the boundary the ranges' edge.
-(`graph::Boundary`, `graph::Crossing`)
+(`graph::ItemsInRanges`, `graph::Boundary`, `graph::Crossing`)
 
 **Thumb.** The instruction set of Cortex-M processors, with 16- and 32-bit
 instructions. Arm sets bit 0 of a Thumb function's address wherever the
