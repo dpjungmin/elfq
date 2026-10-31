@@ -12,6 +12,7 @@ use anyhow::Result;
 use serde::Serialize;
 use serde_json::ser::Formatter;
 
+use super::uses::Row;
 use crate::binary::{AddressRange, Binary, MemoryBlock};
 use crate::graph::{Node, ReferenceKind, RootKind};
 
@@ -171,7 +172,7 @@ pub(super) struct Use<'a> {
     pub sites: Vec<String>,
 }
 
-pub(super) fn uses<'a>(binary: &'a Binary, rows: &[super::Row]) -> Vec<Use<'a>> {
+pub(super) fn uses<'a>(binary: &'a Binary, rows: &[Row]) -> Vec<Use<'a>> {
     rows.iter()
         .map(|row| Use {
             item: Item::new(binary, row.node),

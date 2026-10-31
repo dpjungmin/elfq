@@ -54,7 +54,7 @@ terminal is as it was; `.github/workflows/ci.yml` has the command.
 | `src/main.rs` | The program: parses arguments, runs one command on a thread with a large stack, prints errors and sets the exit status. It also turns `elfq help COMMAND` into `--help`, and suggests the right order when the command comes before the file. |
 | `src/lib.rs` | Declares the modules below. elfq is a library plus that small program; the library exists for the program and its tests. |
 | `src/cli.rs` | Command-line arguments, with clap: a `Command` variant for each command, the structs that hold their arguments, and the text of `--help`. |
-| `src/commands/` | One file per command, which looks up SYMBOL, asks `graph` or `debuginfo` and decides what the answer shows. `mod.rs` runs the command the arguments name, after checking arguments that don't go together. The rest are shared: `symbol.rs` works out what a user means by SYMBOL, `retained_tree.rs` builds the trees of retained sizes that the overview, `top` and `retained` show, `ranges.rs` answers `callers` and `callees` for ranges of memory or with `--from` or `--to`, `text.rs` holds the wording that commands share and `json.rs` the JSON shapes. `mod.rs` also has `Kept`, which leaves what a command keeps until it has answered for the system to take back when elfq ends (`end_after_answer`). |
+| `src/commands/` | One file per command, which looks up SYMBOL, asks `graph` or `debuginfo` and decides what the answer shows. `mod.rs` runs the command the arguments name. The rest are shared: `arguments.rs` checks which arguments go together, `checks.rs` holds the checks a command makes before it answers, such as `check_code_is_readable`, `symbol.rs` works out what a user means by SYMBOL, `retained_tree.rs` builds the trees of retained sizes that the overview, `top` and `retained` show, `uses.rs` holds the table of `callers` and `callees` for SYMBOL, `ranges.rs` answers them for ranges of memory or with `--from` or `--to`, `tree_answer.rs` holds the answers whose table holds a tree, `text.rs` the wording that commands share and `json.rs` the JSON shapes. `kept.rs` has `Kept`, which leaves what a command keeps until it has answered for the system to take back when elfq ends (`end_after_answer`). |
 | `src/commands/browse/` | `elfq FILE browse`, with the `tui` feature: `mod.rs` takes over the terminal and runs the event loop, `session.rs` holds the loaded file and asks the commands' code for answers, `keys.rs` is the table of keys, `app.rs` the history of pages, the go-to box, find's prompt and the screen's layout, and `views/` the pages, the go-to box and the tabs of an item's page other than a function's code, one file each (a data object's contents, its tab 1, are in `item/contents.rs`), `printed.rs`, which draws a command's answer for the pages and tabs that show one, and `names.rs`, which shortens long C++ and Rust names to fit a column. |
 | `src/commands/diff/` | `elfq FILE diff NEW`: `mod.rs` reads both files and gives the exit status, `blocks.rs` works out the blocks of memory that both builds share and what changed in each, `pairing.rs` pairs the builds' items, `rows.rs` works out what changed and the rows of MOVED and CHANGE, `edited.rs` which items of the same size are edited, `crossings.rs` the uses between blocks that are new or gone, and `text.rs` and `json.rs` write the answer. |
 | `src/commands/startup/` | `elfq FILE startup`: `mod.rs` refuses files that aren't Cortex-M firmware from their headers, and runs the rest, `start.rs` finds the reset handler and `main`, `steps.rs` reads the walk's calls and loops as the steps that copy and zero sections, `problems.rs` works out the state of each section when `main` starts, the problems and the notes, and `text.rs` and `json.rs` write the answer. |
@@ -119,6 +119,48 @@ without making them public. It and `arch/listing.rs` build only with the
   add a size to an address without checking. Stored pointers are read only
   where the file holds bytes, however large a section claims to be, and
   sums of sizes stop at the largest number rather than overflow.
+
+## Words
+
+A word means one thing across elfq, so that a name read in one module
+means the same in the next. Check a new file, type or field name against
+this list, and add to it when you bring in a word.
+
+- **item**: a function or data object in the file (`binary::Item`). Its
+  place in `Binary::items` is an item index, named `index` or `item`.
+- **import**: a function from a shared library, which the file calls but
+  doesn't hold. **node**: an item or an import, as the graph connects
+  them (`graph::Node`). **root**: a node where the program starts, such as
+  the entry point or a handler that the vector table lists (`graph::Root`).
+- **use**: a reference from one node to another, such as a call, a jump
+  or a stored pointer: what `callers` and `callees` list.
+- **keeps**, **kept by**: retained's words. An item keeps another when
+  every chain from a root to the other goes through it, so removing it
+  frees the other; the closest such item is what the other is kept by.
+  `Kept`, in `kept.rs`, is unrelated: it leaves a value for the system to
+  free when elfq ends.
+- **answer**: what a command has worked out, before it is written as text
+  or JSON, as `callers::Answer`. `TreeAnswer` is the text of an answer
+  whose table holds a tree, and `TabAnswer` that answer as a tab of
+  browse shows it.
+- **section**: an ELF section. **block**: a run of addresses that
+  sections occupy, as the overview's MEMORY table lists
+  (`MemoryBlock`). **load image**: where the file stores the bytes of a
+  section such as `.data`, for startup code to copy to its address.
+- **state**: what the registers and the stack hold at one point in the
+  code, in `arch/thumb/values/` (`State`). A section's state when `main`
+  starts, in `startup`, is its status (`problems::Status`).
+- **shape**: how a table shows a tree: as rows that name the row they
+  hang under, or drawn with `--tree` (`TreeShape`). A command's
+  **format** is text, tree or JSON (`Format`).
+- **step**: one thing that startup code does, such as copying a section
+  (`startup::steps::Step`). **row**: a line of a table that elfq prints;
+  a loop over a table of sections also reads one row of that table each
+  time it runs.
+
+Some code still uses one of these words for something else, as the Thumb
+walk's `Step` (what an instruction leads to) and `reach`'s `Step` (a row
+of its tree) do. Those are names to fix, not meanings to copy.
 
 ## Tests
 
@@ -244,28 +286,28 @@ is a short one to copy.
 2. **The command, in `src/commands/<name>.rs`.** Start with a `//!` line
    that shows how to type it, then a `run` function that takes the
    `Binary`, the arguments, the `Format` and the output. It returns
-   `Result<()>`, or `Result<Outcome>` when the exit status can be 1, as
-   `callers` and `callees` do for ranges.
-3. **Wiring, in `src/commands/mod.rs`.** Add `mod <name>;`, an arm in `run`
-   and an arm in `command_name`; the compiler asks for the last two. It
-   won't ask about `check_arguments`, which refuses `--range` for every
-   command but the overview, `top` and `retained`. A command that takes
-   `--range` goes in its first arm, and its arm in `run` passes it `range`.
-   Then name it in `RANGE_REFUSED`, the error that lists the commands that
-   take `--range`, in the tests in `tests/it/cli.rs` that check that error,
-   and in the `--range` help in `cli.rs`, README.md and docs/design.md. A
-   command that can't print JSON needs an arm like the one for the debug
-   commands. `check_tree` likewise refuses `--tree` for every command that
-   shows no tree: a command that shows one goes in its first arm, and in
-   that error, its tests and the `--tree` help.
+   `Result<Outcome>`: `Outcome::Answered`, or for exit status 1 another
+   variant, as `callers` and `callees` return for ranges.
+3. **Wiring, in `src/commands/mod.rs` and `arguments.rs`.** Add
+   `mod <name>;` and an arm in `run`. In `arguments.rs`, `check_tree`,
+   `check_range` and `check_json` each have an arm for every command, and
+   the compiler asks for the new one in each: put it with the commands that
+   take `--tree`, `--range` or `--json`, or with those that refuse it. A
+   command that takes `--range` gets `range` from its arm in `run`; name
+   it in `RANGE_REFUSED`, the error that lists the commands that take
+   `--range`, in the tests in `tests/it/cli.rs` that check that error, and
+   in the `--range` help in `cli.rs`, README.md and docs/design.md. A
+   command that shows a tree goes likewise in `check_tree`'s error, its
+   tests and the `--tree` help.
 4. **SYMBOL.** If the command reads code, call `check_code_is_readable`
    first, so that a file whose code elfq can't read says so even when
    SYMBOL names nothing. `symbol::find` turns SYMBOL into a `Symbol`, whose
    `node` may be an import; `item_in_file` or `readable_item` gives its
-   item, or an error that says why there is none. The answer's first line
-   names it with `Symbol::lead_name`, which says when SYMBOL gave another
-   of its names or an address inside it. A command that needs the roots
-   refuses shared libraries, as `top`, `retained` and `why` do.
+   item, or an error that says why there is none. These checks are in
+   `checks.rs`. The answer's first line names it with `Symbol::lead_name`,
+   which says when SYMBOL gave another of its names or an address inside
+   it. A command that needs the roots refuses shared libraries, as `top`,
+   `retained` and `why` do.
 5. **The answer.** Work it out first, then write it. Text uses
    `render::Table`, `TreeRow` for trees, and the shared wording in
    `text.rs`. JSON is a struct that derives `Serialize`, made of the shapes
@@ -278,7 +320,7 @@ is a short one to copy.
    each with an `id` counting from 0 and the `parent` id of the row it
    hangs under, or `null`, as `RetainedTree::to_json` makes them.
    Keep what the command builds that is large, such as the graph,
-   `Names` or a `RetainedTree`, in a `commands::Kept` (`let graph =
+   `Names` or a `RetainedTree`, in a `Kept`, from `kept.rs` (`let graph =
    Kept::new(Graph::build(binary));`), so that elfq ends without freeing
    it a piece at a time. A `Kept` is dropped when it goes out of scope,
    so the compiler checks that what its value borrows outlives it:

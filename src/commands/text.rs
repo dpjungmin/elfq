@@ -5,7 +5,7 @@
 use object::Architecture;
 
 use super::json;
-use crate::binary::{AddressRange, Binary, Item, ItemKind, Section, Source};
+use crate::binary::{AddressRange, Binary, Item, ItemKind, Section, Source, total};
 use crate::graph::{Node, ReferenceKind, Root, RootKind, Unresolved};
 
 /// "1 function", "2 functions".
@@ -33,7 +33,7 @@ pub(super) fn signed(change: i128) -> String {
 pub(super) fn bytes_of_items(binary: &Binary, range: Option<AddressRange>) -> String {
     let bytes_of = |kind: ItemKind| {
         let items = binary.items.iter().filter(|item| item.kind == kind);
-        super::total(items.map(|item| binary.bytes_in(item, range)))
+        total(items.map(|item| binary.bytes_in(item, range)))
     };
     let (code, data) = (bytes_of(ItemKind::Function), bytes_of(ItemKind::Data));
     let what = match (code > 0, data > 0) {

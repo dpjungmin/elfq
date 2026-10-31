@@ -29,7 +29,8 @@ use ratatui::widgets::TableState;
 use super::keys::Action;
 use super::session::Session;
 use crate::binary::{Item, ItemKind};
-use crate::commands::{item_in_file, text};
+use crate::commands::checks::item_in_file;
+use crate::commands::text;
 use crate::graph::Node;
 use item::Tab;
 

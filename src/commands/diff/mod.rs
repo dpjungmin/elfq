@@ -31,9 +31,10 @@ use std::thread;
 use anyhow::{Context, Result, bail};
 use object::Architecture;
 
+use super::kept::Kept;
 use super::symbol::Names;
 use super::text::architecture_name;
-use super::{Kept, Outcome, startup};
+use super::{Outcome, startup};
 use crate::STACK_SIZE;
 use crate::arch;
 use crate::binary::{Binary, FileKind, LoadedMemory, same_memory};

@@ -11,9 +11,10 @@
 
 use super::item::Tab;
 use super::printed::{Lines, Printed, note_name, table_lines};
+use crate::binary::total;
 use crate::commands::browse::session::Session;
 use crate::commands::retained::{self, SymbolInTree};
-use crate::commands::{json, overview, text, total};
+use crate::commands::{json, overview, text};
 use crate::graph::{DominatorTree, Node};
 use crate::render::{Align, Table};
 

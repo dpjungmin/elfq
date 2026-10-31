@@ -720,6 +720,13 @@ fn code_address(architecture: Architecture, address: u64) -> u64 {
     }
 }
 
+/// The sum of `sizes`, which stops at the largest `u64` rather than
+/// overflow: in a damaged file, items or inlined copies can overlap, and
+/// their sizes add up to more than a `u64` holds.
+pub fn total(sizes: impl Iterator<Item = u64>) -> u64 {
+    sizes.fold(0, u64::saturating_add)
+}
+
 /// The number in `bytes`, a pointer of up to 8 bytes.
 pub(crate) fn word(bytes: &[u8], endianness: Endianness) -> u64 {
     let mut word = [0; 8];

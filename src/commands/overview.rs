@@ -13,12 +13,16 @@ use std::path::Path;
 use anyhow::{Result, bail};
 use serde::Serialize;
 
+use super::checks::{check_has_bytes, found_functions, reference_graph};
+use super::kept::Kept;
 use super::reach::Totals;
 use super::retained_tree::RetainedTree;
 use super::symbol::Names;
-use super::{Kept, json, startup, text};
+use super::{Outcome, json, startup, text};
 use crate::arch;
-use crate::binary::{AddressRange, Binary, FileKind, ItemKind, MemoryBlock, Source, memory_blocks};
+use crate::binary::{
+    AddressRange, Binary, FileKind, ItemKind, MemoryBlock, Source, memory_blocks, total,
+};
 use crate::cli::Format;
 use crate::graph::{Graph, Node, RootKind};
 use crate::render::{Align, Table};
@@ -67,13 +71,17 @@ pub fn run(
     range: Option<AddressRange>,
     format: Format,
     out: &mut dyn Write,
-) -> Result<()> {
-    if format == Format::Json {
-        return write_json(path, binary, range, out);
+) -> Result<Outcome> {
+    match (format, range) {
+        (Format::Json, _) => write_json(path, binary, range, out)?,
+        (_, Some(range)) => write_range(path, binary, range, format, out)?,
+        (_, None) => write_text(path, binary, format, out)?,
     }
-    if let Some(range) = range {
-        return write_range(path, binary, range, format, out);
-    }
+    Ok(Outcome::Answered)
+}
+
+/// Writes the overview of the whole file as text.
+fn write_text(path: &Path, binary: &Binary, format: Format, out: &mut dyn Write) -> Result<()> {
     writeln!(out, "{}", file_text(path, binary))?;
     writeln!(out, "{}", found_text(binary))?;
     if !arch::is_supported(binary.architecture, binary.thumb) {
@@ -153,9 +161,9 @@ fn write_range(
     if binary.kind == FileKind::SharedLibrary {
         bail!("elfq can't yet tell what keeps the bytes of a range in a shared library");
     }
-    let graph = Kept::new(super::reference_graph(binary)?);
+    let graph = Kept::new(reference_graph(binary)?);
     let retained = Kept::new(RetainedTree::new(binary, &graph, Some(range)));
-    super::check_has_bytes(binary, Some(range))?;
+    check_has_bytes(binary, Some(range))?;
     writeln!(out, "{}", file_text(path, binary))?;
     writeln!(
         out,
@@ -218,7 +226,7 @@ pub(super) fn found_text(binary: &Binary) -> String {
 /// names the items that have no symbols.
 pub(super) fn found_notes(binary: &Binary) -> Vec<String> {
     let mut notes = Vec::new();
-    if !super::found_functions(binary) {
+    if !found_functions(binary) {
         notes.push(format!("{}.", text::NO_FUNCTIONS));
     }
     match text::unnamed_items(binary) {
@@ -297,7 +305,7 @@ fn write_json(
 ) -> Result<()> {
     // As the text does, refuse a range with nothing in it.
     if range.is_some() {
-        super::check_has_bytes(binary, range)?;
+        check_has_bytes(binary, range)?;
     }
     let readable = arch::is_supported(binary.architecture, binary.thumb);
     let graph = Kept::new((readable && range.is_none()).then(|| Graph::build(binary)));
@@ -335,7 +343,7 @@ fn count(binary: &Binary, kind: ItemKind, range: Option<AddressRange>) -> usize 
 
 /// The bytes of all the items, or with a range, those in it.
 fn total_bytes(binary: &Binary, range: Option<AddressRange>) -> u64 {
-    super::total(binary.items.iter().map(|item| binary.bytes_in(item, range)))
+    total(binary.items.iter().map(|item| binary.bytes_in(item, range)))
 }
 
 /// What elfq found, such as "25 functions and 31 data objects", leaving

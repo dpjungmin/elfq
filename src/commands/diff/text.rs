@@ -18,7 +18,7 @@ use super::crossings::Crossing;
 use super::pairing::{self, is_made_name, same_but_numbers};
 use super::rows::{Change, ChangeRow, MovedRow, Status};
 use super::{Answer, Build, Compared};
-use crate::binary::{FileKind, Item};
+use crate::binary::{FileKind, Item, total};
 use crate::commands::json::address;
 use crate::commands::overview::sections_text;
 use crate::commands::ranges::{self, Direction};
@@ -27,7 +27,6 @@ use crate::commands::text::{
     cannot_read_code, named, names_text, plural, range_argument, range_start, shell_quote,
     shown_count, signed, size_text,
 };
-use crate::commands::total;
 use crate::graph::Node;
 use crate::render::{Align, Table};
 

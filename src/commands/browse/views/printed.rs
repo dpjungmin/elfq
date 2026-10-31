@@ -19,7 +19,8 @@ use super::{
     link_preview, wrap,
 };
 use crate::commands::browse::{keys::Action, session::Session};
-use crate::commands::{TabAnswer, TreeAnswer, reach};
+use crate::commands::reach;
+use crate::commands::tree_answer::{TabAnswer, TreeAnswer};
 use crate::graph::Node;
 use crate::render::{Align, flat_rows};
 

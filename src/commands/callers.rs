@@ -6,9 +6,12 @@ use std::io::Write;
 use anyhow::{Result, bail};
 use serde::Serialize;
 
+use super::checks::check_code_is_readable;
+use super::kept::Kept;
 use super::ranges::{self, Direction, RangeCheck};
 use super::symbol::{self, Subject, Symbol};
-use super::{Kept, Outcome, Row, json, text};
+use super::uses::{self, Row};
+use super::{Outcome, json, text};
 use crate::binary::{AddressRange, Binary, ItemKind};
 use crate::cli::Format;
 use crate::graph::{Graph, Node, Reference, ReferenceKind};
@@ -36,7 +39,7 @@ pub fn run(
     format: Format,
     out: &mut dyn Write,
 ) -> Result<Outcome> {
-    super::check_code_is_readable(binary)?;
+    check_code_is_readable(binary)?;
     let subject = symbol::subject(binary, symbols)?;
     match subject {
         Subject::Symbol(symbol) if from.is_empty() => {
@@ -111,14 +114,14 @@ pub(super) fn callers(
         return Ok(());
     }
 
-    let callers = super::distinct_nodes(&rows);
+    let callers = uses::distinct_nodes(&rows);
     writeln!(
         out,
         "{lead_name} is used by {}:",
         text::count_text(binary, &callers)
     )?;
     writeln!(out)?;
-    super::write_uses_table(binary, rows, "CALLER", text::shown(all), out)?;
+    uses::write_uses_table(binary, rows, "CALLER", text::shown(all), out)?;
     if !notes.is_empty() {
         writeln!(out)?;
         for note in notes {
@@ -198,7 +201,7 @@ fn rows(
     references: &[&Reference],
     how: impl Fn(&Reference) -> &'static str,
 ) -> Vec<Row> {
-    let mut rows = super::rows(
+    let mut rows = uses::rows(
         references.iter().copied(),
         |reference| Node::Item(reference.from),
         how,

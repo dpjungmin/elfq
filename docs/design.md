@@ -1326,8 +1326,8 @@ in order. Its output is the first example under [Commands](#commands).
    into a `cli::Cli`: the file, `--json`, `--tree`, `--range`, and here
    `Command::Retained` with its SYMBOL.
 2. **Dispatch.** `commands::run` checks that the arguments go together
-   (`check_arguments`), before it reads the file, then loads the file,
-   prints any warnings about it, and calls `retained::run`.
+   (`arguments::check_before_loading`), before it reads the file, then
+   loads the file, prints any warnings about it, and calls `retained::run`.
 3. **Loading.** `binary::Binary::load` reads the file with the `object`
    crate: its sections, the dynamic relocations, which name the imports and
    the pointers the loader stores, and in Thumb files the vector table

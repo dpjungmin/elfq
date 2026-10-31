@@ -18,9 +18,10 @@ use anyhow::Result;
 use super::views::PageCode;
 use crate::binary::{Binary, FileKind, ItemKind, MemoryBlock, memory_blocks};
 use crate::commands::callers::{self, Answer};
+use crate::commands::checks::reference_graph;
 use crate::commands::retained_tree::RetainedTree;
 use crate::commands::symbol::Names;
-use crate::commands::{reference_graph, text};
+use crate::commands::text;
 use crate::graph::{DominatorTree, Graph, Node, ShortestPaths, VeneerTarget, Veneers};
 
 /// A loaded file, with what every page needs.

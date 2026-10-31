@@ -14,7 +14,7 @@ use serde::Serialize;
 
 use super::symbol::Names;
 use super::{json, text};
-use crate::binary::{AddressRange, Binary, ItemKind};
+use crate::binary::{AddressRange, Binary, ItemKind, total};
 use crate::cli::Format;
 use crate::graph::{DominatorTree, Graph, Node};
 use crate::render::{Align, Table, TreeRow, TreeShape};
@@ -138,14 +138,14 @@ impl<'g, 'a> RetainedTree<'g, 'a> {
     /// The bytes of the file that sizes count: all of them, or those in
     /// the range.
     pub fn bytes(&self) -> u64 {
-        super::total((0..self.binary.items.len()).map(|index| self.own(index)))
+        total((0..self.binary.items.len()).map(|index| self.own(index)))
     }
 
     /// The bytes that the items where the program starts keep, and so
     /// everything reachable: all the bytes that sizes count, but those of
     /// items that nothing reaches.
     pub fn kept(&self) -> u64 {
-        super::total(self.tree.top().iter().map(|&node| self.tree.retained(node)))
+        total(self.tree.top().iter().map(|&node| self.tree.retained(node)))
     }
 
     /// The item's own bytes that sizes count: all of them, or those in the
@@ -331,7 +331,7 @@ impl<'g, 'a> RetainedTree<'g, 'a> {
         if hidden.is_empty() {
             return None;
         }
-        let bytes = super::total(hidden.iter().map(|&index| self.retained(index)));
+        let bytes = total(hidden.iter().map(|&index| self.retained(index)));
         let items: usize = hidden.iter().map(|&index| 1 + self.kept_items(index)).sum();
         let cells = vec![bytes.to_string(), String::new()];
         Some(TreeRow::new(cells, format!("{items} more"), Vec::new()))

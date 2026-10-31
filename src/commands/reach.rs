@@ -38,11 +38,13 @@ use std::path::Path;
 use anyhow::{Result, bail};
 use serde::Serialize;
 
+use super::checks::{check_code_is_readable, readable_item};
+use super::kept::Kept;
 use super::symbol::{Names, Symbol};
-use super::{Kept, Outcome, callees, json, overview, ranges, text};
+use super::{Outcome, callees, json, overview, ranges, text};
 use crate::binary::{
     AddressRange, Binary, FileKind, ItemKind, MemoryBlock, STARTUP_ARRAYS, exception_name,
-    is_reserved, memory_blocks,
+    is_reserved, memory_blocks, total,
 };
 use crate::cli::Format;
 use crate::graph::{
@@ -186,10 +188,10 @@ pub fn run(
     format: Format,
     out: &mut dyn Write,
 ) -> Result<Outcome> {
-    super::check_code_is_readable(binary)?;
+    check_code_is_readable(binary)?;
     let names = Kept::new(Names::new(binary));
     let symbol = names.find(symbol)?;
-    let index = super::readable_item(binary, symbol.node)?;
+    let index = readable_item(binary, symbol.node)?;
     let graph = Kept::new(Graph::build(binary));
     reach(binary, &graph, &names, &symbol, index, to, all, format, out)
 }
@@ -235,7 +237,7 @@ pub fn run_starts(
     format: Format,
     out: &mut dyn Write,
 ) -> Result<Outcome> {
-    super::check_code_is_readable(binary)?;
+    check_code_is_readable(binary)?;
     let names = Kept::new(Names::new(binary));
     if !to.is_empty() || range.is_some() || format == Format::Tree {
         bail!(
@@ -406,7 +408,7 @@ impl<'n, 'a> Reach<'n, 'a> {
     /// can read (see [`readable_item`]): of a function whose end elfq
     /// doesn't know, the answer would be that it reaches nothing.
     ///
-    /// [`readable_item`]: super::readable_item
+    /// [`readable_item`]: super::checks::readable_item
     fn find(
         binary: &'a Binary,
         graph: &'n Graph,
@@ -1141,7 +1143,7 @@ impl<'n, 'a> Reach<'n, 'a> {
                     ItemKind::Function => "functions",
                     ItemKind::Data => "data objects",
                 };
-                let size = super::total(hidden.iter().map(|step| step.node.size(binary)));
+                let size = total(hidden.iter().map(|step| step.node.size(binary)));
                 (kinds, size.to_string())
             }
             Node::Import(_) => ("imports", String::new()),
@@ -1424,7 +1426,7 @@ impl<'r, 'a> Tree<'r, 'a> {
         let size = if nodes.iter().all(|node| matches!(node, Node::Import(_))) {
             String::new()
         } else {
-            super::total(nodes.iter().map(|node| node.size(binary))).to_string()
+            total(nodes.iter().map(|node| node.size(binary))).to_string()
         };
         let cells = vec![String::new(), size, String::new()];
         TreeRow::new(cells, format!("{} more", nodes.len()), Vec::new())

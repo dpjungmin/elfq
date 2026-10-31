@@ -6,9 +6,12 @@ use std::io::Write;
 use anyhow::Result;
 use serde::Serialize;
 
+use super::checks::{check_code_is_readable, readable_item};
+use super::kept::Kept;
 use super::ranges::{self, Direction, RangeCheck};
 use super::symbol::{self, Subject};
-use super::{Kept, Outcome, Row, json, text};
+use super::uses::{self, Row};
+use super::{Outcome, json, text};
 use crate::binary::{AddressRange, Binary};
 use crate::cli::Format;
 use crate::graph::{Graph, Node, Unresolved};
@@ -48,10 +51,10 @@ pub fn run(
     format: Format,
     out: &mut dyn Write,
 ) -> Result<Outcome> {
-    super::check_code_is_readable(binary)?;
+    check_code_is_readable(binary)?;
     match symbol::subject(binary, symbols)? {
         Subject::Symbol(symbol) => {
-            let index = super::readable_item(binary, symbol.node)?;
+            let index = readable_item(binary, symbol.node)?;
             let graph = Kept::new(Graph::build(binary));
             let lead_name = symbol.lead_name(binary);
             if to.is_empty() {
@@ -96,7 +99,7 @@ pub(super) fn callees(
     if format == Format::Json {
         // The JSON words some uses differently from the text ("uses" for
         // both "access" and "address taken" on data).
-        let rows = super::rows(
+        let rows = uses::rows(
             graph.references_from(index),
             |reference| reference.to,
             |reference| json::how_field(reference.kind),
@@ -119,10 +122,10 @@ pub(super) fn callees(
     }
     let answer = answer(binary, graph, index, name, all);
     if !answer.rows.is_empty() {
-        let callees = super::distinct_nodes(&answer.rows);
+        let callees = uses::distinct_nodes(&answer.rows);
         writeln!(out, "{name} uses {}:", text::count_text(binary, &callees))?;
         writeln!(out)?;
-        super::write_uses_table(binary, answer.rows, "CALLEE", text::shown(all), out)?;
+        uses::write_uses_table(binary, answer.rows, "CALLEE", text::shown(all), out)?;
         if !answer.notes.is_empty() {
             writeln!(out)?;
         }
@@ -154,7 +157,7 @@ pub(super) fn answer(
     name: &str,
     all: bool,
 ) -> Answer {
-    let rows = super::rows(
+    let rows = uses::rows(
         graph.references_from(index),
         |reference| reference.to,
         |reference| text::how_column(binary, reference.to, reference.kind),

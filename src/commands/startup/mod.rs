@@ -33,7 +33,9 @@ use std::path::Path;
 use anyhow::{Result, bail};
 use object::Architecture;
 
-use super::{Kept, Outcome, check_code_is_readable};
+use super::Outcome;
+use super::checks::check_code_is_readable;
+use super::kept::Kept;
 use crate::arch::startup::{DEPTH, End, Walk};
 use crate::binary::{Binary, ItemKind};
 use crate::cli::Format;

@@ -53,7 +53,8 @@ use ratatui::backend::Backend;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use ratatui::{DefaultTerminal, Terminal};
 
-use super::{Kept, text};
+use super::kept::Kept;
+use super::text;
 use crate::binary::Binary;
 
 /// Why the event loop stopped.

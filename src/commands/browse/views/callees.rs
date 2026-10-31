@@ -10,7 +10,8 @@
 use super::item::Tab;
 use super::printed::{Lines, Printed, PrintedRow};
 use crate::commands::browse::session::Session;
-use crate::commands::{callees, distinct_nodes, text};
+use crate::commands::uses::distinct_nodes;
+use crate::commands::{callees, text};
 use crate::graph::Node;
 use crate::render::Align;
 
@@ -59,7 +60,7 @@ mod tests {
     use super::*;
     use crate::binary::Binary;
     use crate::cli::{Cli, Command, Format};
-    use crate::commands::readable_item;
+    use crate::commands::checks::readable_item;
 
     #[test]
     fn the_callees_tab_lists_what_its_command_prints() {

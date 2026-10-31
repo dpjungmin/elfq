@@ -22,6 +22,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use anyhow::{Context, Result, anyhow, bail};
 
+use super::checks::found_functions;
 use super::text;
 use crate::binary::{
     AddressRange, Binary, ItemKind, can_be_shorter, demangle, ends_with_short_name,
@@ -463,7 +464,7 @@ impl<'a> Names<'a> {
         if self.binary.has_symbols {
             return None;
         }
-        if !super::found_functions(self.binary) {
+        if !found_functions(self.binary) {
             return Some(text::NO_FUNCTIONS.to_string());
         }
         let names = match text::unnamed_items(self.binary)? {
