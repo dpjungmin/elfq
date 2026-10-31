@@ -31,12 +31,14 @@
 mod boundary;
 mod dominators;
 mod paths;
+mod reached;
 mod roots;
 mod veneers;
 
 pub use boundary::{Boundary, Crossing, Unfollowed};
 pub use dominators::DominatorTree;
 pub use paths::ShortestPaths;
+pub use reached::Reached;
 pub use roots::{Root, RootKind, listed_in};
 pub use veneers::{VeneerTarget, Veneers};
 
@@ -185,6 +187,13 @@ impl Graph {
         Some(&self.roots[index])
     }
 
+    /// Whether `node` is a PLT's header, whose one jump goes to the dynamic
+    /// loader.
+    pub fn is_plt_header(&self, node: Node) -> bool {
+        self.root(node)
+            .is_some_and(|root| root.kind == RootKind::PltHeader)
+    }
+
     /// The calls and jumps in `item` that the graph can't follow.
     pub fn unresolved_in(&self, item: usize) -> &[Unresolved] {
         let start = self.unresolved.partition_point(|u| u.from < item);
@@ -195,7 +204,7 @@ impl Graph {
     fn add_code_references(&mut self, binary: &Binary, function: usize) {
         let item = &binary.items[function];
         let references = binary.code_references(item);
-        let reset = (binary.vector_table.as_ref()).and_then(|table| table.reset_handler());
+        let reset = binary.reset_handler();
         let startup =
             item.contains(binary.entry) || reset.is_some_and(|reset| item.contains(reset));
         let bounds = if startup {

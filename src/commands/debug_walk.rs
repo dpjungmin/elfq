@@ -197,7 +197,7 @@ pub fn run(binary: &Binary, out: &mut dyn Write) -> Result<Outcome> {
 /// the function of that name.
 fn start(binary: &Binary) -> Start {
     let table = binary.vector_table.as_ref();
-    let reset = table.and_then(|table| table.reset_handler());
+    let reset = binary.reset_handler();
     let stack_pointer = table
         .filter(|_| reset.is_some())
         .and_then(|table| binary.pointer_at(table.address));

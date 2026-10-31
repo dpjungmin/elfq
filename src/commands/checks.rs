@@ -7,7 +7,7 @@ use anyhow::{Result, bail};
 
 use super::text;
 use crate::arch;
-use crate::binary::{AddressRange, Binary, Item, ItemKind, Source, memory_blocks, total};
+use crate::binary::{AddressRange, Binary, Item, Source, memory_blocks, total};
 use crate::graph::{Graph, Node};
 
 /// Builds the reference graph, or explains why elfq can't yet.
@@ -41,7 +41,7 @@ pub(super) fn item_in_file(binary: &Binary, node: Node) -> Result<usize> {
 pub(super) fn readable_item(binary: &Binary, node: Node) -> Result<usize> {
     let index = item_in_file(binary, node)?;
     let item = &binary.items[index];
-    if item.kind == ItemKind::Function && item.size == 0 {
+    if item.end_unknown() {
         bail!(
             "elfq doesn't know where {} ends, so it can't read its code",
             item.name
@@ -85,8 +85,7 @@ pub(super) fn check_has_bytes(binary: &Binary, range: Option<AddressRange>) -> R
 pub(super) fn empty_place(binary: &Binary, range: Option<AddressRange>) -> Result<String> {
     let place = match range {
         Some(range)
-            if text::sections_in(binary, range).is_empty()
-                && text::load_images_in(binary, range).is_empty() =>
+            if binary.sections_in(range).is_empty() && binary.load_images_in(range).is_empty() =>
         {
             let range = text::range_argument(range);
             match &memory_blocks(&binary.sections)[..] {

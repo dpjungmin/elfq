@@ -20,12 +20,11 @@ use super::rows::{Change, ChangeRow, MovedRow, Status};
 use super::{Answer, Build, Compared};
 use crate::binary::{FileKind, Item, total};
 use crate::commands::json::address;
-use crate::commands::overview::sections_text;
 use crate::commands::ranges::{self, Direction};
 use crate::commands::symbol::Names;
 use crate::commands::text::{
-    cannot_read_code, named, names_text, plural, range_argument, range_start, shell_quote,
-    shown_count, signed, size_text,
+    self as house, cannot_read_code, named, names_text, plural, range_argument, range_start,
+    sections_text, shell_quote, shown_count, signed, size_text,
 };
 use crate::graph::Node;
 use crate::render::{Align, Table};
@@ -125,22 +124,14 @@ pub(super) fn write(answer: &Answer, all: bool, out: &mut dyn Write) -> Result<(
 /// The Try list: `why` with `query`, and `startup` when a change may
 /// change what the new build's startup code must do.
 fn write_try(answer: &Answer, query: Option<String>, out: &mut dyn Write) -> Result<()> {
-    let new_path = shell_quote(&answer.new_path.display().to_string());
-    let lines: Vec<String> = [
+    let commands: Vec<String> = [
         query.map(|query| format!("why {query}")),
         answer.try_startup.then(|| "startup".to_string()),
     ]
     .into_iter()
     .flatten()
     .collect();
-    if !lines.is_empty() {
-        writeln!(out)?;
-        writeln!(out, "Try:")?;
-        for line in lines {
-            writeln!(out, "  elfq {new_path} {line}")?;
-        }
-    }
-    Ok(())
+    house::write_try(answer.new_path, &commands, out)
 }
 
 /// The calls between blocks that are new or gone, as `callees BLOCK` lists

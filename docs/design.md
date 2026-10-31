@@ -1302,7 +1302,7 @@ that do this.
    so the answer is always the same. `reach` searches from SYMBOL the same
    way, for the shortest chain to every item. Without SYMBOL, it only adds
    up the bytes that each start reaches, in one search from each, with no
-   chains (`reach::Totals`), which the overview also uses to pick the
+   chains (`graph::Reached`), which the overview also uses to pick the
    handler that reaches the most code.
    `callers` and `callees` read edges. `callers` counts a call to the stub
    for one of the file's own functions, such as `log_msg@plt` in a shared

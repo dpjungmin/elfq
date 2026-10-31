@@ -14,7 +14,7 @@ use super::uses::{self, Row};
 use super::{Outcome, json, text};
 use crate::binary::{AddressRange, Binary};
 use crate::cli::Format;
-use crate::graph::{Graph, Node, Unresolved};
+use crate::graph::{Graph, Node};
 
 #[derive(Serialize)]
 struct Callees<'a> {
@@ -166,87 +166,7 @@ pub(super) fn answer(
     let notes = if rows.is_empty() && unresolved.is_empty() {
         vec![format!("{name} doesn't call or use anything.")]
     } else {
-        unresolved_lines(name, unresolved, !rows.is_empty(), all)
+        text::unresolved_lines(name, unresolved, !rows.is_empty(), all)
     };
     Answer { rows, notes }
-}
-
-/// Sentences about the calls and jumps in `name` that elfq can't follow,
-/// with the first few sites, or with `all`, every one. `listed` is whether
-/// the table above lists what it does call or use.
-pub(super) fn unresolved_lines(
-    name: &str,
-    unresolved: &[Unresolved],
-    listed: bool,
-    all: bool,
-) -> Vec<String> {
-    let mut lines = Vec::new();
-    // Through a pointer, so that only the running program knows where
-    // they go, or to an address the code names but no item holds.
-    for (known_target, end) in [
-        (false, "which elfq can't follow"),
-        (true, "to code outside any function"),
-    ] {
-        let these: Vec<&Unresolved> = unresolved
-            .iter()
-            .filter(|u| u.target.is_some() == known_target)
-            .collect();
-        if these.is_empty() {
-            continue;
-        }
-        let what = text::calls_and_jumps(these.iter().copied());
-        let through = match (known_target, these.len()) {
-            (true, _) => "",
-            (false, 1) => " through a pointer",
-            (false, _) => " through pointers",
-        };
-        let sites: Vec<u64> = these.iter().map(|u| u.site).collect();
-        let start = if listed || !lines.is_empty() {
-            "Also".to_string()
-        } else {
-            format!("{name} makes")
-        };
-        lines.push(format!(
-            "{start} {what}{through}, at {}, {end}.",
-            text::addresses_text(&sites, all)
-        ));
-    }
-    lines
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn unresolved(site: u64, is_call: bool, target: Option<u64>) -> Unresolved {
-        Unresolved {
-            from: 0,
-            site,
-            is_call,
-            target,
-        }
-    }
-
-    #[test]
-    fn what_elfq_cant_follow_is_said_in_one_line_each() {
-        let calls = [
-            unresolved(0x10, true, None),
-            unresolved(0x20, false, Some(0x9000)),
-        ];
-        assert_eq!(
-            unresolved_lines("f", &calls, false, false),
-            [
-                "f makes 1 call through a pointer, at 0x10, which elfq can't follow.",
-                "Also 1 jump, at 0x20, to code outside any function.",
-            ]
-        );
-        let jumps = [
-            unresolved(0x10, false, Some(0x9000)),
-            unresolved(0x18, false, Some(0x9100)),
-        ];
-        assert_eq!(
-            unresolved_lines("f", &jumps, true, false),
-            ["Also 2 jumps, at 0x10 and 0x18, to code outside any function."]
-        );
-    }
 }

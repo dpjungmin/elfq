@@ -27,7 +27,7 @@
 //! Without SYMBOL, `elfq FILE reach` lists where the program starts, and
 //! the bytes of code and data that each start reaches in each block, as
 //! `reach START` counts them. Those come from one search from each start
-//! that only adds up bytes (see [`Totals`]), since a large program has many
+//! that only adds up bytes (see [`Reached`]), since a large program has many
 //! starts, and the tree of each would take a while.
 
 use std::cmp::Reverse;
@@ -41,14 +41,14 @@ use serde::Serialize;
 use super::checks::{check_code_is_readable, readable_item};
 use super::kept::Kept;
 use super::symbol::{Names, Symbol};
-use super::{Outcome, callees, json, overview, ranges, text};
+use super::{Outcome, json, ranges, text};
 use crate::binary::{
-    AddressRange, Binary, FileKind, ItemKind, MemoryBlock, STARTUP_ARRAYS, exception_name,
-    is_reserved, memory_blocks, total,
+    AddressRange, Binary, CodeAndData, FileKind, ItemKind, MemoryBlock, STARTUP_ARRAYS,
+    exception_name, is_reserved, memory_blocks, total,
 };
 use crate::cli::Format;
 use crate::graph::{
-    Boundary, Graph, Node, Reference, ReferenceKind, RootKind, ShortestPaths, Unfollowed,
+    Boundary, Graph, Node, Reached, Reference, ReferenceKind, RootKind, ShortestPaths, Unfollowed,
     Unresolved, VeneerTarget, Veneers, listed_in,
 };
 use crate::render::{Align, Table, TreeRow, TreeShape};
@@ -240,10 +240,7 @@ pub fn run_starts(
     check_code_is_readable(binary)?;
     let names = Kept::new(Names::new(binary));
     if !to.is_empty() || range.is_some() || format == Format::Tree {
-        bail!(
-            "{}",
-            needs_symbol(path, binary, &names, to, range, all, format)
-        );
+        bail!("{}", needs_symbol(path, &names, to, range, all, format));
     }
     let graph = Kept::new(Graph::build(binary));
     let starts = starts(binary, &graph, &names);
@@ -256,11 +253,10 @@ pub fn run_starts(
 
 /// The error for `--to`, `--range` or `--tree` without SYMBOL, with a
 /// command to type instead that answers: about the function that the
-/// overview starts from (see [`overview::starting_point`]), such as `main`,
+/// overview starts from (see [`Names::starting_point`]), such as `main`,
 /// and with the other options given.
 fn needs_symbol(
     path: &Path,
-    binary: &Binary,
     names: &Names,
     to: &[AddressRange],
     range: Option<AddressRange>,
@@ -274,7 +270,7 @@ fn needs_symbol(
     } else {
         "reach --tree needs a SYMBOL"
     };
-    let Some(start) = overview::starting_point(binary, names) else {
+    let Some(start) = names.starting_point() else {
         return refused.to_string();
     };
     let file = text::shell_quote(&path.display().to_string());
@@ -512,10 +508,10 @@ impl<'n, 'a> Reach<'n, 'a> {
                 continue;
             };
             let item = &binary.items[index];
-            if item.kind == ItemKind::Function && item.size == 0 {
+            if item.end_unknown() {
                 unreadable.push(index);
             }
-            if is_plt_header(graph, step.node) {
+            if graph.is_plt_header(step.node) {
                 continue;
             }
             for &jump in graph.unresolved_in(index) {
@@ -523,7 +519,7 @@ impl<'n, 'a> Reach<'n, 'a> {
                 unfollowed.push(through_veneer(&paths, &veneers, jump));
             }
         }
-        let plt_header = is_plt_header(graph, start);
+        let plt_header = graph.is_plt_header(start);
         if !to.is_empty() {
             let through_pointer = !Boundary::new(binary, graph, to)
                 .callable_through_pointer()
@@ -582,24 +578,19 @@ impl<'n, 'a> Reach<'n, 'a> {
     }
 
     /// The bytes of code and of data that the steps in `steps` take.
-    fn bytes<'s>(&self, steps: impl Iterator<Item = &'s Step>) -> (u64, u64) {
-        let (mut code, mut data) = (0, 0);
+    fn bytes<'s>(&self, steps: impl Iterator<Item = &'s Step>) -> CodeAndData {
+        let mut bytes = CodeAndData::default();
         for step in steps {
             if let Node::Item(index) = step.node {
-                let item = &self.binary.items[index];
-                let bytes = match item.kind {
-                    ItemKind::Function => &mut code,
-                    ItemKind::Data => &mut data,
-                };
-                *bytes = u64::saturating_add(*bytes, item.size);
+                bytes.add(&self.binary.items[index]);
             }
         }
-        (code, data)
+        bytes
     }
 
     /// The bytes of code and of data that `steps` take in each block, and
     /// the sections that hold them, in address order.
-    fn blocks_reached(&self, steps: &[&Step]) -> Vec<(u64, u64, Vec<&'a str>)> {
+    fn blocks_reached(&self, steps: &[&Step]) -> Vec<(CodeAndData, Vec<&'a str>)> {
         (0..self.blocks.len())
             .map(|block| {
                 let steps: Vec<&Step> = steps
@@ -607,7 +598,7 @@ impl<'n, 'a> Reach<'n, 'a> {
                     .copied()
                     .filter(|step| step.block == Some(block))
                     .collect();
-                let (code, data) = self.bytes(steps.iter().copied());
+                let bytes = self.bytes(steps.iter().copied());
                 let mut sections: Vec<usize> = steps
                     .iter()
                     .filter_map(|step| match step.node {
@@ -617,7 +608,7 @@ impl<'n, 'a> Reach<'n, 'a> {
                     .collect();
                 sections.sort_by_key(|&section| (self.binary.sections[section].address, section));
                 sections.dedup();
-                (code, data, json::section_names(self.binary, &sections))
+                (bytes, json::section_names(self.binary, &sections))
             })
             .collect()
     }
@@ -626,15 +617,15 @@ impl<'n, 'a> Reach<'n, 'a> {
         let binary = self.binary;
         let item = |node: Node| json::Item::new(binary, node);
         let counted = self.counted();
-        let (code_bytes, data_bytes) = self.bytes(counted.iter().copied());
+        let bytes = self.bytes(counted.iter().copied());
         let blocks = self
             .blocks
             .iter()
             .zip(self.blocks_reached(&counted))
-            .map(|(block, (code_bytes, data_bytes, sections))| BlockJson {
+            .map(|(block, (bytes, sections))| BlockJson {
                 range: json::Range::new(block.range),
-                code_bytes,
-                data_bytes,
+                code_bytes: bytes.code,
+                data_bytes: bytes.data,
                 sections,
             })
             .collect();
@@ -667,8 +658,8 @@ impl<'n, 'a> Reach<'n, 'a> {
         let answer = ReachJson {
             symbol: json::Symbol::new(binary, Node::Item(self.index)),
             to: ranges::json_other(&self.to),
-            code_bytes,
-            data_bytes,
+            code_bytes: bytes.code,
+            data_bytes: bytes.data,
             blocks,
             items,
             unresolved: self
@@ -784,8 +775,7 @@ impl<'n, 'a> Reach<'n, 'a> {
             .filter(|node| matches!(node, Node::Item(_)))
             .collect();
         let imports = reached.len() - items.len();
-        let (code, data) = self.bytes(self.steps.iter());
-        let bytes = text::code_and_data(code, data);
+        let bytes = text::code_and_data(self.bytes(self.steps.iter()));
         let mut lead = match &items[..] {
             [] => format!("{name} takes {bytes}"),
             [Node::Item(index)] => format!(
@@ -857,8 +847,7 @@ impl<'n, 'a> Reach<'n, 'a> {
             .filter(|step| step.parent.is_some())
             .map(|step| step.node)
             .collect();
-        let (code, data) = self.bytes(counted.iter().copied());
-        let bytes = text::code_and_data(code, data);
+        let bytes = text::code_and_data(self.bytes(counted.iter().copied()));
         let ranges = ranges::ranges_text(binary, &self.to, self.all);
         // Counted as the rows show them: a tree has the veneers that the
         // other rows step over.
@@ -1021,11 +1010,11 @@ impl<'n, 'a> Reach<'n, 'a> {
             ("SECTIONS", Align::Left),
         ]);
         let steps: Vec<&Step> = self.steps.iter().collect();
-        for (block, (code, data, sections)) in self.blocks.iter().zip(self.blocks_reached(&steps)) {
+        for (block, (bytes, sections)) in self.blocks.iter().zip(self.blocks_reached(&steps)) {
             table.row(vec![
                 text::range_argument(block.range),
-                code.to_string(),
-                data.to_string(),
+                bytes.code.to_string(),
+                bytes.data.to_string(),
                 sections.join(" "),
             ]);
         }
@@ -1559,7 +1548,8 @@ pub(super) struct Start {
     /// The entries of the vector table that list it, in the table's order,
     /// counting the stack pointer's as 0.
     pub exceptions: Vec<u64>,
-    pub totals: Totals,
+    /// What it reaches, added up.
+    pub reached: Reached,
 }
 
 /// A row of the table of starts.
@@ -1581,7 +1571,7 @@ enum StartRow {
 /// `reach START` counts it.
 pub(super) fn starts<'a>(binary: &'a Binary, graph: &Graph, names: &Names) -> Starts<'a> {
     let blocks = memory_blocks(&binary.sections);
-    let is_start = |index| overview::is_own_function(binary, index);
+    let is_start = |index: usize| binary.items[index].is_own_function();
     let table = binary.vector_table.as_ref();
     let exceptions = |index: usize| -> Vec<u64> {
         let address = binary.items[index].address;
@@ -1597,7 +1587,7 @@ pub(super) fn starts<'a>(binary: &'a Binary, graph: &Graph, names: &Names) -> St
         let item = &binary.items[index];
         if is_start(index) {
             roots.push((index, root.kind));
-        } else if item.kind == ItemKind::Function && item.size == 0 {
+        } else if item.end_unknown() {
             unreadable.push(index);
         }
         if let RootKind::ListedIn(array) = root.kind
@@ -1650,7 +1640,7 @@ pub(super) fn starts<'a>(binary: &'a Binary, graph: &Graph, names: &Names) -> St
             index,
             root,
             exceptions: exceptions(index),
-            totals: Totals::find(binary, graph, index, &blocks),
+            reached: Reached::find(binary, graph, index, &blocks),
         })
         .collect();
     Starts {
@@ -1706,16 +1696,16 @@ impl Starts<'_> {
                         continue;
                     }
                 };
-                let totals = &start.totals;
+                let reached = &start.reached;
                 let mut cells: Vec<String> = if several {
-                    let bytes = |&(code, data): &(u64, u64)| u64::saturating_add(code, data);
-                    totals
-                        .blocks
-                        .iter()
-                        .map(|block| bytes(block).to_string())
+                    (reached.blocks.iter())
+                        .map(|block| block.total().to_string())
                         .collect()
                 } else {
-                    vec![totals.code.to_string(), totals.data.to_string()]
+                    vec![
+                        reached.bytes.code.to_string(),
+                        reached.bytes.data.to_string(),
+                    ]
                 };
                 cells.push(start.why(binary));
                 let mut row = AnswerRow::new(
@@ -1723,7 +1713,7 @@ impl Starts<'_> {
                     binary.items[start.index].name.clone(),
                     Some(Node::Item(start.index)),
                 );
-                if !totals.complete() {
+                if !reached.complete() {
                     row.rest = " (may reach more)".to_string();
                 }
                 answer.rows.push(row);
@@ -1735,15 +1725,15 @@ impl Starts<'_> {
         }
 
         // The marks in the table, of the starts that it shows.
-        let shown: Vec<&Totals> = rows
+        let shown: Vec<&Reached> = rows
             .iter()
             .filter_map(|row| match *row {
-                StartRow::Start(start) => Some(&self.starts[start].totals),
+                StartRow::Start(start) => Some(&self.starts[start].reached),
                 StartRow::More(..) => None,
             })
             .collect();
-        let unfollowed = shown.iter().any(|totals| totals.unfollowed);
-        let unreadable = shown.iter().any(|totals| totals.unreadable);
+        let unfollowed = shown.iter().any(|reached| reached.unfollowed);
+        let unreadable = shown.iter().any(|reached| reached.unreadable);
         let marked = match (unfollowed, unreadable) {
             (true, false) => Some("calls or jumps that elfq can't follow"),
             (false, true) => Some("code that elfq can't read"),
@@ -1781,7 +1771,7 @@ impl Starts<'_> {
             .filter(|&start| is_other(&self.starts[start]))
             .collect();
         let room = text::shown(all).saturating_sub(self.starts.len() - others.len());
-        others.sort_by_key(|&start| Reverse(self.starts[start].totals.bytes()));
+        others.sort_by_key(|&start| Reverse(self.starts[start].reached.bytes.total()));
         let left_out: HashSet<usize> = others[text::shown_count(others.len(), room)..]
             .iter()
             .copied()
@@ -1848,19 +1838,19 @@ impl Starts<'_> {
                     item: item(start.index),
                     root: start.root.map(|kind| json::root_field(binary, kind)),
                     exceptions: start.exception_names(binary),
-                    code_bytes: start.totals.code,
-                    data_bytes: start.totals.data,
+                    code_bytes: start.reached.bytes.code,
+                    data_bytes: start.reached.bytes.data,
                     blocks: self
                         .blocks
                         .iter()
-                        .zip(&start.totals.blocks)
-                        .map(|(block, &(code_bytes, data_bytes))| BlockBytesJson {
+                        .zip(&start.reached.blocks)
+                        .map(|(block, bytes)| BlockBytesJson {
                             range: json::Range::new(block.range),
-                            code_bytes,
-                            data_bytes,
+                            code_bytes: bytes.code,
+                            data_bytes: bytes.data,
                         })
                         .collect(),
-                    complete: start.totals.complete(),
+                    complete: start.reached.complete(),
                 })
                 .collect(),
             unreadable: self.unreadable.iter().map(|&index| item(index)).collect(),
@@ -1906,105 +1896,6 @@ impl Start {
             _ => names,
         }
     }
-}
-
-/// What an item reaches, added up as `reach SYMBOL` counts it, but found
-/// without the tree: one search through the graph that only adds up bytes,
-/// which is quick enough to make for every start of a large program.
-pub(super) struct Totals {
-    /// The bytes of the functions, and of the data objects, among the item
-    /// and what it reaches.
-    pub code: u64,
-    pub data: u64,
-    /// The same, in each of the blocks of memory that [`Totals::find`] was
-    /// given.
-    pub blocks: Vec<(u64, u64)>,
-    /// How many items other than itself it reaches.
-    pub reached: usize,
-    /// Whether the item or what it reaches has a call or jump that elfq
-    /// can't follow, but for the jump in a PLT's header to the dynamic
-    /// loader.
-    pub unfollowed: bool,
-    /// Whether it is, or reaches, a function whose end elfq doesn't know,
-    /// so that it can't read its code.
-    pub unreadable: bool,
-}
-
-impl Totals {
-    /// Adds up what the item at `index` reaches in `graph`, the file's
-    /// reference graph, in all and in each of `blocks`.
-    pub(super) fn find(
-        binary: &Binary,
-        graph: &Graph,
-        index: usize,
-        blocks: &[MemoryBlock],
-    ) -> Totals {
-        let mut totals = Totals {
-            code: 0,
-            data: 0,
-            blocks: vec![(0, 0); blocks.len()],
-            reached: 0,
-            unfollowed: false,
-            unreadable: false,
-        };
-        let mut seen = vec![false; binary.items.len()];
-        seen[index] = true;
-        let mut next = vec![index];
-        while let Some(index) = next.pop() {
-            let item = &binary.items[index];
-            let (code, data) = match item.kind {
-                ItemKind::Function => (item.size, 0),
-                ItemKind::Data => (0, item.size),
-            };
-            totals.code = u64::saturating_add(totals.code, code);
-            totals.data = u64::saturating_add(totals.data, data);
-            if let Some(block) = blocks
-                .iter()
-                .position(|block| block.range.contains(item.address))
-            {
-                let (block_code, block_data) = &mut totals.blocks[block];
-                *block_code = u64::saturating_add(*block_code, code);
-                *block_data = u64::saturating_add(*block_data, data);
-            }
-            if item.kind == ItemKind::Function && item.size == 0 {
-                totals.unreadable = true;
-            }
-            if !graph.unresolved_in(index).is_empty() && !is_plt_header(graph, Node::Item(index)) {
-                totals.unfollowed = true;
-            }
-            // Imports use nothing in the file, and take no bytes in it.
-            for reference in graph.references_from(index) {
-                if let Node::Item(to) = reference.to
-                    && !seen[to]
-                {
-                    seen[to] = true;
-                    totals.reached += 1;
-                    next.push(to);
-                }
-            }
-        }
-        totals
-    }
-
-    /// Whether elfq can follow every call and jump in the item and what it
-    /// reaches, and knows where each function among them ends, as
-    /// `complete` in `reach SYMBOL --json` says.
-    pub(super) fn complete(&self) -> bool {
-        !self.unfollowed && !self.unreadable
-    }
-
-    /// The bytes of code and data together.
-    fn bytes(&self) -> u64 {
-        u64::saturating_add(self.code, self.data)
-    }
-}
-
-/// Whether `node` is a PLT's header, whose one jump goes to the dynamic
-/// loader.
-fn is_plt_header(graph: &Graph, node: Node) -> bool {
-    graph
-        .root(node)
-        .is_some_and(|root| root.kind == RootKind::PltHeader)
 }
 
 /// How the text lists the use that reaches `node`, from `via`: as the call
@@ -2108,13 +1999,14 @@ fn nothing_reached_lines(
         None => vec![format!("{name} doesn't call or use anything.")],
     };
     let listed = self_use.is_some();
-    lines.extend(callees::unresolved_lines(name, unresolved, listed, all));
+    lines.extend(text::unresolved_lines(name, unresolved, listed, all));
     lines
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::binary::CodeAndData;
     use crate::graph::Root;
 
     #[test]
@@ -2184,11 +2076,10 @@ mod tests {
             index: index(binary, name),
             root,
             exceptions: Vec::new(),
-            totals: Totals {
-                code,
-                data: 0,
-                blocks: vec![(code, 0)],
-                reached: 1,
+            reached: Reached {
+                bytes: CodeAndData { code, data: 0 },
+                blocks: vec![CodeAndData { code, data: 0 }],
+                count: 1,
                 unfollowed,
                 unreadable,
             },
@@ -2318,7 +2209,7 @@ _init and _fini are starts too, but elfq doesn't know where they end, so it can'
             .rows(false)
             .iter()
             .map(|row| match *row {
-                StartRow::Start(start) => starts.starts[start].totals.code.to_string(),
+                StartRow::Start(start) => starts.starts[start].reached.bytes.code.to_string(),
                 StartRow::More(kind, count) => format!("{count} more {kind:?}"),
             })
             .collect();

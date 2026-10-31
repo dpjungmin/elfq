@@ -39,7 +39,7 @@ impl Reset {
         let table = binary.vector_table.as_ref();
         let stack_pointer =
             table.and_then(|table| binary.pointer_at(table.address).map(|word| word as u32));
-        let reset = table.and_then(|table| table.reset_handler());
+        let reset = binary.reset_handler();
         if let Some(reset) = reset
             && in_function(reset)
         {

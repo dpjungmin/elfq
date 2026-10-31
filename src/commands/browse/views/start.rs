@@ -110,7 +110,7 @@ mod tests {
         // As if the unwinder started each of the file's own functions.
         for index in 0..binary.items.len() {
             let node = Node::Item(index);
-            if overview::is_own_function(&binary, index) && session.graph.root(node).is_none() {
+            if binary.items[index].is_own_function() && session.graph.root(node).is_none() {
                 let kind = RootKind::Personality;
                 session.graph.roots.push(Root { node, kind });
             }

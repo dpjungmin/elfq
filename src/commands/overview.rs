@@ -15,16 +15,13 @@ use serde::Serialize;
 
 use super::checks::{check_has_bytes, found_functions, reference_graph};
 use super::kept::Kept;
-use super::reach::Totals;
 use super::retained_tree::RetainedTree;
 use super::symbol::Names;
 use super::{Outcome, json, startup, text};
 use crate::arch;
-use crate::binary::{
-    AddressRange, Binary, FileKind, ItemKind, MemoryBlock, Source, memory_blocks, total,
-};
+use crate::binary::{AddressRange, Binary, FileKind, ItemKind, MemoryBlock, memory_blocks, total};
 use crate::cli::Format;
-use crate::graph::{Graph, Node, RootKind};
+use crate::graph::{Graph, Node, Reached, RootKind};
 use crate::render::{Align, Table};
 
 /// How many of the largest items the overview's table shows. It is made as
@@ -108,13 +105,15 @@ fn write_text(path: &Path, binary: &Binary, format: Format, out: &mut dyn Write)
         let names = Kept::new(Names::new(binary));
         let examples: Vec<String> = [
             most_used(binary, &graph).map(|item| about(&names, "callers", item)),
-            starting_point(binary, &names).map(|item| about(&names, "callees", item)),
+            names
+                .starting_point()
+                .map(|item| about(&names, "callees", item)),
             inlined(binary),
         ]
         .into_iter()
         .flatten()
         .collect();
-        return write_try(path, &examples, out);
+        return text::write_try(path, &examples, out);
     }
     let retained = Kept::new(RetainedTree::new(binary, &graph, None));
     let names = retained.names();
@@ -137,7 +136,9 @@ fn write_text(path: &Path, binary: &Binary, format: Format, out: &mut dyn Write)
                 startup::reads(path, binary).then(|| "startup".to_string()),
                 (kept > 0).then(|| "top".to_string()),
                 (kept > 0).then(|| "top --tree".to_string()),
-                starting_point(binary, names).map(|item| about(names, "retained", item)),
+                names
+                    .starting_point()
+                    .map(|item| about(names, "retained", item)),
                 handler.map(|item| about(names, "reach", item)),
                 largest_kept(&retained).map(|item| about(names, "why", item)),
                 inlined(binary),
@@ -146,7 +147,7 @@ fn write_text(path: &Path, binary: &Binary, format: Format, out: &mut dyn Write)
             .flatten(),
         )
         .collect();
-    write_try(path, &examples, out)
+    text::write_try(path, &examples, out)
 }
 
 /// The overview of one range of memory: what elfq found in it, and which
@@ -184,7 +185,7 @@ fn write_range(
     .into_iter()
     .flatten()
     .collect();
-    write_try(path, &examples, out)
+    text::write_try(path, &examples, out)
 }
 
 /// What the file is, such as "app.elf: x86-64 executable, stripped".
@@ -271,30 +272,13 @@ pub(super) fn memory_table(binary: &Binary, blocks: &[MemoryBlock]) -> Option<Ta
         table.row(vec![
             text::range_argument(block.range),
             (block.range.end - block.range.start).to_string(),
-            sections_text(
+            text::sections_text(
                 &json::section_names(binary, &block.sections),
                 &json::section_names(binary, &block.load_images),
             ),
         ]);
     }
     Some(table)
-}
-
-/// The sections in a block, then the sections whose load images are in
-/// it, such as ".isr_vector .text .rodata, load image of .data".
-pub(super) fn sections_text(sections: &[&str], load_images: &[&str]) -> String {
-    let mut text = sections.join(" ");
-    if !load_images.is_empty() {
-        if !text.is_empty() {
-            text += ", ";
-        }
-        text += match load_images.len() {
-            1 => "load image of ",
-            _ => "load images of ",
-        };
-        text += &load_images.join(" ");
-    }
-    text
 }
 
 fn write_json(
@@ -370,20 +354,6 @@ fn indirect_calls(graph: &Graph) -> usize {
         .count()
 }
 
-/// Writes the commands to try next, each given without `elfq FILE`.
-fn write_try(path: &Path, commands: &[String], out: &mut dyn Write) -> Result<()> {
-    if commands.is_empty() {
-        return Ok(());
-    }
-    let file = text::shell_quote(&path.display().to_string());
-    writeln!(out)?;
-    writeln!(out, "Try:")?;
-    for command in commands {
-        writeln!(out, "  elfq {file} {command}")?;
-    }
-    Ok(())
-}
-
 /// `command` asked about `item`, by the shortest name that finds it.
 fn about(names: &Names, command: &str, item: usize) -> String {
     let symbol = names.query_for(Node::Item(item));
@@ -419,14 +389,14 @@ fn handler_reaching_most_code(binary: &Binary, graph: &Graph) -> Option<usize> {
         .iter()
         .filter(|root| root.kind == RootKind::Handler)
         .filter_map(|root| match root.node {
-            Node::Item(index) if is_own_function(binary, index) => Some(index),
+            Node::Item(index) if binary.items[index].is_own_function() => Some(index),
             _ => None,
         })
         .filter(|&index| table.runs_in_normal_operation(binary.items[index].address))
         .filter_map(|handler| {
             // Only the code counts here, not where it is.
-            let totals = Totals::find(binary, graph, handler, &[]);
-            (totals.reached > 0).then_some((totals.code, handler))
+            let reached = Reached::find(binary, graph, handler, &[]);
+            (reached.count > 0).then_some((reached.bytes.code, handler))
         })
         .max_by_key(|&(code, handler)| (code, std::cmp::Reverse(handler)))
         .map(|(_, handler)| handler)
@@ -445,7 +415,7 @@ fn most_used(binary: &Binary, graph: &Graph) -> Option<usize> {
             Node::Item(to) => Some((*stubs.get(&to).unwrap_or(&to), reference.from)),
             Node::Import(_) => None,
         })
-        .filter(|&(to, _)| is_own_function(binary, to))
+        .filter(|&(to, _)| binary.items[to].is_own_function())
         .collect();
     callers.sort_unstable();
     callers.dedup();
@@ -456,52 +426,4 @@ fn most_used(binary: &Binary, graph: &Graph) -> Option<usize> {
         }
     }
     best.map(|(index, _)| index)
-}
-
-/// `main` if there is one, or else the function where the program starts,
-/// the vector table's reset handler or the entry point, since every reader
-/// knows where those fit; otherwise the largest function.
-pub(super) fn starting_point(binary: &Binary, names: &Names) -> Option<usize> {
-    // `main` as SYMBOL would find it, so also `app::main` in Rust.
-    let main = match names.nodes("main") {
-        [Node::Item(index)] => Some(*index),
-        _ => None,
-    };
-    let reset = (binary.vector_table.as_ref())
-        .and_then(|table| table.reset_handler())
-        .and_then(|address| binary.item_at(address));
-    let entry = binary.item_at(binary.entry);
-    let largest = (0..binary.items.len())
-        .filter(|&index| is_own_function(binary, index))
-        .max_by_key(|&index| binary.items[index].size);
-    [main, reset, entry]
-        .into_iter()
-        .flatten()
-        .find(|&index| is_own_function(binary, index))
-        .or(largest)
-}
-
-/// A function whose code is in this file and readable: not a PLT stub,
-/// whose code is a library's, nor a function of unknown size.
-pub(super) fn is_own_function(binary: &Binary, index: usize) -> bool {
-    let item = &binary.items[index];
-    item.kind == ItemKind::Function && item.source != Source::Plt && item.size > 0
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_memory_row_names_its_sections_then_its_load_images() {
-        assert_eq!(sections_text(&[".text", ".rodata"], &[]), ".text .rodata");
-        assert_eq!(
-            sections_text(&[".text"], &[".data"]),
-            ".text, load image of .data"
-        );
-        assert_eq!(
-            sections_text(&[], &[".itcm", ".data"]),
-            "load images of .itcm .data"
-        );
-    }
 }

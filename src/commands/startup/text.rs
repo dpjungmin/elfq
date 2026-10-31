@@ -10,7 +10,7 @@ use super::start::MainFrom;
 use super::steps::{Does, Memory, Step, Way};
 use super::{Answer, Firmware};
 use crate::arch::startup::{End, Event, Through};
-use crate::commands::text::{names_text, plural, shell_quote};
+use crate::commands::text::{self as house, names_text, plural, shell_quote};
 use crate::render::{Align, Table};
 
 /// How many rows the table of steps shows without `--all`: the house cap,
@@ -61,15 +61,7 @@ pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
             writeln!(out, "{}", note.text)?;
         }
     }
-    let tries = try_lines(answer);
-    if !tries.is_empty() {
-        writeln!(out)?;
-        writeln!(out, "Try:")?;
-        for line in tries {
-            writeln!(out, "  {line}")?;
-        }
-    }
-    Ok(())
+    house::write_try(answer.path, &try_commands(answer), out)
 }
 
 /// The first line: how many problems, or what startup does when there are
@@ -492,10 +484,9 @@ pub(super) fn register_name(register: u16) -> String {
 }
 
 /// `reach --to` for code that runs before its copy inside a call, to show
-/// how the call gets there.
-fn try_lines(answer: &Answer) -> Vec<String> {
+/// how the call gets there, each given without `elfq FILE`.
+fn try_commands(answer: &Answer) -> Vec<String> {
     let mut lines = Vec::new();
-    let file = shell_quote(&answer.path.display().to_string());
     for p in &answer.judged.problems {
         // Code that runs inside a call, but not the reset handler's own.
         let (Kind::RunsBeforeCopy, Some(&first)) = (p.kind, p.steps.first()) else {
@@ -516,7 +507,7 @@ fn try_lines(answer: &Answer) -> Vec<String> {
             continue;
         }
         let line = format!(
-            "elfq {file} reach {} --to {:#x}+{}",
+            "reach {} --to {:#x}+{}",
             shell_quote(&answer.firmware.name(function)),
             section.address,
             section.size
