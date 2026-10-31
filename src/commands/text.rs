@@ -84,14 +84,14 @@ pub(super) fn count_text(binary: &Binary, nodes: &[Node]) -> String {
     }
 }
 
-/// How many of the largest items the tables of `top`, `retained` and
-/// `inlined`, and those of `callers SYMBOL` and `callees SYMBOL`, show. A
-/// row such as "6 more, kept by main" sums up the rest, and an item that
-/// would be left out on its own is shown too.
+/// How many of the largest items a table shows without `--all`, as in
+/// `top` or `callers SYMBOL`: a row such as "6 more, kept by main" sums up
+/// the rest, and an item that would be left out on its own is shown too.
+/// `startup` shows this many rows of steps, the last of them summing up the
+/// rest.
 const SHOWN: usize = 30;
 
-/// How many of the largest items to show: [`SHOWN`], or with `--all`, every
-/// one.
+/// How many to show: [`SHOWN`], or with `--all`, every one.
 pub(super) fn shown(all: bool) -> usize {
     if all { usize::MAX } else { SHOWN }
 }

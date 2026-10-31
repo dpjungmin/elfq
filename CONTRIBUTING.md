@@ -54,7 +54,7 @@ terminal is as it was; `.github/workflows/ci.yml` has the command.
 | `src/main.rs` | The program: parses arguments, runs one command on a thread with a large stack, prints errors and sets the exit status. It also turns `elfq help COMMAND` into `--help`, and suggests the right order when the command comes before the file. |
 | `src/lib.rs` | Declares the modules below. elfq is a library plus that small program; the library exists for the program and its tests. |
 | `src/cli.rs` | Command-line arguments, with clap: a `Command` variant for each command, the structs that hold their arguments, and the text of `--help`. |
-| `src/commands/` | One file per command, which looks up SYMBOL, asks `graph` or `debuginfo` and decides what the answer shows. `mod.rs` runs the command the arguments name. The rest are shared: `arguments.rs` checks which arguments go together, `checks.rs` holds the checks a command makes before it answers, such as `check_code_is_readable`, `symbol.rs` works out what a user means by SYMBOL, `retained_tree.rs` builds the trees of retained sizes that the overview, `top` and `retained` show, `uses.rs` holds the table of `callers` and `callees` for SYMBOL, `range_check/` answers them for ranges of memory or with `--from` or `--to` (its `validate.rs` checks the ranges, `crossing.rs` holds the answers and `rows.rs` their rows, which `reach` and `diff` print too), `flat_answer.rs` holds the answers whose table has one row to a line and `tree_answer.rs` those whose table holds a tree, `text.rs` the wording that commands share and `json.rs` the JSON shapes. `kept.rs` has `Kept`, which leaves what a command keeps until it has answered for the system to take back when elfq ends (`end_after_answer`). |
+| `src/commands/` | One file per command, which looks up SYMBOL, asks `graph` or `debuginfo` and decides what the answer shows. `mod.rs` runs the command the arguments name. The rest are shared: `arguments.rs` checks which arguments go together, `checks.rs` holds the checks a command makes before it answers, such as `check_code_is_readable`, `symbol/` works out what a user means by SYMBOL (`lookup.rs` finds what a name means and names items for the user in return, and `not_found.rs` and `similar.rs` word the error when it finds several or none), `retained_tree.rs` builds the trees of retained sizes that the overview, `top` and `retained` show, `uses.rs` holds the table of `callers` and `callees` for SYMBOL, `range_check/` answers them for ranges of memory or with `--from` or `--to` (its `validate.rs` checks the ranges, `crossing.rs` holds the answers and `rows.rs` their rows, which `reach` and `diff` print too), `flat_answer.rs` holds the answers whose table has one row to a line and `tree_answer.rs` those whose table holds a tree, `text.rs` the wording that commands share and `json.rs` the JSON shapes. `kept.rs` has `Kept`, which leaves what a command keeps until it has answered for the system to take back when elfq ends (`end_after_answer`). |
 | `src/commands/browse/` | `elfq FILE browse`, with the `tui` feature: `mod.rs` takes over the terminal and runs the event loop, `session.rs` holds the loaded file and asks the commands' code for answers, `keys.rs` is the table of keys, `app.rs` the history of pages, the go-to box, find's prompt and the screen's layout, and `views/` the pages, the go-to box and the tabs of an item's page other than a function's code, one file each (a data object's contents, its tab 1, are in `item/contents.rs`), `printed.rs`, which draws a command's answer for the pages and tabs that show one, and `names.rs`, which shortens long C++ and Rust names to fit a column. |
 | `src/commands/diff/` | `elfq FILE diff NEW`: `mod.rs` reads both files and gives the exit status, `blocks.rs` works out the blocks of memory that both builds share and what changed in each, `pairing.rs` pairs the builds' items, `rows.rs` works out what changed and the rows of MOVED and CHANGE, `edited.rs` which items of the same size are edited, `crossings.rs` the uses between blocks that are new or gone, and `text.rs` and `json.rs` write the answer. |
 | `src/commands/startup/` | `elfq FILE startup`: `mod.rs` refuses files that aren't Cortex-M firmware from their headers, and runs the rest, `start.rs` finds the reset handler and `main`, `steps.rs` reads the walk's calls and loops as the steps that copy and zero sections, `problems.rs` works out the state of each section when `main` starts, the problems and the notes, and `text.rs` and `json.rs` write the answer. |
@@ -119,6 +119,10 @@ without making them public. It and `arch/listing.rs` build only with the
   add a size to an address without checking. Stored pointers are read only
   where the file holds bytes, however large a section claims to be, and
   sums of sizes stop at the largest number rather than overflow.
+- **A long function reads as named steps.** A function of more than
+  about 100 lines that isn't one decoding match is the usual sign that it
+  does several things. Some still wait to be split, such as
+  `Names::similar` in `commands/symbol/similar.rs`.
 
 ## Words
 
@@ -286,8 +290,10 @@ is a short one to copy.
    declare them again. `elfq help COMMAND` and the hint for a command typed before the
    file find the new command by themselves.
 2. **The command, in `src/commands/<name>.rs`.** Start with a `//!` line
-   that shows how to type it, then a `run` function that takes the
-   `Binary`, the arguments, the `Format` and the output. It returns
+   that shows how to type it, then a `run` function that takes what it
+   needs: the `Binary` (and the file's path, if the answer names the file,
+   as `overview` does), the arguments it reads, the `Format` and the
+   output. It returns
    `Result<Outcome>`: `Outcome::Answered`, or for exit status 1 another
    variant, as `callers` and `callees` return for ranges.
 3. **Wiring, in `src/commands/mod.rs` and `arguments.rs`.** Add
@@ -304,9 +310,11 @@ is a short one to copy.
 4. **SYMBOL.** If the command reads code, call `check_code_is_readable`
    first, so that a file whose code elfq can't read says so even when
    SYMBOL names nothing. `symbol::find` turns SYMBOL into a `Symbol`, whose
-   `node` may be an import; `item_in_file` or `readable_item` gives its
-   item, or an error that says why there is none. These checks are in
-   `checks.rs`. The answer's first line names it with `Symbol::lead_name`,
+   `node` may be an import; an answer that names other items too keeps
+   one `Names` and calls `Names::find`, as `retained` and `why` do, so
+   that the names are worked out once. `item_in_file` or `readable_item`
+   gives its item, or an error that says why there is none. These checks
+   are in `checks.rs`. The answer's first line names it with `Symbol::lead_name`,
    which says when SYMBOL gave another of its names or an address inside
    it. A command that needs the roots refuses shared libraries, as `top`,
    `retained` and `why` do.

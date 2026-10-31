@@ -13,10 +13,6 @@ use crate::arch::startup::{End, Event, Through};
 use crate::commands::text::{self as house, names_text, plural, shell_quote};
 use crate::render::{Align, Table};
 
-/// How many rows the table of steps shows without `--all`: the house cap,
-/// with the last row summing up the rest.
-const ROWS: usize = 30;
-
 pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
     writeln!(out, "{}", lead(answer))?;
     let problems = &answer.judged.problems;
@@ -38,11 +34,9 @@ pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
             ("WHAT", Align::Left),
         ]);
         let count = answer.steps.len();
-        let shown = if answer.all || count <= ROWS {
-            count
-        } else {
-            ROWS - 1
-        };
+        // The house cap, with the last row summing up the rest.
+        let room = house::shown(answer.all);
+        let shown = if count <= room { count } else { room - 1 };
         for step in &answer.steps[..shown] {
             table.row(row(answer, step));
         }
