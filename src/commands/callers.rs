@@ -7,10 +7,11 @@ use anyhow::{Result, bail};
 use serde::Serialize;
 
 use super::checks::check_code_is_readable;
+use super::flat_answer::FlatAnswer;
 use super::kept::Kept;
 use super::ranges::{self, Direction, RangeCheck};
 use super::symbol::{self, Subject, Symbol};
-use super::uses::{self, Row};
+use super::uses::{self, End, Row};
 use super::{Outcome, json, text};
 use crate::binary::{AddressRange, Binary, ItemKind};
 use crate::cli::Format;
@@ -90,90 +91,119 @@ pub(super) fn callers(
     out: &mut dyn Write,
 ) -> Result<()> {
     let node = symbol.node;
-    if format == Format::Json {
-        let references = references_with_stubs(graph, node, &stubs_of(binary, node));
-        let callers = Callers {
-            symbol: json::Symbol::new(binary, node),
-            callers: json::uses(
-                binary,
-                &rows(binary, &references, |reference| {
-                    json::how_field(reference.kind)
-                }),
-            ),
-            complete: !can_be_called_through_pointer(binary, node, &references),
-        };
-        return json::write(&callers, out);
-    }
-    let Answer { rows, notes } = answer(binary, graph, node);
-    let lead_name = symbol.lead_name(binary);
-    if rows.is_empty() {
-        writeln!(out, "Nothing in the file calls or uses {lead_name}.")?;
-        for note in notes {
-            writeln!(out, "{note}")?;
+    let found = Found::new(binary, graph, node);
+    match format {
+        Format::Json => {
+            let callers = Callers {
+                symbol: json::Symbol::new(binary, node),
+                callers: json::uses(
+                    binary,
+                    &rows(binary, &found.references, |reference| {
+                        json::how_field(reference.kind)
+                    }),
+                ),
+                complete: !found.through_pointer,
+            };
+            json::write(&callers, out)
         }
-        return Ok(());
+        // `check_tree` refuses --tree for callers.
+        Format::Text | Format::Tree => found
+            .answer(binary, graph, &symbol.lead_name(binary), all)
+            .write(out),
     }
-
-    let callers = uses::distinct_nodes(&rows);
-    writeln!(
-        out,
-        "{lead_name} is used by {}:",
-        text::count_text(binary, &callers)
-    )?;
-    writeln!(out)?;
-    uses::write_uses_table(binary, rows, "CALLER", text::shown(all), out)?;
-    if !notes.is_empty() {
-        writeln!(out)?;
-        for note in notes {
-            writeln!(out, "{note}")?;
-        }
-    }
-    Ok(())
 }
 
-/// The text answer of `callers SYMBOL` for `node`, before it is written:
-/// the rows of its table and the notes under them. Every caller is in the
-/// rows; the text leaves out all but the largest, unless with `--all`.
-pub(super) struct Answer {
-    /// Sorted by caller, with HOW in the text's words.
-    pub rows: Vec<Row>,
+/// What calls or uses `node`, as the text of `callers SYMBOL` lists it,
+/// which names `node` as `name` in its first line: the rows of the 30
+/// largest callers, or with `all`, every one, and the notes under them.
+#[cfg(feature = "tui")]
+pub(super) fn answer(
+    binary: &Binary,
+    graph: &Graph,
+    node: Node,
+    name: &str,
+    all: bool,
+) -> FlatAnswer {
+    Found::new(binary, graph, node).answer(binary, graph, name, all)
+}
+
+/// What `callers` finds about a node, which its text and its JSON both
+/// say.
+struct Found<'g> {
+    node: Node,
+    /// The references to it (see [`references_with_stubs`]).
+    references: Vec<&'g Reference>,
+    /// The PLT stub that code calls it through, if any, which a note names.
+    called_stub: Option<Node>,
+    /// Whether code can call it through a pointer, which elfq can't see
+    /// (see [`can_be_called_through_pointer`]).
+    through_pointer: bool,
+}
+
+impl<'g> Found<'g> {
+    fn new(binary: &Binary, graph: &'g Graph, node: Node) -> Found<'g> {
+        let stubs = stubs_of(binary, node);
+        let references = references_with_stubs(graph, node, &stubs);
+        // A function's stubs all have its name, as `log_msg@plt`: glibc's
+        // `libc.so.6` has two for `wmemset`. Code that only takes a stub's
+        // address, as for an ifunc, takes the function's, so that needs no
+        // note.
+        let called_stub = stubs
+            .into_iter()
+            .find(|&stub| references.iter().any(|r| r.to == stub && r.kind.is_call()));
+        let through_pointer = can_be_called_through_pointer(binary, node, &references);
+        Found {
+            node,
+            references,
+            called_stub,
+            through_pointer,
+        }
+    }
+
+    /// The text answer, which names the node `name` in its first line.
+    fn answer(&self, binary: &Binary, graph: &Graph, name: &str, all: bool) -> FlatAnswer {
+        let rows = rows(binary, &self.references, |reference| {
+            text::how_column(binary, reference.to, reference.kind)
+        });
+        let lead = match rows.is_empty() {
+            true => format!("Nothing in the file calls or uses {name}."),
+            false => {
+                let callers = text::count_text(binary, &uses::distinct_nodes(&rows));
+                format!("{name} is used by {callers}:")
+            }
+        };
+        let (columns, rows) = uses::table(binary, rows, End::Callers, text::shown(all));
+        FlatAnswer {
+            lead: vec![lead],
+            memory: None,
+            columns,
+            rows,
+            notes: self.notes(binary, graph),
+        }
+    }
+
     /// What the rows include or can't list, such as calls through the
     /// function's PLT stub or through a pointer.
-    pub notes: Vec<String>,
-}
-
-/// What calls or uses `node`, as the text of `callers SYMBOL` lists it.
-pub(super) fn answer(binary: &Binary, graph: &Graph, node: Node) -> Answer {
-    let name = node.name(binary);
-    let stubs = stubs_of(binary, node);
-    let references = references_with_stubs(graph, node, &stubs);
-    let rows = rows(binary, &references, |reference| {
-        text::how_column(binary, reference.to, reference.kind)
-    });
-    let through_pointer = can_be_called_through_pointer(binary, node, &references);
-    let mut notes = Vec::new();
-    // A function's stubs all have its name, as `log_msg@plt`: glibc's
-    // `libc.so.6` has two for `wmemset`. Code that only takes a stub's
-    // address, as for an ifunc, takes the function's, so that needs no note.
-    let called_stub = stubs
-        .into_iter()
-        .find(|&stub| references.iter().any(|r| r.to == stub && r.kind.is_call()));
-    if let Some(stub) = called_stub {
-        notes.push(format!(
-            "This includes calls through {}.",
-            stub.name(binary)
-        ));
+    fn notes(&self, binary: &Binary, graph: &Graph) -> Vec<String> {
+        let name = self.node.name(binary);
+        let mut notes = Vec::new();
+        if let Some(stub) = self.called_stub {
+            notes.push(format!(
+                "This includes calls through {}.",
+                stub.name(binary)
+            ));
+        }
+        // Some calls can't be listed: the system's, to where the program
+        // starts, and those through a pointer.
+        match graph.root(self.node) {
+            Some(root) => notes.push(text::root_sentence(binary, name, root)),
+            None if self.through_pointer => notes.push(format!(
+                "Calls to {name} through a pointer aren't listed, since elfq can't see them."
+            )),
+            None => {}
+        }
+        notes
     }
-    // Some calls can't be listed: the system's, to where the program starts,
-    // and those through a pointer.
-    match graph.root(node) {
-        Some(root) => notes.push(text::root_sentence(binary, name, root)),
-        None if through_pointer => notes.push(format!(
-            "Calls to {name} through a pointer aren't listed, since elfq can't see them."
-        )),
-        None => {}
-    }
-    Answer { rows, notes }
 }
 
 /// The references that `callers` lists for `node`, given its PLT `stubs`.

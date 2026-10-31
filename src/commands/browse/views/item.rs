@@ -38,7 +38,6 @@ use crate::arch::{self, CodeReferenceKind, Refers};
 use crate::binary::{Binary, Item, ItemKind, RelocationTarget, Source};
 use crate::commands::browse::{keys::Action, session::Session};
 use crate::commands::checks::readable_item;
-use crate::commands::uses::distinct_nodes;
 use crate::commands::{retained, text, why};
 use crate::graph::{Node, Reference, Unresolved, VeneerTarget, item_starting_at};
 
@@ -201,7 +200,7 @@ impl ItemPage {
     /// has no code here, the page opens on its callers.
     pub fn new(session: &Session, node: Node, at: Option<u64>, lead: &str) -> ItemPage {
         let answer = session.callers(node);
-        let used_by = distinct_nodes(&answer.rows).len();
+        let used_by = answer.node_count();
         let name = node.name(session.binary);
         let (name, note) = match lead.strip_prefix(name) {
             Some(note) => (name, note),

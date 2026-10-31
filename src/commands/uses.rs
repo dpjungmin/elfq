@@ -3,14 +3,12 @@
 
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
-use std::io::Write;
 
-use anyhow::Result;
-
+use super::flat_answer::FlatRow;
 use super::text;
 use crate::binary::Binary;
 use crate::graph::{Node, Reference};
-use crate::render::{Align, Table};
+use crate::render::Align;
 
 /// One line of a callers or callees table: the references between one pair
 /// of nodes that are worded the same way.
@@ -59,39 +57,63 @@ pub(super) fn distinct_nodes(rows: &[Row]) -> Vec<Node> {
         .collect()
 }
 
-/// Writes the table of `callers` or `callees`: HOW, AT, and the caller or
-/// callee under `column`. It lists the rows of the `count` largest nodes
-/// (see [`largest_rows`]), and a last row such as "70 more" counts the
+/// Which end of the uses a table lists.
+#[derive(Clone, Copy)]
+pub(super) enum End {
+    /// What uses SYMBOL, as `callers` lists it.
+    Callers,
+    /// What SYMBOL uses, as `callees` lists it.
+    Callees,
+}
+
+/// The table of `callers` or `callees`: its columns, HOW, AT and the
+/// caller or callee, and the rows of the `count` largest nodes (see
+/// [`largest_rows`]), then a last row such as "70 more" that counts the
 /// rest.
-pub(super) fn write_uses_table(
+pub(super) fn table(
     binary: &Binary,
     rows: Vec<Row>,
-    column: &'static str,
+    end: End,
     count: usize,
-    out: &mut dyn Write,
-) -> Result<()> {
+) -> (Vec<(String, Align)>, Vec<FlatRow>) {
+    let header = match end {
+        End::Callers => "CALLER",
+        End::Callees => "CALLEE",
+    };
+    let columns = ["HOW", "AT", header].map(|header| (header.to_string(), Align::Left));
     let (rows, left_out) = largest_rows(binary, rows, count);
-    let mut table = Table::new(&[
-        ("HOW", Align::Left),
-        ("AT", Align::Left),
-        (column, Align::Left),
-    ]);
-    for row in &rows {
-        table.row(vec![
-            row.how.to_string(),
-            text::at_column(&row.sites),
-            row.node.name(binary).to_string(),
-        ]);
-    }
+    let mut table: Vec<FlatRow> = (rows.into_iter())
+        .map(|row| {
+            let cells = vec![row.how.to_string(), text::at_column(&row.sites)];
+            let name = row.node.name(binary).to_string();
+            let mut flat = FlatRow::new(cells, name, Some(row.node));
+            // A caller uses SYMBOL in its own code, which browse opens at
+            // the first place; a callee is used in SYMBOL's code.
+            flat.at = match end {
+                End::Callers => Some(row.sites[0]),
+                End::Callees => None,
+            };
+            flat
+        })
+        .collect();
     if left_out > 0 {
-        table.row(vec![
-            String::new(),
-            String::new(),
-            format!("{left_out} more"),
-        ]);
+        let cells = vec![String::new(), String::new()];
+        table.push(FlatRow::new(cells, format!("{left_out} more"), None));
     }
-    table.write(out)?;
-    Ok(())
+    (columns.into(), table)
+}
+
+/// Whether the table of `callers` or `callees` for `nodes` nodes needs
+/// `--all` to list every one.
+#[cfg(feature = "tui")]
+pub(super) fn table_needs_all(nodes: usize) -> bool {
+    left_out(nodes, text::shown(false)) > 0
+}
+
+/// How many of `nodes` nodes a table that lists `count` leaves out (see
+/// [`text::shown_count`]).
+fn left_out(nodes: usize, count: usize) -> usize {
+    nodes - text::shown_count(nodes, count)
 }
 
 /// The rows of the `count` nodes in `rows` with the largest own sizes
@@ -101,11 +123,11 @@ pub(super) fn write_uses_table(
 /// that sorts first is kept.
 fn largest_rows(binary: &Binary, rows: Vec<Row>, count: usize) -> (Vec<Row>, usize) {
     let mut nodes = distinct_nodes(&rows);
-    let shown = text::shown_count(nodes.len(), count);
-    let left_out = nodes.len() - shown;
+    let left_out = left_out(nodes.len(), count);
     if left_out == 0 {
         return (rows, 0);
     }
+    let shown = nodes.len() - left_out;
     nodes.sort_by_key(|&node| (Reverse(node.size(binary)), node.name(binary), node));
     let kept: HashSet<Node> = nodes.into_iter().take(shown).collect();
     let rows = rows
@@ -169,5 +191,35 @@ mod tests {
         // With room for all but one, the last is kept too.
         assert_eq!(kept(4).0.len(), 6);
         assert_eq!(kept(4).1, 0);
+    }
+
+    #[cfg(feature = "tui")]
+    #[test]
+    fn a_table_needs_all_exactly_when_it_would_cut() {
+        // A table lists 30 nodes and counts the rest in a last row, which
+        // never counts one: it lists 31 nodes in full.
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/bin/c-x86_64.elf");
+        let binary = Binary::load(&path).unwrap();
+        for count in 29..=33 {
+            // The cells of the table of `count` nodes, with `all` or without.
+            let cells = |all| {
+                let rows = (0..count)
+                    .map(|index| Row {
+                        node: Node::Item(index),
+                        how: "call",
+                        sites: vec![0],
+                    })
+                    .collect();
+                let (_, rows) = table(&binary, rows, End::Callers, text::shown(all));
+                rows.into_iter()
+                    .map(FlatRow::into_cells)
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                table_needs_all(count),
+                cells(true) != cells(false),
+                "{count} nodes"
+            );
+        }
     }
 }

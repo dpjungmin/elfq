@@ -1,5 +1,10 @@
 //! The answer of a command whose table holds a tree, as `why` and
-//! `retained` write it, and as a tab of browse shows it.
+//! `retained` write it, and as a tab of browse shows it. Unlike a
+//! [`FlatAnswer`], whose rows are one to a line and whose notes follow one
+//! empty line together, its rows hang under one another, and each of its
+//! notes follows an empty line.
+//!
+//! [`FlatAnswer`]: super::flat_answer::FlatAnswer
 
 use std::io::Write;
 

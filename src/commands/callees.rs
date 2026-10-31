@@ -7,10 +7,11 @@ use anyhow::Result;
 use serde::Serialize;
 
 use super::checks::{check_code_is_readable, readable_item};
+use super::flat_answer::FlatAnswer;
 use super::kept::Kept;
 use super::ranges::{self, Direction, RangeCheck};
 use super::symbol::{self, Subject};
-use super::uses::{self, Row};
+use super::uses::{self, End};
 use super::{Outcome, json, text};
 use crate::binary::{AddressRange, Binary};
 use crate::cli::Format;
@@ -120,53 +121,52 @@ pub(super) fn callees(
         };
         return json::write(&callees, out);
     }
-    let answer = answer(binary, graph, index, name, all);
-    if !answer.rows.is_empty() {
-        let callees = uses::distinct_nodes(&answer.rows);
-        writeln!(out, "{name} uses {}:", text::count_text(binary, &callees))?;
-        writeln!(out)?;
-        uses::write_uses_table(binary, answer.rows, "CALLEE", text::shown(all), out)?;
-        if !answer.notes.is_empty() {
-            writeln!(out)?;
-        }
-    }
-    for line in answer.notes {
-        writeln!(out, "{line}")?;
-    }
-    Ok(())
-}
-
-/// What `callees SYMBOL` lists about an item, as its text says it, but for
-/// its first line.
-pub(super) struct Answer {
-    /// Each callee's uses, with HOW in the text's words, every one.
-    pub rows: Vec<Row>,
-    /// What the text says under the table, or in its place when there are
-    /// no rows: the calls and jumps that elfq can't follow, or that the
-    /// item calls or uses nothing.
-    pub notes: Vec<String>,
+    answer(binary, graph, index, name, all).write(out)
 }
 
 /// What the item at `index`, `name` as the answer's first line gives it,
-/// calls or uses, as the text of `callees SYMBOL` lists it, with the first
-/// few sites of what elfq can't follow, or with `all`, every one.
+/// calls or uses, as the text of `callees SYMBOL` lists it: the rows of
+/// the 30 largest callees and the first few sites of what elfq can't
+/// follow, or with `all`, every one.
 pub(super) fn answer(
     binary: &Binary,
     graph: &Graph,
     index: usize,
     name: &str,
     all: bool,
-) -> Answer {
+) -> FlatAnswer {
     let rows = uses::rows(
         graph.references_from(index),
         |reference| reference.to,
         |reference| text::how_column(binary, reference.to, reference.kind),
     );
     let unresolved = graph.unresolved_in(index);
-    let notes = if rows.is_empty() && unresolved.is_empty() {
-        vec![format!("{name} doesn't call or use anything.")]
-    } else {
-        text::unresolved_lines(name, unresolved, !rows.is_empty(), all)
+    // With no rows, what elfq can't follow, or that the item uses nothing,
+    // is said in place of the table.
+    let (lead, notes) = match (rows.is_empty(), unresolved.is_empty()) {
+        (true, true) => (
+            vec![format!("{name} doesn't call or use anything.")],
+            Vec::new(),
+        ),
+        (true, false) => (
+            text::unresolved_lines(name, unresolved, false, all),
+            Vec::new(),
+        ),
+        (false, _) => {
+            let callees = text::count_text(binary, &uses::distinct_nodes(&rows));
+            let lead = format!("{name} uses {callees}:");
+            (
+                vec![lead],
+                text::unresolved_lines(name, unresolved, true, all),
+            )
+        }
     };
-    Answer { rows, notes }
+    let (columns, rows) = uses::table(binary, rows, End::Callees, text::shown(all));
+    FlatAnswer {
+        lead,
+        memory: None,
+        columns,
+        rows,
+        notes,
+    }
 }
