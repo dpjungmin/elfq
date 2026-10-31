@@ -169,7 +169,9 @@ and `elfq --help` lists the commands.
   from a load image, such as code in ITCM, before it is copied, if a load
   image isn't copied or `.bss` isn't zeroed in full, or if elfq can't
   follow code that may set one up; the JSON's `problems_certain` counts
-  the problems it is sure of.
+  the problems it is sure of, and its `keep_out` lists, for each load
+  image of code, the functions that must stay out of it, as they run
+  before its copy.
 - elfq reads the built file, not the source: rebuild before asking again.
 ```
 

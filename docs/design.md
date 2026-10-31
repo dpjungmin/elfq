@@ -897,6 +897,18 @@ library, a program that an operating system loads, or a file without
 section headers. elfq refuses those before it loads the file, so that a
 large program costs nothing.
 
+The JSON also says, for each load image that holds code, which functions
+must stay out of it (`keep_out`): those that run before the step that
+copies it, or before `main` when no step does, and so would run from it
+too early if they were linked into it. They are the reset handler, and
+every function that a call before the copy runs, at any depth, as the
+problems count them, but only the function itself of a call that holds
+the copy, as `data_init` does. A function in the list that is linked into
+the load image is a problem that the text names. The list is what elfq
+can follow: when `complete` is `false`, code it can't follow may run more.
+It is for scripts and agents that move code between memories, so the
+text doesn't print it.
+
 ### JSON
 
 `--json` prints the same answer for scripts, as one object, for every
@@ -1110,6 +1122,7 @@ several.
 | `sections` | every load image and section without contents, in address order, each a range with its `name`, `size` and `load_address`, where the file stores it, or `null` for a section without contents; `status` when `main` starts, `copied`, `partly copied`, `copied from elsewhere`, `zeroed`, `partly zeroed`, `not copied`, `not zeroed`, `unknown`, when an `unread` step may set it up, or `not reached`, when only steps after code that runs from a load image before its copy set it up; `step`, the number of the step that sets it up, or `null`; and `bytes`, how many of its bytes that step sets up, or `null` while `unknown` |
 | `problems` | one row for each sentence of the text, in its order, each with: `kind`, `runs before copy`, `not copied`, `not zeroed`, `partly copied`, `partly zeroed`, `copied from elsewhere` or `can't follow`; `certain`, `false` for `can't follow`, and for code that runs from a load image after a step that elfq can't follow that may copy it first; `steps`, the numbers of the steps it is about; `sections`; `items`, the functions that run from the load image too early; `chain`, the names of the functions that a step's call goes through to the first of them; `before_step`, the step that copies the load image, or `null` when none does; `bytes`, how many bytes a step copies or zeroes of a section it sets up in part, or `null`; `from`, where a step copies from that isn't where the file stores the load image, or `null`; `sites`, the calls that run the functions, or the reset handler's own address when it is in the load image; and `text`, the sentence |
 | `notes` | one row for each note of the text, each with `kind`, `no vector table`, `reset in no function`, `entry differs`, `branch`, `not reached`, `not zeroed`, `partly zeroed` or `can't tell`; `sections`; `items`, empty for now; and `text`, the sentence |
+| `keep_out` | one row for each load image that holds code, in the order of the sections, each with: `section`, its name; and `items`, the functions that must stay out of it: the reset handler first, then every function that runs before the step that copies it, or before `main` when no step does, in the order the calls run them, but no linker's veneer. A function in the list that is in the load image is code that runs from it before its copy |
 
 ### Calls elfq can't follow
 

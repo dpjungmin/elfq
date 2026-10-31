@@ -1,5 +1,6 @@
 //! The JSON of `startup`: the reset handler and `main`, then the steps,
-//! the sections, the problems and the notes, one per line.
+//! the sections, the problems, the notes, and what must stay out of each
+//! load image that holds code, one per line.
 
 use std::io::Write;
 
@@ -38,6 +39,7 @@ struct Startup<'a> {
     sections: Vec<Section<'a>>,
     problems: Vec<ProblemRow<'a>>,
     notes: Vec<Note<'a>>,
+    keep_out: Vec<KeepOut<'a>>,
 }
 
 #[derive(Serialize)]
@@ -94,6 +96,14 @@ struct Note<'a> {
     sections: Vec<&'a str>,
     items: Vec<Item<'a>>,
     text: String,
+}
+
+/// A load image that holds code, with the functions that startup runs
+/// before it copies it, which must stay out of it.
+#[derive(Serialize)]
+struct KeepOut<'a> {
+    section: &'a str,
+    items: Vec<Item<'a>>,
 }
 
 pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
@@ -192,6 +202,14 @@ pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
             text: note.text.clone(),
         })
         .collect();
+    let keep_out = (answer.judged.keep_out.iter())
+        .map(|(x, functions)| KeepOut {
+            section: memory.name(*x),
+            items: (functions.iter())
+                .map(|&index| Item::new(binary, Node::Item(index)))
+                .collect(),
+        })
+        .collect();
     let value = Startup {
         file: answer.path.display().to_string(),
         entry: item(answer.reset.address),
@@ -204,6 +222,7 @@ pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
         sections,
         problems,
         notes,
+        keep_out,
     };
     house::write(&value, out)
 }

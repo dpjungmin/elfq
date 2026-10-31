@@ -11,11 +11,14 @@
 
 use std::collections::{HashMap, HashSet};
 
+use object::SectionKind;
+
 use super::Firmware;
 use super::start::{Main, Reset};
 use super::steps::{Does, Events, Memory, Step};
 use super::text;
 use crate::arch::startup::{End, Event};
+use crate::binary::ItemKind;
 use crate::commands::text::names_text;
 
 /// The state of a section when `main` starts.
@@ -163,6 +166,10 @@ pub(super) struct Judged {
     pub fatal: Option<i64>,
     pub problems: Vec<Problem>,
     pub notes: Vec<Note>,
+    /// For each load image that holds code, by section, the functions
+    /// that must stay out of it, as indexes into the items (see
+    /// [`Runs::keep_out`]).
+    pub keep_out: Vec<(usize, Vec<usize>)>,
 }
 
 impl Judged {
@@ -258,6 +265,7 @@ pub(super) fn judge(
         fatal: None,
         problems: Vec::new(),
         notes: Vec::new(),
+        keep_out: Vec::new(),
     };
     let mut runs = Runs {
         firmware,
@@ -267,6 +275,7 @@ pub(super) fn judge(
         problems: Vec::new(),
     };
     runs.find(memory, events, reset, steps, &judged);
+    judged.keep_out = runs.keep_out(memory, events, reset, steps, &judged);
     let mut problems = runs.problems;
     for p in &mut problems {
         let x = p.sections[0];
@@ -428,23 +437,13 @@ impl Runs<'_> {
                 self.add(judged, x, RESET, None, &hits, None, &[]);
             }
         }
-        let main_event = events.list.len();
         for &x in &memory.loads {
             let (start, stop) = (memory.section(x).address, memory.end(x));
-            let end = judged
-                .init
-                .get(&x)
-                .map_or(main_event, |setup| steps[setup.step].event);
-            for k in 0..events.list.len().min(end + 1) {
-                let (Some(call), Some(target)) = (events.call(k), events.target(k)) else {
+            for (k, target, holds) in self.calls_before(events, steps, judged, x) {
+                let Some(call) = events.call(k) else {
                     continue;
                 };
-                if Some(target) == self.main {
-                    continue;
-                }
-                // A call that holds the copy runs only its own code before
-                // it.
-                let mut hits = if k < end && end < events.span(k) {
+                let mut hits = if holds {
                     (start..stop)
                         .contains(&target)
                         .then(|| (target, vec![target]))
@@ -469,6 +468,77 @@ impl Runs<'_> {
                 }
             }
         }
+    }
+
+    /// The calls that run before the step that copies load image `x`, or
+    /// before `main` when no step does, the copy's own call among them:
+    /// each as its event, the function it goes to, and whether the call
+    /// holds the copy, so that only the function's own code runs before
+    /// it. Calls to `main` don't count.
+    fn calls_before(
+        &self,
+        events: &Events,
+        steps: &[Step],
+        judged: &Judged,
+        x: usize,
+    ) -> Vec<(usize, u64, bool)> {
+        let end = (judged.init.get(&x)).map_or(events.list.len(), |setup| steps[setup.step].event);
+        (0..events.list.len().min(end + 1))
+            .filter_map(|k| {
+                events.call(k)?;
+                let target = events
+                    .target(k)
+                    .filter(|&target| Some(target) != self.main)?;
+                Some((k, target, k < end && end < events.span(k)))
+            })
+            .collect()
+    }
+
+    /// For each load image that holds code, the functions that startup
+    /// runs before it copies it, which must stay out of it: those that
+    /// would run from it too early if they were in it. The reset handler
+    /// comes first, then the functions in the order the calls run them,
+    /// each once, but no veneer.
+    fn keep_out(
+        &mut self,
+        memory: &Memory,
+        events: &Events,
+        reset: &Reset,
+        steps: &[Step],
+        judged: &Judged,
+    ) -> Vec<(usize, Vec<usize>)> {
+        let firmware = self.firmware;
+        let mut rows = Vec::new();
+        for &x in &memory.loads {
+            if memory.section(x).kind != SectionKind::Text {
+                continue;
+            }
+            let mut functions: Vec<usize> = Vec::new();
+            let mut seen: HashSet<usize> = HashSet::new();
+            let mut add = |address: u64| {
+                if firmware.veneer_target(address).is_some() {
+                    return;
+                }
+                let Some(index) = firmware.item(address) else {
+                    return;
+                };
+                if firmware.binary.items[index].kind == ItemKind::Function && seen.insert(index) {
+                    functions.push(index);
+                }
+            };
+            add(reset.address);
+            for (_, target, holds) in self.calls_before(events, steps, judged, x) {
+                if holds {
+                    add(target);
+                } else {
+                    for &(address, _) in &self.closure(target).found {
+                        add(address);
+                    }
+                }
+            }
+            rows.push((x, functions));
+        }
+        rows
     }
 
     /// Counts the functions of `hits`, each with its chain, as code that
@@ -756,7 +826,7 @@ fn data_in<'a>(firmware: &'a Firmware, memory: &Memory, x: usize) -> Vec<&'a str
     let section = memory.section(x);
     (firmware.binary.items.iter())
         .filter(|item| {
-            item.kind == crate::binary::ItemKind::Data
+            item.kind == ItemKind::Data
                 && section.address <= item.address
                 && item.address < memory.end(x)
                 && !item.name.contains('@')

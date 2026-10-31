@@ -778,12 +778,72 @@ fn the_json_gives_the_steps_the_sections_and_the_problems() {
             "text": "Not zeroed, which may be intended: .ocram_bss (tx_buffer).",
         })
     );
+    // memcpy must stay out of ITCM, as must the reset handler.
+    assert_eq!(
+        answer["keep_out"],
+        json!([{"section": ".itcm", "items": [answer["entry"], memcpy]}])
+    );
     // One row per line.
     let (_, text) = startup(TRAP_SAMPLE, &["--json"]);
     assert!(
         text.contains("\"steps\":[\n{\"step\":1,") && text.contains("},\n{\"step\":2,"),
         "{text}"
     );
+}
+
+#[test]
+fn keep_out_names_what_runs_before_each_copy_of_code() {
+    let names = |row: &Value| -> Vec<String> {
+        (row["items"].as_array().unwrap().iter())
+            .map(|item| item["name"].as_str().unwrap().to_string())
+            .collect()
+    };
+    // SystemInit calls clock_setup, in ITCM, before the copy, and memcpy
+    // does the copy: each would run from ITCM too early. .data holds no
+    // code.
+    let (_, sysinit) = answer(SYSINIT_SAMPLE);
+    let rows = sysinit["keep_out"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["section"], ".itcm");
+    assert_eq!(
+        names(&rows[0]),
+        ["Reset_Handler", "SystemInit", "clock_setup", "memcpy"]
+    );
+    // data_init does the copy itself, so only its own code runs before.
+    let (_, sections) = answer(SECTIONS_SAMPLE);
+    assert_eq!(names(&sections["keep_out"][0]), ["ResetISR", "data_init"]);
+    // Nothing copies .ram, so nothing that runs before main may be in it.
+    let (_, far) = answer("testdata/bin/far-gnu-m4-nodebug.elf");
+    let row = &far["keep_out"][0];
+    assert_eq!(row["section"], ".ram");
+    assert_eq!(names(row).first().unwrap(), "Reset_Handler");
+    assert!(names(row).contains(&"ram_leaf".to_string()), "{row}");
+    // In every sample, the reset handler comes first, and the functions
+    // that a row lists in its own section are those that a problem says
+    // run from it before its copy.
+    for sample in samples() {
+        let name = sample.trim_start_matches("testdata/bin/");
+        if name.contains("x86_64") || name == "c-deep.elf" || name == "c-plt.so" {
+            continue;
+        }
+        let (_, answer) = answer(&sample);
+        for row in answer["keep_out"].as_array().unwrap() {
+            let section = &row["section"];
+            let items = row["items"].as_array().unwrap();
+            assert_eq!(items[0], answer["entry"], "{sample}: {row}");
+            let mut inside: Vec<&Value> = (items.iter())
+                .filter(|item| &item["section"] == section)
+                .collect();
+            let mut early: Vec<&Value> = (answer["problems"].as_array().unwrap().iter())
+                .filter(|p| p["kind"] == "runs before copy" && p["sections"][0] == *section)
+                .flat_map(|p| p["items"].as_array().unwrap())
+                .collect();
+            let address = |item: &&Value| item["address"].as_str().unwrap().to_string();
+            inside.sort_by_key(address);
+            early.sort_by_key(address);
+            assert_eq!(inside, early, "{sample}: {row}");
+        }
+    }
 }
 
 #[test]

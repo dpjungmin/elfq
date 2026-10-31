@@ -581,9 +581,11 @@ It reads only the file, so it can't know what a boot ROM or a debugger
 loads, how the chip's memory is set up, or what interrupts and other
 cores do.
 
---json has every step, the state of every section when main starts, and
+--json has every step, the state of every section when main starts,
 every problem with the steps, sections, functions and call sites it is
-about. To fail only on the problems that elfq is sure of:
+about, and for each load image of code, the functions that must stay out
+of it, as they run before its copy (keep_out). To fail only on the
+problems that elfq is sure of:
 
   elfq app.elf startup --json > startup.json || [ $? -eq 1 ]
   jq -e '.problems_certain == 0' startup.json
