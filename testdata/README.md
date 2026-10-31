@@ -26,7 +26,7 @@ testdata/
 | `c-cortex-m4*.elf` | C | Cortex-M4 bare metal, newlib-nano, `--gc-sections` |
 | `c-cortex-m4-cmsis*.elf` | C | The same, laid out as CMSIS's linker script template does |
 | `c-cortex-m7*.elf` | C | Cortex-M7 bare metal, with code and data in TCM, OCRAM and flash |
-| `c-cortex-m7-moved*.elf`, `c-cortex-m7-sdram.elf`, `c-cortex-m7-inlined.elf`, `c-cortex-m7-edited.elf`, `c-x86_64-moved*` | C | The Cortex-M7 and x86-64 builds again, each with one change, for `diff` |
+| `c-cortex-m7-moved*.elf`, `c-cortex-m7-sdram.elf`, `c-cortex-m7-ocram.elf`, `c-cortex-m7-inlined.elf`, `c-cortex-m7-edited.elf`, `c-x86_64-moved*` | C | The Cortex-M7 and x86-64 builds again, each with one change, for `diff` |
 | `c-cortex-m7-entry-main*.elf` | C | The Cortex-M7 build linked with `main` as its entry point, so that no word of its vector table holds the entry point |
 | `c-cortex-m7-trap*.elf`, `c-cortex-m7-reset-itcm*.elf` | C | The Cortex-M7 build again, each with one mistake in its linker script, for `startup` |
 | `c-cortex-m7-sysinit*.elf` | C | Cortex-M7 bare metal, whose reset handler runs code in ITCM before it copies it there, for `startup` |
@@ -47,7 +47,7 @@ testdata/
 
 Each comes in up to three variants, matching what people usually have
 (`c-deep.elf`, `c-x86_64.so`, `c-x86_64-moved.so`, `c-cortex-m7-sdram.elf`,
-`c-cortex-m7-inlined.elf`, `c-cortex-m7-edited.elf`, `c-cortex-m7-steps.elf`,
+`c-cortex-m7-ocram.elf`, `c-cortex-m7-inlined.elf`, `c-cortex-m7-edited.elf`, `c-cortex-m7-steps.elf`,
 `c-cortex-m7-noreturn.elf`, `cpp-x86_64.so` and `c-plt.so` only in the first, `c-softfloat` only in the second,
 `c-cortex-m4-cmsis` and `far-*` only in the last two):
 
@@ -161,6 +161,7 @@ change with a `-D` flag for app.c (see the end of
 | `c-cortex-m7-moved*.elf` | `filter_tap` is linked in flash, not in ITCM, and with `-DDIFF_MOVED`, `crc32` logs an empty frame. | `.itcm` shrinks by 16 bytes: `filter_tap` leaves it, while `crc32` grows by 16 and the linker adds two veneers to reach flash, `__filter_tap_veneer` and `__log_msg_veneer`. `.rodata` grows by 16, for `"empty frame\n"`. Of the four blocks of memory, the bytes differ in ITCM and flash. |
 | `c-x86_64-moved*.elf`, `c-x86_64-moved.so` | With `-DDIFF_MOVED`, `crc32` logs an empty frame. | One block of memory, which stays at the same size: `.text` grows by 16 bytes and `.eh_frame` by 8, into what was padding. |
 | `c-cortex-m7-sdram.elf` | DTCM is at 0x80000000, not 0x20000000. | `.data` and `.bss` leave the block at 0x20000000 for a new one at 0x80000000. The bytes in ITCM and flash differ only in the words that hold an address in DTCM: those that code loads, and the vector table's first, the initial stack pointer. |
+| `c-cortex-m7-ocram.elf` | The linker script lists `.ocram_bss` before `.bss`, and `.ocram_bss` takes `tx_head` too. | `tx_head` moves from `.bss` in DTCM to the end of `.ocram_bss` in OCRAM, and no load image changes: `.bss` shrinks by 4 bytes and `.ocram_bss` grows by 4, and in flash only the words that hold `tx_head`'s address and `.bss`'s end differ. `Reset_Handler` zeroes only `.bss`, so `startup` notes that `.ocram_bss`, with `tx_head` now, isn't zeroed. |
 | `c-cortex-m7-inlined.elf` | With `-DDIFF_INLINED`, `decode_header` is always inlined. | `decode_header` is gone: its DWARF says the compiler inlined it into `process_frame`, its only caller, which keeps its size. `.text` shrinks by 64 bytes, and the code after it moves. |
 | `c-cortex-m7-edited.elf` | With `-DDIFF_EDITED`, `FRAME_MAGIC` is 0xE1F2, not 0xE1F0, and the last of `fir_coeffs` is 42, not 40. | Two bytes differ, and nothing moves or changes size: the number in `decode_header`'s `movw`, and the low byte of the last of `fir_coeffs`, in `.rodata`. |
 
