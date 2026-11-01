@@ -145,7 +145,7 @@ impl Main {
 }
 
 /// Where startup ends: the function named `main`, or where debug info
-/// says a compiler inlined it, or in a stripped file, what [`guess`] and
+/// says a compiler inlined it, or without either, what [`guess`] and
 /// [`c_runtime`] take for it.
 pub(super) fn find_main(firmware: &Firmware, memory: &Memory, reset: &Reset) -> Option<Main> {
     let binary = firmware.binary;

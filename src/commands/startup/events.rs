@@ -1,3 +1,10 @@
+//! What the steps read of the walk's events ([`Events`]): how many calls
+//! deep from the reset handler each event is, which events are the jump of
+//! a veneer that a call goes to, where each call goes past a veneer, and
+//! where the events of the code that a call runs end. [`Iterations`] says
+//! which iteration of a loop that the walk went through one by one each
+//! event is in.
+
 use super::Firmware;
 use crate::arch::startup::{Call, Event, How};
 
@@ -144,7 +151,7 @@ impl Iterations {
     /// The loop and the iteration that the event at `k` is in, by their
     /// events (see [`Home`](super::pieces::Home)).
     pub fn home(&self, k: usize) -> Option<(usize, usize)> {
-        (self.of.get(k).copied().flatten()).map(|(first, l, _)| (l, first))
+        (self.of.get(k).copied().flatten()).map(|(first, loop_event, _)| (loop_event, first))
     }
 
     /// Where the iteration that the event at `k` is in reads its row of a

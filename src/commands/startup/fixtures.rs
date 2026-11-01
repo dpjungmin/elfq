@@ -1,3 +1,8 @@
+//! What the unit tests of `startup` build their walks from: firmware with
+//! two load images and two sections without contents ([`binary`]), the
+//! walk's events and stores, made by hand, and [`steps`], which writes the
+//! steps that [`build`] reads from such a walk, one a line.
+
 use std::ops::Range;
 
 use object::SectionKind;

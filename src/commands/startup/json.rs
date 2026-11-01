@@ -19,17 +19,19 @@ use crate::graph::Node;
 #[derive(Serialize)]
 struct Startup<'a> {
     file: String,
-    /// The reset handler, or without a vector table, the function at the
-    /// entry point.
+    /// The reset handler, or without a vector table, or one whose reset
+    /// handler is in no function, the function at the entry point.
     entry: Option<Item<'a>>,
     /// The function that is `main`, when the walk got to it; `null` for a
-    /// `main` inlined into the reset handler.
+    /// `main` inlined into the reset handler, when startup ends at the
+    /// reset handler's endless loop, or when the walk ends before.
     main: Option<Item<'a>>,
-    /// Where startup ends: `main`, or the head of the reset handler's
-    /// endless loop.
+    /// Where startup ends: `main`, where the code of an inlined `main`
+    /// starts, or the head of the reset handler's endless loop; `null` when
+    /// the walk ends before.
     main_at: Option<String>,
-    /// How elfq knows where `main` is: `symbol`, `debug info`, `guess`, or
-    /// `loop`.
+    /// How elfq knows where `main` is: `symbol`, `debug info`, `guess` or
+    /// `loop`; `null` when the walk ends before.
     main_from: Option<&'static str>,
     /// Whether elfq followed all the code before `main`.
     complete: bool,
@@ -48,8 +50,8 @@ struct StepRow<'a> {
     site: String,
     /// `copy`, `zero`, `call` or `unread`.
     does: &'static str,
-    /// `call`, `tail call`, `inlined`, `loop`, `register call`,
-    /// `supervisor call` or `stop`.
+    /// `call`, `tail call`, `inlined`, `loop`, `store`, `register call`,
+    /// `supervisor call`, `conditional call`, `deep call` or `stop`.
     how: &'static str,
     register: Option<String>,
     function: Option<Item<'a>>,

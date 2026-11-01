@@ -1,12 +1,13 @@
-//! The steps of startup: each copy of a load image and each zeroing of a
-//! section without contents, matched by the numbers that a call passes in
-//! r0 to r2, as `memcpy(to, from, size)` and `memset(to, 0, size)` take
-//! them, or by the bytes that a loop of the code's own, or stores outside
-//! loops, store into the section; the calls that the reset handler makes
-//! around them; and the code that elfq can't follow, which may set up any
-//! section not set up yet: a call through a register, a call the walk
-//! doesn't go through, a loop it can't match, and code the walk can't read
-//! on in.
+//! The steps of startup ([`Step`]), which [`build`] reads from the walk's
+//! events: each copy of a load image and each zeroing of a section without
+//! contents, matched by the numbers that a call passes in r0 to r2, as
+//! `memcpy(to, from, size)` and `memset(to, 0, size)` take them, or by the
+//! bytes that a loop of the code's own, or stores outside loops, store
+//! into the section (see `pieces.rs`); the calls that the reset handler
+//! makes around them; and the code that elfq can't follow, which may set
+//! up any section not set up yet (see `unread.rs`): a call through a
+//! register, a call the walk doesn't go through, a loop it can't match,
+//! and code the walk can't read on in.
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -188,7 +189,9 @@ pub(super) fn build(
     let mut steps: Vec<Step> = Vec::new();
     // The function whose code runs at each level.
     let mut holder: Vec<u64> = vec![reset.address];
-    let at = |holder: &Vec<u64>, level: usize| holder.get(level).copied().unwrap_or(reset.address);
+    let at = |holder: &Vec<u64>, level: u32| {
+        (holder.get(level as usize).copied()).unwrap_or(reset.address)
+    };
     let mut ready: HashSet<usize> = HashSet::new();
     let not_ready = |ready: &HashSet<usize>| -> Vec<usize> {
         (memory.ram.iter().copied())
@@ -220,19 +223,19 @@ pub(super) fn build(
             continue;
         }
         let level = events.level(k);
-        let l = level as usize;
         match event {
             Event::Call(call) => {
                 if events.call(k).is_none() {
                     continue;
                 }
-                let inside = at(&holder, l);
+                let inside = at(&holder, level);
                 let target = events.target(k);
                 if let Some(target) = target {
-                    if holder.len() <= l + 1 {
-                        holder.resize(l + 2, reset.address);
+                    let deeper = level as usize + 1;
+                    if holder.len() <= deeper {
+                        holder.resize(deeper + 1, reset.address);
                     }
-                    holder[l + 1] = target;
+                    holder[deeper] = target;
                 }
                 let way = match (call.how, target) {
                     (How::Jump, _) => Way::TailCall,
@@ -297,10 +300,10 @@ pub(super) fn build(
             // so it is a loop that elfq can't follow, as it would be if the
             // walk went through it once.
             Event::Loop(walked) if !walked.walked_iterations().is_empty() && !in_loop[k] => {
-                walked_loops.push((k, at(&holder, l)));
+                walked_loops.push((k, at(&holder, level)));
             }
             Event::Loop(walked) => {
-                let function = at(&holder, l);
+                let function = at(&holder, level);
                 let home = (level, function, iterations.home(k));
                 if let Some(piece) = Piece::of_loop(memory, walked, home)
                     && pieces.add(memory, piece, k, &mut steps, &mut ready)
@@ -324,28 +327,28 @@ pub(super) fn build(
                 }
             }
             Event::Stop { site, end, .. } => {
-                let inside = if l > 0 {
-                    at(&holder, l - 1)
+                let inside = if level > 0 {
+                    at(&holder, level - 1)
                 } else {
                     reset.address
                 };
                 // A call to code outside the file, or through a veneer
                 // that jumps there.
                 let way = match *end {
-                    End::LeavesFile { target, .. } if target == at(&holder, l) => {
+                    End::LeavesFile { target, .. } if target == at(&holder, level) => {
                         Way::Outside(target)
                     }
                     end => Way::Stop(end),
                 };
                 let mut step = Step::new(k, *site, Does::Unread, way, inside, level);
-                step.function = Some(at(&holder, l));
+                step.function = Some(at(&holder, level));
                 step.may = not_ready(&ready);
                 if !step.may.is_empty() {
                     steps.push(step);
                 }
             }
             Event::Store(store) if !in_loop[k] => {
-                let home = (level, at(&holder, l), iterations.home(k));
+                let home = (level, at(&holder, level), iterations.home(k));
                 match Piece::of_store(memory, store, home) {
                     Some(piece) => {
                         pieces.add(memory, piece, k, &mut steps, &mut ready);

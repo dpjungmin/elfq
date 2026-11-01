@@ -6,18 +6,37 @@
 //!
 //! The answer is worked out in this order:
 //!
-//! - `start.rs` finds the reset handler, and `main`: its symbol, where
-//!   debug info says a compiler inlined it, or in a stripped file, what the
-//!   reset handler calls last.
-//! - `arch::startup` walks the code from the reset handler to `main`.
+//! - `start.rs` finds the reset handler.
+//! - `ram_sections.rs` lists the sections that startup code sets up: the
+//!   load images and the sections without contents.
+//! - `start.rs` then finds `main`: its symbol, where debug info says a
+//!   compiler inlined it, or without either, what the reset handler calls
+//!   last. For that it walks the code itself, up to three times: from the
+//!   reset handler following no calls (`guess`), through the function
+//!   that the reset handler calls last (`sets_up`), and from the reset
+//!   handler as deep as the walk below (`c_runtime`).
+//! - `arch::startup` walks the code from the reset handler to `main`, and
+//!   `events.rs` works out what the steps read of each of its events.
 //! - `steps.rs` reads the walk's events as steps: each copy of a load
 //!   image, each zeroing of a section without contents, matched by the
-//!   numbers a call passes, the calls around them, and the code that elfq
-//!   can't follow, which may set up any section not set up yet.
+//!   numbers a call passes or by the bytes that loops and stores copy or
+//!   zero, which `pieces.rs` joins, the calls around them, and the code
+//!   that elfq can't follow, which may set up any section not set up yet
+//!   (`unread.rs`).
 //! - `problems.rs` works out the state of each section when `main` starts,
 //!   what runs from a load image before it is copied, the problems and the
 //!   notes.
 //! - `text.rs` and `json.rs` write the answer.
+//!
+//! The unit tests build their walks by hand, with `fixtures.rs`.
+//!
+//! Short names mean the same across these files. `x`, and `y` beside it,
+//! is a section, as an index into `Binary::sections`; `k` is an event, as
+//! an index into the walk's events, and `j` is usually another; `l` is a
+//! loop that the walk found (`arch::startup::Loop`). A step goes by its
+//! place in the steps, as `s` or in fields such as `Setup::step` and
+//! `Problem::before`, and by its `number`, from 1, which the text and the
+//! JSON print and `Problem::steps` holds.
 //!
 //! docs/design.md's "Startup, end to end" follows one run through this
 //! module, `arch::startup`, `arch::thumb::startup` and `binary::startup`.

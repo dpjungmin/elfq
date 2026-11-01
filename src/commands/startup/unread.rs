@@ -1,3 +1,14 @@
+//! What code that elfq can't follow may set up. Such code is a step that
+//! does [`Does::Unread`], with the sections it may set up in `may`. A loop
+//! that elfq can't match may set up the sections where its own stores go
+//! ([`own_stores`], [`loop_targets`]); else those of the kind that a loop
+//! in its code copies or zeroes, as a loop over a table of sections does
+//! for its first row ([`loop_repeats`]); else, when it calls code that
+//! sets up a section, any not set up yet ([`loop_calls`]). A loop that the
+//! walk went through one iteration at a time is such a loop too, when its
+//! iterations' steps don't stand for all they store
+//! ([`unfollowed_iterations`]).
+
 use std::collections::HashSet;
 use std::ops::Range;
 

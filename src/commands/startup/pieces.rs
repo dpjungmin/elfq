@@ -1,3 +1,11 @@
+//! The bytes that code copies or zeroes one after another, which steps
+//! are made of ([`Piece`]): a loop's, from all its stores
+//! ([`Piece::of_loop`]), or a store's outside loops
+//! ([`Piece::of_store`]). Pieces next to each other in the same code join,
+//! and when what they copy or zero matches the sections (see
+//! [`Memory::matched`]), they make a step, or extend the step of a piece
+//! they join ([`Pieces::add`]).
+
 use std::collections::HashSet;
 use std::ops::Range;
 
@@ -111,7 +119,9 @@ impl Piece {
     /// `across` another time of the same loop, by the same store.
     fn next_to(&self, other: &Piece, across: bool) -> bool {
         let (level, function, time) = self.home;
-        let same_loop = |(l, _): (usize, usize)| other.home.2.is_some_and(|(m, _)| m == l);
+        let same_loop = |(loop_event, _): (usize, usize)| {
+            (other.home.2).is_some_and(|(theirs, _)| theirs == loop_event)
+        };
         let home = self.home == other.home
             || (across
                 && (level, function) == (other.home.0, other.home.1)

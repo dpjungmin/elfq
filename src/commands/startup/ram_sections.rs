@@ -1,3 +1,13 @@
+//! The sections that startup code sets up, which are all in RAM: the load
+//! images, whose bytes the file stores elsewhere for startup code to copy
+//! into place, and the sections without contents, such as `.bss`, which
+//! it zeroes ([`Memory`]). It also matches what code copies or zeroes to
+//! them: what a call does from the numbers it passes in r0 to r2, as
+//! `memcpy(to, from, size)` and `memset(to, 0, size)` take them
+//! ([`Memory::match_call`]), or the bytes that loops and stores copy or
+//! zero ([`Memory::matched`]); and gives the runs of sections that a copy
+//! or zeroing of a region covers ([`Memory::run_from`]).
+
 use std::ops::Range;
 
 use object::SectionKind;
