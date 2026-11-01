@@ -27,8 +27,8 @@ pub(super) enum Status {
     /// It is smaller, in the same block.
     Shrank,
     /// It has the same size, in the same block, but its bytes changed other
-    /// than where they say where something is, or its code now uses
-    /// different items than before (see `edited.rs`).
+    /// than where they say where something is, or its code uses different
+    /// items in the new build than in the old (see `edited.rs`).
     Edited,
 }
 
@@ -195,7 +195,7 @@ impl<'a> Items<'a> {
 
     /// How many bytes the item grew by: less than 0 when it shrank, all its
     /// bytes when it is new, and less all its bytes when it is gone.
-    pub fn change(&self, change: &Change) -> i128 {
+    pub fn delta(&self, change: &Change) -> i128 {
         let size = |binary: &Binary, index: Option<usize>| {
             i128::from(index.map_or(0, |index| binary.items[index].size))
         };

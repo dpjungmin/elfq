@@ -16,6 +16,15 @@
 //! gone (`crossings.rs`). `rows.rs` picks the rows of the MOVED and CHANGE
 //! tables from what changed, for the text, and `text.rs` and `json.rs`
 //! write the answer.
+//!
+//! Names mean the same across these files. Two items that are paired, one
+//! in each build, are *partners*. A *change* is an item that changed
+//! ([`Change`](changes::Change)), and `at` is its place in
+//! `Items::changes`. A *delta* is how many bytes something grew by, less
+//! than 0 when it shrank: a change's item, a block, a section or a row of
+//! CHANGE. An item's place in its build's items is its `index`, or in
+//! `edited.rs`, `old_item` or `new_item`, and a block's place in
+//! `Answer::blocks` is its `block`.
 
 mod blocks;
 mod changes;
@@ -61,7 +70,7 @@ struct Answer<'a> {
     sections_that_differ: Vec<Differs<'a>>,
     /// The builds' items, paired, when the memory differs and both builds
     /// have a symbol table.
-    items: Option<Compared<'a>>,
+    compared: Option<Compared<'a>>,
     /// Whether to suggest `elfq NEW startup`: when the new build is
     /// firmware that startup reads, and a load image differs, or an item
     /// moved to another block, either of which may change what its startup
@@ -153,7 +162,7 @@ pub fn run(
         && (answer.load_image_differs()
             || (items.changes.iter()).any(|change| change.status == Status::Moved))
         && startup::reads(new_path, &new_build.binary);
-    answer.items = Some(Compared {
+    answer.compared = Some(Compared {
         items,
         crossings,
         old_names,
@@ -184,7 +193,7 @@ impl<'a> Answer<'a> {
             } else {
                 blocks::sections_that_differ(old, new)
             },
-            items: None,
+            compared: None,
             try_startup: false,
         }
     }

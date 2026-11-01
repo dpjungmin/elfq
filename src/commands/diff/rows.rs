@@ -168,32 +168,32 @@ impl<'a> Items<'a> {
             let head = if all { at } else { heads[at] };
             let row = *row_of[head].get_or_insert_with(|| {
                 rows.push(ChangeRow::Item {
-                    change: head,
+                    at: head,
                     kept: 0,
-                    bytes: 0,
+                    delta: 0,
                 });
                 rows.len() - 1
             });
-            if let ChangeRow::Item { kept, bytes, .. } = &mut rows[row] {
+            if let ChangeRow::Item { kept, delta, .. } = &mut rows[row] {
                 *kept += usize::from(at != head);
-                *bytes += self.change(change);
+                *delta += self.delta(change);
             }
         }
         if !all {
             rows = self.fold(rows);
         }
         let block = |row: &ChangeRow| match row {
-            ChangeRow::Item { change, .. } => self.block(&self.changes[*change]),
+            ChangeRow::Item { at, .. } => self.block(&self.changes[*at]),
             ChangeRow::Fold { block, .. } | ChangeRow::More { block, .. } => *block,
         };
         let mut ranked: Vec<(i128, Option<usize>, ChangeRow)> = rows
             .into_iter()
-            .map(|row| (row.change().abs(), block(&row), row))
+            .map(|row| (row.delta().abs(), block(&row), row))
             .collect();
         // Largest first, and of the same size, edited items last, then by
         // name.
         let edited = |row: &ChangeRow| match row {
-            ChangeRow::Item { change, .. } => self.changes[*change].status == Status::Edited,
+            ChangeRow::Item { at, .. } => self.changes[*at].status == Status::Edited,
             _ => false,
         };
         let rank = |(a, _, a_row): &(i128, Option<usize>, ChangeRow),
@@ -280,7 +280,7 @@ impl<'a> Items<'a> {
         let mut ranked = ranked.into_iter().peekable();
         while let Some(((_, block, _), _)) = ranked.peek() {
             let block = *block;
-            let (mut count, mut change) = (0, 0);
+            let (mut count, mut delta) = (0, 0);
             while let Some(((_, _, row), shown)) =
                 ranked.next_if(|((_, row_block, _), _)| *row_block == block)
             {
@@ -288,13 +288,13 @@ impl<'a> Items<'a> {
                     table.push(row);
                 } else {
                     count += row.items();
-                    change += row.change();
+                    delta += row.delta();
                 }
             }
             if count > 0 {
                 table.push(ChangeRow::More {
                     count,
-                    change,
+                    delta,
                     block,
                 });
             }
@@ -309,9 +309,7 @@ impl<'a> Items<'a> {
         let keys: Vec<Option<FoldKey>> = rows
             .iter()
             .map(|row| match row {
-                ChangeRow::Item {
-                    change, kept: 0, ..
-                } => self.fold_key(&self.changes[*change]),
+                ChangeRow::Item { at, kept: 0, .. } => self.fold_key(&self.changes[*at]),
                 _ => None,
             })
             .collect();
@@ -339,19 +337,19 @@ impl<'a> Items<'a> {
                 folded
                     .iter()
                     .filter(|row| match row {
-                        ChangeRow::Item { change, .. } => self.changes[*change].status == status,
+                        ChangeRow::Item { at, .. } => self.changes[*at].status == status,
                         _ => false,
                     })
                     .count()
             };
             let (new, gone) = (count(Status::New), count(Status::Gone));
-            let change = folded.iter().map(ChangeRow::change).sum();
+            let delta = folded.iter().map(ChangeRow::delta).sum();
             unfolded.push(match key {
                 FoldKey::Unnamed(block) => ChangeRow::Fold {
                     fold: Fold::Unnamed {
                         count: folded.len(),
                     },
-                    change,
+                    delta,
                     block,
                 },
                 FoldKey::Name(block, name) => ChangeRow::Fold {
@@ -360,7 +358,7 @@ impl<'a> Items<'a> {
                         new,
                         gone,
                     },
-                    change,
+                    delta,
                     block,
                 },
             });
@@ -389,9 +387,7 @@ impl<'a> Items<'a> {
     /// words.
     fn row_name(&self, row: &ChangeRow) -> Cow<'a, str> {
         match row {
-            ChangeRow::Item { change, .. } => {
-                Cow::Borrowed(&self.item(&self.changes[*change]).name)
-            }
+            ChangeRow::Item { at, .. } => Cow::Borrowed(&self.item(&self.changes[*at]).name),
             ChangeRow::Fold { fold, .. } => Cow::Owned(fold.text()),
             ChangeRow::More { .. } => Cow::Borrowed(""),
         }
@@ -423,35 +419,33 @@ impl MovedRow {
 
 /// A row of the CHANGE table.
 pub(super) enum ChangeRow {
-    /// An item that changed, as an index into the changes. A new or gone
+    /// An item that changed, by its place in the changes. A new or gone
     /// item stands for the `kept` new or gone items in its block that only
-    /// it keeps too, and `bytes` is the change of them all.
-    Item {
-        change: usize,
-        kept: usize,
-        bytes: i128,
-    },
+    /// it keeps too, and `delta` adds up the deltas of them all.
+    Item { at: usize, kept: usize, delta: i128 },
     /// Several changes in a block, folded into one row.
     Fold {
         fold: Fold,
-        change: i128,
+        delta: i128,
         block: Option<usize>,
     },
     /// The rest of a block's rows, which the table leaves out: how many
-    /// items they stand for, and their change.
+    /// items they stand for, and their delta.
     More {
         count: usize,
-        change: i128,
+        delta: i128,
         block: Option<usize>,
     },
 }
 
 impl ChangeRow {
-    /// The row's change in bytes.
-    pub fn change(&self) -> i128 {
+    /// How many bytes the row's items grew by, less than 0 when they
+    /// shrank.
+    pub fn delta(&self) -> i128 {
         match self {
-            ChangeRow::Item { bytes, .. } => *bytes,
-            ChangeRow::Fold { change, .. } | ChangeRow::More { change, .. } => *change,
+            ChangeRow::Item { delta, .. }
+            | ChangeRow::Fold { delta, .. }
+            | ChangeRow::More { delta, .. } => *delta,
         }
     }
 
@@ -577,20 +571,18 @@ mod tests {
         Change { status, old, new }
     }
 
-    /// The rows of CHANGE, each as its change and what it says.
+    /// The rows of CHANGE, each as its delta and what it says.
     fn table(items: &Items, heads: &[usize]) -> Vec<(i128, String)> {
         items
             .change_rows(heads, 1, false)
             .iter()
             .map(|row| {
                 let text = match row {
-                    ChangeRow::Item { change, .. } => {
-                        items.item(&items.changes[*change]).name.clone()
-                    }
+                    ChangeRow::Item { at, .. } => items.item(&items.changes[*at]).name.clone(),
                     ChangeRow::Fold { fold, .. } => fold.text(),
                     ChangeRow::More { count, .. } => format!("{count} more"),
                 };
-                (row.change(), text)
+                (row.delta(), text)
             })
             .collect()
     }
@@ -637,7 +629,7 @@ mod tests {
     }
 
     #[test]
-    fn edited_rows_come_last_of_the_same_change() {
+    fn edited_rows_come_last_of_the_same_delta() {
         // An edited function, and a new one of no size, which its name
         // would put after it.
         let old = build(&[(&["b_edited"], 4)]);

@@ -1,7 +1,7 @@
 //! diff's answer as JSON: whether the builds load the same memory, the
 //! sections that differ, a row for each block of memory, with each section
 //! and load image in it and how the items, the sections without items and
-//! the padding make up its change, a row for each item that changed, and
+//! the padding make up its delta, a row for each item that changed, and
 //! one for each use between blocks that is new or gone. The keys that count
 //! items are `null`, and the items and uses empty, when diff compared none,
 //! as `items_compared` says.
@@ -49,7 +49,7 @@ struct DiffJson<'c, 'a> {
     /// The blocks of memory that the sections and load images of both
     /// occupy, in address order.
     blocks: Vec<BlockJson<'a>>,
-    /// The items that changed, largest change first.
+    /// The items that changed, largest delta first.
     items: ItemsJson<'c, 'a>,
     /// The uses between blocks that are new, then those that are gone.
     crossings: Vec<CrossingJson<'a>>,
@@ -162,7 +162,7 @@ struct KeptBy<'a> {
 }
 
 pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
-    let compared = answer.items.as_ref();
+    let compared = answer.compared.as_ref();
     let bytes = |build: &Build| total(build.binary.items.iter().map(|item| item.size));
     let holds_items: HashSet<&str> = compared.map_or_else(HashSet::new, |compared| {
         let items = &compared.items;
@@ -221,22 +221,22 @@ fn block_json<'a>(
 ) -> BlockJson<'a> {
     let place_address = |place: Option<Place>| place.map(|place| address(place.address));
     let place_size = |place: Option<Place>| place.map(|place| place.size);
-    let parts = answer.items.as_ref().map(|compared| {
+    let parts = answer.compared.as_ref().map(|compared| {
         let items = &compared.items;
         let old = block.parts(true, answer.old, &items.old.binary, holds_items);
         let new = block.parts(false, answer.new, &items.new.binary, holds_items);
-        let change = |old: u64, new: u64| i128::from(new) - i128::from(old);
+        let delta = |old: u64, new: u64| i128::from(new) - i128::from(old);
         (
-            change(old.items, new.items),
-            change(old.sections, new.sections),
-            change(old.padding, new.padding),
+            delta(old.items, new.items),
+            delta(old.sections, new.sections),
+            delta(old.padding, new.padding),
         )
     });
     BlockJson {
         range: json::Range::new(block.range),
         old_size: block.old_size(),
         new_size: block.new_size(),
-        change: block.change(),
+        change: block.delta(),
         same_bytes: block.same_bytes,
         item_bytes: parts.map(|parts| parts.0),
         section_bytes: parts.map(|parts| parts.1),
@@ -248,7 +248,7 @@ fn block_json<'a>(
                 name: section.name,
                 load_image: section.load_image,
                 holds_items: answer
-                    .items
+                    .compared
                     .as_ref()
                     .map(|_| !section.load_image && holds_items.contains(section.name)),
                 old_address: place_address(section.old),
@@ -260,8 +260,8 @@ fn block_json<'a>(
     }
 }
 
-/// A row for each item that changed, largest change first, and of the
-/// same change, by name, each made as it is written, since a pair of large
+/// A row for each item that changed, largest delta first, and of the
+/// same delta, by name, each made as it is written, since a pair of large
 /// programs has hundreds of thousands.
 struct ItemsJson<'c, 'a> {
     compared: Option<&'c Compared<'a>>,
@@ -281,7 +281,7 @@ impl<'c, 'a> ItemsJson<'c, 'a> {
             order.sort_by_cached_key(|&at| {
                 let change = &items.changes[at];
                 (
-                    Reverse(items.change(change).unsigned_abs()),
+                    Reverse(items.delta(change).unsigned_abs()),
                     items.item(change).name.as_str(),
                 )
             });
@@ -327,7 +327,7 @@ impl<'c, 'a> ItemsJson<'c, 'a> {
             kind: item.kind.to_string(),
             status: change.status.word(),
             paired_by: items.paired_by(change),
-            change: items.change(change),
+            change: items.delta(change),
             old_address: old.address,
             old_size: old.size,
             old_section: old.section,

@@ -41,7 +41,7 @@ pub(super) struct Place {
 /// first of a name in one build goes with the first of that name in the
 /// other, and so on.
 #[derive(Debug)]
-pub(super) struct SectionChange<'a> {
+pub(super) struct SectionPair<'a> {
     pub name: &'a str,
     /// Whether these are the section's load images.
     pub load_image: bool,
@@ -67,9 +67,9 @@ pub(super) fn shared_blocks(
     let mut sections = Vec::new();
     let mut origins = Vec::new();
     for (is_new, memory) in [(false, old), (true, new)] {
-        for index in memory.sections_in_memory() {
-            sections.push(memory.sections[index].clone());
-            origins.push((is_new, index));
+        for section in memory.sections_in_memory() {
+            sections.push(memory.sections[section].clone());
+            origins.push((is_new, section));
         }
     }
     let blocks = memory_blocks(&sections);
@@ -136,7 +136,7 @@ impl Block {
     /// How many bytes the block grew by, from the old build to the new:
     /// less than 0 when it shrank. A build that has nothing in the block
     /// counts as 0.
-    pub fn change(&self) -> i128 {
+    pub fn delta(&self) -> i128 {
         let size = |size: Option<u64>| i128::from(size.unwrap_or(0));
         size(self.new_size()) - size(self.old_size())
     }
@@ -147,13 +147,13 @@ impl Block {
         &self,
         old: &'a LoadedMemory,
         new: &'a LoadedMemory,
-    ) -> Vec<SectionChange<'a>> {
+    ) -> Vec<SectionPair<'a>> {
         let name =
             |memory: &'a LoadedMemory, place: &Place| memory.sections[place.section].name.as_str();
-        let mut changes: Vec<SectionChange> = self
+        let mut pairs: Vec<SectionPair> = self
             .old
             .iter()
-            .map(|place| SectionChange {
+            .map(|place| SectionPair {
                 name: name(old, place),
                 load_image: place.load_image,
                 old: Some(*place),
@@ -163,9 +163,9 @@ impl Block {
         // The old build's of each name, first first, for the new build's
         // to pair with.
         let mut unpaired: HashMap<(&str, bool), VecDeque<usize>> = HashMap::new();
-        for (index, change) in changes.iter().enumerate() {
+        for (index, pair) in pairs.iter().enumerate() {
             unpaired
-                .entry((change.name, change.load_image))
+                .entry((pair.name, pair.load_image))
                 .or_default()
                 .push_back(index);
         }
@@ -175,8 +175,8 @@ impl Block {
                 .get_mut(&(name, place.load_image))
                 .and_then(VecDeque::pop_front);
             match paired {
-                Some(index) => changes[index].new = Some(*place),
-                None => changes.push(SectionChange {
+                Some(index) => pairs[index].new = Some(*place),
+                None => pairs.push(SectionPair {
                     name,
                     load_image: place.load_image,
                     old: None,
@@ -184,14 +184,14 @@ impl Block {
                 }),
             }
         }
-        changes.sort_by_key(|change| {
-            [change.old, change.new]
+        pairs.sort_by_key(|pair| {
+            [pair.old, pair.new]
                 .into_iter()
                 .flatten()
                 .map(|place| place.address)
                 .min()
         });
-        changes
+        pairs
     }
 }
 
@@ -266,10 +266,10 @@ impl Block {
     }
 }
 
-impl SectionChange<'_> {
+impl SectionPair<'_> {
     /// How many bytes it grew by: less than 0 when it shrank, and all of
     /// its bytes when only one build has it.
-    pub fn change(&self) -> i128 {
+    pub fn delta(&self) -> i128 {
         let size = |place: Option<Place>| i128::from(place.map_or(0, |place| place.size));
         size(self.new) - size(self.old)
     }
@@ -309,18 +309,19 @@ pub(super) fn sections_that_differ<'a>(
     new: &'a LoadedMemory,
 ) -> Vec<Differs<'a>> {
     let allocated = |memory: &'a LoadedMemory| {
-        (0..memory.sections.len())
-            .filter(|&index| memory.sections[index].allocated && memory.sections[index].size > 0)
+        (0..memory.sections.len()).filter(|&section| {
+            memory.sections[section].allocated && memory.sections[section].size > 0
+        })
     };
     let thread_local = |kind: SectionKind| kind == SectionKind::UninitializedTls;
     // The old build's sections of each name, first first, for the new
     // build's to pair with.
     let mut unpaired: HashMap<&str, VecDeque<usize>> = HashMap::new();
-    for index in allocated(old) {
+    for section in allocated(old) {
         unpaired
-            .entry(old.sections[index].name.as_str())
+            .entry(old.sections[section].name.as_str())
             .or_default()
-            .push_back(index);
+            .push_back(section);
     }
     // Each section that differs, with the address it is listed by.
     let mut differ: Vec<(u64, Differs)> = Vec::new();
@@ -359,9 +360,9 @@ pub(super) fn sections_that_differ<'a>(
     // Those that only the old build has, in the order of its sections.
     let mut gone: Vec<usize> = unpaired.into_values().flatten().collect();
     gone.sort_unstable();
-    for index in gone {
-        let section = &old.sections[index];
-        differ.push((section.address, only(section)));
+    for section in gone {
+        let old_section = &old.sections[section];
+        differ.push((old_section.address, only(old_section)));
     }
     differ.sort_by_key(|&(address, _)| address);
     differ.into_iter().map(|(_, differs)| differs).collect()
@@ -409,13 +410,13 @@ mod tests {
         assert_eq!(describe(&old, &dtcm.old), [".data", ".bss"]);
         assert!(dtcm.new.is_empty());
         assert_eq!(
-            (dtcm.old_size(), dtcm.new_size(), dtcm.change()),
+            (dtcm.old_size(), dtcm.new_size(), dtcm.delta()),
             (Some(1104), None, -1104)
         );
         let sdram = &blocks[4];
         assert!(sdram.old.is_empty());
         assert_eq!(describe(&new, &sdram.new), [".data", ".bss"]);
-        assert_eq!(sdram.change(), 1104);
+        assert_eq!(sdram.delta(), 1104);
         // The code and flash hold DTCM's addresses; OCRAM is the same.
         let same: Vec<bool> = blocks.iter().map(|block| block.same_bytes).collect();
         assert_eq!(same, [false, false, true, false, false]);
@@ -439,13 +440,13 @@ mod tests {
         let new = LoadedMemory::read(&new).unwrap();
         let blocks = shared_blocks(&old, &new, false);
         let flash = &blocks[3];
-        let changes: Vec<(&str, bool, i128)> = flash
+        let deltas: Vec<(&str, bool, i128)> = flash
             .sections(&old, &new)
             .iter()
-            .map(|section| (section.name, section.load_image, section.change()))
+            .map(|section| (section.name, section.load_image, section.delta()))
             .collect();
         assert_eq!(
-            changes,
+            deltas,
             [
                 (".isr_vector", false, 0),
                 (".itcm", true, -16),
@@ -469,7 +470,7 @@ mod tests {
         let same = shared_blocks(&old, &old, true);
         assert!(
             same.iter()
-                .all(|block| block.same_bytes && block.change() == 0)
+                .all(|block| block.same_bytes && block.delta() == 0)
         );
     }
 

@@ -1,6 +1,6 @@
 //! Which paired items changed while keeping their size and block: those
 //! whose bytes differ other than where they say where something is, or
-//! whose code now uses different items than before.
+//! whose code uses different items in the new build than in the old.
 //!
 //! Only partners whose bytes differ are compared, as the program starts
 //! with them: the file's bytes, with the addresses and imports that the
@@ -92,24 +92,25 @@ impl<'a> Edits<'a> {
         }
     }
 
-    /// Whether item `old` of the old build and its partner `new`, of the
-    /// same size, are edited: their bytes differ other than where they say
-    /// where something is, or their code now uses different items.
-    pub fn edited(&self, old: usize, new: usize) -> bool {
+    /// Whether item `old_item` of the old build and its partner `new_item`,
+    /// of the same size, are edited: their bytes differ other than where
+    /// they say where something is, or their code uses different items in
+    /// the new build than in the old.
+    pub fn edited(&self, old_item: usize, new_item: usize) -> bool {
         let (a, b) = (&self.old.binary, &self.new.binary);
-        let (old_item, new_item) = (&a.items[old], &b.items[new]);
-        let (Some(x), Some(y)) = (loaded(a, old_item), loaded(b, new_item)) else {
+        let (old, new) = (&a.items[old_item], &b.items[new_item]);
+        let (Some(x), Some(y)) = (loaded(a, old), loaded(b, new)) else {
             return false;
         };
         if x == y {
             // The same code can still read another import from a global
             // offset table entry, which the loader fills in.
-            return imports(self.old, old) != imports(self.new, new);
+            return imports(self.old, old_item) != imports(self.new, new_item);
         }
         if x.imports != y.imports {
             return true;
         }
-        let code = old_item.kind == ItemKind::Function;
+        let code = old.kind == ItemKind::Function;
         // diff refuses builds for two architectures, and reads the new
         // build's code as it reads the old build's: as Thumb when the old
         // build's is, even where the new build doesn't say it is.
@@ -118,32 +119,32 @@ impl<'a> Edits<'a> {
                 .zip(InstructionSet::of(b.architecture, a.thumb, b.endianness));
         let operands = instruction_sets.filter(|_| code).map(|(old_set, new_set)| {
             (
-                old_set.operands(&x.bytes, old_item.address),
-                new_set.operands(&y.bytes, new_item.address),
+                old_set.operands(&x.bytes, old.address),
+                new_set.operands(&y.bytes, new.address),
             )
         });
-        self.bytes_edited(old_item, &x.bytes, new_item, &y.bytes, operands.as_ref())
+        self.bytes_edited(old, &x.bytes, new, &y.bytes, operands.as_ref())
             || operands.is_some_and(|(old_operands, new_operands)| {
-                let sites = self.distances_elsewhere(&old_operands, &new_operands);
-                self.uses_edited(old, new, &sites)
+                let offsets = self.distances_elsewhere(&old_operands, &new_operands);
+                self.uses_edited(old_item, new_item, &offsets)
             })
     }
 
-    /// Whether the partners' bytes, `old` of `old_item` and `new` of
-    /// `new_item`, differ other than in the distances in their code,
-    /// `operands`, and in the corresponding addresses that they hold.
+    /// Whether the partners' bytes, `old_bytes` of `old` and `new_bytes` of
+    /// `new`, differ other than in the distances in their code, `operands`,
+    /// and in the corresponding addresses that they hold.
     fn bytes_edited(
         &self,
-        old_item: &Item,
-        old: &[u8],
-        new_item: &Item,
-        new: &[u8],
+        old: &Item,
+        old_bytes: &[u8],
+        new: &Item,
+        new_bytes: &[u8],
         operands: Option<&(Operands, Operands)>,
     ) -> bool {
         let (a, b) = (&self.old.binary, &self.new.binary);
         // The bits of each byte that hold a distance or an address that
         // corresponds.
-        let mut explained = vec![0u8; old.len()];
+        let mut explained = vec![0u8; old_bytes.len()];
         if let Some((x, y)) = operands {
             for (bits, (x, y)) in explained
                 .iter_mut()
@@ -170,23 +171,23 @@ impl<'a> Edits<'a> {
         // Data, and Thumb code, which keeps constants and tables of
         // addresses among its instructions, hold addresses in words. An
         // x86-64 jump table holds 32-bit distances from the table instead.
-        let code = old_item.kind == ItemKind::Function;
+        let code = old.kind == ItemKind::Function;
         if !code || a.thumb {
             let pointer = a.pointer_size as usize;
             let entries = !code && a.architecture == Architecture::X86_64;
             let step = if entries { 4 } else { pointer };
-            let mut offset = (step - (old_item.address % step as u64) as usize) % step;
-            while offset + step <= old.len() {
+            let mut offset = (step - (old.address % step as u64) as usize) % step;
+            while offset + step <= old_bytes.len() {
                 // A word where one starts and fits, or else an entry.
-                let starts = (old_item.address + offset as u64).is_multiple_of(pointer as u64);
-                let size = if starts && offset + pointer <= old.len() {
+                let starts = (old.address + offset as u64).is_multiple_of(pointer as u64);
+                let size = if starts && offset + pointer <= old_bytes.len() {
                     pointer
                 } else {
                     step
                 };
                 let range = offset..offset + size;
                 offset += size;
-                let (x, y) = (&old[range.clone()], &new[range.clone()]);
+                let (x, y) = (&old_bytes[range.clone()], &new_bytes[range.clone()]);
                 let unexplained = x
                     .iter()
                     .zip(y)
@@ -199,7 +200,7 @@ impl<'a> Edits<'a> {
                     && self.correspond(word(x, a.endianness), word(y, b.endianness));
                 let entries_correspond = entries
                     && x.chunks(4).zip(y.chunks(4)).all(|(x, y)| {
-                        x == y || self.entries_correspond(old_item.address, x, new_item.address, y)
+                        x == y || self.entries_correspond(old.address, x, new.address, y)
                     });
                 // Words don't overlap, so one whose values don't
                 // correspond is an edit, whatever the others hold.
@@ -209,22 +210,30 @@ impl<'a> Edits<'a> {
                 explained[range].fill(0xff);
             }
         }
-        old.iter()
-            .zip(new)
+        old_bytes
+            .iter()
+            .zip(new_bytes)
             .zip(&explained)
             .any(|((x, y), explained)| (x ^ y) & !explained != 0)
     }
 
-    /// Whether `old` and `new`, the 32-bit entries of a table at `old_table`
-    /// and `new_table` in each build, lead to places that correspond, each
-    /// entry being a distance from its table, as in an x86-64 jump table.
-    fn entries_correspond(&self, old_table: u64, old: &[u8], new_table: u64, new: &[u8]) -> bool {
+    /// Whether `old_entry` and `new_entry`, the 32-bit entries of a table at
+    /// `old_table` and `new_table` in each build, lead to places that
+    /// correspond, each entry being a distance from its table, as in an
+    /// x86-64 jump table.
+    fn entries_correspond(
+        &self,
+        old_table: u64,
+        old_entry: &[u8],
+        new_table: u64,
+        new_entry: &[u8],
+    ) -> bool {
         let endianness = self.old.binary.endianness;
-        let entry = |table: u64, bytes| {
-            let distance = word(bytes, endianness) as u32 as i32;
+        let target = |table: u64, entry| {
+            let distance = word(entry, endianness) as u32 as i32;
             table.wrapping_add_signed(distance.into())
         };
-        self.correspond(entry(old_table, old), entry(new_table, new))
+        self.correspond(target(old_table, old_entry), target(new_table, new_entry))
     }
 
     /// Whether two values that a pair of words or instructions hold are the
@@ -233,108 +242,112 @@ impl<'a> Edits<'a> {
     /// has, which have rows of their own (see [`Edits::in_unpaired_items`]);
     /// (c) at the same text (see [`same_text`]); or (d) the same start or
     /// end of a section (see [`same_edge`]).
-    fn correspond(&self, old: u64, new: u64) -> bool {
+    fn correspond(&self, old_address: u64, new_address: u64) -> bool {
         let (a, b) = (&self.old.binary, &self.new.binary);
-        self.same_place_in_partners(old, new)
-            || self.in_unpaired_items(old, new)
-            || same_text(a, old, b, new)
-            || same_edge(a, old, b, new)
+        self.same_place_in_partners(old_address, new_address)
+            || self.in_unpaired_items(old_address, new_address)
+            || same_text(a, old_address, b, new_address)
+            || same_edge(a, old_address, b, new_address)
     }
 
-    /// Case (a) of [`Edits::correspond`]: whether `old` and `new` point into
-    /// partners at the same offset, a function's Thumb bit and all, or just
-    /// past the end of partners, as a pointer to the end of an array does.
-    fn same_place_in_partners(&self, old: u64, new: u64) -> bool {
+    /// Case (a) of [`Edits::correspond`]: whether `old_address` and
+    /// `new_address` point into partners at the same offset, a function's
+    /// Thumb bit and all, or just past the end of partners, as a pointer to
+    /// the end of an array does.
+    fn same_place_in_partners(&self, old_address: u64, new_address: u64) -> bool {
         let (a, b) = (&self.old.binary, &self.new.binary);
-        let into = match (place(a, old), place(b, new)) {
+        let into = match (place(a, old_address), place(b, new_address)) {
             (Some(x), Some(y)) => self.partner(x.item) == Some(y.item) && x.offset == y.offset,
             _ => false,
         };
-        let past_the_end = match (end(a, old), end(b, new)) {
+        let past_the_end = match (end(a, old_address), end(b, new_address)) {
             (Some(x), Some(y)) => self.partner(x) == Some(y),
             _ => false,
         };
         into || past_the_end
     }
 
-    /// Case (b) of [`Edits::correspond`]: whether `old` and `new` both
-    /// point into items without a partner.
-    fn in_unpaired_items(&self, old: u64, new: u64) -> bool {
+    /// Case (b) of [`Edits::correspond`]: whether `old_address` and
+    /// `new_address` both point into items without a partner.
+    fn in_unpaired_items(&self, old_address: u64, new_address: u64) -> bool {
         let (a, b) = (&self.old.binary, &self.new.binary);
-        place(a, old).is_some_and(|x| self.partner(x.item).is_none())
-            && place(b, new).is_some_and(|y| self.pairing.new_to_old[y.item].is_none())
+        place(a, old_address).is_some_and(|x| self.partner(x.item).is_none())
+            && place(b, new_address).is_some_and(|y| self.pairing.new_to_old[y.item].is_none())
     }
 
-    /// The partner of the old build's item `old`, as an index into the new
-    /// build's items.
-    fn partner(&self, old: usize) -> Option<usize> {
-        self.pairing.old_to_new[old].map(|(partner, _)| partner)
+    /// The partner of the old build's item `old_item`, as an index into the
+    /// new build's items.
+    fn partner(&self, old_item: usize) -> Option<usize> {
+        self.pairing.old_to_new[old_item].map(|(partner, _)| partner)
     }
 
     /// The offsets of the instructions whose distances, in the partners'
-    /// code `old` and `new`, don't lead to the same place in partners, in
-    /// order. Only case (a) of [`Edits::correspond`] counts here: a call to
-    /// a veneer that only one build has, or a load from a global offset
-    /// table, which no item holds, leads elsewhere, and what the code uses
-    /// there tells whether it changed.
-    fn distances_elsewhere(&self, old: &Operands, new: &Operands) -> Vec<usize> {
-        let old_targets: HashMap<usize, u64> = old.targets.iter().copied().collect();
-        let new_targets: HashMap<usize, u64> = new.targets.iter().copied().collect();
-        let same_place = |site: &usize, target: &u64| {
+    /// code, `old_operands` and `new_operands`, don't lead to the same
+    /// place in partners, in order. Only case (a) of [`Edits::correspond`]
+    /// counts here: a call to a veneer that only one build has, or a load
+    /// from a global offset table, which no item holds, leads elsewhere,
+    /// and what the code uses there tells whether it changed.
+    fn distances_elsewhere(&self, old_operands: &Operands, new_operands: &Operands) -> Vec<usize> {
+        let old_targets: HashMap<usize, u64> = old_operands.targets.iter().copied().collect();
+        let new_targets: HashMap<usize, u64> = new_operands.targets.iter().copied().collect();
+        let same_place = |offset: &usize, target: &u64| {
             new_targets
-                .get(site)
+                .get(offset)
                 .is_some_and(|&other| self.same_place_in_partners(*target, other))
         };
-        let only_new = |site: &usize| !old_targets.contains_key(site);
-        let mut sites: Vec<usize> = (old.targets.iter())
-            .filter(|(site, target)| !same_place(site, target))
-            .map(|&(site, _)| site)
-            .chain(new.targets.iter().map(|&(site, _)| site).filter(only_new))
+        let only_new = |offset: &usize| !old_targets.contains_key(offset);
+        let new_offsets = new_operands.targets.iter().map(|&(offset, _)| offset);
+        let mut offsets: Vec<usize> = (old_operands.targets.iter())
+            .filter(|(offset, target)| !same_place(offset, target))
+            .map(|&(offset, _)| offset)
+            .chain(new_offsets.filter(only_new))
             .collect();
-        sites.sort_unstable();
-        sites.dedup();
-        sites
+        offsets.sort_unstable();
+        offsets.dedup();
+        offsets
     }
 
-    /// Whether the partners' code, at the instructions at the offsets
-    /// `sites`, uses other items, or in other ways.
-    fn uses_edited(&self, old: usize, new: usize, sites: &[usize]) -> bool {
-        if sites.is_empty() {
+    /// Whether the partners' code, at the instructions at `offsets`, uses
+    /// other items, or in other ways.
+    fn uses_edited(&self, old_item: usize, new_item: usize, offsets: &[usize]) -> bool {
+        if offsets.is_empty() {
             return false;
         }
-        let old_uses = self.uses(self.old, &self.old_veneers, old, sites, |index| {
+        let old_uses = self.uses(self.old, &self.old_veneers, old_item, offsets, |index| {
             self.partner(index)
         });
-        let new_uses = self.uses(self.new, &self.new_veneers, new, sites, |index| {
+        let new_uses = self.uses(self.new, &self.new_veneers, new_item, offsets, |index| {
             self.pairing.new_to_old[index].map(|_| index)
         });
         old_uses != new_uses
     }
 
-    /// What the instructions of `item` of `build` at the offsets `sites`
-    /// use, each with how, through veneers, in order: of the items that
-    /// both builds have, by `paired`, which gives the new build's index for
-    /// one, and imports by name.
+    /// What the instructions of `item` of `build` at `offsets` into it use,
+    /// each with how, through veneers, in order: of the items that both
+    /// builds have, by `paired`, which gives the new build's index for one,
+    /// and imports by name.
     fn uses(
         &self,
         build: &'a Build,
         veneers: &Veneers,
         item: usize,
-        sites: &[usize],
+        offsets: &[usize],
         paired: impl Fn(usize) -> Option<usize>,
     ) -> Vec<(Used<'a>, ReferenceKind)> {
         let binary = &build.binary;
         let address = binary.items[item].address;
-        let at_site = |site: u64| {
+        // Whether the instruction at the address `site` is at one of
+        // `offsets`.
+        let at_offsets = |site: u64| {
             usize::try_from(site.wrapping_sub(address))
-                .is_ok_and(|offset| sites.binary_search(&offset).is_ok())
+                .is_ok_and(|offset| offsets.binary_search(&offset).is_ok())
         };
         let import = |index: usize| Used::Import(binary.imports[index].as_str());
         let mut uses: Vec<(Used, ReferenceKind)> = build
             .graph
             .references_from(item)
             .iter()
-            .filter(|reference| at_site(reference.site))
+            .filter(|reference| at_offsets(reference.site))
             .filter_map(|reference| {
                 let used = match reference.to {
                     Node::Item(index) if reference.kind.is_call() => {
@@ -438,11 +451,13 @@ fn end(binary: &Binary, value: u64) -> Option<usize> {
     (item.address + item.size == value).then_some(index)
 }
 
-/// Case (c) of [`Edits::correspond`]: whether `old` and `new` point into
-/// sections of the same name, at the same text: a whole string that ends in
-/// a 0 byte, or at least 3 characters, as a Rust string has no 0 byte.
-fn same_text(a: &Binary, old: u64, b: &Binary, new: u64) -> bool {
-    let (Some((x_name, x)), Some((y_name, y))) = (text(a, old), text(b, new)) else {
+/// Case (c) of [`Edits::correspond`]: whether `old_address` and
+/// `new_address` point into sections of the same name, at the same text: a
+/// whole string that ends in a 0 byte, or at least 3 characters, as a Rust
+/// string has no 0 byte.
+fn same_text(a: &Binary, old_address: u64, b: &Binary, new_address: u64) -> bool {
+    let (Some((x_name, x)), Some((y_name, y))) = (text(a, old_address), text(b, new_address))
+    else {
         return false;
     };
     if x_name != y_name {
@@ -467,11 +482,15 @@ fn text(binary: &Binary, address: u64) -> Option<(&str, &[u8])> {
     Some((section.name.as_str(), bytes))
 }
 
-/// Case (d) of [`Edits::correspond`]: whether `old` and `new` are the same
-/// start or end of a section of the same name, or of its load image.
-fn same_edge(a: &Binary, old: u64, b: &Binary, new: u64) -> bool {
-    let old_edges = edges(a, old);
-    !old_edges.is_empty() && edges(b, new).iter().any(|edge| old_edges.contains(edge))
+/// Case (d) of [`Edits::correspond`]: whether `old_address` and
+/// `new_address` are the same start or end of a section of the same name,
+/// or of its load image.
+fn same_edge(a: &Binary, old_address: u64, b: &Binary, new_address: u64) -> bool {
+    let old_edges = edges(a, old_address);
+    !old_edges.is_empty()
+        && edges(b, new_address)
+            .iter()
+            .any(|edge| old_edges.contains(edge))
 }
 
 /// The starts and ends of sections and load images that are at `value`, as

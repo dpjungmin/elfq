@@ -742,10 +742,10 @@ Try:
 
 `process_frame` holds `decode_header`'s code now, at the same size, so
 it is edited: an item of the same size, in the same block, whose bytes
-changed other than where they say where something is, or that now uses
-different items than before. A constant changed in place is an edit too,
-as when the number that `decode_header` compares a frame with and the
-last of `fir_coeffs` change:
+changed other than where they say where something is, or whose code uses
+different items in the new build than in the old. A constant changed in
+place is an edit too, as when the number that `decode_header` compares a
+frame with and the last of `fir_coeffs` change:
 
 ```
 $ elfq testdata/bin/c-cortex-m7.elf diff testdata/bin/c-cortex-m7-edited.elf

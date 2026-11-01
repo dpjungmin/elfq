@@ -268,7 +268,7 @@ impl Lead {
     fn add(&mut self, index: usize) {
         *self = match *self {
             Lead::Nowhere => Lead::To(index),
-            Lead::To(at) if at == index => Lead::To(index),
+            Lead::To(earlier) if earlier == index => Lead::To(index),
             _ => Lead::Several,
         };
     }
@@ -458,16 +458,16 @@ fn without_llvm_numbers(name: &str) -> String {
         (".llvm.", ""),
     ] {
         let mut from = 0;
-        while let Some(at) = name[from..].find(before).map(|at| at + from) {
-            let digits = at + before.len();
+        while let Some(offset) = name[from..].find(before).map(|offset| offset + from) {
+            let digits = offset + before.len();
             let end = digits
                 + name[digits..]
                     .bytes()
                     .take_while(u8::is_ascii_digit)
                     .count();
             if end > digits && name[end..].starts_with(after) {
-                name.replace_range(at..end + after.len(), "");
-                from = at;
+                name.replace_range(offset..end + after.len(), "");
+                from = offset;
             } else {
                 from = digits;
             }
