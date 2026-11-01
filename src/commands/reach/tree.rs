@@ -24,7 +24,7 @@ pub(super) struct Tree<'r, 'a> {
     /// The calls and jumps that elfq can't follow in each step that get
     /// rows, one per kind and target: those to code outside every item, and
     /// with `--to`, those through pointers too.
-    unresolved_rows: Vec<Vec<Unresolved>>,
+    cant_follow_rows: Vec<Vec<Unresolved>>,
     /// The steps that get rows.
     has_row: HashSet<StepId>,
 }
@@ -45,14 +45,15 @@ impl<'r, 'a> Tree<'r, 'a> {
                 Node::Import(_) => None,
             })
             .collect();
-        let mut unresolved_rows: Vec<Vec<Unresolved>> = vec![Vec::new(); steps.len()];
-        for &unresolved in &reach.unresolved {
+        let mut cant_follow_rows: Vec<Vec<Unresolved>> = vec![Vec::new(); steps.len()];
+        for cant in &reach.cant_follow {
+            let unresolved = cant.found;
             // Without `--to`, a note below the tree names the calls and
             // jumps through pointers.
             if unresolved.target.is_none() && reach.to.is_empty() {
                 continue;
             }
-            let rows = &mut unresolved_rows[step_of_item[&unresolved.from]];
+            let rows = &mut cant_follow_rows[step_of_item[&unresolved.from]];
             let same = |row: &Unresolved| {
                 (row.is_call, row.target) == (unresolved.is_call, unresolved.target)
             };
@@ -63,7 +64,7 @@ impl<'r, 'a> Tree<'r, 'a> {
         let mut tree = Tree {
             text,
             children,
-            unresolved_rows,
+            cant_follow_rows,
             has_row: HashSet::new(),
         };
         tree.has_row = tree.has_row();
@@ -88,7 +89,7 @@ impl<'r, 'a> Tree<'r, 'a> {
         let steps = &reach.steps;
         let largest = self.text.largest(&steps[1..]);
         let wanted = (0..steps.len()).filter(|&id| {
-            id == 0 || largest.contains(&steps[id].node) || !self.unresolved_rows[id].is_empty()
+            id == 0 || largest.contains(&steps[id].node) || !self.cant_follow_rows[id].is_empty()
         });
         let mut has_row = tree_answer::with_chains(wanted, |id| steps[id].parent);
         tree_answer::add_lone(&mut has_row, [0], |id| self.children[id].iter().copied());
@@ -135,7 +136,7 @@ impl<'r, 'a> Tree<'r, 'a> {
         let mut children: Vec<TreeRow> = (with_rows.into_iter())
             .map(|child| self.row(child))
             .collect();
-        for unresolved in &self.unresolved_rows[id] {
+        for unresolved in &self.cant_follow_rows[id] {
             let (address, name) = match unresolved.target {
                 Some(target) => (format!("{target:#x}"), "(outside any function)"),
                 None => (String::new(), "(through a pointer)"),

@@ -5,9 +5,9 @@ use std::io::Write;
 use anyhow::Result;
 use serde::Serialize;
 
-use super::Reach;
+use super::{CantFollow, Reach};
 use crate::commands::{json, range_check};
-use crate::graph::{Node, Unresolved};
+use crate::graph::Node;
 
 #[derive(Serialize)]
 struct ReachJson<'a> {
@@ -128,7 +128,8 @@ impl Reach<'_, '_> {
         // With `--to`, a call to a known address in its ranges, as to a
         // chip's ROM, is a whole answer, as `callees --to` counts it: only
         // a call through a pointer leaves it open.
-        let followed = |unresolved: &Unresolved| !self.to.is_empty() && unresolved.target.is_some();
+        let known_target_in_to =
+            |cant: &CantFollow| !self.to.is_empty() && cant.found.target.is_some();
         let answer = ReachJson {
             symbol: json::Symbol::new(binary, Node::Item(self.symbol)),
             to: range_check::json_far_side(&self.to),
@@ -136,16 +137,14 @@ impl Reach<'_, '_> {
             data_bytes: bytes.data,
             blocks,
             items,
-            unresolved: self
-                .unresolved
-                .iter()
-                .map(|unresolved| UnresolvedJson {
-                    caller: item(Node::Item(unresolved.from)),
-                    call: json::Unresolved::new(unresolved),
+            unresolved: (self.cant_follow.iter())
+                .map(|cant| UnresolvedJson {
+                    caller: item(Node::Item(cant.found.from)),
+                    call: json::Unresolved::new(&cant.found),
                 })
                 .collect(),
             unreadable: json::items(binary, &self.unreadable),
-            complete: self.unresolved.iter().all(followed) && self.unreadable.is_empty(),
+            complete: self.cant_follow.iter().all(known_target_in_to) && self.unreadable.is_empty(),
         };
         json::write(&answer, out)
     }

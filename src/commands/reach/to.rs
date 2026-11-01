@@ -8,7 +8,7 @@ use anyhow::Result;
 use super::tree::Tree;
 use super::{COLUMNS, Step, Text};
 use crate::commands::{range_check, text};
-use crate::graph::{Node, ReferenceKind, Unfollowed, Unresolved};
+use crate::graph::{Node, ReferenceKind, Unfollowed};
 use crate::render::{Align, Table};
 
 impl Text<'_, '_> {
@@ -27,13 +27,7 @@ impl Text<'_, '_> {
             .collect();
         let bytes = text::code_and_data(reach.bytes(counted.iter().copied()));
         let ranges = range_check::ranges_text(binary, &reach.to, self.all);
-        // Counted as the rows show them: a tree has the veneers that the
-        // other rows step over.
-        let unknown: Vec<&Unresolved> = if self.tree {
-            reach.unresolved.iter().collect()
-        } else {
-            reach.unfollowed.iter().map(|u| &u.unresolved).collect()
-        };
+        let cant_follow = self.counted_cant_follow();
         let mut lead = match (symbol_in_to, &others[..]) {
             (true, []) => {
                 format!("{name} takes {bytes} in {ranges}, and reaches nothing else there")
@@ -46,7 +40,9 @@ impl Text<'_, '_> {
                 "{name} and the {} it reaches in {ranges} take {bytes}",
                 text::count_text(binary, &others)
             ),
-            (false, []) if !unknown.is_empty() => format!("{name} reaches no items in {ranges}"),
+            (false, []) if !cant_follow.is_empty() => {
+                format!("{name} reaches no items in {ranges}")
+            }
             (false, []) if reach.unreadable.is_empty() => {
                 format!("{name} reaches nothing in {ranges}.")
             }
@@ -59,12 +55,12 @@ impl Text<'_, '_> {
                 if others.len() == 1 { "takes" } else { "take" }
             ),
         };
-        if !unknown.is_empty() {
+        if !cant_follow.is_empty() {
             // A call through a pointer may go anywhere, but one to an
             // address that the code names goes there.
-            let go = if unknown.iter().any(|u| u.target.is_none()) {
+            let go = if cant_follow.iter().any(|u| u.target.is_none()) {
                 "may go"
-            } else if unknown.len() == 1 {
+            } else if cant_follow.len() == 1 {
                 "goes"
             } else {
                 "go"
@@ -72,10 +68,10 @@ impl Text<'_, '_> {
             let joint = if counted.is_empty() { ", but" } else { ";" };
             lead += &format!(
                 "{joint} elfq can't follow {}, which {go} there",
-                text::calls_and_jumps(unknown.iter().copied())
+                text::calls_and_jumps(cant_follow.iter().copied())
             );
         }
-        let listed = !counted.is_empty() || !unknown.is_empty();
+        let listed = !counted.is_empty() || !cant_follow.is_empty();
         if listed {
             lead += ":";
         }
@@ -123,7 +119,7 @@ impl Text<'_, '_> {
         if symbol {
             table.row(with_at(self.symbol_row().into_cells(), &[]));
         }
-        for (unfollowed, sites) in range_check::group_unfollowed(&reach.unfollowed) {
+        for (unfollowed, sites) in range_check::group_unfollowed(&reach.listed()) {
             let sites = self.unfollowed_sites(&unfollowed, sites);
             table.row(with_at(
                 self.unfollowed_row(&unfollowed).into_cells(),

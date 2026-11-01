@@ -41,6 +41,10 @@
 //!   it. Its *via* is the last reference on the chain, from its *parent*.
 //! - The *use* that a row lists ([`Use`]) is that reference, but for the
 //!   target of a veneer, which is listed as called through the veneer.
+//! - A call or jump that elfq *can't follow* ([`CantFollow`]) goes through
+//!   a pointer, or to code outside every item. It is *found* as the code
+//!   makes it, and *listed* as the rows list it: a veneer's jump as the
+//!   call to the veneer.
 //! - The *counted* steps are those whose bytes the answer adds up: every
 //!   one, or with `--to`, those in its ranges ([`Reach::counted`]).
 //! - The steps *in the answer* are those that the tree and the JSON have:
@@ -256,11 +260,7 @@ struct Reach<'g, 'a> {
     /// but for the jump in a PLT's header, which goes to the dynamic
     /// loader, and with `--to`, for those that can't go to its ranges. In
     /// the order of the steps they are in, then by site.
-    unresolved: Vec<Unresolved>,
-    /// The same, as the text lists them: the jump in a veneer to code
-    /// outside every item as the call to the veneer, as `callees` lists it
-    /// for ranges.
-    unfollowed: Vec<Unfollowed>,
+    cant_follow: Vec<CantFollow>,
     /// The functions SYMBOL reaches whose end elfq doesn't know, in the
     /// order of the steps.
     unreadable: Vec<usize>,
@@ -312,6 +312,16 @@ struct Step {
     /// Whether it is a function that nothing SYMBOL reaches calls (see
     /// `ItemJson::through_pointer` in `json.rs`).
     through_pointer: bool,
+}
+
+/// A call or jump in what SYMBOL reaches that elfq can't follow.
+#[derive(Clone, Copy)]
+struct CantFollow {
+    /// As the code makes it, which the tree and the JSON list.
+    found: Unresolved,
+    /// As the rows list it: a veneer's jump to code outside every item as
+    /// the call to the veneer, as `callees` lists it for ranges.
+    listed: Unfollowed,
 }
 
 /// How the text lists the use of an item that reaches it: the use on its
@@ -367,7 +377,7 @@ impl<'g, 'a> Reach<'g, 'a> {
     /// code that elfq can't read, which may.
     fn outcome(&self) -> Outcome {
         let found = !self.counted().is_empty()
-            || !self.unresolved.is_empty()
+            || !self.cant_follow.is_empty()
             || !self.unreadable.is_empty();
         if !self.to.is_empty() && found {
             Outcome::Crossed
@@ -417,16 +427,16 @@ impl<'g, 'a> Reach<'g, 'a> {
     /// follow that may go there, and every step on their chains from
     /// SYMBOL.
     fn in_answer(&self) -> Vec<bool> {
-        let unfollowed: HashSet<Node> = self
-            .unresolved
+        let with_cant_follow: HashSet<Node> = self
+            .cant_follow
             .iter()
-            .map(|unresolved| Node::Item(unresolved.from))
+            .map(|cant| Node::Item(cant.found.from))
             .collect();
         let mut in_answer = vec![self.to.is_empty(); self.steps.len()];
         in_answer[0] = true;
         // A step comes after its parent, so its children come first.
         for (id, step) in self.steps.iter().enumerate().rev() {
-            if in_answer[id] || self.in_to(step) || unfollowed.contains(&step.node) {
+            if in_answer[id] || self.in_to(step) || with_cant_follow.contains(&step.node) {
                 in_answer[id] = true;
                 if let Some(parent) = step.parent {
                     in_answer[parent] = true;
@@ -438,11 +448,15 @@ impl<'g, 'a> Reach<'g, 'a> {
 
     /// The calls and jumps to code outside every item, which the rows list.
     fn outside(&self) -> Vec<Unfollowed> {
-        self.unfollowed
-            .iter()
-            .filter(|unfollowed| unfollowed.unresolved.target.is_some())
-            .copied()
+        self.listed()
+            .into_iter()
+            .filter(|listed| listed.unresolved.target.is_some())
             .collect()
+    }
+
+    /// The calls and jumps that elfq can't follow, as the rows list them.
+    fn listed(&self) -> Vec<Unfollowed> {
+        self.cant_follow.iter().map(|cant| cant.listed).collect()
     }
 
     /// Whether SYMBOL reaches nothing that a row would list, so that the
@@ -453,6 +467,17 @@ impl<'g, 'a> Reach<'g, 'a> {
 }
 
 impl Text<'_, '_> {
+    /// The calls and jumps that elfq can't follow, as the answer counts
+    /// them: as the code makes them for a tree, which has the veneers that
+    /// the rows by block step over, and as the rows list them otherwise.
+    fn counted_cant_follow(&self) -> Vec<&Unresolved> {
+        let cant_follow = self.reach.cant_follow.iter();
+        match self.tree {
+            true => cant_follow.map(|cant| &cant.found).collect(),
+            false => cant_follow.map(|cant| &cant.listed.unresolved).collect(),
+        }
+    }
+
     /// Writes the answer: the items by block, or with `--tree`, as a tree
     /// drawn with branches.
     fn write(&self, out: &mut dyn Write) -> Result<()> {

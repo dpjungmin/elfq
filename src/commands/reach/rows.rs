@@ -26,12 +26,13 @@ impl Text<'_, '_> {
         if reach.reaches_nothing() {
             // Any calls and jumps elfq can't follow are in SYMBOL, through
             // pointers.
+            let found: Vec<Unresolved> = reach.cant_follow.iter().map(|cant| cant.found).collect();
             return FlatAnswer {
                 lead: nothing_reached_lines(
                     name,
                     reach.self_use,
                     reach.plt_header,
-                    &reach.unresolved,
+                    &found,
                     self.all,
                 ),
                 ..FlatAnswer::default()
@@ -60,21 +61,15 @@ impl Text<'_, '_> {
         if imports > 0 {
             lead += &format!(", plus {}", text::plural(imports, "import", "imports"));
         }
-        // Counted as the rows show them: a tree has the veneers that the
-        // rows by block step over.
-        let unfollowed: Vec<&Unresolved> = if self.tree {
-            reach.unresolved.iter().collect()
-        } else {
-            reach.unfollowed.iter().map(|u| &u.unresolved).collect()
-        };
-        if !unfollowed.is_empty() {
-            lead += &format!("; elfq can't follow {}", text::calls_and_jumps(unfollowed));
+        let cant_follow = self.counted_cant_follow();
+        if !cant_follow.is_empty() {
+            lead += &format!("; elfq can't follow {}", text::calls_and_jumps(cant_follow));
         }
 
         let pointers: Vec<&Unresolved> = reach
-            .unfollowed
+            .cant_follow
             .iter()
-            .map(|unfollowed| &unfollowed.unresolved)
+            .map(|cant| &cant.listed.unresolved)
             .filter(|unresolved| unresolved.target.is_none())
             .collect();
         let mut notes = Vec::new();
