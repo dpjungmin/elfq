@@ -401,18 +401,23 @@ impl Walker<'_> {
             return Step::Final(End::Main(address));
         }
         let after_call = std::mem::take(&mut run.after_call);
-        let decoded = self.decode(address);
-        let Some((first, second, effect)) = decoded.filter(|_| !self.is_data(run.bounds, address))
-        else {
+        let decoded = decode_at(self.program, address);
+        let Some(instruction) = decoded.filter(|_| !self.is_data(run.bounds, address)) else {
             return no_code(address, after_call);
         };
+        let Decoded {
+            first,
+            second,
+            effect,
+            ..
+        } = instruction;
         // `bkpt` straight after a call, as after the call to `exit` in the
         // Pico SDK's startup, which faults without a debugger, but for
         // `bkpt 0xab`, which asks a debugger for semihosting.
         if after_call && first & 0xff00 == 0xbe00 && first & 0xff != 0xab {
             return no_code(address, after_call);
         }
-        let next = address + if is_wide(first) { 4 } else { 2 };
+        let next = instruction.next();
         if let Flow::It { firstcond, mask } = effect.flow {
             run.it = (firstcond << 4 | mask) as u8;
             return Step::Next(next);
@@ -458,7 +463,7 @@ impl Walker<'_> {
                         How::Register(register),
                     ),
                     // svc
-                    _ if !is_wide(first) => (None, How::Supervisor),
+                    _ if instruction.size() == 2 => (None, How::Supervisor),
                     _ => match branch(address + 4, first, second) {
                         Some(CodeReferenceKind::Call(target)) => (Some(target), How::Direct),
                         _ => (None, How::Direct),
@@ -741,11 +746,6 @@ impl Walker<'_> {
         None
     }
 
-    /// The instruction at `address`: its two halves and what it does.
-    fn decode(&self, address: u64) -> Option<(u16, u16, Effect)> {
-        decode_at(self.program, address)
-    }
-
     /// Whether `address`, in the function at `bounds`, holds data that the
     /// function's code reads, such as a literal pool, which compilers put
     /// after its last instruction, as after a call that doesn't return.
@@ -832,12 +832,47 @@ impl Run {
     }
 }
 
-/// The instruction at `address` in `program`: its two halves and what it
-/// does.
-fn decode_at(program: &dyn Program, address: u64) -> Option<(u16, u16, Effect)> {
+/// An instruction that the walk reads: where it is, its two halves, and
+/// what it does.
+#[derive(Clone, Copy)]
+struct Decoded {
+    address: u64,
+    first: u16,
+    /// 0 for a 16-bit instruction.
+    second: u16,
+    effect: Effect,
+}
+
+impl Decoded {
+    /// How many bytes it takes: 2, or 4 for a 32-bit instruction.
+    fn size(&self) -> u64 {
+        if is_wide(self.first) { 4 } else { 2 }
+    }
+
+    /// Where the instruction after it starts.
+    fn next(&self) -> u64 {
+        self.address + self.size()
+    }
+}
+
+/// The instruction at `address` in `program`.
+fn decode_at(program: &dyn Program, address: u64) -> Option<Decoded> {
     let code = program.code(address)?;
     let half = |at: usize| Some(u16::from_le_bytes([*code.get(at)?, *code.get(at + 1)?]));
     let first = half(0)?;
     let second = if is_wide(first) { half(2)? } else { 0 };
-    Some((first, second, decode::decode(address, first, second)?))
+    Some(Decoded {
+        address,
+        first,
+        second,
+        effect: decode::decode(address, first, second)?,
+    })
+}
+
+/// The instructions from `start` on, one after another, up to the first
+/// that doesn't decode.
+fn straight_line(program: &dyn Program, start: u64) -> impl Iterator<Item = Decoded> + '_ {
+    std::iter::successors(decode_at(program, start), move |instruction| {
+        decode_at(program, instruction.next())
+    })
 }

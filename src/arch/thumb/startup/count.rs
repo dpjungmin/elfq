@@ -6,12 +6,12 @@ use std::collections::{BTreeSet, HashSet};
 use std::rc::Rc;
 
 use crate::arch::startup::{Event, LoopStore, Source, Store};
+use crate::arch::thumb::SP;
 use crate::arch::thumb::decode::Flow;
-use crate::arch::thumb::{SP, is_wide};
 
 use super::loops::FoundLoop;
 use super::walk_state::{Compare, Flags, Path, Visit, forget_changes};
-use super::{CANDIDATES, Frame, MOST_PASSES, MOST_TIMES, Run, Walker};
+use super::{CANDIDATES, Frame, MOST_PASSES, MOST_TIMES, Run, Walker, decode_at};
 
 /// A loop whose code the walk goes through time by time to count how many
 /// times it runs (see [`Walker::count`]).
@@ -241,8 +241,8 @@ impl Walker<'_> {
         let FoundLoop {
             head, back, before, ..
         } = *found;
-        let (first, _, effect) = self.decode(back)?;
-        match effect.flow {
+        let branch = decode_at(self.program, back)?;
+        match branch.effect.flow {
             Flow::Branch { target, .. } if target == head => {}
             _ => return None,
         }
@@ -259,7 +259,7 @@ impl Walker<'_> {
             .collect();
         Some(Counting {
             back,
-            next: back + if is_wide(first) { 4 } else { 2 },
+            next: branch.next(),
             code,
             ways_out,
             stopped: None,

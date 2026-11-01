@@ -5,10 +5,10 @@
 
 use crate::arch::startup::{Call, End, Event, How, Through};
 use crate::arch::thumb::decode::{Effect, Flow, Operation, Registers};
-use crate::arch::thumb::{ARGUMENTS, CALL_CLOBBERS, LR, SP, is_wide};
+use crate::arch::thumb::{ARGUMENTS, CALL_CLOBBERS, LR, SP};
 
 use super::walk_state::{Alternative, Flags, Path, forget_changes, set_unknown};
-use super::{Frame, Run, Step, Walker};
+use super::{Frame, Run, Step, Walker, decode_at};
 
 /// What code may change, as far as the walk can tell without going
 /// through it (see [`Walker::loop_writes`]).
@@ -52,13 +52,14 @@ impl Walker<'_> {
                 address += 2;
                 continue;
             }
-            let Some((first, _, effect)) = self.decode(address) else {
+            let Some(instruction) = decode_at(self.program, address) else {
                 return Changes {
                     registers: Registers::MAX,
                     stores: true,
                     results: ARGUMENTS as u8,
                 };
             };
+            let effect = instruction.effect;
             changes.registers |= effect.writes;
             changes.results |= results(&effect);
             let leaves = match effect.flow {
@@ -76,7 +77,7 @@ impl Walker<'_> {
                 effect.operation,
                 Operation::Store { .. } | Operation::Push { .. }
             );
-            address += if is_wide(first) { 4 } else { 2 };
+            address = instruction.next();
         }
         changes
     }

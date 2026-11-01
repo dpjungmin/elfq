@@ -10,8 +10,8 @@
 use std::rc::Rc;
 
 use crate::arch::startup::{End, Event, Loop, LoopStore, Runs};
+use crate::arch::thumb::SP;
 use crate::arch::thumb::decode::{Flow, Operation, When};
-use crate::arch::thumb::{SP, is_wide};
 
 use super::calls::Changes;
 use super::count::{Counted, forget_stored};
@@ -21,7 +21,7 @@ use super::execute::holds;
 use super::walk_state::{
     Flags, Path, Visit, forget_changes, forget_words, set_unknown, stored_since,
 };
-use super::{Frame, MOST_TIMES, NESTING, RUNS_INTO, Run, Walker};
+use super::{Frame, MOST_TIMES, NESTING, RUNS_INTO, Run, Walker, decode_at, straight_line};
 
 impl Walker<'_> {
     /// Whether the walk went through code of the function that holds
@@ -47,13 +47,13 @@ impl Walker<'_> {
         let bounds = self.program.function_at(target);
         let mut address = target;
         while address < start && start - address <= RUNS_INTO {
-            let Some((first, _, effect)) = self.decode(address) else {
+            let Some(instruction) = decode_at(self.program, address) else {
                 return false;
             };
-            if !matches!(effect.flow, Flow::Next) || self.is_data(bounds, address) {
+            if !matches!(instruction.effect.flow, Flow::Next) || self.is_data(bounds, address) {
                 return false;
             }
-            address += if is_wide(first) { 4 } else { 2 };
+            address = instruction.next();
         }
         address == start
     }
@@ -200,8 +200,7 @@ impl Walker<'_> {
     /// Whether the branch back at `back` goes back to the loop's head, as
     /// the walk is there at the end of `run`, when it can tell.
     pub(super) fn goes_back(&self, run: &Run, back: u64) -> Option<bool> {
-        let (_, _, effect) = self.decode(back)?;
-        let Flow::Branch { when, .. } = effect.flow else {
+        let Flow::Branch { when, .. } = decode_at(self.program, back)?.effect.flow else {
             return None;
         };
         // In an `it` block, as `blt` at the end of `ittt lt` is.
@@ -233,12 +232,12 @@ impl Walker<'_> {
         bounds: Option<(u64, u64)>,
     ) -> Option<u64> {
         let lowest = bounds.map_or(site.saturating_sub(0x400), |(start, _)| start);
-        let mut address = start;
-        for _ in 0..16 {
+        for instruction in straight_line(self.program, start).take(16) {
+            let address = instruction.address;
             if address >= start + 64 {
                 return None;
             }
-            let (first, _, effect) = self.decode(address)?;
+            let effect = instruction.effect;
             match effect.flow {
                 Flow::Branch {
                     target,
@@ -259,7 +258,6 @@ impl Walker<'_> {
                 _ if matches!(effect.operation, Operation::Pop { .. }) => return None,
                 _ => {}
             }
-            address += if is_wide(first) { 4 } else { 2 };
         }
         None
     }
@@ -274,10 +272,10 @@ impl Walker<'_> {
             if address >= site {
                 return address == site;
             }
-            let Some((first, _, effect)) = self.decode(address) else {
+            let Some(instruction) = decode_at(self.program, address) else {
                 return false;
             };
-            let goes_on = match effect.flow {
+            let goes_on = match instruction.effect.flow {
                 Flow::Next | Flow::It { .. } => true,
                 Flow::Branch { target, when } => {
                     when != When::Always && site < target && target <= body
@@ -287,7 +285,7 @@ impl Walker<'_> {
             if !goes_on {
                 return false;
             }
-            address += if is_wide(first) { 4 } else { 2 };
+            address = instruction.next();
         }
         false
     }
