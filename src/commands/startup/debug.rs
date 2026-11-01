@@ -8,13 +8,13 @@ use std::io::Write;
 
 use anyhow::{Result, bail};
 
-use super::Outcome;
 use crate::arch::startup::{self, End, Event, How, Start, Through};
 use crate::binary::{Binary, ItemKind};
+use crate::commands::Outcome;
 use crate::render::{Align, Table};
 
 /// Answers `elfq FILE debug walk`.
-pub fn run(binary: &Binary, out: &mut dyn Write) -> Result<Outcome> {
+pub(in crate::commands) fn run(binary: &Binary, out: &mut dyn Write) -> Result<Outcome> {
     let code = binary
         .instruction_set()
         .and_then(|set| set.startup_code(binary));

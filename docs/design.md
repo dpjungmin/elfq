@@ -1455,8 +1455,8 @@ table (`vector_table::find`).
    and `run` returns `Outcome::Problems`, for exit status 1, when there
    is a problem.
 
-`elfq FILE debug walk` (`commands/debug_walk.rs`) does only steps 2 to 4,
-from the reset handler, and lists the events.
+`elfq FILE debug walk` (`commands/startup/debug.rs`) does only steps 2 to
+4, from the reset handler, and lists the events.
 
 ## Dependencies
 

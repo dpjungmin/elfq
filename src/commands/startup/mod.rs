@@ -29,6 +29,8 @@
 //! - `text.rs` and `json.rs` write the answer.
 //!
 //! The unit tests build their walks by hand, with `fixtures.rs`.
+//! `debug.rs` answers `elfq FILE debug walk`, which lists the walk's
+//! events.
 //!
 //! Names mean the same across these files. `ram` is the sections that
 //! startup code sets up (`RamSections`). `section` is a section, as an
@@ -44,6 +46,7 @@
 //! docs/design.md's "Startup, end to end" follows one run through this
 //! module, `arch::startup`, `arch::thumb::startup` and `binary::startup`.
 
+pub(super) mod debug;
 mod events;
 #[cfg(test)]
 mod fixtures;
