@@ -2,14 +2,86 @@
 //! registers, the condition flags and the words in memory that it can
 //! tell ([`Known`]), what it knew when it first got to an instruction
 //! ([`Visit`]), and the branches whose condition it couldn't tell, which
-//! it may go back to ([`Alternative`]).
+//! it may go back to ([`Alternative`]). Also how many instructions it may
+//! still go through ([`Budget`]), and how a walk that may be dropped puts
+//! back what it changed in the walker ([`Mark`],
+//! [`Walker::with_budget`]).
 
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use crate::arch::startup::Source;
+use crate::arch::startup::{Event, Source};
 use crate::arch::thumb::SP;
 use crate::arch::thumb::decode::{Registers, each};
+
+use super::Walker;
+
+/// How many more instructions the walk may go through: for what it walks,
+/// and on top, to count how many times loops run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Budget {
+    pub(super) walk: usize,
+    pub(super) count: usize,
+}
+
+impl Budget {
+    /// Each part of this budget, at most as much as `other`'s.
+    pub(super) fn min(self, other: Budget) -> Budget {
+        Budget {
+            walk: self.walk.min(other.walk),
+            count: self.count.min(other.count),
+        }
+    }
+
+    /// What is left of this budget after `spent`, at least none.
+    pub(super) fn saturating_sub(self, spent: Budget) -> Budget {
+        Budget {
+            walk: self.walk.saturating_sub(spent.walk),
+            count: self.count.saturating_sub(spent.count),
+        }
+    }
+}
+
+/// What a walk that the walker may drop changes in it, as it was before:
+/// how many events the walk had found, and the lowest the stack pointer
+/// had been (see [`Walker::rewind`]).
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Mark {
+    pub(super) events: usize,
+    pub(super) lowest: Option<u32>,
+}
+
+impl Walker<'_> {
+    /// Where the walk is now, to go back to with [`Walker::rewind`].
+    pub(super) fn mark(&self) -> Mark {
+        Mark {
+            events: self.events.len(),
+            lowest: self.lowest,
+        }
+    }
+
+    /// Drops the events found since `mark`, which it returns, and puts
+    /// back the lowest the stack pointer had been then.
+    pub(super) fn rewind(&mut self, mark: Mark) -> Vec<Event> {
+        self.lowest = mark.lowest;
+        self.events.split_off(mark.events)
+    }
+
+    /// Runs `f` with `budget` in place of the walk's, then puts the walk's
+    /// back. Returns what `f` returns, and what it spent of `budget`, for
+    /// the caller to take from the walk's budget, or not.
+    pub(super) fn with_budget<T>(
+        &mut self,
+        budget: Budget,
+        f: impl FnOnce(&mut Self) -> T,
+    ) -> (T, Budget) {
+        let kept = std::mem::replace(&mut self.budget, budget);
+        let result = f(self);
+        let spent = budget.saturating_sub(self.budget);
+        self.budget = kept;
+        (result, spent)
+    }
+}
 
 /// What the walk knows on the way it goes.
 #[derive(Debug, Clone, Default)]

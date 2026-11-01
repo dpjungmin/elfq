@@ -10,7 +10,7 @@ use crate::arch::thumb::SP;
 use crate::arch::thumb::decode::Flow;
 
 use super::loops::FoundLoop;
-use super::walk_state::{Compare, Flags, Known, Visit, forget_changes};
+use super::walk_state::{Budget, Compare, Flags, Known, Visit, forget_changes};
 use super::{CANDIDATES, Frame, MOST_ITERATIONS, MOST_WALKED_ITERATIONS, Run, Walker, decode_at};
 
 /// A loop whose iterations the walk goes through one by one, as its `mode`
@@ -236,14 +236,21 @@ impl Walker<'_> {
     /// with either it can't tell what the loop's stores do.
     pub(super) fn count(&mut self, run: &Run, frame: Frame, found: &FoundLoop) -> Option<Counted> {
         let counts = (self.open_loops.iter()).any(|open| open.mode == Mode::Count);
-        if counts || self.count_budget == 0 {
+        if counts || self.budget.count == 0 {
             return None;
         }
         let open = self.open_loop(run, found, Mode::Count)?;
         self.open_loops.push(open);
-        let budget = self.budget;
-        let counted = self.count_iterations(frame, found.head, found.before);
-        self.budget = budget;
+        // Counting spends only from the count budget (see
+        // [`Walker::walk_iteration`]), not from the walk's own.
+        let unlimited = Budget {
+            walk: usize::MAX,
+            ..self.budget
+        };
+        let (counted, spent) = self.with_budget(unlimited, |walker| {
+            walker.count_iterations(frame, found.head, found.before)
+        });
+        self.budget.count -= spent.count;
         self.open_loops.pop();
         counted
     }
@@ -366,24 +373,22 @@ impl Walker<'_> {
     /// leaves (see [`OpenLoop`]), for the innermost loop that the walk goes
     /// through iteration by iteration: `None` when it goes past a branch
     /// that the walk can't tell, or the walk can't tell whether the loop
-    /// goes back after it. To count the loop, it doesn't follow calls, and
-    /// its events and instructions don't count for the walk; otherwise,
-    /// they are the walk's.
+    /// goes back after it. To count the loop ([`Mode::Count`]), it follows
+    /// no calls, drops its events and spends from the count budget, as
+    /// [`Walker::count`] sets the walk's own aside; otherwise, its events
+    /// and instructions are the walk's.
     pub(super) fn walk_iteration(
         &mut self,
         frame: Frame,
         head: u64,
         known: Known,
     ) -> Option<IterationEnd> {
-        let events = self.events.len();
-        let lowest = self.lowest;
+        let mark = self.mark();
         let index = self.open_loops.len().checked_sub(1)?;
         let mode = self.open_loops[index].mode;
-        let body = frame.iteration(index, mode, self.count_budget);
+        let body = frame.iteration(index, mode, self.budget.count);
         if mode == Mode::WalkEach {
             self.open_loops[index].carried = known.sources;
-        } else {
-            self.budget = usize::MAX;
         }
         let (end, run) = self.run(head, body, known);
         let open = &mut self.open_loops[index];
@@ -398,9 +403,8 @@ impl Walker<'_> {
         let mut stores = Vec::new();
         let mut others = false;
         if mode == Mode::Count {
-            self.count_budget = self.count_budget.saturating_sub(run.count);
-            self.lowest = lowest;
-            for event in self.events.split_off(events) {
+            self.budget.count = self.budget.count.saturating_sub(run.count);
+            for event in self.rewind(mark) {
                 match event {
                     Event::Store(store) if store.conditional => return None,
                     Event::Store(store) => stores.push(store),

@@ -61,7 +61,7 @@ use count::{Mode, OpenLoop};
 use execute::holds;
 use loops::FoundLoop;
 pub(in crate::arch) use queries::{branches_past, passes_result};
-use walk_state::{Alternative, Compare, Known, Visit};
+use walk_state::{Alternative, Budget, Compare, Known, Visit};
 
 // The limits. The walk spends instructions from two budgets for all of it,
 // one for what it walks and one, on top, for counting loops. Each
@@ -141,10 +141,14 @@ pub(in crate::arch) fn walk(endianness: Endianness, program: &dyn Program, start
         lowest: start.stack_pointer,
         main: start.main,
         events: Vec::new(),
-        budget: BUDGET,
-        count_budget: COUNT_BUDGET,
-        walk_each_budget: WALK_EACH_TOTAL,
-        walk_each_count_budget: WALK_EACH_COUNT_TOTAL,
+        budget: Budget {
+            walk: BUDGET,
+            count: COUNT_BUDGET,
+        },
+        walk_each_left: Budget {
+            walk: WALK_EACH_TOTAL,
+            count: WALK_EACH_COUNT_TOTAL,
+        },
         open_loops: Vec::new(),
         data: HashMap::new(),
         clobbers: HashMap::new(),
@@ -326,16 +330,15 @@ struct Walker<'a> {
     lowest: Option<u32>,
     main: Option<u64>,
     events: Vec<Event>,
-    /// How many more instructions the walk may go through.
-    budget: usize,
-    /// How many more it may go through to count how many times loops run.
-    count_budget: usize,
+    /// How many more instructions the walk may go through, from
+    /// [`BUDGET`] and [`COUNT_BUDGET`]; or while it goes through each
+    /// iteration of a loop, how many more those iterations may.
+    budget: Budget,
     /// What is left of [`WALK_EACH_TOTAL`] and [`WALK_EACH_COUNT_TOTAL`],
-    /// from which the walk takes [`WALK_EACH_BUDGET`] and
-    /// [`WALK_EACH_COUNT_BUDGET`] at most in place of `budget` and
-    /// `count_budget` to go through each iteration of a loop.
-    walk_each_budget: usize,
-    walk_each_count_budget: usize,
+    /// from which each loop that the walk goes through each iteration of
+    /// takes at most [`WALK_EACH_BUDGET`] and [`WALK_EACH_COUNT_BUDGET`]
+    /// as its budget (see [`Walker::walk_each_iteration`]).
+    walk_each_left: Budget,
     /// The loops that the walk goes through iteration by iteration, the
     /// innermost last: one that it counts, or those that it goes through
     /// each iteration of and loops inside them that it counts.
@@ -465,11 +468,11 @@ impl Walker<'_> {
             }
             run.bounds = self.program.function_at(address);
         }
-        if run.count >= frame.limit || self.budget == 0 {
+        if run.count >= frame.limit || self.budget.walk == 0 {
             return Some(Step::Final(End::Budget(address)));
         }
         run.count += 1;
-        self.budget -= 1;
+        self.budget.walk -= 1;
         let visit = run.visit(self.events.len());
         match run.visits.entry(address) {
             Entry::Occupied(_) => return Some(Step::Final(End::Rejoins(address))),
@@ -835,13 +838,19 @@ impl Walker<'_> {
     fn backtrack(&mut self, run: &mut Run, frame: Frame, end: End) -> Option<u64> {
         let stops_short = self.main.is_some() && matches!(end, End::Spins(_) | End::Returns(_));
         let back = frame.depth == 0 && frame.stop.is_none() && (end.is_dead() || stops_short);
-        if !back || self.budget == 0 {
+        if !back || self.budget.walk == 0 {
             return None;
         }
         while let Some(alternative) = run.alternatives.pop() {
             if run.visits.contains_key(&alternative.target) {
                 continue;
             }
+            // Only the events go back to what they were at the branch, not
+            // all that a `Mark` puts back: the way given up still spent
+            // what it spent of the budget, which bounds all that the walk
+            // does, and the stack pointer stays as low as that way took it,
+            // so that stores there count as ones to the stack (see the test
+            // `the_stack_stays_as_low_as_a_way_the_walk_gave_up_took_it`).
             self.events.truncate(alternative.events);
             self.events.push(Event::Backtrack {
                 site: alternative.site,

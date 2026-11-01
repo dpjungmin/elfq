@@ -11,7 +11,7 @@ use crate::arch::thumb::decode::{Effect, Operation, Registers, each};
 
 use super::count::{Mode, first_iteration, line_through};
 use super::loops::FoundLoop;
-use super::walk_state::Known;
+use super::walk_state::{Budget, Known, Mark};
 use super::{Frame, Run, WALK_EACH_BUDGET, WALK_EACH_COUNT_BUDGET, Walker};
 
 /// What a loop that the walk went through each iteration of leaves (see
@@ -49,22 +49,46 @@ impl Walker<'_> {
         found: &FoundLoop,
         runs: u32,
     ) -> Option<Walked> {
-        let FoundLoop { head, before, .. } = *found;
         let open = self.open_loop(run, found, Mode::WalkEach)?;
-        let first = self.events.split_off(before.events);
-        let lowest = self.lowest;
-        // The iterations spend budgets of their own, but in a loop inside
-        // one that the walk goes through each iteration of.
+        // The events of the first time through the code make way for those
+        // of the iterations, and come back if the walk gives up on them.
+        let mark = Mark {
+            events: found.before.events,
+            ..self.mark()
+        };
+        let first = self.events.split_off(mark.events);
+        // The iterations spend a budget of their own, taken from what is
+        // left for all such loops, but in a loop inside one that the walk
+        // goes through each iteration of.
         let outermost = !(self.open_loops.iter()).any(|open| open.mode == Mode::WalkEach);
-        let walk_budgets = (self.budget, self.count_budget);
-        let given = (
-            WALK_EACH_BUDGET.min(self.walk_each_budget),
-            WALK_EACH_COUNT_BUDGET.min(self.walk_each_count_budget),
-        );
-        if outermost {
-            (self.budget, self.count_budget) = given;
-        }
         self.open_loops.push(open);
+        let walked = if outermost {
+            let own = Budget {
+                walk: WALK_EACH_BUDGET,
+                count: WALK_EACH_COUNT_BUDGET,
+            };
+            let given = own.min(self.walk_each_left);
+            let (walked, spent) =
+                self.with_budget(given, |walker| walker.walk_iterations(frame, found, runs));
+            self.walk_each_left = self.walk_each_left.saturating_sub(spent);
+            walked
+        } else {
+            self.walk_iterations(frame, found, runs)
+        };
+        self.open_loops.pop();
+        if walked.is_none() {
+            self.rewind(mark);
+            self.events.extend(first);
+        }
+        walked
+    }
+
+    /// Goes through each of the `runs` iterations of the loop that the walk
+    /// `found`, the innermost of [`Walker::open_loops`], as
+    /// [`Walker::walk_each_iteration`] says, and works out the row of a
+    /// table that each reads.
+    fn walk_iterations(&mut self, frame: Frame, found: &FoundLoop, runs: u32) -> Option<Walked> {
+        let FoundLoop { head, before, .. } = *found;
         let mut known = Known {
             sources: before.sources,
             ..first_iteration(before)
@@ -79,16 +103,14 @@ impl Walker<'_> {
         let mut called = HashMap::new();
         for n in 1..=runs {
             let first_event = self.events.len();
-            let Some(ended) = self.walk_iteration(frame, head, known.clone()) else {
-                break;
-            };
+            let ended = self.walk_iteration(frame, head, known.clone())?;
             if n == 1 {
                 self.learn_code(&ended);
             }
             if ended.again != (n < runs)
                 || !same_calls(&self.events[first_event..], frame.depth, &mut called)
             {
-                break;
+                return None;
             }
             // The words of a row of a table that the iteration reads: those
             // it loads, other than what the iterations so far copy. Its row
@@ -117,22 +139,7 @@ impl Walker<'_> {
                 exit = Some(ended.exit);
             }
         }
-        self.open_loops.pop();
-        if outermost {
-            let spent = (
-                given.0.saturating_sub(self.budget),
-                given.1.saturating_sub(self.count_budget),
-            );
-            self.walk_each_budget = self.walk_each_budget.saturating_sub(spent.0);
-            self.walk_each_count_budget = self.walk_each_count_budget.saturating_sub(spent.1);
-            (self.budget, self.count_budget) = walk_budgets;
-        }
-        let Some(exit) = exit else {
-            self.events.truncate(before.events);
-            self.events.extend(first);
-            self.lowest = lowest;
-            return None;
-        };
+        let exit = exit?;
         // The rows of a table, one after another.
         let rows: Vec<(u32, u32)> = (iterations.iter().zip(1..))
             .filter_map(|(iteration, n)| Some((n, iteration.row?)))

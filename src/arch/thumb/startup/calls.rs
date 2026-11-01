@@ -183,10 +183,14 @@ impl Walker<'_> {
         if self.program.code(target).is_none() {
             return Some(End::LeavesFile { site, target });
         }
-        let (events, budget, lowest) = (self.events.len(), self.budget, self.lowest);
-        let (end, _) = self.walk(target, frame.callee(), run.known.clone());
-        self.events.truncate(events);
-        (self.budget, self.lowest) = (budget, lowest);
+        let mark = self.mark();
+        let ((end, _), spent) = self.with_budget(self.budget, |walker| {
+            walker.walk(target, frame.callee(), run.known.clone())
+        });
+        // The instructions it goes through don't count for the walk, but
+        // what it spends to count loops does.
+        self.budget.count -= spent.count;
+        self.rewind(mark);
         end.filter(|end| end.is_dead())
     }
 
