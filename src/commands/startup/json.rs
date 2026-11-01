@@ -96,6 +96,8 @@ struct ProblemRow<'a> {
 struct Note<'a> {
     kind: &'static str,
     sections: Vec<&'a str>,
+    /// Always empty: the key keeps a note's shape as docs/design.md gives
+    /// it.
     items: Vec<Item<'a>>,
     text: String,
 }
@@ -137,10 +139,7 @@ pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
             site: address(step.site),
             does: step.does.word(),
             how: step.way.field(),
-            register: match step.way {
-                super::steps::Way::RegisterCall(register) => Some(text::register_name(register)),
-                _ => None,
-            },
+            register: step.way.register().map(text::register_name),
             function: step.function.and_then(item),
             veneer: step.veneer.map(address),
             inside: item(step.inside),
@@ -183,7 +182,7 @@ pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
                 (Kind::RunsBeforeCopy, Some(first)) if !p.steps.is_empty() => {
                     let chain = &p.chains[first];
                     (chain[..chain.len() - 1].iter())
-                        .filter(|&&a| firmware.veneer_target(a).is_none())
+                        .filter(|&&a| !firmware.is_veneer(a))
                         .map(|&a| firmware.name(a))
                         .collect()
                 }

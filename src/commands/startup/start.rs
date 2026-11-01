@@ -8,10 +8,10 @@ use std::path::Path;
 
 use anyhow::{Result, bail};
 
-use super::Firmware;
 use super::events::Events;
 use super::ram_sections::RamSections;
-use crate::arch::startup::{Call, Code, DEPTH, End, Event, How, Start, Walk};
+use super::{Firmware, function_holding};
+use crate::arch::startup::{Call, Code, DEPTH, End, Event, How, Start, Walk, loop_head};
 use crate::binary::{Binary, ItemKind};
 use crate::debuginfo;
 
@@ -32,11 +32,7 @@ impl Reset {
     /// The reset handler that the vector table gives, when it is in a
     /// function, or else the entry point, when that is.
     pub fn find(path: &Path, binary: &Binary) -> Result<Reset> {
-        let in_function = |address| {
-            binary
-                .item_at(address)
-                .is_some_and(|index| binary.items[index].kind == ItemKind::Function)
-        };
+        let in_function = |address| function_holding(binary, address).is_some();
         let table = binary.vector_table.as_ref();
         let stack_pointer =
             table.and_then(|table| binary.pointer_at(table.address).map(|word| word as u32));
@@ -220,10 +216,7 @@ fn guess(firmware: &Firmware, ram: &RamSections, reset: &Reset) -> Option<Main> 
     let last_site = last_call.site;
     // 2.
     let back = match walk.end {
-        End::Loops(site) => walk.events.iter().rev().find_map(|event| match event {
-            Event::Loop(l) if l.back == site => Some(l.head),
-            _ => None,
-        }),
+        End::Loops(site) => loop_head(&walk.events, site),
         End::Rejoins(at) => Some(at),
         End::Main(_)
         | End::Spins(_)

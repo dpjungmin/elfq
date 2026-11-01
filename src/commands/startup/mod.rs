@@ -55,7 +55,7 @@ mod steps;
 mod text;
 mod unread;
 
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::io::Write;
 use std::path::Path;
 
@@ -257,6 +257,11 @@ impl<'a> Firmware<'a> {
         }
     }
 
+    /// Whether a veneer starts at `address`.
+    fn is_veneer(&self, address: u64) -> bool {
+        self.veneer_target(address).is_some()
+    }
+
     /// Where a veneer at `address` jumps on to, when there is one.
     fn veneer_target(&self, address: u64) -> Option<u64> {
         let veneer = self.function_at(address)?;
@@ -283,30 +288,63 @@ impl<'a> Firmware<'a> {
     }
 
     /// The functions that the function at `address` calls, or jumps to,
-    /// in the order it first does, each with where it does: as `callees`
-    /// lists them.
-    fn callees(&self, address: u64) -> Vec<(u64, Vec<u64>)> {
-        let Some(item) = self.function_at(address) else {
-            return Vec::new();
-        };
-        let mut callees: Vec<(u64, Vec<u64>)> = Vec::new();
-        let mut index: HashMap<u64, usize> = HashMap::new();
-        for reference in self.graph.references_from(item) {
-            let Node::Item(to) = reference.to else {
-                continue;
-            };
-            let to = &self.binary.items[to];
-            if !reference.kind.is_call() || to.kind != ItemKind::Function {
-                continue;
-            }
-            let row = *index.entry(to.address).or_insert_with(|| {
-                callees.push((to.address, Vec::new()));
-                callees.len() - 1
-            });
-            callees[row].1.push(reference.site);
-        }
-        callees
+    /// each once, in the order it first does.
+    fn callees(&self, address: u64) -> Vec<u64> {
+        let mut seen = HashSet::new();
+        (self.calls_from(address))
+            .map(|call| call.callee)
+            .filter(|&callee| seen.insert(callee))
+            .collect()
     }
+
+    /// Where the function at `address` calls, or jumps to, the function at
+    /// `callee`.
+    fn call_sites(&self, address: u64, callee: u64) -> Vec<u64> {
+        (self.calls_from(address))
+            .filter(|call| call.callee == callee)
+            .map(|call| call.site)
+            .collect()
+    }
+
+    /// The calls and jumps from the function at `address` to functions, in
+    /// the order of their sites.
+    fn calls_from(&self, address: u64) -> impl Iterator<Item = Call> + 'a {
+        let references = match self.function_at(address) {
+            Some(item) => self.graph.references_from(item),
+            None => &[],
+        };
+        let binary = self.binary;
+        references
+            .iter()
+            .filter_map(move |reference| match reference.to {
+                Node::Item(to)
+                    if reference.kind.is_call() && binary.items[to].kind == ItemKind::Function =>
+                {
+                    Some(Call {
+                        callee: binary.items[to].address,
+                        site: reference.site,
+                    })
+                }
+                Node::Item(_) | Node::Import(_) => None,
+            })
+    }
+}
+
+/// The address of the function whose code holds `address`, when a
+/// function's does.
+fn function_holding(binary: &Binary, address: u64) -> Option<u64> {
+    let index = binary.item_at(address)?;
+    let item = &binary.items[index];
+    (item.kind == ItemKind::Function).then_some(item.address)
+}
+
+/// A call or jump from one function to another (see
+/// [`Firmware::calls_from`]).
+struct Call {
+    /// The address of the function it goes to.
+    callee: u64,
+    /// Where the call is.
+    site: u64,
 }
 
 /// Where a call goes (see [`Firmware::resolve`]).

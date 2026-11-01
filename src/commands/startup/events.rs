@@ -47,7 +47,7 @@ impl<'w> Events<'w> {
                 call.how == How::Jump
                     && event > 0
                     && matches!(&list[event - 1], Event::Call(before) if before.target == Some(start))
-                    && firmware.veneer_target(start).is_some()
+                    && firmware.is_veneer(start)
             })
             .collect();
         let mut open: Vec<u32> = Vec::new();

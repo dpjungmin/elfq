@@ -26,9 +26,8 @@ use super::pieces::{Home, Piece, Pieces};
 use super::ram_sections::{Cover, Match, RamSections, Region};
 use super::start::{Main, MainFrom};
 use super::unread::{loop_calls, loop_repeats, loop_targets, own_stores, unread_walked_loops};
-use super::{Facts, Firmware};
+use super::{Facts, Firmware, function_holding};
 use crate::arch::startup::{Call, End, Event, How, Loop, Store};
-use crate::binary::ItemKind;
 
 /// What a step does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,6 +99,23 @@ impl Way {
             Way::Conditional => "conditional call",
             Way::Deep => "deep call",
             Way::Outside(_) | Way::Stop(_) => "stop",
+        }
+    }
+
+    /// The register that a call through a register goes through.
+    pub fn register(self) -> Option<u16> {
+        match self {
+            Way::RegisterCall(register) => Some(register),
+            Way::Call
+            | Way::TailCall
+            | Way::Inlined
+            | Way::Loop
+            | Way::Store
+            | Way::SupervisorCall
+            | Way::Conditional
+            | Way::Deep
+            | Way::Outside(_)
+            | Way::Stop(_) => None,
         }
     }
 }
@@ -642,10 +658,7 @@ fn add_end(facts: &Facts, steps: &mut Vec<Step>) {
     } = *facts;
     let count = events.list.len();
     if end.stops_short() {
-        let function = firmware
-            .item(end.site())
-            .filter(|&index| firmware.binary.items[index].kind == ItemKind::Function)
-            .map_or(reset.address, |index| firmware.binary.items[index].address);
+        let function = function_holding(firmware.binary, end.site()).unwrap_or(reset.address);
         let may = not_set_up(ram, steps);
         steps.push(Step::stopped_short(
             count,
@@ -657,6 +670,9 @@ fn add_end(facts: &Facts, steps: &mut Vec<Step>) {
     } else if let End::Main(site) = end
         && main.is_some_and(|main| main.from == MainFrom::DebugInfo)
     {
+        // Debug info puts main's code in the function that it was inlined
+        // into, so the item at the site is taken as that function, whatever
+        // its kind.
         let inside = firmware
             .item(site)
             .map_or(reset.address, |index| firmware.binary.items[index].address);

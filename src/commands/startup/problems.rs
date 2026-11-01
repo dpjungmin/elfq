@@ -328,7 +328,7 @@ pub(super) fn judge(facts: &Facts, steps: &[Step], all: bool) -> Judged {
     for p in &mut problems {
         let section = p.sections[0];
         let plain: Vec<u64> = (p.items.iter().copied())
-            .filter(|&a| firmware.veneer_target(a).is_none())
+            .filter(|&a| !firmware.is_veneer(a))
             .collect();
         if !plain.is_empty() {
             p.items = plain;
@@ -597,7 +597,7 @@ impl EarlyRuns<'_> {
             let mut items: Vec<usize> = Vec::new();
             let (mut addresses, mut indexes) = (HashSet::new(), HashSet::new());
             let mut add = |address: u64| {
-                if !addresses.insert(address) || firmware.veneer_target(address).is_some() {
+                if !addresses.insert(address) || firmware.is_veneer(address) {
                     return;
                 }
                 let Some(index) = firmware.item(address) else {
@@ -690,11 +690,7 @@ impl EarlyRuns<'_> {
             while next < found.len() {
                 let from = found[next].function;
                 let firmware = self.facts.firmware;
-                let callees = (self.callees.entry(from)).or_insert_with(|| {
-                    (firmware.callees(from).into_iter())
-                        .map(|(to, _)| to)
-                        .collect()
-                });
+                let callees = (self.callees.entry(from)).or_insert_with(|| firmware.callees(from));
                 for &to in callees.iter() {
                     if Some(to) != self.main && seen.insert(to) {
                         found.push(Called {
@@ -722,12 +718,10 @@ impl EarlyRuns<'_> {
         }
         let mut last = chain.len() - 2;
         let firmware = self.facts.firmware;
-        while last > 0 && firmware.veneer_target(chain[last]).is_some() {
+        while last > 0 && firmware.is_veneer(chain[last]) {
             last -= 1;
         }
-        (firmware.callees(chain[last]).into_iter())
-            .find(|(to, _)| *to == chain[last + 1])
-            .map_or(Vec::new(), |(_, sites)| sites)
+        firmware.call_sites(chain[last], chain[last + 1])
     }
 }
 

@@ -10,7 +10,7 @@ use super::ram_sections::RamSections;
 use super::start::MainFrom;
 use super::steps::{Does, Step, Way, number};
 use super::{Answer, Facts, Firmware};
-use crate::arch::startup::{End, Event, Through};
+use crate::arch::startup::{End, Through, loop_head};
 use crate::binary::Section;
 use crate::commands::text::{self as house, names_text, plural, shell_quote};
 use crate::render::{Align, Table};
@@ -189,10 +189,7 @@ fn lead(answer: &Answer) -> String {
                 None => "then stops".to_string(),
             },
             End::Loops(site) => {
-                let head = (events.list.iter()).rev().find_map(|event| match event {
-                    Event::Loop(l) if l.back == site => Some(l.head),
-                    _ => None,
-                });
+                let head = loop_head(events.list, site);
                 format!("then loops for good at {:#x}", head.unwrap_or(site))
             }
             End::Rejoins(at) => format!("then runs a loop elfq can't follow at {at:#x}"),
@@ -277,10 +274,7 @@ pub(super) fn sentence(answer: &Answer, p: &Problem) -> String {
             }
             let direct = p.items.iter().all(|a| {
                 let chain = &p.chains[a];
-                (chain.iter())
-                    .filter(|&&c| firmware.veneer_target(c).is_none())
-                    .count()
-                    <= 2
+                (chain.iter()).filter(|&&c| !firmware.is_veneer(c)).count() <= 2
             });
             let verb = match (p.steps.len() == 1, direct) {
                 (true, true) => "calls",
@@ -438,18 +432,9 @@ fn row(answer: &Answer, index: usize, step: &Step) -> Vec<String> {
                 )
             }
             Way::Stop(end) => match end {
-                End::Branches {
-                    through: Through::Register(register),
-                    ..
-                } => format!("a branch through {} in {function}", register_name(register)),
-                End::Branches {
-                    through: Through::Memory,
-                    ..
-                } => format!("a branch through a word in memory in {function}"),
-                End::Branches {
-                    through: Through::Table,
-                    ..
-                } => format!("a jump table in {function}"),
+                End::Branches { through, .. } => {
+                    format!("{} in {function}", branch_noun(through).one)
+                }
                 End::LeavesFile { .. } => format!("a jump out of the file in {function}"),
                 End::Undecoded(_) => format!("code in {function} that elfq can't decode"),
                 End::Rejoins(_) => format!("a loop in {function}"),
@@ -563,11 +548,9 @@ pub(super) fn unread_text(steps: &[Step], indexes: &[usize]) -> String {
     let loops = (unread.iter())
         .filter(|step| matches!(step.way, Way::Loop | Way::Stop(End::Rejoins(_))))
         .count();
-    let registers: Vec<u16> = (unread.iter())
-        .filter_map(|step| match step.way {
-            Way::RegisterCall(register) => Some(register),
-            _ => None,
-        })
+    let registers: Vec<u16> = unread
+        .iter()
+        .filter_map(|step| step.way.register())
         .collect();
     let mut kinds: Vec<String> = Vec::new();
     match loops {
@@ -598,43 +581,18 @@ pub(super) fn unread_text(steps: &[Step], indexes: &[usize]) -> String {
     // Each kind once, for more than one step in the plural.
     let mut groups: Vec<(String, Vec<String>)> = Vec::new();
     for step in &unread {
-        let (one, many) = match step.way {
-            Way::Outside(_) => (
-                "a call outside the file".to_string(),
-                "calls outside the file",
-            ),
+        let noun = |one: &str, many| Noun {
+            one: one.to_string(),
+            many,
+        };
+        let Noun { one, many } = match step.way {
+            Way::Outside(_) => noun("a call outside the file", "calls outside the file"),
             Way::Stop(end) => match end {
-                End::Branches {
-                    through: Through::Register(register),
-                    ..
-                } => (
-                    format!("a branch through {}", register_name(register)),
-                    "branches through registers",
-                ),
-                End::Branches {
-                    through: Through::Memory,
-                    ..
-                } => (
-                    "a branch through a word in memory".to_string(),
-                    "branches through words in memory",
-                ),
-                End::Branches {
-                    through: Through::Table,
-                    ..
-                } => ("a jump table".to_string(), "jump tables"),
-                End::LeavesFile { .. } => (
-                    "a jump out of the file".to_string(),
-                    "jumps out of the file",
-                ),
-                End::Undecoded(_) => (
-                    "code elfq can't decode".to_string(),
-                    "code elfq can't decode",
-                ),
+                End::Branches { through, .. } => branch_noun(through),
+                End::LeavesFile { .. } => noun("a jump out of the file", "jumps out of the file"),
+                End::Undecoded(_) => noun("code elfq can't decode", "code elfq can't decode"),
                 End::Rejoins(_) => continue,
-                _ => (
-                    "code past elfq's budget".to_string(),
-                    "code past elfq's budget",
-                ),
+                _ => noun("code past elfq's budget", "code past elfq's budget"),
             },
             _ => continue,
         };
@@ -664,6 +622,32 @@ pub(super) fn unread_text(steps: &[Step], indexes: &[usize]) -> String {
         steps_text(indexes, false),
         names_text(&kinds, true)
     )
+}
+
+/// A kind of code, as one of it and as several: "a jump table" and "jump
+/// tables".
+struct Noun {
+    one: String,
+    many: &'static str,
+}
+
+/// A branch that the walk can't follow, by what it goes through: "a branch
+/// through r3", and for several, "branches through registers".
+fn branch_noun(through: Through) -> Noun {
+    match through {
+        Through::Register(register) => Noun {
+            one: format!("a branch through {}", register_name(register)),
+            many: "branches through registers",
+        },
+        Through::Memory => Noun {
+            one: "a branch through a word in memory".to_string(),
+            many: "branches through words in memory",
+        },
+        Through::Table => Noun {
+            one: "a jump table".to_string(),
+            many: "jump tables",
+        },
+    }
 }
 
 /// How startup code sets up `section`, with where it is: "copies .data, 4
@@ -712,21 +696,9 @@ pub(super) fn may_text(ram: &RamSections, sections: &[usize]) -> String {
 pub(super) fn other_way(end: End) -> String {
     let site = end.site();
     match end {
-        End::Branches {
-            through: Through::Register(register),
-            ..
-        } => format!(
-            "ends in a branch through {} at {site:#x}",
-            register_name(register)
-        ),
-        End::Branches {
-            through: Through::Memory,
-            ..
-        } => format!("ends in a branch through a word in memory at {site:#x}"),
-        End::Branches {
-            through: Through::Table,
-            ..
-        } => format!("ends in a jump table at {site:#x}"),
+        End::Branches { through, .. } => {
+            format!("ends in {} at {site:#x}", branch_noun(through).one)
+        }
         End::LeavesFile { .. } => format!("jumps out of the file at {site:#x}"),
         End::Undecoded(_) => format!("reaches code elfq can't decode at {site:#x}"),
         End::Spins(_) => format!("spins at {site:#x}"),
