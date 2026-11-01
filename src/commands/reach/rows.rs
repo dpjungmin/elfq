@@ -99,12 +99,12 @@ impl Text<'_, '_> {
             ("SECTIONS", Align::Left),
         ]);
         let steps: Vec<&Step> = reach.steps.iter().collect();
-        for (block, (bytes, sections)) in reach.blocks.iter().zip(reach.blocks_reached(&steps)) {
+        for (block, reached) in reach.blocks.iter().zip(reach.blocks_reached(&steps)) {
             table.row(vec![
                 text::range_argument(block.range),
-                bytes.code.to_string(),
-                bytes.data.to_string(),
-                sections.join(" "),
+                reached.bytes.code.to_string(),
+                reached.bytes.data.to_string(),
+                reached.sections.join(" "),
             ]);
         }
         table
@@ -239,7 +239,7 @@ impl Text<'_, '_> {
     pub(super) fn row(&self, step: &Step) -> FlatRow {
         let binary = self.reach.binary;
         let [address, size] = text::address_and_size(binary, step.node);
-        let used = step.used.as_ref().expect("only SYMBOL has no user");
+        let used = &step.link().used;
         let mark = if step.through_pointer && !self.like_callees_to() {
             " (through a pointer)"
         } else {

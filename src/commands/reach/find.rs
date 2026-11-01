@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::{CantFollow, Reach, Step, StepId, Use};
+use super::{CantFollow, Link, Reach, Step, StepId, Use};
 use crate::binary::{AddressRange, Binary, ItemKind, MemoryBlock, memory_blocks};
 use crate::graph::{
     Graph, ItemsInRanges, Node, Reference, ReferenceKind, RootKind, ShortestPaths, Unfollowed,
@@ -93,7 +93,7 @@ impl<'s> Search<'s> {
     /// SYMBOL first, then depth first, each item's children in the order
     /// that it first uses them.
     fn steps(&self, symbol: Node) -> Vec<Step> {
-        let children = self.children_in_use_order();
+        let children_of_item = self.children_in_use_order();
         let mut steps: Vec<Step> = Vec::new();
         // The steps to add, each with its parent's step, last first.
         let mut next = vec![(symbol, None)];
@@ -101,7 +101,7 @@ impl<'s> Search<'s> {
             let id = steps.len();
             steps.push(self.step(node, parent));
             if let Node::Item(index) = node
-                && let Some(nodes) = children.get(&index)
+                && let Some(nodes) = children_of_item.get(&index)
             {
                 next.extend(nodes.iter().rev().map(|&child| (child, Some(id))));
             }
@@ -109,43 +109,44 @@ impl<'s> Search<'s> {
         steps
     }
 
-    /// The nodes under each item in the tree, those whose chain from
-    /// SYMBOL ends with a reference from it, in the order that it first
-    /// uses them.
+    /// The nodes under each item in the tree, by the item's index in
+    /// [`Binary::items`]: those whose chain from SYMBOL ends with a
+    /// reference from it, in the order that it first uses them. The tree's
+    /// own children are by step (see `Tree::children` in `tree.rs`).
     fn children_in_use_order(&self) -> HashMap<usize, Vec<Node>> {
         let binary = self.binary;
         let nodes = (0..binary.items.len())
             .map(Node::Item)
             .chain((0..binary.imports.len()).map(Node::Import))
             .filter(|&node| self.paths.is_reached(node));
-        let mut children: HashMap<usize, Vec<Node>> = HashMap::new();
+        let mut children_of_item: HashMap<usize, Vec<Node>> = HashMap::new();
         for node in nodes {
             if let Some(via) = self.paths.via(node) {
-                children.entry(via.from).or_default().push(node);
+                children_of_item.entry(via.from).or_default().push(node);
             }
         }
-        for (&parent, nodes) in &mut children {
+        for (&item, nodes) in &mut children_of_item {
             let mut first_use: HashMap<Node, usize> = HashMap::new();
-            for (position, reference) in self.graph.references_from(parent).iter().enumerate() {
+            for (position, reference) in self.graph.references_from(item).iter().enumerate() {
                 first_use.entry(reference.to).or_insert(position);
             }
             nodes.sort_by_key(|node| first_use[node]);
         }
-        children
+        children_of_item
     }
 
     /// The step of `node` under the step `parent`, which is `None` only
     /// for SYMBOL. Whether it is reached through pointers is left for
     /// [`mark_through_pointer`].
     fn step(&self, node: Node, parent: Option<StepId>) -> Step {
-        let via = self.paths.via(node);
-        let sites = via.map_or_else(Vec::new, |via| {
-            self.graph
-                .references_from(via.from)
-                .iter()
+        let link = parent.zip(self.paths.via(node)).map(|(parent, via)| Link {
+            parent,
+            via,
+            sites: (self.graph.references_from(via.from).iter())
                 .filter(|r| r.to == node && r.kind == via.kind)
                 .map(|r| r.site)
-                .collect()
+                .collect(),
+            used: self.used(node, via),
         });
         let block = match node {
             Node::Item(index) => {
@@ -158,10 +159,7 @@ impl<'s> Search<'s> {
         };
         Step {
             node,
-            parent,
-            via,
-            sites,
-            used: via.map(|via| self.used(node, via)),
+            link,
             block,
             through_pointer: false,
         }

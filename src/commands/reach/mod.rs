@@ -302,24 +302,53 @@ struct Text<'r, 'a> {
 type StepId = usize;
 
 /// SYMBOL, or an item or import that it reaches, at its place in the tree.
-/// `parent`, `via` and `used` are `None`, and `sites` is empty, exactly for
-/// SYMBOL, the first step.
 struct Step {
     node: Node,
-    /// The step of the item that uses it on its chain from SYMBOL.
-    parent: Option<StepId>,
-    /// The reference on the chain that reaches it, from its parent.
-    via: Option<Reference>,
-    /// Where its parent uses it as `via` does.
-    sites: Vec<u64>,
-    /// How the text lists the use that reaches it.
-    used: Option<Use>,
+    /// The last link of its chain from SYMBOL: `None` exactly for SYMBOL,
+    /// the first step.
+    link: Option<Link>,
     /// The block of memory that holds it, as an index into
     /// [`Reach::blocks`].
     block: Option<usize>,
     /// Whether it is a function that nothing SYMBOL reaches calls (see
     /// `ItemJson::through_pointer` in `json.rs`).
     through_pointer: bool,
+}
+
+/// The last link of the chain from SYMBOL to a step other than SYMBOL's:
+/// the item before it on the chain, and how that item uses it.
+struct Link {
+    /// The step of the item that uses it on its chain from SYMBOL.
+    parent: StepId,
+    /// The reference on the chain that reaches it, from its parent.
+    via: Reference,
+    /// Where its parent uses it as `via` does.
+    sites: Vec<u64>,
+    /// How the text lists the use that reaches it.
+    used: Use,
+}
+
+impl Step {
+    /// The step of the item that uses it on its chain from SYMBOL, or
+    /// `None` for SYMBOL.
+    fn parent(&self) -> Option<StepId> {
+        self.link.as_ref().map(|link| link.parent)
+    }
+
+    /// The last link of its chain from SYMBOL, for a step that the caller
+    /// knows isn't SYMBOL's, such as one that has a row of its own.
+    fn link(&self) -> &Link {
+        self.link.as_ref().expect("only SYMBOL's step has no link")
+    }
+}
+
+/// What some steps take in one block of memory (see
+/// [`Reach::blocks_reached`]).
+struct BlockReached<'a> {
+    /// The bytes of code and of data that they take there.
+    bytes: CodeAndData,
+    /// The names of the sections that hold them, in address order.
+    sections: Vec<&'a str>,
 }
 
 /// A call or jump in what SYMBOL reaches that elfq can't follow.
@@ -405,9 +434,8 @@ impl<'g, 'a> Reach<'g, 'a> {
         bytes
     }
 
-    /// The bytes of code and of data that `steps` take in each block, and
-    /// the sections that hold them, in address order.
-    fn blocks_reached(&self, steps: &[&Step]) -> Vec<(CodeAndData, Vec<&'a str>)> {
+    /// What `steps` take in each block, in the order of [`Reach::blocks`].
+    fn blocks_reached(&self, steps: &[&Step]) -> Vec<BlockReached<'a>> {
         (0..self.blocks.len())
             .map(|block| {
                 let steps: Vec<&Step> = steps
@@ -425,7 +453,10 @@ impl<'g, 'a> Reach<'g, 'a> {
                     .collect();
                 sections.sort_by_key(|&section| (self.binary.sections[section].address, section));
                 sections.dedup();
-                (bytes, section_names(self.binary, &sections))
+                BlockReached {
+                    bytes,
+                    sections: section_names(self.binary, &sections),
+                }
             })
             .collect()
     }
@@ -446,7 +477,7 @@ impl<'g, 'a> Reach<'g, 'a> {
         for (id, step) in self.steps.iter().enumerate().rev() {
             if in_answer[id] || self.in_to(step) || with_cant_follow.contains(&step.node) {
                 in_answer[id] = true;
-                if let Some(parent) = step.parent {
+                if let Some(parent) = step.parent() {
                     in_answer[parent] = true;
                 }
             }

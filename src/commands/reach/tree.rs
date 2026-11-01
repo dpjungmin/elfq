@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use super::rows::more_size;
-use super::{Step, StepId, Text};
+use super::{StepId, Text};
 use crate::commands::{text, tree_answer};
 use crate::graph::{Node, Unresolved};
 use crate::render::TreeRow;
@@ -51,9 +51,11 @@ impl<'r, 'a> Tree<'r, 'a> {
             TreeRows::Exactly(marked) => marked[id],
         };
         let mut children = vec![Vec::new(); steps.len()];
-        for (id, step) in steps.iter().enumerate().skip(1) {
-            if in_tree(id) {
-                children[step.parent.expect("only SYMBOL has no parent")].push(id);
+        for (id, step) in steps.iter().enumerate() {
+            if let Some(parent) = step.parent()
+                && in_tree(id)
+            {
+                children[parent].push(id);
             }
         }
         let step_of_item: HashMap<usize, StepId> = steps
@@ -106,7 +108,7 @@ impl<'r, 'a> Tree<'r, 'a> {
         let wanted = (0..steps.len()).filter(|&id| {
             id == 0 || largest.contains(&steps[id].node) || !self.cant_follow_rows[id].is_empty()
         });
-        let mut has_row = tree_answer::with_chains(wanted, |id| steps[id].parent);
+        let mut has_row = tree_answer::with_chains(wanted, |id| steps[id].parent());
         tree_answer::add_lone(&mut has_row, [0], |id| self.children[id].iter().copied());
         has_row
     }
@@ -122,14 +124,11 @@ impl<'r, 'a> Tree<'r, 'a> {
     /// them.
     fn row(&self, id: StepId) -> TreeRow {
         let binary = self.text.reach.binary;
-        let Step {
-            node,
-            via,
-            through_pointer,
-            ..
-        } = self.text.reach.steps[id];
+        let step = &self.text.reach.steps[id];
+        let (node, through_pointer) = (step.node, step.through_pointer);
         let [address, size] = text::address_and_size(binary, node);
-        let how = via.map_or("", |via| text::how_column(binary, node, via.kind));
+        let how =
+            (step.link.as_ref()).map_or("", |link| text::how_column(binary, node, link.via.kind));
         let (with_rows, hidden): (Vec<StepId>, Vec<StepId>) = self.children[id]
             .iter()
             .partition(|child| self.has_row.contains(child));

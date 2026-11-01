@@ -96,11 +96,11 @@ impl Reach<'_, '_> {
             .blocks
             .iter()
             .zip(self.blocks_reached(&counted))
-            .map(|(block, (bytes, sections))| BlockJson {
+            .map(|(block, reached)| BlockJson {
                 range: json::Range::new(block.range),
-                code_bytes: bytes.code,
-                data_bytes: bytes.data,
-                sections,
+                code_bytes: reached.bytes.code,
+                data_bytes: reached.bytes.data,
+                sections: reached.sections,
             })
             .collect();
         let ids = self.json_ids();
@@ -115,12 +115,11 @@ impl Reach<'_, '_> {
                     block: step
                         .block
                         .map(|block| json::address(self.blocks[block].range.start)),
-                    how: step.via.map(|via| json::how_field(via.kind)),
-                    sites: json::addresses(&step.sites),
+                    how: (step.link.as_ref()).map(|link| json::how_field(link.via.kind)),
+                    sites: json::addresses(step.link.as_ref().map_or(&[], |link| &link.sites)),
                     through_pointer: step.through_pointer,
                     in_to: (!self.to.is_empty()).then(|| self.in_to(step)),
-                    parent: step
-                        .parent
+                    parent: (step.parent())
                         .map(|parent| ids[parent].expect("a row's parent has one")),
                 })
             })
