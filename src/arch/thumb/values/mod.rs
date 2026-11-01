@@ -10,13 +10,13 @@
 //!
 //! Compilers do this for `long_call` functions, and linkers put stubs called
 //! veneers next to a `bl` that can't reach, which do it for the `bl`. The
-//! sweep in `thumb/mod.rs` reads each instruction on its own, so it sees an
-//! address loaded and a call through a pointer. This module follows the
+//! sweep in `thumb/sweep.rs` reads each instruction on its own, so it sees
+//! an address loaded and a call through a pointer. This module follows the
 //! numbers that a function puts in its registers and on its stack, through
 //! its branches and loops, and reports such a branch as a call or a jump to
-//! each address the register can hold there. It keeps apart the paths
-//! where an `it` block's condition holds and where it doesn't, until the
-//! flags it tests change, since a later `it` block may test them again.
+//! each address the register can hold there. It keeps apart the paths where
+//! an `it` block's condition holds and where it doesn't, until the flags it
+//! tests change, since a later `it` block may test them again.
 //!
 //! It follows the ways compilers and linkers build an address: loading it
 //! from a literal pool, `adr`, `movw` and `movt`, `movs` with shifts and

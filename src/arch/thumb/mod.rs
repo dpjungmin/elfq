@@ -21,6 +21,25 @@
 //! `startup` walks the code from reset, one way through as the processor
 //! runs it, using the same `decode`, to work out what startup code does
 //! (see `arch::startup`).
+//!
+//! # How the files are organized
+//!
+//! - This file has [`scan`], which sweeps a function and then follows its
+//!   registers, the [`Instruction`] that the sweep hands out, and the
+//!   helpers that read the bits of a branch or a load, which the other
+//!   files share.
+//! - `sweep.rs` has the [`Scanner`], which decodes one instruction at a
+//!   time and notes what it refers to, and the sweep that steps through a
+//!   function with it ([`Scanner::sweep`]).
+//! - `values/` follows the registers, and `decode.rs` says what each
+//!   instruction does with them, for `values` and `startup`.
+//! - `bounds.rs` finds where a function's code ends, for finding the
+//!   functions in stripped firmware: `code_size`, `ending`,
+//!   `last_instruction` and `leading_padding`.
+//! - `veneers.rs` recognizes the veneers that linkers add (`is_veneer`).
+//! - `operands.rs` finds the bits that say where something is, for `diff`.
+//! - `layout.rs` cuts a function into instructions and data, for `browse`.
+//! - `startup/` walks the code from reset; its `mod.rs` maps its files.
 
 mod bounds;
 mod decode;

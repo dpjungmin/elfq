@@ -1,3 +1,8 @@
+//! The sweep through one function's Thumb code: the [`Scanner`], which
+//! decodes the instructions that refer to addresses and notes the data
+//! they read, and [`Scanner::sweep`], which steps through the code with it
+//! and skips that data.
+
 use std::collections::BTreeMap;
 
 use object::{Endian, Endianness};
@@ -19,6 +24,15 @@ pub(in crate::arch) fn scan_instructions(
     Scanner::swept(code, address, endianness).references
 }
 
+/// Decodes one function's instructions, one at a time from the start, and
+/// notes what they refer to: a reference for each instruction that calls,
+/// jumps to or uses an address (`references`), and the constants and jump
+/// tables that the instructions read (`data`), which the sweep skips. It
+/// keeps more when asked: the bits that say where something is, when
+/// `operands` is `Some`, for diff. `layout` marks more data before the
+/// sweep, the bytes that `$d` symbols mark; the startup walk reads the data
+/// that a sweep found, to tell a literal pool from code; and browse reads
+/// the tables of addresses it found (`address_tables`).
 pub(super) struct Scanner<'a> {
     code: &'a [u8],
     /// The address of `code[0]`.

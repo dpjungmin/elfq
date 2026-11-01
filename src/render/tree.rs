@@ -54,7 +54,7 @@ pub struct TreeRow {
     /// The rows under it, in the order they are drawn.
     pub children: Vec<TreeRow>,
     /// The item or import that the row is about, if any, which browse
-    /// opens.
+    /// opens. It is all that `render` knows of the graph.
     #[cfg_attr(not(feature = "tui"), expect(dead_code))]
     pub node: Option<Node>,
 }

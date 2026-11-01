@@ -1,3 +1,7 @@
+//! The veneers that GNU ld and LLD add for Cortex-M: stubs next to a call
+//! whose target is too far away, which [`is_veneer`] recognizes by their
+//! instructions.
+
 /// Whether `code` is one of the veneers that GNU ld and LLD add for
 /// Cortex-M. Each jumps to the target; all but LLD's lone `b.w` put the
 /// target, or its offset from pc, in a register, or on the stack where
@@ -80,13 +84,15 @@ enum Names {
     Linkers,
 }
 
-/// The veneers that [`is_veneer`] recognizes, in the order of its list.
+/// The veneers that [`is_veneer`] recognizes, each named as in its list.
 const VENEERS: [Veneer; 9] = [
+    // GNU ld, Cortex-M3 and up.
     Veneer {
         instructions: &[exactly(0xf85f), exactly(0xf000)],
         word: true,
         names: Names::Any,
     },
+    // GNU ld, Cortex-M0 and M23.
     Veneer {
         instructions: &[
             exactly(0xb401),
@@ -99,6 +105,7 @@ const VENEERS: [Veneer; 9] = [
         word: true,
         names: Names::Any,
     },
+    // GNU ld, --pic-veneer.
     Veneer {
         instructions: &[
             exactly(0xb401),
@@ -111,11 +118,13 @@ const VENEERS: [Veneer; 9] = [
         word: true,
         names: Names::Any,
     },
+    // GNU ld, -mpure-code, and LLD, Cortex-M3 and up and M23.
     Veneer {
         instructions: &[MOVW_IP, TO_IP, MOVT_IP, TO_IP, exactly(0x4760)],
         word: false,
         names: Names::NoneOrLinkers,
     },
+    // LLD, --pic-veneer.
     Veneer {
         instructions: &[
             MOVW_IP,
@@ -128,6 +137,7 @@ const VENEERS: [Veneer; 9] = [
         word: false,
         names: Names::NoneOrLinkers,
     },
+    // LLD, Cortex-M0.
     Veneer {
         instructions: &[
             exactly(0xb403),
@@ -138,6 +148,7 @@ const VENEERS: [Veneer; 9] = [
         word: true,
         names: Names::Any,
     },
+    // LLD, Cortex-M0, execute-only code.
     Veneer {
         instructions: &[
             exactly(0xb403),
@@ -154,6 +165,7 @@ const VENEERS: [Veneer; 9] = [
         word: false,
         names: Names::Any,
     },
+    // LLD, Cortex-M0, -pie.
     Veneer {
         instructions: &[
             exactly(0xb401),
@@ -166,6 +178,7 @@ const VENEERS: [Veneer; 9] = [
         word: true,
         names: Names::Any,
     },
+    // LLD, when the veneer is in reach of the target, though the call isn't.
     Veneer {
         instructions: &[
             Halfword {

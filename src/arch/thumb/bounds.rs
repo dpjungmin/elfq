@@ -1,3 +1,8 @@
+//! Where a function's code ends, for finding the functions in stripped
+//! firmware (see `binary/unnamed_functions.rs`): how many bytes its code
+//! takes before the padding after it, whether its last instruction runs on
+//! into the next function, and how much padding comes before it.
+
 use object::Endianness;
 
 use super::sweep::{Scanner, Swept};

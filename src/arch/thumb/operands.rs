@@ -1,3 +1,7 @@
+//! The bits of a function's code that say where something is, as the
+//! distance in a `bl`, for diff to tell code that moved from code that
+//! changed (see `arch::operands`).
+
 use object::Endianness;
 
 use super::sweep::Scanner;

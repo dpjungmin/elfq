@@ -1,3 +1,6 @@
+//! Where the instructions and the data in a function's code are, for
+//! browse to print the code as text (see `arch::listing`).
+
 use object::Endianness;
 
 use super::sweep::Scanner;
