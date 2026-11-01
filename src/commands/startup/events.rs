@@ -5,7 +5,7 @@
 //! which iteration of a loop that the walk went through one by one each
 //! event is in.
 
-use super::Firmware;
+use super::{CallTarget, Firmware};
 use crate::arch::startup::{Call, Event, How};
 
 /// The walk's events, with what the steps read of them.
@@ -23,7 +23,7 @@ pub(super) struct Events<'w> {
     /// For each call that the walk can tell the target of, where it goes:
     /// past a veneer, to the function the veneer jumps to, with the
     /// veneer.
-    targets: Vec<Option<(u64, Option<u64>)>>,
+    targets: Vec<Option<CallTarget>>,
 }
 
 impl<'w> Events<'w> {
@@ -96,12 +96,12 @@ impl<'w> Events<'w> {
 
     /// Where the call at `event` goes, past a veneer.
     pub fn target(&self, event: usize) -> Option<u64> {
-        self.targets[event].map(|(target, _)| target)
+        self.targets[event].map(|target| target.function)
     }
 
     /// The veneer that the call at `event` goes through.
     pub fn veneer(&self, event: usize) -> Option<u64> {
-        self.targets[event].and_then(|(_, veneer)| veneer)
+        self.targets[event].and_then(|target| target.veneer)
     }
 
     /// Where the events of the code that the call at `event` runs end: the
@@ -117,56 +117,58 @@ impl<'w> Events<'w> {
     }
 }
 
+/// An iteration of a walked loop, by events: the loop's, and the
+/// iteration's first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct WalkedIteration {
+    pub loop_event: usize,
+    pub first_event: usize,
+}
+
 /// The iterations of loops that the walk went through one by one (see
 /// [`Loop::walked_iterations`]), by event.
 ///
 /// [`Loop::walked_iterations`]: crate::arch::startup::Loop::walked_iterations
 pub(super) struct Iterations {
-    /// For each event, the innermost iteration it is in, as the first
-    /// event of that iteration, with the loop's event and the iteration's
-    /// row of a table.
-    of: Vec<Option<(usize, usize, Option<u32>)>>,
+    /// For each event, the innermost iteration it is in.
+    of: Vec<Option<WalkedIteration>>,
+    /// For each event, where the iteration it is in reads its row of a
+    /// table.
+    rows: Vec<Option<u32>>,
 }
 
 impl Iterations {
     pub fn new(list: &[Event]) -> Iterations {
         let mut of = vec![None; list.len()];
+        let mut rows = vec![None; list.len()];
         // A loop inside another closes first, so its iterations come first.
-        for (loop_event, event) in list.iter().enumerate() {
-            let Event::Loop(l) = event else {
+        for (loop_event, recorded) in list.iter().enumerate() {
+            let Event::Loop(l) = recorded else {
                 continue;
             };
             for iteration in l.walked_iterations() {
-                for slot in &mut of[iteration.events.clone()] {
-                    slot.get_or_insert((iteration.events.start, loop_event, iteration.row));
+                for event in iteration.events.clone() {
+                    if of[event].is_none() {
+                        of[event] = Some(WalkedIteration {
+                            loop_event,
+                            first_event: iteration.events.start,
+                        });
+                        rows[event] = iteration.row;
+                    }
                 }
             }
         }
-        Iterations { of }
+        Iterations { of, rows }
     }
 
-    /// The iteration that `event` is in, by its first event.
-    pub fn of(&self, event: usize) -> Option<usize> {
-        self.of
-            .get(event)
-            .copied()
-            .flatten()
-            .map(|(first, _, _)| first)
-    }
-
-    /// The loop and the iteration that `event` is in, by their events (see
-    /// [`Home`](super::pieces::Home)).
-    pub fn home(&self, event: usize) -> Option<(usize, usize)> {
-        (self.of.get(event).copied().flatten()).map(|(first, loop_event, _)| (loop_event, first))
+    /// The iteration that `event` is in (see [`Home`](super::pieces::Home)).
+    pub fn of(&self, event: usize) -> Option<WalkedIteration> {
+        self.of.get(event).copied().flatten()
     }
 
     /// Where the iteration that `event` is in reads its row of a table.
     pub fn row(&self, event: usize) -> Option<u32> {
-        self.of
-            .get(event)
-            .copied()
-            .flatten()
-            .and_then(|(_, _, row)| row)
+        self.rows.get(event).copied().flatten()
     }
 }
 

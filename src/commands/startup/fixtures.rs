@@ -7,11 +7,11 @@ use std::ops::Range;
 
 use object::SectionKind;
 
-use super::Firmware;
 use super::events::Events;
 use super::ram_sections::RamSections;
 use super::start::Reset;
 use super::steps::build;
+use super::{Facts, Firmware};
 use crate::arch::InstructionSet;
 use crate::arch::startup::{
     Call, End, Event, How, Iteration, Loop, LoopStore, Runs, Source, Store,
@@ -146,7 +146,15 @@ pub(super) fn steps_to(binary: &Binary, list: &[Event], end: End) -> Vec<String>
         table: None,
         outside: None,
     };
-    (build(&firmware, &ram, &events, &reset, None, end).iter())
+    let facts = Facts {
+        firmware: &firmware,
+        ram: &ram,
+        reset: &reset,
+        main: None,
+        events: &events,
+        end,
+    };
+    (build(&facts).iter())
         .map(|step| {
             let covers: Vec<String> = (step.covers.iter())
                 .map(|cover| format!("{} {}", ram.name(cover.section), cover.bytes))

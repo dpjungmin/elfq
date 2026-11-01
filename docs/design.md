@@ -1443,7 +1443,9 @@ table (`vector_table::find`).
    address.
 5. **The answer**, back in `commands/startup/`. `Events::new` works out
    what the steps read of each event: how many calls deep it is, and
-   where a call goes past a veneer. `steps::build` reads the events as
+   where a call goes past a veneer. `Facts` holds what each stage after
+   that reads: the file, the RAM sections, the reset handler, `main`,
+   the events and how the walk ended. `steps::build` reads the events as
    steps: the copies, the zeroings, the calls around them and the code
    that elfq can't follow. `problems::judge` works out the state of each
    section when `main` starts, and the problems and the notes. Then

@@ -17,11 +17,18 @@ use super::ram_sections::RamSections;
 use super::steps::{Does, Step, Way};
 use crate::arch::startup::{Event, Loop, Store};
 
-/// Makes each loop of `walked`, which the walk went through one iteration
-/// at a time, with the function that runs it, a loop that elfq can't
-/// follow, as it is when the walk goes through it once, when steps don't
-/// stand for all its iterations' stores into the sections. Outer loops go
-/// first, and for each:
+/// A loop that the walk went through one iteration at a time, by its
+/// event, with the function that runs it.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct WalkedLoop {
+    pub event: usize,
+    pub function: u64,
+}
+
+/// Makes each of the `walked` loops a loop that elfq can't follow, as it
+/// is when the walk goes through it once, when steps don't stand for all
+/// its iterations' stores into the sections. Outer loops go first, and
+/// for each:
 ///
 /// 1. A loop inside one that this has made such a loop is left out: the
 ///    outer loop's step stands for it.
@@ -41,7 +48,7 @@ use crate::arch::startup::{Event, Loop, Store};
 pub(super) fn unread_walked_loops(
     ram: &RamSections,
     events: &Events,
-    walked: &[(usize, u64)],
+    walked: &[WalkedLoop],
     skipped: impl Fn(usize) -> bool,
     steps: &mut Vec<Step>,
 ) {
@@ -50,11 +57,15 @@ pub(super) fn unread_walked_loops(
     let mut made_unread: Vec<Range<usize>> = Vec::new();
     // Outer loops first.
     let mut walked = walked.to_vec();
-    walked.sort_by_key(|&(loop_event, _)| match &events.list[loop_event] {
-        Event::Loop(l) => (l.events.start, usize::MAX - loop_event),
-        _ => (loop_event, 0),
+    walked.sort_by_key(|walked| match &events.list[walked.event] {
+        Event::Loop(l) => (l.events.start, usize::MAX - walked.event),
+        _ => (walked.event, 0),
     });
-    for (loop_event, function) in walked {
+    for WalkedLoop {
+        event: loop_event,
+        function,
+    } in walked
+    {
         let Event::Loop(l) = &events.list[loop_event] else {
             continue;
         };

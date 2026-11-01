@@ -8,9 +8,9 @@ use anyhow::Result;
 use serde::Serialize;
 
 use super::Answer;
-use super::problems::Kind;
+use super::problems::{Kind, SectionStatus};
 use super::start::MainFrom;
-use super::steps::Step;
+use super::steps::{Step, number};
 use super::text;
 use crate::arch::startup::End;
 use crate::commands::json::{self as house, Item, address};
@@ -109,13 +109,13 @@ struct KeepOut<'a> {
 }
 
 pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
-    let firmware = answer.firmware;
+    let firmware = answer.facts.firmware;
     let binary = firmware.binary;
-    let ram = answer.ram;
+    let ram = answer.facts.ram;
     let item =
         |address: u64| (firmware.item(address)).map(|index| Item::new(binary, Node::Item(index)));
-    let reached = answer.reached_main();
-    let (main, main_at, main_from) = match answer.main {
+    let reached = answer.facts.reached_main();
+    let (main, main_at, main_from) = match answer.facts.main {
         Some(main) if reached => (
             (main.from != MainFrom::DebugInfo)
                 .then(|| item(main.address))
@@ -123,7 +123,7 @@ pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
             Some(address(main.address)),
             Some(main.from.field()),
         ),
-        Some(main) if main.from == MainFrom::Loop && matches!(answer.walk.end, End::Main(_)) => {
+        Some(main) if main.from == MainFrom::Loop && matches!(answer.facts.end, End::Main(_)) => {
             (None, Some(address(main.address)), Some(main.from.field()))
         }
         _ => (None, None, None),
@@ -131,9 +131,9 @@ pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
     let names = |sections: &[usize]| -> Vec<&str> {
         sections.iter().map(|&section| ram.name(section)).collect()
     };
-    let steps = (answer.steps.iter())
-        .map(|step: &Step| StepRow {
-            step: step.number,
+    let steps = (answer.steps.iter().enumerate())
+        .map(|(index, step): (usize, &Step)| StepRow {
+            step: number(index),
             site: address(step.site),
             does: step.does.word(),
             how: step.way.field(),
@@ -156,7 +156,11 @@ pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
         .collect();
     let sections = (ram.sections.iter().copied())
         .map(|section| {
-            let (status, step, bytes) = answer.judged.status(answer.steps, ram, section);
+            let SectionStatus {
+                status,
+                step,
+                bytes,
+            } = answer.judged.status(answer.steps, ram, section);
             Section {
                 name: ram.name(section),
                 start: address(ram.section(section).address),
@@ -166,7 +170,7 @@ pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
                     .is_load(section)
                     .then(|| address(ram.load_address(section))),
                 status: status.field(),
-                step,
+                step: step.map(number),
                 bytes,
             }
         })
@@ -186,11 +190,11 @@ pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
             ProblemRow {
                 kind: p.kind.field(),
                 certain: p.certain,
-                steps: p.steps.clone(),
+                steps: p.steps.iter().map(|&index| number(index)).collect(),
                 sections: names(&p.sections),
                 items: p.items.iter().filter_map(|&a| item(a)).collect(),
                 chain,
-                before_step: p.before.map(|before| answer.steps[before].number),
+                before_step: p.before.map(number),
                 bytes: p.bytes,
                 from: p.from.map(address),
                 sites: house::addresses(&p.sites),
@@ -207,16 +211,16 @@ pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
         })
         .collect();
     let keep_out = (answer.judged.keep_out.iter())
-        .map(|(section, functions)| KeepOut {
-            section: ram.name(*section),
-            items: (functions.iter())
+        .map(|keep_out| KeepOut {
+            section: ram.name(keep_out.section),
+            items: (keep_out.items.iter())
                 .map(|&index| Item::new(binary, Node::Item(index)))
                 .collect(),
         })
         .collect();
     let value = Startup {
         file: answer.path.display().to_string(),
-        entry: item(answer.reset.address),
+        entry: item(answer.facts.reset.address),
         main,
         main_at,
         main_from,

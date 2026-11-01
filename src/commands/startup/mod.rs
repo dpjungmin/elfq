@@ -34,10 +34,11 @@
 //! startup code sets up (`RamSections`). `section` is a section, as an
 //! index into `Binary::sections`; `event` is an event, as an index into
 //! the walk's events, and `loop_event` a loop's; `l` is a loop that the
-//! walk found (`arch::startup::Loop`). A step goes by its place in the
-//! steps, as `s` or in fields such as `Setup::step` and `Problem::before`,
-//! and by its `number`, from 1, which the text and the JSON print and
-//! `Problem::steps` holds.
+//! walk found (`arch::startup::Loop`). A step goes by its index in the
+//! steps, as in `Setup::step`, `Problem::steps` and `Problem::before`,
+//! and where elfq writes it out, by its number, from 1 (`steps::number`).
+//! What every stage reads once the walk is done, from the file to how the
+//! walk ended, is in `Facts`.
 //!
 //! docs/design.md's "Startup, end to end" follows one run through this
 //! module, `arch::startup`, `arch::thumb::startup` and `binary::startup`.
@@ -64,7 +65,7 @@ use object::elf::{EM_386, EM_AARCH64, EM_ARM, EM_X86_64, ET_DYN, ET_REL};
 use super::Outcome;
 use super::checks::check_code_is_readable;
 use super::kept::Kept;
-use crate::arch::startup::{Code, DEPTH, End, Walk};
+use crate::arch::startup::{Code, DEPTH, End};
 use crate::binary::{Binary, ElfHeader, ItemKind};
 use crate::cli::Format;
 use crate::graph::{Graph, Node, VeneerTarget, Veneers};
@@ -154,18 +155,19 @@ pub(super) fn run(
     let main = start::find_main(&firmware, &ram, &reset);
     let walk = reset.walk(code, main.map(|main| main.address), DEPTH);
     let events = Events::new(&firmware, &walk.events);
-    let steps = steps::build(&firmware, &ram, &events, &reset, main, walk.end);
-    let judged = problems::judge(
-        &firmware, &ram, &events, &reset, main, &steps, walk.end, all,
-    );
-    let answer = Answer {
-        path,
+    let facts = Facts {
         firmware: &firmware,
         ram: &ram,
         reset: &reset,
         main,
-        walk: &walk,
         events: &events,
+        end: walk.end,
+    };
+    let steps = steps::build(&facts);
+    let judged = problems::judge(&facts, &steps, all);
+    let answer = Answer {
+        path,
+        facts: &facts,
         steps: &steps,
         judged: &judged,
         all,
@@ -182,29 +184,37 @@ pub(super) fn run(
     })
 }
 
-/// Everything startup found, for the text and the JSON to write.
-struct Answer<'a> {
-    path: &'a Path,
+/// What startup knows once it has walked the code, which the steps, the
+/// problems and the answer read.
+#[derive(Clone, Copy)]
+struct Facts<'a> {
     firmware: &'a Firmware<'a>,
     ram: &'a RamSections<'a>,
     reset: &'a Reset,
     main: Option<Main>,
-    walk: &'a Walk,
     events: &'a Events<'a>,
-    steps: &'a [Step],
-    judged: &'a Judged,
-    all: bool,
+    /// How the walk ended.
+    end: End,
 }
 
-impl Answer<'_> {
+impl Facts<'_> {
     /// Whether the walk got to `main`, as against a loop that the reset
     /// handler runs for good, taken as where its startup ends.
     fn reached_main(&self) -> bool {
-        matches!(self.walk.end, End::Main(_))
+        matches!(self.end, End::Main(_))
             && self
                 .main
                 .is_some_and(|main| main.from != start::MainFrom::Loop)
     }
+}
+
+/// Everything startup found, for the text and the JSON to write.
+struct Answer<'a> {
+    path: &'a Path,
+    facts: &'a Facts<'a>,
+    steps: &'a [Step],
+    judged: &'a Judged,
+    all: bool,
 }
 
 /// The file, with its code as the walk reads it, and what tells where its
@@ -259,10 +269,16 @@ impl<'a> Firmware<'a> {
 
     /// Where a call to `target` goes: past a veneer there, to the function
     /// it jumps on to, with the veneer's address.
-    fn resolve(&self, target: u64) -> (u64, Option<u64>) {
+    fn resolve(&self, target: u64) -> CallTarget {
         match self.veneer_target(target) {
-            Some(function) => (function, Some(target)),
-            None => (target, None),
+            Some(function) => CallTarget {
+                function,
+                veneer: Some(target),
+            },
+            None => CallTarget {
+                function: target,
+                veneer: None,
+            },
         }
     }
 
@@ -291,4 +307,14 @@ impl<'a> Firmware<'a> {
         }
         callees
     }
+}
+
+/// Where a call goes (see [`Firmware::resolve`]).
+#[derive(Debug, Clone, Copy)]
+struct CallTarget {
+    /// The function that runs: the one that a veneer at the call's target
+    /// jumps on to, or else the target.
+    function: u64,
+    /// The veneer at the call's target, when there is one.
+    veneer: Option<u64>,
 }

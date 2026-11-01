@@ -211,7 +211,7 @@ fn guess(firmware: &Firmware, ram: &RamSections, reset: &Reset) -> Option<Main> 
     let walk = reset.walk(firmware.code, None, 0);
     let calls: Vec<(usize, &Call, u64)> = (0..walk.events.len())
         .filter_map(|event| match &walk.events[event] {
-            Event::Call(call) => Some((event, call, firmware.resolve(call.target?).0)),
+            Event::Call(call) => Some((event, call, firmware.resolve(call.target?).function)),
             _ => None,
         })
         .collect();

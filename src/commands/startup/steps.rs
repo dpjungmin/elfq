@@ -12,12 +12,14 @@
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
-use super::Firmware;
 use super::events::{Events, Iterations};
-use super::pieces::{Piece, Pieces};
-use super::ram_sections::{Cover, RamSections};
-use super::start::{Main, MainFrom, Reset};
-use super::unread::{loop_calls, loop_repeats, loop_targets, own_stores, unread_walked_loops};
+use super::pieces::{Home, Piece, Pieces};
+use super::ram_sections::Cover;
+use super::start::{Main, MainFrom};
+use super::unread::{
+    WalkedLoop, loop_calls, loop_repeats, loop_targets, own_stores, unread_walked_loops,
+};
+use super::{Facts, Firmware};
 use crate::arch::startup::{End, Event, How};
 use crate::binary::ItemKind;
 
@@ -100,8 +102,6 @@ pub(super) struct Step {
     /// Where its event is in the walk, which orders the steps; the number
     /// of events for a step at the walk's end.
     pub event: usize,
-    /// Its number, from 1.
-    pub number: usize,
     /// The instruction.
     pub site: u64,
     pub does: Does,
@@ -148,7 +148,6 @@ impl Step {
     ) -> Step {
         Step {
             event,
-            number: 0,
             site,
             does,
             way,
@@ -176,15 +175,22 @@ impl Step {
     }
 }
 
+/// The number that the text and the JSON give the step at `index` in the
+/// steps: they count from 1.
+pub(super) fn number(index: usize) -> usize {
+    index + 1
+}
+
 /// Reads the walk's events as the steps of startup, up to `main`.
-pub(super) fn build(
-    firmware: &Firmware,
-    ram: &RamSections,
-    events: &Events,
-    reset: &Reset,
-    main: Option<Main>,
-    end: End,
-) -> Vec<Step> {
+pub(super) fn build(facts: &Facts) -> Vec<Step> {
+    let Facts {
+        firmware,
+        ram,
+        reset,
+        main,
+        events,
+        end,
+    } = *facts;
     let main_function = main.and_then(Main::function);
     let mut steps: Vec<Step> = Vec::new();
     // The function whose code runs at each level.
@@ -217,7 +223,7 @@ pub(super) fn build(
     // code, and each loop that the walk went through each time, outside
     // loops that it didn't, with the function that runs it.
     let mut called: Vec<Range<usize>> = Vec::new();
-    let mut walked_loops: Vec<(usize, u64)> = Vec::new();
+    let mut walked_loops: Vec<WalkedLoop> = Vec::new();
     for (event, recorded) in events.list.iter().enumerate() {
         if event < skip_to {
             continue;
@@ -300,11 +306,18 @@ pub(super) fn build(
             // so it is a loop that elfq can't follow, as it would be if the
             // walk went through it once.
             Event::Loop(l) if !l.walked_iterations().is_empty() && !in_loop[event] => {
-                walked_loops.push((event, at(&holder, level)));
+                walked_loops.push(WalkedLoop {
+                    event,
+                    function: at(&holder, level),
+                });
             }
             Event::Loop(l) => {
                 let function = at(&holder, level);
-                let home = (level, function, iterations.home(event));
+                let home = Home {
+                    level,
+                    function,
+                    iteration: iterations.of(event),
+                };
                 if let Some(piece) = Piece::of_loop(ram, l, home)
                     && pieces.add(ram, piece, event, &mut steps, &mut ready)
                 {
@@ -348,7 +361,11 @@ pub(super) fn build(
                 }
             }
             Event::Store(store) if !in_loop[event] => {
-                let home = (level, at(&holder, level), iterations.home(event));
+                let home = Home {
+                    level,
+                    function: at(&holder, level),
+                    iteration: iterations.of(event),
+                };
                 match Piece::of_store(ram, store, home) {
                     Some(piece) => {
                         pieces.add(ram, piece, event, &mut steps, &mut ready);
@@ -457,11 +474,7 @@ pub(super) fn build(
         }
         kept.push(step);
     }
-    let mut steps = kept;
-    for (n, step) in steps.iter_mut().enumerate() {
-        step.number = n + 1;
-    }
-    steps
+    kept
 }
 
 /// `steps`, with each call that the reset handler makes to a function

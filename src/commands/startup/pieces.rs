@@ -9,13 +9,23 @@
 use std::collections::HashSet;
 use std::ops::Range;
 
+use super::events::WalkedIteration;
 use super::ram_sections::{Match, RamSections};
 use super::steps::{Does, Step, Way};
 use crate::arch::startup::{Loop, LoopStore, Store};
 
-/// The level and function of code, and the iteration of a loop it is in,
-/// with the loop, as their events (see [`Piece::home`]).
-pub(super) type Home = (u32, u64, Option<(usize, usize)>);
+/// Where code is: its level and function, and the iteration of a walked
+/// loop that it is in (see [`Piece::home`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Home {
+    /// How many calls deep from the reset handler it is (see
+    /// [`Events::level`](super::events::Events::level)).
+    pub level: u32,
+    pub function: u64,
+    /// The innermost iteration it is in (see
+    /// [`Iterations`](super::events::Iterations)).
+    pub iteration: Option<WalkedIteration>,
+}
 
 /// Bytes that code copies or zeroes one after another: a loop's, or a
 /// store's outside loops, or those of several of them next to each other
@@ -29,13 +39,9 @@ pub(super) struct Piece {
     /// For a copy, how far after where it stores each word it loads it
     /// from, wrapping round.
     gap: Option<u32>,
-    /// Where the code is: its level and function, and the iteration that
-    /// it is in of a loop that the walk went through one iteration at a
-    /// time (see [`Iterations`]). Pieces join only when they have the same
-    /// home, but for those of one loop's iterations by the same store,
+    /// Where the code is. Pieces join only when they have the same home,
+    /// but for those of one walked loop's iterations by the same store,
     /// which make no step alone (see [`Pieces::add`]).
-    ///
-    /// [`Iterations`]: super::events::Iterations
     home: Home,
     /// Its first store, of the loop's when there is a loop.
     site: u64,
@@ -122,17 +128,17 @@ impl Piece {
     }
 
     /// Whether `other` does what this does with the bytes next to its
-    /// own, in the same function, and the same time through a loop, or
-    /// `across` another time of the same loop, by the same store.
+    /// own, in the same function, and the same iteration of a walked loop,
+    /// or `across` another iteration of the same loop, by the same store.
     fn next_to(&self, other: &Piece, across: bool) -> bool {
-        let (level, function, time) = self.home;
-        let same_loop = |(loop_event, _): (usize, usize)| {
-            (other.home.2).is_some_and(|(theirs, _)| theirs == loop_event)
+        let (mine, theirs) = (self.home, other.home);
+        let same_loop = |iteration: WalkedIteration| {
+            (theirs.iteration).is_some_and(|other| other.loop_event == iteration.loop_event)
         };
-        let home = self.home == other.home
+        let home = mine == theirs
             || (across
-                && (level, function) == (other.home.0, other.home.1)
-                && time.is_some_and(same_loop)
+                && (mine.level, mine.function) == (theirs.level, theirs.function)
+                && mine.iteration.is_some_and(same_loop)
                 && self.site == other.site);
         home && self.does == other.does
             && self.gap == other.gap
@@ -188,7 +194,7 @@ impl Pieces {
         ready: &mut HashSet<usize>,
     ) -> bool {
         // 1.
-        let across = piece.home.2.is_some() && step_match(ram, &piece).is_none();
+        let across = piece.home.iteration.is_some() && step_match(ram, &piece).is_none();
         let mut joined = piece;
         let mut taken: Vec<usize> = Vec::new();
         while let Some(i) =
@@ -218,7 +224,9 @@ impl Pieces {
         let index = match joined.step {
             Some(index) => index,
             None => {
-                let (level, function, _) = joined.home;
+                let Home {
+                    level, function, ..
+                } = joined.home;
                 let mut step =
                     Step::new(event, joined.site, joined.does, joined.way, function, level);
                 step.function = Some(function);
@@ -383,7 +391,11 @@ mod tests {
     /// 0x8000400".
     fn piece(ram: &RamSections, stores: Vec<LoopStore>) -> Option<String> {
         // In the reset handler's own code.
-        let home = (0, 0x800_0000, None);
+        let home = Home {
+            level: 0,
+            function: 0x800_0000,
+            iteration: None,
+        };
         let piece = Piece::of_loop(ram, &loop_with(stores), home)?;
         let from =
             (piece.gap).map(|gap| format!(" from {:#x}", (piece.to as u32).wrapping_add(gap)));

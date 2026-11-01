@@ -5,11 +5,11 @@ use std::io::Write;
 
 use anyhow::Result;
 
-use super::problems::{Kind, Problem, RESET, Status};
+use super::problems::{Kind, Problem, RunsAt, Status};
 use super::ram_sections::RamSections;
 use super::start::MainFrom;
-use super::steps::{Does, Step, Way};
-use super::{Answer, Firmware};
+use super::steps::{Does, Step, Way, number};
+use super::{Answer, Facts, Firmware};
 use crate::arch::startup::{End, Event, Through};
 use crate::binary::Section;
 use crate::commands::text::{self as house, names_text, plural, shell_quote};
@@ -39,12 +39,12 @@ pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
         // The house cap, with the last row summing up the rest.
         let room = house::shown(answer.all);
         let shown = if count <= room { count } else { room - 1 };
-        for step in &answer.steps[..shown] {
-            table.row(row(answer, step));
+        for (index, step) in answer.steps[..shown].iter().enumerate() {
+            table.row(row(answer, index, step));
         }
         if shown < count {
             let mut cells = vec![String::new(); 7];
-            cells[0] = format!("{}-{count}", shown + 1);
+            cells[0] = format!("{}-{count}", number(shown));
             cells[6] = format!("{} more steps; --all lists them", count - shown);
             table.row(cells);
         }
@@ -63,21 +63,21 @@ pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
 /// The first line: how many problems, or what startup does when there are
 /// none.
 fn lead(answer: &Answer) -> String {
-    let firmware = answer.firmware;
-    let ram = answer.ram;
-    let boot = firmware.name(answer.reset.address);
-    let main = answer.main;
+    let firmware = answer.facts.firmware;
+    let ram = answer.facts.ram;
+    let boot = firmware.name(answer.facts.reset.address);
+    let main = answer.facts.main;
     let inlined = main.is_some_and(|main| main.from == MainFrom::DebugInfo);
-    let reached = answer.reached_main();
-    let endless = match (answer.walk.end, main) {
+    let reached = answer.facts.reached_main();
+    let endless = match (answer.facts.end, main) {
         (End::Main(_), Some(main)) if main.from == MainFrom::Loop => Some(main.address),
         _ => None,
     };
     let problems = &answer.judged.problems;
     // Without startup code, as when the entry point is main.
-    let first = reached && main.is_some_and(|main| main.address == answer.reset.address);
+    let first = reached && main.is_some_and(|main| main.address == answer.facts.reset.address);
     if first {
-        let main = firmware.name(answer.reset.address);
+        let main = firmware.name(answer.facts.reset.address);
         return match problems.len() {
             0 => format!(
                 "No problems: the processor starts at {main}, so no startup code runs before it."
@@ -96,7 +96,7 @@ fn lead(answer: &Answer) -> String {
         } else if let Some(head) = endless {
             format!(" before its endless loop at {head:#x}")
         } else {
-            match answer.walk.end {
+            match answer.facts.end {
                 End::Spins(_) => " before it spins".to_string(),
                 End::Returns(_) => " before it returns".to_string(),
                 _ => String::new(),
@@ -117,11 +117,11 @@ fn lead(answer: &Answer) -> String {
     let mut ordered = ram.sections.clone();
     let first = |section: usize| {
         (answer.steps.iter())
-            .find(|step| step.covers.iter().any(|cover| cover.section == section))
-            .map_or(answer.steps.len() + 1, |step| step.number)
+            .position(|step| step.covers.iter().any(|cover| cover.section == section))
+            .unwrap_or(answer.steps.len())
     };
     ordered.sort_by_key(|&section| first(section));
-    let status = |section| answer.judged.status(answer.steps, ram, section).0;
+    let status = |section| answer.judged.status(answer.steps, ram, section).status;
     // What the steps from event `from` up to `to` copy and zero.
     let parts = |from: usize, to: usize| {
         let by = |section: usize| {
@@ -141,10 +141,10 @@ fn lead(answer: &Answer) -> String {
         }
         parts
     };
-    let events = answer.events;
+    let events = answer.facts.events;
     // The last call the reset handler makes, when it doesn't return: it may
     // do the copies and zeroings itself, as Zephyr's z_prep_c does.
-    let last = match answer.walk.end {
+    let last = match answer.facts.end {
         End::RunsOff(_) => (0..events.list.len())
             .rev()
             .filter(|&event| events.level(event) == 0)
@@ -179,7 +179,7 @@ fn lead(answer: &Answer) -> String {
     } else if let Some(head) = endless {
         format!("then runs its endless loop at {head:#x}")
     } else {
-        match answer.walk.end {
+        match answer.facts.end {
             End::Spins(_) => "then spins".to_string(),
             End::Returns(_) => "then returns".to_string(),
             End::RunsOff(_) => match last {
@@ -189,15 +189,10 @@ fn lead(answer: &Answer) -> String {
                 None => "then stops".to_string(),
             },
             End::Loops(site) => {
-                let head = answer
-                    .walk
-                    .events
-                    .iter()
-                    .rev()
-                    .find_map(|event| match event {
-                        Event::Loop(l) if l.back == site => Some(l.head),
-                        _ => None,
-                    });
+                let head = (events.list.iter()).rev().find_map(|event| match event {
+                    Event::Loop(l) if l.back == site => Some(l.head),
+                    _ => None,
+                });
                 format!("then loops for good at {:#x}", head.unwrap_or(site))
             }
             End::Rejoins(at) => format!("then runs a loop elfq can't follow at {at:#x}"),
@@ -210,13 +205,14 @@ fn lead(answer: &Answer) -> String {
 
 /// `main`'s name, as the lead and the table give it.
 fn main_text(answer: &Answer) -> String {
-    let Some(main) = answer.main else {
+    let Facts { firmware, main, .. } = *answer.facts;
+    let Some(main) = main else {
         return String::new();
     };
     match main.from {
         MainFrom::DebugInfo => "main".to_string(),
-        MainFrom::Guess => format!("{} (taken as main)", answer.firmware.name(main.address)),
-        MainFrom::Symbol | MainFrom::Loop => answer.firmware.name(main.address),
+        MainFrom::Guess => format!("{} (taken as main)", firmware.name(main.address)),
+        MainFrom::Symbol | MainFrom::Loop => firmware.name(main.address),
     }
 }
 
@@ -233,15 +229,16 @@ fn at_name(firmware: &Firmware, address: u64) -> String {
 
 /// The sentence that says what problem `p` is.
 pub(super) fn sentence(answer: &Answer, p: &Problem) -> String {
-    let firmware = answer.firmware;
-    let ram = answer.ram;
+    let firmware = answer.facts.firmware;
+    let ram = answer.facts.ram;
     let steps = answer.steps;
     let Some(&section) = p.sections.first() else {
         return String::new();
     };
     let name = ram.name(section);
     let size = ram.section(section).size;
-    let step = p.steps.first().copied().unwrap_or(0);
+    // The number of the step it is about.
+    let step = p.steps.first().map_or(0, |&index| number(index));
     match p.kind {
         Kind::RunsBeforeCopy => {
             let what = match &p.items[..] {
@@ -252,27 +249,26 @@ pub(super) fn sentence(answer: &Answer, p: &Problem) -> String {
                     names_text(&names, answer.all)
                 }
             };
-            let reset_runs_from_image = p.uses.contains(&RESET);
+            let reset_runs_from_image = p.uses.contains(&RunsAt::ResetHandler);
             let tail = match p.before {
                 None if answer.judged.unread.contains_key(&section) => {
                     format!("before anything copies {name}")
                 }
                 None => "which nothing copies".to_string(),
-                Some(before) => {
-                    let before = &steps[before];
-                    let inside = (p.uses.iter()).filter(|&&event| event >= 0).any(|&event| {
-                        (event as usize) < before.event
-                            && before.event < answer.events.span(event as usize)
+                Some(index) => {
+                    let before = &steps[index];
+                    let inside = (p.uses.iter()).filter_map(|at| at.event()).any(|event| {
+                        event < before.event && before.event < answer.facts.events.span(event)
                     });
-                    if reset_runs_from_image || inside || p.steps.contains(&before.number) {
+                    if reset_runs_from_image || inside || p.steps.contains(&index) {
                         "which nothing has copied yet".to_string()
                     } else {
-                        format!("before step {} copies {name}", before.number)
+                        format!("before step {} copies {name}", number(index))
                     }
                 }
             };
             if reset_runs_from_image {
-                let boot = answer.reset.address;
+                let boot = answer.facts.reset.address;
                 return format!(
                     "{} runs at {boot:#x} in {name}, {tail}{}.",
                     firmware.name(boot),
@@ -294,7 +290,7 @@ pub(super) fn sentence(answer: &Answer, p: &Problem) -> String {
             };
             let mut who = steps_text(&p.steps, true);
             if let [one] = p.steps[..]
-                && let Some(function) = steps[one - 1].called()
+                && let Some(function) = steps[one].called()
                 && !p.items.contains(&function)
             {
                 who = format!("{who}, {},", firmware.name(function));
@@ -346,24 +342,26 @@ fn unless(answer: &Answer, p: &Problem) -> String {
     }
     let section = p.sections[0];
     let first = p.first();
-    let numbers: Vec<usize> = (answer.steps.iter())
-        .filter(|step| {
-            step.does == Does::Unread && (step.event as i64) <= first && step.may.contains(&section)
+    let indexes: Vec<usize> = (answer.steps.iter().enumerate())
+        .filter(|(_, step)| {
+            step.does == Does::Unread
+                && RunsAt::Event(step.event) <= first
+                && step.may.contains(&section)
         })
-        .map(|step| step.number)
+        .map(|(index, _)| index)
         .collect();
-    if numbers.is_empty() {
+    if indexes.is_empty() {
         return String::new();
     }
     format!(
         ", unless {} copies it first",
-        unread_text(answer.steps, &numbers)
+        unread_text(answer.steps, &indexes)
     )
 }
 
-/// The cells of a step's row.
-fn row(answer: &Answer, step: &Step) -> Vec<String> {
-    let firmware = answer.firmware;
+/// The cells of the row of `step`, at `index` in the steps.
+fn row(answer: &Answer, index: usize, step: &Step) -> Vec<String> {
+    let firmware = answer.facts.firmware;
     let name = |address: u64| firmware.name(address);
     let function = step.function.map(name).unwrap_or_default();
     let via = if step.veneer.is_some() {
@@ -381,7 +379,7 @@ fn row(answer: &Answer, step: &Step) -> Vec<String> {
     let what = match step.does {
         Does::Copy | Does::Zero => {
             let names: Vec<&str> = (step.covers.iter())
-                .map(|cover| answer.ram.name(cover.section))
+                .map(|cover| answer.facts.ram.name(cover.section))
                 .collect();
             let names = names_text(&names, answer.all);
             let what = match step.way {
@@ -408,7 +406,11 @@ fn row(answer: &Answer, step: &Step) -> Vec<String> {
             format!("main, inlined into {}", name(step.inside))
         }
         Does::Call => {
-            let guessed = step.main && answer.main.is_some_and(|main| main.from == MainFrom::Guess);
+            let guessed = step.main
+                && answer
+                    .facts
+                    .main
+                    .is_some_and(|main| main.from == MainFrom::Guess);
             let taken = if guessed { " (taken as main)" } else { "" };
             in_inside(format!("{function}{via}{taken}"))
         }
@@ -458,7 +460,7 @@ fn row(answer: &Answer, step: &Step) -> Vec<String> {
     };
     let hex = |value: Option<u64>| value.map_or(String::new(), |value| format!("{value:#x}"));
     vec![
-        step.number.to_string(),
+        number(index).to_string(),
         step.does.word().to_string(),
         hex(step.from),
         hex(step.to),
@@ -481,27 +483,28 @@ pub(super) fn register_name(register: u16) -> String {
 /// `reach --to` for code that runs before its copy inside a call, to show
 /// how the call gets there, each given without `elfq FILE`.
 fn try_commands(answer: &Answer) -> Vec<String> {
+    let Facts { firmware, ram, .. } = *answer.facts;
     let mut lines = Vec::new();
     for p in &answer.judged.problems {
         // Code that runs inside a call, but not the reset handler's own.
         let (Kind::RunsBeforeCopy, Some(&first)) = (p.kind, p.steps.first()) else {
             continue;
         };
-        if p.uses.contains(&RESET) {
+        if p.uses.contains(&RunsAt::ResetHandler) {
             continue;
         }
-        let step = &answer.steps[first - 1];
+        let step = &answer.steps[first];
         let section = p.sections[0];
-        let Section { address, size, .. } = answer.ram.section(section);
+        let Section { address, size, .. } = ram.section(section);
         let Some(function) = step.called() else {
             continue;
         };
-        if p.items.contains(&function) || (*address..answer.ram.end(section)).contains(&function) {
+        if p.items.contains(&function) || (*address..ram.end(section)).contains(&function) {
             continue;
         }
         let line = format!(
             "reach {} --to {address:#x}+{size}",
-            shell_quote(&answer.firmware.name(function)),
+            shell_quote(&firmware.name(function)),
         );
         if !lines.contains(&line) {
             lines.push(line);
@@ -510,10 +513,10 @@ fn try_commands(answer: &Answer) -> Vec<String> {
     lines
 }
 
-/// The steps numbered `numbers`: "Step 3", "Steps 2 and 5", "Steps 6 to
-/// 24", or for many runs, "40 steps from 2 to 90".
-pub(super) fn steps_text(numbers: &[usize], capital: bool) -> String {
-    let mut numbers = numbers.to_vec();
+/// The steps at `indexes` in the steps, by number: "Step 3", "Steps 2 and
+/// 5", "Steps 6 to 24", or for many runs, "40 steps from 2 to 90".
+pub(super) fn steps_text(indexes: &[usize], capital: bool) -> String {
+    let mut numbers: Vec<usize> = indexes.iter().map(|&index| number(index)).collect();
     numbers.sort_unstable();
     numbers.dedup();
     let (one, many) = if capital {
@@ -551,11 +554,11 @@ pub(super) fn steps_text(numbers: &[usize], capital: bool) -> String {
     format!("{word} {}", names_text(&parts, true))
 }
 
-/// The steps numbered `numbers` of code elfq can't follow, with what kinds
-/// of code they are: "step 3 (a loop)", "steps 2 and 5 (a loop and a call
-/// through r3)".
-pub(super) fn unread_text(steps: &[Step], numbers: &[usize]) -> String {
-    let unread: Vec<&Step> = numbers.iter().map(|&n| &steps[n - 1]).collect();
+/// The steps at `indexes` in `steps`, of code elfq can't follow, with what
+/// kinds of code they are: "step 3 (a loop)", "steps 2 and 5 (a loop and
+/// a call through r3)".
+pub(super) fn unread_text(steps: &[Step], indexes: &[usize]) -> String {
+    let unread: Vec<&Step> = indexes.iter().map(|&index| &steps[index]).collect();
     let loops = (unread.iter())
         .filter(|step| matches!(step.way, Way::Loop | Way::Stop(End::Rejoins(_))))
         .count();
@@ -657,7 +660,7 @@ pub(super) fn unread_text(steps: &[Step], numbers: &[usize]) -> String {
     let kinds: Vec<&str> = kinds.iter().map(String::as_str).collect();
     format!(
         "{} ({})",
-        steps_text(numbers, false),
+        steps_text(indexes, false),
         names_text(&kinds, true)
     )
 }
@@ -737,16 +740,17 @@ mod tests {
 
     #[test]
     fn steps_are_named_with_runs_as_ranges() {
-        assert_eq!(steps_text(&[3], true), "Step 3");
-        assert_eq!(steps_text(&[5, 2], false), "steps 2 and 5");
-        assert_eq!(steps_text(&[4, 2, 3, 3], false), "steps 2 to 4");
+        // By index, so that the step at 2 is step 3.
+        assert_eq!(steps_text(&[2], true), "Step 3");
+        assert_eq!(steps_text(&[4, 1], false), "steps 2 and 5");
+        assert_eq!(steps_text(&[3, 1, 2, 2], false), "steps 2 to 4");
         assert_eq!(
-            steps_text(&[1, 2, 4, 6, 7, 8], true),
+            steps_text(&[0, 1, 3, 5, 6, 7], true),
             "Steps 1, 2, 4 and 6 to 8"
         );
         // Past four parts, the JSON lists them.
         assert_eq!(
-            steps_text(&[1, 3, 5, 7, 9, 10, 11], false),
+            steps_text(&[0, 2, 4, 6, 8, 9, 10], false),
             "7 steps from 1 to 11"
         );
         assert_eq!(steps_text(&[], false), "");
@@ -773,21 +777,21 @@ mod tests {
             step(Way::Conditional),
             step(Way::Outside(0x1fff_0000)),
         ];
-        let text = |numbers: &[usize]| unread_text(&steps, numbers);
-        assert_eq!(text(&[1]), "step 1 (a loop)");
+        let text = |indexes: &[usize]| unread_text(&steps, indexes);
+        assert_eq!(text(&[0]), "step 1 (a loop)");
         assert_eq!(
-            text(&[1, 2]),
+            text(&[0, 1]),
             "steps 1 and 2 (a loop and a call through r3)"
         );
         assert_eq!(
-            text(&[1, 3, 4]),
+            text(&[0, 2, 3]),
             "steps 1, 3 and 4 (loops and a call deeper than elfq follows)"
         );
         // Branches through the same register name it once.
-        assert_eq!(text(&[5, 6]), "steps 5 and 6 (branches through r2)");
-        assert_eq!(text(&[5, 7]), "steps 5 and 7 (branches through registers)");
+        assert_eq!(text(&[4, 5]), "steps 5 and 6 (branches through r2)");
+        assert_eq!(text(&[4, 6]), "steps 5 and 7 (branches through registers)");
         assert_eq!(
-            text(&[8, 9, 10]),
+            text(&[7, 8, 9]),
             "steps 8 to 10 (a supervisor call, a conditional call and a call outside the file)"
         );
     }
