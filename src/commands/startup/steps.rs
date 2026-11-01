@@ -172,69 +172,6 @@ impl<'a> Memory<'a> {
         })
     }
 
-    /// The bytes that the loop `l` copies or zeroes, when the walk can
-    /// tell what each of its stores does each time it runs (see
-    /// [`Loop::stores`]): those that its stores into the sections cover
-    /// all of, one after another, each time the next ones up or down (see
-    /// [`tiled`]). A copy stores each time words that it loads from as far
-    /// after or before where it stores them; a zeroing stores 0 each time,
-    /// which it doesn't load.
-    fn loop_piece(&self, l: &Loop) -> Option<Piece> {
-        let stores: Vec<&LoopStore> = (l.stores()?.iter())
-            .filter(|store| store.times > 0 && self.overlaps(stored_bytes(store)))
-            .collect();
-        let first = *stores.first()?;
-        let (to, size) = tiled(&stores)?;
-        // How far after each store a copy loads its words from.
-        let gap = |store: &LoopStore| {
-            let (from, step) = store.source?;
-            (step == store.step).then(|| from.wrapping_sub(store.address))
-        };
-        let copies = (gap(first)).filter(|&by| stores.iter().all(|&store| gap(store) == Some(by)));
-        let zeroes = (stores.iter()).all(|store| store.value == Some(0) && !store.loaded);
-        let does = match copies {
-            Some(_) => Does::Copy,
-            None if zeroes => Does::Zero,
-            None => return None,
-        };
-        Some(Piece {
-            does,
-            to,
-            size,
-            gap: copies,
-            home: (0, 0, None),
-            site: first.site,
-            way: Way::Loop,
-            step: None,
-        })
-    }
-
-    /// The bytes that `store`, outside loops, copies or zeroes: a copy
-    /// when the walk can tell where it loaded its words from, or a zeroing
-    /// when it stores 0.
-    fn store_piece(&self, store: &Store) -> Option<Piece> {
-        let address = store.address?;
-        let (to, size) = (u64::from(address), u64::from(store.size));
-        if store.conditional || size == 0 || !self.overlaps(to..to + size) {
-            return None;
-        }
-        let (does, gap) = match store.source {
-            Some(source) => (Does::Copy, Some(source.address.wrapping_sub(address))),
-            None if store.value == Some(0) => (Does::Zero, None),
-            None => return None,
-        };
-        Some(Piece {
-            does,
-            to,
-            size,
-            gap,
-            home: (0, 0, None),
-            site: store.site,
-            way: Way::Store,
-            step: None,
-        })
-    }
-
     /// Whether any byte from `bytes` is in a section that startup code
     /// sets up.
     fn overlaps(&self, bytes: Range<u64>) -> bool {
@@ -320,6 +257,69 @@ struct Piece {
 }
 
 impl Piece {
+    /// The bytes that the loop `l`, of the code at `home`, copies or
+    /// zeroes, when the walk can tell what each of its stores does each
+    /// time it runs (see [`Loop::stores`]): those that its stores into the
+    /// sections cover all of, one after another, each time the next ones up
+    /// or down (see [`tiled`]). A copy stores each time words that it loads
+    /// from as far after or before where it stores them; a zeroing stores 0
+    /// each time, which it doesn't load.
+    fn of_loop(memory: &Memory, l: &Loop, home: Home) -> Option<Piece> {
+        let stores: Vec<&LoopStore> = (l.stores()?.iter())
+            .filter(|store| store.times > 0 && memory.overlaps(stored_bytes(store)))
+            .collect();
+        let first = *stores.first()?;
+        let (to, size) = tiled(&stores)?;
+        // How far after each store a copy loads its words from.
+        let gap = |store: &LoopStore| {
+            let (from, step) = store.source?;
+            (step == store.step).then(|| from.wrapping_sub(store.address))
+        };
+        let copies = (gap(first)).filter(|&by| stores.iter().all(|&store| gap(store) == Some(by)));
+        let zeroes = (stores.iter()).all(|store| store.value == Some(0) && !store.loaded);
+        let does = match copies {
+            Some(_) => Does::Copy,
+            None if zeroes => Does::Zero,
+            None => return None,
+        };
+        Some(Piece {
+            does,
+            to,
+            size,
+            gap: copies,
+            home,
+            site: first.site,
+            way: Way::Loop,
+            step: None,
+        })
+    }
+
+    /// The bytes that `store`, outside loops, of the code at `home`, copies
+    /// or zeroes: a copy when the walk can tell where it loaded its words
+    /// from, or a zeroing when it stores 0.
+    fn of_store(memory: &Memory, store: &Store, home: Home) -> Option<Piece> {
+        let address = store.address?;
+        let (to, size) = (u64::from(address), u64::from(store.size));
+        if store.conditional || size == 0 || !memory.overlaps(to..to + size) {
+            return None;
+        }
+        let (does, gap) = match store.source {
+            Some(source) => (Does::Copy, Some(source.address.wrapping_sub(address))),
+            None if store.value == Some(0) => (Does::Zero, None),
+            None => return None,
+        };
+        Some(Piece {
+            does,
+            to,
+            size,
+            gap,
+            home,
+            site: store.site,
+            way: Way::Store,
+            step: None,
+        })
+    }
+
     fn end(&self) -> u64 {
         self.to + self.size
     }
@@ -887,11 +887,8 @@ pub(super) fn build(
             }
             Event::Loop(walked) => {
                 let function = at(&holder, l);
-                let piece = (memory.loop_piece(walked)).map(|piece| Piece {
-                    home: (level, function, iterations.home(k)),
-                    ..piece
-                });
-                if let Some(piece) = piece
+                let home = (level, function, iterations.home(k));
+                if let Some(piece) = Piece::of_loop(memory, walked, home)
                     && pieces.add(memory, piece, k, &mut steps, &mut ready)
                 {
                     continue;
@@ -935,9 +932,8 @@ pub(super) fn build(
             }
             Event::Store(store) if !in_loop[k] => {
                 let home = (level, at(&holder, l), iterations.home(k));
-                match memory.store_piece(store) {
+                match Piece::of_store(memory, store, home) {
                     Some(piece) => {
-                        let piece = Piece { home, ..piece };
                         pieces.add(memory, piece, k, &mut steps, &mut ready);
                     }
                     None => pieces.unsure(memory, store, home, &mut steps, &mut ready),
@@ -1628,7 +1624,9 @@ mod tests {
     /// What the loop with `stores` does, as "copy 0x20000000 32 from
     /// 0x8000400".
     fn piece(memory: &Memory, stores: Vec<LoopStore>) -> Option<String> {
-        let piece = memory.loop_piece(&walked(stores))?;
+        // In the reset handler's own code.
+        let home = (0, 0x800_0000, None);
+        let piece = Piece::of_loop(memory, &walked(stores), home)?;
         let from =
             (piece.gap).map(|gap| format!(" from {:#x}", (piece.to as u32).wrapping_add(gap)));
         Some(format!(
