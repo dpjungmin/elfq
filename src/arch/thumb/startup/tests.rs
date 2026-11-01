@@ -632,6 +632,48 @@ fn a_tail_call_to_a_dead_end_takes_the_other_way_without_following_calls() {
 }
 
 #[test]
+fn the_instructions_a_dead_end_goes_through_dont_count_for_the_walk() {
+    // A walk that follows no calls makes 70 tail calls to a dead end of
+    // 300 instructions, each after a branch it can't tell, which it goes
+    // back to. Going through the dead end 70 times takes 21,000
+    // instructions, more than the walk's 20,000, but they don't count
+    // for it, so it gets to main:
+    //   8000000: 2900       cmp   r1, #0
+    //   8000002: d000       beq.n 8000006
+    //   8000004: e0d3       b.n   80001ae <dead>
+    //   ... 69 more times, 6 bytes on
+    //   80001a4: f000 f801  bl    80001aa <main>
+    //   80001a8: bf00       nop
+    // main:
+    //   80001aa: e7fe       b.n   80001aa
+    //   80001ac: bf00       nop
+    // dead:
+    //   80001ae: bf00       nop
+    //   ... 298 more
+    //   8000404: 4710       bx    r2
+    let blocks = 70u16;
+    let mut code = Vec::new();
+    for k in 0..blocks {
+        // From 0x8000004 + 6k to 0x80001ae: (0x1ae - 8 - 6k) / 2 halves on.
+        code.extend([0x2900, 0xd000, 0xe000 | (0xd3 - 3 * k)]);
+    }
+    code.extend([0xf000, 0xf801, 0xbf00, 0xe7fe, 0xbf00]);
+    code.extend([0xbf00; 299]);
+    code.push(0x4710);
+    let functions = [0x0800_0000, 0x0800_01aa, 0x0800_01ae];
+    let lines = walk_lines_following(&code, &functions, Some(0x0800_01aa), 0);
+    assert_eq!(lines.len(), 72);
+    assert_eq!(
+        lines[69..],
+        [
+            "0 0x80001a0 back to 0x80001a4, since Branches { site: 8000404, through: Register(2) }",
+            "0 0x80001a4 call 0x80001aa (? ? ? ?), not followed",
+            "end Main(80001a4)",
+        ]
+    );
+}
+
+#[test]
 fn the_walk_goes_through_so_many_instructions() {
     // 700 nops in the reset handler.
     let code = [0xbf00; 700];
@@ -1608,6 +1650,53 @@ fn a_branch_taken_later_starts_from_what_the_walk_knew_there() {
             "0 0x800000a back to 0x8000016, since Branches { site: 8000014, through: Register(2) }",
             "0 0x8000016 call 0x800001a (0x20000000 0x1 ? ?)",
             "end Main(8000016)",
+        ]
+    );
+}
+
+#[test]
+fn the_stack_stays_as_low_as_a_way_the_walk_gave_up_took_it() {
+    // The walk takes the way past the beq first, which moves sp down by
+    // 64 bytes and spins, then goes back to the beq. The lowest the stack
+    // pointer has been stays where that way took it, so the store at
+    // 0x20000fe0, 32 bytes below the top, counts as one to the stack and
+    // isn't listed:
+    //   8000000: f04f 5000  mov.w r0, #0x20000000
+    //   8000004: 6801       ldr   r1, [r0, #0]
+    //   8000006: 2900       cmp   r1, #0
+    //   8000008: d001       beq.n 800000e
+    //   800000a: b090       sub   sp, #64
+    //   800000c: e7fe       b.n   800000c
+    //   800000e: 4a02       ldr   r2, [pc, #8]  ; 0x20000fe0
+    //   8000010: 6010       str   r0, [r2, #0]
+    //   8000012: f000 f803  bl    800001c <main>
+    //   8000016: bf00       nop
+    //   8000018: 20000fe0   .word
+    // main:
+    //   800001c: e7fe       b.n   800001c
+    let code = |sub: u16| {
+        vec![
+            0xf04f, 0x5000, 0x6801, 0x2900, 0xd001, sub, 0xe7fe, 0x4a02, 0x6010, 0xf000, 0xf803,
+            0xbf00, 0x0fe0, 0x2000, 0xe7fe,
+        ]
+    };
+    let functions = [0x0800_0000, 0x0800_001c];
+    assert_eq!(
+        walk_lines(&code(0xb090), &functions, Some(0x0800_001c)),
+        [
+            "0 0x8000008 back to 0x800000e, since Spins(800000c)",
+            "0 0x8000012 call 0x800001c (0x20000000 ? 0x20000fe0 ?)",
+            "end Main(8000012)",
+        ]
+    );
+    // With a nop in place of the sub, the store is listed.
+    assert_eq!(
+        walk_lines(&code(0xbf00), &functions, Some(0x0800_001c)),
+        [
+            "0 0x8000008 back to 0x800000e, since Spins(800000c)",
+            "0 0x8000010 store 0x20000000 at 0x20000fe0, 4 bytes",
+            "0 0x8000012 call 0x800001c (0x20000000 ? 0x20000fe0 ?)",
+            "end Main(8000012)",
         ]
     );
 }
