@@ -9,8 +9,9 @@ use crate::arch::startup::{Event, LoopStore, Source, Store};
 use crate::arch::thumb::decode::Flow;
 use crate::arch::thumb::{SP, is_wide};
 
+use super::loops::FoundLoop;
 use super::walk_state::{Compare, Flags, Path, Visit, forget_changes};
-use super::{CANDIDATES, Frame, LOOP_LIMIT, MOST_PASSES, MOST_TIMES, Run, Walker};
+use super::{CANDIDATES, Frame, MOST_PASSES, MOST_TIMES, Run, Walker};
 
 /// A loop whose code the walk goes through time by time to count how many
 /// times it runs (see [`Walker::count`]).
@@ -199,9 +200,9 @@ impl Line {
 }
 
 impl Walker<'_> {
-    /// How many times the loop from `head` to the branch back at `back`
-    /// runs, what it leaves, and what its stores do, when the walk can
-    /// tell, from what it knew at the head, `before`:
+    /// How many times the loop that the walk `found` runs, what it leaves,
+    /// and what its stores do, when the walk can tell, from what it knew
+    /// the first time it got to the head:
     ///
     /// 1. It goes through the loop's code the first three times, as the
     ///    processor would.
@@ -219,39 +220,27 @@ impl Walker<'_> {
     /// code the compiler put after the function's other code doesn't. The
     /// walk doesn't follow the loop's calls, nor count loops inside it, so
     /// with either it can't tell what the loop's stores do.
-    pub(super) fn count(
-        &mut self,
-        run: &Run,
-        frame: Frame,
-        head: u64,
-        back: u64,
-        before: &Visit,
-    ) -> Option<Counted> {
+    pub(super) fn count(&mut self, run: &Run, frame: Frame, found: &FoundLoop) -> Option<Counted> {
         let counts = self.counting.iter().any(|counting| !counting.walks);
         if counts || self.count_budget == 0 {
             return None;
         }
-        let counting = self.times_of(run, head, back, before, false)?;
+        let counting = self.times_of(run, found, false)?;
         self.counting.push(counting);
         let budget = self.budget;
-        let counted = self.count_passes(frame, head, before);
+        let counted = self.count_passes(frame, found.head, found.before);
         self.budget = budget;
         self.counting.pop();
         counted
     }
 
-    /// The loop from `head` to the branch back at `back`, to go through
-    /// time by time from what the walk knew at its head the first time,
-    /// `before`, as [`Counting`] says, with `walks`: `None` unless the
-    /// branch back goes to the head.
-    pub(super) fn times_of(
-        &self,
-        run: &Run,
-        head: u64,
-        back: u64,
-        before: &Visit,
-        walks: bool,
-    ) -> Option<Counting> {
+    /// The loop that the walk `found`, to go through time by time, as
+    /// [`Counting`] says, with `walks`: `None` unless the branch back goes
+    /// to the head.
+    pub(super) fn times_of(&self, run: &Run, found: &FoundLoop, walks: bool) -> Option<Counting> {
+        let FoundLoop {
+            head, back, before, ..
+        } = *found;
         let (first, _, effect) = self.decode(back)?;
         match effect.flow {
             Flow::Branch { target, .. } if target == head => {}
@@ -371,18 +360,7 @@ impl Walker<'_> {
         let lowest = self.lowest;
         let index = self.counting.len().checked_sub(1)?;
         let walks = self.counting[index].walks;
-        let body = Frame {
-            depth: frame.depth,
-            follow: if walks { frame.follow } else { 0 },
-            limit: match walks {
-                true => LOOP_LIMIT,
-                false => LOOP_LIMIT.min(self.count_budget),
-            },
-            stop: None,
-            nesting: frame.nesting + 1,
-            pass: Some(index),
-            rows: walks.then_some(index),
-        };
+        let body = frame.iteration(index, walks, self.count_budget);
         if walks {
             self.counting[index].carried = path.sources;
         } else {

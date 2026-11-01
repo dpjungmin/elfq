@@ -8,10 +8,10 @@ use crate::arch::thumb::decode::{Effect, Flow, Operation, Registers};
 use crate::arch::thumb::{ARGUMENTS, CALL_CLOBBERS, LR, SP, is_wide};
 
 use super::walk_state::{Alternative, Flags, Path, forget_changes, set_unknown};
-use super::{CALL_LIMIT, Frame, Run, Step, Walker};
+use super::{Frame, Run, Step, Walker};
 
 /// What code may change, as far as the walk can tell without going
-/// through it (see [`Walker::writes`]).
+/// through it (see [`Walker::loop_writes`]).
 pub(super) struct Changes {
     /// The registers its instructions write.
     pub(super) registers: Registers,
@@ -23,11 +23,24 @@ pub(super) struct Changes {
 }
 
 impl Walker<'_> {
-    /// What the code from `start` up to `end` may change, as far as the
-    /// walk can tell without going through it. With `whole`, the code is a
-    /// function's, and a jump out of it goes to another function, which may
-    /// change r0 to r3, ip and lr.
-    pub(super) fn writes(&mut self, start: u64, end: u64, whole: bool) -> Changes {
+    /// What the code of the loop from `head` to its branch back at `back`
+    /// may change, as far as the walk can tell without going through it.
+    pub(super) fn loop_writes(&mut self, head: u64, back: u64) -> Changes {
+        self.writes(head, back, false)
+    }
+
+    /// What the code of the function from `start` to `end` may change, as
+    /// far as the walk can tell without going through it, past the data in
+    /// it, such as a literal pool. A jump out of it goes to another
+    /// function, which may change r0 to r3, ip and lr.
+    fn function_writes(&mut self, start: u64, end: u64) -> Changes {
+        self.writes(start, end, true)
+    }
+
+    /// What the code from `start` up to `end` may change, as
+    /// [`Walker::loop_writes`] and, with `function`, as
+    /// [`Walker::function_writes`] say.
+    fn writes(&mut self, start: u64, end: u64, function: bool) -> Changes {
         let mut changes = Changes {
             registers: 0,
             stores: false,
@@ -35,7 +48,7 @@ impl Walker<'_> {
         };
         let mut address = start;
         while address < end {
-            if whole && self.is_data(Some((start, end)), address) {
+            if function && self.is_data(Some((start, end)), address) {
                 address += 2;
                 continue;
             }
@@ -50,8 +63,8 @@ impl Walker<'_> {
             changes.results |= results(&effect);
             let leaves = match effect.flow {
                 Flow::Call | Flow::CallRegister(..) => true,
-                Flow::Branch { target, .. } => whole && !(start..end).contains(&target),
-                Flow::JumpRegister(..) | Flow::JumpRelative(_) | Flow::JumpMemory => whole,
+                Flow::Branch { target, .. } => function && !(start..end).contains(&target),
+                Flow::JumpRegister(..) | Flow::JumpRelative(_) | Flow::JumpMemory => function,
                 _ => false,
             };
             if leaves {
@@ -81,7 +94,7 @@ impl Walker<'_> {
         if let Some(&clobbers) = self.clobbers.get(&start) {
             return clobbers;
         }
-        let changes = self.writes(start, end, true);
+        let changes = self.function_writes(start, end);
         let clobbers = (
             (changes.registers | 1 << LR) & CALL_CLOBBERS,
             changes.results,
@@ -139,7 +152,7 @@ impl Walker<'_> {
             // runs is: the walk goes back to a branch it couldn't tell.
             if frame.depth == 0
                 && frame.stop.is_none()
-                && let Some(end) = self.dead_end(run, site, target)
+                && let Some(end) = self.dead_end(run, frame, site, target)
             {
                 return Step::End(end);
             }
@@ -157,11 +170,11 @@ impl Walker<'_> {
         Step::Next(target)
     }
 
-    /// How the code that the jump at `site` to `target` goes to ends, when
-    /// it ends where the walk can't read on and the walk has a branch it
-    /// couldn't tell to go back to: walked as a function the walk calls,
-    /// whose events are then dropped.
-    fn dead_end(&mut self, run: &Run, site: u64, target: u64) -> Option<End> {
+    /// How the code that the jump at `site` to `target`, in the code of
+    /// `frame`, goes to ends, when it ends where the walk can't read on and
+    /// the walk has a branch it couldn't tell to go back to: walked as a
+    /// function that the code calls, whose events are then dropped.
+    fn dead_end(&mut self, run: &Run, frame: Frame, site: u64, target: u64) -> Option<End> {
         let untried = |alternative: &Alternative| !run.visits.contains_key(&alternative.target);
         if !run.alternatives.iter().any(untried) {
             return None;
@@ -170,16 +183,7 @@ impl Walker<'_> {
             return Some(End::LeavesFile { site, target });
         }
         let (events, budget, lowest) = (self.events.len(), self.budget, self.lowest);
-        let frame = Frame {
-            depth: 1,
-            follow: 0,
-            limit: CALL_LIMIT,
-            stop: None,
-            nesting: 0,
-            pass: None,
-            rows: None,
-        };
-        let (end, _) = self.walk(target, frame, run.path.clone());
+        let (end, _) = self.walk(target, frame.callee(), run.path.clone());
         self.events.truncate(events);
         (self.budget, self.lowest) = (budget, lowest);
         end.filter(|end| end.is_dead())
@@ -222,21 +226,12 @@ impl Walker<'_> {
                 let end = End::LeavesFile { site, target };
                 self.events.push(Event::Stop { site, depth, end });
             } else {
-                let callee = Frame {
-                    depth,
-                    follow: frame.follow - 1,
-                    limit: CALL_LIMIT,
-                    stop: None,
-                    nesting: 0,
-                    pass: None,
-                    rows: None,
-                };
                 // The call puts the address to return to in lr, which the
                 // walk doesn't follow.
                 let mut path = run.path.clone();
                 path.registers[usize::from(LR)] = None;
                 path.results = 0;
-                let (end, path) = self.walk(target, callee, path);
+                let (end, path) = self.walk(target, frame.callee(), path);
                 match end {
                     Some(End::Main(at)) => return Some(End::Main(at)),
                     Some(End::Returns(_)) => after = Some((path, true)),

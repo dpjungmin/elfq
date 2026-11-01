@@ -10,7 +10,8 @@ use crate::arch::thumb::PC;
 use crate::arch::thumb::decode::{Effect, Operation, Registers, each};
 
 use super::count::{first_time, line_through};
-use super::walk_state::{Path, Visit};
+use super::loops::FoundLoop;
+use super::walk_state::Path;
 use super::{Frame, Run, TIMES_BUDGET, TIMES_COUNT_BUDGET, Walker};
 
 /// What a loop that the walk went through each time leaves (see
@@ -22,9 +23,9 @@ pub(super) struct Walked {
 }
 
 impl Walker<'_> {
-    /// Goes through the code of the loop from `head` to `back` each of
-    /// the `passes` times it runs, as [`Walker::count`] counted them, from
-    /// what the walk knew at the head the first time, `before`. Each time,
+    /// Goes through the code of the loop that the walk `found` each of the
+    /// `passes` times it runs, as [`Walker::count`] counted them, from
+    /// what the walk knew the first time it got to the head. Each time,
     /// it follows the calls the code makes and counts the loops inside, as
     /// outside loops: for a loop that runs a few times and makes calls or
     /// has loops inside, as one over a table of sections that copies each
@@ -45,12 +46,11 @@ impl Walker<'_> {
         &mut self,
         run: &Run,
         frame: Frame,
-        head: u64,
-        back: u64,
-        before: &Visit,
+        found: &FoundLoop,
         passes: u32,
     ) -> Option<Walked> {
-        let counting = self.times_of(run, head, back, before, true)?;
+        let FoundLoop { head, before, .. } = *found;
+        let counting = self.times_of(run, found, true)?;
         let first = self.events.split_off(before.events);
         let lowest = self.lowest;
         // The times spend budgets of their own, but in a loop inside one

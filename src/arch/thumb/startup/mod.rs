@@ -58,6 +58,7 @@ use crate::arch::startup::{Call, DEPTH, End, Event, How, Program, Start, Through
 use calls::arguments;
 use count::Counting;
 use execute::holds;
+use loops::FoundLoop;
 pub(in crate::arch) use queries::{branches_past, passes_result};
 use walk_state::{Alternative, Compare, Path, Visit};
 
@@ -147,16 +148,7 @@ pub(in crate::arch) fn walk(endianness: Endianness, program: &dyn Program, start
     };
     let mut path = Path::default();
     path.registers[usize::from(SP)] = start.stack_pointer;
-    let frame = Frame {
-        depth: 0,
-        follow: start.follow.min(DEPTH),
-        limit: RESET_LIMIT,
-        stop: None,
-        nesting: 0,
-        pass: None,
-        rows: None,
-    };
-    let (end, _) = walker.walk(start.address & !1, frame, path);
+    let (end, _) = walker.walk(start.address & !1, Frame::reset(start.follow), path);
     Walk {
         events: walker.events,
         // Only the walk of a loop's code stops without an end.
@@ -185,6 +177,67 @@ struct Frame {
     /// inside it is: the loop's place in [`Walker::counting`], which keeps
     /// the words its code loads (see [`Counting::loads`]).
     rows: Option<usize>,
+}
+
+impl Frame {
+    /// The reset handler's code, from which the walk follows calls
+    /// `follow` deep, at most [`DEPTH`].
+    fn reset(follow: u32) -> Frame {
+        Frame::function(0, follow.min(DEPTH), RESET_LIMIT)
+    }
+
+    /// The code of a function that this frame's code calls: one deeper,
+    /// following one call fewer, if any.
+    fn callee(self) -> Frame {
+        Frame::function(self.depth + 1, self.follow.saturating_sub(1), CALL_LIMIT)
+    }
+
+    /// A function's code, `depth` calls deep, following calls `follow`
+    /// deeper, through at most `limit` instructions.
+    fn function(depth: u32, follow: u32, limit: usize) -> Frame {
+        Frame {
+            depth,
+            follow,
+            limit,
+            stop: None,
+            nesting: 0,
+            pass: None,
+            rows: None,
+        }
+    }
+
+    /// The code of a loop in this frame's code, walked once from its head
+    /// to its branch back at `back`.
+    fn loop_body(self, back: u64) -> Frame {
+        Frame {
+            limit: LOOP_LIMIT,
+            stop: Some(back),
+            nesting: self.nesting + 1,
+            pass: None,
+            ..self
+        }
+    }
+
+    /// One iteration of the loop at `index` in [`Walker::counting`], whose
+    /// code is in this frame's: with its calls, the loops inside and their
+    /// events when the walk goes through each iteration (`walks`), and
+    /// otherwise only to count the loop, following no calls, through at
+    /// most the `count_budget` instructions left to count with.
+    fn iteration(self, index: usize, walks: bool, count_budget: usize) -> Frame {
+        Frame {
+            follow: if walks { self.follow } else { 0 },
+            limit: if walks {
+                LOOP_LIMIT
+            } else {
+                LOOP_LIMIT.min(count_budget)
+            },
+            stop: None,
+            nesting: self.nesting + 1,
+            pass: Some(index),
+            rows: walks.then_some(index),
+            ..self
+        }
+    }
 }
 
 /// Where one walk is.
@@ -536,7 +589,14 @@ impl Walker<'_> {
         }
         if let Some(visit) = run.visits.get(&target).filter(|_| target < site) {
             let visit = visit.clone();
-            let exit = self.close_loop(run, frame, target, site, &visit, None, true);
+            let found = FoundLoop {
+                head: target,
+                back: site,
+                before: &visit,
+                stopped: None,
+                runs: true,
+            };
+            let exit = self.close_loop(run, frame, found);
             return match exit.or_else(|| run.way_out(target, site)) {
                 Some(exit) => Step::Next(exit),
                 None => Step::End(End::Loops(site)),
@@ -586,7 +646,7 @@ impl Walker<'_> {
             // A loop: the walk goes through its code once. When the code
             // was jumped over to the test at its end, it is walked from
             // here, with what the walk knows at the test.
-            let (visit, end, runs) = match run.visits.get(&target) {
+            let (before, stopped, runs) = match run.visits.get(&target) {
                 Some(visit) => (visit.clone(), None, true),
                 // The code was jumped over to a test that doesn't go back:
                 // the loop runs no times, as for an empty section.
@@ -595,11 +655,18 @@ impl Walker<'_> {
                     let before = run.visit(self.events.len());
                     match self.loop_body(run, frame, target, site) {
                         Some(End::Main(at)) => return Step::Final(End::Main(at)),
-                        end => (before, end, taken == Some(true)),
+                        stopped => (before, stopped, taken == Some(true)),
                     }
                 }
             };
-            let exit = self.close_loop(run, frame, target, site, &visit, end, runs);
+            let found = FoundLoop {
+                head: target,
+                back: site,
+                before: &before,
+                stopped,
+                runs,
+            };
+            let exit = self.close_loop(run, frame, found);
             return Step::Next(exit.unwrap_or(next));
         }
         if taken == Some(true) {
@@ -611,11 +678,18 @@ impl Walker<'_> {
             // other code, as GCC -Os does, which branches back to here.
             if let Some(back) = self.out_of_line_body(target, site, run.bounds) {
                 let before = run.visit(self.events.len());
-                let end = self.loop_body(run, frame, target, back);
-                if let Some(End::Main(at)) = end {
+                let stopped = self.loop_body(run, frame, target, back);
+                if let Some(End::Main(at)) = stopped {
                     return Step::Final(End::Main(at));
                 }
-                self.close_loop(run, frame, target, back, &before, end, false);
+                let found = FoundLoop {
+                    head: target,
+                    back,
+                    before: &before,
+                    stopped,
+                    runs: false,
+                };
+                self.close_loop(run, frame, found);
                 return Step::Next(next);
             }
             run.alternatives.push(Alternative {
