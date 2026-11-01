@@ -29,11 +29,11 @@ pub(super) struct Piece {
     /// For a copy, how far after where it stores each word it loads it
     /// from, wrapping round.
     gap: Option<u32>,
-    /// The level and function of the code, and the iteration that it is
-    /// in of a loop that the walk went through each iteration of (see
-    /// [`Iterations`]): the bytes of one iteration are joined with
-    /// another's only when they don't set up a section of their own (see
-    /// [`Pieces::add`]).
+    /// Where the code is: its level and function, and the iteration that
+    /// it is in of a loop that the walk went through one iteration at a
+    /// time (see [`Iterations`]). Pieces join only when they have the same
+    /// home, but for those of one loop's iterations by the same store,
+    /// which make no step alone (see [`Pieces::add`]).
     ///
     /// [`Iterations`]: super::events::Iterations
     home: Home,
@@ -48,19 +48,26 @@ pub(super) struct Piece {
 
 impl Piece {
     /// The bytes that the loop `l`, of the code at `home`, copies or
-    /// zeroes, when the walk can tell what each of its stores does each
-    /// time it runs (see [`Loop::stores`]): those that its stores into the
-    /// sections cover all of, one after another, each time the next ones up
-    /// or down (see [`tiled`]). A copy stores each time words that it loads
-    /// from as far after or before where it stores them; a zeroing stores 0
-    /// each time, which it doesn't load.
+    /// zeroes, when:
+    ///
+    /// 1. the walk can tell what each of its stores does each time the loop
+    ///    runs (see [`Loop::stores`]), and some of them store into the
+    ///    sections;
+    /// 2. those stores cover all their bytes once, one after another, each
+    ///    time the next ones up or down (see [`tiled`]);
+    /// 3. and they copy, each time storing words that they load from as far
+    ///    after or before where they store them, the same distance for
+    ///    every store; or else zero, each time storing 0, which they don't
+    ///    load.
     pub fn of_loop(memory: &Memory, l: &Loop, home: Home) -> Option<Piece> {
+        // 1.
         let stores: Vec<&LoopStore> = (l.stores()?.iter())
             .filter(|store| store.times > 0 && memory.overlaps(stored_bytes(store)))
             .collect();
         let first = *stores.first()?;
+        // 2.
         let (to, size) = tiled(&stores)?;
-        // How far after each store a copy loads its words from.
+        // 3. How far after each store a copy loads its words from.
         let gap = |store: &LoopStore| {
             let (from, step) = store.source?;
             (step == store.step).then(|| from.wrapping_sub(store.address))
@@ -154,15 +161,25 @@ fn step_match(memory: &Memory, piece: &Piece) -> Option<Match> {
 pub(super) struct Pieces(Vec<Piece>);
 
 impl Pieces {
-    /// Adds `piece`, of the event at `k`, joined with those next to it,
-    /// and makes a step of the bytes, or extends the step of a piece it
-    /// joins, when [`Memory::matched`] matches them: for the bytes of
-    /// stores alone, only when they cover whole sections, copied from
-    /// their load images. A piece of a time through a loop that the walk
-    /// went through each time joins those of the loop's other times, as
-    /// the word that a loop copies each time with a call does, unless it
-    /// makes a step alone, as the copy of a row of a table does, which is
-    /// a step of its own. Returns whether a step stands for `piece`.
+    /// Adds `piece`, of the event at `k`, and returns whether a step stands
+    /// for it:
+    ///
+    /// 1. It joins the pieces next to it, one after another (see
+    ///    [`Piece::next_to`]). A piece in an iteration of a loop that the
+    ///    walk went through one iteration at a time joins those of the
+    ///    loop's other iterations by the same store, as the word that a
+    ///    loop copies each iteration with a call does, unless it makes a
+    ///    step alone, as the copy of a row of a table does, which is a step
+    ///    of its own. The joined bytes are a loop's when any of the pieces
+    ///    is, or when they are of several iterations.
+    /// 2. When the joined bytes make no step (see [`step_match`]: for the
+    ///    bytes of stores alone, only when they cover whole sections,
+    ///    copied from their load images), the pieces it would join stay as
+    ///    they are. A store's piece is kept alone, for the stores after it
+    ///    to join; a loop's goes, and `build` asks what the loop may set up
+    ///    (see `unread.rs`).
+    /// 3. Else the joined bytes make a step, or extend the step of a piece
+    ///    they join, and take the place of the pieces they join.
     pub fn add(
         &mut self,
         memory: &Memory,
@@ -171,6 +188,7 @@ impl Pieces {
         steps: &mut Vec<Step>,
         ready: &mut HashSet<usize>,
     ) -> bool {
+        // 1.
         let across = piece.home.2.is_some() && step_match(memory, &piece).is_none();
         let mut joined = piece;
         let mut taken: Vec<usize> = Vec::new();
@@ -184,18 +202,20 @@ impl Pieces {
             if other.way == Way::Loop && joined.way != Way::Loop {
                 (joined.way, joined.site) = (Way::Loop, other.site);
             }
-            // The bytes of several times are a loop's.
+            // The bytes of several iterations are a loop's.
             if other.home != joined.home {
                 joined.way = Way::Loop;
             }
             taken.push(i);
         }
+        // 2.
         let Some(matched) = step_match(memory, &joined) else {
             if piece.way == Way::Store {
                 self.0.push(piece);
             }
             return false;
         };
+        // 3.
         let index = match joined.step {
             Some(index) => index,
             None => {

@@ -180,17 +180,33 @@ pub(super) fn find_main(firmware: &Firmware, memory: &Memory, reset: &Reset) -> 
 }
 
 /// Without a symbol `main`, as in a stripped file, `main` taken from the
-/// reset handler's own code: the function it calls last before it spins,
-/// returns, loops or runs off its end, or where it can't read on. When
-/// that call can't return, and the call before it only hands it its
-/// result, as in `exit(main())`, `main` is the call before, unless that
-/// call copies or zeroes a section. When a loop goes back over the last
-/// call, the reset handler is the program, and its loop ends startup.
-/// Code that runs back into code that the walk went through elsewhere is a
-/// loop that elfq can't follow, after which startup may go on: no `main`,
-/// unless the code after the last call runs back into a loop that ran
-/// before it, where the compiler put that loop's code after a call that
-/// doesn't return.
+/// reset handler's own code, walked without following its calls:
+///
+/// 1. When it makes no call that the walk can tell the target of, there is
+///    no `main`.
+/// 2. When the walk ends going back to code at or before the last call, a
+///    loop's head or code that it went through, a loop goes back over that
+///    call: the reset handler is the program, and startup ends at the
+///    loop's head ([`MainFrom::Loop`]). Not when an earlier branch goes
+///    past the call: then the call doesn't return, and the compiler put
+///    other code after it, such as a loop's body.
+/// 3. Else, when the code after the last call spins, returns, loops, runs
+///    off its end, or can't be read on, `main` is the function that the
+///    last call goes to.
+/// 4. Code that runs back into code that the walk went through elsewhere
+///    is a loop that elfq can't follow, after which startup may go on: no
+///    `main`, unless it runs back into a loop that ran before the last
+///    call, where the compiler put that loop's code after a call that
+///    doesn't return; then `main` is as in 3. Any other end, such as a
+///    branch through a register, gives no `main` either.
+/// 5. When the code runs off its end after the last call, so that the call
+///    can't return, and the call before it only hands it its result, as in
+///    `exit(main())`, `main` is the function that the call before goes to.
+///    Not when that call copies or zeroes a section, as in `memset(...);
+///    main();` with a `main` that never returns, nor when the last call's
+///    function sets up a section (see [`sets_up`]): then it starts a C
+///    runtime, as `bl SystemInit; bl _mainCRTStartup` does, rather than
+///    exiting.
 fn guess(firmware: &Firmware, memory: &Memory, reset: &Reset) -> Option<Main> {
     let walk = reset.walk(firmware.code, None, 0);
     let calls: Vec<(usize, &Call, u64)> = (walk.events.iter().enumerate())
@@ -199,23 +215,25 @@ fn guess(firmware: &Firmware, memory: &Memory, reset: &Reset) -> Option<Main> {
             _ => None,
         })
         .collect();
+    // 1.
     let &(last_event, last_call, last) = calls.last()?;
     let last_site = last_call.site;
-    let ran_before = |at: u64| {
-        (walk.events[..last_event].iter())
-            .any(|event| matches!(event, Event::Loop(l) if l.head <= at && at <= l.back))
-    };
+    // 2.
     let back = match walk.end {
         End::Loops(site) => walk.events.iter().rev().find_map(|event| match event {
             Event::Loop(l) if l.back == site => Some(l.head),
             _ => None,
         }),
         End::Rejoins(at) => Some(at),
-        _ => None,
+        End::Main(_)
+        | End::Spins(_)
+        | End::Returns(_)
+        | End::RunsOff(_)
+        | End::Undecoded(_)
+        | End::Branches { .. }
+        | End::LeavesFile { .. }
+        | End::Budget(_) => None,
     };
-    // Unless the code after the call is where an earlier branch goes: then
-    // the call doesn't return, and the compiler put other code after it,
-    // such as a loop's body.
     if let Some(head) = back
         && head <= last_site
         && !firmware.code.branches_past(reset.address, last_site)
@@ -225,21 +243,24 @@ fn guess(firmware: &Firmware, memory: &Memory, reset: &Reset) -> Option<Main> {
             from: MainFrom::Loop,
         });
     }
+    let ran_before = |at: u64| {
+        (walk.events[..last_event].iter())
+            .any(|event| matches!(event, Event::Loop(l) if l.head <= at && at <= l.back))
+    };
     let ends = match walk.end {
+        // 3.
         End::Spins(_) | End::Returns(_) | End::Loops(_) | End::RunsOff(_) | End::Undecoded(_) => {
             true
         }
+        // 4.
         End::Rejoins(at) => ran_before(at),
-        _ => false,
+        End::Main(_) | End::Branches { .. } | End::LeavesFile { .. } | End::Budget(_) => false,
     };
     if !ends {
         return None;
     }
     let mut main = last;
-    // A call before that copies or zeroes a section isn't `main`, as in
-    // `memset(...); main();` with a `main` that never returns. A last call
-    // that copies or zeroes a section starts a C runtime, as `bl
-    // SystemInit; bl _mainCRTStartup` does, rather than exiting.
+    // 5.
     if let End::RunsOff(_) = walk.end
         && let [.., (_, before_call, before), _] = calls[..]
         && firmware.code.passes_result(before_call.site, last_site)

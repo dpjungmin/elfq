@@ -17,17 +17,27 @@ use super::ram_sections::Memory;
 use super::steps::{Does, Step, Way};
 use crate::arch::startup::{Event, Loop, Store};
 
-/// Makes each loop of `walked`, which the walk went through each time,
-/// with the function that runs it, a loop that elfq can't follow, as it is
-/// when the walk goes through it once, when steps don't stand for all its
-/// times' stores into the sections: as when each time stores words by
-/// several stores, which don't join across times, or runs a loop inside
-/// that the walk went through each time too, or stores through a pointer
-/// that it can't tell, in the loop's code or in a function it calls. Then
-/// the loop's step stands for its times' steps that copy or zero part of
-/// what it may set up. Leaves out the stores of events that are
-/// `skipped`, whose own steps stand for them, and the loops inside one
-/// that it makes such a loop.
+/// Makes each loop of `walked`, which the walk went through one iteration
+/// at a time, with the function that runs it, a loop that elfq can't
+/// follow, as it is when the walk goes through it once, when steps don't
+/// stand for all its iterations' stores into the sections. Outer loops go
+/// first, and for each:
+///
+/// 1. A loop inside one that this has made such a loop is left out: the
+///    outer loop's step stands for it.
+/// 2. The stores that steps don't stand for are its iterations' stores,
+///    in its code or in a function it calls, that go where the walk can't
+///    tell, or into a section that startup code sets up where no step
+///    that copies or zeroes covers them; as when each iteration stores
+///    words by several stores, which don't join across iterations, or
+///    runs a loop inside that the walk went through one iteration at a
+///    time too. Conditional stores, and those of events that are
+///    `skipped`, whose own steps stand for them, don't count.
+/// 3. When those stores may set up no section (see [`loop_targets`]), the
+///    loop is left as it is.
+/// 4. Else its step stands for its iterations' steps that copy or zero
+///    part of what it may set up: they go, and it may set up what they
+///    did too.
 pub(super) fn unfollowed_iterations(
     memory: &Memory,
     events: &Events,
@@ -46,9 +56,11 @@ pub(super) fn unfollowed_iterations(
         let Event::Loop(l) = &events.list[k] else {
             continue;
         };
+        // 1.
         if unfollowed.iter().any(|run| run.contains(&l.events.start)) {
             continue;
         }
+        // 2.
         let covered = |at: u32, size: u32| {
             let (at, size) = (u64::from(at), u64::from(size.max(1)));
             steps.iter().any(|step| {
@@ -68,10 +80,12 @@ pub(super) fn unfollowed_iterations(
                 None => true,
             })
             .collect();
+        // 3.
         let mut may = loop_targets(memory, &stores, &HashSet::new());
         if may.is_empty() {
             continue;
         }
+        // 4.
         let part = |step: &Step| {
             l.events.contains(&step.event)
                 && matches!(step.does, Does::Copy | Does::Zero)

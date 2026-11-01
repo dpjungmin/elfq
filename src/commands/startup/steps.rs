@@ -463,33 +463,47 @@ pub(super) fn build(
 }
 
 /// `steps`, with each call that the reset handler makes to a function
-/// that does one step, a copy or a zeroing, and calls nothing else, as
-/// MCUXpresso's `data_init` and `bss_init` do, made that step, as a call
-/// to `memcpy` is: the call's, by the function, at its site. A call to
-/// code in the function that makes it, as Pico SDK's `data_cpy` is, which
-/// isn't a function of its own, keeps how the step does it, as a loop in
-/// that function.
+/// that does one step, a copy or a zeroing, as MCUXpresso's `data_init`
+/// and `bss_init` do, made that step, as a call to `memcpy` is. Such a
+/// call:
+///
+/// 1. is one that the reset handler makes, other than to `main`;
+/// 2. runs code in which there is one step, the next, and that step
+///    copies or zeroes, deeper than the call;
+/// 3. and makes no call in that code but that step's own, if it is one.
+///
+/// The call goes, and the step takes its site, the function that makes
+/// it, its level and its span, and is by the function it calls, but:
+///
+/// 4. a step that a call to code in the function that makes it does, as
+///    Pico SDK's `data_cpy` is, which isn't a function of its own, keeps
+///    how it does it, as a loop in that function.
 fn helpers(firmware: &Firmware, events: &Events, steps: Vec<Step>) -> Vec<Step> {
     // For each step, whether it is such a call, and so the step after
     // it, the one it does, goes.
     let merged: Vec<bool> = (0..steps.len())
         .map(|i| {
             let step = &steps[i];
+            // 1.
             let (Does::Call, false, Some(span)) = (step.does, step.main, step.span) else {
                 return false;
             };
+            // 2.
             let inside = |j: usize| steps.get(j).is_some_and(|other| other.event < span);
             let Some(only) = steps.get(i + 1).filter(|_| inside(i + 1) && !inside(i + 2)) else {
                 return false;
             };
-            // The events of the step's own call, when it is one.
+            if !matches!(only.does, Does::Copy | Does::Zero) || only.level <= step.level {
+                return false;
+            }
+            // 3. The events of the step's own call, when it is one.
             let own = match events.list[only.event] {
                 Event::Call(_) => only.event..events.span(only.event),
-                _ => 0..0,
+                Event::Store(_) | Event::Loop(_) | Event::Backtrack { .. } | Event::Stop { .. } => {
+                    0..0
+                }
             };
-            let calls_else =
-                (step.event + 1..span).any(|j| !own.contains(&j) && events.call(j).is_some());
-            matches!(only.does, Does::Copy | Does::Zero) && only.level > step.level && !calls_else
+            !(step.event + 1..span).any(|j| !own.contains(&j) && events.call(j).is_some())
         })
         .collect();
     let local = |call: &Step| {
@@ -504,6 +518,7 @@ fn helpers(firmware: &Firmware, events: &Events, steps: Vec<Step>) -> Vec<Step> 
             continue;
         }
         match call.take() {
+            // 4.
             Some(call) if local(&call) => out.push(Step {
                 site: call.site,
                 inside: call.inside,
