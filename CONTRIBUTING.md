@@ -149,6 +149,13 @@ this list, and add to it when you bring in a word.
   the entry point or a handler that the vector table lists (`graph::Root`).
 - **use**: a reference from one node to another, such as a call, a jump
   or a stored pointer: what `callers` and `callees` list.
+- **short name**: a shorter name that also means a long one, as
+  `process_frame` means `app::process_frame` (`binary::names`). Items
+  are filed under their short names' keys, the last parts of their
+  paths, so that finding one needs only the short names of a few
+  (`names::short_name_key`). A name's **words**, in `names`, are its
+  runs of letters, digits, `_` and characters outside ASCII, unrelated
+  to the words of memory that `Binary::words` reads.
 - **keeps**, **kept by**: retained's words. An item keeps another when
   every chain from a root to the other goes through it, so removing it
   frees the other; the closest such item is what the other is kept by.

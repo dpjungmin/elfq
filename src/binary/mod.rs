@@ -34,7 +34,7 @@ mod eh_frame;
 mod header;
 mod load;
 mod memory;
-mod names;
+pub mod names;
 mod plt;
 mod range;
 mod relocations;
@@ -48,11 +48,6 @@ mod vector_table;
 pub use attributes::ArmArchitecture;
 pub use header::ElfHeader;
 pub use memory::{Bytes, LoadedMemory, same_bytes_in, same_memory};
-pub use names::{
-    can_be_shorter, demangle, ends_with_short_name, for_each_short_name, has_short_name,
-    may_join_words, short_name_key, short_name_keys, short_names, short_names_with_key,
-    without_copy_suffixes, words,
-};
 pub use range::{AddressRange, MemoryBlock, hex_number, memory_blocks, range_hint};
 pub use vector_table::{VectorTable, exception_name, is_reserved};
 
@@ -355,7 +350,7 @@ impl Binary {
         // one step.
         let runs = std::iter::from_fn(move || {
             let slot = next.filter(|&slot| slot < end)?;
-            let (stop, bytes) = self.run(slot, end);
+            let (stop, bytes) = self.words_run(slot, end);
             let count = (stop - slot).div_ceil(size);
             next = count
                 .checked_mul(size)
@@ -377,7 +372,7 @@ impl Binary {
     /// Where the words from `slot` up to `end` stop coming from the section
     /// that holds `slot`, and the bytes the file holds for them: none when
     /// no section holds `slot`, or the file holds none of its bytes.
-    fn run(&self, slot: u64, end: u64) -> (u64, &[u8]) {
+    fn words_run(&self, slot: u64, end: u64) -> (u64, &[u8]) {
         // Sections can overlap, as GNU ld's OVERLAY makes them, and the
         // first that holds an address is the one that counts, so the run
         // ends where any other one starts too.

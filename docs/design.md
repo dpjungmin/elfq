@@ -1175,7 +1175,7 @@ SYMBOL names a function that the compiler inlined. [Life of a
 command](#life-of-a-command) follows one command through the functions
 that do this.
 
-1. **Load** the file with the `object` crate: sections, with where the
+1. **Read** the file with the `object` crate: sections, with where the
    program headers store their load images, symbols, entry point, dynamic
    relocations.
 2. **Discover items**, each with an address, size and a record of how it
@@ -1198,16 +1198,15 @@ that do this.
    5. The entry point, as a function named `entry`, when it is in code, no
       function covers it, and it isn't in the vector table, as it is in
       firmware linked with no entry point whose `.text` begins with the
-      table.
-   6. The Cortex-M vector table, when no item covers any of it, named after
-      its section, or after the section and address (`.text@0x8000000`)
-      when it is only part of it.
-   7. In Thumb executables where neither the symbol tables nor `.eh_frame`
+      table. The Cortex-M vector table, when no item covers any of it,
+      named after its section, or after the section and address
+      (`.text@0x8000000`) when it is only part of it.
+   6. In Thumb executables where neither the symbol tables nor `.eh_frame`
       list a function, the functions that the code leads to from the entry
       point, the vector table's handlers and the startup arrays, and those
       whose Thumb addresses code loads or data holds, where the code before
       them ends (see `unnamed_functions.rs`).
-   8. Data that code or a stored pointer refers to where there is no item,
+   7. Data that code or a stored pointer refers to where there is no item,
       in a data section other than the global offset table or, in Thumb
       files, in code: vtables, string literals and, in stripped files,
       variables and the constants that some linker scripts put in `.text`.
@@ -1215,7 +1214,7 @@ that do this.
       to and runs to the next one, the next item or the end of its section;
       elfq never guesses which function it belongs to.
 
-   Before 8, a function whose size runs past the start of another function
+   Before 7, a function whose size runs past the start of another function
    in its section ends there when the functions that start inside it run
    to its end, as an entry point that shares its code with the next does;
    and each function still of unknown size runs to the next item in its
@@ -1341,11 +1340,11 @@ in order. Its output is the first example under [Commands](#commands).
    `Names::find`: by address, by full name, or by the end of a name.
    Working out the ends of every name takes a while in a large file, so
    `Names` files each item under the last part of the paths that its
-   names' ends can have (`short_name_keys`), and works out the ends of
-   only the items filed under `process_frame`. `retained::refusal` refuses
-   an import, and a function whose end elfq doesn't know
-   (`readable_item`), then a shared library, before `run` builds the
-   graph.
+   names' ends can have (`names::short_name_keys`), and works out the
+   ends of only the items filed under `process_frame`.
+   `retained::refusal` refuses an import, and a function whose end elfq
+   doesn't know (`readable_item`), then a shared library, before `run`
+   builds the graph.
 5. **The graph.** `retained::run` has `graph::Graph::build` turn what
    `InstructionSet::scan` found in each function's code into references, or
    into unresolved calls. `Graph::build` then adds the pointers stored in

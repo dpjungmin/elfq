@@ -19,7 +19,7 @@ use super::flat_answer::{FlatAnswer, FlatRow};
 use super::kept::Kept;
 use super::tree_answer::{self, TreeAnswer, TreeTable};
 use super::{Outcome, json, text};
-use crate::binary::{Binary, ItemKind, short_names, total};
+use crate::binary::{Binary, ItemKind, names, total};
 use crate::cli::Format;
 use crate::debuginfo::{self, InlinedCopy};
 use crate::graph::Node;
@@ -437,13 +437,14 @@ impl<'a> Groups<'a> {
 
     /// What the rows inlined into each group call it, when the tree is
     /// shown as rows: the shortest name of its function that no other
-    /// function in the answer has, `symbol` included (see [`short_names`]).
-    /// Where several groups are copies of that function, or `symbol` is that
-    /// function too, " in " and a place follow: the nearest group above it
-    /// whose function is inlined in one place only, or `symbol`, as in
-    /// "fetch_add in update_stats". Where that still leaves groups with rows
-    /// under them called the same, the place of each is what the rows call
-    /// the group it sits in instead, as in "spec_next in next in write".
+    /// function in the answer has, `symbol` included (see
+    /// [`names::short_names`]). Where several groups are copies of that
+    /// function, or `symbol` is that function too, " in " and a place
+    /// follow: the nearest group above it whose function is inlined in one
+    /// place only, or `symbol`, as in "fetch_add in update_stats". Where
+    /// that still leaves groups with rows under them called the same, the
+    /// place of each is what the rows call the group it sits in instead,
+    /// as in "spec_next in next in write".
     fn short_names(&self, symbol: &str) -> Vec<String> {
         // Damaged debug info can nest copies of a function in copies of it
         // thousands deep, and names as long as that. Past this many names, a
@@ -458,23 +459,23 @@ impl<'a> Groups<'a> {
         // The function itself is one more place its own copies can be.
         *groups_named.entry(symbol).or_default() += 1;
         // Each function's names, and how many functions have each name.
-        let names: HashMap<&str, Vec<String>> = groups_named
+        let function_names: HashMap<&str, Vec<String>> = groups_named
             .keys()
             .map(|&name| {
-                let mut names = short_names(name);
-                names.push(name.to_string());
-                names.sort_by(|a, b| a.len().cmp(&b.len()).then(a.cmp(b)));
-                (name, names)
+                let mut its_names = names::short_names(name);
+                its_names.push(name.to_string());
+                its_names.sort_by(|a, b| a.len().cmp(&b.len()).then(a.cmp(b)));
+                (name, its_names)
             })
             .collect();
         let mut functions_named: HashMap<&str, usize> = HashMap::new();
-        for name in names.values().flatten() {
+        for name in function_names.values().flatten() {
             *functions_named.entry(name).or_default() += 1;
         }
-        let shortest: HashMap<&str, &str> = names
+        let shortest: HashMap<&str, &str> = function_names
             .iter()
-            .map(|(&function, names)| {
-                let unique = names
+            .map(|(&function, its_names)| {
+                let unique = its_names
                     .iter()
                     .find(|name| functions_named[name.as_str()] == 1);
                 (function, unique.map_or(function, String::as_str))

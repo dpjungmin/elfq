@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use super::Names;
 use super::lookup::add_index;
-use crate::binary::{short_name_key, short_name_keys, short_names_with_key};
+use crate::binary::names;
 use crate::commands::checks::found_functions;
 use crate::commands::text;
 use crate::debuginfo::{self, InlinedCopy};
@@ -32,7 +32,7 @@ pub(super) struct Inlined {
     functions: Vec<(String, Vec<usize>)>,
     /// The function with each name, as an index into `functions`.
     by_name: HashMap<String, usize>,
-    /// The functions that each key files (see [`short_name_key`]).
+    /// The functions that each key files (see [`names::short_name_key`]).
     filed: HashMap<String, FiledFunctions>,
     /// The names of the functions that the compiler kept part of out of
     /// line, by the names of the items it kept: GCC names them after the
@@ -135,7 +135,7 @@ impl<'a> Names<'a> {
             }
             let mut filed: HashMap<String, FiledFunctions> = HashMap::new();
             for (function, (name, _)) in functions.iter().enumerate() {
-                for key in short_name_keys(name) {
+                for key in names::short_name_keys(name) {
                     filed.entry(key).or_default().functions.push(function);
                 }
             }
@@ -232,13 +232,14 @@ impl Inlined {
     /// it names only one.
     fn only_function(&self, query: &str) -> Option<usize> {
         let mut found: Vec<usize> = self.by_name.get(query).copied().into_iter().collect();
-        if let Some(key) = short_name_key(query)
+        if let Some(key) = names::short_name_key(query)
             && let Some(filed) = self.filed.get(key)
         {
             let by_short_name = filed.by_short_name.get_or_init(|| {
                 let mut by_short_name: HashMap<String, Vec<usize>> = HashMap::new();
                 for &function in &filed.functions {
-                    for short_name in short_names_with_key(&self.functions[function].0, key) {
+                    for short_name in names::short_names_with_key(&self.functions[function].0, key)
+                    {
                         add_index(by_short_name.entry(short_name).or_default(), function);
                     }
                 }

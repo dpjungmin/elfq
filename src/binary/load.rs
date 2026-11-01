@@ -80,7 +80,7 @@ impl Binary {
         binary.merged_variables = merged_variables;
         let stubs = plt::stubs(&binary, &items);
         add_new_items(&mut items, stubs);
-        add_new_items(&mut items, section_items(&binary.sections));
+        add_new_items(&mut items, startup_array_items(&binary.sections));
         match eh_frame::read(&file) {
             Ok(table) => {
                 add_unwind_items(&mut items, &table.functions, &binary.sections);
@@ -146,7 +146,7 @@ fn add_new_items(items: &mut Vec<Item>, new: Vec<Item>) {
 
 /// Items for the arrays of functions that run at startup and exit, which
 /// have no symbols of their own.
-fn section_items(sections: &[Section]) -> Vec<Item> {
+fn startup_array_items(sections: &[Section]) -> Vec<Item> {
     sections
         .iter()
         .enumerate()

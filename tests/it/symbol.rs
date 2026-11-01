@@ -1,9 +1,6 @@
 //! Finding what the user means by SYMBOL.
 
-use elfq::binary::{
-    Binary, ends_with_short_name, may_join_words, short_name_key, short_name_keys, short_names,
-    short_names_with_key, words,
-};
+use elfq::binary::{Binary, names};
 use elfq::commands::symbol;
 
 use crate::support::{load_sample, samples};
@@ -296,9 +293,9 @@ fn every_short_name_has_one_of_its_names_keys() {
     for sample in samples() {
         let binary = load_sample(sample.trim_start_matches("testdata/bin/"));
         for name in binary.items.iter().flat_map(|item| item.names()) {
-            let keys = short_name_keys(name);
-            for short_name in short_names(name) {
-                let key = short_name_key(&short_name);
+            let keys = names::short_name_keys(name);
+            for short_name in names::short_names(name) {
+                let key = names::short_name_key(&short_name);
                 assert!(
                     key.is_some_and(|key| keys.iter().any(|k| k == key)),
                     "{sample}: {short_name:?} of {name:?} has key {key:?}, not one of {keys:?}"
@@ -316,14 +313,16 @@ fn short_names_with_a_key_are_the_short_names_that_have_it() {
     for sample in samples() {
         let binary = load_sample(sample.trim_start_matches("testdata/bin/"));
         for name in binary.items.iter().flat_map(|item| item.names()) {
-            let short = short_names(name);
-            for key in short_name_keys(name) {
+            let short = names::short_names(name);
+            for key in names::short_name_keys(name) {
                 let with_key: Vec<&String> = short
                     .iter()
-                    .filter(|short_name| short_name_key(short_name) == Some(key.as_str()))
+                    .filter(|short_name| names::short_name_key(short_name) == Some(key.as_str()))
                     .collect();
                 assert_eq!(
-                    short_names_with_key(name, &key).iter().collect::<Vec<_>>(),
+                    names::short_names_with_key(name, &key)
+                        .iter()
+                        .collect::<Vec<_>>(),
                     with_key,
                     "{sample}: {name:?}, key {key:?}"
                 );
@@ -341,10 +340,10 @@ fn the_words_of_a_short_name_are_words_of_its_name() {
     for sample in samples() {
         let binary = load_sample(sample.trim_start_matches("testdata/bin/"));
         for name in binary.items.iter().flat_map(|item| item.names()) {
-            let short = short_names(name);
-            let of_name: Vec<&str> = words(name).collect();
-            for short_name in short.iter().filter(|_| !may_join_words(name)) {
-                for word in words(short_name) {
+            let short = names::short_names(name);
+            let of_name: Vec<&str> = names::words(name).collect();
+            for short_name in short.iter().filter(|_| !names::may_join_words(name)) {
+                for word in names::words(short_name) {
                     assert!(
                         of_name.contains(&word),
                         "{sample}: {word:?} of {short_name:?} isn't a word of {name:?}"
@@ -355,7 +354,7 @@ fn the_words_of_a_short_name_are_words_of_its_name() {
             for (at, _) in name.char_indices() {
                 let end = &name[at..];
                 assert!(
-                    !ends_with_short_name(name, end) || short.iter().any(|s| s == end),
+                    !names::ends_with_short_name(name, end) || short.iter().any(|s| s == end),
                     "{sample}: {end:?} isn't a short name of {name:?}"
                 );
             }

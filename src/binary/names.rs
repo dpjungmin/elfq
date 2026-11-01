@@ -6,7 +6,45 @@
 //! `_RNvCsjtrlrMDykj5_3app13process_frame`, and C++'s
 //! `app::process_frame(app::Frame const&)` becomes
 //! `_ZN3app13process_frameERKNS_5FrameE`. elfq shows the readable name and
-//! keeps the symbol as an alias, so both find the item.
+//! keeps the symbol as an alias, so both find the item ([`demangle`]).
+//!
+//! # Short names
+//!
+//! A *short name* is a shorter name that also means a long one: an end of
+//! its path, as `process_frame` for `app::process_frame`, with or without
+//! generic arguments and parameters, or a method's path through its type
+//! or trait. [`short_names`] says which. A name in C has none, and
+//! [`can_be_shorter`] tells it apart quickly.
+//!
+//! A large file has hundreds of thousands of names, too many to work out
+//! the short names of each when SYMBOL is looked up. So each short name
+//! has a *key*, the last part of its path ([`short_name_key`]), as
+//! `run(short*) const` for `Gain::run(short*) const`, and a query is
+//! looked up in two steps:
+//!
+//! 1. [`short_name_keys`] gives every key that a name's short names can
+//!    have, without working them out, so that each item is filed once
+//!    under the keys of its names;
+//! 2. the query's key picks the few items filed under it, and
+//!    [`short_names_with_key`] works out only their short names that have
+//!    that key.
+//!
+//! A key such as `fmt`, in a Rust program, can file thousands of items.
+//! For those, two quick checks come first. The *words* of a name are its
+//! runs of letters, digits, `_` and characters outside ASCII ([`words`]),
+//! and each word of a short name is a word of the name, unless taking out
+//! generic arguments joins two, which [`may_join_words`] tells. So only the
+//! items whose names have every word of the query can have it. Of those,
+//! [`ends_with_short_name`] says yes for most at once, and
+//! [`has_short_name`] answers for the rest.
+//! `commands::symbol::Names` asks these questions, in that order, in its
+//! `nodes` and `finds_only`.
+//!
+//! [`for_each_short_name`] visits a name's short names without putting
+//! them in order, for the names that the error for a SYMBOL that finds
+//! nothing suggests. [`without_copy_suffixes`] gives a function and the
+//! copies that compilers make of it, such as `dev_read.constprop.0`, one
+//! name, for `diff`.
 
 /// The readable name of a mangled Rust or C++ symbol, or `None` when
 /// `symbol` isn't one. Rust names leave out the hashes that tell builds of a
@@ -140,14 +178,13 @@ fn for_each_short_name_ending(
         if key.is_some_and(|key| last != key && without_special_prefixes(last) != key) {
             return;
         }
-        // Every end of the path, except one that starts with generic
-        // arguments, like the `<u8>` in `checksum::<u8>`. Each is the
-        // path from where its first part starts.
+        // Every end of the path from a part where a short name can start.
+        // Each is the path from where its first part starts.
         let mut at = 0;
         for start in 0..parts.len() {
             let from = at;
             at += parts[start].len() + "::".len();
-            if start > 0 && (parts[start].is_empty() || parts[start].starts_with('<')) {
+            if !can_start_short_name(start, parts[start]) {
                 continue;
             }
             if let Some(key) = key {
@@ -180,8 +217,8 @@ pub fn ends_with_short_name(name: &str, short_name: &str) -> bool {
     }
     // `name` and the paths of a method through its type and trait are
     // among the paths that `for_each_path` visits, and each of their ends
-    // from a part that isn't empty and doesn't start with generic arguments
-    // is a short name, but `name` itself.
+    // from a part where a short name can start is a short name, but `name`
+    // itself.
     let ends_with = |path: &str| {
         let Some(start) = path.len().checked_sub(short_name.len()) else {
             return false;
@@ -195,13 +232,20 @@ pub fn ends_with_short_name(name: &str, short_name: &str) -> bool {
         let mut at = 0;
         for (index, part) in parts.into_iter().enumerate() {
             if at == start {
-                return index == 0 || !part.is_empty() && !part.starts_with('<');
+                return can_start_short_name(index, part);
             }
             at += part.len() + "::".len();
         }
         false
     };
     ends_with(name) || impl_method_paths(name).iter().any(|path| ends_with(path))
+}
+
+/// Whether a short name can start at `part`, part `index` of a path: at
+/// the first part, or at one that isn't empty and doesn't start with
+/// generic arguments, like the `<u8>` in `checksum::<u8>`.
+fn can_start_short_name(index: usize, part: &str) -> bool {
+    index == 0 || !part.is_empty() && !part.starts_with('<')
 }
 
 /// The words of `text`: its runs of letters, digits, `_` and characters
@@ -619,8 +663,7 @@ fn push_without_angle_brackets(text: &str, kept: &mut String) {
                 }
                 depth += 1;
             }
-            // The `>` of `->`, as in `fn() -> u8`, closes nothing.
-            b'>' if depth > 0 && (at == 0 || bytes[at - 1] != b'-') => {
+            b'>' if depth > 0 && !is_arrow(bytes, at) => {
                 depth -= 1;
                 if depth == 0 {
                     outside = at + 1;
@@ -672,8 +715,7 @@ fn for_each_top_level_match(text: &str, pattern: &str, mut found: impl FnMut(usi
                 }
             }
             b'<' | b'(' | b'[' | b'{' => depth += 1,
-            // The `>` of `->`, as in `fn() -> u8`, closes nothing.
-            b'>' if at > 0 && bytes[at - 1] == b'-' => {}
+            b'>' if is_arrow(bytes, at) => {}
             b'>' | b')' | b']' | b'}' => match depth.checked_sub(1) {
                 Some(outer) => depth = outer,
                 None => return false,
@@ -683,6 +725,12 @@ fn for_each_top_level_match(text: &str, pattern: &str, mut found: impl FnMut(usi
         at += 1;
     }
     depth == 0
+}
+
+/// Whether the `>` at `at` in `bytes` ends `->`, as in `fn() -> u8`,
+/// which closes no bracket.
+fn is_arrow(bytes: &[u8], at: usize) -> bool {
+    at > 0 && bytes[at - 1] == b'-'
 }
 
 /// The bytes that open or close a bracket, and the `o` that starts

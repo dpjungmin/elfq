@@ -9,10 +9,7 @@ use anyhow::{Context, Result, bail};
 use super::Symbol;
 use super::not_found::Inlined;
 use super::similar::{Lowercase, Suggestable};
-use crate::binary::{
-    Binary, ItemKind, can_be_shorter, demangle, ends_with_short_name, has_short_name, hex_number,
-    may_join_words, short_name_key, short_name_keys, short_names, short_names_with_key, words,
-};
+use crate::binary::{Binary, ItemKind, hex_number, names};
 use crate::graph::Node;
 
 /// Every name that finds an item or import, and what each one finds.
@@ -32,9 +29,9 @@ pub(crate) struct Names<'a> {
     pub(super) binary: &'a Binary,
     /// Names of items and imports, and aliases of items.
     full: OnceCell<HashMap<&'a str, Vec<Node>>>,
-    /// For each key (see [`short_name_key`]), the items that one of their
-    /// names files under it, and the short names with the key, worked out
-    /// the first time a query that isn't a full name has it.
+    /// For each key (see [`names::short_name_key`]), the items that one of
+    /// their names files under it, and the short names with the key, worked
+    /// out the first time a query that isn't a full name has it.
     filed: OnceCell<HashMap<String, Filed<'a>>>,
     /// Every short name of every item, worked out at once when many items
     /// are to be named (see [`Names::will_name`]).
@@ -64,8 +61,8 @@ struct Filed<'a> {
     items: Vec<usize>,
     /// The short names with the key, and what each finds.
     nodes: OnceCell<HashMap<String, Vec<Node>>>,
-    /// The words of the items' names (see [`words`]), and the items that
-    /// have each, as indices into `items`, for [`Names::finds_only`].
+    /// The words of the items' names (see [`names::words`]), and the items
+    /// that have each, as indices into `items`, for [`Names::finds_only`].
     words: OnceCell<Words<'a>>,
 }
 
@@ -73,7 +70,7 @@ struct Filed<'a> {
 struct Words<'a> {
     with: HashMap<&'a str, Vec<usize>>,
     /// The items with a name that may have a short name with any words
-    /// (see [`may_join_words`]).
+    /// (see [`names::may_join_words`]).
     any: Vec<usize>,
 }
 
@@ -192,7 +189,8 @@ impl<'a> Names<'a> {
             return None;
         };
         let item = &self.binary.items[index];
-        let gives = |name: &str| name == query || short_names(name).iter().any(|s| s == query);
+        let gives =
+            |name: &str| name == query || names::short_names(name).iter().any(|s| s == query);
         if gives(&item.name) {
             return None;
         }
@@ -212,7 +210,7 @@ impl<'a> Names<'a> {
         // Working out every short name of every item takes a while in a
         // large file: only those of the items filed under `query`'s key
         // are worked out, once.
-        let key = short_name_key(query);
+        let key = names::short_name_key(query);
         let Some(filed) = key.and_then(|key| self.filed().get(key)) else {
             return &[];
         };
@@ -238,7 +236,7 @@ impl<'a> Names<'a> {
         if self.full().contains_key(query) || self.many.get() {
             return self.nodes(query) == [node];
         }
-        let key = short_name_key(query);
+        let key = names::short_name_key(query);
         let Some(filed) = key.and_then(|key| self.filed().get(key)) else {
             return false;
         };
@@ -253,14 +251,14 @@ impl<'a> Names<'a> {
             for (at, &index) in filed.items.iter().enumerate() {
                 // A name that can't be shorter has no short names, as a
                 // mangled symbol has none.
-                let names = self.binary.items[index]
+                let item_names = self.binary.items[index]
                     .names()
-                    .filter(|name| can_be_shorter(name));
-                for name in names {
-                    if may_join_words(name) {
+                    .filter(|name| names::can_be_shorter(name));
+                for name in item_names {
+                    if names::may_join_words(name) {
                         add_index(&mut by_word.any, at);
                     }
-                    for word in words(name) {
+                    for word in names::words(name) {
                         add_index(by_word.with.entry(word).or_default(), at);
                     }
                 }
@@ -269,7 +267,7 @@ impl<'a> Names<'a> {
         });
         // The items whose names have the word of `query` that the fewest
         // have, or every item when it has no words.
-        let query_words: Vec<&str> = words(query).collect();
+        let query_words: Vec<&str> = names::words(query).collect();
         let all: Vec<usize>;
         let with = match query_words
             .iter()
@@ -285,16 +283,18 @@ impl<'a> Names<'a> {
         // Whether item `index` has `query` as a short name, as
         // [`Names::short_names_of`] gives them.
         let has = |index: usize| {
-            let names = || self.binary.items[index].names();
+            let item_names = || self.binary.items[index].names();
             let may_have = |name: &str| {
-                may_join_words(name) || query_words.iter().all(|word| name.contains(word))
+                names::may_join_words(name) || query_words.iter().all(|word| name.contains(word))
             };
             if self.own_function_stubs().contains(&index) && !query.ends_with("@plt")
-                || !names().any(may_have)
+                || !item_names().any(may_have)
             {
                 return false;
             }
-            names().any(|name| ends_with_short_name(name, query) || has_short_name(name, query))
+            item_names().any(|name| {
+                names::ends_with_short_name(name, query) || names::has_short_name(name, query)
+            })
         };
         let mut found = false;
         for &at in with.iter().chain(&by_word.any) {
@@ -368,7 +368,7 @@ impl<'a> Names<'a> {
         self.filed.get_or_init(|| {
             let mut filed: HashMap<String, Filed> = HashMap::new();
             for (index, item) in self.binary.items.iter().enumerate() {
-                for key in item.names().flat_map(short_name_keys) {
+                for key in item.names().flat_map(names::short_name_keys) {
                     let items = &mut filed
                         .entry(key)
                         .or_insert_with(|| Filed {
@@ -386,18 +386,18 @@ impl<'a> Names<'a> {
         })
     }
 
-    /// The short names of item `index` (see [`short_names`]), or with a
-    /// key, only those that have it. A stub for one of the file's own
-    /// functions keeps only those that end in `@plt`: `app::log(unsigned
-    /// int)@plt` is also `log(unsigned int)@plt`, but not `log`, which means
-    /// the function.
+    /// The short names of item `index` (see [`names::short_names`]), or
+    /// with a key, only those that have it. A stub for one of the file's
+    /// own functions keeps only those that end in `@plt`:
+    /// `app::log(unsigned int)@plt` is also `log(unsigned int)@plt`, but
+    /// not `log`, which means the function.
     fn short_names_of(&self, index: usize, key: Option<&str>) -> Vec<String> {
         let own_function_stub = self.own_function_stubs().contains(&index);
         self.binary.items[index]
             .names()
             .flat_map(|name| match key {
-                Some(key) => short_names_with_key(name, key),
-                None => short_names(name),
+                Some(key) => names::short_names_with_key(name, key),
+                None => names::short_names(name),
             })
             .filter(|short_name| !own_function_stub || short_name.ends_with("@plt"))
             .collect()
@@ -439,21 +439,25 @@ impl<'a> Names<'a> {
             .unwrap_or_else(|| format!("{:#x}", self.binary.items[index].address))
     }
 
-    /// The shortest of `names` and their short names that finds only
+    /// The shortest of `whole_names` and their short names that finds only
     /// `node` and that `keep` keeps, leaving out mangled symbols, if one
     /// does.
     fn shortest_name(
         &self,
         node: Node,
-        names: Vec<&str>,
+        whole_names: Vec<&str>,
         keep: impl Fn(&str) -> bool,
     ) -> Option<String> {
         // A stub for one of the file's own functions has the function's
         // mangled names as aliases, with `@plt` added.
-        let mut queries: Vec<String> = names
+        let mut queries: Vec<String> = whole_names
             .into_iter()
-            .filter(|name| demangle(name.strip_suffix("@plt").unwrap_or(name)).is_none())
-            .flat_map(|name| short_names(name).into_iter().chain([name.to_string()]))
+            .filter(|name| names::demangle(name.strip_suffix("@plt").unwrap_or(name)).is_none())
+            .flat_map(|name| {
+                names::short_names(name)
+                    .into_iter()
+                    .chain([name.to_string()])
+            })
             .filter(|query| keep(query))
             .collect();
         queries.sort_by(|a, b| a.len().cmp(&b.len()).then(a.cmp(b)));
@@ -487,7 +491,7 @@ fn readable(name: &str) -> String {
         Some(symbol) => (symbol, "@plt"),
         None => (name, ""),
     };
-    demangle(symbol).map_or_else(|| name.to_string(), |readable| readable + plt)
+    names::demangle(symbol).map_or_else(|| name.to_string(), |readable| readable + plt)
 }
 
 /// Adds `index` to a list of indices in order, unless it is the last.

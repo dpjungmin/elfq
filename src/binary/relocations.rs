@@ -13,7 +13,8 @@ use object::{
     Architecture, Object, ObjectSymbol, ObjectSymbolTable, RelocationFlags, SymbolKind, elf,
 };
 
-use super::{Relocation, RelocationTarget, code_address, demangle};
+use super::names::demangle;
+use super::{Relocation, RelocationTarget, code_address};
 
 /// Returns the imports, and the relocations sorted by address.
 pub(super) fn read(

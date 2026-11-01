@@ -15,7 +15,7 @@ use std::hash::Hash;
 
 use serde::Serialize;
 
-use crate::binary::{Binary, Item, ItemKind, Source, without_copy_suffixes};
+use crate::binary::{Binary, Item, ItemKind, Source, names};
 use crate::graph::{Graph, Node, ReferenceKind};
 
 /// The rule that paired two items, as JSON's `paired_by` says it.
@@ -92,7 +92,7 @@ fn by_other_name(pairing: &mut Pairing, old: &Binary, new: &Binary) {
 fn by_copy_name(pairing: &mut Pairing, old: &Binary, new: &Binary) {
     pairing.pair_unique(old, new, PairedBy::Name, |binary, index| {
         let item = &binary.items[index];
-        pairs_by_name(item, &item.name).then(|| without_copy_suffixes(&item.name))
+        pairs_by_name(item, &item.name).then(|| names::without_copy_suffixes(&item.name))
     });
 }
 
@@ -423,7 +423,7 @@ pub(super) fn numbered_name<'n>(item: &Item, name: &'n str) -> Option<&'n str> {
     if item.kind != ItemKind::Data {
         return None;
     }
-    let (before, number) = without_copy_suffixes(name).rsplit_once('.')?;
+    let (before, number) = names::without_copy_suffixes(name).rsplit_once('.')?;
     let is_number = !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit());
     let mut c_name = before.bytes();
     let is_c_name = c_name
