@@ -471,8 +471,27 @@ fn loads_and_stores() {
     // the flags, and goes on.
     let clear = effect(0, &[0x9f, 0xe8, 0xf7, 0x9f]);
     assert_eq!(clear.writes, 0x1ff7);
-    assert!(clear.sets_flags);
+    assert_eq!(clear.flags, SetsFlags::Always);
     assert_eq!(clear.flow, Flow::Next);
+}
+
+#[test]
+fn when_instructions_set_the_flags() {
+    let sets = |bytes: &[u8]| {
+        let effect = effect(0, bytes);
+        [effect.sets_flags(false), effect.sets_flags(true)]
+    };
+    // movs r0, #1 and adds r0, r1, r2 set them outside an `it` block only.
+    assert_eq!(sets(&[0x01, 0x20]), [true, false]);
+    assert_eq!(sets(&[0x88, 0x18]), [true, false]);
+    // cmp r0, #5 and tst r0, r1 set them inside one too.
+    assert_eq!(sets(&[0x05, 0x28]), [true, true]);
+    assert_eq!(sets(&[0x08, 0x42]), [true, true]);
+    // add r0, r1 starts at 0x4400 and sets none; nor does mov.w r0, #1,
+    // but movs.w r0, #1 does, inside an `it` block too.
+    assert_eq!(sets(&[0x08, 0x44]), [false, false]);
+    assert_eq!(sets(&[0x4f, 0xf0, 0x01, 0x00]), [false, false]);
+    assert_eq!(sets(&[0x5f, 0xf0, 0x01, 0x00]), [true, true]);
 }
 
 #[test]
@@ -487,7 +506,7 @@ fn it_and_the_flags() {
     );
     // cmp r0, #5 sets the flags; adds r0, #1 doesn't inside it.
     let compare = effect(0, &[0x05, 0x28]);
-    assert!(compare.sets_flags);
+    assert_eq!(compare.flags, SetsFlags::Always);
     assert_eq!(
         compare.operation,
         Operation::Compare {
@@ -495,10 +514,10 @@ fn it_and_the_flags() {
             value: 5
         }
     );
-    assert!(!effect(0, &[0x01, 0x30]).sets_flags);
+    assert_eq!(effect(0, &[0x01, 0x30]).flags, SetsFlags::OutsideIt);
     // cmp.w r0, #-1
     let compare = effect(0, &[0xb0, 0xf1, 0xff, 0x3f]);
-    assert!(compare.sets_flags);
+    assert_eq!(compare.flags, SetsFlags::Always);
     assert_eq!(
         compare.operation,
         Operation::Compare {
@@ -593,7 +612,7 @@ fn instructions_that_work_out_lengths_and_compare_them() {
     );
     // ands r2, r2, #0xff sets the flags.
     let and = effect(0, &[0x12, 0xf0, 0xff, 0x02]);
-    assert!(and.sets_flags);
+    assert_eq!(and.flags, SetsFlags::Always);
     assert_eq!(
         and.operation,
         Operation::AndConstant {
@@ -673,8 +692,8 @@ fn instructions_that_work_out_lengths_and_compare_them() {
             source: 1
         }
     );
-    // Inside an `it` block, the 16-bit ands, bics, subs, lsrs and asrs
-    // leave the flags as they are.
+    // The 16-bit ands, bics, subs, lsrs and asrs set the flags only
+    // outside an `it` block.
     for bytes in [
         [0x0a, 0x40],
         [0x8a, 0x43],
@@ -682,13 +701,13 @@ fn instructions_that_work_out_lengths_and_compare_them() {
         [0x92, 0x08],
         [0xc1, 0x17],
     ] {
-        assert!(!effect(0, &bytes).sets_flags);
+        assert_eq!(effect(0, &bytes).flags, SetsFlags::OutsideIt);
     }
     // cmp r0, r1, cmp r8, r1 and cmp.w r0, r1 set the flags and write
     // nothing.
     for bytes in [&[0x88, 0x42][..], &[0x88, 0x45], &[0xb0, 0xeb, 0x01, 0x0f]] {
         let compare = effect(0, bytes);
-        assert!(compare.sets_flags);
+        assert_eq!(compare.flags, SetsFlags::Always);
         assert_eq!(compare.writes, 0);
     }
     assert_eq!(
@@ -764,7 +783,10 @@ fn floating_point_instructions_leave_the_core_registers() {
     assert_eq!(effect(0, &[0x20, 0xee, 0x20, 0x0a]).writes, 0);
     // vmov r0, s15 writes r0; vmrs APSR_nzcv, fpscr sets the flags.
     assert_eq!(effect(0, &[0x17, 0xee, 0x90, 0x0a]).writes, bit(0));
-    assert!(effect(0, &[0xf1, 0xee, 0x10, 0xfa]).sets_flags);
+    assert_eq!(
+        effect(0, &[0xf1, 0xee, 0x10, 0xfa]).flags,
+        SetsFlags::Always
+    );
     // vpush {d8}: writes sp.
     assert_eq!(effect(0, &[0x2d, 0xed, 0x02, 0x8b]).writes, bit(SP));
     // Half precision: vmov.f16 r0, s0 writes r0, vmul.f16 s0, s16, s0

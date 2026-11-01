@@ -57,7 +57,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use object::{Endian, Endianness};
 
 use self::state::{Contents, Kind, RESULT, State, Value, Values};
-use super::decode::{self, Effect, Flow, LowBit, Operation, Registers, When};
+use super::decode::{self, Effect, Flow, LowBit, Operation, Registers, SetsFlags, When};
 use super::{Instruction, PC, SP};
 use crate::arch::CodeReference;
 use crate::arch::CodeReferenceKind::{self, *};
@@ -297,7 +297,7 @@ impl<'a> Function<'a> {
                     _ => Condition::Else,
                 };
                 let effect = self.effects[inside];
-                flags_changed |= effect.sets_flags;
+                flags_changed |= effect.sets_flags(true);
                 // Only the last instruction of a block may branch.
                 let goes_on = matches!(
                     effect.flow,
@@ -498,8 +498,8 @@ impl<'a> Function<'a> {
                 }
             }
             // A call may change the flags too.
-            paths.flags_changed |=
-                effect.sets_flags || matches!(effect.flow, Flow::Call | Flow::CallRegister(..));
+            paths.flags_changed |= effect.sets_flags(true)
+                || matches!(effect.flow, Flow::Call | Flow::CallRegister(..));
         }
         if let Some(Split {
             paths: [held, not], ..
@@ -529,11 +529,9 @@ impl<'a> Function<'a> {
     }
 
     /// Whether the instruction at `index`, outside an `it` block, may change
-    /// the flags. There, the 16-bit instructions that shift, add, subtract,
-    /// move, compare or do logic, which start below 0x4400, change them too.
+    /// the flags.
     fn changes_flags(&self, index: usize) -> bool {
-        let instruction = self.instructions[index];
-        self.effects[index].sets_flags || (instruction.size() == 2 && instruction.first < 0x4400)
+        self.effects[index].sets_flags(false)
     }
 
     /// Runs the instruction at `index` on `state`, and passes the state on
@@ -1387,7 +1385,7 @@ const UNREACHED: Effect = Effect {
     writes: 0,
     operation: Operation::Nothing,
     flow: Flow::Stop,
-    sets_flags: false,
+    flags: SetsFlags::Never,
     writeback: None,
     index: None,
     words: None,

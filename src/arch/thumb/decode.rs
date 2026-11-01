@@ -30,10 +30,8 @@ pub(super) struct Effect {
     pub operation: Operation,
     /// Where the processor goes after it.
     pub flow: Flow,
-    /// Whether it changes the condition flags inside an `it` block. The
-    /// 16-bit instructions that set the flags elsewhere, such as `adds`,
-    /// don't inside one.
-    pub sets_flags: bool,
+    /// When it changes the condition flags (see [`Effect::sets_flags`]).
+    pub flags: SetsFlags,
     /// For a load or store that adds an immediate to its base register, as
     /// `ldr.w r3, [r5], #4`, `str.w r3, [r2, #4]!` and `ldmia r1!, {r3,
     /// r4}` do, what it adds and when. Its `Load` or `Store` gives no
@@ -189,6 +187,31 @@ pub(super) enum Operation {
     CompareRegisters { a: u16, b: u16 },
 }
 
+/// When an instruction changes the condition flags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SetsFlags {
+    Never,
+    /// Inside an `it` block too: `cmp`, `tst` and `cmn`, and the 32-bit
+    /// instructions that set them, such as `adds.w` and `msr`.
+    Always,
+    /// Only outside an `it` block: the 16-bit instructions that shift,
+    /// add, subtract, move or do logic, such as `adds` and `movs`, which
+    /// inside one leave the flags as they are.
+    OutsideIt,
+}
+
+impl SetsFlags {
+    /// `Always` when `always`, and otherwise `Never`, as for an instruction
+    /// whose S bit says whether it sets the flags.
+    fn always_if(always: bool) -> SetsFlags {
+        if always {
+            SetsFlags::Always
+        } else {
+            SetsFlags::Never
+        }
+    }
+}
+
 /// When a branch goes to its target, rather than on to the next
 /// instruction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -255,13 +278,23 @@ pub(super) enum LowBit {
 }
 
 impl Effect {
+    /// Whether it changes the condition flags, inside an `it` block or
+    /// outside one.
+    pub fn sets_flags(&self, in_it_block: bool) -> bool {
+        match self.flags {
+            SetsFlags::Never => false,
+            SetsFlags::Always => true,
+            SetsFlags::OutsideIt => !in_it_block,
+        }
+    }
+
     fn new(reads: Registers, writes: Registers) -> Effect {
         Effect {
             reads,
             writes,
             operation: Operation::Nothing,
             flow: Flow::Next,
-            sets_flags: false,
+            flags: SetsFlags::Never,
             writeback: None,
             index: None,
             words: None,
@@ -278,8 +311,8 @@ impl Effect {
         self
     }
 
-    fn sets_flags(mut self, sets_flags: bool) -> Effect {
-        self.sets_flags = sets_flags;
+    fn flags(mut self, flags: SetsFlags) -> Effect {
+        self.flags = flags;
         self
     }
 
@@ -387,7 +420,7 @@ fn narrow(address: u64, op: u16) -> Option<Effect> {
                 register: high,
                 value: u32::from(op & 0xff),
             })
-            .sets_flags(true),
+            .flags(SetsFlags::Always),
         // adds and subs register, #imm8
         0b00110 | 0b00111 => {
             let amount = u32::from(op & 0xff);
@@ -540,6 +573,12 @@ fn narrow(address: u64, op: u16) -> Option<Effect> {
         }),
         _ => return None,
     };
+    // Below 0x4400 are the instructions that shift, add, subtract, move,
+    // compare or do logic. All set the flags, but inside an `it` block
+    // only `cmp`, `tst` and `cmn` do.
+    if op < 0x4400 && effect.flags == SetsFlags::Never {
+        return Some(effect.flags(SetsFlags::OutsideIt));
+    }
     Some(effect)
 }
 
@@ -564,9 +603,9 @@ fn data_processing(op: u16) -> Effect {
                 a: register,
                 b: source,
             })
-            .sets_flags(true),
+            .flags(SetsFlags::Always),
         // tst and cmn only set the flags.
-        0b1000 | 0b1011 => Effect::new(reads, 0).sets_flags(true),
+        0b1000 | 0b1011 => Effect::new(reads, 0).flags(SetsFlags::Always),
         0b1001 => {
             Effect::new(reads, bit(register)).operation(Operation::Negate { register, source })
         }
@@ -592,7 +631,7 @@ fn special(op: u16) -> Effect {
                 a: register,
                 b: source,
             })
-            .sets_flags(true),
+            .flags(SetsFlags::Always),
         // mov register, source: into pc it jumps.
         0b10 if register == PC => match source {
             LR => Effect::new(bit(LR), 0).flow(Flow::Return),
@@ -712,7 +751,10 @@ fn wide(address: u64, first: u16, second: u16) -> Option<Effect> {
                     return None;
                 }
                 let shifts = first & 0x80 == 0 && second & 0xf0 == 0;
-                Some(Effect::new(reads(&[rn, rm]), bit(rd)).sets_flags(shifts && first & 0x10 != 0))
+                Some(
+                    Effect::new(reads(&[rn, rm]), bit(rd))
+                        .flags(SetsFlags::always_if(shifts && first & 0x10 != 0)),
+                )
             }
             // mul, mla, mls and the multiplies of the DSP extension.
             0b011 if first & 0x80 == 0 => {
@@ -750,7 +792,9 @@ fn load_store_multiple(first: u16, second: u16) -> Option<Effect> {
     // clrm {registers}, which zeroes them, and the flags with bit 15. It
     // takes the place of an `ldm` from pc, which Armv7-M doesn't allow.
     if first == 0xe89f {
-        return Some(Effect::new(0, second & !bit(PC)).sets_flags(second & bit(PC) != 0));
+        return Some(
+            Effect::new(0, second & !bit(PC)).flags(SetsFlags::always_if(second & bit(PC) != 0)),
+        );
     }
     let rn = first & 0xf;
     let writeback = if first & 0x20 != 0 { bit(rn) } else { 0 };
@@ -943,7 +987,7 @@ fn shifted_register(first: u16, second: u16) -> Option<Effect> {
     let plain = kind == 0 && shift == 0;
     let tests = rd == PC && s && matches!(op, 0b0000 | 0b0100 | 0b1000 | 0b1101);
     if tests {
-        let effect = Effect::new(reads(&[rn, rm]), 0).sets_flags(true);
+        let effect = Effect::new(reads(&[rn, rm]), 0).flags(SetsFlags::Always);
         // cmp.w
         return Some(match op {
             0b1101 if plain => effect.operation(Operation::CompareRegisters { a: rn, b: rm }),
@@ -953,7 +997,7 @@ fn shifted_register(first: u16, second: u16) -> Option<Effect> {
     if rd == PC {
         return None;
     }
-    let effect = Effect::new(reads(&[rn, rm]), bit(rd)).sets_flags(s);
+    let effect = Effect::new(reads(&[rn, rm]), bit(rd)).flags(SetsFlags::always_if(s));
     Some(match op {
         // mov.w and lsl.w with an immediate.
         0b0010 if rn == PC && kind == 0 => effect.operation(Operation::ShiftLeft {
@@ -1014,7 +1058,7 @@ fn modified_immediate(first: u16, second: u16) -> Option<Effect> {
     }
     let tests = rd == PC && s && matches!(op, 0b0000 | 0b0100 | 0b1000 | 0b1101);
     if tests {
-        let effect = Effect::new(reads(&[rn]), 0).sets_flags(true);
+        let effect = Effect::new(reads(&[rn]), 0).flags(SetsFlags::Always);
         // cmp.w
         return Some(match op {
             0b1101 => effect.operation(Operation::Compare {
@@ -1027,7 +1071,7 @@ fn modified_immediate(first: u16, second: u16) -> Option<Effect> {
     if rd == PC {
         return None;
     }
-    let effect = Effect::new(reads(&[rn]), bit(rd)).sets_flags(s);
+    let effect = Effect::new(reads(&[rn]), bit(rd)).flags(SetsFlags::always_if(s));
     Some(match op {
         // and and bic
         0b0000 => effect.operation(Operation::AndConstant {
@@ -1155,7 +1199,7 @@ fn branch_or_control(pc: u64, first: u16, second: u16) -> Option<Effect> {
         })),
         0x0000 => match first & 0xffe0 {
             // msr, which can set the flags.
-            0xf380 => Some(Effect::new(bit(first & 0xf), 0).sets_flags(true)),
+            0xf380 => Some(Effect::new(bit(first & 0xf), 0).flags(SetsFlags::Always)),
             // Hints such as nop.w, and barriers such as dsb.
             0xf3a0 if first == 0xf3af => Some(effect),
             0xf3a0 if first == 0xf3bf => Some(effect),
@@ -1478,7 +1522,7 @@ fn coprocessor(first: u16, second: u16) -> Option<Effect> {
                 // vmov to a core register, and vmrs, which into pc sets the
                 // flags.
                 return Some(if rt == PC {
-                    Effect::new(0, 0).sets_flags(true)
+                    Effect::new(0, 0).flags(SetsFlags::Always)
                 } else if rt == SP {
                     return None;
                 } else {

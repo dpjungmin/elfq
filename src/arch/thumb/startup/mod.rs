@@ -376,10 +376,7 @@ impl Walker<'_> {
         if runs == Some(false) {
             return Step::Next(next);
         }
-        // 16-bit instructions that start below 0x4400 set the flags
-        // outside an `it` block too.
-        let changes_flags =
-            effect.sets_flags || (!is_wide(first) && first < 0x4400 && condition.is_none());
+        let changes_flags = effect.sets_flags(condition.is_some());
         let conditional = runs.is_none();
         let depth = frame.depth;
         match effect.flow {

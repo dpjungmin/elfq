@@ -8,7 +8,7 @@ use std::rc::Rc;
 use object::Endian;
 
 use crate::arch::startup::{Event, Source, Store};
-use crate::arch::thumb::decode::{Effect, Operation, Registers, Words};
+use crate::arch::thumb::decode::{Effect, Operation, Registers, SetsFlags, Words};
 use crate::arch::thumb::{PC, SP};
 
 use super::Walker;
@@ -260,11 +260,11 @@ impl Walker<'_> {
                     _ => flags,
                 }
             }
-            // movs keeps the carry flag; mov.w and mvn with an immediate
+            // movs keeps the carry flag; movs.w and mvns with an immediate
             // may set it.
             Operation::Constant { value, .. } => {
-                let wide = effect.sets_flags;
-                logic(Some(value), if wide { None } else { old.carry })
+                let narrow = effect.flags == SetsFlags::OutsideIt;
+                logic(Some(value), if narrow { old.carry } else { None })
             }
             Operation::ShiftLeft { source, shift, .. } => {
                 let n = get(source);
