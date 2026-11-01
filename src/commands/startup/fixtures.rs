@@ -2,7 +2,8 @@
 //! two load images and two sections without contents ([`binary`]), the
 //! walk's events and stores, made by hand, and [`steps`], which writes the
 //! steps that [`build`] reads from such a walk, one a line. A test of one
-//! pass of `steps.rs` reads the facts of such a walk with [`with_facts`].
+//! pass of `steps.rs`, or of a judgment in `problems.rs`, reads the facts
+//! of such a walk with [`with_facts`].
 
 use std::ops::Range;
 

@@ -1208,3 +1208,6 @@ fn cant_tell_note(
         steps: indexes,
     })
 }
+
+#[cfg(test)]
+mod tests;
