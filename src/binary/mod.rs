@@ -144,25 +144,26 @@ pub struct Binary {
     /// when the table points there instead.
     pub used_by_unwinder: Vec<u64>,
     /// Blocks of variables that the compiler placed side by side, such as
-    /// LLVM's `.L_MergedGlobals`, as `(address, size)`. Code takes the
-    /// block's address and reaches each variable at an offset from it, so
-    /// taking that address can mean using any of them.
-    pub merged_variables: Vec<(u64, u64)>,
+    /// LLVM's `.L_MergedGlobals`. Code takes the block's address and
+    /// reaches each variable at an offset from it, so taking that address
+    /// can mean using any of them.
+    pub merged_variables: Vec<AddressRange>,
     /// The Cortex-M vector table, in Thumb files that have one.
     pub vector_table: Option<VectorTable>,
     /// For 32-bit Arm, the version of the architecture that the code is
     /// built for, as the build attributes in `.ARM.attributes` say.
     pub arm_architecture: Option<ArmArchitecture>,
     /// The stretches of code that the file's `$d` symbols mark as data,
-    /// such as literal pools, as `(start, end)`, sorted. Only 32-bit Arm
-    /// files have them, unless they are stripped (see
-    /// [`Binary::data_in_code`]).
-    data_in_code: Vec<(u64, u64)>,
+    /// such as literal pools, sorted. Only 32-bit Arm files have them,
+    /// unless they are stripped (see [`Binary::data_in_code`]).
+    data_in_code: Vec<AddressRange>,
     /// Problems that did not stop loading but may make answers incomplete.
     pub warnings: Vec<String>,
     /// The references in each function's code, by its address and size;
     /// see [`Binary::code_references`]. Not by item index, since unnamed
-    /// data is added, and the items sorted again, after the scan.
+    /// data is added, and the items sorted again, after the scan. The key
+    /// stays a pair: it is only ever made from a function and looked up,
+    /// never taken apart.
     code_references: HashMap<(u64, u64), Vec<CodeReference>>,
     /// The whole file.
     data: Vec<u8>,
@@ -331,18 +332,21 @@ impl Binary {
     }
 
     /// The stretches of the `size` bytes at `address` that the file's `$d`
-    /// symbols mark as data among code, as `(start, end)`, in order. Arm's
-    /// ELF ABI has assemblers mark data, such as a literal pool, with `$d`,
-    /// and code again with `$t` or `$a`. Stripped files have none.
-    pub fn data_in_code(&self, address: u64, size: u64) -> impl Iterator<Item = (u64, u64)> + '_ {
+    /// symbols mark as data among code, in order. Arm's ELF ABI has
+    /// assemblers mark data, such as a literal pool, with `$d`, and code
+    /// again with `$t` or `$a`. Stripped files have none.
+    pub fn data_in_code(&self, address: u64, size: u64) -> impl Iterator<Item = AddressRange> + '_ {
         let end = address.saturating_add(size);
         let first = self
             .data_in_code
-            .partition_point(|&(_, stretch_end)| stretch_end <= address);
+            .partition_point(|stretch| stretch.end <= address);
         self.data_in_code[first..]
             .iter()
-            .take_while(move |&&(start, _)| start < end)
-            .map(move |&(start, stretch_end)| (start.max(address), stretch_end.min(end)))
+            .take_while(move |stretch| stretch.start < end)
+            .map(move |stretch| AddressRange {
+                start: stretch.start.max(address),
+                end: stretch.end.min(end),
+            })
     }
 
     /// The bytes at `address`, or `None` if the file doesn't hold all `size`
@@ -384,13 +388,13 @@ impl Binary {
         // one step.
         let runs = std::iter::from_fn(move || {
             let slot = next.filter(|&slot| slot < end)?;
-            let (stop, bytes) = self.words_run(slot, end);
-            let count = (stop - slot).div_ceil(size);
+            let run = self.words_run(slot, end);
+            let count = (run.stop - slot).div_ceil(size);
             next = count
                 .checked_mul(size)
                 .and_then(|length| slot.checked_add(length));
-            let words = bytes.chunks_exact(size as usize).take(count as usize);
-            Some((slot..stop).step_by(size as usize).zip(words))
+            let words = run.bytes.chunks_exact(size as usize).take(count as usize);
+            Some((slot..run.stop).step_by(size as usize).zip(words))
         });
         runs.flatten()
             .map(|(address, bytes)| (address, word(bytes, self.endianness)))
@@ -403,10 +407,9 @@ impl Binary {
         self.words(first.unwrap_or(end), end)
     }
 
-    /// Where the words from `slot` up to `end` stop coming from the section
-    /// that holds `slot`, and the bytes the file holds for them: none when
-    /// no section holds `slot`, or the file holds none of its bytes.
-    fn words_run(&self, slot: u64, end: u64) -> (u64, &[u8]) {
+    /// The words from `slot` up to `end` that come from the section that
+    /// holds `slot`.
+    fn words_run(&self, slot: u64, end: u64) -> WordsRun<'_> {
         // Sections can overlap, as GNU ld's OVERLAY makes them, and the
         // first that holds an address is the one that counts, so the run
         // ends where any other one starts too.
@@ -420,14 +423,12 @@ impl Binary {
         match self.section_at(slot) {
             Some(index) => {
                 let section = &self.sections[index];
-                let stop = stop.min(section.address + section.size);
-                (
-                    stop,
-                    self.section_bytes(section, slot, end - slot)
-                        .unwrap_or_default(),
-                )
+                WordsRun {
+                    stop: stop.min(section.address + section.size),
+                    bytes: (self.section_bytes(section, slot, end - slot)).unwrap_or_default(),
+                }
             }
-            None => (stop, &[]),
+            None => WordsRun { stop, bytes: &[] },
         }
     }
 
@@ -583,6 +584,17 @@ impl Binary {
     pub fn own_function_stubs(&self) -> HashMap<usize, usize> {
         plt::own_function_stubs(self)
     }
+}
+
+/// A run of the words that [`Binary::words`] reads, all from the section
+/// that holds the first of them, or from none (see `Binary::words_run`).
+struct WordsRun<'a> {
+    /// Where the run stops: where that section ends, where another one
+    /// starts, or at the end that was asked for, whichever comes first.
+    stop: u64,
+    /// The bytes the file holds for the run: none when no section holds
+    /// it, or the file holds none of the section's bytes.
+    bytes: &'a [u8],
 }
 
 impl Item {

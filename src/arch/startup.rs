@@ -37,7 +37,25 @@ pub trait Program {
     fn word_at_reset(&self, address: u64) -> Option<u32>;
 
     /// Where the function whose code holds `address` starts and ends.
-    fn function_at(&self, address: u64) -> Option<(u64, u64)>;
+    fn function_at(&self, address: u64) -> Option<FunctionBounds>;
+}
+
+/// Where a function's code starts and ends, as [`Program::function_at`]
+/// gives it. `arch` is below `binary`, so it has this small struct of its
+/// own rather than `binary::AddressRange`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FunctionBounds {
+    /// The address of its first byte.
+    pub start: u64,
+    /// The address just past its last byte.
+    pub end: u64,
+}
+
+impl FunctionBounds {
+    /// Whether `address` is in the function.
+    pub fn contains(self, address: u64) -> bool {
+        (self.start..self.end).contains(&address)
+    }
 }
 
 /// Where a walk starts, and what it knows of the program before it does.

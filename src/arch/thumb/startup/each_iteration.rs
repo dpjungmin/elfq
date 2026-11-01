@@ -241,7 +241,7 @@ impl Walker<'_> {
         }
         let bounds = open.bounds;
         for Source { site, address } in read {
-            if bounds.is_some_and(|(start, end)| (start..end).contains(&site))
+            if bounds.is_some_and(|bounds| bounds.contains(site))
                 && !self.is_stack(Some(address))
                 && self.program.word_at_reset(u64::from(address)).is_some()
             {

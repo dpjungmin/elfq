@@ -1063,7 +1063,9 @@ pub(super) fn listing(binary: &Binary, item: &Item, bytes: &[u8]) -> Option<Vec<
     // The marks, as offsets into `bytes`.
     let marked: Vec<std::ops::Range<usize>> = binary
         .data_in_code(item.address, item.size)
-        .map(|(start, end)| (start - item.address) as usize..(end - item.address) as usize)
+        .map(|stretch| {
+            (stretch.start - item.address) as usize..(stretch.end - item.address) as usize
+        })
         .collect();
     let instruction_set = binary.instruction_set()?;
     Some(instruction_set.listing(bytes, item.address, &marked))

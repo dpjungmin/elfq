@@ -16,16 +16,26 @@ use object::{
 use super::names::demangle;
 use super::{Relocation, RelocationTarget, code_address};
 
-/// Returns the imports, and the relocations sorted by address.
-pub(super) fn read(
-    file: &object::File,
-    architecture: Architecture,
-) -> (Vec<String>, Vec<Relocation>) {
+/// What elfq reads from the dynamic relocations.
+pub(super) struct DynamicRelocations {
+    /// The names of the imports that they name (see [`Binary::imports`]).
+    ///
+    /// [`Binary::imports`]: super::Binary::imports
+    pub imports: Vec<String>,
+    /// The relocations, sorted by address.
+    pub relocations: Vec<Relocation>,
+}
+
+/// Reads the dynamic relocations.
+pub(super) fn read(file: &object::File, architecture: Architecture) -> DynamicRelocations {
     let mut imports = Vec::new();
     let mut relocations = Vec::new();
     let (Some(all), Some(symbols)) = (file.dynamic_relocations(), file.dynamic_symbol_table())
     else {
-        return (imports, relocations);
+        return DynamicRelocations {
+            imports,
+            relocations,
+        };
     };
     // Import names, as indices into `imports`.
     let mut import_index: HashMap<String, usize> = HashMap::new();
@@ -74,7 +84,10 @@ pub(super) fn read(
         relocations.push(Relocation { address, target });
     }
     relocations.sort_by_key(|relocation| relocation.address);
-    (imports, relocations)
+    DynamicRelocations {
+        imports,
+        relocations,
+    }
 }
 
 /// Whether a relocation type that stores a symbol's address adds the addend

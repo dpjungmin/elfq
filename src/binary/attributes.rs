@@ -112,7 +112,7 @@ fn read_architecture(endian: Endianness, data: &[u8]) -> Option<ArmArchitecture>
             }
             let mut attributes = subsubsection.attributes();
             while let Some(tag) = attributes.read_tag().ok()? {
-                let value = read_value(&mut attributes, tag)?;
+                let value = read_value(&mut attributes, tag)?.number();
                 match tag {
                     CPU_ARCH => version = value,
                     CPU_ARCH_PROFILE => profile = value.and_then(|v| u8::try_from(v).ok()),
@@ -128,25 +128,41 @@ fn read_architecture(endian: Endianness, data: &[u8]) -> Option<ArmArchitecture>
     })
 }
 
+/// The value of an attribute: a number, or a string, which elfq skips.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Value {
+    Number(u64),
+    Text,
+}
+
+impl Value {
+    /// The number, or `None` for a string.
+    fn number(self) -> Option<u64> {
+        match self {
+            Value::Number(number) => Some(number),
+            Value::Text => None,
+        }
+    }
+}
+
 /// Reads the value of the attribute `tag`, which is a number for most tags
 /// but a string for some: Tag_CPU_raw_name (4), Tag_CPU_name (5),
 /// Tag_conformance (67) and every odd tag above 32, which the ABI keeps for
-/// strings. Tag_compatibility (32) has a number and then a string. Returns
-/// the number, or `Some(None)` for a string; `None` when the value is cut
-/// short.
-fn read_value(attributes: &mut AttributeReader, tag: u64) -> Option<Option<u64>> {
+/// strings. Tag_compatibility (32) has a number and then a string, and its
+/// value is the number. `None` when the value is cut short.
+fn read_value(attributes: &mut AttributeReader, tag: u64) -> Option<Value> {
     match tag {
         4 | 5 | 67 => {}
         32 => {
             let number = attributes.read_integer().ok()?;
             attributes.read_string().ok()?;
-            return Some(Some(number));
+            return Some(Value::Number(number));
         }
         _ if tag > 32 && tag % 2 == 1 => {}
-        _ => return Some(Some(attributes.read_integer().ok()?)),
+        _ => return Some(Value::Number(attributes.read_integer().ok()?)),
     }
     attributes.read_string().ok()?;
-    Some(None)
+    Some(Value::Text)
 }
 
 #[cfg(test)]

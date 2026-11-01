@@ -163,24 +163,49 @@ pub struct MemoryBlock {
     pub load_images: Vec<usize>,
 }
 
+/// What a block holds: a section, at its address, or a section's load
+/// image, at its load address.
+struct BlockPart {
+    address: u64,
+    size: u64,
+    /// The section, as an index into the sections.
+    section: usize,
+    /// Whether it is the section's load image.
+    load_image: bool,
+}
+
 /// The blocks of addresses that the program's sections occupy, and the
 /// load images of those whose bytes are stored elsewhere, in address order.
 pub fn memory_blocks(sections: &[Section]) -> Vec<MemoryBlock> {
-    // Where each section, or load image, is: (address, size, section, is
-    // a load image).
-    let mut places: Vec<(u64, u64, usize, bool)> = Vec::new();
+    let mut parts: Vec<BlockPart> = Vec::new();
     for (index, section) in sections.iter().enumerate() {
         if !section.allocated || section.size == 0 {
             continue;
         }
-        places.push((section.address, section.size, index, false));
+        parts.push(BlockPart {
+            address: section.address,
+            size: section.size,
+            section: index,
+            load_image: false,
+        });
         if let Some(load_address) = section.load_address {
-            places.push((load_address, section.size, index, true));
+            parts.push(BlockPart {
+                address: load_address,
+                size: section.size,
+                section: index,
+                load_image: true,
+            });
         }
     }
-    places.sort_by_key(|&(address, _, index, load_image)| (address, load_image, index));
+    parts.sort_by_key(|part| (part.address, part.load_image, part.section));
     let mut blocks: Vec<MemoryBlock> = Vec::new();
-    for (address, size, index, load_image) in places {
+    for BlockPart {
+        address,
+        size,
+        section,
+        load_image,
+    } in parts
+    {
         let end = address.saturating_add(size);
         let block = match blocks.last_mut() {
             Some(block) if address < block.range.end.saturating_add(LARGEST_GAP) => {
@@ -200,9 +225,9 @@ pub fn memory_blocks(sections: &[Section]) -> Vec<MemoryBlock> {
             }
         };
         if load_image {
-            block.load_images.push(index);
+            block.load_images.push(section);
         } else {
-            block.sections.push(index);
+            block.sections.push(section);
         }
     }
     blocks

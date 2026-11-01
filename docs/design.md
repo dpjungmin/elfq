@@ -1333,7 +1333,7 @@ in order. Its output is the first example under [Commands](#commands).
    sections, the dynamic relocations, which name the imports and the
    pointers the loader stores, and in Thumb files the vector table
    (`vector_table::find`). Then `from_vec` finds the items, in the steps
-   that the module doc of `binary` numbers: `symbols::items`,
+   that the module doc of `binary` numbers: `symbols::read`,
    `plt::stubs`, the startup arrays, `eh_frame::read`, the entry point,
    the vector table, in stripped firmware `unnamed_functions::add`. Then
    it has `InstructionSet::scan` read each function's code once

@@ -137,6 +137,13 @@ this list, and add to it when you bring in a word.
 
 - **item**: a function or data object in the file (`binary::Item`). Its
   place in `Binary::items` is an item index, named `index` or `item`.
+- **range**: the addresses from a start up to, but not including, an end
+  (`binary::AddressRange`), as `--range` reads them. An item keeps an
+  address and a size instead, and `Item::range` gives the range they
+  make. A section's or segment's `file_range`, named after the `object`
+  crate's, is an offset and a size in the file. **bounds**: where a
+  function starts and ends, in `arch`, which can't use `AddressRange`
+  (`arch::startup::FunctionBounds`).
 - **load**: elfq loads a file once, before a command answers: it reads
   the sections, symbols and relocations and finds the items
   (`Binary::load`, in `load.rs`). A section's load image, below, the

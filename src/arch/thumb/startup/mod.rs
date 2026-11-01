@@ -53,7 +53,9 @@ use object::Endianness;
 use super::decode::{self, Addressing, Effect, Flow, LowBit, Operation, Registers, Transfer, When};
 use super::{ARGUMENTS, CALL_CLOBBERS, SP, Scanner, branch, is_wide, literal};
 use crate::arch::CodeReferenceKind;
-use crate::arch::startup::{Call, DEPTH, End, Event, How, Program, Start, Through, Walk};
+use crate::arch::startup::{
+    Call, DEPTH, End, Event, FunctionBounds, How, Program, Start, Through, Walk,
+};
 
 use calls::arguments;
 use count::{LoopCode, Mode, OpenLoop, StoppedAt};
@@ -269,7 +271,7 @@ struct Run {
     /// mask in the bottom ones. 0 outside one.
     it: u8,
     /// The function the walk is in.
-    bounds: Option<(u64, u64)>,
+    bounds: Option<FunctionBounds>,
     /// How many instructions it went through.
     count: usize,
     /// Whether the walk got here from a call that returned, through
@@ -896,8 +898,8 @@ impl Walker<'_> {
     /// Whether `address`, in the function at `bounds`, holds data that the
     /// function's code reads, such as a literal pool, which compilers put
     /// after its last instruction, as after a call that doesn't return.
-    fn is_data(&mut self, bounds: Option<(u64, u64)>, address: u64) -> bool {
-        let Some((start, end)) = bounds else {
+    fn is_data(&mut self, bounds: Option<FunctionBounds>, address: u64) -> bool {
+        let Some(FunctionBounds { start, end }) = bounds else {
             return false;
         };
         let (program, endianness) = (self.program, self.endianness);
@@ -974,8 +976,7 @@ impl Run {
 
     /// Whether `target` is outside the function the walk is in.
     fn leaves(&self, target: u64) -> bool {
-        self.bounds
-            .is_some_and(|(start, end)| !(start..end).contains(&target))
+        self.bounds.is_some_and(|bounds| !bounds.contains(target))
     }
 
     /// Where the walk goes on after a loop from `head` to a branch back at

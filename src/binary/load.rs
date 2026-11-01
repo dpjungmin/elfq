@@ -13,6 +13,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use object::{Architecture, Endianness, Object, ObjectSymbol, SymbolKind};
 
+use super::eh_frame::UnwindFunction;
 use super::sections::{fitting_size, parse_program, read_sections};
 use super::{
     ArmArchitecture, Binary, FileKind, Item, ItemKind, Section, Source, attributes, code_address,
@@ -47,8 +48,9 @@ impl Binary {
         // `item_at` finds nothing until then: each step sees what the steps
         // before it found through `items`.
         // 1. The symbol tables.
-        let (mut items, merged_variables) = symbols::items(&file, &binary.sections);
-        binary.merged_variables = merged_variables;
+        let tables = symbols::read(&file, &binary.sections);
+        let mut items = tables.items;
+        binary.merged_variables = tables.merged_variables;
         // 2. PLT stubs.
         let stubs = plt::stubs(&binary, &items);
         add_new_items(&mut items, stubs);
@@ -109,7 +111,7 @@ fn read_all_but_items(data: Vec<u8>) -> Result<Binary> {
     };
     let mut warnings = Vec::new();
     let sections = read_sections(&file, data.len() as u64, &mut warnings);
-    let (imports, relocations) = relocations::read(&file, architecture);
+    let dynamic = relocations::read(&file, architecture);
     let data_in_code = if architecture == Architecture::Arm {
         symbols::data_in_code(&file, &sections)
     } else {
@@ -133,8 +135,8 @@ fn read_all_but_items(data: Vec<u8>) -> Result<Binary> {
         has_dwarf: file.section_by_name(".debug_info").is_some(),
         sections,
         items: Vec::new(),
-        imports,
-        relocations,
+        imports: dynamic.imports,
+        relocations: dynamic.relocations,
         used_by_unwinder: Vec::new(),
         merged_variables: Vec::new(),
         vector_table: None,
@@ -194,10 +196,10 @@ fn startup_array_items(sections: &[Section]) -> Vec<Item> {
         .collect()
 }
 
-/// Adds a function for each unwind-table range that the items found so far,
-/// from symbols and PLT stubs, missed, and fills in sizes that the symbol
-/// table left as 0.
-fn add_unwind_items(binary: &Binary, items: &mut Vec<Item>, ranges: &[(u64, u64)]) {
+/// Adds a function for each of the unwind table's `functions` that the
+/// items found so far, from symbols and PLT stubs, missed, and fills in
+/// sizes that the symbol table left as 0.
+fn add_unwind_items(binary: &Binary, items: &mut Vec<Item>, functions: &[UnwindFunction]) {
     // The functions found so far, as (address, size, index into items).
     let mut known: Vec<(u64, u64, usize)> = items
         .iter()
@@ -207,11 +209,11 @@ fn add_unwind_items(binary: &Binary, items: &mut Vec<Item>, ranges: &[(u64, u64)
         .collect();
     known.sort_unstable();
 
-    for &(start, length) in ranges {
+    for &UnwindFunction { start, length } in functions {
         if start == 0 || length == 0 {
             continue;
         }
-        // A range that would end past the last address is damaged.
+        // A function that would end past the last address is damaged.
         let Some(length) = fitting_size(start, length) else {
             continue;
         };
@@ -432,15 +434,16 @@ mod tests {
             function("sized", 0x1000, 0x20),
             function("unsized", 0x1100, 0),
         ];
-        let ranges = [
-            (0x1000, 0x30),     // same start as a symbol: the symbol's size wins
-            (0x1010, 0x08),     // inside a symbol, such as a split-off cold part
-            (0x1100, 0x40),     // the symbol has no size: take the table's
-            (0x1200, 0x10),     // no symbol at all: a new, unnamed function
-            (0x9000, 0x10),     // outside any code section: ignored
-            (0x1300, u64::MAX), // would end past the last address: ignored
+        let described = |start, length| UnwindFunction { start, length };
+        let functions = [
+            described(0x1000, 0x30),     // same start as a symbol: the symbol's size wins
+            described(0x1010, 0x08),     // inside a symbol, such as a split-off cold part
+            described(0x1100, 0x40),     // the symbol has no size: take the table's
+            described(0x1200, 0x10),     // no symbol at all: a new, unnamed function
+            described(0x9000, 0x10),     // outside any code section: ignored
+            described(0x1300, u64::MAX), // would end past the last address: ignored
         ];
-        add_unwind_items(&binary, &mut items, &ranges);
+        add_unwind_items(&binary, &mut items, &functions);
         let found: Vec<(&str, u64, u64, Source)> = items
             .iter()
             .map(|i| (i.name.as_str(), i.address, i.size, i.source))
