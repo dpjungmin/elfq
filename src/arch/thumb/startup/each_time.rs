@@ -1,11 +1,11 @@
 //! Going through the code of a loop over a table of sections each time it
 //! runs, with its calls and the loops inside ([`Walker::walk_times`]), and
-//! where each time reads its row of the table
-//! ([`Time::row`](crate::arch::startup::Time::row)).
+//! where each iteration reads its row of the table
+//! ([`Iteration::row`](crate::arch::startup::Iteration::row)).
 
 use std::collections::HashMap;
 
-use crate::arch::startup::{Event, How, Loop, LoopStore, Source, Store, Time};
+use crate::arch::startup::{Event, How, Iteration, LoopStore, Source, Store};
 use crate::arch::thumb::PC;
 use crate::arch::thumb::decode::{Effect, Operation, Registers, each};
 
@@ -18,7 +18,7 @@ use super::{Frame, Run, TIMES_BUDGET, TIMES_COUNT_BUDGET, Walker};
 pub(super) struct Walked {
     pub(super) path: Path,
     pub(super) exit: u64,
-    pub(super) times: Vec<Time>,
+    pub(super) iterations: Vec<Iteration>,
 }
 
 impl Walker<'_> {
@@ -69,7 +69,7 @@ impl Walker<'_> {
             sources: before.sources,
             ..first_time(before)
         };
-        let mut times: Vec<Time> = Vec::new();
+        let mut iterations: Vec<Iteration> = Vec::new();
         let mut loads: Vec<Vec<u32>> = Vec::new();
         // Whether the walk can tell each time's row.
         let mut tells = true;
@@ -107,8 +107,8 @@ impl Walker<'_> {
                 .collect();
             let start = row.first().map(|&(at, _)| at);
             tells &= row.iter().map(|&(_, pointer)| pointer).min() == start;
-            times.push(Time {
-                first_event,
+            iterations.push(Iteration {
+                events: first_event..self.events.len(),
                 row: start,
             });
             loads.push(row.into_iter().map(|(at, _)| at).collect());
@@ -134,17 +134,21 @@ impl Walker<'_> {
             return None;
         };
         // The rows of a table, one after another.
-        let rows: Vec<(u32, u32)> = (times.iter().zip(1..))
-            .filter_map(|(time, n)| Some((n, time.row?)))
+        let rows: Vec<(u32, u32)> = (iterations.iter().zip(1..))
+            .filter_map(|(iteration, n)| Some((n, iteration.row?)))
             .collect();
         let steady = match line_through(rows.iter().map(|&(n, row)| (n, Some(row)))) {
             Some((_, step)) => step != 0 || rows.len() == 1,
             None => false,
         };
         if !tells || !steady || !same_words(&loads) {
-            times.iter_mut().for_each(|time| time.row = None);
+            (iterations.iter_mut()).for_each(|iteration| iteration.row = None);
         }
-        Some(Walked { path, exit, times })
+        Some(Walked {
+            path,
+            exit,
+            iterations,
+        })
     }
 
     /// Keeps where the load at `site` that does `effect`, in the time
@@ -261,10 +265,7 @@ fn copied_from(event: &Event) -> Vec<(u64, u64)> {
             let start = u64::from(source.address);
             vec![(start, start + u64::from(*size))]
         }
-        Event::Loop(Loop {
-            stores: Some(stores),
-            ..
-        }) => (stores.iter())
+        Event::Loop(l) => (l.stores().into_iter().flatten())
             .filter_map(|store| {
                 let (address, step) = store.source?;
                 let first = i64::from(address);

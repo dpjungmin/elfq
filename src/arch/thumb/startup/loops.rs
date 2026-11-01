@@ -8,7 +8,7 @@
 
 use std::rc::Rc;
 
-use crate::arch::startup::{End, Event, Loop};
+use crate::arch::startup::{End, Event, Loop, Runs};
 use crate::arch::thumb::decode::{Flow, Operation, When};
 use crate::arch::thumb::{SP, is_wide};
 
@@ -121,16 +121,13 @@ impl Walker<'_> {
                 head,
                 back,
                 depth: frame.depth,
-                first_event: before.events,
-                end: None,
-                passes: Some(counted.passes),
-                stores: None,
-                times: walked.times,
+                events: before.events..self.events.len(),
+                runs: Runs::EachIteration(walked.iterations),
             }));
             return Some(walked.exit);
         }
         let exit = counted.as_ref().map(|counted| counted.exit);
-        let (passes, stores) = match counted {
+        let runs = match counted {
             Some(Counted {
                 passes,
                 path,
@@ -153,7 +150,10 @@ impl Walker<'_> {
                 if !every {
                     forget_stored(&mut run.path, passes, stores.as_deref(), before);
                 }
-                (Some(passes), stores)
+                Runs::Counted {
+                    iterations: passes,
+                    stores,
+                }
             }
             None => {
                 forget_changes(&mut run.path, &before.registers, &before.memory);
@@ -168,14 +168,18 @@ impl Walker<'_> {
                     (Rc::make_mut(&mut run.path.memory).values_mut()).for_each(|word| *word = None);
                 }
                 run.path.flags = Flags::default();
-                (None, None)
+                Runs::Uncounted { stopped: end }
             }
         };
         // The loads of a loop inside one that the walk goes through each
         // time may read what it copies, which can't be told from the rows
         // of a table when the walk can't tell what its stores copy from.
+        let stores = match &runs {
+            Runs::Counted { stores, .. } => stores.as_deref(),
+            _ => None,
+        };
         if let Some(index) = frame.rows
-            && !knows_sources(stores.as_deref())
+            && !knows_sources(stores)
         {
             (self.counting[index].loads).retain(|&(site, ..)| !(head..=back).contains(&site));
         }
@@ -183,11 +187,8 @@ impl Walker<'_> {
             head,
             back,
             depth: frame.depth,
-            first_event: before.events,
-            end,
-            passes,
-            stores,
-            times: Vec::new(),
+            events: before.events..self.events.len(),
+            runs,
         }));
         exit
     }

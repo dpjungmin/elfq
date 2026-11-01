@@ -73,7 +73,7 @@ fn loop_stores(units: &[u16], functions: &[u64], main: Option<u64>) -> Vec<Strin
     let number = |number: Option<u32>| number.map_or("?".to_string(), |n| format!("{n:#x}"));
     (walk.events.iter())
         .filter_map(|event| match event {
-            Event::Loop(l) => l.stores.as_ref(),
+            Event::Loop(l) => l.stores(),
             _ => None,
         })
         .flatten()
@@ -104,8 +104,8 @@ fn walk_lines_following(
 ) -> Vec<String> {
     let walk = walk_units(units, functions, main, follow);
     let number = |number: Option<u32>| number.map_or("?".to_string(), |n| format!("{n:#x}"));
-    let mut lines: Vec<String> = (walk.events.iter())
-        .map(|event| match event {
+    let mut lines: Vec<String> = (walk.events.iter().enumerate())
+        .map(|(k, event)| match event {
             Event::Call(call) => {
                 let how = match call.how {
                     How::Direct => "call".to_string(),
@@ -152,18 +152,29 @@ fn walk_lines_following(
                 )
             }
             Event::Loop(l) => {
+                // The loop's events come just before it, and those of the
+                // iterations that the walk went through one by one are
+                // theirs, one after another.
+                assert_eq!(l.events.end, k, "the events of the loop at {k}");
+                let iterations = l.walked_iterations();
+                if let (Some(first), Some(last)) = (iterations.first(), iterations.last()) {
+                    assert_eq!(first.events.start..last.events.end, l.events);
+                    for pair in iterations.windows(2) {
+                        assert_eq!(pair[0].events.end, pair[1].events.start);
+                    }
+                }
                 let end = l
-                    .end
+                    .stopped()
                     .map_or(String::new(), |end| format!(", stops {end:x?}"));
                 let passes = l
-                    .passes
+                    .iterations()
                     .map_or(String::new(), |n| format!(", runs {n:#x} times"));
-                // Where each time the walk went through starts, and the
-                // row of a table it reads.
-                let times: Vec<String> = (l.times.iter())
-                    .map(|time| match time.row {
-                        Some(row) => format!(" {}@{row:#x}", time.first_event),
-                        None => format!(" {}", time.first_event),
+                // Where each iteration that the walk went through starts,
+                // and the row of a table it reads.
+                let times: Vec<String> = (iterations.iter())
+                    .map(|iteration| match iteration.row {
+                        Some(row) => format!(" {}@{row:#x}", iteration.events.start),
+                        None => format!(" {}", iteration.events.start),
                     })
                     .collect();
                 let times = match times.is_empty() {
@@ -172,7 +183,7 @@ fn walk_lines_following(
                 };
                 format!(
                     "{} {:#x} loop back at {:#x}, from event {}{passes}{times}{end}",
-                    l.depth, l.head, l.back, l.first_event
+                    l.depth, l.head, l.back, l.events.start
                 )
             }
             Event::Backtrack {
