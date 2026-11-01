@@ -12,9 +12,11 @@ use std::io::Write;
 use anyhow::{Result, bail};
 use serde::Serialize;
 
+use super::checks::{check_has_bytes, reference_graph};
+use super::kept::Kept;
 use super::retained_tree::{KeptItem, RetainedTree};
-use super::{Kept, json, text};
-use crate::binary::{AddressRange, Binary, FileKind};
+use super::{Outcome, json, text};
+use crate::binary::{AddressRange, Binary, FileKind, total};
 use crate::cli::Format;
 use crate::graph::Node;
 
@@ -53,13 +55,13 @@ pub fn run(
     all: bool,
     format: Format,
     out: &mut dyn Write,
-) -> Result<()> {
+) -> Result<Outcome> {
     if binary.kind == FileKind::SharedLibrary {
         bail!("elfq can't yet tell what keeps the most bytes in a shared library");
     }
-    let graph = Kept::new(super::reference_graph(binary)?);
+    let graph = Kept::new(reference_graph(binary)?);
     let retained = Kept::new(RetainedTree::new(binary, &graph, range));
-    super::check_has_bytes(binary, range)?;
+    check_has_bytes(binary, range)?;
     if format == Format::Json {
         let answer = TopJson {
             range: range.map(json::Range::new),
@@ -74,7 +76,8 @@ pub fn run(
                 })
                 .collect(),
         };
-        return json::write(&answer, out);
+        json::write(&answer, out)?;
+        return Ok(Outcome::Answered);
     }
     // When nothing reaches the items in the range, which items nothing
     // reaches is the whole answer.
@@ -98,7 +101,7 @@ pub fn run(
         }
         writeln!(out, "{unreachable}")?;
     }
-    Ok(())
+    Ok(Outcome::Answered)
 }
 
 /// The items that nothing reaches, largest first, leaving out those with no
@@ -122,7 +125,7 @@ fn unreachable_text(retained: &RetainedTree, all: bool) -> Option<String> {
     if unreachable.is_empty() {
         return None;
     }
-    let bytes = super::total(unreachable.iter().map(|&index| retained.own(index)));
+    let bytes = total(unreachable.iter().map(|&index| retained.own(index)));
     // Marked as rows are, when the bytes counted are a load image's.
     let names: Vec<String> = unreachable
         .iter()

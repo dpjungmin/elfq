@@ -1302,7 +1302,7 @@ that do this.
    so the answer is always the same. `reach` searches from SYMBOL the same
    way, for the shortest chain to every item. Without SYMBOL, it only adds
    up the bytes that each start reaches, in one search from each, with no
-   chains (`reach::Totals`), which the overview also uses to pick the
+   chains (`graph::Reached`), which the overview also uses to pick the
    handler that reaches the most code.
    `callers` and `callees` read edges. `callers` counts a call to the stub
    for one of the file's own functions, such as `log_msg@plt` in a shared
@@ -1326,8 +1326,8 @@ in order. Its output is the first example under [Commands](#commands).
    into a `cli::Cli`: the file, `--json`, `--tree`, `--range`, and here
    `Command::Retained` with its SYMBOL.
 2. **Dispatch.** `commands::run` checks that the arguments go together
-   (`check_arguments`), before it reads the file, then loads the file,
-   prints any warnings about it, and calls `retained::run`.
+   (`arguments::check_before_loading`), before it reads the file, then
+   loads the file, prints any warnings about it, and calls `retained::run`.
 3. **Loading.** `binary::Binary::load` reads the file with the `object`
    crate: its sections, the dynamic relocations, which name the imports and
    the pointers the loader stores, and in Thumb files the vector table

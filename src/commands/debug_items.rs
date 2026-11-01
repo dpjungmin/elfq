@@ -6,12 +6,12 @@ use std::io::Write;
 
 use anyhow::Result;
 
-use super::text;
+use super::{Outcome, text};
 use crate::binary::{Binary, Item, ItemKind};
 use crate::render::{Align, Table};
 
 /// Answers `elfq FILE debug items`.
-pub fn run(binary: &Binary, out: &mut dyn Write) -> Result<()> {
+pub fn run(binary: &Binary, out: &mut dyn Write) -> Result<Outcome> {
     writeln!(
         out,
         "{} {}, entry {:#x}: {}, {}",
@@ -40,7 +40,7 @@ pub fn run(binary: &Binary, out: &mut dyn Write) -> Result<()> {
         ]);
     }
     table.write(out)?;
-    Ok(())
+    Ok(Outcome::Answered)
 }
 
 fn count(binary: &Binary, kind: ItemKind, one: &str, many: &str) -> String {

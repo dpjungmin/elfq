@@ -14,8 +14,10 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
 
-use super::{Kept, json, text};
-use crate::binary::{Binary, ItemKind, short_names};
+use super::checks::item_in_file;
+use super::kept::Kept;
+use super::{Outcome, json, text};
+use crate::binary::{Binary, ItemKind, short_names, total};
 use crate::cli::Format;
 use crate::debuginfo::{self, InlinedCopy};
 use crate::graph::Node;
@@ -30,7 +32,7 @@ pub fn run(
     all: bool,
     format: Format,
     out: &mut dyn Write,
-) -> Result<()> {
+) -> Result<Outcome> {
     if !binary.has_dwarf {
         bail!(
             "{} has no DWARF debug info; build it with debug info and don't strip it",
@@ -49,11 +51,12 @@ pub fn run(
             .with_context(|| format!("cannot read the DWARF debug info in {}", path.display()))?,
     );
     match function {
-        None => write_list(binary, &copies, all, format, out),
+        None => write_list(binary, &copies, all, format, out)?,
         Some((index, lead_name)) => {
-            write_tree(binary, &copies, index, &lead_name, all, format, out)
+            write_tree(binary, &copies, index, &lead_name, all, format, out)?
         }
     }
+    Ok(Outcome::Answered)
 }
 
 /// The index of the function that `symbol` names, with its name as the
@@ -63,7 +66,7 @@ pub fn run(
 /// [`Symbol::lead_name`]: super::symbol::Symbol::lead_name
 fn find_function(binary: &Binary, symbol: &str) -> Result<(usize, String)> {
     let symbol = super::symbol::find(binary, symbol)?;
-    let index = super::item_in_file(binary, symbol.node)?;
+    let index = item_in_file(binary, symbol.node)?;
     if binary.items[index].kind != ItemKind::Function {
         bail!(
             "{} is a data object, not a function, so nothing is inlined into it",
@@ -114,12 +117,12 @@ fn write_list(
     let mut totals: Vec<Total> = by_name.into_values().collect();
     totals.sort_by_key(|total| (Reverse(total.bytes), Reverse(total.copies), total.name));
 
-    let inlined = super::total(copies.iter().map(|copy| copy.own));
+    let inlined = total(copies.iter().map(|copy| copy.own));
     let functions = binary
         .items
         .iter()
         .filter(|item| item.kind == ItemKind::Function);
-    let code = super::total(functions.map(|item| item.size));
+    let code = total(functions.map(|item| item.size));
     if format == Format::Json {
         let list = ListJson {
             inlined_bytes: inlined,
@@ -153,7 +156,7 @@ fn write_list(
         ]);
     }
     if !hidden.is_empty() {
-        let bytes = super::total(hidden.iter().map(|total| total.bytes));
+        let bytes = total(hidden.iter().map(|total| total.bytes));
         let copies: usize = hidden.iter().map(|total| total.copies).sum();
         table.row(vec![
             bytes.to_string(),
@@ -183,7 +186,7 @@ fn write_tree(
     let name = node.name(binary);
     let item = &binary.items[index];
     let groups = Groups::new(copies, index);
-    let bytes = super::total(groups.top.iter().map(|&group| groups.list[group].bytes));
+    let bytes = total(groups.top.iter().map(|&group| groups.list[group].bytes));
     if format == Format::Json {
         let tree = TreeJson {
             function: json::Symbol::new(binary, node),
@@ -595,7 +598,7 @@ impl<'a> Groups<'a> {
         }
         // A group's bytes include those inlined into it, but its copies
         // don't.
-        let bytes = super::total(hidden.iter().map(|&group| self.list[group].bytes));
+        let bytes = total(hidden.iter().map(|&group| self.list[group].bytes));
         let all = self.with_inlined(hidden);
         let copies: usize = all.iter().map(|&group| self.list[group].copies).sum();
         let cells = vec![bytes.to_string(), copies.to_string()];

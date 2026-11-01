@@ -22,6 +22,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use anyhow::{Context, Result, anyhow, bail};
 
+use super::checks::found_functions;
 use super::text;
 use crate::binary::{
     AddressRange, Binary, ItemKind, can_be_shorter, demangle, ends_with_short_name,
@@ -280,6 +281,31 @@ impl<'a> Names<'a> {
         }
     }
 
+    /// `main` if there is one, or else the function where the program
+    /// starts, the vector table's reset handler or the entry point, since
+    /// every reader knows where those fit; otherwise the largest function.
+    /// The overview's Try lines and `reach` without SYMBOL start here.
+    pub(super) fn starting_point(&self) -> Option<usize> {
+        let binary = self.binary;
+        // `main` as SYMBOL would find it, so also `app::main` in Rust.
+        let main = match self.nodes("main") {
+            [Node::Item(index)] => Some(*index),
+            _ => None,
+        };
+        let reset = binary
+            .reset_handler()
+            .and_then(|address| binary.item_at(address));
+        let entry = binary.item_at(binary.entry);
+        let largest = (0..binary.items.len())
+            .filter(|&index| binary.items[index].is_own_function())
+            .max_by_key(|&index| binary.items[index].size);
+        [main, reset, entry]
+            .into_iter()
+            .flatten()
+            .find(|&index| binary.items[index].is_own_function())
+            .or(largest)
+    }
+
     /// Finds the item or import that `query` names. When it could mean
     /// several, or none, the error lists names to try instead.
     pub(super) fn find(&self, query: &str) -> Result<Symbol> {
@@ -463,7 +489,7 @@ impl<'a> Names<'a> {
         if self.binary.has_symbols {
             return None;
         }
-        if !super::found_functions(self.binary) {
+        if !found_functions(self.binary) {
             return Some(text::NO_FUNCTIONS.to_string());
         }
         let names = match text::unnamed_items(self.binary)? {

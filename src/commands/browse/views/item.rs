@@ -37,7 +37,9 @@ use super::{
 use crate::arch::{self, CodeReferenceKind, Refers};
 use crate::binary::{Binary, Item, ItemKind, RelocationTarget, Source};
 use crate::commands::browse::{keys::Action, session::Session};
-use crate::commands::{distinct_nodes, readable_item, retained, text, why};
+use crate::commands::checks::readable_item;
+use crate::commands::uses::distinct_nodes;
+use crate::commands::{retained, text, why};
 use crate::graph::{Node, Reference, Unresolved, VeneerTarget, item_starting_at};
 
 mod contents;

@@ -18,10 +18,9 @@ use super::blocks::{Block, Place};
 use super::pairing::PairedBy;
 use super::rows::{Change, Status};
 use super::{Answer, Build, Compared};
-use crate::binary::Binary;
+use crate::binary::{Binary, total};
 use crate::commands::json::{self, address};
 use crate::commands::ranges::{self, CalleeJson};
-use crate::commands::total;
 use crate::graph::Node;
 
 #[derive(Serialize)]

@@ -18,9 +18,10 @@ use anyhow::Result;
 use super::views::PageCode;
 use crate::binary::{Binary, FileKind, ItemKind, MemoryBlock, memory_blocks};
 use crate::commands::callers::{self, Answer};
+use crate::commands::checks::reference_graph;
 use crate::commands::retained_tree::RetainedTree;
 use crate::commands::symbol::Names;
-use crate::commands::{reference_graph, text};
+use crate::commands::text::CommandLine;
 use crate::graph::{DominatorTree, Graph, Node, ShortestPaths, VeneerTarget, Veneers};
 
 /// A loaded file, with what every page needs.
@@ -146,15 +147,11 @@ impl<'a> Session<'a> {
     /// SYMBOL, both quoted for the shell, then `--all` when `all` asks for
     /// it.
     pub(super) fn command(&self, command: &str, node: Option<Node>, all: bool) -> String {
-        let symbol = match node {
-            Some(node) => format!(" {}", text::shell_quote(&self.names.query_for(node))),
-            None => String::new(),
-        };
-        let all = if all { " --all" } else { "" };
-        format!(
-            "$ elfq {} {command}{symbol}{all}",
-            text::shell_quote(&self.path.display().to_string()),
-        )
+        let mut line = CommandLine::new(&self.path, command);
+        if let Some(node) = node {
+            line = line.word(&self.names.query_for(node));
+        }
+        format!("$ {}", line.flag("--all", all))
     }
 
     /// The node whose page stands for `node`: for an import, its PLT stub

@@ -11,6 +11,7 @@ use std::io::Write;
 use anyhow::{Result, bail};
 use serde::Serialize;
 
+use super::checks::empty_place;
 use super::{Outcome, json, text};
 use crate::binary::{AddressRange, Binary};
 use crate::cli::Format;
@@ -460,9 +461,10 @@ fn check_holds_items(binary: &Binary, range: AddressRange) -> Result<()> {
     if binary.items.iter().any(|item| item.is_in(&[range])) {
         return Ok(());
     }
-    let place = super::empty_place(binary, Some(range))?;
+    let place = empty_place(binary, Some(range))?;
     // Where the program uses what is stored in the range.
-    let used_at: Vec<String> = text::load_images_in(binary, range)
+    let used_at: Vec<String> = binary
+        .load_images_in(range)
         .into_iter()
         .map(|section| {
             let used_at = AddressRange {
@@ -590,8 +592,7 @@ pub(super) fn check_to_range(
     if has_address(code_outside, range) {
         return Ok(());
     }
-    if text::sections_in(binary, range).is_empty() && text::load_images_in(binary, range).is_empty()
-    {
+    if binary.sections_in(range).is_empty() && binary.load_images_in(range).is_empty() {
         bail!(
             "--to {} holds no functions or data, and no code in the file calls or jumps there",
             text::range_argument(range)

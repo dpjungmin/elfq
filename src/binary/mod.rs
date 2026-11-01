@@ -31,6 +31,7 @@
 
 mod attributes;
 mod eh_frame;
+mod header;
 mod memory;
 mod names;
 mod plt;
@@ -43,6 +44,7 @@ mod unnamed_functions;
 mod vector_table;
 
 pub use attributes::ArmArchitecture;
+pub use header::ElfHeader;
 pub use memory::{Bytes, LoadedMemory, same_bytes_in, same_memory};
 pub use names::{
     can_be_shorter, demangle, ends_with_short_name, for_each_short_name, has_short_name,
@@ -524,6 +526,32 @@ impl Binary {
         Some(&rest[..rest.len().min(usize::try_from(len).unwrap_or(usize::MAX))])
     }
 
+    /// Where the reset handler starts, which the vector table names, when
+    /// the file has one: the code a Cortex-M processor runs from reset.
+    pub fn reset_handler(&self) -> Option<u64> {
+        (self.vector_table.as_ref()).and_then(|table| table.reset_handler())
+    }
+
+    /// The allocated sections that have bytes in `range`.
+    pub fn sections_in(&self, range: AddressRange) -> Vec<&Section> {
+        self.sections
+            .iter()
+            .filter(|section| section.allocated && range.overlap(section.address, section.size) > 0)
+            .collect()
+    }
+
+    /// The sections whose load images have bytes in `range`.
+    pub fn load_images_in(&self, range: AddressRange) -> Vec<&Section> {
+        self.sections
+            .iter()
+            .filter(|section| {
+                section
+                    .load_address
+                    .is_some_and(|address| range.overlap(address, section.size) > 0)
+            })
+            .collect()
+    }
+
     /// Whether the entry point is in the vector table, as in firmware linked
     /// with no entry point, which is where `.text` starts, when `.text`
     /// begins with the table. It is data then, not code.
@@ -642,6 +670,43 @@ impl Item {
     pub fn names(&self) -> impl Iterator<Item = &str> {
         std::iter::once(self.name.as_str()).chain(self.aliases.iter().map(String::as_str))
     }
+
+    /// Whether the item is a function whose end elfq doesn't know, so that
+    /// it can't read its code.
+    pub fn end_unknown(&self) -> bool {
+        self.kind == ItemKind::Function && self.size == 0
+    }
+
+    /// Whether the item is a function whose code is in this file and can be
+    /// read: not a PLT stub, whose code is a library's, nor a function whose
+    /// end elfq doesn't know.
+    pub fn is_own_function(&self) -> bool {
+        self.kind == ItemKind::Function && self.source != Source::Plt && self.size > 0
+    }
+}
+
+/// The bytes of functions and the bytes of data objects, counted apart.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CodeAndData {
+    pub code: u64,
+    pub data: u64,
+}
+
+impl CodeAndData {
+    /// Counts `item`'s bytes, as code or as data. Sums stop at the largest
+    /// `u64` rather than overflow.
+    pub fn add(&mut self, item: &Item) {
+        let bytes = match item.kind {
+            ItemKind::Function => &mut self.code,
+            ItemKind::Data => &mut self.data,
+        };
+        *bytes = bytes.saturating_add(item.size);
+    }
+
+    /// The bytes of code and data together.
+    pub fn total(self) -> u64 {
+        self.code.saturating_add(self.data)
+    }
 }
 
 impl Section {
@@ -718,6 +783,13 @@ fn code_address(architecture: Architecture, address: u64) -> u64 {
     } else {
         address
     }
+}
+
+/// The sum of `sizes`, which stops at the largest `u64` rather than
+/// overflow: in a damaged file, items or inlined copies can overlap, and
+/// their sizes add up to more than a `u64` holds.
+pub fn total(sizes: impl Iterator<Item = u64>) -> u64 {
+    sizes.fold(0, u64::saturating_add)
 }
 
 /// The number in `bytes`, a pointer of up to 8 bytes.

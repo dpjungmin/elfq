@@ -11,9 +11,10 @@
 
 use super::item::Tab;
 use super::printed::{Lines, Printed, note_name, table_lines};
+use crate::binary::total;
 use crate::commands::browse::session::Session;
 use crate::commands::retained::{self, SymbolInTree};
-use crate::commands::{json, overview, text, total};
+use crate::commands::{json, text};
 use crate::graph::{DominatorTree, Node};
 use crate::render::{Align, Table};
 
@@ -70,7 +71,7 @@ fn by_block(session: &Session, tree: &DominatorTree, node: Node) -> Vec<Lines> {
         table.row(vec![
             text::range_argument(block.range),
             bytes.to_string(),
-            overview::sections_text(&sections, &load_images),
+            text::sections_text(&sections, &load_images),
         ]);
     }
     vec![

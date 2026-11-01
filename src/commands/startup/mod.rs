@@ -26,16 +26,18 @@ mod steps;
 mod text;
 
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::Write;
 use std::path::Path;
 
 use anyhow::{Result, bail};
 use object::Architecture;
+use object::elf::{EM_386, EM_AARCH64, EM_ARM, EM_X86_64, ET_DYN, ET_REL};
 
-use super::{Kept, Outcome, check_code_is_readable};
+use super::Outcome;
+use super::checks::check_code_is_readable;
+use super::kept::Kept;
 use crate::arch::startup::{DEPTH, End, Walk};
-use crate::binary::{Binary, ItemKind};
+use crate::binary::{Binary, ElfHeader, ItemKind};
 use crate::cli::Format;
 use crate::graph::{Graph, Node, VeneerTarget, Veneers};
 use problems::Judged;
@@ -54,7 +56,7 @@ pub(super) fn check_header(path: &Path) -> Result<()> {
     if !std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file()) {
         return Ok(());
     }
-    let Ok(Some(header)) = Header::read(path) else {
+    let Ok(Some(header)) = ElfHeader::read(path) else {
         return Ok(());
     };
     let file = path.display();
@@ -65,11 +67,11 @@ pub(super) fn check_header(path: &Path) -> Result<()> {
         EM_AARCH64 => Some("64-bit Arm code"),
         _ => Some("code for another processor"),
     };
-    let what = what.or(match header.kind {
+    let what = what.or(match header.file_type {
         ET_REL => Some("an object file, not a linked program"),
-        _ if header.interpreter => Some("a program that an operating system loads"),
+        _ if header.has_interpreter => Some("a program that an operating system loads"),
         ET_DYN => Some("a shared library"),
-        _ if header.dynamic => Some("a program that an operating system loads"),
+        _ if header.has_dynamic => Some("a program that an operating system loads"),
         _ => None,
     });
     if let Some(what) = what {
@@ -81,119 +83,25 @@ pub(super) fn check_header(path: &Path) -> Result<()> {
     Ok(())
 }
 
-// The ELF header's and program headers' numbers that `check_header` reads.
-const EM_386: u16 = 3;
-const EM_ARM: u16 = 40;
-const EM_X86_64: u16 = 62;
-const EM_AARCH64: u16 = 183;
-const ET_REL: u16 = 1;
-const ET_DYN: u16 = 3;
-const PT_DYNAMIC: u32 = 2;
-const PT_INTERP: u32 = 3;
-
-/// What [`check_header`] reads of a file.
-struct Header {
-    /// `e_machine`.
-    machine: u16,
-    /// `e_type`.
-    kind: u16,
-    /// Whether a program header names a program interpreter, as a
-    /// program that an operating system loads has.
-    interpreter: bool,
-    /// Whether a program header gives a dynamic section.
-    dynamic: bool,
-    has_sections: bool,
-}
-
-impl Header {
-    /// The header of the ELF file at `path`, or `None` when it isn't one.
-    fn read(path: &Path) -> std::io::Result<Option<Header>> {
-        let mut file = File::open(path)?;
-        let mut ident = [0; 64];
-        let read = file.read(&mut ident)?;
-        if read < 52 || ident[..4] != *b"\x7fELF" {
-            return Ok(None);
-        }
-        let wide = match ident[4] {
-            1 => false,
-            2 => true,
-            _ => return Ok(None),
-        };
-        let little = match ident[5] {
-            1 => true,
-            2 => false,
-            _ => return Ok(None),
-        };
-        if wide && read < 64 {
-            return Ok(None);
-        }
-        let number = |bytes: &[u8]| -> u64 {
-            let mut value = 0;
-            for (n, &byte) in bytes.iter().enumerate() {
-                let shift = if little { n } else { bytes.len() - 1 - n };
-                value |= u64::from(byte) << (8 * shift);
-            }
-            value
-        };
-        let half = |at: usize| number(&ident[at..at + 2]) as u16;
-        let (program_headers, section_headers, sizes) = if wide {
-            (number(&ident[32..40]), number(&ident[40..48]), 54)
-        } else {
-            (number(&ident[28..32]), number(&ident[32..36]), 42)
-        };
-        let (program_header_size, programs) = (half(sizes), half(sizes + 2));
-        let (section_header_size, sections) = (half(sizes + 4), half(sizes + 6));
-        let mut header = Header {
-            machine: half(18),
-            kind: half(16),
-            interpreter: false,
-            dynamic: false,
-            has_sections: section_headers != 0,
-        };
-        let mut word = [0; 8];
-        // With more sections than e_shnum holds, it is 0, and the first
-        // section header's size gives the number.
-        if sections == 0 && header.has_sections {
-            let size = if wide { 8 } else { 4 };
-            let at = section_headers.checked_add(if wide { 32 } else { 20 });
-            header.has_sections = section_header_size > 0
-                && at.is_some_and(|at| file.seek(SeekFrom::Start(at)).is_ok())
-                && file.read_exact(&mut word[..size]).is_ok()
-                && number(&word[..size]) != 0;
-        }
-        // 0xffff is a number of program headers too large for e_phnum.
-        if programs != 0xffff {
-            for n in 0..u64::from(programs) {
-                let Some(at) = program_headers.checked_add(n * u64::from(program_header_size))
-                else {
-                    break;
-                };
-                if file.seek(SeekFrom::Start(at)).is_err()
-                    || file.read_exact(&mut word[..4]).is_err()
-                {
-                    break;
-                }
-                match number(&word[..4]) as u32 {
-                    PT_INTERP => header.interpreter = true,
-                    PT_DYNAMIC => header.dynamic = true,
-                    _ => {}
-                }
-            }
-        }
-        Ok(Some(header))
-    }
-}
-
 /// Whether `elfq FILE startup` reads the file at `path`, loaded as
 /// `binary`, and has something to say about it, for a Try line: Cortex-M
 /// firmware with a load image or a section without contents, whose reset
 /// handler elfq finds.
 pub(super) fn reads(path: &Path, binary: &Binary) -> bool {
-    binary.architecture == Architecture::Arm
-        && check_code_is_readable(binary).is_ok()
+    reset_handler(path, binary).is_ok()
         && !Memory::new(binary).ram.is_empty()
         && check_header(path).is_ok()
-        && Reset::find(path, binary).is_ok()
+}
+
+/// Where the processor starts in the firmware at `path`, loaded as
+/// `binary`, or why startup refuses the file once it is loaded: its code
+/// can't be read, it isn't Arm code, or elfq finds no reset handler.
+fn reset_handler(path: &Path, binary: &Binary) -> Result<Reset> {
+    check_code_is_readable(binary)?;
+    if binary.architecture != Architecture::Arm {
+        bail!("{} isn't Arm code; {READS}", path.display());
+    }
+    Reset::find(path, binary)
 }
 
 /// Answers `elfq FILE startup`: [`Outcome::Problems`] when it finds a
@@ -205,11 +113,7 @@ pub(super) fn run(
     format: Format,
     out: &mut dyn Write,
 ) -> Result<Outcome> {
-    check_code_is_readable(binary)?;
-    if binary.architecture != Architecture::Arm {
-        bail!("{} isn't Arm code; {READS}", path.display());
-    }
-    let reset = Reset::find(path, binary)?;
+    let reset = reset_handler(path, binary)?;
     let graph = Kept::new(Graph::build(binary));
     let firmware = Firmware::new(binary, &graph);
     let memory = Memory::new(binary);

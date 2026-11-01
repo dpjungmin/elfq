@@ -12,12 +12,15 @@ use std::io::Write;
 use anyhow::{Result, bail};
 use serde::Serialize;
 
-#[cfg(feature = "tui")]
-use super::TabAnswer;
+use super::checks::{check_code_is_readable, readable_item};
+use super::kept::Kept;
 use super::retained_tree::{self, KeptItem, RetainedTree};
 use super::symbol::Names;
 use super::text::Naming;
-use super::{Kept, TreeAnswer, json, text};
+#[cfg(feature = "tui")]
+use super::tree_answer::TabAnswer;
+use super::tree_answer::TreeAnswer;
+use super::{Outcome, json, text};
 use crate::binary::{AddressRange, Binary, FileKind};
 use crate::cli::Format;
 use crate::graph::{Graph, Node, Unresolved};
@@ -61,8 +64,8 @@ pub fn run(
     all: bool,
     format: Format,
     out: &mut dyn Write,
-) -> Result<()> {
-    super::check_code_is_readable(binary)?;
+) -> Result<Outcome> {
+    check_code_is_readable(binary)?;
     let names = Kept::new(Names::new(binary));
     let symbol = names.find(symbol)?;
     let node = symbol.node;
@@ -76,17 +79,18 @@ pub fn run(
         index,
         lead_name: &lead_name,
     };
-    if format == Format::Json {
-        return write_json(&symbol, out);
+    match format {
+        Format::Json => write_json(&symbol, out)?,
+        Format::Text | Format::Tree => answer(&symbol, all, format).write(out)?,
     }
-    answer(&symbol, all, format).write(out)
+    Ok(Outcome::Answered)
 }
 
 /// Why `retained` can't answer about `node`, if it can't: it is an import,
 /// or a function whose end elfq doesn't know, or the file is a shared
 /// library. Otherwise, the index of `node`'s item.
 pub(super) fn refusal(binary: &Binary, node: Node) -> Result<usize> {
-    let index = super::readable_item(binary, node)?;
+    let index = readable_item(binary, node)?;
     if binary.kind == FileKind::SharedLibrary {
         let name = node.name(binary);
         bail!("elfq can't yet tell what only {name} leads to in a shared library");

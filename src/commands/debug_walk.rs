@@ -8,12 +8,13 @@ use std::io::Write;
 
 use anyhow::{Result, bail};
 
+use super::Outcome;
 use crate::arch::startup::{self, End, Event, How, Start, Through};
 use crate::binary::{Binary, ItemKind};
 use crate::render::{Align, Table};
 
 /// Answers `elfq FILE debug walk`.
-pub fn run(binary: &Binary, out: &mut dyn Write) -> Result<()> {
+pub fn run(binary: &Binary, out: &mut dyn Write) -> Result<Outcome> {
     let start = start(binary);
     let walk = binary
         .thumb
@@ -188,7 +189,7 @@ pub fn run(binary: &Binary, out: &mut dyn Write) -> Result<()> {
         format!("ends: {}", end_text(walk.end)),
     ]);
     table.write(out)?;
-    Ok(())
+    Ok(Outcome::Answered)
 }
 
 /// Where the processor starts, as `startup` will take it: the vector
@@ -196,7 +197,7 @@ pub fn run(binary: &Binary, out: &mut dyn Write) -> Result<()> {
 /// the function of that name.
 fn start(binary: &Binary) -> Start {
     let table = binary.vector_table.as_ref();
-    let reset = table.and_then(|table| table.reset_handler());
+    let reset = binary.reset_handler();
     let stack_pointer = table
         .filter(|_| reset.is_some())
         .and_then(|table| binary.pointer_at(table.address));

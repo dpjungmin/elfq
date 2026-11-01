@@ -53,7 +53,8 @@ use ratatui::backend::Backend;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use ratatui::{DefaultTerminal, Terminal};
 
-use super::{Kept, text};
+use super::kept::Kept;
+use super::text;
 use crate::binary::Binary;
 
 /// Why the event loop stopped.
@@ -72,7 +73,7 @@ pub fn run(path: &Path, symbol: Option<&str>) -> Result<()> {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         bail!(
             "browse needs a terminal; to print answers, run elfq {} or another command",
-            text::shell_quote(&path.display().to_string())
+            text::quoted_path(path)
         );
     }
     // On elfq's own thread, with its large stack, as for every command:

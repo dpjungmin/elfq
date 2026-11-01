@@ -42,7 +42,7 @@ mod tests {
     use super::*;
     use crate::binary::Binary;
     use crate::cli::{Cli, Command, Format};
-    use crate::commands::readable_item;
+    use crate::commands::checks::readable_item;
 
     #[test]
     fn the_reach_tab_lists_what_its_command_prints() {

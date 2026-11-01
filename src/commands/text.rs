@@ -2,10 +2,15 @@
 //! commands write, kept in one place so that every command says them the
 //! same way.
 
+use std::fmt;
+use std::io::Write;
+use std::path::Path;
+
+use anyhow::Result;
 use object::Architecture;
 
 use super::json;
-use crate::binary::{AddressRange, Binary, Item, ItemKind, Section, Source};
+use crate::binary::{AddressRange, Binary, CodeAndData, Item, ItemKind, Section, Source, total};
 use crate::graph::{Node, ReferenceKind, Root, RootKind, Unresolved};
 
 /// "1 function", "2 functions".
@@ -33,7 +38,7 @@ pub(super) fn signed(change: i128) -> String {
 pub(super) fn bytes_of_items(binary: &Binary, range: Option<AddressRange>) -> String {
     let bytes_of = |kind: ItemKind| {
         let items = binary.items.iter().filter(|item| item.kind == kind);
-        super::total(items.map(|item| binary.bytes_in(item, range)))
+        total(items.map(|item| binary.bytes_in(item, range)))
     };
     let (code, data) = (bytes_of(ItemKind::Function), bytes_of(ItemKind::Data));
     let what = match (code > 0, data > 0) {
@@ -46,11 +51,11 @@ pub(super) fn bytes_of_items(binary: &Binary, range: Option<AddressRange>) -> St
 
 /// Bytes of code and of data, kept apart: "446 bytes of code and 4128 bytes
 /// of data".
-pub(super) fn code_and_data(code: u64, data: u64) -> String {
+pub(super) fn code_and_data(bytes: CodeAndData) -> String {
     format!(
         "{} of code and {} of data",
-        bytes_text(code),
-        bytes_text(data)
+        bytes_text(bytes.code),
+        bytes_text(bytes.data)
     )
 }
 
@@ -400,14 +405,14 @@ pub(super) fn root_sentence(binary: &Binary, name: &str, root: &Root) -> String 
 /// Whether `node` is the item where the vector table's reset handler
 /// starts.
 fn is_reset_handler(binary: &Binary, node: Node) -> bool {
-    let reset = (binary.vector_table.as_ref()).and_then(|table| table.reset_handler());
+    let reset = binary.reset_handler();
     matches!(node, Node::Item(index) if Some(binary.items[index].address) == reset)
 }
 
 /// Whether the vector table has a reset handler, and `node` doesn't hold
 /// it.
 fn reset_handler_elsewhere(binary: &Binary, node: Node) -> bool {
-    let reset = (binary.vector_table.as_ref()).and_then(|table| table.reset_handler());
+    let reset = binary.reset_handler();
     reset.is_some_and(
         |reset| !matches!(node, Node::Item(index) if binary.items[index].contains(reset)),
     )
@@ -447,26 +452,11 @@ pub(super) fn cannot_read_code(binary: &Binary) -> String {
     format!("elfq can't yet read {code} code to tell what calls what")
 }
 
-/// The names of the sections that have bytes in `range`.
-pub(super) fn sections_in(binary: &Binary, range: AddressRange) -> Vec<&str> {
-    binary
-        .sections
-        .iter()
-        .filter(|section| section.allocated && range.overlap(section.address, section.size) > 0)
+/// The names of `sections`.
+fn section_names(sections: Vec<&Section>) -> Vec<&str> {
+    sections
+        .into_iter()
         .map(|section| section.name.as_str())
-        .collect()
-}
-
-/// The sections whose load images have bytes in `range`.
-pub(super) fn load_images_in(binary: &Binary, range: AddressRange) -> Vec<&Section> {
-    binary
-        .sections
-        .iter()
-        .filter(|section| {
-            section
-                .load_address
-                .is_some_and(|address| range.overlap(address, section.size) > 0)
-        })
         .collect()
 }
 
@@ -475,10 +465,7 @@ pub(super) fn load_images_in(binary: &Binary, range: AddressRange) -> Vec<&Secti
 /// `0x30000000..0x30000edc (.isr_vector, .text, .rodata and .ARM.exidx,
 /// with the load images of .itcm and .data)`, every one with `all`.
 pub(super) fn range_text(binary: &Binary, range: AddressRange, all: bool) -> String {
-    let load_images: Vec<&str> = load_images_in(binary, range)
-        .into_iter()
-        .map(|section| section.name.as_str())
-        .collect();
+    let load_images = section_names(binary.load_images_in(range));
     let load_images = match load_images[..] {
         [] => None,
         [one] => Some(format!("the load image of {one}")),
@@ -487,7 +474,7 @@ pub(super) fn range_text(binary: &Binary, range: AddressRange, all: bool) -> Str
             names_text(&load_images, all)
         )),
     };
-    let sections = sections_in(binary, range);
+    let sections = section_names(binary.sections_in(range));
     let sections = (!sections.is_empty()).then(|| names_text(&sections, all));
     let range = range_argument(range);
     match (sections, load_images) {
@@ -502,7 +489,7 @@ pub(super) fn range_text(binary: &Binary, range: AddressRange, all: bool) -> Str
 /// it, every one with `all`: [`range_text`] without the load images, for
 /// range checks, which look only where the program uses its code and data.
 pub(super) fn range_sections_text(binary: &Binary, range: AddressRange, all: bool) -> String {
-    let sections = sections_in(binary, range);
+    let sections = section_names(binary.sections_in(range));
     match sections[..] {
         [] => range_argument(range),
         _ => format!("{} ({})", range_argument(range), names_text(&sections, all)),
@@ -536,6 +523,143 @@ pub(super) fn shell_quote(text: &str) -> String {
     } else {
         format!("'{}'", text.replace('\'', r"'\''"))
     }
+}
+
+/// The file's path as the user typed it, as one shell word.
+pub(super) fn quoted_path(path: &Path) -> String {
+    shell_quote(&path.display().to_string())
+}
+
+/// An elfq command line to suggest, ready to paste into a shell, such as
+/// `elfq app.elf reach 'log(unsigned int)' --to 0x20000000..0x20001000`.
+/// It is built from words as they are meant, and quotes each one for the
+/// shell as it is added, so no word is quoted twice or not at all.
+pub(super) struct CommandLine {
+    words: Vec<String>,
+}
+
+impl CommandLine {
+    /// `elfq FILE COMMAND`, with the file as the user typed it.
+    pub(super) fn new(path: &Path, command: &str) -> CommandLine {
+        CommandLine {
+            words: vec!["elfq".to_string(), quoted_path(path), shell_quote(command)],
+        }
+    }
+
+    /// Adds `word`, such as a SYMBOL.
+    pub(super) fn word(mut self, word: &str) -> CommandLine {
+        self.words.push(shell_quote(word));
+        self
+    }
+
+    /// Adds each of `words`.
+    pub(super) fn words(self, words: &[String]) -> CommandLine {
+        words.iter().fold(self, |line, word| line.word(word))
+    }
+
+    /// Adds `option` before each of `ranges`, as `--range` takes a range,
+    /// such as `--to 0x20000000..0x20001000`; or with an empty `option`,
+    /// the ranges alone, as callers and callees take them in place of
+    /// SYMBOL.
+    pub(super) fn ranges(
+        mut self,
+        option: &str,
+        ranges: impl IntoIterator<Item = AddressRange>,
+    ) -> CommandLine {
+        for range in ranges {
+            if !option.is_empty() {
+                self = self.word(option);
+            }
+            self = self.word(&range_argument(range));
+        }
+        self
+    }
+
+    /// Adds `flag`, such as `--all`, when `on`.
+    pub(super) fn flag(self, flag: &str, on: bool) -> CommandLine {
+        if on { self.word(flag) } else { self }
+    }
+}
+
+impl fmt::Display for CommandLine {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(&self.words.join(" "))
+    }
+}
+
+/// The sections in a block, then the sections whose load images are in
+/// it, such as ".isr_vector .text .rodata, load image of .data".
+pub(super) fn sections_text(sections: &[&str], load_images: &[&str]) -> String {
+    let mut text = sections.join(" ");
+    if !load_images.is_empty() {
+        if !text.is_empty() {
+            text += ", ";
+        }
+        text += match load_images.len() {
+            1 => "load image of ",
+            _ => "load images of ",
+        };
+        text += &load_images.join(" ");
+    }
+    text
+}
+
+/// Sentences about the calls and jumps in `name` that elfq can't follow,
+/// with the first few sites, or with `all`, every one. `listed` is whether
+/// the table above lists what it does call or use.
+pub(super) fn unresolved_lines(
+    name: &str,
+    unresolved: &[Unresolved],
+    listed: bool,
+    all: bool,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    // Through a pointer, so that only the running program knows where
+    // they go, or to an address the code names but no item holds.
+    for (known_target, end) in [
+        (false, "which elfq can't follow"),
+        (true, "to code outside any function"),
+    ] {
+        let these: Vec<&Unresolved> = unresolved
+            .iter()
+            .filter(|u| u.target.is_some() == known_target)
+            .collect();
+        if these.is_empty() {
+            continue;
+        }
+        let what = calls_and_jumps(these.iter().copied());
+        let through = match (known_target, these.len()) {
+            (true, _) => "",
+            (false, 1) => " through a pointer",
+            (false, _) => " through pointers",
+        };
+        let sites: Vec<u64> = these.iter().map(|u| u.site).collect();
+        let start = if listed || !lines.is_empty() {
+            "Also".to_string()
+        } else {
+            format!("{name} makes")
+        };
+        lines.push(format!(
+            "{start} {what}{through}, at {}, {end}.",
+            addresses_text(&sites, all)
+        ));
+    }
+    lines
+}
+
+/// Writes the commands to try next, under "Try:", each given without
+/// `elfq FILE`, or nothing when there are none.
+pub(super) fn write_try(path: &Path, commands: &[String], out: &mut dyn Write) -> Result<()> {
+    if commands.is_empty() {
+        return Ok(());
+    }
+    let file = quoted_path(path);
+    writeln!(out)?;
+    writeln!(out, "Try:")?;
+    for command in commands {
+        writeln!(out, "  elfq {file} {command}")?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -586,5 +710,50 @@ mod tests {
         assert_eq!(bytes_text(0), "0 bytes");
         assert_eq!(bytes_text(1), "1 byte");
         assert_eq!(bytes_text(2), "2 bytes");
+    }
+
+    fn unresolved(site: u64, is_call: bool, target: Option<u64>) -> Unresolved {
+        Unresolved {
+            from: 0,
+            site,
+            is_call,
+            target,
+        }
+    }
+
+    #[test]
+    fn what_elfq_cant_follow_is_said_in_one_line_each() {
+        let calls = [
+            unresolved(0x10, true, None),
+            unresolved(0x20, false, Some(0x9000)),
+        ];
+        assert_eq!(
+            unresolved_lines("f", &calls, false, false),
+            [
+                "f makes 1 call through a pointer, at 0x10, which elfq can't follow.",
+                "Also 1 jump, at 0x20, to code outside any function.",
+            ]
+        );
+        let jumps = [
+            unresolved(0x10, false, Some(0x9000)),
+            unresolved(0x18, false, Some(0x9100)),
+        ];
+        assert_eq!(
+            unresolved_lines("f", &jumps, true, false),
+            ["Also 2 jumps, at 0x10 and 0x18, to code outside any function."]
+        );
+    }
+
+    #[test]
+    fn a_memory_row_names_its_sections_then_its_load_images() {
+        assert_eq!(sections_text(&[".text", ".rodata"], &[]), ".text .rodata");
+        assert_eq!(
+            sections_text(&[".text"], &[".data"]),
+            ".text, load image of .data"
+        );
+        assert_eq!(
+            sections_text(&[], &[".itcm", ".data"]),
+            "load images of .itcm .data"
+        );
     }
 }

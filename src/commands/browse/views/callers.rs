@@ -10,7 +10,8 @@ use super::item::Tab;
 use super::printed::{Lines, Printed, PrintedRow};
 use crate::commands::browse::session::Session;
 use crate::commands::callers::Answer;
-use crate::commands::{distinct_nodes, text};
+use crate::commands::text;
+use crate::commands::uses::distinct_nodes;
 use crate::graph::Node;
 use crate::render::Align;
 
@@ -57,7 +58,8 @@ mod tests {
     use super::*;
     use crate::binary::Binary;
     use crate::cli::{Cli, Command, Format};
-    use crate::commands::{self, callers};
+    use crate::commands::callers;
+    use crate::commands::uses::{self, Row};
 
     /// Runs `words`, a `callers` command line, as elfq does, but on the
     /// graph that `session` has already built, and returns what it prints,
@@ -170,10 +172,10 @@ mod tests {
         let full = session.callers(node);
         let callers = distinct_nodes(&full.rows);
         for count in 29..=33 {
-            let rows = || -> Vec<commands::Row> {
+            let rows = || -> Vec<Row> {
                 (full.rows.iter())
                     .filter(|row| callers[..count].contains(&row.node))
-                    .map(|row| commands::Row {
+                    .map(|row| Row {
                         node: row.node,
                         how: row.how,
                         sites: row.sites.clone(),
@@ -183,7 +185,7 @@ mod tests {
             let table = |all| {
                 let mut out = Vec::new();
                 let shown = text::shown(all);
-                commands::write_uses_table(&binary, rows(), "CALLER", shown, &mut out).unwrap();
+                uses::write_uses_table(&binary, rows(), "CALLER", shown, &mut out).unwrap();
                 out
             };
             let answer = Answer {

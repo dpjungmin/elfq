@@ -14,11 +14,14 @@ use std::io::Write;
 use anyhow::{Result, bail};
 use serde::Serialize;
 
-#[cfg(feature = "tui")]
-use super::TabAnswer;
+use super::checks::check_code_is_readable;
+use super::kept::Kept;
 use super::symbol::{Names, Symbol};
 use super::text::Naming;
-use super::{Kept, TreeAnswer, json, text};
+#[cfg(feature = "tui")]
+use super::tree_answer::TabAnswer;
+use super::tree_answer::TreeAnswer;
+use super::{Outcome, json, text};
 use crate::binary::{Binary, FileKind};
 use crate::cli::Format;
 use crate::graph::{DominatorTree, Graph, Node, Reference, Root, ShortestPaths};
@@ -70,13 +73,14 @@ pub fn run(
     all: bool,
     format: Format,
     out: &mut dyn Write,
-) -> Result<()> {
-    super::check_code_is_readable(binary)?;
+) -> Result<Outcome> {
+    check_code_is_readable(binary)?;
     let names = Kept::new(Names::new(binary));
     let symbol = names.find(symbol)?;
     refusal(binary, symbol.node)?;
     let graph = Kept::new(Graph::build(binary));
-    why(binary, &graph, &names, &symbol, all, format, out)
+    why(binary, &graph, &names, &symbol, all, format, out)?;
+    Ok(Outcome::Answered)
 }
 
 /// The same, for `symbol`, which `names` found, in `graph`, the file's
