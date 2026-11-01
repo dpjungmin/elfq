@@ -15,9 +15,9 @@ use std::ops::Range;
 use super::Firmware;
 use super::events::{Events, Iterations};
 use super::pieces::{Piece, Pieces};
-use super::ram_sections::{Cover, Memory};
+use super::ram_sections::{Cover, RamSections};
 use super::start::{Main, MainFrom, Reset};
-use super::unread::{loop_calls, loop_repeats, loop_targets, own_stores, unfollowed_iterations};
+use super::unread::{loop_calls, loop_repeats, loop_targets, own_stores, unread_walked_loops};
 use crate::arch::startup::{End, Event, How};
 use crate::binary::ItemKind;
 
@@ -179,7 +179,7 @@ impl Step {
 /// Reads the walk's events as the steps of startup, up to `main`.
 pub(super) fn build(
     firmware: &Firmware,
-    memory: &Memory,
+    ram: &RamSections,
     events: &Events,
     reset: &Reset,
     main: Option<Main>,
@@ -194,8 +194,8 @@ pub(super) fn build(
     };
     let mut ready: HashSet<usize> = HashSet::new();
     let not_ready = |ready: &HashSet<usize>| -> Vec<usize> {
-        (memory.ram.iter().copied())
-            .filter(|x| !ready.contains(x))
+        (ram.sections.iter().copied())
+            .filter(|section| !ready.contains(section))
             .collect()
     };
     // Inside a call that copies or zeroes: its own code.
@@ -218,18 +218,18 @@ pub(super) fn build(
     // loops that it didn't, with the function that runs it.
     let mut called: Vec<Range<usize>> = Vec::new();
     let mut walked_loops: Vec<(usize, u64)> = Vec::new();
-    for (k, event) in events.list.iter().enumerate() {
-        if k < skip_to {
+    for (event, recorded) in events.list.iter().enumerate() {
+        if event < skip_to {
             continue;
         }
-        let level = events.level(k);
-        match event {
+        let level = events.level(event);
+        match recorded {
             Event::Call(call) => {
-                if events.call(k).is_none() {
+                if events.call(event).is_none() {
                     continue;
                 }
                 let inside = at(&holder, level);
-                let target = events.target(k);
+                let target = events.target(event);
                 if let Some(target) = target {
                     let deeper = level as usize + 1;
                     if holder.len() <= deeper {
@@ -243,13 +243,13 @@ pub(super) fn build(
                     (How::Supervisor, None) => Way::SupervisorCall,
                     _ => Way::Call,
                 };
-                let mut step = Step::new(k, call.site, Does::Call, way, inside, level);
+                let mut step = Step::new(event, call.site, Does::Call, way, inside, level);
                 step.function = target;
-                step.veneer = events.veneer(k);
+                step.veneer = events.veneer(event);
                 if target.is_some() && target == main_function {
                     step.main = true;
                     steps.push(step);
-                } else if let Some(matched) = memory
+                } else if let Some(matched) = ram
                     .match_call(&call.passes())
                     // A copy of 0 bytes, as of an empty section that has
                     // no bytes in memory, where a section that an earlier
@@ -266,8 +266,8 @@ pub(super) fn build(
                     ready.extend(matched.covers.iter().map(|cover| cover.section));
                     step.covers = matched.covers;
                     steps.push(step);
-                    skip_to = events.span(k);
-                    called.push(k..skip_to);
+                    skip_to = events.span(event);
+                    called.push(event..skip_to);
                 } else if target.is_none() {
                     if matches!(call.how, How::Direct | How::Jump) {
                         continue;
@@ -290,37 +290,37 @@ pub(super) fn build(
                         steps.push(step);
                     }
                 } else if level == 0 {
-                    step.span = Some(events.span(k));
+                    step.span = Some(events.span(event));
                     steps.push(step);
                 }
             }
             // Its iterations' events are steps of their own (see
-            // [`unfollowed_iterations`]). In a loop that the walk didn't go
+            // [`unread_walked_loops`]). In a loop that the walk didn't go
             // through each iteration of, they are those of one iteration,
             // so it is a loop that elfq can't follow, as it would be if the
             // walk went through it once.
-            Event::Loop(walked) if !walked.walked_iterations().is_empty() && !in_loop[k] => {
-                walked_loops.push((k, at(&holder, level)));
+            Event::Loop(l) if !l.walked_iterations().is_empty() && !in_loop[event] => {
+                walked_loops.push((event, at(&holder, level)));
             }
-            Event::Loop(walked) => {
+            Event::Loop(l) => {
                 let function = at(&holder, level);
-                let home = (level, function, iterations.home(k));
-                if let Some(piece) = Piece::of_loop(memory, walked, home)
-                    && pieces.add(memory, piece, k, &mut steps, &mut ready)
+                let home = (level, function, iterations.home(event));
+                if let Some(piece) = Piece::of_loop(ram, l, home)
+                    && pieces.add(ram, piece, event, &mut steps, &mut ready)
                 {
                     continue;
                 }
-                let stores = own_stores(events, k, walked);
-                let mut may = loop_targets(memory, &stores, &ready);
+                let stores = own_stores(events, event, l);
+                let mut may = loop_targets(ram, &stores, &ready);
                 if may.is_empty() {
-                    may = loop_repeats(memory, &steps, walked, &ready);
+                    may = loop_repeats(ram, &steps, l, &ready);
                 }
                 if may.is_empty() {
-                    may = loop_calls(memory, events, k, walked, &ready);
+                    may = loop_calls(ram, events, event, l, &ready);
                 }
                 if !may.is_empty() {
                     let mut step =
-                        Step::new(k, walked.head, Does::Unread, Way::Loop, function, level);
+                        Step::new(event, l.head, Does::Unread, Way::Loop, function, level);
                     step.function = Some(function);
                     step.may = may;
                     steps.push(step);
@@ -340,31 +340,31 @@ pub(super) fn build(
                     }
                     end => Way::Stop(end),
                 };
-                let mut step = Step::new(k, *site, Does::Unread, way, inside, level);
+                let mut step = Step::new(event, *site, Does::Unread, way, inside, level);
                 step.function = Some(at(&holder, level));
                 step.may = not_ready(&ready);
                 if !step.may.is_empty() {
                     steps.push(step);
                 }
             }
-            Event::Store(store) if !in_loop[k] => {
-                let home = (level, at(&holder, level), iterations.home(k));
-                match Piece::of_store(memory, store, home) {
+            Event::Store(store) if !in_loop[event] => {
+                let home = (level, at(&holder, level), iterations.home(event));
+                match Piece::of_store(ram, store, home) {
                     Some(piece) => {
-                        pieces.add(memory, piece, k, &mut steps, &mut ready);
+                        pieces.add(ram, piece, event, &mut steps, &mut ready);
                     }
-                    None => pieces.unsure(memory, store, home, &mut steps, &mut ready),
+                    None => pieces.unread_store(ram, store, home, &mut steps, &mut ready),
                 }
             }
             Event::Store(_) | Event::Backtrack { .. } => {}
         }
     }
-    let skipped = |j: usize| in_loop[j] || called.iter().any(|run| run.contains(&j));
-    unfollowed_iterations(memory, events, &walked_loops, skipped, &mut steps);
+    let skipped = |event: usize| in_loop[event] || called.iter().any(|run| run.contains(&event));
+    unread_walked_loops(ram, events, &walked_loops, skipped, &mut steps);
     ready = (steps.iter())
         .flat_map(|step| step.covers.iter().map(|cover| cover.section))
         .collect();
-    let k = events.list.len();
+    let event = events.list.len();
     match end {
         // Where the walk can't read on, or stops short, what comes after
         // may set up anything.
@@ -374,7 +374,7 @@ pub(super) fn build(
                 .item(site)
                 .filter(|&index| firmware.binary.items[index].kind == ItemKind::Function)
                 .map_or(reset.address, |index| firmware.binary.items[index].address);
-            let mut step = Step::new(k, site, Does::Unread, Way::Stop(end), reset.address, 0);
+            let mut step = Step::new(event, site, Does::Unread, Way::Stop(end), reset.address, 0);
             step.function = Some(function);
             step.may = not_ready(&ready);
             steps.push(step);
@@ -383,7 +383,7 @@ pub(super) fn build(
             let inside = firmware
                 .item(site)
                 .map_or(reset.address, |index| firmware.binary.items[index].address);
-            let mut step = Step::new(k, site, Does::Call, Way::Inlined, inside, 0);
+            let mut step = Step::new(event, site, Does::Call, Way::Inlined, inside, 0);
             step.function = Some(site);
             step.main = true;
             steps.push(step);
@@ -401,7 +401,7 @@ pub(super) fn build(
         if step.does == Does::Unread {
             let event = step.event;
             step.may
-                .retain(|x| !first.get(x).is_some_and(|&k| k < event));
+                .retain(|section| !first.get(section).is_some_and(|&covered| covered < event));
         }
     }
     steps.retain(|step| step.does != Does::Unread || !step.may.is_empty());
@@ -439,12 +439,14 @@ pub(super) fn build(
                     && in_iteration
                 {
                     let first = &mut kept[first];
-                    for x in step.may {
-                        if !first.may.contains(&x) {
-                            first.may.push(x);
+                    for section in step.may {
+                        if !first.may.contains(&section) {
+                            first.may.push(section);
                         }
                     }
-                    first.may.sort_by_key(|&x| memory.section(x).address);
+                    first
+                        .may
+                        .sort_by_key(|&section| ram.section(section).address);
                     continue;
                 }
                 if seen.is_none() {
@@ -489,7 +491,7 @@ fn helpers(firmware: &Firmware, events: &Events, steps: Vec<Step>) -> Vec<Step> 
                 return false;
             };
             // 2.
-            let inside = |j: usize| steps.get(j).is_some_and(|other| other.event < span);
+            let inside = |index: usize| steps.get(index).is_some_and(|other| other.event < span);
             let Some(only) = steps.get(i + 1).filter(|_| inside(i + 1) && !inside(i + 2)) else {
                 return false;
             };
@@ -503,7 +505,8 @@ fn helpers(firmware: &Firmware, events: &Events, steps: Vec<Step>) -> Vec<Step> 
                     0..0
                 }
             };
-            !(step.event + 1..span).any(|j| !own.contains(&j) && events.call(j).is_some())
+            !(step.event + 1..span)
+                .any(|event| !own.contains(&event) && events.call(event).is_some())
         })
         .collect();
     let local = |call: &Step| {
@@ -547,7 +550,7 @@ fn helpers(firmware: &Firmware, events: &Events, steps: Vec<Step>) -> Vec<Step> 
 #[cfg(test)]
 mod tests {
     use super::super::fixtures::{
-        alone, binary, called, closed, copied, steps, steps_to, walked, walked_each,
+        alone, binary, called, closed, copied, loop_with, steps, steps_to, walked_each,
     };
     use super::*;
     use crate::arch::startup::Loop;
@@ -594,7 +597,7 @@ mod tests {
             Event::Loop(Loop {
                 depth: 1,
                 events: 2..2,
-                ..walked(vec![copied(0x2000_0000, 0x800_0400, 4, 4, 8)])
+                ..loop_with(vec![copied(0x2000_0000, 0x800_0400, 4, 4, 8)])
             }),
             walked_each(&[0..1, 1..3]),
         ];

@@ -6,11 +6,12 @@ use std::io::Write;
 use anyhow::Result;
 
 use super::problems::{Kind, Problem, RESET, Status};
-use super::ram_sections::Memory;
+use super::ram_sections::RamSections;
 use super::start::MainFrom;
 use super::steps::{Does, Step, Way};
 use super::{Answer, Firmware};
 use crate::arch::startup::{End, Event, Through};
+use crate::binary::Section;
 use crate::commands::text::{self as house, names_text, plural, shell_quote};
 use crate::render::{Align, Table};
 
@@ -63,7 +64,7 @@ pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
 /// none.
 fn lead(answer: &Answer) -> String {
     let firmware = answer.firmware;
-    let memory = answer.memory;
+    let ram = answer.ram;
     let boot = firmware.name(answer.reset.address);
     let main = answer.main;
     let inlined = main.is_some_and(|main| main.from == MainFrom::DebugInfo);
@@ -106,33 +107,33 @@ fn lead(answer: &Answer) -> String {
             plural(problems.len(), "problem", "problems")
         );
     }
-    if memory.ram.is_empty() {
+    if ram.sections.is_empty() {
         return format!(
             "{boot} has nothing to copy or zero: the file stores every section where it runs, \
              and none starts as zeros."
         );
     }
     // The sections in the order the steps set them up.
-    let mut ordered = memory.ram.clone();
-    let first = |x: usize| {
+    let mut ordered = ram.sections.clone();
+    let first = |section: usize| {
         (answer.steps.iter())
-            .find(|step| step.covers.iter().any(|cover| cover.section == x))
+            .find(|step| step.covers.iter().any(|cover| cover.section == section))
             .map_or(answer.steps.len() + 1, |step| step.number)
     };
-    ordered.sort_by_key(|&x| first(x));
-    let status = |x| answer.judged.status(answer.steps, memory, x).0;
+    ordered.sort_by_key(|&section| first(section));
+    let status = |section| answer.judged.status(answer.steps, ram, section).0;
     // What the steps from event `from` up to `to` copy and zero.
     let parts = |from: usize, to: usize| {
-        let by = |x: usize| {
+        let by = |section: usize| {
             (answer.steps.iter())
-                .find(|step| step.covers.iter().any(|cover| cover.section == x))
+                .find(|step| step.covers.iter().any(|cover| cover.section == section))
                 .is_some_and(|step| (from..to).contains(&step.event))
         };
         let mut parts = Vec::new();
         for (verb, wanted) in [("copies", Status::Copied), ("zeroes", Status::Zeroed)] {
             let names: Vec<&str> = (ordered.iter().copied())
-                .filter(|&x| status(x) == wanted && by(x))
-                .map(|x| memory.name(x))
+                .filter(|&section| status(section) == wanted && by(section))
+                .map(|section| ram.name(section))
                 .collect();
             if !names.is_empty() {
                 parts.push(format!("{verb} {}", names_text(&names, true)));
@@ -146,13 +147,13 @@ fn lead(answer: &Answer) -> String {
     let last = match answer.walk.end {
         End::RunsOff(_) => (0..events.list.len())
             .rev()
-            .filter(|&k| events.level(k) == 0)
-            .find_map(|k| events.target(k).map(|target| (k, target))),
+            .filter(|&event| events.level(event) == 0)
+            .find_map(|event| events.target(event).map(|target| (event, target))),
         _ => None,
     };
-    if let Some((k, last)) = last {
-        let before = parts(0, k);
-        let inside = parts(k, events.list.len());
+    if let Some((event, last)) = last {
+        let before = parts(0, event);
+        let inside = parts(event, events.list.len());
         if !inside.is_empty() {
             let inside = format!("{} and", inside.join(", "));
             let before = match before.is_empty() {
@@ -233,13 +234,13 @@ fn at_name(firmware: &Firmware, address: u64) -> String {
 /// The sentence that says what problem `p` is.
 pub(super) fn sentence(answer: &Answer, p: &Problem) -> String {
     let firmware = answer.firmware;
-    let memory = answer.memory;
+    let ram = answer.ram;
     let steps = answer.steps;
-    let Some(&x) = p.sections.first() else {
+    let Some(&section) = p.sections.first() else {
         return String::new();
     };
-    let name = memory.name(x);
-    let section = memory.section(x);
+    let name = ram.name(section);
+    let size = ram.section(section).size;
     let step = p.steps.first().copied().unwrap_or(0);
     match p.kind {
         Kind::RunsBeforeCopy => {
@@ -251,25 +252,26 @@ pub(super) fn sentence(answer: &Answer, p: &Problem) -> String {
                     names_text(&names, answer.all)
                 }
             };
-            let boot_only = p.uses.contains(&RESET);
+            let reset_runs_from_image = p.uses.contains(&RESET);
             let tail = match p.before {
-                None if answer.judged.unknown.contains_key(&x) => {
+                None if answer.judged.unread.contains_key(&section) => {
                     format!("before anything copies {name}")
                 }
                 None => "which nothing copies".to_string(),
                 Some(before) => {
                     let before = &steps[before];
-                    let inside = (p.uses.iter()).filter(|&&k| k >= 0).any(|&k| {
-                        (k as usize) < before.event && before.event < answer.events.span(k as usize)
+                    let inside = (p.uses.iter()).filter(|&&event| event >= 0).any(|&event| {
+                        (event as usize) < before.event
+                            && before.event < answer.events.span(event as usize)
                     });
-                    if boot_only || inside || p.steps.contains(&before.number) {
+                    if reset_runs_from_image || inside || p.steps.contains(&before.number) {
                         "which nothing has copied yet".to_string()
                     } else {
                         format!("before step {} copies {name}", before.number)
                     }
                 }
             };
-            if boot_only {
+            if reset_runs_from_image {
                 let boot = answer.reset.address;
                 return format!(
                     "{} runs at {boot:#x} in {name}, {tail}{}.",
@@ -307,27 +309,25 @@ pub(super) fn sentence(answer: &Answer, p: &Problem) -> String {
                 unless(answer, p)
             )
         }
-        Kind::NotCopied | Kind::NotZeroed => format!("Nothing {}.", set_up_text(memory, x)),
+        Kind::NotCopied | Kind::NotZeroed => format!("Nothing {}.", set_up_text(ram, section)),
         Kind::PartlyCopied => format!(
-            "Step {step} copies {} of {name}'s {} bytes.",
+            "Step {step} copies {} of {name}'s {size} bytes.",
             p.bytes.unwrap_or(0),
-            section.size
         ),
         Kind::PartlyZeroed => format!(
-            "Step {step} zeroes {} of {name}'s {} bytes.",
+            "Step {step} zeroes {} of {name}'s {size} bytes.",
             p.bytes.unwrap_or(0),
-            section.size
         ),
         Kind::CopiedFromElsewhere => format!(
             "Step {step} copies {name} from {:#x}, but the file stores it at {:#x}.",
             p.from.unwrap_or(0),
-            memory.load_address(x)
+            ram.load_address(section)
         ),
         Kind::CantFollow => {
             // The steps may set up what the problem says nothing does.
             let what = match p.sections[..] {
-                [x] => set_up_text(memory, x),
-                _ => does_text(memory, &p.sections, ["copies", "zeroes"], " or "),
+                [section] => set_up_text(ram, section),
+                _ => does_text(ram, &p.sections, ["copies", "zeroes"], " or "),
             };
             let verb = if p.steps.len() == 1 { "does" } else { "do" };
             format!(
@@ -344,11 +344,11 @@ fn unless(answer: &Answer, p: &Problem) -> String {
     if p.certain {
         return String::new();
     }
-    let x = p.sections[0];
+    let section = p.sections[0];
     let first = p.first();
     let numbers: Vec<usize> = (answer.steps.iter())
         .filter(|step| {
-            step.does == Does::Unread && (step.event as i64) <= first && step.may.contains(&x)
+            step.does == Does::Unread && (step.event as i64) <= first && step.may.contains(&section)
         })
         .map(|step| step.number)
         .collect();
@@ -381,7 +381,7 @@ fn row(answer: &Answer, step: &Step) -> Vec<String> {
     let what = match step.does {
         Does::Copy | Does::Zero => {
             let names: Vec<&str> = (step.covers.iter())
-                .map(|cover| answer.memory.name(cover.section))
+                .map(|cover| answer.ram.name(cover.section))
                 .collect();
             let names = names_text(&names, answer.all);
             let what = match step.way {
@@ -491,21 +491,17 @@ fn try_commands(answer: &Answer) -> Vec<String> {
             continue;
         }
         let step = &answer.steps[first - 1];
-        let x = p.sections[0];
-        let section = answer.memory.section(x);
+        let section = p.sections[0];
+        let Section { address, size, .. } = answer.ram.section(section);
         let Some(function) = step.called() else {
             continue;
         };
-        if p.items.contains(&function)
-            || (section.address..answer.memory.end(x)).contains(&function)
-        {
+        if p.items.contains(&function) || (*address..answer.ram.end(section)).contains(&function) {
             continue;
         }
         let line = format!(
-            "reach {} --to {:#x}+{}",
+            "reach {} --to {address:#x}+{size}",
             shell_quote(&answer.firmware.name(function)),
-            section.address,
-            section.size
         );
         if !lines.contains(&line) {
             lines.push(line);
@@ -666,16 +662,20 @@ pub(super) fn unread_text(steps: &[Step], numbers: &[usize]) -> String {
     )
 }
 
-/// How startup code sets up section `x`, with where it is: "copies .data,
-/// 4 bytes at 0x20000000 stored at 0x8001000" or "zeroes .bss, 56 bytes
-/// at 0x20000004".
-fn set_up_text(memory: &Memory, x: usize) -> String {
-    let section = memory.section(x);
-    let (name, size, address) = (memory.name(x), section.size, section.address);
-    match memory.is_load(x) {
+/// How startup code sets up `section`, with where it is: "copies .data, 4
+/// bytes at 0x20000000 stored at 0x8001000" or "zeroes .bss, 56 bytes at
+/// 0x20000004".
+fn set_up_text(ram: &RamSections, section: usize) -> String {
+    let Section {
+        name,
+        size,
+        address,
+        ..
+    } = ram.section(section);
+    match ram.is_load(section) {
         true => format!(
             "copies {name}, {size} bytes at {address:#x} stored at {:#x}",
-            memory.load_address(x)
+            ram.load_address(section)
         ),
         false => format!("zeroes {name}, {size} bytes at {address:#x}"),
     }
@@ -683,12 +683,12 @@ fn set_up_text(memory: &Memory, x: usize) -> String {
 
 /// What a copy and a zeroing, by the `verbs` that say so, do to `sections`,
 /// joined by `joiner`: "copies .data or zeroes .bss".
-fn does_text(memory: &Memory, sections: &[usize], verbs: [&str; 2], joiner: &str) -> String {
+fn does_text(ram: &RamSections, sections: &[usize], verbs: [&str; 2], joiner: &str) -> String {
     let mut parts = Vec::new();
     for (verb, load) in verbs.into_iter().zip([true, false]) {
         let names: Vec<&str> = (sections.iter().copied())
-            .filter(|&x| memory.is_load(x) == load)
-            .map(|x| memory.name(x))
+            .filter(|&section| ram.is_load(section) == load)
+            .map(|section| ram.name(section))
             .collect();
         if !names.is_empty() {
             parts.push(format!("{verb} {}", names_text(&names, true)));
@@ -699,8 +699,8 @@ fn does_text(memory: &Memory, sections: &[usize], verbs: [&str; 2], joiner: &str
 
 /// What code elfq can't follow may do to `sections`: "copy .data and zero
 /// .bss".
-pub(super) fn may_text(memory: &Memory, sections: &[usize]) -> String {
-    does_text(memory, sections, ["copy", "zero"], " and ")
+pub(super) fn may_text(ram: &RamSections, sections: &[usize]) -> String {
+    does_text(ram, sections, ["copy", "zero"], " and ")
 }
 
 /// How the way the walk didn't take ended, for the note on a branch it
@@ -819,17 +819,21 @@ mod tests {
             Vec::new(),
             Vec::new(),
         );
-        let memory = Memory::new(&binary);
-        let x = |name: &str| (memory.ram.iter().copied()).find(|&x| memory.name(x) == name);
-        let (data, bss, sbss) = (x(".data").unwrap(), x(".bss").unwrap(), x(".sbss").unwrap());
-        let nothing =
-            |sections: &[usize]| does_text(&memory, sections, ["copies", "zeroes"], " or ");
+        let ram = RamSections::new(&binary);
+        let named =
+            |name: &str| (ram.sections.iter().copied()).find(|&section| ram.name(section) == name);
+        let (data, bss, sbss) = (
+            named(".data").unwrap(),
+            named(".bss").unwrap(),
+            named(".sbss").unwrap(),
+        );
+        let nothing = |sections: &[usize]| does_text(&ram, sections, ["copies", "zeroes"], " or ");
         assert_eq!(nothing(&[data]), "copies .data");
         assert_eq!(nothing(&[bss, sbss]), "zeroes .bss and .sbss");
         assert_eq!(
             nothing(&[sbss, data, bss]),
             "copies .data or zeroes .sbss and .bss"
         );
-        assert_eq!(may_text(&memory, &[data, bss]), "copy .data and zero .bss");
+        assert_eq!(may_text(&ram, &[data, bss]), "copy .data and zero .bss");
     }
 }

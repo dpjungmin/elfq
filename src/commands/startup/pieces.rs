@@ -3,13 +3,13 @@
 //! ([`Piece::of_loop`]), or a store's outside loops
 //! ([`Piece::of_store`]). Pieces next to each other in the same code join,
 //! and when what they copy or zero matches the sections (see
-//! [`Memory::matched`]), they make a step, or extend the step of a piece
-//! they join ([`Pieces::add`]).
+//! [`RamSections::matched`]), they make a step, or extend the step of a
+//! piece they join ([`Pieces::add`]).
 
 use std::collections::HashSet;
 use std::ops::Range;
 
-use super::ram_sections::{Match, Memory};
+use super::ram_sections::{Match, RamSections};
 use super::steps::{Does, Step, Way};
 use crate::arch::startup::{Loop, LoopStore, Store};
 
@@ -59,10 +59,10 @@ impl Piece {
     ///    after or before where they store them, the same distance for
     ///    every store; or else zero, each time storing 0, which they don't
     ///    load.
-    pub fn of_loop(memory: &Memory, l: &Loop, home: Home) -> Option<Piece> {
+    pub fn of_loop(ram: &RamSections, l: &Loop, home: Home) -> Option<Piece> {
         // 1.
         let stores: Vec<&LoopStore> = (l.stores()?.iter())
-            .filter(|store| store.times > 0 && memory.overlaps(stored_bytes(store)))
+            .filter(|store| store.times > 0 && ram.overlaps(stored_bytes(store)))
             .collect();
         let first = *stores.first()?;
         // 2.
@@ -94,10 +94,10 @@ impl Piece {
     /// The bytes that `store`, outside loops, of the code at `home`, copies
     /// or zeroes: a copy when the walk can tell where it loaded its words
     /// from, or a zeroing when it stores 0.
-    pub fn of_store(memory: &Memory, store: &Store, home: Home) -> Option<Piece> {
+    pub fn of_store(ram: &RamSections, store: &Store, home: Home) -> Option<Piece> {
         let address = store.address?;
         let (to, size) = (u64::from(address), u64::from(store.size));
-        if store.conditional || size == 0 || !memory.overlaps(to..to + size) {
+        if store.conditional || size == 0 || !ram.overlaps(to..to + size) {
             return None;
         }
         let (does, gap) = match store.source {
@@ -141,16 +141,16 @@ impl Piece {
     }
 }
 
-/// What [`Memory::matched`] matches of the bytes of `piece`, when they
+/// What [`RamSections::matched`] matches of the bytes of `piece`, when they
 /// make a step (see [`Pieces::add`]).
-fn step_match(memory: &Memory, piece: &Piece) -> Option<Match> {
+fn step_match(ram: &RamSections, piece: &Piece) -> Option<Match> {
     let from = (piece.gap).map(|gap| u64::from((piece.to as u32).wrapping_add(gap)));
-    (memory.matched(piece.does, piece.to, from, piece.size)).filter(|matched| {
+    (ram.matched(piece.does, piece.to, from, piece.size)).filter(|matched| {
         piece.step.is_some()
             || piece.way == Way::Loop
             || matched.covers.iter().all(|cover| {
-                cover.bytes == memory.section(cover.section).size
-                    && (cover.from).is_none_or(|from| from == memory.load_address(cover.section))
+                cover.bytes == ram.section(cover.section).size
+                    && (cover.from).is_none_or(|from| from == ram.load_address(cover.section))
             })
     })
 }
@@ -161,8 +161,7 @@ fn step_match(memory: &Memory, piece: &Piece) -> Option<Match> {
 pub(super) struct Pieces(Vec<Piece>);
 
 impl Pieces {
-    /// Adds `piece`, of the event at `k`, and returns whether a step stands
-    /// for it:
+    /// Adds `piece`, of `event`, and returns whether a step stands for it:
     ///
     /// 1. It joins the pieces next to it, one after another (see
     ///    [`Piece::next_to`]). A piece in an iteration of a loop that the
@@ -182,14 +181,14 @@ impl Pieces {
     ///    they join, and take the place of the pieces they join.
     pub fn add(
         &mut self,
-        memory: &Memory,
+        ram: &RamSections,
         piece: Piece,
-        k: usize,
+        event: usize,
         steps: &mut Vec<Step>,
         ready: &mut HashSet<usize>,
     ) -> bool {
         // 1.
-        let across = piece.home.2.is_some() && step_match(memory, &piece).is_none();
+        let across = piece.home.2.is_some() && step_match(ram, &piece).is_none();
         let mut joined = piece;
         let mut taken: Vec<usize> = Vec::new();
         while let Some(i) =
@@ -209,7 +208,7 @@ impl Pieces {
             taken.push(i);
         }
         // 2.
-        let Some(matched) = step_match(memory, &joined) else {
+        let Some(matched) = step_match(ram, &joined) else {
             if piece.way == Way::Store {
                 self.0.push(piece);
             }
@@ -220,7 +219,8 @@ impl Pieces {
             Some(index) => index,
             None => {
                 let (level, function, _) = joined.home;
-                let mut step = Step::new(k, joined.site, joined.does, joined.way, function, level);
+                let mut step =
+                    Step::new(event, joined.site, joined.does, joined.way, function, level);
                 step.function = Some(function);
                 steps.push(step);
                 steps.len() - 1
@@ -250,9 +250,9 @@ impl Pieces {
     /// leaves to code after it, that step becomes code that elfq can't
     /// follow, which may set up the sections it covered and those that
     /// follow the section with no gap.
-    pub fn unsure(
+    pub fn unread_store(
         &mut self,
-        memory: &Memory,
+        ram: &RamSections,
         store: &Store,
         home: Home,
         steps: &mut [Step],
@@ -261,12 +261,12 @@ impl Pieces {
         if store.address.is_some() || store.conditional {
             return;
         }
-        let Some(x) = store.base.and_then(|base| memory.holding(u64::from(base))) else {
+        let Some(section) = store.base.and_then(|base| ram.holding(u64::from(base))) else {
             return;
         };
         let part = |index: usize| {
             (steps[index].covers.iter())
-                .any(|cover| cover.section == x && cover.bytes < memory.section(x).size)
+                .any(|cover| cover.section == section && cover.bytes < ram.section(section).size)
         };
         let Some(i) =
             (self.0.iter()).position(|piece| piece.home == home && piece.step.is_some_and(part))
@@ -278,9 +278,9 @@ impl Pieces {
         };
         let step = &mut steps[index];
         let mut may: Vec<usize> = step.covers.iter().map(|cover| cover.section).collect();
-        for y in memory.run_from(x) {
-            if !may.contains(&y) {
-                may.push(y);
+        for other in ram.run_from(section) {
+            if !may.contains(&other) {
+                may.push(other);
             }
         }
         step.does = Does::Unread;
@@ -374,17 +374,17 @@ fn tiled(stores: &[&LoopStore]) -> Option<(u64, u64)> {
 #[cfg(test)]
 mod tests {
     use super::super::fixtures::{
-        alone, binary, called, closed, copied, each, steps, walked, walked_each,
+        alone, binary, called, closed, copied, each, loop_with, steps, walked_each,
     };
     use super::*;
     use crate::arch::startup::Event;
 
     /// What the loop with `stores` does, as "copy 0x20000000 32 from
     /// 0x8000400".
-    fn piece(memory: &Memory, stores: Vec<LoopStore>) -> Option<String> {
+    fn piece(ram: &RamSections, stores: Vec<LoopStore>) -> Option<String> {
         // In the reset handler's own code.
         let home = (0, 0x800_0000, None);
-        let piece = Piece::of_loop(memory, &walked(stores), home)?;
+        let piece = Piece::of_loop(ram, &loop_with(stores), home)?;
         let from =
             (piece.gap).map(|gap| format!(" from {:#x}", (piece.to as u32).wrapping_add(gap)));
         Some(format!(
@@ -452,15 +452,15 @@ mod tests {
     #[test]
     fn a_loop_copies_words_it_loads_as_far_on_and_zeroes_with_0() {
         let binary = binary();
-        let memory = Memory::new(&binary);
+        let ram = RamSections::new(&binary);
         // .data and .ramfunc from their load images, a word at a time or
         // 16 bytes, as `ldm` and `stm` copy them.
         assert_eq!(
-            piece(&memory, vec![copied(0x2000_0000, 0x800_0400, 4, 4, 12)]).as_deref(),
+            piece(&ram, vec![copied(0x2000_0000, 0x800_0400, 4, 4, 12)]).as_deref(),
             Some("copy 0x20000000 48 from 0x8000400")
         );
         assert_eq!(
-            piece(&memory, vec![copied(0x2000_0000, 0x800_0400, 16, 16, 2)]).as_deref(),
+            piece(&ram, vec![copied(0x2000_0000, 0x800_0400, 16, 16, 2)]).as_deref(),
             Some("copy 0x20000000 32 from 0x8000400")
         );
         // .bss from its last word down, beside a store to a peripheral
@@ -469,29 +469,26 @@ mod tests {
             each(0x2000_006c, -4, 4, 16, Some(0)),
             each(0x4000_0000, 0, 4, 16, Some(1)),
         ];
-        assert_eq!(piece(&memory, zero).as_deref(), Some("zero 0x20000030 64"));
+        assert_eq!(piece(&ram, zero).as_deref(), Some("zero 0x20000030 64"));
         // Not of words from a table that moves otherwise, or as far on
         // for each store; nor of a 0 that the loop loaded, nor of words it
         // can't tell; nor of a loop that stores only elsewhere.
         let mut table = copied(0x2000_0000, 0x800_0400, 4, 4, 8);
         table.source = Some((0x800_0400, 8));
-        assert_eq!(piece(&memory, vec![table]), None);
+        assert_eq!(piece(&ram, vec![table]), None);
         let apart = vec![
             copied(0x2000_0000, 0x800_0400, 8, 4, 4),
             copied(0x2000_0004, 0x800_0500, 8, 4, 4),
         ];
-        assert_eq!(piece(&memory, apart), None);
+        assert_eq!(piece(&ram, apart), None);
         let loaded = LoopStore {
             loaded: true,
             ..each(0x2000_0030, 4, 4, 16, Some(0))
         };
-        assert_eq!(piece(&memory, vec![loaded]), None);
+        assert_eq!(piece(&ram, vec![loaded]), None);
+        assert_eq!(piece(&ram, vec![each(0x2000_0030, 4, 4, 16, None)]), None);
         assert_eq!(
-            piece(&memory, vec![each(0x2000_0030, 4, 4, 16, None)]),
-            None
-        );
-        assert_eq!(
-            piece(&memory, vec![each(0x4000_0000, 4, 4, 16, Some(0))]),
+            piece(&ram, vec![each(0x4000_0000, 4, 4, 16, Some(0))]),
             None
         );
     }

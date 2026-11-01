@@ -111,7 +111,7 @@ struct KeepOut<'a> {
 pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
     let firmware = answer.firmware;
     let binary = firmware.binary;
-    let memory = answer.memory;
+    let ram = answer.ram;
     let item =
         |address: u64| (firmware.item(address)).map(|index| Item::new(binary, Node::Item(index)));
     let reached = answer.reached_main();
@@ -128,8 +128,9 @@ pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
         }
         _ => (None, None, None),
     };
-    let names =
-        |sections: &[usize]| -> Vec<&str> { sections.iter().map(|&x| memory.name(x)).collect() };
+    let names = |sections: &[usize]| -> Vec<&str> {
+        sections.iter().map(|&section| ram.name(section)).collect()
+    };
     let steps = (answer.steps.iter())
         .map(|step: &Step| StepRow {
             step: step.number,
@@ -147,22 +148,23 @@ pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
             to: step.to.map(address),
             size: step.size,
             sections: (step.covers.iter())
-                .map(|cover| memory.name(cover.section))
+                .map(|cover| ram.name(cover.section))
                 .collect(),
             table: step.table.map(address),
             may_set_up: names(&step.may),
         })
         .collect();
-    let sections = (memory.ram.iter().copied())
-        .map(|x| {
-            let section = memory.section(x);
-            let (status, step, bytes) = answer.judged.status(answer.steps, memory, x);
+    let sections = (ram.sections.iter().copied())
+        .map(|section| {
+            let (status, step, bytes) = answer.judged.status(answer.steps, ram, section);
             Section {
-                name: &section.name,
-                start: address(section.address),
-                end: address(memory.end(x)),
-                size: section.size,
-                load_address: memory.is_load(x).then(|| address(memory.load_address(x))),
+                name: ram.name(section),
+                start: address(ram.section(section).address),
+                end: address(ram.end(section)),
+                size: ram.section(section).size,
+                load_address: ram
+                    .is_load(section)
+                    .then(|| address(ram.load_address(section))),
                 status: status.field(),
                 step,
                 bytes,
@@ -205,8 +207,8 @@ pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
         })
         .collect();
     let keep_out = (answer.judged.keep_out.iter())
-        .map(|(x, functions)| KeepOut {
-            section: memory.name(*x),
+        .map(|(section, functions)| KeepOut {
+            section: ram.name(*section),
             items: (functions.iter())
                 .map(|&index| Item::new(binary, Node::Item(index)))
                 .collect(),

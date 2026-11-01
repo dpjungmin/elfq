@@ -9,7 +9,7 @@ use object::SectionKind;
 
 use super::Firmware;
 use super::events::Events;
-use super::ram_sections::Memory;
+use super::ram_sections::RamSections;
 use super::start::Reset;
 use super::steps::build;
 use crate::arch::InstructionSet;
@@ -111,7 +111,7 @@ pub(super) fn copied(address: u32, from: u32, step: i32, size: u32, times: u32) 
 /// The loop from 0x8000010 to 0x8000020 with `stores`, which runs as
 /// many times as they store at most, and which the walk can't count
 /// without any.
-pub(super) fn walked(stores: Vec<LoopStore>) -> Loop {
+pub(super) fn loop_with(stores: Vec<LoopStore>) -> Loop {
     let runs = match stores.iter().map(|store| store.times).max() {
         Some(iterations) => Runs::Counted {
             iterations,
@@ -138,7 +138,7 @@ pub(super) fn steps(binary: &Binary, list: &[Event]) -> Vec<String> {
 pub(super) fn steps_to(binary: &Binary, list: &[Event], end: End) -> Vec<String> {
     let graph = Graph::default();
     let firmware = firmware(binary, &graph);
-    let memory = Memory::new(binary);
+    let ram = RamSections::new(binary);
     let events = Events::new(&firmware, list);
     let reset = Reset {
         address: 0x800_0000,
@@ -146,11 +146,15 @@ pub(super) fn steps_to(binary: &Binary, list: &[Event], end: End) -> Vec<String>
         table: None,
         outside: None,
     };
-    (build(&firmware, &memory, &events, &reset, None, end).iter())
+    (build(&firmware, &ram, &events, &reset, None, end).iter())
         .map(|step| {
             let covers: Vec<String> = (step.covers.iter())
-                .map(|cover| format!("{} {}", memory.name(cover.section), cover.bytes))
-                .chain(step.may.iter().map(|&x| memory.name(x).to_string()))
+                .map(|cover| format!("{} {}", ram.name(cover.section), cover.bytes))
+                .chain(
+                    step.may
+                        .iter()
+                        .map(|&section| ram.name(section).to_string()),
+                )
                 .collect();
             format!(
                 "{} {:#x} {} by a {}: {}",
@@ -194,7 +198,7 @@ pub(super) fn alone(
 pub(super) fn closed(stores: Vec<LoopStore>, events: Range<usize>) -> Event {
     Event::Loop(Loop {
         events,
-        ..walked(stores)
+        ..loop_with(stores)
     })
 }
 
@@ -213,12 +217,12 @@ pub(super) fn walked_each(iterations: &[Range<usize>]) -> Event {
                 })
                 .collect(),
         ),
-        ..walked(Vec::new())
+        ..loop_with(Vec::new())
     })
 }
 
 /// As `walked_each`, for a loop from 0x8000040 to 0x8000048.
-pub(super) fn timed_inside(iterations: &[Range<usize>]) -> Event {
+pub(super) fn walked_each_inside(iterations: &[Range<usize>]) -> Event {
     let Event::Loop(l) = walked_each(iterations) else {
         unreachable!()
     };

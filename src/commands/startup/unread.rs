@@ -7,13 +7,13 @@
 //! sets up a section, any not set up yet ([`loop_calls`]). A loop that the
 //! walk went through one iteration at a time is such a loop too, when its
 //! iterations' steps don't stand for all they store
-//! ([`unfollowed_iterations`]).
+//! ([`unread_walked_loops`]).
 
 use std::collections::HashSet;
 use std::ops::Range;
 
 use super::events::Events;
-use super::ram_sections::Memory;
+use super::ram_sections::RamSections;
 use super::steps::{Does, Step, Way};
 use crate::arch::startup::{Event, Loop, Store};
 
@@ -38,26 +38,28 @@ use crate::arch::startup::{Event, Loop, Store};
 /// 4. Else its step stands for its iterations' steps that copy or zero
 ///    part of what it may set up: they go, and it may set up what they
 ///    did too.
-pub(super) fn unfollowed_iterations(
-    memory: &Memory,
+pub(super) fn unread_walked_loops(
+    ram: &RamSections,
     events: &Events,
     walked: &[(usize, u64)],
     skipped: impl Fn(usize) -> bool,
     steps: &mut Vec<Step>,
 ) {
-    let mut unfollowed: Vec<Range<usize>> = Vec::new();
+    // The events of the loops that this has made loops that elfq can't
+    // follow.
+    let mut made_unread: Vec<Range<usize>> = Vec::new();
     // Outer loops first.
     let mut walked = walked.to_vec();
-    walked.sort_by_key(|&(k, _)| match &events.list[k] {
-        Event::Loop(l) => (l.events.start, usize::MAX - k),
-        _ => (k, 0),
+    walked.sort_by_key(|&(loop_event, _)| match &events.list[loop_event] {
+        Event::Loop(l) => (l.events.start, usize::MAX - loop_event),
+        _ => (loop_event, 0),
     });
-    for (k, function) in walked {
-        let Event::Loop(l) = &events.list[k] else {
+    for (loop_event, function) in walked {
+        let Event::Loop(l) = &events.list[loop_event] else {
             continue;
         };
         // 1.
-        if unfollowed.iter().any(|run| run.contains(&l.events.start)) {
+        if (made_unread.iter()).any(|made| made.contains(&l.events.start)) {
             continue;
         }
         // 2.
@@ -70,18 +72,18 @@ pub(super) fn unfollowed_iterations(
             })
         };
         let stores: Vec<&Store> = (l.events.clone())
-            .filter(|&j| !skipped(j))
-            .filter_map(|j| match &events.list[j] {
+            .filter(|&event| !skipped(event))
+            .filter_map(|event| match &events.list[event] {
                 Event::Store(store) if !store.conditional => Some(store),
                 _ => None,
             })
             .filter(|store| match store.address {
-                Some(at) => memory.holding(u64::from(at)).is_some() && !covered(at, store.size),
+                Some(at) => ram.holding(u64::from(at)).is_some() && !covered(at, store.size),
                 None => true,
             })
             .collect();
         // 3.
-        let mut may = loop_targets(memory, &stores, &HashSet::new());
+        let mut may = loop_targets(ram, &stores, &HashSet::new());
         if may.is_empty() {
             continue;
         }
@@ -96,19 +98,19 @@ pub(super) fn unfollowed_iterations(
             .flat_map(|step| step.covers.iter().map(|cover| cover.section))
             .collect();
         steps.retain(|step| !part(step));
-        for x in parts {
-            if !may.contains(&x) {
-                may.push(x);
+        for section in parts {
+            if !may.contains(&section) {
+                may.push(section);
             }
         }
-        may.sort_by_key(|&x| memory.section(x).address);
-        let level = events.level(k);
-        let mut step = Step::new(k, l.head, Does::Unread, Way::Loop, function, level);
+        may.sort_by_key(|&section| ram.section(section).address);
+        let level = events.level(loop_event);
+        let mut step = Step::new(loop_event, l.head, Does::Unread, Way::Loop, function, level);
         step.function = Some(function);
         step.may = may;
-        let at = steps.partition_point(|step| step.event <= k);
+        let at = steps.partition_point(|step| step.event <= loop_event);
         steps.insert(at, step);
-        unfollowed.push(l.events.clone());
+        made_unread.push(l.events.clone());
     }
 }
 
@@ -118,7 +120,7 @@ pub(super) fn unfollowed_iterations(
 /// contents when it stores only zeros. None when it stores only elsewhere,
 /// as to peripherals.
 pub(super) fn loop_targets(
-    memory: &Memory,
+    ram: &RamSections,
     stores: &[&Store],
     ready: &HashSet<usize>,
 ) -> Vec<usize> {
@@ -126,16 +128,18 @@ pub(super) fn loop_targets(
     for store in stores {
         if store.base.is_none() && store.address.is_none() {
             let zeros_only = stores.iter().all(|store| store.value == Some(0));
-            return (memory.ram.iter().copied())
-                .filter(|x| !ready.contains(x) && (!zeros_only || !memory.is_load(*x)))
+            return (ram.sections.iter().copied())
+                .filter(|section| {
+                    !ready.contains(section) && (!zeros_only || !ram.is_load(*section))
+                })
                 .collect();
         }
         // The pointer, and where the store goes, which may be past it.
         for at in [store.base, store.address].into_iter().flatten() {
-            if let Some(x) = memory.holding(u64::from(at)) {
-                for y in memory.run_from(x) {
-                    if !ready.contains(&y) && !may.contains(&y) {
-                        may.push(y);
+            if let Some(first) = ram.holding(u64::from(at)) {
+                for section in ram.run_from(first) {
+                    if !ready.contains(&section) && !may.contains(&section) {
+                        may.push(section);
                     }
                 }
             }
@@ -144,55 +148,57 @@ pub(super) fn loop_targets(
     may
 }
 
-/// The stores of the loop `l`, whose event is at `k`: its own, not those
-/// of a loop inside it, nor of what it calls.
-pub(super) fn own_stores<'w>(events: &Events<'w>, k: usize, l: &Loop) -> Vec<&'w Store> {
-    let level = events.level(k);
+/// The stores of the loop `l`, at `loop_event`: its own, not those of a
+/// loop inside it, nor of what it calls.
+pub(super) fn own_stores<'w>(events: &Events<'w>, loop_event: usize, l: &Loop) -> Vec<&'w Store> {
+    let level = events.level(loop_event);
     let inner: Vec<Range<usize>> = (l.events.clone())
-        .filter_map(|j| match &events.list[j] {
-            Event::Loop(inner) if events.level(j) == level => Some(inner.events.clone()),
+        .filter_map(|event| match &events.list[event] {
+            Event::Loop(inner) if events.level(event) == level => Some(inner.events.clone()),
             _ => None,
         })
         .collect();
     (l.events.clone())
-        .filter(|&j| events.level(j) == level && !inner.iter().any(|range| range.contains(&j)))
-        .filter_map(|j| match &events.list[j] {
+        .filter(|&event| {
+            events.level(event) == level && !inner.iter().any(|range| range.contains(&event))
+        })
+        .filter_map(|event| match &events.list[event] {
             Event::Store(store) => Some(store),
             _ => None,
         })
         .collect()
 }
 
-/// When a loop's code calls a function that copies, zeroes, or stores
-/// into a section, as a loop over a table of sections does, every
-/// section not set up yet.
+/// When the code of the loop `l`, at `loop_event`, calls a function that
+/// copies, zeroes, or stores into a section, as a loop over a table of
+/// sections does, every section not set up yet.
 pub(super) fn loop_calls(
-    memory: &Memory,
+    ram: &RamSections,
     events: &Events,
-    k: usize,
+    loop_event: usize,
     l: &Loop,
     ready: &HashSet<usize>,
 ) -> Vec<usize> {
-    let level = events.level(k);
-    let stores_into_ram = |j: usize| match &events.list[j] {
+    let level = events.level(loop_event);
+    let stores_into_ram = |event: usize| match &events.list[event] {
         Event::Store(store) => match store.address.or(store.base) {
-            Some(at) => memory.holding(u64::from(at)).is_some(),
+            Some(at) => ram.holding(u64::from(at)).is_some(),
             None => true,
         },
         _ => false,
     };
-    let sets_up = (l.events.clone()).any(|j| {
-        events.level(j) == level
-            && events.call(j).is_some_and(|call| {
-                memory.match_call(&call.passes()).is_some()
-                    || (j + 1..events.span(j)).any(stores_into_ram)
+    let sets_up = (l.events.clone()).any(|event| {
+        events.level(event) == level
+            && events.call(event).is_some_and(|call| {
+                ram.match_call(&call.passes()).is_some()
+                    || (event + 1..events.span(event)).any(stores_into_ram)
             })
     });
     if !sets_up {
         return Vec::new();
     }
-    (memory.ram.iter().copied())
-        .filter(|x| !ready.contains(x))
+    (ram.sections.iter().copied())
+        .filter(|section| !ready.contains(section))
         .collect()
 }
 
@@ -201,7 +207,7 @@ pub(super) fn loop_calls(
 /// the sections of that kind not set up yet, which the loop's next times
 /// may set up.
 pub(super) fn loop_repeats(
-    memory: &Memory,
+    ram: &RamSections,
     steps: &[Step],
     l: &Loop,
     ready: &HashSet<usize>,
@@ -210,13 +216,13 @@ pub(super) fn loop_repeats(
     let inner = (steps.iter()).filter(|step| step.way == Way::Loop && step.event >= l.events.start);
     for step in inner {
         let sections = match step.does {
-            Does::Copy => &memory.loads,
-            Does::Zero => &memory.zeros,
+            Does::Copy => &ram.loads,
+            Does::Zero => &ram.zeros,
             _ => continue,
         };
-        for &x in &memory.ram {
-            if sections.contains(&x) && !ready.contains(&x) && !may.contains(&x) {
-                may.push(x);
+        for &section in &ram.sections {
+            if sections.contains(&section) && !ready.contains(&section) && !may.contains(&section) {
+                may.push(section);
             }
         }
     }
@@ -226,7 +232,7 @@ pub(super) fn loop_repeats(
 #[cfg(test)]
 mod tests {
     use super::super::fixtures::{
-        alone, binary, closed, each, steps, stored, timed_inside, walked_each,
+        alone, binary, closed, each, steps, stored, walked_each, walked_each_inside,
     };
     use super::*;
 
@@ -274,10 +280,10 @@ mod tests {
         let list = [
             store(),
             store(),
-            timed_inside(&[0..1, 1..2]),
+            walked_each_inside(&[0..1, 1..2]),
             store(),
             store(),
-            timed_inside(&[3..4, 4..5]),
+            walked_each_inside(&[3..4, 4..5]),
             walked_each(&[0..3, 3..6]),
         ];
         assert_eq!(
@@ -289,13 +295,13 @@ mod tests {
     #[test]
     fn a_loop_elfq_cant_match_may_set_up_where_its_stores_go() {
         let binary = binary();
-        let memory = Memory::new(&binary);
+        let ram = RamSections::new(&binary);
         // A store 4 bytes past a pointer into .ramfunc goes to .bss.
         let mut store = stored(0x2000_0030, None, None);
         store.base = Some(0x2000_002c);
         let names = |stores: &[&Store]| -> Vec<&str> {
-            (loop_targets(&memory, stores, &HashSet::new()).into_iter())
-                .map(|x| memory.name(x))
+            (loop_targets(&ram, stores, &HashSet::new()).into_iter())
+                .map(|section| ram.name(section))
                 .collect()
         };
         assert_eq!(names(&[&store]), [".ramfunc", ".bss", ".noinit"]);

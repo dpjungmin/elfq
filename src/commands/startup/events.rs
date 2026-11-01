@@ -29,8 +29,8 @@ pub(super) struct Events<'w> {
 impl<'w> Events<'w> {
     pub fn new(firmware: &Firmware, list: &'w [Event]) -> Events<'w> {
         let veneer_jumps: Vec<bool> = (0..list.len())
-            .map(|k| {
-                let Event::Call(call) = &list[k] else {
+            .map(|event| {
+                let Event::Call(call) = &list[event] else {
                     return false;
                 };
                 let Some(veneer) = firmware.item(call.site) else {
@@ -38,30 +38,30 @@ impl<'w> Events<'w> {
                 };
                 let start = firmware.binary.items[veneer].address;
                 call.how == How::Jump
-                    && k > 0
-                    && matches!(&list[k - 1], Event::Call(before) if before.target == Some(start))
+                    && event > 0
+                    && matches!(&list[event - 1], Event::Call(before) if before.target == Some(start))
                     && firmware.veneer_target(start).is_some()
             })
             .collect();
         let mut open: Vec<u32> = Vec::new();
         // How the events nest is what `Walk::events` says.
-        let levels = (list.iter().enumerate())
-            .map(|(k, event)| {
+        let levels = (0..list.len())
+            .map(|event| {
                 // A backtrack opens or closes no level.
-                if let Event::Backtrack { .. } = event {
+                if let Event::Backtrack { .. } = list[event] {
                     return 0;
                 }
-                let depth = event.depth();
+                let depth = list[event].depth();
                 // The function a tail call jumps to returns to the caller
                 // of the one that jumped.
                 while open.last().is_some_and(|&open| depth < open) {
                     open.pop();
                 }
                 let level = depth + open.len() as u32;
-                if let Event::Call(call) = event
+                if let Event::Call(call) = &list[event]
                     && call.how == How::Jump
                     && call.followed
-                    && !veneer_jumps[k]
+                    && !veneer_jumps[event]
                 {
                     open.push(call.depth);
                 }
@@ -69,7 +69,7 @@ impl<'w> Events<'w> {
             })
             .collect();
         let targets = (list.iter().zip(&veneer_jumps))
-            .map(|(event, &veneer_jump)| match event {
+            .map(|(recorded, &veneer_jump)| match recorded {
                 Event::Call(call) if !veneer_jump => Some(firmware.resolve(call.target?)),
                 _ => None,
             })
@@ -82,35 +82,37 @@ impl<'w> Events<'w> {
         }
     }
 
-    pub fn level(&self, k: usize) -> u32 {
-        self.levels[k]
+    pub fn level(&self, event: usize) -> u32 {
+        self.levels[event]
     }
 
-    /// The call at `k`, unless it is a veneer's jump.
-    pub fn call(&self, k: usize) -> Option<&'w Call> {
-        match &self.list[k] {
-            Event::Call(call) if !self.veneer_jumps[k] => Some(call),
+    /// The call at `event`, unless it is a veneer's jump.
+    pub fn call(&self, event: usize) -> Option<&'w Call> {
+        match &self.list[event] {
+            Event::Call(call) if !self.veneer_jumps[event] => Some(call),
             _ => None,
         }
     }
 
-    /// Where the call at `k` goes, past a veneer.
-    pub fn target(&self, k: usize) -> Option<u64> {
-        self.targets[k].map(|(target, _)| target)
+    /// Where the call at `event` goes, past a veneer.
+    pub fn target(&self, event: usize) -> Option<u64> {
+        self.targets[event].map(|(target, _)| target)
     }
 
-    /// The veneer that the call at `k` goes through.
-    pub fn veneer(&self, k: usize) -> Option<u64> {
-        self.targets[k].and_then(|(_, veneer)| veneer)
+    /// The veneer that the call at `event` goes through.
+    pub fn veneer(&self, event: usize) -> Option<u64> {
+        self.targets[event].and_then(|(_, veneer)| veneer)
     }
 
-    /// Where the events of the code that the call at `k` runs end: the
+    /// Where the events of the code that the call at `event` runs end: the
     /// first event after it that is no deeper, but for a backtrack (see
     /// `Walk::events`).
-    pub fn span(&self, k: usize) -> usize {
-        let level = self.levels[k];
-        (k + 1..self.list.len())
-            .find(|&j| !matches!(self.list[j], Event::Backtrack { .. }) && self.levels[j] <= level)
+    pub fn span(&self, event: usize) -> usize {
+        let level = self.levels[event];
+        (event + 1..self.list.len())
+            .find(|&later| {
+                !matches!(self.list[later], Event::Backtrack { .. }) && self.levels[later] <= level
+            })
             .unwrap_or(self.list.len())
     }
 }
@@ -130,35 +132,38 @@ impl Iterations {
     pub fn new(list: &[Event]) -> Iterations {
         let mut of = vec![None; list.len()];
         // A loop inside another closes first, so its iterations come first.
-        for (k, event) in list.iter().enumerate() {
+        for (loop_event, event) in list.iter().enumerate() {
             let Event::Loop(l) = event else {
                 continue;
             };
             for iteration in l.walked_iterations() {
                 for slot in &mut of[iteration.events.clone()] {
-                    slot.get_or_insert((iteration.events.start, k, iteration.row));
+                    slot.get_or_insert((iteration.events.start, loop_event, iteration.row));
                 }
             }
         }
         Iterations { of }
     }
 
-    /// The iteration that the event at `k` is in, by its first event.
-    pub fn of(&self, k: usize) -> Option<usize> {
-        self.of.get(k).copied().flatten().map(|(first, _, _)| first)
-    }
-
-    /// The loop and the iteration that the event at `k` is in, by their
-    /// events (see [`Home`](super::pieces::Home)).
-    pub fn home(&self, k: usize) -> Option<(usize, usize)> {
-        (self.of.get(k).copied().flatten()).map(|(first, loop_event, _)| (loop_event, first))
-    }
-
-    /// Where the iteration that the event at `k` is in reads its row of a
-    /// table.
-    pub fn row(&self, k: usize) -> Option<u32> {
+    /// The iteration that `event` is in, by its first event.
+    pub fn of(&self, event: usize) -> Option<usize> {
         self.of
-            .get(k)
+            .get(event)
+            .copied()
+            .flatten()
+            .map(|(first, _, _)| first)
+    }
+
+    /// The loop and the iteration that `event` is in, by their events (see
+    /// [`Home`](super::pieces::Home)).
+    pub fn home(&self, event: usize) -> Option<(usize, usize)> {
+        (self.of.get(event).copied().flatten()).map(|(first, loop_event, _)| (loop_event, first))
+    }
+
+    /// Where the iteration that `event` is in reads its row of a table.
+    pub fn row(&self, event: usize) -> Option<u32> {
+        self.of
+            .get(event)
             .copied()
             .flatten()
             .and_then(|(_, _, row)| row)

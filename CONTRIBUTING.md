@@ -153,13 +153,17 @@ this list, and add to it when you bring in a word.
   `TreeAnswer` the text of one whose table holds a tree, as `why` and
   `retained` write it. Browse shows both; `TabAnswer` is a `TreeAnswer`
   as a tab of browse shows it.
-- **section**: an ELF section. **block**: a run of addresses that
+- **section**: an ELF section. Its place in `Binary::sections` is a
+  section index, named `section`. **block**: a run of addresses that
   sections occupy, as the overview's MEMORY table lists
   (`MemoryBlock`). **load image**: where the file stores the bytes of a
   section such as `.data`, for startup code to copy to its address.
   **RAM sections**: in `startup`, the sections that startup code sets
   up, which are all in RAM: those with a load image, and those without
-  contents, such as `.bss` (`ram_sections.rs`).
+  contents, such as `.bss` (`RamSections`, in `ram_sections.rs`, named
+  `ram`). **early run**: code that runs from a load image before startup
+  code copies it there (`EarlyRuns`, and the problem `runs before
+  copy`).
 - **state**: what the registers and the stack hold at one point in the
   code, in `arch/thumb/values/` (`State`). A section's state when `main`
   starts, in `startup`, is its status (`problems::Status`).
@@ -172,13 +176,21 @@ this list, and add to it when you bring in a word.
   time it runs.
 - **event**: one thing that the startup walk records, such as a call, a
   store or a loop (`arch::startup::Event`); its place in the walk's list
-  is an event index. Browse's event loop, which reads the terminal's
-  keys (crossterm's `Event`), is unrelated. **piece**: bytes that a loop
-  or stores copy or zero one after another, which join into a step
-  (`startup`'s `pieces.rs`).
+  is an event index, named `event`, or `loop_event` for a loop's.
+  Browse's event loop, which reads the terminal's keys (crossterm's
+  `Event`), is unrelated. **walked loop**: a loop that the walk went
+  through one iteration at a time, as a loop over a table of sections,
+  so that each iteration's calls and stores are events of their own
+  (`Loop::walked_iterations`). **call tree**: in `startup`, the
+  functions that run when a function runs, each with the function that
+  calls it on a shortest chain from the first (`CallTree`). **piece**:
+  bytes that a loop or stores copy or zero one after another, which
+  join into a step (`startup`'s `pieces.rs`).
   **unread**: code that elfq can't follow, such as a call through a
   register, which may set up any section not set up yet
-  (`Does::Unread`, and `unread.rs`).
+  (`Does::Unread`, and `unread.rs`). Where the JSON says `unknown` for a
+  section's status and `can't follow` for the problem, the code keeps
+  those words (`Status::Unknown`, `Kind::CantFollow`).
 
 Some code still uses one of these words for something else, as the Thumb
 walk's `Step` (what an instruction leads to) and `reach`'s `Step` (a row

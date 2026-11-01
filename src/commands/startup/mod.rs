@@ -30,13 +30,14 @@
 //!
 //! The unit tests build their walks by hand, with `fixtures.rs`.
 //!
-//! Short names mean the same across these files. `x`, and `y` beside it,
-//! is a section, as an index into `Binary::sections`; `k` is an event, as
-//! an index into the walk's events, and `j` is usually another; `l` is a
-//! loop that the walk found (`arch::startup::Loop`). A step goes by its
-//! place in the steps, as `s` or in fields such as `Setup::step` and
-//! `Problem::before`, and by its `number`, from 1, which the text and the
-//! JSON print and `Problem::steps` holds.
+//! Names mean the same across these files. `ram` is the sections that
+//! startup code sets up (`RamSections`). `section` is a section, as an
+//! index into `Binary::sections`; `event` is an event, as an index into
+//! the walk's events, and `loop_event` a loop's; `l` is a loop that the
+//! walk found (`arch::startup::Loop`). A step goes by its place in the
+//! steps, as `s` or in fields such as `Setup::step` and `Problem::before`,
+//! and by its `number`, from 1, which the text and the JSON print and
+//! `Problem::steps` holds.
 //!
 //! docs/design.md's "Startup, end to end" follows one run through this
 //! module, `arch::startup`, `arch::thumb::startup` and `binary::startup`.
@@ -69,7 +70,7 @@ use crate::cli::Format;
 use crate::graph::{Graph, Node, VeneerTarget, Veneers};
 use events::Events;
 use problems::Judged;
-use ram_sections::Memory;
+use ram_sections::RamSections;
 use start::{Main, Reset};
 use steps::Step;
 
@@ -118,7 +119,7 @@ pub(super) fn check_header(path: &Path) -> Result<()> {
 /// handler elfq finds.
 pub(super) fn reads(path: &Path, binary: &Binary) -> bool {
     reset_handler(path, binary).is_ok()
-        && !Memory::new(binary).ram.is_empty()
+        && !RamSections::new(binary).sections.is_empty()
         && check_header(path).is_ok()
 }
 
@@ -149,18 +150,18 @@ pub(super) fn run(
     let (reset, code) = reset_handler(path, binary)?;
     let graph = Kept::new(Graph::build(binary));
     let firmware = Firmware::new(binary, code, &graph);
-    let memory = Memory::new(binary);
-    let main = start::find_main(&firmware, &memory, &reset);
+    let ram = RamSections::new(binary);
+    let main = start::find_main(&firmware, &ram, &reset);
     let walk = reset.walk(code, main.map(|main| main.address), DEPTH);
     let events = Events::new(&firmware, &walk.events);
-    let steps = steps::build(&firmware, &memory, &events, &reset, main, walk.end);
+    let steps = steps::build(&firmware, &ram, &events, &reset, main, walk.end);
     let judged = problems::judge(
-        &firmware, &memory, &events, &reset, main, &steps, walk.end, all,
+        &firmware, &ram, &events, &reset, main, &steps, walk.end, all,
     );
     let answer = Answer {
         path,
         firmware: &firmware,
-        memory: &memory,
+        ram: &ram,
         reset: &reset,
         main,
         walk: &walk,
@@ -185,7 +186,7 @@ pub(super) fn run(
 struct Answer<'a> {
     path: &'a Path,
     firmware: &'a Firmware<'a>,
-    memory: &'a Memory<'a>,
+    ram: &'a RamSections<'a>,
     reset: &'a Reset,
     main: Option<Main>,
     walk: &'a Walk,
