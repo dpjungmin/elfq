@@ -57,17 +57,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use object::{Endian, Endianness};
 
 use self::state::{Contents, Kind, RESULT, State, Value, Values};
-use super::decode::{self, Effect, Flow, LowBit, Operation, Registers, SetsFlags, When};
-use super::{Instruction, PC, SP};
+use super::decode::{self, Effect, Flow, LowBit, Operation, Registers, SetsFlags, When, bit, each};
+use super::{ARGUMENTS, CALL_CLOBBERS, Instruction, PC, SP};
 use crate::arch::CodeReference;
 use crate::arch::CodeReferenceKind::{self, *};
-
-/// The registers that pass arguments to a function and return its result:
-/// r0 to r3.
-const ARGUMENTS: Registers = 0x000f;
-
-/// The registers that a call may change: r0 to r3, ip (r12) and lr.
-const CALL_CLOBBERS: Registers = 0x500f;
 
 /// The references in a function's code, given the instructions the sweep
 /// decoded and the references it found: those of the sweep, with each
@@ -555,13 +548,13 @@ impl<'a> Function<'a> {
             _ => 0,
         };
         let reads = effect.reads & !bit(RESULT) | branches_through;
-        self.reads_stale_lost |= registers(reads).any(|register| {
+        self.reads_stale_lost |= each(reads).any(|register| {
             let contents = state.registers[usize::from(register)];
             contents.saturated && contents.stale
         });
         state.escaped |= self.execute(index, state);
         if calls {
-            for register in registers(CALL_CLOBBERS) {
+            for register in each(CALL_CLOBBERS) {
                 let contents = &mut state.registers[usize::from(register)];
                 *contents = contents.after_call();
             }
@@ -735,7 +728,7 @@ impl<'a> Function<'a> {
                 None
             }
         };
-        for register in registers(effect.writes) {
+        for register in each(effect.writes) {
             state.registers[usize::from(register)] = Contents::unknown();
         }
         match (effect.operation, sp) {
@@ -744,7 +737,7 @@ impl<'a> Function<'a> {
                 for word in (bottom..sp).step_by(4) {
                     state.set_word(word, Contents::unknown());
                 }
-                for (n, register) in self::registers(registers).enumerate() {
+                for (n, register) in each(registers).enumerate() {
                     state.set_word(bottom + 4 * n as i32, state.get(register, pc));
                 }
                 state.registers[usize::from(SP)] = Contents::holding(Value::stack(bottom));
@@ -754,7 +747,7 @@ impl<'a> Function<'a> {
                 state.forget_stack(&mut lost(&mut self.uses, &mut self.stale_lost))
             }
             (Operation::Pop { registers, size }, Some(sp)) => {
-                for (n, register) in self::registers(registers).enumerate() {
+                for (n, register) in each(registers).enumerate() {
                     let at = sp + 4 * n as i32;
                     self.loads_back(state, at);
                     if register != PC {
@@ -929,7 +922,7 @@ impl<'a> Function<'a> {
         if calls {
             passed |= ARGUMENTS;
         }
-        registers(passed).any(|register| state.registers[usize::from(register)].may_be_stack())
+        each(passed).any(|register| state.registers[usize::from(register)].may_be_stack())
             || calls && state.stack.values().any(Contents::may_be_stack)
     }
 
@@ -998,7 +991,7 @@ impl<'a> Function<'a> {
                 let base = state.get(base, 0);
                 // Through a register it reads that may hold an address on
                 // the stack, as its base or what it adds to the base.
-                let may_be_stack = registers(effect.reads)
+                let may_be_stack = each(effect.reads)
                     .any(|register| state.registers[usize::from(register)].may_be_stack());
                 match (base.stack_offset(), offset) {
                     (Some(at), Some(offset)) => {
@@ -1017,7 +1010,7 @@ impl<'a> Function<'a> {
         match effect.flow {
             Flow::CallRegister(register, low_bit) | Flow::JumpRegister(register, low_bit) => {
                 let contents = state.get(register, 0);
-                self.branch(index, &contents, |number| target(number, low_bit));
+                self.branch(index, &contents, |number| low_bit.target(number));
                 self.use_kept_result(state, register);
                 // A call or a tail call passes the arguments on.
                 other &= !bit(register);
@@ -1037,7 +1030,7 @@ impl<'a> Function<'a> {
             Flow::Pop => {
                 if let (Operation::Pop { registers, .. }, Some(sp)) = (effect.operation, state.sp())
                 {
-                    for (n, register) in self::registers(registers).enumerate() {
+                    for (n, register) in each(registers).enumerate() {
                         let mut contents = state.word(sp.wrapping_add(4 * n as i32));
                         if register == PC {
                             // What elfq can't tell is the address to
@@ -1046,7 +1039,7 @@ impl<'a> Function<'a> {
                             contents.saturated = false;
                             if !contents.values.is_empty() {
                                 self.branch(index, &contents, |number| {
-                                    target(number, LowBit::Thumb)
+                                    LowBit::Thumb.target(number)
                                 });
                             }
                         } else if bit(register) & ARGUMENTS != 0 {
@@ -1170,7 +1163,7 @@ impl<'a> Function<'a> {
     /// isn't passed, since code passes nothing in a register that a call
     /// may have changed.
     fn pass_registers(&mut self, state: &State, registers: Registers) {
-        for register in self::registers(registers).filter(|&register| register != PC) {
+        for register in each(registers).filter(|&register| register != PC) {
             for value in state.registers[usize::from(register)].values.iter() {
                 if !value.stale {
                     use_value(&mut self.uses, value, Use::Other);
@@ -1182,7 +1175,7 @@ impl<'a> Function<'a> {
     /// Records a use of the values in each register of `registers`, as the
     /// code reads them.
     fn use_registers(&mut self, state: &State, registers: Registers, how: Use) {
-        for register in self::registers(registers).filter(|&register| register != PC) {
+        for register in each(registers).filter(|&register| register != PC) {
             for value in state.get(register, 0).values.iter() {
                 use_value(&mut self.uses, value, how);
             }
@@ -1500,17 +1493,6 @@ fn may_find_more(effects: impl IntoIterator<Item = Option<Effect>>) -> bool {
     false
 }
 
-/// Where a branch through a register goes with `number` in it: to
-/// `number` without its low bit, unless that bit must be 1 and is 0.
-/// Cortex-M cores only run Thumb code, so `bx` faults there, as for the
-/// address 0 of a weak function that the program doesn't have.
-fn target(number: u32, low_bit: LowBit) -> Option<u32> {
-    match low_bit {
-        LowBit::Thumb if number & 1 == 0 => None,
-        _ => Some(number & !1),
-    }
-}
-
 /// Whether adding what `a` and `b` hold adds the program counter.
 fn adds_pc(a: u16, b: u16, state: &State) -> bool {
     let pc = |register: u16| {
@@ -1546,20 +1528,6 @@ fn lost<'a>(uses: &'a mut [Uses], stale_lost: &'a mut BTreeSet<u32>) -> impl FnM
         (true, Some(source)) => _ = stale_lost.insert(source),
         _ => use_value(uses, value, Use::Other),
     }
-}
-
-/// `register` as a set.
-fn bit(register: u16) -> Registers {
-    1 << register
-}
-
-/// The registers in `set`, from r0 up.
-fn registers(mut set: Registers) -> impl Iterator<Item = u16> {
-    std::iter::from_fn(move || {
-        let register = set.trailing_zeros() as u16;
-        set &= set.wrapping_sub(1);
-        (register < 16).then_some(register)
-    })
 }
 
 #[cfg(test)]

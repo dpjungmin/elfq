@@ -4,11 +4,11 @@
 //! ([`Walker::clobbers`]).
 
 use crate::arch::startup::{Call, End, Event, How, Through};
-use crate::arch::thumb::decode::{Effect, Flow, LowBit, Operation, Registers};
-use crate::arch::thumb::{LR, SP, is_wide};
+use crate::arch::thumb::decode::{Effect, Flow, Operation, Registers};
+use crate::arch::thumb::{ARGUMENTS, CALL_CLOBBERS, LR, SP, is_wide};
 
 use super::walk_state::{Alternative, Flags, Path, forget_changes, set_unknown};
-use super::{CALL_LIMIT, CLOBBERED, Frame, Run, Step, Walker};
+use super::{CALL_LIMIT, Frame, Run, Step, Walker};
 
 /// What code may change, as far as the walk can tell without going
 /// through it (see [`Walker::writes`]).
@@ -43,7 +43,7 @@ impl Walker<'_> {
                 return Changes {
                     registers: Registers::MAX,
                     stores: true,
-                    results: 0xf,
+                    results: ARGUMENTS as u8,
                 };
             };
             changes.registers |= effect.writes;
@@ -55,8 +55,8 @@ impl Walker<'_> {
                 _ => false,
             };
             if leaves {
-                changes.registers |= CLOBBERED;
-                changes.results = 0xf;
+                changes.registers |= CALL_CLOBBERS;
+                changes.results = ARGUMENTS as u8;
                 changes.stores = true;
             }
             changes.stores |= matches!(
@@ -76,13 +76,16 @@ impl Walker<'_> {
     fn clobbers(&mut self, target: Option<u64>) -> (Registers, u8) {
         let function = target.and_then(|target| self.program.function_at(target));
         let Some((start, end)) = function.filter(|&(start, _)| Some(start) == target) else {
-            return (CLOBBERED, 0xf);
+            return (CALL_CLOBBERS, ARGUMENTS as u8);
         };
         if let Some(&clobbers) = self.clobbers.get(&start) {
             return clobbers;
         }
         let changes = self.writes(start, end, true);
-        let clobbers = ((changes.registers | 1 << LR) & CLOBBERED, changes.results);
+        let clobbers = (
+            (changes.registers | 1 << LR) & CALL_CLOBBERS,
+            changes.results,
+        );
         self.clobbers.insert(start, clobbers);
         clobbers
     }
@@ -284,16 +287,6 @@ impl Walker<'_> {
     }
 }
 
-/// Where a branch through a register goes with `number` in it, as in
-/// `values`: Cortex-M cores only run Thumb code, so `bx` and `blx` fault
-/// when the low bit is 0.
-pub(super) fn target(number: u32, low_bit: LowBit) -> Option<u64> {
-    match low_bit {
-        LowBit::Thumb if number & 1 == 0 => None,
-        _ => Some(u64::from(number & !1)),
-    }
-}
-
 /// What r0 to r3 hold.
 pub(super) fn arguments(path: &Path) -> [Option<u32>; 4] {
     [0, 1, 2, 3].map(|register| path.registers[register])
@@ -304,5 +297,5 @@ pub(super) fn arguments(path: &Path) -> [Option<u32>; 4] {
 /// it writes, and r0 when it reads it, other than to push it.
 pub(super) fn results(effect: &Effect) -> u8 {
     let reads_r0 = effect.reads & 1 != 0 && !matches!(effect.operation, Operation::Push { .. });
-    (effect.writes & 0xf) as u8 | u8::from(reads_r0)
+    (effect.writes & ARGUMENTS) as u8 | u8::from(reads_r0)
 }

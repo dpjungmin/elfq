@@ -1,4 +1,5 @@
 use super::*;
+use crate::arch::thumb::{ARGUMENTS, CALL_CLOBBERS};
 
 /// Decodes the instruction in `bytes`, little-endian as in a file.
 fn effect(address: u64, bytes: &[u8]) -> Effect {
@@ -206,6 +207,43 @@ fn branches_through_registers() {
     assert_eq!(effect(0, &[0xbd, 0xe8, 0xf0, 0x81]).flow, Flow::Pop);
     assert_eq!(effect(0, &[0x5d, 0xf8, 0x04, 0xfb]).flow, Flow::Pop);
     assert_eq!(effect(0, &[0xd3, 0xf8, 0x04, 0xf0]).flow, Flow::JumpMemory);
+}
+
+#[test]
+fn where_branches_through_registers_go() {
+    let low_bit = |bytes: &[u8]| match effect(0, bytes).flow {
+        Flow::JumpRegister(_, low_bit) | Flow::CallRegister(_, low_bit) => low_bit,
+        flow => panic!("{flow:?} doesn't branch through a register"),
+    };
+    // bx r3 and blx r3 go to the Thumb code at an odd address, and fault
+    // on an even one.
+    for bytes in [[0x18, 0x47], [0x98, 0x47]] {
+        assert_eq!(low_bit(&bytes).target(0x0800_0101), Some(0x0800_0100));
+        assert_eq!(low_bit(&bytes).target(0x0800_0100), None);
+    }
+    // mov pc, r3 and bxns r4 go to either.
+    for bytes in [[0x9f, 0x46], [0x24, 0x47]] {
+        assert_eq!(low_bit(&bytes).target(0x0800_0101), Some(0x0800_0100));
+        assert_eq!(low_bit(&bytes).target(0x0800_0100), Some(0x0800_0100));
+    }
+}
+
+#[test]
+fn sets_of_registers() {
+    // push {r4, r5, r7, lr}
+    let Operation::Push { registers, .. } = operation(&[0xb0, 0xb5]) else {
+        panic!("push isn't a push");
+    };
+    assert_eq!(each(registers).collect::<Vec<_>>(), [4, 5, 7, LR]);
+    assert_eq!(registers, bit(4) | bit(5) | bit(7) | bit(LR));
+    assert_eq!(each(0).next(), None);
+    assert_eq!(each(Registers::MAX).count(), 16);
+    // A call passes arguments in r0 to r3, and may change them, ip and lr.
+    assert_eq!(each(ARGUMENTS).collect::<Vec<_>>(), [0, 1, 2, 3]);
+    assert_eq!(
+        each(CALL_CLOBBERS).collect::<Vec<_>>(),
+        [0, 1, 2, 3, 12, LR]
+    );
 }
 
 #[test]

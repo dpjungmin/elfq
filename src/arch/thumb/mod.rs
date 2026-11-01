@@ -63,12 +63,27 @@ pub(super) use operands::operands;
 pub(super) use sweep::scan_instructions;
 pub(super) use veneers::is_veneer;
 
+use decode::Registers;
 use sweep::Scanner;
 
 // The stack pointer, link register and program counter.
 const SP: u16 = 13;
 const LR: u16 = 14;
 const PC: u16 = 15;
+
+/// ip (r12), the scratch register that veneers and long calls use.
+const IP: u16 = 12;
+
+// What the procedure call standard for Arm says of the registers, which
+// `values` and `startup` take the functions that code calls to follow.
+
+/// The registers that pass arguments to a function and return its result:
+/// r0 to r3.
+const ARGUMENTS: Registers = 0x000f;
+
+/// The registers that a called function may change and not put back: r0
+/// to r3, ip and lr.
+const CALL_CLOBBERS: Registers = ARGUMENTS | 1 << IP | 1 << LR;
 
 /// The references in the Thumb code `code`, which starts at `address`, in
 /// the order of their instructions. The constants and jump tables that the

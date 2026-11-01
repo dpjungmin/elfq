@@ -8,8 +8,8 @@ use std::rc::Rc;
 use object::Endian;
 
 use crate::arch::startup::{Event, Source, Store};
-use crate::arch::thumb::decode::{Effect, Operation, Registers, SetsFlags, Words};
-use crate::arch::thumb::{PC, SP};
+use crate::arch::thumb::decode::{Effect, Operation, SetsFlags, Words, each};
+use crate::arch::thumb::{ARGUMENTS, PC, SP};
 
 use super::Walker;
 use super::calls::results;
@@ -29,7 +29,7 @@ impl Walker<'_> {
         depth: u32,
     ) {
         path.results |= results(effect);
-        path.left &= !(effect.writes & 0xf) as u8;
+        path.left &= !(effect.writes & ARGUMENTS) as u8;
         let at = self.access(path, site, effect);
         if let Operation::Store { .. } = effect.operation {
             self.store(path, site, depth, effect, at, conditional);
@@ -584,9 +584,4 @@ fn word_registers(words: Words) -> Vec<u16> {
         Words::List { registers, .. } => each(registers).collect(),
         Words::Pair { first, second, .. } => vec![first, second],
     }
-}
-
-/// The registers in `set`, from r0 up.
-pub(super) fn each(set: Registers) -> impl Iterator<Item = u16> {
-    (0..16).filter(move |register| set & (1 << register) != 0)
 }

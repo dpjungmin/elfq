@@ -277,6 +277,20 @@ pub(super) enum LowBit {
     Ignored,
 }
 
+impl LowBit {
+    /// Where a branch through a register goes with `number` in it: to
+    /// `number` without its low bit, unless that bit must be 1 and is 0.
+    /// Cortex-M cores only run Thumb code, so `bx` and `blx` fault there,
+    /// as for the address 0 of a weak function that the program doesn't
+    /// have.
+    pub fn target(self, number: u32) -> Option<u32> {
+        match self {
+            LowBit::Thumb if number & 1 == 0 => None,
+            _ => Some(number & !1),
+        }
+    }
+}
+
 impl Effect {
     /// Whether it changes the condition flags, inside an `it` block or
     /// outside one.
@@ -333,8 +347,17 @@ impl Effect {
 }
 
 /// `register` as a set.
-fn bit(register: u16) -> Registers {
+pub(super) fn bit(register: u16) -> Registers {
     1 << register
+}
+
+/// The registers in `set`, from r0 up.
+pub(super) fn each(mut set: Registers) -> impl Iterator<Item = u16> {
+    std::iter::from_fn(move || {
+        let register = set.trailing_zeros() as u16;
+        set &= set.wrapping_sub(1);
+        (register < 16).then_some(register)
+    })
 }
 
 /// `register` = `source` >> `shift`, as `lsr` does, or `asr` when `signed`.

@@ -7,10 +7,9 @@ use std::collections::HashMap;
 
 use crate::arch::startup::{Event, How, Loop, LoopStore, Source, Store, Time};
 use crate::arch::thumb::PC;
-use crate::arch::thumb::decode::{Effect, Operation, Registers};
+use crate::arch::thumb::decode::{Effect, Operation, Registers, each};
 
 use super::count::{first_time, line_through};
-use super::execute::each;
 use super::walk_state::{Path, Visit};
 use super::{Frame, Run, TIMES_BUDGET, TIMES_COUNT_BUDGET, Walker};
 

@@ -51,11 +51,11 @@ use std::rc::Rc;
 use object::Endianness;
 
 use super::decode::{self, Effect, Flow, LowBit, Operation, Registers, When};
-use super::{LR, SP, Scanner, branch, is_wide, literal};
+use super::{ARGUMENTS, CALL_CLOBBERS, SP, Scanner, branch, is_wide, literal};
 use crate::arch::CodeReferenceKind;
 use crate::arch::startup::{Call, DEPTH, End, Event, How, Program, Start, Through, Walk};
 
-use calls::{arguments, target};
+use calls::arguments;
 use count::Counting;
 use execute::holds;
 pub(in crate::arch) use queries::{branches_past, passes_result};
@@ -127,13 +127,6 @@ pub(in crate::arch) const TIMES_COUNT_TOTAL: usize = 2 * TIMES_COUNT_BUDGET;
 /// How far before a function's start the code of a loop can begin that
 /// runs on into the function (see [`Walker::runs_into`]).
 const RUNS_INTO: u64 = 0x40;
-
-/// ip (r12), the scratch register that veneers and long calls use.
-const IP: u16 = 12;
-
-/// The registers that a called function may change and not put back: r0
-/// to r3, which pass arguments and results, ip and lr.
-const CLOBBERED: Registers = 0b1111 | 1 << IP | 1 << LR;
 
 /// Walks the code from `start`; see `arch::startup::walk`.
 pub(in crate::arch) fn walk(endianness: Endianness, program: &dyn Program, start: &Start) -> Walk {
@@ -401,12 +394,14 @@ impl Walker<'_> {
             Flow::Call | Flow::CallRegister(..) => {
                 // A call reads its arguments, in r0 to r3.
                 if let Some(index) = frame.rows {
-                    self.carried_reads(index, effect.reads | 0b1111, CLOBBERED, conditional);
+                    let reads = effect.reads | ARGUMENTS;
+                    self.carried_reads(index, reads, CALL_CLOBBERS, conditional);
                 }
                 let (target, how) = match effect.flow {
                     Flow::CallRegister(register, low_bit) => (
                         self.register(&run.path, register, address)
-                            .and_then(|number| target(number, low_bit)),
+                            .and_then(|number| low_bit.target(number))
+                            .map(u64::from),
                         How::Register(register),
                     ),
                     // svc
@@ -462,7 +457,10 @@ impl Walker<'_> {
                 // to and pop it: a called function starts with lr unknown.
                 let to = self.popped_pc(&run.path, effect.operation);
                 self.execute(&mut run.path, address, &effect, false, false, depth);
-                match to.and_then(|number| target(number, LowBit::Thumb)) {
+                match to
+                    .and_then(|number| LowBit::Thumb.target(number))
+                    .map(u64::from)
+                {
                     None => Step::End(End::Returns(address)),
                     Some(to) => self.jump_to(run, frame, address, Some(to), Through::Memory),
                 }
@@ -479,7 +477,7 @@ impl Walker<'_> {
                     run,
                     frame,
                     address,
-                    to.and_then(|n| target(n, low_bit)),
+                    to.and_then(|n| low_bit.target(n)).map(u64::from),
                     through,
                 )
             }
@@ -509,7 +507,8 @@ impl Walker<'_> {
                     _ => None,
                 };
                 let to = at.and_then(|at| self.load(&run.path, at, true));
-                let to = to.and_then(|number| target(number, LowBit::Thumb));
+                let to = to.and_then(|number| LowBit::Thumb.target(number));
+                let to = to.map(u64::from);
                 self.jump_to(run, frame, address, to, Through::Memory)
             }
         }

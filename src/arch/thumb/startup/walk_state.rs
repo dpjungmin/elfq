@@ -9,9 +9,7 @@ use std::rc::Rc;
 
 use crate::arch::startup::Source;
 use crate::arch::thumb::SP;
-use crate::arch::thumb::decode::Registers;
-
-use super::execute::each;
+use crate::arch::thumb::decode::{Registers, each};
 
 /// What the walk knows on the way it goes.
 #[derive(Debug, Clone, Default)]
