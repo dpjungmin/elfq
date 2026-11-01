@@ -112,7 +112,7 @@ pub struct Operands {
     /// function or what it uses moves. A distance to a place inside the
     /// code, as a loop's jump, doesn't change when the function moves, and
     /// isn't here.
-    pub relative: Vec<u8>,
+    pub distance_bits: Vec<u8>,
     /// Where each of those distances leads, as (the offset of its
     /// instruction in the code, the address), in the order of the
     /// instructions.

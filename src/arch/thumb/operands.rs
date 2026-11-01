@@ -23,11 +23,11 @@ pub(in crate::arch) fn operands(code: &[u8], address: u64, endianness: Endiannes
             .is_ok()
     };
     let outside = |target: u64| target.wrapping_sub(address) >= code.len() as u64;
-    let mut relative = vec![0; code.len()];
+    let mut distance_bits = vec![0; code.len()];
     let mut targets = Vec::new();
-    for (offset, halfwords, target) in found.relative {
+    for (offset, halfwords, target) in found.distances {
         if kept(offset) && outside(target) {
-            set_bits(&mut relative, offset, halfwords);
+            set_bits(&mut distance_bits, offset, halfwords);
             targets.push((offset, target));
         }
     }
@@ -45,7 +45,7 @@ pub(in crate::arch) fn operands(code: &[u8], address: u64, endianness: Endiannes
         })
         .collect();
     Operands {
-        relative,
+        distance_bits,
         targets,
         split,
     }
@@ -76,7 +76,7 @@ pub(super) struct Found {
     /// Each distance from an instruction to an address, as (the
     /// instruction's offset, the bits of its first and second 16 bits that
     /// hold the distance, the address).
-    pub(super) relative: Vec<(usize, [u16; 2], u64)>,
+    pub(super) distances: Vec<(usize, [u16; 2], u64)>,
     /// Each number that a `movw` and a `movt` put together, as (their
     /// offsets, the number).
     pub(super) split: Vec<([usize; 2], u32)>,
@@ -90,8 +90,8 @@ mod tests {
 
     /// The bits of `code` at `address` that hold a distance to an address
     /// outside it, as `operands` gives them.
-    fn relative_bits(code: &[u8], address: u64) -> Vec<u8> {
-        operands(code, address, Little).relative
+    fn distance_bits(code: &[u8], address: u64) -> Vec<u8> {
+        operands(code, address, Little).distance_bits
     }
 
     // Each instruction below is from this code, assembled at 0 with far at
@@ -112,11 +112,11 @@ mod tests {
     #[test]
     fn bl_and_b_w_hold_a_distance_in_both_halves() {
         assert_eq!(
-            relative_bits(&[0x01, 0xf0, 0xfe, 0xff], 0),
+            distance_bits(&[0x01, 0xf0, 0xfe, 0xff], 0),
             [0xff, 0x07, 0xff, 0x2f]
         );
         assert_eq!(
-            relative_bits(&[0x01, 0xf0, 0xfc, 0xbf], 4),
+            distance_bits(&[0x01, 0xf0, 0xfc, 0xbf], 4),
             [0xff, 0x07, 0xff, 0x2f]
         );
     }
@@ -125,32 +125,32 @@ mod tests {
     fn b_cond_holds_a_distance_but_not_its_condition() {
         // beq.w keeps its condition in bits 6 to 9 of the first half.
         assert_eq!(
-            relative_bits(&[0x01, 0xf0, 0xfa, 0x87], 8),
+            distance_bits(&[0x01, 0xf0, 0xfa, 0x87], 8),
             [0x3f, 0x04, 0xff, 0x2f]
         );
         // beq.n and b.n
-        assert_eq!(relative_bits(&[0x0a, 0xd0], 0xc), [0xff, 0x00]);
-        assert_eq!(relative_bits(&[0x09, 0xe0], 0xe), [0xff, 0x07]);
+        assert_eq!(distance_bits(&[0x0a, 0xd0], 0xc), [0xff, 0x00]);
+        assert_eq!(distance_bits(&[0x09, 0xe0], 0xe), [0xff, 0x07]);
     }
 
     #[test]
     fn cbz_holds_a_distance_but_not_its_register() {
-        assert_eq!(relative_bits(&[0x48, 0xb1], 0x10), [0xf8, 0x02]);
+        assert_eq!(distance_bits(&[0x48, 0xb1], 0x10), [0xf8, 0x02]);
     }
 
     #[test]
     fn loads_from_a_literal_pool_hold_a_distance() {
-        assert_eq!(relative_bits(&[0x06, 0x48], 0x12), [0xff, 0x00]);
+        assert_eq!(distance_bits(&[0x06, 0x48], 0x12), [0xff, 0x00]);
         // ldr.w also has whether the constant is before or after it.
         assert_eq!(
-            relative_bits(&[0xdf, 0xf8, 0x0c, 0x30], 0x1e),
+            distance_bits(&[0xdf, 0xf8, 0x0c, 0x30], 0x1e),
             [0x80, 0x00, 0xff, 0x0f]
         );
     }
 
     #[test]
     fn adr_holds_a_distance() {
-        assert_eq!(relative_bits(&[0x05, 0xa1], 0x14), [0xff, 0x00]);
+        assert_eq!(distance_bits(&[0x05, 0xa1], 0x14), [0xff, 0x00]);
         assert_eq!(operands(&[0x05, 0xa1], 0x14, Little).targets, [(0, 0x2c)]);
     }
 
@@ -159,8 +159,8 @@ mod tests {
         // subw r0, pc, #16 and addw r0, pc, #36: bits 5 and 7 of the first
         // half say which.
         let bits = [0xa0, 0x04, 0xff, 0x70];
-        assert_eq!(relative_bits(&[0xaf, 0xf2, 0x10, 0x00], 0x100), bits);
-        assert_eq!(relative_bits(&[0x0f, 0xf2, 0x24, 0x00], 0x104), bits);
+        assert_eq!(distance_bits(&[0xaf, 0xf2, 0x10, 0x00], 0x100), bits);
+        assert_eq!(distance_bits(&[0x0f, 0xf2, 0x24, 0x00], 0x104), bits);
     }
 
     #[test]
@@ -168,19 +168,19 @@ mod tests {
         // ldrb.w r4, [pc, #64], with 12 bits of distance, and ldrd r0, r1,
         // [pc, #24] and vldr d0, [pc, #-16], with 8 bits of words.
         assert_eq!(
-            relative_bits(&[0x9f, 0xf8, 0x40, 0x40], 0x108),
+            distance_bits(&[0x9f, 0xf8, 0x40, 0x40], 0x108),
             [0x80, 0x00, 0xff, 0x0f]
         );
         let imm8 = [0x80, 0x00, 0xff, 0x00];
-        assert_eq!(relative_bits(&[0xdf, 0xe9, 0x06, 0x01], 0x10c), imm8);
-        assert_eq!(relative_bits(&[0x1f, 0xed, 0x04, 0x0b], 0x110), imm8);
+        assert_eq!(distance_bits(&[0xdf, 0xe9, 0x06, 0x01], 0x10c), imm8);
+        assert_eq!(distance_bits(&[0x1f, 0xed, 0x04, 0x0b], 0x110), imm8);
     }
 
     #[test]
     fn movw_and_movt_hold_a_number() {
         let code = [0x45, 0xf2, 0x78, 0x62, 0xc1, 0xf2, 0x34, 0x22];
         let operands = operands(&code, 0x16, Little);
-        assert_eq!(operands.relative, [0; 8]);
+        assert_eq!(operands.distance_bits, [0; 8]);
         assert_eq!(
             operands.split,
             [SplitNumber {
@@ -215,6 +215,6 @@ mod tests {
             expected[at..at + 4].copy_from_slice(&[0xff, 0x07, 0xff, 0x2f]);
         }
         expected[8..12].copy_from_slice(&[0x3f, 0x04, 0xff, 0x2f]);
-        assert_eq!(relative_bits(&code, 0), expected);
+        assert_eq!(distance_bits(&code, 0), expected);
     }
 }

@@ -59,7 +59,7 @@ use super::CodeReferenceKind;
 
 pub(super) use bounds::{code_size, ending, leading_padding, runs_on};
 #[cfg(feature = "tui")]
-pub(in crate::arch) use layout::{Piece, layout};
+pub(super) use layout::{Piece, layout};
 pub(super) use operands::operands;
 pub(super) use sweep::scan_instructions;
 pub(super) use veneers::is_veneer;
@@ -145,7 +145,7 @@ fn branch(pc: u64, first: u16, second: u16) -> Option<CodeReferenceKind> {
         let i1 = !(j1 ^ s) & 1;
         let i2 = !(j2 ^ s) & 1;
         let offset = s << 24 | i1 << 23 | i2 << 22 | u32::from(first & 0x3ff) << 12 | imm11;
-        relative(pc, offset, 25)
+        add_signed(pc, offset, 25)
     };
     match second & 0x5000 {
         0x5000 => Some(CodeReferenceKind::Call(long())),
@@ -154,7 +154,7 @@ fn branch(pc: u64, first: u16, second: u16) -> Option<CodeReferenceKind> {
         // instructions, such as barriers.
         0x0000 if (first >> 6) & 0xf < 0xe => {
             let offset = s << 20 | j2 << 19 | j1 << 18 | u32::from(first & 0x3f) << 12 | imm11;
-            Some(CodeReferenceKind::Jump(relative(pc, offset, 21)))
+            Some(CodeReferenceKind::Jump(add_signed(pc, offset, 21)))
         }
         // blx to Arm code, which Cortex-M can't run.
         _ => None,
@@ -198,7 +198,7 @@ fn imm16(first: u16, second: u16) -> u32 {
 }
 
 /// `pc` plus `offset`, a signed number of `bits` bits.
-fn relative(pc: u64, offset: u32, bits: u32) -> u64 {
+fn add_signed(pc: u64, offset: u32, bits: u32) -> u64 {
     let shift = 32 - bits;
     let offset = ((offset << shift) as i32) >> shift;
     pc.wrapping_add_signed(i64::from(offset))

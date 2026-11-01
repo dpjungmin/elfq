@@ -14,8 +14,8 @@ use object::{Endian, Endianness};
 
 use super::operands::Found;
 use super::{
-    Instruction, LR, PC, SP, align, branch, cbz_target, imm12, imm16, is_wide, literal,
-    narrow_literal, relative,
+    Instruction, LR, PC, SP, add_signed, align, branch, cbz_target, imm12, imm16, is_wide, literal,
+    narrow_literal,
 };
 use crate::arch::CodeReference;
 use crate::arch::CodeReferenceKind::{self, *};
@@ -127,9 +127,9 @@ impl<'a> Scanner<'a> {
     /// Notes, when [`operands`](super::operands::operands) asks, that the
     /// bits under `halfwords` of the instruction at `offset` hold its
     /// distance to `target`.
-    fn relative(&mut self, offset: usize, halfwords: [u16; 2], target: u64) {
+    fn note_distance(&mut self, offset: usize, halfwords: [u16; 2], target: u64) {
         if let Some(found) = &mut self.operands {
-            found.relative.push((offset, halfwords, target));
+            found.distances.push((offset, halfwords, target));
         }
     }
 
@@ -162,20 +162,20 @@ impl<'a> Scanner<'a> {
         let pc = self.pc(offset);
         // b<cond> label. Conditions 0b1110 and 0b1111 are other instructions.
         if op & 0xf000 == 0xd000 && (op >> 8) & 0xf < 0xe {
-            let target = relative(pc, u32::from(op & 0xff) << 1, 9);
-            self.relative(offset, [0x00ff, 0], target);
+            let target = add_signed(pc, u32::from(op & 0xff) << 1, 9);
+            self.note_distance(offset, [0x00ff, 0], target);
             return Some(Jump(target));
         }
         // b label
         if op & 0xf800 == 0xe000 {
-            let target = relative(pc, u32::from(op & 0x7ff) << 1, 12);
-            self.relative(offset, [0x07ff, 0], target);
+            let target = add_signed(pc, u32::from(op & 0x7ff) << 1, 12);
+            self.note_distance(offset, [0x07ff, 0], target);
             return Some(Jump(target));
         }
         // cbz, cbnz: always forward.
         if op & 0xf500 == 0xb100 {
             let target = cbz_target(pc, op);
-            self.relative(offset, [0x02f8, 0], target);
+            self.note_distance(offset, [0x02f8, 0], target);
             return Some(Jump(target));
         }
         // bx and blx with a register. `bx lr` returns.
@@ -194,14 +194,14 @@ impl<'a> Scanner<'a> {
         // ldr register, [pc, #imm]
         if op & 0xf800 == 0x4800 {
             let address = narrow_literal(pc, op);
-            self.relative(offset, [0x00ff, 0], address);
+            self.note_distance(offset, [0x00ff, 0], address);
             let value = self.constant(address, 4)?;
             return Some(Address(value));
         }
         // adr register, label
         if op & 0xf800 == 0xa000 {
             let address = narrow_literal(pc, op);
-            self.relative(offset, [0x00ff, 0], address);
+            self.note_distance(offset, [0x00ff, 0], address);
             return Some(Address(self.pointed_at(address)));
         }
         None
@@ -220,7 +220,7 @@ impl<'a> Scanner<'a> {
                 // bits of the distance.
                 let conditional = second & 0x1000 == 0;
                 let halfwords = [if conditional { 0x043f } else { 0x07ff }, 0x2fff];
-                self.relative(offset, halfwords, target);
+                self.note_distance(offset, halfwords, target);
             }
             return kind;
         }
@@ -244,12 +244,12 @@ impl<'a> Scanner<'a> {
         let adr = [0x04a0, 0x70ff];
         if first & 0xfbff == 0xf2af && second & 0x8000 == 0 {
             let address = align(pc).wrapping_sub(u64::from(imm12(first, second))) & 0xffff_ffff;
-            self.relative(offset, adr, address);
+            self.note_distance(offset, adr, address);
             return Some(Address(self.pointed_at(address)));
         }
         if first & 0xfbff == 0xf20f && second & 0x8000 == 0 {
             let address = align(pc) + u64::from(imm12(first, second));
-            self.relative(offset, adr, address);
+            self.note_distance(offset, adr, address);
             return Some(Address(self.pointed_at(address)));
         }
         // Loads from a literal pool: bit 7 says whether the constant is
@@ -260,7 +260,7 @@ impl<'a> Scanner<'a> {
         // that linkers add for calls too far for bl.
         if first & 0xff7f == 0xf85f {
             let address = literal(pc, first, u64::from(second & 0xfff));
-            self.relative(offset, [0x0080, 0x0fff], address);
+            self.note_distance(offset, [0x0080, 0x0fff], address);
             let value = self.constant(address, 4)?;
             return Some(if rt == PC {
                 TailJump(value & !1)
@@ -273,7 +273,7 @@ impl<'a> Scanner<'a> {
         // ldrsh (into pc these are preload hints), ldrd and vldr.
         if first & 0xfe5f == 0xf81f {
             let address = literal(pc, first, u64::from(second & 0xfff));
-            self.relative(offset, [0x0080, 0x0fff], address);
+            self.note_distance(offset, [0x0080, 0x0fff], address);
             if rt != PC {
                 let size = if first & 0x20 == 0 { 1 } else { 2 };
                 self.constant(address, size);
@@ -282,7 +282,7 @@ impl<'a> Scanner<'a> {
         }
         if first & 0xff7f == 0xe95f {
             let address = literal(pc, first, u64::from(second & 0xff) * 4);
-            self.relative(offset, [0x0080, 0x00ff], address);
+            self.note_distance(offset, [0x0080, 0x00ff], address);
             self.constant(address, 8);
             return None;
         }
@@ -298,7 +298,7 @@ impl<'a> Scanner<'a> {
             && let Some((size, scale)) = vldr
         {
             let address = literal(pc, first, u64::from(second & 0xff) * scale);
-            self.relative(offset, [0x0080, 0x00ff], address);
+            self.note_distance(offset, [0x0080, 0x00ff], address);
             self.constant(address, size);
             return None;
         }

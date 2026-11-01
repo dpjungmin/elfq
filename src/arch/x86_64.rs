@@ -30,7 +30,7 @@ pub(super) fn scan(code: &[u8], address: u64) -> Vec<CodeReference> {
 pub(super) fn operands(code: &[u8], address: u64) -> Operands {
     let mut decoder = Decoder::with_ip(64, code, address, DecoderOptions::NONE);
     let mut instruction = Instruction::default();
-    let mut relative = vec![0; code.len()];
+    let mut distance_bits = vec![0; code.len()];
     let mut targets = Vec::new();
     while decoder.can_decode() {
         decoder.decode_out(&mut instruction);
@@ -57,13 +57,13 @@ pub(super) fn operands(code: &[u8], address: u64) -> Operands {
             )
         };
         let site = (instruction.ip() - address) as usize;
-        if let Some(bits) = relative.get_mut(site + offset..site + offset + size) {
+        if let Some(bits) = distance_bits.get_mut(site + offset..site + offset + size) {
             bits.fill(0xff);
         }
         targets.push((site, target));
     }
     Operands {
-        relative,
+        distance_bits,
         targets,
         split: Vec::new(),
     }
@@ -199,15 +199,15 @@ mod tests {
         assert_eq!(runs_on(&[0x90, 0xcc], 0x1000), None);
     }
 
-    fn relative_bits(code: &[u8]) -> Vec<u8> {
-        operands(code, 0x1000).relative
+    fn distance_bits(code: &[u8]) -> Vec<u8> {
+        operands(code, 0x1000).distance_bits
     }
 
     #[test]
     fn a_call_holds_its_distance_in_its_rel32() {
         // call 0x1700
         let code = [0xe8, 0xfb, 0x06, 0x00, 0x00];
-        assert_eq!(relative_bits(&code), [0, 0xff, 0xff, 0xff, 0xff]);
+        assert_eq!(distance_bits(&code), [0, 0xff, 0xff, 0xff, 0xff]);
         assert_eq!(operands(&code, 0x1000).targets, [(0, 0x1700)]);
     }
 
@@ -215,12 +215,12 @@ mod tests {
     fn an_operand_relative_to_rip_holds_its_distance_in_its_disp32() {
         // lea rdi, [rip + 0x100]
         assert_eq!(
-            relative_bits(&[0x48, 0x8d, 0x3d, 0x00, 0x01, 0x00, 0x00]),
+            distance_bits(&[0x48, 0x8d, 0x3d, 0x00, 0x01, 0x00, 0x00]),
             [0, 0, 0, 0xff, 0xff, 0xff, 0xff]
         );
         // mov dword ptr [rip + 0x100], 5: the immediate is a number.
         assert_eq!(
-            relative_bits(&[0xc7, 0x05, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00]),
+            distance_bits(&[0xc7, 0x05, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00]),
             [0, 0, 0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0]
         );
     }
@@ -228,7 +228,7 @@ mod tests {
     #[test]
     fn a_jump_inside_the_code_is_left_out() {
         // jmp 0x1002; ret
-        assert_eq!(relative_bits(&[0xeb, 0x00, 0xc3]), [0, 0, 0]);
+        assert_eq!(distance_bits(&[0xeb, 0x00, 0xc3]), [0, 0, 0]);
     }
 
     #[test]

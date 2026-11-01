@@ -18,7 +18,8 @@
 //! `narrow_literal`, so a fix to one lands in both.
 
 use super::{
-    LR, PC, SP, align, branch, cbz_target, imm12, imm16, is_wide, literal, narrow_literal, relative,
+    LR, PC, SP, add_signed, align, branch, cbz_target, imm12, imm16, is_wide, literal,
+    narrow_literal,
 };
 use crate::arch::CodeReferenceKind;
 
@@ -593,13 +594,13 @@ fn narrow(address: u64, op: u16) -> Option<Effect> {
             0b1111 => Effect::new(0, 0).flow(Flow::Call),
             // b<cond> label
             condition => Effect::new(0, 0).flow(Flow::Branch {
-                target: relative(pc, u32::from(op & 0xff) << 1, 9),
+                target: add_signed(pc, u32::from(op & 0xff) << 1, 9),
                 when: When::Flags(condition),
             }),
         },
         // b label
         0b11100 => Effect::new(0, 0).flow(Flow::Branch {
-            target: relative(pc, u32::from(op & 0x7ff) << 1, 12),
+            target: add_signed(pc, u32::from(op & 0x7ff) << 1, 12),
             when: When::Always,
         }),
         _ => return None,

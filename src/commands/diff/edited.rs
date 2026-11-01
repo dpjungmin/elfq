@@ -145,7 +145,10 @@ impl<'a> Edits<'a> {
         // corresponds.
         let mut explained = vec![0u8; old.len()];
         if let Some((x, y)) = operands {
-            for (bits, (x, y)) in explained.iter_mut().zip(x.relative.iter().zip(&y.relative)) {
+            for (bits, (x, y)) in explained
+                .iter_mut()
+                .zip(x.distance_bits.iter().zip(&y.distance_bits))
+            {
                 *bits = x & y;
             }
             let new_numbers: HashMap<_, u64> = y

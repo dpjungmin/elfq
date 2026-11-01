@@ -68,7 +68,7 @@ fn last_instruction(code: &[u8], address: u64, endianness: Endianness) -> Option
         let first = instruction.first;
         if !instruction.is_padding() {
             let ending = match conditional {
-                0 => exit(first, instruction.second),
+                0 => ending_after(first, instruction.second),
                 _ => Ending::RunsOn,
             };
             last = Some((instruction.offset, ending));
@@ -113,7 +113,7 @@ pub(in crate::arch) fn leading_padding(code: &[u8]) -> usize {
 
 /// Where the processor goes after the instruction made of `first` and, if
 /// it is 32 bits long, `second`.
-fn exit(first: u16, second: u16) -> Ending {
+fn ending_after(first: u16, second: u16) -> Ending {
     let stops = if !is_wide(first) {
         // blx register
         if first & 0xff80 == 0x4780 {

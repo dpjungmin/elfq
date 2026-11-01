@@ -50,9 +50,9 @@ pub(in crate::arch) fn is_veneer(code: &[u8], name: Option<&str>) -> bool {
                     bits & halfword.mask == halfword.bits
                 })
             && match veneer.names {
-                Names::Any => true,
-                Names::NoneOrLinkers => name.is_none_or(is_linker_name),
-                Names::Linkers => name.is_some_and(is_linker_name),
+                VeneerNames::Any => true,
+                VeneerNames::NoneOrLinkers => name.is_none_or(is_linker_name),
+                VeneerNames::Linkers => name.is_some_and(is_linker_name),
             }
     })
 }
@@ -69,11 +69,11 @@ struct Veneer {
     /// Whether a word, the target or its offset from pc, follows them.
     word: bool,
     /// The names that code like it may have and be a veneer.
-    names: Names,
+    names: VeneerNames,
 }
 
 /// The names a [`Veneer`] may have, from the symbol table.
-enum Names {
+enum VeneerNames {
     /// Any: compilers don't make such code.
     Any,
     /// None, or one that a linker gives veneers: compilers make the same
@@ -90,7 +90,7 @@ const VENEERS: [Veneer; 9] = [
     Veneer {
         instructions: &[exactly(0xf85f), exactly(0xf000)],
         word: true,
-        names: Names::Any,
+        names: VeneerNames::Any,
     },
     // GNU ld, Cortex-M0 and M23.
     Veneer {
@@ -103,7 +103,7 @@ const VENEERS: [Veneer; 9] = [
             exactly(0xbf00),
         ],
         word: true,
-        names: Names::Any,
+        names: VeneerNames::Any,
     },
     // GNU ld, --pic-veneer.
     Veneer {
@@ -116,13 +116,13 @@ const VENEERS: [Veneer; 9] = [
             exactly(0x4760),
         ],
         word: true,
-        names: Names::Any,
+        names: VeneerNames::Any,
     },
     // GNU ld, -mpure-code, and LLD, Cortex-M3 and up and M23.
     Veneer {
         instructions: &[MOVW_IP, TO_IP, MOVT_IP, TO_IP, exactly(0x4760)],
         word: false,
-        names: Names::NoneOrLinkers,
+        names: VeneerNames::NoneOrLinkers,
     },
     // LLD, --pic-veneer.
     Veneer {
@@ -135,7 +135,7 @@ const VENEERS: [Veneer; 9] = [
             exactly(0x4760),
         ],
         word: false,
-        names: Names::NoneOrLinkers,
+        names: VeneerNames::NoneOrLinkers,
     },
     // LLD, Cortex-M0.
     Veneer {
@@ -146,7 +146,7 @@ const VENEERS: [Veneer; 9] = [
             exactly(0xbd01),
         ],
         word: true,
-        names: Names::Any,
+        names: VeneerNames::Any,
     },
     // LLD, Cortex-M0, execute-only code.
     Veneer {
@@ -163,7 +163,7 @@ const VENEERS: [Veneer; 9] = [
             exactly(0xbd01),
         ],
         word: false,
-        names: Names::Any,
+        names: VeneerNames::Any,
     },
     // LLD, Cortex-M0, -pie.
     Veneer {
@@ -176,7 +176,7 @@ const VENEERS: [Veneer; 9] = [
             exactly(0x46c0),
         ],
         word: true,
-        names: Names::Any,
+        names: VeneerNames::Any,
     },
     // LLD, when the veneer is in reach of the target, though the call isn't.
     Veneer {
@@ -191,7 +191,7 @@ const VENEERS: [Veneer; 9] = [
             },
         ],
         word: false,
-        names: Names::Linkers,
+        names: VeneerNames::Linkers,
     },
 ];
 
