@@ -17,7 +17,7 @@ use std::collections::HashSet;
 
 use super::Build;
 use super::blocks::Block;
-use super::rows::{Items, Status};
+use super::changes::{Items, Status};
 use crate::commands::range_check::{self, CrossingRow};
 use crate::graph::{Boundary, Node, ReferenceKind};
 

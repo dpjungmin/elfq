@@ -14,9 +14,10 @@ use std::io::Write;
 use anyhow::Result;
 
 use super::blocks::{Block, SectionChange};
+use super::changes::{Change, Status};
 use super::crossings::Crossing;
 use super::pairing::{self, is_made_name, same_but_numbers};
-use super::rows::{Change, ChangeRow, MovedRow, Status};
+use super::rows::{ChangeRow, MovedRow};
 use super::{Answer, Build, Compared};
 use crate::binary::{FileKind, Item, total};
 use crate::commands::json::address;
@@ -286,7 +287,7 @@ fn no_keepers(compared: &Compared) -> Option<String> {
 struct Rows<'c, 'a> {
     compared: &'c Compared<'a>,
     /// Where the compiler inlined the gone functions that CHANGE shows (see
-    /// [`Items::inlined_into`](super::rows::Items::inlined_into)).
+    /// [`Items::inlined_into`](super::changes::Items::inlined_into)).
     inlined_into: HashMap<usize, Vec<usize>>,
     old: RowNames<'c, 'a>,
     new: RowNames<'c, 'a>,
@@ -569,12 +570,12 @@ impl RowNames<'_, '_> {
 
 /// The Try line's question: why the new build has the item that heads the
 /// subtree of new items with the most new bytes (see
-/// [`Items::heads`](super::rows::Items::heads)), as SYMBOL names it, as the
-/// overview's Try line picks an item for `why`: one that something keeps,
-/// rather than a place where the program starts, which `why` only names,
-/// and with a name of its own. Of subtrees of the same bytes, the one that
-/// the table lists first. Not for a shared library, which `why` doesn't
-/// answer for yet.
+/// [`Items::heads`](super::changes::Items::heads)), as SYMBOL names it, as
+/// the overview's Try line picks an item for `why`: one that something
+/// keeps, rather than a place where the program starts, which `why` only
+/// names, and with a name of its own. Of subtrees of the same bytes, the one
+/// that the table lists first. Not for a shared library, which `why`
+/// doesn't answer for yet.
 fn try_why(compared: &Compared, heads: &[usize]) -> Option<String> {
     let items = &compared.items;
     let new = items.new;

@@ -15,8 +15,8 @@ use serde::ser::SerializeSeq;
 use serde::{Serialize, Serializer};
 
 use super::blocks::{Block, Place};
+use super::changes::{Change, Status};
 use super::pairing::PairedBy;
-use super::rows::{Change, Status};
 use super::{Answer, Build, Compared};
 use crate::binary::{Binary, total};
 use crate::commands::json::{self, address};
@@ -269,7 +269,7 @@ struct ItemsJson<'c, 'a> {
     /// The changes, in the order of the rows.
     order: Vec<usize>,
     /// Where the compiler inlined each gone function (see
-    /// [`Items::inlined_into`](super::rows::Items::inlined_into)).
+    /// [`Items::inlined_into`](super::changes::Items::inlined_into)).
     inlined_into: HashMap<usize, Vec<usize>>,
 }
 
