@@ -5,7 +5,7 @@
 
 use std::collections::BTreeSet;
 
-use super::state::{RESULT, State, Value};
+use super::state::{Contents, RESULT, State, Value};
 use crate::arch::thumb::PC;
 use crate::arch::thumb::decode::{Registers, each};
 
@@ -106,7 +106,7 @@ impl AddressUses {
     pub(super) fn reads(&mut self, state: &State, registers: Registers) {
         self.reads_stale_lost |= each(registers).any(|register| {
             let contents = state.registers[usize::from(register)];
-            contents.saturated && contents.stale
+            matches!(contents, Contents::TooMany { stale: true })
         });
     }
 
@@ -124,7 +124,7 @@ impl AddressUses {
     /// Records that the code loads back what the word on the stack at
     /// `offset` holds; see [`AddressUses::loaded`].
     pub(super) fn loads_back(&mut self, state: &State, offset: i32) {
-        for value in state.word(offset).values.iter() {
+        for value in state.word(offset).values() {
             if let Some(source) = value.source {
                 self.loaded.insert((offset, source));
             }
@@ -138,7 +138,7 @@ impl AddressUses {
     /// code reads them.
     pub(super) fn record_registers(&mut self, state: &State, registers: Registers, how: Use) {
         for register in each(registers).filter(|&register| register != PC) {
-            for value in state.get(register, 0).values.iter() {
+            for value in state.get(register, 0).values() {
                 self.record(value, how);
             }
         }
@@ -152,7 +152,7 @@ impl AddressUses {
         if register != RESULT {
             return;
         }
-        for value in state.registers[usize::from(register)].values.iter() {
+        for value in state.registers[usize::from(register)].values() {
             if value.stale {
                 self.record(value, Use::Other);
             }
@@ -162,7 +162,7 @@ impl AddressUses {
     /// Records that code reads the numbers in the word on the stack at
     /// `offset` where elfq can't follow them.
     pub(super) fn record_word(&mut self, state: &State, offset: i32) {
-        for value in state.word(offset).values.iter() {
+        for value in state.word(offset).values() {
             self.record(value, Use::Other);
         }
     }
@@ -171,7 +171,7 @@ impl AddressUses {
     /// where elfq can't follow them.
     pub(super) fn record_stack(&mut self, state: &State) {
         for contents in state.stack.values() {
-            for value in contents.values.iter() {
+            for value in contents.values() {
                 self.record(value, Use::Other);
             }
         }
@@ -186,7 +186,7 @@ impl AddressUses {
             if sp.is_some_and(|sp| offset < sp) {
                 continue;
             }
-            for value in contents.values.iter() {
+            for value in contents.values() {
                 let loaded_back = value
                     .source
                     .is_some_and(|source| self.loaded.contains(&(offset, source)));
@@ -204,7 +204,7 @@ impl AddressUses {
     /// may have changed.
     pub(super) fn pass_registers(&mut self, state: &State, registers: Registers) {
         for register in each(registers).filter(|&register| register != PC) {
-            for value in state.registers[usize::from(register)].values.iter() {
+            for value in state.registers[usize::from(register)].values() {
                 if !value.stale {
                     self.record(value, Use::Other);
                 }
