@@ -1447,11 +1447,12 @@ table (`vector_table::find`).
    each stage after that reads: the file, the RAM sections, the reset
    handler, `main`, the events and how the walk ended. `steps::build`
    reads the events as steps: the copies, the zeroings, the calls
-   around them and the code that elfq can't follow. `problems::judge`
-   works out the state of each section when `main` starts, and the
-   problems and the notes. Then `text::write`, or `json::write` with
-   `--json`, writes the `Answer`, and `run` returns `Outcome::Problems`,
-   for exit status 1, when there is a problem.
+   around them and the code that elfq can't follow, in passes that the
+   module doc of `steps.rs` lists. `problems::judge` works out the state
+   of each section when `main` starts, and the problems and the notes.
+   Then `text::write`, or `json::write` with `--json`, writes the
+   `Answer`, and `run` returns `Outcome::Problems`, for exit status 1,
+   when there is a problem.
 
 `elfq FILE debug walk` (`commands/debug_walk.rs`) does only steps 2 to 4,
 from the reset handler, and lists the events.

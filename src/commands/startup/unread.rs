@@ -63,7 +63,7 @@ pub(super) fn unread_walked_loops(
             continue;
         }
         // 2.
-        let covered = |at: u32, size: u32| {
+        let in_a_region = |at: u32, size: u32| {
             let (at, size) = (u64::from(at), u64::from(size.max(1)));
             (steps.iter().filter_map(|step| step.region.as_ref()))
                 .any(|region| region.to <= at && at + size <= region.to + region.size)
@@ -75,7 +75,7 @@ pub(super) fn unread_walked_loops(
                 _ => None,
             })
             .filter(|store| match store.address {
-                Some(at) => ram.holding(u64::from(at)).is_some() && !covered(at, store.size),
+                Some(at) => ram.holding(u64::from(at)).is_some() && !in_a_region(at, store.size),
                 None => true,
             })
             .collect();
@@ -115,7 +115,7 @@ pub(super) fn unread_walked_loops(
 pub(super) fn loop_targets(
     ram: &RamSections,
     stores: &[&Store],
-    ready: &HashSet<usize>,
+    covered: &HashSet<usize>,
 ) -> Vec<usize> {
     let mut may: Vec<usize> = Vec::new();
     for store in stores {
@@ -123,7 +123,7 @@ pub(super) fn loop_targets(
             let zeros_only = stores.iter().all(|store| store.value == Some(0));
             return (ram.sections.iter().copied())
                 .filter(|section| {
-                    !ready.contains(section) && (!zeros_only || !ram.is_load(*section))
+                    !covered.contains(section) && (!zeros_only || !ram.is_load(*section))
                 })
                 .collect();
         }
@@ -131,7 +131,7 @@ pub(super) fn loop_targets(
         for at in [store.base, store.address].into_iter().flatten() {
             if let Some(first) = ram.holding(u64::from(at)) {
                 for section in ram.run_from(first) {
-                    if !ready.contains(&section) && !may.contains(&section) {
+                    if !covered.contains(&section) && !may.contains(&section) {
                         may.push(section);
                     }
                 }
@@ -170,7 +170,7 @@ pub(super) fn loop_calls(
     events: &Events,
     loop_event: usize,
     l: &Loop,
-    ready: &HashSet<usize>,
+    covered: &HashSet<usize>,
 ) -> Vec<usize> {
     let level = events.level(loop_event);
     let stores_into_ram = |event: usize| match &events.list[event] {
@@ -191,7 +191,7 @@ pub(super) fn loop_calls(
         return Vec::new();
     }
     (ram.sections.iter().copied())
-        .filter(|section| !ready.contains(section))
+        .filter(|section| !covered.contains(section))
         .collect()
 }
 
@@ -203,7 +203,7 @@ pub(super) fn loop_repeats(
     ram: &RamSections,
     steps: &[Step],
     l: &Loop,
-    ready: &HashSet<usize>,
+    covered: &HashSet<usize>,
 ) -> Vec<usize> {
     let mut may: Vec<usize> = Vec::new();
     let inner = (steps.iter()).filter(|step| step.way == Way::Loop && step.event >= l.events.start);
@@ -214,7 +214,8 @@ pub(super) fn loop_repeats(
             _ => continue,
         };
         for &section in &ram.sections {
-            if sections.contains(&section) && !ready.contains(&section) && !may.contains(&section) {
+            if sections.contains(&section) && !covered.contains(&section) && !may.contains(&section)
+            {
                 may.push(section);
             }
         }

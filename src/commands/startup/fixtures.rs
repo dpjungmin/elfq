@@ -1,7 +1,8 @@
 //! What the unit tests of `startup` build their walks from: firmware with
 //! two load images and two sections without contents ([`binary`]), the
 //! walk's events and stores, made by hand, and [`steps`], which writes the
-//! steps that [`build`] reads from such a walk, one a line.
+//! steps that [`build`] reads from such a walk, one a line. A test of one
+//! pass of `steps.rs` reads the facts of such a walk with [`with_facts`].
 
 use std::ops::Range;
 
@@ -10,7 +11,7 @@ use object::SectionKind;
 use super::events::Events;
 use super::ram_sections::RamSections;
 use super::start::Reset;
-use super::steps::build;
+use super::steps::{Step, build};
 use super::{Facts, Firmware};
 use crate::arch::InstructionSet;
 use crate::arch::startup::{
@@ -136,6 +137,20 @@ pub(super) fn steps(binary: &Binary, list: &[Event]) -> Vec<String> {
 
 /// As `steps`, for a walk that ended at `end`.
 pub(super) fn steps_to(binary: &Binary, list: &[Event], end: End) -> Vec<String> {
+    let ram = RamSections::new(binary);
+    (with_facts(binary, list, end, build).iter())
+        .map(|step| described(&ram, step))
+        .collect()
+}
+
+/// What `f` makes of the facts of startup code in `binary` whose walk,
+/// from the reset handler at 0x8000000, found `list` and ended at `end`.
+pub(super) fn with_facts<T>(
+    binary: &Binary,
+    list: &[Event],
+    end: End,
+    f: impl FnOnce(&Facts) -> T,
+) -> T {
     let graph = Graph::default();
     let firmware = firmware(binary, &graph);
     let ram = RamSections::new(binary);
@@ -154,26 +169,28 @@ pub(super) fn steps_to(binary: &Binary, list: &[Event], end: End) -> Vec<String>
         events: &events,
         end,
     };
-    (build(&facts).iter())
-        .map(|step| {
-            let covers: Vec<String> = (step.covers().iter())
-                .map(|cover| format!("{} {}", ram.name(cover.section), cover.bytes))
-                .chain(
-                    step.may
-                        .iter()
-                        .map(|&section| ram.name(section).to_string()),
-                )
-                .collect();
-            format!(
-                "{} {:#x} {} by a {}: {}",
-                step.does.word(),
-                step.region.as_ref().map_or(0, |region| region.to),
-                step.region.as_ref().map_or(0, |region| region.size),
-                step.way.field(),
-                covers.join(", ")
-            )
-        })
-        .collect()
+    f(&facts)
+}
+
+/// `step`, as "copy 0x20000000 32 by a loop: .data 32", with the sections
+/// it copies or zeroes, or may set up.
+pub(super) fn described(ram: &RamSections, step: &Step) -> String {
+    let covers: Vec<String> = (step.covers().iter())
+        .map(|cover| format!("{} {}", ram.name(cover.section), cover.bytes))
+        .chain(
+            step.may
+                .iter()
+                .map(|&section| ram.name(section).to_string()),
+        )
+        .collect();
+    format!(
+        "{} {:#x} {} by a {}: {}",
+        step.does.word(),
+        step.region.as_ref().map_or(0, |region| region.to),
+        step.region.as_ref().map_or(0, |region| region.size),
+        step.way.field(),
+        covers.join(", ")
+    )
 }
 
 /// A store at `site`, outside loops, of a word loaded from `from`, or

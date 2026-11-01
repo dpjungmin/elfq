@@ -6,7 +6,6 @@
 //! [`RamSections::matched`]), they make a step, or extend the step of a
 //! piece they join ([`Pieces::add`]).
 
-use std::collections::HashSet;
 use std::ops::Range;
 
 use super::events::WalkedIteration;
@@ -181,8 +180,8 @@ impl Pieces {
     ///    bytes of stores alone, only when they cover whole sections,
     ///    copied from their load images), the pieces it would join stay as
     ///    they are. A store's piece is kept alone, for the stores after it
-    ///    to join; a loop's goes, and `build` asks what the loop may set up
-    ///    (see `unread.rs`).
+    ///    to join; a loop's goes, and `StepReader::on_loop` asks what the
+    ///    loop may set up (see `unread.rs`).
     /// 3. Else the joined bytes make a step, or extend the step of a piece
     ///    they join, and take the place of the pieces they join.
     pub fn add(
@@ -191,7 +190,6 @@ impl Pieces {
         piece: Piece,
         event: usize,
         steps: &mut Vec<Step>,
-        ready: &mut HashSet<usize>,
     ) -> bool {
         // 1.
         let across = piece.home.iteration.is_some() && step_match(ram, &piece).is_none();
@@ -232,7 +230,6 @@ impl Pieces {
                 steps.len() - 1
             }
         };
-        ready.extend(steps[index].covers().iter().map(|cover| cover.section));
         taken.sort_unstable();
         for i in taken.into_iter().rev() {
             self.0.remove(i);
@@ -257,7 +254,6 @@ impl Pieces {
         store: &Store,
         home: Home,
         steps: &mut [Step],
-        ready: &mut HashSet<usize>,
     ) {
         if store.address.is_some() || store.conditional {
             return;
@@ -285,9 +281,6 @@ impl Pieces {
             }
         }
         step.make_unread(may);
-        *ready = (steps.iter())
-            .flat_map(|step| step.covers().iter().map(|cover| cover.section))
-            .collect();
     }
 }
 
