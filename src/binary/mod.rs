@@ -28,9 +28,38 @@
 //! scans each function's code once (see [`Binary::code_references`]).
 //! `load.rs` takes these steps, in this order.
 //!
-//! [`LoadedMemory`] reads only a file's section headers, and the bytes that
-//! its sections put in memory, which `diff` compares before it needs any
-//! item (see `memory.rs`).
+//! # How the files are organized
+//!
+//! - This file has the types, such as [`Binary`], [`Section`] and
+//!   [`Item`], the queries that the rest of elfq asks of them, and the
+//!   reading of the bytes and pointers that the file stores at an address.
+//! - `load.rs` loads a file: it reads everything but the items, then takes
+//!   the steps above in order. It holds the steps, or parts of them, that
+//!   have no file of their own.
+//! - `sections.rs` parses the file, refusing one that isn't a linked program
+//!   or library, and reads the section headers, and from the program
+//!   headers, where each section's load image is, for `load.rs` and
+//!   `memory.rs`.
+//! - `symbols.rs`, `plt.rs`, `vector_table.rs`, `unnamed_functions.rs` and
+//!   `unnamed_data.rs` find the items of the steps that name them.
+//!   `eh_frame.rs` reads the unwind table's function ranges and personality
+//!   routines, `relocations.rs` the dynamic relocations, and `attributes.rs`
+//!   the version of the Arm architecture that the code is built for.
+//! - `names.rs` makes mangled names readable, and works out the short
+//!   names that people type for long ones.
+//! - `memory.rs` has [`LoadedMemory`], which reads only a file's section
+//!   headers and the bytes that its sections put in memory, which `diff`
+//!   compares before it needs any item. `header.rs` reads only the ELF
+//!   header and program headers, for `startup` to refuse a file for
+//!   another processor before loading it.
+//! - `range.rs` has address ranges, and the blocks of addresses that the
+//!   sections and their load images occupy.
+//! - `startup.rs` gives the startup walk (`arch::startup::Program`) the
+//!   file's code, the words that memory holds at reset, as in flash or a
+//!   load image, and where its functions are.
+//!
+//! The unit tests of `names.rs` and `vector_table.rs` are in
+//! `names/tests.rs` and `vector_table/tests.rs`.
 
 mod attributes;
 mod eh_frame;
@@ -131,7 +160,8 @@ pub struct Binary {
     /// Problems that did not stop loading but may make answers incomplete.
     pub warnings: Vec<String>,
     /// The references in each function's code, by its address and size;
-    /// see [`Binary::code_references`].
+    /// see [`Binary::code_references`]. Not by item index, since unnamed
+    /// data is added, and the items sorted again, after the scan.
     code_references: HashMap<(u64, u64), Vec<CodeReference>>,
     /// The whole file.
     data: Vec<u8>,
@@ -489,10 +519,16 @@ impl Binary {
     }
 
     /// The item whose bytes include `address`, as an index into
-    /// [`Binary::items`].
+    /// [`Binary::items`]: of the items that start at the last address at or
+    /// before `address`, the smallest that holds it, as when a function of
+    /// unknown size and a data object start at one address. An item that
+    /// starts before that address isn't found, though it may hold `address`
+    /// too: a function whose code goes on after one that starts inside it
+    /// stays whole (see `end_where_functions_start`), and after the inner
+    /// one ends, `item_at` doesn't find the outer one: it finds an item that
+    /// starts after the inner one, such as unnamed data that step 7 adds
+    /// there, or nothing.
     pub fn item_at(&self, address: u64) -> Option<usize> {
-        // Items don't overlap, except that several can start at one address,
-        // such as a function of unknown size and a data object.
         let end = self.items.partition_point(|item| item.address <= address);
         let start = self.items.get(end.checked_sub(1)?)?.address;
         (0..end)

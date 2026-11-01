@@ -1,3 +1,12 @@
+//! The section headers, read for both [`Binary`](super::Binary) and
+//! [`LoadedMemory`](super::LoadedMemory): each section's name, where it is
+//! in memory and where the file stores its bytes, and from the program
+//! headers, where its load image is ([`Section::load_address`]). A damaged
+//! header is read as far as it makes sense (see `read_sections` and
+//! `fitting_size`). Here too is [`parse_program`], which parses the file,
+//! tells which kind it is and refuses one that isn't a linked program or
+//! library.
+
 use anyhow::{Context, Result, bail};
 use object::read::elf::{ElfFile, FileHeader, ProgramHeader, SectionHeader};
 use object::{Object, ObjectKind, ObjectSection, SectionFlags, SectionIndex, SectionKind};

@@ -1,4 +1,5 @@
-//! Names for PLT stubs.
+//! Items for PLT stubs, named after what they jump to, and the file's own
+//! functions that stubs jump to.
 //!
 //! Code calls a function in a shared library through a stub in the procedure
 //! linkage table (`.plt`, `.plt.sec` or `.plt.got`), which jumps through a

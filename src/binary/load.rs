@@ -1,3 +1,12 @@
+//! Loading a file ([`Binary::load`]). `read_all_but_items` reads the
+//! sections, relocations and vector table, then [`Binary::from_vec`] finds
+//! the items in the steps that the module doc of `binary` lists, marked with
+//! its numbers, through the file of each step that has one. The steps, or
+//! parts of them, that have no file of their own are here: the startup
+//! arrays, the functions for the unwind table's ranges, which `eh_frame.rs`
+//! reads, and the entry point. So is settling the sizes of functions before
+//! `scan_functions` reads each one's code once.
+
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 

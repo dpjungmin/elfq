@@ -1170,8 +1170,9 @@ finds its items and has `arch` read each function's code once; `graph`
 connects the items by the references found there, and works out the roots,
 the dominator tree and the shortest chains; and the command picks what to
 show and writes it, as a table that `render` lays out, or as JSON.
-`debuginfo` reads DWARF beside the graph, for `inlined`, and to say when
-SYMBOL names a function that the compiler inlined. [Life of a
+`debuginfo` reads DWARF beside the graph, for `inlined`, to say when
+SYMBOL names a function that the compiler inlined, and for `startup`, to
+find a `main` that the compiler inlined. [Life of a
 command](#life-of-a-command) follows one command through the functions
 that do this.
 
@@ -1309,9 +1310,10 @@ that do this.
    inlined-subroutine entry is a copy of one function in another, with the
    address ranges of its code. `inlined` adds them up. Copies whose code the
    linker dropped still have entries, so elfq skips those that don't start
-   inside an item. A SYMBOL that no item has is looked for among them too.
-   Nothing above depends on DWARF; source locations could make output
-   easier to follow later.
+   inside an item. A SYMBOL that no item has is looked for among them too,
+   and for `startup`, a `main` that the compiler inlined. Nothing above
+   depends on DWARF; source locations could make output easier to follow
+   later.
 
 ## Life of a command
 
@@ -1326,13 +1328,15 @@ in order. Its output is the first example under [Commands](#commands).
 2. **Dispatch.** `commands::run` checks that the arguments go together
    (`arguments::check_before_loading`), before it reads the file, then
    loads the file, prints any warnings about it, and calls `retained::run`.
-3. **Loading.** `binary::Binary::load` reads the file with the `object`
-   crate: its sections, the dynamic relocations, which name the imports and
-   the pointers the loader stores, and in Thumb files the vector table
-   (`vector_table::find`). Then it finds the items: `symbols::items`,
-   `plt::stubs`, the startup arrays, `eh_frame::read`, the entry point, the
-   vector table, in stripped firmware `unnamed_functions::add`. Then it has
-   `InstructionSet::scan` read each function's code once
+3. **Loading.** `binary::Binary::load`, in binary/load.rs, reads the
+   file with the `object` crate. `read_all_but_items` reads its
+   sections, the dynamic relocations, which name the imports and the
+   pointers the loader stores, and in Thumb files the vector table
+   (`vector_table::find`). Then `from_vec` finds the items, in the steps
+   that the module doc of `binary` numbers: `symbols::items`,
+   `plt::stubs`, the startup arrays, `eh_frame::read`, the entry point,
+   the vector table, in stripped firmware `unnamed_functions::add`. Then
+   it has `InstructionSet::scan` read each function's code once
    (`scan_functions`), and last `unnamed_data::items` finds there the
    addresses of data that no symbol names.
 4. **SYMBOL.** `retained::run` checks that elfq can read the file's code
@@ -1395,7 +1399,7 @@ commands/    2 commands::run   4 retained::run, Names::find
              7 retained::answer, RetainedTree::largest, tree_row
 cli/         1 Cli, Command
 render/      7 Table::tree, Table::write
-debuginfo/   (for inlined, and SYMBOL that the compiler inlined)
+debuginfo/   (for inlined, an inlined SYMBOL, and startup's inlined main)
 graph/       5 Graph::build, roots::find   6 DominatorTree::build
 binary/      3 Binary::load, scan_functions, unnamed_data::items
 arch/        3 InstructionSet::scan
