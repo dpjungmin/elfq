@@ -38,7 +38,8 @@
 //! steps, as in `Setup::step`, `Problem::steps` and `Problem::before`,
 //! and where elfq writes it out, by its number, from 1 (`steps::number`).
 //! What every stage reads once the walk is done, from the file to how the
-//! walk ended, is in `Facts`.
+//! walk ended, is in `Facts`, and where startup ends, which the text and
+//! the JSON say, is its `Ending`.
 //!
 //! docs/design.md's "Startup, end to end" follows one run through this
 //! module, `arch::startup`, `arch::thumb::startup` and `binary::startup`.
@@ -72,7 +73,7 @@ use crate::graph::{Graph, Node, VeneerTarget, Veneers};
 use events::Events;
 use problems::Judged;
 use ram_sections::RamSections;
-use start::{Main, Reset};
+use start::{Main, MainFrom, Reset};
 use steps::Step;
 
 /// What startup refuses to read, and why: the end of each refusal.
@@ -198,14 +199,35 @@ struct Facts<'a> {
 }
 
 impl Facts<'_> {
-    /// Whether the walk got to `main`, as against a loop that the reset
-    /// handler runs for good, taken as where its startup ends.
-    fn reached_main(&self) -> bool {
-        matches!(self.end, End::Main(_))
-            && self
-                .main
-                .is_some_and(|main| main.from != start::MainFrom::Loop)
+    /// Where startup ends, from how the walk ended and where `main` is.
+    fn ending(&self) -> Ending {
+        match (self.end, self.main) {
+            (End::Main(_), Some(main)) if main.from == MainFrom::Loop => {
+                Ending::EndlessLoop(main.address)
+            }
+            (End::Main(_), Some(main)) if main.address == self.reset.address => {
+                Ending::EntryIsMain(main)
+            }
+            (End::Main(_), Some(main)) => Ending::Main(main),
+            (end, _) => Ending::Walk(end),
+        }
     }
+}
+
+/// Where startup ends (see [`Facts::ending`]), as the lead and the JSON's
+/// `main` keys say.
+#[derive(Debug, Clone, Copy)]
+enum Ending {
+    /// The processor starts at `main`, so no startup code runs before it.
+    EntryIsMain(Main),
+    /// The walk got to `main`: a call to it, or the code of a `main` that a
+    /// compiler inlined into the reset handler.
+    Main(Main),
+    /// The head of the reset handler's endless loop, where its startup
+    /// ends: the reset handler is the program ([`MainFrom::Loop`]).
+    EndlessLoop(u64),
+    /// The walk ended before `main`, as its end says.
+    Walk(End),
 }
 
 /// Everything startup found, for the text and the JSON to write.

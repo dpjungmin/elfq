@@ -106,9 +106,6 @@ impl RunsAt {
 
 pub(super) struct Problem {
     pub kind: Kind,
-    /// False for code elfq can't follow, which may be a problem or not, and
-    /// for a use of a load image after such code.
-    pub certain: bool,
     pub sections: Vec<usize>,
     /// The steps it is about, as indexes into the steps.
     pub steps: Vec<usize>,
@@ -126,13 +123,16 @@ pub(super) struct Problem {
     pub sites: Vec<u64>,
     /// Where in the walk the code runs from the load image.
     pub uses: Vec<RunsAt>,
+    /// For code that runs before its copy, the unread steps up to where it
+    /// first runs that may copy the load image first, as indexes into the
+    /// steps.
+    pub unless: Vec<usize>,
 }
 
 impl Problem {
     fn new(kind: Kind, sections: Vec<usize>) -> Problem {
         Problem {
             kind,
-            certain: true,
             sections,
             steps: Vec::new(),
             items: Vec::new(),
@@ -142,7 +142,15 @@ impl Problem {
             from: None,
             sites: Vec::new(),
             uses: Vec::new(),
+            unless: Vec::new(),
         }
+    }
+
+    /// Whether the problem is certain: not for code elfq can't follow,
+    /// which may be a problem or not, nor for code that runs from a load
+    /// image after unread steps that may copy it first.
+    pub fn certain(&self) -> bool {
+        self.kind != Kind::CantFollow && self.unless.is_empty()
     }
 
     /// The first place in the walk where the code runs from the load
@@ -193,6 +201,9 @@ pub(super) struct Judged {
     /// Where the first certain problem is, after which nothing can be
     /// counted on.
     pub fatal: Option<RunsAt>,
+    /// The state of each section that startup code sets up when `main`
+    /// starts (see [`Judged::status`]).
+    statuses: HashMap<usize, SectionStatus>,
     pub problems: Vec<Problem>,
     pub notes: Vec<Note>,
     /// For each load image that holds code, the functions that must stay
@@ -215,9 +226,25 @@ impl Judged {
             .is_none_or(|fatal| RunsAt::Event(step.event) < fatal)
     }
 
-    /// The state of `section` when `main` starts, with the step that sets
-    /// it up and how many of its bytes.
-    pub fn status(&self, steps: &[Step], ram: &RamSections, section: usize) -> SectionStatus {
+    /// Whether `step` may never run: it comes after the first certain
+    /// problem, or copies or zeroes at its event, after the code that runs
+    /// from a load image there.
+    pub fn may_never_run(&self, step: &Step) -> bool {
+        self.fatal.is_some_and(|fatal| {
+            let at = RunsAt::Event(step.event);
+            at > fatal || (at == fatal && matches!(step.does, Does::Copy | Does::Zero))
+        })
+    }
+
+    /// The state of `section`, one of the RAM sections, when `main` starts,
+    /// with the step that sets it up and how many of its bytes.
+    pub fn status(&self, section: usize) -> SectionStatus {
+        self.statuses[&section]
+    }
+
+    /// Works out the state of `section` when `main` starts, which
+    /// [`Judged::status`] gives: once the first certain problem is known.
+    fn work_out_status(&self, steps: &[Step], ram: &RamSections, section: usize) -> SectionStatus {
         let unset = |status| SectionStatus {
             status,
             step: None,
@@ -311,6 +338,7 @@ pub(super) fn judge(facts: &Facts, steps: &[Step], all: bool) -> Judged {
         unread,
         complete: !stopped && !steps.iter().any(|step| step.does == Does::Unread),
         fatal: None,
+        statuses: HashMap::new(),
         problems: Vec::new(),
         notes: Vec::new(),
         keep_out: Vec::new(),
@@ -334,21 +362,27 @@ pub(super) fn judge(facts: &Facts, steps: &[Step], all: bool) -> Judged {
             p.items = plain;
         }
         let first = p.first();
-        p.certain = !steps.iter().any(|step| {
-            step.does == Does::Unread
-                && RunsAt::Event(step.event) <= first
-                && step.may.contains(&section)
-        });
+        p.unless = (steps.iter().enumerate())
+            .filter(|(_, step)| {
+                step.does == Does::Unread
+                    && RunsAt::Event(step.event) <= first
+                    && step.may.contains(&section)
+            })
+            .map(|(index, _)| index)
+            .collect();
     }
     judged.fatal = (problems.iter())
-        .filter(|p| p.certain)
+        .filter(|p| p.certain())
         .map(Problem::first)
         .min();
+    judged.statuses = (ram.sections.iter())
+        .map(|&section| (section, judged.work_out_status(steps, ram, section)))
+        .collect();
     // Load images not copied, copied short or from elsewhere; .bss and
     // .sbss not zeroed in full.
     let ran_from: Vec<usize> = problems.iter().map(|p| p.sections[0]).collect();
     for &section in &ram.sections {
-        let status = judged.status(steps, ram, section).status;
+        let status = judged.status(section).status;
         let setup = judged.init.get(&section).copied();
         match (status, setup) {
             (Status::NotCopied, _) if !ran_from.contains(&section) => {
@@ -393,7 +427,7 @@ pub(super) fn judge(facts: &Facts, steps: &[Step], all: bool) -> Judged {
     }
     // Code elfq can't follow that may set up a load image, .bss or .sbss.
     let unknown: Vec<usize> = (ram.sections.iter().copied())
-        .filter(|&section| judged.status(steps, ram, section).status == Status::Unknown)
+        .filter(|&section| judged.status(section).status == Status::Unknown)
         .collect();
     if unknown.iter().any(|&section| ram.required(section)) {
         let mut indexes: Vec<usize> = (unknown.iter())
@@ -408,7 +442,6 @@ pub(super) fn judge(facts: &Facts, steps: &[Step], all: bool) -> Judged {
             .filter(|&section| ram.required(section))
             .collect();
         let mut p = Problem::new(Kind::CantFollow, sections);
-        p.certain = false;
         p.steps = indexes;
         problems.push(p);
     }
@@ -808,38 +841,33 @@ fn notes(facts: &Facts, steps: &[Step], judged: &Judged, all: bool) -> Vec<Note>
             ));
         }
     }
-    let status = |section| judged.status(steps, ram, section).status;
+    let status = |section| judged.status(section).status;
     let named: Vec<usize> = (judged.problems.iter())
         .filter(|p| p.kind != Kind::CantFollow)
         .flat_map(|p| p.sections.iter().copied())
         .collect();
-    if let Some(fatal) = judged.fatal {
-        let later: Vec<usize> = (steps.iter().enumerate())
-            .filter(|(_, step)| {
-                let at = RunsAt::Event(step.event);
-                at > fatal || (at == fatal && matches!(step.does, Does::Copy | Does::Zero))
-            })
-            .map(|(index, _)| index)
+    let later: Vec<usize> = (steps.iter().enumerate())
+        .filter(|(_, step)| judged.may_never_run(step))
+        .map(|(index, _)| index)
+        .collect();
+    if !later.is_empty() {
+        let lost: Vec<usize> = (ram.sections.iter().copied())
+            .filter(|&section| status(section) == Status::NotReached)
             .collect();
-        if !later.is_empty() {
-            let lost: Vec<usize> = (ram.sections.iter().copied())
-                .filter(|&section| status(section) == Status::NotReached)
-                .collect();
-            let rest: Vec<&str> = (lost.iter())
-                .filter(|section| !named.contains(section))
-                .map(|&section| ram.name(section))
-                .collect();
-            let so = if rest.is_empty() {
-                String::new()
-            } else {
-                format!(", so {} may not be set up", names_text(&rest, all))
-            };
-            notes.push(note(
-                "not reached",
-                lost,
-                format!("{} may never run{so}.", text::steps_text(&later, true)),
-            ));
-        }
+        let rest: Vec<&str> = (lost.iter())
+            .filter(|section| !named.contains(section))
+            .map(|&section| ram.name(section))
+            .collect();
+        let so = if rest.is_empty() {
+            String::new()
+        } else {
+            format!(", so {} may not be set up", names_text(&rest, all))
+        };
+        notes.push(note(
+            "not reached",
+            lost,
+            format!("{} may never run{so}.", text::steps_text(&later, true)),
+        ));
     }
     let not_zeroed: Vec<usize> = (ram.zeros.iter().copied())
         .filter(|&section| status(section) == Status::NotZeroed && !named.contains(&section))
@@ -866,7 +894,7 @@ fn notes(facts: &Facts, steps: &[Step], judged: &Judged, all: bool) -> Vec<Note>
         ));
     }
     for &section in &ram.zeros {
-        let zeroed = judged.status(steps, ram, section);
+        let zeroed = judged.status(section);
         if zeroed.status == Status::PartlyZeroed && !named.contains(&section) {
             notes.push(note(
                 "partly zeroed",

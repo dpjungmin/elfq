@@ -7,12 +7,11 @@ use std::io::Write;
 use anyhow::Result;
 use serde::Serialize;
 
-use super::Answer;
 use super::problems::{Kind, SectionStatus};
 use super::start::MainFrom;
 use super::steps::{Step, number};
 use super::text;
-use crate::arch::startup::End;
+use super::{Answer, Ending};
 use crate::commands::json::{self as house, Item, address};
 use crate::graph::Node;
 
@@ -116,19 +115,14 @@ pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
     let ram = answer.facts.ram;
     let item =
         |address: u64| (firmware.item(address)).map(|index| Item::new(binary, Node::Item(index)));
-    let reached = answer.facts.reached_main();
-    let (main, main_at, main_from) = match answer.facts.main {
-        Some(main) if reached => (
-            (main.from != MainFrom::DebugInfo)
-                .then(|| item(main.address))
-                .flatten(),
+    let (main, main_at, main_from) = match answer.facts.ending() {
+        Ending::EntryIsMain(main) | Ending::Main(main) => (
+            main.function().and_then(item),
             Some(address(main.address)),
             Some(main.from.field()),
         ),
-        Some(main) if main.from == MainFrom::Loop && matches!(answer.facts.end, End::Main(_)) => {
-            (None, Some(address(main.address)), Some(main.from.field()))
-        }
-        _ => (None, None, None),
+        Ending::EndlessLoop(head) => (None, Some(address(head)), Some(MainFrom::Loop.field())),
+        Ending::Walk(_) => (None, None, None),
     };
     let names = |sections: &[usize]| -> Vec<&str> {
         sections.iter().map(|&section| ram.name(section)).collect()
@@ -161,7 +155,7 @@ pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
                 status,
                 step,
                 bytes,
-            } = answer.judged.status(answer.steps, ram, section);
+            } = answer.judged.status(section);
             Section {
                 name: ram.name(section),
                 start: address(ram.section(section).address),
@@ -190,7 +184,7 @@ pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
             };
             ProblemRow {
                 kind: p.kind.field(),
-                certain: p.certain,
+                certain: p.certain(),
                 steps: p.steps.iter().map(|&index| number(index)).collect(),
                 sections: names(&p.sections),
                 items: p.items.iter().filter_map(|&a| item(a)).collect(),
@@ -226,7 +220,9 @@ pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
         main_at,
         main_from,
         complete: answer.judged.complete,
-        problems_certain: answer.judged.problems.iter().filter(|p| p.certain).count(),
+        problems_certain: (answer.judged.problems.iter())
+            .filter(|p| p.certain())
+            .count(),
         steps,
         sections,
         problems,

@@ -7,9 +7,9 @@ use anyhow::Result;
 
 use super::problems::{Kind, Problem, RunsAt, Status};
 use super::ram_sections::RamSections;
-use super::start::MainFrom;
+use super::start::{Main, MainFrom};
 use super::steps::{Does, Step, Way, number};
-use super::{Answer, Facts, Firmware};
+use super::{Answer, Ending, Facts, Firmware};
 use crate::arch::startup::{End, Through, loop_head};
 use crate::binary::Section;
 use crate::commands::text::{self as house, names_text, plural, shell_quote};
@@ -66,18 +66,11 @@ fn lead(answer: &Answer) -> String {
     let firmware = answer.facts.firmware;
     let ram = answer.facts.ram;
     let boot = firmware.name(answer.facts.reset.address);
-    let main = answer.facts.main;
-    let inlined = main.is_some_and(|main| main.from == MainFrom::DebugInfo);
-    let reached = answer.facts.reached_main();
-    let endless = match (answer.facts.end, main) {
-        (End::Main(_), Some(main)) if main.from == MainFrom::Loop => Some(main.address),
-        _ => None,
-    };
+    let ending = answer.facts.ending();
     let problems = &answer.judged.problems;
     // Without startup code, as when the entry point is main.
-    let first = reached && main.is_some_and(|main| main.address == answer.facts.reset.address);
-    if first {
-        let main = firmware.name(answer.facts.reset.address);
+    if let Ending::EntryIsMain(_) = ending {
+        let main = boot;
         return match problems.len() {
             0 => format!(
                 "No problems: the processor starts at {main}, so no startup code runs before it."
@@ -89,22 +82,10 @@ fn lead(answer: &Answer) -> String {
         };
     }
     if !problems.is_empty() {
-        let end = if reached && inlined {
-            " before it runs main".to_string()
-        } else if reached {
-            format!(" before it calls {}", main_text(answer))
-        } else if let Some(head) = endless {
-            format!(" before its endless loop at {head:#x}")
-        } else {
-            match answer.facts.end {
-                End::Spins(_) => " before it spins".to_string(),
-                End::Returns(_) => " before it returns".to_string(),
-                _ => String::new(),
-            }
-        };
         return format!(
-            "{} in what {boot} does{end}:",
-            plural(problems.len(), "problem", "problems")
+            "{} in what {boot} does{}:",
+            plural(problems.len(), "problem", "problems"),
+            before_text(firmware, ending)
         );
     }
     if ram.sections.is_empty() {
@@ -115,19 +96,17 @@ fn lead(answer: &Answer) -> String {
     }
     // The sections in the order the steps set them up.
     let mut ordered = ram.sections.clone();
-    let first = |section: usize| {
-        (answer.steps.iter())
-            .position(|step| step.covers().iter().any(|cover| cover.section == section))
-            .unwrap_or(answer.steps.len())
-    };
-    ordered.sort_by_key(|&section| first(section));
-    let status = |section| answer.judged.status(answer.steps, ram, section).status;
+    let init = &answer.judged.init;
+    ordered.sort_by_key(|section| {
+        init.get(section)
+            .map_or(answer.steps.len(), |setup| setup.step)
+    });
+    let status = |section| answer.judged.status(section).status;
     // What the steps from event `from` up to `to` copy and zero.
     let parts = |from: usize, to: usize| {
         let by = |section: usize| {
-            (answer.steps.iter())
-                .find(|step| step.covers().iter().any(|cover| cover.section == section))
-                .is_some_and(|step| (from..to).contains(&step.event))
+            (init.get(&section))
+                .is_some_and(|setup| (from..to).contains(&answer.steps[setup.step].event))
         };
         let mut parts = Vec::new();
         for (verb, wanted) in [("copies", Status::Copied), ("zeroes", Status::Zeroed)] {
@@ -144,12 +123,13 @@ fn lead(answer: &Answer) -> String {
     let events = answer.facts.events;
     // The last call the reset handler makes, when it doesn't return: it may
     // do the copies and zeroings itself, as Zephyr's z_prep_c does.
-    let last = match answer.facts.end {
-        End::RunsOff(_) => (0..events.list.len())
+    let last = if let Ending::Walk(End::RunsOff(_)) = ending {
+        (0..events.list.len())
             .rev()
             .filter(|&event| events.level(event) == 0)
-            .find_map(|event| events.target(event).map(|target| (event, target))),
-        _ => None,
+            .find_map(|event| events.target(event).map(|target| (event, target)))
+    } else {
+        None
     };
     if let Some((event, last)) = last {
         let before = parts(0, event);
@@ -172,40 +152,71 @@ fn lead(answer: &Answer) -> String {
     } else {
         parts.join(", ")
     };
-    let then = if reached && inlined {
-        "then runs main, inlined into it".to_string()
-    } else if reached {
-        format!("then calls {}", main_text(answer))
-    } else if let Some(head) = endless {
-        format!("then runs its endless loop at {head:#x}")
-    } else {
-        match answer.facts.end {
+    let then = then_text(answer, ending, last.map(|(_, last)| last));
+    format!("No problems: {boot} {what}, {then}.")
+}
+
+/// How startup ends, for the lead when there are problems: " before it
+/// calls main", or nothing when the walk ends some other way.
+fn before_text(firmware: &Firmware, ending: Ending) -> String {
+    match ending {
+        Ending::EntryIsMain(main) | Ending::Main(main) => match main.from {
+            MainFrom::DebugInfo => " before it runs main".to_string(),
+            MainFrom::Symbol | MainFrom::Guess | MainFrom::Loop => {
+                format!(" before it calls {}", main_text(firmware, main))
+            }
+        },
+        Ending::EndlessLoop(head) => format!(" before its endless loop at {head:#x}"),
+        Ending::Walk(End::Spins(_)) => " before it spins".to_string(),
+        Ending::Walk(End::Returns(_)) => " before it returns".to_string(),
+        Ending::Walk(
+            End::Main(_)
+            | End::Loops(_)
+            | End::Rejoins(_)
+            | End::RunsOff(_)
+            | End::Undecoded(_)
+            | End::Branches { .. }
+            | End::LeavesFile { .. }
+            | End::Budget(_),
+        ) => String::new(),
+    }
+}
+
+/// How startup ends, for the lead when there are no problems: "then calls
+/// main". `last_call` is the function that the reset handler's last call
+/// goes to, when the walk runs off the end of its code.
+fn then_text(answer: &Answer, ending: Ending, last_call: Option<u64>) -> String {
+    let firmware = answer.facts.firmware;
+    match ending {
+        Ending::EntryIsMain(main) | Ending::Main(main) => match main.from {
+            MainFrom::DebugInfo => "then runs main, inlined into it".to_string(),
+            MainFrom::Symbol | MainFrom::Guess | MainFrom::Loop => {
+                format!("then calls {}", main_text(firmware, main))
+            }
+        },
+        Ending::EndlessLoop(head) => format!("then runs its endless loop at {head:#x}"),
+        Ending::Walk(end) => match end {
             End::Spins(_) => "then spins".to_string(),
             End::Returns(_) => "then returns".to_string(),
-            End::RunsOff(_) => match last {
-                Some((_, last)) => {
-                    format!("then calls {}, which doesn't return", firmware.name(last))
-                }
+            End::RunsOff(_) => match last_call {
+                Some(last) => format!("then calls {}, which doesn't return", firmware.name(last)),
                 None => "then stops".to_string(),
             },
             End::Loops(site) => {
-                let head = loop_head(events.list, site);
+                let head = loop_head(answer.facts.events.list, site);
                 format!("then loops for good at {:#x}", head.unwrap_or(site))
             }
             End::Rejoins(at) => format!("then runs a loop elfq can't follow at {at:#x}"),
             End::Budget(site) => format!("then goes on past elfq's budget at {site:#x}"),
-            end => format!("then {}", other_way(end)),
-        }
-    };
-    format!("No problems: {boot} {what}, {then}.")
+            End::Main(_) | End::Undecoded(_) | End::Branches { .. } | End::LeavesFile { .. } => {
+                format!("then {}", other_way(end))
+            }
+        },
+    }
 }
 
-/// `main`'s name, as the lead and the table give it.
-fn main_text(answer: &Answer) -> String {
-    let Facts { firmware, main, .. } = *answer.facts;
-    let Some(main) = main else {
-        return String::new();
-    };
+/// `main`'s name, as the lead gives it.
+fn main_text(firmware: &Firmware, main: Main) -> String {
     match main.from {
         MainFrom::DebugInfo => "main".to_string(),
         MainFrom::Guess => format!("{} (taken as main)", firmware.name(main.address)),
@@ -331,25 +342,12 @@ pub(super) fn sentence(answer: &Answer, p: &Problem) -> String {
 /// For code that runs from a load image after code elfq can't follow,
 /// which may copy it first: ", unless step 1 (a loop) copies it first".
 fn unless(answer: &Answer, p: &Problem) -> String {
-    if p.certain {
-        return String::new();
-    }
-    let section = p.sections[0];
-    let first = p.first();
-    let indexes: Vec<usize> = (answer.steps.iter().enumerate())
-        .filter(|(_, step)| {
-            step.does == Does::Unread
-                && RunsAt::Event(step.event) <= first
-                && step.may.contains(&section)
-        })
-        .map(|(index, _)| index)
-        .collect();
-    if indexes.is_empty() {
+    if p.unless.is_empty() {
         return String::new();
     }
     format!(
         ", unless {} copies it first",
-        unread_text(answer.steps, &indexes)
+        unread_text(answer.steps, &p.unless)
     )
 }
 

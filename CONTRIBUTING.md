@@ -177,7 +177,9 @@ this list, and add to it when you bring in a word.
   zeroes: how many bytes, where, and for a copy, where from, with the
   sections that start in them (`ram_sections::Region`). **facts**: in
   `startup`, what each stage reads once the walk is done, from the file
-  to how the walk ended (`Facts`).
+  to how the walk ended (`Facts`). **ending**: where startup ends: at
+  `main`, at the reset handler's endless loop, or where the walk ended
+  before either (`Ending`); the walk's own end is an `End`.
   **row**: a line of a table that elfq prints; a loop over a table of
   sections also reads one row of that table each time it runs.
 - **event**: one thing that the startup walk records, such as a call, a
