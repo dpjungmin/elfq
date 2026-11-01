@@ -17,7 +17,7 @@ use super::eh_frame::UnwindFunction;
 use super::sections::{fitting_size, parse_program, read_sections};
 use super::{
     ArmArchitecture, Binary, FileKind, Item, ItemKind, Section, Source, attributes, code_address,
-    eh_frame, plt, relocations, symbols, unnamed_data, unnamed_functions, vector_table,
+    eh_frame, made_names, plt, relocations, symbols, unnamed_data, unnamed_functions, vector_table,
 };
 use crate::arch::{CodeReference, CodeReferenceKind, InstructionSet};
 
@@ -234,7 +234,7 @@ fn add_unwind_items(binary: &Binary, items: &mut Vec<Item>, functions: &[UnwindF
             continue;
         };
         items.push(Item {
-            name: format!("fn_{start:#x}"),
+            name: made_names::function_name_at(start),
             aliases: Vec::new(),
             kind: ItemKind::Function,
             address: start,
@@ -258,7 +258,7 @@ fn add_entry_item(binary: &Binary, items: &mut Vec<Item>) {
     }
     if let Some(section) = binary.code_section_at(entry) {
         items.push(Item {
-            name: "entry".to_string(),
+            name: made_names::ENTRY_NAME.to_string(),
             aliases: Vec::new(),
             kind: ItemKind::Function,
             address: entry,

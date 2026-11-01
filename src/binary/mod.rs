@@ -42,12 +42,16 @@
 //!   headers, where each section's load image is, for `load.rs` and
 //!   `memory.rs`.
 //! - `symbols.rs`, `plt.rs`, `vector_table.rs`, `unnamed_functions.rs` and
-//!   `unnamed_data.rs` find the items of the steps that name them.
-//!   `eh_frame.rs` reads the unwind table's function ranges and personality
-//!   routines, `relocations.rs` the dynamic relocations, and `attributes.rs`
-//!   the version of the Arm architecture that the code is built for.
-//! - `names.rs` makes mangled names readable, and works out the short
-//!   names that people type for long ones.
+//!   `unnamed_data.rs` find the items of the steps that name them, and
+//!   `plt.rs` also tells a table's header from its stubs
+//!   (`Binary::is_plt_header`). `eh_frame.rs` reads the unwind table's
+//!   function ranges and personality routines, `relocations.rs` the dynamic
+//!   relocations, and `attributes.rs` the version of the Arm architecture
+//!   that the code is built for.
+//! - `names.rs` makes mangled names readable, and works out the short names
+//!   that people type for long ones. `made_names.rs` makes the names of
+//!   items that no symbol names, such as `fn_0x8000040`, and tells them
+//!   apart, for `diff` and `startup` ([`Item::has_made_name`]).
 //! - `memory.rs` has [`LoadedMemory`], which reads only a file's section
 //!   headers and the bytes that its sections put in memory, which `diff`
 //!   compares before it needs any item. `header.rs` reads only the ELF
@@ -66,6 +70,7 @@ mod attributes;
 mod eh_frame;
 mod header;
 mod load;
+pub mod made_names;
 mod memory;
 pub mod names;
 mod plt;

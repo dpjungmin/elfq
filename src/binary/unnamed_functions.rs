@@ -64,7 +64,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{Binary, Item, ItemKind, Section, Source};
+use super::{Binary, Item, ItemKind, Section, Source, made_names};
 use crate::arch::{CodeReference, CodeReferenceKind, Ending, InstructionSet};
 
 /// What starts at an address in code.
@@ -145,7 +145,7 @@ pub(super) fn add(binary: &Binary, items: &mut Vec<Item>) {
             continue;
         };
         items.push(Item {
-            name: format!("fn_{start:#x}"),
+            name: made_names::function_name_at(start),
             aliases: Vec::new(),
             kind: ItemKind::Function,
             address: start,
@@ -490,7 +490,7 @@ mod tests {
             data: [text, data].concat(),
         };
         let mut items = vec![Item {
-            name: "entry".to_string(),
+            name: made_names::ENTRY_NAME.to_string(),
             aliases: Vec::new(),
             kind: ItemKind::Function,
             address: 0x1000,

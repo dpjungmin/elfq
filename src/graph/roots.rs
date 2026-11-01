@@ -19,7 +19,7 @@
 
 use object::SectionKind;
 
-use crate::binary::{Binary, FileKind, Source};
+use crate::binary::{Binary, FileKind};
 
 use super::{Node, item_starting_at, pointer_target};
 
@@ -85,12 +85,8 @@ pub(super) fn find(binary: &Binary) -> Vec<Root> {
             add(listed_in(binary, index), RootKind::ListedIn(index));
         }
     }
-    // PLT headers are named after their section; the stubs after what they
-    // jump to.
-    let plt_headers = (0..binary.items.len()).filter(|&index| {
-        let item = &binary.items[index];
-        item.source == Source::Plt && item.name == binary.sections[item.section].name
-    });
+    let plt_headers =
+        (0..binary.items.len()).filter(|&index| binary.is_plt_header(&binary.items[index]));
     add(plt_headers.map(Node::Item).collect(), RootKind::PltHeader);
     let personalities = binary.used_by_unwinder.iter();
     add(

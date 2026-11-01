@@ -12,7 +12,7 @@
 //! Firmware has no list of stored pointers, and a word in its data could be
 //! a pointer or just a number, so there only code finds unnamed data.
 
-use super::{Binary, Item, ItemKind, RelocationTarget, Source};
+use super::{Binary, Item, ItemKind, RelocationTarget, Source, made_names};
 use crate::arch::CodeReferenceKind;
 
 /// Returns an item for each unnamed data object, sorted by address.
@@ -50,7 +50,7 @@ pub(super) fn items(binary: &Binary) -> Vec<Item> {
             .min(next_start)
             .min(next_item);
         items.push(Item {
-            name: format!("{}@{start:#x}", section.name),
+            name: made_names::data_name_at(section, start),
             aliases: Vec::new(),
             kind: ItemKind::Data,
             address: start,

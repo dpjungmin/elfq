@@ -12,7 +12,7 @@
 
 use object::SectionKind;
 
-use super::{ArmArchitecture, Binary, FileKind, Item, ItemKind, Section, Source};
+use super::{ArmArchitecture, Binary, FileKind, Item, ItemKind, Section, Source, made_names};
 
 /// Where the vector table is and the handlers it lists.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -323,7 +323,7 @@ pub(super) fn item(binary: &Binary, items: &[Item]) -> Option<Item> {
     let name = if (section.address, section.size) == (table.address, table.size) {
         section.name.clone()
     } else {
-        format!("{}@{:#x}", section.name, table.address)
+        made_names::data_name_at(section, table.address)
     };
     Some(Item {
         name,

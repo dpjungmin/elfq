@@ -394,16 +394,18 @@ fn trimmed_bytes<'b>(binary: &'b Binary, item: &Item) -> Option<&'b [u8]> {
 /// `anon.` objects. Such names never pair items.
 pub(super) fn is_made_name(item: &Item, name: &str) -> bool {
     match item.source {
-        Source::EhFrame | Source::EntryPoint | Source::Reached | Source::Reference => true,
-        // `.text@0x8000000`, for a vector table that is only part of its
-        // section, has an address; `.init_array` doesn't.
-        Source::Section => name.contains("@0x"),
         Source::SymbolTable | Source::DynamicSymbolTable | Source::Plt => {
             name.starts_with(".L")
                 || name == ".str"
                 || name.starts_with(".str.")
                 || is_anonymous(name)
         }
+        // An item that elfq names has no aliases, so `name` is that name.
+        Source::EhFrame
+        | Source::EntryPoint
+        | Source::Reached
+        | Source::Reference
+        | Source::Section => item.has_made_name(),
     }
 }
 
