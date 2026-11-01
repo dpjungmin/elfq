@@ -1,9 +1,9 @@
 //! What the steps read of the walk's events ([`Events`]): how many calls
-//! deep from the reset handler each event is, which events are the jump of
-//! a veneer that a call goes to, where each call goes past a veneer, and
-//! where the events of the code that a call runs end. [`Iterations`] says
-//! which iteration of a loop that the walk went through one by one each
-//! event is in.
+//! deep from the reset handler each event is, and in whose code, which
+//! events are the jump of a veneer that a call goes to, where each call
+//! goes past a veneer, and where the events of the code that a call runs
+//! end. [`Iterations`] says which iteration of a loop that the walk went
+//! through one by one each event is in.
 
 use super::{CallTarget, Firmware};
 use crate::arch::startup::{Call, Event, How};
@@ -17,6 +17,11 @@ pub(super) struct Events<'w> {
     /// branch to another function that the walk didn't follow, when a flag
     /// is set, opens no level: the walk goes on in the same function.
     levels: Vec<u32>,
+    /// The function whose code holds each event (see [`Events::function`]).
+    functions: Vec<u64>,
+    /// The function that calls the one whose code holds each event (see
+    /// [`Events::caller`]).
+    callers: Vec<u64>,
     /// Whether each event is the jump of a veneer that a call goes to,
     /// which the call's step stands for.
     veneer_jumps: Vec<bool>,
@@ -27,7 +32,9 @@ pub(super) struct Events<'w> {
 }
 
 impl<'w> Events<'w> {
-    pub fn new(firmware: &Firmware, list: &'w [Event]) -> Events<'w> {
+    /// The events in `list`, of a walk from the reset handler, at
+    /// `reset_handler`.
+    pub fn new(firmware: &Firmware, reset_handler: u64, list: &'w [Event]) -> Events<'w> {
         let veneer_jumps: Vec<bool> = (0..list.len())
             .map(|event| {
                 let Event::Call(call) = &list[event] else {
@@ -45,7 +52,7 @@ impl<'w> Events<'w> {
             .collect();
         let mut open: Vec<u32> = Vec::new();
         // How the events nest is what `Walk::events` says.
-        let levels = (0..list.len())
+        let levels: Vec<u32> = (0..list.len())
             .map(|event| {
                 // A backtrack opens or closes no level.
                 if let Event::Backtrack { .. } = list[event] {
@@ -68,15 +75,34 @@ impl<'w> Events<'w> {
                 level
             })
             .collect();
-        let targets = (list.iter().zip(&veneer_jumps))
+        let targets: Vec<Option<CallTarget>> = (list.iter().zip(&veneer_jumps))
             .map(|(recorded, &veneer_jump)| match recorded {
                 Event::Call(call) if !veneer_jump => Some(firmware.resolve(call.target?)),
                 _ => None,
             })
             .collect();
+        // The function whose code runs at each level: the reset handler at
+        // 0, and at level n, the one that the last call at n - 1 goes to.
+        let mut running: Vec<u64> = vec![reset_handler];
+        let mut functions = Vec::with_capacity(list.len());
+        let mut callers = Vec::with_capacity(list.len());
+        for (&level, target) in levels.iter().zip(&targets) {
+            let level = level as usize;
+            let at = |level: usize| running.get(level).copied().unwrap_or(reset_handler);
+            functions.push(at(level));
+            callers.push(level.checked_sub(1).map_or(reset_handler, at));
+            if let Some(target) = target {
+                if running.len() <= level + 1 {
+                    running.resize(level + 2, reset_handler);
+                }
+                running[level + 1] = target.function;
+            }
+        }
         Events {
             list,
             levels,
+            functions,
+            callers,
             veneer_jumps,
             targets,
         }
@@ -84,6 +110,19 @@ impl<'w> Events<'w> {
 
     pub fn level(&self, event: usize) -> u32 {
         self.levels[event]
+    }
+
+    /// The function whose code holds `event`: the reset handler at level
+    /// 0, and at level n, the one that the last call at level n - 1 goes
+    /// to, past a veneer.
+    pub fn function(&self, event: usize) -> u64 {
+        self.functions[event]
+    }
+
+    /// The function that calls the one whose code holds `event`, or the
+    /// reset handler at level 0.
+    pub fn caller(&self, event: usize) -> u64 {
+        self.callers[event]
     }
 
     /// The call at `event`, unless it is a veneer's jump.
@@ -174,9 +213,38 @@ impl Iterations {
 
 #[cfg(test)]
 mod tests {
-    use super::super::fixtures::{binary, called, firmware, steps};
+    use super::super::fixtures::{binary, called, firmware, steps, stored};
     use super::*;
+    use crate::arch::startup::Store;
     use crate::graph::Graph;
+
+    #[test]
+    fn an_event_is_in_the_code_of_the_function_that_the_last_call_goes_to() {
+        let binary = binary();
+        let graph = Graph::default();
+        let firmware = firmware(&binary, &graph);
+        // The reset handler, at 0x8000000, calls the function at 0x8000200,
+        // which stores a word, then stores one itself.
+        let store = |depth| {
+            Event::Store(Store {
+                depth,
+                ..stored(0x2000_0000, Some(0), None)
+            })
+        };
+        let list = [called(0x800_0010, [0, 0, 0]), store(1), store(0)];
+        let events = Events::new(&firmware, 0x800_0000, &list);
+        let code: Vec<(u64, u64)> = (0..list.len())
+            .map(|event| (events.function(event), events.caller(event)))
+            .collect();
+        assert_eq!(
+            code,
+            [
+                (0x800_0000, 0x800_0000),
+                (0x800_0200, 0x800_0000),
+                (0x800_0000, 0x800_0000)
+            ]
+        );
+    }
 
     #[test]
     fn only_a_tail_call_that_the_walk_went_into_opens_a_level() {
@@ -203,7 +271,7 @@ mod tests {
             branch(false),
             called(0x800_0010, [0x2000_0000, 0x800_0400, 0x20]),
         ];
-        let events = Events::new(&firmware, &list);
+        let events = Events::new(&firmware, 0x800_0000, &list);
         assert_eq!((events.level(0), events.level(1)), (0, 0));
         assert!(
             steps(&binary, &list).contains(&"copy 0x20000000 32 by a call: .data 32".to_string())
@@ -213,7 +281,7 @@ mod tests {
             branch(true),
             called(0x800_0010, [0x2000_0000, 0x800_0400, 0x20]),
         ];
-        let events = Events::new(&firmware, &list);
+        let events = Events::new(&firmware, 0x800_0000, &list);
         assert_eq!((events.level(0), events.level(1)), (0, 1));
     }
 }

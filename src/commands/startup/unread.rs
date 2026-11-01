@@ -17,18 +17,10 @@ use super::ram_sections::RamSections;
 use super::steps::{Does, Step, Way};
 use crate::arch::startup::{Event, Loop, Store};
 
-/// A loop that the walk went through one iteration at a time, by its
-/// event, with the function that runs it.
-#[derive(Debug, Clone, Copy)]
-pub(super) struct WalkedLoop {
-    pub event: usize,
-    pub function: u64,
-}
-
-/// Makes each of the `walked` loops a loop that elfq can't follow, as it
-/// is when the walk goes through it once, when steps don't stand for all
-/// its iterations' stores into the sections. Outer loops go first, and
-/// for each:
+/// Makes each of the `walked` loops, by event, a loop that elfq can't
+/// follow, as it is when the walk goes through it once, when steps don't
+/// stand for all its iterations' stores into the sections. Outer loops go
+/// first, and for each:
 ///
 /// 1. A loop inside one that this has made such a loop is left out: the
 ///    outer loop's step stands for it.
@@ -48,27 +40,24 @@ pub(super) struct WalkedLoop {
 pub(super) fn unread_walked_loops(
     ram: &RamSections,
     events: &Events,
-    walked: &[WalkedLoop],
+    walked: &[usize],
     skipped: impl Fn(usize) -> bool,
     steps: &mut Vec<Step>,
 ) {
     // The events of the loops that this has made loops that elfq can't
     // follow.
     let mut made_unread: Vec<Range<usize>> = Vec::new();
+    let mut walked: Vec<(usize, &Loop)> = (walked.iter())
+        .filter_map(|&loop_event| {
+            let Event::Loop(l) = &events.list[loop_event] else {
+                return None;
+            };
+            Some((loop_event, l))
+        })
+        .collect();
     // Outer loops first.
-    let mut walked = walked.to_vec();
-    walked.sort_by_key(|walked| match &events.list[walked.event] {
-        Event::Loop(l) => (l.events.start, usize::MAX - walked.event),
-        _ => (walked.event, 0),
-    });
-    for WalkedLoop {
-        event: loop_event,
-        function,
-    } in walked
-    {
-        let Event::Loop(l) = &events.list[loop_event] else {
-            continue;
-        };
+    walked.sort_by_key(|&(loop_event, l)| (l.events.start, usize::MAX - loop_event));
+    for (loop_event, l) in walked {
         // 1.
         if (made_unread.iter()).any(|made| made.contains(&l.events.start)) {
             continue;
@@ -116,6 +105,7 @@ pub(super) fn unread_walked_loops(
         }
         may.sort_by_key(|&section| ram.section(section).address);
         let level = events.level(loop_event);
+        let function = events.function(loop_event);
         let mut step = Step::new(loop_event, l.head, Does::Unread, Way::Loop, function, level);
         step.function = Some(function);
         step.may = may;

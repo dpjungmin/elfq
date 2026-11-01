@@ -16,9 +16,7 @@ use super::events::{Events, Iterations};
 use super::pieces::{Home, Piece, Pieces};
 use super::ram_sections::Cover;
 use super::start::{Main, MainFrom};
-use super::unread::{
-    WalkedLoop, loop_calls, loop_repeats, loop_targets, own_stores, unread_walked_loops,
-};
+use super::unread::{loop_calls, loop_repeats, loop_targets, own_stores, unread_walked_loops};
 use super::{Facts, Firmware};
 use crate::arch::startup::{End, Event, How};
 use crate::binary::ItemKind;
@@ -193,11 +191,6 @@ pub(super) fn build(facts: &Facts) -> Vec<Step> {
     } = *facts;
     let main_function = main.and_then(Main::function);
     let mut steps: Vec<Step> = Vec::new();
-    // The function whose code runs at each level.
-    let mut holder: Vec<u64> = vec![reset.address];
-    let at = |holder: &Vec<u64>, level: u32| {
-        (holder.get(level as usize).copied()).unwrap_or(reset.address)
-    };
     let mut ready: HashSet<usize> = HashSet::new();
     let not_ready = |ready: &HashSet<usize>| -> Vec<usize> {
         (ram.sections.iter().copied())
@@ -221,9 +214,9 @@ pub(super) fn build(facts: &Facts) -> Vec<Step> {
     let mut pieces = Pieces::default();
     // The events of calls that copy or zero, whose steps stand for their
     // code, and each loop that the walk went through each time, outside
-    // loops that it didn't, with the function that runs it.
+    // loops that it didn't, by event.
     let mut called: Vec<Range<usize>> = Vec::new();
-    let mut walked_loops: Vec<WalkedLoop> = Vec::new();
+    let mut walked_loops: Vec<usize> = Vec::new();
     for (event, recorded) in events.list.iter().enumerate() {
         if event < skip_to {
             continue;
@@ -234,15 +227,8 @@ pub(super) fn build(facts: &Facts) -> Vec<Step> {
                 if events.call(event).is_none() {
                     continue;
                 }
-                let inside = at(&holder, level);
+                let inside = events.function(event);
                 let target = events.target(event);
-                if let Some(target) = target {
-                    let deeper = level as usize + 1;
-                    if holder.len() <= deeper {
-                        holder.resize(deeper + 1, reset.address);
-                    }
-                    holder[deeper] = target;
-                }
                 let way = match (call.how, target) {
                     (How::Jump, _) => Way::TailCall,
                     (How::Register(register), None) => Way::RegisterCall(register),
@@ -306,13 +292,10 @@ pub(super) fn build(facts: &Facts) -> Vec<Step> {
             // so it is a loop that elfq can't follow, as it would be if the
             // walk went through it once.
             Event::Loop(l) if !l.walked_iterations().is_empty() && !in_loop[event] => {
-                walked_loops.push(WalkedLoop {
-                    event,
-                    function: at(&holder, level),
-                });
+                walked_loops.push(event);
             }
             Event::Loop(l) => {
-                let function = at(&holder, level);
+                let function = events.function(event);
                 let home = Home {
                     level,
                     function,
@@ -340,21 +323,16 @@ pub(super) fn build(facts: &Facts) -> Vec<Step> {
                 }
             }
             Event::Stop { site, end, .. } => {
-                let inside = if level > 0 {
-                    at(&holder, level - 1)
-                } else {
-                    reset.address
-                };
+                let function = events.function(event);
                 // A call to code outside the file, or through a veneer
                 // that jumps there.
                 let way = match *end {
-                    End::LeavesFile { target, .. } if target == at(&holder, level) => {
-                        Way::Outside(target)
-                    }
+                    End::LeavesFile { target, .. } if target == function => Way::Outside(target),
                     end => Way::Stop(end),
                 };
+                let inside = events.caller(event);
                 let mut step = Step::new(event, *site, Does::Unread, way, inside, level);
-                step.function = Some(at(&holder, level));
+                step.function = Some(function);
                 step.may = not_ready(&ready);
                 if !step.may.is_empty() {
                     steps.push(step);
@@ -363,7 +341,7 @@ pub(super) fn build(facts: &Facts) -> Vec<Step> {
             Event::Store(store) if !in_loop[event] => {
                 let home = Home {
                     level,
-                    function: at(&holder, level),
+                    function: events.function(event),
                     iteration: iterations.of(event),
                 };
                 match Piece::of_store(ram, store, home) {

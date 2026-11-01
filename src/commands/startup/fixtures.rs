@@ -139,13 +139,13 @@ pub(super) fn steps_to(binary: &Binary, list: &[Event], end: End) -> Vec<String>
     let graph = Graph::default();
     let firmware = firmware(binary, &graph);
     let ram = RamSections::new(binary);
-    let events = Events::new(&firmware, list);
     let reset = Reset {
         address: 0x800_0000,
         stack_pointer: None,
         table: None,
         outside: None,
     };
+    let events = Events::new(&firmware, reset.address, list);
     let facts = Facts {
         firmware: &firmware,
         ram: &ram,

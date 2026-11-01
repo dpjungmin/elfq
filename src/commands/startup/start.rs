@@ -296,7 +296,7 @@ fn sets_up(code: Code, ram: &RamSections, reset: &Reset, address: u64) -> bool {
 /// that when the last only takes its result, as `exit(main())` does.
 fn c_runtime(firmware: &Firmware, ram: &RamSections, reset: &Reset, guess: u64) -> Option<u64> {
     let walk = reset.walk(firmware.code, None, DEPTH);
-    let events = Events::new(firmware, &walk.events);
+    let events = Events::new(firmware, reset.address, &walk.events);
     let call_to_guess = (0..events.list.len())
         .find(|&event| events.level(event) == 0 && events.target(event) == Some(guess))?;
     let inside = call_to_guess + 1..events.span(call_to_guess);

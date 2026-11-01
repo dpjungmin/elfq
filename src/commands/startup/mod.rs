@@ -154,7 +154,7 @@ pub(super) fn run(
     let ram = RamSections::new(binary);
     let main = start::find_main(&firmware, &ram, &reset);
     let walk = reset.walk(code, main.map(|main| main.address), DEPTH);
-    let events = Events::new(&firmware, &walk.events);
+    let events = Events::new(&firmware, reset.address, &walk.events);
     let facts = Facts {
         firmware: &firmware,
         ram: &ram,
