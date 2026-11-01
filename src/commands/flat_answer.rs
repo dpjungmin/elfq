@@ -59,10 +59,22 @@ impl FlatRow {
         }
     }
 
+    /// The same row, saying `rest` about its name, such as ", used by main".
+    pub(super) fn with_rest(self, rest: String) -> FlatRow {
+        FlatRow { rest, ..self }
+    }
+
+    /// Its last cell as the table writes it: the name, then what the row
+    /// says about it.
+    fn last_cell(&self) -> String {
+        format!("{}{}", self.name, self.rest)
+    }
+
     /// Its cells as the table writes them.
     pub(super) fn into_cells(self) -> Vec<String> {
+        let last = self.last_cell();
         let mut cells = self.cells;
-        cells.push(self.name + &self.rest);
+        cells.push(last);
         cells
     }
 }
@@ -119,11 +131,11 @@ impl FlatAnswer {
     }
 
     /// The table of rows, as the text writes it.
-    pub(super) fn table(&self) -> Table {
+    fn table(&self) -> Table {
         let mut table = Table::new(&self.columns);
         for row in &self.rows {
             let mut cells = row.cells.clone();
-            cells.push(format!("{}{}", row.name, row.rest));
+            cells.push(row.last_cell());
             table.row(cells);
         }
         table

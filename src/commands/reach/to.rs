@@ -5,7 +5,6 @@ use std::io::Write;
 
 use anyhow::Result;
 
-use super::rows::kind_name;
 use super::tree::Tree;
 use super::{Reach, Step};
 use crate::commands::{range_check, text};
@@ -40,7 +39,7 @@ impl<'n, 'a> Reach<'n, 'a> {
             }
             (true, [Node::Item(index)]) => format!(
                 "{name} and the {} it reaches in {ranges} take {bytes}",
-                kind_name(binary.items[*index].kind)
+                text::kind_name(binary.items[*index].kind)
             ),
             (true, _) => format!(
                 "{name} and the {} it reaches in {ranges} take {bytes}",

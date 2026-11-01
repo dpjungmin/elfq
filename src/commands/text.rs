@@ -84,6 +84,15 @@ pub(super) fn count_text(binary: &Binary, nodes: &[Node]) -> String {
     }
 }
 
+/// What an item of `kind` is, as a sentence names it: "function" or "data
+/// object".
+pub(super) fn kind_name(kind: ItemKind) -> &'static str {
+    match kind {
+        ItemKind::Function => "function",
+        ItemKind::Data => "data object",
+    }
+}
+
 /// How many of the largest items a table shows without `--all`, as in
 /// `top` or `callers SYMBOL`: a row such as "6 more, kept by main" sums up
 /// the rest, and an item that would be left out on its own is shown too.

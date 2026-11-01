@@ -34,7 +34,7 @@ struct StartsJson<'a> {
 struct StartJson<'a> {
     #[serde(flatten)]
     item: json::Item<'a>,
-    /// Why it is a root, as `root` in `why --json` says it, or `None` for
+    /// Why it is a root, as `root` in `why --json` says it, or `null` for
     /// `main`.
     root: Option<String>,
     /// The exceptions that it handles, as the WHY column names them, but
@@ -63,26 +63,26 @@ struct BlockBytesJson {
 pub(in crate::commands) struct Starts<'a> {
     binary: &'a Binary,
     /// The starts, in the order of [`starts`].
-    pub starts: Vec<Start>,
+    pub(in crate::commands) starts: Vec<Start>,
     /// The roots that are functions whose end elfq doesn't know, such as
     /// `_init`, as indexes into [`Binary::items`]: elfq can't tell what
     /// they reach.
-    pub unreadable: Vec<usize>,
+    unreadable: Vec<usize>,
     /// The file's blocks of memory, as the overview lists them.
-    pub blocks: Vec<MemoryBlock>,
+    blocks: Vec<MemoryBlock>,
 }
 
 /// One place where the program starts, and what it reaches.
 pub(in crate::commands) struct Start {
     /// The function, as an index into [`Binary::items`].
-    pub index: usize,
+    index: usize,
     /// Why it is a root, or `None` for `main`.
-    pub root: Option<RootKind>,
+    root: Option<RootKind>,
     /// The entries of the vector table that list it, in the table's order,
     /// counting the stack pointer's as 0.
-    pub exceptions: Vec<u64>,
+    exceptions: Vec<u64>,
     /// What it reaches, added up.
-    pub reached: Reached,
+    reached: Reached,
 }
 
 /// A row of the table of starts.
@@ -99,8 +99,9 @@ enum StartRow {
 /// elfq can read, other than a PLT's header: the entry point; the handlers
 /// in the vector table, in the order of their first entries; the functions
 /// that the startup and exit arrays list, `.preinit_array`, `.init_array`
-/// and `.fini_array` in that order, each in its array's order; then the
-/// others by kind, and by address. Each comes with what it reaches, as
+/// and `.fini_array` in that order, each in its array's order; the
+/// functions in `.init` and `.fini`, by section; then the rest, such as
+/// personality routines, by address. Each comes with what it reaches, as
 /// `reach START` counts it.
 pub(in crate::commands) fn starts<'a>(
     binary: &'a Binary,
@@ -245,15 +246,19 @@ impl Starts<'_> {
                     ]
                 };
                 cells.push(start.why(binary));
-                let mut row = FlatRow::new(
-                    cells,
-                    binary.items[start.index].name.clone(),
-                    Some(Node::Item(start.index)),
+                let rest = if reached.complete() {
+                    ""
+                } else {
+                    " (may reach more)"
+                };
+                answer.rows.push(
+                    FlatRow::new(
+                        cells,
+                        binary.items[start.index].name.clone(),
+                        Some(Node::Item(start.index)),
+                    )
+                    .with_rest(rest.to_string()),
                 );
-                if !reached.complete() {
-                    row.rest = " (may reach more)".to_string();
-                }
-                answer.rows.push(row);
             }
         } else if self.unreadable.is_empty() {
             answer
@@ -402,7 +407,7 @@ impl Start {
     /// "(entry point)" after them for the handler that is the entry point,
     /// usually the reset handler; or why it is a root, as the HOW column of
     /// `why` says it.
-    pub(super) fn why(&self, binary: &Binary) -> String {
+    fn why(&self, binary: &Binary) -> String {
         let names = self.exception_names(binary);
         let names: Vec<&str> = names.iter().map(String::as_str).collect();
         let exceptions = text::column_names(&names);
@@ -420,7 +425,7 @@ impl Start {
     /// since the processor takes none of them: "reserved" only for a
     /// handler that no other entry lists. None for a function that isn't a
     /// handler.
-    pub(super) fn exception_names(&self, binary: &Binary) -> Vec<String> {
+    fn exception_names(&self, binary: &Binary) -> Vec<String> {
         let architecture = binary.arm_architecture;
         let names: Vec<String> = self
             .exceptions

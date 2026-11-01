@@ -49,7 +49,7 @@ impl<'n, 'a> Reach<'n, 'a> {
             [] => format!("{name} takes {bytes}"),
             [Node::Item(index)] => format!(
                 "{name} and the {} it reaches take {bytes}",
-                kind_name(binary.items[*index].kind)
+                text::kind_name(binary.items[*index].kind)
             ),
             _ => format!(
                 "{name} and the {} it reaches take {bytes}",
@@ -204,9 +204,10 @@ impl<'n, 'a> Reach<'n, 'a> {
             String::new(),
             range_check::unfollowed_how(unfollowed).to_string(),
         ];
-        let mut row = FlatRow::new(cells, String::new(), Some(Node::Item(unresolved.from)));
-        row.rest = format!("{what}, used by {}", self.user_name(unresolved.from));
-        row
+        FlatRow::new(cells, String::new(), Some(Node::Item(unresolved.from))).with_rest(format!(
+            "{what}, used by {}",
+            self.user_name(unresolved.from)
+        ))
     }
 
     /// Adds the rows of `steps`, one group of the table, such as a block's
@@ -272,9 +273,8 @@ impl<'n, 'a> Reach<'n, 'a> {
         };
         let how = text::how_via(binary, step.node, used.kind, used.veneer);
         let cells = vec![address, size, how.to_string()];
-        let mut row = FlatRow::new(cells, step.node.name(binary).to_string(), Some(step.node));
-        row.rest = format!("{mark}, used by {}", self.user_name(used.by));
-        row
+        FlatRow::new(cells, step.node.name(binary).to_string(), Some(step.node))
+            .with_rest(format!("{mark}, used by {}", self.user_name(used.by)))
     }
 
     /// The name of `index`, an item that uses another, on that item's row:
@@ -337,14 +337,6 @@ impl<'n, 'a> Reach<'n, 'a> {
              more.",
             text::names_text(&names, self.all)
         )
-    }
-}
-
-/// "function" or "data object".
-pub(super) fn kind_name(kind: ItemKind) -> &'static str {
-    match kind {
-        ItemKind::Function => "function",
-        ItemKind::Data => "data object",
     }
 }
 

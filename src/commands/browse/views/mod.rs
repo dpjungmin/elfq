@@ -28,7 +28,7 @@ use ratatui::widgets::TableState;
 
 use super::keys::Action;
 use super::session::Session;
-use crate::binary::{Item, ItemKind};
+use crate::binary::Item;
 use crate::commands::checks::item_in_file;
 use crate::commands::text;
 use crate::graph::Node;
@@ -367,10 +367,7 @@ pub fn imported(session: &Session, node: Node) -> String {
 
 /// What and where an item is: "function at 0x1080, 16 bytes, in .plt.sec".
 pub fn whereabouts(item: &Item, section: &str) -> String {
-    let kind = match item.kind {
-        ItemKind::Function => "function",
-        ItemKind::Data => "data object",
-    };
+    let kind = text::kind_name(item.kind);
     let size = match (item.size, item.size_estimated) {
         (0, _) => "size unknown".to_string(),
         (size, true) => format!("~{}", text::bytes_text(size)),
