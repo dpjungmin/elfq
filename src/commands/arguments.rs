@@ -15,6 +15,7 @@ use anyhow::{Result, bail};
 
 use super::checks::check_code_is_readable;
 use super::kept::freeing;
+use super::range_check::Direction;
 use super::text::CommandLine;
 use super::{Outcome, callees, callers, symbol, text};
 use crate::binary::{AddressRange, Binary};
@@ -145,19 +146,17 @@ type UsesRun =
 
 /// What `callers` or `callees` was given.
 struct UsesQuery<'a> {
-    /// The command's name: `callers` or `callees`.
-    name: &'static str,
+    /// Which command it is: `callers` asks what crosses into SYMBOL or the
+    /// ranges, `callees` what crosses out.
+    direction: Direction,
     /// The command's `run`.
     run: UsesRun,
     args: &'a UsesArgs,
-    /// The option that lists only the uses whose other end is in some
-    /// ranges: `--from` or `--to`.
-    option: &'static str,
-    /// Its ranges.
-    other: &'a [AddressRange],
-    /// The other command's option, when it was given by mistake, and that
-    /// command: `--to` and `callees` for `callers`.
-    misplaced: Option<(&'static str, &'static str)>,
+    /// The ranges of `--from` or `--to`.
+    far_side: &'a [AddressRange],
+    /// Whether the other command's option was given by mistake: `--to` for
+    /// `callers`.
+    misplaced: bool,
 }
 
 impl UsesQuery<'_> {
@@ -165,20 +164,18 @@ impl UsesQuery<'_> {
     fn of(command: &Command) -> Option<UsesQuery<'_>> {
         match command {
             Command::Callers(args) => Some(UsesQuery {
-                name: "callers",
+                direction: Direction::In,
                 run: callers::run,
                 args: &args.uses,
-                option: "--from",
-                other: &args.from,
-                misplaced: (!args.misplaced_to.is_empty()).then_some(("--to", "callees")),
+                far_side: &args.from,
+                misplaced: !args.misplaced_to.is_empty(),
             }),
             Command::Callees(args) => Some(UsesQuery {
-                name: "callees",
+                direction: Direction::Out,
                 run: callees::run,
                 args: &args.uses,
-                option: "--to",
-                other: &args.to,
-                misplaced: (!args.misplaced_from.is_empty()).then_some(("--from", "callers")),
+                far_side: &args.to,
+                misplaced: !args.misplaced_from.is_empty(),
             }),
             _ => None,
         }
@@ -188,12 +185,14 @@ impl UsesQuery<'_> {
 /// Refuses what `callers` or `callees` doesn't take: the other command's
 /// option, no SYMBOL, and with `--range`, ranges mixed with a SYMBOL.
 fn check_uses(cli: &Cli, uses: &UsesQuery) -> Result<()> {
-    let name = uses.name;
-    if let Some((misplaced, belongs_to)) = uses.misplaced {
+    let name = uses.direction.command();
+    if uses.misplaced {
+        let other = uses.direction.other();
         bail!(
-            "{misplaced} goes with {belongs_to}; {name} takes {} to list only the {name} in a \
-             range",
-            uses.option
+            "{} goes with {}; {name} takes {} to list only the {name} in a range",
+            other.option(),
+            other.command(),
+            uses.direction.option()
         )
     }
     let symbols = &uses.args.symbols;
@@ -269,43 +268,61 @@ fn refuse_range(cli: &Cli, binary: &Binary, uses: &UsesQuery, range: AddressRang
         // A mistyped name is the first thing to fix.
         freeing(|| symbol::subject(binary, symbols))?;
     }
-    let answer = |symbols: &[String], other: &[AddressRange]| {
+    let answer = |symbols: &[String], far_side: &[AddressRange]| {
         let sink = &mut std::io::sink();
-        freeing(|| (uses.run)(binary, symbols, other, false, Format::Json, sink))
+        freeing(|| (uses.run)(binary, symbols, far_side, false, Format::Json, sink))
     };
-    let added =
-        ranges && answer(&[&symbols[..], &[range.to_string()]].concat(), uses.other).is_ok();
-    let limited = !symbols.is_empty() && answer(symbols, &[uses.other, &[range]].concat()).is_ok();
-    if !added && !limited {
-        if !symbols.is_empty() {
-            answer(symbols, uses.other)?;
+    let added = ranges
+        && answer(
+            &[&symbols[..], &[range.to_string()]].concat(),
+            uses.far_side,
+        )
+        .is_ok();
+    let limited =
+        !symbols.is_empty() && answer(symbols, &[uses.far_side, &[range]].concat()).is_ok();
+    let answers = match (added, limited) {
+        (false, false) => {
+            if !symbols.is_empty() {
+                answer(symbols, uses.far_side)?;
+            }
+            bail!("{RANGE_REFUSED}");
         }
-        bail!("{RANGE_REFUSED}");
-    }
-    bail!("{}", range_hint(cli, uses, range, added, limited))
+        (false, true) => InPlaceOfRange::Limited,
+        (true, false) => InPlaceOfRange::Added,
+        (true, true) => InPlaceOfRange::Both,
+    };
+    bail!("{}", range_hint(cli, uses, range, answers))
+}
+
+/// The forms of `callers` or `callees` that answer in place of one with
+/// `--range`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum InPlaceOfRange {
+    /// The one that lists only the uses in the range, with `--from` or
+    /// `--to`.
+    Limited,
+    /// The one that adds the range to the ranges in place of SYMBOL.
+    Added,
+    /// Both.
+    Both,
 }
 
 /// The error for `--range` with `callers` or `callees`, which don't take
-/// it, with the commands to type: with ranges in place of SYMBOL, or none,
-/// the one that adds `range` to them, when `added`, and the one that lists
-/// only the uses in `range`, with `--from` or `--to`, when `limited`. Keeps
-/// what `uses` has of those. One of them must be given.
-fn range_hint(
-    cli: &Cli,
-    uses: &UsesQuery,
-    range: AddressRange,
-    added: bool,
-    limited: bool,
-) -> String {
-    let name = uses.name;
-    let option = uses.option;
+/// it, with the commands to type that `answers` names, the forms that
+/// answer: with ranges in place of SYMBOL, or none, the one that adds
+/// `range` to them, and the one that lists only the uses in `range`, with
+/// `--from` or `--to`. Keeps what `uses` has of those.
+fn range_hint(cli: &Cli, uses: &UsesQuery, range: AddressRange, answers: InPlaceOfRange) -> String {
+    let name = uses.direction.command();
+    let option = uses.direction.option();
     let symbols = &uses.args.symbols;
-    let kept = uses.other.iter().copied();
+    let kept = uses.far_side.iter().copied();
     let limited_command = CommandLine::new(&cli.file, name)
         .words(symbols)
         .ranges(option, kept.clone().chain([range]))
         .flag("--json", cli.json);
-    if !added || !symbols.iter().all(|query| symbol::is_range(query)) {
+    // Only ranges in place of SYMBOL, or none, can have `range` added.
+    if answers == InPlaceOfRange::Limited {
         return format!(
             "{name} takes {option}, not --range, to list only the {name} in a range: \
              {limited_command}"
@@ -320,7 +337,7 @@ fn range_hint(
         format!("{name} takes ranges in place of SYMBOL, not with --range: {added_command}");
     // With `--from` or `--to` given, the command that adds `range` to them
     // lists the uses in theirs too.
-    if limited && !symbols.is_empty() && uses.other.is_empty() {
+    if answers == InPlaceOfRange::Both && !symbols.is_empty() && uses.far_side.is_empty() {
         let range = text::range_argument(range);
         error += &format!("; to list only the {name} in {range}: {limited_command}");
     }

@@ -124,7 +124,7 @@ or `--to`, and for `reach --to`, an item is inside when any of its bytes is
 in one of the ranges, where an item whose size elfq doesn't know counts as
 its first byte, and a reference **crosses** the boundary when one end is
 inside and the other isn't. The help calls the boundary the ranges' edge.
-(`graph::Boundary`, `graph::Crossing`)
+(`graph::ItemsInRanges`, `graph::Boundary`, `graph::Crossing`)
 
 **Thumb.** The instruction set of Cortex-M processors, with 16- and 32-bit
 instructions. Arm sets bit 0 of a Thumb function's address wherever the
@@ -1353,7 +1353,8 @@ in order. Its output is the first example under [Commands](#commands).
    from the dynamic relocations or, in a file that runs at a fixed
    address, from the words that hold an item's address, and finds the
    roots with `roots::find`.
-6. **The dominator tree.** `RetainedTree::new` borrows the graph, and
+6. **The dominator tree.** `RetainedTree::naming` borrows the graph and
+   keeps the `Names` that found `process_frame`, and
    `graph::DominatorTree::build` has `petgraph` find each node's closest
    dominator, starting from one node above every root, and adds up the
    retained sizes from the bottom of the tree up.
@@ -1361,9 +1362,11 @@ in order. Its output is the first example under [Commands](#commands).
    the "(through a pointer)" mark.
 7. **The answer.** `retained::answer` words the lead line, then
    `RetainedTree::largest` picks the 30 largest items under
-   `process_frame`, and the items between them and it, and
-   `RetainedTree::tree_row` makes a `render::TreeRow` of each, with the
-   short name that the rows under it call it by (`Names::short_name`).
+   `process_frame`, and the items between them and it, with the
+   functions in `tree_answer.rs` that cut the trees of `top`, `retained`
+   and `inlined` down the same way, and `RetainedTree::tree_row` makes a
+   `render::TreeRow` of each, with the short name that the rows under it
+   call it by (`Names::short_name`).
    `shared_note` names what `process_frame` uses that other code uses too,
    and `indirect_note` notes any calls through pointers in `process_frame`
    or the items it keeps. `TreeAnswer::write` writes the lead line, then
@@ -1391,9 +1394,9 @@ that run in it:
 
 ```
 main.rs      1 main, run                                  8 exit status
-commands/    2 commands::run   4 retained::run, symbol::find
+commands/    2 commands::run   4 retained::run, Names::find
              7 retained::answer, RetainedTree::largest, tree_row
-cli.rs       1 Cli, Command
+cli/         1 Cli, Command
 render/      7 Table::tree, Table::write
 debuginfo/   (for inlined, and SYMBOL that the compiler inlined)
 graph/       5 Graph::build, roots::find   6 DominatorTree::build

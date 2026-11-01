@@ -1,125 +1,10 @@
-//! Command-line arguments. Each command has a variant here and a module in
-//! `commands/`.
-//!
-//! The file comes first and the question after it, so that a command sits
-//! next to the symbol it asks about: `elfq app.elf callers log_msg`.
+//! The prose that `--help` prints after the options: the examples that
+//! `elfq --help` ends with, the table of the HOW column's words that
+//! several commands print, and then one constant per command, in the order
+//! of `Command`. `mod.rs` puts each command's together in its
+//! `after_help`.
 
-use std::path::PathBuf;
-
-use clap::{Args, Parser, Subcommand};
-
-use crate::binary::AddressRange;
-
-// The whole command line. No `///` comment here: clap would show one of more
-// than one paragraph at the top of `elfq --help`, in place of the
-// description that `about` takes from Cargo.toml.
-#[derive(Debug, Parser)]
-#[command(
-    name = "elfq",
-    version,
-    about,
-    arg_required_else_help = true,
-    disable_help_subcommand = true,
-    after_help = EXAMPLES
-)]
-pub struct Cli {
-    /// The ELF file: an executable, shared library or firmware image
-    pub file: PathBuf,
-    /// What to ask about FILE. Without one, elfq prints an overview.
-    #[command(subcommand)]
-    pub command: Option<Command>,
-    /// Print the answer as JSON, for scripts
-    #[arg(long, global = true)]
-    pub json: bool,
-    /// Draw the overview, top, retained, why, reach SYMBOL and inlined
-    /// SYMBOL as trees
-    #[arg(long, global = true)]
-    pub tree: bool,
-    /// Count only the bytes in one range of memory, such as ITCM: START..END
-    /// or START+SIZE, like 0x20000000+256K. When the file's sections and load
-    /// images occupy several ranges, as in firmware, the overview lists them.
-    /// For the overview, top and retained.
-    #[arg(long, global = true, value_name = "RANGE", value_parser = one_range)]
-    pub range: Option<AddressRange>,
-}
-
-/// Reads `--range`, which takes one range: given several, separated by
-/// commas, it says so, with the first as the example.
-fn one_range(text: &str) -> Result<AddressRange, String> {
-    if let Some((first, _)) = text.split_once(',')
-        && first.parse::<AddressRange>().is_ok()
-    {
-        return Err(format!("--range takes one range, such as {}", first.trim()));
-    }
-    text.parse()
-}
-
-/// Reads one `--from`.
-fn from_range(text: &str) -> Result<AddressRange, String> {
-    one_range_each("--from", text)
-}
-
-/// Reads one `--to`.
-fn to_range(text: &str) -> Result<AddressRange, String> {
-    one_range_each("--to", text)
-}
-
-/// Reads one range for `option`, `--from` or `--to`, which take one each:
-/// given several, separated by commas, it shows them given apart.
-fn one_range_each(option: &str, text: &str) -> Result<AddressRange, String> {
-    if !text.contains(',') {
-        return text.parse();
-    }
-    let parts: Vec<&str> = text
-        .split(',')
-        .map(str::trim)
-        .filter(|part| !part.is_empty())
-        .collect();
-    for part in &parts {
-        part.parse::<AddressRange>()?;
-    }
-    match parts[..] {
-        [] => text.parse(),
-        [_] => Err(format!("{option} takes one range; leave out the comma")),
-        _ => {
-            let apart: Vec<String> = parts
-                .iter()
-                .map(|part| format!("{option} {part}"))
-                .collect();
-            Err(format!(
-                "{option} takes one range; give it again for each: {}",
-                apart.join(" ")
-            ))
-        }
-    }
-}
-
-impl Cli {
-    /// How to print the answer. `--json` and `--tree` don't go together,
-    /// which `commands::run` checks.
-    pub fn format(&self) -> Format {
-        if self.json {
-            Format::Json
-        } else if self.tree {
-            Format::Tree
-        } else {
-            Format::Text
-        }
-    }
-}
-
-/// How a command prints its answer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Format {
-    /// Tables of one row per line, for people and for tools such as grep
-    Text,
-    /// The same, but with trees drawn with branches, with `--tree`
-    Tree,
-    /// JSON, for scripts, with `--json`
-    Json,
-}
-
-const EXAMPLES: &str = "\
+pub(super) const EXAMPLES: &str = "\
 Examples:
   elfq app.elf                            Overview of app.elf
   elfq app.elf top                        What keeps the most bytes in app.elf
@@ -163,53 +48,6 @@ FILE's, or startup finds a problem in what the reset code does before
 main, or might, and 2 for an error, which goes to stderr with nothing on
 stdout.";
 
-// One variant per command. Each variant's `///` line is its line in
-// `elfq --help`.
-#[derive(Debug, Subcommand)]
-pub enum Command {
-    /// Show the items that keep the most bytes in the file
-    #[command(after_help = TOP)]
-    Top(TopArgs),
-    /// Show what removing SYMBOL would save
-    #[command(after_help = RETAINED)]
-    Retained(RetainedArgs),
-    /// Show the chains of calls and references that keep SYMBOL in the file
-    #[command(after_help = format!("{WHY}\n\n{}\n\n{HOW_NOTES}", how_table()))]
-    Why(WhyArgs),
-    /// List the functions the compiler inlined, by the bytes their copies take
-    #[command(after_help = INLINED)]
-    Inlined(InlinedArgs),
-    /// List what calls or uses SYMBOL
-    #[command(
-        override_usage = "elfq <FILE> callers [OPTIONS] <SYMBOL>\n       \
-                          elfq <FILE> callers [OPTIONS] <RANGE>...",
-        after_help = format!("{}\n\n{HOW_NOTES}\n\n{AT}\n\n{CALLERS}\n\n{CALLERS_RANGES}", how_table())
-    )]
-    Callers(CallersArgs),
-    /// List what SYMBOL calls or uses
-    #[command(
-        override_usage = "elfq <FILE> callees [OPTIONS] <SYMBOL>\n       \
-                          elfq <FILE> callees [OPTIONS] <RANGE>...",
-        after_help = format!("{}\n\n{HOW_NOTES}\n\n{AT}\n\n{CALLEES}\n\n{CALLEES_RANGES}", how_table())
-    )]
-    Callees(CalleesArgs),
-    /// List everything SYMBOL calls or uses, at any depth, by memory block
-    #[command(after_help = format!("{REACH}\n\n{}\n\n{HOW_NOTES}", how_table()))]
-    Reach(ReachArgs),
-    /// Read a function's code in the terminal, and follow what it calls, reaches and is used by
-    #[command(after_help = format!("{BROWSE}\n\n{}", how_table()))]
-    Browse(BrowseArgs),
-    /// Show what changed from FILE to NEW, by block of memory
-    #[command(after_help = DIFF)]
-    Diff(DiffArgs),
-    /// Check that the reset code copies and zeroes memory before it uses it
-    #[command(after_help = STARTUP)]
-    Startup(StartupArgs),
-    /// Show elfq's own view of the file (for developing elfq)
-    #[command(subcommand, hide = true)]
-    Debug(DebugCommand),
-}
-
 /// The words of the HOW column, each with what it means, which `--help`
 /// prints as a table, and browse's help page lists too.
 pub const HOW_WORDS: [(&str, &str); 5] = [
@@ -236,7 +74,7 @@ pub const HOW_WORDS: [(&str, &str); 5] = [
 
 /// What the HOW column's words mean, as a table: each meaning is wrapped
 /// under the column it starts in.
-fn how_table() -> String {
+pub(super) fn how_table() -> String {
     const WIDTH: usize = 76;
     const INDENT: usize = 17;
     let mut text = "The HOW column says how one item uses the other:".to_string();
@@ -260,7 +98,7 @@ fn how_table() -> String {
 
 /// What the commands with a HOW column also say about it, after
 /// [`how_table`].
-const HOW_NOTES: &str = "\
+pub(super) const HOW_NOTES: &str = "\
 In --json, the how key uses these words, but in place of uses, it says
 access where code reads or writes data, and address taken where it loads
 its address. elfq tells the two apart only in x86-64 code; in Thumb code,
@@ -269,50 +107,76 @@ it says address taken.
 elfq can't tell where a call through a pointer set at run time goes; the
 address taken and pointer rows show where such pointers come from.";
 
-const AT: &str = "\
+pub(super) const AT: &str = "\
 The AT column gives the sites: the address of each instruction or pointer,
 or for more than two, the first and how many more; --json has every one.";
 
-const CALLERS: &str = "\
+/// What the marks on the rows of `top` and `retained` mean, which both
+/// print after their first paragraph.
+pub(super) const ROW_MARKS: &str = "\
+Nothing calls a function marked \"(through a pointer)\" directly, so it counts
+for the code or data that holds its address. With --range, a row marked
+\"(load image)\" counts the copy of an item that the file stores in the
+range for startup code to copy where the program uses it, and one marked
+\"(with its load image)\" counts both copies. Sizes marked ~ are estimates.";
+
+pub(super) const TOP: &str = "\
+An item's retained size is its own size plus the sizes of the items that
+only it leads to, from where the program starts: what removing it would
+save. A row such as \"crc_table, kept by crc32\" names the closest item that
+every path to it goes through. The rows that name none are where the
+program starts, or are reached from more than one of those places. The
+table shows the 30 largest items, or every item with --all; rows such as
+\"6 more, kept by main\" sum up the rest, and --tree draws the rows as a
+tree.";
+
+pub(super) const RETAINED: &str = "\
+SYMBOL's retained size is its own size plus the sizes of the items that only
+it leads to, from where the program starts: what removing it would save. A
+row such as \"crc_table, kept by crc32\" names the closest item that every
+path to it goes through. The table shows the 30 largest items, or every
+item with --all; rows such as \"6 more, kept by crc32\" sum up the rest, and
+--tree draws the rows as a tree.";
+
+/// How `reach SYMBOL` differs, which `retained` ends with.
+pub(super) const RETAINED_REACH: &str = "\
+reach SYMBOL lists everything SYMBOL calls or uses, including what other
+items use too.";
+
+pub(super) const WHY: &str = "\
+The chains start where the program does, as HOW says: at the entry point, a
+function the C runtime runs at startup, or a handler in the vector table.
+Every other row is used by the row above it, or where chains branch, by the
+item it names, as in \"process_frame, used by main\", and the chains end at
+SYMBOL. Only the shortest chain through each item that uses SYMBOL is
+shown, for the 10 nearest, or for every one with --all, and --tree draws
+the chains as a tree. Items that nothing reaches, or that only SYMBOL leads
+to, don't keep it, and are named below the chains.
+
+The last line names the closest item that every chain goes through, if
+there is one: SYMBOL counts toward that item's retained size.";
+
+pub(super) const INLINED: &str = "\
+The compiler inlines a function by putting a copy of its code into the
+function that calls it. Only DWARF debug info says where it did that, so
+this command needs a file built with debug info, such as with -g.
+
+In the list, a function's bytes leave out the functions inlined into its
+copies in turn, which have rows of their own. For SYMBOL, a row's bytes
+include the functions inlined into it, whose rows name it, as in
+\"atomic_add, inlined into fetch_add\", or where fetch_add is inlined in
+several places, \"atomic_add, inlined into fetch_add in update_stats\";
+--tree draws the rows as a tree. A copy of 0 bytes is one the compiler
+merged into the code around it.";
+
+pub(super) const CALLERS: &str = "\
 The table lists the 30 largest callers by their own size, in order of name,
 and a last row such as \"70 more\" counts the rest; --all lists every one.";
 
-const CALLEES: &str = "\
-The table lists the 30 largest callees by their own size, in the order
-SYMBOL first uses them, and a last row such as \"70 more\" counts the rest;
---all lists every one.";
-
-const CALLEES_RANGES: &str = "\
-With ranges of memory in place of SYMBOL, such as 0x0+256K for an ITCM,
-elfq lists only what the code and data in them use outside them. Each row
-names the item outside first, as in \"memcpy, used by apply_filter\", and
-ADDRESS and SIZE are that item's. Every crossing has a row, and --all makes
-the sentences name everything they would cut short. Calls and jumps that
-elfq can't follow come first, as \"(through a pointer)\", or as \"(outside any
-function)\" when they go to an address no function holds. A call through a
-veneer, which a linker adds when the target is too far away for the call
-instruction, is listed where it calls the veneer, as \"call via veneer\",
-and a call through a PLT stub to one of the file's own functions, as in a
-shared library, as \"call via PLT\". In --json, the how key leaves out \"via
-veneer\" and \"via PLT\", and the veneer key names the veneer or stub. elfq
-knows the veneers that GNU ld and LLD add for Cortex-M.
-
---to RANGE lists only the callees in RANGE, and can be given again for
-more: callees 0x0+256K --to 0x30000000+16M lists what an ITCM at 0x0 uses
-in flash at 0x30000000. With SYMBOL, --to answers as for the range that
-SYMBOL occupies: callees process_frame --to 0x0+256K lists what
-process_frame uses in the ITCM. Calls and jumps that elfq can't follow stay
-when they may go to the --to ranges: one to a known address, when the
-address is in them, and one through a pointer, when the ranges hold a
-function whose address is taken or stored other than in the vector table.
-When the --to ranges hold a veneer or PLT stub but not its target, the call
-is listed as a call to the veneer or stub, as in \"__crc32_veneer, used by
-process_frame\".
-
-Exit status, with ranges or --to: 1 if the answer lists a callee, or code
-that elfq can't follow or read; 0 if not; and 2 for an error.";
-
-const CALLERS_RANGES: &str = "\
+// The sentences on veneers and PLT stubs, from "A call through a veneer"
+// to "add for Cortex-M.", are in CALLEES_RANGES too. They start mid-line,
+// so they stay copied: change both.
+pub(super) const CALLERS_RANGES: &str = "\
 With ranges of memory in place of SYMBOL, such as 0x0+256K for an ITCM,
 elfq lists only the code and data outside them that use what is in them.
 Each row names the item outside first, as in \"process_frame, uses crc32\",
@@ -344,7 +208,44 @@ Exit status, with ranges or --from: 1 if the answer lists a caller, or
 notes calls through a pointer or code that elfq can't read; 0 if not; and 2
 for an error.";
 
-const REACH: &str = "\
+pub(super) const CALLEES: &str = "\
+The table lists the 30 largest callees by their own size, in the order
+SYMBOL first uses them, and a last row such as \"70 more\" counts the rest;
+--all lists every one.";
+
+// The sentences on veneers and PLT stubs are in CALLERS_RANGES too:
+// change both.
+pub(super) const CALLEES_RANGES: &str = "\
+With ranges of memory in place of SYMBOL, such as 0x0+256K for an ITCM,
+elfq lists only what the code and data in them use outside them. Each row
+names the item outside first, as in \"memcpy, used by apply_filter\", and
+ADDRESS and SIZE are that item's. Every crossing has a row, and --all makes
+the sentences name everything they would cut short. Calls and jumps that
+elfq can't follow come first, as \"(through a pointer)\", or as \"(outside any
+function)\" when they go to an address no function holds. A call through a
+veneer, which a linker adds when the target is too far away for the call
+instruction, is listed where it calls the veneer, as \"call via veneer\",
+and a call through a PLT stub to one of the file's own functions, as in a
+shared library, as \"call via PLT\". In --json, the how key leaves out \"via
+veneer\" and \"via PLT\", and the veneer key names the veneer or stub. elfq
+knows the veneers that GNU ld and LLD add for Cortex-M.
+
+--to RANGE lists only the callees in RANGE, and can be given again for
+more: callees 0x0+256K --to 0x30000000+16M lists what an ITCM at 0x0 uses
+in flash at 0x30000000. With SYMBOL, --to answers as for the range that
+SYMBOL occupies: callees process_frame --to 0x0+256K lists what
+process_frame uses in the ITCM. Calls and jumps that elfq can't follow stay
+when they may go to the --to ranges: one to a known address, when the
+address is in them, and one through a pointer, when the ranges hold a
+function whose address is taken or stored other than in the vector table.
+When the --to ranges hold a veneer or PLT stub but not its target, the call
+is listed as a call to the veneer or stub, as in \"__crc32_veneer, used by
+process_frame\".
+
+Exit status, with ranges or --to: 1 if the answer lists a callee, or code
+that elfq can't follow or read; 0 if not; and 2 for an error.";
+
+pub(super) const REACH: &str = "\
 SYMBOL reaches what it calls or uses, what those call or use, and so on:
 calls, tail calls, data that code reads or writes, anything whose address
 code takes, and pointers stored in data, as in a table of functions. These
@@ -420,7 +321,7 @@ names. --to and --tree need SYMBOL.
 Exit status, with --to: 1 if the answer lists an item, or code that elfq
 can't follow or read; 0 if not; and 2 for an error.";
 
-const BROWSE: &str = "\
+pub(super) const BROWSE: &str = "\
 browse opens a page for SYMBOL, or without it, the start page: what the
 file is and its blocks of memory, as the overview says them, then where the
 program starts, as reach lists it without SYMBOL, with every start and that
@@ -484,7 +385,7 @@ browse needs a terminal, and takes no --json, --tree or --range. For
 scripts, callers and callees print the same links, with --json, and
 objdump --start-address prints the instructions.";
 
-const DIFF: &str = "\
+pub(super) const DIFF: &str = "\
 diff compares the memory that FILE and NEW load: each section that the
 program has in memory, at its address, with a section such as .bss, which
 the file doesn't store, as zeros, and each load image, the bytes that the
@@ -546,7 +447,7 @@ whatever the answer, as in CI:
 
   elfq old.elf diff new.elf --json > diff.json || [ $? -eq 1 ]";
 
-const STARTUP: &str = "\
+pub(super) const STARTUP: &str = "\
 startup reads the code that a Cortex-M processor runs from reset, in a
 linked firmware file, as far as main, and lists what it does there, in
 order: each copy of a load image, such as .data or code that runs from
@@ -593,204 +494,3 @@ problems that elfq is sure of:
 Exit status: 0 when startup finds no problem, 1 when it finds one, or code
 it can't follow that may be one (certain is false in the JSON), and 2 for
 an error, as for a file that isn't Cortex-M firmware.";
-
-const WHY: &str = "\
-The chains start where the program does, as HOW says: at the entry point, a
-function the C runtime runs at startup, or a handler in the vector table.
-Every other row is used by the row above it, or where chains branch, by the
-item it names, as in \"process_frame, used by main\", and the chains end at
-SYMBOL. Only the shortest chain through each item that uses SYMBOL is
-shown, for the 10 nearest, or for every one with --all, and --tree draws
-the chains as a tree. Items that nothing reaches, or that only SYMBOL leads
-to, don't keep it, and are named below the chains.
-
-The last line names the closest item that every chain goes through, if
-there is one: SYMBOL counts toward that item's retained size.";
-
-const TOP: &str = "\
-An item's retained size is its own size plus the sizes of the items that
-only it leads to, from where the program starts: what removing it would
-save. A row such as \"crc_table, kept by crc32\" names the closest item that
-every path to it goes through. The rows that name none are where the
-program starts, or are reached from more than one of those places. The
-table shows the 30 largest items, or every item with --all; rows such as
-\"6 more, kept by main\" sum up the rest, and --tree draws the rows as a
-tree.
-
-Nothing calls a function marked \"(through a pointer)\" directly, so it counts
-for the code or data that holds its address. With --range, a row marked
-\"(load image)\" counts the copy of an item that the file stores in the
-range for startup code to copy where the program uses it, and one marked
-\"(with its load image)\" counts both copies. Sizes marked ~ are estimates.";
-
-const INLINED: &str = "\
-The compiler inlines a function by putting a copy of its code into the
-function that calls it. Only DWARF debug info says where it did that, so
-this command needs a file built with debug info, such as with -g.
-
-In the list, a function's bytes leave out the functions inlined into its
-copies in turn, which have rows of their own. For SYMBOL, a row's bytes
-include the functions inlined into it, whose rows name it, as in
-\"atomic_add, inlined into fetch_add\", or where fetch_add is inlined in
-several places, \"atomic_add, inlined into fetch_add in update_stats\";
---tree draws the rows as a tree. A copy of 0 bytes is one the compiler
-merged into the code around it.";
-
-const RETAINED: &str = "\
-SYMBOL's retained size is its own size plus the sizes of the items that only
-it leads to, from where the program starts: what removing it would save. A
-row such as \"crc_table, kept by crc32\" names the closest item that every
-path to it goes through. The table shows the 30 largest items, or every
-item with --all; rows such as \"6 more, kept by crc32\" sum up the rest, and
---tree draws the rows as a tree.
-
-Nothing calls a function marked \"(through a pointer)\" directly, so it counts
-for the code or data that holds its address. With --range, a row marked
-\"(load image)\" counts the copy of an item that the file stores in the
-range for startup code to copy where the program uses it, and one marked
-\"(with its load image)\" counts both copies. Sizes marked ~ are estimates.
-
-reach SYMBOL lists everything SYMBOL calls or uses, including what other
-items use too.";
-
-#[derive(Debug, Args)]
-pub struct TopArgs {
-    /// Show every item, not only the 30 largest
-    #[arg(long)]
-    pub all: bool,
-}
-
-#[derive(Debug, Args)]
-pub struct RetainedArgs {
-    /// A function or data object: its name, the end of its name
-    /// (process_frame for app::process_frame), or an address such as 0x1700
-    pub symbol: String,
-    /// Show every item, not only the 30 largest
-    #[arg(long)]
-    pub all: bool,
-}
-
-#[derive(Debug, Args)]
-pub struct WhyArgs {
-    /// A function or data object: its name, the end of its name
-    /// (process_frame for app::process_frame), or an address such as 0x1700
-    pub symbol: String,
-    /// Show the chains through every item that keeps SYMBOL, not only the
-    /// 10 nearest
-    #[arg(long)]
-    pub all: bool,
-}
-
-#[derive(Debug, Args)]
-pub struct UsesArgs {
-    /// A function or data object: its name, the end of its name
-    /// (process_frame for app::process_frame), or an address such as 0x1700.
-    /// Or one or more ranges of memory, START..END or START+SIZE, to list
-    /// only what crosses their edge
-    // Not required here: commands::check_arguments says what is missing,
-    // and with --range, what to type instead.
-    #[arg(value_name = "SYMBOL|RANGE")]
-    pub symbols: Vec<String>,
-    /// Show every item, not only the 30 largest
-    #[arg(long)]
-    pub all: bool,
-}
-
-#[derive(Debug, Args)]
-pub struct CallersArgs {
-    #[command(flatten)]
-    pub uses: UsesArgs,
-    /// List only the callers in this range of memory, START..END or
-    /// START+SIZE; give it again for more
-    #[arg(long, value_name = "RANGE", value_parser = from_range)]
-    pub from: Vec<AddressRange>,
-    // Hidden, so that commands::check_arguments can say that --to goes with
-    // callees, in place of clap's error.
-    #[arg(long = "to", hide = true, value_name = "RANGE")]
-    pub misplaced_to: Vec<String>,
-}
-
-#[derive(Debug, Args)]
-pub struct CalleesArgs {
-    #[command(flatten)]
-    pub uses: UsesArgs,
-    /// List only the callees in this range of memory, START..END or
-    /// START+SIZE; give it again for more
-    #[arg(long, value_name = "RANGE", value_parser = to_range)]
-    pub to: Vec<AddressRange>,
-    // As `CallersArgs::misplaced_to`.
-    #[arg(long = "from", hide = true, value_name = "RANGE")]
-    pub misplaced_from: Vec<String>,
-}
-
-#[derive(Debug, Args)]
-pub struct ReachArgs {
-    /// A function or data object: its name, the end of its name
-    /// (process_frame for app::process_frame), or an address such as 0x1700.
-    /// Without it, reach lists where the program starts, and what each
-    /// start reaches
-    pub symbol: Option<String>,
-    /// List only what SYMBOL reaches in this range of memory, START..END or
-    /// START+SIZE; give it again for more
-    #[arg(long, value_name = "RANGE", value_parser = to_range)]
-    pub to: Vec<AddressRange>,
-    /// Show every item, not only the 30 largest
-    #[arg(long)]
-    pub all: bool,
-    // As `CallersArgs::misplaced_to`.
-    #[arg(long = "from", hide = true, value_name = "RANGE")]
-    pub misplaced_from: Vec<String>,
-}
-
-#[derive(Debug, Args)]
-pub struct BrowseArgs {
-    /// The function, data object or import to open first: its name, the
-    /// end of its name, or an address in it
-    pub symbol: Option<String>,
-}
-
-#[derive(Debug, Args)]
-pub struct DiffArgs {
-    /// The other build of the program, to compare with FILE
-    #[arg(value_name = "NEW")]
-    pub new: PathBuf,
-    /// Show every item and section that changed, not only the largest
-    #[arg(long)]
-    pub all: bool,
-}
-
-#[derive(Debug, Args)]
-pub struct StartupArgs {
-    /// Show every step, not only the first 30, and name every function in
-    /// sentences
-    #[arg(long)]
-    pub all: bool,
-}
-
-#[derive(Debug, Args)]
-pub struct InlinedArgs {
-    /// Show the inlined code in one function instead: its name, the end of
-    /// its name, or an address in it
-    pub symbol: Option<String>,
-    /// Show every function, not only the 30 largest
-    #[arg(long)]
-    pub all: bool,
-}
-
-#[derive(Debug, Subcommand)]
-pub enum DebugCommand {
-    /// List the functions and data objects elfq found, and where it found each
-    Items,
-    /// List what the code run from reset does before main: calls, stores and loops
-    Walk,
-}
-
-/// The names of the commands, for reading `elfq help COMMAND` and for
-/// spotting a command typed before the file.
-pub fn command_names() -> Vec<String> {
-    use clap::CommandFactory;
-    Cli::command()
-        .get_subcommands()
-        .map(|command| command.get_name().to_string())
-        .collect()
-}

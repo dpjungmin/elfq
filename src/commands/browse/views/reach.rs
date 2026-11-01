@@ -27,7 +27,7 @@ pub fn tab(session: &Session, index: usize, name: &str) -> Printed {
     let cut = brief.written() != answer.written();
     let node = Node::Item(index);
     let command = session.command("reach", Some(node), cut);
-    (Printed::of_reach(answer, command))
+    (Printed::of_flat(answer, command))
         .with_brief(brief.notes)
         .opening(Tab::Reach, node)
 }

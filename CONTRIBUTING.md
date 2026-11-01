@@ -53,14 +53,14 @@ terminal is as it was; `.github/workflows/ci.yml` has the command.
 |---|---|
 | `src/main.rs` | The program: parses arguments, runs one command on a thread with a large stack, prints errors and sets the exit status. It also turns `elfq help COMMAND` into `--help`, and suggests the right order when the command comes before the file. |
 | `src/lib.rs` | Declares the modules below. elfq is a library plus that small program; the library exists for the program and its tests. |
-| `src/cli.rs` | Command-line arguments, with clap: a `Command` variant for each command, the structs that hold their arguments, and the text of `--help`. |
-| `src/commands/` | One file per command, which looks up SYMBOL, asks `graph` or `debuginfo` and decides what the answer shows. `mod.rs` runs the command the arguments name. The rest are shared: `arguments.rs` checks which arguments go together, `checks.rs` holds the checks a command makes before it answers, such as `check_code_is_readable`, `symbol.rs` works out what a user means by SYMBOL, `retained_tree.rs` builds the trees of retained sizes that the overview, `top` and `retained` show, `uses.rs` holds the table of `callers` and `callees` for SYMBOL, `ranges.rs` answers them for ranges of memory or with `--from` or `--to`, `tree_answer.rs` holds the answers whose table holds a tree, `text.rs` the wording that commands share and `json.rs` the JSON shapes. `kept.rs` has `Kept`, which leaves what a command keeps until it has answered for the system to take back when elfq ends (`end_after_answer`). |
+| `src/cli/` | Command-line arguments, with clap: in `mod.rs`, a `Command` variant for each command and the structs that hold their arguments, and in `help.rs`, the text of `--help`. |
+| `src/commands/` | One file per command, which looks up SYMBOL, asks `graph` or `debuginfo` and decides what the answer shows. `mod.rs` runs the command the arguments name. The rest are shared: `arguments.rs` checks which arguments go together, `checks.rs` holds the checks a command makes before it answers, such as `check_code_is_readable`, `symbol/` works out what a user means by SYMBOL (`lookup.rs` finds what a name means and names items for the user in return, and `not_found.rs` and `similar.rs` word the error when it finds several or none), `retained_tree.rs` builds the trees of retained sizes that the overview, `top` and `retained` show, `uses.rs` holds the table of `callers` and `callees` for SYMBOL, `range_check/` answers them for ranges of memory or with `--from` or `--to` (its `validate.rs` checks the ranges, `crossing.rs` holds the answers and `rows.rs` their rows, which `reach` and `diff` print too), `flat_answer.rs` holds the answers whose table has one row to a line and `tree_answer.rs` those whose table holds a tree, `text.rs` the wording that commands share and `json.rs` the JSON shapes. `kept.rs` has `Kept`, which leaves what a command keeps until it has answered for the system to take back when elfq ends (`end_after_answer`). |
 | `src/commands/browse/` | `elfq FILE browse`, with the `tui` feature: `mod.rs` takes over the terminal and runs the event loop, `session.rs` holds the loaded file and asks the commands' code for answers, `keys.rs` is the table of keys, `app.rs` the history of pages, the go-to box, find's prompt and the screen's layout, and `views/` the pages, the go-to box and the tabs of an item's page other than a function's code, one file each (a data object's contents, its tab 1, are in `item/contents.rs`), `printed.rs`, which draws a command's answer for the pages and tabs that show one, and `names.rs`, which shortens long C++ and Rust names to fit a column. |
 | `src/commands/diff/` | `elfq FILE diff NEW`: `mod.rs` reads both files and gives the exit status, `blocks.rs` works out the blocks of memory that both builds share and what changed in each, `pairing.rs` pairs the builds' items, `rows.rs` works out what changed and the rows of MOVED and CHANGE, `edited.rs` which items of the same size are edited, `crossings.rs` the uses between blocks that are new or gone, and `text.rs` and `json.rs` write the answer. |
 | `src/commands/startup/` | `elfq FILE startup`: `mod.rs` refuses files that aren't Cortex-M firmware from their headers, and runs the rest, `start.rs` finds the reset handler and `main`, `steps.rs` reads the walk's calls and loops as the steps that copy and zero sections, `problems.rs` works out the state of each section when `main` starts, the problems and the notes, and `text.rs` and `json.rs` write the answer. |
 | `src/arch/` | Finding the addresses that machine code calls or uses, one module per instruction set (x86-64 and Thumb). Thumb's has three parts: `thumb/mod.rs` reads each instruction on its own, `thumb/decode.rs` says what an instruction does with the registers and the stack, and `thumb/values/` follows the addresses that code puts in registers to where a branch through one goes, as for long calls and veneers. `listing.rs` prints a function's code as text, for `browse`: x86-64 with iced-x86's formatter, and Thumb with thumb-asm, in the lines that `thumb::layout` cuts the code into with the same sweep as `scan`. `operands` finds the bits of a function's code that say where something is, such as the distance in a call, for `diff` to tell code that changed from code that only moved. `startup.rs` and `thumb/startup.rs` follow the code that a Cortex-M processor runs from reset, with the numbers in its registers and memory, for `startup`. |
 | `src/binary/` | Reading an ELF file: its functions and data objects ("items") and where they were found, their names, imports, stored pointers and memory blocks, and in Arm files the core the code is for (`attributes.rs`) and the data that `$d` symbols mark among code. `memory.rs` reads only the headers and the bytes that the sections put in memory, which `diff` compares, and `header.rs` only the ELF header and program headers, for `startup` to refuse a file for another processor before loading it. Unnamed data, such as string literals, is found from what code and pointers refer to. Each function's code is scanned once, as the file loads (`Binary::code_references`). |
-| `src/graph/` | The reference graph that connects items, the roots where the program starts, the dominator tree that says what is exclusive to what, the shortest paths that `why` and `reach` show, the bytes that a function reaches (`reached.rs`), the references that cross the boundary of ranges of memory, and where a linker's veneers jump to. |
+| `src/graph/` | The reference graph that connects items, the roots where the program starts, the dominator tree that says what is exclusive to what, the shortest paths that `why` and `reach` show, the bytes that a function reaches (`reached.rs`), the items in ranges of memory (`items_in_ranges.rs`) and the references that cross the ranges' boundary, narrowed with `--from` or `--to` (`boundary.rs`), and where a linker's veneers jump to. |
 | `src/debuginfo/` | Reading DWARF, when the file has it: the copies of functions that the compiler inlined, for `inlined`, and for the error when SYMBOL names a function that the compiler inlined everywhere. |
 | `src/render/` | Text output: tables, and the trees in their last column (`tree.rs`), which every command shows the same way: as rows that name the row they hang under (in `why`, only where chains branch), or drawn with `--tree`. |
 | `tests/it/` | Integration tests, built as one test program (`main.rs` lists its modules). See [Tests](#tests). |
@@ -75,7 +75,7 @@ Each module uses only the ones below it in this list:
 ```
 main.rs      the program
 commands/    one module per command
-cli.rs       arguments
+cli/         arguments
 render/      tables and trees
 debuginfo/   DWARF
 graph/       references, roots, the dominator tree, paths, crossings, veneers
@@ -119,6 +119,10 @@ without making them public. It and `arch/listing.rs` build only with the
   add a size to an address without checking. Stored pointers are read only
   where the file holds bytes, however large a section claims to be, and
   sums of sizes stop at the largest number rather than overflow.
+- **A long function reads as named steps.** A function of more than
+  about 100 lines that isn't one decoding match is the usual sign that it
+  does several things. Some still wait to be split, such as
+  `Names::similar` in `commands/symbol/similar.rs`.
 
 ## Words
 
@@ -140,9 +144,11 @@ this list, and add to it when you bring in a word.
   `Kept`, in `kept.rs`, is unrelated: it leaves a value for the system to
   free when elfq ends.
 - **answer**: what a command has worked out, before it is written as text
-  or JSON, as `callers::Answer`. `TreeAnswer` is the text of an answer
-  whose table holds a tree, and `TabAnswer` that answer as a tab of
-  browse shows it.
+  or JSON. `FlatAnswer` is the text of an answer whose table has one row
+  to a line, as `callers`, `callees` and `reach` write it, and
+  `TreeAnswer` the text of one whose table holds a tree, as `why` and
+  `retained` write it. Browse shows both; `TabAnswer` is a `TreeAnswer`
+  as a tab of browse shows it.
 - **section**: an ELF section. **block**: a run of addresses that
   sections occupy, as the overview's MEMORY table lists
   (`MemoryBlock`). **load image**: where the file stores the bytes of a
@@ -274,18 +280,21 @@ one when you make elfq quick to load a file that took far too long.
 Commands take the form `elfq FILE <command> [ARGS]`. `src/commands/top.rs`
 is a short one to copy.
 
-1. **Arguments, in `src/cli.rs`.** Add a variant to `Command`, before the
-   hidden `Debug`. Its name, in lowercase with `-` between words (`SizeOf`
-   is typed `size-of`), is the command's name, and its `///` line is what
-   `elfq --help` lists. Give it an `after_help` with a longer explanation,
-   as the others have, and a line in `EXAMPLES`. Its
-   arguments go in a struct of their own, or in `SymbolArgs` if SYMBOL is
-   all it takes. `--json`, `--tree` and `--range` are global, so don't
-   declare them again. `elfq help COMMAND` and the hint for a command typed before the
+1. **Arguments, in `src/cli/`.** Add a variant to `Command` in `mod.rs`,
+   before the hidden `Debug`. Its name, in lowercase with `-` between
+   words (`SizeOf` is typed `size-of`), is the command's name, and its
+   `///` line is what `elfq --help` lists. Give it an `after_help` with a
+   longer explanation, a constant in `help.rs` in `Command`'s order, as the
+   others have, and a line in `EXAMPLES` there. Its arguments go in a
+   struct of their own, as `RetainedArgs` holds SYMBOL and `--all`.
+   `--json`, `--tree` and `--range` are global, so don't declare them
+   again. `elfq help COMMAND` and the hint for a command typed before the
    file find the new command by themselves.
 2. **The command, in `src/commands/<name>.rs`.** Start with a `//!` line
-   that shows how to type it, then a `run` function that takes the
-   `Binary`, the arguments, the `Format` and the output. It returns
+   that shows how to type it, then a `run` function that takes what it
+   needs: the `Binary` (and the file's path, if the answer names the file,
+   as `overview` does), the arguments it reads, the `Format` and the
+   output. It returns
    `Result<Outcome>`: `Outcome::Answered`, or for exit status 1 another
    variant, as `callers` and `callees` return for ranges.
 3. **Wiring, in `src/commands/mod.rs` and `arguments.rs`.** Add
@@ -296,21 +305,26 @@ is a short one to copy.
    command that takes `--range` gets `range` from its arm in `run`; name
    it in `RANGE_REFUSED`, the error that lists the commands that take
    `--range`, in the tests in `tests/it/cli.rs` that check that error, and
-   in the `--range` help in `cli.rs`, README.md and docs/design.md. A
+   in the `--range` help in `cli/mod.rs`, README.md and docs/design.md. A
    command that shows a tree goes likewise in `check_tree`'s error, its
    tests and the `--tree` help.
 4. **SYMBOL.** If the command reads code, call `check_code_is_readable`
    first, so that a file whose code elfq can't read says so even when
    SYMBOL names nothing. `symbol::find` turns SYMBOL into a `Symbol`, whose
-   `node` may be an import; `item_in_file` or `readable_item` gives its
-   item, or an error that says why there is none. These checks are in
-   `checks.rs`. The answer's first line names it with `Symbol::lead_name`,
+   `node` may be an import; an answer that names other items too keeps
+   one `Names` and calls `Names::find`, as `retained` and `why` do, so
+   that the names are worked out once. `item_in_file` or `readable_item`
+   gives its item, or an error that says why there is none. These checks
+   are in `checks.rs`. The answer's first line names it with `Symbol::lead_name`,
    which says when SYMBOL gave another of its names or an address inside
    it. A command that needs the roots refuses shared libraries, as `top`,
    `retained` and `why` do.
-5. **The answer.** Work it out first, then write it. Text uses
-   `render::Table`, `TreeRow` for trees, and the shared wording in
-   `text.rs`. JSON is a struct that derives `Serialize`, made of the shapes
+5. **The answer.** Work it out first, then write it. Text is a
+   `FlatAnswer` for a table of one row to a line, or a `TreeAnswer` for a
+   table that holds a tree of `TreeRow`s, as `top` builds one, with the
+   shared wording in `text.rs`. A tree cut down to its largest rows uses
+   the functions at the end of `tree_answer.rs`, as `top` does through
+   `RetainedTree::largest`. JSON is a struct that derives `Serialize`, made of the shapes
    in `json.rs`, such as `json::Symbol` for SYMBOL's item, which adds its
    `aliases`, and `json::Item` for every other item, and written with
    `json::write`. Every key is always there, `null` when it has no value.

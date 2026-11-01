@@ -7,44 +7,26 @@
 //! call. `printed.rs` draws it.
 
 use super::item::Tab;
-use super::printed::{Lines, Printed, PrintedRow};
+use super::printed::Printed;
 use crate::commands::browse::session::Session;
-use crate::commands::callers::Answer;
-use crate::commands::text;
-use crate::commands::uses::distinct_nodes;
+use crate::commands::flat_answer::FlatAnswer;
+use crate::commands::uses;
 use crate::graph::Node;
-use crate::render::Align;
 
-/// The callers of `node`, from `answer`, the answer that `callers SYMBOL`
-/// gives for it: HOW, AT and CALLER, each row opening the caller at the
-/// first place where it uses `node`.
-pub fn tab(session: &Session, node: Node, answer: Answer) -> Printed {
-    let binary = session.binary;
+/// The callers of `node`, from `answer`, the answer that `callers SYMBOL
+/// --all` gives for it (see [`Session::callers`]): HOW, AT and CALLER,
+/// each row opening the caller at the first place where it uses `node`.
+pub fn tab(session: &Session, node: Node, mut answer: FlatAnswer) -> Printed {
     // `callers SYMBOL` lists the rows of the 30 largest callers, unless
     // with --all, and a last row counts the rest.
-    let callers = distinct_nodes(&answer.rows).len();
-    let cut = text::shown_count(callers, text::shown(false)) < callers;
-    // Said in place of the table when nothing uses the item, as the
-    // command says it.
-    let mut above = Vec::new();
-    if answer.rows.is_empty() {
-        above.push(Lines::Words(format!(
-            "Nothing in the file calls or uses {}.",
-            node.name(binary)
-        )));
+    let cut = uses::table_needs_all(answer.node_count());
+    // The page's header counts the callers, so the tab leaves out the
+    // first line, which counts them too, unless it is all there is to say.
+    if !answer.rows.is_empty() {
+        answer.lead.clear();
     }
-    let rows = (answer.rows.into_iter())
-        .map(|row| PrintedRow {
-            cells: vec![row.how.to_string(), text::at_column(&row.sites)],
-            name: row.node.name(binary).to_string(),
-            rest: String::new(),
-            under: None,
-            link: Some((row.node, Some(row.sites[0]))),
-        })
-        .collect();
-    let columns = ["HOW", "AT", "CALLER"].map(|header| (header.to_string(), Align::Left));
     let command = session.command("callers", Some(node), cut);
-    Printed::new(above, columns.into(), rows, answer.notes, command).opening(Tab::Callers, node)
+    Printed::of_flat(answer, command).opening(Tab::Callers, node)
 }
 
 #[cfg(test)]
@@ -59,7 +41,6 @@ mod tests {
     use crate::binary::Binary;
     use crate::cli::{Cli, Command, Format};
     use crate::commands::callers;
-    use crate::commands::uses::{self, Row};
 
     /// Runs `words`, a `callers` command line, as elfq does, but on the
     /// graph that `session` has already built, and returns what it prints,
@@ -157,45 +138,6 @@ mod tests {
             }
         }
         assert!(pages > 100, "{pages}");
-    }
-
-    #[test]
-    fn the_command_has_all_exactly_when_the_table_would_cut() {
-        // `callers` lists 30 callers and counts the rest in a last row,
-        // which never counts one: it lists 31 callers in full. No sample
-        // has 31, so the callers of __rust_dealloc are cut to each count.
-        let path =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/bin/rust-x86_64-nodebug.elf");
-        let binary = Binary::load(&path).unwrap();
-        let session = Session::new(&path, &binary).unwrap();
-        let node = session.names.find("__rust_dealloc").unwrap().node;
-        let full = session.callers(node);
-        let callers = distinct_nodes(&full.rows);
-        for count in 29..=33 {
-            let rows = || -> Vec<Row> {
-                (full.rows.iter())
-                    .filter(|row| callers[..count].contains(&row.node))
-                    .map(|row| Row {
-                        node: row.node,
-                        how: row.how,
-                        sites: row.sites.clone(),
-                    })
-                    .collect()
-            };
-            let table = |all| {
-                let mut out = Vec::new();
-                let shown = text::shown(all);
-                uses::write_uses_table(&binary, rows(), "CALLER", shown, &mut out).unwrap();
-                out
-            };
-            let answer = Answer {
-                rows: rows(),
-                notes: Vec::new(),
-            };
-            let tab = tab(&session, node, answer);
-            let all = tab.command().ends_with(" --all");
-            assert_eq!(all, table(true) != table(false), "{count} callers");
-        }
     }
 
     #[test]

@@ -20,7 +20,7 @@ use super::rows::{Change, ChangeRow, MovedRow, Status};
 use super::{Answer, Build, Compared};
 use crate::binary::{FileKind, Item, total};
 use crate::commands::json::address;
-use crate::commands::ranges::{self, Direction};
+use crate::commands::range_check::{self, Direction};
 use crate::commands::symbol::Names;
 use crate::commands::text::{
     self as house, cannot_read_code, named, names_text, plural, range_argument, range_start,
@@ -148,13 +148,13 @@ fn write_crossings(compared: &Compared, out: &mut dyn Write) -> Result<()> {
         writeln!(out)?;
         let columns = [("STATUS", Align::Left)]
             .into_iter()
-            .chain(ranges::crossings_columns(Direction::Out));
+            .chain(range_check::crossings_columns(Direction::Out));
         let mut table = Table::new(&columns.collect::<Vec<_>>());
         for crossing in calls {
             let binary = &crossing.build(&compared.items).binary;
             let callee = Node::Item(crossing.callee);
             let mut cells = vec![crossing.status.word().to_string()];
-            cells.extend(ranges::row_cells(
+            cells.extend(range_check::row_cells(
                 binary,
                 callee,
                 &crossing.row,

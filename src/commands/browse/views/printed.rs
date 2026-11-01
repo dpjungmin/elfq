@@ -19,7 +19,7 @@ use super::{
     link_preview, wrap,
 };
 use crate::commands::browse::{keys::Action, session::Session};
-use crate::commands::reach;
+use crate::commands::flat_answer::FlatAnswer;
 use crate::commands::tree_answer::{TabAnswer, TreeAnswer};
 use crate::graph::Node;
 use crate::render::{Align, flat_rows};
@@ -165,9 +165,9 @@ impl Printed {
         }
     }
 
-    /// `answer`, an answer of `reach`, printed by `command`. Each row
-    /// opens the item it is about.
-    pub fn of_reach(answer: reach::Answer, command: String) -> Printed {
+    /// `answer`, an answer of `callers`, `callees` or `reach`, printed by
+    /// `command`. Each row opens the item it is about.
+    pub fn of_flat(answer: FlatAnswer, command: String) -> Printed {
         let mut above: Vec<Lines> = answer.lead.into_iter().map(Lines::Words).collect();
         if let Some(memory) = answer.memory {
             above.push(Lines::Table(table_lines(&memory)));
@@ -178,7 +178,7 @@ impl Printed {
                 name: row.name,
                 rest: row.rest,
                 under: None,
-                link: row.node.map(|node| (node, None)),
+                link: row.node.map(|node| (node, row.at)),
             })
             .collect();
         Printed::new(above, answer.columns, rows, answer.notes, command)
@@ -199,15 +199,13 @@ impl Printed {
     /// under where the command's does. Each row opens the item it is about.
     fn of_tree(answer: TreeAnswer, command: String) -> Printed {
         let above = answer.lead.into_iter().map(Lines::Words).collect();
-        let columns = (answer.columns.iter())
+        let Some(table) = answer.table else {
+            return Printed::new(above, Vec::new(), Vec::new(), answer.notes, command);
+        };
+        let columns = (table.columns.iter())
             .map(|&(header, align)| (header.to_string(), align))
             .collect();
-        // An answer of sentences has no rows, and no shape to show them in.
-        let rows = match answer.rows.is_empty() {
-            true => Vec::new(),
-            false => flat_rows(&answer.rows, answer.shape),
-        };
-        let rows = (rows.into_iter())
+        let rows = (flat_rows(&table.rows, table.shape).into_iter())
             .map(|flat| PrintedRow {
                 cells: flat.row.cells.clone(),
                 name: flat.row.name.clone(),

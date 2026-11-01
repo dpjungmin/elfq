@@ -20,7 +20,7 @@ use super::rows::{Change, Status};
 use super::{Answer, Build, Compared};
 use crate::binary::{Binary, total};
 use crate::commands::json::{self, address};
-use crate::commands::ranges::{self, CalleeJson};
+use crate::commands::range_check::{self, CalleeJson};
 use crate::graph::Node;
 
 #[derive(Serialize)]
@@ -202,7 +202,7 @@ pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
                 .iter()
                 .map(|crossing| CrossingJson {
                     status: crossing.status.word(),
-                    row: ranges::callee_json(
+                    row: range_check::callee_json(
                         &crossing.build(&compared.items).binary,
                         Node::Item(crossing.callee),
                         &crossing.row,

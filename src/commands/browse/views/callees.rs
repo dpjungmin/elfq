@@ -8,47 +8,31 @@
 //! opens the selected callee's page on its callees. `printed.rs` draws it.
 
 use super::item::Tab;
-use super::printed::{Lines, Printed, PrintedRow};
+use super::printed::Printed;
 use crate::commands::browse::session::Session;
-use crate::commands::uses::distinct_nodes;
-use crate::commands::{callees, text};
+use crate::commands::callees;
 use crate::graph::Node;
-use crate::render::Align;
 
 /// What the item at `index` calls or uses, as `callees SYMBOL` lists it,
 /// which names it `name` (see [`Session::lead_name`]): HOW, AT and
 /// CALLEE, each row opening the callee.
 pub fn tab(session: &Session, index: usize, name: &str) -> Printed {
     let (binary, graph) = (session.binary, &session.graph);
-    let answer = callees::answer(binary, graph, index, name, true);
-    let brief = callees::answer(binary, graph, index, name, false).notes;
+    let mut answer = callees::answer(binary, graph, index, name, true);
     // `callees SYMBOL` lists the rows of the 30 largest callees, unless
     // with --all, and a last row counts the rest; and it gives only the
     // first few sites of the calls and jumps that elfq can't follow.
-    let count = distinct_nodes(&answer.rows).len();
-    let cut = text::shown_count(count, text::shown(false)) < count || brief != answer.notes;
+    let brief = callees::answer(binary, graph, index, name, false);
+    let cut = brief.written() != answer.written();
     let node = Node::Item(index);
     let command = session.command("callees", Some(node), cut);
-    // What the command says in place of the table, when it has none, is
-    // said at the top.
-    let (above, notes, brief) = if answer.rows.is_empty() {
-        let above = answer.notes.into_iter().map(Lines::Words).collect();
-        (above, Vec::new(), Vec::new())
-    } else {
-        (Vec::new(), answer.notes, brief)
-    };
-    let rows = (answer.rows.into_iter())
-        .map(|row| PrintedRow {
-            cells: vec![row.how.to_string(), text::at_column(&row.sites)],
-            name: row.node.name(binary).to_string(),
-            rest: String::new(),
-            under: None,
-            link: Some((row.node, None)),
-        })
-        .collect();
-    let columns = ["HOW", "AT", "CALLEE"].map(|header| (header.to_string(), Align::Left));
-    (Printed::new(above, columns.into(), rows, notes, command))
-        .with_brief(brief)
+    // The rows show what the first line counts, so the tab leaves it out,
+    // unless it says what the item uses in place of rows.
+    if !answer.rows.is_empty() {
+        answer.lead.clear();
+    }
+    (Printed::of_flat(answer, command))
+        .with_brief(brief.notes)
         .opening(Tab::Callees, node)
 }
 

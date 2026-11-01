@@ -4151,6 +4151,17 @@ fn help_comes_before_a_command_too() {
 }
 
 #[test]
+fn help_before_a_command_is_that_commands_help() {
+    // Hidden commands too: `elfq help debug` is `elfq FILE debug --help`.
+    for command in elfq::cli::command_names() {
+        assert_output(
+            &stdout(&["help", &command]),
+            &stdout(&[SAMPLE, &command, "--help"]),
+        );
+    }
+}
+
+#[test]
 #[cfg(unix)]
 fn an_argument_that_is_not_utf8_is_an_error() {
     use std::ffi::OsStr;

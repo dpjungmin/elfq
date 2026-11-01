@@ -13,8 +13,9 @@
 //! jumps it can't follow, such as a call through a function pointer, are kept
 //! in [`Graph::unresolved`] so that answers can say what they don't know.
 //!
-//! [`Boundary`] tells which references cross the boundary of some ranges
-//! of memory (see `boundary.rs`).
+//! [`ItemsInRanges`] tells which items are in some ranges of memory, and
+//! [`Boundary`] which references cross the ranges' boundary (see
+//! `items_in_ranges.rs` and `boundary.rs`).
 //!
 //! [`Veneers`] tells where each of a linker's veneers jumps to. A veneer is
 //! code that the linker adds where a call is too far for the call
@@ -30,13 +31,15 @@
 
 mod boundary;
 mod dominators;
+mod items_in_ranges;
 mod paths;
 mod reached;
 mod roots;
 mod veneers;
 
-pub use boundary::{Boundary, Crossing, Unfollowed};
+pub use boundary::{Boundary, Crossing, Crossings, Unfollowed};
 pub use dominators::DominatorTree;
+pub use items_in_ranges::ItemsInRanges;
 pub use paths::ShortestPaths;
 pub use reached::Reached;
 pub use roots::{Root, RootKind, listed_in};
@@ -45,7 +48,7 @@ pub use veneers::{VeneerTarget, Veneers};
 use std::collections::HashSet;
 
 use crate::arch::{self, CodeReference, CodeReferenceKind};
-use crate::binary::{Binary, FileKind, ItemKind, Relocation, RelocationTarget};
+use crate::binary::{AddressRange, Binary, FileKind, ItemKind, Relocation, RelocationTarget};
 
 /// A node of the graph: an item in the file, or an import.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -121,6 +124,17 @@ impl Unresolved {
     /// code outside every item.
     pub fn is_indirect(&self) -> bool {
         self.target.is_none()
+    }
+
+    /// Whether it may go to code in `ranges`: when it goes to an address,
+    /// whether the address is in them, and when it goes through a pointer,
+    /// `through_pointer`, which says whether a function in them has its
+    /// address taken or stored.
+    pub fn may_go_to(&self, ranges: &[AddressRange], through_pointer: bool) -> bool {
+        match self.target {
+            Some(target) => ranges.iter().any(|range| range.contains(target)),
+            None => through_pointer,
+        }
     }
 }
 
@@ -199,6 +213,16 @@ impl Graph {
         let start = self.unresolved.partition_point(|u| u.from < item);
         let end = self.unresolved.partition_point(|u| u.from <= item);
         &self.unresolved[start..end]
+    }
+
+    /// The addresses outside every item that calls and jumps in the file
+    /// go to, as to a routine in a chip's ROM, in the order of
+    /// [`Graph::unresolved`].
+    pub fn code_outside_items(&self) -> Vec<u64> {
+        self.unresolved
+            .iter()
+            .filter_map(|unresolved| unresolved.target)
+            .collect()
     }
 
     fn add_code_references(&mut self, binary: &Binary, function: usize) {

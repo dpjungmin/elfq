@@ -17,8 +17,9 @@ use anyhow::Result;
 
 use super::views::PageCode;
 use crate::binary::{Binary, FileKind, ItemKind, MemoryBlock, memory_blocks};
-use crate::commands::callers::{self, Answer};
+use crate::commands::callers;
 use crate::commands::checks::reference_graph;
+use crate::commands::flat_answer::FlatAnswer;
 use crate::commands::retained_tree::RetainedTree;
 use crate::commands::symbol::Names;
 use crate::commands::text::CommandLine;
@@ -124,10 +125,11 @@ impl<'a> Session<'a> {
         }
     }
 
-    /// What uses `node`, as `callers SYMBOL` lists it: its rows, with every
-    /// caller, and the notes under them.
-    pub(super) fn callers(&self, node: Node) -> Answer {
-        callers::answer(self.binary, &self.graph, node)
+    /// What uses `node`, as `callers SYMBOL --all` lists it, but with
+    /// `node`'s own name in the first line, as the page's header names it.
+    pub(super) fn callers(&self, node: Node) -> FlatAnswer {
+        let name = node.name(self.binary);
+        callers::answer(self.binary, &self.graph, node, name, true)
     }
 
     /// `node`'s name as the first line of a command's answer about it

@@ -12,9 +12,10 @@ use anyhow::Result;
 use serde::Serialize;
 use serde_json::ser::Formatter;
 
+use super::text;
 use super::uses::Row;
 use crate::binary::{AddressRange, Binary, MemoryBlock};
-use crate::graph::{Node, ReferenceKind, RootKind};
+use crate::graph::{self, Node, ReferenceKind, RootKind};
 
 /// Writes `value`, an answer's object, as JSON with one row per line: each
 /// element of a list that the object holds, such as an item of `top` or a
@@ -157,6 +158,36 @@ impl<'a> Symbol<'a> {
         Symbol {
             item: Item::new(binary, node),
             aliases,
+        }
+    }
+}
+
+/// The items at `indexes` in [`Binary::items`].
+pub(super) fn items<'a>(binary: &'a Binary, indexes: &[usize]) -> Vec<Item<'a>> {
+    indexes
+        .iter()
+        .map(|&index| Item::new(binary, Node::Item(index)))
+        .collect()
+}
+
+/// A call or jump that elfq can't follow.
+#[derive(Serialize)]
+pub(super) struct Unresolved {
+    /// The instruction's address.
+    site: String,
+    /// `call` or `jump`.
+    how: &'static str,
+    /// Where it goes, when the code says so but no item is there, or
+    /// `null` when only the running program knows.
+    target: Option<String>,
+}
+
+impl Unresolved {
+    pub(super) fn new(unresolved: &graph::Unresolved) -> Unresolved {
+        Unresolved {
+            site: address(unresolved.site),
+            how: text::call_or_jump(unresolved),
+            target: unresolved.target.map(address),
         }
     }
 }

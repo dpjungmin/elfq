@@ -20,7 +20,7 @@ use super::symbol::{Names, Symbol};
 use super::text::Naming;
 #[cfg(feature = "tui")]
 use super::tree_answer::TabAnswer;
-use super::tree_answer::TreeAnswer;
+use super::tree_answer::{self, TreeAnswer, TreeTable};
 use super::{Outcome, json, text};
 use crate::binary::{Binary, FileKind};
 use crate::cli::Format;
@@ -338,12 +338,13 @@ impl<'u, 'a> Users<'u, 'a> {
             Format::Tree => TreeShape::Drawn,
             _ => TreeShape::Chains { words: "used by" },
         };
-
         TreeAnswer {
             lead: vec![lead(binary, lead_name, keeping, shown.len())],
-            columns: vec![("HOW", Align::Left), ("ITEM", Align::Left)],
-            rows: chains.rows(shape),
-            shape,
+            table: Some(TreeTable {
+                columns: vec![("HOW", Align::Left), ("ITEM", Align::Left)],
+                rows: chains.rows(shape),
+                shape,
+            }),
             notes: self.notes(&Naming::of(all)),
         }
     }
@@ -525,12 +526,9 @@ impl<'n, 'a> Chains<'n, 'a> {
     fn row(&self, how: String, node: Node, shape: TreeShape) -> TreeRow {
         let children = self.children_rows(node, shape);
         let name = node.name(self.binary);
-        // Finding a short name takes a while, so only rows that show it
-        // find it.
-        let short_name = if children.is_empty() || shape == TreeShape::Drawn {
-            name.to_string()
-        } else {
-            self.names.short_name(node)
+        let short_name = match tree_answer::is_named_below(&children, shape) {
+            true => self.names.short_name(node),
+            false => name.to_string(),
         };
         TreeRow {
             short_name,

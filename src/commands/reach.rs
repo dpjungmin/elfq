@@ -20,9 +20,9 @@
 //! USER --to RANGE` lists for that code, so that it names the code to
 //! change, but for a veneer whose target is in the ranges too, which
 //! `callees` steps over. The calls and jumps that elfq can't follow stay by
-//! the rule that `callees --to` keeps them by (see `ranges.rs`), and the
-//! tree and the JSON keep only the chains to what is in the ranges and to
-//! those calls and jumps.
+//! the rule that `callees --to` keeps them by (see `Unresolved::may_go_to`
+//! in `graph`), and the tree and the JSON keep only the chains to what is
+//! in the ranges and to those calls and jumps.
 //!
 //! Without SYMBOL, `elfq FILE reach` lists where the program starts, and
 //! the bytes of code and data that each start reaches in each block, as
@@ -39,18 +39,19 @@ use anyhow::{Result, bail};
 use serde::Serialize;
 
 use super::checks::{check_code_is_readable, readable_item};
+use super::flat_answer::{FlatAnswer, FlatRow};
 use super::kept::Kept;
 use super::symbol::{Names, Symbol};
 use super::text::CommandLine;
-use super::{Outcome, json, ranges, text};
+use super::{Outcome, json, range_check, text};
 use crate::binary::{
     AddressRange, Binary, CodeAndData, FileKind, ItemKind, MemoryBlock, STARTUP_ARRAYS,
     exception_name, is_reserved, memory_blocks, total,
 };
 use crate::cli::Format;
 use crate::graph::{
-    Boundary, Graph, Node, Reached, Reference, ReferenceKind, RootKind, ShortestPaths, Unfollowed,
-    Unresolved, VeneerTarget, Veneers, listed_in,
+    Graph, ItemsInRanges, Node, Reached, Reference, ReferenceKind, RootKind, ShortestPaths,
+    Unfollowed, Unresolved, VeneerTarget, Veneers, listed_in,
 };
 use crate::render::{Align, Table, TreeRow, TreeShape};
 
@@ -127,13 +128,8 @@ struct ItemJson<'a> {
 struct UnresolvedJson<'a> {
     /// The function it is in.
     caller: json::Item<'a>,
-    /// The instruction's address.
-    site: String,
-    /// `call` or `jump`.
-    how: &'static str,
-    /// Where it goes, when the code says so but no item is there, or
-    /// `null` when only the running program knows.
-    target: Option<String>,
+    #[serde(flatten)]
+    call: json::Unresolved,
 }
 
 /// What `elfq FILE reach` lists without SYMBOL: where the program starts,
@@ -296,7 +292,7 @@ pub(super) fn answer<'a>(
     names: &Names<'a>,
     index: usize,
     lead_name: String,
-) -> (Answer, Answer) {
+) -> (FlatAnswer, FlatAnswer) {
     let mut reach = Reach::find(binary, graph, names, index, lead_name, &[], true)
         .expect("without --to, there is no range for reach to refuse");
     let all = reach.answer(Body::Rows);
@@ -408,9 +404,9 @@ impl<'n, 'a> Reach<'n, 'a> {
         to: &[AddressRange],
         all: bool,
     ) -> Result<Reach<'n, 'a>> {
-        let code_outside = ranges::code_outside(graph);
+        let code_outside = graph.code_outside_items();
         for &range in to {
-            ranges::check_to_range(binary, range, &code_outside)?;
+            range_check::check_to_range(binary, range, &code_outside)?;
         }
         let start = Node::Item(index);
         let paths = ShortestPaths::from(binary, graph, start);
@@ -515,12 +511,11 @@ impl<'n, 'a> Reach<'n, 'a> {
         }
         let plt_header = graph.is_plt_header(start);
         if !to.is_empty() {
-            let through_pointer = !Boundary::new(binary, graph, to)
-                .callable_through_pointer()
+            let through_pointer = !ItemsInRanges::new(binary, to)
+                .callable_through_pointer(graph)
                 .is_empty();
-            let may_go_to = |jump: &Unresolved| ranges::may_go_to(jump, to, through_pointer);
-            unresolved.retain(may_go_to);
-            unfollowed.retain(|row| may_go_to(&row.unresolved));
+            unresolved.retain(|jump| jump.may_go_to(to, through_pointer));
+            unfollowed.retain(|row| row.unresolved.may_go_to(to, through_pointer));
         }
         Ok(Reach {
             binary,
@@ -651,7 +646,7 @@ impl<'n, 'a> Reach<'n, 'a> {
         let followed = |unresolved: &Unresolved| !self.to.is_empty() && unresolved.target.is_some();
         let answer = ReachJson {
             symbol: json::Symbol::new(binary, Node::Item(self.index)),
-            to: ranges::json_other(&self.to),
+            to: range_check::json_far_side(&self.to),
             code_bytes: bytes.code,
             data_bytes: bytes.data,
             blocks,
@@ -661,16 +656,10 @@ impl<'n, 'a> Reach<'n, 'a> {
                 .iter()
                 .map(|unresolved| UnresolvedJson {
                     caller: item(Node::Item(unresolved.from)),
-                    site: json::address(unresolved.site),
-                    how: text::call_or_jump(unresolved),
-                    target: unresolved.target.map(json::address),
+                    call: json::Unresolved::new(unresolved),
                 })
                 .collect(),
-            unreadable: self
-                .unreadable
-                .iter()
-                .map(|&index| item(Node::Item(index)))
-                .collect(),
+            unreadable: json::items(binary, &self.unreadable),
             complete: self.unresolved.iter().all(followed) && self.unreadable.is_empty(),
         };
         json::write(&answer, out)
@@ -743,14 +732,14 @@ impl<'n, 'a> Reach<'n, 'a> {
     /// rows by block, and the notes on what elfq can't follow or read. For
     /// a tree, it has no rows, since the tree takes their place, and its
     /// first line counts the calls and jumps as the tree shows them.
-    fn answer(&self, body: Body) -> Answer {
+    fn answer(&self, body: Body) -> FlatAnswer {
         let tree = body == Body::Tree;
         let binary = self.binary;
         let name = &self.lead_name;
         if self.reaches_nothing() {
             // Any calls and jumps elfq can't follow are in SYMBOL, through
             // pointers.
-            return Answer {
+            return FlatAnswer {
                 lead: nothing_reached_lines(
                     name,
                     self.self_use,
@@ -758,7 +747,7 @@ impl<'n, 'a> Reach<'n, 'a> {
                     &self.unresolved,
                     self.all,
                 ),
-                ..Answer::default()
+                ..FlatAnswer::default()
             };
         }
 
@@ -820,7 +809,7 @@ impl<'n, 'a> Reach<'n, 'a> {
             let columns = columns.map(|(header, align)| (header.to_string(), align));
             (columns.into(), self.rows(&self.outside()))
         };
-        Answer {
+        FlatAnswer {
             lead: vec![format!("{lead}:")],
             memory: (self.blocks.len() > 1).then(|| self.memory_table()),
             columns,
@@ -842,7 +831,7 @@ impl<'n, 'a> Reach<'n, 'a> {
             .map(|step| step.node)
             .collect();
         let bytes = text::code_and_data(self.bytes(counted.iter().copied()));
-        let ranges = ranges::ranges_text(binary, &self.to, self.all);
+        let ranges = range_check::ranges_text(binary, &self.to, self.all);
         // Counted as the rows show them: a tree has the veneers that the
         // other rows step over.
         let unknown: Vec<&Unresolved> = if tree {
@@ -942,7 +931,7 @@ impl<'n, 'a> Reach<'n, 'a> {
         if symbol {
             table.row(with_at(self.symbol_row().into_cells(), &[]));
         }
-        for (unfollowed, sites) in ranges::group_unfollowed(&self.unfollowed) {
+        for (unfollowed, sites) in range_check::group_unfollowed(&self.unfollowed) {
             let sites = self.unfollowed_sites(&unfollowed, sites);
             table.row(with_at(
                 self.unfollowed_row(&unfollowed).into_cells(),
@@ -1021,7 +1010,7 @@ impl<'n, 'a> Reach<'n, 'a> {
     /// Unless the answer shows every row, only the 30 largest items are
     /// shown, and a row such as "9 more data objects in
     /// 0x20000000..0x20000450" sums up the rest of a block's.
-    fn rows(&self, outside: &[Unfollowed]) -> Vec<AnswerRow> {
+    fn rows(&self, outside: &[Unfollowed]) -> Vec<FlatRow> {
         let mut rows = vec![self.symbol_row()];
         let reached = &self.steps[1..];
         let shown = self.shown(reached);
@@ -1031,7 +1020,7 @@ impl<'n, 'a> Reach<'n, 'a> {
         for steps in items.chunk_by(|a, b| self.group(a) == self.group(b)) {
             self.add_group(steps, &shown, &mut rows);
         }
-        for (unfollowed, _) in ranges::group_unfollowed(outside) {
+        for (unfollowed, _) in range_check::group_unfollowed(outside) {
             rows.push(self.unfollowed_row(&unfollowed));
         }
         if !imports.is_empty() {
@@ -1041,14 +1030,14 @@ impl<'n, 'a> Reach<'n, 'a> {
     }
 
     /// SYMBOL's row.
-    fn symbol_row(&self) -> AnswerRow {
+    fn symbol_row(&self) -> FlatRow {
         let item = &self.binary.items[self.index];
         let cells = vec![
             format!("{:#x}", item.address),
             text::size_text(item),
             String::new(),
         ];
-        AnswerRow::new(cells, item.name.clone(), Some(Node::Item(self.index)))
+        FlatRow::new(cells, item.name.clone(), Some(Node::Item(self.index)))
     }
 
     /// Which group of the table `step`'s row is in: each block's functions,
@@ -1084,7 +1073,7 @@ impl<'n, 'a> Reach<'n, 'a> {
     /// words it, but for the AT column: to code outside every item, at its
     /// address, or through a pointer. It names no item, and is about the
     /// item that makes it.
-    fn unfollowed_row(&self, unfollowed: &Unfollowed) -> AnswerRow {
+    fn unfollowed_row(&self, unfollowed: &Unfollowed) -> FlatRow {
         let unresolved = &unfollowed.unresolved;
         let (address, what) = match unresolved.target {
             Some(target) => (format!("{target:#x}"), "(outside any function)"),
@@ -1093,9 +1082,9 @@ impl<'n, 'a> Reach<'n, 'a> {
         let cells = vec![
             address,
             String::new(),
-            ranges::unfollowed_how(unfollowed).to_string(),
+            range_check::unfollowed_how(unfollowed).to_string(),
         ];
-        let mut row = AnswerRow::new(cells, String::new(), Some(Node::Item(unresolved.from)));
+        let mut row = FlatRow::new(cells, String::new(), Some(Node::Item(unresolved.from)));
         row.rest = format!("{what}, used by {}", self.user_name(unresolved.from));
         row
     }
@@ -1104,7 +1093,7 @@ impl<'n, 'a> Reach<'n, 'a> {
     /// functions: those in `shown`, and a row that sums up the rest. One
     /// that would be left out on its own is shown too, since its row takes
     /// no more room than the sum's.
-    fn add_group(&self, steps: &[&Step], shown: &HashSet<Node>, rows: &mut Vec<AnswerRow>) {
+    fn add_group(&self, steps: &[&Step], shown: &HashSet<Node>, rows: &mut Vec<FlatRow>) {
         let binary = self.binary;
         let hidden: Vec<&Step> = steps
             .iter()
@@ -1139,14 +1128,14 @@ impl<'n, 'a> Reach<'n, 'a> {
         };
         let cells = vec![String::new(), size, String::new()];
         let more = format!("{} more {what}{place}", hidden.len());
-        rows.push(AnswerRow::new(cells, more, None));
+        rows.push(FlatRow::new(cells, more, None));
     }
 
     /// An item's or import's row. With `--to`, the row is
     /// written as `callees --to` writes it, with the whole name of the item
     /// that uses it, and no mark for a function reached through a pointer,
     /// which HOW shows.
-    fn row(&self, step: &Step) -> AnswerRow {
+    fn row(&self, step: &Step) -> FlatRow {
         let binary = self.binary;
         let (address, size) = match step.node {
             Node::Item(index) => {
@@ -1163,7 +1152,7 @@ impl<'n, 'a> Reach<'n, 'a> {
         };
         let how = text::how_via(binary, step.node, used.kind, used.veneer);
         let cells = vec![address, size, how.to_string()];
-        let mut row = AnswerRow::new(cells, step.node.name(binary).to_string(), Some(step.node));
+        let mut row = FlatRow::new(cells, step.node.name(binary).to_string(), Some(step.node));
         row.rest = format!("{mark}, used by {}", self.user_name(used.by));
         row
     }
@@ -1416,110 +1405,6 @@ impl<'r, 'a> Tree<'r, 'a> {
     }
 }
 
-/// The text answer of `reach`, before it is written, which browse shows
-/// too: the lines before its tables, the bytes in each block of
-/// memory, the table of rows, with the item that each row is about, and
-/// the notes under them. An empty line comes before each table, and before
-/// the notes when there is a table of rows.
-#[derive(Default)]
-pub(super) struct Answer {
-    /// The first line, or what the answer says in place of its tables.
-    pub lead: Vec<String>,
-    pub memory: Option<Table>,
-    /// The columns of the table of rows, the last of which names an item.
-    pub columns: Vec<(String, Align)>,
-    /// Empty when the answer has no table of rows.
-    pub rows: Vec<AnswerRow>,
-    pub notes: Vec<String>,
-}
-
-/// A row of [`Answer`]'s table.
-pub(super) struct AnswerRow {
-    /// Every cell but the last.
-    pub cells: Vec<String>,
-    /// The last cell: a name, which may be empty, then what the row says
-    /// about it, such as " (may reach more)" or ", used by main".
-    pub name: String,
-    pub rest: String,
-    /// The item or import that the row is about, if any, which browse
-    /// opens.
-    #[cfg_attr(not(feature = "tui"), expect(dead_code))]
-    pub node: Option<Node>,
-}
-
-impl AnswerRow {
-    fn new(cells: Vec<String>, name: String, node: Option<Node>) -> AnswerRow {
-        AnswerRow {
-            cells,
-            name,
-            rest: String::new(),
-            node,
-        }
-    }
-
-    /// Its cells as the table writes them.
-    fn into_cells(self) -> Vec<String> {
-        let mut cells = self.cells;
-        cells.push(self.name + &self.rest);
-        cells
-    }
-}
-
-/// Writes a table, or what takes its place in an [`Answer`].
-type WriteTable<'a> = dyn Fn(&mut dyn Write) -> Result<()> + 'a;
-
-impl Answer {
-    pub(super) fn write(&self, out: &mut dyn Write) -> Result<()> {
-        if self.rows.is_empty() {
-            return self.write_with(None, out);
-        }
-        let table = self.table();
-        self.write_with(Some(&|out: &mut dyn Write| Ok(table.write(out)?)), out)
-    }
-
-    /// Writes it with what `table` writes, if anything, in place of its
-    /// table of rows, as `--tree` draws a tree there.
-    fn write_with(&self, table: Option<&WriteTable>, out: &mut dyn Write) -> Result<()> {
-        for line in &self.lead {
-            writeln!(out, "{line}")?;
-        }
-        if let Some(memory) = &self.memory {
-            writeln!(out)?;
-            memory.write(out)?;
-        }
-        if let Some(table) = table {
-            writeln!(out)?;
-            table(out)?;
-            if !self.notes.is_empty() {
-                writeln!(out)?;
-            }
-        }
-        for note in &self.notes {
-            writeln!(out, "{note}")?;
-        }
-        Ok(())
-    }
-
-    /// What [`Answer::write`] writes.
-    #[cfg(feature = "tui")]
-    pub(super) fn written(&self) -> Vec<u8> {
-        let mut out = Vec::new();
-        self.write(&mut out).expect("writing to memory");
-        out
-    }
-
-    /// The table of rows, as the text writes it.
-    pub(super) fn table(&self) -> Table {
-        let mut table = Table::new(&self.columns);
-        for row in &self.rows {
-            let mut cells = row.cells.clone();
-            cells.push(format!("{}{}", row.name, row.rest));
-            table.row(cells);
-        }
-        table
-    }
-}
-
 /// Where the program starts, and what each start reaches.
 pub(super) struct Starts<'a> {
     binary: &'a Binary,
@@ -1649,12 +1534,12 @@ impl Starts<'_> {
     /// The answer's text: the starts as a table, then what elfq can't
     /// follow or read, and for a shared library, that its exported
     /// functions aren't counted. Each row is about its start.
-    pub(super) fn answer(&self, path: &Path, all: bool) -> Answer {
+    pub(super) fn answer(&self, path: &Path, all: bool) -> FlatAnswer {
         let binary = self.binary;
         let file = path.display();
         let several = self.blocks.len() > 1;
         let rows = self.rows(all);
-        let mut answer = Answer::default();
+        let mut answer = FlatAnswer::default();
         if !self.starts.is_empty() {
             let each = if several {
                 " in each block of memory"
@@ -1686,7 +1571,7 @@ impl Starts<'_> {
                         cells.push(text::root_column(binary, kind));
                         answer
                             .rows
-                            .push(AnswerRow::new(cells, format!("{count} more"), None));
+                            .push(FlatRow::new(cells, format!("{count} more"), None));
                         continue;
                     }
                 };
@@ -1702,7 +1587,7 @@ impl Starts<'_> {
                     ]
                 };
                 cells.push(start.why(binary));
-                let mut row = AnswerRow::new(
+                let mut row = FlatRow::new(
                     cells,
                     binary.items[start.index].name.clone(),
                     Some(Node::Item(start.index)),
@@ -1896,20 +1781,17 @@ impl Start {
 /// to a veneer when `via` is the veneer's jump to its target and the veneer
 /// is reached by a call.
 fn used(paths: &ShortestPaths, veneers: &Veneers, node: Node, via: Reference) -> Use {
-    if veneers.target(via.from) == Some(VeneerTarget::Node(node))
-        && let Some(call) = paths.via(Node::Item(via.from))
-        && call.kind.is_call()
-    {
-        return Use {
+    match call_to_veneer(paths, veneers, via.from, VeneerTarget::Node(node)) {
+        Some(call) => Use {
             by: call.from,
             kind: call.kind,
             veneer: Some(via.from),
-        };
-    }
-    Use {
-        by: via.from,
-        kind: via.kind,
-        veneer: None,
+        },
+        None => Use {
+            by: via.from,
+            kind: via.kind,
+            veneer: None,
+        },
     }
 }
 
@@ -1917,25 +1799,32 @@ fn used(paths: &ShortestPaths, veneers: &Veneers, node: Node, via: Reference) ->
 /// every item, and a call reaches the veneer, as that call, through the
 /// veneer.
 fn through_veneer(paths: &ShortestPaths, veneers: &Veneers, jump: Unresolved) -> Unfollowed {
-    if let Some(target) = jump.target
-        && veneers.target(jump.from) == Some(VeneerTarget::Outside(target))
-        && let Some(call) = paths.via(Node::Item(jump.from))
-        && call.kind.is_call()
-    {
-        return Unfollowed {
-            unresolved: Unresolved {
-                from: call.from,
-                site: call.site,
-                is_call: call.kind == ReferenceKind::Call,
-                target: Some(target),
-            },
-            veneer: Some(jump.from),
-        };
+    let call = jump.target.and_then(|target| {
+        call_to_veneer(paths, veneers, jump.from, VeneerTarget::Outside(target))
+    });
+    match call {
+        Some(call) => Unfollowed::through_veneer(&call, jump.from, jump.target),
+        None => Unfollowed {
+            unresolved: jump,
+            veneer: None,
+        },
     }
-    Unfollowed {
-        unresolved: jump,
-        veneer: None,
+}
+
+/// When `veneer` is a veneer that jumps to `target`, and the chain from
+/// SYMBOL reaches it by a call, that call.
+fn call_to_veneer(
+    paths: &ShortestPaths,
+    veneers: &Veneers,
+    veneer: usize,
+    target: VeneerTarget,
+) -> Option<Reference> {
+    if veneers.target(veneer) != Some(target) {
+        return None;
     }
+    paths
+        .via(Node::Item(veneer))
+        .filter(|call| call.kind.is_call())
 }
 
 /// The nodes that something in `steps` calls, or that a vector table among

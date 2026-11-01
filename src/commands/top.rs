@@ -15,6 +15,7 @@ use serde::Serialize;
 use super::checks::{check_has_bytes, reference_graph};
 use super::kept::Kept;
 use super::retained_tree::{KeptItem, RetainedTree};
+use super::tree_answer::TreeAnswer;
 use super::{Outcome, json, text};
 use crate::binary::{AddressRange, Binary, FileKind, total};
 use crate::cli::Format;
@@ -79,29 +80,34 @@ pub fn run(
         json::write(&answer, out)?;
         return Ok(Outcome::Answered);
     }
+    answer(&retained, all, format).write(out)?;
+    Ok(Outcome::Answered)
+}
+
+/// What `top` writes as text: the tree of the largest items, or with `all`,
+/// every one, in the shape that `format` asks for, then the items that
+/// nothing reaches.
+fn answer(retained: &RetainedTree, all: bool, format: Format) -> TreeAnswer {
+    let binary = retained.binary;
+    let unreachable: Vec<String> = unreachable_text(retained, all).into_iter().collect();
     // When nothing reaches the items in the range, which items nothing
     // reaches is the whole answer.
-    let kept = retained.kept() > 0;
-    if kept {
-        let total = text::bytes_of_items(binary, range);
-        match range {
-            Some(range) => writeln!(
-                out,
-                "{total} in {}, by what keeps them:",
-                text::range_text(binary, range, all)
-            )?,
-            None => writeln!(out, "{total}, by what keeps them:")?,
-        }
-        writeln!(out)?;
-        retained.write_largest(text::shown(all), format, out)?;
+    if retained.kept() == 0 {
+        return TreeAnswer::sentences(unreachable);
     }
-    if let Some(unreachable) = unreachable_text(&retained, all) {
-        if kept {
-            writeln!(out)?;
-        }
-        writeln!(out, "{unreachable}")?;
+    let total = text::bytes_of_items(binary, retained.range);
+    let lead = match retained.range {
+        Some(range) => format!(
+            "{total} in {}, by what keeps them:",
+            text::range_text(binary, range, all)
+        ),
+        None => format!("{total}, by what keeps them:"),
+    };
+    TreeAnswer {
+        lead: vec![lead],
+        table: Some(retained.largest_table(text::shown(all), format)),
+        notes: unreachable,
     }
-    Ok(Outcome::Answered)
 }
 
 /// The items that nothing reaches, largest first, leaving out those with no

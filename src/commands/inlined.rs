@@ -15,13 +15,15 @@ use anyhow::{Context, Result, bail};
 use serde::Serialize;
 
 use super::checks::item_in_file;
+use super::flat_answer::{FlatAnswer, FlatRow};
 use super::kept::Kept;
+use super::tree_answer::{self, TreeAnswer, TreeTable};
 use super::{Outcome, json, text};
 use crate::binary::{Binary, ItemKind, short_names, total};
 use crate::cli::Format;
 use crate::debuginfo::{self, InlinedCopy};
 use crate::graph::Node;
-use crate::render::{Align, Table, TreeRow, TreeShape};
+use crate::render::{Align, TreeRow, TreeShape};
 
 /// Answers `elfq FILE inlined`, or with `symbol`, `inlined SYMBOL`. Needs
 /// DWARF.
@@ -131,44 +133,46 @@ fn write_list(
         };
         return json::write(&list, out);
     }
-    if copies.is_empty() {
-        writeln!(out, "The debug info lists no inlined code.")?;
-        return Ok(());
+    list_answer(&totals, inlined, code, all).write(out)
+}
+
+/// What `inlined` writes as text about `totals`, each inlined function's
+/// copies added up, largest first: the largest, or with `all`, every one,
+/// and the `inlined` bytes of the `code` bytes in all that they take.
+fn list_answer(totals: &[Total], inlined: u64, code: u64, all: bool) -> FlatAnswer {
+    if totals.is_empty() {
+        return FlatAnswer {
+            lead: vec!["The debug info lists no inlined code.".to_string()],
+            ..FlatAnswer::default()
+        };
     }
-    writeln!(
-        out,
+    let lead = format!(
         "Inlined copies of {} take {inlined} of the {} of code:",
         text::plural(totals.len(), "function", "functions"),
         text::bytes_text(code)
-    )?;
-    writeln!(out)?;
-    let mut table = Table::new(&[
-        ("BYTES", Align::Right),
-        ("COPIES", Align::Right),
-        ("FUNCTION", Align::Left),
-    ]);
+    );
     let (shown, hidden) = totals.split_at(text::shown_count(totals.len(), text::shown(all)));
-    for total in shown {
-        table.row(vec![
-            total.bytes.to_string(),
-            total.copies.to_string(),
-            total.name.to_string(),
-        ]);
-    }
+    let mut rows: Vec<FlatRow> = (shown.iter())
+        .map(|total| {
+            let cells = vec![total.bytes.to_string(), total.copies.to_string()];
+            FlatRow::new(cells, total.name.to_string(), None)
+        })
+        .collect();
     if !hidden.is_empty() {
         let bytes = total(hidden.iter().map(|total| total.bytes));
         let copies: usize = hidden.iter().map(|total| total.copies).sum();
-        table.row(vec![
-            bytes.to_string(),
-            copies.to_string(),
-            format!("{} more", hidden.len()),
-        ]);
+        let cells = vec![bytes.to_string(), copies.to_string()];
+        rows.push(FlatRow::new(cells, format!("{} more", hidden.len()), None));
     }
-    table.write(out)?;
-    if shown.iter().any(|total| total.bytes == 0) {
-        write_empty_copies_note(out)?;
+    FlatAnswer {
+        lead: vec![lead],
+        memory: None,
+        columns: (COLUMNS.iter())
+            .map(|&(header, align)| (header.to_string(), align))
+            .collect(),
+        rows,
+        notes: empty_copies_note(shown.iter().any(|total| total.bytes == 0)),
     }
-    Ok(())
 }
 
 /// Writes the tree of the inlined code in SYMBOL's function, the item at
@@ -183,23 +187,37 @@ fn write_tree(
     out: &mut dyn Write,
 ) -> Result<()> {
     let node = Node::Item(index);
-    let name = node.name(binary);
-    let item = &binary.items[index];
     let groups = Groups::new(copies, index);
-    let bytes = total(groups.top.iter().map(|&group| groups.list[group].bytes));
     if format == Format::Json {
         let tree = TreeJson {
             function: json::Symbol::new(binary, node),
-            inlined_bytes: bytes,
+            inlined_bytes: groups.bytes(),
             inlined: groups.to_json(&groups.top),
         };
         return json::write(&tree, out);
     }
-    if groups.top.is_empty() {
-        writeln!(out, "The debug info lists no inlined code in {lead_name}.")?;
-        return Ok(());
-    }
+    tree_answer(binary, &groups, index, lead_name, all, format).write(out)
+}
 
+/// What `inlined FUNCTION` writes as text about `groups`, the copies
+/// inlined into the item at `index`, called `lead_name` in the first line:
+/// the tree of the largest groups, or with `all`, every one, in the shape
+/// that `format` asks for.
+fn tree_answer(
+    binary: &Binary,
+    groups: &Groups,
+    index: usize,
+    lead_name: &str,
+    all: bool,
+    format: Format,
+) -> TreeAnswer {
+    if groups.top.is_empty() {
+        let sentence = format!("The debug info lists no inlined code in {lead_name}.");
+        return TreeAnswer::sentences(vec![sentence]);
+    }
+    let name = Node::Item(index).name(binary);
+    let item = &binary.items[index];
+    let bytes = groups.bytes();
     let functions: BTreeSet<&str> = groups.list.iter().map(|group| group.name).collect();
     let functions = text::plural(functions.len(), "function", "functions");
     let are = if bytes == 1 { "is" } else { "are" };
@@ -214,40 +232,35 @@ fn write_tree(
     };
     // The copies' code can reach past the function's symbol, into a part
     // that the compiler moved away from the rest, such as `name.cold`.
-    if bytes <= item.size {
-        writeln!(
-            out,
+    let lead = if bytes <= item.size {
+        format!(
             "Of {}, {bytes} {are} inlined copies of {functions}:",
             of_function(&text::bytes_text(item.size))
-        )?;
+        )
     } else {
-        writeln!(
-            out,
+        format!(
             "{} of {} {are} inlined copies of {functions}:",
             text::bytes_text(bytes),
             of_function("code")
-        )?;
-    }
-    writeln!(out)?;
+        )
+    };
     let shown = groups.largest(text::shown(all));
     let short_names = groups.short_names(name);
-    let mut table = Table::new(&[
-        ("BYTES", Align::Right),
-        ("COPIES", Align::Right),
-        ("FUNCTION", Align::Left),
-    ]);
     let shape = match format {
         Format::Tree => TreeShape::Drawn,
         _ => TreeShape::Rows {
             words: "inlined into",
         },
     };
-    table.tree(&groups.rows(&shown, &groups.top, &short_names), shape);
-    table.write(out)?;
-    if shown.iter().any(|&group| groups.list[group].bytes == 0) {
-        write_empty_copies_note(out)?;
+    TreeAnswer {
+        lead: vec![lead],
+        table: Some(TreeTable {
+            columns: COLUMNS.into(),
+            rows: groups.rows(&shown, &groups.top, &short_names),
+            shape,
+        }),
+        notes: empty_copies_note(shown.iter().any(|&group| groups.list[group].bytes == 0)),
     }
-    Ok(())
 }
 
 /// Whether `inlined FUNCTION`, for the item at `into`, has a row of the
@@ -260,13 +273,22 @@ pub(super) fn shows(copies: &[InlinedCopy], into: usize, name: &str) -> bool {
         .any(|group| groups.list[group].name == name)
 }
 
-fn write_empty_copies_note(out: &mut dyn Write) -> Result<()> {
-    writeln!(out)?;
-    writeln!(
-        out,
-        "A copy of 0 bytes is one the compiler merged into the code around it."
-    )?;
-    Ok(())
+/// The columns of the list and of the tree.
+const COLUMNS: [(&str, Align); 3] = [
+    ("BYTES", Align::Right),
+    ("COPIES", Align::Right),
+    ("FUNCTION", Align::Left),
+];
+
+/// The note under a list or tree that `shows_empty`, one with a row of
+/// copies of 0 bytes.
+fn empty_copies_note(shows_empty: bool) -> Vec<String> {
+    match shows_empty {
+        true => {
+            vec!["A copy of 0 bytes is one the compiler merged into the code around it.".into()]
+        }
+        false => Vec::new(),
+    }
 }
 
 /// The tree as JSON: every group, not only the largest.
@@ -368,42 +390,22 @@ impl<'a> Groups<'a> {
         group
     }
 
-    /// The groups to show of a large tree: the `count` largest, and every
-    /// group between each of them and the top, so that the tree holds
-    /// together. A group that would be left out on its own, with nothing
-    /// inlined into it, is shown too, since its row takes no more room than
-    /// "1 more" would.
-    fn largest(&self, count: usize) -> HashSet<usize> {
-        let mut by_size: Vec<usize> = (0..self.list.len()).collect();
-        by_size.sort_by_key(|&group| (Reverse(self.list[group].bytes), group));
-        let mut shown = HashSet::new();
-        for &group in by_size.iter().take(count) {
-            let mut group = Some(group);
-            while let Some(index) = group {
-                if !shown.insert(index) {
-                    break;
-                }
-                group = self.list[index].parent;
-            }
-        }
-        let lone: Vec<usize> = shown
-            .iter()
-            .map(|&group| &self.list[group].children)
-            .chain([&self.top])
-            .filter_map(|groups| self.lone(groups, &shown))
-            .collect();
-        shown.extend(lone);
-        shown
+    /// The bytes of the function's code that inlined copies take.
+    fn bytes(&self) -> u64 {
+        total(self.top.iter().map(|&group| self.list[group].bytes))
     }
 
-    /// The one group in `groups` that isn't in `shown`, if there is only
-    /// one and nothing is inlined into it.
-    fn lone(&self, groups: &[usize], shown: &HashSet<usize>) -> Option<usize> {
-        let mut hidden = groups.iter().filter(|group| !shown.contains(group));
-        match (hidden.next(), hidden.next()) {
-            (Some(&lone), None) if self.list[lone].children.is_empty() => Some(lone),
-            _ => None,
-        }
+    /// The groups to show of a large tree: the `count` largest, every group
+    /// between each of them and the top, and a lone group that would be
+    /// left out on its own (see [`tree_answer::add_lone`]).
+    fn largest(&self, count: usize) -> HashSet<usize> {
+        let largest =
+            tree_answer::largest(0..self.list.len(), |group| self.list[group].bytes, count);
+        let mut shown = tree_answer::with_chains(largest, |group| self.list[group].parent);
+        tree_answer::add_lone(&mut shown, self.top.iter().copied(), |group| {
+            self.list[group].children.iter().copied()
+        });
+        shown
     }
 
     /// The rows of `groups` and of the groups inlined into them, in the
@@ -576,20 +578,6 @@ impl<'a> Groups<'a> {
         }
     }
 
-    /// The groups in `groups` and all the groups inlined into them, each
-    /// before the groups inlined into it.
-    fn with_inlined(&self, groups: &[usize]) -> Vec<usize> {
-        let mut all = Vec::new();
-        // The groups still to list, the next one last. A loop rather than
-        // recursion, since copies can nest deeper than the stack would hold.
-        let mut next: Vec<usize> = groups.iter().rev().copied().collect();
-        while let Some(group) = next.pop() {
-            all.push(group);
-            next.extend(self.list[group].children.iter().rev());
-        }
-        all
-    }
-
     /// The row that sums up `hidden` groups and the groups inlined into
     /// them, if there are any.
     fn more(&self, hidden: &[usize]) -> Option<TreeRow> {
@@ -599,7 +587,9 @@ impl<'a> Groups<'a> {
         // A group's bytes include those inlined into it, but its copies
         // don't.
         let bytes = total(hidden.iter().map(|&group| self.list[group].bytes));
-        let all = self.with_inlined(hidden);
+        let all = tree_answer::with_descendants(hidden, |group| {
+            self.list[group].children.iter().copied()
+        });
         let copies: usize = all.iter().map(|&group| self.list[group].copies).sum();
         let cells = vec![bytes.to_string(), copies.to_string()];
         Some(TreeRow::new(

@@ -30,7 +30,7 @@ pub fn page(session: &Session) -> Printed {
     let cut = brief.written() != answer.written();
     let command = session.command("reach", None, cut);
     let brief = brief.notes;
-    Printed::of_reach(answer, command)
+    Printed::of_flat(answer, command)
         .with_context(overview)
         .with_brief(brief)
 }

@@ -658,12 +658,23 @@ impl Item {
         address == self.address || (address > self.address && address - self.address < self.size)
     }
 
-    /// Whether any of the item's bytes are in one of `ranges`, where an item
-    /// of unknown size counts as its first byte.
+    /// The addresses the item occupies, where an item of unknown size
+    /// counts as its first byte.
+    pub fn range(&self) -> AddressRange {
+        AddressRange {
+            start: self.address,
+            end: self.address.saturating_add(self.size.max(1)),
+        }
+    }
+
+    /// Whether any of the item's bytes, as [`Item::range`] gives them, are
+    /// in one of `ranges`.
     pub fn is_in(&self, ranges: &[AddressRange]) -> bool {
+        let own = self.range();
+        let size = own.end - own.start;
         ranges
             .iter()
-            .any(|range| range.overlap(self.address, self.size.max(1)) > 0)
+            .any(|range| range.overlap(own.start, size) > 0)
     }
 
     /// The item's name, then its aliases.
