@@ -86,7 +86,7 @@ use crate::graph::{
     Graph, ItemsInRanges, Node, Reference, ReferenceKind, RootKind, ShortestPaths, Unfollowed,
     Unresolved, VeneerTarget, Veneers,
 };
-use tree::Tree;
+use crate::render::Align;
 
 /// Answers `elfq FILE reach SYMBOL`. The text lists SYMBOL and the 30
 /// largest items it reaches, or with `all`, every one, by block, or with
@@ -112,8 +112,7 @@ pub fn run(
         Format::Json => reach.write_json(out)?,
         Format::Text | Format::Tree => {
             let lead_name = symbol.lead_name(binary);
-            let text = reach.text(&names, &lead_name, all);
-            text.write(format == Format::Tree, out)?;
+            reach.text(&names, &lead_name, all, format).write(out)?;
         }
     }
     Ok(reach.outcome())
@@ -206,7 +205,7 @@ pub(super) fn tab<'a>(
     lead_name: &str,
 ) -> FlatTab {
     let reach = Reach::find(binary, graph, index, &[]);
-    let answer = |all| reach.text(names, lead_name, all).answer(Body::Rows);
+    let answer = |all| reach.text(names, lead_name, all, Format::Text).answer();
     FlatTab::new(answer(true), answer(false))
 }
 
@@ -224,20 +223,19 @@ pub(super) fn text_output<'a>(
 ) -> String {
     let reach = Reach::find(binary, graph, index, &[]);
     let mut out = Vec::new();
-    let text = reach.text(names, lead_name, all);
-    text.write(false, &mut out).expect("writing to memory");
+    let text = reach.text(names, lead_name, all, Format::Text);
+    text.write(&mut out).expect("writing to memory");
     String::from_utf8(out).expect("elfq writes UTF-8")
 }
 
-/// What the text answer of `reach SYMBOL` shows under its first lines.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Body {
-    /// The rows by block of memory.
-    Rows,
-    /// A tree, with `--tree`, which the answer leaves out for its writer
-    /// to draw.
-    Tree,
-}
+/// The columns of the rows by block and of the tree. With `--to`, the
+/// rows have AT before ITEM.
+const COLUMNS: [(&str, Align); 4] = [
+    ("ADDRESS", Align::Left),
+    ("SIZE", Align::Right),
+    ("HOW", Align::Left),
+    ("ITEM", Align::Left),
+];
 
 /// What SYMBOL reaches: the facts that the search finds, which the JSON
 /// has, and which [`Text`] words.
@@ -289,6 +287,9 @@ struct Text<'r, 'a> {
     lead_name: &'r str,
     /// Whether the table shows every row, and the sentences every name.
     all: bool,
+    /// Whether the answer draws a tree, with `--tree`, in place of its
+    /// rows.
+    tree: bool,
 }
 
 /// A step's place in [`Reach::steps`]: 0 is SYMBOL's.
@@ -466,14 +467,22 @@ impl<'g, 'a> Reach<'g, 'a> {
     }
 
     /// The text answer's view of it, which names SYMBOL `lead_name` in its
-    /// first line and the other items as `names` finds them, and with
-    /// `all`, shows every row and name.
-    fn text<'r>(&'r self, names: &'r Names<'a>, lead_name: &'r str, all: bool) -> Text<'r, 'a> {
+    /// first line and the other items as `names` finds them, with `all`,
+    /// shows every row and name, and as `format` says, draws a tree or
+    /// lists rows.
+    fn text<'r>(
+        &'r self,
+        names: &'r Names<'a>,
+        lead_name: &'r str,
+        all: bool,
+        format: Format,
+    ) -> Text<'r, 'a> {
         Text {
             reach: self,
             names,
             lead_name,
             all,
+            tree: format == Format::Tree,
         }
     }
 
@@ -585,17 +594,13 @@ impl<'g, 'a> Reach<'g, 'a> {
 }
 
 impl Text<'_, '_> {
-    /// Writes the answer: the items by block, or with `tree`, as a tree
+    /// Writes the answer: the items by block, or with `--tree`, as a tree
     /// drawn with branches.
-    fn write(&self, tree: bool, out: &mut dyn Write) -> Result<()> {
+    fn write(&self, out: &mut dyn Write) -> Result<()> {
         if !self.reach.to.is_empty() {
-            return self.write_to_text(tree, out);
+            return self.write_to_text(out);
         }
-        let answer = self.answer(if tree { Body::Tree } else { Body::Rows });
-        if !tree || self.reach.reaches_nothing() {
-            return answer.write(out);
-        }
-        answer.write_with(Some(&|out: &mut dyn Write| Tree::new(self).write(out)), out)
+        self.answer().write(out)
     }
 }
 

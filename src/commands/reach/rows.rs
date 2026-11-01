@@ -5,8 +5,9 @@
 use std::cmp::Reverse;
 use std::collections::HashSet;
 
-use super::{Body, Step, Text};
-use crate::binary::{ItemKind, total};
+use super::tree::Tree;
+use super::{COLUMNS, Step, Text};
+use crate::binary::{Binary, ItemKind, total};
 use crate::commands::flat_answer::{FlatAnswer, FlatRow};
 use crate::commands::{range_check, text};
 use crate::graph::{Node, Unfollowed, Unresolved};
@@ -15,12 +16,11 @@ use crate::render::{Align, Table};
 impl Text<'_, '_> {
     /// The answer as text, without `--to`: what SYMBOL and what it reaches
     /// take, the bytes in each block of memory when there are several, the
-    /// rows by block, and the notes on what elfq can't follow or read. For
-    /// a tree, it has no rows, since the tree takes their place, and its
-    /// first line counts the calls and jumps as the tree shows them.
-    pub(super) fn answer(&self, body: Body) -> FlatAnswer {
+    /// rows by block, and the notes on what elfq can't follow or read. With
+    /// `--tree`, a tree takes the place of the rows, and the first line
+    /// counts the calls and jumps as the tree shows them.
+    pub(super) fn answer(&self) -> FlatAnswer {
         let reach = self.reach;
-        let tree = body == Body::Tree;
         let binary = reach.binary;
         let name = self.lead_name;
         if reach.reaches_nothing() {
@@ -62,7 +62,7 @@ impl Text<'_, '_> {
         }
         // Counted as the rows show them: a tree has the veneers that the
         // rows by block step over.
-        let unfollowed: Vec<&Unresolved> = if tree {
+        let unfollowed: Vec<&Unresolved> = if self.tree {
             reach.unresolved.iter().collect()
         } else {
             reach.unfollowed.iter().map(|u| &u.unresolved).collect()
@@ -84,23 +84,18 @@ impl Text<'_, '_> {
         if !reach.unreadable.is_empty() {
             notes.push(text::unreadable_text(binary, &reach.unreadable, self.all));
         }
-        let (columns, rows) = if tree {
-            (Vec::new(), Vec::new())
-        } else {
-            let columns = [
-                ("ADDRESS", Align::Left),
-                ("SIZE", Align::Right),
-                ("HOW", Align::Left),
-                ("ITEM", Align::Left),
-            ];
-            let columns = columns.map(|(header, align)| (header.to_string(), align));
-            (columns.into(), self.rows(&reach.outside()))
+        let (rows, tree) = match self.tree {
+            true => (Vec::new(), Some(Tree::new(self).top())),
+            false => (self.rows(&reach.outside()), None),
         };
         FlatAnswer {
             lead: vec![format!("{lead}:")],
             memory: (reach.blocks.len() > 1).then(|| self.memory_table()),
-            columns,
+            columns: COLUMNS
+                .map(|(header, align)| (header.to_string(), align))
+                .into(),
             rows,
+            tree,
             notes,
         }
     }
@@ -236,17 +231,14 @@ impl Text<'_, '_> {
             return;
         }
         let first = hidden[0];
-        let (what, size) = match first.node {
-            Node::Item(index) => {
-                let kinds = match binary.items[index].kind {
-                    ItemKind::Function => "functions",
-                    ItemKind::Data => "data objects",
-                };
-                let size = total(hidden.iter().map(|step| step.node.size(binary)));
-                (kinds, size.to_string())
-            }
-            Node::Import(_) => ("imports", String::new()),
+        let what = match first.node {
+            Node::Item(index) => match binary.items[index].kind {
+                ItemKind::Function => "functions",
+                ItemKind::Data => "data objects",
+            },
+            Node::Import(_) => "imports",
         };
+        let size = more_size(binary, hidden.iter().map(|step| step.node));
         let place = match first.block {
             Some(block) if reach.blocks.len() > 1 => {
                 format!(" in {}", text::range_argument(reach.blocks[block].range))
@@ -376,6 +368,17 @@ fn nothing_reached_lines(
     let listed = self_use.is_some();
     lines.extend(text::unresolved_lines(name, unresolved, listed, all));
     lines
+}
+
+/// The SIZE cell of a row such as "9 more" that sums up `nodes`: their
+/// bytes, or blank when they are all imports, which have no bytes in the
+/// file, as the imports' own rows show.
+pub(super) fn more_size(binary: &Binary, nodes: impl IntoIterator<Item = Node>) -> String {
+    let nodes: Vec<Node> = nodes.into_iter().collect();
+    if nodes.iter().all(|node| matches!(node, Node::Import(_))) {
+        return String::new();
+    }
+    total(nodes.iter().map(|node| node.size(binary))).to_string()
 }
 
 #[cfg(test)]

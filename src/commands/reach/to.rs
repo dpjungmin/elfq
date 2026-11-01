@@ -6,15 +6,15 @@ use std::io::Write;
 use anyhow::Result;
 
 use super::tree::Tree;
-use super::{Step, Text};
+use super::{COLUMNS, Step, Text};
 use crate::commands::{range_check, text};
 use crate::graph::{Node, ReferenceKind, Unfollowed, Unresolved};
 use crate::render::{Align, Table};
 
 impl Text<'_, '_> {
     /// Writes the answer as text with `--to`: what SYMBOL reaches in its
-    /// ranges, every row, or with `tree`, the chains from SYMBOL to them.
-    pub(super) fn write_to_text(&self, tree: bool, out: &mut dyn Write) -> Result<()> {
+    /// ranges, every row, or with `--tree`, the chains from SYMBOL to them.
+    pub(super) fn write_to_text(&self, out: &mut dyn Write) -> Result<()> {
         let reach = self.reach;
         let binary = reach.binary;
         let name = self.lead_name;
@@ -29,7 +29,7 @@ impl Text<'_, '_> {
         let ranges = range_check::ranges_text(binary, &reach.to, self.all);
         // Counted as the rows show them: a tree has the veneers that the
         // other rows step over.
-        let unknown: Vec<&Unresolved> = if tree {
+        let unknown: Vec<&Unresolved> = if self.tree {
             reach.unresolved.iter().collect()
         } else {
             reach.unfollowed.iter().map(|u| &u.unresolved).collect()
@@ -82,7 +82,7 @@ impl Text<'_, '_> {
         writeln!(out, "{lead}")?;
         if listed {
             writeln!(out)?;
-            if tree {
+            if self.tree {
                 Tree::new(self).write(out)?;
             } else {
                 self.write_to_rows(&counted, out)?;
@@ -109,13 +109,9 @@ impl Text<'_, '_> {
     /// it names in the AT column.
     fn write_to_rows(&self, counted: &[&Step], out: &mut dyn Write) -> Result<()> {
         let reach = self.reach;
-        let mut table = Table::new(&[
-            ("ADDRESS", Align::Left),
-            ("SIZE", Align::Right),
-            ("HOW", Align::Left),
-            ("AT", Align::Left),
-            ("ITEM", Align::Left),
-        ]);
+        let mut columns = COLUMNS.to_vec();
+        columns.insert(3, ("AT", Align::Left));
+        let mut table = Table::new(&columns);
         let with_at = |mut cells: Vec<String>, sites: &[u64]| {
             cells.insert(3, text::at_column(sites));
             cells

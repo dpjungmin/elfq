@@ -1,15 +1,15 @@
 //! The tree that `reach SYMBOL --tree` draws, with `--to` and without.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 
 use anyhow::Result;
 
-use super::{Step, StepId, Text};
-use crate::binary::total;
-use crate::commands::text;
+use super::rows::more_size;
+use super::{COLUMNS, Step, StepId, Text};
+use crate::commands::{text, tree_answer};
 use crate::graph::{Node, Unresolved};
-use crate::render::{Align, Table, TreeRow, TreeShape};
+use crate::render::{Table, TreeRow, TreeShape};
 
 /// What SYMBOL reaches, as `--tree` draws it: each item under the item that
 /// uses it on its chain from SYMBOL, in the order that item first uses
@@ -25,8 +25,8 @@ pub(super) struct Tree<'r, 'a> {
     /// rows, one per kind and target: those to code outside every item, and
     /// with `--to`, those through pointers too.
     unresolved_rows: Vec<Vec<Unresolved>>,
-    /// Whether each step gets a row.
-    has_row: Vec<bool>,
+    /// The steps that get rows.
+    has_row: HashSet<StepId>,
 }
 
 impl<'r, 'a> Tree<'r, 'a> {
@@ -64,7 +64,7 @@ impl<'r, 'a> Tree<'r, 'a> {
             text,
             children,
             unresolved_rows,
-            has_row: Vec::new(),
+            has_row: HashSet::new(),
         };
         tree.has_row = tree.has_row();
         tree
@@ -74,60 +74,39 @@ impl<'r, 'a> Tree<'r, 'a> {
     /// [`Reach::in_answer`]). Without it, SYMBOL; the largest items, or
     /// every one (see [`Text::largest`]); the steps with rows for calls or
     /// jumps to code outside every item, since rows by block show every
-    /// one; and every step on their chains from SYMBOL, so that the tree
-    /// holds together. A step that would be the only one left out under a
-    /// row, with nothing under it, gets a row too, since its row takes no
-    /// more room than "1 more" would.
+    /// one; every step on their chains from SYMBOL, so that the tree holds
+    /// together; and a step left out on its own (see
+    /// [`tree_answer::add_lone`]).
     ///
     /// [`Reach::in_answer`]: super::Reach::in_answer
-    fn has_row(&self) -> Vec<bool> {
+    fn has_row(&self) -> HashSet<StepId> {
         let reach = self.text.reach;
         if !reach.to.is_empty() {
-            return reach.in_answer();
+            let in_answer = reach.in_answer();
+            return (0..in_answer.len()).filter(|&id| in_answer[id]).collect();
         }
         let steps = &reach.steps;
         let largest = self.text.largest(&steps[1..]);
-        let wanted = |id: StepId| {
+        let wanted = (0..steps.len()).filter(|&id| {
             id == 0 || largest.contains(&steps[id].node) || !self.unresolved_rows[id].is_empty()
-        };
-        let mut has_row = vec![false; steps.len()];
-        for id in 0..steps.len() {
-            if wanted(id) {
-                let mut on_chain = Some(id);
-                while let Some(id) = on_chain
-                    && !has_row[id]
-                {
-                    has_row[id] = true;
-                    on_chain = steps[id].parent;
-                }
-            }
-        }
-        let lone: Vec<StepId> = (0..steps.len())
-            .filter(|&id| has_row[id])
-            .filter_map(|id| {
-                let mut hidden = self.children[id].iter().filter(|&&child| !has_row[child]);
-                match (hidden.next(), hidden.next()) {
-                    (Some(&lone), None) if self.children[lone].is_empty() => Some(lone),
-                    _ => None,
-                }
-            })
-            .collect();
-        for id in lone {
-            has_row[id] = true;
-        }
+        });
+        let mut has_row = tree_answer::with_chains(wanted, |id| steps[id].parent);
+        tree_answer::add_lone(&mut has_row, [0], |id| self.children[id].iter().copied());
         has_row
     }
 
+    /// Writes the tree under the columns of the rows by block, as `--to`
+    /// writes it.
     pub(super) fn write(&self, out: &mut dyn Write) -> Result<()> {
-        let mut table = Table::new(&[
-            ("ADDRESS", Align::Left),
-            ("SIZE", Align::Right),
-            ("HOW", Align::Left),
-            ("ITEM", Align::Left),
-        ]);
-        table.tree(&[self.row(0)], TreeShape::Drawn);
+        let mut table = Table::new(&COLUMNS);
+        table.tree(&[self.top()], TreeShape::Drawn);
         table.write(out)?;
         Ok(())
+    }
+
+    /// SYMBOL's row, with every row under it.
+    pub(super) fn top(&self) -> TreeRow {
+        self.row(0)
     }
 
     /// The row of the step `id`, with the rows under it: the steps under it
@@ -152,7 +131,7 @@ impl<'r, 'a> Tree<'r, 'a> {
         let how = via.map_or("", |via| text::how_column(binary, node, via.kind));
         let (with_rows, hidden): (Vec<StepId>, Vec<StepId>) = self.children[id]
             .iter()
-            .partition(|&&child| self.has_row[child]);
+            .partition(|child| self.has_row.contains(child));
         let mut children: Vec<TreeRow> = (with_rows.into_iter())
             .map(|child| self.row(child))
             .collect();
@@ -184,20 +163,10 @@ impl<'r, 'a> Tree<'r, 'a> {
     /// The row that sums up the steps in `hidden`, and every step under
     /// them, which no row shows.
     fn more(&self, hidden: &[StepId]) -> TreeRow {
-        let binary = self.text.reach.binary;
-        let mut nodes: Vec<Node> = Vec::new();
-        let mut next = hidden.to_vec();
-        while let Some(id) = next.pop() {
-            nodes.push(self.text.reach.steps[id].node);
-            next.extend(&self.children[id]);
-        }
-        // Imports have no bytes in the file, as their own rows show.
-        let size = if nodes.iter().all(|node| matches!(node, Node::Import(_))) {
-            String::new()
-        } else {
-            total(nodes.iter().map(|node| node.size(binary))).to_string()
-        };
-        let cells = vec![String::new(), size, String::new()];
-        TreeRow::new(cells, format!("{} more", nodes.len()), Vec::new())
+        let reach = self.text.reach;
+        let steps = tree_answer::with_descendants(hidden, |id| self.children[id].iter().copied());
+        let nodes = steps.iter().map(|&id| reach.steps[id].node);
+        let cells = vec![String::new(), more_size(reach.binary, nodes), String::new()];
+        TreeRow::new(cells, format!("{} more", steps.len()), Vec::new())
     }
 }

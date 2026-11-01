@@ -1363,10 +1363,9 @@ in order. Its output is the first example under [Commands](#commands).
 7. **The answer.** `retained::answer` words the lead line, then
    `RetainedTree::largest` picks the 30 largest items under
    `process_frame`, and the items between them and it, with the
-   functions in `tree_answer.rs` that cut the trees of `top`, `retained`
-   and `inlined` down the same way, and `RetainedTree::tree_row` makes a
-   `render::TreeRow` of each, with the short name that the rows under it
-   call it by (`Names::short_name`).
+   functions in `tree_answer.rs` that cut every tree down the same way,
+   and `RetainedTree::tree_row` makes a `render::TreeRow` of each, with the
+   short name that the rows under it call it by (`Names::short_name`).
    `shared_note` names what `process_frame` uses that other code uses too,
    and `indirect_note` notes any calls through pointers in `process_frame`
    or the items it keeps. `TreeAnswer::write` writes the lead line, then

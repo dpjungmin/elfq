@@ -5,8 +5,7 @@
 //! each of its notes follows an empty line.
 //!
 //! A large tree shows only its largest rows, and the functions at the end
-//! of this file cut it down the same way for `top`, `retained` and
-//! `inlined FUNCTION` (`reach --tree` still has its own copy): the largest
+//! of this file cut it down the same way for every command: the largest
 //! items, and the items between them and the top so that the tree holds
 //! together ([`largest`] and [`with_chains`]), a lone item that would be
 //! left out on its own ([`add_lone`]), and a row such as "70 more" that sums
