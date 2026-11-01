@@ -19,6 +19,10 @@ impl Walker<'_> {
     /// Changes `path` as the instruction at `site` does, other than where
     /// it goes next. When it is `conditional`, in an `it` block whose
     /// condition the walk can't tell, what it writes becomes unknown.
+    ///
+    /// It reads all it needs from `path` before it forgets what the
+    /// instruction writes, as `ldr r0, [r0]` reads r0 for the address it
+    /// loads r0 from, and only then writes what it worked out.
     pub(super) fn execute(
         &mut self,
         path: &mut Path,

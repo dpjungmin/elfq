@@ -21,7 +21,9 @@ use super::execute::holds;
 use super::walk_state::{
     Flags, Path, Visit, forget_changes, forget_words, set_unknown, stored_since,
 };
-use super::{Frame, MOST_TIMES, NESTING, RUNS_INTO, Run, Walker, decode_at, straight_line};
+use super::{
+    Branch, Frame, MOST_TIMES, NESTING, RUNS_INTO, Run, Step, Walker, decode_at, straight_line,
+};
 
 impl Walker<'_> {
     /// Whether the walk went through code of the function that holds
@@ -197,6 +199,71 @@ impl Walker<'_> {
         }
     }
 
+    /// A branch back, as a loop's: the walk goes through the loop's code
+    /// once (see [`Walker::loop_body`]), unless it went through it on its
+    /// way to the branch. When the code was jumped over to the loop's test
+    /// at its end, the walk goes through it from the branch's target, with
+    /// what it knows at the test.
+    pub(super) fn branch_back(&mut self, run: &mut Run, frame: Frame, branch: Branch) -> Step {
+        let Branch {
+            site,
+            target,
+            next,
+            taken,
+        } = branch;
+        let (before, stopped, runs) = match run.visits.get(&target) {
+            Some(visit) => (visit.clone(), None, true),
+            // The code was jumped over to a test that doesn't go back:
+            // the loop runs no times, as for an empty section.
+            _ if taken == Some(false) => return Step::Next(next),
+            _ => {
+                let before = run.visit(self.events.len());
+                match self.loop_body(run, frame, target, site) {
+                    Some(End::Main(at)) => return Step::Final(End::Main(at)),
+                    stopped => (before, stopped, taken == Some(true)),
+                }
+            }
+        };
+        let found = FoundLoop {
+            head: target,
+            back: site,
+            before: &before,
+            stopped,
+            runs,
+        };
+        let exit = self.close_loop(run, frame, found);
+        Step::Next(exit.unwrap_or(next))
+    }
+
+    /// When `branch`, whose condition the walk can't tell, goes to a loop's
+    /// code that the compiler put after the function's other code, as GCC
+    /// -Os does, which branches back to the loop's test, which leads to
+    /// `branch`: walks the loop there and then, and goes on after the
+    /// branch.
+    pub(super) fn out_of_line_loop(
+        &mut self,
+        run: &mut Run,
+        frame: Frame,
+        branch: Branch,
+    ) -> Option<Step> {
+        let head = branch.target;
+        let back = self.out_of_line_body(head, branch.site, run.bounds)?;
+        let before = run.visit(self.events.len());
+        let stopped = self.loop_body(run, frame, head, back);
+        if let Some(End::Main(at)) = stopped {
+            return Some(Step::Final(End::Main(at)));
+        }
+        let found = FoundLoop {
+            head,
+            back,
+            before: &before,
+            stopped,
+            runs: false,
+        };
+        self.close_loop(run, frame, found);
+        Some(Step::Next(branch.next))
+    }
+
     /// Whether the branch back at `back` goes back to the loop's head, as
     /// the walk is there at the end of `run`, when it can tell.
     pub(super) fn goes_back(&self, run: &Run, back: u64) -> Option<bool> {
@@ -204,17 +271,11 @@ impl Walker<'_> {
             return None;
         };
         // In an `it` block, as `blt` at the end of `ittt lt` is.
-        let runs = match run.it & 0xf {
-            0 => Some(true),
-            _ => holds(u16::from(run.it >> 4), run.path.flags),
+        let runs = match run.condition() {
+            None => Some(true),
+            Some(condition) => holds(condition, run.path.flags),
         };
-        let taken = match when {
-            When::Always => Some(true),
-            When::Flags(condition) => holds(condition, run.path.flags),
-            When::Zero(register) => self.register(&run.path, register, back).map(|n| n == 0),
-            When::NotZero(register) => self.register(&run.path, register, back).map(|n| n != 0),
-        };
-        match (runs, taken) {
+        match (runs, self.taken(&run.path, when, back)) {
             (Some(false), _) | (_, Some(false)) => Some(false),
             (Some(true), Some(true)) => Some(true),
             _ => None,
@@ -225,12 +286,7 @@ impl Walker<'_> {
     /// code ends: the block at `start`, which a branch at `site` goes to,
     /// ends with a branch back to the loop's test, which leads to `site`,
     /// in the function.
-    pub(super) fn out_of_line_body(
-        &self,
-        start: u64,
-        site: u64,
-        bounds: Option<(u64, u64)>,
-    ) -> Option<u64> {
+    fn out_of_line_body(&self, start: u64, site: u64, bounds: Option<(u64, u64)>) -> Option<u64> {
         let lowest = bounds.map_or(site.saturating_sub(0x400), |(start, _)| start);
         for instruction in straight_line(self.program, start).take(16) {
             let address = instruction.address;

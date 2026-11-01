@@ -17,13 +17,15 @@
 //!   through time by time ([`Walker::counting`]).
 //! - [`Walker::run`] walks one function's code, or one loop's: a [`Run`],
 //!   within the limits of a [`Frame`]. [`Walker::step`] runs each
-//!   instruction. `execute.rs` works out what it does to what the walk
-//!   knows there, a [`Path`] (in `walk_state.rs`, with the [`Visit`] that
-//!   keeps what it knew when it first got to an instruction), and
-//!   `calls.rs` follows a call. When the way the walk went ends where it
-//!   can't go on, [`Walker::backtrack`] goes back to a branch whose
-//!   condition it couldn't tell.
-//! - A branch back is a loop. `loops.rs` finds the loop's code, and
+//!   instruction, with one handler for each way it goes on, such as
+//!   [`Walker::on_branch`]. `execute.rs` works out what an instruction
+//!   does to what the walk knows there, a [`Path`] (in `walk_state.rs`,
+//!   with the [`Visit`] that keeps what it knew when it first got to an
+//!   instruction), and `calls.rs` follows a call. When the way the walk
+//!   went ends where it can't go on, [`Walker::backtrack`] goes back to a
+//!   branch whose condition it couldn't tell.
+//! - A branch back is a loop ([`Walker::branch_back`]). `loops.rs` finds
+//!   the loop's code, and
 //!   [`Walker::close_loop`] decides what the walk knows after it:
 //!   `count.rs` counts how many times the loop runs by going through its
 //!   code time by time ([`Counting`]), and `each_time.rs` goes through the
@@ -266,6 +268,41 @@ struct Run {
     after_call: bool,
 }
 
+/// An instruction that runs, or may, as one in an `it` block does when
+/// its condition holds.
+#[derive(Clone, Copy)]
+struct Running {
+    instruction: Decoded,
+    in_it_block: bool,
+    /// Whether it runs: `None` when the walk can't tell the flags that its
+    /// condition reads.
+    runs: Option<bool>,
+}
+
+impl Running {
+    /// Whether it runs only when flags that the walk can't tell are set.
+    fn conditional(&self) -> bool {
+        self.runs.is_none()
+    }
+
+    /// Whether it sets the flags, where it is.
+    fn sets_flags(&self) -> bool {
+        self.instruction.effect.sets_flags(self.in_it_block)
+    }
+}
+
+/// A branch that the walk may take or not.
+#[derive(Clone, Copy)]
+struct Branch {
+    site: u64,
+    /// Where it goes when it is taken.
+    target: u64,
+    /// The instruction after it, where the code goes on when it isn't.
+    next: u64,
+    /// Whether it is taken, when the walk can tell.
+    taken: Option<bool>,
+}
+
 /// What an instruction leads to.
 enum Step {
     /// On to the instruction at this address.
@@ -354,221 +391,213 @@ impl Walker<'_> {
         }
     }
 
-    /// Runs the instruction at `address`.
+    /// Runs the instruction at `address`: unless the walk stops before it
+    /// ([`Walker::stop_here`] and [`Walker::enter`]), reads it
+    /// ([`Walker::fetch`]), passes over an `it` and an instruction in an
+    /// `it` block whose condition doesn't hold ([`Run::running`]), and does
+    /// what its flow says.
     fn step(&mut self, run: &mut Run, frame: Frame, address: u64) -> Step {
-        if let Some(index) = frame.pass {
-            // At the branch back, or where the loop leaves: past it the
-            // first time, and elsewhere than the code of the first time
-            // later.
-            let counting = &self.counting[index];
-            let back = counting.back;
-            let leaves = match counting.code.is_empty() {
-                true => address > back,
-                false => !counting.code.contains(&address),
-            };
-            if address == back || leaves {
-                let again = match address == back {
-                    true => self.goes_back(run, back),
-                    false => (counting.code.is_empty() || counting.ways_out.contains(&address))
-                        .then_some(false),
-                };
-                self.counting[index].stopped = Some((address, again));
-                return Step::Stopped;
-            }
-        } else if frame.stop.is_some_and(|stop| address >= stop) {
-            return Step::Stopped;
+        if let Some(step) = self.stop_here(run, frame, address) {
+            return step;
         }
+        if let Some(step) = self.enter(run, frame, address) {
+            return step;
+        }
+        let after_call = std::mem::take(&mut run.after_call);
+        let Some(instruction) = self.fetch(run, address, after_call) else {
+            return no_code(address, after_call);
+        };
+        let Some(running) = run.running(instruction) else {
+            return Step::Next(instruction.next());
+        };
+        match instruction.effect.flow {
+            Flow::Next | Flow::It { .. } => self.straight(run, frame, running, after_call),
+            Flow::Call | Flow::CallRegister(..) => self.on_call(run, frame, running),
+            Flow::Branch { target, when } => self.on_branch(run, frame, running, target, when),
+            _ if running.conditional() => self.may_jump(run, frame, running),
+            Flow::Return => Step::End(End::Returns(address)),
+            Flow::Pop => self.on_pop(run, frame, instruction),
+            Flow::Stop => no_code(address, after_call),
+            Flow::Table | Flow::JumpRegister(..) | Flow::JumpRelative(_) | Flow::JumpMemory => {
+                self.on_jump(run, frame, instruction)
+            }
+        }
+    }
+
+    /// Whether the walk stops before the instruction at `address`: in one
+    /// iteration of a loop that the walk goes through one by one, at the
+    /// branch back or where the loop leaves, which is past the branch the
+    /// first time and anywhere but the first iteration's code later; and
+    /// in a loop's code, at its branch back.
+    fn stop_here(&mut self, run: &Run, frame: Frame, address: u64) -> Option<Step> {
+        let Some(index) = frame.pass else {
+            let at_back = frame.stop.is_some_and(|stop| address >= stop);
+            return at_back.then_some(Step::Stopped);
+        };
+        let counting = &self.counting[index];
+        let back = counting.back;
+        let leaves = match counting.code.is_empty() {
+            true => address > back,
+            false => !counting.code.contains(&address),
+        };
+        if address != back && !leaves {
+            return None;
+        }
+        let again = match address == back {
+            true => self.goes_back(run, back),
+            false => {
+                (counting.code.is_empty() || counting.ways_out.contains(&address)).then_some(false)
+            }
+        };
+        self.counting[index].stopped = Some((address, again));
+        Some(Step::Stopped)
+    }
+
+    /// Goes to the instruction at `address`, unless the walk ends there:
+    /// where code after a call that can't return runs off its function,
+    /// out of instructions to go through, where it has been before, or at
+    /// `main`. Other code that runs on into the next function goes on
+    /// there, as hand-written startup code may.
+    fn enter(&mut self, run: &mut Run, frame: Frame, address: u64) -> Option<Step> {
         if run.leaves(address) {
             if run.after_call {
-                return Step::Final(End::RunsOff(address));
+                return Some(Step::Final(End::RunsOff(address)));
             }
-            // Code that runs on into the next function, as hand-written
-            // startup code may: the walk goes on there.
             run.bounds = self.program.function_at(address);
         }
         if run.count >= frame.limit || self.budget == 0 {
-            return Step::Final(End::Budget(address));
+            return Some(Step::Final(End::Budget(address)));
         }
         run.count += 1;
         self.budget -= 1;
         let visit = run.visit(self.events.len());
         match run.visits.entry(address) {
-            Entry::Occupied(_) => return Step::Final(End::Rejoins(address)),
+            Entry::Occupied(_) => return Some(Step::Final(End::Rejoins(address))),
             Entry::Vacant(entry) => entry.insert(visit),
         };
         run.order.push(address);
         if self.main == Some(address) {
-            return Step::Final(End::Main(address));
+            return Some(Step::Final(End::Main(address)));
         }
-        let after_call = std::mem::take(&mut run.after_call);
-        let decoded = decode_at(self.program, address);
-        let Some(instruction) = decoded.filter(|_| !self.is_data(run.bounds, address)) else {
-            return no_code(address, after_call);
-        };
-        let Decoded {
-            first,
-            second,
-            effect,
-            ..
-        } = instruction;
+        None
+    }
+
+    /// The instruction at `address`, unless there is none that the walk
+    /// can run there: data that the function's code reads, as a literal
+    /// pool, an instruction elfq can't decode, or `bkpt` `after_call`.
+    fn fetch(&mut self, run: &Run, address: u64, after_call: bool) -> Option<Decoded> {
+        let instruction = decode_at(self.program, address)?;
+        if self.is_data(run.bounds, address) {
+            return None;
+        }
         // `bkpt` straight after a call, as after the call to `exit` in the
         // Pico SDK's startup, which faults without a debugger, but for
         // `bkpt 0xab`, which asks a debugger for semihosting.
+        let first = instruction.first;
         if after_call && first & 0xff00 == 0xbe00 && first & 0xff != 0xab {
-            return no_code(address, after_call);
+            return None;
         }
-        let next = instruction.next();
-        if let Flow::It { firstcond, mask } = effect.flow {
-            run.it = (firstcond << 4 | mask) as u8;
-            return Step::Next(next);
+        Some(instruction)
+    }
+
+    /// An instruction that goes on to the next one: what it does to what
+    /// the walk knows. In an iteration of a loop whose rows of a table the
+    /// walk looks for, it keeps the words that the instruction reads.
+    fn straight(
+        &mut self,
+        run: &mut Run,
+        frame: Frame,
+        running: Running,
+        after_call: bool,
+    ) -> Step {
+        let Running { instruction, .. } = running;
+        let (site, effect) = (instruction.address, instruction.effect);
+        let conditional = running.conditional();
+        if let Some(index) = frame.rows {
+            if !conditional {
+                self.row_load(run, index, site, &effect);
+            }
+            self.carried_reads(index, effect.reads, effect.writes, conditional);
         }
-        let condition = run.next_condition();
-        let runs = condition.map_or(Some(true), |condition| holds(condition, run.path.flags));
-        if runs == Some(false) {
-            return Step::Next(next);
+        let sets_flags = running.sets_flags();
+        self.execute(
+            &mut run.path,
+            site,
+            &effect,
+            sets_flags,
+            conditional,
+            frame.depth,
+        );
+        // The walk is still straight after a call (see `Run::after_call`).
+        run.after_call = after_call;
+        Step::Next(instruction.next())
+    }
+
+    /// An instruction in an `it` block whose condition the walk can't tell
+    /// that may jump, return or trap: the walk goes on with what it writes
+    /// unknown.
+    fn may_jump(&mut self, run: &mut Run, frame: Frame, running: Running) -> Step {
+        let Running { instruction, .. } = running;
+        let sets_flags = running.sets_flags();
+        let (site, effect) = (instruction.address, &instruction.effect);
+        self.execute(&mut run.path, site, effect, sets_flags, true, frame.depth);
+        run.path.forks = true;
+        Step::Next(instruction.next())
+    }
+
+    /// A call, which the walk records, and follows as [`Walker::call`]
+    /// says.
+    fn on_call(&mut self, run: &mut Run, frame: Frame, running: Running) -> Step {
+        let Running { instruction, .. } = running;
+        let conditional = running.conditional();
+        // A call reads its arguments, in r0 to r3.
+        if let Some(index) = frame.rows {
+            let reads = instruction.effect.reads | ARGUMENTS;
+            self.carried_reads(index, reads, CALL_CLOBBERS, conditional);
         }
-        let changes_flags = effect.sets_flags(condition.is_some());
-        let conditional = runs.is_none();
-        let depth = frame.depth;
-        match effect.flow {
-            Flow::Next | Flow::It { .. } => {
-                if let Some(index) = frame.rows {
-                    if !conditional {
-                        self.row_load(run, index, address, &effect);
-                    }
-                    self.carried_reads(index, effect.reads, effect.writes, conditional);
-                }
-                self.execute(
-                    &mut run.path,
-                    address,
-                    &effect,
-                    changes_flags,
-                    conditional,
-                    depth,
-                );
-                run.after_call = after_call;
-                Step::Next(next)
+        let (target, how) = self.called(&run.path, instruction);
+        if let Some(end) = self.call(run, frame, instruction.address, target, how, conditional) {
+            return Step::Final(end);
+        }
+        run.after_call = true;
+        Step::Next(instruction.next())
+    }
+
+    /// What the call `instruction` calls, when the walk can tell, and how.
+    fn called(&self, path: &Path, instruction: Decoded) -> (Option<u64>, How) {
+        let site = instruction.address;
+        match instruction.effect.flow {
+            Flow::CallRegister(register, low_bit) => {
+                let target = self.register(path, register, site);
+                let target = target.and_then(|number| low_bit.target(number));
+                (target.map(u64::from), How::Register(register))
             }
-            Flow::Call | Flow::CallRegister(..) => {
-                // A call reads its arguments, in r0 to r3.
-                if let Some(index) = frame.rows {
-                    let reads = effect.reads | ARGUMENTS;
-                    self.carried_reads(index, reads, CALL_CLOBBERS, conditional);
-                }
-                let (target, how) = match effect.flow {
-                    Flow::CallRegister(register, low_bit) => (
-                        self.register(&run.path, register, address)
-                            .and_then(|number| low_bit.target(number))
-                            .map(u64::from),
-                        How::Register(register),
-                    ),
-                    // svc
-                    _ if instruction.size() == 2 => (None, How::Supervisor),
-                    _ => match branch(address + 4, first, second) {
-                        Some(CodeReferenceKind::Call(target)) => (Some(target), How::Direct),
-                        _ => (None, How::Direct),
-                    },
-                };
-                if let Some(end) = self.call(run, frame, address, target, how, conditional) {
-                    return Step::Final(end);
-                }
-                run.after_call = true;
-                Step::Next(next)
-            }
-            Flow::Branch { target, when } => {
-                if let When::Zero(register) | When::NotZero(register) = when
-                    && !self.counting.is_empty()
-                {
-                    let number = self.register(&run.path, register, address);
-                    run.path.compares.push(Compare {
-                        site: address,
-                        numbers: [number, Some(0)],
-                    });
-                }
-                let taken = match when {
-                    When::Always => runs,
-                    When::Flags(condition) => holds(condition, run.path.flags),
-                    When::Zero(register) => {
-                        self.register(&run.path, register, address).map(|n| n == 0)
-                    }
-                    When::NotZero(register) => {
-                        self.register(&run.path, register, address).map(|n| n != 0)
-                    }
-                };
-                if when == When::Always && condition.is_none() {
-                    self.jump(run, frame, address, target)
-                } else {
-                    self.branch(run, frame, address, next, target, taken)
-                }
-            }
-            _ if conditional => {
-                // It may jump or return, or go on with what it writes
-                // unknown; the walk goes on.
-                self.execute(&mut run.path, address, &effect, changes_flags, true, depth);
-                run.path.forks = true;
-                Step::Next(next)
-            }
-            Flow::Return => Step::End(End::Returns(address)),
-            Flow::Pop => {
-                // A return, unless the walk can tell the word it pops into
-                // pc, as LLD's Cortex-M0 veneers push the address they go
-                // to and pop it: a called function starts with lr unknown.
-                let to = self.popped_pc(&run.path, effect.operation);
-                self.execute(&mut run.path, address, &effect, false, false, depth);
-                match to
-                    .and_then(|number| LowBit::Thumb.target(number))
-                    .map(u64::from)
-                {
-                    None => Step::End(End::Returns(address)),
-                    Some(to) => self.jump_to(run, frame, address, Some(to), Through::Memory),
-                }
-            }
-            Flow::Stop => no_code(address, after_call),
-            Flow::Table => Step::End(End::Branches {
-                site: address,
-                through: Through::Table,
-            }),
-            Flow::JumpRegister(register, low_bit) => {
-                let to = self.register(&run.path, register, address);
-                let through = Through::Register(register);
-                self.jump_to(
-                    run,
-                    frame,
-                    address,
-                    to.and_then(|n| low_bit.target(n)).map(u64::from),
-                    through,
-                )
-            }
-            Flow::JumpRelative(register) => {
-                let pc = (address as u32).wrapping_add(4);
-                let to = self.register(&run.path, register, address);
-                let to = to.map(|offset| u64::from(pc.wrapping_add(offset) & !1));
-                self.jump_to(run, frame, address, to, Through::Register(register))
-            }
-            Flow::JumpMemory => {
-                // ldr pc, [sp, #imm] returns.
-                if let Operation::Load { base: SP, .. } = effect.operation {
-                    return Step::End(End::Returns(address));
-                }
-                let at = match effect.operation {
-                    Operation::Load {
-                        base,
-                        offset: Some(offset),
-                        ..
-                    } => self
-                        .register(&run.path, base, address)
-                        .map(|base| base.wrapping_add_signed(offset)),
-                    // ldr.w pc, [pc, #imm], as in a veneer.
-                    Operation::Nothing if first & 0xff7f == 0xf85f => {
-                        Some(literal(address + 4, first, u64::from(second & 0xfff)) as u32)
-                    }
-                    _ => None,
-                };
-                let to = at.and_then(|at| self.load(&run.path, at, true));
-                let to = to.and_then(|number| LowBit::Thumb.target(number));
-                let to = to.map(u64::from);
-                self.jump_to(run, frame, address, to, Through::Memory)
-            }
+            // svc
+            _ if instruction.size() == 2 => (None, How::Supervisor),
+            _ => match branch(site + 4, instruction.first, instruction.second) {
+                Some(CodeReferenceKind::Call(target)) => (Some(target), How::Direct),
+                _ => (None, How::Direct),
+            },
+        }
+    }
+
+    /// A `pop` with pc: a return, unless the walk can tell the word it pops
+    /// into pc, as LLD's Cortex-M0 veneers push the address they go to and
+    /// pop it: a called function starts with lr unknown.
+    fn on_pop(&mut self, run: &mut Run, frame: Frame, instruction: Decoded) -> Step {
+        let site = instruction.address;
+        let to = self.popped_pc(&run.path, instruction.effect.operation);
+        self.execute(
+            &mut run.path,
+            site,
+            &instruction.effect,
+            false,
+            false,
+            frame.depth,
+        );
+        match to.and_then(|number| LowBit::Thumb.target(number)) {
+            None => Step::End(End::Returns(site)),
+            Some(to) => self.jump_to(run, frame, site, Some(u64::from(to)), Through::Memory),
         }
     }
 
@@ -585,6 +614,106 @@ impl Walker<'_> {
             sp.wrapping_add(4 * (registers.count_ones() - 1)),
             false,
         )
+    }
+
+    /// A jump through a register, through a word in memory, or to a case
+    /// of a jump table: on to where it goes, when the walk can tell (see
+    /// [`Walker::jump_to`]). `ldr pc, [sp, #imm]` returns.
+    fn on_jump(&mut self, run: &mut Run, frame: Frame, instruction: Decoded) -> Step {
+        let Decoded {
+            address: site,
+            first,
+            second,
+            effect,
+        } = instruction;
+        let path = &run.path;
+        let (to, through) = match effect.flow {
+            Flow::JumpRegister(register, low_bit) => {
+                let to = self.register(path, register, site);
+                let to = to.and_then(|number| low_bit.target(number));
+                (to.map(u64::from), Through::Register(register))
+            }
+            Flow::JumpRelative(register) => {
+                let pc = (site as u32).wrapping_add(4);
+                let to = self.register(path, register, site);
+                let to = to.map(|offset| u64::from(pc.wrapping_add(offset) & !1));
+                (to, Through::Register(register))
+            }
+            Flow::JumpMemory => {
+                if let Operation::Load { base: SP, .. } = effect.operation {
+                    return Step::End(End::Returns(site));
+                }
+                let at = match effect.operation {
+                    Operation::Load {
+                        base,
+                        offset: Some(offset),
+                        ..
+                    } => (self.register(path, base, site))
+                        .map(|base| base.wrapping_add_signed(offset)),
+                    // ldr.w pc, [pc, #imm], as in a veneer.
+                    Operation::Nothing if first & 0xff7f == 0xf85f => {
+                        Some(literal(site + 4, first, u64::from(second & 0xfff)) as u32)
+                    }
+                    _ => None,
+                };
+                let to = at.and_then(|at| self.load(path, at, true));
+                let to = to.and_then(|number| LowBit::Thumb.target(number));
+                (to.map(u64::from), Through::Memory)
+            }
+            // A case of a jump table, which the walk can't tell.
+            _ => (None, Through::Table),
+        };
+        self.jump_to(run, frame, site, to, through)
+    }
+
+    /// A branch: one that always goes, outside an `it` block, as
+    /// [`Walker::jump`] says, and others as [`Walker::branch`] says.
+    fn on_branch(
+        &mut self,
+        run: &mut Run,
+        frame: Frame,
+        running: Running,
+        target: u64,
+        when: When,
+    ) -> Step {
+        let site = running.instruction.address;
+        // What a loop that the walk counts compares: `cbz` and `cbnz`
+        // compare a register with 0.
+        if let When::Zero(register) | When::NotZero(register) = when
+            && !self.counting.is_empty()
+        {
+            let number = self.register(&run.path, register, site);
+            run.path.compares.push(Compare {
+                site,
+                numbers: [number, Some(0)],
+            });
+        }
+        if when == When::Always && !running.in_it_block {
+            return self.jump(run, frame, site, target);
+        }
+        // One that always goes, in an `it` block, is taken when it runs.
+        let taken = match when {
+            When::Always => running.runs,
+            _ => self.taken(&run.path, when, site),
+        };
+        let branch = Branch {
+            site,
+            target,
+            next: running.instruction.next(),
+            taken,
+        };
+        self.branch(run, frame, branch)
+    }
+
+    /// Whether a branch at `site` that goes `when` is taken, as the walk
+    /// knows `path`, when it can tell: one that always goes is.
+    fn taken(&self, path: &Path, when: When, site: u64) -> Option<bool> {
+        match when {
+            When::Always => Some(true),
+            When::Flags(condition) => holds(condition, path.flags),
+            When::Zero(register) => self.register(path, register, site).map(|n| n == 0),
+            When::NotZero(register) => self.register(path, register, site).map(|n| n != 0),
+        }
     }
 
     /// An unconditional branch at `site` to `target`.
@@ -613,89 +742,74 @@ impl Walker<'_> {
         Step::Next(target)
     }
 
-    /// A branch at `site` that goes to `target` when `taken`, or to `next`.
-    fn branch(
-        &mut self,
-        run: &mut Run,
-        frame: Frame,
-        site: u64,
-        next: u64,
-        target: u64,
-        taken: Option<bool>,
-    ) -> Step {
-        let back =
-            target <= site && (self.went_through(run, target) || self.runs_into(run, target));
-        if run.leaves(target) && !back {
-            // A tail call when the branch is taken, as Clang makes of `if
-            // (a) f(); else g();`.
-            return match taken {
-                Some(true) => self.tail_call(run, frame, site, target),
-                Some(false) => Step::Next(next),
-                None => {
-                    self.events.push(Event::Call(Call {
-                        site,
-                        depth: frame.depth,
-                        target: Some(target),
-                        how: How::Jump,
-                        arguments: arguments(&run.path),
-                        left: run.path.left,
-                        conditional: true,
-                        followed: false,
-                    }));
-                    run.path.forks = true;
-                    Step::Next(next)
-                }
-            };
+    /// A branch that may not be taken: to another function
+    /// ([`Walker::branch_out`]), back, as a loop's
+    /// ([`Walker::branch_back`]), or forward ([`Walker::branch_forward`]).
+    fn branch(&mut self, run: &mut Run, frame: Frame, branch: Branch) -> Step {
+        let Branch { site, target, .. } = branch;
+        // A branch back to code in another function is a loop's when the
+        // walk went through that code, or it runs on into this function.
+        let back = target <= site;
+        let loops_back = back && (self.went_through(run, target) || self.runs_into(run, target));
+        if run.leaves(target) && !loops_back {
+            return self.branch_out(run, frame, branch);
         }
-        if target <= site {
-            // A loop: the walk goes through its code once. When the code
-            // was jumped over to the test at its end, it is walked from
-            // here, with what the walk knows at the test.
-            let (before, stopped, runs) = match run.visits.get(&target) {
-                Some(visit) => (visit.clone(), None, true),
-                // The code was jumped over to a test that doesn't go back:
-                // the loop runs no times, as for an empty section.
-                _ if taken == Some(false) => return Step::Next(next),
-                _ => {
-                    let before = run.visit(self.events.len());
-                    match self.loop_body(run, frame, target, site) {
-                        Some(End::Main(at)) => return Step::Final(End::Main(at)),
-                        stopped => (before, stopped, taken == Some(true)),
-                    }
-                }
-            };
-            let found = FoundLoop {
-                head: target,
-                back: site,
-                before: &before,
-                stopped,
-                runs,
-            };
-            let exit = self.close_loop(run, frame, found);
-            return Step::Next(exit.unwrap_or(next));
+        if back {
+            return self.branch_back(run, frame, branch);
         }
+        self.branch_forward(run, frame, branch)
+    }
+
+    /// A branch to another function: a tail call when it is taken, as
+    /// Clang makes of `if (a) f(); else g();`. When the walk can't tell,
+    /// it records the call, which it doesn't follow, and goes on.
+    fn branch_out(&mut self, run: &mut Run, frame: Frame, branch: Branch) -> Step {
+        let Branch {
+            site,
+            target,
+            next,
+            taken,
+        } = branch;
+        match taken {
+            Some(true) => self.tail_call(run, frame, site, target),
+            Some(false) => Step::Next(next),
+            None => {
+                self.events.push(Event::Call(Call {
+                    site,
+                    depth: frame.depth,
+                    target: Some(target),
+                    how: How::Jump,
+                    arguments: arguments(&run.path),
+                    left: run.path.left,
+                    conditional: true,
+                    followed: false,
+                }));
+                run.path.forks = true;
+                Step::Next(next)
+            }
+        }
+    }
+
+    /// A branch forward in the function, which the walk takes when it can
+    /// tell it is taken. When it can't, it goes on to the next instruction,
+    /// and outside a loop's code keeps the branch to go back to (see
+    /// [`Walker::backtrack`]), unless the branch goes to a loop's code that
+    /// the compiler put after the function's other code (see
+    /// [`Walker::out_of_line_loop`]).
+    fn branch_forward(&mut self, run: &mut Run, frame: Frame, branch: Branch) -> Step {
+        let Branch {
+            site,
+            target,
+            next,
+            taken,
+        } = branch;
         if taken == Some(true) {
             run.pending.push((site, next));
             return Step::Next(target);
         }
         if taken.is_none() && frame.stop.is_none() {
-            // A loop's code that the compiler put after the function's
-            // other code, as GCC -Os does, which branches back to here.
-            if let Some(back) = self.out_of_line_body(target, site, run.bounds) {
-                let before = run.visit(self.events.len());
-                let stopped = self.loop_body(run, frame, target, back);
-                if let Some(End::Main(at)) = stopped {
-                    return Step::Final(End::Main(at));
-                }
-                let found = FoundLoop {
-                    head: target,
-                    back,
-                    before: &before,
-                    stopped,
-                    runs: false,
-                };
-                self.close_loop(run, frame, found);
-                return Step::Next(next);
+            if let Some(step) = self.out_of_line_loop(run, frame, branch) {
+                return step;
             }
             run.alternatives.push(Alternative {
                 site,
@@ -792,18 +906,42 @@ impl Run {
         }
     }
 
+    /// The condition of the next instruction in an `it` block; `None`
+    /// outside one.
+    fn condition(&self) -> Option<u16> {
+        (self.it & 0xf != 0).then(|| u16::from(self.it >> 4))
+    }
+
     /// The condition of the next instruction in an `it` block, which moves
     /// the block on by one; `None` outside one.
     fn next_condition(&mut self) -> Option<u16> {
-        if self.it & 0xf == 0 {
-            return None;
-        }
-        let condition = u16::from(self.it >> 4);
+        let condition = self.condition()?;
         self.it = match self.it & 7 {
             0 => 0,
             _ => self.it & 0xe0 | (self.it << 1) & 0x1f,
         };
         Some(condition)
+    }
+
+    /// `instruction` as it runs here, with whether it does when it is in an
+    /// `it` block, which moves the block on; `None` when the walk passes
+    /// over it to the next: an `it`, which starts a block, and one in a
+    /// block whose condition the flags say doesn't hold.
+    fn running(&mut self, instruction: Decoded) -> Option<Running> {
+        if let Flow::It { firstcond, mask } = instruction.effect.flow {
+            self.it = (firstcond << 4 | mask) as u8;
+            return None;
+        }
+        let condition = self.next_condition();
+        let runs = condition.map_or(Some(true), |condition| holds(condition, self.path.flags));
+        if runs == Some(false) {
+            return None;
+        }
+        Some(Running {
+            instruction,
+            in_it_block: condition.is_some(),
+            runs,
+        })
     }
 
     /// Whether `target` is outside the function the walk is in.
