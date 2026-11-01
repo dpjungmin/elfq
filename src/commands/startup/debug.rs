@@ -1,36 +1,50 @@
-//! `elfq FILE debug walk`: follows the code that a Cortex-M processor runs
-//! from reset, as far as `main`, and lists what the walk finds there (see
-//! `arch::startup`): calls with their arguments, stores outside the stack,
-//! loops, and how it ends. It exists to check the walk while developing
-//! elfq.
+//! `elfq FILE debug walk`: the walk that `startup` reads, event by event
+//! (see `arch::startup`): the calls that the code run from reset makes,
+//! with their arguments, its stores outside the stack, its loops, and how
+//! it ends. It starts at the reset handler that `Reset::find` takes and
+//! ends at the `main` that `start::find_main` finds, as `startup` does. It
+//! exists to check the walk while developing elfq.
 
 use std::io::Write;
+use std::path::Path;
 
 use anyhow::{Result, bail};
 
-use crate::arch::startup::{self, Call, End, Event, How, Loop, LoopStore, Start, Store, Through};
-use crate::binary::{Binary, ItemKind};
+use super::Firmware;
+use super::ram_sections::RamSections;
+use super::start::{self, Main, MainFrom, Reset};
+use crate::arch::startup::{Call, DEPTH, End, Event, How, Loop, LoopStore, Store, Through};
+use crate::binary::Binary;
 use crate::commands::Outcome;
+use crate::commands::kept::Kept;
+use crate::graph::Graph;
 use crate::render::{Align, Table};
 
-/// Answers `elfq FILE debug walk`.
-pub(in crate::commands) fn run(binary: &Binary, out: &mut dyn Write) -> Result<Outcome> {
+/// Answers `elfq FILE debug walk` for the file at `path`, loaded as
+/// `binary`. Its only refusal of its own, for code that isn't Thumb, comes
+/// first; then it refuses what `Reset::find` refuses, as `startup` does.
+pub(in crate::commands) fn run(
+    path: &Path,
+    binary: &Binary,
+    out: &mut dyn Write,
+) -> Result<Outcome> {
     let code = binary
         .instruction_set()
         .and_then(|set| set.startup_code(binary));
     let Some(code) = code else {
         bail!("elfq walks only Thumb code, which Cortex-M processors run");
     };
-    let start = start(binary);
-    let walk = code.walk(&start);
+    let reset = Reset::find(path, binary)?;
+    let graph = Kept::new(Graph::build(binary));
+    let firmware = Firmware::new(binary, code, &graph);
+    let main = start::find_main(&firmware, &RamSections::new(binary), &reset);
+    let walk = reset.walk(code, main.map(|main| main.address), DEPTH);
     writeln!(
         out,
         "from {}, stack pointer {}, main {}",
-        address_text(binary, start.address),
-        hex(start.stack_pointer),
-        start
-            .main
-            .map_or("unknown".to_string(), |main| format!("{main:#x}")),
+        address_text(binary, reset.address),
+        hex(reset.stack_pointer),
+        main_text(main),
     )?;
     writeln!(out)?;
     let mut table = Table::new(&[
@@ -59,6 +73,20 @@ pub(in crate::commands) fn run(binary: &Binary, out: &mut dyn Write) -> Result<O
     ]);
     table.write(out)?;
     Ok(Outcome::Answered)
+}
+
+/// Where `main` is, then how elfq found it, as the JSON's `main_from`
+/// says, when that isn't its symbol; or `unknown`.
+fn main_text(main: Option<Main>) -> String {
+    let Some(main) = main else {
+        return "unknown".to_string();
+    };
+    match main.from {
+        MainFrom::Symbol => format!("{:#x}", main.address),
+        MainFrom::DebugInfo | MainFrom::Guess | MainFrom::Loop => {
+            format!("{:#x} ({})", main.address, main.from.field())
+        }
+    }
 }
 
 /// A call: what it calls and how, the numbers in r0 to r3, whether it is
@@ -191,27 +219,6 @@ fn backtrack_text(target: u64, because: End) -> String {
         "takes the branch to {target:#x}: the other way {}",
         end_at(because)
     )
-}
-
-/// Where the processor starts, as `startup` will take it: the vector
-/// table's reset handler, or without a table, the entry point. `main` is
-/// the function of that name.
-fn start(binary: &Binary) -> Start {
-    let table = binary.vector_table.as_ref();
-    let reset = binary.reset_handler();
-    let stack_pointer = table
-        .filter(|_| reset.is_some())
-        .and_then(|table| binary.pointer_at(table.address));
-    let main = binary
-        .items
-        .iter()
-        .find(|item| item.kind == ItemKind::Function && item.name == "main");
-    Start {
-        address: reset.unwrap_or(binary.entry),
-        stack_pointer: stack_pointer.map(|word| word as u32),
-        main: main.map(|item| item.address),
-        follow: startup::DEPTH,
-    }
 }
 
 /// How the walk, or the walk of a function it calls, ended.

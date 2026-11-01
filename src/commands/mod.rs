@@ -125,7 +125,7 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<Outcome> {
         },
         Some(Command::Startup(args)) => startup::run(&cli.file, &binary, args.all, format, out),
         Some(Command::Debug(DebugCommand::Items)) => debug_items::run(&binary, out),
-        Some(Command::Debug(DebugCommand::Walk)) => startup::debug::run(&binary, out),
+        Some(Command::Debug(DebugCommand::Walk)) => startup::debug::run(&cli.file, &binary, out),
         // These two run before the file is loaded, above.
         Some(Command::Browse(_)) => unreachable!("browse has run above"),
         Some(Command::Diff(_)) => unreachable!("diff has run above"),

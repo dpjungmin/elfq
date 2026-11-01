@@ -29,8 +29,10 @@
 //! - `text.rs` and `json.rs` write the answer.
 //!
 //! The unit tests build their walks by hand, with `fixtures.rs`.
-//! `debug.rs` answers `elfq FILE debug walk`, which lists the walk's
-//! events.
+//!
+//! `debug.rs` answers `elfq FILE debug walk`, listing the events of the
+//! walk that `arch::startup` makes, from the reset handler to the `main`
+//! that `start.rs` finds.
 //!
 //! Names mean the same across these files. `ram` is the sections that
 //! startup code sets up (`RamSections`). `section` is a section, as an
