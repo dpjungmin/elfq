@@ -1,3 +1,8 @@
+//! What an instruction that goes on to the next does to what the walk
+//! knows ([`Walker::execute`]): the numbers it writes in registers, the
+//! flags it sets, and the words it stores and loads, with the arithmetic
+//! on numbers that the walk may not know, such as [`add`] and [`holds`].
+
 use std::rc::Rc;
 
 use object::Endian;

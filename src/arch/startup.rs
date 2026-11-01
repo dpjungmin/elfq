@@ -9,6 +9,10 @@
 //! a check of the startup code needs: each call, with the numbers in its
 //! argument registers, each store outside the stack, each loop, and how
 //! the walk ends. See [`walk`] for what it follows and where it stops.
+//!
+//! `commands::startup` asks for the walk and reads what it finds, and the
+//! walk through Thumb code is in `arch::thumb::startup`. docs/design.md's
+//! "Startup, end to end" follows one run through all of them.
 
 use object::{Architecture, Endianness};
 
@@ -72,8 +76,11 @@ pub enum Event {
     Call(Call),
     /// A store outside the stack.
     Store(Store),
-    /// A loop. The walk goes through its code once, and then knows nothing
-    /// of the registers and memory that the code changes.
+    /// A loop, after the events of its code (see [`Loop::first_event`]).
+    /// When the walk can tell how many times it runs ([`Loop::passes`]),
+    /// it goes on from where the loop leaves with what the loop leaves in
+    /// the registers and memory; otherwise with what the loop's code
+    /// writes unknown.
     Loop(Loop),
     /// The walk went back to a branch whose condition it couldn't tell, and
     /// took it, since the way it had gone ended where it couldn't go on
@@ -229,14 +236,20 @@ pub struct Time {
     /// The first of its events: those up to the next time's, or the
     /// loop's, are its own.
     pub first_event: usize,
-    /// Where it reads a row of a table from: the lowest address in the
-    /// file, outside the stack, that the code of the loop's function loads
-    /// a word from that time, or that a register holds from the time
-    /// before that the time reads, but for the words that the times so far
-    /// copy; when the register of a load that time points there and none
-    /// points lower, the rows of the times that load one follow each other,
-    /// as far apart each time, and each time reads the same words of its
-    /// row, but the last, which may read fewer.
+    /// Where this time reads a row of a table from, as a loop over
+    /// `__data_section_table` does: the lowest address in the file,
+    /// outside the stack, that the code of the loop's function reads a
+    /// word from that time, other than the words that the times so far
+    /// copy. A word that a register brings from the time before counts as
+    /// read from where it was loaded.
+    ///
+    /// `None` for every time unless the walk can tell where each row
+    /// starts: each time, the lowest address that the time's loads point
+    /// at is the row's start. A load points at the register that it adds
+    /// an offset to, when that is lower than its word, and else at its
+    /// word; a word brought from the time before points nowhere. The rows
+    /// must also be as far apart each time, and each time read the same
+    /// words of its row, but the last, which may read fewer.
     pub row: Option<u32>,
 }
 
@@ -380,30 +393,58 @@ impl End {
 ///   the next function.
 ///
 /// It goes through a loop's code, and then counts how many times the loop
-/// runs as the processor would, when it can: it goes through the code
-/// again, the first three times, and then a compare in it tells when a
-/// number that moves by the same amount each time gets to where the loop
-/// leaves, which it checks by going through the code the time before and
-/// that time, from where each number would be; or when none does, it goes
-/// on through the code time by time, up to 16 times (see
-/// [`Loop::passes`]). The walk then goes on from where the loop leaves,
-/// and the loop's events are those of the first time. To count, it
-/// doesn't follow calls or count loops inside, so it can't tell what the
-/// stores of such a loop do (see [`Loop::stores`]); when such a loop runs
-/// at most 16 times, as one over a table of sections that copies each
-/// with a function or a loop, it goes through its code each time, with
-/// its calls and the loops inside, and the loop's events are those of
-/// every time (see [`Loop::times`]), but not when it calls through a
-/// register another function each time, as one over a table of functions
-/// does, such as the constructors that `__libc_init_array` calls, or one
-/// it can't tell, and not past 5,000 instructions in all in such times
-/// and 10,000 more to count the loops inside them. A loop it can't
-/// count, as one whose bound it can't tell, leaves what its code writes
-/// unknown. It stops
-/// after 20,000 instructions in all and 600 in the reset handler's own
-/// code. It goes through 300 in each function it calls, and 60 in a
-/// loop's code, 8 loops deep, and then goes on after the call or the loop
-/// (see [`Event::Stop`] and [`Loop::end`]).
+/// runs as the processor would, when it can (see [`Loop::passes`]), and
+/// goes on from where the loop leaves, with what the loop leaves in the
+/// registers and memory. To count, it doesn't follow calls or count loops
+/// inside, so it can't tell what the stores of such a loop do (see
+/// [`Loop::stores`]). When such a loop runs at most 16 times, as one over
+/// a table of sections that copies each with a function or a loop, it
+/// goes through its code each time, with its calls and the loops inside
+/// (see [`Loop::times`]), but not when it calls through a register
+/// another function each time, as one over a table of functions does,
+/// such as the constructors that `__libc_init_array` calls, or one it
+/// can't tell. A loop it can't count, as one whose bound it can't tell,
+/// leaves what its code writes unknown.
+///
+/// Each of its limits is one constant:
+///
+/// - It stops after 20,000 instructions in all ([`BUDGET`]) and 600 in
+///   the reset handler's own code ([`RESET_LIMIT`]).
+/// - It goes through 300 in each function it calls ([`CALL_LIMIT`]), and
+///   60 in a loop's code each time ([`LOOP_LIMIT`]), 8 loops deep
+///   ([`NESTING`]), and then goes on after the call or the loop (see
+///   [`Event::Stop`] and [`Loop::end`]). It follows calls [`DEPTH`] deep.
+/// - To count loops, it goes through 50,000 more instructions in all
+///   ([`COUNT_BUDGET`]). It counts a loop that runs at most 2^24 times
+///   ([`MOST_PASSES`]), tries at most 12 of the times that its compares
+///   say it may leave ([`CANDIDATES`]), and goes through its code at most
+///   16 times when they say none ([`MOST_TIMES`]).
+/// - It goes through the code of a loop each time when the loop runs at
+///   most 16 times ([`MOST_TIMES`]), and its times take at most 5,000
+///   instructions ([`TIMES_BUDGET`]) and 10,000 to count the loops inside
+///   them ([`TIMES_COUNT_BUDGET`]), in place of the two budgets above; all
+///   such loops take at most 10,000 and 20,000 ([`TIMES_TOTAL`] and
+///   [`TIMES_COUNT_TOTAL`]). Past these, it goes through the loop's code
+///   once, as through others.
+///
+/// docs/design.md tells the walk in prose where it describes `elfq FILE
+/// startup`, with the loops it counts and the tables of sections it goes
+/// through, and its "Startup, end to end" says what runs before and after
+/// the walk.
+///
+/// [`BUDGET`]: super::thumb::startup::BUDGET
+/// [`RESET_LIMIT`]: super::thumb::startup::RESET_LIMIT
+/// [`CALL_LIMIT`]: super::thumb::startup::CALL_LIMIT
+/// [`LOOP_LIMIT`]: super::thumb::startup::LOOP_LIMIT
+/// [`NESTING`]: super::thumb::startup::NESTING
+/// [`COUNT_BUDGET`]: super::thumb::startup::COUNT_BUDGET
+/// [`MOST_PASSES`]: super::thumb::startup::MOST_PASSES
+/// [`CANDIDATES`]: super::thumb::startup::CANDIDATES
+/// [`MOST_TIMES`]: super::thumb::startup::MOST_TIMES
+/// [`TIMES_BUDGET`]: super::thumb::startup::TIMES_BUDGET
+/// [`TIMES_COUNT_BUDGET`]: super::thumb::startup::TIMES_COUNT_BUDGET
+/// [`TIMES_TOTAL`]: super::thumb::startup::TIMES_TOTAL
+/// [`TIMES_COUNT_TOTAL`]: super::thumb::startup::TIMES_COUNT_TOTAL
 pub fn walk(
     architecture: Architecture,
     endianness: Endianness,

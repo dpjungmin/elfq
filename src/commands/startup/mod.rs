@@ -18,6 +18,9 @@
 //!   what runs from a load image before it is copied, the problems and the
 //!   notes.
 //! - `text.rs` and `json.rs` write the answer.
+//!
+//! docs/design.md's "Startup, end to end" follows one run through this
+//! module, `arch::startup`, `arch::thumb::startup` and `binary::startup`.
 
 mod json;
 mod problems;

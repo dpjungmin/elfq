@@ -1,3 +1,7 @@
+//! Counting how many times a loop runs by going through its code time by
+//! time ([`Walker::count`]), and what each of its stores does over all the
+//! times ([`summaries`]).
+
 use std::collections::{BTreeSet, HashSet};
 use std::rc::Rc;
 
@@ -32,13 +36,16 @@ pub(super) struct Counting {
     /// through each time (see [`Walker::walk_times`]), rather than to
     /// count how many times it runs.
     pub(super) walks: bool,
-    /// The addresses that the time through the loop's own code loads words
-    /// from, in the file and outside the stack, as a row of a table, when
-    /// `walks`, each with the load instruction, so that a loop inside can
-    /// drop its own, and with where the register it loads through points,
-    /// when lower: with those of the words that registers held at the head
-    /// that it reads, as a loop does whose time loads the start of the next
-    /// row at its end, which point nowhere, `u32::MAX`.
+    /// When `walks`, the words in the file, outside the stack, that the
+    /// time through the loop's own code reads, as from a row of a table:
+    /// each as the load instruction, so that a loop inside can drop its own
+    /// (see [`Walker::close_loop`]), the address of the word, and where the
+    /// register it loads through points, when that is lower.
+    ///
+    /// A word that a register held at the head and the time reads counts
+    /// as loaded by the instruction that loaded it, when that is in the
+    /// loop's function, and its register points nowhere, `u32::MAX`: as
+    /// when the time before loaded the start of the next row at its end.
     pub(super) loads: Vec<(u64, u32, u32)>,
     /// Where the words that registers held at the head of the time were
     /// loaded from, for those that the time's code hasn't read or written
@@ -194,18 +201,24 @@ impl Line {
 impl Walker<'_> {
     /// How many times the loop from `head` to the branch back at `back`
     /// runs, what it leaves, and what its stores do, when the walk can
-    /// tell. It goes through the loop's code from what it knew at the
-    /// head, `before`, the first three times, as the processor would. Then
-    /// each compare whose numbers move by the same amount each time tells
-    /// when it may hold the other way, and the loop may leave; the first
-    /// such time that the walk finds the loop leaves, going through the
-    /// code that time from where each number would be, and goes back the
-    /// time before, is when it leaves. When none does, it goes on through
-    /// the code time by time, up to [`MOST_TIMES`] times, as for a loop
-    /// over a table that ends at a zero word. Only a loop whose branch
-    /// back goes to its head, as one with its code after the function's
-    /// other code doesn't; the walk doesn't follow its calls, nor count
-    /// loops inside it, and then can't tell what its stores do.
+    /// tell, from what it knew at the head, `before`:
+    ///
+    /// 1. It goes through the loop's code the first three times, as the
+    ///    processor would.
+    /// 2. Each compare whose numbers move by the same amount each time
+    ///    tells when it may hold the other way, so that the loop may leave
+    ///    then ([`leaving_times`], at most [`CANDIDATES`] of them). The
+    ///    first such time that the loop leaves, as the walk finds going
+    ///    through the code that time from where each number would be, and
+    ///    goes back the time before, is when it leaves.
+    /// 3. When none is, it goes on through the code time by time, up to
+    ///    [`MOST_TIMES`] times, as for a loop over a table that ends at a
+    ///    zero word.
+    ///
+    /// Only for a loop whose branch back goes to its head, which one whose
+    /// code the compiler put after the function's other code doesn't. The
+    /// walk doesn't follow the loop's calls, nor count loops inside it, so
+    /// with either it can't tell what the loop's stores do.
     pub(super) fn count(
         &mut self,
         run: &Run,

@@ -1,3 +1,6 @@
+//! Tests of the walk: small programs in Thumb code, written as the 16-bit
+//! units that a disassembler shows, walked from their first instruction.
+
 use object::Endianness::Little;
 
 use super::each_time::same_words;

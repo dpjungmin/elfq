@@ -1,3 +1,7 @@
+//! Two questions that `commands/startup` asks about the code around a
+//! call, to tell which call is `main` in a stripped file:
+//! [`passes_result`] and [`branches_past`].
+
 use crate::arch::startup::Program;
 use crate::arch::thumb::decode::{Flow, Operation};
 use crate::arch::thumb::is_wide;

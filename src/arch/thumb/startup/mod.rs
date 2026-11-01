@@ -1,4 +1,6 @@
 //! The startup walk (see `arch::startup`) through Thumb code.
+//! docs/design.md's "Startup, end to end" shows where it fits in
+//! `elfq FILE startup`.
 //!
 //! It is a second reader of what `decode` says each instruction does,
 //! beside `values`. `values` follows every path through one function at
@@ -7,6 +9,30 @@
 //! processor would from reset, through the functions that the startup
 //! code calls, so a register holds one number or one it can't tell, and
 //! memory is at the addresses the code uses, the stack among them.
+//!
+//! # How the walk is organized
+//!
+//! - [`walk`] makes a [`Walker`], which keeps what the whole walk finds
+//!   and spends: the events, the budgets, and the loops it is going
+//!   through time by time ([`Walker::counting`]).
+//! - [`Walker::run`] walks one function's code, or one loop's: a [`Run`],
+//!   within the limits of a [`Frame`]. [`Walker::step`] runs each
+//!   instruction. `execute.rs` works out what it does to what the walk
+//!   knows there, a [`Path`] (in `walk_state.rs`, with the [`Visit`] that
+//!   keeps what it knew when it first got to an instruction), and
+//!   `calls.rs` follows a call. When the way the walk went ends where it
+//!   can't go on, [`Walker::backtrack`] goes back to a branch whose
+//!   condition it couldn't tell.
+//! - A branch back is a loop. `loops.rs` finds the loop's code, and
+//!   [`Walker::close_loop`] decides what the walk knows after it:
+//!   `count.rs` counts how many times the loop runs by going through its
+//!   code time by time ([`Counting`]), and `each_time.rs` goes through the
+//!   code of a loop over a table each time it runs, with its calls and
+//!   the loops inside.
+//! - `queries.rs` answers two questions that `commands/startup` asks about
+//!   the code around a call, and `tests.rs` walks small programs.
+//!
+//! The limits below say how far the walk goes.
 
 mod calls;
 mod count;
@@ -35,54 +61,72 @@ use execute::holds;
 pub(in crate::arch) use queries::{branches_past, passes_result};
 use walk_state::{Alternative, Compare, Path, Visit};
 
-/// How far before a function's start the code of a loop can begin that
-/// runs on into the function (see [`Walker::runs_into`]).
-const RUNS_INTO: u64 = 0x40;
+// The limits. The walk spends instructions from two budgets for all of
+// it, one for what it walks and one, on top, for counting loops. Each
+// function's code and each loop's has a limit of its own, as does how
+// deep loops nest. Counting a loop has limits on how many times it may
+// run and how many it tries. A loop that the walk goes through each time
+// it runs spends budgets of its own in place of the two for all of it,
+// taken from two totals for all such loops. How many calls deep it
+// follows is `arch::startup::DEPTH`. `arch::startup::walk` lists them
+// with what each means for what the walk finds, and links to them.
 
-/// How many instructions the walk goes through, in all.
-const BUDGET: usize = 20_000;
-
-/// How many it goes through in the reset handler's own code, in each
-/// function it calls, and in a loop's code.
-const RESET_LIMIT: usize = 600;
-
-const CALL_LIMIT: usize = 300;
-
-const LOOP_LIMIT: usize = 60;
-
-/// How many loops inside loops it walks the code of.
-const NESTING: u32 = 8;
-
-/// How many times at most a loop that the walk can tell runs: more is
-/// not a loop of startup code.
-const MOST_PASSES: u32 = 1 << 24;
+/// How many instructions the walk goes through in all, but for those it
+/// goes through to count loops ([`COUNT_BUDGET`]) and in loops that it
+/// goes through each time ([`TIMES_TOTAL`]).
+pub(in crate::arch) const BUDGET: usize = 20_000;
 
 /// How many instructions it goes through in all to count how many times
 /// loops run, on top of [`BUDGET`].
-const COUNT_BUDGET: usize = 50_000;
+pub(in crate::arch) const COUNT_BUDGET: usize = 50_000;
+
+/// How many instructions it goes through in the reset handler's own code.
+pub(in crate::arch) const RESET_LIMIT: usize = 600;
+
+/// How many it goes through in each function it calls.
+pub(in crate::arch) const CALL_LIMIT: usize = 300;
+
+/// How many it goes through in a loop's code, each time through it.
+pub(in crate::arch) const LOOP_LIMIT: usize = 60;
+
+/// How many loops inside loops it walks the code of.
+pub(in crate::arch) const NESTING: u32 = 8;
+
+/// How many times at most a loop that the walk can tell runs: more is
+/// not a loop of startup code.
+pub(in crate::arch) const MOST_PASSES: u32 = 1 << 24;
 
 /// How many of the times a loop may leave, as its compares tell, it tries.
-const CANDIDATES: usize = 12;
+pub(in crate::arch) const CANDIDATES: usize = 12;
 
 /// How many times at most a loop runs that the walk goes through the code
 /// of each time with the calls it makes and the loops inside, as a loop
 /// over a table of sections; and how many times it goes through a loop's
 /// code to count it when its compares don't tell.
-const MOST_TIMES: u32 = 16;
+pub(in crate::arch) const MOST_TIMES: u32 = 16;
 
-/// How many instructions the walk goes through in the times of a loop
-/// that it goes through each time, and to count the loops inside them, in
-/// place of [`BUDGET`] and [`COUNT_BUDGET`]: a loop that costs more is
-/// walked once, as others, and leaves the rest of the walk as it would be
-/// had the walk not tried (see [`Walker::walk_times`]); and how many in
-/// all for such loops, those it tries and gives up on too.
-const TIMES_BUDGET: usize = 5_000;
+/// How many instructions the walk goes through in the times of one loop
+/// that it goes through each time, in place of [`BUDGET`]. A loop that
+/// costs more is walked once, as others, and leaves the rest of the walk
+/// as it would be had the walk not tried (see [`Walker::walk_times`]).
+pub(in crate::arch) const TIMES_BUDGET: usize = 5_000;
 
-const TIMES_COUNT_BUDGET: usize = 10_000;
+/// How many it goes through to count the loops inside those times, in
+/// place of [`COUNT_BUDGET`].
+pub(in crate::arch) const TIMES_COUNT_BUDGET: usize = 10_000;
 
-const TIMES_TOTAL: usize = 2 * TIMES_BUDGET;
+/// How many instructions it goes through in all the loops that it goes
+/// through each time, those it tries and gives up on too, from which each
+/// takes up to [`TIMES_BUDGET`].
+pub(in crate::arch) const TIMES_TOTAL: usize = 2 * TIMES_BUDGET;
 
-const TIMES_COUNT_TOTAL: usize = 2 * TIMES_COUNT_BUDGET;
+/// How many it goes through in all to count the loops inside them, from
+/// which each takes up to [`TIMES_COUNT_BUDGET`].
+pub(in crate::arch) const TIMES_COUNT_TOTAL: usize = 2 * TIMES_COUNT_BUDGET;
+
+/// How far before a function's start the code of a loop can begin that
+/// runs on into the function (see [`Walker::runs_into`]).
+const RUNS_INTO: u64 = 0x40;
 
 /// ip (r12), the scratch register that veneers and long calls use.
 const IP: u16 = 12;

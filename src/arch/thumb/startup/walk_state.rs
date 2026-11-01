@@ -1,3 +1,9 @@
+//! What the walk knows on one way through the code: the numbers in the
+//! registers, the condition flags and the words in memory that it can
+//! tell ([`Path`]), what it knew when it first got to an instruction
+//! ([`Visit`]), and the branches whose condition it couldn't tell, which
+//! it may go back to ([`Alternative`]).
+
 use std::collections::BTreeMap;
 use std::rc::Rc;
 

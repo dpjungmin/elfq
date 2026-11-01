@@ -1,3 +1,8 @@
+//! Calls and tail calls ([`Walker::call`] and [`Walker::tail_call`]): the
+//! walk follows one into the function it calls, and works out what a
+//! call that it doesn't follow to a return may change
+//! ([`Walker::clobbers`]).
+
 use crate::arch::startup::{Call, End, Event, How, Through};
 use crate::arch::thumb::decode::{Effect, Flow, LowBit, Operation, Registers};
 use crate::arch::thumb::{LR, SP, is_wide};

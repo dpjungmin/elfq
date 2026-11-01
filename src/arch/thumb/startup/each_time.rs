@@ -1,3 +1,8 @@
+//! Going through the code of a loop over a table of sections each time it
+//! runs, with its calls and the loops inside ([`Walker::walk_times`]), and
+//! where each time reads its row of the table
+//! ([`Time::row`](crate::arch::startup::Time::row)).
+
 use std::collections::HashMap;
 
 use crate::arch::startup::{Event, How, Loop, LoopStore, Source, Store, Time};
@@ -19,20 +24,24 @@ pub(super) struct Walked {
 
 impl Walker<'_> {
     /// Goes through the code of the loop from `head` to `back` each of
-    /// the `passes` times it runs, as it counted them, from what it knew
-    /// at the head the first time, `before`, following the calls it makes
-    /// and counting the loops inside, as outside loops: for a loop that
-    /// runs a few times and makes calls or has loops inside, as one over a
-    /// table of sections that copies each with a function or a loop. The
-    /// events of each time take the place of those that the walk found
-    /// the first time. `None` when a time goes past a branch that the walk
-    /// can't tell, the loop goes back or leaves other than it counted, it
-    /// calls through a register a function that the walk can't tell, or
-    /// another than the first time, as a loop over a table of functions
-    /// does, such as the constructors that `__libc_init_array` calls,
-    /// which set up no sections, or the times go through more instructions
-    /// than [`TIMES_BUDGET`] lets; then the walk keeps the events of the
-    /// first time.
+    /// the `passes` times it runs, as [`Walker::count`] counted them, from
+    /// what the walk knew at the head the first time, `before`. Each time,
+    /// it follows the calls the code makes and counts the loops inside, as
+    /// outside loops: for a loop that runs a few times and makes calls or
+    /// has loops inside, as one over a table of sections that copies each
+    /// with a function or a loop. The events of each time take the place
+    /// of those that the walk found the first time.
+    ///
+    /// `None`, and the walk keeps the events of the first time, when:
+    ///
+    /// - a time goes past a branch that the walk can't tell;
+    /// - the loop goes back or leaves other than it counted;
+    /// - it calls through a register a function that the walk can't tell,
+    ///   or another than the first time, as a loop over a table of
+    ///   functions does, such as the constructors that `__libc_init_array`
+    ///   calls, which set up no sections;
+    /// - or the times go through more instructions than [`TIMES_BUDGET`]
+    ///   lets.
     pub(super) fn walk_times(
         &mut self,
         run: &Run,
@@ -141,7 +150,8 @@ impl Walker<'_> {
 
     /// Keeps where the load at `site` that does `effect`, in the time
     /// through the code of the loop at `index` in [`Walker::counting`]
-    /// that the walk goes through, loads from (see [`Counting::loads`](super::count::Counting::loads)).
+    /// that the walk goes through, loads from (see
+    /// [`Counting::loads`](super::count::Counting::loads)).
     pub(super) fn row_load(&mut self, run: &Run, index: usize, site: u64, effect: &Effect) {
         let Operation::Load { base, .. } = effect.operation else {
             return;

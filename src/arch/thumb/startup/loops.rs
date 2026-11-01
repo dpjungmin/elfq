@@ -1,3 +1,11 @@
+//! Loops: walking a loop's code once ([`Walker::loop_body`]), also a body
+//! that the compiler put after the function's other code
+//! ([`Walker::out_of_line_body`]), whether its branch back goes back
+//! ([`Walker::goes_back`]), and what the walk knows after the loop
+//! ([`Walker::close_loop`]), with `count.rs` and `each_time.rs`. Also
+//! where a call goes to a loop's code that a function finder took for a
+//! function ([`Walker::went_through`] and [`Walker::runs_into`]).
+
 use std::rc::Rc;
 
 use crate::arch::startup::{End, Event, Loop};

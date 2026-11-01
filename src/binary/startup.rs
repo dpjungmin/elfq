@@ -1,5 +1,6 @@
 //! What the startup walk (see `arch::startup`) reads of a file: its code as
 //! it runs, what memory holds at reset, and where its functions are.
+//! docs/design.md's "Startup, end to end" shows where this fits.
 
 use object::SectionKind;
 
