@@ -57,7 +57,7 @@ use crate::arch::CodeReferenceKind;
 use crate::arch::startup::{Call, DEPTH, End, Event, How, Program, Start, Through, Walk};
 
 use calls::arguments;
-use count::{Mode, OpenLoop};
+use count::{LoopCode, Mode, OpenLoop, StoppedAt};
 use execute::holds;
 use loops::FoundLoop;
 pub(in crate::arch) use queries::{branches_past, passes_result};
@@ -155,11 +155,15 @@ pub(in crate::arch) fn walk(endianness: Endianness, program: &dyn Program, start
     };
     let mut known = Known::default();
     known.registers[usize::from(SP)] = start.stack_pointer;
-    let (end, _) = walker.walk(start.address & !1, Frame::reset(start.follow), known);
+    let (finish, _) = walker.walk(start.address & !1, Frame::reset(start.follow), known);
+    let end = match finish {
+        Finish::Ended(end) => end,
+        // Only the walk of a loop's code stops without an end.
+        Finish::AtStop => End::Budget(start.address & !1),
+    };
     Walk {
         events: walker.events,
-        // Only the walk of a loop's code stops without an end.
-        end: end.unwrap_or(End::Budget(start.address & !1)),
+        end,
     }
 }
 
@@ -313,12 +317,23 @@ struct Branch {
 enum Step {
     /// On to the instruction at this address.
     Next(u64),
-    /// A loop's walk got to its branch back.
+    /// The walk stops before it, as [`Finish::AtStop`].
     Stopped,
     /// The walk ends here, unless it goes back to a branch it didn't take.
     MayBacktrack(End),
     /// The walk ends here.
     Final(End),
+}
+
+/// How a walk finished.
+#[derive(Debug, Clone, Copy)]
+enum Finish {
+    /// It ended, as this says.
+    Ended(End),
+    /// A loop's walk stopped where its frame says, without an end: the
+    /// walk of its code at its branch back, and one iteration where the
+    /// loop goes back or leaves (see [`Walker::stop_here`]).
+    AtStop,
 }
 
 struct Walker<'a> {
@@ -354,16 +369,16 @@ struct Walker<'a> {
 
 impl Walker<'_> {
     /// Walks from `start` with what `known` knows, until it ends, or for a
-    /// loop's code, until it gets to `frame.stop`. Returns how it ended,
-    /// or `None` when it got there, and what it knew then.
-    fn walk(&mut self, start: u64, frame: Frame, known: Known) -> (Option<End>, Known) {
-        let (end, run) = self.run(start, frame, known);
-        (end, run.known)
+    /// loop, until it stops where `frame` says. Returns how it finished,
+    /// and what it knew then.
+    fn walk(&mut self, start: u64, frame: Frame, known: Known) -> (Finish, Known) {
+        let (finish, run) = self.run(start, frame, known);
+        (finish, run.known)
     }
 
-    /// Walks as [`Walker::walk`] does, and returns how it ended and where
-    /// it went.
-    fn run(&mut self, start: u64, frame: Frame, known: Known) -> (Option<End>, Run) {
+    /// Walks as [`Walker::walk`] does, and returns how it finished and
+    /// where it went.
+    fn run(&mut self, start: u64, frame: Frame, known: Known) -> (Finish, Run) {
         let mut run = Run {
             known,
             order: Vec::new(),
@@ -382,7 +397,7 @@ impl Walker<'_> {
                     address = next;
                     continue;
                 }
-                Step::Stopped => return (None, run),
+                Step::Stopped => return (Finish::AtStop, run),
                 Step::Final(end) => end,
                 Step::MayBacktrack(end) => match self.backtrack(&mut run, frame, end) {
                     Some(target) => {
@@ -392,7 +407,7 @@ impl Walker<'_> {
                     None => end,
                 },
             };
-            return (Some(end), run);
+            return (Finish::Ended(end), run);
         }
     }
 
@@ -429,11 +444,14 @@ impl Walker<'_> {
         }
     }
 
-    /// Whether the walk stops before the instruction at `address`: in one
-    /// iteration of a loop that the walk goes through one by one, at the
-    /// branch back or where the loop leaves, which is past the branch in
-    /// the first iteration and anywhere but the first iteration's code
-    /// later; and in a loop's code, at its branch back.
+    /// [`Step::Stopped`] when the walk stops before the instruction at
+    /// `address`: in one iteration of a loop that the walk goes through one
+    /// by one, at the branch back or where the loop leaves, which is past
+    /// the branch in the first iteration and anywhere but the first
+    /// iteration's code later; and in a loop's code, at its branch back. In
+    /// an iteration, it also records where the iteration stopped and
+    /// whether the loop goes back, in the loop's [`OpenLoop::stopped`],
+    /// which [`Walker::walk_iteration`] reads.
     fn stop_here(&mut self, run: &Run, frame: Frame, address: u64) -> Option<Step> {
         let Some(index) = frame.iteration_of else {
             let at_back = frame.stop.is_some_and(|stop| address >= stop);
@@ -441,18 +459,23 @@ impl Walker<'_> {
         };
         let open = &self.open_loops[index];
         let back = open.back;
-        let leaves = match open.code.is_empty() {
-            true => address > back,
-            false => !open.code.contains(&address),
+        let leaves = match &open.code {
+            LoopCode::NotYet => address > back,
+            LoopCode::Seen { code, .. } => !code.contains(&address),
         };
         if address != back && !leaves {
             return None;
         }
-        let again = match address == back {
-            true => self.goes_back(run, back),
-            false => (open.code.is_empty() || open.ways_out.contains(&address)).then_some(false),
+        let goes_back = match &open.code {
+            _ if address == back => self.goes_back(run, back),
+            LoopCode::NotYet => Some(false),
+            LoopCode::Seen { ways_out, .. } => ways_out.contains(&address).then_some(false),
         };
-        self.open_loops[index].stopped = Some((address, again));
+        let stopped = StoppedAt {
+            at: address,
+            goes_back,
+        };
+        self.open_loops[index].stopped = Some(stopped);
         Some(Step::Stopped)
     }
 

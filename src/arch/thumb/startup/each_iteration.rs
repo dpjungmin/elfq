@@ -14,6 +14,29 @@ use super::loops::FoundLoop;
 use super::walk_state::{Budget, Known, Mark};
 use super::{Frame, Run, WALK_EACH_BUDGET, WALK_EACH_COUNT_BUDGET, Walker};
 
+/// A word in the file that one iteration of a loop that the walk goes
+/// through each iteration of reads, as from a row of a table (see
+/// [`OpenLoop::loads`](super::count::OpenLoop::loads)). Words sort by
+/// address, then by pointer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct RowWord {
+    pub(super) address: u32,
+    /// Where the register that the iteration loads it through points, when
+    /// that is lower than `address`, else `address`; or [`NOWHERE`].
+    pub(super) pointer: u32,
+}
+
+/// [`RowWord::pointer`] for a word that a register held at the head of the
+/// iteration, which no register points to: the highest address, so that it
+/// is never the lowest pointer.
+pub(super) const NOWHERE: u32 = u32::MAX;
+
+/// A [`RowWord`] and the instruction that loads it.
+pub(super) struct RowLoad {
+    pub(super) site: u64,
+    pub(super) word: RowWord,
+}
+
 /// What a loop that the walk went through each iteration of leaves (see
 /// [`Walker::walk_each_iteration`]).
 pub(super) struct Walked {
@@ -24,7 +47,7 @@ pub(super) struct Walked {
 
 impl Walker<'_> {
     /// Goes through the code of the loop that the walk `found` each of the
-    /// `runs` times it runs, as [`Walker::count`] counted them, from what
+    /// `count` times it runs, as [`Walker::count`] counted them, from what
     /// the walk knew the first time it got to the head. Each iteration, it
     /// follows the calls the code makes and counts the loops inside, as
     /// outside loops: for a loop that runs a few times and makes calls or
@@ -47,7 +70,7 @@ impl Walker<'_> {
         run: &Run,
         frame: Frame,
         found: &FoundLoop,
-        runs: u32,
+        count: u32,
     ) -> Option<Walked> {
         let open = self.open_loop(run, found, Mode::WalkEach)?;
         // The events of the first time through the code make way for those
@@ -69,11 +92,11 @@ impl Walker<'_> {
             };
             let given = own.min(self.walk_each_left);
             let (walked, spent) =
-                self.with_budget(given, |walker| walker.walk_iterations(frame, found, runs));
+                self.with_budget(given, |walker| walker.walk_iterations(frame, found, count));
             self.walk_each_left = self.walk_each_left.saturating_sub(spent);
             walked
         } else {
-            self.walk_iterations(frame, found, runs)
+            self.walk_iterations(frame, found, count)
         };
         self.open_loops.pop();
         if walked.is_none() {
@@ -83,11 +106,11 @@ impl Walker<'_> {
         walked
     }
 
-    /// Goes through each of the `runs` iterations of the loop that the walk
+    /// Goes through each of the `count` iterations of the loop that the walk
     /// `found`, the innermost of [`Walker::open_loops`], as
     /// [`Walker::walk_each_iteration`] says, and works out the row of a
     /// table that each reads.
-    fn walk_iterations(&mut self, frame: Frame, found: &FoundLoop, runs: u32) -> Option<Walked> {
+    fn walk_iterations(&mut self, frame: Frame, found: &FoundLoop, count: u32) -> Option<Walked> {
         let FoundLoop { head, before, .. } = *found;
         let mut known = Known {
             sources: before.sources,
@@ -101,13 +124,13 @@ impl Walker<'_> {
         let mut copied: Vec<(u64, u64)> = Vec::new();
         let mut exit = None;
         let mut called = HashMap::new();
-        for n in 1..=runs {
+        for n in 1..=count {
             let first_event = self.events.len();
             let ended = self.walk_iteration(frame, head, known.clone())?;
             if n == 1 {
                 self.learn_code(&ended);
             }
-            if ended.again != (n < runs)
+            if ended.again != (n < count)
                 || !same_calls(&self.events[first_event..], frame.depth, &mut called)
             {
                 return None;
@@ -122,20 +145,21 @@ impl Walker<'_> {
             // the row's words from the iteration before, the walk can't
             // tell where its row starts.
             copied.extend(self.events[first_event..].iter().flat_map(copied_from));
-            let row: Vec<(u32, u32)> = (ended.loads.into_iter())
-                .filter(|&(at, _)| {
-                    !(copied.iter()).any(|(start, end)| (start..end).contains(&&u64::from(at)))
+            let row: Vec<RowWord> = (ended.loads.into_iter())
+                .filter(|word| {
+                    let at = u64::from(word.address);
+                    !(copied.iter()).any(|(start, end)| (start..end).contains(&&at))
                 })
                 .collect();
-            let start = row.first().map(|&(at, _)| at);
-            tells &= row.iter().map(|&(_, pointer)| pointer).min() == start;
+            let start = row.first().map(|word| word.address);
+            tells &= row.iter().map(|word| word.pointer).min() == start;
             iterations.push(Iteration {
                 events: first_event..self.events.len(),
                 row: start,
             });
-            loads.push(row.into_iter().map(|(at, _)| at).collect());
+            loads.push(row.into_iter().map(|word| word.address).collect());
             known = ended.known;
-            if n == runs {
+            if n == count {
                 exit = Some(ended.exit);
             }
         }
@@ -180,8 +204,11 @@ impl Walker<'_> {
             None if base != PC && !before => self.register(&run.known, base, site),
             _ => None,
         };
-        let pointer = pointer.map_or(at, |pointer| pointer.min(at));
-        self.open_loops[index].loads.push((site, at, pointer));
+        let word = RowWord {
+            address: at,
+            pointer: pointer.map_or(at, |pointer| pointer.min(at)),
+        };
+        self.open_loops[index].loads.push(RowLoad { site, word });
     }
 
     /// Keeps where the words that registers held at the head of the
@@ -210,7 +237,11 @@ impl Walker<'_> {
                 && !self.is_stack(Some(address))
                 && self.program.word_at_reset(u64::from(address)).is_some()
             {
-                self.open_loops[index].loads.push((site, address, u32::MAX));
+                let word = RowWord {
+                    address,
+                    pointer: NOWHERE,
+                };
+                self.open_loops[index].loads.push(RowLoad { site, word });
             }
         }
     }

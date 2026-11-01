@@ -8,7 +8,19 @@ use crate::arch::thumb::decode::{Effect, Flow, Operation, Registers};
 use crate::arch::thumb::{ARGUMENTS, CALL_CLOBBERS, LR, SP};
 
 use super::walk_state::{Alternative, Flags, Known, forget_changes, set_unknown};
-use super::{Frame, Run, Step, Walker, decode_at};
+use super::{Finish, Frame, Run, Step, Walker, decode_at};
+
+/// How the walk went through the function that a call calls (see
+/// [`Walker::call`]), with what it knew where it ended.
+enum Callee {
+    /// The function returned.
+    Returned(Known),
+    /// The walk of it ended other than where it returns, as where it ran
+    /// out of instructions to go through.
+    Ended(Known),
+    /// The walk didn't go through it.
+    NotWalked,
+}
 
 /// What code may change, as far as the walk can tell without going
 /// through it (see [`Walker::loop_writes`]).
@@ -184,14 +196,17 @@ impl Walker<'_> {
             return Some(End::LeavesFile { site, target });
         }
         let mark = self.mark();
-        let ((end, _), spent) = self.with_budget(self.budget, |walker| {
+        let ((finish, _), spent) = self.with_budget(self.budget, |walker| {
             walker.walk(target, frame.callee(), run.known.clone())
         });
         // The instructions it goes through don't count for the walk, but
         // what it spends to count loops does.
         self.budget.count -= spent.count;
         self.rewind(mark);
-        end.filter(|end| end.is_dead())
+        match finish {
+            Finish::Ended(end) if end.is_dead() => Some(end),
+            _ => None,
+        }
     }
 
     /// Records a call at `site`, which runs only when the flags say so
@@ -224,7 +239,7 @@ impl Walker<'_> {
         if target.is_some() && self.main == target {
             return Some(End::Main(site));
         }
-        let mut after = None;
+        let mut callee = Callee::NotWalked;
         if let Some(target) = target.filter(|_| follows) {
             let depth = frame.depth + 1;
             if self.program.code(target).is_none() {
@@ -236,25 +251,26 @@ impl Walker<'_> {
                 let mut known = run.known.clone();
                 known.registers[usize::from(LR)] = None;
                 known.results = 0;
-                let (end, known) = self.walk(target, frame.callee(), known);
-                match end {
-                    Some(End::Main(at)) => return Some(End::Main(at)),
-                    Some(End::Returns(_)) => after = Some((known, true)),
-                    Some(end) => {
+                let (finish, known) = self.walk(target, frame.callee(), known);
+                callee = match finish {
+                    Finish::Ended(End::Main(at)) => return Some(End::Main(at)),
+                    Finish::Ended(End::Returns(_)) => Callee::Returned(known),
+                    Finish::Ended(end) => {
                         if end.stops_short() {
                             self.events.push(Event::Stop { site, depth, end });
                         }
-                        after = Some((known, false));
+                        Callee::Ended(known)
                     }
-                    None => {}
-                }
+                    // A function's walk has no branch back to stop at.
+                    Finish::AtStop => Callee::NotWalked,
+                };
             }
         }
         let sp = run.known.registers[usize::from(SP)];
         let results = run.known.results;
         // Of r0 to r3, those that may hold what the call leaves.
-        let called = match after {
-            Some((mut known, true)) => {
+        let called = match callee {
+            Callee::Returned(mut known) => {
                 if known.forks {
                     forget_changes(&mut known, &run.known.registers, &run.known.memory);
                     known.flags = Flags::default();
@@ -266,7 +282,7 @@ impl Walker<'_> {
                 run.known.registers[usize::from(LR)] = None;
                 called
             }
-            Some((mut known, false)) => {
+            Callee::Ended(mut known) => {
                 forget_changes(&mut known, &run.known.registers, &run.known.memory);
                 run.known.memory = known.memory;
                 let (clobbers, called) = self.clobbers(target);
@@ -274,7 +290,7 @@ impl Walker<'_> {
                 run.known.flags = Flags::default();
                 called
             }
-            None => {
+            Callee::NotWalked => {
                 let (clobbers, called) = self.clobbers(target);
                 set_unknown(&mut run.known, clobbers);
                 run.known.flags = Flags::default();

@@ -22,8 +22,8 @@ use super::walk_state::{
     Flags, Known, Visit, forget_changes, forget_words, set_unknown, stored_since,
 };
 use super::{
-    Branch, Frame, MOST_WALKED_ITERATIONS, NESTING, RUNS_INTO, Run, Step, Walker, decode_at,
-    straight_line,
+    Branch, Finish, Frame, MOST_WALKED_ITERATIONS, NESTING, RUNS_INTO, Run, Step, Walker,
+    decode_at, straight_line,
 };
 
 impl Walker<'_> {
@@ -74,9 +74,12 @@ impl Walker<'_> {
         if frame.nesting >= NESTING {
             return Some(End::Budget(head));
         }
-        let (end, known) = self.walk(head, frame.loop_body(back), run.known.clone());
+        let (finish, known) = self.walk(head, frame.loop_body(back), run.known.clone());
         run.known = known;
-        end
+        match finish {
+            Finish::Ended(end) => Some(end),
+            Finish::AtStop => None,
+        }
     }
 
     /// Records the loop that the walk `found`, and goes on with what it
@@ -147,7 +150,7 @@ impl Walker<'_> {
             forget_words(&mut run.known, stored_since(&first.memory, &before.memory));
         }
         if !every {
-            forget_stored(&mut run.known, iterations, stores.as_deref(), before);
+            forget_stored(&mut run.known, stores.as_deref(), before);
         }
         self.forget_row_loads(frame, found, stores.as_deref());
         let runs = Runs::Counted { iterations, stores };
@@ -194,7 +197,7 @@ impl Walker<'_> {
             && !knows_sources(stores)
         {
             let code = found.head..=found.back;
-            (self.open_loops[index].loads).retain(|&(site, ..)| !code.contains(&site));
+            (self.open_loops[index].loads).retain(|load| !code.contains(&load.site));
         }
     }
 

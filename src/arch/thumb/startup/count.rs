@@ -9,9 +9,12 @@ use crate::arch::startup::{Event, LoopStore, Source, Store};
 use crate::arch::thumb::SP;
 use crate::arch::thumb::decode::Flow;
 
+use super::each_iteration::{RowLoad, RowWord};
 use super::loops::FoundLoop;
 use super::walk_state::{Budget, Compare, Flags, Known, Visit, forget_changes};
-use super::{CANDIDATES, Frame, MOST_ITERATIONS, MOST_WALKED_ITERATIONS, Run, Walker, decode_at};
+use super::{
+    CANDIDATES, Finish, Frame, MOST_ITERATIONS, MOST_WALKED_ITERATIONS, Run, Walker, decode_at,
+};
 
 /// A loop whose iterations the walk goes through one by one, as its `mode`
 /// says: to count how many times it runs ([`Walker::count`]), or to go
@@ -23,37 +26,57 @@ pub(super) struct OpenLoop {
     /// The instruction after it, where the loop leaves when it doesn't go
     /// back.
     next: u64,
-    /// The instructions that the first iteration went through, and where
-    /// the branches it didn't take go: a later iteration that goes
-    /// elsewhere leaves there, or goes a way the walk can't tell. Before
-    /// the first iteration, the walk's own way through the code, when it
-    /// went through it in the same run; otherwise empty, and the first
-    /// iteration leaves past `back`.
-    pub(super) code: HashSet<u64>,
-    pub(super) ways_out: Vec<u64>,
-    /// Where the iteration stopped, and whether it goes back to the loop's
-    /// head from there, when the walk can tell.
-    pub(super) stopped: Option<(u64, Option<bool>)>,
+    /// The loop's code, as the first iteration went through it. Before the
+    /// first iteration, the walk's own way through the code, when it went
+    /// through it in the same run.
+    pub(super) code: LoopCode,
+    /// Where the iteration stopped, when it did, as [`Walker::stop_here`]
+    /// records it.
+    pub(super) stopped: Option<StoppedAt>,
     /// What the walk goes through the loop's iterations for.
     pub(super) mode: Mode,
     /// With [`Mode::WalkEach`], the words in the file, outside the stack,
-    /// that the iteration's own code reads, as from a row of a table: each
-    /// as the load instruction, so that a loop inside can drop its own (see
-    /// [`Walker::close_loop`]), the address of the word, and where the
-    /// register it loads through points, when that is lower.
+    /// that the iteration's own code reads, as from a row of a table, each
+    /// with the instruction that loads it, so that a loop inside can drop
+    /// its own (see [`Walker::close_loop`]).
     ///
     /// A word that a register held at the head and the iteration reads
     /// counts as loaded by the instruction that loaded it, when that is in
-    /// the loop's function, and its register points nowhere, `u32::MAX`: as
-    /// when the iteration before loaded the start of the next row at its
-    /// end.
-    pub(super) loads: Vec<(u64, u32, u32)>,
+    /// the loop's function, and no register points to it
+    /// ([`NOWHERE`](super::each_iteration::NOWHERE)): as when the iteration
+    /// before loaded the start of the next row at its end.
+    pub(super) loads: Vec<RowLoad>,
     /// Where the words that registers held at the head of the iteration
     /// were loaded from, for those that the iteration's code hasn't read or
     /// written yet.
     pub(super) carried: [Option<Source>; 16],
     /// The function that the loop is in.
     pub(super) bounds: Option<(u64, u64)>,
+}
+
+/// What the walk knows of the code of a loop that it goes through iteration
+/// by iteration, to tell where an iteration leaves the loop (see
+/// [`Walker::stop_here`](super::Walker::stop_here)).
+pub(super) enum LoopCode {
+    /// Nothing yet: the iteration leaves past the branch back.
+    NotYet,
+    /// The instructions of the loop, and where the branches among them
+    /// that weren't taken go: an iteration leaves when it goes elsewhere,
+    /// at one of `ways_out`, or a way the walk can't tell.
+    Seen {
+        code: HashSet<u64>,
+        ways_out: Vec<u64>,
+    },
+}
+
+/// Where one iteration of a loop that the walk goes through iteration by
+/// iteration stopped: at the branch back, or where it leaves the loop.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct StoppedAt {
+    pub(super) at: u64,
+    /// Whether the loop goes back to its head from there, when the walk
+    /// can tell.
+    pub(super) goes_back: Option<bool>,
 }
 
 /// What the walk goes through a loop's iterations one by one for.
@@ -89,10 +112,9 @@ pub(super) struct IterationEnd {
     /// didn't take go.
     order: Vec<u64>,
     ways_out: Vec<u64>,
-    /// The addresses that it loaded words from, as [`OpenLoop::loads`]
-    /// says, the lowest first, each with where the register it loaded
-    /// through points, when lower, or `u32::MAX`.
-    pub(super) loads: Vec<(u32, u32)>,
+    /// The words that it loaded, as [`OpenLoop::loads`] says, the lowest
+    /// first.
+    pub(super) loads: Vec<RowWord>,
 }
 
 /// What a loop leaves, as the walk counted it.
@@ -110,11 +132,20 @@ pub(super) struct Counted {
     pub(super) every: bool,
 }
 
+/// How many iterations of a loop the walk goes through before it fits a
+/// [`Line`] through their ends, which takes three.
+const FIRST_ITERATIONS: u32 = 3;
+
 /// Where what a loop's code changes is at the start of each iteration, from
 /// the second on, as the ends of the first three iterations tell: each
 /// register, address a register's word was loaded from, and word in memory
 /// either stays, or moves by the same amount each iteration, or the walk
 /// can't tell it, as a word that code loaded into a register.
+///
+/// Iterations count from 1, and the ends of the first three are the starts
+/// of the second to the fourth, so the line starts at the second: the
+/// `n`th iteration starts `n - 2` steps along it, as [`Line::start`],
+/// [`leaving_iterations`] and [`keeps_order`] count.
 struct Line {
     /// What the walk knows at the start of the second iteration.
     start: Known,
@@ -269,20 +300,21 @@ impl Walker<'_> {
         }
         // The code the walk went through from the head, which may lie
         // past the branch back, as GCC -Os puts a loop's test.
-        let walked = match run.order.get(before.order) == Some(&head) {
-            true => &run.order[before.order..],
-            false => &[],
+        let code = match run.order.get(before.order) == Some(&head) {
+            true => {
+                let code: HashSet<u64> = run.order[before.order..].iter().copied().collect();
+                let ways_out = (run.pending.iter())
+                    .filter(|(from, to)| code.contains(from) && !code.contains(to))
+                    .map(|&(_, to)| to)
+                    .collect();
+                LoopCode::Seen { code, ways_out }
+            }
+            false => LoopCode::NotYet,
         };
-        let code: HashSet<u64> = walked.iter().copied().collect();
-        let ways_out = (run.pending.iter())
-            .filter(|(from, to)| code.contains(from) && !code.contains(to))
-            .map(|&(_, to)| to)
-            .collect();
         Some(OpenLoop {
             back,
             next: branch.next(),
             code,
-            ways_out,
             stopped: None,
             mode,
             loads: Vec::new(),
@@ -297,7 +329,7 @@ impl Walker<'_> {
     fn count_iterations(&mut self, frame: Frame, head: u64, before: &Visit) -> Option<Counted> {
         let mut start = first_iteration(before);
         let mut walked: Vec<(u32, IterationEnd)> = Vec::new();
-        for n in 1..=3 {
+        for n in 1..=FIRST_ITERATIONS {
             let ended = self.walk_iteration(frame, head, start)?;
             if n == 1 {
                 self.learn_code(&ended);
@@ -309,15 +341,18 @@ impl Walker<'_> {
                 return Some(counted(walked, n));
             }
         }
-        if let Some(line) = Line::new(&walked[0].1.known, &walked[1].1.known, &walked[2].1.known) {
-            let (second, third) = (&walked[1].1, &walked[2].1);
+        let [(_, first), (_, second), (_, third)] = walked.as_slice() else {
+            unreachable!("the walk went through the first three iterations");
+        };
+        if let Some(line) = Line::new(&first.known, &second.known, &third.known) {
             for n in leaving_iterations(second, third) {
                 if !keeps_order(second, third, n - 1) {
                     break;
                 }
-                // The iteration before goes back, from where the line says.
+                // The iteration before goes back, from where the line says,
+                // unless it is the third, which the walk went through.
                 let before = match n {
-                    4 => None,
+                    n if n == FIRST_ITERATIONS + 1 => None,
                     _ => match self.walk_iteration(frame, head, line.start(n - 1)) {
                         Some(before) if before.again => Some(before),
                         _ => continue,
@@ -326,9 +361,7 @@ impl Walker<'_> {
                 // Where the iteration before ends, which the line must go
                 // through.
                 let line_start = line.start(n);
-                let ends = before
-                    .as_ref()
-                    .map_or(&walked[2].1.known, |before| &before.known);
+                let ends = before.as_ref().map_or(&third.known, |before| &before.known);
                 let on_line =
                     |r: usize| line_start.registers[r].is_none_or(|n| ends.registers[r] == Some(n));
                 if !(0..16).all(on_line) {
@@ -347,7 +380,7 @@ impl Walker<'_> {
         // Iteration by iteration, as a loop whose compares tell nothing
         // that moves by the same amount, such as one over a table that ends
         // at a row of zeros.
-        for n in 4..=MOST_WALKED_ITERATIONS {
+        for n in FIRST_ITERATIONS + 1..=MOST_WALKED_ITERATIONS {
             let ended = self.walk_iteration(frame, head, start)?;
             let again = ended.again;
             start = ended.known.clone();
@@ -363,8 +396,10 @@ impl Walker<'_> {
     /// iteration leaves, as the first iteration, `first`, tells.
     pub(super) fn learn_code(&mut self, first: &IterationEnd) {
         if let Some(open) = self.open_loops.last_mut() {
-            open.code = first.order.iter().copied().collect();
-            open.ways_out = first.ways_out.clone();
+            open.code = LoopCode::Seen {
+                code: first.order.iter().copied().collect(),
+                ways_out: first.ways_out.clone(),
+            };
         }
     }
 
@@ -390,14 +425,12 @@ impl Walker<'_> {
         if mode == Mode::WalkEach {
             self.open_loops[index].carried = known.sources;
         }
-        let (end, run) = self.run(head, body, known);
+        let (finish, run) = self.run(head, body, known);
         let open = &mut self.open_loops[index];
         let stopped = open.stopped.take();
         let loads = std::mem::take(&mut open.loads);
         let (back, next) = (open.back, open.next);
-        let mut loads: Vec<(u32, u32)> = (loads.into_iter())
-            .map(|(_, at, pointer)| (at, pointer))
-            .collect();
+        let mut loads: Vec<RowWord> = loads.into_iter().map(|load| load.word).collect();
         loads.sort_unstable();
         loads.dedup();
         let mut stores = Vec::new();
@@ -412,7 +445,15 @@ impl Walker<'_> {
                 }
             }
         }
-        let (Some((at, Some(again))), None, false) = (stopped, end, run.known.forks) else {
+        let (
+            Finish::AtStop,
+            Some(StoppedAt {
+                at,
+                goes_back: Some(again),
+            }),
+            false,
+        ) = (finish, stopped, run.known.forks)
+        else {
             return None;
         };
         let exit = if at == back { next } else { at };
@@ -487,7 +528,7 @@ fn leaving_iterations(second: &IterationEnd, third: &IterationEnd) -> Vec<u32> {
             };
             let crossing = after.saturating_add(2);
             for n in crossing.saturating_sub(1)..=crossing.saturating_add(2) {
-                if (4..=MOST_ITERATIONS).contains(&n) {
+                if (FIRST_ITERATIONS + 1..=MOST_ITERATIONS).contains(&n) {
                     candidates.insert(n);
                 }
             }
@@ -524,7 +565,7 @@ fn counted(walked: Vec<(u32, IterationEnd)>, iterations: u32) -> Counted {
     let stores = summaries(&walked, iterations);
     let others = walked.iter().any(|(_, ended)| ended.others);
     let every = walked.len() == iterations as usize;
-    let (_, last) = walked.into_iter().next_back().expect("the last time");
+    let (_, last) = walked.into_iter().next_back().expect("the last iteration");
     Counted {
         iterations,
         known: last.known,
@@ -633,20 +674,13 @@ pub(super) fn line_through(
     Some((first, step.unwrap_or(0)))
 }
 
-/// Forgets the words in memory that a loop that runs `iterations` times may
-/// have stored to on the iterations that the walk didn't go through, from
-/// the fourth to the one before the one before the last: those that its
-/// `stores` cover, or when the walk can't tell them, those that changed
-/// since `before`, at its head.
-pub(super) fn forget_stored(
-    known: &mut Known,
-    iterations: u32,
-    stores: Option<&[LoopStore]>,
-    before: &Visit,
-) {
-    if iterations <= 5 {
-        return;
-    }
+/// Forgets the words in memory that a loop may have stored to on the
+/// iterations that the walk didn't go through, from the fourth to the one
+/// before the one before the last, for a loop that it didn't go through
+/// every iteration of (see `Counted::every`): those that its `stores`
+/// cover, or when the walk can't tell them, those that changed since
+/// `before`, at its head.
+pub(super) fn forget_stored(known: &mut Known, stores: Option<&[LoopStore]>, before: &Visit) {
     let Some(stores) = stores else {
         let registers = known.registers;
         forget_changes(known, &registers, &before.memory);
