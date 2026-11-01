@@ -173,8 +173,11 @@ this list, and add to it when you bring in a word.
 - **step**: one thing that startup code does, such as copying a section
   (`startup::steps::Step`). Its place in the steps is a step index;
   where elfq writes a step out, it gives its number, from 1
-  (`steps::number`). **facts**: in `startup`, what each stage reads once
-  the walk is done, from the file to how the walk ended (`Facts`).
+  (`steps::number`). **region**: what a copy or zeroing copies or
+  zeroes: how many bytes, where, and for a copy, where from, with the
+  sections that start in them (`ram_sections::Region`). **facts**: in
+  `startup`, what each stage reads once the walk is done, from the file
+  to how the walk ended (`Facts`).
   **row**: a line of a table that elfq prints; a loop over a table of
   sections also reads one row of that table each time it runs.
 - **event**: one thing that the startup walk records, such as a call, a

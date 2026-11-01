@@ -154,7 +154,7 @@ fn step_match(ram: &RamSections, piece: &Piece) -> Option<Match> {
     (ram.matched(piece.does, piece.to, from, piece.size)).filter(|matched| {
         piece.step.is_some()
             || piece.way == Way::Loop
-            || matched.covers.iter().all(|cover| {
+            || matched.region.covers.iter().all(|cover| {
                 cover.bytes == ram.section(cover.section).size
                     && (cover.from).is_none_or(|from| from == ram.load_address(cover.section))
             })
@@ -222,24 +222,17 @@ impl Pieces {
         };
         // 3.
         let index = match joined.step {
-            Some(index) => index,
+            Some(index) => {
+                steps[index].set_up(matched);
+                index
+            }
             None => {
-                let Home {
-                    level, function, ..
-                } = joined.home;
-                let mut step =
-                    Step::new(event, joined.site, joined.does, joined.way, function, level);
-                step.function = Some(function);
+                let step = Step::of_pieces(event, joined.site, joined.way, joined.home, matched);
                 steps.push(step);
                 steps.len() - 1
             }
         };
-        let step = &mut steps[index];
-        step.to = Some(matched.to);
-        step.from = matched.from;
-        step.size = Some(matched.size);
-        ready.extend(matched.covers.iter().map(|cover| cover.section));
-        step.covers = matched.covers;
+        ready.extend(steps[index].covers().iter().map(|cover| cover.section));
         taken.sort_unstable();
         for i in taken.into_iter().rev() {
             self.0.remove(i);
@@ -273,7 +266,7 @@ impl Pieces {
             return;
         };
         let part = |index: usize| {
-            (steps[index].covers.iter())
+            (steps[index].covers().iter())
                 .any(|cover| cover.section == section && cover.bytes < ram.section(section).size)
         };
         let Some(i) =
@@ -285,17 +278,15 @@ impl Pieces {
             return;
         };
         let step = &mut steps[index];
-        let mut may: Vec<usize> = step.covers.iter().map(|cover| cover.section).collect();
+        let mut may: Vec<usize> = step.covers().iter().map(|cover| cover.section).collect();
         for other in ram.run_from(section) {
             if !may.contains(&other) {
                 may.push(other);
             }
         }
-        step.does = Does::Unread;
-        (step.covers, step.may) = (Vec::new(), may);
-        (step.to, step.from, step.size) = (None, None, None);
+        step.make_unread(may);
         *ready = (steps.iter())
-            .flat_map(|step| step.covers.iter().map(|cover| cover.section))
+            .flat_map(|step| step.covers().iter().map(|cover| cover.section))
             .collect();
     }
 }

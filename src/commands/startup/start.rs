@@ -304,7 +304,7 @@ fn c_runtime(firmware: &Firmware, ram: &RamSections, reset: &Reset, guess: u64) 
         range
             .filter(|&event| events.level(event) >= level)
             .filter_map(|event| ram.match_call(&events.call(event)?.passes()))
-            .flat_map(|matched| matched.covers.into_iter().map(|cover| cover.section))
+            .flat_map(|matched| matched.region.covers.into_iter().map(|cover| cover.section))
             .collect()
     };
     let earlier = set_up(0..call_to_guess, 0);

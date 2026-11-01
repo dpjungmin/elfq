@@ -285,7 +285,7 @@ pub(super) fn judge(facts: &Facts, steps: &[Step], all: bool) -> Judged {
     } = *facts;
     let mut init: HashMap<usize, Setup> = HashMap::new();
     for (index, step) in steps.iter().enumerate() {
-        for cover in &step.covers {
+        for cover in step.covers() {
             init.entry(cover.section).or_insert(Setup {
                 step: index,
                 bytes: cover.bytes,

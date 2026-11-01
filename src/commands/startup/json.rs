@@ -144,10 +144,12 @@ pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
             function: step.function.and_then(item),
             veneer: step.veneer.map(address),
             inside: item(step.inside),
-            from: step.from.map(address),
-            to: step.to.map(address),
-            size: step.size,
-            sections: (step.covers.iter())
+            from: (step.region.as_ref())
+                .and_then(|region| region.from)
+                .map(address),
+            to: step.region.as_ref().map(|region| address(region.to)),
+            size: step.region.as_ref().map(|region| region.size),
+            sections: (step.covers().iter())
                 .map(|cover| ram.name(cover.section))
                 .collect(),
             table: step.table.map(address),

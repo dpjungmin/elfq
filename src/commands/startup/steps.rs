@@ -14,11 +14,11 @@ use std::ops::Range;
 
 use super::events::{Events, Iterations};
 use super::pieces::{Home, Piece, Pieces};
-use super::ram_sections::Cover;
+use super::ram_sections::{Cover, Match, Region};
 use super::start::{Main, MainFrom};
 use super::unread::{loop_calls, loop_repeats, loop_targets, own_stores, unread_walked_loops};
 use super::{Facts, Firmware};
-use crate::arch::startup::{End, Event, How};
+use crate::arch::startup::{Call, End, Event, How, Loop};
 use crate::binary::ItemKind;
 
 /// What a step does.
@@ -96,73 +96,233 @@ impl Way {
 }
 
 /// One step of startup.
+///
+/// What its `site`, `function` and `inside` are depends on its kind:
+///
+/// - A call, a call that copies or zeroes, and a call that elfq can't
+///   follow: the call; the function it calls, past a veneer, when the walk
+///   can tell; and the function whose code makes the call.
+/// - A copy or zeroing by a call to a function that does one step (see
+///   [`helpers`]): all three are the call's, but for such a function in
+///   the code of the one that calls it, which keeps the function and the
+///   way of its loop or call.
+/// - A copy or zeroing by a loop or by stores: the first store, of the
+///   loop's when there is one; and the function whose code holds it,
+///   twice.
+/// - A loop that elfq can't follow: its head; and the function whose code
+///   holds it, twice.
+/// - A function that a call runs, which goes where the walk can't follow
+///   or on past its budget ([`Way::Outside`], or [`Way::Stop`] before the
+///   walk's end): the call; the function; and the function whose code
+///   makes the call. Its `level` is the function's, one deeper than the
+///   call's.
+/// - The walk's end, where it stops short ([`Way::Stop`]): where the walk
+///   stopped; the function whose code holds that, or else the reset
+///   handler; and the reset handler.
+/// - `main`, which a compiler inlined ([`Way::Inlined`]): where its code
+///   starts, as both `site` and `function`; and the function whose code
+///   holds that, or else the reset handler.
 pub(super) struct Step {
     /// Where its event is in the walk, which orders the steps; the number
     /// of events for a step at the walk's end.
     pub event: usize,
-    /// The instruction.
+    /// Where the step begins in the walk's events: at `event`, or for a
+    /// call to a function that does one step, which the step stands for,
+    /// at the call's (see [`helpers`]).
+    pub begins: usize,
+    /// Its instruction.
     pub site: u64,
     pub does: Does,
     pub way: Way,
-    /// The function it calls, or that runs the loop or the code elfq
-    /// can't follow.
+    /// The function it calls, or whose code holds it (see the list above).
     pub function: Option<u64>,
-    /// The veneer that the call goes through.
-    pub veneer: Option<u64>,
-    /// The function that makes the call.
+    /// The function whose code makes the call, or holds the step (see the
+    /// list above).
     pub inside: u64,
     /// How many calls deep from the reset handler it is (see
     /// [`Events::level`]).
     pub level: u32,
+    /// For a call, the veneer that it goes through.
+    pub veneer: Option<u64>,
     /// Whether it is the call to `main`.
     pub main: bool,
-    /// The sections it copies or zeroes, with the numbers it passes.
-    pub covers: Vec<Cover>,
-    pub to: Option<u64>,
-    pub from: Option<u64>,
-    pub size: Option<u64>,
-    /// For code elfq can't follow, the sections it may set up.
-    pub may: Vec<usize>,
-    /// For a call, where the events of the code it runs end.
+    /// For a call that the reset handler makes, other than to `main`, that
+    /// neither copies nor zeroes, where the events of the code it runs end,
+    /// for [`helpers`] to read.
     pub span: Option<usize>,
-    /// Where the step begins in the walk's events: at `event`, or for a
-    /// call to a function that copies or zeroes, whose step stands for
-    /// the call, at the call's (see [`helpers`]).
-    pub begins: usize,
+    /// For a copy or zeroing, what it copies or zeroes.
+    pub region: Option<Region>,
     /// For a copy or zeroing in an iteration of a loop over a table of
     /// sections, where the iteration reads its row of the table (see
     /// [`Iteration::row`](crate::arch::startup::Iteration::row)).
     pub table: Option<u64>,
+    /// For code elfq can't follow, the sections it may set up.
+    pub may: Vec<usize>,
 }
 
 impl Step {
-    pub(super) fn new(
+    /// A step with what each kind has, as the list on [`Step`] says, and
+    /// nothing else: the constructors below begin with it.
+    fn new(
         event: usize,
         site: u64,
         does: Does,
         way: Way,
+        function: Option<u64>,
         inside: u64,
         level: u32,
     ) -> Step {
         Step {
             event,
+            begins: event,
             site,
             does,
             way,
-            function: None,
-            veneer: None,
+            function,
             inside,
             level,
+            veneer: None,
             main: false,
-            covers: Vec::new(),
-            to: None,
-            from: None,
-            size: None,
-            may: Vec::new(),
             span: None,
-            begins: event,
+            region: None,
             table: None,
+            may: Vec::new(),
         }
+    }
+
+    /// A step of code that elfq can't follow, which goes `way`, and has
+    /// nothing else: for the unit tests of other files that read only
+    /// what kind of code a step is.
+    #[cfg(test)]
+    pub(super) fn unread_for_tests(way: Way) -> Step {
+        Step::new(0, 0, Does::Unread, way, None, 0, 0)
+    }
+
+    /// The step of `call`, at `event`, which goes `way`: a call, until
+    /// [`Step::set_up`] makes it a copy or zeroing, or
+    /// [`Step::make_unread`] code that elfq can't follow.
+    pub fn call(events: &Events, event: usize, call: &Call, way: Way) -> Step {
+        Step {
+            veneer: events.veneer(event),
+            ..Step::new(
+                event,
+                call.site,
+                Does::Call,
+                way,
+                events.target(event),
+                events.function(event),
+                events.level(event),
+            )
+        }
+    }
+
+    /// The step at `event` that joined pieces of the code at `home` make
+    /// (see `pieces.rs`): the copy or zeroing that `matched` says, by a
+    /// loop or by stores, as `way` says, whose first store is `site`.
+    pub fn of_pieces(event: usize, site: u64, way: Way, home: Home, matched: Match) -> Step {
+        let Home {
+            level, function, ..
+        } = home;
+        Step {
+            region: Some(matched.region),
+            ..Step::new(
+                event,
+                site,
+                matched.does,
+                way,
+                Some(function),
+                function,
+                level,
+            )
+        }
+    }
+
+    /// The step of the loop `l`, at `loop_event`, when elfq can't follow
+    /// it: code that may set up `may`.
+    pub fn unread_loop(events: &Events, loop_event: usize, l: &Loop, may: Vec<usize>) -> Step {
+        let function = events.function(loop_event);
+        Step {
+            may,
+            ..Step::new(
+                loop_event,
+                l.head,
+                Does::Unread,
+                Way::Loop,
+                Some(function),
+                function,
+                events.level(loop_event),
+            )
+        }
+    }
+
+    /// The step of the stop at `event`, where a function that the call at
+    /// `site` runs goes where the walk can't follow, or on past its budget,
+    /// as `way` says: code that may set up `may`.
+    pub fn stop(events: &Events, event: usize, site: u64, way: Way, may: Vec<usize>) -> Step {
+        Step {
+            may,
+            ..Step::new(
+                event,
+                site,
+                Does::Unread,
+                way,
+                Some(events.function(event)),
+                events.caller(event),
+                events.level(event),
+            )
+        }
+    }
+
+    /// The step after the walk's `count` events, where it ends at `end`,
+    /// stopping short, in the code of `function`: code that may set up
+    /// `may`, in the reset handler, at `reset_handler`.
+    fn stopped_short(
+        count: usize,
+        end: End,
+        function: u64,
+        reset_handler: u64,
+        may: Vec<usize>,
+    ) -> Step {
+        Step {
+            may,
+            ..Step::new(
+                count,
+                end.site(),
+                Does::Unread,
+                Way::Stop(end),
+                Some(function),
+                reset_handler,
+                0,
+            )
+        }
+    }
+
+    /// The step after the walk's `count` events of `main`, whose code a
+    /// compiler inlined at `site`, into the code of `inside`.
+    fn inlined_main(count: usize, site: u64, inside: u64) -> Step {
+        Step {
+            main: true,
+            ..Step::new(count, site, Does::Call, Way::Inlined, Some(site), inside, 0)
+        }
+    }
+
+    /// Makes the step the copy or zeroing that `matched` says.
+    pub fn set_up(&mut self, matched: Match) {
+        self.does = matched.does;
+        self.region = Some(matched.region);
+    }
+
+    /// Makes the step code that elfq can't follow, which may set up `may`.
+    pub fn make_unread(&mut self, may: Vec<usize>) {
+        self.does = Does::Unread;
+        self.region = None;
+        self.may = may;
+    }
+
+    /// The sections that the step copies or zeroes, with the numbers it
+    /// passes: none for a step of another kind.
+    pub fn covers(&self) -> &[Cover] {
+        self.region.as_ref().map_or(&[], |region| &region.covers)
     }
 
     /// The function that the step's instruction calls: a call's, or that
@@ -227,7 +387,6 @@ pub(super) fn build(facts: &Facts) -> Vec<Step> {
                 if events.call(event).is_none() {
                     continue;
                 }
-                let inside = events.function(event);
                 let target = events.target(event);
                 let way = match (call.how, target) {
                     (How::Jump, _) => Way::TailCall,
@@ -235,9 +394,7 @@ pub(super) fn build(facts: &Facts) -> Vec<Step> {
                     (How::Supervisor, None) => Way::SupervisorCall,
                     _ => Way::Call,
                 };
-                let mut step = Step::new(event, call.site, Does::Call, way, inside, level);
-                step.function = target;
-                step.veneer = events.veneer(event);
+                let mut step = Step::call(events, event, call, way);
                 if target.is_some() && target == main_function {
                     step.main = true;
                     steps.push(step);
@@ -247,16 +404,13 @@ pub(super) fn build(facts: &Facts) -> Vec<Step> {
                     // no bytes in memory, where a section that an earlier
                     // step set up starts, doesn't set that one up.
                     .filter(|matched| {
-                        matched.size > 0
-                            || !(matched.covers.iter()).all(|cover| ready.contains(&cover.section))
+                        let region = &matched.region;
+                        region.size > 0
+                            || !(region.covers.iter()).all(|cover| ready.contains(&cover.section))
                     })
                 {
-                    step.does = matched.does;
-                    step.to = Some(matched.to);
-                    step.from = matched.from;
-                    step.size = Some(matched.size);
-                    ready.extend(matched.covers.iter().map(|cover| cover.section));
-                    step.covers = matched.covers;
+                    step.set_up(matched);
+                    ready.extend(step.covers().iter().map(|cover| cover.section));
                     steps.push(step);
                     skip_to = events.span(event);
                     called.push(event..skip_to);
@@ -264,20 +418,18 @@ pub(super) fn build(facts: &Facts) -> Vec<Step> {
                     if matches!(call.how, How::Direct | How::Jump) {
                         continue;
                     }
-                    step.does = Does::Unread;
-                    step.may = not_ready(&ready);
+                    step.make_unread(not_ready(&ready));
                     if !step.may.is_empty() {
                         steps.push(step);
                     }
                 } else if !call.followed {
                     // Code the walk didn't go through.
-                    step.does = Does::Unread;
                     step.way = if call.conditional {
                         Way::Conditional
                     } else {
                         Way::Deep
                     };
-                    step.may = not_ready(&ready);
+                    step.make_unread(not_ready(&ready));
                     if !step.may.is_empty() {
                         steps.push(step);
                     }
@@ -315,11 +467,7 @@ pub(super) fn build(facts: &Facts) -> Vec<Step> {
                     may = loop_calls(ram, events, event, l, &ready);
                 }
                 if !may.is_empty() {
-                    let mut step =
-                        Step::new(event, l.head, Does::Unread, Way::Loop, function, level);
-                    step.function = Some(function);
-                    step.may = may;
-                    steps.push(step);
+                    steps.push(Step::unread_loop(events, event, l, may));
                 }
             }
             Event::Stop { site, end, .. } => {
@@ -330,10 +478,7 @@ pub(super) fn build(facts: &Facts) -> Vec<Step> {
                     End::LeavesFile { target, .. } if target == function => Way::Outside(target),
                     end => Way::Stop(end),
                 };
-                let inside = events.caller(event);
-                let mut step = Step::new(event, *site, Does::Unread, way, inside, level);
-                step.function = Some(function);
-                step.may = not_ready(&ready);
+                let step = Step::stop(events, event, *site, way, not_ready(&ready));
                 if !step.may.is_empty() {
                     steps.push(step);
                 }
@@ -357,7 +502,7 @@ pub(super) fn build(facts: &Facts) -> Vec<Step> {
     let skipped = |event: usize| in_loop[event] || called.iter().any(|run| run.contains(&event));
     unread_walked_loops(ram, events, &walked_loops, skipped, &mut steps);
     ready = (steps.iter())
-        .flat_map(|step| step.covers.iter().map(|cover| cover.section))
+        .flat_map(|step| step.covers().iter().map(|cover| cover.section))
         .collect();
     let event = events.list.len();
     match end {
@@ -369,26 +514,27 @@ pub(super) fn build(facts: &Facts) -> Vec<Step> {
                 .item(site)
                 .filter(|&index| firmware.binary.items[index].kind == ItemKind::Function)
                 .map_or(reset.address, |index| firmware.binary.items[index].address);
-            let mut step = Step::new(event, site, Does::Unread, Way::Stop(end), reset.address, 0);
-            step.function = Some(function);
-            step.may = not_ready(&ready);
-            steps.push(step);
+            let may = not_ready(&ready);
+            steps.push(Step::stopped_short(
+                event,
+                end,
+                function,
+                reset.address,
+                may,
+            ));
         }
         End::Main(site) if main.is_some_and(|main| main.from == MainFrom::DebugInfo) => {
             let inside = firmware
                 .item(site)
                 .map_or(reset.address, |index| firmware.binary.items[index].address);
-            let mut step = Step::new(event, site, Does::Call, Way::Inlined, inside, 0);
-            step.function = Some(site);
-            step.main = true;
-            steps.push(step);
+            steps.push(Step::inlined_main(event, site, inside));
         }
         _ => {}
     }
     // Code elfq can't follow may set up only what no earlier step does.
     let mut first: HashMap<usize, usize> = HashMap::new();
     for step in &steps {
-        for cover in &step.covers {
+        for cover in step.covers() {
             first.entry(cover.section).or_insert(step.event);
         }
     }
@@ -466,7 +612,7 @@ pub(super) fn build(facts: &Facts) -> Vec<Step> {
 /// 3. and makes no call in that code but that step's own, if it is one.
 ///
 /// The call goes, and the step takes its site, the function that makes
-/// it, its level and its span, and is by the function it calls, but:
+/// it and its level, and is by the function it calls, but:
 ///
 /// 4. a step that a call to code in the function that makes it does, as
 ///    Pico SDK's `data_cpy` is, which isn't a function of its own, keeps
@@ -517,7 +663,6 @@ fn helpers(firmware: &Firmware, events: &Events, steps: Vec<Step>) -> Vec<Step> 
                 site: call.site,
                 inside: call.inside,
                 level: call.level,
-                span: call.span,
                 begins: call.event,
                 ..step
             }),
@@ -528,7 +673,6 @@ fn helpers(firmware: &Firmware, events: &Events, steps: Vec<Step>) -> Vec<Step> 
                 veneer: call.veneer,
                 inside: call.inside,
                 level: call.level,
-                span: call.span,
                 begins: call.event,
                 ..step
             }),

@@ -189,10 +189,12 @@ impl<'a> RamSections<'a> {
         }
         Some(Match {
             does,
-            to,
-            from,
-            size,
-            covers,
+            region: Region {
+                to,
+                from,
+                size,
+                covers,
+            },
         })
     }
 
@@ -253,9 +255,16 @@ impl<'a> RamSections<'a> {
     }
 }
 
-/// What a call does to the sections, as [`RamSections::match_call`] tells.
+/// What code does to the sections, as [`RamSections::match_call`] and
+/// [`RamSections::matched`] tell: a copy or a zeroing, of a region.
 pub(super) struct Match {
     pub does: Does,
+    pub region: Region,
+}
+
+/// What a copy or zeroing copies or zeroes: `size` bytes at `to`, for a
+/// copy from `from`, and the sections that start in them.
+pub(super) struct Region {
     pub to: u64,
     pub from: Option<u64>,
     pub size: u64,
@@ -283,7 +292,7 @@ mod tests {
         let Some(found) = ram.match_call(&[Some(to), from, Some(size), None]) else {
             return Vec::new();
         };
-        (found.covers.iter())
+        (found.region.covers.iter())
             .map(|cover| {
                 let from = cover.from.map(|from| format!(" from {from:#x}"));
                 let name = ram.name(cover.section);

@@ -156,7 +156,7 @@ pub(super) fn steps_to(binary: &Binary, list: &[Event], end: End) -> Vec<String>
     };
     (build(&facts).iter())
         .map(|step| {
-            let covers: Vec<String> = (step.covers.iter())
+            let covers: Vec<String> = (step.covers().iter())
                 .map(|cover| format!("{} {}", ram.name(cover.section), cover.bytes))
                 .chain(
                     step.may
@@ -167,8 +167,8 @@ pub(super) fn steps_to(binary: &Binary, list: &[Event], end: End) -> Vec<String>
             format!(
                 "{} {:#x} {} by a {}: {}",
                 step.does.word(),
-                step.to.unwrap_or_default(),
-                step.size.unwrap_or_default(),
+                step.region.as_ref().map_or(0, |region| region.to),
+                step.region.as_ref().map_or(0, |region| region.size),
                 step.way.field(),
                 covers.join(", ")
             )

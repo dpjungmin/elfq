@@ -65,11 +65,8 @@ pub(super) fn unread_walked_loops(
         // 2.
         let covered = |at: u32, size: u32| {
             let (at, size) = (u64::from(at), u64::from(size.max(1)));
-            steps.iter().any(|step| {
-                matches!(step.does, Does::Copy | Does::Zero)
-                    && (step.to.zip(step.size))
-                        .is_some_and(|(to, bytes)| to <= at && at + size <= to + bytes)
-            })
+            (steps.iter().filter_map(|step| step.region.as_ref()))
+                .any(|region| region.to <= at && at + size <= region.to + region.size)
         };
         let stores: Vec<&Store> = (l.events.clone())
             .filter(|&event| !skipped(event))
@@ -91,11 +88,11 @@ pub(super) fn unread_walked_loops(
         let part = |step: &Step| {
             l.events.contains(&step.event)
                 && matches!(step.does, Does::Copy | Does::Zero)
-                && (step.covers.iter()).any(|cover| may.contains(&cover.section))
+                && (step.covers().iter()).any(|cover| may.contains(&cover.section))
         };
         let parts: Vec<usize> = (steps.iter())
             .filter(|step| part(step))
-            .flat_map(|step| step.covers.iter().map(|cover| cover.section))
+            .flat_map(|step| step.covers().iter().map(|cover| cover.section))
             .collect();
         steps.retain(|step| !part(step));
         for section in parts {
@@ -104,13 +101,8 @@ pub(super) fn unread_walked_loops(
             }
         }
         may.sort_by_key(|&section| ram.section(section).address);
-        let level = events.level(loop_event);
-        let function = events.function(loop_event);
-        let mut step = Step::new(loop_event, l.head, Does::Unread, Way::Loop, function, level);
-        step.function = Some(function);
-        step.may = may;
         let at = steps.partition_point(|step| step.event <= loop_event);
-        steps.insert(at, step);
+        steps.insert(at, Step::unread_loop(events, loop_event, l, may));
         made_unread.push(l.events.clone());
     }
 }

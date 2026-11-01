@@ -117,7 +117,7 @@ fn lead(answer: &Answer) -> String {
     let mut ordered = ram.sections.clone();
     let first = |section: usize| {
         (answer.steps.iter())
-            .position(|step| step.covers.iter().any(|cover| cover.section == section))
+            .position(|step| step.covers().iter().any(|cover| cover.section == section))
             .unwrap_or(answer.steps.len())
     };
     ordered.sort_by_key(|&section| first(section));
@@ -126,7 +126,7 @@ fn lead(answer: &Answer) -> String {
     let parts = |from: usize, to: usize| {
         let by = |section: usize| {
             (answer.steps.iter())
-                .find(|step| step.covers.iter().any(|cover| cover.section == section))
+                .find(|step| step.covers().iter().any(|cover| cover.section == section))
                 .is_some_and(|step| (from..to).contains(&step.event))
         };
         let mut parts = Vec::new();
@@ -378,7 +378,7 @@ fn row(answer: &Answer, index: usize, step: &Step) -> Vec<String> {
     };
     let what = match step.does {
         Does::Copy | Does::Zero => {
-            let names: Vec<&str> = (step.covers.iter())
+            let names: Vec<&str> = (step.covers().iter())
                 .map(|cover| answer.facts.ram.name(cover.section))
                 .collect();
             let names = names_text(&names, answer.all);
@@ -459,12 +459,13 @@ fn row(answer: &Answer, index: usize, step: &Step) -> Vec<String> {
         },
     };
     let hex = |value: Option<u64>| value.map_or(String::new(), |value| format!("{value:#x}"));
+    let region = step.region.as_ref();
     vec![
         number(index).to_string(),
         step.does.word().to_string(),
-        hex(step.from),
-        hex(step.to),
-        step.size.map_or(String::new(), |size| size.to_string()),
+        hex(region.and_then(|region| region.from)),
+        hex(region.map(|region| region.to)),
+        region.map_or(String::new(), |region| region.size.to_string()),
         format!("{:#x}", step.site),
         what,
     ]
@@ -758,7 +759,7 @@ mod tests {
 
     #[test]
     fn unread_steps_say_what_kind_of_code_each_is() {
-        let step = |way| Step::new(0, 0, Does::Unread, way, 0, 0);
+        let step = Step::unread_for_tests;
         let branch = |site, register| {
             step(Way::Stop(End::Branches {
                 site,
