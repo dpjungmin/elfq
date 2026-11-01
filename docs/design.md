@@ -1419,7 +1419,7 @@ table (`vector_table::find`).
    when the table gives no reset handler in a function. It builds the
    graph, which tells where a call goes past a veneer and what each
    function calls (`Firmware`), and lists the load images and the
-   sections without contents (`steps::Memory`).
+   sections without contents (`ram_sections::Memory`).
    `start::find_main` takes `main` from its symbol, from where DWARF
    says a compiler inlined it, or in a stripped file from what the reset
    handler calls last, which a first walk that follows no calls finds

@@ -22,11 +22,17 @@
 //! docs/design.md's "Startup, end to end" follows one run through this
 //! module, `arch::startup`, `arch::thumb::startup` and `binary::startup`.
 
+mod events;
+#[cfg(test)]
+mod fixtures;
 mod json;
+mod pieces;
 mod problems;
+mod ram_sections;
 mod start;
 mod steps;
 mod text;
+mod unread;
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -42,9 +48,11 @@ use crate::arch::startup::{Code, DEPTH, End, Walk};
 use crate::binary::{Binary, ElfHeader, ItemKind};
 use crate::cli::Format;
 use crate::graph::{Graph, Node, VeneerTarget, Veneers};
+use events::Events;
 use problems::Judged;
+use ram_sections::Memory;
 use start::{Main, Reset};
-use steps::{Events, Memory, Step};
+use steps::Step;
 
 /// What startup refuses to read, and why: the end of each refusal.
 const READS: &str = "startup reads the reset code of Cortex-M firmware";

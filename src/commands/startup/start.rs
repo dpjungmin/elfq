@@ -9,7 +9,8 @@ use std::path::Path;
 use anyhow::{Result, bail};
 
 use super::Firmware;
-use super::steps::{Events, Memory};
+use super::events::Events;
+use super::ram_sections::Memory;
 use crate::arch::startup::{Call, Code, DEPTH, End, Event, How, Start, Walk};
 use crate::binary::{Binary, ItemKind};
 use crate::debuginfo;

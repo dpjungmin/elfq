@@ -6,8 +6,9 @@ use std::io::Write;
 use anyhow::Result;
 
 use super::problems::{Kind, Problem, RESET, Status};
+use super::ram_sections::Memory;
 use super::start::MainFrom;
-use super::steps::{Does, Memory, Step, Way};
+use super::steps::{Does, Step, Way};
 use super::{Answer, Firmware};
 use crate::arch::startup::{End, Event, Through};
 use crate::commands::text::{self as house, names_text, plural, shell_quote};

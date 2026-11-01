@@ -14,8 +14,10 @@ use std::collections::{HashMap, HashSet};
 use object::SectionKind;
 
 use super::Firmware;
+use super::events::Events;
+use super::ram_sections::Memory;
 use super::start::{Main, Reset};
-use super::steps::{Does, Events, Memory, Step};
+use super::steps::{Does, Step};
 use super::text;
 use crate::arch::startup::{End, Event};
 use crate::binary::ItemKind;
