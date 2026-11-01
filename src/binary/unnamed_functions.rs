@@ -64,7 +64,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{Binary, Item, ItemKind, Section, Source, made_names};
+use super::{AddressRange, Binary, Item, ItemKind, Section, Source, made_names};
 use crate::arch::{CodeReference, CodeReferenceKind, Ending, InstructionSet};
 
 /// What starts at an address in code.
@@ -74,6 +74,15 @@ enum Start {
     /// Constants that code loads, as when a linker script puts `.rodata` in
     /// `.text`. They end the function before them.
     Constants,
+}
+
+/// The addresses in a file's code where elfq knows that a function or
+/// constants start, with the file, which says where each one ends.
+#[derive(Clone)]
+struct KnownStarts<'a> {
+    binary: &'a Binary,
+    /// What starts at each address.
+    at: BTreeMap<u64, Start>,
 }
 
 /// How this module reads code: as Thumb, since only Thumb firmware has its
@@ -99,26 +108,32 @@ pub(super) fn add(binary: &Binary, items: &mut Vec<Item>) {
     known.extend(arrays.flat_map(|section| {
         thumb_addresses(binary, section.address, section.address + section.size)
     }));
-    let mut seeds: BTreeMap<u64, Start> = known
-        .into_iter()
-        .map(|address| (address, Start::Function))
-        .collect();
+    let mut seeds = KnownStarts {
+        binary,
+        at: known
+            .into_iter()
+            .map(|address| (address, Start::Function))
+            .collect(),
+    };
     let stored = stored_addresses(binary);
     // Code followed before the constants after it were known may have read
     // them as code, so once there are new constants, it is followed again.
     let starts = loop {
-        let (starts, loaded) = follow(binary, &seeds, &stored);
-        let constants: Vec<u64> = loaded
+        let Followed {
+            starts,
+            maybe_constants,
+        } = follow(&seeds, &stored);
+        let constants: Vec<u64> = maybe_constants
             .into_iter()
             .filter(|&address| {
-                !starts.contains_key(&address)
-                    && splits_cleanly(binary, &starts, address, Start::Constants)
+                !starts.at.contains_key(&address)
+                    && starts.splits_cleanly(address, Start::Constants)
             })
             .collect();
         if constants.is_empty() {
             break starts;
         }
-        seeds.extend(
+        seeds.at.extend(
             constants
                 .into_iter()
                 .map(|address| (address, Start::Constants)),
@@ -128,7 +143,7 @@ pub(super) fn add(binary: &Binary, items: &mut Vec<Item>) {
     // Each start comes once, so a function added below never matches
     // another: only the items there before need searching.
     let known = items.len();
-    for (start, end) in functions(binary, &starts) {
+    for AddressRange { start, end } in starts.ranges(Start::Function) {
         // Without the padding that aligns the next function.
         let size = binary
             .bytes(start, end - start)
@@ -157,87 +172,80 @@ pub(super) fn add(binary: &Binary, items: &mut Vec<Item>) {
     }
 }
 
-/// Follows the code from `seeds` until it leads nowhere new, and returns the
-/// starts it knows then, with the addresses in code that it loads, where
-/// there may be constants.
-fn follow(
-    binary: &Binary,
-    seeds: &BTreeMap<u64, Start>,
-    stored: &BTreeSet<u64>,
-) -> (BTreeMap<u64, Start>, BTreeSet<u64>) {
+/// What following the code finds (see [`follow`]).
+struct Followed<'a> {
+    /// The starts that elfq knows once the code leads nowhere new.
+    starts: KnownStarts<'a>,
+    /// The addresses in code that the code loads from outside the function
+    /// that loads them, where constants may start.
+    maybe_constants: BTreeSet<u64>,
+}
+
+/// Follows the code from `seeds` until it leads nowhere new.
+fn follow<'a>(seeds: &KnownStarts<'a>, stored: &BTreeSet<u64>) -> Followed<'a> {
+    let binary = seeds.binary;
     let mut starts = seeds.clone();
     // Thumb addresses that may be numbers instead: those stored in data,
     // and those the code loads.
-    let mut numbers = stored.clone();
-    let mut constants = BTreeSet::new();
+    let mut maybe_functions = stored.clone();
+    let mut maybe_constants = BTreeSet::new();
     // A function's code is scanned again only when a new start ends it
     // sooner. Only a new function, and the one just before it, can end
     // somewhere new, so only they are looked at again.
     let mut scanned = BTreeSet::new();
-    let mut to_scan: Vec<u64> = functions(binary, &starts).map(|(start, _)| start).collect();
+    let mut to_scan: Vec<u64> = (starts.ranges(Start::Function))
+        .map(|function| function.start)
+        .collect();
     loop {
-        let mut found = BTreeSet::new();
+        // Where the code calls or carries on in another function.
+        let mut led_to = BTreeSet::new();
         for start in to_scan.drain(..) {
-            let Some(end) = end(binary, &starts, start) else {
+            let Some(end) = starts.end(start) else {
                 continue;
             };
             if scanned.insert((start, end)) {
                 let leads = leads(binary, start, end);
-                found.extend(leads.functions);
-                numbers.extend(leads.thumb_addresses);
-                constants.extend(leads.constants);
+                led_to.extend(leads.functions);
+                maybe_functions.extend(leads.thumb_addresses);
+                maybe_constants.extend(leads.constants);
             }
         }
-        found.retain(|address| !starts.contains_key(address));
-        // They are checked against the functions found so far, so only once
-        // the code leads nowhere new. So are tables among constants in code.
-        if found.is_empty() {
-            let tables = starts
-                .iter()
-                .filter(|&(_, &kind)| kind == Start::Constants)
-                .filter_map(|(&start, _)| Some((start, end(binary, &starts, start)?)))
-                .flat_map(|(start, end)| thumb_addresses(binary, start, end));
-            found = numbers
+        led_to.retain(|address| !starts.at.contains_key(address));
+        // The Thumb addresses that may be numbers are checked against the
+        // functions found so far, so only once the code leads nowhere new.
+        // So are those in tables among constants in code.
+        let new_functions: BTreeSet<u64> = if led_to.is_empty() {
+            let tables = (starts.ranges(Start::Constants))
+                .flat_map(|constants| thumb_addresses(binary, constants.start, constants.end));
+            maybe_functions
                 .iter()
                 .copied()
                 .chain(tables)
                 .filter(|&address| {
-                    !starts.contains_key(&address)
-                        && splits_cleanly(binary, &starts, address, Start::Function)
+                    !starts.at.contains_key(&address)
+                        && starts.splits_cleanly(address, Start::Function)
                 })
-                .collect();
+                .collect()
+        } else {
+            led_to
+        };
+        if new_functions.is_empty() {
+            return Followed {
+                starts,
+                maybe_constants,
+            };
         }
-        if found.is_empty() {
-            return (starts, constants);
-        }
-        starts.extend(found.iter().map(|&address| (address, Start::Function)));
-        for address in found {
+        let functions = new_functions
+            .iter()
+            .map(|&address| (address, Start::Function));
+        starts.at.extend(functions);
+        for address in new_functions {
             to_scan.push(address);
-            if let Some((&before, Start::Function)) = starts.range(..address).next_back() {
+            if let Some((&before, Start::Function)) = starts.at.range(..address).next_back() {
                 to_scan.push(before);
             }
         }
     }
-}
-
-/// Each function's start and end.
-fn functions<'a>(
-    binary: &'a Binary,
-    starts: &'a BTreeMap<u64, Start>,
-) -> impl Iterator<Item = (u64, u64)> + 'a {
-    starts
-        .iter()
-        .filter(|&(_, &kind)| kind == Start::Function)
-        .filter_map(|(&start, _)| Some((start, end(binary, starts, start)?)))
-}
-
-/// Where what starts at `start` ends: at the next start, or the end of its
-/// section.
-fn end(binary: &Binary, starts: &BTreeMap<u64, Start>, start: u64) -> Option<u64> {
-    let section = &binary.sections[binary.code_section_at(start)?];
-    let end = section.address + section.size;
-    let next = starts.range(start + 1..).next();
-    Some(next.map_or(end, |(&next, _)| next.min(end)))
 }
 
 /// What the code of one function leads to.
@@ -310,129 +318,149 @@ fn code_start(binary: &Binary, section: &Section) -> u64 {
     }
 }
 
-/// Whether a function, or constants, can start at `address` without
-/// cutting the code before it in two, as far as `starts` tell. Nothing
-/// starts at `address` yet. The code before it runs from the last start
-/// before it in the section's code; the code after it runs to the next
-/// start, or the end of the section. They can start there when:
-///
-/// 1. `address` is in a code section.
-/// 2. It isn't before the section's code, which starts after the vector
-///    table when the table is in the section.
-/// 3. If something starts before `address`, it is a function: inside
-///    constants, nothing is cut.
-/// 4. Constants need a function before them: they matter only where they
-///    end one.
-/// 5. If something starts before `address`, its code doesn't run on into
-///    `address` (see [`Ending`]), and before constants it doesn't end with
-///    a call either. Before the first start in a section there may be
-///    data, so this isn't checked there.
-///
-/// For constants, also:
-///
-/// 6. Scanning the code before them alone finds exactly what scanning on
-///    to the next start finds before `address`, such as each constant it
-///    loads.
-/// 7. No jump in the code before them, not even a `b.w`, lands on
-///    `address` or after it, short of the next start.
-///
-/// For a function, with the code after it cut where the padding before the
-/// next start begins, also:
-///
-/// 8. `address` is before that padding, and the code there doesn't start
-///    with padding: a function starts after the padding before it.
-/// 9. Scanning the code before `address` and the code after it apart finds
-///    exactly what scanning them together finds: no instruction spans
-///    `address`, and each side still finds the constants it loads.
-/// 10. No jump before `address` lands on it, except a `TailJump` such as a
-///     `b.w`, which may be a tail call; and none lands after it, short of
-///     that padding.
-/// 11. No jump after `address` lands in the code before it, except on the
-///     start of the function there, if there is one.
-fn splits_cleanly(
-    binary: &Binary,
-    starts: &BTreeMap<u64, Start>,
-    address: u64,
-    kind: Start,
-) -> bool {
-    // 1.
-    let Some(index) = binary.code_section_at(address) else {
-        return false;
-    };
-    let section = &binary.sections[index];
-    let section_end = section.address + section.size;
-    let code_start = code_start(binary, section);
-    // 2.
-    if address < code_start {
-        return false;
+impl KnownStarts<'_> {
+    /// From each start of `kind`, a function or constants, to where what
+    /// starts there ends.
+    fn ranges(&self, kind: Start) -> impl Iterator<Item = AddressRange> + '_ {
+        (self.at.iter())
+            .filter(move |&(_, &what)| what == kind)
+            .filter_map(|(&start, _)| {
+                let end = self.end(start)?;
+                Some(AddressRange { start, end })
+            })
     }
-    let before = starts.range(code_start..address).next_back();
-    let start = match (before, kind) {
-        // 3.
-        (Some((_, Start::Constants)), _) => return false,
-        (Some((&start, _)), _) => start,
-        // 4.
-        (None, Start::Constants) => return false,
-        (None, Start::Function) => code_start,
-    };
-    let end = starts.range(address..section_end).next();
-    let end = end.map_or(section_end, |(&end, _)| end);
-    let bytes = |from: u64, to: u64| binary.bytes(from, to - from).unwrap_or_default();
-    // Each instruction on its own: when code that ends with a call to a
-    // function that never returns runs on into the next function, as far
-    // as elfq can tell, an address it left in a register would make the
-    // next function's references differ when scanned with it.
-    let scan = |from: u64, to: u64| thumb(binary).scan_instructions(bytes(from, to), from);
-    // 5.
-    if before.is_some() {
-        match thumb(binary).ending(bytes(start, address), start) {
-            Ending::RunsOn => return false,
-            Ending::Call if kind == Start::Constants => return false,
-            _ => {}
-        }
+
+    /// Where what starts at `start` ends: at the next start, or the end of
+    /// its section.
+    fn end(&self, start: u64) -> Option<u64> {
+        let section = &self.binary.sections[self.binary.code_section_at(start)?];
+        let end = section.address + section.size;
+        let next = self.at.range(start + 1..).next();
+        Some(next.map_or(end, |(&next, _)| next.min(end)))
     }
-    let jumps_into = |reference: &CodeReference, from: u64, to: u64| match reference.kind {
-        CodeReferenceKind::Jump(target) | CodeReferenceKind::TailJump(target) => {
-            (from..to).contains(&target) && !starts.contains_key(&target)
+
+    /// Whether a function, or constants, can start at `address` without
+    /// cutting the code before it in two, as far as the known starts tell.
+    /// Nothing starts at `address` yet. The code before it runs from the
+    /// last start before it in the section's code; the code after it runs
+    /// to the next start, or the end of the section. They can start there
+    /// when:
+    ///
+    /// 1. `address` is in a code section.
+    /// 2. It isn't before the section's code, which starts after the
+    ///    vector table when the table is in the section.
+    /// 3. If something starts before `address`, it is a function: inside
+    ///    constants, nothing is cut.
+    /// 4. Constants need a function before them: they matter only where
+    ///    they end one.
+    /// 5. If something starts before `address`, its code doesn't run on
+    ///    into `address` (see [`Ending`]), and before constants it doesn't
+    ///    end with a call either. Before the first start in a section
+    ///    there may be data, so this isn't checked there.
+    ///
+    /// For constants, also:
+    ///
+    /// 6. Scanning the code before them alone finds exactly what scanning
+    ///    on to the next start finds before `address`, such as each
+    ///    constant it loads.
+    /// 7. No jump in the code before them, not even a `b.w`, lands on
+    ///    `address` or after it, short of the next start.
+    ///
+    /// For a function, with the code after it cut where the padding before
+    /// the next start begins, also:
+    ///
+    /// 8. `address` is before that padding, and the code there doesn't
+    ///    start with padding: a function starts after the padding before
+    ///    it.
+    /// 9. Scanning the code before `address` and the code after it apart
+    ///    finds exactly what scanning them together finds: no instruction
+    ///    spans `address`, and each side still finds the constants it
+    ///    loads.
+    /// 10. No jump before `address` lands on it, except a `TailJump` such
+    ///     as a `b.w`, which may be a tail call; and none lands after it,
+    ///     short of that padding.
+    /// 11. No jump after `address` lands in the code before it, except on
+    ///     the start of the function there, if there is one.
+    fn splits_cleanly(&self, address: u64, kind: Start) -> bool {
+        // 1.
+        let Some(index) = self.binary.code_section_at(address) else {
+            return false;
+        };
+        let section = &self.binary.sections[index];
+        let section_end = section.address + section.size;
+        let code_start = code_start(self.binary, section);
+        // 2.
+        if address < code_start {
+            return false;
         }
-        _ => false,
-    };
-    if kind == Start::Constants {
+        let before = self.at.range(code_start..address).next_back();
+        let start = match (before, kind) {
+            // 3.
+            (Some((_, Start::Constants)), _) => return false,
+            (Some((&start, _)), _) => start,
+            // 4.
+            (None, Start::Constants) => return false,
+            (None, Start::Function) => code_start,
+        };
+        let end = self.at.range(address..section_end).next();
+        let end = end.map_or(section_end, |(&end, _)| end);
+        let bytes = |from: u64, to: u64| self.binary.bytes(from, to - from).unwrap_or_default();
+        // Each instruction on its own: when code that ends with a call to a
+        // function that never returns runs on into the next function, as far
+        // as elfq can tell, an address it left in a register would make the
+        // next function's references differ when scanned with it.
+        let scan = |from: u64, to: u64| thumb(self.binary).scan_instructions(bytes(from, to), from);
+        // 5.
+        if before.is_some() {
+            match thumb(self.binary).ending(bytes(start, address), start) {
+                Ending::RunsOn => return false,
+                Ending::Call if kind == Start::Constants => return false,
+                _ => {}
+            }
+        }
+        let jumps_into = |reference: &CodeReference, from: u64, to: u64| match reference.kind {
+            CodeReferenceKind::Jump(target) | CodeReferenceKind::TailJump(target) => {
+                (from..to).contains(&target) && !self.at.contains_key(&target)
+            }
+            _ => false,
+        };
+        if kind == Start::Constants {
+            let whole = scan(start, end);
+            let alone = scan(start, address);
+            let before = &whole[..alone.len().min(whole.len())];
+            // 6.
+            return before == alone
+                && whole
+                    .get(alone.len())
+                    .is_none_or(|next| next.site >= address)
+                // 7.
+                && !alone
+                    .iter()
+                    .any(|reference| jumps_into(reference, address, end));
+        }
+        // Without the padding after the code, which can decode as a jump.
+        let end = start + thumb(self.binary).code_size(bytes(start, end), start);
+        // 8.
+        if address >= end || thumb(self.binary).leading_padding(bytes(address, end)) > 0 {
+            return false;
+        }
+        // 9.
         let whole = scan(start, end);
-        let alone = scan(start, address);
-        let before = &whole[..alone.len().min(whole.len())];
-        // 6.
-        return before == alone
-            && whole
-                .get(alone.len())
-                .is_none_or(|next| next.site >= address)
-            // 7.
-            && !alone
-                .iter()
-                .any(|reference| jumps_into(reference, address, end));
+        let mut halves = scan(start, address);
+        halves.extend(scan(address, end));
+        let crosses = whole.iter().any(|reference| {
+            if reference.site < address {
+                // 10. A `b.w` from before may be a tail call to a function
+                // there, but other jumps to it stay inside one function.
+                reference.kind == CodeReferenceKind::Jump(address)
+                    || jumps_into(reference, address + 1, end)
+            } else {
+                // 11.
+                jumps_into(reference, start, address)
+            }
+        });
+        whole == halves && !crosses
     }
-    // Without the padding after the code, which can decode as a jump.
-    let end = start + thumb(binary).code_size(bytes(start, end), start);
-    // 8.
-    if address >= end || thumb(binary).leading_padding(bytes(address, end)) > 0 {
-        return false;
-    }
-    // 9.
-    let whole = scan(start, end);
-    let mut halves = scan(start, address);
-    halves.extend(scan(address, end));
-    let crosses = whole.iter().any(|reference| {
-        if reference.site < address {
-            // 10. A `b.w` from before may be a tail call to a function
-            // there, but other jumps to it stay inside one function.
-            reference.kind == CodeReferenceKind::Jump(address)
-                || jumps_into(reference, address + 1, end)
-        } else {
-            // 11.
-            jumps_into(reference, start, address)
-        }
-    });
-    whole == halves && !crosses
 }
 
 #[cfg(test)]
