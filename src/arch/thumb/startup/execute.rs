@@ -13,7 +13,7 @@ use crate::arch::thumb::{ARGUMENTS, PC, SP};
 
 use super::Walker;
 use super::calls::results;
-use super::walk_state::{Compare, Flags, Known, set_unknown};
+use super::walk_state::{Compare, Flags, Known};
 
 impl Walker<'_> {
     /// Changes `known` as the instruction at `site` does, other than where
@@ -47,7 +47,7 @@ impl Walker<'_> {
             (true, false) => self.flags(known, site, effect),
         };
         if conditional {
-            set_unknown(known, effect.writes);
+            known.forget_registers(effect.writes);
             known.flags = flags;
             return;
         }
@@ -93,7 +93,7 @@ impl Walker<'_> {
                 pushed.push((at, None));
             }
         }
-        set_unknown(known, effect.writes);
+        known.forget_registers(effect.writes);
         match (effect.operation, sp) {
             (Operation::Push { size, .. }, Some(sp)) => {
                 let memory = Rc::make_mut(&mut known.memory);

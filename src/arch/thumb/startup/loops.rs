@@ -3,24 +3,20 @@
 //! ([`Walker::out_of_line_body`]), whether its branch back goes back
 //! ([`Walker::goes_back`]), and what the walk knows after the loop
 //! ([`Walker::close_loop`], for a [`FoundLoop`]), with `count.rs` and
-//! `each_iteration.rs`. Also
-//! where a call goes to a loop's code that a function finder took for a
-//! function ([`Walker::went_through`] and [`Walker::runs_into`]).
-
-use std::rc::Rc;
+//! `each_iteration.rs`. Also where a call goes to a loop's code that a
+//! function finder took for a function ([`Walker::went_through`] and
+//! [`Walker::runs_into`]).
 
 use crate::arch::startup::{End, Event, Loop, LoopStore, Runs};
 use crate::arch::thumb::SP;
 use crate::arch::thumb::decode::{Flow, Operation, When};
 
 use super::calls::Changes;
-use super::count::{Counted, forget_stored};
+use super::count::Counted;
 use super::each_iteration::Walked;
 use super::each_iteration::knows_sources;
 use super::execute::holds;
-use super::walk_state::{
-    Flags, Known, Visit, forget_changes, forget_words, set_unknown, stored_since,
-};
+use super::walk_state::{Known, Visit, stored_since};
 use super::{
     Branch, Finish, Frame, MOST_WALKED_ITERATIONS, NESTING, RUNS_INTO, Run, Step, Walker,
     decode_at, straight_line,
@@ -140,17 +136,18 @@ impl Walker<'_> {
         let first = std::mem::replace(
             &mut run.known,
             Known {
-                forks: before.forks,
+                forks: before.known.forks,
                 ..known
             },
         );
         // What code that the iterations don't follow, as a call, stored the
         // first time through the code.
         if stores.is_none() {
-            forget_words(&mut run.known, stored_since(&first.memory, &before.memory));
+            let stored = stored_since(&first.memory, &before.known.memory);
+            run.known.forget_words(stored);
         }
         if !every {
-            forget_stored(&mut run.known, stores.as_deref(), before);
+            run.known.forget_stored(stores.as_deref(), before);
         }
         self.forget_row_loads(frame, found, stores.as_deref());
         let runs = Runs::Counted { iterations, stores };
@@ -166,19 +163,19 @@ impl Walker<'_> {
         frame: Frame,
         found: &FoundLoop,
     ) -> (Runs, Option<u64>) {
-        let before = found.before;
-        forget_changes(&mut run.known, &before.registers, &before.memory);
+        let before = &found.before.known;
+        (run.known).forget_changes_since(&before.registers, &before.memory);
         let Changes {
             registers,
             stores,
             results,
         } = self.loop_writes(found.head, found.back);
-        set_unknown(&mut run.known, registers & !(1 << SP));
+        run.known.forget_registers(registers & !(1 << SP));
         run.known.results |= results;
-        if found.stopped.is_some() && stores && run.known.memory.values().any(Option::is_some) {
-            (Rc::make_mut(&mut run.known.memory).values_mut()).for_each(|word| *word = None);
+        if found.stopped.is_some() && stores {
+            run.known.forget_all_words();
         }
-        run.known.flags = Flags::default();
+        run.known.forget_flags();
         self.forget_row_loads(frame, found, None);
         let runs = Runs::Uncounted {
             stopped: found.stopped,
@@ -373,7 +370,7 @@ pub(super) struct FoundLoop<'v> {
 /// what the last one leaves.
 fn leave_walked(run: &mut Run, found: &FoundLoop, walked: Walked) -> (Runs, Option<u64>) {
     run.known = Known {
-        forks: found.before.forks,
+        forks: found.before.known.forks,
         ..walked.known
     };
     (Runs::EachIteration(walked.iterations), Some(walked.exit))

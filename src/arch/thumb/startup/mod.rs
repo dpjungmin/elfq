@@ -47,7 +47,6 @@ mod walk_state;
 
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
-use std::rc::Rc;
 
 use object::Endianness;
 
@@ -927,14 +926,9 @@ impl Run {
     /// What the walk knows now, as it would be at an instruction it got to.
     fn visit(&self, events: usize) -> Visit {
         Visit {
-            registers: self.known.registers,
-            memory: Rc::clone(&self.known.memory),
-            sources: self.known.sources,
-            left: self.known.left,
-            results: self.known.results,
+            known: self.known.snapshot(),
             events,
             order: self.order.len(),
-            forks: self.known.forks,
         }
     }
 

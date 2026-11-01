@@ -9,7 +9,7 @@ use crate::arch::startup::{Event, How, Iteration, LoopStore, Source, Store};
 use crate::arch::thumb::PC;
 use crate::arch::thumb::decode::{Effect, Operation, Registers, each};
 
-use super::count::{Mode, first_iteration, line_through};
+use super::count::{Mode, line_through};
 use super::loops::FoundLoop;
 use super::walk_state::{Budget, Known, Mark};
 use super::{Frame, Run, WALK_EACH_BUDGET, WALK_EACH_COUNT_BUDGET, Walker};
@@ -113,8 +113,8 @@ impl Walker<'_> {
     fn walk_iterations(&mut self, frame: Frame, found: &FoundLoop, count: u32) -> Option<Walked> {
         let FoundLoop { head, before, .. } = *found;
         let mut known = Known {
-            sources: before.sources,
-            ..first_iteration(before)
+            sources: before.known.sources,
+            ..before.known.first_iteration()
         };
         let mut iterations: Vec<Iteration> = Vec::new();
         let mut loads: Vec<Vec<u32>> = Vec::new();

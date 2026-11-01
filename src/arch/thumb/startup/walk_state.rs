@@ -1,16 +1,16 @@
 //! What the walk knows on one way through the code: the numbers in the
-//! registers, the condition flags and the words in memory that it can
-//! tell ([`Known`]), what it knew when it first got to an instruction
-//! ([`Visit`]), and the branches whose condition it couldn't tell, which
-//! it may go back to ([`Alternative`]). Also how many instructions it may
-//! still go through ([`Budget`]), and how a walk that may be dropped puts
-//! back what it changed in the walker ([`Mark`],
+//! registers, the condition flags and the words in memory that it can tell,
+//! and how it forgets them ([`Known`]); what it knew when it first got to
+//! an instruction ([`Visit`]); and the branches whose condition it couldn't
+//! tell, which it may go back to ([`Alternative`]). Also how many
+//! instructions it may still go through ([`Budget`]), and how a walk that
+//! may be dropped puts back what it changed in the walker ([`Mark`],
 //! [`Walker::with_budget`]).
 
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use crate::arch::startup::{Event, Source};
+use crate::arch::startup::{Event, LoopStore, Source};
 use crate::arch::thumb::SP;
 use crate::arch::thumb::decode::{Registers, each};
 
@@ -137,22 +137,113 @@ pub(super) struct Flags {
     pub(super) overflow: Option<bool>,
 }
 
+impl Known {
+    /// What the walk knows here, but for the compares of a loop that it
+    /// counts, to keep for a loop that comes back here (see [`Visit`]).
+    pub(super) fn snapshot(&self) -> Known {
+        Known {
+            memory: Rc::clone(&self.memory),
+            compares: Vec::new(),
+            ..*self
+        }
+    }
+
+    /// What the walk knows at the head of a loop the first iteration, from
+    /// what it knew the first time it got there, this, to go through the
+    /// code iteration by iteration: not where words in registers were
+    /// loaded from, nor the flags, nor that it went past a branch it
+    /// couldn't tell.
+    pub(super) fn first_iteration(&self) -> Known {
+        Known {
+            memory: Rc::clone(&self.memory),
+            flags: Flags::default(),
+            forks: false,
+            sources: [None; 16],
+            compares: Vec::new(),
+            ..*self
+        }
+    }
+
+    /// Forgets what `registers` hold.
+    pub(super) fn forget_registers(&mut self, registers: Registers) {
+        for register in each(registers) {
+            self.registers[usize::from(register)] = None;
+            self.sources[usize::from(register)] = None;
+        }
+    }
+
+    /// Forgets the words at `addresses`.
+    pub(super) fn forget_words(&mut self, addresses: Vec<u32>) {
+        if addresses.is_empty() {
+            return;
+        }
+        let words = Rc::make_mut(&mut self.memory);
+        for address in addresses {
+            words.insert(address, None);
+        }
+    }
+
+    /// Forgets all the words that code stored on the way.
+    pub(super) fn forget_all_words(&mut self) {
+        if self.memory.values().any(Option::is_some) {
+            (Rc::make_mut(&mut self.memory).values_mut()).for_each(|word| *word = None);
+        }
+    }
+
+    /// Forgets the flags.
+    pub(super) fn forget_flags(&mut self) {
+        self.flags = Flags::default();
+    }
+
+    /// Forgets what changed, but for the stack pointer, since the registers
+    /// held `registers` and memory `memory`, and where words in registers
+    /// were loaded from.
+    pub(super) fn forget_changes_since(&mut self, registers: &[Option<u32>; 16], memory: &Memory) {
+        self.sources = [None; 16];
+        for register in (0..16).filter(|&register| register != usize::from(SP)) {
+            if self.registers[register] != registers[register] {
+                self.registers[register] = None;
+            }
+        }
+        self.forget_words(stored_since(&self.memory, memory));
+    }
+
+    /// Forgets the words in memory that a loop may have stored to on the
+    /// iterations that the walk didn't go through, from the fourth to the
+    /// one before the one before the last, for a loop that it didn't go
+    /// through every iteration of (see `Counted::every`): those that its
+    /// `stores` cover, or when the walk can't tell them, those that changed
+    /// since `before`, at its head.
+    pub(super) fn forget_stored(&mut self, stores: Option<&[LoopStore]>, before: &Visit) {
+        let Some(stores) = stores else {
+            let registers = self.registers;
+            self.forget_changes_since(&registers, &before.known.memory);
+            return;
+        };
+        for store in stores {
+            let span = i64::from(store.step) * i64::from(store.times - 1);
+            let ends = [i64::from(store.address), i64::from(store.address) + span];
+            let low = ends[0].min(ends[1]) & !3;
+            let high = ends[0].max(ends[1]) + i64::from(store.size) - 1;
+            let (Ok(low), Ok(high)) = (u32::try_from(low), u32::try_from(high)) else {
+                continue;
+            };
+            let words = self.memory.range(low..=high).map(|(&address, _)| address);
+            self.forget_words(words.collect());
+        }
+    }
+}
+
 /// What the walk knew when it first got to an instruction, for a loop
 /// that goes back there.
 #[derive(Debug, Clone)]
 pub(super) struct Visit {
-    pub(super) registers: [Option<u32>; 16],
-    pub(super) memory: Memory,
-    /// See `Known::sources`, `Known::left` and `Known::results`.
-    pub(super) sources: [Option<Source>; 16],
-    pub(super) left: u8,
-    pub(super) results: u8,
+    /// What it knew, but for the compares (see [`Known::snapshot`]).
+    pub(super) known: Known,
     /// How many events the walk had found.
     pub(super) events: usize,
     /// How many instructions the walk had gone through (see `Run::order`).
     pub(super) order: usize,
-    /// See `Known::forks`.
-    pub(super) forks: bool,
 }
 
 /// A branch whose condition the walk couldn't tell, and what it knew there,
@@ -167,19 +258,6 @@ pub(super) struct Alternative {
     pub(super) order: usize,
     pub(super) pending: Vec<(u64, u64)>,
     pub(super) bounds: Option<(u64, u64)>,
-}
-
-/// Forgets what changed in `known`, but for the stack pointer, since it
-/// held `registers` and `memory`, and where words were loaded from.
-pub(super) fn forget_changes(known: &mut Known, registers: &[Option<u32>; 16], memory: &Memory) {
-    known.sources = [None; 16];
-    for register in (0..16).filter(|&register| register != usize::from(SP)) {
-        if known.registers[register] != registers[register] {
-            known.registers[register] = None;
-        }
-    }
-    let changed = stored_since(&known.memory, memory);
-    forget_words(known, changed);
 }
 
 /// The words that code stored from when memory held `before` to when it
@@ -197,23 +275,4 @@ pub(super) fn stored_since(after: &Memory, before: &Memory) -> Vec<u32> {
                 .copied(),
         )
         .collect()
-}
-
-/// Forgets the words at `addresses` in `known`.
-pub(super) fn forget_words(known: &mut Known, addresses: Vec<u32>) {
-    if addresses.is_empty() {
-        return;
-    }
-    let words = Rc::make_mut(&mut known.memory);
-    for address in addresses {
-        words.insert(address, None);
-    }
-}
-
-/// Forgets what `registers` hold.
-pub(super) fn set_unknown(known: &mut Known, registers: Registers) {
-    for register in each(registers) {
-        known.registers[usize::from(register)] = None;
-        known.sources[usize::from(register)] = None;
-    }
 }

@@ -11,7 +11,7 @@ use crate::arch::thumb::decode::Flow;
 
 use super::each_iteration::{RowLoad, RowWord};
 use super::loops::FoundLoop;
-use super::walk_state::{Budget, Compare, Flags, Known, Visit, forget_changes};
+use super::walk_state::{Budget, Compare, Known, Visit};
 use super::{
     CANDIDATES, Finish, Frame, MOST_ITERATIONS, MOST_WALKED_ITERATIONS, Run, Walker, decode_at,
 };
@@ -209,7 +209,7 @@ impl Line {
         }
         let mut start = first.clone();
         if !(first.flags == second.flags && second.flags == third.flags) {
-            start.flags = Flags::default();
+            start.forget_flags();
         }
         Some(Line {
             start,
@@ -327,7 +327,7 @@ impl Walker<'_> {
     /// from what the walk knew there the first time it got there, `before`,
     /// as [`Walker::count`] says.
     fn count_iterations(&mut self, frame: Frame, head: u64, before: &Visit) -> Option<Counted> {
-        let mut start = first_iteration(before);
+        let mut start = before.known.first_iteration();
         let mut walked: Vec<(u32, IterationEnd)> = Vec::new();
         for n in 1..=FIRST_ITERATIONS {
             let ended = self.walk_iteration(frame, head, start)?;
@@ -576,22 +576,6 @@ fn counted(walked: Vec<(u32, IterationEnd)>, iterations: u32) -> Counted {
     }
 }
 
-/// What the walk knows at the head of a loop the first iteration, as it was
-/// there, `before`, to go through the code iteration by iteration: not
-/// where words in registers were loaded from, nor the flags.
-pub(super) fn first_iteration(before: &Visit) -> Known {
-    Known {
-        registers: before.registers,
-        memory: Rc::clone(&before.memory),
-        flags: Flags::default(),
-        forks: false,
-        left: before.left,
-        results: before.results,
-        sources: [None; 16],
-        compares: Vec::new(),
-    }
-}
-
 /// What each store of a loop that runs `iterations` times does over all the
 /// iterations, from those that the walk went through, `walked`: when each
 /// iteration but the last stores with the same instructions as the first,
@@ -672,40 +656,6 @@ pub(super) fn line_through(
         }
     }
     Some((first, step.unwrap_or(0)))
-}
-
-/// Forgets the words in memory that a loop may have stored to on the
-/// iterations that the walk didn't go through, from the fourth to the one
-/// before the one before the last, for a loop that it didn't go through
-/// every iteration of (see `Counted::every`): those that its `stores`
-/// cover, or when the walk can't tell them, those that changed since
-/// `before`, at its head.
-pub(super) fn forget_stored(known: &mut Known, stores: Option<&[LoopStore]>, before: &Visit) {
-    let Some(stores) = stores else {
-        let registers = known.registers;
-        forget_changes(known, &registers, &before.memory);
-        return;
-    };
-    for store in stores {
-        let span = i64::from(store.step) * i64::from(store.times - 1);
-        let ends = [i64::from(store.address), i64::from(store.address) + span];
-        let low = ends[0].min(ends[1]) & !3;
-        let high = ends[0].max(ends[1]) + i64::from(store.size) - 1;
-        let (Ok(low), Ok(high)) = (u32::try_from(low), u32::try_from(high)) else {
-            continue;
-        };
-        let words: Vec<u32> = known
-            .memory
-            .range(low..=high)
-            .map(|(&address, _)| address)
-            .collect();
-        if !words.is_empty() {
-            let memory = Rc::make_mut(&mut known.memory);
-            words
-                .into_iter()
-                .for_each(|address| _ = memory.insert(address, None));
-        }
-    }
 }
 
 #[cfg(test)]

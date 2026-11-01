@@ -7,7 +7,7 @@ use crate::arch::startup::{Call, End, Event, How, Through};
 use crate::arch::thumb::decode::{Effect, Flow, Operation, Registers};
 use crate::arch::thumb::{ARGUMENTS, CALL_CLOBBERS, LR, SP};
 
-use super::walk_state::{Alternative, Flags, Known, forget_changes, set_unknown};
+use super::walk_state::{Alternative, Known};
 use super::{Finish, Frame, Run, Step, Walker, decode_at};
 
 /// How the walk went through the function that a call calls (see
@@ -172,7 +172,7 @@ impl Walker<'_> {
             // It returns with what the function it jumps to leaves in the
             // registers that pass arguments and results.
             let (clobbers, results) = self.clobbers(Some(target));
-            set_unknown(&mut run.known, clobbers);
+            run.known.forget_registers(clobbers);
             run.known.results |= results;
             return Step::MayBacktrack(End::Returns(site));
         }
@@ -272,8 +272,8 @@ impl Walker<'_> {
         let called = match callee {
             Callee::Returned(mut known) => {
                 if known.forks {
-                    forget_changes(&mut known, &run.known.registers, &run.known.memory);
-                    known.flags = Flags::default();
+                    known.forget_changes_since(&run.known.registers, &run.known.memory);
+                    known.forget_flags();
                 }
                 let called = known.results;
                 known.forks = run.known.forks;
@@ -283,17 +283,17 @@ impl Walker<'_> {
                 called
             }
             Callee::Ended(mut known) => {
-                forget_changes(&mut known, &run.known.registers, &run.known.memory);
+                known.forget_changes_since(&run.known.registers, &run.known.memory);
                 run.known.memory = known.memory;
                 let (clobbers, called) = self.clobbers(target);
-                set_unknown(&mut run.known, clobbers);
-                run.known.flags = Flags::default();
+                run.known.forget_registers(clobbers);
+                run.known.forget_flags();
                 called
             }
             Callee::NotWalked => {
                 let (clobbers, called) = self.clobbers(target);
-                set_unknown(&mut run.known, clobbers);
-                run.known.flags = Flags::default();
+                run.known.forget_registers(clobbers);
+                run.known.forget_flags();
                 called
             }
         };
