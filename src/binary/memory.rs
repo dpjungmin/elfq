@@ -16,7 +16,8 @@ use std::cmp::Ordering;
 use anyhow::Result;
 use object::{Architecture, Object, ObjectSection, SectionFlags, SectionKind};
 
-use super::{AddressRange, FileKind, Section, parse_program, read_sections};
+use super::sections::{parse_program, read_sections};
+use super::{AddressRange, FileKind, Section};
 
 /// A file's sections, and the bytes they put in memory.
 #[derive(Debug)]

@@ -99,7 +99,7 @@ fn candidate(
     // table or an estimate, as one without a size does, and a data object
     // without a size is dropped below, and becomes unnamed data where
     // something refers to it.
-    let size = super::fitting_size(address, symbol.size()).unwrap_or(0);
+    let size = super::sections::fitting_size(address, symbol.size()).unwrap_or(0);
     // Zero-size data symbols mark positions, like `_edata`; they hold nothing.
     if kind == ItemKind::Data && size == 0 {
         return None;
