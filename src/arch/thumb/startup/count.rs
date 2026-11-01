@@ -672,3 +672,159 @@ pub(super) fn forget_stored(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A time through a loop's code whose compares, at 0x100, 0x110 and
+    /// on, compare `numbers`.
+    fn time(numbers: &[[Option<u32>; 2]]) -> Pass {
+        Pass {
+            path: Path::default(),
+            stores: Vec::new(),
+            others: false,
+            compares: (numbers.iter().zip(0..))
+                .map(|(&numbers, k)| Compare {
+                    site: 0x100 + 0x10 * k,
+                    numbers,
+                })
+                .collect(),
+            again: true,
+            exit: 0,
+            order: Vec::new(),
+            ways_out: Vec::new(),
+            loads: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_line_through_numbers_that_move_by_the_same_amount() {
+        let line = |points: &[(u32, Option<u32>)]| line_through(points.iter().copied());
+        // The times it went through need not follow each other.
+        assert_eq!(
+            line(&[(1, Some(0x100)), (2, Some(0x104)), (4, Some(0x10c))]),
+            Some((0x100, 4))
+        );
+        assert_eq!(
+            line(&[(1, Some(0x100)), (2, Some(0xfc))]),
+            Some((0x100, -4))
+        );
+        assert_eq!(
+            line(&[(1, Some(0xffff_fffc)), (2, Some(0)), (3, Some(4))]),
+            Some((0xffff_fffc, 4))
+        );
+        assert_eq!(line(&[(1, Some(0x100))]), Some((0x100, 0)));
+        // Not by the same amount: 5 bytes in two times is no whole step.
+        assert_eq!(line(&[(1, Some(0x100)), (3, Some(0x105))]), None);
+        assert_eq!(
+            line(&[(1, Some(0x100)), (2, Some(0x104)), (3, Some(0x10c))]),
+            None
+        );
+        // A number the walk can't tell, or no first time.
+        assert_eq!(line(&[(1, Some(0x100)), (2, None)]), None);
+        assert_eq!(line(&[(2, Some(0x104)), (3, Some(0x108))]), None);
+        assert_eq!(line(&[]), None);
+    }
+
+    #[test]
+    fn a_loop_may_leave_around_where_a_compare_closes_its_gap() {
+        // `cmp r0, r1` with r0 counting up by 4 to r1, 0x40: 8 the second
+        // time and 12 the third, so it gets to 0x40 the 16th time.
+        let (second, third) = (
+            time(&[[Some(8), Some(0x40)]]),
+            time(&[[Some(12), Some(0x40)]]),
+        );
+        assert_eq!(leaving_times(&second, &third), [15, 16, 17, 18]);
+        // Counting down to 0 too, as `subs r2, #4; bne` does.
+        let (second, third) = (
+            time(&[[Some(0x18), Some(0)]]),
+            time(&[[Some(0x14), Some(0)]]),
+        );
+        assert_eq!(leaving_times(&second, &third), [7, 8, 9, 10]);
+    }
+
+    #[test]
+    fn only_from_the_fourth_time_on() {
+        // The gap closes the third time, so the times around it would be
+        // the 2nd to the 5th, but the walk went through the first three.
+        let (second, third) = (time(&[[Some(4), Some(8)]]), time(&[[Some(8), Some(8)]]));
+        assert_eq!(leaving_times(&second, &third), [4, 5]);
+    }
+
+    #[test]
+    fn a_gap_that_doesnt_close_says_nothing() {
+        // r0 counts away from the bound, or both move together.
+        let (second, third) = (
+            time(&[[Some(8), Some(0x40)]]),
+            time(&[[Some(4), Some(0x40)]]),
+        );
+        assert_eq!(leaving_times(&second, &third), [] as [u32; 0]);
+        let (second, third) = (
+            time(&[[Some(8), Some(0x40)]]),
+            time(&[[Some(12), Some(0x44)]]),
+        );
+        assert_eq!(leaving_times(&second, &third), [] as [u32; 0]);
+        // A number the walk can't tell.
+        let (second, third) = (time(&[[None, Some(0x40)]]), time(&[[None, Some(0x40)]]));
+        assert_eq!(leaving_times(&second, &third), [] as [u32; 0]);
+    }
+
+    #[test]
+    fn compares_count_only_while_both_times_make_them_in_the_same_order() {
+        let mut second = time(&[[Some(8), Some(0x40)]]);
+        let third = time(&[[Some(12), Some(0x40)]]);
+        second.compares[0].site = 0x104;
+        assert_eq!(leaving_times(&second, &third), [] as [u32; 0]);
+    }
+
+    #[test]
+    fn numbers_are_taken_with_a_sign_too() {
+        // r0 counts up from -8 to 8: with no sign, it starts above 8 and
+        // moves away; with one, it gets there the 6th time.
+        let (second, third) = (
+            time(&[[Some(-8i32 as u32), Some(8)]]),
+            time(&[[Some(-4i32 as u32), Some(8)]]),
+        );
+        assert_eq!(leaving_times(&second, &third), [5, 6, 7, 8]);
+    }
+
+    #[test]
+    fn at_most_twelve_times_are_tried_the_earliest_first() {
+        // Five compares, which close their gaps the 20th, 30th, 40th,
+        // 50th and 60th times: four times around each.
+        let numbers = |third: bool| {
+            (0..5)
+                .map(|k| [Some(u32::from(third) * 4), Some(72 + 40 * k)])
+                .collect::<Vec<_>>()
+        };
+        let (second, third) = (time(&numbers(false)), time(&numbers(true)));
+        assert_eq!(
+            leaving_times(&second, &third),
+            [19, 20, 21, 22, 29, 30, 31, 32, 39, 40, 41, 42]
+        );
+    }
+
+    #[test]
+    fn numbers_keep_their_order_unless_they_wrap_round() {
+        let (second, third) = (
+            time(&[[Some(8), Some(0x40)]]),
+            time(&[[Some(12), Some(0x40)]]),
+        );
+        assert!(keeps_order(&second, &third, 16));
+        // Past 0xffffffff with no sign, from the 6th time on.
+        let (second, third) = (
+            time(&[[Some(0xffff_fff0), Some(0)]]),
+            time(&[[Some(0xffff_fff4), Some(0)]]),
+        );
+        assert!(keeps_order(&second, &third, 5));
+        assert!(!keeps_order(&second, &third, 6));
+        // Past 0x7fffffff with a sign.
+        let (second, third) = (
+            time(&[[Some(0x7fff_fff0), Some(0)]]),
+            time(&[[Some(0x7fff_fff4), Some(0)]]),
+        );
+        assert!(keeps_order(&second, &third, 5));
+        assert!(!keeps_order(&second, &third, 6));
+    }
+}

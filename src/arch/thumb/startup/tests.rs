@@ -5,8 +5,8 @@ use object::Endianness::Little;
 
 use super::each_time::same_words;
 use super::execute::{add, holds, subtract};
-use super::walk;
 use super::walk_state::Flags;
+use super::{branches_past, passes_result, walk};
 use crate::arch::startup::{DEPTH, Event, How, Program, Start, Walk};
 
 /// Where the code of each test is, as in flash.
@@ -2186,4 +2186,74 @@ fn a_store_of_several_words_copies_only_words_loaded_one_after_another() {
             "end Main(8000012)",
         ]
     );
+}
+
+/// Flash holding `units`, as `walk_units` lays them out, as one function.
+fn flash(units: &[u16]) -> Flash {
+    let code: Vec<u8> = units.iter().flat_map(|unit| unit.to_le_bytes()).collect();
+    let end = FLASH + code.len() as u64;
+    Flash {
+        functions: vec![(FLASH, end)],
+        code,
+    }
+}
+
+#[test]
+fn a_call_passes_its_result_on_through_copies_of_r0() {
+    //   8000000: f000 f804  bl    800000c
+    //   8000004: 4603       mov   r3, r0
+    //   8000006: 4618       mov   r0, r3
+    //   8000008: f000 f802  bl    8000010
+    let code = flash(&[0xf000, 0xf804, 0x4603, 0x4618, 0xf000, 0xf802]);
+    assert!(passes_result(&code, FLASH, FLASH + 8));
+    // Nothing between the calls passes it on too.
+    let code = flash(&[0xf000, 0xf804, 0xf000, 0xf802]);
+    assert!(passes_result(&code, FLASH, FLASH + 4));
+    // Loading a word from a literal pool into another register keeps it.
+    //   8000004: 4900       ldr   r1, [pc, #0]
+    let code = flash(&[0xf000, 0xf804, 0x4900, 0xf000, 0xf802]);
+    assert!(passes_result(&code, FLASH, FLASH + 6));
+}
+
+#[test]
+fn a_call_doesnt_pass_its_result_when_r0_changes() {
+    //   8000004: 4620       mov   r0, r4
+    let code = flash(&[0xf000, 0xf804, 0x4620, 0xf000, 0xf802]);
+    assert!(!passes_result(&code, FLASH, FLASH + 6));
+    //   8000004: 4800       ldr   r0, [pc, #0]
+    let code = flash(&[0xf000, 0xf804, 0x4800, 0xf000, 0xf802]);
+    assert!(!passes_result(&code, FLASH, FLASH + 6));
+    // Code that does anything but copy registers and load literals.
+    //   8000004: 3001       adds  r0, #1
+    let code = flash(&[0xf000, 0xf804, 0x3001, 0xf000, 0xf802]);
+    assert!(!passes_result(&code, FLASH, FLASH + 6));
+    // Calls more than 16 bytes apart, or in the wrong order.
+    let mut units = vec![0xf000, 0xf804];
+    units.extend([0x4603; 9]);
+    units.extend([0xf000, 0xf802]);
+    assert!(!passes_result(&flash(&units), FLASH, FLASH + 22));
+    let code = flash(&[0xf000, 0xf804, 0xf000, 0xf802]);
+    assert!(!passes_result(&code, FLASH + 4, FLASH));
+    // A second call that isn't at an instruction's start.
+    let code = flash(&[0xf000, 0xf804, 0x4603, 0xf000, 0xf802]);
+    assert!(!passes_result(&code, FLASH, FLASH + 5));
+}
+
+#[test]
+fn a_branch_past_a_call_says_that_it_doesnt_return() {
+    //   8000000: e001       b.n   8000006
+    //   8000002: f000 f802  bl    800000a
+    //   8000006: 4770       bx    lr
+    let code = flash(&[0xe001, 0xf000, 0xf802, 0x4770]);
+    assert!(branches_past(&code, FLASH, FLASH + 2));
+    // A conditional branch counts too.
+    //   8000000: d001       beq.n 8000006
+    let code = flash(&[0xd001, 0xf000, 0xf802, 0x4770]);
+    assert!(branches_past(&code, FLASH, FLASH + 2));
+    // One to elsewhere doesn't, nor one before `start`.
+    //   8000000: e002       b.n   8000008
+    let code = flash(&[0xe002, 0xf000, 0xf802, 0x4770, 0x4770]);
+    assert!(!branches_past(&code, FLASH, FLASH + 2));
+    let code = flash(&[0xe001, 0xf000, 0xf802, 0x4770]);
+    assert!(!branches_past(&code, FLASH + 2, FLASH + 2));
 }
