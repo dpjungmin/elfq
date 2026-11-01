@@ -10,8 +10,16 @@
 //! instruction this module doesn't know decodes to `None`, and `values`
 //! then follows nothing in its function, since such an instruction could
 //! write any register or branch anywhere.
+//!
+//! The sweep (`sweep.rs`) decodes the branches, literal loads, `adr`,
+//! `movw` and `movt` again on its own, since it reads every function and
+//! needs only what they refer to. Both read the fields of these
+//! instructions with the helpers in `thumb/mod.rs`, such as `imm12` and
+//! `narrow_literal`, so a fix to one lands in both.
 
-use super::{LR, PC, SP, align, branch, is_wide, relative};
+use super::{
+    LR, PC, SP, align, branch, cbz_target, imm12, imm16, is_wide, literal, narrow_literal, relative,
+};
 use crate::arch::CodeReferenceKind;
 
 /// A set of registers, one bit each: r0 is bit 0 and pc bit 15.
@@ -465,7 +473,7 @@ fn narrow(address: u64, op: u16) -> Option<Effect> {
         // ldr register, [pc, #imm]
         0b01001 => Effect::new(0, bit(high)).operation(Operation::Literal {
             register: high,
-            address: align(pc) + u64::from(op & 0xff) * 4,
+            address: narrow_literal(pc, op),
         }),
         // Loads and stores with a register offset: str, strh, strb, then
         // ldrsb, ldr, ldrh, ldrb and ldrsh.
@@ -530,7 +538,7 @@ fn narrow(address: u64, op: u16) -> Option<Effect> {
         // adr register, label
         0b10100 => Effect::new(0, bit(high)).operation(Operation::Address {
             register: high,
-            value: (align(pc) + u64::from(op & 0xff) * 4) as u32,
+            value: narrow_literal(pc, op) as u32,
         }),
         // add register, sp, #imm
         0b10101 => Effect::new(bit(SP), bit(high)).operation(Operation::AddConstant {
@@ -696,10 +704,9 @@ fn miscellaneous(address: u64, op: u16) -> Option<Effect> {
         }
         // cbz and cbnz
         0b0001 | 0b0011 | 0b1001 | 0b1011 => {
-            let distance = u64::from((op >> 9) & 1) << 6 | u64::from((op >> 3) & 0x1f) << 1;
             let register = op & 7;
             Effect::new(bit(register), 0).flow(Flow::Branch {
-                target: address + 4 + distance,
+                target: cbz_target(address + 4, op),
                 when: match op & 0x800 {
                     0 => When::Zero(register),
                     _ => When::NotZero(register),
@@ -1069,10 +1076,7 @@ fn modified_immediate(first: u16, second: u16) -> Option<Effect> {
     let s = first & 0x10 != 0;
     let rn = first & 0xf;
     let rd = (second >> 8) & 0xf;
-    let imm12 = u32::from((first >> 10) & 1) << 11
-        | u32::from((second >> 12) & 7) << 8
-        | u32::from(second & 0xff);
-    let value = expand_immediate(imm12);
+    let value = expand_immediate(imm12(first, second));
     if !matches!(
         op,
         0b0000..=0b0100 | 0b1000 | 0b1010 | 0b1011 | 0b1101 | 0b1110
@@ -1156,10 +1160,8 @@ fn plain_immediate(pc: u64, first: u16, second: u16) -> Option<Effect> {
     if rd == PC {
         return None;
     }
-    let imm12 = u32::from((first >> 10) & 1) << 11
-        | u32::from((second >> 12) & 7) << 8
-        | u32::from(second & 0xff);
-    let imm16 = u32::from(rn) << 12 | imm12;
+    let imm12 = imm12(first, second);
+    let imm16 = imm16(first, second);
     let effect = Effect::new(reads(&[rn]), bit(rd));
     Some(match (first >> 4) & 0x1f {
         // adr.w, after or before the instruction
@@ -1357,12 +1359,7 @@ fn load(pc: u64, first: u16, second: u16) -> Option<Effect> {
     let word = size == 0b10;
     if rn == PC {
         let effect = Effect::new(0, if rt == PC { 0 } else { bit(rt) });
-        let offset = u64::from(second & 0xfff);
-        let address = if first & 0x80 != 0 {
-            align(pc) + offset
-        } else {
-            align(pc).wrapping_sub(offset)
-        };
+        let address = literal(pc, first, u64::from(second & 0xfff));
         return Some(match (rt, word) {
             // A byte or halfword into pc is a preload hint.
             (PC, false) => effect,

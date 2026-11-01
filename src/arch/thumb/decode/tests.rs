@@ -180,6 +180,60 @@ fn literal_loads_name_the_constant() {
 }
 
 #[test]
+fn operand_fields() {
+    let halves = |bytes: [u8; 4]| {
+        let half = |at: usize| u16::from_le_bytes([bytes[at], bytes[at + 1]]);
+        (half(0), half(2))
+    };
+    // movw r3, #0x1234 and movt r3, #0x5678
+    let (first, second) = halves([0x41, 0xf2, 0x34, 0x23]);
+    assert_eq!(imm16(first, second), 0x1234);
+    let (first, second) = halves([0xc5, 0xf2, 0x78, 0x63]);
+    assert_eq!(imm16(first, second), 0x5678);
+    // 1000: f60f 20bc  addw r0, pc, #2748  (adr.w r0, 0x1ac0)
+    let (first, second) = halves([0x0f, 0xf6, 0xbc, 0x20]);
+    assert_eq!(imm12(first, second), 0xabc);
+    assert_eq!(
+        effect(0x1000, &[0x0f, 0xf6, 0xbc, 0x20]).operation,
+        Operation::Address {
+            register: 0,
+            value: 0x1ac0
+        }
+    );
+    // 102: 4802  ldr r0, [pc, #8]  (the word at 0x10c), and 102: a002  adr
+    // r0, 0x10c
+    assert_eq!(narrow_literal(0x106, 0x4802), 0x10c);
+    assert_eq!(
+        effect(0x102, &[0x02, 0x48]).operation,
+        Operation::Literal {
+            register: 0,
+            address: 0x10c
+        }
+    );
+    assert_eq!(
+        effect(0x102, &[0x02, 0xa0]).operation,
+        Operation::Address {
+            register: 0,
+            value: 0x10c
+        }
+    );
+    // 100: b3fb  cbz r3, 0x182, as far forward as cbz goes
+    assert_eq!(cbz_target(0x104, 0xb3fb), 0x182);
+    let Flow::Branch { target, .. } = effect(0x100, &[0xfb, 0xb3]).flow else {
+        panic!("cbz isn't a branch");
+    };
+    assert_eq!(target, 0x182);
+    // 100: f8df 0ffc  ldr.w r0, [pc, #4092] and f85f 0004  ldr.w r0, [pc,
+    // #-4], whose constants are after and before it
+    let literal_address = |bytes: &[u8]| match effect(0x100, bytes).operation {
+        Operation::Literal { address, .. } => address,
+        operation => panic!("{operation:?} isn't a literal load"),
+    };
+    assert_eq!(literal_address(&[0xdf, 0xf8, 0xfc, 0x0f]), 0x1100);
+    assert_eq!(literal_address(&[0x5f, 0xf8, 0x04, 0x00]), 0x100);
+}
+
+#[test]
 fn branches_through_registers() {
     // blx r3; bx r3; bx lr; mov pc, r3; add pc, ip
     let thumb = LowBit::Thumb;

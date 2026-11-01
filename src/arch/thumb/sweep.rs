@@ -2,13 +2,21 @@
 //! decodes the instructions that refer to addresses and notes the data
 //! they read, and [`Scanner::sweep`], which steps through the code with it
 //! and skips that data.
+//!
+//! The scanner decodes those instructions itself, rather than with
+//! `decode`, which works out all that an instruction does: the sweep reads
+//! every function, and needs only what they refer to. Both read the
+//! fields of an instruction with the helpers in `thumb/mod.rs`.
 
 use std::collections::BTreeMap;
 
 use object::{Endian, Endianness};
 
 use super::operands::Found;
-use super::{Instruction, LR, PC, SP, align, branch, is_wide, literal, relative};
+use super::{
+    Instruction, LR, PC, SP, align, branch, cbz_target, imm12, imm16, is_wide, literal,
+    narrow_literal, relative,
+};
 use crate::arch::CodeReference;
 use crate::arch::CodeReferenceKind::{self, *};
 
@@ -166,9 +174,9 @@ impl<'a> Scanner<'a> {
         }
         // cbz, cbnz: always forward.
         if op & 0xf500 == 0xb100 {
-            let distance = u64::from((op >> 9) & 1) << 6 | u64::from((op >> 3) & 0x1f) << 1;
-            self.relative(offset, [0x02f8, 0], pc + distance);
-            return Some(Jump(pc + distance));
+            let target = cbz_target(pc, op);
+            self.relative(offset, [0x02f8, 0], target);
+            return Some(Jump(target));
         }
         // bx and blx with a register. `bx lr` returns.
         if op & 0xff00 == 0x4700 {
@@ -185,14 +193,14 @@ impl<'a> Scanner<'a> {
         }
         // ldr register, [pc, #imm]
         if op & 0xf800 == 0x4800 {
-            let address = align(pc) + u64::from(op & 0xff) * 4;
+            let address = narrow_literal(pc, op);
             self.relative(offset, [0x00ff, 0], address);
             let value = self.constant(address, 4)?;
             return Some(Address(value));
         }
         // adr register, label
         if op & 0xf800 == 0xa000 {
-            let address = align(pc) + u64::from(op & 0xff) * 4;
+            let address = narrow_literal(pc, op);
             self.relative(offset, [0x00ff, 0], address);
             return Some(Address(self.pointed_at(address)));
         }
@@ -203,12 +211,6 @@ impl<'a> Scanner<'a> {
     fn wide(&mut self, offset: usize, first: u16, second: u16) -> Option<CodeReferenceKind> {
         let pc = self.pc(offset);
         let rt = second >> 12;
-        // The immediates of plain-binary instructions such as adr and movw,
-        // spread over imm4:i:imm3:imm8.
-        let imm12 = u32::from((first >> 10) & 1) << 11
-            | u32::from((second >> 12) & 7) << 8
-            | u32::from(second & 0xff);
-        let imm16 = u32::from(first & 0xf) << 12 | imm12;
 
         // bl, b.w and b<cond>.w
         if first & 0xf800 == 0xf000 && second & 0x8000 != 0 {
@@ -224,13 +226,14 @@ impl<'a> Scanner<'a> {
         }
         // movw register, #imm16: maybe the low half of an address.
         if first & 0xfbf0 == 0xf240 && second & 0x8000 == 0 {
-            self.low_halves[usize::from((second >> 8) & 0xf)] = Some((offset, imm16));
+            self.low_halves[usize::from((second >> 8) & 0xf)] =
+                Some((offset, imm16(first, second)));
             return None;
         }
         // movt register, #imm16: the high half, completing the movw.
         if first & 0xfbf0 == 0xf2c0 && second & 0x8000 == 0 {
             let (movw, low) = self.low_halves[usize::from((second >> 8) & 0xf)].take()?;
-            let value = imm16 << 16 | low;
+            let value = imm16(first, second) << 16 | low;
             if let Some(found) = &mut self.operands {
                 found.split.push(([movw, offset], value));
             }
@@ -240,12 +243,12 @@ impl<'a> Scanner<'a> {
         // and 7 say which.
         let adr = [0x04a0, 0x70ff];
         if first & 0xfbff == 0xf2af && second & 0x8000 == 0 {
-            let address = align(pc).wrapping_sub(u64::from(imm12)) & 0xffff_ffff;
+            let address = align(pc).wrapping_sub(u64::from(imm12(first, second))) & 0xffff_ffff;
             self.relative(offset, adr, address);
             return Some(Address(self.pointed_at(address)));
         }
         if first & 0xfbff == 0xf20f && second & 0x8000 == 0 {
-            let address = align(pc) + u64::from(imm12);
+            let address = align(pc) + u64::from(imm12(first, second));
             self.relative(offset, adr, address);
             return Some(Address(self.pointed_at(address)));
         }
@@ -344,15 +347,12 @@ impl<'a> Scanner<'a> {
         let pc = self.pc(adr.offset);
         // adr and adr.w, forward, into the base register, right before.
         let table = if adr.first & 0xf800 == 0xa000 && (adr.first >> 8) & 7 == base {
-            align(pc) + u64::from(adr.first & 0xff) * 4
+            narrow_literal(pc, adr.first)
         } else if adr.first & 0xfbff == 0xf20f
             && adr.second & 0x8000 == 0
             && (adr.second >> 8) & 0xf == base
         {
-            let imm12 = u32::from((adr.first >> 10) & 1) << 11
-                | u32::from((adr.second >> 12) & 7) << 8
-                | u32::from(adr.second & 0xff);
-            align(pc) + u64::from(imm12)
+            align(pc) + u64::from(imm12(adr.first, adr.second))
         } else {
             return;
         };

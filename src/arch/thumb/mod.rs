@@ -170,6 +170,32 @@ fn literal(pc: u64, first: u16, offset: u64) -> u64 {
     }
 }
 
+/// The word that the 16-bit `ldr register, [pc, #imm]`, `op`, loads, or
+/// the address that `adr register, label` makes: `imm` words past the
+/// word-aligned `pc`.
+fn narrow_literal(pc: u64, op: u16) -> u64 {
+    align(pc) + u64::from(op & 0xff) * 4
+}
+
+/// Where `cbz` or `cbnz`, `op`, goes, always forward: `pc` plus i:imm5:0.
+fn cbz_target(pc: u64, op: u16) -> u64 {
+    pc + (u64::from((op >> 9) & 1) << 6 | u64::from((op >> 3) & 0x1f) << 1)
+}
+
+/// The 12 bits i:imm3:imm8 that a 32-bit data-processing instruction with
+/// an immediate spreads over its halves: the immediate of `adr.w`, `addw`
+/// and `subw`, and the encoded one of `mov.w`, `cmp.w` and the like.
+fn imm12(first: u16, second: u16) -> u32 {
+    u32::from((first >> 10) & 1) << 11
+        | u32::from((second >> 12) & 7) << 8
+        | u32::from(second & 0xff)
+}
+
+/// The 16 bits imm4:i:imm3:imm8 of `movw` and `movt`.
+fn imm16(first: u16, second: u16) -> u32 {
+    u32::from(first & 0xf) << 12 | imm12(first, second)
+}
+
 /// `pc` plus `offset`, a signed number of `bits` bits.
 fn relative(pc: u64, offset: u32, bits: u32) -> u64 {
     let shift = 32 - bits;
