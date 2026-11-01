@@ -162,7 +162,7 @@ this list, and add to it when you bring in a word.
   up, which are all in RAM: those with a load image, and those without
   contents, such as `.bss` (`RamSections`, in `ram_sections.rs`, named
   `ram`). **early run**: code that runs from a load image before startup
-  code copies it there (`EarlyRun`, which `EarlyRuns` finds, and the
+  code copies it there (`EarlyRun`, which `EarlyRunFinder` finds, and the
   problem `runs before copy`), and its functions (`EarlyFunction`). A
   **hit** is a function in a load image that the reset handler or a call
   runs, with the chain of functions that gets to it: for one that a
@@ -179,11 +179,14 @@ this list, and add to it when you bring in a word.
   where elfq writes a step out, it gives its number, from 1
   (`steps::number`). **region**: what a copy or zeroing copies or
   zeroes: how many bytes, where, and for a copy, where from, with the
-  sections that start in them (`ram_sections::Region`). **facts**: in
-  `startup`, what each stage reads once the walk is done, from the file
-  to how the walk ended (`Facts`). **ending**: where startup ends: at
-  `main`, at the reset handler's endless loop, or where the walk ended
-  before either (`Ending`); the walk's own end is an `End`.
+  sections that start in them (`ram_sections::Region`). **setup**: the
+  first step that sets up a section (`problems::Setup`); `Setups` holds
+  each section's, with the unread steps that may set up the others.
+  **facts**: in `startup`, what each stage reads once the walk is done,
+  from the file to how the walk ended (`Facts`). **ending**: where
+  startup ends: at `main`, at the reset handler's endless loop, or where
+  the walk ended before either (`Ending`); the walk's own end is an
+  `End`.
   **row**: a line of a table that elfq prints; a loop over a table of
   sections also reads one row of that table each time it runs.
 - **event**: one thing that the startup walk records, such as a call, a

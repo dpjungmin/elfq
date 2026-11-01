@@ -168,7 +168,7 @@ impl Problem {
 }
 
 /// Code that runs from a load image before startup code copies it there:
-/// an early run, which [`EarlyRuns`] finds.
+/// an early run, which [`EarlyRunFinder`] finds.
 pub(super) struct EarlyRun {
     /// The load image.
     pub section: usize,
@@ -254,8 +254,8 @@ pub(super) enum Note {
     /// since the other way ends as `because` says.
     Branch { site: u64, because: End },
     /// The steps at `later`, as indexes into the steps, may never run (see
-    /// [`Judged::may_never_run`]), so the sections in `lost` may not be set
-    /// up. No problem names those in `unnamed`.
+    /// [`Statuses::may_never_run`]), so the sections in `lost` may not be
+    /// set up. No problem names those in `unnamed`.
     NotReached {
         later: Vec<usize>,
         lost: Vec<usize>,
@@ -328,39 +328,78 @@ pub(super) struct SectionStatus {
     pub bytes: Option<u64>,
 }
 
-/// What startup's steps come to.
-pub(super) struct Judged {
+/// What sets up each section (see [`Setups::new`]).
+pub(super) struct Setups {
     /// The first step that sets up each section.
     pub init: HashMap<usize, Setup>,
     /// The steps of code elfq can't follow that may set up each section
     /// that no step does, as indexes into the steps: the unread steps.
     pub unread: HashMap<usize, Vec<usize>>,
-    /// Whether elfq followed all the code before `main`.
-    pub complete: bool,
-    /// Where the first certain problem is, after which nothing can be
-    /// counted on.
-    pub fatal: Option<RunsAt>,
-    /// The state of each section that startup code sets up when `main`
-    /// starts (see [`Judged::status`]).
-    statuses: HashMap<usize, SectionStatus>,
-    pub problems: Vec<Problem>,
-    pub notes: Vec<Note>,
-    /// For each load image that holds code, the functions that must stay
-    /// out of it (see [`EarlyRuns::keep_out`]).
-    pub keep_out: Vec<KeepOut>,
 }
 
-/// The functions that must stay out of a load image that holds code.
-pub(super) struct KeepOut {
-    pub section: usize,
-    /// The functions that must stay out of it, as item indexes.
-    pub items: Vec<usize>,
+impl Setups {
+    /// What `steps` set up: the first step that sets up each section, and
+    /// the unread steps that may set up each of the others.
+    fn new(steps: &[Step]) -> Setups {
+        let mut init: HashMap<usize, Setup> = HashMap::new();
+        for (index, step) in steps.iter().enumerate() {
+            for cover in step.covers() {
+                init.entry(cover.section).or_insert(Setup {
+                    step: index,
+                    bytes: cover.bytes,
+                    from: cover.from,
+                });
+            }
+        }
+        let mut unread: HashMap<usize, Vec<usize>> = HashMap::new();
+        for (index, step) in steps.iter().enumerate() {
+            if step.does == Does::Unread {
+                for &section in &step.may {
+                    if !init.contains_key(&section) {
+                        unread.entry(section).or_default().push(index);
+                    }
+                }
+            }
+        }
+        Setups { init, unread }
+    }
 }
 
-impl Judged {
+/// The state of each section when `main` starts, with where the first
+/// certain problem is, which it depends on: nothing after that can be
+/// counted on (see [`Statuses::new`]).
+struct Statuses {
+    /// Where the first certain problem is (see [`first_certain`]).
+    fatal: Option<RunsAt>,
+    /// The state of each RAM section.
+    of: HashMap<usize, SectionStatus>,
+}
+
+impl Statuses {
+    /// The state of each RAM section when `main` starts, when `steps` set
+    /// them up as `setups` says and the first certain problem is at
+    /// `fatal`.
+    fn new(ram: &RamSections, steps: &[Step], setups: &Setups, fatal: Option<RunsAt>) -> Statuses {
+        let mut statuses = Statuses {
+            fatal,
+            of: HashMap::new(),
+        };
+        for &section in &ram.sections {
+            let status = statuses.work_out(ram, steps, setups, section);
+            statuses.of.insert(section, status);
+        }
+        statuses
+    }
+
+    /// The state of `section`, one of the RAM sections, when `main` starts,
+    /// with the step that sets it up and how many of its bytes.
+    fn status(&self, section: usize) -> SectionStatus {
+        self.of[&section]
+    }
+
     /// Whether `step` comes before the first certain problem, so that it
     /// can be counted on to run.
-    pub fn reached(&self, step: &Step) -> bool {
+    fn reached(&self, step: &Step) -> bool {
         self.fatal
             .is_none_or(|fatal| RunsAt::Event(step.event) < fatal)
     }
@@ -368,28 +407,28 @@ impl Judged {
     /// Whether `step` may never run: it comes after the first certain
     /// problem, or copies or zeroes at its event, after the code that runs
     /// from a load image there.
-    pub fn may_never_run(&self, step: &Step) -> bool {
+    fn may_never_run(&self, step: &Step) -> bool {
         self.fatal.is_some_and(|fatal| {
             let at = RunsAt::Event(step.event);
             at > fatal || (at == fatal && matches!(step.does, Does::Copy | Does::Zero))
         })
     }
 
-    /// The state of `section`, one of the RAM sections, when `main` starts,
-    /// with the step that sets it up and how many of its bytes.
-    pub fn status(&self, section: usize) -> SectionStatus {
-        self.statuses[&section]
-    }
-
     /// Works out the state of `section` when `main` starts, which
-    /// [`Judged::status`] gives: once the first certain problem is known.
-    fn work_out_status(&self, steps: &[Step], ram: &RamSections, section: usize) -> SectionStatus {
+    /// [`Statuses::new`] keeps for [`Statuses::status`] to give.
+    fn work_out(
+        &self,
+        ram: &RamSections,
+        steps: &[Step],
+        setups: &Setups,
+        section: usize,
+    ) -> SectionStatus {
         let unset = |status| SectionStatus {
             status,
             step: None,
             bytes: Some(0),
         };
-        if let Some(setup) = self.init.get(&section) {
+        if let Some(setup) = setups.init.get(&section) {
             if !self.reached(&steps[setup.step]) {
                 return SectionStatus {
                     status: Status::NotReached,
@@ -420,7 +459,7 @@ impl Judged {
                 bytes: Some(setup.bytes),
             };
         }
-        if let Some(unread) = self.unread.get(&section) {
+        if let Some(unread) = setups.unread.get(&section) {
             if (unread.iter()).any(|&index| self.reached(&steps[index])) {
                 return SectionStatus {
                     status: Status::Unknown,
@@ -439,175 +478,188 @@ impl Judged {
     }
 }
 
-/// Works out what `steps` come to.
+/// What startup's steps come to.
+pub(super) struct Judged {
+    /// What sets up each section.
+    pub setups: Setups,
+    /// The state of each section that startup code sets up when `main`
+    /// starts (see [`Judged::status`]).
+    statuses: Statuses,
+    /// Whether elfq followed all the code before `main`.
+    pub complete: bool,
+    pub problems: Vec<Problem>,
+    pub notes: Vec<Note>,
+    /// For each load image that holds code, the functions that must stay
+    /// out of it (see [`EarlyRunFinder::keep_out`]).
+    pub keep_out: Vec<KeepOut>,
+}
+
+/// The functions that must stay out of a load image that holds code.
+pub(super) struct KeepOut {
+    pub section: usize,
+    /// The functions that must stay out of it, as item indexes.
+    pub items: Vec<usize>,
+}
+
+impl Judged {
+    /// The state of `section`, one of the RAM sections, when `main` starts,
+    /// with the step that sets it up and how many of its bytes.
+    pub fn status(&self, section: usize) -> SectionStatus {
+        self.statuses.status(section)
+    }
+}
+
+/// Works out what `steps` come to, in phases: what sets up each section;
+/// the code that runs from load images before startup code copies them,
+/// and what must stay out of each that holds code; the state of each
+/// section when `main` starts, which depends on the first certain problem
+/// among that code's; the problems that the states make; and the notes.
 pub(super) fn judge(facts: &Facts, steps: &[Step]) -> Judged {
-    let Facts {
-        firmware,
-        ram,
-        main,
-        end,
-        ..
-    } = *facts;
-    let mut init: HashMap<usize, Setup> = HashMap::new();
-    for (index, step) in steps.iter().enumerate() {
-        for cover in step.covers() {
-            init.entry(cover.section).or_insert(Setup {
-                step: index,
-                bytes: cover.bytes,
-                from: cover.from,
-            });
-        }
-    }
-    let mut unread: HashMap<usize, Vec<usize>> = HashMap::new();
-    for (index, step) in steps.iter().enumerate() {
-        if step.does == Does::Unread {
-            for &section in &step.may {
-                if !init.contains_key(&section) {
-                    unread.entry(section).or_default().push(index);
-                }
-            }
-        }
-    }
-    // A walk that ends where it can't read on, or stops short, didn't
-    // follow what comes after, though that may set up nothing.
-    let stopped = end.stops_short();
-    let mut judged = Judged {
-        init,
-        unread,
-        complete: !stopped && !steps.iter().any(|step| step.does == Does::Unread),
-        fatal: None,
-        statuses: HashMap::new(),
-        problems: Vec::new(),
-        notes: Vec::new(),
-        keep_out: Vec::new(),
-    };
-    let mut early = EarlyRuns {
-        facts,
-        main: main.and_then(Main::function),
-        call_trees: HashMap::new(),
-        callees: HashMap::new(),
-        runs: Vec::new(),
-    };
-    early.find(steps, &judged);
-    judged.keep_out = early.keep_out(steps, &judged);
-    let mut runs = early.runs;
-    for run in &mut runs {
-        if (run.functions.iter()).any(|early| !firmware.is_veneer(early.function)) {
-            (run.functions).retain(|early| !firmware.is_veneer(early.function));
-        }
-        let first = run.first();
-        run.unless = (steps.iter().enumerate())
-            .filter(|(_, step)| {
-                step.does == Does::Unread
-                    && RunsAt::Event(step.event) <= first
-                    && step.may.contains(&run.section)
-            })
-            .map(|(index, _)| index)
-            .collect();
-    }
-    judged.fatal = (runs.iter())
-        .filter(|run| run.certain())
-        .map(EarlyRun::first)
-        .min();
-    judged.statuses = (ram.sections.iter())
-        .map(|&section| (section, judged.work_out_status(steps, ram, section)))
-        .collect();
-    // Load images not copied, copied short or from elsewhere; .bss and
-    // .sbss not zeroed in full.
+    let setups = Setups::new(steps);
+    let mut finder = EarlyRunFinder::new(facts, steps, &setups);
+    let runs = finder.find();
+    let keep_out = finder.keep_out();
+    let statuses = Statuses::new(facts.ram, steps, &setups, first_certain(&runs));
     let ran_from: Vec<usize> = runs.iter().map(|run| run.section).collect();
     let mut problems: Vec<Problem> = runs.into_iter().map(Problem::RunsBeforeCopy).collect();
-    for &section in &ram.sections {
-        let status = judged.status(section).status;
-        let setup = judged.init.get(&section).copied();
-        match (status, setup) {
-            (Status::NotCopied, _) if !ran_from.contains(&section) => {
-                problems.push(Problem::NotCopied { section });
-            }
-            (Status::NotZeroed, _) if ram.zeroed_by_rule(section) => {
-                problems.push(Problem::NotZeroed { section });
-            }
-            (
-                Status::PartlyCopied
-                | Status::PartlyZeroed
-                | Status::CopiedFromElsewhere
-                | Status::NotReached,
-                Some(setup),
-            ) => {
-                let size = ram.section(section).size;
-                let step = setup.step;
-                let bytes = setup.bytes;
-                let p = if let Some(from) = setup.from
-                    && ram.is_load(section)
-                    && from != ram.load_address(section)
-                {
-                    Problem::CopiedFromElsewhere {
-                        section,
-                        step,
-                        from,
-                    }
-                } else if bytes < size && ram.required(section) && ram.is_load(section) {
-                    Problem::PartlyCopied {
-                        section,
-                        step,
-                        bytes,
-                    }
-                } else if bytes < size && ram.required(section) {
-                    Problem::PartlyZeroed {
-                        section,
-                        step,
-                        bytes,
-                    }
-                } else {
-                    continue;
-                };
-                problems.push(p);
-            }
-            _ => {}
-        }
+    problems.extend(section_problems(facts.ram, &setups, &statuses, &ran_from));
+    problems.extend(cant_follow_problem(facts.ram, steps, &setups, &statuses));
+    let notes = notes(facts, steps, &setups, &statuses, &problems);
+    // A walk that ends where it can't read on, or stops short, didn't
+    // follow what comes after, though that may set up nothing.
+    let complete = !facts.end.stops_short() && !steps.iter().any(|step| step.does == Does::Unread);
+    Judged {
+        setups,
+        statuses,
+        complete,
+        problems,
+        notes,
+        keep_out,
     }
-    // Code elfq can't follow that may set up a load image, .bss or .sbss.
-    let unknown: Vec<usize> = (ram.sections.iter().copied())
-        .filter(|&section| judged.status(section).status == Status::Unknown)
-        .collect();
-    if unknown.iter().any(|&section| ram.required(section)) {
-        let mut indexes: Vec<usize> = (unknown.iter())
-            .filter(|&&section| ram.required(section))
-            .flat_map(|section| judged.unread[section].iter().copied())
-            .filter(|&index| judged.reached(&steps[index]))
-            .collect();
-        indexes.sort_unstable();
-        indexes.dedup();
-        // The problem names only what it is about; the rest gets a note.
-        let sections = (unknown.iter().copied())
-            .filter(|&section| ram.required(section))
-            .collect();
-        problems.push(Problem::CantFollow {
-            sections,
-            steps: indexes,
+}
+
+/// Where the first certain problem is, after which nothing can be counted
+/// on: the first place in the walk where code certainly runs from a load
+/// image before startup code copies it. Problems of other kinds have no
+/// place in the walk.
+fn first_certain(runs: &[EarlyRun]) -> Option<RunsAt> {
+    (runs.iter())
+        .filter(|run| run.certain())
+        .map(EarlyRun::first)
+        .min()
+}
+
+/// The problems that the states of the RAM sections make: a load image
+/// that nothing copies, but for one that code runs from, in `ran_from`,
+/// which that problem names; `.bss` or `.sbss` not zeroed; and the first
+/// step that sets up a section wrongly (see [`set_up_wrongly`]), even
+/// when it may never run.
+fn section_problems(
+    ram: &RamSections,
+    setups: &Setups,
+    statuses: &Statuses,
+    ran_from: &[usize],
+) -> Vec<Problem> {
+    let problem = |section: usize| match statuses.status(section).status {
+        Status::NotCopied => {
+            (!ran_from.contains(&section)).then_some(Problem::NotCopied { section })
+        }
+        Status::NotZeroed => ram
+            .zeroed_by_rule(section)
+            .then_some(Problem::NotZeroed { section }),
+        Status::PartlyCopied
+        | Status::PartlyZeroed
+        | Status::CopiedFromElsewhere
+        | Status::NotReached => set_up_wrongly(ram, section, setups.init.get(&section)?),
+        Status::Copied | Status::Zeroed | Status::Unknown => None,
+    };
+    (ram.sections.iter().copied()).filter_map(problem).collect()
+}
+
+/// The problem with `setup`, the first step that sets up `section`, if it
+/// sets it up wrongly: it copies the load image from somewhere other than
+/// where the file stores it, or it copies a load image, or zeroes `.bss`
+/// or `.sbss`, short of the section's size.
+fn set_up_wrongly(ram: &RamSections, section: usize, setup: &Setup) -> Option<Problem> {
+    let Setup { step, bytes, from } = *setup;
+    if let Some(from) = from
+        && ram.is_load(section)
+        && from != ram.load_address(section)
+    {
+        return Some(Problem::CopiedFromElsewhere {
+            section,
+            step,
+            from,
         });
     }
-    judged.problems = problems;
-    judged.notes = notes(facts, steps, &judged);
-    judged
+    if bytes >= ram.section(section).size || !ram.required(section) {
+        return None;
+    }
+    Some(if ram.is_load(section) {
+        Problem::PartlyCopied {
+            section,
+            step,
+            bytes,
+        }
+    } else {
+        Problem::PartlyZeroed {
+            section,
+            step,
+            bytes,
+        }
+    })
+}
+
+/// The problem of code elfq can't follow that may set up a load image,
+/// `.bss` or `.sbss` that no step does, with the unread steps before the
+/// first certain problem that may; none when it may set up no such
+/// section. The other sections that it may set up get a note.
+fn cant_follow_problem(
+    ram: &RamSections,
+    steps: &[Step],
+    setups: &Setups,
+    statuses: &Statuses,
+) -> Option<Problem> {
+    let sections: Vec<usize> = (ram.sections.iter().copied())
+        .filter(|&section| {
+            statuses.status(section).status == Status::Unknown && ram.required(section)
+        })
+        .collect();
+    if sections.is_empty() {
+        return None;
+    }
+    let mut indexes: Vec<usize> = (sections.iter())
+        .flat_map(|section| setups.unread[section].iter().copied())
+        .filter(|&index| statuses.reached(&steps[index]))
+        .collect();
+    indexes.sort_unstable();
+    indexes.dedup();
+    Some(Problem::CantFollow {
+        sections,
+        steps: indexes,
+    })
 }
 
 /// Finds the code that runs from load images before startup code copies
-/// them.
-struct EarlyRuns<'a> {
+/// them (see [`EarlyRunFinder::find`]), and what must stay out of each that
+/// holds code (see [`EarlyRunFinder::keep_out`]).
+struct EarlyRunFinder<'a> {
     facts: &'a Facts<'a>,
+    /// The steps, which copy the load images.
+    steps: &'a [Step],
+    /// What sets up each section.
+    setups: &'a Setups,
     /// The function that is `main`, which the call trees leave out.
     main: Option<u64>,
-    /// The call tree of each function (see [`EarlyRuns::call_tree`]).
+    /// The call tree of each function (see [`EarlyRunFinder::call_tree`]).
     call_trees: HashMap<u64, CallTree>,
     /// The functions that each function calls or jumps to.
     callees: HashMap<u64, Vec<u64>>,
-    /// The early runs found so far, one for each load image.
-    runs: Vec<EarlyRun>,
 }
 
 /// The functions that run when a function runs, each with the function
 /// that calls it on a shortest chain from the first (see
-/// [`EarlyRuns::call_tree`]).
+/// [`EarlyRunFinder::call_tree`]).
 struct CallTree {
     /// Each function, in the order a breadth-first search finds them.
     found: Vec<Called>,
@@ -663,7 +715,18 @@ struct Hit {
     chain: Vec<u64>,
 }
 
-/// What runs code from a load image (see [`EarlyRuns::add`]).
+impl Hit {
+    /// The function at `function`, which the code runs itself: its chain
+    /// is the function alone.
+    fn alone(function: u64) -> Hit {
+        Hit {
+            function,
+            chain: vec![function],
+        }
+    }
+}
+
+/// What runs code from a load image (see [`EarlyRunFinder::add`]).
 enum RunBy {
     /// The reset handler, whose own code is in it.
     ResetHandler,
@@ -689,7 +752,7 @@ impl RunBy {
 }
 
 /// A call that runs before the step that copies a load image (see
-/// [`EarlyRuns::calls_before`]).
+/// [`EarlyRunFinder::calls_before`]).
 #[derive(Debug, Clone, Copy)]
 struct CallBefore {
     event: usize,
@@ -700,65 +763,103 @@ struct CallBefore {
     holds_copy: bool,
 }
 
-impl EarlyRuns<'_> {
-    /// Finds the code that runs from each load image before `steps` copy
-    /// it: the reset handler's own code, and what each call runs.
-    fn find(&mut self, steps: &[Step], judged: &Judged) {
+impl<'a> EarlyRunFinder<'a> {
+    /// What finds the code that runs from load images before `steps`,
+    /// which set up the sections as `setups` says, copy them.
+    fn new(facts: &'a Facts<'a>, steps: &'a [Step], setups: &'a Setups) -> EarlyRunFinder<'a> {
+        EarlyRunFinder {
+            facts,
+            steps,
+            setups,
+            main: facts.main.and_then(Main::function),
+            call_trees: HashMap::new(),
+            callees: HashMap::new(),
+        }
+    }
+
+    /// The code that runs from each load image before the steps copy it,
+    /// one early run for each: the reset handler's own code, and what each
+    /// call runs (see [`EarlyRunFinder::add_calls`]). An early run leaves
+    /// out the veneers among its functions, unless all are veneers, and
+    /// holds the unread steps that may copy its load image first.
+    fn find(&mut self) -> Vec<EarlyRun> {
         let Facts {
-            ram, events, reset, ..
+            firmware,
+            ram,
+            reset,
+            ..
         } = *self.facts;
+        let mut runs = Vec::new();
         let boot = reset.address;
         for &section in &ram.loads {
             if ram.section(section).address <= boot && boot < ram.end(section) {
-                let hits = [Hit {
-                    function: boot,
-                    chain: vec![boot],
-                }];
-                self.add(judged, section, RunBy::ResetHandler, &hits);
+                let hits = [Hit::alone(boot)];
+                self.add(&mut runs, section, RunBy::ResetHandler, &hits);
             }
         }
         for &section in &ram.loads {
-            let (start, stop) = (ram.section(section).address, ram.end(section));
-            for CallBefore {
-                event,
-                target,
-                holds_copy,
-            } in self.calls_before(steps, judged, section)
+            self.add_calls(&mut runs, section);
+        }
+        for run in &mut runs {
+            if (run.functions.iter()).any(|early| !firmware.is_veneer(early.function)) {
+                (run.functions).retain(|early| !firmware.is_veneer(early.function));
+            }
+            let first = run.first();
+            run.unless = (self.steps.iter().enumerate())
+                .filter(|(_, step)| {
+                    step.does == Does::Unread
+                        && RunsAt::Event(step.event) <= first
+                        && step.may.contains(&run.section)
+                })
+                .map(|(index, _)| index)
+                .collect();
+        }
+        runs
+    }
+
+    /// Adds to `runs` the code that each call before the step that copies
+    /// the load image `section` runs from it: the function that a call
+    /// holding the copy goes to, when it is in the load image, and for
+    /// other calls, the functions of its call tree that are; with a
+    /// veneer in the load image that the call goes through.
+    fn add_calls(&mut self, runs: &mut Vec<EarlyRun>, section: usize) {
+        let Facts { ram, events, .. } = *self.facts;
+        let (start, stop) = (ram.section(section).address, ram.end(section));
+        for CallBefore {
+            event,
+            target,
+            holds_copy,
+        } in self.calls_before(section)
+        {
+            let Some(call) = events.call(event) else {
+                continue;
+            };
+            let mut hits = if holds_copy {
+                (start..stop)
+                    .contains(&target)
+                    .then(|| Hit::alone(target))
+                    .into_iter()
+                    .collect()
+            } else {
+                self.call_tree(target).within(start, stop)
+            };
+            if let Some(veneer) = events
+                .veneer(event)
+                .filter(|veneer| (start..stop).contains(veneer))
             {
-                let Some(call) = events.call(event) else {
-                    continue;
-                };
-                let alone = |function| Hit {
-                    function,
-                    chain: vec![function],
-                };
-                let mut hits = if holds_copy {
-                    (start..stop)
-                        .contains(&target)
-                        .then(|| alone(target))
-                        .into_iter()
-                        .collect()
-                } else {
-                    self.call_tree(target).within(start, stop)
-                };
-                if let Some(veneer) = events
-                    .veneer(event)
-                    .filter(|veneer| (start..stop).contains(veneer))
-                {
-                    match hits.iter_mut().find(|hit| hit.function == veneer) {
-                        Some(hit) => hit.chain = vec![veneer],
-                        None => hits.push(alone(veneer)),
-                    }
+                match hits.iter_mut().find(|hit| hit.function == veneer) {
+                    Some(hit) => hit.chain = vec![veneer],
+                    None => hits.push(Hit::alone(veneer)),
                 }
-                if !hits.is_empty() {
-                    let by = RunBy::Call {
-                        event,
-                        site: call.site,
-                        step: step_at(steps, event),
-                        callers: enclosing(events, event),
-                    };
-                    self.add(judged, section, by, &hits);
-                }
+            }
+            if !hits.is_empty() {
+                let by = RunBy::Call {
+                    event,
+                    site: call.site,
+                    step: step_at(self.steps, event),
+                    callers: enclosing(events, event),
+                };
+                self.add(runs, section, by, &hits);
             }
         }
     }
@@ -766,10 +867,10 @@ impl EarlyRuns<'_> {
     /// The calls that run before the step that copies the load image
     /// `section`, or before `main` when no step does, the copy's own call
     /// among them. Calls to `main` don't count.
-    fn calls_before(&self, steps: &[Step], judged: &Judged, section: usize) -> Vec<CallBefore> {
+    fn calls_before(&self, section: usize) -> Vec<CallBefore> {
         let events = self.facts.events;
-        let end =
-            (judged.init.get(&section)).map_or(events.list.len(), |setup| steps[setup.step].event);
+        let end = (self.setups.init.get(&section))
+            .map_or(events.list.len(), |setup| self.steps[setup.step].event);
         (0..events.list.len().min(end + 1))
             .filter_map(|event| {
                 events.call(event)?;
@@ -790,7 +891,7 @@ impl EarlyRuns<'_> {
     /// those that would run from it too early if they were in it. The
     /// reset handler comes first, then each call's function and what it
     /// calls, breadth first, each once, but no veneer.
-    fn keep_out(&mut self, steps: &[Step], judged: &Judged) -> Vec<KeepOut> {
+    fn keep_out(&mut self) -> Vec<KeepOut> {
         let Facts {
             firmware,
             ram,
@@ -821,7 +922,7 @@ impl EarlyRuns<'_> {
             // what it calls each time would take as long as the calls
             // times all they call.
             let mut expanded = HashSet::new();
-            for call in self.calls_before(steps, judged, section) {
+            for call in self.calls_before(section) {
                 if call.holds_copy {
                     add(call.target);
                 } else if expanded.insert(call.target) {
@@ -836,8 +937,9 @@ impl EarlyRuns<'_> {
     }
 
     /// Counts the functions of `hits`, each with its chain, as code that
-    /// runs from the load image `section` when `by` runs it.
-    fn add(&mut self, judged: &Judged, section: usize, by: RunBy, hits: &[Hit]) {
+    /// runs from the load image `section` when `by` runs it, in its early
+    /// run in `runs`.
+    fn add(&self, runs: &mut Vec<EarlyRun>, section: usize, by: RunBy, hits: &[Hit]) {
         // The reset handler's own code is in the load image; a call's
         // code calls on into it.
         let (step, callers, sites): (Option<usize>, &[u64], Vec<u64>) = match &by {
@@ -855,15 +957,15 @@ impl EarlyRuns<'_> {
                     .collect(),
             ),
         };
-        let index = match self.runs.iter().position(|run| run.section == section) {
+        let index = match runs.iter().position(|run| run.section == section) {
             Some(index) => index,
             None => {
-                let before = judged.init.get(&section).map(|setup| setup.step);
-                self.runs.push(EarlyRun::new(section, before, by.at()));
-                self.runs.len() - 1
+                let before = self.setups.init.get(&section).map(|setup| setup.step);
+                runs.push(EarlyRun::new(section, before, by.at()));
+                runs.len() - 1
             }
         };
-        let run = &mut self.runs[index];
+        let run = &mut runs[index];
         for hit in hits {
             if !run.runs(hit.function) {
                 run.functions.push(EarlyFunction {
@@ -962,13 +1064,37 @@ fn step_at(steps: &[Step], event: usize) -> Option<usize> {
     (steps.iter()).rposition(|step| step.begins <= event && step.level == 0)
 }
 
-/// The notes under the steps: where the walk starts, branches it took,
-/// steps that may never run, and sections without contents that may be
-/// meant to stay as they are.
-fn notes(facts: &Facts, steps: &[Step], judged: &Judged) -> Vec<Note> {
+/// The notes under the steps, as `problems` leave them: where the walk
+/// starts and the branches it took, the steps that may never run, the
+/// sections without contents that may be meant to stay as they are, and
+/// those that code elfq can't follow may set up, which no problem names.
+fn notes(
+    facts: &Facts,
+    steps: &[Step],
+    setups: &Setups,
+    statuses: &Statuses,
+    problems: &[Problem],
+) -> Vec<Note> {
+    let ram = facts.ram;
+    // The sections that problems say are not set up as they should be,
+    // which need no note.
+    let named: Vec<usize> = (problems.iter())
+        .filter(|p| !matches!(p, Problem::CantFollow { .. }))
+        .flat_map(|p| p.sections().iter().copied())
+        .collect();
+    let mut notes = walk_notes(facts);
+    notes.extend(not_reached_note(ram, steps, statuses, &named));
+    notes.extend(zeroing_notes(ram, statuses, &named));
+    notes.extend(cant_tell_note(ram, setups, statuses, problems));
+    notes
+}
+
+/// The notes on where the walk starts, when not at the reset handler that
+/// the vector table gives as the entry point, and on each branch whose
+/// condition it can't tell.
+fn walk_notes(facts: &Facts) -> Vec<Note> {
     let Facts {
         firmware,
-        ram,
         reset,
         events,
         ..
@@ -987,43 +1113,59 @@ fn notes(facts: &Facts, steps: &[Step], judged: &Judged) -> Vec<Note> {
             notes.push(Note::Branch { site, because });
         }
     }
-    let status = |section| judged.status(section).status;
-    let named: Vec<usize> = (judged.problems.iter())
-        .filter(|p| !matches!(p, Problem::CantFollow { .. }))
-        .flat_map(|p| p.sections().iter().copied())
-        .collect();
+    notes
+}
+
+/// The note on the steps that may never run, with the sections that may
+/// not be set up, saying which of them no problem names, as `named`
+/// lists those it does: none when every step can be counted on.
+fn not_reached_note(
+    ram: &RamSections,
+    steps: &[Step],
+    statuses: &Statuses,
+    named: &[usize],
+) -> Option<Note> {
     let later: Vec<usize> = (steps.iter().enumerate())
-        .filter(|(_, step)| judged.may_never_run(step))
+        .filter(|(_, step)| statuses.may_never_run(step))
         .map(|(index, _)| index)
         .collect();
-    if !later.is_empty() {
-        let lost: Vec<usize> = (ram.sections.iter().copied())
-            .filter(|&section| status(section) == Status::NotReached)
-            .collect();
-        let unnamed = (lost.iter().copied())
-            .filter(|section| !named.contains(section))
-            .collect();
-        notes.push(Note::NotReached {
-            later,
-            lost,
-            unnamed,
-        });
+    if later.is_empty() {
+        return None;
     }
-    let not_zeroed: Vec<usize> = (ram.zeros.iter().copied())
-        .filter(|&section| status(section) == Status::NotZeroed && !named.contains(&section))
+    let lost: Vec<usize> = (ram.sections.iter().copied())
+        .filter(|&section| statuses.status(section).status == Status::NotReached)
+        .collect();
+    let unnamed = (lost.iter().copied())
+        .filter(|section| !named.contains(section))
+        .collect();
+    Some(Note::NotReached {
+        later,
+        lost,
+        unnamed,
+    })
+}
+
+/// The notes on the sections without contents that no problem names, as
+/// `named` lists those it does, which may be meant to stay as they are:
+/// one for those that nothing zeroes, then one for each that a step zeroes
+/// short.
+fn zeroing_notes(ram: &RamSections, statuses: &Statuses, named: &[usize]) -> Vec<Note> {
+    let mut notes = Vec::new();
+    let unnamed = || (ram.zeros.iter().copied()).filter(|section| !named.contains(section));
+    let not_zeroed: Vec<usize> = unnamed()
+        .filter(|&section| statuses.status(section).status == Status::NotZeroed)
         .collect();
     if !not_zeroed.is_empty() {
         notes.push(Note::NotZeroed {
             sections: not_zeroed,
         });
     }
-    for &section in &ram.zeros {
+    for section in unnamed() {
         if let SectionStatus {
             status: Status::PartlyZeroed,
             step: Some(step),
             bytes: Some(bytes),
-        } = judged.status(section)
-            && !named.contains(&section)
+        } = statuses.status(section)
         {
             notes.push(Note::PartlyZeroed {
                 section,
@@ -1032,25 +1174,37 @@ fn notes(facts: &Facts, steps: &[Step], judged: &Judged) -> Vec<Note> {
             });
         }
     }
-    // Sections that the can't-follow problem doesn't name, which code elfq
-    // can't follow may set up too.
-    let in_problem: Vec<usize> = (judged.problems.iter())
+    notes
+}
+
+/// The note on the sections that code elfq can't follow may set up, but
+/// for those that the can't-follow problem among `problems` names, with
+/// the unread steps that may: none when there are none.
+fn cant_tell_note(
+    ram: &RamSections,
+    setups: &Setups,
+    statuses: &Statuses,
+    problems: &[Problem],
+) -> Option<Note> {
+    let in_problem: Vec<usize> = (problems.iter())
         .filter(|p| matches!(p, Problem::CantFollow { .. }))
         .flat_map(|p| p.sections().iter().copied())
         .collect();
-    let unknown: Vec<usize> = (ram.sections.iter().copied())
-        .filter(|&section| status(section) == Status::Unknown && !in_problem.contains(&section))
+    let sections: Vec<usize> = (ram.sections.iter().copied())
+        .filter(|&section| {
+            statuses.status(section).status == Status::Unknown && !in_problem.contains(&section)
+        })
         .collect();
-    if !unknown.is_empty() {
-        let mut indexes: Vec<usize> = (unknown.iter())
-            .flat_map(|section| judged.unread[section].iter().copied())
-            .collect();
-        indexes.sort_unstable();
-        indexes.dedup();
-        notes.push(Note::CantTell {
-            sections: unknown,
-            steps: indexes,
-        });
+    if sections.is_empty() {
+        return None;
     }
-    notes
+    let mut indexes: Vec<usize> = (sections.iter())
+        .flat_map(|section| setups.unread[section].iter().copied())
+        .collect();
+    indexes.sort_unstable();
+    indexes.dedup();
+    Some(Note::CantTell {
+        sections,
+        steps: indexes,
+    })
 }

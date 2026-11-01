@@ -157,7 +157,7 @@ fn last_call(answer: &Answer, ending: Ending) -> Option<LastCall> {
 /// steps set the sections up: "copies .data", "zeroes .bss and .sbss".
 fn set_up_parts(answer: &Answer, events: Range<usize>) -> Vec<String> {
     let ram = answer.facts.ram;
-    let init = &answer.judged.init;
+    let init = &answer.judged.setups.init;
     let mut ordered = ram.sections.clone();
     ordered.sort_by_key(|section| {
         init.get(section)
@@ -370,7 +370,7 @@ fn runs_before_copy_text(answer: &Answer, run: &EarlyRun) -> String {
 fn copied_yet_text(answer: &Answer, run: &EarlyRun) -> String {
     let name = answer.facts.ram.name(run.section);
     match run.before {
-        None if answer.judged.unread.contains_key(&run.section) => {
+        None if answer.judged.setups.unread.contains_key(&run.section) => {
             format!("before anything copies {name}")
         }
         None => "which nothing copies".to_string(),
