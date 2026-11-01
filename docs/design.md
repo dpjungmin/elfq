@@ -759,7 +759,7 @@ reset handler is the program, and startup ends at its endless loop. When
 the walk runs back into code that it went through other than that way,
 startup may go on past it, so elfq takes no `main`.
 
-The walk (`arch::startup`, for Thumb in `arch/thumb/startup.rs`) goes
+The walk (`arch::startup`, for Thumb in `arch/thumb/startup/`) goes
 one way through the code, as the processor would, keeping the numbers
 that it can work out in registers, on the stack and in the memory that
 the code writes, and the condition flags, so that it takes a branch the
