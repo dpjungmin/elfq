@@ -4,7 +4,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Deref;
 
-use crate::arch::thumb::{PC, SP};
+use crate::arch::thumb::decode::each;
+use crate::arch::thumb::{CALL_CLOBBERS, PC, SP};
 
 /// How many numbers elfq follows in one register or word on the stack.
 /// Past that, it stops following it until code writes it again.
@@ -205,7 +206,7 @@ impl Contents {
     /// elfq can't tell, or what it held before, which is then stale. Code
     /// compiled with GCC's `-fipa-ra` counts on the second when it knows
     /// that the function it calls keeps r0 to r3 or ip. For r0, the first
-    /// is the result; see [`State::get`].
+    /// is the result; see [`State::read`].
     pub fn after_call(&self) -> Contents {
         match self {
             Contents::TooMany { stale: true } => *self,
@@ -260,6 +261,51 @@ impl Contents {
             },
             _ => None,
         }
+    }
+
+    /// The offset of the word on the stack `offset` bytes past the one
+    /// address on the stack these contents hold, when they hold just that
+    /// and a word starts there.
+    pub fn word_at(&self, offset: i32) -> Option<i32> {
+        let at = self.stack_offset()?.wrapping_add(offset);
+        (at % 4 == 0).then_some(at)
+    }
+
+    /// The sum of what `a` and `b` hold, as `add` computes it. Adding the
+    /// program counter to a number makes an address, which the
+    /// instruction `source` builds. `None` when the sum may be more than
+    /// [`LIMIT`] numbers.
+    pub fn sum(a: &Contents, b: &Contents, source: Option<u32>) -> Option<Contents> {
+        let mut values = Values::NONE;
+        let mut or_unknown = a.may_be_unknown() || b.may_be_unknown();
+        for x in a.values() {
+            for y in b.values() {
+                let number = x.number.wrapping_add(y.number);
+                let (kind, source) = match (x.kind, y.kind) {
+                    (Kind::Number, Kind::Number) => (Kind::Number, None),
+                    (Kind::ProgramCounter, Kind::Number) | (Kind::Number, Kind::ProgramCounter) => {
+                        (Kind::Number, source)
+                    }
+                    (Kind::Stack, Kind::Number) | (Kind::Number, Kind::Stack) => {
+                        (Kind::Stack, None)
+                    }
+                    _ => {
+                        or_unknown = true;
+                        continue;
+                    }
+                };
+                let value = Value {
+                    number,
+                    kind,
+                    source,
+                    stale: false,
+                };
+                if values.insert(value) == Inserted::Full {
+                    return None;
+                }
+            }
+        }
+        Some(Contents::Known { values, or_unknown })
     }
 
     /// Whether these contents may be an address on the stack.
@@ -368,13 +414,14 @@ impl Contents {
 /// function's code.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct State {
-    /// r0 to pc. pc always holds something elfq can't tell: it reads pc
-    /// from the instruction's address instead.
-    pub registers: [Contents; 16],
+    /// r0 to pc, as the code left them; see [`State::held`] and
+    /// [`State::read`]. pc always holds something elfq can't tell: elfq
+    /// reads pc from the instruction's address instead.
+    registers: [Contents; 16],
     /// The words on the stack that the function stored numbers in, by
     /// their offset from where sp pointed when the function started. Any
     /// other word holds something elfq can't tell.
-    pub stack: BTreeMap<i32, Contents>,
+    stack: BTreeMap<i32, Contents>,
     /// Whether an address on the stack may be where elfq can't follow it,
     /// as in a register that holds something elfq can't tell, or with a
     /// function the code called. Code could then change the stack where
@@ -396,31 +443,80 @@ impl State {
         }
     }
 
-    /// What `register` holds for an instruction that reads it, where
-    /// reading pc gives `pc`. After a call, r0 holds what the function
-    /// returns, which elfq can't tell. Code reads r1 to r3 or ip after a
-    /// call only when it knows the call kept them, so what they held is no
-    /// longer stale.
-    pub fn get(&self, register: u16, pc: u32) -> Contents {
-        let contents = self.registers[usize::from(register)];
-        match register {
-            PC => Contents::holding(Value {
+    /// What `register` holds as the code left it, with the stale numbers
+    /// it held before a call that may have changed it. An instruction
+    /// works on what [`State::read`] says. The checks of whether code may
+    /// let an address out of sight, or reach the stack through a register,
+    /// use this instead, since code may count on a call having kept a
+    /// register, r0 included.
+    pub fn held(&self, register: u16) -> &Contents {
+        &self.registers[usize::from(register)]
+    }
+
+    /// What an instruction whose pc reads as `pc` sees in `register`. After
+    /// a call, r0 holds what the function returns, which elfq can't tell.
+    /// Code reads r1 to r3 or ip after a call only when it knows the call
+    /// kept them, so what they held is no longer stale.
+    pub fn read(&self, register: u16, pc: u32) -> Contents {
+        if register == PC {
+            return Contents::holding(Value {
                 number: pc,
                 kind: Kind::ProgramCounter,
                 source: None,
                 stale: false,
-            }),
-            RESULT => contents.result(),
-            _ => contents.kept(),
+            });
+        }
+        self.read_other(register)
+    }
+
+    /// What an instruction sees in `register`, which isn't pc; see
+    /// [`State::read`].
+    fn read_other(&self, register: u16) -> Contents {
+        let held = self.held(register);
+        match register {
+            RESULT => held.result(),
+            _ => held.kept(),
         }
     }
 
-    /// Leaves in `register` the numbers that are 0 if `zero`, or those that
-    /// aren't, where code tests whether it is 0; see [`Contents::narrow`].
-    pub fn narrow(&mut self, register: u16, zero: bool) {
-        let mut contents = self.get(register, 0);
-        contents.narrow(zero);
+    /// Sets what `register` holds. pc always holds something elfq can't
+    /// tell.
+    pub fn set(&mut self, register: u16, contents: Contents) {
+        debug_assert!(register != PC || contents == Contents::UNKNOWN);
         self.registers[usize::from(register)] = contents;
+    }
+
+    /// Leaves the registers as a call does: each that a call may change
+    /// holds what [`Contents::after_call`] says.
+    pub fn after_call(&mut self) {
+        for register in each(CALL_CLOBBERS) {
+            let contents = &mut self.registers[usize::from(register)];
+            *contents = contents.after_call();
+        }
+    }
+
+    /// Leaves in `register`, which a test of whether it is 0 reads, the
+    /// numbers that are 0 if `zero`, or those that aren't; see
+    /// [`Contents::narrow`].
+    pub fn narrow(&mut self, register: u16, zero: bool) {
+        let mut contents = self.read_other(register);
+        contents.narrow(zero);
+        self.set(register, contents);
+    }
+
+    /// Whether adding what registers `a` and `b` hold adds the program
+    /// counter: one of them is pc, or holds what an instruction read from
+    /// it.
+    pub fn adds_pc(&self, a: u16, b: u16) -> bool {
+        let pc = |register: u16| {
+            register == PC
+                || self
+                    .held(register)
+                    .values()
+                    .iter()
+                    .any(|value| value.kind == Kind::ProgramCounter)
+        };
+        pc(a) || pc(b)
     }
 
     /// Where sp points, as an offset from where it pointed when the
@@ -435,6 +531,20 @@ impl State {
             .get(&offset)
             .copied()
             .unwrap_or(Contents::UNKNOWN)
+    }
+
+    /// The words on the stack that the function stored numbers in, by
+    /// offset, from the lowest.
+    pub fn stack_words(&self) -> impl Iterator<Item = (i32, &Contents)> {
+        self.stack
+            .iter()
+            .map(|(&offset, contents)| (offset, contents))
+    }
+
+    /// Frees the words on the stack below `top`, as moving sp up to it
+    /// does: they hold nothing the function can count on.
+    pub fn free_below(&mut self, top: i32) {
+        self.stack.retain(|&offset, _| offset >= top);
     }
 
     /// Sets the word on the stack at `offset`.
@@ -661,28 +771,28 @@ mod tests {
     #[test]
     fn r0_after_a_call_holds_the_result_and_other_registers_what_they_did() {
         let mut state = State::entry();
-        state.registers[0] = holding([0x100]).after_call();
-        state.registers[1] = holding([0x200]).after_call();
+        state.set(0, holding([0x100]).after_call());
+        state.set(1, holding([0x200]).after_call());
         // r0 is what the call returns: the stale numbers aren't there.
-        assert_eq!(state.get(RESULT, 0), Contents::UNKNOWN);
+        assert_eq!(state.read(RESULT, 0), Contents::UNKNOWN);
         // r1 is read only when the call keeps it, so they are, and no
         // longer stale.
-        let r1 = state.get(1, 0);
+        let r1 = state.read(1, 0);
         assert_eq!(numbers(&r1), [0x200]);
         assert!(r1.may_be_unknown() && !r1.values()[0].stale);
         // An r0 that holds too many, some stale, is the result too.
-        state.registers[0] = too_many(true);
-        assert_eq!(state.get(RESULT, 0), Contents::UNKNOWN);
-        state.registers[2] = too_many(true);
-        assert_eq!(state.get(2, 0), too_many(false));
+        state.set(0, too_many(true));
+        assert_eq!(state.read(RESULT, 0), Contents::UNKNOWN);
+        state.set(2, too_many(true));
+        assert_eq!(state.read(2, 0), too_many(false));
         // r0 without stale numbers holds what it held.
-        state.registers[0] = holding([7]);
-        assert_eq!(state.get(RESULT, 0), holding([7]));
+        state.set(0, holding([7]));
+        assert_eq!(state.read(RESULT, 0), holding([7]));
     }
 
     #[test]
     fn reading_pc_gives_the_instruction_s_pc() {
-        let pc = State::entry().get(PC, 0x1004);
+        let pc = State::entry().read(PC, 0x1004);
         assert_eq!(pc.values().len(), 1);
         assert_eq!(pc.values()[0].number, 0x1004);
         assert_eq!(pc.values()[0].kind, Kind::ProgramCounter);
@@ -692,28 +802,31 @@ mod tests {
     #[test]
     fn a_test_for_zero_leaves_the_numbers_it_can_be() {
         let mut state = State::entry();
-        state.registers[3] = Contents::UNKNOWN;
+        state.set(3, Contents::UNKNOWN);
         state.narrow(3, true);
-        assert_eq!(state.registers[3], holding([0]));
+        assert_eq!(*state.held(3), holding([0]));
 
-        state.registers[3] = Contents::Known {
-            values: values([0, 4]),
-            or_unknown: true,
-        };
+        state.set(
+            3,
+            Contents::Known {
+                values: values([0, 4]),
+                or_unknown: true,
+            },
+        );
         state.narrow(3, false);
-        assert_eq!(numbers(&state.registers[3]), [4]);
-        assert!(state.registers[3].may_be_unknown());
+        assert_eq!(numbers(state.held(3)), [4]);
+        assert!(state.held(3).may_be_unknown());
 
         // Nothing left: the code there never runs.
-        state.registers[3] = holding([4]);
+        state.set(3, holding([4]));
         state.narrow(3, true);
-        assert!(numbers(&state.registers[3]).is_empty() && !state.registers[3].may_be_unknown());
+        assert!(numbers(state.held(3)).is_empty() && !state.held(3).may_be_unknown());
 
         // elfq doesn't follow contents that hold too many, so a test
         // leaves them.
-        state.registers[3] = too_many(false);
+        state.set(3, too_many(false));
         state.narrow(3, true);
-        assert_eq!(state.registers[3], too_many(false));
+        assert_eq!(*state.held(3), too_many(false));
     }
 
     #[test]
@@ -744,7 +857,7 @@ mod tests {
         state.set_word(-4, holding([1]));
         assert_eq!(state.word(-4), holding([1]));
         state.set_word(-4, Contents::UNKNOWN);
-        assert!(state.stack.is_empty());
+        assert!(state.stack_words().next().is_none());
         // Contents that hold too many are kept, as they aren't just what
         // elfq can't tell.
         state.set_word(-8, too_many(false));
@@ -758,7 +871,7 @@ mod tests {
         let mut lost = Vec::new();
         state.forget_stack(&mut |value| lost.push(value.number));
         assert_eq!(lost, [1]);
-        assert!(state.stack.is_empty() && !state.escaped);
+        assert!(state.stack_words().next().is_none() && !state.escaped);
 
         state.set_word(-4, Contents::holding(Value::stack(-16)));
         state.forget_stack(&mut |_| {});
@@ -768,8 +881,8 @@ mod tests {
         // too.
         let mut state = State::entry();
         let mut other = State::entry();
-        state.registers[4] = Contents::holding(Value::stack(-8));
-        other.registers[4] = holding(1..=8);
+        state.set(4, Contents::holding(Value::stack(-8)));
+        other.set(4, holding(1..=8));
         let mut lost = Vec::new();
         assert!(state.join(&other, &mut |value| lost.push(*value)));
         assert!(state.escaped);
@@ -781,11 +894,11 @@ mod tests {
     fn joining_states_joins_each_register_and_word() {
         let mut state = State::entry();
         let mut other = State::entry();
-        state.registers[1] = holding([1]);
-        other.registers[1] = holding([2]);
+        state.set(1, holding([1]));
+        other.set(1, holding([2]));
         other.set_word(-4, holding([3]));
         assert!(state.join(&other, &mut |_| {}));
-        assert_eq!(numbers(&state.registers[1]), [1, 2]);
+        assert_eq!(numbers(state.held(1)), [1, 2]);
         // A word that only one side stored holds something elfq can't
         // tell as well.
         let word = state.word(-4);

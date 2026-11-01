@@ -89,9 +89,9 @@ use object::Endianness;
 
 use self::address_uses::{AddressUses, Use};
 use self::code::{Code, Condition};
-use self::state::{Contents, Inserted, Kind, RESULT, State, Value, Values};
+use self::state::{Contents, Kind, RESULT, State, Value};
 use super::decode::{Flow, LowBit, Operation, When, bit, each};
-use super::{ARGUMENTS, CALL_CLOBBERS, Instruction, PC, SP};
+use super::{ARGUMENTS, Instruction, PC, SP};
 use crate::arch::CodeReference;
 use crate::arch::CodeReferenceKind::{self, *};
 
@@ -419,7 +419,10 @@ impl<'a> Function<'a> {
             // The code runs on past what elfq was given, into code it
             // can't see, unless it ends with a call that never returns.
             self.uses.pass_registers(&state, !0);
-            for value in state.stack.values().flat_map(Contents::values) {
+            for value in state
+                .stack_words()
+                .flat_map(|(_, contents)| contents.values())
+            {
                 self.uses.record(value, Use::Other);
             }
         }
@@ -450,10 +453,7 @@ impl<'a> Function<'a> {
             .reads(state, effect.reads & !bit(RESULT) | branches_through);
         state.escaped |= self.execute(index, state);
         if calls {
-            for register in each(CALL_CLOBBERS) {
-                let contents = &mut state.registers[usize::from(register)];
-                *contents = contents.after_call();
-            }
+            state.after_call();
             // The function may change the stack through an address that
             // got out of sight.
             if state.escaped {
@@ -549,20 +549,20 @@ impl<'a> Function<'a> {
                 Some((register, Contents::holding(address(value))))
             }
             Operation::HighHalf { register, high } => {
-                let low = state.get(register, pc);
+                let low = state.read(register, pc);
                 leaks = low.may_be_stack();
                 let contents = low.map(|low| {
                     (low.kind == Kind::Number).then(|| address(low.number & 0xffff | high << 16))
                 });
                 Some((register, contents))
             }
-            Operation::Copy { register, source } => Some((register, state.get(source, pc))),
+            Operation::Copy { register, source } => Some((register, state.read(source, pc))),
             Operation::AddConstant {
                 register,
                 source,
                 amount,
             } => {
-                let contents = state.get(source, pc).map(|value| {
+                let contents = state.read(source, pc).map(|value| {
                     Some(Value {
                         number: value.number.wrapping_add(amount),
                         ..value
@@ -575,7 +575,7 @@ impl<'a> Function<'a> {
                 source,
                 shift,
             } => {
-                let source = state.get(source, pc);
+                let source = state.read(source, pc);
                 leaks = shift != 0 && source.may_be_stack();
                 let contents = source.map(|value| match (shift, value.kind) {
                     (0, _) => Some(value),
@@ -588,8 +588,17 @@ impl<'a> Function<'a> {
                 Some((register, contents))
             }
             Operation::Add { register, a, b } => {
-                let (a, b) = (state.get(a, pc), state.get(b, pc));
-                let sum = self.add(&a, &b, source);
+                let (a, b) = (state.read(a, pc), state.read(b, pc));
+                let sum = match Contents::sum(&a, &b, source) {
+                    Some(sum) => sum,
+                    // More than elfq follows.
+                    None => {
+                        for value in a.values().iter().chain(b.values()) {
+                            self.uses.record(value, Use::Other);
+                        }
+                        Contents::UNKNOWN
+                    }
+                };
                 // An address on the stack plus something elfq can't tell.
                 leaks = sum.may_be_unknown() && (a.may_be_stack() || b.may_be_stack());
                 Some((register, sum))
@@ -600,7 +609,7 @@ impl<'a> Function<'a> {
                 offset: Some(offset),
             } => {
                 let at = state
-                    .get(base, pc)
+                    .read(base, pc)
                     .stack_offset()
                     .map(|at| at.wrapping_add(offset));
                 if let Some(at) = at {
@@ -618,13 +627,13 @@ impl<'a> Function<'a> {
                 offset,
                 size,
             } => {
-                let value = register.map(|register| state.get(register, pc));
-                self.store(state, value, state.get(base, pc), offset, size);
+                let value = register.map(|register| state.read(register, pc));
+                self.store(state, value, state.read(base, pc), offset, size);
                 None
             }
         };
         for register in each(effect.writes) {
-            state.registers[usize::from(register)] = Contents::UNKNOWN;
+            state.set(register, Contents::UNKNOWN);
         }
         match (effect.operation, sp) {
             (Operation::Push { registers, size }, Some(sp)) => {
@@ -633,9 +642,9 @@ impl<'a> Function<'a> {
                     state.set_word(word, Contents::UNKNOWN);
                 }
                 for (n, register) in each(registers).enumerate() {
-                    state.set_word(bottom + 4 * n as i32, state.get(register, pc));
+                    state.set_word(bottom + 4 * n as i32, state.read(register, pc));
                 }
-                state.registers[usize::from(SP)] = Contents::holding(Value::stack(bottom));
+                state.set(SP, Contents::holding(Value::stack(bottom)));
             }
             // It may push anywhere on the stack.
             (Operation::Push { .. }, None) => state.forget_stack(&mut self.uses.lost()),
@@ -644,14 +653,12 @@ impl<'a> Function<'a> {
                     let at = sp + 4 * n as i32;
                     self.uses.loads_back(state, at);
                     if register != PC {
-                        state.registers[usize::from(register)] = state.word(at);
+                        state.set(register, state.word(at));
                     }
                 }
-                // The words below sp are free, and hold nothing the
-                // function can count on.
                 let top = sp.wrapping_add(size as i32);
-                state.stack.retain(|&offset, _| offset >= top);
-                state.registers[usize::from(SP)] = Contents::holding(Value::stack(top));
+                state.free_below(top);
+                state.set(SP, Contents::holding(Value::stack(top)));
             }
             _ => {}
         }
@@ -666,7 +673,7 @@ impl<'a> Function<'a> {
                 let addresses = found.addresses.entry(index).or_default();
                 addresses.extend(built.map(|value| value.number));
             }
-            state.registers[usize::from(register)] = contents;
+            state.set(register, contents);
         }
         leaks
     }
@@ -705,46 +712,6 @@ impl<'a> Function<'a> {
         }
     }
 
-    /// The sum of what `a` and `b` hold, as `add` computes it. Adding the
-    /// program counter to a number makes an address, which the
-    /// instruction `source` builds.
-    fn add(&mut self, a: &Contents, b: &Contents, source: Option<u32>) -> Contents {
-        let mut values = Values::NONE;
-        let mut or_unknown = a.may_be_unknown() || b.may_be_unknown();
-        for x in a.values() {
-            for y in b.values() {
-                let number = x.number.wrapping_add(y.number);
-                let (kind, source) = match (x.kind, y.kind) {
-                    (Kind::Number, Kind::Number) => (Kind::Number, None),
-                    (Kind::ProgramCounter, Kind::Number) | (Kind::Number, Kind::ProgramCounter) => {
-                        (Kind::Number, source)
-                    }
-                    (Kind::Stack, Kind::Number) | (Kind::Number, Kind::Stack) => {
-                        (Kind::Stack, None)
-                    }
-                    _ => {
-                        or_unknown = true;
-                        continue;
-                    }
-                };
-                let value = Value {
-                    number,
-                    kind,
-                    source,
-                    stale: false,
-                };
-                if values.insert(value) == Inserted::Full {
-                    // More than elfq follows.
-                    for value in a.values().iter().chain(b.values()) {
-                        self.uses.record(value, Use::Other);
-                    }
-                    return Contents::UNKNOWN;
-                }
-            }
-        }
-        Contents::Known { values, or_unknown }
-    }
-
     /// Whether the instruction at `index` may let an address on the stack
     /// out of sight, besides by turning it into something elfq can't tell:
     /// it does something elfq doesn't follow with a register that may hold
@@ -775,8 +742,7 @@ impl<'a> Function<'a> {
                 offset,
                 size,
             } if !writes_back(base) => {
-                let slot =
-                    offset.and_then(|offset| word_at(&state.registers[usize::from(base)], offset));
+                let slot = offset.and_then(|offset| state.held(base).word_at(offset));
                 match register {
                     Some(register) if size == 4 && slot.is_some() => bit(base) | bit(register),
                     _ => bit(base),
@@ -801,8 +767,11 @@ impl<'a> Function<'a> {
         if calls {
             passed |= ARGUMENTS;
         }
-        each(passed).any(|register| state.registers[usize::from(register)].may_be_stack())
-            || calls && state.stack.values().any(Contents::may_be_stack)
+        each(passed).any(|register| state.held(register).may_be_stack())
+            || calls
+                && state
+                    .stack_words()
+                    .any(|(_, contents)| contents.may_be_stack())
     }
 
     /// Whether the instruction at `index` loads or builds an address: it
@@ -813,7 +782,7 @@ impl<'a> Function<'a> {
             Operation::Literal { .. } | Operation::Address { .. } | Operation::HighHalf { .. } => {
                 true
             }
-            Operation::Add { a, b, .. } => adds_pc(a, b, state),
+            Operation::Add { a, b, .. } => state.adds_pc(a, b),
             _ => false,
         }
     }
@@ -822,6 +791,7 @@ impl<'a> Function<'a> {
     /// where it branches when it branches through a register.
     fn report(&mut self, index: usize, state: &State) {
         let effect = self.code.effects[index];
+        let pc = self.code.pc(index);
         // The registers it reads as plain numbers.
         let mut other = effect.reads;
         // Those it passes on without naming them; see
@@ -839,14 +809,14 @@ impl<'a> Function<'a> {
                 register, source, ..
             } if register != PC => other &= !bit(source),
             Operation::HighHalf { register, .. } => {
-                for value in state.get(register, 0).values() {
+                for value in state.read(register, pc).values() {
                     self.uses.record(value, Use::Part);
                 }
                 other &= !bit(register);
             }
-            Operation::Add { register, a, b } if register != PC && adds_pc(a, b, state) => {
+            Operation::Add { register, a, b } if register != PC && state.adds_pc(a, b) => {
                 let offsets = (bit(a) | bit(b)) & !bit(PC);
-                self.uses.record_registers(state, offsets, Use::Part);
+                self.uses.record_registers(state, offsets, pc, Use::Part);
                 other &= !offsets;
             }
             // Storing a value on the stack passes it on, to where the code
@@ -856,7 +826,7 @@ impl<'a> Function<'a> {
                 base,
                 offset: Some(offset),
                 size: 4,
-            } if word_at(&state.registers[usize::from(base)], offset).is_some() => {
+            } if state.held(base).word_at(offset).is_some() => {
                 other &= !bit(register);
             }
             Operation::Push { registers, .. } if state.sp().is_some() => other &= !registers,
@@ -868,11 +838,11 @@ impl<'a> Function<'a> {
                 base,
                 offset,
             } => {
-                let base = state.get(base, 0);
+                let base = state.read(base, pc);
                 // Through a register it reads that may hold an address on
                 // the stack, as its base or what it adds to the base.
-                let may_be_stack = each(effect.reads)
-                    .any(|register| state.registers[usize::from(register)].may_be_stack());
+                let may_be_stack =
+                    each(effect.reads).any(|register| state.held(register).may_be_stack());
                 match (base.stack_offset(), offset) {
                     (Some(at), Some(offset)) => {
                         let at = at.wrapping_add(offset);
@@ -891,7 +861,7 @@ impl<'a> Function<'a> {
         }
         match effect.flow {
             Flow::CallRegister(register, low_bit) | Flow::JumpRegister(register, low_bit) => {
-                let contents = state.get(register, 0);
+                let contents = state.read(register, pc);
                 self.branch(index, &contents, |number| low_bit.target(number));
                 self.uses.record_kept_result(state, register);
                 // A call or a tail call passes the arguments on.
@@ -899,8 +869,7 @@ impl<'a> Function<'a> {
                 passed |= ARGUMENTS & !bit(register);
             }
             Flow::JumpRelative(register) => {
-                let pc = self.code.pc(index);
-                let contents = state.get(register, 0);
+                let contents = state.read(register, pc);
                 // It goes to pc + the offset, whatever its low bit.
                 self.branch(index, &contents, |offset| {
                     Some(pc.wrapping_add(offset) & !1)
@@ -959,7 +928,7 @@ impl<'a> Function<'a> {
         if leaves {
             self.uses.pass_stack(state);
         }
-        self.uses.record_registers(state, other, Use::Other);
+        self.uses.record_registers(state, other, pc, Use::Other);
         self.uses.pass_registers(state, passed & !other);
     }
 
@@ -1041,23 +1010,4 @@ impl<'a> Function<'a> {
         references.sort_by_key(|reference| reference.site);
         references
     }
-}
-
-/// The word on the stack at `offset` bytes past the address `base` holds,
-/// when `base` holds one address on the stack and that word starts there.
-fn word_at(base: &Contents, offset: i32) -> Option<i32> {
-    let at = base.stack_offset()?.wrapping_add(offset);
-    (at % 4 == 0).then_some(at)
-}
-
-/// Whether adding what `a` and `b` hold adds the program counter.
-fn adds_pc(a: u16, b: u16, state: &State) -> bool {
-    let pc = |register: u16| {
-        register == PC
-            || state.registers[usize::from(register)]
-                .values()
-                .iter()
-                .any(|value| value.kind == Kind::ProgramCounter)
-    };
-    pc(a) || pc(b)
 }

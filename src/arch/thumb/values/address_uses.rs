@@ -6,7 +6,6 @@
 use std::collections::BTreeSet;
 
 use super::state::{Contents, RESULT, State, Value};
-use crate::arch::thumb::PC;
 use crate::arch::thumb::decode::{Registers, each};
 
 /// How the rest of a function uses an address that one instruction loaded
@@ -104,10 +103,8 @@ impl AddressUses {
     /// Notes that an instruction reads each register of `registers` in
     /// `state`, for the stale numbers elfq stopped following there.
     pub(super) fn reads(&mut self, state: &State, registers: Registers) {
-        self.reads_stale_lost |= each(registers).any(|register| {
-            let contents = state.registers[usize::from(register)];
-            matches!(contents, Contents::TooMany { stale: true })
-        });
+        self.reads_stale_lost |= each(registers)
+            .any(|register| matches!(state.held(register), Contents::TooMany { stale: true }));
     }
 
     /// Counts every stale number that elfq stopped following as used, if
@@ -134,11 +131,19 @@ impl AddressUses {
     // What the code does with the numbers in registers and on the stack,
     // which the last pass records.
 
-    /// Records a use of the values in each register of `registers`, as the
-    /// code reads them.
-    pub(super) fn record_registers(&mut self, state: &State, registers: Registers, how: Use) {
-        for register in each(registers).filter(|&register| register != PC) {
-            for value in state.get(register, 0).values() {
+    /// Records a use of the values in each register of `registers`, as an
+    /// instruction whose pc reads as `pc` reads them. What it reads in pc
+    /// is no address that an instruction loaded or built, so it records
+    /// nothing.
+    pub(super) fn record_registers(
+        &mut self,
+        state: &State,
+        registers: Registers,
+        pc: u32,
+        how: Use,
+    ) {
+        for register in each(registers) {
+            for value in state.read(register, pc).values() {
                 self.record(value, how);
             }
         }
@@ -146,13 +151,13 @@ impl AddressUses {
 
     /// Records that a branch through `register` uses what r0 held before a
     /// call, when that is the register: elfq takes r0 to hold the call's
-    /// result (see [`State::get`]), but code that knows the call kept r0
+    /// result (see [`State::read`]), but code that knows the call kept r0
     /// may branch to what it held.
     pub(super) fn record_kept_result(&mut self, state: &State, register: u16) {
         if register != RESULT {
             return;
         }
-        for value in state.registers[usize::from(register)].values() {
+        for value in state.held(register).values() {
             if value.stale {
                 self.record(value, Use::Other);
             }
@@ -170,7 +175,7 @@ impl AddressUses {
     /// Records that code may read the numbers in any word on the stack
     /// where elfq can't follow them.
     pub(super) fn record_stack(&mut self, state: &State) {
-        for contents in state.stack.values() {
+        for (_, contents) in state.stack_words() {
             for value in contents.values() {
                 self.record(value, Use::Other);
             }
@@ -182,7 +187,7 @@ impl AddressUses {
     /// that the code doesn't load back from there itself.
     pub(super) fn pass_stack(&mut self, state: &State) {
         let sp = state.sp();
-        for (&offset, contents) in &state.stack {
+        for (offset, contents) in state.stack_words() {
             if sp.is_some_and(|sp| offset < sp) {
                 continue;
             }
@@ -201,10 +206,10 @@ impl AddressUses {
     /// on, without naming them: as arguments to a function, a result to
     /// the caller, or to code that elfq can't see. A stale number in one
     /// isn't passed, since code passes nothing in a register that a call
-    /// may have changed.
+    /// may have changed. pc holds no number here.
     pub(super) fn pass_registers(&mut self, state: &State, registers: Registers) {
-        for register in each(registers).filter(|&register| register != PC) {
-            for value in state.registers[usize::from(register)].values() {
+        for register in each(registers) {
+            for value in state.held(register).values() {
                 if !value.stale {
                     self.record(value, Use::Other);
                 }
