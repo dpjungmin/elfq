@@ -165,7 +165,7 @@ pub(super) fn run(
         end: walk.end,
     };
     let steps = steps::build(&facts);
-    let judged = problems::judge(&facts, &steps, all);
+    let judged = problems::judge(&facts, &steps);
     let answer = Answer {
         path,
         facts: &facts,

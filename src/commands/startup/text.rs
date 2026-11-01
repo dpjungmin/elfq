@@ -1,17 +1,18 @@
 //! The text of `startup`: a line that says whether there are problems,
-//! a sentence for each, the steps in a table, notes, and what to try.
+//! a sentence for each, the steps in a table, notes, and what to try. The
+//! JSON gives the same sentences for the problems and the notes.
 
 use std::io::Write;
 
 use anyhow::Result;
 
-use super::problems::{Kind, Problem, RunsAt, Status};
+use super::problems::{Kind, Note, Problem, RunsAt, Status};
 use super::ram_sections::RamSections;
 use super::start::{Main, MainFrom};
 use super::steps::{Does, Step, Way, number};
 use super::{Answer, Ending, Facts, Firmware};
 use crate::arch::startup::{End, Through, loop_head};
-use crate::binary::Section;
+use crate::binary::{ItemKind, Section};
 use crate::commands::text::{self as house, names_text, plural, shell_quote};
 use crate::render::{Align, Table};
 
@@ -54,7 +55,7 @@ pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
     if !notes.is_empty() {
         writeln!(out)?;
         for note in notes {
-            writeln!(out, "{}", note.text)?;
+            writeln!(out, "{}", note_text(answer, note))?;
         }
     }
     house::write_try(answer.path, &try_commands(answer), out)
@@ -339,6 +340,90 @@ pub(super) fn sentence(answer: &Answer, p: &Problem) -> String {
     }
 }
 
+/// The sentence of note `note`.
+pub(super) fn note_text(answer: &Answer, note: &Note) -> String {
+    let Facts {
+        firmware,
+        ram,
+        reset,
+        ..
+    } = *answer.facts;
+    let boot = firmware.name(reset.address);
+    match note {
+        Note::NoVectorTable => {
+            format!("elfq finds no vector table, so it reads from the entry point, {boot}.")
+        }
+        Note::ResetInNoFunction { table, outside } => format!(
+            "The vector table at {table:#x} gives {outside:#x} for reset, which is in no \
+             function, so elfq reads from the entry point, {boot}."
+        ),
+        Note::EntryDiffers { table } => format!(
+            "The vector table at {table:#x} gives {boot} for reset, not the entry point {}.",
+            firmware.name(firmware.binary.entry)
+        ),
+        Note::Branch { site, because } => format!(
+            "At {site:#x} elfq takes the branch, since the other way {}.",
+            other_way(*because)
+        ),
+        Note::NotReached { later, unnamed, .. } => {
+            let rest: Vec<&str> = unnamed.iter().map(|&section| ram.name(section)).collect();
+            let so = if rest.is_empty() {
+                String::new()
+            } else {
+                format!(", so {} may not be set up", names_text(&rest, answer.all))
+            };
+            format!("{} may never run{so}.", steps_text(later, true))
+        }
+        Note::NotZeroed { sections } => {
+            let parts: Vec<String> = (sections.iter())
+                .map(|&section| {
+                    let held = data_in(firmware, ram, section);
+                    if held.is_empty() {
+                        ram.name(section).to_string()
+                    } else {
+                        format!("{} ({})", ram.name(section), names_text(&held, answer.all))
+                    }
+                })
+                .collect();
+            let parts: Vec<&str> = parts.iter().map(String::as_str).collect();
+            format!(
+                "Not zeroed, which may be intended: {}.",
+                names_text(&parts, true)
+            )
+        }
+        Note::PartlyZeroed {
+            section,
+            step,
+            bytes,
+        } => format!(
+            "Step {} zeroes {bytes} of {}'s {} bytes, which may be intended.",
+            number(*step),
+            ram.name(*section),
+            ram.section(*section).size
+        ),
+        Note::CantTell { sections, steps } => format!(
+            "elfq can't follow {}, which may {}.",
+            unread_text(answer.steps, steps),
+            may_text(ram, sections)
+        ),
+    }
+}
+
+/// The names of the data objects in `section`, by address, but for those
+/// named after where they are.
+fn data_in<'a>(firmware: &'a Firmware, ram: &RamSections, section: usize) -> Vec<&'a str> {
+    let start = ram.section(section).address;
+    (firmware.binary.items.iter())
+        .filter(|item| {
+            item.kind == ItemKind::Data
+                && start <= item.address
+                && item.address < ram.end(section)
+                && !item.name.contains('@')
+        })
+        .map(|item| item.name.as_str())
+        .collect()
+}
+
 /// For code that runs from a load image after code elfq can't follow,
 /// which may copy it first: ", unless step 1 (a loop) copies it first".
 fn unless(answer: &Answer, p: &Problem) -> String {
@@ -499,7 +584,7 @@ fn try_commands(answer: &Answer) -> Vec<String> {
 
 /// The steps at `indexes` in the steps, by number: "Step 3", "Steps 2 and
 /// 5", "Steps 6 to 24", or for many runs, "40 steps from 2 to 90".
-pub(super) fn steps_text(indexes: &[usize], capital: bool) -> String {
+fn steps_text(indexes: &[usize], capital: bool) -> String {
     let mut numbers: Vec<usize> = indexes.iter().map(|&index| number(index)).collect();
     numbers.sort_unstable();
     numbers.dedup();
@@ -541,7 +626,7 @@ pub(super) fn steps_text(indexes: &[usize], capital: bool) -> String {
 /// The steps at `indexes` in `steps`, of code elfq can't follow, with what
 /// kinds of code they are: "step 3 (a loop)", "steps 2 and 5 (a loop and
 /// a call through r3)".
-pub(super) fn unread_text(steps: &[Step], indexes: &[usize]) -> String {
+fn unread_text(steps: &[Step], indexes: &[usize]) -> String {
     let unread: Vec<&Step> = indexes.iter().map(|&index| &steps[index]).collect();
     let loops = (unread.iter())
         .filter(|step| matches!(step.way, Way::Loop | Way::Stop(End::Rejoins(_))))
@@ -685,13 +770,13 @@ fn does_text(ram: &RamSections, sections: &[usize], verbs: [&str; 2], joiner: &s
 
 /// What code elfq can't follow may do to `sections`: "copy .data and zero
 /// .bss".
-pub(super) fn may_text(ram: &RamSections, sections: &[usize]) -> String {
+fn may_text(ram: &RamSections, sections: &[usize]) -> String {
     does_text(ram, sections, ["copy", "zero"], " and ")
 }
 
 /// How the way the walk didn't take ended, for the note on a branch it
 /// took instead.
-pub(super) fn other_way(end: End) -> String {
+fn other_way(end: End) -> String {
     let site = end.site();
     match end {
         End::Branches { through, .. } => {

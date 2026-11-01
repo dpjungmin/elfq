@@ -1,5 +1,5 @@
 //! What can go wrong in startup: the state of each section when `main`
-//! starts, the problems, and the notes.
+//! starts, the problems, and the notes, as facts that `text.rs` words.
 //!
 //! A load image runs before its copy when code in it runs before the step
 //! that copies it: the reset handler itself, or any function that a call
@@ -13,15 +13,13 @@ use std::collections::{HashMap, HashSet};
 
 use object::SectionKind;
 
+use super::Facts;
 use super::events::Events;
 use super::ram_sections::RamSections;
 use super::start::Main;
-use super::steps::{Does, Step, number};
-use super::text;
-use super::{Facts, Firmware};
-use crate::arch::startup::Event;
+use super::steps::{Does, Step};
+use crate::arch::startup::{End, Event};
 use crate::binary::ItemKind;
-use crate::commands::text::names_text;
 
 /// The state of a section when `main` starts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,10 +162,73 @@ impl Problem {
     }
 }
 
-pub(super) struct Note {
-    pub kind: &'static str,
-    pub sections: Vec<usize>,
-    pub text: String,
+/// A note under the steps, as facts, which `text::note_text` words.
+pub(super) enum Note {
+    /// elfq finds no vector table, so it reads from the entry point.
+    NoVectorTable,
+    /// The vector table at `table` gives `outside` for reset, which is in
+    /// no function, so elfq reads from the entry point.
+    ResetInNoFunction { table: u64, outside: u64 },
+    /// The vector table at `table` gives a reset handler other than the
+    /// entry point.
+    EntryDiffers { table: u64 },
+    /// At `site` the walk takes a branch whose condition it can't tell,
+    /// since the other way ends as `because` says.
+    Branch { site: u64, because: End },
+    /// The steps at `later`, as indexes into the steps, may never run (see
+    /// [`Judged::may_never_run`]), so the sections in `lost` may not be set
+    /// up. No problem names those in `unnamed`.
+    NotReached {
+        later: Vec<usize>,
+        lost: Vec<usize>,
+        unnamed: Vec<usize>,
+    },
+    /// Sections without contents that nothing zeroes and no problem names,
+    /// which may be meant to stay as they are.
+    NotZeroed { sections: Vec<usize> },
+    /// A section without contents that the step at index `step` zeroes
+    /// `bytes` of, short of its size, which no problem names.
+    PartlyZeroed {
+        section: usize,
+        step: usize,
+        bytes: u64,
+    },
+    /// Sections that code elfq can't follow may set up, which the
+    /// can't-follow problem doesn't name, with the unread steps that may,
+    /// as indexes into the steps.
+    CantTell {
+        sections: Vec<usize>,
+        steps: Vec<usize>,
+    },
+}
+
+impl Note {
+    /// The JSON's `kind`.
+    pub fn field(&self) -> &'static str {
+        match self {
+            Note::NoVectorTable => "no vector table",
+            Note::ResetInNoFunction { .. } => "reset in no function",
+            Note::EntryDiffers { .. } => "entry differs",
+            Note::Branch { .. } => "branch",
+            Note::NotReached { .. } => "not reached",
+            Note::NotZeroed { .. } => "not zeroed",
+            Note::PartlyZeroed { .. } => "partly zeroed",
+            Note::CantTell { .. } => "can't tell",
+        }
+    }
+
+    /// The sections it is about.
+    pub fn sections(&self) -> &[usize] {
+        match self {
+            Note::NoVectorTable
+            | Note::ResetInNoFunction { .. }
+            | Note::EntryDiffers { .. }
+            | Note::Branch { .. } => &[],
+            Note::NotReached { lost, .. } => lost,
+            Note::NotZeroed { sections } | Note::CantTell { sections, .. } => sections,
+            Note::PartlyZeroed { section, .. } => std::slice::from_ref(section),
+        }
+    }
 }
 
 /// The first step that sets up a section: as an index into the steps,
@@ -300,9 +361,8 @@ impl Judged {
     }
 }
 
-/// Works out what `steps` come to. With `all`, as with `--all`, the notes
-/// list every name in full.
-pub(super) fn judge(facts: &Facts, steps: &[Step], all: bool) -> Judged {
+/// Works out what `steps` come to.
+pub(super) fn judge(facts: &Facts, steps: &[Step]) -> Judged {
     let Facts {
         firmware,
         ram,
@@ -446,7 +506,7 @@ pub(super) fn judge(facts: &Facts, steps: &[Step], all: bool) -> Judged {
         problems.push(p);
     }
     judged.problems = problems;
-    judged.notes = notes(facts, steps, &judged, all);
+    judged.notes = notes(facts, steps, &judged);
     judged
 }
 
@@ -789,7 +849,7 @@ fn step_at(steps: &[Step], event: usize) -> Option<usize> {
 /// The notes under the steps: where the walk starts, branches it took,
 /// steps that may never run, and sections without contents that may be
 /// meant to stay as they are.
-fn notes(facts: &Facts, steps: &[Step], judged: &Judged, all: bool) -> Vec<Note> {
+fn notes(facts: &Facts, steps: &[Step], judged: &Judged) -> Vec<Note> {
     let Facts {
         firmware,
         ram,
@@ -798,47 +858,17 @@ fn notes(facts: &Facts, steps: &[Step], judged: &Judged, all: bool) -> Vec<Note>
         ..
     } = *facts;
     let mut notes = Vec::new();
-    let note = |kind, sections, text| Note {
-        kind,
-        sections,
-        text,
-    };
-    let boot = firmware.name(reset.address);
-    let entry = firmware.binary.entry;
     match (reset.table, reset.outside) {
-        (None, _) => notes.push(note(
-            "no vector table",
-            Vec::new(),
-            format!("elfq finds no vector table, so it reads from the entry point, {boot}."),
-        )),
-        (Some(table), Some(outside)) => notes.push(note(
-            "reset in no function",
-            Vec::new(),
-            format!(
-                "The vector table at {table:#x} gives {outside:#x} for reset, which is in no \
-                 function, so elfq reads from the entry point, {boot}."
-            ),
-        )),
-        (Some(table), None) if entry != reset.address => notes.push(note(
-            "entry differs",
-            Vec::new(),
-            format!(
-                "The vector table at {table:#x} gives {boot} for reset, not the entry point {}.",
-                firmware.name(entry)
-            ),
-        )),
+        (None, _) => notes.push(Note::NoVectorTable),
+        (Some(table), Some(outside)) => notes.push(Note::ResetInNoFunction { table, outside }),
+        (Some(table), None) if firmware.binary.entry != reset.address => {
+            notes.push(Note::EntryDiffers { table });
+        }
         (Some(_), None) => {}
     }
     for event in events.list {
-        if let Event::Backtrack { site, because, .. } = event {
-            notes.push(note(
-                "branch",
-                Vec::new(),
-                format!(
-                    "At {site:#x} elfq takes the branch, since the other way {}.",
-                    text::other_way(*because)
-                ),
-            ));
+        if let Event::Backtrack { site, because, .. } = *event {
+            notes.push(Note::Branch { site, because });
         }
     }
     let status = |section| judged.status(section).status;
@@ -854,59 +884,36 @@ fn notes(facts: &Facts, steps: &[Step], judged: &Judged, all: bool) -> Vec<Note>
         let lost: Vec<usize> = (ram.sections.iter().copied())
             .filter(|&section| status(section) == Status::NotReached)
             .collect();
-        let rest: Vec<&str> = (lost.iter())
+        let unnamed = (lost.iter().copied())
             .filter(|section| !named.contains(section))
-            .map(|&section| ram.name(section))
             .collect();
-        let so = if rest.is_empty() {
-            String::new()
-        } else {
-            format!(", so {} may not be set up", names_text(&rest, all))
-        };
-        notes.push(note(
-            "not reached",
+        notes.push(Note::NotReached {
+            later,
             lost,
-            format!("{} may never run{so}.", text::steps_text(&later, true)),
-        ));
+            unnamed,
+        });
     }
     let not_zeroed: Vec<usize> = (ram.zeros.iter().copied())
         .filter(|&section| status(section) == Status::NotZeroed && !named.contains(&section))
         .collect();
     if !not_zeroed.is_empty() {
-        let parts: Vec<String> = (not_zeroed.iter())
-            .map(|&section| {
-                let held = data_in(firmware, ram, section);
-                if held.is_empty() {
-                    ram.name(section).to_string()
-                } else {
-                    format!("{} ({})", ram.name(section), names_text(&held, all))
-                }
-            })
-            .collect();
-        let parts: Vec<&str> = parts.iter().map(String::as_str).collect();
-        notes.push(note(
-            "not zeroed",
-            not_zeroed,
-            format!(
-                "Not zeroed, which may be intended: {}.",
-                names_text(&parts, true)
-            ),
-        ));
+        notes.push(Note::NotZeroed {
+            sections: not_zeroed,
+        });
     }
     for &section in &ram.zeros {
-        let zeroed = judged.status(section);
-        if zeroed.status == Status::PartlyZeroed && !named.contains(&section) {
-            notes.push(note(
-                "partly zeroed",
-                vec![section],
-                format!(
-                    "Step {} zeroes {} of {}'s {} bytes, which may be intended.",
-                    zeroed.step.map_or(0, number),
-                    zeroed.bytes.unwrap_or(0),
-                    ram.name(section),
-                    ram.section(section).size
-                ),
-            ));
+        if let SectionStatus {
+            status: Status::PartlyZeroed,
+            step: Some(step),
+            bytes: Some(bytes),
+        } = judged.status(section)
+            && !named.contains(&section)
+        {
+            notes.push(Note::PartlyZeroed {
+                section,
+                step,
+                bytes,
+            });
         }
     }
     // Sections that the can't-follow problem doesn't name, which code elfq
@@ -924,27 +931,10 @@ fn notes(facts: &Facts, steps: &[Step], judged: &Judged, all: bool) -> Vec<Note>
             .collect();
         indexes.sort_unstable();
         indexes.dedup();
-        let text = format!(
-            "elfq can't follow {}, which may {}.",
-            text::unread_text(steps, &indexes),
-            text::may_text(ram, &unknown)
-        );
-        notes.push(note("can't tell", unknown, text));
+        notes.push(Note::CantTell {
+            sections: unknown,
+            steps: indexes,
+        });
     }
     notes
-}
-
-/// The names of the data objects in `section`, by address, but for those
-/// named after where they are.
-fn data_in<'a>(firmware: &'a Firmware, ram: &RamSections, section: usize) -> Vec<&'a str> {
-    let start = ram.section(section).address;
-    (firmware.binary.items.iter())
-        .filter(|item| {
-            item.kind == ItemKind::Data
-                && start <= item.address
-                && item.address < ram.end(section)
-                && !item.name.contains('@')
-        })
-        .map(|item| item.name.as_str())
-        .collect()
 }

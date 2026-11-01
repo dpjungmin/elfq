@@ -197,8 +197,9 @@ this list, and add to it when you bring in a word.
   **unread**: code that elfq can't follow, such as a call through a
   register, which may set up any section not set up yet
   (`Does::Unread`, and `unread.rs`). Where the JSON says `unknown` for a
-  section's status and `can't follow` for the problem, the code keeps
-  those words (`Status::Unknown`, `Kind::CantFollow`).
+  section's status, `can't follow` for the problem and `can't tell` for
+  the note, the code keeps those words (`Status::Unknown`,
+  `Kind::CantFollow`, `Note::CantTell`).
 
 Some code still uses one of these words for something else, as the Thumb
 walk's `Step` (what an instruction leads to) and `reach`'s `Step` (a row

@@ -199,10 +199,10 @@ pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
         .collect();
     let notes = (answer.judged.notes.iter())
         .map(|note| Note {
-            kind: note.kind,
-            sections: names(&note.sections),
+            kind: note.field(),
+            sections: names(note.sections()),
             items: Vec::new(),
-            text: note.text.clone(),
+            text: text::note_text(answer, note),
         })
         .collect();
     let keep_out = (answer.judged.keep_out.iter())
