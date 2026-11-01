@@ -1057,21 +1057,16 @@ fn no_text(binary: &Binary) -> Option<String> {
 
 /// The lines of `item`'s code, whose bytes are `bytes`, as `arch` prints
 /// them, with the data that the file marks there (see
-/// [`Binary::data_in_code`]); `None` for an instruction set that elfq
-/// doesn't print.
+/// [`Binary::data_in_code`]); `None` when elfq can't read the file's
+/// code, which browse refuses before it opens (see `Session::new`).
 pub(super) fn listing(binary: &Binary, item: &Item, bytes: &[u8]) -> Option<Vec<arch::Line>> {
     // The marks, as offsets into `bytes`.
     let marked: Vec<std::ops::Range<usize>> = binary
         .data_in_code(item.address, item.size)
         .map(|(start, end)| (start - item.address) as usize..(end - item.address) as usize)
         .collect();
-    arch::listing(
-        binary.architecture,
-        binary.endianness,
-        bytes,
-        item.address,
-        &marked,
-    )
+    let instruction_set = binary.instruction_set()?;
+    Some(instruction_set.listing(bytes, item.address, &marked))
 }
 
 impl PageCode {

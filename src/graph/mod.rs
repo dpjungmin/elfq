@@ -47,7 +47,7 @@ pub use veneers::{VeneerTarget, Veneers};
 
 use std::collections::HashSet;
 
-use crate::arch::{self, CodeReference, CodeReferenceKind};
+use crate::arch::{CodeReference, CodeReferenceKind};
 use crate::binary::{AddressRange, Binary, FileKind, ItemKind, Relocation, RelocationTarget};
 
 /// A node of the graph: an item in the file, or an import.
@@ -157,7 +157,7 @@ impl Graph {
     /// read yet, it only has the pointers stored in data.
     pub fn build(binary: &Binary) -> Graph {
         let mut graph = Graph::default();
-        let scan_code = arch::is_supported(binary.architecture, binary.thumb);
+        let scan_code = binary.instruction_set().is_some();
         for (index, item) in binary.items.iter().enumerate() {
             match item.kind {
                 ItemKind::Function if scan_code => graph.add_code_references(binary, index),

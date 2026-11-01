@@ -23,10 +23,10 @@ pub(super) fn scan(code: &[u8], address: u64) -> Vec<CodeReference> {
 }
 
 /// The bits of the x86-64 code `code`, which starts at `address`, that say
-/// where something is (see `arch::operands`): the distance of a call or jump
-/// to its target, and of an operand relative to the instruction pointer,
-/// each from the end of its instruction, when it leads outside the code,
-/// and where each leads.
+/// where something is (see `InstructionSet::operands`): the distance of a
+/// call or jump to its target, and of an operand relative to the
+/// instruction pointer, each from the end of its instruction, when it
+/// leads outside the code, and where each leads.
 pub(super) fn operands(code: &[u8], address: u64) -> Operands {
     let mut decoder = Decoder::with_ip(64, code, address, DecoderOptions::NONE);
     let mut instruction = Instruction::default();

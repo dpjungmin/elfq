@@ -18,7 +18,6 @@ use super::kept::Kept;
 use super::retained_tree::RetainedTree;
 use super::symbol::Names;
 use super::{Outcome, json, startup, text};
-use crate::arch;
 use crate::binary::{AddressRange, Binary, FileKind, ItemKind, MemoryBlock, memory_blocks, total};
 use crate::cli::Format;
 use crate::graph::{Graph, Node, Reached, RootKind};
@@ -81,7 +80,7 @@ pub fn run(
 fn write_text(path: &Path, binary: &Binary, format: Format, out: &mut dyn Write) -> Result<()> {
     writeln!(out, "{}", file_text(path, binary))?;
     writeln!(out, "{}", found_text(binary))?;
-    if !arch::is_supported(binary.architecture, binary.thumb) {
+    if binary.instruction_set().is_none() {
         writeln!(out, "{}.", text::cannot_read_code(binary))?;
         return Ok(());
     }
@@ -291,7 +290,7 @@ fn write_json(
     if range.is_some() {
         check_has_bytes(binary, range)?;
     }
-    let readable = arch::is_supported(binary.architecture, binary.thumb);
+    let readable = binary.instruction_set().is_some();
     let graph = Kept::new((readable && range.is_none()).then(|| Graph::build(binary)));
     let answer = OverviewJson {
         file: path.display().to_string(),

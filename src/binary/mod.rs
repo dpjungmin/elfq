@@ -65,7 +65,7 @@ use object::{
     SectionIndex, SectionKind, SymbolKind,
 };
 
-use crate::arch::{self, CodeReference, CodeReferenceKind};
+use crate::arch::{CodeReference, CodeReferenceKind, InstructionSet};
 
 /// Arrays of pointers to the functions that the C runtime calls at startup
 /// and exit.
@@ -401,11 +401,11 @@ impl Binary {
         Ok(binary)
     }
 
-    /// The references that the code of `function` makes, as `arch::scan`
-    /// finds them, and a jump to the next function when the code runs on
-    /// into it (see `end_where_functions_start`): none when elfq can't read
-    /// the code. Scanning code is much of what elfq does, so it scans each
-    /// function once, as it loads the file.
+    /// The references that the code of `function` makes, as
+    /// `InstructionSet::scan` finds them, and a jump to the next function
+    /// when the code runs on into it (see `end_where_functions_start`):
+    /// none when elfq can't read the code. Scanning code is much of what
+    /// elfq does, so it scans each function once, as it loads the file.
     pub fn code_references(&self, function: &Item) -> &[CodeReference] {
         self.code_references
             .get(&(function.address, function.size))
@@ -524,6 +524,12 @@ impl Binary {
             .data
             .get(usize::try_from(offset.checked_add(start)?).ok()?..)?;
         Some(&rest[..rest.len().min(usize::try_from(len).unwrap_or(usize::MAX))])
+    }
+
+    /// The instruction set that elfq reads the file's code in, or `None`
+    /// when it can't read it yet (see `InstructionSet::of`).
+    pub fn instruction_set(&self) -> Option<InstructionSet> {
+        InstructionSet::of(self.architecture, self.thumb, self.endianness)
     }
 
     /// Where the reset handler starts, which the vector table names, when
@@ -1183,9 +1189,9 @@ fn scan_functions(
     binary: &Binary,
     run_on: &HashSet<(u64, u64)>,
 ) -> HashMap<(u64, u64), Vec<CodeReference>> {
-    if !arch::is_supported(binary.architecture, binary.thumb) {
+    let Some(instruction_set) = binary.instruction_set() else {
         return HashMap::new();
-    }
+    };
     let functions = binary
         .items
         .iter()
@@ -1194,14 +1200,9 @@ fn scan_functions(
         .filter_map(|function| {
             let key = (function.address, function.size);
             let code = binary.bytes(function.address, function.size)?;
-            let mut references = arch::scan(
-                binary.architecture,
-                binary.endianness,
-                code,
-                function.address,
-            );
+            let mut references = instruction_set.scan(code, function.address);
             if run_on.contains(&key) {
-                references.extend(run_on_jump(binary, function, code, &references));
+                references.extend(run_on_jump(instruction_set, function, code, &references));
             }
             Some((key, references))
         })
@@ -1210,22 +1211,17 @@ fn scan_functions(
 
 /// The jump from the last instruction of `function`, whose `code` makes
 /// `references`, to the function that starts where it ends, when the code
-/// runs on into it (see `arch::runs_on`). `None` when it doesn't, or when
-/// that instruction is a conditional jump there, which `references`
-/// already has.
+/// runs on into it (see `InstructionSet::runs_on`). `None` when it
+/// doesn't, or when that instruction is a conditional jump there, which
+/// `references` already has.
 fn run_on_jump(
-    binary: &Binary,
+    instruction_set: InstructionSet,
     function: &Item,
     code: &[u8],
     references: &[CodeReference],
 ) -> Option<CodeReference> {
     let next = function.address + function.size;
-    let site = arch::runs_on(
-        binary.architecture,
-        binary.endianness,
-        code,
-        function.address,
-    )?;
+    let site = instruction_set.runs_on(code, function.address)?;
     let jumps_there = references.iter().any(|reference| {
         reference.site == site
             && matches!(

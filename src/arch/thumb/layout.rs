@@ -1,5 +1,5 @@
 //! Where the instructions and the data in a function's code are, for
-//! browse to print the code as text (see `arch::listing`).
+//! browse to print the code as text (see `InstructionSet::listing`).
 
 use object::Endianness;
 

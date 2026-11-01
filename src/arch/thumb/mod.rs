@@ -33,9 +33,10 @@
 //!   function with it ([`Scanner::sweep`]).
 //! - `values/` follows the registers, and `decode.rs` says what each
 //!   instruction does with them, for `values` and `startup`.
-//! - `bounds.rs` finds where a function's code ends, for finding the
-//!   functions in stripped firmware: `code_size`, `ending`,
-//!   `last_instruction` and `leading_padding`.
+//! - `bounds.rs` finds where a function's code ends: `code_size`,
+//!   `ending` and `leading_padding`, for finding the functions in stripped
+//!   firmware, and `runs_on`, for an entry point that runs on into the next
+//!   function.
 //! - `veneers.rs` recognizes the veneers that linkers add (`is_veneer`).
 //! - `operands.rs` finds the bits that say where something is, for `diff`.
 //! - `layout.rs` cuts a function into instructions and data, for `browse`.
@@ -56,7 +57,7 @@ use object::Endianness;
 use super::CodeReference;
 use super::CodeReferenceKind;
 
-pub(super) use bounds::{code_size, ending, last_instruction, leading_padding};
+pub(super) use bounds::{code_size, ending, leading_padding, runs_on};
 #[cfg(feature = "tui")]
 pub(in crate::arch) use layout::{Piece, layout};
 pub(super) use operands::operands;

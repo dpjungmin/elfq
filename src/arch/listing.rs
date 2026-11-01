@@ -16,8 +16,9 @@ use std::ops::Range;
 use iced_x86::{
     Decoder, DecoderOptions, FlowControl, Formatter, Instruction, IntelFormatter, OpKind,
 };
-use object::{Architecture, Endian, Endianness};
+use object::{Endian, Endianness};
 
+use super::InstructionSet;
 use super::thumb::{self, Piece};
 
 /// One instruction, or one piece of data among them.
@@ -53,22 +54,16 @@ pub enum Refers {
     Case(u64),
 }
 
-/// The lines of one function's code, which starts at `address`, or `None`
-/// when elfq doesn't print this instruction set's code. `endianness` is the
-/// file's, for reading data among Thumb code, and `marked` lists the bytes
-/// that the file marks as data there, as offsets into `code` (see
-/// `Binary::data_in_code`).
-pub fn listing(
-    architecture: Architecture,
-    endianness: Endianness,
-    code: &[u8],
-    address: u64,
-    marked: &[Range<usize>],
-) -> Option<Vec<Line>> {
-    match architecture {
-        Architecture::X86_64 => Some(x86_64(code, address)),
-        Architecture::Arm => Some(thumb(code, address, endianness, marked)),
-        _ => None,
+impl InstructionSet {
+    /// The lines of one function's code, which starts at `address`.
+    /// `marked` lists the bytes that the file marks as data there, as
+    /// offsets into `code` (see `Binary::data_in_code`); Thumb code prints
+    /// them as data, in the file's byte order.
+    pub fn listing(self, code: &[u8], address: u64, marked: &[Range<usize>]) -> Vec<Line> {
+        match self {
+            Self::X86_64 => x86_64_lines(code, address),
+            Self::Thumb { endianness } => thumb_lines(code, address, endianness, marked),
+        }
     }
 }
 
@@ -77,7 +72,7 @@ pub fn listing(
 /// operands don't imply them, and iced's own spellings, such as `mov` for
 /// objdump's `movabs` and `imul edi, 0xe` for `imul edi, edi, 0xe`:
 /// `lea rsi, [rip+0x1b1]`, `call 0x1080`.
-fn x86_64(code: &[u8], address: u64) -> Vec<Line> {
+fn x86_64_lines(code: &[u8], address: u64) -> Vec<Line> {
     let mut formatter = IntelFormatter::new();
     let options = formatter.options_mut();
     options.set_space_after_operand_separator(true);
@@ -117,7 +112,12 @@ fn x86_64(code: &[u8], address: u64) -> Vec<Line> {
 
 /// Thumb code, as thumb-asm prints it, in the lines that the sweep cuts
 /// it into. Data is printed as objdump prints it: `.word 0x20000444`.
-fn thumb(code: &[u8], address: u64, endianness: Endianness, marked: &[Range<usize>]) -> Vec<Line> {
+fn thumb_lines(
+    code: &[u8],
+    address: u64,
+    endianness: Endianness,
+    marked: &[Range<usize>],
+) -> Vec<Line> {
     use thumb_asm::isa::{Decoder, FpReg, Operand, Target};
 
     let layout = thumb::layout(code, address, endianness, marked);
@@ -265,10 +265,13 @@ fn condition_first(printed: &str, base: &str, conditional: bool) -> String {
 mod tests {
     use super::*;
 
+    const THUMB: InstructionSet = InstructionSet::Thumb {
+        endianness: Endianness::Little,
+    };
+
     /// Each line as `address mnemonic operands`.
-    fn text(architecture: Architecture, code: &[u8], address: u64) -> Vec<String> {
-        listing(architecture, Endianness::Little, code, address, &[])
-            .unwrap()
+    fn text(set: InstructionSet, code: &[u8], address: u64) -> Vec<String> {
+        set.listing(code, address, &[])
             .iter()
             .map(|line| format!("{:#x} {} {}", line.address, line.mnemonic, line.operands))
             .collect()
@@ -288,7 +291,7 @@ mod tests {
             0x48, 0x8d, 0x35, 0x00, 0x01, 0x00, 0x00, // lea rsi,[rip+0x100]
         ];
         assert_eq!(
-            text(Architecture::X86_64, &code, 0x1610),
+            text(InstructionSet::X86_64, &code, 0x1610),
             [
                 "0x1610 endbr64 ",
                 "0x1614 push rbx",
@@ -300,7 +303,7 @@ mod tests {
                 "0x1626 lea rsi, [rip+0x100]",
             ]
         );
-        let lines = listing(Architecture::X86_64, Endianness::Little, &code, 0x1610, &[]).unwrap();
+        let lines = InstructionSet::X86_64.listing(&code, 0x1610, &[]);
         // The calls and jumps, with where they go.
         let targets: Vec<(u64, Refers)> = lines
             .iter()
@@ -319,7 +322,7 @@ mod tests {
     fn a_cut_instruction_ends_the_listing_without_a_panic() {
         // The first 3 bytes of `call 0x1080`.
         let code = [0x53, 0xe8, 0x5a, 0xfa];
-        let lines = listing(Architecture::X86_64, Endianness::Little, &code, 0x1000, &[]).unwrap();
+        let lines = InstructionSet::X86_64.listing(&code, 0x1000, &[]);
         assert_eq!(lines[0].mnemonic, "push");
         assert!(lines.len() <= 2);
     }
@@ -337,7 +340,7 @@ mod tests {
         // objdump writes mul.w for mul, bcs.n for bhs, and ldmia.w sp!,
         // {r4, lr} for pop.w; the rest is the same.
         assert_eq!(
-            text(Architecture::Arm, &code, 0x3000_02e4),
+            text(THUMB, &code, 0x3000_02e4),
             [
                 "0x300002e4 ldr r3, [pc, #44]",
                 "0x300002e6 ldr r2, [pc, #48]",
@@ -361,18 +364,8 @@ mod tests {
                 "0x3000031c .word 0x30000de8",
             ]
         );
-        let lines = listing(
-            Architecture::Arm,
-            Endianness::Little,
-            &code,
-            0x3000_02e4,
-            &[],
-        );
-        let refers: Vec<Refers> = lines
-            .unwrap()
-            .iter()
-            .filter_map(|line| line.refers)
-            .collect();
+        let lines = THUMB.listing(&code, 0x3000_02e4, &[]);
+        let refers: Vec<Refers> = lines.iter().filter_map(|line| line.refers).collect();
         assert_eq!(
             refers[..4],
             [
@@ -400,7 +393,7 @@ mod tests {
             0x03, 0x48, 0xdf, 0xed, 0x03, 0x7a, 0x9f, 0xed, 0x03, 0x8b, 0x9f, 0xf8, 0x04, 0x10,
             0x00, 0xbf, 0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf0, 0x3f,
         ];
-        let lines = listing(Architecture::Arm, Endianness::Little, &code, 0, &[]).unwrap();
+        let lines = THUMB.listing(&code, 0, &[]);
         let loads: Vec<(String, Option<Refers>)> = lines
             .iter()
             .map(|line| (format!("{} {}", line.mnemonic, line.operands), line.refers))
@@ -423,7 +416,7 @@ mod tests {
         // writes them.
         let code = [0xcc, 0xbf, 0xb0, 0xee, 0x47, 0x0a, 0xb0, 0xee, 0x67, 0x0a];
         assert_eq!(
-            text(Architecture::Arm, &code, 0),
+            text(THUMB, &code, 0),
             [
                 "0x0 ite gt",
                 "0x2 vmovgt.f32 s0, s14",
@@ -440,7 +433,7 @@ mod tests {
             0x01, 0xa0, 0x50, 0xf8, 0x22, 0xf0, 0x00, 0xbf, 0x15, 0xe0, 0x00, 0x00, 0x17, 0xe0,
             0x00, 0x00, 0x19, 0xe0, 0x00, 0x00, 0x70, 0x47, 0x70, 0x47, 0x70, 0x47,
         ];
-        let lines = listing(Architecture::Arm, Endianness::Little, &code, 0xe000, &[]).unwrap();
+        let lines = THUMB.listing(&code, 0xe000, &[]);
         let text: Vec<String> = lines
             .iter()
             .map(|line| format!("{:#x} {} {}", line.address, line.mnemonic, line.operands))
@@ -477,7 +470,7 @@ mod tests {
         // $d marks as data, which isn't aligned to 4 here.
         let code = [0x70, 0xf8, 0x00, 0x00, 0x70, 0x47, 0x01, 0x02, 0x03, 0x04];
         let marked = [Range { start: 6, end: 10 }];
-        let lines = listing(Architecture::Arm, Endianness::Little, &code, 0, &marked).unwrap();
+        let lines = THUMB.listing(&code, 0, &marked);
         let text: Vec<String> = lines
             .iter()
             .map(|line| format!("{:#x} {} {}", line.address, line.mnemonic, line.operands))

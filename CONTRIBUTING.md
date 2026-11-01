@@ -59,7 +59,7 @@ terminal is as it was; `.github/workflows/ci.yml` has the command.
 | `src/commands/reach/` | `elfq FILE reach [SYMBOL]`: `mod.rs` holds what the search from SYMBOL finds, with the words the code uses for its parts, and `Text`, which words it for people, `find.rs` the search, `rows.rs` writes the answer by block of memory, which browse shows too, `to.rs` the answer with `--to`, `tree.rs` the tree of `--tree` and `json.rs` the JSON, and `starts.rs` answers without SYMBOL, as browse's start page does. |
 | `src/commands/diff/` | `elfq FILE diff NEW`: `mod.rs` reads both files and gives the exit status, `blocks.rs` works out the blocks of memory that both builds share and what changed in each, `pairing.rs` pairs the builds' items, `rows.rs` works out what changed and the rows of MOVED and CHANGE, `edited.rs` which items of the same size are edited, `crossings.rs` the uses between blocks that are new or gone, and `text.rs` and `json.rs` write the answer. |
 | `src/commands/startup/` | `elfq FILE startup`: `mod.rs` refuses files that aren't Cortex-M firmware from their headers, and runs the rest, `start.rs` finds the reset handler and `main`, `steps.rs` reads the walk's calls and loops as the steps that copy and zero sections, `problems.rs` works out the state of each section when `main` starts, the problems and the notes, and `text.rs` and `json.rs` write the answer. |
-| `src/arch/` | Finding the addresses that machine code calls or uses, one module per instruction set (x86-64 and Thumb). Thumb's has three parts: `thumb/sweep.rs` reads each instruction on its own, `thumb/decode.rs` says what an instruction does with the registers and the stack, and `thumb/values/` follows the addresses that code puts in registers to where a branch through one goes, as for long calls and veneers; `thumb/mod.rs` begins with a map of its files. `listing.rs` prints a function's code as text, for `browse`: x86-64 with iced-x86's formatter, and Thumb with thumb-asm, in the lines that `thumb::layout` cuts the code into with the same sweep as `scan`. `operands` finds the bits of a function's code that say where something is, such as the distance in a call, for `diff` to tell code that changed from code that only moved. `startup.rs` and `thumb/startup/` follow the code that a Cortex-M processor runs from reset, with the numbers in its registers and memory, for `startup`; `thumb/startup/mod.rs` begins with a map of its files, and design.md's [Startup, end to end](docs/design.md#startup-end-to-end) shows how the four `startup` modules hand off to each other. |
+| `src/arch/` | Finding the addresses that machine code calls or uses, one module per instruction set (x86-64 and Thumb). The rest of elfq reads code through `InstructionSet`, in `mod.rs`, which a file whose code elfq can't read doesn't have. Thumb's has three parts: `thumb/sweep.rs` reads each instruction on its own, `thumb/decode.rs` says what an instruction does with the registers and the stack, and `thumb/values/` follows the addresses that code puts in registers to where a branch through one goes, as for long calls and veneers; `thumb/mod.rs` begins with a map of its files. `listing.rs` prints a function's code as text, for `browse`: x86-64 with iced-x86's formatter, and Thumb with thumb-asm, in the lines that `thumb::layout` cuts the code into with the same sweep as `scan`. `operands` finds the bits of a function's code that say where something is, such as the distance in a call, for `diff` to tell code that changed from code that only moved. `startup.rs` and `thumb/startup/` follow the code that a Cortex-M processor runs from reset, with the numbers in its registers and memory, for `startup`; `thumb/startup/mod.rs` begins with a map of its files, and design.md's [Startup, end to end](docs/design.md#startup-end-to-end) shows how the four `startup` modules hand off to each other. |
 | `src/binary/` | Reading an ELF file: its functions and data objects ("items") and where they were found, their names, imports, stored pointers and memory blocks, and in Arm files the core the code is for (`attributes.rs`) and the data that `$d` symbols mark among code. `memory.rs` reads only the headers and the bytes that the sections put in memory, which `diff` compares, and `header.rs` only the ELF header and program headers, for `startup` to refuse a file for another processor before loading it. Unnamed data, such as string literals, is found from what code and pointers refer to. Each function's code is scanned once, as the file loads (`Binary::code_references`). |
 | `src/graph/` | The reference graph that connects items, the roots where the program starts, the dominator tree that says what is exclusive to what, the shortest paths that `why` and `reach` show, the bytes that a function reaches (`reached.rs`), the items in ranges of memory (`items_in_ranges.rs`) and the references that cross the ranges' boundary, narrowed with `--from` or `--to` (`boundary.rs`), and where a linker's veneers jump to. |
 | `src/debuginfo/` | Reading DWARF, when the file has it: the copies of functions that the compiler inlined, for `inlined`, and for the error when SYMBOL names a function that the compiler inlined everywhere. |
@@ -434,19 +434,22 @@ page, which the capture prints.
    `src/arch/mod.rs` lists the kinds. It must not panic on any bytes: a
    truncated instruction ends the scan. Unit tests beside it check it on
    bytes from a sample's disassembly.
-2. **Wiring, in `src/arch/mod.rs`.** Add `mod <name>;`, an arm in `scan`,
-   an arm in `operands` and an arm in `is_supported`: until `is_supported`
-   says yes, elfq never scans the code and says it can't read it, and
-   without an arm in `operands`, `diff` calls a function edited whenever
-   the distance in one of its calls changes, as when it or what it calls
-   moves. An arm in `is_veneer` lets `callers` and `callees` of ranges,
-   and `reach`, see through a linker's veneers. An arm in `runs_on` lets
-   an entry point that shares its code with the next function, as libgcc's
-   `__aeabi_dsub` does with `__adddf3`, run on into it as a tail call;
-   without one, such entry points use nothing.
-   `code_size`, `leading_padding`, `ending` and `scan_instructions` matter
-   only for finding the functions in stripped firmware, which elfq does
-   only for Thumb.
+2. **Wiring, in `src/arch/mod.rs`.** Add `mod <name>;`, a variant of
+   `InstructionSet`, and an arm for it in `InstructionSet::of`: until `of`
+   names it, elfq never reads the code and says it can't read it. The
+   compiler then asks for an arm in each of `InstructionSet`'s methods.
+   `scan` and `operands` call the new scanner; without a real `operands`,
+   `diff` calls a function edited whenever the distance in one of its
+   calls changes, as when it or what it calls moves. `is_veneer` lets
+   `callers` and `callees` of ranges, and `reach`, see through a linker's
+   veneers. `runs_on` lets an entry point that shares its code with the
+   next function, as libgcc's `__aeabi_dsub` does with `__adddf3`, run on
+   into it as a tail call; when it answers `None`, such entry points use
+   nothing. `code_size`, `leading_padding`, `ending` and
+   `scan_instructions` matter only for finding the functions in stripped
+   firmware, which elfq does only for Thumb, and `startup_code` only for
+   `startup`, which walks only Thumb code: the x86-64 arms show what to
+   answer there.
 3. **Its name.** Add it to `text::architecture_name`, which the overview
    prints.
 4. **Linux programs.** Dynamic relocations (`binary/relocations.rs`) and
@@ -461,10 +464,9 @@ page, which the capture prints.
 6. **Tests that need code elfq can't read.**
    `a_file_whose_code_elfq_cant_read_says_so` in `tests/it/cli.rs` marks a
    file as AArch64; when that is the one you add, pick another machine.
-7. **Text for `browse`.** An arm in `listing` in `src/arch/listing.rs`
-   prints the code, one line per instruction, starting where `scan`'s
-   references are. Until then, a function's page lists only the lines that
-   use another item.
+7. **Text for `browse`.** The arm in `InstructionSet::listing`, in
+   `src/arch/listing.rs`, prints the code, one line per instruction,
+   starting where `scan`'s references are.
 8. **Docs.** README.md and docs/design.md say which instruction sets elfq
    reads.
 

@@ -69,8 +69,8 @@ use walk_state::{Alternative, Budget, Compare, Known, Visit};
 // how many it tries. A loop that the walk goes through each iteration of
 // spends budgets of its own in place of the two for all of it, taken from
 // two totals for all such loops. How many calls deep it follows is
-// `arch::startup::DEPTH`. `arch::startup::walk` lists them with what each
-// means for what the walk finds, and links to them.
+// `arch::startup::DEPTH`. `arch::startup::Code::walk` lists them with what
+// each means for what the walk finds, and links to them.
 
 /// How many instructions the walk goes through in all, but for those it
 /// goes through to count loops ([`COUNT_BUDGET`]) and in loops that it goes
@@ -131,7 +131,7 @@ pub(in crate::arch) const WALK_EACH_COUNT_TOTAL: usize = 2 * WALK_EACH_COUNT_BUD
 /// runs on into the function (see [`Walker::runs_into`]).
 const RUNS_INTO: u64 = 0x40;
 
-/// Walks the code from `start`; see `arch::startup::walk`.
+/// Walks the code from `start`; see `arch::startup::Code::walk`.
 pub(in crate::arch) fn walk(endianness: Endianness, program: &dyn Program, start: &Start) -> Walk {
     let mut walker = Walker {
         program,

@@ -12,8 +12,8 @@
 //! two partners is no edit when it is in one of these:
 //!
 //! - the distance from an instruction to what it calls, jumps to, loads or
-//!   takes the address of outside the function, as `arch::operands` finds
-//!   it;
+//!   takes the address of outside the function, as
+//!   `InstructionSet::operands` finds it;
 //! - an aligned word of data, or of Thumb code, which keeps constants among
 //!   its instructions, a number that Thumb's `movw` and `movt` put
 //!   together, or an entry of an x86-64 jump table, which is a 32-bit
@@ -36,7 +36,7 @@ use object::{Architecture, Endianness};
 
 use super::Build;
 use super::pairing::Pairing;
-use crate::arch::{self, Operands};
+use crate::arch::{InstructionSet, Operands};
 use crate::binary::{Binary, Item, ItemKind, RelocationTarget, word};
 use crate::graph::{Node, ReferenceKind, VeneerTarget, Veneers};
 
@@ -110,13 +110,16 @@ impl<'a> Edits<'a> {
             return true;
         }
         let code = old_item.kind == ItemKind::Function;
-        let operands = (code && arch::is_supported(a.architecture, a.thumb)).then(|| {
-            let operands = |binary: &Binary, bytes, address| {
-                arch::operands(binary.architecture, binary.endianness, bytes, address)
-            };
+        // diff refuses builds for two architectures, and reads the new
+        // build's code as it reads the old build's: as Thumb when the old
+        // build's is, even where the new build doesn't say it is.
+        let instruction_sets =
+            a.instruction_set()
+                .zip(InstructionSet::of(b.architecture, a.thumb, b.endianness));
+        let operands = instruction_sets.filter(|_| code).map(|(old_set, new_set)| {
             (
-                operands(a, &x.bytes, old_item.address),
-                operands(b, &y.bytes, new_item.address),
+                old_set.operands(&x.bytes, old_item.address),
+                new_set.operands(&y.bytes, new_item.address),
             )
         });
         self.bytes_edited(old_item, &x.bytes, new_item, &y.bytes, operands.as_ref())
@@ -812,6 +815,16 @@ mod tests {
         // that movw and movt put together changed.
         let old = code(0x120, 0x800, true, 0x800);
         assert!(!edited(&old, &code(0x130, 0x810, true, 0x810), "f"));
+    }
+
+    #[test]
+    fn the_new_build_is_read_as_thumb_when_the_old_one_is() {
+        // As when the new build lost the section that says its code is
+        // Thumb.
+        let old = code(0x120, 0x800, true, 0x800);
+        let mut new = code(0x130, 0x810, true, 0x810);
+        new.binary.thumb = false;
+        assert!(!edited(&old, &new, "f"));
     }
 
     #[test]

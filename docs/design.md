@@ -155,11 +155,11 @@ entry point's address, as when a header comes before the table.
 too far away for the call instruction, as between flash and ITCM: the code
 calls the veneer, which jumps on to the target. The range forms of
 `callers` and `callees`, and the rows of `reach`, list a call through a
-veneer as a call to its target, "via veneer", and a call through a PLT stub to one of the file's
-own functions, as a shared library makes, the same way, "via PLT";
-elsewhere a veneer is a function that tail-calls its target. elfq knows the
-veneers that GNU ld and LLD add for Cortex-M. (`arch::is_veneer`,
-`graph::Veneers`)
+veneer as a call to its target, "via veneer", and a call through a PLT stub
+to one of the file's own functions, as a shared library makes, the same
+way, "via PLT"; elsewhere a veneer is a function that tail-calls its
+target. elfq knows the veneers that GNU ld and LLD add for Cortex-M.
+(`InstructionSet::is_veneer`, `graph::Veneers`)
 
 **Long call.** A call that puts the target's address in a register and
 branches through it, as `ldr r3, =f; blx r3`, so that it can reach any
@@ -234,17 +234,17 @@ out. A call that goes through a linker's veneer is listed as a call to the
 veneer's target, at the call to the veneer, which is in code someone
 wrote, with "via veneer" after how it calls, and a call through a PLT stub
 to one of the file's own functions with "via PLT". elfq knows the veneers
-that GNU ld and LLD add for Cortex-M (`arch::is_veneer`). `callers` also
-lists the calls and jumps to an address in the ranges that no item holds,
-as to a routine in a chip's ROM, and then the ranges need hold nothing
-else. elfq's exit status is then 1 when anything crosses, or might:
-through a call elfq can't follow, through a pointer to a function in the
-ranges, or in a function in them whose end elfq doesn't know. A CI job can
-then check that code in ITCM stays there, or that code run from RAM never
-touches flash. As with diff(1), the exit status is 0 otherwise, and 2 for
-any error, with or without ranges. When the reader stops early, as `head`
-does, elfq still finishes and exits with the answer's status, and an error
-that nothing reads still exits with 2.
+that GNU ld and LLD add for Cortex-M (`InstructionSet::is_veneer`).
+`callers` also lists the calls and jumps to an address in the ranges that
+no item holds, as to a routine in a chip's ROM, and then the ranges need
+hold nothing else. elfq's exit status is then 1 when anything crosses, or
+might: through a call elfq can't follow, through a pointer to a function in
+the ranges, or in a function in them whose end elfq doesn't know. A CI job
+can then check that code in ITCM stays there, or that code run from RAM
+never touches flash. As with diff(1), the exit status is 0 otherwise, and 2
+for any error, with or without ranges. When the reader stops early, as
+`head` does, elfq still finishes and exits with the answer's status, and an
+error that nothing reads still exits with 2.
 
 `--from RANGE` lists only the callers in RANGE, and `--to RANGE` only the
 callees, so that `callers 0x20000000+256K --from 0x0+256K` lists what in
@@ -658,13 +658,12 @@ though nothing else in them does. So where the partners' bytes differ, a
 byte is no edit when it is in one of these:
 
 - The distance in an instruction to what it calls, jumps to, loads or
-  takes the address of outside the function (`arch::operands`): on
-  x86-64, the rel32 of a call or jump and an operand relative to `rip`,
+  takes the address of outside the function (`InstructionSet::operands`):
+  on x86-64, the rel32 of a call or jump and an operand relative to `rip`,
   which iced-x86 finds; on Thumb, the distance in `bl`, `b`, `b<cond>`,
-  `cbz`, `cbnz`, `adr` and a load from a literal pool, each in its 16-
-  and 32-bit forms. A distance to a place inside the function, as in a
-  loop, is compared as it is, since it doesn't change when the function
-  moves.
+  `cbz`, `cbnz`, `adr` and a load from a literal pool, each in its 16- and
+  32-bit forms. A distance to a place inside the function, as in a loop, is
+  compared as it is, since it doesn't change when the function moves.
 - A word of data, or of Thumb code, which keeps constants and tables of
   addresses among its instructions, at an address that is a multiple of
   its size; a number that `movw` and `movt` put together; or an entry of
@@ -1334,9 +1333,9 @@ in order. Its output is the first example under [Commands](#commands).
    (`vector_table::find`). Then it finds the items: `symbols::items`,
    `plt::stubs`, the startup arrays, `eh_frame::read`, the entry point, the
    vector table, in stripped firmware `unnamed_functions::add`. Then it has
-   `arch::scan` read each function's code once (`scan_functions`), and
-   last `unnamed_data::items` finds there the addresses of data that no
-   symbol names.
+   `InstructionSet::scan` read each function's code once
+   (`scan_functions`), and last `unnamed_data::items` finds there the
+   addresses of data that no symbol names.
 4. **SYMBOL.** `retained::run` checks that elfq can read the file's code
    (`check_code_is_readable`) and turns `process_frame` into an item with
    `Names::find`: by address, by full name, or by the end of a name.
@@ -1348,11 +1347,11 @@ in order. Its output is the first example under [Commands](#commands).
    (`readable_item`), then a shared library, before `run` builds the
    graph.
 5. **The graph.** `retained::run` has `graph::Graph::build` turn what
-   `arch::scan` found in each function's code into references, or into
-   unresolved calls. `Graph::build` then adds the pointers stored in data,
-   from the dynamic relocations or, in a file that runs at a fixed
-   address, from the words that hold an item's address, and finds the
-   roots with `roots::find`.
+   `InstructionSet::scan` found in each function's code into references, or
+   into unresolved calls. `Graph::build` then adds the pointers stored in
+   data, from the dynamic relocations or, in a file that runs at a fixed
+   address, from the words that hold an item's address, and finds the roots
+   with `roots::find`.
 6. **The dominator tree.** `RetainedTree::naming` borrows the graph and
    keeps the `Names` that found `process_frame`, and
    `graph::DominatorTree::build` has `petgraph` find each node's closest
@@ -1400,7 +1399,7 @@ render/      7 Table::tree, Table::write
 debuginfo/   (for inlined, and SYMBOL that the compiler inlined)
 graph/       5 Graph::build, roots::find   6 DominatorTree::build
 binary/      3 Binary::load, scan_functions, unnamed_data::items
-arch/        3 arch::scan
+arch/        3 InstructionSet::scan
 ```
 
 [CONTRIBUTING.md](../CONTRIBUTING.md#where-things-live) says what each
@@ -1425,12 +1424,13 @@ table (`vector_table::find`).
    says a compiler inlined it, or in a stripped file from what the reset
    handler calls last, which a first walk that follows no calls finds
    (`guess`).
-2. **The walk** (`arch/startup.rs`). `Reset::walk` hands
-   `arch::startup::walk` a `Start`: the reset handler, the stack pointer,
-   `main`, and how many calls deep to follow (`DEPTH`), with the file as
-   a `Program`. `walk` picks the walk for the file's instruction set, and
-   Thumb has the only one. `passes_result` and `branches_past`, which
-   `guess` asks about the code around a call, go the same way.
+2. **The walk** (`arch/startup.rs`). Where it checks that the code is
+   Arm, the command asks the file's `InstructionSet` for the `Code` that
+   the walk reads, with the file as a `Program`: Thumb has the only walk.
+   `Reset::walk` hands `Code::walk` a `Start`: the reset handler, the
+   stack pointer, `main`, and how many calls deep to follow (`DEPTH`).
+   `Code::passes_result` and `Code::branches_past`, which `guess` asks
+   about the code around a call, go the same way.
 3. **Thumb** (`arch/thumb/startup/`). `thumb::startup::walk` goes
    through the code one instruction at a time (`Walker::step`), with what
    `thumb::decode` says each does, follows calls and counts loops. It
@@ -1637,10 +1637,10 @@ language.
    32 to 126 is, or a tab, newline or carriage return; otherwise they are
    an edit.
 9. **Instructions that `diff` doesn't decode.** A distance in an
-   instruction that `arch::operands` doesn't know shows as an edit when
-   what it points to moves. On Thumb, a table of addresses in the code,
-   as some switches jump through, is read as words, as data is, and on
-   x86-64 a jump table in data as 32-bit distances from the table, but
+   instruction that `InstructionSet::operands` doesn't know shows as an
+   edit when what it points to moves. On Thumb, a table of addresses in the
+   code, as some switches jump through, is read as words, as data is, and
+   on x86-64 a jump table in data as 32-bit distances from the table, but
    one in x86-64 code is not. On instruction sets other than x86-64 and
    Thumb, any byte of a function that changed is an edit.
 10. **What `startup` reads.** It reads only the file, so it can't know

@@ -225,6 +225,7 @@ mod tests {
         graph.references.sort_by_key(|r| (r.from, r.site));
         let mut binary = Binary::for_tests(vec![text], items, data);
         binary.architecture = Architecture::Arm;
+        binary.thumb = true;
         Build {
             binary,
             graph,

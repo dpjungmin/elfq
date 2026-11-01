@@ -1,6 +1,6 @@
 //! The bits of a function's code that say where something is, as the
 //! distance in a `bl`, for diff to tell code that moved from code that
-//! changed (see `arch::operands`).
+//! changed (see `InstructionSet::operands`).
 
 use object::Endianness;
 
@@ -8,7 +8,7 @@ use super::sweep::Scanner;
 use crate::arch::{Operands, SplitNumber};
 
 /// The bits of `code`, which starts at `address`, that say where something
-/// is (see `arch::operands`): those that the sweep that
+/// is (see `InstructionSet::operands`): those that the sweep that
 /// [`scan`](super::scan) makes finds in the instructions it keeps.
 pub(in crate::arch) fn operands(code: &[u8], address: u64, endianness: Endianness) -> Operands {
     let mut scanner = Scanner::new(code, address, endianness);

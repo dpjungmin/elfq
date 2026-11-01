@@ -8,7 +8,8 @@
 //! a branch the way the processor would when it can tell. It records what
 //! a check of the startup code needs: each call, with the numbers in its
 //! argument registers, each store outside the stack, each loop, and how
-//! the walk ends. See [`walk`] for what it follows and where it stops.
+//! the walk ends. See [`Code::walk`] for what it follows and where it
+//! stops.
 //!
 //! `commands::startup` asks for the walk and reads what it finds, and the
 //! walk through Thumb code is in `arch::thumb::startup`. docs/design.md's
@@ -16,12 +17,12 @@
 
 use std::ops::Range;
 
-use object::{Architecture, Endianness};
+use object::Endianness;
 
 use super::thumb;
 
-/// What [`walk`] reads of a program, which the caller works out from the
-/// file.
+/// What [`Code::walk`] reads of a program, which the caller works out from
+/// the file.
 pub trait Program {
     /// The bytes of code that the file holds from `address` to the end of
     /// the section of code that holds it, as they are once startup code
@@ -260,9 +261,9 @@ pub enum Runs {
     /// walk goes on knowing no word in memory either.
     Uncounted { stopped: Option<End> },
     /// It runs `iterations` times from its head, the last to where it
-    /// leaves (see [`walk`]). `stores` says what each store of the loop's
-    /// own code does over all its iterations, in the order of the first,
-    /// when the walk can tell what each store does each iteration.
+    /// leaves (see [`Code::walk`]). `stores` says what each store of the
+    /// loop's own code does over all its iterations, in the order of the
+    /// first, when the walk can tell what each store does each iteration.
     Counted {
         iterations: u32,
         stores: Option<Vec<LoopStore>>,
@@ -439,142 +440,140 @@ impl End {
     }
 }
 
-/// Walks the code from `start`, as [`Start`] says, in a program in Thumb
-/// code. `None` for other architectures; it reads any 32-bit Arm code as
-/// Thumb, so check [`super::is_supported`] first.
+/// A program's code as the walk reads it: Thumb code, the only kind that
+/// has a walk, as [`InstructionSet::startup_code`] hands it out.
 ///
-/// What it follows:
-///
-/// - Numbers in registers that code puts there: constants, loaded from a
-///   literal pool or built with `adr`, `movw` and `movt`, and what
-///   adding, subtracting, shifting and masking makes of them.
-/// - Words that code stores at an address the walk can tell, as on the
-///   stack, and loads back, a word or several at once, and where each
-///   word in a register was loaded from (see [`Store::source`]). A load
-///   from anywhere else reads what is there at reset (see
-///   [`Program::word_at_reset`]).
-/// - The condition flags that compares, `adds` and `subs` set, so that it
-///   takes a branch, and runs an instruction in an `it` block, as the
-///   processor would. Where it can't tell, a branch is taken later, if the
-///   way on doesn't go on (see [`Event::Backtrack`]); an instruction in an
-///   `it` block leaves what it writes unknown.
-/// - Calls, up to [`Start::follow`] deep, never into `main`. A called
-///   function starts with the caller's registers and memory. Where it
-///   returns, the caller goes on with what the function left in the
-///   registers, in memory and in the flags, as a result in r0 and r1 or
-///   what code built with GCC's `-fipa-ra` counts on staying in r2 and r3,
-///   but with its own stack pointer and lr unknown. If the function got to
-///   the return past a branch that the walk couldn't tell, all it changed
-///   is unknown. A call that the walk doesn't follow, or that doesn't get
-///   to a return, leaves unknown the flags and those of r0 to r3, ip and
-///   lr that the function writes (all of them if it calls on, or the walk
-///   can't tell where its code is), and, for one it followed, the words it
-///   changed in memory. It doesn't follow a call that it can't tell runs:
-///   one in an `it` block, or a branch to another function (see
-///   [`Call::conditional`]).
-/// - Code that runs on past the end of a function: after a call, the call
-///   can't return (see [`End::RunsOff`]); otherwise, the code goes on into
-///   the next function.
-///
-/// It goes through a loop's code, and then counts how many times the loop
-/// runs as the processor would, when it can: it goes through the code
-/// again for the first three iterations, and then a compare in it tells
-/// when a number that moves by the same amount each iteration gets to
-/// where the loop leaves, which it checks by going through the iteration
-/// before and that one, from where each number would be; or when none
-/// does, it goes on iteration by iteration, up to 16 (see
-/// [`Runs::Counted`]). It goes on from where the loop leaves, with what the
-/// loop leaves in the registers and memory. To count, it doesn't follow
-/// calls or count loops inside, so it can't tell what the stores of such a
-/// loop do. When such a loop runs at most 16 times, as one over a table of
-/// sections that copies each with a function or a loop, it goes through its
-/// code each iteration, with its calls and the loops inside (see
-/// [`Runs::EachIteration`]), but not when it calls through a register
-/// another function each iteration, as one over a table of functions does,
-/// such as the constructors that `__libc_init_array` calls, or one it can't
-/// tell. A loop it can't count, as one whose bound it can't tell, leaves
-/// what its code writes unknown ([`Runs::Uncounted`]).
-///
-/// Each of its limits is one constant:
-///
-/// - It stops after 20,000 instructions in all ([`BUDGET`]) and 600 in
-///   the reset handler's own code ([`RESET_LIMIT`]).
-/// - It goes through 300 in each function it calls ([`CALL_LIMIT`]), and
-///   60 in a loop's code each iteration ([`LOOP_LIMIT`]), 8 loops deep
-///   ([`NESTING`]), and then goes on after the call or the loop (see
-///   [`Event::Stop`] and [`Runs::Uncounted`]). It follows calls [`DEPTH`]
-///   deep.
-/// - To count loops, it goes through 50,000 more instructions in all
-///   ([`COUNT_BUDGET`]). It counts a loop that runs at most 2^24 times
-///   ([`MOST_ITERATIONS`]), tries at most 12 of the times that its compares
-///   say it may leave ([`CANDIDATES`]), and goes through its code at most
-///   16 times when they say none ([`MOST_WALKED_ITERATIONS`]).
-/// - It goes through the code of a loop each iteration when the loop runs
-///   at most 16 times ([`MOST_WALKED_ITERATIONS`]), and its iterations take
-///   at most 5,000 instructions ([`WALK_EACH_BUDGET`]) and 10,000 to count
-///   the loops inside them ([`WALK_EACH_COUNT_BUDGET`]), in place of the
-///   two budgets above; all such loops take at most 10,000 and 20,000
-///   ([`WALK_EACH_TOTAL`] and [`WALK_EACH_COUNT_TOTAL`]). Past these, it
-///   goes through the loop's code once, as through others.
-///
-/// docs/design.md tells the walk in prose where it describes `elfq FILE
-/// startup`, with the loops it counts and the tables of sections it goes
-/// through, and its "Startup, end to end" says what runs before and after
-/// the walk.
-///
-/// [`BUDGET`]: super::thumb::startup::BUDGET
-/// [`RESET_LIMIT`]: super::thumb::startup::RESET_LIMIT
-/// [`CALL_LIMIT`]: super::thumb::startup::CALL_LIMIT
-/// [`LOOP_LIMIT`]: super::thumb::startup::LOOP_LIMIT
-/// [`NESTING`]: super::thumb::startup::NESTING
-/// [`COUNT_BUDGET`]: super::thumb::startup::COUNT_BUDGET
-/// [`MOST_ITERATIONS`]: super::thumb::startup::MOST_ITERATIONS
-/// [`CANDIDATES`]: super::thumb::startup::CANDIDATES
-/// [`MOST_WALKED_ITERATIONS`]: super::thumb::startup::MOST_WALKED_ITERATIONS
-/// [`WALK_EACH_BUDGET`]: super::thumb::startup::WALK_EACH_BUDGET
-/// [`WALK_EACH_COUNT_BUDGET`]: super::thumb::startup::WALK_EACH_COUNT_BUDGET
-/// [`WALK_EACH_TOTAL`]: super::thumb::startup::WALK_EACH_TOTAL
-/// [`WALK_EACH_COUNT_TOTAL`]: super::thumb::startup::WALK_EACH_COUNT_TOTAL
-pub fn walk(
-    architecture: Architecture,
+/// [`InstructionSet::startup_code`]: super::InstructionSet::startup_code
+#[derive(Clone, Copy)]
+pub struct Code<'p> {
+    program: &'p dyn Program,
+    /// The order of the bytes in the words that the code loads.
     endianness: Endianness,
-    program: &dyn Program,
-    start: &Start,
-) -> Option<Walk> {
-    match architecture {
-        Architecture::Arm => Some(thumb::startup::walk(endianness, program, start)),
-        _ => None,
-    }
 }
 
-/// Whether the code after the call at `first` and before the call at
-/// `second` only copies registers, or loads words from a literal pool, and
-/// leaves in r0 what `first` returns there, so that `second` gets it, as in
-/// `exit(main())`: `bl main; mov r3, r0; mov r0, r3; bl exit`. False when
-/// the calls are more than 16 bytes apart.
-pub fn passes_result(
-    architecture: Architecture,
-    program: &dyn Program,
-    first: u64,
-    second: u64,
-) -> bool {
-    match architecture {
-        Architecture::Arm => thumb::startup::passes_result(program, first, second),
-        _ => false,
+impl<'p> Code<'p> {
+    /// The Thumb code in `program`, whose words are in `endianness`.
+    pub(super) fn thumb(program: &'p dyn Program, endianness: Endianness) -> Code<'p> {
+        Code {
+            program,
+            endianness,
+        }
     }
-}
 
-/// Whether a branch in the code from `start` up to the call at `call` goes
-/// to the instruction after the call: then the call doesn't return, and
-/// the compiler put other code after it, such as a loop's.
-pub fn branches_past(
-    architecture: Architecture,
-    program: &dyn Program,
-    start: u64,
-    call: u64,
-) -> bool {
-    match architecture {
-        Architecture::Arm => thumb::startup::branches_past(program, start, call),
-        _ => false,
+    /// Walks the code from `start`, as [`Start`] says.
+    ///
+    /// What it follows:
+    ///
+    /// - Numbers in registers that code puts there: constants, loaded from a
+    ///   literal pool or built with `adr`, `movw` and `movt`, and what
+    ///   adding, subtracting, shifting and masking makes of them.
+    /// - Words that code stores at an address the walk can tell, as on the
+    ///   stack, and loads back, a word or several at once, and where each
+    ///   word in a register was loaded from (see [`Store::source`]). A load
+    ///   from anywhere else reads what is there at reset (see
+    ///   [`Program::word_at_reset`]).
+    /// - The condition flags that compares, `adds` and `subs` set, so that
+    ///   it takes a branch, and runs an instruction in an `it` block, as the
+    ///   processor would. Where it can't tell, a branch is taken later, if
+    ///   the way on doesn't go on (see [`Event::Backtrack`]); an instruction
+    ///   in an `it` block leaves what it writes unknown.
+    /// - Calls, up to [`Start::follow`] deep, never into `main`. A called
+    ///   function starts with the caller's registers and memory. Where it
+    ///   returns, the caller goes on with what the function left in the
+    ///   registers, in memory and in the flags, as a result in r0 and r1 or
+    ///   what code built with GCC's `-fipa-ra` counts on staying in r2 and
+    ///   r3, but with its own stack pointer and lr unknown. If the function
+    ///   got to the return past a branch that the walk couldn't tell, all it
+    ///   changed is unknown. A call that the walk doesn't follow, or that
+    ///   doesn't get to a return, leaves unknown the flags and those of r0
+    ///   to r3, ip and lr that the function writes (all of them if it calls
+    ///   on, or the walk can't tell where its code is), and, for one it
+    ///   followed, the words it changed in memory. It doesn't follow a call
+    ///   that it can't tell runs: one in an `it` block, or a branch to
+    ///   another function (see [`Call::conditional`]).
+    /// - Code that runs on past the end of a function: after a call, the
+    ///   call can't return (see [`End::RunsOff`]); otherwise, the code goes
+    ///   on into the next function.
+    ///
+    /// It goes through a loop's code, and then counts how many times the
+    /// loop runs as the processor would, when it can: it goes through the
+    /// code again for the first three iterations, and then a compare in it
+    /// tells when a number that moves by the same amount each iteration gets
+    /// to where the loop leaves, which it checks by going through the
+    /// iteration before and that one, from where each number would be; or
+    /// when none does, it goes on iteration by iteration, up to 16 (see
+    /// [`Runs::Counted`]). It goes on from where the loop leaves, with what
+    /// the loop leaves in the registers and memory. To count, it doesn't
+    /// follow calls or count loops inside, so it can't tell what the stores
+    /// of such a loop do. When such a loop runs at most 16 times, as one
+    /// over a table of sections that copies each with a function or a loop,
+    /// it goes through its code each iteration, with its calls and the loops
+    /// inside (see [`Runs::EachIteration`]), but not when it calls through a
+    /// register another function each iteration, as one over a table of
+    /// functions does, such as the constructors that `__libc_init_array`
+    /// calls, or one it can't tell. A loop it can't count, as one whose
+    /// bound it can't tell, leaves what its code writes unknown
+    /// ([`Runs::Uncounted`]).
+    ///
+    /// Each of its limits is one constant:
+    ///
+    /// - It stops after 20,000 instructions in all ([`BUDGET`]) and 600 in
+    ///   the reset handler's own code ([`RESET_LIMIT`]).
+    /// - It goes through 300 in each function it calls ([`CALL_LIMIT`]), and
+    ///   60 in a loop's code each iteration ([`LOOP_LIMIT`]), 8 loops deep
+    ///   ([`NESTING`]), and then goes on after the call or the loop (see
+    ///   [`Event::Stop`] and [`Runs::Uncounted`]). It follows calls
+    ///   [`DEPTH`] deep.
+    /// - To count loops, it goes through 50,000 more instructions in all
+    ///   ([`COUNT_BUDGET`]). It counts a loop that runs at most 2^24 times
+    ///   ([`MOST_ITERATIONS`]), tries at most 12 of the times that its
+    ///   compares say it may leave ([`CANDIDATES`]), and goes through its
+    ///   code at most 16 times when they say none
+    ///   ([`MOST_WALKED_ITERATIONS`]).
+    /// - It goes through the code of a loop each iteration when the loop
+    ///   runs at most 16 times ([`MOST_WALKED_ITERATIONS`]), and its
+    ///   iterations take at most 5,000 instructions ([`WALK_EACH_BUDGET`])
+    ///   and 10,000 to count the loops inside them
+    ///   ([`WALK_EACH_COUNT_BUDGET`]), in place of the two budgets above;
+    ///   all such loops take at most 10,000 and 20,000 ([`WALK_EACH_TOTAL`]
+    ///   and [`WALK_EACH_COUNT_TOTAL`]). Past these, it goes through the
+    ///   loop's code once, as through others.
+    ///
+    /// docs/design.md tells the walk in prose where it describes `elfq FILE
+    /// startup`, with the loops it counts and the tables of sections it goes
+    /// through, and its "Startup, end to end" says what runs before and
+    /// after the walk.
+    ///
+    /// [`BUDGET`]: super::thumb::startup::BUDGET
+    /// [`RESET_LIMIT`]: super::thumb::startup::RESET_LIMIT
+    /// [`CALL_LIMIT`]: super::thumb::startup::CALL_LIMIT
+    /// [`LOOP_LIMIT`]: super::thumb::startup::LOOP_LIMIT
+    /// [`NESTING`]: super::thumb::startup::NESTING
+    /// [`COUNT_BUDGET`]: super::thumb::startup::COUNT_BUDGET
+    /// [`MOST_ITERATIONS`]: super::thumb::startup::MOST_ITERATIONS
+    /// [`CANDIDATES`]: super::thumb::startup::CANDIDATES
+    /// [`MOST_WALKED_ITERATIONS`]: super::thumb::startup::MOST_WALKED_ITERATIONS
+    /// [`WALK_EACH_BUDGET`]: super::thumb::startup::WALK_EACH_BUDGET
+    /// [`WALK_EACH_COUNT_BUDGET`]: super::thumb::startup::WALK_EACH_COUNT_BUDGET
+    /// [`WALK_EACH_TOTAL`]: super::thumb::startup::WALK_EACH_TOTAL
+    /// [`WALK_EACH_COUNT_TOTAL`]: super::thumb::startup::WALK_EACH_COUNT_TOTAL
+    pub fn walk(&self, start: &Start) -> Walk {
+        thumb::startup::walk(self.endianness, self.program, start)
+    }
+
+    /// Whether the code after the call at `first` and before the call at
+    /// `second` only copies registers, or loads words from a literal pool,
+    /// and leaves in r0 what `first` returns there, so that `second` gets
+    /// it, as in `exit(main())`: `bl main; mov r3, r0; mov r0, r3; bl
+    /// exit`. False when the calls are more than 16 bytes apart.
+    pub fn passes_result(&self, first: u64, second: u64) -> bool {
+        thumb::startup::passes_result(self.program, first, second)
+    }
+
+    /// Whether a branch in the code from `start` up to the call at `call`
+    /// goes to the instruction after the call: then the call doesn't
+    /// return, and the compiler put other code after it, such as a loop's.
+    pub fn branches_past(&self, start: u64, call: u64) -> bool {
+        thumb::startup::branches_past(self.program, start, call)
     }
 }
