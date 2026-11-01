@@ -31,8 +31,9 @@
 //! - `sweep.rs` has the [`Scanner`], which decodes one instruction at a
 //!   time and notes what it refers to, and the sweep that steps through a
 //!   function with it ([`Scanner::sweep`]).
-//! - `values/` follows the registers, and `decode.rs` says what each
-//!   instruction does with them, for `values` and `startup`.
+//! - `values/` follows the registers; its `mod.rs` says how, in four
+//!   steps, and maps its files. `decode.rs` says what each instruction
+//!   does with them, for `values` and `startup`.
 //! - `bounds.rs` finds where a function's code ends: `code_size`,
 //!   `ending` and `leading_padding`, for finding the functions in stripped
 //!   firmware, and `runs_on`, for an entry point that runs on into the next
@@ -111,6 +112,12 @@ impl Instruction {
     /// Its size in bytes.
     fn size(&self) -> usize {
         if is_wide(self.first) { 4 } else { 2 }
+    }
+
+    /// Where it ends, as an offset into the code: where the next
+    /// instruction starts, unless data is between them.
+    fn end(&self) -> usize {
+        self.offset + self.size()
     }
 
     /// Whether it is padding that compilers and linkers put between
