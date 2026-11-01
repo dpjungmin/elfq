@@ -3,7 +3,7 @@
 
 use object::Endianness::Little;
 
-use super::each_time::same_words;
+use super::each_iteration::same_words;
 use super::execute::{add, holds, subtract};
 use super::walk_state::Flags;
 use super::{branches_past, passes_result, walk};
@@ -166,23 +166,23 @@ fn walk_lines_following(
                 let end = l
                     .stopped()
                     .map_or(String::new(), |end| format!(", stops {end:x?}"));
-                let passes = l
+                let runs = l
                     .iterations()
                     .map_or(String::new(), |n| format!(", runs {n:#x} times"));
                 // Where each iteration that the walk went through starts,
                 // and the row of a table it reads.
-                let times: Vec<String> = (iterations.iter())
+                let starts: Vec<String> = (iterations.iter())
                     .map(|iteration| match iteration.row {
                         Some(row) => format!(" {}@{row:#x}", iteration.events.start),
                         None => format!(" {}", iteration.events.start),
                     })
                     .collect();
-                let times = match times.is_empty() {
+                let starts = match starts.is_empty() {
                     true => String::new(),
-                    false => format!(", times from events{}", times.concat()),
+                    false => format!(", times from events{}", starts.concat()),
                 };
                 format!(
-                    "{} {:#x} loop back at {:#x}, from event {}{passes}{times}{end}",
+                    "{} {:#x} loop back at {:#x}, from event {}{runs}{starts}{end}",
                     l.depth, l.head, l.back, l.events.start
                 )
             }
@@ -930,9 +930,10 @@ fn a_region_table_loop_whose_function_the_walk_cant_tell_is_walked_once() {
 #[test]
 fn a_table_loop_that_loads_the_next_row_at_its_end() {
     // The code loads the first row before the loop, and the next at
-    // the end of each time, which the test then reads. Each time's
-    // call reads a row that registers carry over from the time
-    // before, which no register points at, so elfq names no rows:
+    // the end of each iteration, which the test then reads. Each
+    // iteration's call reads a row that registers carry over from the
+    // iteration before, which no register points at, so elfq names no
+    // rows:
     // reset:
     //   8000000: 4c08       ldr   r4, [pc, #32]  ; 0x8000024
     //   8000002: cc07       ldmia r4!, {r0, r1, r2}
@@ -979,12 +980,12 @@ fn a_table_loop_that_loads_the_next_row_at_its_end() {
 }
 
 #[test]
-fn loops_that_cost_more_than_the_times_budget_leave_the_walk_its_own() {
-    // Three loops of 16 times, one inside the other through calls, cost
-    // more to go through each time than the times budget lets, so the
-    // walk goes through the outer one once, as it would through a loop
-    // that it doesn't go through each time, and still has its own
-    // budget for the copy after it:
+fn loops_that_cost_more_than_the_walk_each_budget_leave_the_walk_its_own() {
+    // Three loops of 16 iterations, one inside the other through calls,
+    // cost more to go through each iteration than WALK_EACH_BUDGET lets,
+    // so the walk goes through the outer one once, as it would through a
+    // loop that it doesn't go through each iteration, and still has its
+    // own budget for the copy after it:
     // reset:
     //   8000000: 2600       movs  r6, #0
     //   8000002: f000 f80f  bl    8000024 <f>
@@ -1046,9 +1047,10 @@ fn loops_that_cost_more_than_the_times_budget_leave_the_walk_its_own() {
 }
 
 #[test]
-fn each_time_reads_the_same_words_of_its_row() {
+fn each_iteration_reads_the_same_words_of_its_row() {
     // Three words of each row, and then only the first, as of the zero
-    // word that ends the table; times that load nothing don't count.
+    // word that ends the table; iterations that load nothing don't
+    // count.
     let rows = [
         vec![0x100, 0x104, 0x108],
         vec![0x10c, 0x110, 0x114],
@@ -1060,9 +1062,9 @@ fn each_time_reads_the_same_words_of_its_row() {
         vec![],
         vec![0x10c, 0x110]
     ]));
-    // A first time that also loads the start of the next row at its
-    // end, which the next time doesn't load again, or a time that
-    // reads another word of its row.
+    // A first iteration that also loads the start of the next row at
+    // its end, which the next iteration doesn't load again, or an
+    // iteration that reads another word of its row.
     let rows = [
         vec![0x100, 0x104, 0x108, 0x10c],
         vec![0x110, 0x114, 0x118],
@@ -2033,9 +2035,9 @@ fn a_table_loop_whose_test_is_past_its_branch_back() {
     // As CMSIS 5.9's __cmsis_start goes through its copy table, built
     // with GCC -Os, which puts the test of the loop over the table's
     // rows after the branch back: the table has one row, which copies
-    // 4 words, and the loop leaves the second time. The walk goes
-    // through the loop's code each time, and the first time reads the
-    // row from its start, though the code reads the row's last word
+    // 4 words, and the loop leaves in the second iteration. The walk
+    // goes through the loop's code each iteration, and the first reads
+    // the row from its start, though the code reads the row's last word
     // first:
     // reset:
     //   8000000: 4b0a       ldr	r3, [pc, #40]	@ (800002c <body+0x6>)
@@ -2094,9 +2096,10 @@ fn a_table_loop_whose_test_is_past_its_branch_back() {
 #[test]
 fn a_loop_over_a_table_of_functions_is_walked_once() {
     // As __libc_init_array calls the constructors in .init_array: the
-    // loop calls another function through r3 each time, so the walk
-    // keeps what it found the first time, as for a loop it doesn't go
-    // through each time, and doesn't follow the second function:
+    // loop calls another function through r3 each iteration, so the
+    // walk keeps what it found in the first, as for a loop it doesn't
+    // go through each iteration, and doesn't follow the second
+    // function:
     // reset:
     //   8000000: 4c08       ldr	r4, [pc, #32]	@ (8000024 <second+0x8>)
     //   8000002: 4d09       ldr	r5, [pc, #36]	@ (8000028 <second+0xc>)
@@ -2186,7 +2189,7 @@ fn a_loop_that_leaves_with_cbz_at_its_head() {
 #[test]
 fn a_loop_counts_without_the_words_it_loads() {
     // The words the loop copies run 1, 2, 3, 4, then 9: the walk
-    // doesn't take the word in r0 to move on by 1 each time, as the
+    // doesn't take the word in r0 to move on by 1 each iteration, as the
     // registers that count do:
     // reset:
     //   8000000: a106       add	r1, pc, #24	@ (adr r1, 800001c <data>)

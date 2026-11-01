@@ -1,6 +1,6 @@
 //! What the walk knows on one way through the code: the numbers in the
 //! registers, the condition flags and the words in memory that it can
-//! tell ([`Path`]), what it knew when it first got to an instruction
+//! tell ([`Known`]), what it knew when it first got to an instruction
 //! ([`Visit`]), and the branches whose condition it couldn't tell, which
 //! it may go back to ([`Alternative`]).
 
@@ -13,7 +13,7 @@ use crate::arch::thumb::decode::{Registers, each};
 
 /// What the walk knows on the way it goes.
 #[derive(Debug, Clone, Default)]
-pub(super) struct Path {
+pub(super) struct Known {
     /// What each register holds, when the walk can tell; pc's is unused.
     pub(super) registers: [Option<u32>; 16],
     /// The words that code stored on the way, by address: what the walk
@@ -40,8 +40,8 @@ pub(super) struct Path {
     /// tell and code hasn't changed the register since (see
     /// [`Store::source`](crate::arch::startup::Store::source)).
     pub(super) sources: [Option<Source>; 16],
-    /// The compares in one time through a loop's code that the walk
-    /// counts (see [`Walker::count`](super::Walker::count)).
+    /// The compares in one iteration of a loop that the walk counts (see
+    /// [`Walker::count`](super::Walker::count)).
     pub(super) compares: Vec<Compare>,
 }
 
@@ -71,7 +71,7 @@ pub(super) struct Flags {
 pub(super) struct Visit {
     pub(super) registers: [Option<u32>; 16],
     pub(super) memory: Memory,
-    /// See `Path::sources`, `Path::left` and `Path::results`.
+    /// See `Known::sources`, `Known::left` and `Known::results`.
     pub(super) sources: [Option<Source>; 16],
     pub(super) left: u8,
     pub(super) results: u8,
@@ -79,7 +79,7 @@ pub(super) struct Visit {
     pub(super) events: usize,
     /// How many instructions the walk had gone through (see `Run::order`).
     pub(super) order: usize,
-    /// See `Path::forks`.
+    /// See `Known::forks`.
     pub(super) forks: bool,
 }
 
@@ -90,24 +90,24 @@ pub(super) struct Alternative {
     pub(super) site: u64,
     pub(super) target: u64,
     pub(super) events: usize,
-    pub(super) path: Path,
+    pub(super) known: Known,
     /// How many instructions the walk had gone through.
-    pub(super) visited: usize,
+    pub(super) order: usize,
     pub(super) pending: Vec<(u64, u64)>,
     pub(super) bounds: Option<(u64, u64)>,
 }
 
-/// Forgets what changed in `path`, but for the stack pointer, since it
+/// Forgets what changed in `known`, but for the stack pointer, since it
 /// held `registers` and `memory`, and where words were loaded from.
-pub(super) fn forget_changes(path: &mut Path, registers: &[Option<u32>; 16], memory: &Memory) {
-    path.sources = [None; 16];
+pub(super) fn forget_changes(known: &mut Known, registers: &[Option<u32>; 16], memory: &Memory) {
+    known.sources = [None; 16];
     for register in (0..16).filter(|&register| register != usize::from(SP)) {
-        if path.registers[register] != registers[register] {
-            path.registers[register] = None;
+        if known.registers[register] != registers[register] {
+            known.registers[register] = None;
         }
     }
-    let changed = stored_since(&path.memory, memory);
-    forget_words(path, changed);
+    let changed = stored_since(&known.memory, memory);
+    forget_words(known, changed);
 }
 
 /// The words that code stored from when memory held `before` to when it
@@ -127,21 +127,21 @@ pub(super) fn stored_since(after: &Memory, before: &Memory) -> Vec<u32> {
         .collect()
 }
 
-/// Forgets the words at `addresses` in `path`.
-pub(super) fn forget_words(path: &mut Path, addresses: Vec<u32>) {
+/// Forgets the words at `addresses` in `known`.
+pub(super) fn forget_words(known: &mut Known, addresses: Vec<u32>) {
     if addresses.is_empty() {
         return;
     }
-    let words = Rc::make_mut(&mut path.memory);
+    let words = Rc::make_mut(&mut known.memory);
     for address in addresses {
         words.insert(address, None);
     }
 }
 
 /// Forgets what `registers` hold.
-pub(super) fn set_unknown(path: &mut Path, registers: Registers) {
+pub(super) fn set_unknown(known: &mut Known, registers: Registers) {
     for register in each(registers) {
-        path.registers[usize::from(register)] = None;
-        path.sources[usize::from(register)] = None;
+        known.registers[usize::from(register)] = None;
+        known.sources[usize::from(register)] = None;
     }
 }

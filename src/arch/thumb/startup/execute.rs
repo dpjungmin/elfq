@@ -13,47 +13,47 @@ use crate::arch::thumb::{ARGUMENTS, PC, SP};
 
 use super::Walker;
 use super::calls::results;
-use super::walk_state::{Compare, Flags, Path, set_unknown};
+use super::walk_state::{Compare, Flags, Known, set_unknown};
 
 impl Walker<'_> {
-    /// Changes `path` as the instruction at `site` does, other than where
+    /// Changes `known` as the instruction at `site` does, other than where
     /// it goes next. When it is `conditional`, in an `it` block whose
     /// condition the walk can't tell, what it writes becomes unknown.
     ///
-    /// It reads all it needs from `path` before it forgets what the
+    /// It reads all it needs from `known` before it forgets what the
     /// instruction writes, as `ldr r0, [r0]` reads r0 for the address it
     /// loads r0 from, and only then writes what it worked out.
     pub(super) fn execute(
         &mut self,
-        path: &mut Path,
+        known: &mut Known,
         site: u64,
         effect: &Effect,
         changes_flags: bool,
         conditional: bool,
         depth: u32,
     ) {
-        path.results |= results(effect);
-        path.left &= !(effect.writes & ARGUMENTS) as u8;
-        let at = self.access(path, site, effect);
+        known.results |= results(effect);
+        known.left &= !(effect.writes & ARGUMENTS) as u8;
+        let at = self.access(known, site, effect);
         if let Operation::Store { .. } = effect.operation {
-            self.store(path, site, depth, effect, at, conditional);
+            self.store(known, site, depth, effect, at, conditional);
         }
         if changes_flags {
-            self.compare(path, site, effect.operation);
+            self.compare(known, site, effect.operation);
         }
         let flags = match (changes_flags, conditional) {
-            (false, _) => path.flags,
+            (false, _) => known.flags,
             (true, true) => Flags::default(),
-            (true, false) => self.flags(path, site, effect),
+            (true, false) => self.flags(known, site, effect),
         };
         if conditional {
-            set_unknown(path, effect.writes);
-            path.flags = flags;
+            set_unknown(known, effect.writes);
+            known.flags = flags;
             return;
         }
-        let result = self.result(path, site, effect.operation, at);
+        let result = self.result(known, site, effect.operation, at);
         let source = match effect.operation {
-            Operation::Copy { source, .. } if source != PC => path.sources[usize::from(source)],
+            Operation::Copy { source, .. } if source != PC => known.sources[usize::from(source)],
             Operation::Load {
                 register: Some(_), ..
             } => at.map(|address| Source { site, address }),
@@ -65,7 +65,7 @@ impl Walker<'_> {
                 .enumerate()
                 .map(|(n, register)| {
                     let address = at.map(|at| at.wrapping_add(4 * n as u32));
-                    let word = address.and_then(|address| self.load(path, address, false));
+                    let word = address.and_then(|address| self.load(known, address, false));
                     let source = address.map(|address| Source { site, address });
                     (register, word, source)
                 })
@@ -75,17 +75,17 @@ impl Walker<'_> {
         // The base register after a load or store that adds to it.
         let moved = match (effect.operation, effect.writeback) {
             (Operation::Load { base, .. } | Operation::Store { base, .. }, Some(writeback)) => {
-                let after = self.register(path, base, site);
+                let after = self.register(known, base, site);
                 Some((base, after.map(|n| n.wrapping_add_signed(writeback.amount))))
             }
             _ => None,
         };
-        let sp = path.registers[usize::from(SP)];
+        let sp = known.registers[usize::from(SP)];
         let mut pushed = Vec::new();
         if let (Operation::Push { registers, size }, Some(sp)) = (effect.operation, sp) {
             let bottom = sp.wrapping_sub(size);
             for (n, register) in each(registers).enumerate() {
-                let word = self.register(path, register, site);
+                let word = self.register(known, register, site);
                 pushed.push((bottom.wrapping_add(4 * n as u32), word));
             }
             // The floating-point registers that `vpush` stores.
@@ -93,59 +93,59 @@ impl Walker<'_> {
                 pushed.push((at, None));
             }
         }
-        set_unknown(path, effect.writes);
+        set_unknown(known, effect.writes);
         match (effect.operation, sp) {
             (Operation::Push { size, .. }, Some(sp)) => {
-                let memory = Rc::make_mut(&mut path.memory);
+                let memory = Rc::make_mut(&mut known.memory);
                 for (at, word) in pushed {
                     memory.insert(at, word);
                 }
-                path.registers[usize::from(SP)] = Some(sp.wrapping_sub(size));
+                known.registers[usize::from(SP)] = Some(sp.wrapping_sub(size));
             }
             (Operation::Pop { registers, size }, Some(sp)) => {
                 for (n, register) in each(registers).enumerate() {
                     if register != PC {
                         let at = sp.wrapping_add(4 * n as u32);
-                        path.registers[usize::from(register)] = self.load(path, at, false);
+                        known.registers[usize::from(register)] = self.load(known, at, false);
                     }
                 }
-                path.registers[usize::from(SP)] = Some(sp.wrapping_add(size));
+                known.registers[usize::from(SP)] = Some(sp.wrapping_add(size));
             }
             _ => {}
         }
         if let Some((register, _)) = result {
-            path.sources[usize::from(register)] = source;
+            known.sources[usize::from(register)] = source;
         }
         for (register, word, source) in words {
-            path.registers[usize::from(register)] = word;
-            path.sources[usize::from(register)] = source;
+            known.registers[usize::from(register)] = word;
+            known.sources[usize::from(register)] = source;
         }
         for (register, number) in result.into_iter().chain(moved) {
             if register != PC {
-                path.registers[usize::from(register)] = number;
+                known.registers[usize::from(register)] = number;
             }
         }
-        if let (Some(lowest), Some(sp)) = (self.lowest, path.registers[usize::from(SP)]) {
+        if let (Some(lowest), Some(sp)) = (self.lowest, known.registers[usize::from(SP)]) {
             self.lowest = Some(lowest.min(sp));
         }
-        path.flags = flags;
+        known.flags = flags;
     }
 
     /// The register that `operation` writes a number to, and the number,
     /// when the walk can tell it. A load loads it from `at`.
     fn result(
         &self,
-        path: &Path,
+        known: &Known,
         site: u64,
         operation: Operation,
         at: Option<u32>,
     ) -> Option<(u16, Option<u32>)> {
-        let get = |register| self.register(path, register, site);
+        let get = |register| self.register(known, register, site);
         let number = |register, number| Some((register, number));
         match operation {
             Operation::Constant { register, value } => number(register, Some(value)),
             Operation::Literal { register, address } => {
-                number(register, self.load(path, address as u32, true))
+                number(register, self.load(known, address as u32, true))
             }
             Operation::Address { register, value } => number(register, Some(value)),
             Operation::HighHalf { register, high } => {
@@ -205,7 +205,7 @@ impl Walker<'_> {
             Operation::Load {
                 register: Some(register),
                 ..
-            } => number(register, at.and_then(|at| self.load(path, at, false))),
+            } => number(register, at.and_then(|at| self.load(known, at, false))),
             Operation::Nothing
             | Operation::Load { .. }
             | Operation::Store { .. }
@@ -217,9 +217,9 @@ impl Walker<'_> {
     }
 
     /// The flags after the instruction at `site`, which changes them.
-    fn flags(&self, path: &Path, site: u64, effect: &Effect) -> Flags {
-        let get = |register| self.register(path, register, site);
-        let old = path.flags;
+    fn flags(&self, known: &Known, site: u64, effect: &Effect) -> Flags {
+        let get = |register| self.register(known, register, site);
+        let old = known.flags;
         // Moves and logic leave the overflow flag as it was.
         let logic = |result: Option<u32>, carry| Flags {
             carry,
@@ -300,10 +300,10 @@ impl Walker<'_> {
 
     /// Records the store at `site`, which does what `effect` says, at
     /// `address` when the walk can tell it, and changes the memory that
-    /// `path` knows.
+    /// `known` knows.
     fn store(
         &mut self,
-        path: &mut Path,
+        known: &mut Known,
         site: u64,
         depth: u32,
         effect: &Effect,
@@ -319,7 +319,7 @@ impl Walker<'_> {
         else {
             return;
         };
-        let from = self.register(path, base, site);
+        let from = self.register(known, base, site);
         // The registers whose words it stores, in order: none for part of
         // a word.
         let registers: Vec<u16> = match (effect.words, register) {
@@ -328,10 +328,10 @@ impl Walker<'_> {
             (None, None) => Vec::new(),
         };
         let words: Vec<Option<u32>> = (registers.iter())
-            .map(|&register| self.register(path, register, site))
+            .map(|&register| self.register(known, register, site))
             .collect();
         if let Some(address) = address {
-            let memory = Rc::make_mut(&mut path.memory);
+            let memory = Rc::make_mut(&mut known.memory);
             if !words.is_empty() && address.is_multiple_of(4) && !conditional {
                 for (n, &word) in words.iter().enumerate() {
                     memory.insert(address.wrapping_add(4 * n as u32), word);
@@ -359,7 +359,7 @@ impl Walker<'_> {
             };
             // Of several words, only when it loaded them one after another.
             let sources: Vec<Option<Source>> = (registers.iter())
-                .map(|&r| path.sources[usize::from(r)])
+                .map(|&r| known.sources[usize::from(r)])
                 .collect();
             let source = sources.first().copied().flatten().filter(|first| {
                 (sources.iter().enumerate()).all(|(n, source)| {
@@ -383,7 +383,7 @@ impl Walker<'_> {
 
     /// The address of the first word that a load or store at `site` that
     /// does what `effect` says reads or writes, when the walk can tell it.
-    pub(super) fn access(&self, path: &Path, site: u64, effect: &Effect) -> Option<u32> {
+    pub(super) fn access(&self, known: &Known, site: u64, effect: &Effect) -> Option<u32> {
         let (Operation::Load { base, offset, .. } | Operation::Store { base, offset, .. }) =
             effect.operation
         else {
@@ -393,10 +393,10 @@ impl Walker<'_> {
         // down to a word.
         let base = match base {
             PC => (site as u32).wrapping_add(4) & !3,
-            _ => self.register(path, base, site)?,
+            _ => self.register(known, base, site)?,
         };
         if let Some(index) = effect.index {
-            let added = self.register(path, index.register, site)?;
+            let added = self.register(known, index.register, site)?;
             return Some(base.wrapping_add(added << index.shift));
         }
         let offset = match (effect.words, effect.writeback) {
@@ -421,12 +421,12 @@ impl Walker<'_> {
     /// the carry tells, and what they leave with 0; and any other
     /// instruction compares what it leaves with 0, as the negative and
     /// zero flags tell.
-    fn compare(&self, path: &mut Path, site: u64, operation: Operation) {
-        if self.counting.is_empty() {
+    fn compare(&self, known: &mut Known, site: u64, operation: Operation) {
+        if self.open_loops.is_empty() {
             return;
         }
-        let get = |register| self.register(path, register, site);
-        let left = || match self.result(path, site, operation, None) {
+        let get = |register| self.register(known, register, site);
+        let left = || match self.result(known, site, operation, None) {
             Some((_, number)) => [Some([number, Some(0)]), None],
             None => [None, None],
         };
@@ -447,7 +447,8 @@ impl Walker<'_> {
             _ => left(),
         };
         let compares = compares.into_iter().flatten();
-        path.compares
+        known
+            .compares
             .extend(compares.map(|numbers| Compare { site, numbers }));
     }
 
@@ -464,13 +465,13 @@ impl Walker<'_> {
     /// is there at reset. A literal pool is read as the code is, when
     /// `literal`, as if copied into place, unless code stored a word the
     /// walk knows there.
-    pub(super) fn load(&self, path: &Path, address: u32, literal: bool) -> Option<u32> {
+    pub(super) fn load(&self, known: &Known, address: u32, literal: bool) -> Option<u32> {
         if !address.is_multiple_of(4) {
             return None;
         }
         let code = self.program.code(u64::from(address)).filter(|_| literal);
         match (
-            path.memory.get(&address),
+            known.memory.get(&address),
             code.and_then(|bytes| bytes.get(..4)),
         ) {
             (Some(&Some(word)), _) => Some(word),
@@ -482,10 +483,10 @@ impl Walker<'_> {
 
     /// What `register` holds at the instruction at `site`: for pc, the
     /// instruction's address + 4.
-    pub(super) fn register(&self, path: &Path, register: u16, site: u64) -> Option<u32> {
+    pub(super) fn register(&self, known: &Known, register: u16, site: u64) -> Option<u32> {
         match register {
             PC => Some((site as u32).wrapping_add(4)),
-            _ => path.registers[usize::from(register)],
+            _ => known.registers[usize::from(register)],
         }
     }
 }

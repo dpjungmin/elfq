@@ -506,16 +506,16 @@ impl End {
 ///   deep.
 /// - To count loops, it goes through 50,000 more instructions in all
 ///   ([`COUNT_BUDGET`]). It counts a loop that runs at most 2^24 times
-///   ([`MOST_PASSES`]), tries at most 12 of the times that its compares
+///   ([`MOST_ITERATIONS`]), tries at most 12 of the times that its compares
 ///   say it may leave ([`CANDIDATES`]), and goes through its code at most
-///   16 times when they say none ([`MOST_TIMES`]).
+///   16 times when they say none ([`MOST_WALKED_ITERATIONS`]).
 /// - It goes through the code of a loop each iteration when the loop runs
-///   at most 16 times ([`MOST_TIMES`]), and its iterations take at most
-///   5,000 instructions ([`TIMES_BUDGET`]) and 10,000 to count the loops
-///   inside them ([`TIMES_COUNT_BUDGET`]), in place of the two budgets
-///   above; all such loops take at most 10,000 and 20,000 ([`TIMES_TOTAL`]
-///   and [`TIMES_COUNT_TOTAL`]). Past these, it goes through the loop's
-///   code once, as through others.
+///   at most 16 times ([`MOST_WALKED_ITERATIONS`]), and its iterations take
+///   at most 5,000 instructions ([`WALK_EACH_BUDGET`]) and 10,000 to count
+///   the loops inside them ([`WALK_EACH_COUNT_BUDGET`]), in place of the
+///   two budgets above; all such loops take at most 10,000 and 20,000
+///   ([`WALK_EACH_TOTAL`] and [`WALK_EACH_COUNT_TOTAL`]). Past these, it
+///   goes through the loop's code once, as through others.
 ///
 /// docs/design.md tells the walk in prose where it describes `elfq FILE
 /// startup`, with the loops it counts and the tables of sections it goes
@@ -528,13 +528,13 @@ impl End {
 /// [`LOOP_LIMIT`]: super::thumb::startup::LOOP_LIMIT
 /// [`NESTING`]: super::thumb::startup::NESTING
 /// [`COUNT_BUDGET`]: super::thumb::startup::COUNT_BUDGET
-/// [`MOST_PASSES`]: super::thumb::startup::MOST_PASSES
+/// [`MOST_ITERATIONS`]: super::thumb::startup::MOST_ITERATIONS
 /// [`CANDIDATES`]: super::thumb::startup::CANDIDATES
-/// [`MOST_TIMES`]: super::thumb::startup::MOST_TIMES
-/// [`TIMES_BUDGET`]: super::thumb::startup::TIMES_BUDGET
-/// [`TIMES_COUNT_BUDGET`]: super::thumb::startup::TIMES_COUNT_BUDGET
-/// [`TIMES_TOTAL`]: super::thumb::startup::TIMES_TOTAL
-/// [`TIMES_COUNT_TOTAL`]: super::thumb::startup::TIMES_COUNT_TOTAL
+/// [`MOST_WALKED_ITERATIONS`]: super::thumb::startup::MOST_WALKED_ITERATIONS
+/// [`WALK_EACH_BUDGET`]: super::thumb::startup::WALK_EACH_BUDGET
+/// [`WALK_EACH_COUNT_BUDGET`]: super::thumb::startup::WALK_EACH_COUNT_BUDGET
+/// [`WALK_EACH_TOTAL`]: super::thumb::startup::WALK_EACH_TOTAL
+/// [`WALK_EACH_COUNT_TOTAL`]: super::thumb::startup::WALK_EACH_COUNT_TOTAL
 pub fn walk(
     architecture: Architecture,
     endianness: Endianness,

@@ -12,25 +12,24 @@
 //!
 //! # How the walk is organized
 //!
-//! - [`walk`] makes a [`Walker`], which keeps what the whole walk finds
-//!   and spends: the events, the budgets, and the loops it is going
-//!   through time by time ([`Walker::counting`]).
+//! - [`walk`] makes a [`Walker`], which keeps what the whole walk finds and
+//!   spends: the events, the budgets, and the loops it is going through
+//!   iteration by iteration ([`Walker::open_loops`]).
 //! - [`Walker::run`] walks one function's code, or one loop's: a [`Run`],
 //!   within the limits of a [`Frame`]. [`Walker::step`] runs each
 //!   instruction, with one handler for each way it goes on, such as
 //!   [`Walker::on_branch`]. `execute.rs` works out what an instruction
-//!   does to what the walk knows there, a [`Path`] (in `walk_state.rs`,
+//!   does to what the walk knows there, a [`Known`] (in `walk_state.rs`,
 //!   with the [`Visit`] that keeps what it knew when it first got to an
 //!   instruction), and `calls.rs` follows a call. When the way the walk
 //!   went ends where it can't go on, [`Walker::backtrack`] goes back to a
 //!   branch whose condition it couldn't tell.
 //! - A branch back is a loop ([`Walker::branch_back`]). `loops.rs` finds
-//!   the loop's code, and
-//!   [`Walker::close_loop`] decides what the walk knows after it:
-//!   `count.rs` counts how many times the loop runs by going through its
-//!   code time by time ([`Counting`]), and `each_time.rs` goes through the
-//!   code of a loop over a table each time it runs, with its calls and
-//!   the loops inside.
+//!   the loop's code, and [`Walker::close_loop`] decides what the walk
+//!   knows after it: `count.rs` counts how many times the loop runs by
+//!   going through its code iteration by iteration ([`OpenLoop`]), and
+//!   `each_iteration.rs` goes through each iteration of a loop over a
+//!   table, with its calls and the loops inside.
 //! - `queries.rs` answers two questions that `commands/startup` asks about
 //!   the code around a call, and `tests.rs` walks small programs.
 //!
@@ -38,7 +37,7 @@
 
 mod calls;
 mod count;
-mod each_time;
+mod each_iteration;
 mod execute;
 mod loops;
 mod queries;
@@ -58,25 +57,25 @@ use crate::arch::CodeReferenceKind;
 use crate::arch::startup::{Call, DEPTH, End, Event, How, Program, Start, Through, Walk};
 
 use calls::arguments;
-use count::Counting;
+use count::{Mode, OpenLoop};
 use execute::holds;
 use loops::FoundLoop;
 pub(in crate::arch) use queries::{branches_past, passes_result};
-use walk_state::{Alternative, Compare, Path, Visit};
+use walk_state::{Alternative, Compare, Known, Visit};
 
-// The limits. The walk spends instructions from two budgets for all of
-// it, one for what it walks and one, on top, for counting loops. Each
-// function's code and each loop's has a limit of its own, as does how
-// deep loops nest. Counting a loop has limits on how many times it may
-// run and how many it tries. A loop that the walk goes through each time
-// it runs spends budgets of its own in place of the two for all of it,
-// taken from two totals for all such loops. How many calls deep it
-// follows is `arch::startup::DEPTH`. `arch::startup::walk` lists them
-// with what each means for what the walk finds, and links to them.
+// The limits. The walk spends instructions from two budgets for all of it,
+// one for what it walks and one, on top, for counting loops. Each
+// function's code and each loop's has a limit of its own, as does how deep
+// loops nest. Counting a loop has limits on how many times it may run and
+// how many it tries. A loop that the walk goes through each iteration of
+// spends budgets of its own in place of the two for all of it, taken from
+// two totals for all such loops. How many calls deep it follows is
+// `arch::startup::DEPTH`. `arch::startup::walk` lists them with what each
+// means for what the walk finds, and links to them.
 
 /// How many instructions the walk goes through in all, but for those it
-/// goes through to count loops ([`COUNT_BUDGET`]) and in loops that it
-/// goes through each time ([`TIMES_TOTAL`]).
+/// goes through to count loops ([`COUNT_BUDGET`]) and in loops that it goes
+/// through each iteration of ([`WALK_EACH_TOTAL`]).
 pub(in crate::arch) const BUDGET: usize = 20_000;
 
 /// How many instructions it goes through in all to count how many times
@@ -97,35 +96,37 @@ pub(in crate::arch) const NESTING: u32 = 8;
 
 /// How many times at most a loop that the walk can tell runs: more is
 /// not a loop of startup code.
-pub(in crate::arch) const MOST_PASSES: u32 = 1 << 24;
+pub(in crate::arch) const MOST_ITERATIONS: u32 = 1 << 24;
 
-/// How many of the times a loop may leave, as its compares tell, it tries.
+/// How many of the iterations after which a loop may leave, as its compares
+/// tell, it tries.
 pub(in crate::arch) const CANDIDATES: usize = 12;
 
-/// How many times at most a loop runs that the walk goes through the code
-/// of each time with the calls it makes and the loops inside, as a loop
+/// How many times at most a loop runs that the walk goes through each
+/// iteration of with the calls it makes and the loops inside, as a loop
 /// over a table of sections; and how many times it goes through a loop's
 /// code to count it when its compares don't tell.
-pub(in crate::arch) const MOST_TIMES: u32 = 16;
+pub(in crate::arch) const MOST_WALKED_ITERATIONS: u32 = 16;
 
-/// How many instructions the walk goes through in the times of one loop
-/// that it goes through each time, in place of [`BUDGET`]. A loop that
-/// costs more is walked once, as others, and leaves the rest of the walk
-/// as it would be had the walk not tried (see [`Walker::walk_times`]).
-pub(in crate::arch) const TIMES_BUDGET: usize = 5_000;
+/// How many instructions the walk goes through in the iterations of one
+/// loop that it goes through each iteration of, in place of [`BUDGET`]. A
+/// loop that costs more is walked once, as others, and leaves the rest of
+/// the walk as it would be had the walk not tried (see
+/// [`Walker::walk_each_iteration`]).
+pub(in crate::arch) const WALK_EACH_BUDGET: usize = 5_000;
 
-/// How many it goes through to count the loops inside those times, in
+/// How many it goes through to count the loops inside those iterations, in
 /// place of [`COUNT_BUDGET`].
-pub(in crate::arch) const TIMES_COUNT_BUDGET: usize = 10_000;
+pub(in crate::arch) const WALK_EACH_COUNT_BUDGET: usize = 10_000;
 
 /// How many instructions it goes through in all the loops that it goes
-/// through each time, those it tries and gives up on too, from which each
-/// takes up to [`TIMES_BUDGET`].
-pub(in crate::arch) const TIMES_TOTAL: usize = 2 * TIMES_BUDGET;
+/// through each iteration of, those it tries and gives up on too, from
+/// which each takes up to [`WALK_EACH_BUDGET`].
+pub(in crate::arch) const WALK_EACH_TOTAL: usize = 2 * WALK_EACH_BUDGET;
 
 /// How many it goes through in all to count the loops inside them, from
-/// which each takes up to [`TIMES_COUNT_BUDGET`].
-pub(in crate::arch) const TIMES_COUNT_TOTAL: usize = 2 * TIMES_COUNT_BUDGET;
+/// which each takes up to [`WALK_EACH_COUNT_BUDGET`].
+pub(in crate::arch) const WALK_EACH_COUNT_TOTAL: usize = 2 * WALK_EACH_COUNT_BUDGET;
 
 /// How far before a function's start the code of a loop can begin that
 /// runs on into the function (see [`Walker::runs_into`]).
@@ -142,15 +143,15 @@ pub(in crate::arch) fn walk(endianness: Endianness, program: &dyn Program, start
         events: Vec::new(),
         budget: BUDGET,
         count_budget: COUNT_BUDGET,
-        times_budget: TIMES_TOTAL,
-        times_count_budget: TIMES_COUNT_TOTAL,
-        counting: Vec::new(),
+        walk_each_budget: WALK_EACH_TOTAL,
+        walk_each_count_budget: WALK_EACH_COUNT_TOTAL,
+        open_loops: Vec::new(),
         data: HashMap::new(),
         clobbers: HashMap::new(),
     };
-    let mut path = Path::default();
-    path.registers[usize::from(SP)] = start.stack_pointer;
-    let (end, _) = walker.walk(start.address & !1, Frame::reset(start.follow), path);
+    let mut known = Known::default();
+    known.registers[usize::from(SP)] = start.stack_pointer;
+    let (end, _) = walker.walk(start.address & !1, Frame::reset(start.follow), known);
     Walk {
         events: walker.events,
         // Only the walk of a loop's code stops without an end.
@@ -170,14 +171,14 @@ struct Frame {
     stop: Option<u64>,
     /// How many loops' code it is in.
     nesting: u32,
-    /// When it is one time through the code of a loop that the walk counts
-    /// or goes through each time, which stops where the loop goes back or
-    /// leaves: the loop's place in [`Walker::counting`].
-    pass: Option<usize>,
-    /// When its code is part of one time through a loop that the walk goes
-    /// through each time, but for what that calls, as the code of a loop
-    /// inside it is: the loop's place in [`Walker::counting`], which keeps
-    /// the words its code loads (see [`Counting::loads`]).
+    /// When it is one iteration of a loop that the walk counts or goes
+    /// through each iteration of, which stops where the loop goes back or
+    /// leaves: the loop's place in [`Walker::open_loops`].
+    iteration_of: Option<usize>,
+    /// When its code is part of one iteration of a loop that the walk goes
+    /// through each iteration of, but for what that calls, as the code of a
+    /// loop inside it is: the loop's place in [`Walker::open_loops`], which
+    /// keeps the words its code loads (see [`OpenLoop::loads`]).
     rows: Option<usize>,
 }
 
@@ -203,7 +204,7 @@ impl Frame {
             limit,
             stop: None,
             nesting: 0,
-            pass: None,
+            iteration_of: None,
             rows: None,
         }
     }
@@ -215,17 +216,18 @@ impl Frame {
             limit: LOOP_LIMIT,
             stop: Some(back),
             nesting: self.nesting + 1,
-            pass: None,
+            iteration_of: None,
             ..self
         }
     }
 
-    /// One iteration of the loop at `index` in [`Walker::counting`], whose
-    /// code is in this frame's: with its calls, the loops inside and their
-    /// events when the walk goes through each iteration (`walks`), and
-    /// otherwise only to count the loop, following no calls, through at
-    /// most the `count_budget` instructions left to count with.
-    fn iteration(self, index: usize, walks: bool, count_budget: usize) -> Frame {
+    /// One iteration of the loop at `index` in [`Walker::open_loops`], whose
+    /// code is in this frame's, as `mode` says: with its calls, the loops
+    /// inside and their events ([`Mode::WalkEach`]), or only to count the
+    /// loop ([`Mode::Count`]), following no calls, through at most the
+    /// `count_budget` instructions left to count with.
+    fn iteration(self, index: usize, mode: Mode, count_budget: usize) -> Frame {
+        let walks = mode == Mode::WalkEach;
         Frame {
             follow: if walks { self.follow } else { 0 },
             limit: if walks {
@@ -235,7 +237,7 @@ impl Frame {
             },
             stop: None,
             nesting: self.nesting + 1,
-            pass: Some(index),
+            iteration_of: Some(index),
             rows: walks.then_some(index),
             ..self
         }
@@ -244,7 +246,7 @@ impl Frame {
 
 /// Where one walk is.
 struct Run {
-    path: Path,
+    known: Known,
     /// The instructions it went through, in order.
     order: Vec<u64>,
     /// What the walk knew at each instruction it went through, when it got
@@ -310,7 +312,7 @@ enum Step {
     /// A loop's walk got to its branch back.
     Stopped,
     /// The walk ends here, unless it goes back to a branch it didn't take.
-    End(End),
+    MayBacktrack(End),
     /// The walk ends here.
     Final(End),
 }
@@ -328,16 +330,16 @@ struct Walker<'a> {
     budget: usize,
     /// How many more it may go through to count how many times loops run.
     count_budget: usize,
-    /// What is left of [`TIMES_TOTAL`] and [`TIMES_COUNT_TOTAL`], from
-    /// which the walk takes [`TIMES_BUDGET`] and [`TIMES_COUNT_BUDGET`] at
-    /// most in place of `budget` and `count_budget` to go through a loop
-    /// each time.
-    times_budget: usize,
-    times_count_budget: usize,
-    /// The loops that the walk goes through time by time, the innermost
-    /// last: one that it counts, or those that it goes through each time
-    /// and loops inside them that it counts.
-    counting: Vec<Counting>,
+    /// What is left of [`WALK_EACH_TOTAL`] and [`WALK_EACH_COUNT_TOTAL`],
+    /// from which the walk takes [`WALK_EACH_BUDGET`] and
+    /// [`WALK_EACH_COUNT_BUDGET`] at most in place of `budget` and
+    /// `count_budget` to go through each iteration of a loop.
+    walk_each_budget: usize,
+    walk_each_count_budget: usize,
+    /// The loops that the walk goes through iteration by iteration, the
+    /// innermost last: one that it counts, or those that it goes through
+    /// each iteration of and loops inside them that it counts.
+    open_loops: Vec<OpenLoop>,
     /// The data in each function the walk got to, by where the function
     /// starts: the constants and jump tables its code reads, as offsets
     /// from its start.
@@ -348,19 +350,19 @@ struct Walker<'a> {
 }
 
 impl Walker<'_> {
-    /// Walks from `start` with what `path` knows, until it ends, or for a
+    /// Walks from `start` with what `known` knows, until it ends, or for a
     /// loop's code, until it gets to `frame.stop`. Returns how it ended,
     /// or `None` when it got there, and what it knew then.
-    fn walk(&mut self, start: u64, frame: Frame, path: Path) -> (Option<End>, Path) {
-        let (end, run) = self.run(start, frame, path);
-        (end, run.path)
+    fn walk(&mut self, start: u64, frame: Frame, known: Known) -> (Option<End>, Known) {
+        let (end, run) = self.run(start, frame, known);
+        (end, run.known)
     }
 
     /// Walks as [`Walker::walk`] does, and returns how it ended and where
     /// it went.
-    fn run(&mut self, start: u64, frame: Frame, path: Path) -> (Option<End>, Run) {
+    fn run(&mut self, start: u64, frame: Frame, known: Known) -> (Option<End>, Run) {
         let mut run = Run {
-            path,
+            known,
             order: Vec::new(),
             visits: HashMap::new(),
             pending: Vec::new(),
@@ -379,7 +381,7 @@ impl Walker<'_> {
                 }
                 Step::Stopped => return (None, run),
                 Step::Final(end) => end,
-                Step::End(end) => match self.backtrack(&mut run, frame, end) {
+                Step::MayBacktrack(end) => match self.backtrack(&mut run, frame, end) {
                     Some(target) => {
                         address = target;
                         continue;
@@ -415,7 +417,7 @@ impl Walker<'_> {
             Flow::Call | Flow::CallRegister(..) => self.on_call(run, frame, running),
             Flow::Branch { target, when } => self.on_branch(run, frame, running, target, when),
             _ if running.conditional() => self.may_jump(run, frame, running),
-            Flow::Return => Step::End(End::Returns(address)),
+            Flow::Return => Step::MayBacktrack(End::Returns(address)),
             Flow::Pop => self.on_pop(run, frame, instruction),
             Flow::Stop => no_code(address, after_call),
             Flow::Table | Flow::JumpRegister(..) | Flow::JumpRelative(_) | Flow::JumpMemory => {
@@ -426,30 +428,28 @@ impl Walker<'_> {
 
     /// Whether the walk stops before the instruction at `address`: in one
     /// iteration of a loop that the walk goes through one by one, at the
-    /// branch back or where the loop leaves, which is past the branch the
-    /// first time and anywhere but the first iteration's code later; and
-    /// in a loop's code, at its branch back.
+    /// branch back or where the loop leaves, which is past the branch in
+    /// the first iteration and anywhere but the first iteration's code
+    /// later; and in a loop's code, at its branch back.
     fn stop_here(&mut self, run: &Run, frame: Frame, address: u64) -> Option<Step> {
-        let Some(index) = frame.pass else {
+        let Some(index) = frame.iteration_of else {
             let at_back = frame.stop.is_some_and(|stop| address >= stop);
             return at_back.then_some(Step::Stopped);
         };
-        let counting = &self.counting[index];
-        let back = counting.back;
-        let leaves = match counting.code.is_empty() {
+        let open = &self.open_loops[index];
+        let back = open.back;
+        let leaves = match open.code.is_empty() {
             true => address > back,
-            false => !counting.code.contains(&address),
+            false => !open.code.contains(&address),
         };
         if address != back && !leaves {
             return None;
         }
         let again = match address == back {
             true => self.goes_back(run, back),
-            false => {
-                (counting.code.is_empty() || counting.ways_out.contains(&address)).then_some(false)
-            }
+            false => (open.code.is_empty() || open.ways_out.contains(&address)).then_some(false),
         };
-        self.counting[index].stopped = Some((address, again));
+        self.open_loops[index].stopped = Some((address, again));
         Some(Step::Stopped)
     }
 
@@ -521,7 +521,7 @@ impl Walker<'_> {
         }
         let sets_flags = running.sets_flags();
         self.execute(
-            &mut run.path,
+            &mut run.known,
             site,
             &effect,
             sets_flags,
@@ -540,8 +540,8 @@ impl Walker<'_> {
         let Running { instruction, .. } = running;
         let sets_flags = running.sets_flags();
         let (site, effect) = (instruction.address, &instruction.effect);
-        self.execute(&mut run.path, site, effect, sets_flags, true, frame.depth);
-        run.path.forks = true;
+        self.execute(&mut run.known, site, effect, sets_flags, true, frame.depth);
+        run.known.forks = true;
         Step::Next(instruction.next())
     }
 
@@ -555,7 +555,7 @@ impl Walker<'_> {
             let reads = instruction.effect.reads | ARGUMENTS;
             self.carried_reads(index, reads, CALL_CLOBBERS, conditional);
         }
-        let (target, how) = self.called(&run.path, instruction);
+        let (target, how) = self.called(&run.known, instruction);
         if let Some(end) = self.call(run, frame, instruction.address, target, how, conditional) {
             return Step::Final(end);
         }
@@ -564,11 +564,11 @@ impl Walker<'_> {
     }
 
     /// What the call `instruction` calls, when the walk can tell, and how.
-    fn called(&self, path: &Path, instruction: Decoded) -> (Option<u64>, How) {
+    fn called(&self, known: &Known, instruction: Decoded) -> (Option<u64>, How) {
         let site = instruction.address;
         match instruction.effect.flow {
             Flow::CallRegister(register, low_bit) => {
-                let target = self.register(path, register, site);
+                let target = self.register(known, register, site);
                 let target = target.and_then(|number| low_bit.target(number));
                 (target.map(u64::from), How::Register(register))
             }
@@ -586,9 +586,9 @@ impl Walker<'_> {
     /// pop it: a called function starts with lr unknown.
     fn on_pop(&mut self, run: &mut Run, frame: Frame, instruction: Decoded) -> Step {
         let site = instruction.address;
-        let to = self.popped_pc(&run.path, instruction.effect.operation);
+        let to = self.popped_pc(&run.known, instruction.effect.operation);
         self.execute(
-            &mut run.path,
+            &mut run.known,
             site,
             &instruction.effect,
             false,
@@ -596,21 +596,21 @@ impl Walker<'_> {
             frame.depth,
         );
         match to.and_then(|number| LowBit::Thumb.target(number)) {
-            None => Step::End(End::Returns(site)),
+            None => Step::MayBacktrack(End::Returns(site)),
             Some(to) => self.jump_to(run, frame, site, Some(u64::from(to)), Through::Memory),
         }
     }
 
     /// The word that `operation`, a `pop` with pc, pops into pc, when the
     /// walk can tell it.
-    fn popped_pc(&self, path: &Path, operation: Operation) -> Option<u32> {
+    fn popped_pc(&self, known: &Known, operation: Operation) -> Option<u32> {
         let Operation::Pop { registers, .. } = operation else {
             return None;
         };
         // pc is the highest register, so its word is the last.
-        let sp = path.registers[usize::from(SP)]?;
+        let sp = known.registers[usize::from(SP)]?;
         self.load(
-            path,
+            known,
             sp.wrapping_add(4 * (registers.count_ones() - 1)),
             false,
         )
@@ -626,29 +626,29 @@ impl Walker<'_> {
             second,
             effect,
         } = instruction;
-        let path = &run.path;
+        let known = &run.known;
         let (to, through) = match effect.flow {
             Flow::JumpRegister(register, low_bit) => {
-                let to = self.register(path, register, site);
+                let to = self.register(known, register, site);
                 let to = to.and_then(|number| low_bit.target(number));
                 (to.map(u64::from), Through::Register(register))
             }
             Flow::JumpRelative(register) => {
                 let pc = (site as u32).wrapping_add(4);
-                let to = self.register(path, register, site);
+                let to = self.register(known, register, site);
                 let to = to.map(|offset| u64::from(pc.wrapping_add(offset) & !1));
                 (to, Through::Register(register))
             }
             Flow::JumpMemory => {
                 if let Operation::Load { base: SP, .. } = effect.operation {
-                    return Step::End(End::Returns(site));
+                    return Step::MayBacktrack(End::Returns(site));
                 }
                 let at = match effect.operation {
                     Operation::Load {
                         base,
                         offset: Some(offset),
                         ..
-                    } => (self.register(path, base, site))
+                    } => (self.register(known, base, site))
                         .map(|base| base.wrapping_add_signed(offset)),
                     // ldr.w pc, [pc, #imm], as in a veneer.
                     Operation::Nothing if first & 0xff7f == 0xf85f => {
@@ -656,7 +656,7 @@ impl Walker<'_> {
                     }
                     _ => None,
                 };
-                let to = at.and_then(|at| self.load(path, at, true));
+                let to = at.and_then(|at| self.load(known, at, true));
                 let to = to.and_then(|number| LowBit::Thumb.target(number));
                 (to.map(u64::from), Through::Memory)
             }
@@ -680,10 +680,10 @@ impl Walker<'_> {
         // What a loop that the walk counts compares: `cbz` and `cbnz`
         // compare a register with 0.
         if let When::Zero(register) | When::NotZero(register) = when
-            && !self.counting.is_empty()
+            && !self.open_loops.is_empty()
         {
-            let number = self.register(&run.path, register, site);
-            run.path.compares.push(Compare {
+            let number = self.register(&run.known, register, site);
+            run.known.compares.push(Compare {
                 site,
                 numbers: [number, Some(0)],
             });
@@ -694,7 +694,7 @@ impl Walker<'_> {
         // One that always goes, in an `it` block, is taken when it runs.
         let taken = match when {
             When::Always => running.runs,
-            _ => self.taken(&run.path, when, site),
+            _ => self.taken(&run.known, when, site),
         };
         let branch = Branch {
             site,
@@ -706,20 +706,20 @@ impl Walker<'_> {
     }
 
     /// Whether a branch at `site` that goes `when` is taken, as the walk
-    /// knows `path`, when it can tell: one that always goes is.
-    fn taken(&self, path: &Path, when: When, site: u64) -> Option<bool> {
+    /// knows `known`, when it can tell: one that always goes is.
+    fn taken(&self, known: &Known, when: When, site: u64) -> Option<bool> {
         match when {
             When::Always => Some(true),
-            When::Flags(condition) => holds(condition, path.flags),
-            When::Zero(register) => self.register(path, register, site).map(|n| n == 0),
-            When::NotZero(register) => self.register(path, register, site).map(|n| n != 0),
+            When::Flags(condition) => holds(condition, known.flags),
+            When::Zero(register) => self.register(known, register, site).map(|n| n == 0),
+            When::NotZero(register) => self.register(known, register, site).map(|n| n != 0),
         }
     }
 
     /// An unconditional branch at `site` to `target`.
     fn jump(&mut self, run: &mut Run, frame: Frame, site: u64, target: u64) -> Step {
         if target == site {
-            return Step::End(End::Spins(site));
+            return Step::MayBacktrack(End::Spins(site));
         }
         if let Some(visit) = run.visits.get(&target).filter(|_| target < site) {
             let visit = visit.clone();
@@ -728,12 +728,12 @@ impl Walker<'_> {
                 back: site,
                 before: &visit,
                 stopped: None,
-                runs: true,
+                known_to_run: true,
             };
             let exit = self.close_loop(run, frame, found);
             return match exit.or_else(|| run.way_out(target, site)) {
                 Some(exit) => Step::Next(exit),
-                None => Step::End(End::Loops(site)),
+                None => Step::MayBacktrack(End::Loops(site)),
             };
         }
         if run.leaves(target) {
@@ -779,12 +779,12 @@ impl Walker<'_> {
                     depth: frame.depth,
                     target: Some(target),
                     how: How::Jump,
-                    arguments: arguments(&run.path),
-                    left: run.path.left,
+                    arguments: arguments(&run.known),
+                    left: run.known.left,
                     conditional: true,
                     followed: false,
                 }));
-                run.path.forks = true;
+                run.known.forks = true;
                 Step::Next(next)
             }
         }
@@ -815,14 +815,14 @@ impl Walker<'_> {
                 site,
                 target,
                 events: self.events.len(),
-                path: run.path.clone(),
-                visited: run.order.len(),
+                known: run.known.clone(),
+                order: run.order.len(),
                 pending: run.pending.clone(),
                 bounds: run.bounds,
             });
         }
         if taken.is_none() {
-            run.path.forks = true;
+            run.known.forks = true;
         }
         run.pending.push((site, target));
         Step::Next(next)
@@ -848,10 +848,10 @@ impl Walker<'_> {
                 target: alternative.target,
                 because: end,
             });
-            for address in run.order.drain(alternative.visited..) {
+            for address in run.order.drain(alternative.order..) {
                 run.visits.remove(&address);
             }
-            run.path = alternative.path;
+            run.known = alternative.known;
             run.pending = alternative.pending;
             run.bounds = alternative.bounds;
             run.it = 0;
@@ -887,7 +887,7 @@ impl Walker<'_> {
 fn no_code(address: u64, after_call: bool) -> Step {
     match after_call {
         true => Step::Final(End::RunsOff(address)),
-        false => Step::End(End::Undecoded(address)),
+        false => Step::MayBacktrack(End::Undecoded(address)),
     }
 }
 
@@ -895,14 +895,14 @@ impl Run {
     /// What the walk knows now, as it would be at an instruction it got to.
     fn visit(&self, events: usize) -> Visit {
         Visit {
-            registers: self.path.registers,
-            memory: Rc::clone(&self.path.memory),
-            sources: self.path.sources,
-            left: self.path.left,
-            results: self.path.results,
+            registers: self.known.registers,
+            memory: Rc::clone(&self.known.memory),
+            sources: self.known.sources,
+            left: self.known.left,
+            results: self.known.results,
             events,
             order: self.order.len(),
-            forks: self.path.forks,
+            forks: self.known.forks,
         }
     }
 
@@ -933,7 +933,7 @@ impl Run {
             return None;
         }
         let condition = self.next_condition();
-        let runs = condition.map_or(Some(true), |condition| holds(condition, self.path.flags));
+        let runs = condition.map_or(Some(true), |condition| holds(condition, self.known.flags));
         if runs == Some(false) {
             return None;
         }

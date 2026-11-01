@@ -3,7 +3,7 @@
 //! ([`Walker::out_of_line_body`]), whether its branch back goes back
 //! ([`Walker::goes_back`]), and what the walk knows after the loop
 //! ([`Walker::close_loop`], for a [`FoundLoop`]), with `count.rs` and
-//! `each_time.rs`. Also
+//! `each_iteration.rs`. Also
 //! where a call goes to a loop's code that a function finder took for a
 //! function ([`Walker::went_through`] and [`Walker::runs_into`]).
 
@@ -15,14 +15,15 @@ use crate::arch::thumb::decode::{Flow, Operation, When};
 
 use super::calls::Changes;
 use super::count::{Counted, forget_stored};
-use super::each_time::Walked;
-use super::each_time::knows_sources;
+use super::each_iteration::Walked;
+use super::each_iteration::knows_sources;
 use super::execute::holds;
 use super::walk_state::{
-    Flags, Path, Visit, forget_changes, forget_words, set_unknown, stored_since,
+    Flags, Known, Visit, forget_changes, forget_words, set_unknown, stored_since,
 };
 use super::{
-    Branch, Frame, MOST_TIMES, NESTING, RUNS_INTO, Run, Step, Walker, decode_at, straight_line,
+    Branch, Frame, MOST_WALKED_ITERATIONS, NESTING, RUNS_INTO, Run, Step, Walker, decode_at,
+    straight_line,
 };
 
 impl Walker<'_> {
@@ -73,31 +74,32 @@ impl Walker<'_> {
         if frame.nesting >= NESTING {
             return Some(End::Budget(head));
         }
-        let (end, path) = self.walk(head, frame.loop_body(back), run.path.clone());
-        run.path = path;
+        let (end, known) = self.walk(head, frame.loop_body(back), run.known.clone());
+        run.known = known;
         end
     }
 
     /// Records the loop that the walk `found`, and goes on with what it
     /// knows where the loop leaves. When the loop's code surely runs and
     /// the walk of it didn't stop short, the walk tries to count how many
-    /// times the loop runs, and when it can, returns where it leaves. A loop
-    /// that runs at most [`MOST_TIMES`] times and makes calls or has loops
-    /// inside, whose stores the walk can't tell from three iterations, it
-    /// goes through each iteration of (see [`Walker::walk_times`]).
+    /// times the loop runs, and when it can, returns where it leaves. A
+    /// loop that runs at most [`MOST_WALKED_ITERATIONS`] times and makes
+    /// calls or has loops inside, whose stores the walk can't tell from
+    /// three iterations, it goes through each iteration of (see
+    /// [`Walker::walk_each_iteration`]).
     pub(super) fn close_loop(
         &mut self,
         run: &mut Run,
         frame: Frame,
         found: FoundLoop,
     ) -> Option<u64> {
-        let counted = match (found.stopped, found.runs) {
+        let counted = match (found.stopped, found.known_to_run) {
             (None, true) => self.count(run, frame, &found),
             _ => None,
         };
         let (runs, exit) = match counted {
-            Some(counted) if counted.others && counted.passes <= MOST_TIMES => {
-                match self.walk_times(run, frame, &found, counted.passes) {
+            Some(counted) if counted.others && counted.iterations <= MOST_WALKED_ITERATIONS => {
+                match self.walk_each_iteration(run, frame, &found, counted.iterations) {
                     Some(walked) => leave_walked(run, &found, walked),
                     None => self.leave_counted(run, frame, &found, counted),
                 }
@@ -124,8 +126,8 @@ impl Walker<'_> {
         counted: Counted,
     ) -> (Runs, Option<u64>) {
         let Counted {
-            passes,
-            path,
+            iterations,
+            known,
             exit,
             stores,
             every,
@@ -133,25 +135,22 @@ impl Walker<'_> {
         } = counted;
         let before = found.before;
         let first = std::mem::replace(
-            &mut run.path,
-            Path {
+            &mut run.known,
+            Known {
                 forks: before.forks,
-                ..path
+                ..known
             },
         );
-        // What code that the iterations don't follow, as a call, stored
-        // the first time.
+        // What code that the iterations don't follow, as a call, stored the
+        // first time through the code.
         if stores.is_none() {
-            forget_words(&mut run.path, stored_since(&first.memory, &before.memory));
+            forget_words(&mut run.known, stored_since(&first.memory, &before.memory));
         }
         if !every {
-            forget_stored(&mut run.path, passes, stores.as_deref(), before);
+            forget_stored(&mut run.known, iterations, stores.as_deref(), before);
         }
         self.forget_row_loads(frame, found, stores.as_deref());
-        let runs = Runs::Counted {
-            iterations: passes,
-            stores,
-        };
+        let runs = Runs::Counted { iterations, stores };
         (runs, Some(exit))
     }
 
@@ -165,18 +164,18 @@ impl Walker<'_> {
         found: &FoundLoop,
     ) -> (Runs, Option<u64>) {
         let before = found.before;
-        forget_changes(&mut run.path, &before.registers, &before.memory);
+        forget_changes(&mut run.known, &before.registers, &before.memory);
         let Changes {
             registers,
             stores,
             results,
         } = self.loop_writes(found.head, found.back);
-        set_unknown(&mut run.path, registers & !(1 << SP));
-        run.path.results |= results;
-        if found.stopped.is_some() && stores && run.path.memory.values().any(Option::is_some) {
-            (Rc::make_mut(&mut run.path.memory).values_mut()).for_each(|word| *word = None);
+        set_unknown(&mut run.known, registers & !(1 << SP));
+        run.known.results |= results;
+        if found.stopped.is_some() && stores && run.known.memory.values().any(Option::is_some) {
+            (Rc::make_mut(&mut run.known.memory).values_mut()).for_each(|word| *word = None);
         }
-        run.path.flags = Flags::default();
+        run.known.flags = Flags::default();
         self.forget_row_loads(frame, found, None);
         let runs = Runs::Uncounted {
             stopped: found.stopped,
@@ -186,7 +185,7 @@ impl Walker<'_> {
 
     /// Drops the loads of the code of the loop that the walk `found` from
     /// the words that an iteration of an outer loop reads as a row of a
-    /// table (see [`Counting::loads`](super::count::Counting::loads)), when
+    /// table (see [`OpenLoop::loads`](super::count::OpenLoop::loads)), when
     /// the walk goes through each of that loop's iterations, unless it can
     /// tell what the loop's `stores` copy from: else those loads may read
     /// what the loop copies.
@@ -195,7 +194,7 @@ impl Walker<'_> {
             && !knows_sources(stores)
         {
             let code = found.head..=found.back;
-            (self.counting[index].loads).retain(|&(site, ..)| !code.contains(&site));
+            (self.open_loops[index].loads).retain(|&(site, ..)| !code.contains(&site));
         }
     }
 
@@ -211,7 +210,7 @@ impl Walker<'_> {
             next,
             taken,
         } = branch;
-        let (before, stopped, runs) = match run.visits.get(&target) {
+        let (before, stopped, known_to_run) = match run.visits.get(&target) {
             Some(visit) => (visit.clone(), None, true),
             // The code was jumped over to a test that doesn't go back:
             // the loop runs no times, as for an empty section.
@@ -229,7 +228,7 @@ impl Walker<'_> {
             back: site,
             before: &before,
             stopped,
-            runs,
+            known_to_run,
         };
         let exit = self.close_loop(run, frame, found);
         Step::Next(exit.unwrap_or(next))
@@ -258,7 +257,7 @@ impl Walker<'_> {
             back,
             before: &before,
             stopped,
-            runs: false,
+            known_to_run: false,
         };
         self.close_loop(run, frame, found);
         Some(Step::Next(branch.next))
@@ -273,9 +272,9 @@ impl Walker<'_> {
         // In an `it` block, as `blt` at the end of `ittt lt` is.
         let runs = match run.condition() {
             None => Some(true),
-            Some(condition) => holds(condition, run.path.flags),
+            Some(condition) => holds(condition, run.known.flags),
         };
-        match (runs, self.taken(&run.path, when, back)) {
+        match (runs, self.taken(&run.known, when, back)) {
             (Some(false), _) | (_, Some(false)) => Some(false),
             (Some(true), Some(true)) => Some(true),
             _ => None,
@@ -364,15 +363,15 @@ pub(super) struct FoundLoop<'v> {
     /// end goes back, nor for a body that the compiler put after the
     /// function's other code. Only then does the walk count how many times
     /// the loop runs.
-    pub(super) runs: bool,
+    pub(super) known_to_run: bool,
 }
 
 /// Goes on from a loop that the walk went through each iteration of, with
 /// what the last one leaves.
 fn leave_walked(run: &mut Run, found: &FoundLoop, walked: Walked) -> (Runs, Option<u64>) {
-    run.path = Path {
+    run.known = Known {
         forks: found.before.forks,
-        ..walked.path
+        ..walked.known
     };
     (Runs::EachIteration(walked.iterations), Some(walked.exit))
 }

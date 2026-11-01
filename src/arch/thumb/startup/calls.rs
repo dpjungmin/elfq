@@ -7,7 +7,7 @@ use crate::arch::startup::{Call, End, Event, How, Through};
 use crate::arch::thumb::decode::{Effect, Flow, Operation, Registers};
 use crate::arch::thumb::{ARGUMENTS, CALL_CLOBBERS, LR, SP};
 
-use super::walk_state::{Alternative, Flags, Path, forget_changes, set_unknown};
+use super::walk_state::{Alternative, Flags, Known, forget_changes, set_unknown};
 use super::{Frame, Run, Step, Walker, decode_at};
 
 /// What code may change, as far as the walk can tell without going
@@ -18,7 +18,7 @@ pub(super) struct Changes {
     /// Whether it stores, or calls a function that may.
     pub(super) stores: bool,
     /// Of r0 to r3, those that may hold what it leaves (see
-    /// `Path::results`).
+    /// `Known::results`).
     pub(super) results: u8,
 }
 
@@ -86,7 +86,7 @@ impl Walker<'_> {
     /// to a return: of r0 to r3, ip and lr, the registers that the
     /// function's code writes, as code built with GCC's `-fipa-ra` counts
     /// on, or all of them; and of r0 to r3, those that may hold what it
-    /// leaves (see `Path::results`).
+    /// leaves (see `Known::results`).
     fn clobbers(&mut self, target: Option<u64>) -> (Registers, u8) {
         let function = target.and_then(|target| self.program.function_at(target));
         let Some((start, end)) = function.filter(|&(start, _)| Some(start) == target) else {
@@ -115,9 +115,9 @@ impl Walker<'_> {
         through: Through,
     ) -> Step {
         match to {
-            None => Step::End(End::Branches { site, through }),
+            None => Step::MayBacktrack(End::Branches { site, through }),
             Some(target) if self.program.code(target).is_none() => {
-                Step::End(End::LeavesFile { site, target })
+                Step::MayBacktrack(End::LeavesFile { site, target })
             }
             Some(target) if run.leaves(target) => self.tail_call(run, frame, site, target),
             Some(target) => Step::Next(target),
@@ -138,8 +138,8 @@ impl Walker<'_> {
             depth: frame.depth,
             target: Some(target),
             how: How::Jump,
-            arguments: arguments(&run.path),
-            left: run.path.left,
+            arguments: arguments(&run.known),
+            left: run.known.left,
             conditional: false,
             followed: frame.follow > 0,
         }));
@@ -155,17 +155,17 @@ impl Walker<'_> {
                 && frame.stop.is_none()
                 && let Some(end) = self.dead_end(run, frame, site, target)
             {
-                return Step::End(end);
+                return Step::MayBacktrack(end);
             }
             // It returns with what the function it jumps to leaves in the
             // registers that pass arguments and results.
             let (clobbers, results) = self.clobbers(Some(target));
-            set_unknown(&mut run.path, clobbers);
-            run.path.results |= results;
-            return Step::End(End::Returns(site));
+            set_unknown(&mut run.known, clobbers);
+            run.known.results |= results;
+            return Step::MayBacktrack(End::Returns(site));
         }
         if self.program.code(target).is_none() {
-            return Step::End(End::LeavesFile { site, target });
+            return Step::MayBacktrack(End::LeavesFile { site, target });
         }
         run.bounds = self.program.function_at(target);
         Step::Next(target)
@@ -184,7 +184,7 @@ impl Walker<'_> {
             return Some(End::LeavesFile { site, target });
         }
         let (events, budget, lowest) = (self.events.len(), self.budget, self.lowest);
-        let (end, _) = self.walk(target, frame.callee(), run.path.clone());
+        let (end, _) = self.walk(target, frame.callee(), run.known.clone());
         self.events.truncate(events);
         (self.budget, self.lowest) = (budget, lowest);
         end.filter(|end| end.is_dead())
@@ -212,8 +212,8 @@ impl Walker<'_> {
             depth: frame.depth,
             target,
             how,
-            arguments: arguments(&run.path),
-            left: run.path.left,
+            arguments: arguments(&run.known),
+            left: run.known.left,
             conditional,
             followed: follows,
         }));
@@ -229,67 +229,67 @@ impl Walker<'_> {
             } else {
                 // The call puts the address to return to in lr, which the
                 // walk doesn't follow.
-                let mut path = run.path.clone();
-                path.registers[usize::from(LR)] = None;
-                path.results = 0;
-                let (end, path) = self.walk(target, frame.callee(), path);
+                let mut known = run.known.clone();
+                known.registers[usize::from(LR)] = None;
+                known.results = 0;
+                let (end, known) = self.walk(target, frame.callee(), known);
                 match end {
                     Some(End::Main(at)) => return Some(End::Main(at)),
-                    Some(End::Returns(_)) => after = Some((path, true)),
+                    Some(End::Returns(_)) => after = Some((known, true)),
                     Some(end) => {
                         if end.stops_short() {
                             self.events.push(Event::Stop { site, depth, end });
                         }
-                        after = Some((path, false));
+                        after = Some((known, false));
                     }
                     None => {}
                 }
             }
         }
-        let sp = run.path.registers[usize::from(SP)];
-        let results = run.path.results;
+        let sp = run.known.registers[usize::from(SP)];
+        let results = run.known.results;
         // Of r0 to r3, those that may hold what the call leaves.
         let called = match after {
-            Some((mut path, true)) => {
-                if path.forks {
-                    forget_changes(&mut path, &run.path.registers, &run.path.memory);
-                    path.flags = Flags::default();
+            Some((mut known, true)) => {
+                if known.forks {
+                    forget_changes(&mut known, &run.known.registers, &run.known.memory);
+                    known.flags = Flags::default();
                 }
-                let called = path.results;
-                path.forks = run.path.forks;
-                run.path = path;
-                run.path.registers[usize::from(SP)] = sp;
-                run.path.registers[usize::from(LR)] = None;
+                let called = known.results;
+                known.forks = run.known.forks;
+                run.known = known;
+                run.known.registers[usize::from(SP)] = sp;
+                run.known.registers[usize::from(LR)] = None;
                 called
             }
-            Some((mut path, false)) => {
-                forget_changes(&mut path, &run.path.registers, &run.path.memory);
-                run.path.memory = path.memory;
+            Some((mut known, false)) => {
+                forget_changes(&mut known, &run.known.registers, &run.known.memory);
+                run.known.memory = known.memory;
                 let (clobbers, called) = self.clobbers(target);
-                set_unknown(&mut run.path, clobbers);
-                run.path.flags = Flags::default();
+                set_unknown(&mut run.known, clobbers);
+                run.known.flags = Flags::default();
                 called
             }
             None => {
                 let (clobbers, called) = self.clobbers(target);
-                set_unknown(&mut run.path, clobbers);
-                run.path.flags = Flags::default();
+                set_unknown(&mut run.known, clobbers);
+                run.known.flags = Flags::default();
                 called
             }
         };
-        run.path.results = results | called;
-        run.path.left |= called;
+        run.known.results = results | called;
+        run.known.left |= called;
         None
     }
 }
 
 /// What r0 to r3 hold.
-pub(super) fn arguments(path: &Path) -> [Option<u32>; 4] {
-    [0, 1, 2, 3].map(|register| path.registers[register])
+pub(super) fn arguments(known: &Known) -> [Option<u32>; 4] {
+    [0, 1, 2, 3].map(|register| known.registers[register])
 }
 
 /// Of r0 to r3, as bits, those that may hold what a call leaves after an
-/// instruction that does what `effect` says (see `Path::results`): those
+/// instruction that does what `effect` says (see `Known::results`): those
 /// it writes, and r0 when it reads it, other than to push it.
 pub(super) fn results(effect: &Effect) -> u8 {
     let reads_r0 = effect.reads & 1 != 0 && !matches!(effect.operation, Operation::Push { .. });
