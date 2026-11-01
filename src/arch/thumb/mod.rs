@@ -44,8 +44,7 @@ pub(super) use operands::operands;
 pub(super) use sweep::scan_instructions;
 pub(super) use veneers::is_veneer;
 
-use bounds::{is_nop, is_padding};
-use sweep::{Scanner, sweep, sweep_instructions};
+use sweep::Scanner;
 
 // The stack pointer, link register and program counter.
 const SP: u16 = 13;
@@ -57,7 +56,8 @@ const PC: u16 = 15;
 /// code reads are skipped, not decoded. A branch through a register goes
 /// where the code before it put an address there, if it did.
 pub(super) fn scan(code: &[u8], address: u64, endianness: Endianness) -> Vec<CodeReference> {
-    let (scanner, instructions) = sweep_instructions(Scanner::new(code, address, endianness));
+    let mut scanner = Scanner::new(code, address, endianness);
+    let instructions = scanner.sweep_instructions();
     values::follow(code, address, endianness, &instructions, scanner.references)
 }
 
@@ -76,6 +76,19 @@ impl Instruction {
     /// Its size in bytes.
     fn size(&self) -> usize {
         if is_wide(self.first) { 4 } else { 2 }
+    }
+
+    /// Whether it is padding that compilers and linkers put between
+    /// functions: a `nop` (see [`Instruction::is_nop`]), zeros, or lld's
+    /// `0xd4d4`.
+    fn is_padding(&self) -> bool {
+        self.is_nop() || matches!(self.first, 0x0000 | 0xd4d4)
+    }
+
+    /// Whether it is a `nop`, `mov r8, r8` or `nop.w`, the padding that
+    /// compilers put inside a function to align a loop.
+    fn is_nop(&self) -> bool {
+        matches!(self.first, 0xbf00 | 0x46c0) || (self.first, self.second) == (0xf3af, 0x8000)
     }
 }
 

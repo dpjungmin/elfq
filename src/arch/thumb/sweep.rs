@@ -7,28 +7,6 @@ use super::{Instruction, LR, PC, SP, align, branch, is_wide, literal, relative};
 use crate::arch::CodeReference;
 use crate::arch::CodeReferenceKind::{self, *};
 
-/// Sweeps the scanner's code, keeping the instructions it decodes. The
-/// sweep decodes a constant that only a later instruction loads, as in
-/// Clang's islands of constants, before it knows the constant is data, so
-/// those instructions are dropped.
-pub(super) fn sweep_instructions(mut scanner: Scanner) -> (Scanner, Vec<Instruction>) {
-    // Instructions take 2 bytes or more.
-    scanner.instructions = Some(Vec::with_capacity(scanner.code.len() / 2));
-    let mut scanner = sweep(scanner);
-    let mut instructions = scanner.instructions.take().unwrap_or_default();
-    // Both lists are in order, so one pass over each drops them.
-    let mut data = scanner.data.iter().peekable();
-    instructions.retain(|instruction| {
-        while data
-            .next_if(|&(_, &end)| end <= instruction.offset)
-            .is_some()
-        {}
-        data.peek()
-            .is_none_or(|&(&start, _)| start >= instruction.offset + instruction.size())
-    });
-    (scanner, instructions)
-}
-
 /// The references that each instruction in `code` makes on its own: like
 /// [`scan`](super::scan), but without following addresses from one
 /// instruction to the next, so a branch through a register is always
@@ -38,28 +16,11 @@ pub(in crate::arch) fn scan_instructions(
     address: u64,
     endianness: Endianness,
 ) -> Vec<CodeReference> {
-    sweep(Scanner::new(code, address, endianness)).references
-}
-
-/// Decodes the instructions in the scanner's code, skipping the constants
-/// and jump tables they read.
-pub(super) fn sweep(mut scanner: Scanner) -> Scanner {
-    let mut offset = 0;
-    while let Some(first) = scanner.halfword(offset) {
-        if let Some(end) = scanner.data_end(offset) {
-            offset = end;
-            continue;
-        }
-        let Some(size) = scanner.step(offset, first) else {
-            break;
-        };
-        offset += size;
-    }
-    scanner
+    Scanner::swept(code, address, endianness).references
 }
 
 pub(super) struct Scanner<'a> {
-    pub(super) code: &'a [u8],
+    code: &'a [u8],
     /// The address of `code[0]`.
     address: u64,
     /// The order of the bytes in constants and jump tables. Instructions
@@ -72,13 +33,9 @@ pub(super) struct Scanner<'a> {
     /// For each register, where its last `movw` is and its value, which a
     /// `movt` completes into a 32-bit address.
     low_halves: [Option<(usize, u32)>; 16],
-    /// The last three instructions decoded, the last one last, as
-    /// (offset, first halfword, second halfword or 0), which can say how
-    /// long a jump table is.
-    previous: [Option<(usize, u16, u16)>; 3],
-    /// The instructions decoded so far, when they are kept, for following
-    /// the registers through them.
-    pub(super) instructions: Option<Vec<Instruction>>,
+    /// The last three instructions decoded, the last one last, which can
+    /// say how long a jump table is.
+    previous: [Option<Instruction>; 3],
     /// The tables of addresses found so far, which are data too, as ranges
     /// of offsets: the browser links their words to the cases.
     pub(super) address_tables: Vec<std::ops::Range<usize>>,
@@ -97,10 +54,52 @@ impl<'a> Scanner<'a> {
             data: BTreeMap::new(),
             low_halves: [None; 16],
             previous: [None; 3],
-            instructions: None,
             address_tables: Vec::new(),
             operands: None,
         }
+    }
+
+    /// A scanner that has swept all of `code`, with the references and the
+    /// data that it found.
+    pub(super) fn swept(code: &'a [u8], address: u64, endianness: Endianness) -> Self {
+        let mut scanner = Scanner::new(code, address, endianness);
+        for _ in scanner.sweep() {}
+        scanner
+    }
+
+    /// Steps through the code from its start, decoding each instruction
+    /// and skipping the constants and jump tables that the instructions
+    /// before it read.
+    pub(super) fn sweep(&mut self) -> Sweep<'_, 'a> {
+        Sweep {
+            scanner: self,
+            offset: Some(0),
+        }
+    }
+
+    /// Sweeps the code, keeping the instructions it decodes. The sweep
+    /// decodes a constant that only a later instruction loads, as in
+    /// Clang's islands of constants, before it knows the constant is data,
+    /// so those instructions are dropped.
+    pub(super) fn sweep_instructions(&mut self) -> Vec<Instruction> {
+        // Instructions take 2 bytes or more.
+        let mut instructions = Vec::with_capacity(self.code.len() / 2);
+        for swept in self.sweep() {
+            if let Swept::Instruction(instruction) = swept {
+                instructions.push(instruction);
+            }
+        }
+        // Both lists are in order, so one pass over each drops them.
+        let mut data = self.data.iter().peekable();
+        instructions.retain(|instruction| {
+            while data
+                .next_if(|&(_, &end)| end <= instruction.offset)
+                .is_some()
+            {}
+            data.peek()
+                .is_none_or(|&(&start, _)| start >= instruction.offset + instruction.size())
+        });
+        instructions
     }
 
     /// Notes, when [`operands`](super::operands::operands) asks, that the
@@ -112,34 +111,28 @@ impl<'a> Scanner<'a> {
         }
     }
 
-    /// Decodes the instruction at `offset` and reports its reference, if
-    /// any. Returns the instruction's size.
-    pub(super) fn step(&mut self, offset: usize, first: u16) -> Option<usize> {
-        let (kind, size, second) = if is_wide(first) {
+    /// Decodes the instruction at `offset`, which starts with `first`, and
+    /// notes its reference, if any. `None` when the code ends inside it.
+    fn step(&mut self, offset: usize, first: u16) -> Option<Instruction> {
+        let (kind, second) = if is_wide(first) {
             let second = self.halfword(offset + 2)?;
-            (self.wide(offset, first, second), 4, second)
+            (self.wide(offset, first, second), second)
         } else {
-            (self.narrow(offset, first), 2, 0)
+            (self.narrow(offset, first), 0)
         };
-        self.previous = [
-            self.previous[1],
-            self.previous[2],
-            Some((offset, first, second)),
-        ];
-        if let Some(instructions) = &mut self.instructions {
-            instructions.push(Instruction {
-                offset,
-                first,
-                second,
-            });
-        }
+        let instruction = Instruction {
+            offset,
+            first,
+            second,
+        };
+        self.previous = [self.previous[1], self.previous[2], Some(instruction)];
         if let Some(kind) = kind {
             self.references.push(CodeReference {
                 site: self.address + offset as u64,
                 kind,
             });
         }
-        Some(size)
+        Some(instruction)
     }
 
     /// A 16-bit instruction.
@@ -331,21 +324,21 @@ impl<'a> Scanner<'a> {
             return;
         }
         let base = first & 0xf;
-        let [cmp, bhi, Some((adr, adr_first, adr_second))] = self.previous else {
+        let [cmp, bhi, Some(adr)] = self.previous else {
             return;
         };
-        let pc = self.pc(adr);
+        let pc = self.pc(adr.offset);
         // adr and adr.w, forward, into the base register, right before.
-        let (table, size) = if adr_first & 0xf800 == 0xa000 && (adr_first >> 8) & 7 == base {
-            (align(pc) + u64::from(adr_first & 0xff) * 4, 2)
-        } else if adr_first & 0xfbff == 0xf20f
-            && adr_second & 0x8000 == 0
-            && (adr_second >> 8) & 0xf == base
+        let table = if adr.first & 0xf800 == 0xa000 && (adr.first >> 8) & 7 == base {
+            align(pc) + u64::from(adr.first & 0xff) * 4
+        } else if adr.first & 0xfbff == 0xf20f
+            && adr.second & 0x8000 == 0
+            && (adr.second >> 8) & 0xf == base
         {
-            let imm12 = u32::from((adr_first >> 10) & 1) << 11
-                | u32::from((adr_second >> 12) & 7) << 8
-                | u32::from(adr_second & 0xff);
-            (align(pc) + u64::from(imm12), 4)
+            let imm12 = u32::from((adr.first >> 10) & 1) << 11
+                | u32::from((adr.second >> 12) & 7) << 8
+                | u32::from(adr.second & 0xff);
+            align(pc) + u64::from(imm12)
         } else {
             return;
         };
@@ -355,13 +348,13 @@ impl<'a> Scanner<'a> {
         let Ok(start) = usize::try_from(start) else {
             return;
         };
-        if adr + size != offset || start < offset + 4 {
+        if adr.offset + adr.size() != offset || start < offset + 4 {
             return;
         }
         let function_end = self.address + self.code.len() as u64;
         // Where the table ends: after its n + 1 words, or else where the
         // first case after it starts, as far as the words read so far say.
-        let mut first_case = match Self::entries(cmp, bhi, adr, second & 0xf) {
+        let mut first_case = match Self::entries(cmp, bhi, adr.offset, second & 0xf) {
             Some(entries) => start + entries * 4,
             None => self.code.len(),
         };
@@ -404,31 +397,27 @@ impl<'a> Scanner<'a> {
     /// `cmp` and `bhi`, which end right before `next`, are `cmp register,
     /// #n` and `bhi`: n + 1.
     fn entries(
-        cmp: Option<(usize, u16, u16)>,
-        bhi: Option<(usize, u16, u16)>,
+        cmp: Option<Instruction>,
+        bhi: Option<Instruction>,
         next: usize,
         register: u16,
     ) -> Option<usize> {
-        let (Some((cmp, first, second)), Some((bhi, branch, branch_second))) = (cmp, bhi) else {
+        let (Some(cmp), Some(bhi)) = (cmp, bhi) else {
             return None;
         };
-        let bhi_size = if branch & 0xff00 == 0xd800 {
-            2
-        } else if branch & 0xfbc0 == 0xf200 && branch_second & 0xd000 == 0x8000 {
-            4
-        } else {
-            return None;
-        };
+        // bhi and bhi.w.
+        let is_bhi = bhi.first & 0xff00 == 0xd800
+            || (bhi.first & 0xfbc0 == 0xf200 && bhi.second & 0xd000 == 0x8000);
         // cmp and cmp.w, with an immediate below 256.
-        let (cmp_size, cmp_register, n) = if first & 0xf800 == 0x2800 {
-            (2, (first >> 8) & 7, first & 0xff)
-        } else if first & 0xfff0 == 0xf1b0 && second & 0xff00 == 0x0f00 {
-            (4, first & 0xf, second & 0xff)
+        let (cmp_register, n) = if cmp.first & 0xf800 == 0x2800 {
+            ((cmp.first >> 8) & 7, cmp.first & 0xff)
+        } else if cmp.first & 0xfff0 == 0xf1b0 && cmp.second & 0xff00 == 0x0f00 {
+            (cmp.first & 0xf, cmp.second & 0xff)
         } else {
             return None;
         };
-        (cmp + cmp_size == bhi && bhi + bhi_size == next && cmp_register == register)
-            .then_some(usize::from(n) + 1)
+        let in_a_row = cmp.offset + cmp.size() == bhi.offset && bhi.offset + bhi.size() == next;
+        (is_bhi && in_a_row && cmp_register == register).then_some(usize::from(n) + 1)
     }
 
     /// Marks the jump table after the `tbb` or `tbh` at `site` as data, and
@@ -488,13 +477,13 @@ impl<'a> Scanner<'a> {
     }
 
     /// Where the data at `offset` ends, if `offset` is inside data.
-    pub(super) fn data_end(&self, offset: usize) -> Option<usize> {
+    fn data_end(&self, offset: usize) -> Option<usize> {
         let (_, &end) = self.data.range(..=offset).next_back()?;
         (offset < end).then_some(end)
     }
 
     /// The 16 bits of an instruction at `offset`.
-    pub(super) fn halfword(&self, offset: usize) -> Option<u16> {
+    fn halfword(&self, offset: usize) -> Option<u16> {
         let bytes = self.code.get(offset..offset + 2)?;
         Some(u16::from_le_bytes([bytes[0], bytes[1]]))
     }
@@ -509,6 +498,44 @@ impl<'a> Scanner<'a> {
     /// runs: four bytes past the instruction.
     fn pc(&self, offset: usize) -> u64 {
         self.address + offset as u64 + 4
+    }
+}
+
+/// What [`Scanner::sweep`] finds next in the code.
+pub(super) enum Swept {
+    /// Data that the code reads, such as a constant or a jump table, which
+    /// the sweep skips to `end`.
+    Data { end: usize },
+    /// An instruction, which the scanner decoded.
+    Instruction(Instruction),
+    /// An instruction that the end of the code cuts off, at this offset.
+    /// The sweep stops there.
+    Cut(usize),
+}
+
+/// The sweep through a scanner's code (see [`Scanner::sweep`]).
+pub(super) struct Sweep<'s, 'a> {
+    scanner: &'s mut Scanner<'a>,
+    /// Where the next instruction or data starts, or `None` after a cut.
+    offset: Option<usize>,
+}
+
+impl Iterator for Sweep<'_, '_> {
+    type Item = Swept;
+
+    fn next(&mut self) -> Option<Swept> {
+        let offset = self.offset?;
+        let first = self.scanner.halfword(offset)?;
+        if let Some(end) = self.scanner.data_end(offset) {
+            self.offset = Some(end);
+            return Some(Swept::Data { end });
+        }
+        let Some(instruction) = self.scanner.step(offset, first) else {
+            self.offset = None;
+            return Some(Swept::Cut(offset));
+        };
+        self.offset = Some(offset + instruction.size());
+        Some(Swept::Instruction(instruction))
     }
 }
 

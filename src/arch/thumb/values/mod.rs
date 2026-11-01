@@ -58,7 +58,7 @@ use object::{Endian, Endianness};
 
 use self::state::{Contents, Kind, RESULT, State, Value, Values};
 use super::decode::{self, Effect, Flow, LowBit, Operation, Registers, When};
-use super::{Instruction, PC, SP, is_nop, is_padding};
+use super::{Instruction, PC, SP};
 use crate::arch::CodeReference;
 use crate::arch::CodeReferenceKind::{self, *};
 
@@ -1427,7 +1427,7 @@ fn enters_reached(address: u64, instructions: &[Instruction], effects: &[Option<
         while runs_on(index) {
             index += 1;
             let next = instructions[index];
-            if reached(index) || !is_nop(next.first, Some(next.second)) {
+            if reached(index) || !next.is_nop() {
                 return reached(index);
             }
         }
@@ -1435,7 +1435,7 @@ fn enters_reached(address: u64, instructions: &[Instruction], effects: &[Option<
     };
     (0..instructions.len()).any(|index| {
         let instruction = instructions[index];
-        if reached(index) || is_padding(instruction.first, Some(instruction.second)) {
+        if reached(index) || instruction.is_padding() {
             return false;
         }
         let site = address + instruction.offset as u64;

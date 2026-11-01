@@ -1,6 +1,6 @@
 use object::Endianness;
 
-use super::sweep::{Scanner, sweep_instructions};
+use super::sweep::Scanner;
 
 /// What a piece of a function's code is, as [`layout`] cuts it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,7 +42,7 @@ pub(in crate::arch) fn layout(
         let end = scanner.data.entry(range.start).or_insert(range.end);
         *end = (*end).max(range.end);
     }
-    let (scanner, instructions) = sweep_instructions(scanner);
+    let instructions = scanner.sweep_instructions();
     let mut pieces: Vec<(usize, usize, Piece)> = instructions
         .iter()
         .map(|instruction| (instruction.offset, instruction.size(), Piece::Instruction))

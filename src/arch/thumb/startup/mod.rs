@@ -51,7 +51,7 @@ use std::rc::Rc;
 use object::Endianness;
 
 use super::decode::{self, Effect, Flow, LowBit, Operation, Registers, When};
-use super::{LR, SP, Scanner, branch, is_wide, literal, sweep};
+use super::{LR, SP, Scanner, branch, is_wide, literal};
 use crate::arch::CodeReferenceKind;
 use crate::arch::startup::{Call, DEPTH, End, Event, How, Program, Start, Through, Walk};
 
@@ -687,7 +687,7 @@ impl Walker<'_> {
         let data = self.data.entry(start).or_insert_with(|| {
             let code = program.code(start).unwrap_or_default();
             let code = &code[..code.len().min((end - start) as usize)];
-            sweep(Scanner::new(code, start, endianness)).data
+            Scanner::swept(code, start, endianness).data
         });
         let offset = (address - start) as usize;
         data.range(..=offset)

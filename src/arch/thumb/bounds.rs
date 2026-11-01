@@ -1,7 +1,7 @@
 use object::Endianness;
 
-use super::sweep::Scanner;
-use super::{PC, is_wide};
+use super::sweep::{Scanner, Swept};
+use super::{Instruction, PC, is_wide};
 use crate::arch::Ending;
 
 /// How many bytes of `code` its instructions and constants take, leaving
@@ -10,19 +10,15 @@ use crate::arch::Ending;
 pub(in crate::arch) fn code_size(code: &[u8], address: u64, endianness: Endianness) -> usize {
     let mut scanner = Scanner::new(code, address, endianness);
     let mut size = 0;
-    let mut offset = 0;
-    while let Some(first) = scanner.halfword(offset) {
-        if let Some(end) = scanner.data_end(offset) {
-            (offset, size) = (end, end);
-            continue;
+    for swept in scanner.sweep() {
+        match swept {
+            Swept::Data { end } => size = end,
+            Swept::Instruction(instruction) if !instruction.is_padding() => {
+                size = instruction.offset + instruction.size();
+            }
+            Swept::Instruction(_) => {}
+            Swept::Cut(_) => return code.len(),
         }
-        let Some(step) = scanner.step(offset, first) else {
-            return code.len();
-        };
-        if !is_padding(first, scanner.halfword(offset + 2)) {
-            size = offset + step;
-        }
-        offset += step;
     }
     size.min(code.len())
 }
@@ -47,30 +43,29 @@ pub(in crate::arch) fn last_instruction(
     let mut last = None;
     // How many of the next instructions an `it` makes conditional.
     let mut conditional = 0;
-    let mut offset = 0;
-    while let Some(first) = scanner.halfword(offset) {
-        if let Some(end) = scanner.data_end(offset) {
-            (offset, last, conditional) = (end, None, 0);
-            continue;
-        }
-        let Some(step) = scanner.step(offset, first) else {
+    for swept in scanner.sweep() {
+        let instruction = match swept {
+            Swept::Data { .. } => {
+                (last, conditional) = (None, 0);
+                continue;
+            }
+            Swept::Instruction(instruction) => instruction,
             // The code ends inside an instruction.
-            return Some((offset, Ending::RunsOn));
+            Swept::Cut(offset) => return Some((offset, Ending::RunsOn)),
         };
-        let second = scanner.halfword(offset + 2);
-        if !is_padding(first, second) {
+        let first = instruction.first;
+        if !instruction.is_padding() {
             let ending = match conditional {
-                0 => exit(first, second.unwrap_or(0)),
+                0 => exit(first, instruction.second),
                 _ => Ending::RunsOn,
             };
-            last = Some((offset, ending));
+            last = Some((instruction.offset, ending));
         }
         conditional = match first {
             // it, with a mask that says how many instructions follow.
             _ if first & 0xff00 == 0xbf00 && first & 0xf != 0 => 4 - (first & 0xf).trailing_zeros(),
             _ => conditional.saturating_sub(1),
         };
-        offset += step;
     }
     if conditional > 0 {
         return last.map(|(offset, _)| (offset, Ending::RunsOn));
@@ -85,26 +80,23 @@ pub(in crate::arch) fn leading_padding(code: &[u8]) -> usize {
         Some(u16::from_le_bytes([bytes[0], bytes[1]]))
     };
     let mut offset = 0;
-    while let Some(first) = halfword(offset)
-        && is_padding(first, halfword(offset + 2))
-    {
-        offset += if first == 0xf3af { 4 } else { 2 };
+    while let Some(first) = halfword(offset) {
+        // A `nop.w` that the end of the code cuts off isn't padding.
+        let second = match is_wide(first) {
+            true => halfword(offset + 2).unwrap_or(0),
+            false => 0,
+        };
+        let instruction = Instruction {
+            offset,
+            first,
+            second,
+        };
+        if !instruction.is_padding() {
+            break;
+        }
+        offset += instruction.size();
     }
     offset
-}
-
-/// Whether the instruction that starts with `first`, followed by `second`,
-/// is padding that compilers and linkers put between functions: a `nop`,
-/// zeros, or lld's `0xd4d4`.
-pub(super) fn is_padding(first: u16, second: Option<u16>) -> bool {
-    is_nop(first, second) || matches!(first, 0x0000 | 0xd4d4)
-}
-
-/// Whether the instruction that starts with `first`, followed by `second`,
-/// is a `nop`, `mov r8, r8` or `nop.w`, the padding that compilers put
-/// inside a function to align a loop.
-pub(super) fn is_nop(first: u16, second: Option<u16>) -> bool {
-    matches!(first, 0xbf00 | 0x46c0) || (first, second) == (0xf3af, Some(0x8000))
 }
 
 /// Where the processor goes after the instruction made of `first` and, if

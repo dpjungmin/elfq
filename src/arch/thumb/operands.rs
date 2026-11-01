@@ -1,6 +1,6 @@
 use object::Endianness;
 
-use super::sweep::{Scanner, sweep_instructions};
+use super::sweep::Scanner;
 use crate::arch::{Operands, SplitNumber};
 
 /// The bits of `code`, which starts at `address`, that say where something
@@ -9,7 +9,7 @@ use crate::arch::{Operands, SplitNumber};
 pub(in crate::arch) fn operands(code: &[u8], address: u64, endianness: Endianness) -> Operands {
     let mut scanner = Scanner::new(code, address, endianness);
     scanner.operands = Some(Found::default());
-    let (mut scanner, instructions) = sweep_instructions(scanner);
+    let instructions = scanner.sweep_instructions();
     let found = scanner.operands.take().unwrap_or_default();
     // Constants that the sweep decoded before a later load showed they are
     // data hold no instructions, nor their operands.
