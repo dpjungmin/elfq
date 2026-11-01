@@ -17,6 +17,16 @@ const CPU_ARCH: u64 = 6;
 /// microcontrollers, as on Armv7, which has all three.
 const CPU_ARCH_PROFILE: u64 = 7;
 
+// The versions of the architecture, as Tag_CPU_arch gives them, that the
+// Cortex-M checks below ask about: Armv7, and those of Cortex-M cores.
+const ARMV7: u64 = 10;
+const ARMV6_M: u64 = 11;
+const ARMV6S_M: u64 = 12;
+const ARMV7E_M: u64 = 13;
+const ARMV8_M_BASELINE: u64 = 16;
+const ARMV8_M_MAINLINE: u64 = 17;
+const ARMV8_1_M_MAINLINE: u64 = 21;
+
 /// The version of the Arm architecture that a file's code is built for, as
 /// its build attributes say.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,23 +52,23 @@ impl ArmArchitecture {
             7 => "Armv6KZ",
             8 => "Armv6T2",
             9 => "Armv6K",
-            10 => match self.profile {
+            ARMV7 => match self.profile {
                 Some(b'A') => "Armv7-A",
                 Some(b'R') => "Armv7-R",
                 Some(b'M') => "Armv7-M",
                 _ => "Armv7",
             },
-            11 => "Armv6-M",
-            12 => "Armv6S-M",
-            13 => "Armv7E-M",
+            ARMV6_M => "Armv6-M",
+            ARMV6S_M => "Armv6S-M",
+            ARMV7E_M => "Armv7E-M",
             14 => "Armv8-A",
             15 => "Armv8-R",
-            16 => "Armv8-M Baseline",
-            17 => "Armv8-M Mainline",
+            ARMV8_M_BASELINE => "Armv8-M Baseline",
+            ARMV8_M_MAINLINE => "Armv8-M Mainline",
             18 => "Armv8.1-A",
             19 => "Armv8.2-A",
             20 => "Armv8.3-A",
-            21 => "Armv8.1-M Mainline",
+            ARMV8_1_M_MAINLINE => "Armv8.1-M Mainline",
             22 => "Armv9-A",
             version => return format!("Arm architecture {version}"),
         };
@@ -69,7 +79,24 @@ impl ArmArchitecture {
     /// Thumb code: the profile is M, or the version is one that only
     /// Cortex-M cores have, Armv6-M to Armv8.1-M Mainline.
     pub fn is_cortex_m(&self) -> bool {
-        self.profile == Some(b'M') || matches!(self.version, 11..=13 | 16 | 17 | 21)
+        self.profile == Some(b'M')
+            || self.is_baseline()
+            || self.version == ARMV7E_M
+            || self.is_v8_m_mainline()
+    }
+
+    /// Whether it is Armv6-M, Armv6S-M or Armv8-M Baseline: the
+    /// architectures of the smallest Cortex-M cores, such as the Cortex-M0
+    /// and M23, which have fewer instructions and exceptions than the
+    /// others.
+    pub fn is_baseline(&self) -> bool {
+        matches!(self.version, ARMV6_M | ARMV6S_M | ARMV8_M_BASELINE)
+    }
+
+    /// Whether it is Armv8-M Mainline or Armv8.1-M Mainline, as on a
+    /// Cortex-M33 or M55.
+    pub fn is_v8_m_mainline(&self) -> bool {
+        matches!(self.version, ARMV8_M_MAINLINE | ARMV8_1_M_MAINLINE)
     }
 
     /// Whether it is the architecture of a Cortex-M core up to Armv7E-M:
@@ -77,7 +104,8 @@ impl ArmArchitecture {
     /// Armv7E-M (Cortex-M4 and M7). Armv8-M cores, such as the Cortex-M33,
     /// add instructions that take the place of others.
     pub fn is_cortex_m_up_to_v7(&self) -> bool {
-        matches!(self.version, 11..=13) || (self.version == 10 && self.profile == Some(b'M'))
+        matches!(self.version, ARMV6_M | ARMV6S_M | ARMV7E_M)
+            || (self.version == ARMV7 && self.profile == Some(b'M'))
     }
 }
 
@@ -269,6 +297,29 @@ mod tests {
         // Armv7 with profile A or none, and Armv8-A, aren't.
         for (version, profile) in [(10, Some(b'A')), (10, None), (14, None)] {
             assert!(!architecture(version, profile).is_cortex_m(), "{version}");
+        }
+    }
+
+    #[test]
+    fn baseline_and_v8_m_mainline_are_told_apart() {
+        let version = |version| ArmArchitecture {
+            version,
+            profile: Some(b'M'),
+        };
+        // Armv6-M, Armv6S-M and Armv8-M Baseline.
+        for baseline in [11, 12, 16] {
+            assert!(version(baseline).is_baseline(), "{baseline}");
+            assert!(!version(baseline).is_v8_m_mainline(), "{baseline}");
+        }
+        // Armv8-M Mainline and Armv8.1-M Mainline.
+        for mainline in [17, 21] {
+            assert!(version(mainline).is_v8_m_mainline(), "{mainline}");
+            assert!(!version(mainline).is_baseline(), "{mainline}");
+        }
+        // Armv7-M and Armv7E-M are neither.
+        for neither in [10, 13] {
+            assert!(!version(neither).is_baseline(), "{neither}");
+            assert!(!version(neither).is_v8_m_mainline(), "{neither}");
         }
     }
 

@@ -34,14 +34,22 @@ pub struct VectorTable {
     ///    entry that the file holds no bytes for and the end of the reset
     ///    entry's section.
     pub size: u64,
-    /// Where each handler's code starts, without the Thumb bit, in the
-    /// table's order: first the reset handler, which is usually the entry
-    /// point. A handler for several exceptions is listed once for each.
-    pub handlers: Vec<u64>,
-    /// The exception of each of `handlers`, by its entry's number, counting
-    /// the stack pointer's as 0: 1 for reset, 3 for HardFault, 15 for
-    /// SysTick, and 16 on for the chip's interrupts.
-    pub exceptions: Vec<u64>,
+    /// The handlers its entries name, in the table's order: first the
+    /// reset handler, which is usually the entry point. Code that handles
+    /// several exceptions is listed once for each.
+    pub handlers: Vec<Handler>,
+}
+
+/// An entry of the vector table that names a handler: the exception, and
+/// the code that the processor runs for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Handler {
+    /// The exception, by its entry's number, counting the stack pointer's
+    /// as 0: 1 for reset, 3 for HardFault, 15 for SysTick, and 16 on for
+    /// the chip's interrupts.
+    pub exception: u64,
+    /// Where the code starts, without the Thumb bit.
+    pub address: u64,
 }
 
 impl VectorTable {
@@ -60,11 +68,11 @@ impl VectorTable {
     /// code, which happens only when the word taken for it holds the
     /// address of an entry point that isn't code.
     pub fn reset_handler(&self) -> Option<u64> {
-        let position = self
-            .exceptions
+        let reset = self
+            .handlers
             .iter()
-            .position(|&exception| exception == 1)?;
-        Some(self.handlers[position])
+            .find(|handler| handler.exception == 1)?;
+        Some(reset.address)
     }
 
     /// Whether the table holds `address`.
@@ -77,9 +85,8 @@ impl VectorTable {
     pub fn exceptions_of(&self, address: u64) -> impl Iterator<Item = u64> + '_ {
         self.handlers
             .iter()
-            .zip(&self.exceptions)
-            .filter(move |&(&handler, _)| handler == address)
-            .map(|(_, &exception)| exception)
+            .filter(move |handler| handler.address == address)
+            .map(|handler| handler.exception)
     }
 }
 
@@ -117,17 +124,26 @@ pub fn exception_name(number: u64, architecture: Option<ArmArchitecture>) -> Str
 /// Armv8-M Baseline, which have no MemManage, BusFault, UsageFault or
 /// DebugMonitor; and not 7 on Armv8-M Mainline, where it is SecureFault.
 pub fn is_reserved(number: u64, architecture: Option<ArmArchitecture>) -> bool {
-    match architecture.map(|architecture| architecture.version) {
-        // Armv6-M, Armv6S-M and Armv8-M Baseline.
-        Some(11 | 12 | 16) => RESERVED.contains(&number) || [4, 5, 6, 12].contains(&number),
-        // Armv8-M Mainline and Armv8.1-M Mainline.
-        Some(17 | 21) => number != 7 && RESERVED.contains(&number),
-        _ => RESERVED.contains(&number),
+    let reserved = RESERVED.contains(&number);
+    match architecture {
+        Some(architecture) if architecture.is_baseline() => {
+            reserved || BASELINE_ALSO_RESERVES.contains(&number)
+        }
+        Some(architecture) if architecture.is_v8_m_mainline() => reserved && number != SECURE_FAULT,
+        Some(_) | None => reserved,
     }
 }
 
 /// The entries that Armv7-M reserves, counted from the stack pointer's.
 const RESERVED: [u64; 5] = [7, 8, 9, 10, 13];
+
+/// The entries of MemManage, BusFault, UsageFault and DebugMonitor, which
+/// Armv6-M and Armv8-M Baseline also reserve.
+const BASELINE_ALSO_RESERVES: [u64; 4] = [4, 5, 6, 12];
+
+/// The entry of SecureFault, which Armv8-M Mainline has in place of a
+/// reserved one.
+const SECURE_FAULT: u64 = 7;
 
 /// The entries of SVCall, PendSV and SysTick, the exceptions other than the
 /// chip's interrupts that come in normal operation.
@@ -172,26 +188,33 @@ pub(super) fn find(binary: &Binary) -> Option<VectorTable> {
         _ => at_section_start(binary).or(held)?,
     };
 
+    // Where the table ends, by the rules of `VectorTable::size`, whose
+    // numbers the comments below follow. An entry that holds 0, rule 2,
+    // falls through, as a handler's does, and the table runs past it.
     let address = reset - size;
     let section_end = section.address + section.size;
     let mut handlers = Vec::new();
-    let mut exceptions = Vec::new();
     let mut end = reset;
     let mut next = reset;
     for (slot, value) in binary.words(reset, section_end) {
-        // The table ends at the first entry the file holds no bytes for.
+        // 4. The table ends at the first entry the file holds no bytes for.
         if slot != next {
             break;
         }
         next = slot + size;
-        let index = (slot - address) / size;
-        if let Some(handler) = binary.thumb_code_address(value) {
-            handlers.push(handler);
-            exceptions.push(index);
+        let entry = (slot - address) / size;
+        if let Some(code) = binary.thumb_code_address(value) {
+            // 1.
+            handlers.push(Handler {
+                exception: entry,
+                address: code,
+            });
         } else if value != 0 {
-            if RESERVED.contains(&index) {
+            // 3.
+            if RESERVED.contains(&entry) {
                 continue;
             }
+            // 4.
             break;
         }
         end = slot + size;
@@ -200,7 +223,6 @@ pub(super) fn find(binary: &Binary) -> Option<VectorTable> {
         address,
         size: end - address,
         handlers,
-        exceptions,
     })
 }
 

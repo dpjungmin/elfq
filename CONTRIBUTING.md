@@ -156,6 +156,12 @@ this list, and add to it when you bring in a word.
   the entry point or a handler that the vector table lists (`graph::Root`).
 - **use**: a reference from one node to another, such as a call, a jump
   or a stored pointer: what `callers` and `callees` list.
+- **handler**: code that an entry of the Cortex-M vector table names,
+  which the processor runs for that entry's **exception**. An exception
+  is numbered by its entry, counting the stack pointer's as 0.
+  `binary::Handler` holds the two: the exception, and where the code
+  that handles it starts. The exceptions and panics that the unwinder
+  handles, in `eh_frame.rs`, are unrelated.
 - **short name**: a shorter name that also means a long one, as
   `process_frame` means `app::process_frame` (`binary::names`). Items
   are filed under their short names' keys, the last parts of their

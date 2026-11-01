@@ -16,8 +16,8 @@
 //!    - or no further into the function than its other jumps reach so far.
 //!
 //! Scanning repeats until nothing new turns up. Then the Thumb addresses
-//! that the code loads or data holds start functions too, as for a handler
-//! passed to another function, a table of handlers or a vtable, and so do
+//! that the code loads or data holds start functions too, as for a callback
+//! passed to another function, a table of callbacks or a vtable, and so do
 //! those in tables among the constants in code; their code is followed in
 //! turn. Such a word can also be a number that only looks like an address,
 //! so it starts a function only where (`splits_cleanly` has the details):
@@ -93,7 +93,7 @@ pub(super) fn add(binary: &Binary, items: &mut Vec<Item>) {
         .map(|item| item.address)
         .collect();
     if let Some(table) = &binary.vector_table {
-        known.extend(&table.handlers);
+        known.extend(table.handlers.iter().map(|handler| handler.address));
     }
     let arrays = (binary.sections.iter()).filter(|section| section.is_startup_array());
     known.extend(arrays.flat_map(|section| {

@@ -146,9 +146,9 @@ fn vector_table(binary: &Binary) -> (Vec<Node>, Vec<Node>) {
     let items = slots.filter_map(|slot| binary.item_at(slot).map(Node::Item));
     // A handler can start at address 0, as in a Cortex-M7's ITCM, where
     // `item_starting_at` would see a null pointer.
-    let handlers = table.handlers.iter().filter_map(|&handler| {
-        let index = binary.item_at(handler)?;
-        (binary.items[index].address == handler).then_some(Node::Item(index))
+    let handlers = table.handlers.iter().filter_map(|handler| {
+        let index = binary.item_at(handler.address)?;
+        (binary.items[index].address == handler.address).then_some(Node::Item(index))
     });
     (items.collect(), handlers.collect())
 }

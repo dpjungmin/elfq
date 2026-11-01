@@ -306,8 +306,13 @@ fn the_vector_table_ends_where_the_file_holds_no_bytes() {
     let (binary, _) = parse(&data);
     let table = binary.vector_table.unwrap();
     assert_eq!((table.address, table.size), (0x0800_0000, 0x10));
-    assert_eq!(table.handlers, [0x0800_05a0, 0x0800_059c, 0x0800_059c]);
-    assert_eq!(table.exceptions, [1, 2, 3]);
+    let handlers: Vec<(u64, u64)> = (table.handlers.iter())
+        .map(|handler| (handler.exception, handler.address))
+        .collect();
+    assert_eq!(
+        handlers,
+        [(1, 0x0800_05a0), (2, 0x0800_059c), (3, 0x0800_059c)]
+    );
 }
 
 #[test]

@@ -17,7 +17,7 @@
 //!   iteration by iteration ([`Walker::open_loops`]).
 //! - [`Walker::run`] walks one function's code, or one loop's: a [`Run`],
 //!   within the limits of a [`Frame`]. [`Walker::step`] runs each
-//!   instruction, with one handler for each way it goes on, such as
+//!   instruction, with one method for each way it goes on, such as
 //!   [`Walker::on_branch`]. `execute.rs` works out what an instruction
 //!   does to what the walk knows there, a [`Known`] (in `walk_state.rs`,
 //!   with the [`Visit`] that keeps what it knew when it first got to an

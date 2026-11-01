@@ -48,6 +48,11 @@ fn firmware(entry: u64, sections: &[(&str, u64, SectionKind, Vec<u32>)]) -> Bina
     }
 }
 
+/// The handler of `exception`, whose code starts at `address`.
+fn handler(exception: u64, address: u64) -> Handler {
+    Handler { exception, address }
+}
+
 #[test]
 fn a_short_table_in_code_ends_at_its_last_handler() {
     // The stack pointer, then the reset handler and five fault handlers,
@@ -61,8 +66,9 @@ fn a_short_table_in_code_ends_at_its_last_handler() {
     let table = VectorTable {
         address: 0x1000,
         size: 28,
-        handlers: vec![0x1030; 6],
-        exceptions: vec![1, 2, 3, 4, 5, 6],
+        handlers: (1..=6)
+            .map(|exception| handler(exception, 0x1030))
+            .collect(),
     };
     assert_eq!(find(&binary), Some(table));
 }
@@ -100,8 +106,7 @@ fn a_table_that_does_not_hold_the_entry_point_is_at_a_section_start() {
     let table = VectorTable {
         address: 0x900,
         size: 16,
-        handlers: vec![0x1040, 0x1044, 0x1044],
-        exceptions: vec![1, 2, 3],
+        handlers: vec![handler(1, 0x1040), handler(2, 0x1044), handler(3, 0x1044)],
     };
     let binary = entry_point_is_main(FileKind::Executable);
     assert_eq!(find(&binary), Some(table));
@@ -417,16 +422,17 @@ fn the_reset_entry_follows_a_word_that_could_be_the_stack_pointer() {
 
 #[test]
 fn the_reset_handler_is_the_code_its_entry_holds() {
-    let table = |exceptions: Vec<u64>| VectorTable {
+    let table = |handlers| VectorTable {
         address: 0,
         size: 16,
-        handlers: vec![0x100, 0x200],
-        exceptions,
+        handlers,
     };
-    assert_eq!(table(vec![1, 3]).reset_handler(), Some(0x100));
+    let reset = table(vec![handler(1, 0x100), handler(3, 0x200)]);
+    assert_eq!(reset.reset_handler(), Some(0x100));
     // The reset entry holds no address of code, as when it is a word
     // that holds the address of an entry point outside code.
-    assert_eq!(table(vec![2, 3]).reset_handler(), None);
+    let no_reset = table(vec![handler(2, 0x100), handler(3, 0x200)]);
+    assert_eq!(no_reset.reset_handler(), None);
 }
 
 #[test]
@@ -434,8 +440,16 @@ fn a_handler_runs_in_normal_operation_when_an_entry_for_it_is_routine() {
     let table = VectorTable {
         address: 0,
         size: 128,
-        handlers: vec![0x100, 0x200, 0x200, 0x300, 0x300, 0x400, 0x500, 0x500],
-        exceptions: vec![1, 2, 3, 4, 12, 11, 6, 20],
+        handlers: vec![
+            handler(1, 0x100),
+            handler(2, 0x200),
+            handler(3, 0x200),
+            handler(4, 0x300),
+            handler(12, 0x300),
+            handler(11, 0x400),
+            handler(6, 0x500),
+            handler(20, 0x500),
+        ],
     };
     // SVCall, and an interrupt with a fault.
     assert!(table.runs_in_normal_operation(0x400));

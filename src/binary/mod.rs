@@ -87,7 +87,7 @@ pub use attributes::ArmArchitecture;
 pub use header::ElfHeader;
 pub use memory::{Bytes, LoadedMemory, same_bytes_in, same_memory};
 pub use range::{AddressRange, MemoryBlock, hex_number, memory_blocks, range_hint};
-pub use vector_table::{VectorTable, exception_name, is_reserved};
+pub use vector_table::{Handler, VectorTable, exception_name, is_reserved};
 
 use std::collections::HashMap;
 use std::fmt;
