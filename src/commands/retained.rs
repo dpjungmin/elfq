@@ -129,11 +129,11 @@ pub(super) fn answers(symbol: &SymbolInTree, shorten: &dyn Fn(&str) -> String) -
     let answer = parts.answer(&every, true, Format::Text);
     let brief = parts.notes(&Naming::of(false));
     // Without --all, the tree leaves out items, or the notes names.
-    let cut = largest.len() < every.len() || brief != answer.notes;
+    let needs_all = largest.len() < every.len() || brief != answer.notes;
     TabAnswer {
         briefest: parts.notes(&Naming::first(shorten)),
         brief,
-        cut,
+        needs_all,
         answer,
     }
 }

@@ -107,7 +107,7 @@ pub(super) struct TabAnswer {
     /// screen with little room for them.
     pub(super) briefest: Vec<String>,
     /// Whether the command needs `--all` to print all of `answer`.
-    pub(super) cut: bool,
+    pub(super) needs_all: bool,
 }
 
 #[cfg(feature = "tui")]
@@ -118,7 +118,7 @@ impl TabAnswer {
             answer: TreeAnswer::sentences(lead),
             brief: Vec::new(),
             briefest: Vec::new(),
-            cut: false,
+            needs_all: false,
         }
     }
 }

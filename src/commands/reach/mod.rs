@@ -32,18 +32,22 @@
 //!
 //! The words the code uses:
 //!
-//! - A *step* is a row of the tree: SYMBOL, or an item or import that it
-//!   reaches ([`Step`]).
+//! - A *step* is SYMBOL, or an item or import that it reaches, at its
+//!   place in the tree ([`Step`]). Its id is its place in the search's
+//!   order ([`StepId`]), and SYMBOL's is 0. A step *has a row* when the
+//!   text shows it on a line of its own; a row such as "12 more" sums up
+//!   the others.
 //! - A step's *chain* is the shortest chain of references from SYMBOL to
 //!   it. Its *via* is the last reference on the chain, from its *parent*.
 //! - The *use* that a row lists ([`Use`]) is that reference, but for the
 //!   target of a veneer, which is listed as called through the veneer.
 //! - The *counted* steps are those whose bytes the answer adds up: every
 //!   one, or with `--to`, those in its ranges ([`Reach::counted`]).
-//! - The *kept* steps are those that the tree and the JSON have: every one,
-//!   or with `--to`, the chains to what is listed ([`Reach::kept`]).
-//! - The *shown* steps are those that get rows: the 30 largest, or with
-//!   `--all`, every one ([`Text::shown`]).
+//! - The steps *in the answer* are those that the tree and the JSON have:
+//!   every one, or with `--to`, the chains to what is listed
+//!   ([`Reach::in_answer`]).
+//! - The *largest* items are those that get rows without `--all`: the 30
+//!   that take the most bytes ([`Text::largest`]).
 //!
 //! Here, `mod.rs` holds the search, [`Reach::find`], with what every form
 //! of the answer asks of what it found, and [`Text`], the view that words
@@ -241,14 +245,14 @@ struct Reach<'g, 'a> {
     binary: &'a Binary,
     graph: &'g Graph,
     /// SYMBOL's item, as an index into [`Binary::items`].
-    index: usize,
+    symbol: usize,
     /// How SYMBOL uses itself, as a recursive function calls itself:
     /// "calls" or "uses", or `None` when it doesn't. No row shows it.
     self_use: Option<&'static str>,
     /// Whether SYMBOL is a PLT's header, whose one jump goes to the dynamic
     /// loader.
     plt_header: bool,
-    /// SYMBOL and what it reaches, as the rows of the tree: SYMBOL first,
+    /// SYMBOL and what it reaches, as the steps of the tree: SYMBOL first,
     /// then depth first, each item's children in the order it first uses
     /// them.
     steps: Vec<Step>,
@@ -287,12 +291,16 @@ struct Text<'r, 'a> {
     all: bool,
 }
 
-/// One row of the tree: SYMBOL, or an item or import that it reaches.
+/// A step's place in [`Reach::steps`]: 0 is SYMBOL's.
+type StepId = usize;
+
+/// SYMBOL, or an item or import that it reaches, at its place in the tree.
+/// `parent`, `via` and `used` are `None`, and `sites` is empty, exactly for
+/// SYMBOL, the first step.
 struct Step {
     node: Node,
-    /// The step of the item that uses it on its chain from SYMBOL, or
-    /// `None` for SYMBOL.
-    parent: Option<usize>,
+    /// The step of the item that uses it on its chain from SYMBOL.
+    parent: Option<StepId>,
     /// The reference on the chain that reaches it, from its parent.
     via: Option<Reference>,
     /// Where its parent uses it as `via` does.
@@ -311,7 +319,7 @@ struct Step {
 /// chain, or for the target of a veneer, the call to the veneer.
 struct Use {
     /// The item that uses it, as an index into [`Binary::items`].
-    by: usize,
+    user: usize,
     kind: ReferenceKind,
     /// The veneer or PLT stub that the call goes through.
     veneer: Option<usize>,
@@ -352,13 +360,13 @@ impl<'g, 'a> Reach<'g, 'a> {
             .chain((0..binary.imports.len()).map(Node::Import))
             .filter(|&node| paths.is_reached(node));
         // Each item's children, in the order it first uses them.
-        let mut children: HashMap<usize, Vec<Node>> = HashMap::new();
+        let mut children_of_item: HashMap<usize, Vec<Node>> = HashMap::new();
         for node in nodes {
             if let Some(via) = paths.via(node) {
-                children.entry(via.from).or_default().push(node);
+                children_of_item.entry(via.from).or_default().push(node);
             }
         }
-        for (&parent, nodes) in &mut children {
+        for (&parent, nodes) in &mut children_of_item {
             let mut first_use: HashMap<Node, usize> = HashMap::new();
             for (position, reference) in graph.references_from(parent).iter().enumerate() {
                 first_use.entry(reference.to).or_insert(position);
@@ -400,7 +408,7 @@ impl<'g, 'a> Reach<'g, 'a> {
                 through_pointer: false,
             });
             if let Node::Item(index) = node
-                && let Some(nodes) = children.get(&index)
+                && let Some(nodes) = children_of_item.get(&index)
             {
                 next.extend(nodes.iter().rev().map(|&child| (child, Some(step))));
             }
@@ -436,16 +444,16 @@ impl<'g, 'a> Reach<'g, 'a> {
         }
         let plt_header = graph.is_plt_header(start);
         if !to.is_empty() {
-            let through_pointer = !ItemsInRanges::new(binary, to)
+            let callable_through_pointer = !ItemsInRanges::new(binary, to)
                 .callable_through_pointer(graph)
                 .is_empty();
-            unresolved.retain(|jump| jump.may_go_to(to, through_pointer));
-            unfollowed.retain(|row| row.unresolved.may_go_to(to, through_pointer));
+            unresolved.retain(|jump| jump.may_go_to(to, callable_through_pointer));
+            unfollowed.retain(|row| row.unresolved.may_go_to(to, callable_through_pointer));
         }
         Reach {
             binary,
             graph,
-            index,
+            symbol: index,
             self_use,
             plt_header,
             steps,
@@ -540,24 +548,24 @@ impl<'g, 'a> Reach<'g, 'a> {
     /// steps in its ranges, those with calls and jumps that elfq can't
     /// follow that may go there, and every step on their chains from
     /// SYMBOL.
-    fn kept(&self) -> Vec<bool> {
+    fn in_answer(&self) -> Vec<bool> {
         let unfollowed: HashSet<Node> = self
             .unresolved
             .iter()
             .map(|unresolved| Node::Item(unresolved.from))
             .collect();
-        let mut kept = vec![self.to.is_empty(); self.steps.len()];
-        kept[0] = true;
-        // A step comes after its parent, so its children are kept first.
-        for (step, row) in self.steps.iter().enumerate().rev() {
-            if kept[step] || self.in_to(row) || unfollowed.contains(&row.node) {
-                kept[step] = true;
-                if let Some(parent) = row.parent {
-                    kept[parent] = true;
+        let mut in_answer = vec![self.to.is_empty(); self.steps.len()];
+        in_answer[0] = true;
+        // A step comes after its parent, so its children come first.
+        for (id, step) in self.steps.iter().enumerate().rev() {
+            if in_answer[id] || self.in_to(step) || unfollowed.contains(&step.node) {
+                in_answer[id] = true;
+                if let Some(parent) = step.parent {
+                    in_answer[parent] = true;
                 }
             }
         }
-        kept
+        in_answer
     }
 
     /// The calls and jumps to code outside every item, which the rows list.
@@ -597,12 +605,12 @@ impl Text<'_, '_> {
 fn used(paths: &ShortestPaths, veneers: &Veneers, node: Node, via: Reference) -> Use {
     match call_to_veneer(paths, veneers, via.from, VeneerTarget::Node(node)) {
         Some(call) => Use {
-            by: call.from,
+            user: call.from,
             kind: call.kind,
             veneer: Some(via.from),
         },
         None => Use {
-            by: via.from,
+            user: via.from,
             kind: via.kind,
             veneer: None,
         },

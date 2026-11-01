@@ -154,7 +154,7 @@ impl Text<'_, '_> {
         let how = |kind| text::how_via(binary, step.node, kind, used.veneer);
         reach
             .graph
-            .references_from(used.by)
+            .references_from(used.user)
             .iter()
             .filter(|reference| reference.to == to && how(reference.kind) == how(used.kind))
             .map(|reference| reference.site)

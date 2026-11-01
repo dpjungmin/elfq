@@ -5,7 +5,7 @@ use std::io::Write;
 
 use anyhow::Result;
 
-use super::{Step, Text};
+use super::{Step, StepId, Text};
 use crate::binary::total;
 use crate::commands::text;
 use crate::graph::{Node, Unresolved};
@@ -20,13 +20,13 @@ use crate::render::{Align, Table, TreeRow, TreeShape};
 pub(super) struct Tree<'r, 'a> {
     text: &'r Text<'r, 'a>,
     /// The steps under each step, in the order that it first uses them.
-    children: Vec<Vec<usize>>,
+    children: Vec<Vec<StepId>>,
     /// The calls and jumps that elfq can't follow in each step that get
     /// rows, one per kind and target: those to code outside every item, and
     /// with `--to`, those through pointers too.
-    outside: Vec<Vec<Unresolved>>,
+    unresolved_rows: Vec<Vec<Unresolved>>,
     /// Whether each step gets a row.
-    shown: Vec<bool>,
+    has_row: Vec<bool>,
 }
 
 impl<'r, 'a> Tree<'r, 'a> {
@@ -34,25 +34,25 @@ impl<'r, 'a> Tree<'r, 'a> {
         let reach = text.reach;
         let steps = &reach.steps;
         let mut children = vec![Vec::new(); steps.len()];
-        for (step, row) in steps.iter().enumerate().skip(1) {
-            children[row.parent.expect("only SYMBOL has no parent")].push(step);
+        for (id, step) in steps.iter().enumerate().skip(1) {
+            children[step.parent.expect("only SYMBOL has no parent")].push(id);
         }
-        let step_of: HashMap<usize, usize> = steps
+        let step_of_item: HashMap<usize, StepId> = steps
             .iter()
             .enumerate()
-            .filter_map(|(step, row)| match row.node {
-                Node::Item(index) => Some((index, step)),
+            .filter_map(|(id, step)| match step.node {
+                Node::Item(index) => Some((index, id)),
                 Node::Import(_) => None,
             })
             .collect();
-        let mut outside: Vec<Vec<Unresolved>> = vec![Vec::new(); steps.len()];
+        let mut unresolved_rows: Vec<Vec<Unresolved>> = vec![Vec::new(); steps.len()];
         for &unresolved in &reach.unresolved {
             // Without `--to`, a note below the tree names the calls and
             // jumps through pointers.
             if unresolved.target.is_none() && reach.to.is_empty() {
                 continue;
             }
-            let rows = &mut outside[step_of[&unresolved.from]];
+            let rows = &mut unresolved_rows[step_of_item[&unresolved.from]];
             let same = |row: &Unresolved| {
                 (row.is_call, row.target) == (unresolved.is_call, unresolved.target)
             };
@@ -63,59 +63,59 @@ impl<'r, 'a> Tree<'r, 'a> {
         let mut tree = Tree {
             text,
             children,
-            outside,
-            shown: Vec::new(),
+            unresolved_rows,
+            has_row: Vec::new(),
         };
-        tree.shown = tree.shown();
+        tree.has_row = tree.has_row();
         tree
     }
 
-    /// Which steps get rows: with `--to`, the steps the answer has (see
-    /// [`Reach::kept`]). Without it, SYMBOL; the largest items, or every
-    /// one (see [`Text::shown`]); the steps with rows for calls or jumps
-    /// to code outside every item, since rows by block show every one; and
-    /// every step on their chains from SYMBOL, so that the tree holds
-    /// together. A step that would be the only one left out under a row,
-    /// with nothing under it, is shown too, since its row takes no more
-    /// room than "1 more" would.
+    /// Which steps get rows: with `--to`, the steps in the answer (see
+    /// [`Reach::in_answer`]). Without it, SYMBOL; the largest items, or
+    /// every one (see [`Text::largest`]); the steps with rows for calls or
+    /// jumps to code outside every item, since rows by block show every
+    /// one; and every step on their chains from SYMBOL, so that the tree
+    /// holds together. A step that would be the only one left out under a
+    /// row, with nothing under it, gets a row too, since its row takes no
+    /// more room than "1 more" would.
     ///
-    /// [`Reach::kept`]: super::Reach::kept
-    fn shown(&self) -> Vec<bool> {
+    /// [`Reach::in_answer`]: super::Reach::in_answer
+    fn has_row(&self) -> Vec<bool> {
         let reach = self.text.reach;
         if !reach.to.is_empty() {
-            return reach.kept();
+            return reach.in_answer();
         }
         let steps = &reach.steps;
-        let largest = self.text.shown(&steps[1..]);
-        let wanted = |step: usize| {
-            step == 0 || largest.contains(&steps[step].node) || !self.outside[step].is_empty()
+        let largest = self.text.largest(&steps[1..]);
+        let wanted = |id: StepId| {
+            id == 0 || largest.contains(&steps[id].node) || !self.unresolved_rows[id].is_empty()
         };
-        let mut shown = vec![false; steps.len()];
-        for step in 0..steps.len() {
-            if wanted(step) {
-                let mut on_chain = Some(step);
-                while let Some(step) = on_chain
-                    && !shown[step]
+        let mut has_row = vec![false; steps.len()];
+        for id in 0..steps.len() {
+            if wanted(id) {
+                let mut on_chain = Some(id);
+                while let Some(id) = on_chain
+                    && !has_row[id]
                 {
-                    shown[step] = true;
-                    on_chain = steps[step].parent;
+                    has_row[id] = true;
+                    on_chain = steps[id].parent;
                 }
             }
         }
-        let lone: Vec<usize> = (0..steps.len())
-            .filter(|&step| shown[step])
-            .filter_map(|step| {
-                let mut hidden = self.children[step].iter().filter(|&&child| !shown[child]);
+        let lone: Vec<StepId> = (0..steps.len())
+            .filter(|&id| has_row[id])
+            .filter_map(|id| {
+                let mut hidden = self.children[id].iter().filter(|&&child| !has_row[child]);
                 match (hidden.next(), hidden.next()) {
                     (Some(&lone), None) if self.children[lone].is_empty() => Some(lone),
                     _ => None,
                 }
             })
             .collect();
-        for step in lone {
-            shown[step] = true;
+        for id in lone {
+            has_row[id] = true;
         }
-        shown
+        has_row
     }
 
     pub(super) fn write(&self, out: &mut dyn Write) -> Result<()> {
@@ -130,17 +130,18 @@ impl<'r, 'a> Tree<'r, 'a> {
         Ok(())
     }
 
-    /// The row of `step`, with the rows under it: the steps under it that
-    /// are shown, its calls and jumps to code outside every item, and a row
-    /// that sums up the steps under it that aren't, and what is under them.
-    fn row(&self, step: usize) -> TreeRow {
+    /// The row of the step `id`, with the rows under it: the steps under it
+    /// that have rows, its calls and jumps that elfq can't follow, and a
+    /// row that sums up the steps under it that don't, and what is under
+    /// them.
+    fn row(&self, id: StepId) -> TreeRow {
         let binary = self.text.reach.binary;
         let Step {
             node,
             via,
             through_pointer,
             ..
-        } = self.text.reach.steps[step];
+        } = self.text.reach.steps[id];
         let (address, size) = match node {
             Node::Item(index) => {
                 let item = &binary.items[index];
@@ -149,11 +150,13 @@ impl<'r, 'a> Tree<'r, 'a> {
             Node::Import(_) => (String::new(), String::new()),
         };
         let how = via.map_or("", |via| text::how_column(binary, node, via.kind));
-        let (shown, hidden): (Vec<usize>, Vec<usize>) = self.children[step]
+        let (with_rows, hidden): (Vec<StepId>, Vec<StepId>) = self.children[id]
             .iter()
-            .partition(|&&child| self.shown[child]);
-        let mut children: Vec<TreeRow> = shown.into_iter().map(|child| self.row(child)).collect();
-        for unresolved in &self.outside[step] {
+            .partition(|&&child| self.has_row[child]);
+        let mut children: Vec<TreeRow> = (with_rows.into_iter())
+            .map(|child| self.row(child))
+            .collect();
+        for unresolved in &self.unresolved_rows[id] {
             let (address, name) = match unresolved.target {
                 Some(target) => (format!("{target:#x}"), "(outside any function)"),
                 None => (String::new(), "(through a pointer)"),
@@ -180,13 +183,13 @@ impl<'r, 'a> Tree<'r, 'a> {
 
     /// The row that sums up the steps in `hidden`, and every step under
     /// them, which no row shows.
-    fn more(&self, hidden: &[usize]) -> TreeRow {
+    fn more(&self, hidden: &[StepId]) -> TreeRow {
         let binary = self.text.reach.binary;
         let mut nodes: Vec<Node> = Vec::new();
         let mut next = hidden.to_vec();
-        while let Some(step) = next.pop() {
-            nodes.push(self.text.reach.steps[step].node);
-            next.extend(&self.children[step]);
+        while let Some(id) = next.pop() {
+            nodes.push(self.text.reach.steps[id].node);
+            next.extend(&self.children[id]);
         }
         // Imports have no bytes in the file, as their own rows show.
         let size = if nodes.iter().all(|node| matches!(node, Node::Import(_))) {

@@ -136,18 +136,18 @@ impl Text<'_, '_> {
         let reach = self.reach;
         let mut rows = vec![self.symbol_row()];
         let reached = &reach.steps[1..];
-        let shown = self.shown(reached);
+        let largest = self.largest(reached);
         let steps = self.in_row_order(reached.iter().collect());
         let imports = steps.partition_point(|step| matches!(step.node, Node::Item(_)));
         let (items, imports) = steps.split_at(imports);
         for steps in items.chunk_by(|a, b| self.group(a) == self.group(b)) {
-            self.add_group(steps, &shown, &mut rows);
+            self.add_group(steps, &largest, &mut rows);
         }
         for (unfollowed, _) in range_check::group_unfollowed(outside) {
             rows.push(self.unfollowed_row(&unfollowed));
         }
         if !imports.is_empty() {
-            self.add_group(imports, &shown, &mut rows);
+            self.add_group(imports, &largest, &mut rows);
         }
         rows
     }
@@ -155,13 +155,13 @@ impl Text<'_, '_> {
     /// SYMBOL's row.
     pub(super) fn symbol_row(&self) -> FlatRow {
         let reach = self.reach;
-        let item = &reach.binary.items[reach.index];
+        let item = &reach.binary.items[reach.symbol];
         let cells = vec![
             format!("{:#x}", item.address),
             text::size_text(item),
             String::new(),
         ];
-        FlatRow::new(cells, item.name.clone(), Some(Node::Item(reach.index)))
+        FlatRow::new(cells, item.name.clone(), Some(Node::Item(reach.symbol)))
     }
 
     /// Which group of the table `step`'s row is in: each block's functions,
@@ -216,19 +216,19 @@ impl Text<'_, '_> {
     }
 
     /// Adds the rows of `steps`, one group of the table, such as a block's
-    /// functions: those in `shown`, and a row that sums up the rest. One
+    /// functions: those in `largest`, and a row that sums up the rest. One
     /// that would be left out on its own is shown too, since its row takes
     /// no more room than the sum's.
-    fn add_group(&self, steps: &[&Step], shown: &HashSet<Node>, rows: &mut Vec<FlatRow>) {
+    fn add_group(&self, steps: &[&Step], largest: &HashSet<Node>, rows: &mut Vec<FlatRow>) {
         let reach = self.reach;
         let binary = reach.binary;
         let hidden: Vec<&Step> = steps
             .iter()
             .copied()
-            .filter(|step| !shown.contains(&step.node))
+            .filter(|step| !largest.contains(&step.node))
             .collect();
         for step in steps {
-            if hidden.len() < 2 || shown.contains(&step.node) {
+            if hidden.len() < 2 || largest.contains(&step.node) {
                 rows.push(self.row(step));
             }
         }
@@ -281,7 +281,7 @@ impl Text<'_, '_> {
         let how = text::how_via(binary, step.node, used.kind, used.veneer);
         let cells = vec![address, size, how.to_string()];
         FlatRow::new(cells, step.node.name(binary).to_string(), Some(step.node))
-            .with_rest(format!("{mark}, used by {}", self.user_name(used.by)))
+            .with_rest(format!("{mark}, used by {}", self.user_name(used.user)))
     }
 
     /// The name of `index`, an item that uses another, on that item's row:
@@ -297,7 +297,7 @@ impl Text<'_, '_> {
 
     /// The items and imports in `reached` that get rows: the 30 largest,
     /// or every one.
-    pub(super) fn shown(&self, reached: &[Step]) -> HashSet<Node> {
+    pub(super) fn largest(&self, reached: &[Step]) -> HashSet<Node> {
         let binary = self.reach.binary;
         let mut nodes: Vec<Node> = reached.iter().map(|step| step.node).collect();
         nodes.sort_by_key(|&node| (Reverse(node.size(binary)), node.name(binary), node));
@@ -336,10 +336,10 @@ impl Text<'_, '_> {
             }
             _ => (several, String::new()),
         };
-        let who = if callers[..] == [reach.index] {
+        let who = if callers[..] == [reach.symbol] {
             "it"
         } else {
-            &binary.items[reach.index].name
+            &binary.items[reach.symbol].name
         };
         format!(
             "{} also {verb} through {through}{at}, which elfq can't follow, so {who} may reach \

@@ -26,7 +26,7 @@ struct ReachJson<'a> {
     /// SYMBOL, then what it reaches, as the rows of a tree: each item comes
     /// after the item that uses it on its chain from SYMBOL, its `parent`.
     /// With `--to`, only the items that the tree draws (see
-    /// [`Reach::kept`]).
+    /// [`Reach::in_answer`]).
     items: Vec<ItemJson<'a>>,
     /// The calls and jumps in what SYMBOL reaches that elfq can't follow,
     /// or with `--to`, those that may go to its ranges.
@@ -130,7 +130,7 @@ impl Reach<'_, '_> {
         // a call through a pointer leaves it open.
         let followed = |unresolved: &Unresolved| !self.to.is_empty() && unresolved.target.is_some();
         let answer = ReachJson {
-            symbol: json::Symbol::new(binary, Node::Item(self.index)),
+            symbol: json::Symbol::new(binary, Node::Item(self.symbol)),
             to: range_check::json_far_side(&self.to),
             code_bytes: bytes.code,
             data_bytes: bytes.data,
@@ -151,12 +151,12 @@ impl Reach<'_, '_> {
     }
 
     /// The `id` of each step's row in the JSON, for the steps the answer
-    /// has (see [`Reach::kept`]).
+    /// has (see [`Reach::in_answer`]).
     fn json_ids(&self) -> Vec<Option<usize>> {
         let mut ids = 0..;
-        self.kept()
+        self.in_answer()
             .into_iter()
-            .map(|kept| if kept { ids.next() } else { None })
+            .map(|in_answer| if in_answer { ids.next() } else { None })
             .collect()
     }
 }

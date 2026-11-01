@@ -150,7 +150,7 @@ pub(super) fn answers<'a>(
     let answer = |all| users.answer(names, lead_name, all, Format::Text);
     let (answer, brief) = (answer(true), answer(false));
     TabAnswer {
-        cut: brief.written() != answer.written(),
+        needs_all: brief.written() != answer.written(),
         brief: brief.notes,
         briefest: users.notes(&Naming::first(shorten)),
         answer,

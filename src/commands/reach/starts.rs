@@ -331,9 +331,9 @@ impl Starts<'_> {
             .collect();
         let mut rows = Vec::new();
         let mut first = 0;
-        for kind in self.starts.chunk_by(|a, b| a.root == b.root) {
-            let starts = first..first + kind.len();
-            first += kind.len();
+        for same_kind in self.starts.chunk_by(|a, b| a.root == b.root) {
+            let starts = first..first + same_kind.len();
+            first += same_kind.len();
             let hidden = starts
                 .clone()
                 .filter(|start| left_out.contains(start))
@@ -341,7 +341,7 @@ impl Starts<'_> {
             // A row for one start takes no more room than "1 more" would.
             let hide = |start: &usize| hidden > 1 && left_out.contains(start);
             rows.extend(starts.filter(|start| !hide(start)).map(StartRow::Start));
-            if let Some(root) = kind[0].root
+            if let Some(root) = same_kind[0].root
                 && hidden > 1
             {
                 rows.push(StartRow::More(root, hidden));
