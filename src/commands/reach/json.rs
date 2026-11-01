@@ -86,7 +86,7 @@ struct UnresolvedJson<'a> {
     call: json::Unresolved,
 }
 
-impl<'n, 'a> Reach<'n, 'a> {
+impl Reach<'_, '_> {
     pub(super) fn write_json(&self, out: &mut dyn Write) -> Result<()> {
         let binary = self.binary;
         let item = |node: Node| json::Item::new(binary, node);

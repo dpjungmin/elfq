@@ -5,46 +5,47 @@
 use std::cmp::Reverse;
 use std::collections::HashSet;
 
-use super::{Body, Reach, Step};
+use super::{Body, Step, Text};
 use crate::binary::{ItemKind, total};
 use crate::commands::flat_answer::{FlatAnswer, FlatRow};
 use crate::commands::{range_check, text};
 use crate::graph::{Node, Unfollowed, Unresolved};
 use crate::render::{Align, Table};
 
-impl<'n, 'a> Reach<'n, 'a> {
+impl Text<'_, '_> {
     /// The answer as text, without `--to`: what SYMBOL and what it reaches
     /// take, the bytes in each block of memory when there are several, the
     /// rows by block, and the notes on what elfq can't follow or read. For
     /// a tree, it has no rows, since the tree takes their place, and its
     /// first line counts the calls and jumps as the tree shows them.
     pub(super) fn answer(&self, body: Body) -> FlatAnswer {
+        let reach = self.reach;
         let tree = body == Body::Tree;
-        let binary = self.binary;
-        let name = &self.lead_name;
-        if self.reaches_nothing() {
+        let binary = reach.binary;
+        let name = self.lead_name;
+        if reach.reaches_nothing() {
             // Any calls and jumps elfq can't follow are in SYMBOL, through
             // pointers.
             return FlatAnswer {
                 lead: nothing_reached_lines(
                     name,
-                    self.self_use,
-                    self.plt_header,
-                    &self.unresolved,
+                    reach.self_use,
+                    reach.plt_header,
+                    &reach.unresolved,
                     self.all,
                 ),
                 ..FlatAnswer::default()
             };
         }
 
-        let reached = &self.steps[1..];
+        let reached = &reach.steps[1..];
         let items: Vec<Node> = reached
             .iter()
             .map(|step| step.node)
             .filter(|node| matches!(node, Node::Item(_)))
             .collect();
         let imports = reached.len() - items.len();
-        let bytes = text::code_and_data(self.bytes(self.steps.iter()));
+        let bytes = text::code_and_data(reach.bytes(reach.steps.iter()));
         let mut lead = match &items[..] {
             [] => format!("{name} takes {bytes}"),
             [Node::Item(index)] => format!(
@@ -62,15 +63,15 @@ impl<'n, 'a> Reach<'n, 'a> {
         // Counted as the rows show them: a tree has the veneers that the
         // rows by block step over.
         let unfollowed: Vec<&Unresolved> = if tree {
-            self.unresolved.iter().collect()
+            reach.unresolved.iter().collect()
         } else {
-            self.unfollowed.iter().map(|u| &u.unresolved).collect()
+            reach.unfollowed.iter().map(|u| &u.unresolved).collect()
         };
         if !unfollowed.is_empty() {
             lead += &format!("; elfq can't follow {}", text::calls_and_jumps(unfollowed));
         }
 
-        let pointers: Vec<&Unresolved> = self
+        let pointers: Vec<&Unresolved> = reach
             .unfollowed
             .iter()
             .map(|unfollowed| &unfollowed.unresolved)
@@ -80,8 +81,8 @@ impl<'n, 'a> Reach<'n, 'a> {
         if !pointers.is_empty() {
             notes.push(self.pointer_note(&pointers));
         }
-        if !self.unreadable.is_empty() {
-            notes.push(text::unreadable_text(binary, &self.unreadable, self.all));
+        if !reach.unreadable.is_empty() {
+            notes.push(text::unreadable_text(binary, &reach.unreadable, self.all));
         }
         let (columns, rows) = if tree {
             (Vec::new(), Vec::new())
@@ -93,11 +94,11 @@ impl<'n, 'a> Reach<'n, 'a> {
                 ("ITEM", Align::Left),
             ];
             let columns = columns.map(|(header, align)| (header.to_string(), align));
-            (columns.into(), self.rows(&self.outside()))
+            (columns.into(), self.rows(&reach.outside()))
         };
         FlatAnswer {
             lead: vec![format!("{lead}:")],
-            memory: (self.blocks.len() > 1).then(|| self.memory_table()),
+            memory: (reach.blocks.len() > 1).then(|| self.memory_table()),
             columns,
             rows,
             notes,
@@ -106,14 +107,15 @@ impl<'n, 'a> Reach<'n, 'a> {
 
     /// The bytes of code and data in each block of memory.
     fn memory_table(&self) -> Table {
+        let reach = self.reach;
         let mut table = Table::new(&[
             ("MEMORY", Align::Left),
             ("CODE", Align::Right),
             ("DATA", Align::Right),
             ("SECTIONS", Align::Left),
         ]);
-        let steps: Vec<&Step> = self.steps.iter().collect();
-        for (block, (bytes, sections)) in self.blocks.iter().zip(self.blocks_reached(&steps)) {
+        let steps: Vec<&Step> = reach.steps.iter().collect();
+        for (block, (bytes, sections)) in reach.blocks.iter().zip(reach.blocks_reached(&steps)) {
             table.row(vec![
                 text::range_argument(block.range),
                 bytes.code.to_string(),
@@ -131,8 +133,9 @@ impl<'n, 'a> Reach<'n, 'a> {
     /// shown, and a row such as "9 more data objects in
     /// 0x20000000..0x20000450" sums up the rest of a block's.
     fn rows(&self, outside: &[Unfollowed]) -> Vec<FlatRow> {
+        let reach = self.reach;
         let mut rows = vec![self.symbol_row()];
-        let reached = &self.steps[1..];
+        let reached = &reach.steps[1..];
         let shown = self.shown(reached);
         let steps = self.in_row_order(reached.iter().collect());
         let imports = steps.partition_point(|step| matches!(step.node, Node::Item(_)));
@@ -151,22 +154,24 @@ impl<'n, 'a> Reach<'n, 'a> {
 
     /// SYMBOL's row.
     pub(super) fn symbol_row(&self) -> FlatRow {
-        let item = &self.binary.items[self.index];
+        let reach = self.reach;
+        let item = &reach.binary.items[reach.index];
         let cells = vec![
             format!("{:#x}", item.address),
             text::size_text(item),
             String::new(),
         ];
-        FlatRow::new(cells, item.name.clone(), Some(Node::Item(self.index)))
+        FlatRow::new(cells, item.name.clone(), Some(Node::Item(reach.index)))
     }
 
     /// Which group of the table `step`'s row is in: each block's functions,
     /// then its data objects; then the items in no block, which a damaged
     /// file can have; then the imports.
     fn group(&self, step: &Step) -> (usize, bool) {
+        let reach = self.reach;
         match step.node {
             Node::Item(index) => {
-                let kind = self.binary.items[index].kind;
+                let kind = reach.binary.items[index].kind;
                 (step.block.unwrap_or(usize::MAX), kind != ItemKind::Function)
             }
             Node::Import(_) => (usize::MAX, true),
@@ -175,7 +180,7 @@ impl<'n, 'a> Reach<'n, 'a> {
 
     /// `steps` in the order of their rows: by group, each largest first.
     pub(super) fn in_row_order<'s>(&self, mut steps: Vec<&'s Step>) -> Vec<&'s Step> {
-        let binary = self.binary;
+        let binary = self.reach.binary;
         steps.sort_by_key(|step| {
             let node = step.node;
             (
@@ -215,7 +220,8 @@ impl<'n, 'a> Reach<'n, 'a> {
     /// that would be left out on its own is shown too, since its row takes
     /// no more room than the sum's.
     fn add_group(&self, steps: &[&Step], shown: &HashSet<Node>, rows: &mut Vec<FlatRow>) {
-        let binary = self.binary;
+        let reach = self.reach;
+        let binary = reach.binary;
         let hidden: Vec<&Step> = steps
             .iter()
             .copied()
@@ -242,8 +248,8 @@ impl<'n, 'a> Reach<'n, 'a> {
             Node::Import(_) => ("imports", String::new()),
         };
         let place = match first.block {
-            Some(block) if self.blocks.len() > 1 => {
-                format!(" in {}", text::range_argument(self.blocks[block].range))
+            Some(block) if reach.blocks.len() > 1 => {
+                format!(" in {}", text::range_argument(reach.blocks[block].range))
             }
             _ => String::new(),
         };
@@ -257,7 +263,8 @@ impl<'n, 'a> Reach<'n, 'a> {
     /// that uses it, and no mark for a function reached through a pointer,
     /// which HOW shows.
     pub(super) fn row(&self, step: &Step) -> FlatRow {
-        let binary = self.binary;
+        let reach = self.reach;
+        let binary = reach.binary;
         let (address, size) = match step.node {
             Node::Item(index) => {
                 let item = &binary.items[index];
@@ -266,7 +273,7 @@ impl<'n, 'a> Reach<'n, 'a> {
             Node::Import(_) => (String::new(), String::new()),
         };
         let used = step.used.as_ref().expect("only SYMBOL has no user");
-        let mark = if step.through_pointer && self.to.is_empty() {
+        let mark = if step.through_pointer && reach.to.is_empty() {
             " (through a pointer)"
         } else {
             ""
@@ -281,16 +288,17 @@ impl<'n, 'a> Reach<'n, 'a> {
     /// the shortest that finds it, or with `--to`, its whole name, as
     /// `callees --to` names it.
     fn user_name(&self, index: usize) -> String {
-        match self.to[..] {
+        let reach = self.reach;
+        match reach.to[..] {
             [] => self.names.row_name(index),
-            _ => self.binary.items[index].name.clone(),
+            _ => reach.binary.items[index].name.clone(),
         }
     }
 
     /// The items and imports in `reached` that get rows: the 30 largest,
     /// or every one.
     pub(super) fn shown(&self, reached: &[Step]) -> HashSet<Node> {
-        let binary = self.binary;
+        let binary = self.reach.binary;
         let mut nodes: Vec<Node> = reached.iter().map(|step| step.node).collect();
         nodes.sort_by_key(|&node| (Reverse(node.size(binary)), node.name(binary), node));
         nodes.into_iter().take(text::shown(self.all)).collect()
@@ -299,7 +307,8 @@ impl<'n, 'a> Reach<'n, 'a> {
     /// The note on the calls and jumps through pointers in `pointers`, all
     /// in what SYMBOL reaches, since SYMBOL may reach more through them.
     fn pointer_note(&self, pointers: &[&Unresolved]) -> String {
-        let binary = self.binary;
+        let reach = self.reach;
+        let binary = reach.binary;
         let mut callers: Vec<usize> = Vec::new();
         let mut seen: HashSet<usize> = HashSet::new();
         for unresolved in pointers {
@@ -327,10 +336,10 @@ impl<'n, 'a> Reach<'n, 'a> {
             }
             _ => (several, String::new()),
         };
-        let who = if callers[..] == [self.index] {
+        let who = if callers[..] == [reach.index] {
             "it"
         } else {
-            &binary.items[self.index].name
+            &binary.items[reach.index].name
         };
         format!(
             "{} also {verb} through {through}{at}, which elfq can't follow, so {who} may reach \

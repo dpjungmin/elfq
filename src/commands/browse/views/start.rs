@@ -23,16 +23,11 @@ pub fn page(session: &Session) -> Printed {
     if let Some(memory) = overview::memory_table(binary, &session.blocks) {
         overview.push(Lines::Table(table_lines(&memory)));
     }
-    let starts = reach::starts(binary, &session.graph, &session.names);
-    let (answer, brief) = (starts.answer(path, true), starts.answer(path, false));
-    // `reach` lists only the starts that reach the most, and names only
-    // a few functions that elfq can't read, unless with --all.
-    let cut = brief.written() != answer.written();
-    let command = session.command("reach", None, cut);
-    let brief = brief.notes;
-    Printed::of_flat(answer, command)
+    let tab = reach::starts(binary, &session.graph, &session.names).tab(path);
+    let command = session.command("reach", None, tab.needs_all);
+    Printed::of_flat(tab.answer, command)
         .with_context(overview)
-        .with_brief(brief)
+        .with_brief(tab.brief)
 }
 
 #[cfg(test)]
@@ -121,7 +116,7 @@ mod tests {
         // Every start has a row, and the command under them has --all,
         // since `reach` would list fewer.
         let page = page(&session);
-        let all = String::from_utf8(starts.answer(&path, true).written()).unwrap();
+        let all = String::from_utf8(starts.tab(&path).answer.written()).unwrap();
         let lines: Vec<String> = (all.lines())
             .filter(|line| !line.is_empty())
             .map(str::to_string)

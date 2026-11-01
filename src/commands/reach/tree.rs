@@ -5,7 +5,7 @@ use std::io::Write;
 
 use anyhow::Result;
 
-use super::{Reach, Step};
+use super::{Step, Text};
 use crate::binary::total;
 use crate::commands::text;
 use crate::graph::{Node, Unresolved};
@@ -18,7 +18,7 @@ use crate::render::{Align, Table, TreeRow, TreeShape};
 /// to the items in its ranges, and to the calls and jumps that may go
 /// there, through pointers too.
 pub(super) struct Tree<'r, 'a> {
-    reach: &'r Reach<'r, 'a>,
+    text: &'r Text<'r, 'a>,
     /// The steps under each step, in the order that it first uses them.
     children: Vec<Vec<usize>>,
     /// The calls and jumps that elfq can't follow in each step that get
@@ -30,7 +30,8 @@ pub(super) struct Tree<'r, 'a> {
 }
 
 impl<'r, 'a> Tree<'r, 'a> {
-    pub(super) fn new(reach: &'r Reach<'r, 'a>) -> Tree<'r, 'a> {
+    pub(super) fn new(text: &'r Text<'r, 'a>) -> Tree<'r, 'a> {
+        let reach = text.reach;
         let steps = &reach.steps;
         let mut children = vec![Vec::new(); steps.len()];
         for (step, row) in steps.iter().enumerate().skip(1) {
@@ -60,7 +61,7 @@ impl<'r, 'a> Tree<'r, 'a> {
             }
         }
         let mut tree = Tree {
-            reach,
+            text,
             children,
             outside,
             shown: Vec::new(),
@@ -71,19 +72,21 @@ impl<'r, 'a> Tree<'r, 'a> {
 
     /// Which steps get rows: with `--to`, the steps the answer has (see
     /// [`Reach::kept`]). Without it, SYMBOL; the largest items, or every
-    /// one (see [`Reach::shown`]); the steps with rows for calls or jumps
+    /// one (see [`Text::shown`]); the steps with rows for calls or jumps
     /// to code outside every item, since rows by block show every one; and
     /// every step on their chains from SYMBOL, so that the tree holds
     /// together. A step that would be the only one left out under a row,
     /// with nothing under it, is shown too, since its row takes no more
     /// room than "1 more" would.
+    ///
+    /// [`Reach::kept`]: super::Reach::kept
     fn shown(&self) -> Vec<bool> {
-        let reach = self.reach;
+        let reach = self.text.reach;
         if !reach.to.is_empty() {
             return reach.kept();
         }
         let steps = &reach.steps;
-        let largest = reach.shown(&steps[1..]);
+        let largest = self.text.shown(&steps[1..]);
         let wanted = |step: usize| {
             step == 0 || largest.contains(&steps[step].node) || !self.outside[step].is_empty()
         };
@@ -131,13 +134,13 @@ impl<'r, 'a> Tree<'r, 'a> {
     /// are shown, its calls and jumps to code outside every item, and a row
     /// that sums up the steps under it that aren't, and what is under them.
     fn row(&self, step: usize) -> TreeRow {
-        let binary = self.reach.binary;
+        let binary = self.text.reach.binary;
         let Step {
             node,
             via,
             through_pointer,
             ..
-        } = self.reach.steps[step];
+        } = self.text.reach.steps[step];
         let (address, size) = match node {
             Node::Item(index) => {
                 let item = &binary.items[index];
@@ -163,7 +166,7 @@ impl<'r, 'a> Tree<'r, 'a> {
             children.push(TreeRow::new(cells, name, Vec::new()));
         }
         // With `--to`, the steps left out aren't part of the answer.
-        if !hidden.is_empty() && self.reach.to.is_empty() {
+        if !hidden.is_empty() && self.text.reach.to.is_empty() {
             children.push(self.more(&hidden));
         }
         let mut row = TreeRow::new(
@@ -178,11 +181,11 @@ impl<'r, 'a> Tree<'r, 'a> {
     /// The row that sums up the steps in `hidden`, and every step under
     /// them, which no row shows.
     fn more(&self, hidden: &[usize]) -> TreeRow {
-        let binary = self.reach.binary;
+        let binary = self.text.reach.binary;
         let mut nodes: Vec<Node> = Vec::new();
         let mut next = hidden.to_vec();
         while let Some(step) = next.pop() {
-            nodes.push(self.reach.steps[step].node);
+            nodes.push(self.text.reach.steps[step].node);
             next.extend(&self.children[step]);
         }
         // Imports have no bytes in the file, as their own rows show.

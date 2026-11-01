@@ -1,6 +1,6 @@
 //! Tab 4 of an item's page: everything the item calls or uses, at any
 //! depth, as `elfq FILE reach SYMBOL` prints it, from the same code
-//! (`reach::answer`): its first line, the bytes in each block of memory
+//! (`reach::tab`): its first line, the bytes in each block of memory
 //! when there are several, the rows, and the notes. The tab lists every
 //! row, where the command lists the 30 largest items, and under them is
 //! that command, ready to paste, with `--all` when the command needs it to
@@ -20,15 +20,11 @@ use crate::graph::Node;
 /// names it `name` (see [`Session::lead_name`]).
 pub fn tab(session: &Session, index: usize, name: &str) -> Printed {
     let (binary, graph, names) = (session.binary, &session.graph, &session.names);
-    let (answer, brief) = reach::answer(binary, graph, names, index, name.to_string());
-    // `reach SYMBOL` lists the 30 items that take the most bytes, and
-    // names only a few functions that elfq can't follow, unless with
-    // --all.
-    let cut = brief.written() != answer.written();
+    let tab = reach::tab(binary, graph, names, index, name);
     let node = Node::Item(index);
-    let command = session.command("reach", Some(node), cut);
-    (Printed::of_flat(answer, command))
-        .with_brief(brief.notes)
+    let command = session.command("reach", Some(node), tab.needs_all);
+    (Printed::of_flat(tab.answer, command))
+        .with_brief(tab.brief)
         .opening(Tab::Reach, node)
 }
 
@@ -41,7 +37,7 @@ mod tests {
     use super::super::{samples, shell_words};
     use super::*;
     use crate::binary::Binary;
-    use crate::cli::{Cli, Command, Format};
+    use crate::cli::{Cli, Command};
     use crate::commands::checks::readable_item;
 
     #[test]
@@ -97,22 +93,9 @@ mod tests {
             // What it prints, as `reach` runs it, but on the graph that the
             // session has built, with --all and without.
             let output = |all| {
-                let mut out = Vec::new();
                 let (graph, names) = (&session.graph, &session.names);
-                let text = Format::Text;
-                reach::reach(
-                    &binary,
-                    graph,
-                    names,
-                    &symbol,
-                    index,
-                    &[],
-                    all,
-                    text,
-                    &mut out,
-                )
-                .unwrap();
-                String::from_utf8(out).unwrap()
+                let lead_name = symbol.lead_name(&binary);
+                reach::text_output(&binary, graph, names, index, &lead_name, all)
             };
             let (all, cut) = (output(true), output(false));
             // The tab has every line it prints with --all.

@@ -6,32 +6,33 @@ use std::io::Write;
 use anyhow::Result;
 
 use super::tree::Tree;
-use super::{Reach, Step};
+use super::{Step, Text};
 use crate::commands::{range_check, text};
 use crate::graph::{Node, ReferenceKind, Unfollowed, Unresolved};
 use crate::render::{Align, Table};
 
-impl<'n, 'a> Reach<'n, 'a> {
+impl Text<'_, '_> {
     /// Writes the answer as text with `--to`: what SYMBOL reaches in its
     /// ranges, every row, or with `tree`, the chains from SYMBOL to them.
     pub(super) fn write_to_text(&self, tree: bool, out: &mut dyn Write) -> Result<()> {
-        let binary = self.binary;
-        let name = &self.lead_name;
-        let counted = self.counted();
+        let reach = self.reach;
+        let binary = reach.binary;
+        let name = self.lead_name;
+        let counted = reach.counted();
         let symbol_in_to = counted.first().is_some_and(|step| step.parent.is_none());
         let others: Vec<Node> = counted
             .iter()
             .filter(|step| step.parent.is_some())
             .map(|step| step.node)
             .collect();
-        let bytes = text::code_and_data(self.bytes(counted.iter().copied()));
-        let ranges = range_check::ranges_text(binary, &self.to, self.all);
+        let bytes = text::code_and_data(reach.bytes(counted.iter().copied()));
+        let ranges = range_check::ranges_text(binary, &reach.to, self.all);
         // Counted as the rows show them: a tree has the veneers that the
         // other rows step over.
         let unknown: Vec<&Unresolved> = if tree {
-            self.unresolved.iter().collect()
+            reach.unresolved.iter().collect()
         } else {
-            self.unfollowed.iter().map(|u| &u.unresolved).collect()
+            reach.unfollowed.iter().map(|u| &u.unresolved).collect()
         };
         let mut lead = match (symbol_in_to, &others[..]) {
             (true, []) => {
@@ -46,7 +47,7 @@ impl<'n, 'a> Reach<'n, 'a> {
                 text::count_text(binary, &others)
             ),
             (false, []) if !unknown.is_empty() => format!("{name} reaches no items in {ranges}"),
-            (false, []) if self.unreadable.is_empty() => {
+            (false, []) if reach.unreadable.is_empty() => {
                 format!("{name} reaches nothing in {ranges}.")
             }
             (false, []) => {
@@ -87,14 +88,14 @@ impl<'n, 'a> Reach<'n, 'a> {
                 self.write_to_rows(&counted, out)?;
             }
         }
-        if !self.unreadable.is_empty() {
+        if !reach.unreadable.is_empty() {
             if listed {
                 writeln!(out)?;
             }
             writeln!(
                 out,
                 "{}",
-                text::unreadable_text(binary, &self.unreadable, self.all)
+                text::unreadable_text(binary, &reach.unreadable, self.all)
             )?;
         }
         Ok(())
@@ -104,9 +105,10 @@ impl<'n, 'a> Reach<'n, 'a> {
     /// the steps in its ranges; then the calls and jumps that elfq can't
     /// follow that may go there, first, as `callees --to` lists them, since
     /// they may hide more; then the rest of `counted`, in the order of
-    /// [`Reach::rows`]. Every row is shown, with the sites of the use
+    /// [`Text::rows`]. Every row is shown, with the sites of the use
     /// it names in the AT column.
     fn write_to_rows(&self, counted: &[&Step], out: &mut dyn Write) -> Result<()> {
+        let reach = self.reach;
         let mut table = Table::new(&[
             ("ADDRESS", Align::Left),
             ("SIZE", Align::Right),
@@ -125,7 +127,7 @@ impl<'n, 'a> Reach<'n, 'a> {
         if symbol {
             table.row(with_at(self.symbol_row().into_cells(), &[]));
         }
-        for (unfollowed, sites) in range_check::group_unfollowed(&self.unfollowed) {
+        for (unfollowed, sites) in range_check::group_unfollowed(&reach.unfollowed) {
             let sites = self.unfollowed_sites(&unfollowed, sites);
             table.row(with_at(
                 self.unfollowed_row(&unfollowed).into_cells(),
@@ -144,12 +146,14 @@ impl<'n, 'a> Reach<'n, 'a> {
     /// which may be more than the chain's, as when code both reads a
     /// variable and loads its address, which is "uses" either way.
     fn use_sites(&self, step: &Step) -> Vec<u64> {
-        let binary = self.binary;
+        let reach = self.reach;
+        let binary = reach.binary;
         let used = step.used.as_ref().expect("only SYMBOL has no user");
         // A call through a veneer is a call to the veneer.
         let to = used.veneer.map_or(step.node, Node::Item);
         let how = |kind| text::how_via(binary, step.node, kind, used.veneer);
-        self.graph
+        reach
+            .graph
             .references_from(used.by)
             .iter()
             .filter(|reference| reference.to == to && how(reference.kind) == how(used.kind))
@@ -162,11 +166,13 @@ impl<'n, 'a> Reach<'n, 'a> {
     /// there to the veneer, as `callees` lists them, since the answer keeps
     /// only the one on the chain to the veneer.
     fn unfollowed_sites(&self, unfollowed: &Unfollowed, sites: Vec<u64>) -> Vec<u64> {
+        let reach = self.reach;
         let Some(veneer) = unfollowed.veneer else {
             return sites;
         };
         let unresolved = &unfollowed.unresolved;
-        self.graph
+        reach
+            .graph
             .references_from(unresolved.from)
             .iter()
             .filter(|reference| {

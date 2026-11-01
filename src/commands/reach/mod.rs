@@ -43,12 +43,14 @@
 //! - The *kept* steps are those that the tree and the JSON have: every one,
 //!   or with `--to`, the chains to what is listed ([`Reach::kept`]).
 //! - The *shown* steps are those that get rows: the 30 largest, or with
-//!   `--all`, every one ([`Reach::shown`]).
+//!   `--all`, every one ([`Text::shown`]).
 //!
-//! Here, `mod.rs` holds the search, [`Reach::find`], and what every form of
-//! the answer asks of it; `rows.rs` the text without `--to`, by block of
-//! memory; `to.rs` the text with `--to`; `tree.rs` the tree of `--tree`;
-//! `json.rs` the JSON; and `starts.rs` the answer without SYMBOL.
+//! Here, `mod.rs` holds the search, [`Reach::find`], with what every form
+//! of the answer asks of what it found, and [`Text`], the view that words
+//! it for people; `rows.rs` the text without `--to`, by block of memory;
+//! `to.rs` the text with `--to`; `tree.rs` the tree of `--tree`; `json.rs`
+//! the JSON, from the facts alone; and `starts.rs` the answer without
+//! SYMBOL.
 //!
 //! [`Reached`]: crate::graph::Reached
 
@@ -68,10 +70,10 @@ use anyhow::{Result, bail};
 
 use super::checks::{check_code_is_readable, readable_item};
 #[cfg(feature = "tui")]
-use super::flat_answer::FlatAnswer;
+use super::flat_answer::FlatTab;
 use super::json::section_names;
 use super::kept::Kept;
-use super::symbol::{Names, Symbol};
+use super::symbol::Names;
 use super::text::CommandLine;
 use super::{Outcome, range_check};
 use crate::binary::{AddressRange, Binary, CodeAndData, ItemKind, MemoryBlock, memory_blocks};
@@ -100,33 +102,27 @@ pub fn run(
     let symbol = names.find(symbol)?;
     let index = readable_item(binary, symbol.node)?;
     let graph = Kept::new(Graph::build(binary));
-    reach(binary, &graph, &names, &symbol, index, to, all, format, out)
-}
-
-/// Answers `reach SYMBOL` about `symbol`, the item at `index`, whose code
-/// elfq can read, in `graph`, the file's reference graph, as [`run`] does.
-#[expect(clippy::too_many_arguments)]
-pub(super) fn reach<'a>(
-    binary: &'a Binary,
-    graph: &Graph,
-    names: &Names<'a>,
-    symbol: &Symbol,
-    index: usize,
-    to: &[AddressRange],
-    all: bool,
-    format: Format,
-    out: &mut dyn Write,
-) -> Result<Outcome> {
-    let lead_name = symbol.lead_name(binary);
-    let reach = Kept::new(Reach::find(
-        binary, graph, names, index, lead_name, to, all,
-    )?);
+    check_to(binary, &graph, to)?;
+    let reach = Kept::new(Reach::find(binary, &graph, index, to));
     match format {
         Format::Json => reach.write_json(out)?,
-        Format::Text => reach.write_text(false, out)?,
-        Format::Tree => reach.write_text(true, out)?,
+        Format::Text | Format::Tree => {
+            let lead_name = symbol.lead_name(binary);
+            let text = reach.text(&names, &lead_name, all);
+            text.write(format == Format::Tree, out)?;
+        }
     }
     Ok(reach.outcome())
+}
+
+/// Refuses a range of `--to`, `to`, that holds nothing that code in
+/// `graph` can use, as `callees --to` refuses it.
+fn check_to(binary: &Binary, graph: &Graph, to: &[AddressRange]) -> Result<()> {
+    let code_outside = graph.code_outside_items();
+    for &range in to {
+        range_check::check_to_range(binary, range, &code_outside)?;
+    }
+    Ok(())
 }
 
 /// Answers `elfq FILE reach` without SYMBOL, for the file at `path`: where
@@ -189,26 +185,44 @@ fn needs_symbol(
     format!("{refused}, such as {command}")
 }
 
-/// What `reach SYMBOL` writes as text about the item at `index`, which
-/// its first line names `lead_name` (see [`Symbol::lead_name`]): with every
-/// row and every name, as browse shows it, and as the command writes it
-/// without `--all`.
+/// What `reach SYMBOL` writes as text about the item at `index`, as tab 4
+/// of browse shows it, whose first line names it `lead_name` (see
+/// [`Symbol::lead_name`]), with `graph`, the file's reference graph, and
+/// `names` for the short names of the rows: with every row and name, as
+/// with `--all`; its notes as the command writes them without `--all`; and
+/// whether the command needs `--all` to print it all.
 ///
 /// [`Symbol::lead_name`]: super::symbol::Symbol::lead_name
 #[cfg(feature = "tui")]
-pub(super) fn answer<'a>(
+pub(super) fn tab<'a>(
     binary: &'a Binary,
     graph: &Graph,
     names: &Names<'a>,
     index: usize,
-    lead_name: String,
-) -> (FlatAnswer, FlatAnswer) {
-    let mut reach = Reach::find(binary, graph, names, index, lead_name, &[], true)
-        .expect("without --to, there is no range for reach to refuse");
-    let all = reach.answer(Body::Rows);
-    // The same, but with the rows and names that the command lists.
-    reach.all = false;
-    (all, reach.answer(Body::Rows))
+    lead_name: &str,
+) -> FlatTab {
+    let reach = Reach::find(binary, graph, index, &[]);
+    let answer = |all| reach.text(names, lead_name, all).answer(Body::Rows);
+    FlatTab::new(answer(true), answer(false))
+}
+
+/// What `reach SYMBOL` prints as text about the item at `index`, whose
+/// first line names it `lead_name`, with `graph` and `names`, which the
+/// caller built: for browse's test that tab 4 shows what it prints.
+#[cfg(all(test, feature = "tui"))]
+pub(super) fn text_output<'a>(
+    binary: &'a Binary,
+    graph: &Graph,
+    names: &Names<'a>,
+    index: usize,
+    lead_name: &str,
+    all: bool,
+) -> String {
+    let reach = Reach::find(binary, graph, index, &[]);
+    let mut out = Vec::new();
+    let text = reach.text(names, lead_name, all);
+    text.write(false, &mut out).expect("writing to memory");
+    String::from_utf8(out).expect("elfq writes UTF-8")
 }
 
 /// What the text answer of `reach SYMBOL` shows under its first lines.
@@ -221,19 +235,13 @@ enum Body {
     Tree,
 }
 
-/// What SYMBOL reaches.
-struct Reach<'n, 'a> {
+/// What SYMBOL reaches: the facts that the search finds, which the JSON
+/// has, and which [`Text`] words.
+struct Reach<'g, 'a> {
     binary: &'a Binary,
-    graph: &'n Graph,
-    /// The names that find each item, for the short names of the rows.
-    names: &'n Names<'a>,
+    graph: &'g Graph,
     /// SYMBOL's item, as an index into [`Binary::items`].
     index: usize,
-    /// SYMBOL's name as the answer's first line gives it (see
-    /// [`Symbol::lead_name`]).
-    ///
-    /// [`Symbol::lead_name`]: super::symbol::Symbol::lead_name
-    lead_name: String,
     /// How SYMBOL uses itself, as a recursive function calls itself:
     /// "calls" or "uses", or `None` when it doesn't. No row shows it.
     self_use: Option<&'static str>,
@@ -261,6 +269,20 @@ struct Reach<'n, 'a> {
     /// The ranges of `--to`: when there are any, the answer is what SYMBOL
     /// reaches in them.
     to: Vec<AddressRange>,
+}
+
+/// How the text answer words what [`Reach`] found: the names it gives the
+/// items, and how much of it it shows. The JSON has every fact, and no
+/// words.
+struct Text<'r, 'a> {
+    reach: &'r Reach<'r, 'a>,
+    /// The names that find each item, for the short names of the rows.
+    names: &'r Names<'a>,
+    /// SYMBOL's name as the answer's first line gives it (see
+    /// [`Symbol::lead_name`]).
+    ///
+    /// [`Symbol::lead_name`]: super::symbol::Symbol::lead_name
+    lead_name: &'r str,
     /// Whether the table shows every row, and the sentences every name.
     all: bool,
 }
@@ -295,29 +317,22 @@ struct Use {
     veneer: Option<usize>,
 }
 
-impl<'n, 'a> Reach<'n, 'a> {
+impl<'g, 'a> Reach<'g, 'a> {
     /// Finds everything that SYMBOL, the item at `index`, reaches in
     /// `graph`, the file's reference graph, keeping only the calls and
     /// jumps that elfq can't follow that may go to `to`, the ranges of
-    /// `--to`, if there are any. `lead_name` is SYMBOL's name as the
-    /// answer's first line gives it. SYMBOL must be an item whose code elfq
-    /// can read (see [`readable_item`]): of a function whose end elfq
-    /// doesn't know, the answer would be that it reaches nothing.
+    /// `--to`, if there are any, which [`check_to`] has checked. SYMBOL
+    /// must be an item whose code elfq can read (see [`readable_item`]): of
+    /// a function whose end elfq doesn't know, the answer would be that it
+    /// reaches nothing.
     ///
     /// [`readable_item`]: super::checks::readable_item
     fn find(
         binary: &'a Binary,
-        graph: &'n Graph,
-        names: &'n Names<'a>,
+        graph: &'g Graph,
         index: usize,
-        lead_name: String,
         to: &[AddressRange],
-        all: bool,
-    ) -> Result<Reach<'n, 'a>> {
-        let code_outside = graph.code_outside_items();
-        for &range in to {
-            range_check::check_to_range(binary, range, &code_outside)?;
-        }
+    ) -> Reach<'g, 'a> {
         let start = Node::Item(index);
         let paths = ShortestPaths::from(binary, graph, start);
         let veneers = Veneers::new(binary, graph);
@@ -427,12 +442,10 @@ impl<'n, 'a> Reach<'n, 'a> {
             unresolved.retain(|jump| jump.may_go_to(to, through_pointer));
             unfollowed.retain(|row| row.unresolved.may_go_to(to, through_pointer));
         }
-        Ok(Reach {
+        Reach {
             binary,
             graph,
-            names,
             index,
-            lead_name,
             self_use,
             plt_header,
             steps,
@@ -441,8 +454,19 @@ impl<'n, 'a> Reach<'n, 'a> {
             unreadable,
             blocks,
             to: to.to_vec(),
+        }
+    }
+
+    /// The text answer's view of it, which names SYMBOL `lead_name` in its
+    /// first line and the other items as `names` finds them, and with
+    /// `all`, shows every row and name.
+    fn text<'r>(&'r self, names: &'r Names<'a>, lead_name: &'r str, all: bool) -> Text<'r, 'a> {
+        Text {
+            reach: self,
+            names,
+            lead_name,
             all,
-        })
+        }
     }
 
     /// Whether `step` is an item in the ranges of `--to`.
@@ -536,19 +560,6 @@ impl<'n, 'a> Reach<'n, 'a> {
         kept
     }
 
-    /// Writes the answer as text: the items by block, or with `tree`, as
-    /// a tree drawn with branches.
-    fn write_text(&self, tree: bool, out: &mut dyn Write) -> Result<()> {
-        if !self.to.is_empty() {
-            return self.write_to_text(tree, out);
-        }
-        let answer = self.answer(if tree { Body::Tree } else { Body::Rows });
-        if !tree || self.reaches_nothing() {
-            return answer.write(out);
-        }
-        answer.write_with(Some(&|out: &mut dyn Write| Tree::new(self).write(out)), out)
-    }
-
     /// The calls and jumps to code outside every item, which the rows list.
     fn outside(&self) -> Vec<Unfollowed> {
         self.unfollowed
@@ -562,6 +573,21 @@ impl<'n, 'a> Reach<'n, 'a> {
     /// answer is a few sentences.
     fn reaches_nothing(&self) -> bool {
         self.steps.len() == 1 && self.outside().is_empty()
+    }
+}
+
+impl Text<'_, '_> {
+    /// Writes the answer: the items by block, or with `tree`, as a tree
+    /// drawn with branches.
+    fn write(&self, tree: bool, out: &mut dyn Write) -> Result<()> {
+        if !self.reach.to.is_empty() {
+            return self.write_to_text(tree, out);
+        }
+        let answer = self.answer(if tree { Body::Tree } else { Body::Rows });
+        if !tree || self.reach.reaches_nothing() {
+            return answer.write(out);
+        }
+        answer.write_with(Some(&|out: &mut dyn Write| Tree::new(self).write(out)), out)
     }
 }
 

@@ -13,6 +13,8 @@ use serde::Serialize;
 use crate::binary::{
     Binary, FileKind, MemoryBlock, STARTUP_ARRAYS, exception_name, is_reserved, memory_blocks,
 };
+#[cfg(feature = "tui")]
+use crate::commands::flat_answer::FlatTab;
 use crate::commands::flat_answer::{FlatAnswer, FlatRow};
 use crate::commands::symbol::Names;
 use crate::commands::{json, text};
@@ -190,10 +192,19 @@ pub(in crate::commands) fn starts<'a>(
 }
 
 impl Starts<'_> {
+    /// The answer as browse's start page shows it, for the file at `path`:
+    /// with every start and name, as with `--all`, the notes as the
+    /// command writes them without `--all`, and whether the command needs
+    /// `--all` to print it all.
+    #[cfg(feature = "tui")]
+    pub(in crate::commands) fn tab(&self, path: &Path) -> FlatTab {
+        FlatTab::new(self.answer(path, true), self.answer(path, false))
+    }
+
     /// The answer's text: the starts as a table, then what elfq can't
     /// follow or read, and for a shared library, that its exported
     /// functions aren't counted. Each row is about its start.
-    pub(in crate::commands) fn answer(&self, path: &Path, all: bool) -> FlatAnswer {
+    pub(super) fn answer(&self, path: &Path, all: bool) -> FlatAnswer {
         let binary = self.binary;
         let file = path.display();
         let several = self.blocks.len() > 1;

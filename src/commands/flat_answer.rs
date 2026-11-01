@@ -79,6 +79,32 @@ impl FlatRow {
     }
 }
 
+/// A [`FlatAnswer`] as a tab of browse shows it, with what the command
+/// that prints it leaves out without `--all`.
+#[cfg(feature = "tui")]
+pub(super) struct FlatTab {
+    /// The answer with every row and name, as with `--all`.
+    pub(super) answer: FlatAnswer,
+    /// Its notes as the command words them without `--all`, which name
+    /// fewer items.
+    pub(super) brief: Vec<String>,
+    /// Whether the command needs `--all` to print all of `answer`.
+    pub(super) needs_all: bool,
+}
+
+#[cfg(feature = "tui")]
+impl FlatTab {
+    /// The tab of `answer`, which `brief` is as the command writes it
+    /// without `--all`.
+    pub(super) fn new(answer: FlatAnswer, brief: FlatAnswer) -> FlatTab {
+        FlatTab {
+            needs_all: brief.written() != answer.written(),
+            brief: brief.notes,
+            answer,
+        }
+    }
+}
+
 /// Writes a table, or what takes its place in an [`FlatAnswer`].
 pub(super) type WriteTable<'a> = dyn Fn(&mut dyn Write) -> Result<()> + 'a;
 
