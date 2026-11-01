@@ -6,7 +6,7 @@ use std::borrow::Cow;
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 
-use super::changes::{Change, Items, Status};
+use super::changes::{Change, Items, PartnerStatus, Status};
 use super::pairing;
 use crate::binary::ItemKind;
 use crate::commands::text::shown;
@@ -23,23 +23,22 @@ impl<'a> Items<'a> {
         let mut new_changes = HashMap::new();
         let mut gone_changes = HashMap::new();
         for (at, change) in self.changes.iter().enumerate() {
-            match (change.status, change.old, change.new) {
-                (Status::New, _, Some(index)) => {
-                    new_changes.insert(index, at);
+            match *change {
+                Change::New { new } => {
+                    new_changes.insert(new, at);
                 }
-                (Status::Gone, Some(index), _) => {
-                    gone_changes.insert(index, at);
+                Change::Gone { old } => {
+                    gone_changes.insert(old, at);
                 }
-                _ => {}
+                Change::Partners { .. } => {}
             }
         }
         // The change of the item above a change's item in its subtree.
         let above = |at: usize| -> Option<usize> {
-            let change = &self.changes[at];
-            let (build, index, blocks, changes) = match change.status {
-                Status::New => (self.new, change.new?, &self.new_blocks, &new_changes),
-                Status::Gone => (self.old, change.old?, &self.old_blocks, &gone_changes),
-                _ => return None,
+            let (build, index, blocks, changes) = match self.changes[at] {
+                Change::New { new } => (self.new, new, &self.new_blocks, &new_changes),
+                Change::Gone { old } => (self.old, old, &self.old_blocks, &gone_changes),
+                Change::Partners { .. } => return None,
             };
             let Some(Node::Item(parent)) = build.tree.as_ref()?.parent(Node::Item(index)) else {
                 return None;
@@ -79,11 +78,15 @@ impl<'a> Items<'a> {
     pub fn moved_rows(&self, all: bool) -> Vec<MovedRow> {
         let old = &self.old.binary;
         // The items that moved by each offset between each two blocks.
-        let mut groups: Vec<Vec<usize>> = Vec::new();
+        let mut groups: Vec<Vec<MovedItem>> = Vec::new();
         let mut group_of = HashMap::new();
         for (at, change) in self.changes.iter().enumerate() {
-            let (Status::Moved, Some(old_index), Some(new_index)) =
-                (change.status, change.old, change.new)
+            let Change::Partners {
+                old: old_index,
+                new: new_index,
+                status: PartnerStatus::Moved,
+                ..
+            } = *change
             else {
                 continue;
             };
@@ -98,7 +101,11 @@ impl<'a> Items<'a> {
                 groups.push(Vec::new());
                 groups.len() - 1
             });
-            groups[group].push(at);
+            groups[group].push(MovedItem {
+                at,
+                old: old_index,
+                new: new_index,
+            });
         }
         // How many items each section of the old build holds.
         let mut in_section: HashMap<usize, usize> = HashMap::new();
@@ -106,10 +113,9 @@ impl<'a> Items<'a> {
             *in_section.entry(item.section).or_default() += 1;
         }
         let mut rows = Vec::new();
-        for changes in groups {
+        for moved in groups {
             let mut sections: Vec<(u64, usize, usize)> = Vec::new();
-            for &at in &changes {
-                let item = &old.items[self.changes[at].old.unwrap_or_default()];
+            for item in moved.iter().map(|item| &old.items[item.old]) {
                 match sections
                     .iter_mut()
                     .find(|(_, section, _)| *section == item.section)
@@ -124,29 +130,25 @@ impl<'a> Items<'a> {
             let whole = sections
                 .iter()
                 .all(|&(_, section, count)| in_section[&section] == count);
-            if all || changes.len() < 2 || !whole {
-                rows.extend(changes.into_iter().map(MovedRow::Item));
+            if all || moved.len() < 2 || !whole {
+                rows.extend(moved.into_iter().map(MovedRow::Item));
             } else {
                 sections.sort_unstable();
                 let sections = sections
                     .into_iter()
                     .map(|(_, section, _)| old.sections[section].name.clone())
                     .collect();
-                rows.push(MovedRow::Sections { changes, sections });
+                rows.push(MovedRow::Sections { moved, sections });
             }
         }
-        rows.sort_by_key(|row| {
-            let changes = row.changes();
-            let size: u64 = changes
-                .iter()
-                .map(|&at| old.items[self.changes[at].old.unwrap_or_default()].size)
-                .sum();
-            let start = changes
-                .iter()
-                .map(|&at| old.items[self.changes[at].old.unwrap_or_default()].address)
-                .min();
+        // What orders the rows: the bytes of their items in the old build,
+        // largest first, then where the first of them starts there.
+        let order = |moved: &[MovedItem]| {
+            let size: u64 = moved.iter().map(|item| old.items[item.old].size).sum();
+            let start = moved.iter().map(|item| old.items[item.old].address).min();
             (Reverse(size), start)
-        });
+        };
+        rows.sort_by_cached_key(|row| order(row.moved()));
         rows
     }
 
@@ -162,7 +164,7 @@ impl<'a> Items<'a> {
         let mut rows: Vec<ChangeRow> = Vec::new();
         let mut row_of = vec![None; self.changes.len()];
         for (at, change) in self.changes.iter().enumerate() {
-            if change.status == Status::Moved {
+            if change.status() == Status::Moved {
                 continue;
             }
             let head = if all { at } else { heads[at] };
@@ -193,8 +195,8 @@ impl<'a> Items<'a> {
         // Largest first, and of the same size, edited items last, then by
         // name.
         let edited = |row: &ChangeRow| match row {
-            ChangeRow::Item { at, .. } => self.changes[*at].status == Status::Edited,
-            _ => false,
+            ChangeRow::Item { at, .. } => self.changes[*at].status() == Status::Edited,
+            ChangeRow::Fold { .. } | ChangeRow::More { .. } => false,
         };
         let rank = |(a, _, a_row): &(i128, Option<usize>, ChangeRow),
                     (b, _, b_row): &(i128, Option<usize>, ChangeRow)| {
@@ -337,8 +339,8 @@ impl<'a> Items<'a> {
                 folded
                     .iter()
                     .filter(|row| match row {
-                        ChangeRow::Item { at, .. } => self.changes[*at].status == status,
-                        _ => false,
+                        ChangeRow::Item { at, .. } => self.changes[*at].status() == status,
+                        ChangeRow::Fold { .. } | ChangeRow::More { .. } => false,
                     })
                     .count()
             };
@@ -373,13 +375,19 @@ impl<'a> Items<'a> {
         let item = self.item(change);
         let made = pairing::is_made_name(item, &item.name);
         let block = self.block(change);
-        match change.status {
-            Status::Grew | Status::Shrank if item.kind == ItemKind::Data && made => {
-                let old = &self.old.binary.items[change.old?];
-                (old.size_estimated || item.size_estimated).then_some(FoldKey::Unnamed(block))
+        match *change {
+            Change::Partners { old, status, .. } => {
+                let resized = match status {
+                    PartnerStatus::Grew | PartnerStatus::Shrank => true,
+                    PartnerStatus::Moved | PartnerStatus::Edited => false,
+                };
+                let estimated = || self.old.binary.items[old].size_estimated || item.size_estimated;
+                (resized && item.kind == ItemKind::Data && made && estimated())
+                    .then_some(FoldKey::Unnamed(block))
             }
-            Status::New | Status::Gone if !made => Some(FoldKey::Name(block, &item.name)),
-            _ => None,
+            Change::New { .. } | Change::Gone { .. } => {
+                (!made).then_some(FoldKey::Name(block, &item.name))
+            }
         }
     }
 
@@ -396,23 +404,31 @@ impl<'a> Items<'a> {
 
 /// A row of the MOVED table.
 pub(super) enum MovedRow {
-    /// An item that moved, as an index into the changes.
-    Item(usize),
+    /// An item that moved.
+    Item(MovedItem),
     /// All the items of whole sections, which moved by one offset between
-    /// the same two blocks: the changes, and the old build's sections, in
-    /// address order.
+    /// the same two blocks, and the old build's sections, in address order.
     Sections {
-        changes: Vec<usize>,
+        moved: Vec<MovedItem>,
         sections: Vec<String>,
     },
 }
 
+/// An item that moved to another block: its place in the changes, and the
+/// item in each build, as an index into its items.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct MovedItem {
+    pub at: usize,
+    pub old: usize,
+    pub new: usize,
+}
+
 impl MovedRow {
-    /// The changes that the row stands for.
-    pub fn changes(&self) -> &[usize] {
+    /// The items that the row stands for.
+    pub fn moved(&self) -> &[MovedItem] {
         match self {
-            MovedRow::Item(change) => std::slice::from_ref(change),
-            MovedRow::Sections { changes, .. } => changes,
+            MovedRow::Item(item) => std::slice::from_ref(item),
+            MovedRow::Sections { moved, .. } => moved,
         }
     }
 }
@@ -512,7 +528,7 @@ mod tests {
     use super::*;
     use crate::binary::{Binary, Item, Section, Source};
     use crate::commands::diff::Build;
-    use crate::commands::diff::pairing::Pairing;
+    use crate::commands::diff::pairing::{PairedBy, Pairing};
     use crate::graph::Graph;
 
     /// A build whose `.text` holds a function of each size, with the first
@@ -567,8 +583,14 @@ mod tests {
         }
     }
 
-    fn change(status: Status, old: Option<usize>, new: Option<usize>) -> Change {
-        Change { status, old, new }
+    /// Partners `old` and `new`, with `status`, paired by name.
+    fn partners(status: PartnerStatus, old: usize, new: usize) -> Change {
+        Change::Partners {
+            old,
+            new,
+            status,
+            paired_by: PairedBy::Name,
+        }
     }
 
     /// The rows of CHANGE, each as its delta and what it says.
@@ -597,8 +619,8 @@ mod tests {
             (&["Dependency::grow", "Value::grow"], 8),
         ]);
         let changes = vec![
-            change(Status::Shrank, Some(0), Some(0)),
-            change(Status::Shrank, Some(1), Some(1)),
+            partners(PartnerStatus::Shrank, 0, 0),
+            partners(PartnerStatus::Shrank, 1, 1),
         ];
         let items = changed(&old, &new, changes);
         assert_eq!(items.was(&items.changes[0]), Some("dev_read"));
@@ -610,10 +632,10 @@ mod tests {
         let old = build(&[(&["helper"], 4)]);
         let new = build(&[(&["helper"], 6), (&["helper"], 8), (&["main"], 2)]);
         let changes = vec![
-            change(Status::Gone, Some(0), None),
-            change(Status::New, None, Some(0)),
-            change(Status::New, None, Some(1)),
-            change(Status::New, None, Some(2)),
+            Change::Gone { old: 0 },
+            Change::New { new: 0 },
+            Change::New { new: 1 },
+            Change::New { new: 2 },
         ];
         let items = changed(&old, &new, changes);
         assert_eq!(
@@ -635,8 +657,8 @@ mod tests {
         let old = build(&[(&["b_edited"], 4)]);
         let new = build(&[(&["b_edited"], 4), (&["c_empty"], 0)]);
         let changes = vec![
-            change(Status::Edited, Some(0), Some(0)),
-            change(Status::New, None, Some(1)),
+            partners(PartnerStatus::Edited, 0, 0),
+            Change::New { new: 1 },
         ];
         let items = changed(&old, &new, changes);
         assert_eq!(
@@ -659,7 +681,7 @@ mod tests {
         functions.extend([(&["kept"][..], 1); 4]);
         let (old, new) = (build(&[]), build(&functions));
         let changes: Vec<Change> = (0..functions.len())
-            .map(|index| change(Status::New, None, Some(index)))
+            .map(|new| Change::New { new })
             .collect();
         let items = changed(&old, &new, changes);
         let heads: Vec<usize> = (0..36).map(|at| at.min(31)).collect();
@@ -669,9 +691,7 @@ mod tests {
         assert_eq!(rows[30], (134, "6 more".to_string()));
         // With one row left, the row takes the place of "1 more".
         let new = build(&functions[..31]);
-        let changes: Vec<Change> = (0..31)
-            .map(|index| change(Status::New, None, Some(index)))
-            .collect();
+        let changes: Vec<Change> = (0..31).map(|new| Change::New { new }).collect();
         let items = changed(&old, &new, changes);
         let rows = table(&items, &(0..31).collect::<Vec<_>>());
         assert_eq!(rows.len(), 31);

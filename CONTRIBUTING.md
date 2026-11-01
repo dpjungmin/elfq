@@ -191,13 +191,14 @@ this list, and add to it when you bring in a word.
   new build that it is paired with, by the rule that `PairedBy` names
   (`pairing.rs`). **change**: an item that changed from one build to the
   other (`Change`, in `diff/changes.rs`): partners that moved to another
-  block, grew, shrank or are edited, or an item that only one build has,
-  new or gone; its status (`changes::Status`, unrelated to `startup`'s)
-  says which. Its place in `Items::changes` is named `at`. **delta**:
-  how many bytes something grew by from one build to the other, less
-  than 0 when it shrank: a change's item, a block, a section or a row of
-  CHANGE (`Items::delta`, `Block::delta`). The CHANGE column and the
-  JSON's `change` keys print it.
+  block, grew, shrank or are edited (`Change::Partners`), or an item
+  that only one build has (`Change::New`, `Change::Gone`); its status
+  (`changes::Status`, unrelated to `startup`'s) says which. Its place in
+  `Items::changes` is named `at`. **delta**: how many bytes something
+  grew by from one build to the other, less than 0 when it shrank: a
+  change's item, a block, a section or a row of CHANGE (`Items::delta`,
+  `Block::delta`). The CHANGE column and the JSON's `change` keys print
+  it.
 - **section**: an ELF section. Its place in `Binary::sections` is a
   section index, named `section`. **block**: a run of addresses that
   sections occupy, as the overview's MEMORY table lists

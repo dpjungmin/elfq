@@ -201,7 +201,7 @@ pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
                 .crossings
                 .iter()
                 .map(|crossing| CrossingJson {
-                    status: crossing.status.word(),
+                    status: Status::from(crossing.status).word(),
                     row: range_check::callee_json(
                         &crossing.build(&compared.items).binary,
                         Node::Item(crossing.callee),
@@ -285,11 +285,7 @@ impl<'c, 'a> ItemsJson<'c, 'a> {
                     items.item(change).name.as_str(),
                 )
             });
-            let gone = items
-                .changes
-                .iter()
-                .filter(|change| change.status == Status::Gone)
-                .filter_map(|change| change.old);
+            let gone = items.changes.iter().filter_map(Change::gone_index);
             (order, items.inlined_into(&compared.new_names, gone))
         });
         ItemsJson {
@@ -314,8 +310,8 @@ impl<'c, 'a> ItemsJson<'c, 'a> {
             })
         };
         let (old, new) = (
-            side(items.old, change.old, &items.old_blocks),
-            side(items.new, change.new, &items.new_blocks),
+            side(items.old, change.old_index(), &items.old_blocks),
+            side(items.new, change.new_index(), &items.new_blocks),
         );
         let estimated = |build: &Build, index: Option<usize>| {
             index.is_some_and(|index| build.binary.items[index].size_estimated)
@@ -325,8 +321,8 @@ impl<'c, 'a> ItemsJson<'c, 'a> {
             name: &item.name,
             was: items.was(change),
             kind: item.kind.to_string(),
-            status: change.status.word(),
-            paired_by: items.paired_by(change),
+            status: change.status().word(),
+            paired_by: change.paired_by(),
             change: items.delta(change),
             old_address: old.address,
             old_size: old.size,
@@ -340,9 +336,10 @@ impl<'c, 'a> ItemsJson<'c, 'a> {
             new_block: new.block,
             new_kept_by: new.kept_by,
             new_retained: new.retained,
-            size_estimated: estimated(items.old, change.old) || estimated(items.new, change.new),
+            size_estimated: estimated(items.old, change.old_index())
+                || estimated(items.new, change.new_index()),
             inlined_into: change
-                .old
+                .gone_index()
                 .and_then(|index| self.inlined_into.get(&index))
                 .map(|into| {
                     into.iter()

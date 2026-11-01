@@ -47,15 +47,91 @@ impl Status {
     }
 }
 
-/// An item that changed.
+/// What happened to partners that changed: the statuses of an item that
+/// both builds have.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PartnerStatus {
+    /// [`Status::Moved`].
+    Moved,
+    /// [`Status::Grew`].
+    Grew,
+    /// [`Status::Shrank`].
+    Shrank,
+    /// [`Status::Edited`].
+    Edited,
+}
+
+impl From<PartnerStatus> for Status {
+    fn from(status: PartnerStatus) -> Status {
+        match status {
+            PartnerStatus::Moved => Status::Moved,
+            PartnerStatus::Grew => Status::Grew,
+            PartnerStatus::Shrank => Status::Shrank,
+            PartnerStatus::Edited => Status::Edited,
+        }
+    }
+}
+
+/// An item that changed, with the item in each build that has it, as an
+/// index into that build's items.
 #[derive(Debug, Clone, Copy)]
-pub(super) struct Change {
-    pub status: Status,
-    /// The item in the old build, as an index into its items: `None` for a
-    /// new item.
-    pub old: Option<usize>,
-    /// The item in the new build: `None` for a gone item.
-    pub new: Option<usize>,
+pub(super) enum Change {
+    /// Partners that moved to another block, changed size or are edited,
+    /// with the rule that paired them.
+    Partners {
+        old: usize,
+        new: usize,
+        status: PartnerStatus,
+        paired_by: PairedBy,
+    },
+    /// An item that only the new build has.
+    New { new: usize },
+    /// An item that only the old build has.
+    Gone { old: usize },
+}
+
+impl Change {
+    /// What happened to the item.
+    pub fn status(&self) -> Status {
+        match *self {
+            Change::Partners { status, .. } => status.into(),
+            Change::New { .. } => Status::New,
+            Change::Gone { .. } => Status::Gone,
+        }
+    }
+
+    /// The item in the old build, unless it is new: for the JSON's keys
+    /// and the cells that say each build's.
+    pub fn old_index(&self) -> Option<usize> {
+        match *self {
+            Change::Partners { old, .. } | Change::Gone { old } => Some(old),
+            Change::New { .. } => None,
+        }
+    }
+
+    /// The item in the new build, unless it is gone.
+    pub fn new_index(&self) -> Option<usize> {
+        match *self {
+            Change::Partners { new, .. } | Change::New { new } => Some(new),
+            Change::Gone { .. } => None,
+        }
+    }
+
+    /// The item in the old build, when it is gone.
+    pub fn gone_index(&self) -> Option<usize> {
+        match *self {
+            Change::Gone { old } => Some(old),
+            Change::Partners { .. } | Change::New { .. } => None,
+        }
+    }
+
+    /// The rule that paired the item's partners, when both builds have it.
+    pub fn paired_by(&self) -> Option<PairedBy> {
+        match *self {
+            Change::Partners { paired_by, .. } => Some(paired_by),
+            Change::New { .. } | Change::Gone { .. } => None,
+        }
+    }
 }
 
 /// The items of both builds, paired, and what changed.
@@ -89,40 +165,33 @@ pub(super) fn compare<'a>(old: &'a Build, new: &'a Build, blocks: &[Block]) -> I
     let mut changes = Vec::new();
     let mut unchanged = 0;
     for (index, partner) in pairing.old_to_new.iter().enumerate() {
-        let Some((partner, _)) = *partner else {
-            changes.push(Change {
-                status: Status::Gone,
-                old: Some(index),
-                new: None,
-            });
+        let Some((partner, paired_by)) = *partner else {
+            changes.push(Change::Gone { old: index });
             continue;
         };
         let (old_size, new_size) = (old.binary.items[index].size, new.binary.items[partner].size);
         let status = if old_blocks[index] != new_blocks[partner] {
-            Status::Moved
+            PartnerStatus::Moved
         } else if new_size > old_size {
-            Status::Grew
+            PartnerStatus::Grew
         } else if new_size < old_size {
-            Status::Shrank
+            PartnerStatus::Shrank
         } else if edits.edited(index, partner) {
-            Status::Edited
+            PartnerStatus::Edited
         } else {
             unchanged += 1;
             continue;
         };
-        changes.push(Change {
+        changes.push(Change::Partners {
+            old: index,
+            new: partner,
             status,
-            old: Some(index),
-            new: Some(partner),
+            paired_by,
         });
     }
     for (index, partner) in pairing.new_to_old.iter().enumerate() {
         if partner.is_none() {
-            changes.push(Change {
-                status: Status::New,
-                old: None,
-                new: Some(index),
-            });
+            changes.push(Change::New { new: index });
         }
     }
     Items {
@@ -186,35 +255,31 @@ impl<'a> Items<'a> {
     /// The item that a change is about: the new build's, or for a gone
     /// item, the old build's.
     pub fn item(&self, change: &Change) -> &'a Item {
-        match (change.new, change.old) {
-            (Some(index), _) => &self.new.binary.items[index],
-            (None, Some(index)) => &self.old.binary.items[index],
-            (None, None) => unreachable!("a change is about an item"),
+        match *change {
+            Change::Partners { new, .. } | Change::New { new } => &self.new.binary.items[new],
+            Change::Gone { old } => &self.old.binary.items[old],
         }
     }
 
     /// How many bytes the item grew by: less than 0 when it shrank, all its
     /// bytes when it is new, and less all its bytes when it is gone.
     pub fn delta(&self, change: &Change) -> i128 {
-        let size = |binary: &Binary, index: Option<usize>| {
-            i128::from(index.map_or(0, |index| binary.items[index].size))
-        };
-        size(&self.new.binary, change.new) - size(&self.old.binary, change.old)
+        let old_size = |old: usize| i128::from(self.old.binary.items[old].size);
+        let new_size = |new: usize| i128::from(self.new.binary.items[new].size);
+        match *change {
+            Change::Partners { old, new, .. } => new_size(new) - old_size(old),
+            Change::New { new } => new_size(new),
+            Change::Gone { old } => -old_size(old),
+        }
     }
 
     /// The block that a change counts in, in the CHANGE table: the new
     /// build's, or for a gone item, the old build's.
     pub fn block(&self, change: &Change) -> Option<usize> {
-        match (change.new, change.old) {
-            (Some(index), _) => self.new_blocks[index],
-            (None, Some(index)) => self.old_blocks[index],
-            (None, None) => None,
+        match *change {
+            Change::Partners { new, .. } | Change::New { new } => self.new_blocks[new],
+            Change::Gone { old } => self.old_blocks[old],
         }
-    }
-
-    /// How the rule that paired a change's items, if any.
-    pub fn paired_by(&self, change: &Change) -> Option<PairedBy> {
-        Some(self.pairing.old_to_new[change.old?]?.1)
     }
 
     /// The old build's name of a paired item, when the new build names it
@@ -222,9 +287,19 @@ impl<'a> Items<'a> {
     /// function it names do, or two functions that identical code folding
     /// made one of.
     pub fn was(&self, change: &Change) -> Option<&'a str> {
-        let old = &self.old.binary.items[change.old?];
-        let new = &self.new.binary.items[change.new?];
-        let share = old.names().any(|a| new.names().any(|b| a == b));
-        (!share).then_some(old.name.as_str())
+        let Change::Partners {
+            old: old_index,
+            new: new_index,
+            ..
+        } = *change
+        else {
+            return None;
+        };
+        let (old_item, new_item) = (
+            &self.old.binary.items[old_index],
+            &self.new.binary.items[new_index],
+        );
+        let share = old_item.names().any(|a| new_item.names().any(|b| a == b));
+        (!share).then_some(old_item.name.as_str())
     }
 }

@@ -25,8 +25,7 @@ use crate::graph::{Boundary, Node, ReferenceKind};
 /// BLOCK` in that build lists it: the new build's for a new use, and the
 /// old build's for a gone one.
 pub(super) struct Crossing {
-    /// `New` or `Gone`.
-    pub status: Status,
+    pub status: NewOrGone,
     /// The item that is used, as an index into the build's items.
     pub callee: usize,
     /// The item in another block that uses it, how, through which veneer,
@@ -34,12 +33,30 @@ pub(super) struct Crossing {
     pub row: CrossingRow,
 }
 
+/// Whether a use between blocks is new or gone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum NewOrGone {
+    /// Only the new build has it.
+    New,
+    /// Only the old build has it.
+    Gone,
+}
+
+impl From<NewOrGone> for Status {
+    fn from(status: NewOrGone) -> Status {
+        match status {
+            NewOrGone::New => Status::New,
+            NewOrGone::Gone => Status::Gone,
+        }
+    }
+}
+
 impl Crossing {
     /// The build whose row it is.
     pub fn build<'a>(&self, items: &Items<'a>) -> &'a Build {
         match self.status {
-            Status::Gone => items.old,
-            _ => items.new,
+            NewOrGone::New => items.new,
+            NewOrGone::Gone => items.old,
         }
     }
 
@@ -93,12 +110,12 @@ pub(super) fn compare(items: &Items, blocks: &[Block]) -> Vec<Crossing> {
     uses(items.new, &items.new_blocks, blocks, new, |used| {
         new_keys.insert(used.key);
         if !old_keys.contains(&used.key) {
-            crossings.push(used.crossing(Status::New));
+            crossings.push(used.crossing(NewOrGone::New));
         }
     });
     drop(old_keys);
     let gone = old.into_iter().filter(|used| !new_keys.contains(&used.key));
-    crossings.extend(gone.map(|used| used.crossing(Status::Gone)));
+    crossings.extend(gone.map(|used| used.crossing(NewOrGone::Gone)));
     crossings
 }
 
@@ -110,7 +127,7 @@ struct Use {
 }
 
 impl Use {
-    fn crossing(self, status: Status) -> Crossing {
+    fn crossing(self, status: NewOrGone) -> Crossing {
         Crossing {
             status,
             callee: self.callee,
@@ -281,7 +298,7 @@ mod tests {
                 let via = row.veneer.map_or("", |_| " via veneer");
                 format!(
                     "{} {}{via} {} -> {}",
-                    crossing.status.word(),
+                    Status::from(crossing.status).word(),
                     how_field(row.kind),
                     row.inside.name(binary),
                     binary.items[crossing.callee].name,

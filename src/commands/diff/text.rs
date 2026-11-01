@@ -14,8 +14,8 @@ use std::io::Write;
 use anyhow::Result;
 
 use super::blocks::{Block, SectionPair};
-use super::changes::{Change, Status};
-use super::crossings::Crossing;
+use super::changes::{Change, PartnerStatus, Status};
+use super::crossings::{Crossing, NewOrGone};
 use super::pairing::{self, is_made_name, same_but_numbers};
 use super::rows::{ChangeRow, MovedRow};
 use super::{Answer, Build, Compared};
@@ -158,7 +158,7 @@ fn write_crossings(compared: &Compared, out: &mut dyn Write) -> Result<()> {
         for crossing in calls {
             let binary = &crossing.build(&compared.items).binary;
             let callee = Node::Item(crossing.callee);
-            let mut cells = vec![crossing.status.word().to_string()];
+            let mut cells = vec![Status::from(crossing.status).word().to_string()];
             cells.extend(range_check::row_cells(
                 binary,
                 callee,
@@ -176,9 +176,9 @@ fn write_crossings(compared: &Compared, out: &mut dyn Write) -> Result<()> {
             .iter()
             .filter(|c| !c.is_call() && c.status == status)
             .count();
-        (count > 0).then(|| format!("{count} {}", status.word()))
+        (count > 0).then(|| format!("{count} {}", Status::from(status).word()))
     };
-    let uses: Vec<String> = [Status::New, Status::Gone]
+    let uses: Vec<String> = [NewOrGone::New, NewOrGone::Gone]
         .into_iter()
         .filter_map(uses)
         .collect();
@@ -226,7 +226,7 @@ fn lead(answer: &Answer) -> String {
         (
             changes
                 .iter()
-                .filter(|change| change.status == status)
+                .filter(|change| change.status() == status)
                 .count(),
             status,
         )
@@ -312,10 +312,8 @@ impl<'c, 'a> Rows<'c, 'a> {
     fn new(compared: &'c Compared<'a>, change_rows: &[ChangeRow], all: bool) -> Rows<'c, 'a> {
         let items = &compared.items;
         let gone = change_rows.iter().filter_map(|row| match row {
-            ChangeRow::Item { at, .. } if items.changes[*at].status == Status::Gone => {
-                items.changes[*at].old
-            }
-            _ => None,
+            ChangeRow::Item { at, .. } => items.changes[*at].gone_index(),
+            ChangeRow::Fold { .. } | ChangeRow::More { .. } => None,
         });
         let row_names = |build, names| RowNames {
             build,
@@ -344,25 +342,19 @@ impl<'c, 'a> Rows<'c, 'a> {
         ]);
         for row in rows {
             // The row's items in each build.
-            let (mut old_items, mut new_items): (Vec<&Item>, Vec<&Item>) = (Vec::new(), Vec::new());
-            for &at in row.changes() {
-                let change = &items.changes[at];
-                old_items.extend(change.old.map(|index| &items.old.binary.items[index]));
-                new_items.extend(change.new.map(|index| &items.new.binary.items[index]));
-            }
+            let moved = row.moved();
+            let old_items: Vec<&Item> = (moved.iter())
+                .map(|item| &items.old.binary.items[item.old])
+                .collect();
+            let new_items: Vec<&Item> = (moved.iter())
+                .map(|item| &items.new.binary.items[item.new])
+                .collect();
             let ([old_size, new_size], text) = match row {
-                MovedRow::Item(at) => {
-                    let size = |items: &[&Item]| {
-                        items
-                            .first()
-                            .map_or_else(String::new, |item| size_text(item))
-                    };
-                    (
-                        [size(&old_items), size(&new_items)],
-                        self.item_text(&items.changes[*at], 0),
-                    )
-                }
-                MovedRow::Sections { changes, sections } => {
+                MovedRow::Item(item) => (
+                    [size_text(old_items[0]), size_text(new_items[0])],
+                    self.item_text(&items.changes[item.at], 0),
+                ),
+                MovedRow::Sections { sections, .. } => {
                     let sum =
                         |items: &[&Item]| total(items.iter().map(|item| item.size)).to_string();
                     let sections: Vec<&str> = sections.iter().map(String::as_str).collect();
@@ -370,7 +362,7 @@ impl<'c, 'a> Rows<'c, 'a> {
                         [sum(&old_items), sum(&new_items)],
                         format!(
                             "all {} items of {}",
-                            changes.len(),
+                            moved.len(),
                             names_text(&sections, false)
                         ),
                     )
@@ -416,10 +408,15 @@ impl<'c, 'a> Rows<'c, 'a> {
                     };
                     // A new or gone item with what only it keeps counts
                     // their bytes too, so that NEW less OLD is CHANGE.
-                    let (old_size, new_size) = match (kept, change.status) {
-                        (0, _) => (size(items.old, change.old), size(items.new, change.new)),
-                        (_, Status::Gone) => ((-delta).to_string(), String::new()),
-                        _ => (String::new(), delta.to_string()),
+                    let (old_size, new_size) = match (kept, change) {
+                        (0, _) => (
+                            size(items.old, change.old_index()),
+                            size(items.new, change.new_index()),
+                        ),
+                        (_, Change::Gone { .. }) => ((-delta).to_string(), String::new()),
+                        (_, Change::New { .. } | Change::Partners { .. }) => {
+                            (String::new(), delta.to_string())
+                        }
                     };
                     [
                         signed(*delta),
@@ -471,58 +468,70 @@ impl<'c, 'a> Rows<'c, 'a> {
         let (old, new) = (&items.old.binary, &items.new.binary);
         let item = items.item(change);
         let mut marks = Vec::new();
-        if let (Some(was), Some(old_index), Some(new_index)) =
-            (items.was(change), change.old, change.new)
-        {
-            let (old_item, new_item) = (&old.items[old_index], &new.items[new_index]);
-            // A name that elfq made, or that differs only in a number that
-            // changes from build to build, says nothing of the item.
-            if !is_made_name(old_item, was)
-                && !is_made_name(new_item, &new_item.name)
-                && !same_but_numbers(old_item, new_item)
-            {
-                marks.push(format!("was {was}"));
+        let mut ending = match *change {
+            Change::Gone { old: index } => self.old.kept_by(index),
+            Change::New { new: index } | Change::Partners { new: index, .. } => {
+                self.new.kept_by(index)
             }
-        }
-        if let (Status::Moved, Some(old_index), Some(new_index)) =
-            (change.status, change.old, change.new)
-        {
-            let from = pairing::section_name(old, old_index);
-            let to = pairing::section_name(new, new_index);
-            if from != to {
-                marks.push(format!("{from} to {to}"));
-            }
-        }
-        if change.status == Status::Edited {
-            marks.push("edited".to_string());
-        }
-        let mut ending = match (change.status, change.old, change.new) {
-            (Status::Gone, Some(index), _) => self.old.kept_by(index),
-            (_, _, Some(index)) => self.new.kept_by(index),
-            _ => String::new(),
         };
-        if matches!(change.status, Status::New | Status::Gone) {
-            let mut mark = change.status.word().to_string();
-            match (kept, change.status) {
-                (0, _) => {}
-                (_, Status::New) => {
+        match *change {
+            Change::Partners {
+                old: old_index,
+                new: new_index,
+                status,
+                ..
+            } => {
+                let (old_item, new_item) = (&old.items[old_index], &new.items[new_index]);
+                // A name that elfq made, or that differs only in a number
+                // that changes from build to build, says nothing of the
+                // item.
+                if let Some(was) = items.was(change)
+                    && !is_made_name(old_item, was)
+                    && !is_made_name(new_item, &new_item.name)
+                    && !same_but_numbers(old_item, new_item)
+                {
+                    marks.push(format!("was {was}"));
+                }
+                match status {
+                    PartnerStatus::Moved => {
+                        let from = pairing::section_name(old, old_index);
+                        let to = pairing::section_name(new, new_index);
+                        if from != to {
+                            marks.push(format!("{from} to {to}"));
+                        }
+                    }
+                    PartnerStatus::Edited => marks.push("edited".to_string()),
+                    PartnerStatus::Grew | PartnerStatus::Shrank => {}
+                }
+            }
+            Change::New { .. } => {
+                let mut mark = Status::New.word().to_string();
+                if kept > 0 {
                     mark += &format!(", with {} it keeps", plural(kept, "new item", "new items"));
                 }
-                _ => mark += &format!(", with {} it kept", plural(kept, "gone item", "gone items")),
+                marks.push(mark);
             }
-            if let Some(into) = change.old.and_then(|index| self.inlined_into.get(&index)) {
-                let names: Vec<String> = into.iter().map(|&index| self.new.name(index)).collect();
-                let names: Vec<&str> = names.iter().map(String::as_str).collect();
-                mark += &format!(", inlined into {}", names_text(&names, self.all));
-                // "inlined into process_frame, kept by process_frame" would
-                // say it twice.
-                let named = &names[..shown_count(names.len(), named(self.all))];
-                let keeper = change.old.and_then(|index| self.old.keeper(index));
-                if keeper.is_some_and(|keeper| named.contains(&self.old.name(keeper).as_str())) {
-                    ending.clear();
+            Change::Gone { old: index } => {
+                let mut mark = Status::Gone.word().to_string();
+                if kept > 0 {
+                    mark += &format!(", with {} it kept", plural(kept, "gone item", "gone items"));
                 }
+                if let Some(into) = self.inlined_into.get(&index) {
+                    let names: Vec<String> =
+                        into.iter().map(|&index| self.new.name(index)).collect();
+                    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+                    mark += &format!(", inlined into {}", names_text(&names, self.all));
+                    // "inlined into process_frame, kept by process_frame"
+                    // would say it twice.
+                    let named = &names[..shown_count(names.len(), named(self.all))];
+                    let keeper = self.old.keeper(index);
+                    if keeper.is_some_and(|keeper| named.contains(&self.old.name(keeper).as_str()))
+                    {
+                        ending.clear();
+                    }
+                }
+                marks.push(mark);
             }
-            marks.push(mark);
         }
         let marks = match marks.is_empty() {
             true => String::new(),
@@ -582,13 +591,13 @@ fn try_why(compared: &Compared, heads: &[usize]) -> Option<String> {
     let tree = new.tree.as_ref()?;
     let mut bytes = vec![0; items.changes.len()];
     for (at, change) in items.changes.iter().enumerate() {
-        if change.status == Status::New {
+        if let Change::New { .. } = change {
             bytes[heads[at]] += items.delta(change);
         }
     }
     let mut best = None;
     for (at, change) in items.changes.iter().enumerate() {
-        let (Status::New, Some(index)) = (change.status, change.new) else {
+        let Change::New { new: index } = *change else {
             continue;
         };
         let (item, node) = (&new.binary.items[index], Node::Item(index));

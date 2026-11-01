@@ -160,7 +160,7 @@ pub fn run(
     };
     answer.try_startup = format != Format::Json
         && (answer.load_image_differs()
-            || (items.changes.iter()).any(|change| change.status == Status::Moved))
+            || (items.changes.iter()).any(|change| change.status() == Status::Moved))
         && startup::reads(new_path, &new_build.binary);
     answer.compared = Some(Compared {
         items,
