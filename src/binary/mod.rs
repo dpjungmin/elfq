@@ -1,8 +1,12 @@
 //! Loading an ELF file and finding the items in it.
 //!
 //! An *item* is a function or a data object: a named range of addresses that
-//! the rest of elfq reasons about. [`Binary::load`] finds items in these
-//! places, each one only adding what the earlier ones missed:
+//! the rest of elfq reasons about. [`Binary::load`] first reads what it
+//! needs before it looks for items: its sections, the dynamic relocations
+//! (see `relocations.rs`), which say where the program stores pointers and
+//! which functions and variables it imports from shared libraries, and in
+//! Cortex-M firmware the vector table (see `vector_table.rs`). Then it finds
+//! items in these places, each one only adding what the earlier ones missed:
 //!
 //! 1. the symbol tables, `.symtab` and `.dynsym` (see `symbols.rs`);
 //! 2. in x86-64 files, the PLT stubs that call imported functions, such as
@@ -20,10 +24,9 @@
 //! 7. references to data that has no symbol, such as vtables and string
 //!    literals (see `unnamed_data.rs`).
 //!
-//! Loading also reads the dynamic relocations (see `relocations.rs`), which
-//! say where the program stores pointers and which functions and variables
-//! it imports from shared libraries, and in Cortex-M firmware the vector
-//! table (see `vector_table.rs`).
+//! Before the last, with every function found, it settles their sizes and
+//! scans each function's code once (see [`Binary::code_references`]).
+//! `load.rs` takes these steps, in this order.
 //!
 //! [`LoadedMemory`] reads only a file's section headers, and the bytes that
 //! its sections put in memory, which `diff` compares before it needs any
@@ -496,22 +499,6 @@ impl Binary {
             .rev()
             .take_while(|&index| self.items[index].address == start)
             .find(|&index| self.items[index].contains(address))
-    }
-
-    /// Where a personality routine is, given the unwind table's pointer to
-    /// it. `None` when it is in a shared library.
-    fn personality_address(&self, pointer: gimli::Pointer) -> Option<u64> {
-        let stored_at = match pointer {
-            gimli::Pointer::Direct(address) => return Some(address),
-            gimli::Pointer::Indirect(stored_at) => stored_at,
-        };
-        match self.relocation_at(stored_at) {
-            Some(relocation) => match relocation.target {
-                RelocationTarget::Address(address) => Some(address),
-                RelocationTarget::Import(_) => None,
-            },
-            None => self.pointer_at(stored_at),
-        }
     }
 
     /// The relocation that stores a pointer at `address`, if any.

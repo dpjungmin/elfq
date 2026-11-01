@@ -8,11 +8,15 @@
 //!
 //! The table also names *personality routines*, such as
 //! `rust_eh_personality`, which the unwinder calls while it handles a panic
-//! or an exception. Nothing in the code calls them.
+//! or an exception. Nothing in the code calls them, so
+//! [`used_by_unwinder`] says where they are, for
+//! [`Binary::used_by_unwinder`].
 
 use anyhow::Result;
 use gimli::{BaseAddresses, CieOrFde, EhFrame, Pointer, RunTimeEndian, UnwindSection};
 use object::{Object, ObjectSection};
+
+use super::{Binary, RelocationTarget};
 
 /// What elfq reads from the unwind table.
 #[derive(Default)]
@@ -64,4 +68,34 @@ pub(super) fn read(file: &object::File) -> Result<UnwindTable> {
         });
     table.personalities.dedup();
     Ok(table)
+}
+
+/// The addresses that the unwinder uses, given the table's pointers to the
+/// personality routines: where each routine is, unless it is in a shared
+/// library, and where an indirect pointer to it is stored.
+pub(super) fn used_by_unwinder(binary: &Binary, personalities: &[Pointer]) -> Vec<u64> {
+    let mut used = Vec::new();
+    for &pointer in personalities {
+        if let Pointer::Indirect(stored_at) = pointer {
+            used.push(stored_at);
+        }
+        used.extend(personality_address(binary, pointer));
+    }
+    used
+}
+
+/// Where a personality routine is, given the unwind table's pointer to
+/// it. `None` when it is in a shared library.
+fn personality_address(binary: &Binary, pointer: Pointer) -> Option<u64> {
+    let stored_at = match pointer {
+        Pointer::Direct(address) => return Some(address),
+        Pointer::Indirect(stored_at) => stored_at,
+    };
+    match binary.relocation_at(stored_at) {
+        Some(relocation) => match relocation.target {
+            RelocationTarget::Address(address) => Some(address),
+            RelocationTarget::Import(_) => None,
+        },
+        None => binary.pointer_at(stored_at),
+    }
 }

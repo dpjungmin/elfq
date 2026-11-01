@@ -26,81 +26,42 @@ impl Binary {
     }
 
     /// Parses an ELF file, keeping `data` as the file's bytes rather than a
-    /// copy of them, since a large file takes hundreds of megabytes.
+    /// copy of them, since a large file takes hundreds of megabytes. It
+    /// reads everything but the items, then finds them in the steps that
+    /// the module doc lists.
     pub(crate) fn from_vec(data: Vec<u8>) -> Result<Binary> {
-        let (file, kind) = parse_program(&data)?;
-        let architecture = file.architecture();
-        let arm_architecture = if architecture == Architecture::Arm {
-            attributes::arm_architecture(&file)
-        } else {
-            None
-        };
-        let mut warnings = Vec::new();
-        let mut binary = Binary {
-            architecture,
-            pointer_size: if file.is_64() { 8 } else { 4 },
-            kind,
-            entry: code_address(architecture, file.entry()),
-            // Only a damaged header puts 32-bit Arm code in a 64-bit file.
-            thumb: architecture == Architecture::Arm
-                && !file.is_64()
-                && is_thumb(&file, arm_architecture),
-            endianness: if file.is_little_endian() {
-                Endianness::Little
-            } else {
-                Endianness::Big
-            },
-            has_symbols: file.symbol_table().is_some(),
-            has_dwarf: file.section_by_name(".debug_info").is_some(),
-            sections: read_sections(&file, data.len() as u64, &mut warnings),
-            items: Vec::new(),
-            imports: Vec::new(),
-            relocations: Vec::new(),
-            used_by_unwinder: Vec::new(),
-            merged_variables: Vec::new(),
-            vector_table: None,
-            arm_architecture,
-            data_in_code: Vec::new(),
-            warnings,
-            code_references: HashMap::new(),
-            data,
-        };
+        let mut binary = read_all_but_items(data)?;
         // The bytes have moved into `binary`, so read them there. This
         // reads only the headers again.
         let file = object::File::parse(binary.data.as_slice()).context("malformed ELF file")?;
-        (binary.imports, binary.relocations) = relocations::read(&file, architecture);
-        if binary.thumb {
-            binary.vector_table = vector_table::find(&binary);
-        }
-        if architecture == Architecture::Arm {
-            binary.data_in_code = symbols::data_in_code(&file, &binary.sections);
-        }
 
+        // `binary.items` stays empty until every function is found, so
+        // `item_at` finds nothing until then: each step sees what the steps
+        // before it found through `items`.
+        // 1. The symbol tables.
         let (mut items, merged_variables) = symbols::items(&file, &binary.sections);
         binary.merged_variables = merged_variables;
+        // 2. PLT stubs.
         let stubs = plt::stubs(&binary, &items);
         add_new_items(&mut items, stubs);
+        // 3. The arrays of startup and shutdown functions.
         add_new_items(&mut items, startup_array_items(&binary.sections));
+        // 4. The unwind table.
         match eh_frame::read(&file) {
             Ok(table) => {
                 add_unwind_items(&mut items, &table.functions, &binary.sections);
-                for pointer in table.personalities {
-                    if let gimli::Pointer::Indirect(stored_at) = pointer {
-                        binary.used_by_unwinder.push(stored_at);
-                    }
-                    binary
-                        .used_by_unwinder
-                        .extend(binary.personality_address(pointer));
-                }
+                binary.used_by_unwinder = eh_frame::used_by_unwinder(&binary, &table.personalities);
             }
             Err(err) => binary
                 .warnings
                 .push(format!("cannot read .eh_frame: {err}")),
         }
+        // 5. The entry point, and the vector table.
         if !binary.entry_in_vector_table() {
             add_entry_item(&mut items, binary.entry, &binary.sections);
         }
         items.extend(vector_table::item(&binary, &items));
+        // 6. The code itself, in firmware that nothing lists functions for.
         let listed = items
             .iter()
             .any(|item| item.kind == ItemKind::Function && item.source.lists_functions());
@@ -108,17 +69,78 @@ impl Binary {
             unnamed_functions::add(&binary, &mut items);
         }
 
+        // Every function is found. Their sizes settle before the scan,
+        // which reads each function's code by its address and size: entry
+        // points end where the next starts, and then those of unknown size
+        // reach the next item, which needs the items in address order.
         let run_on = end_where_functions_start(&mut items);
         sort_items(&mut items);
         estimate_missing_sizes(&mut items, &binary.sections);
         binary.items = items;
         binary.code_references = scan_functions(&binary, &run_on);
-        // Last, since finding unnamed data needs all the other items.
+        // 7. Data that nothing names. Last, since finding it needs all the
+        // other items and the references in their code.
         let unnamed = unnamed_data::items(&binary);
         binary.items.extend(unnamed);
         sort_items(&mut binary.items);
         Ok(binary)
     }
+}
+
+/// The [`Binary`] of the file in `data` with everything but its items: its
+/// sections, imports and relocations, and in Arm files the core the code
+/// is for and the stretches that `$d` symbols mark as data, and in Thumb
+/// files the vector table.
+fn read_all_but_items(data: Vec<u8>) -> Result<Binary> {
+    let (file, kind) = parse_program(&data)?;
+    let architecture = file.architecture();
+    let arm_architecture = if architecture == Architecture::Arm {
+        attributes::arm_architecture(&file)
+    } else {
+        None
+    };
+    let mut warnings = Vec::new();
+    let sections = read_sections(&file, data.len() as u64, &mut warnings);
+    let (imports, relocations) = relocations::read(&file, architecture);
+    let data_in_code = if architecture == Architecture::Arm {
+        symbols::data_in_code(&file, &sections)
+    } else {
+        Vec::new()
+    };
+    let mut binary = Binary {
+        architecture,
+        pointer_size: if file.is_64() { 8 } else { 4 },
+        kind,
+        entry: code_address(architecture, file.entry()),
+        // Only a damaged header puts 32-bit Arm code in a 64-bit file.
+        thumb: architecture == Architecture::Arm
+            && !file.is_64()
+            && is_thumb(&file, arm_architecture),
+        endianness: if file.is_little_endian() {
+            Endianness::Little
+        } else {
+            Endianness::Big
+        },
+        has_symbols: file.symbol_table().is_some(),
+        has_dwarf: file.section_by_name(".debug_info").is_some(),
+        sections,
+        items: Vec::new(),
+        imports,
+        relocations,
+        used_by_unwinder: Vec::new(),
+        merged_variables: Vec::new(),
+        vector_table: None,
+        arm_architecture,
+        data_in_code,
+        warnings,
+        code_references: HashMap::new(),
+        data,
+    };
+    // Finding the vector table reads the bytes, which are now in `binary`.
+    if binary.thumb {
+        binary.vector_table = vector_table::find(&binary);
+    }
+    Ok(binary)
 }
 
 /// Whether a 32-bit Arm file's code is Thumb: its entry point or any
