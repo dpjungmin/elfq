@@ -426,33 +426,28 @@ fn narrow(address: u64, op: u16) -> Option<Effect> {
             }
         }
         // adds and subs, with a register or a 3-bit immediate.
-        0b00011 => {
-            let effect = Effect::new(bit(middle), bit(low));
-            match (op >> 9) & 3 {
-                0b00 => Effect::new(bit(middle) | bit(top), bit(low)).operation(Operation::Add {
-                    register: low,
-                    a: middle,
-                    b: top,
-                }),
-                0b01 => {
-                    Effect::new(bit(middle) | bit(top), bit(low)).operation(Operation::Subtract {
-                        register: low,
-                        a: middle,
-                        b: top,
-                    })
-                }
-                0b10 => effect.operation(Operation::AddConstant {
-                    register: low,
-                    source: middle,
-                    amount: u32::from(top),
-                }),
-                _ => effect.operation(Operation::AddConstant {
-                    register: low,
-                    source: middle,
-                    amount: u32::from(top).wrapping_neg(),
-                }),
-            }
-        }
+        0b00011 => match (op >> 9) & 3 {
+            0b00 => Effect::new(bit(middle) | bit(top), bit(low)).operation(Operation::Add {
+                register: low,
+                a: middle,
+                b: top,
+            }),
+            0b01 => Effect::new(bit(middle) | bit(top), bit(low)).operation(Operation::Subtract {
+                register: low,
+                a: middle,
+                b: top,
+            }),
+            0b10 => Effect::new(bit(middle), bit(low)).operation(Operation::AddConstant {
+                register: low,
+                source: middle,
+                amount: u32::from(top),
+            }),
+            _ => Effect::new(bit(middle), bit(low)).operation(Operation::AddConstant {
+                register: low,
+                source: middle,
+                amount: u32::from(top).wrapping_neg(),
+            }),
+        },
         // movs register, #imm8
         0b00100 => Effect::new(0, bit(high)).operation(Operation::Constant {
             register: high,
