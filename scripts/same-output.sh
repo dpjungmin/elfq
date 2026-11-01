@@ -59,7 +59,8 @@ compare() {
 # The commands run on one file. Those that take a SYMBOL take each of the
 # first three items that `top` lists, and those that take a range take the
 # first two blocks of memory that the overview lists, as old elfq prints
-# them. A command that refuses the file is compared too.
+# them; `reach SYMBOL --to RANGE` takes the first item with each block. A
+# command that refuses the file is compared too.
 check_file() {
     file=$1
     compare "$file"
@@ -82,6 +83,7 @@ check_file() {
     "$old" "$file" top --json 2>/dev/null |
         sed -n 's/^{"id":[0-9]*,"name":"\([^"\\]*\)".*/\1/p' |
         head -3 >"$work/symbols"
+    first_symbol=$(head -1 "$work/symbols")
     while IFS= read -r symbol; do
         compare "$file" retained "$symbol"
         compare "$file" retained "$symbol" --tree
@@ -110,6 +112,11 @@ check_file() {
             compare "$file" callers "$range" --from "$first"
             compare "$file" callees "$first" --to "$range" --json
             compare "$file" reach --to "$range"
+        fi
+        if [ -n "$first_symbol" ]; then
+            compare "$file" reach "$first_symbol" --to "$range"
+            compare "$file" reach "$first_symbol" --to "$range" --tree
+            compare "$file" reach "$first_symbol" --to "$range" --json
         fi
         first=$range
     done <"$work/ranges"

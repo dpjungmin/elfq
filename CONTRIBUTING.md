@@ -491,10 +491,11 @@ scripts/same-output.sh ../elfq-main/target/release/elfq target/release/elfq \
 It runs every command, with and without `--json`, `--all` and `--tree`, on
 each file, the SYMBOL commands on the first three items that `top` lists,
 and the range commands on the first two blocks of memory that the overview
-lists. It also runs every `--help`, and `diff` on each pair of files listed
-in `pairs.txt`, one pair a line. It prints each command whose stdout,
-stderr or exit status differs, with the first lines that differ, and exits
-with status 1 if one does. On the samples alone it runs about 5,800
+lists, with `reach SYMBOL --to RANGE` on the first item and each block. It
+also runs every `--help`, and `diff` on each pair of files listed in
+`pairs.txt`, one pair a line. It prints each command whose stdout, stderr
+or exit status differs, with the first lines that differ, and exits with
+status 1 if one does. On the samples alone it runs about 6,200
 commands, in about 15 seconds on four processors.
 
 The samples are small and similar, so add other files too: programs from
