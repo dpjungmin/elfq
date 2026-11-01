@@ -76,6 +76,30 @@
 //! `state.rs` holds what the registers and the stack may hold, `code.rs`
 //! the layout, `address_uses.rs` how the code uses each address, and
 //! `tests.rs` the tests on hand-assembled functions.
+//!
+//! # Following another instruction
+//!
+//! To follow what another instruction does with the registers:
+//!
+//! 1. In `decode.rs`, decode it to an [`Operation`] of its own, with a
+//!    test of its bytes.
+//! 2. In [`Function::execute`], work out what it puts in the register it
+//!    writes.
+//! 3. In [`Function::escapes`], list the registers it reads in a way that
+//!    `execute` follows, so that an address on the stack in one doesn't
+//!    count as out of sight.
+//! 4. In [`Function::report`], record how it uses what it reads: as an
+//!    address, as part of one, or by passing it on.
+//! 5. In [`Function::builds_address`], say whether it builds an address,
+//!    and if it does, list it in `may_find_more`, in `code.rs`, so that
+//!    elfq follows the functions that have it.
+//! 6. In `startup`, say what it puts in the register (`Walker::result`),
+//!    and, where the walk can tell, how it sets the flags
+//!    (`Walker::flags`) and what it compares (`Walker::compare`).
+//!
+//! The compiler points to each of these but `may_find_more`,
+//! `Walker::flags` and `Walker::compare`, which list only what they
+//! follow.
 
 mod address_uses;
 mod code;
@@ -717,26 +741,30 @@ impl<'a> Function<'a> {
     /// passes one to a function, in a register or on the stack.
     fn escapes(&self, index: usize, state: &State) -> bool {
         let effect = self.code.effects[index];
-        let writes_back = |base| effect.writes & bit(base) != 0;
+        let writes_base = |base| effect.writes & bit(base) != 0;
         // The registers it reads in ways elfq follows.
         let mut followed = match effect.operation {
             Operation::Copy { source, .. }
             | Operation::AddConstant { source, .. }
             | Operation::ShiftLeft { source, .. } => bit(source),
+            // `execute` follows the sum, though `report` counts what code
+            // adds to as used as an address, unless it adds pc.
             Operation::Add { a, b, .. } => bit(a) | bit(b),
+            // Comparing lets nothing out, though `report` counts what code
+            // compares as used as an address.
             Operation::HighHalf { register, .. } | Operation::Compare { register, .. } => {
                 bit(register)
             }
             // Its base, as an address to load from, unless it changes the
-            // base too.
+            // base too, other than by loading a word into it.
             Operation::Load { into, base, .. }
-                if !writes_back(base) || into == Transfer::Word(base) =>
+                if !writes_base(base) || into == Transfer::Word(base) =>
             {
                 bit(base)
             }
             Operation::Store {
                 from, base, size, ..
-            } if !writes_back(base) => {
+            } if !writes_base(base) => {
                 let offset = plain_offset(&effect);
                 let slot = offset.and_then(|offset| state.held(base).word_at(offset));
                 match from {
@@ -747,8 +775,25 @@ impl<'a> Function<'a> {
                 }
             }
             Operation::Push { registers, .. } if state.sp().is_some() => registers | bit(SP),
+            // It reads sp only to pop from it, though `report` counts the
+            // words it may pop as used where elfq can't tell sp.
             Operation::Pop { .. } => bit(SP),
-            _ => 0,
+            // A load or store that changes its base, and a push where elfq
+            // can't tell sp, and what elfq doesn't follow.
+            Operation::Load { .. }
+            | Operation::Store { .. }
+            | Operation::Push { .. }
+            | Operation::Nothing
+            | Operation::Constant { .. }
+            | Operation::Literal { .. }
+            | Operation::Address { .. }
+            | Operation::Subtract { .. }
+            | Operation::AddShifted { .. }
+            | Operation::Negate { .. }
+            | Operation::AndConstant { .. }
+            | Operation::And { .. }
+            | Operation::ShiftRight { .. }
+            | Operation::CompareRegisters { .. } => 0,
         };
         followed |= match effect.flow {
             Flow::CallRegister(register, _)
@@ -781,7 +826,23 @@ impl<'a> Function<'a> {
                 true
             }
             Operation::Add { a, b, .. } => state.adds_pc(a, b),
-            _ => false,
+            Operation::Nothing
+            | Operation::Constant { .. }
+            | Operation::Copy { .. }
+            | Operation::AddConstant { .. }
+            | Operation::Subtract { .. }
+            | Operation::AddShifted { .. }
+            | Operation::Negate { .. }
+            | Operation::AndConstant { .. }
+            | Operation::And { .. }
+            | Operation::ShiftLeft { .. }
+            | Operation::ShiftRight { .. }
+            | Operation::Load { .. }
+            | Operation::Store { .. }
+            | Operation::Push { .. }
+            | Operation::Pop { .. }
+            | Operation::Compare { .. }
+            | Operation::CompareRegisters { .. } => false,
         }
     }
 
@@ -812,6 +873,8 @@ impl<'a> Function<'a> {
                 }
                 other &= !bit(register);
             }
+            // Adding pc builds another address from what the other register
+            // holds.
             Operation::Add { register, a, b } if register != PC && state.adds_pc(a, b) => {
                 let offsets = (bit(a) | bit(b)) & !bit(PC);
                 self.uses.record_registers(state, offsets, pc, Use::Part);
@@ -852,8 +915,31 @@ impl<'a> Function<'a> {
                     _ => {}
                 }
             }
+            // Where elfq can tell sp, `execute` follows what a pop loads.
             Operation::Pop { .. } if state.sp().is_none() => self.uses.record_stack(state),
-            _ => {}
+            // What these read stays in `other`, which counts as using it as
+            // an address: what a compare compares, as `cmp r0, #0` on the
+            // address of a weak function does, and what a sum that doesn't
+            // add pc adds, though `escapes` lets `execute` follow both.
+            Operation::Compare { .. }
+            | Operation::Nothing
+            | Operation::Constant { .. }
+            | Operation::Literal { .. }
+            | Operation::Address { .. }
+            | Operation::Copy { .. }
+            | Operation::AddConstant { .. }
+            | Operation::ShiftLeft { .. }
+            | Operation::Add { .. }
+            | Operation::Subtract { .. }
+            | Operation::AddShifted { .. }
+            | Operation::Negate { .. }
+            | Operation::AndConstant { .. }
+            | Operation::And { .. }
+            | Operation::ShiftRight { .. }
+            | Operation::Store { .. }
+            | Operation::Push { .. }
+            | Operation::Pop { .. }
+            | Operation::CompareRegisters { .. } => {}
         }
         match effect.flow {
             Flow::CallRegister(register, low_bit) | Flow::JumpRegister(register, low_bit) => {

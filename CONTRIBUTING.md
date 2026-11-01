@@ -125,7 +125,8 @@ without making them public. It and `arch/listing.rs` build only with the
 - **A long function reads as named steps.** A function of more than
   about 100 lines that isn't one decoding match is the usual sign that it
   does several things. Some still wait to be split, such as
-  `Names::similar` in `commands/symbol/similar.rs`.
+  `Names::similar` in `commands/symbol/similar.rs` and `Function::report`
+  in `arch/thumb/values/mod.rs`.
 
 ## Words
 
