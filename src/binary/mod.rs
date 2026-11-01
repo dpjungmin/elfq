@@ -31,8 +31,9 @@
 //! # How the files are organized
 //!
 //! - This file has the types, such as [`Binary`], [`Section`] and
-//!   [`Item`], the queries that the rest of elfq asks of them, and the
-//!   reading of the bytes and pointers that the file stores at an address.
+//!   [`Item`], the queries that the rest of elfq asks of them, such as
+//!   whether a section holds code or data, and the reading of the bytes
+//!   and pointers that the file stores at an address.
 //! - `load.rs` loads a file: it reads everything but the items, then takes
 //!   the steps above in order. It holds the steps, or parts of them, that
 //!   have no file of their own.
@@ -490,6 +491,25 @@ impl Binary {
             .position(|section| section.in_memory() && section.contains(address))
     }
 
+    /// The section of code that holds `address` (see [`Section::is_code`]),
+    /// as an index into [`Binary::sections`].
+    pub(crate) fn code_section_at(&self, address: u64) -> Option<usize> {
+        self.sections
+            .iter()
+            .position(|section| section.is_code() && section.contains(address))
+    }
+
+    /// `value` as the address of Thumb code, where a pointer to Thumb code
+    /// has bit 0 set: when `value` is odd and in a section of code once
+    /// that bit is cleared, the address without it.
+    pub(crate) fn thumb_code_address(&self, value: u64) -> Option<u64> {
+        if value & 1 == 0 {
+            return None;
+        }
+        let address = value & !1;
+        self.code_section_at(address).map(|_| address)
+    }
+
     /// Where the load image of `item` starts, when its section has one
     /// (see [`Section::load_address`]): where the file stores its bytes for
     /// the program to copy to where it uses them.
@@ -645,6 +665,39 @@ impl Section {
     fn in_memory(&self) -> bool {
         self.allocated && self.kind != SectionKind::UninitializedTls
     }
+
+    /// Whether the section holds code that elfq reads: it is allocated,
+    /// and the `object` crate takes it for code (`SectionKind::Text`).
+    /// [`LoadedMemory::stores_code`] asks the header's executable flag
+    /// instead, on purpose: in a file of debug info alone, `.text` takes
+    /// no space in the file, so its kind isn't `Text`.
+    pub fn is_code(&self) -> bool {
+        self.allocated && self.kind == SectionKind::Text
+    }
+
+    /// Whether the section holds data, whose unnamed objects get items:
+    /// it is allocated, and holds variables, constants or strings. Not
+    /// code, though in Thumb files the constants in code get items too
+    /// (see `unnamed_data::items`), and not the global offset table: elfq
+    /// follows the pointers stored there to what they point at instead.
+    pub fn holds_data(&self) -> bool {
+        self.allocated
+            && matches!(
+                self.kind,
+                SectionKind::Data
+                    | SectionKind::ReadOnlyData
+                    | SectionKind::ReadOnlyString
+                    | SectionKind::UninitializedData
+            )
+            && !matches!(self.name.as_str(), ".got" | ".got.plt")
+    }
+
+    /// Whether the section is one of the arrays of functions that the C
+    /// runtime calls at startup and exit, such as `.init_array` (see
+    /// `STARTUP_ARRAYS`), and allocated.
+    pub fn is_startup_array(&self) -> bool {
+        self.allocated && STARTUP_ARRAYS.contains(&self.name.as_str())
+    }
 }
 
 impl fmt::Display for FileKind {
@@ -710,13 +763,6 @@ pub(crate) fn word(bytes: &[u8], endianness: Endianness) -> u64 {
     }
 }
 
-/// The executable section containing `address`, if any.
-fn code_section(sections: &[Section], address: u64) -> Option<usize> {
-    sections
-        .iter()
-        .position(|s| s.allocated && s.kind == SectionKind::Text && s.contains(address))
-}
-
 impl Binary {
     /// An x86-64 executable for unit tests, with `sections` and `items`,
     /// whose file is `data`.
@@ -744,5 +790,61 @@ impl Binary {
             code_references: HashMap::new(),
             data,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn section(name: &str, address: u64, kind: SectionKind) -> Section {
+        Section {
+            name: name.to_string(),
+            address,
+            size: 0x100,
+            kind,
+            allocated: true,
+            file_range: None,
+            entry_size: 0,
+            load_address: None,
+        }
+    }
+
+    #[test]
+    fn only_data_sections_hold_unnamed_data() {
+        let data = |name, kind| section(name, 0x1000, kind).holds_data();
+        assert!(data(".rodata", SectionKind::ReadOnlyData));
+        assert!(data(".data.rel.ro", SectionKind::Data));
+        assert!(data(".bss", SectionKind::UninitializedData));
+        assert!(!data(".text", SectionKind::Text));
+        assert!(!data(".got", SectionKind::Data));
+        assert!(!data(".tdata", SectionKind::Tls));
+        let unallocated = Section {
+            allocated: false,
+            ..section(".data", 0x1000, SectionKind::Data)
+        };
+        assert!(!unallocated.holds_data());
+    }
+
+    #[test]
+    fn thumb_code_is_at_odd_addresses_in_sections_of_code() {
+        let debug_only = Section {
+            allocated: false,
+            ..section(".text.debug", 0x3000, SectionKind::Text)
+        };
+        let sections = vec![
+            section(".text", 0x1000, SectionKind::Text),
+            section(".rodata", 0x2000, SectionKind::ReadOnlyData),
+            debug_only,
+        ];
+        let binary = Binary::for_tests(sections, Vec::new(), Vec::new());
+        assert_eq!(binary.code_section_at(0x10ff), Some(0));
+        assert_eq!(binary.code_section_at(0x1100), None);
+        assert_eq!(binary.thumb_code_address(0x1041), Some(0x1040));
+        // Even, so not a pointer to Thumb code; in data; and in a section
+        // that isn't in memory.
+        assert_eq!(binary.thumb_code_address(0x1040), None);
+        assert_eq!(binary.thumb_code_address(0x2001), None);
+        assert_eq!(binary.thumb_code_address(0x3001), None);
     }
 }

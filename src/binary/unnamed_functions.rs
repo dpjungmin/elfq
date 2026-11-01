@@ -64,7 +64,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{Binary, Item, ItemKind, STARTUP_ARRAYS, Section, Source, code_section, unnamed_data};
+use super::{Binary, Item, ItemKind, Section, Source};
 use crate::arch::{CodeReference, CodeReferenceKind, Ending, InstructionSet};
 
 /// What starts at an address in code.
@@ -95,10 +95,7 @@ pub(super) fn add(binary: &Binary, items: &mut Vec<Item>) {
     if let Some(table) = &binary.vector_table {
         known.extend(&table.handlers);
     }
-    let arrays = binary
-        .sections
-        .iter()
-        .filter(|section| section.allocated && STARTUP_ARRAYS.contains(&section.name.as_str()));
+    let arrays = (binary.sections.iter()).filter(|section| section.is_startup_array());
     known.extend(arrays.flat_map(|section| {
         thumb_addresses(binary, section.address, section.address + section.size)
     }));
@@ -144,7 +141,7 @@ pub(super) fn add(binary: &Binary, items: &mut Vec<Item>) {
             item.size_estimated = true;
             continue;
         }
-        let Some(section) = code_section(&binary.sections, start) else {
+        let Some(section) = binary.code_section_at(start) else {
             continue;
         };
         items.push(Item {
@@ -237,7 +234,7 @@ fn functions<'a>(
 /// Where what starts at `start` ends: at the next start, or the end of its
 /// section.
 fn end(binary: &Binary, starts: &BTreeMap<u64, Start>, start: u64) -> Option<u64> {
-    let section = &binary.sections[code_section(&binary.sections, start)?];
+    let section = &binary.sections[binary.code_section_at(start)?];
     let end = section.address + section.size;
     let next = starts.range(start + 1..).next();
     Some(next.map_or(end, |(&next, _)| next.min(end)))
@@ -278,7 +275,7 @@ fn leads(binary: &Binary, start: u64, end: u64) -> Leads {
             _ => {}
         }
     }
-    let in_code = |address: &u64| code_section(&binary.sections, *address).is_some();
+    let in_code = |address: &u64| binary.code_section_at(*address).is_some();
     leads.functions.retain(in_code);
     leads.thumb_addresses.retain(in_code);
     leads.constants.retain(in_code);
@@ -287,10 +284,7 @@ fn leads(binary: &Binary, start: u64, end: u64) -> Leads {
 
 /// The Thumb code addresses stored in data.
 fn stored_addresses(binary: &Binary) -> BTreeSet<u64> {
-    let sections = binary
-        .sections
-        .iter()
-        .filter(|section| section.allocated && unnamed_data::holds_data(section));
+    let sections = (binary.sections.iter()).filter(|section| section.holds_data());
     sections
         .flat_map(|section| {
             thumb_addresses(binary, section.address, section.address + section.size)
@@ -299,13 +293,11 @@ fn stored_addresses(binary: &Binary) -> BTreeSet<u64> {
 }
 
 /// The Thumb code addresses stored from `start` to `end`, word by word,
-/// without their Thumb bit.
+/// without their Thumb bit (see [`Binary::thumb_code_address`]).
 fn thumb_addresses(binary: &Binary, start: u64, end: u64) -> Vec<u64> {
     binary
         .aligned_words(start, end)
-        .filter(|&(_, value)| value & 1 == 1)
-        .map(|(_, value)| value & !1)
-        .filter(|&address| code_section(&binary.sections, address).is_some())
+        .filter_map(|(_, value)| binary.thumb_code_address(value))
         .collect()
 }
 
@@ -364,7 +356,7 @@ fn splits_cleanly(
     kind: Start,
 ) -> bool {
     // 1.
-    let Some(index) = code_section(&binary.sections, address) else {
+    let Some(index) = binary.code_section_at(address) else {
         return false;
     };
     let section = &binary.sections[index];

@@ -19,7 +19,7 @@
 
 use object::SectionKind;
 
-use crate::binary::{Binary, FileKind, STARTUP_ARRAYS, Source};
+use crate::binary::{Binary, FileKind, Source};
 
 use super::{Node, item_starting_at, pointer_target};
 
@@ -75,14 +75,13 @@ pub(super) fn find(binary: &Binary) -> Vec<Root> {
         if !section.allocated {
             continue;
         }
-        let name = section.name.as_str();
-        if STARTUP_CODE.contains(&name)
-            || STARTUP_ARRAYS.contains(&name)
+        if STARTUP_CODE.contains(&section.name.as_str())
+            || section.is_startup_array()
             || section.kind == SectionKind::Note
         {
             add(items_in_section(binary, index), RootKind::InSection(index));
         }
-        if STARTUP_ARRAYS.contains(&name) {
+        if section.is_startup_array() {
             add(listed_in(binary, index), RootKind::ListedIn(index));
         }
     }

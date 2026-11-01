@@ -12,7 +12,7 @@
 
 use object::SectionKind;
 
-use super::{ArmArchitecture, Binary, FileKind, Item, ItemKind, Section, Source, code_section};
+use super::{ArmArchitecture, Binary, FileKind, Item, ItemKind, Section, Source};
 
 /// Where the vector table is and the handlers it lists.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -185,8 +185,8 @@ pub(super) fn find(binary: &Binary) -> Option<VectorTable> {
         }
         next = slot + size;
         let index = (slot - address) / size;
-        if thumb_code(binary, value) {
-            handlers.push(value & !1);
+        if let Some(handler) = binary.thumb_code_address(value) {
+            handlers.push(handler);
             exceptions.push(index);
         } else if value != 0 {
             if RESERVED.contains(&index) {
@@ -223,7 +223,7 @@ fn holding_entry(binary: &Binary) -> Option<(&Section, u64)> {
         let mut end = section.address + section.size;
         // In code, only there, so that no constant in a function is taken
         // for it.
-        if section.kind == SectionKind::Text {
+        if section.is_code() {
             end = end.min(first + size);
         }
         let (slot, _) = binary
@@ -242,9 +242,10 @@ fn holding_entry(binary: &Binary) -> Option<(&Section, u64)> {
 ///
 /// 1. the initial stack pointer (see [`could_be_stack_pointer`]);
 /// 2. the Thumb addresses of the reset, NMI and HardFault handlers (see
-///    [`thumb_code`]), which every table fills in. A table of pairs of an
-///    argument and a handler, such as Zephyr's `_sw_isr_table`, holds the
-///    second interrupt's argument where NMI's would be.
+///    [`Binary::thumb_code_address`]), which every table fills in. A
+///    table of pairs of an argument and a handler, such as Zephyr's
+///    `_sw_isr_table`, holds the second interrupt's argument where NMI's
+///    would be.
 ///
 /// Sections that startup code copies into place, such as `.data`, come
 /// last: the processor reads the table at reset, before any copy, and
@@ -279,7 +280,7 @@ fn at_section_start(binary: &Binary) -> Option<(&Section, u64)> {
         let table = could_be_stack_pointer(binary, stack)
             && [reset, nmi, hard_fault]
                 .iter()
-                .all(|&value| thumb_code(binary, value));
+                .all(|&value| binary.thumb_code_address(value).is_some());
         table.then_some((section, start + size))
     })
 }
@@ -301,12 +302,6 @@ fn could_be_stack_pointer(binary: &Binary, value: u64) -> bool {
             && binary.pointer_at(address).is_some()
     };
     value != 0 && value.is_multiple_of(4) && !in_read_only(value - 4)
-}
-
-/// Whether `value` is the address of Thumb code: odd, and in a code section
-/// once bit 0 is cleared.
-fn thumb_code(binary: &Binary, value: u64) -> bool {
-    value & 1 == 1 && code_section(&binary.sections, value & !1).is_some()
 }
 
 /// An item for the vector table when no item covers any of it, as in

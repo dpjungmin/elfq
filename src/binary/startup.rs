@@ -2,15 +2,13 @@
 //! it runs, what memory holds at reset, and where its functions are.
 //! docs/design.md's "Startup, end to end" shows where this fits.
 
-use object::SectionKind;
-
 use super::{Binary, ItemKind, word};
 use crate::arch::startup::Program;
 
 impl Program for Binary {
     fn code(&self, address: u64) -> Option<&[u8]> {
         let section = &self.sections[self.section_at(address)?];
-        if section.kind != SectionKind::Text {
+        if !section.is_code() {
             return None;
         }
         let rest = section.address + section.size - address;

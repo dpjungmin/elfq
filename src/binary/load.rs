@@ -15,9 +15,8 @@ use object::{Architecture, Endianness, Object, ObjectSymbol, SymbolKind};
 
 use super::sections::{fitting_size, parse_program, read_sections};
 use super::{
-    ArmArchitecture, Binary, FileKind, Item, ItemKind, STARTUP_ARRAYS, Section, Source, attributes,
-    code_address, code_section, eh_frame, plt, relocations, symbols, unnamed_data,
-    unnamed_functions, vector_table,
+    ArmArchitecture, Binary, FileKind, Item, ItemKind, Section, Source, attributes, code_address,
+    eh_frame, plt, relocations, symbols, unnamed_data, unnamed_functions, vector_table,
 };
 use crate::arch::{CodeReference, CodeReferenceKind, InstructionSet};
 
@@ -58,7 +57,7 @@ impl Binary {
         // 4. The unwind table.
         match eh_frame::read(&file) {
             Ok(table) => {
-                add_unwind_items(&mut items, &table.functions, &binary.sections);
+                add_unwind_items(&binary, &mut items, &table.functions);
                 binary.used_by_unwinder = eh_frame::used_by_unwinder(&binary, &table.personalities);
             }
             Err(err) => binary
@@ -67,7 +66,7 @@ impl Binary {
         }
         // 5. The entry point, and the vector table.
         if !binary.entry_in_vector_table() {
-            add_entry_item(&mut items, binary.entry, &binary.sections);
+            add_entry_item(&binary, &mut items);
         }
         items.extend(vector_table::item(&binary, &items));
         // 6. The code itself, in firmware that nothing lists functions for.
@@ -181,9 +180,7 @@ fn startup_array_items(sections: &[Section]) -> Vec<Item> {
     sections
         .iter()
         .enumerate()
-        .filter(|(_, section)| {
-            section.allocated && section.size > 0 && STARTUP_ARRAYS.contains(&section.name.as_str())
-        })
+        .filter(|(_, section)| section.is_startup_array() && section.size > 0)
         .map(|(index, section)| Item {
             name: section.name.clone(),
             aliases: Vec::new(),
@@ -200,7 +197,7 @@ fn startup_array_items(sections: &[Section]) -> Vec<Item> {
 /// Adds a function for each unwind-table range that the items found so far,
 /// from symbols and PLT stubs, missed, and fills in sizes that the symbol
 /// table left as 0.
-fn add_unwind_items(items: &mut Vec<Item>, ranges: &[(u64, u64)], sections: &[Section]) {
+fn add_unwind_items(binary: &Binary, items: &mut Vec<Item>, ranges: &[(u64, u64)]) {
     // The functions found so far, as (address, size, index into items).
     let mut known: Vec<(u64, u64, usize)> = items
         .iter()
@@ -231,7 +228,7 @@ fn add_unwind_items(items: &mut Vec<Item>, ranges: &[(u64, u64)], sections: &[Se
                 continue;
             }
         }
-        let Some(section) = code_section(sections, start) else {
+        let Some(section) = binary.code_section_at(start) else {
             continue;
         };
         items.push(Item {
@@ -249,14 +246,15 @@ fn add_unwind_items(items: &mut Vec<Item>, ranges: &[(u64, u64)], sections: &[Se
 
 /// Adds the entry point as a function when nothing else covers it, as in
 /// stripped firmware.
-fn add_entry_item(items: &mut Vec<Item>, entry: u64, sections: &[Section]) {
+fn add_entry_item(binary: &Binary, items: &mut Vec<Item>) {
+    let entry = binary.entry;
     let covered = items
         .iter()
         .any(|item| item.kind == ItemKind::Function && item.contains(entry));
     if covered {
         return;
     }
-    if let Some(section) = code_section(sections, entry) {
+    if let Some(section) = binary.code_section_at(entry) {
         items.push(Item {
             name: "entry".to_string(),
             aliases: Vec::new(),
@@ -429,7 +427,7 @@ mod tests {
 
     #[test]
     fn unwind_table_fills_gaps_but_never_overrides_symbols() {
-        let sections = [text_section()];
+        let binary = Binary::for_tests(vec![text_section()], Vec::new(), Vec::new());
         let mut items = vec![
             function("sized", 0x1000, 0x20),
             function("unsized", 0x1100, 0),
@@ -442,7 +440,7 @@ mod tests {
             (0x9000, 0x10),     // outside any code section: ignored
             (0x1300, u64::MAX), // would end past the last address: ignored
         ];
-        add_unwind_items(&mut items, &ranges, &sections);
+        add_unwind_items(&binary, &mut items, &ranges);
         let found: Vec<(&str, u64, u64, Source)> = items
             .iter()
             .map(|i| (i.name.as_str(), i.address, i.size, i.source))
