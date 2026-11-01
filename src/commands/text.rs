@@ -68,6 +68,18 @@ pub(super) fn size_text(item: &Item) -> String {
     }
 }
 
+/// The ADDRESS and SIZE cells of `node`'s row: blank for an import, which
+/// has no bytes in the file.
+pub(super) fn address_and_size(binary: &Binary, node: Node) -> [String; 2] {
+    match node {
+        Node::Item(index) => {
+            let item = &binary.items[index];
+            [format!("{:#x}", item.address), size_text(item)]
+        }
+        Node::Import(_) => [String::new(), String::new()],
+    }
+}
+
 /// "3 functions", "2 data objects" or "4 items", whichever fits `nodes`.
 pub(super) fn count_text(binary: &Binary, nodes: &[Node]) -> String {
     let kind = |node: &Node| match node {
@@ -280,6 +292,33 @@ pub(super) fn how_via(
 /// "call" or "jump", for a call or jump that elfq can't follow.
 pub(super) fn call_or_jump(unresolved: &Unresolved) -> &'static str {
     if unresolved.is_call { "call" } else { "jump" }
+}
+
+/// Where a call or jump that elfq can't follow goes, for its row: the
+/// address that the code names, and "(outside any function)"; or no
+/// address, and "(through a pointer)".
+pub(super) fn cant_follow_target(unresolved: &Unresolved) -> (String, &'static str) {
+    match unresolved.target {
+        Some(target) => (format!("{target:#x}"), "(outside any function)"),
+        None => (String::new(), "(through a pointer)"),
+    }
+}
+
+/// How a sentence says that `cant_follow`, calls and jumps that elfq can't
+/// follow, go to some ranges: "may go" when one goes through a pointer,
+/// which may go anywhere, or else "goes" or "go", since a call to an
+/// address that the code names goes there.
+pub(super) fn where_they_go(cant_follow: &[&Unresolved]) -> &'static str {
+    if cant_follow
+        .iter()
+        .any(|unresolved| unresolved.target.is_none())
+    {
+        "may go"
+    } else if cant_follow.len() == 1 {
+        "goes"
+    } else {
+        "go"
+    }
 }
 
 /// "1 call", "2 jumps" or "1 call and 2 jumps", for calls and jumps that

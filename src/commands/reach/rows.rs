@@ -5,8 +5,8 @@
 use std::cmp::Reverse;
 use std::collections::HashSet;
 
-use super::tree::Tree;
-use super::{COLUMNS, Step, Text};
+use super::tree::{Tree, TreeRows};
+use super::{Step, Text, columns, reached_words};
 use crate::binary::{Binary, ItemKind, total};
 use crate::commands::flat_answer::{FlatAnswer, FlatRow};
 use crate::commands::{range_check, text};
@@ -49,13 +49,9 @@ impl Text<'_, '_> {
         let bytes = text::code_and_data(reach.bytes(reach.steps.iter()));
         let mut lead = match &items[..] {
             [] => format!("{name} takes {bytes}"),
-            [Node::Item(index)] => format!(
-                "{name} and the {} it reaches take {bytes}",
-                text::kind_name(binary.items[*index].kind)
-            ),
             _ => format!(
                 "{name} and the {} it reaches take {bytes}",
-                text::count_text(binary, &items)
+                reached_words(binary, &items)
             ),
         };
         if imports > 0 {
@@ -80,15 +76,13 @@ impl Text<'_, '_> {
             notes.push(text::unreadable_text(binary, &reach.unreadable, self.all));
         }
         let (rows, tree) = match self.tree {
-            true => (Vec::new(), Some(Tree::new(self).top())),
+            true => (Vec::new(), Some(Tree::new(self, TreeRows::Largest).top())),
             false => (self.rows(&reach.outside()), None),
         };
         FlatAnswer {
             lead: vec![format!("{lead}:")],
             memory: (reach.blocks.len() > 1).then(|| self.memory_table()),
-            columns: COLUMNS
-                .map(|(header, align)| (header.to_string(), align))
-                .into(),
+            columns: columns(false),
             rows,
             tree,
             notes,
@@ -145,13 +139,10 @@ impl Text<'_, '_> {
     /// SYMBOL's row.
     pub(super) fn symbol_row(&self) -> FlatRow {
         let reach = self.reach;
-        let item = &reach.binary.items[reach.symbol];
-        let cells = vec![
-            format!("{:#x}", item.address),
-            text::size_text(item),
-            String::new(),
-        ];
-        FlatRow::new(cells, item.name.clone(), Some(Node::Item(reach.symbol)))
+        let node = Node::Item(reach.symbol);
+        let [address, size] = text::address_and_size(reach.binary, node);
+        let cells = vec![address, size, String::new()];
+        FlatRow::new(cells, node.name(reach.binary).to_string(), Some(node))
     }
 
     /// Which group of the table `step`'s row is in: each block's functions,
@@ -190,10 +181,7 @@ impl Text<'_, '_> {
     /// item that makes it.
     pub(super) fn unfollowed_row(&self, unfollowed: &Unfollowed) -> FlatRow {
         let unresolved = &unfollowed.unresolved;
-        let (address, what) = match unresolved.target {
-            Some(target) => (format!("{target:#x}"), "(outside any function)"),
-            None => (String::new(), "(through a pointer)"),
-        };
+        let (address, what) = text::cant_follow_target(unresolved);
         let cells = vec![
             address,
             String::new(),
@@ -245,22 +233,14 @@ impl Text<'_, '_> {
         rows.push(FlatRow::new(cells, more, None));
     }
 
-    /// An item's or import's row. With `--to`, the row is
-    /// written as `callees --to` writes it, with the whole name of the item
-    /// that uses it, and no mark for a function reached through a pointer,
-    /// which HOW shows.
+    /// An item's or import's row, with a mark for a function reached
+    /// through a pointer, unless it is worded as `callees --to` words it
+    /// (see [`Text::like_callees_to`]).
     pub(super) fn row(&self, step: &Step) -> FlatRow {
-        let reach = self.reach;
-        let binary = reach.binary;
-        let (address, size) = match step.node {
-            Node::Item(index) => {
-                let item = &binary.items[index];
-                (format!("{:#x}", item.address), text::size_text(item))
-            }
-            Node::Import(_) => (String::new(), String::new()),
-        };
+        let binary = self.reach.binary;
+        let [address, size] = text::address_and_size(binary, step.node);
         let used = step.used.as_ref().expect("only SYMBOL has no user");
-        let mark = if step.through_pointer && reach.to.is_empty() {
+        let mark = if step.through_pointer && !self.like_callees_to() {
             " (through a pointer)"
         } else {
             ""
@@ -272,13 +252,13 @@ impl Text<'_, '_> {
     }
 
     /// The name of `index`, an item that uses another, on that item's row:
-    /// the shortest that finds it, or with `--to`, its whole name, as
-    /// `callees --to` names it.
+    /// the shortest that finds it, or its whole name, as `callees --to`
+    /// names it (see [`Text::like_callees_to`]).
     fn user_name(&self, index: usize) -> String {
-        let reach = self.reach;
-        match reach.to[..] {
-            [] => self.names.row_name(index),
-            _ => reach.binary.items[index].name.clone(),
+        if self.like_callees_to() {
+            self.reach.binary.items[index].name.clone()
+        } else {
+            self.names.row_name(index)
         }
     }
 

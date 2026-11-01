@@ -69,17 +69,11 @@ impl FlatRow {
         FlatRow { rest, ..self }
     }
 
-    /// Its last cell as the table writes it: the name, then what the row
-    /// says about it.
-    fn last_cell(&self) -> String {
-        format!("{}{}", self.name, self.rest)
-    }
-
-    /// Its cells as the table writes them.
-    pub(super) fn into_cells(self) -> Vec<String> {
-        let last = self.last_cell();
-        let mut cells = self.cells;
-        cells.push(last);
+    /// Its cells as the table writes them, the last of which is the name,
+    /// then what the row says about it.
+    pub(super) fn all_cells(&self) -> Vec<String> {
+        let mut cells = self.cells.clone();
+        cells.push(format!("{}{}", self.name, self.rest));
         cells
     }
 }
@@ -157,9 +151,7 @@ impl FlatAnswer {
             None if self.rows.is_empty() => return None,
             None => {
                 for row in &self.rows {
-                    let mut cells = row.cells.clone();
-                    cells.push(row.last_cell());
-                    table.row(cells);
+                    table.row(row.all_cells());
                 }
             }
         }

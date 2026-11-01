@@ -1,25 +1,48 @@
 //! The text answer of `reach SYMBOL --to RANGE`: what SYMBOL reaches in
 //! the ranges, and the use from outside them that reaches each item.
 
-use std::io::Write;
-
-use anyhow::Result;
-
-use super::tree::Tree;
-use super::{COLUMNS, Step, Text};
+use super::tree::{Tree, TreeRows};
+use super::{Step, Text, columns, reached_words};
+use crate::commands::flat_answer::{FlatAnswer, FlatRow};
 use crate::commands::{range_check, text};
-use crate::graph::{Node, ReferenceKind, Unfollowed};
-use crate::render::{Align, Table};
+use crate::graph::{Node, ReferenceKind, Unfollowed, Unresolved};
 
 impl Text<'_, '_> {
-    /// Writes the answer as text with `--to`: what SYMBOL reaches in its
-    /// ranges, every row, or with `--tree`, the chains from SYMBOL to them.
-    pub(super) fn write_to_text(&self, out: &mut dyn Write) -> Result<()> {
+    /// The answer as text with `--to`: what SYMBOL reaches in its ranges,
+    /// with every row, or with `--tree`, the chains from SYMBOL to them;
+    /// and the note on the code that elfq can't read, which may reach more.
+    pub(super) fn to_answer(&self) -> FlatAnswer {
+        let reach = self.reach;
+        let counted = reach.counted();
+        let cant_follow = self.counted_cant_follow();
+        let mut lead = self.to_lead(&counted, &cant_follow);
+        let mut answer = FlatAnswer::default();
+        if !counted.is_empty() || !cant_follow.is_empty() {
+            lead += ":";
+            answer.columns = columns(!self.tree);
+            if self.tree {
+                let rows = TreeRows::Exactly(reach.in_answer());
+                answer.tree = Some(Tree::new(self, rows).top());
+            } else {
+                answer.rows = self.to_rows(&counted);
+            }
+        }
+        answer.lead = vec![lead];
+        if !reach.unreadable.is_empty() {
+            let unreadable = text::unreadable_text(reach.binary, &reach.unreadable, self.all);
+            answer.notes.push(unreadable);
+        }
+        answer
+    }
+
+    /// The first line with `--to`, but for the colon before the rows: what
+    /// SYMBOL and what it reaches in the ranges take, of `counted`, and
+    /// what elfq can't follow of `cant_follow`, which may go there.
+    fn to_lead(&self, counted: &[&Step], cant_follow: &[&Unresolved]) -> String {
         let reach = self.reach;
         let binary = reach.binary;
         let name = self.lead_name;
-        let counted = reach.counted();
-        let symbol_in_to = counted.first().is_some_and(|step| step.parent.is_none());
+        let symbol_in_to = reach.in_to(&reach.steps[0]);
         let others: Vec<Node> = counted
             .iter()
             .filter(|step| step.parent.is_some())
@@ -27,18 +50,13 @@ impl Text<'_, '_> {
             .collect();
         let bytes = text::code_and_data(reach.bytes(counted.iter().copied()));
         let ranges = range_check::ranges_text(binary, &reach.to, self.all);
-        let cant_follow = self.counted_cant_follow();
         let mut lead = match (symbol_in_to, &others[..]) {
             (true, []) => {
                 format!("{name} takes {bytes} in {ranges}, and reaches nothing else there")
             }
-            (true, [Node::Item(index)]) => format!(
-                "{name} and the {} it reaches in {ranges} take {bytes}",
-                text::kind_name(binary.items[*index].kind)
-            ),
             (true, _) => format!(
                 "{name} and the {} it reaches in {ranges} take {bytes}",
-                text::count_text(binary, &others)
+                reached_words(binary, &others)
             ),
             (false, []) if !cant_follow.is_empty() => {
                 format!("{name} reaches no items in {ranges}")
@@ -56,83 +74,43 @@ impl Text<'_, '_> {
             ),
         };
         if !cant_follow.is_empty() {
-            // A call through a pointer may go anywhere, but one to an
-            // address that the code names goes there.
-            let go = if cant_follow.iter().any(|u| u.target.is_none()) {
-                "may go"
-            } else if cant_follow.len() == 1 {
-                "goes"
-            } else {
-                "go"
-            };
             let joint = if counted.is_empty() { ", but" } else { ";" };
             lead += &format!(
-                "{joint} elfq can't follow {}, which {go} there",
-                text::calls_and_jumps(cant_follow.iter().copied())
+                "{joint} elfq can't follow {}, which {} there",
+                text::calls_and_jumps(cant_follow.iter().copied()),
+                text::where_they_go(cant_follow)
             );
         }
-        let listed = !counted.is_empty() || !cant_follow.is_empty();
-        if listed {
-            lead += ":";
-        }
-        writeln!(out, "{lead}")?;
-        if listed {
-            writeln!(out)?;
-            if self.tree {
-                Tree::new(self).write(out)?;
-            } else {
-                self.write_to_rows(&counted, out)?;
-            }
-        }
-        if !reach.unreadable.is_empty() {
-            if listed {
-                writeln!(out)?;
-            }
-            writeln!(
-                out,
-                "{}",
-                text::unreadable_text(binary, &reach.unreadable, self.all)
-            )?;
-        }
-        Ok(())
+        lead
     }
 
-    /// Writes the rows with `--to`: SYMBOL's, when it is among `counted`,
-    /// the steps in its ranges; then the calls and jumps that elfq can't
-    /// follow that may go there, first, as `callees --to` lists them, since
-    /// they may hide more; then the rest of `counted`, in the order of
-    /// [`Text::rows`]. Every row is shown, with the sites of the use
-    /// it names in the AT column.
-    fn write_to_rows(&self, counted: &[&Step], out: &mut dyn Write) -> Result<()> {
+    /// The rows with `--to`: SYMBOL's, when it is in the ranges; then the
+    /// calls and jumps that elfq can't follow that may go there, first, as
+    /// `callees --to` lists them, since they may hide more; then the rest
+    /// of `counted`, in the order of [`Text::rows`]. Every row is shown,
+    /// with the sites of the use it names in the AT column.
+    fn to_rows(&self, counted: &[&Step]) -> Vec<FlatRow> {
         let reach = self.reach;
-        let mut columns = COLUMNS.to_vec();
-        columns.insert(3, ("AT", Align::Left));
-        let mut table = Table::new(&columns);
-        let with_at = |mut cells: Vec<String>, sites: &[u64]| {
-            cells.insert(3, text::at_column(sites));
-            cells
+        let with_at = |mut row: FlatRow, sites: &[u64]| {
+            row.cells.push(text::at_column(sites));
+            row
         };
-        let (symbol, reached) = match counted {
-            [first, rest @ ..] if first.parent.is_none() => (true, rest),
-            _ => (false, counted),
-        };
-        if symbol {
-            table.row(with_at(self.symbol_row().into_cells(), &[]));
+        let mut rows = Vec::new();
+        if reach.in_to(&reach.steps[0]) {
+            rows.push(with_at(self.symbol_row(), &[]));
         }
         for (unfollowed, sites) in range_check::group_unfollowed(&reach.listed()) {
             let sites = self.unfollowed_sites(&unfollowed, sites);
-            table.row(with_at(
-                self.unfollowed_row(&unfollowed).into_cells(),
-                &sites,
-            ));
+            rows.push(with_at(self.unfollowed_row(&unfollowed), &sites));
         }
-        for step in self.in_row_order(reached.to_vec()) {
-            table.row(with_at(self.row(step).into_cells(), &self.use_sites(step)));
+        let reached = (counted.iter().copied())
+            .filter(|step| step.parent.is_some())
+            .collect();
+        for step in self.in_row_order(reached) {
+            rows.push(with_at(self.row(step), &self.use_sites(step)));
         }
-        table.write(out)?;
-        Ok(())
+        rows
     }
-
     /// Where the item that uses `step` on its row uses it as the row's HOW
     /// says, for the AT column: every such site, as `callees` lists them,
     /// which may be more than the chain's, as when code both reads a

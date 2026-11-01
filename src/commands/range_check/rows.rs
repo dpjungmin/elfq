@@ -211,13 +211,7 @@ pub(crate) fn row_cells(
     row: &CrossingRow,
     direction: Direction,
 ) -> Vec<String> {
-    let (address, size) = match outside {
-        Node::Item(item) => {
-            let item = &binary.items[item];
-            (format!("{:#x}", item.address), text::size_text(item))
-        }
-        Node::Import(_) => (String::new(), String::new()),
-    };
+    let [address, size] = text::address_and_size(binary, outside);
     let used = match direction {
         Direction::Out => outside,
         Direction::In => row.inside,

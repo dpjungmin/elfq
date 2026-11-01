@@ -83,7 +83,7 @@ use super::flat_answer::FlatTab;
 use super::json::section_names;
 use super::kept::Kept;
 use super::symbol::Names;
-use super::text::CommandLine;
+use super::text::{self, CommandLine};
 use super::{Outcome, range_check};
 use crate::binary::{AddressRange, Binary, CodeAndData, MemoryBlock};
 use crate::cli::Format;
@@ -230,14 +230,22 @@ pub(super) fn text_output<'a>(
     String::from_utf8(out).expect("elfq writes UTF-8")
 }
 
-/// The columns of the rows by block and of the tree. With `--to`, the
-/// rows have AT before ITEM.
-const COLUMNS: [(&str, Align); 4] = [
-    ("ADDRESS", Align::Left),
-    ("SIZE", Align::Right),
-    ("HOW", Align::Left),
-    ("ITEM", Align::Left),
-];
+/// The columns of the rows by block and of the tree, and with `at`, of the
+/// rows of `--to`, which have AT before ITEM.
+fn columns(at: bool) -> Vec<(String, Align)> {
+    let mut columns = vec![
+        ("ADDRESS", Align::Left),
+        ("SIZE", Align::Right),
+        ("HOW", Align::Left),
+        ("ITEM", Align::Left),
+    ];
+    if at {
+        columns.insert(3, ("AT", Align::Left));
+    }
+    (columns.into_iter())
+        .map(|(header, align)| (header.to_string(), align))
+        .collect()
+}
 
 /// What SYMBOL reaches: the facts that the search finds, which the JSON
 /// has, and which [`Text`] words.
@@ -478,12 +486,31 @@ impl Text<'_, '_> {
         }
     }
 
-    /// Writes the answer: the items by block, or with `--tree`, as a tree
-    /// drawn with branches.
+    /// Whether the rows are worded as `callees --to` words them, as they
+    /// are with `--to`: each names the item that uses it by its whole name,
+    /// and a function reached through a pointer gets no mark, since HOW
+    /// shows it.
+    fn like_callees_to(&self) -> bool {
+        !self.reach.to.is_empty()
+    }
+
+    /// Writes the answer: the items by block, or with `--to`, those in its
+    /// ranges; or with `--tree`, as a tree drawn with branches.
     fn write(&self, out: &mut dyn Write) -> Result<()> {
-        if !self.reach.to.is_empty() {
-            return self.write_to_text(out);
-        }
-        self.answer().write(out)
+        let answer = match self.reach.to[..] {
+            [] => self.answer(),
+            _ => self.to_answer(),
+        };
+        answer.write(out)
+    }
+}
+
+/// What the first line calls the items in `nodes` that SYMBOL reaches,
+/// after "the", as in "main and the 12 functions it reaches take": the
+/// kind of one item, or as [`text::count_text`] counts them.
+fn reached_words(binary: &Binary, nodes: &[Node]) -> String {
+    match nodes {
+        [Node::Item(index)] => text::kind_name(binary.items[*index].kind).to_string(),
+        _ => text::count_text(binary, nodes),
     }
 }

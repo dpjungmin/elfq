@@ -14,6 +14,7 @@ mod crossing;
 mod rows;
 mod validate;
 
+pub(super) use crossing::complete;
 pub(super) use rows::{
     CalleeJson, CrossingRow, callee_json, callee_rows, crossings_columns, group_unfollowed,
     json_far_side, ranges_text, row_cells, unfollowed_how,

@@ -1,15 +1,12 @@
 //! The tree that `reach SYMBOL --tree` draws, with `--to` and without.
 
 use std::collections::{HashMap, HashSet};
-use std::io::Write;
-
-use anyhow::Result;
 
 use super::rows::more_size;
-use super::{COLUMNS, Step, StepId, Text};
+use super::{Step, StepId, Text};
 use crate::commands::{text, tree_answer};
 use crate::graph::{Node, Unresolved};
-use crate::render::{Table, TreeRow, TreeShape};
+use crate::render::TreeRow;
 
 /// What SYMBOL reaches, as `--tree` draws it: each item under the item that
 /// uses it on its chain from SYMBOL, in the order that item first uses
@@ -23,19 +20,41 @@ pub(super) struct Tree<'r, 'a> {
     children: Vec<Vec<StepId>>,
     /// The calls and jumps that elfq can't follow in each step that get
     /// rows, one per kind and target: those to code outside every item, and
-    /// with `--to`, those through pointers too.
+    /// with [`TreeRows::Exactly`], those through pointers too.
     cant_follow_rows: Vec<Vec<Unresolved>>,
     /// The steps that get rows.
     has_row: HashSet<StepId>,
 }
 
+/// Which steps the tree has, and which of them get rows.
+pub(super) enum TreeRows {
+    /// Every step, with rows for the largest items and what holds them
+    /// together (see [`Tree::largest_rows`]), and "N more" rows for the
+    /// rest. The calls and jumps through pointers are left for a note below
+    /// the tree.
+    Largest,
+    /// Only the steps marked `true`, each with a row, as with `--to`, where
+    /// the tree has only the steps in the answer (see [`Reach::in_answer`]),
+    /// with rows for the calls and jumps through pointers that may go to
+    /// its ranges.
+    ///
+    /// [`Reach::in_answer`]: super::Reach::in_answer
+    Exactly(Vec<bool>),
+}
+
 impl<'r, 'a> Tree<'r, 'a> {
-    pub(super) fn new(text: &'r Text<'r, 'a>) -> Tree<'r, 'a> {
+    pub(super) fn new(text: &'r Text<'r, 'a>, rows: TreeRows) -> Tree<'r, 'a> {
         let reach = text.reach;
         let steps = &reach.steps;
+        let in_tree = |id: StepId| match &rows {
+            TreeRows::Largest => true,
+            TreeRows::Exactly(marked) => marked[id],
+        };
         let mut children = vec![Vec::new(); steps.len()];
         for (id, step) in steps.iter().enumerate().skip(1) {
-            children[step.parent.expect("only SYMBOL has no parent")].push(id);
+            if in_tree(id) {
+                children[step.parent.expect("only SYMBOL has no parent")].push(id);
+            }
         }
         let step_of_item: HashMap<usize, StepId> = steps
             .iter()
@@ -48,17 +67,17 @@ impl<'r, 'a> Tree<'r, 'a> {
         let mut cant_follow_rows: Vec<Vec<Unresolved>> = vec![Vec::new(); steps.len()];
         for cant in &reach.cant_follow {
             let unresolved = cant.found;
-            // Without `--to`, a note below the tree names the calls and
+            // With `Largest`, a note below the tree names the calls and
             // jumps through pointers.
-            if unresolved.target.is_none() && reach.to.is_empty() {
+            if unresolved.target.is_none() && matches!(rows, TreeRows::Largest) {
                 continue;
             }
-            let rows = &mut cant_follow_rows[step_of_item[&unresolved.from]];
+            let step_rows = &mut cant_follow_rows[step_of_item[&unresolved.from]];
             let same = |row: &Unresolved| {
                 (row.is_call, row.target) == (unresolved.is_call, unresolved.target)
             };
-            if !rows.iter().any(same) {
-                rows.push(unresolved);
+            if !step_rows.iter().any(same) {
+                step_rows.push(unresolved);
             }
         }
         let mut tree = Tree {
@@ -67,25 +86,21 @@ impl<'r, 'a> Tree<'r, 'a> {
             cant_follow_rows,
             has_row: HashSet::new(),
         };
-        tree.has_row = tree.has_row();
+        tree.has_row = match rows {
+            TreeRows::Largest => tree.largest_rows(),
+            TreeRows::Exactly(marked) => (0..steps.len()).filter(|&id| marked[id]).collect(),
+        };
         tree
     }
 
-    /// Which steps get rows: with `--to`, the steps in the answer (see
-    /// [`Reach::in_answer`]). Without it, SYMBOL; the largest items, or
-    /// every one (see [`Text::largest`]); the steps with rows for calls or
-    /// jumps to code outside every item, since rows by block show every
-    /// one; every step on their chains from SYMBOL, so that the tree holds
-    /// together; and a step left out on its own (see
+    /// The steps that get rows with [`TreeRows::Largest`]: SYMBOL; the
+    /// largest items, or every one (see [`Text::largest`]); the steps with
+    /// rows for calls or jumps to code outside every item, since rows by
+    /// block show every one; every step on their chains from SYMBOL, so
+    /// that the tree holds together; and a step left out on its own (see
     /// [`tree_answer::add_lone`]).
-    ///
-    /// [`Reach::in_answer`]: super::Reach::in_answer
-    fn has_row(&self) -> HashSet<StepId> {
+    fn largest_rows(&self) -> HashSet<StepId> {
         let reach = self.text.reach;
-        if !reach.to.is_empty() {
-            let in_answer = reach.in_answer();
-            return (0..in_answer.len()).filter(|&id| in_answer[id]).collect();
-        }
         let steps = &reach.steps;
         let largest = self.text.largest(&steps[1..]);
         let wanted = (0..steps.len()).filter(|&id| {
@@ -94,15 +109,6 @@ impl<'r, 'a> Tree<'r, 'a> {
         let mut has_row = tree_answer::with_chains(wanted, |id| steps[id].parent);
         tree_answer::add_lone(&mut has_row, [0], |id| self.children[id].iter().copied());
         has_row
-    }
-
-    /// Writes the tree under the columns of the rows by block, as `--to`
-    /// writes it.
-    pub(super) fn write(&self, out: &mut dyn Write) -> Result<()> {
-        let mut table = Table::new(&COLUMNS);
-        table.tree(&[self.top()], TreeShape::Drawn);
-        table.write(out)?;
-        Ok(())
     }
 
     /// SYMBOL's row, with every row under it.
@@ -122,13 +128,7 @@ impl<'r, 'a> Tree<'r, 'a> {
             through_pointer,
             ..
         } = self.text.reach.steps[id];
-        let (address, size) = match node {
-            Node::Item(index) => {
-                let item = &binary.items[index];
-                (format!("{:#x}", item.address), text::size_text(item))
-            }
-            Node::Import(_) => (String::new(), String::new()),
-        };
+        let [address, size] = text::address_and_size(binary, node);
         let how = via.map_or("", |via| text::how_column(binary, node, via.kind));
         let (with_rows, hidden): (Vec<StepId>, Vec<StepId>) = self.children[id]
             .iter()
@@ -137,10 +137,7 @@ impl<'r, 'a> Tree<'r, 'a> {
             .map(|child| self.row(child))
             .collect();
         for unresolved in &self.cant_follow_rows[id] {
-            let (address, name) = match unresolved.target {
-                Some(target) => (format!("{target:#x}"), "(outside any function)"),
-                None => (String::new(), "(through a pointer)"),
-            };
+            let (address, name) = text::cant_follow_target(unresolved);
             let cells = vec![
                 address,
                 String::new(),
@@ -148,8 +145,7 @@ impl<'r, 'a> Tree<'r, 'a> {
             ];
             children.push(TreeRow::new(cells, name, Vec::new()));
         }
-        // With `--to`, the steps left out aren't part of the answer.
-        if !hidden.is_empty() && self.text.reach.to.is_empty() {
+        if !hidden.is_empty() {
             children.push(self.more(&hidden));
         }
         let mut row = TreeRow::new(

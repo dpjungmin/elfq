@@ -5,7 +5,7 @@ use std::io::Write;
 use anyhow::Result;
 use serde::Serialize;
 
-use super::{CantFollow, Reach};
+use super::Reach;
 use crate::commands::{json, range_check};
 use crate::graph::Node;
 
@@ -125,11 +125,6 @@ impl Reach<'_, '_> {
                 })
             })
             .collect();
-        // With `--to`, a call to a known address in its ranges, as to a
-        // chip's ROM, is a whole answer, as `callees --to` counts it: only
-        // a call through a pointer leaves it open.
-        let known_target_in_to =
-            |cant: &CantFollow| !self.to.is_empty() && cant.found.target.is_some();
         let answer = ReachJson {
             symbol: json::Symbol::new(binary, Node::Item(self.symbol)),
             to: range_check::json_far_side(&self.to),
@@ -144,7 +139,11 @@ impl Reach<'_, '_> {
                 })
                 .collect(),
             unreadable: json::items(binary, &self.unreadable),
-            complete: self.cant_follow.iter().all(known_target_in_to) && self.unreadable.is_empty(),
+            complete: range_check::complete(
+                self.cant_follow.iter().map(|cant| &cant.found),
+                &self.unreadable,
+                !self.to.is_empty(),
+            ),
         };
         json::write(&answer, out)
     }
