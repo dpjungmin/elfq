@@ -30,7 +30,7 @@ pub fn tab(session: &Session, index: usize, name: &str) -> Option<Printed> {
     };
     let answer = retained::answers(&symbol, &note_name);
     let node = Node::Item(index);
-    let command = session.command("retained", Some(node), answer.cut);
+    let command = session.command("retained", Some(node), answer.needs_all);
     let printed = (Printed::of_tab(answer, command))
         .with_below(by_block(session, &retained.tree, node))
         .opening(Tab::Retained, node);

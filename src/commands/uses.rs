@@ -211,9 +211,7 @@ mod tests {
                     })
                     .collect();
                 let (_, rows) = table(&binary, rows, End::Callers, text::shown(all));
-                rows.into_iter()
-                    .map(FlatRow::into_cells)
-                    .collect::<Vec<_>>()
+                rows.iter().map(FlatRow::all_cells).collect::<Vec<_>>()
             };
             assert_eq!(
                 table_needs_all(count),

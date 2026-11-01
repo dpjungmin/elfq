@@ -19,7 +19,7 @@ use super::{Direction, RangeCheck};
 use crate::binary::{AddressRange, Binary};
 use crate::cli::Format;
 use crate::commands::{json, text};
-use crate::graph::{Boundary, Crossing, Graph, ItemsInRanges, Node, Unfollowed};
+use crate::graph::{Boundary, Crossing, Graph, ItemsInRanges, Node, Unfollowed, Unresolved};
 
 #[derive(Serialize)]
 struct LeavingJson<'a> {
@@ -143,15 +143,14 @@ impl<'a> Leaving<'a> {
     }
 
     /// Whether the answer has everything that crosses, as far as elfq can
-    /// tell. With `--to`, a call to a known address in its ranges, as to a
-    /// chip's ROM, is a whole answer, as `callers --from` counts it: only a
-    /// call through a pointer leaves it open.
+    /// tell (see [`complete`]).
     fn complete(&self) -> bool {
-        self.unreadable.is_empty()
-            && self
-                .unfollowed
-                .iter()
-                .all(|row| !self.check.far_side.is_empty() && row.unresolved.target.is_some())
+        let cant_follow = self.unfollowed.iter().map(|row| &row.unresolved);
+        complete(
+            cant_follow,
+            &self.unreadable,
+            !self.check.far_side.is_empty(),
+        )
     }
 
     /// Writes the answer in `format`.
@@ -208,19 +207,9 @@ impl<'a> Leaving<'a> {
                 verb("makes", "make")
             ),
             (true, false) => {
-                // A call through a pointer may go anywhere, but one to an
-                // address that the code names goes there.
-                let go = if self
-                    .unfollowed
-                    .iter()
-                    .any(|u| u.unresolved.target.is_none())
-                {
-                    "may go"
-                } else if self.unfollowed.len() == 1 {
-                    "goes"
-                } else {
-                    "go"
-                };
+                let cant_follow: Vec<&Unresolved> =
+                    self.unfollowed.iter().map(|u| &u.unresolved).collect();
+                let go = text::where_they_go(&cant_follow);
                 format!(
                     "{subject} {} {unknown} that elfq can't follow, which {go} to {}:",
                     verb("makes", "make"),
@@ -241,10 +230,7 @@ impl<'a> Leaving<'a> {
             // What elfq can't follow comes first, since it may hide more.
             for (unfollowed, sites) in group_unfollowed(&self.unfollowed) {
                 let unresolved = &unfollowed.unresolved;
-                let (callee, address) = match unresolved.target {
-                    None => ("(through a pointer)", String::new()),
-                    Some(target) => ("(outside any function)", format!("{target:#x}")),
-                };
+                let (address, callee) = text::cant_follow_target(unresolved);
                 table.row(vec![
                     address,
                     String::new(),
@@ -268,6 +254,21 @@ impl<'a> Leaving<'a> {
         }
         Ok(())
     }
+}
+
+/// Whether an answer that leaves out `cant_follow`, the calls and jumps
+/// in it that elfq can't follow, and `unreadable`, the functions whose code
+/// elfq can't read, has everything, as far as elfq can tell. When the
+/// answer is `limited` to some ranges, as with `--to`, a call to a known
+/// address in them, as to a chip's ROM, is a whole answer, as `callers
+/// --from` counts it: only a call through a pointer leaves it open.
+pub(crate) fn complete<'u>(
+    cant_follow: impl IntoIterator<Item = &'u Unresolved>,
+    unreadable: &[usize],
+    limited: bool,
+) -> bool {
+    unreadable.is_empty()
+        && (cant_follow.into_iter()).all(|unresolved| limited && unresolved.target.is_some())
 }
 
 /// What uses the items in the ranges from outside them: `callers

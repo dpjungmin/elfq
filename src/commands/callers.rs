@@ -169,6 +169,7 @@ impl<'g> Found<'g> {
             memory: None,
             columns,
             rows,
+            tree: None,
             notes: self.notes(binary, graph),
         }
     }

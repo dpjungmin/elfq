@@ -3,22 +3,24 @@
 //! browse shows it. Unlike a [`TreeAnswer`], whose rows hang under one another and
 //! whose notes each follow an empty line, it can have a table of the
 //! blocks of memory before its rows, and its notes follow one empty line
-//! together.
+//! together. `reach --tree` draws a tree in place of the rows.
 //!
 //! [`TreeAnswer`]: super::tree_answer::TreeAnswer
 
 use std::io::Write;
+use std::slice;
 
 use anyhow::Result;
 
 use crate::graph::Node;
-use crate::render::{Align, Table};
+use crate::render::{Align, Table, TreeRow, TreeShape};
 
 /// The text answer of `callers`, `callees`, `reach` or `inlined`, before
 /// it is written, which browse shows too: the lines before its tables, the bytes
 /// in each block of memory, the table of rows, with the item that each row
-/// is about, and the notes under them. An empty line comes before each
-/// table, and before the notes when there is a table of rows.
+/// is about, or a tree in their place, and the notes under them. An empty
+/// line comes before each table, and before the notes when there is a
+/// table of rows or a tree.
 #[derive(Default)]
 pub(super) struct FlatAnswer {
     /// The first line, or what the answer says in place of its tables.
@@ -28,6 +30,9 @@ pub(super) struct FlatAnswer {
     pub columns: Vec<(String, Align)>,
     /// Empty when the answer has no table of rows.
     pub rows: Vec<FlatRow>,
+    /// The tree drawn with branches in place of the rows, as `reach --tree`
+    /// draws it, under the same columns. Browse shows rows, never a tree.
+    pub tree: Option<TreeRow>,
     pub notes: Vec<String>,
 }
 
@@ -59,29 +64,48 @@ impl FlatRow {
         }
     }
 
-    /// Its cells as the table writes them.
-    pub(super) fn into_cells(self) -> Vec<String> {
-        let mut cells = self.cells;
-        cells.push(self.name + &self.rest);
+    /// The same row, saying `rest` about its name, such as ", used by main".
+    pub(super) fn with_rest(self, rest: String) -> FlatRow {
+        FlatRow { rest, ..self }
+    }
+
+    /// Its cells as the table writes them, the last of which is the name,
+    /// then what the row says about it.
+    pub(super) fn all_cells(&self) -> Vec<String> {
+        let mut cells = self.cells.clone();
+        cells.push(format!("{}{}", self.name, self.rest));
         cells
     }
 }
 
-/// Writes a table, or what takes its place in an [`FlatAnswer`].
-pub(super) type WriteTable<'a> = dyn Fn(&mut dyn Write) -> Result<()> + 'a;
+/// A [`FlatAnswer`] as a tab of browse shows it, with what the command
+/// that prints it leaves out without `--all`.
+#[cfg(feature = "tui")]
+pub(super) struct FlatTab {
+    /// The answer with every row and name, as with `--all`.
+    pub(super) answer: FlatAnswer,
+    /// Its notes as the command words them without `--all`, which name
+    /// fewer items.
+    pub(super) brief: Vec<String>,
+    /// Whether the command needs `--all` to print all of `answer`.
+    pub(super) needs_all: bool,
+}
+
+#[cfg(feature = "tui")]
+impl FlatTab {
+    /// The tab of `answer`, which `brief` is as the command writes it
+    /// without `--all`.
+    pub(super) fn new(answer: FlatAnswer, brief: FlatAnswer) -> FlatTab {
+        FlatTab {
+            needs_all: brief.written() != answer.written(),
+            brief: brief.notes,
+            answer,
+        }
+    }
+}
 
 impl FlatAnswer {
     pub(super) fn write(&self, out: &mut dyn Write) -> Result<()> {
-        if self.rows.is_empty() {
-            return self.write_with(None, out);
-        }
-        let table = self.table();
-        self.write_with(Some(&|out: &mut dyn Write| Ok(table.write(out)?)), out)
-    }
-
-    /// Writes it with what `table` writes, if anything, in place of its
-    /// table of rows, as `--tree` draws a tree there.
-    pub(super) fn write_with(&self, table: Option<&WriteTable>, out: &mut dyn Write) -> Result<()> {
         for line in &self.lead {
             writeln!(out, "{line}")?;
         }
@@ -89,9 +113,9 @@ impl FlatAnswer {
             writeln!(out)?;
             memory.write(out)?;
         }
-        if let Some(table) = table {
+        if let Some(table) = self.table() {
             writeln!(out)?;
-            table(out)?;
+            table.write(out)?;
             if !self.notes.is_empty() {
                 writeln!(out)?;
             }
@@ -118,14 +142,19 @@ impl FlatAnswer {
         nodes.len()
     }
 
-    /// The table of rows, as the text writes it.
-    pub(super) fn table(&self) -> Table {
+    /// The table of rows, or of the tree, as the text writes it, if the
+    /// answer has either.
+    fn table(&self) -> Option<Table> {
         let mut table = Table::new(&self.columns);
-        for row in &self.rows {
-            let mut cells = row.cells.clone();
-            cells.push(format!("{}{}", row.name, row.rest));
-            table.row(cells);
+        match &self.tree {
+            Some(tree) => table.tree(slice::from_ref(tree), TreeShape::Drawn),
+            None if self.rows.is_empty() => return None,
+            None => {
+                for row in &self.rows {
+                    table.row(row.all_cells());
+                }
+            }
         }
-        table
+        Some(table)
     }
 }

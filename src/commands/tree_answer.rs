@@ -5,8 +5,7 @@
 //! each of its notes follows an empty line.
 //!
 //! A large tree shows only its largest rows, and the functions at the end
-//! of this file cut it down the same way for `top`, `retained` and
-//! `inlined FUNCTION` (`reach --tree` still has its own copy): the largest
+//! of this file cut it down the same way for every command: the largest
 //! items, and the items between them and the top so that the tree holds
 //! together ([`largest`] and [`with_chains`]), a lone item that would be
 //! left out on its own ([`add_lone`]), and a row such as "70 more" that sums
@@ -107,7 +106,7 @@ pub(super) struct TabAnswer {
     /// screen with little room for them.
     pub(super) briefest: Vec<String>,
     /// Whether the command needs `--all` to print all of `answer`.
-    pub(super) cut: bool,
+    pub(super) needs_all: bool,
 }
 
 #[cfg(feature = "tui")]
@@ -118,7 +117,7 @@ impl TabAnswer {
             answer: TreeAnswer::sentences(lead),
             brief: Vec::new(),
             briefest: Vec::new(),
-            cut: false,
+            needs_all: false,
         }
     }
 }

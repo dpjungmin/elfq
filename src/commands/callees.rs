@@ -142,6 +142,7 @@ pub(super) fn answer(
         memory: None,
         columns,
         rows,
+        tree: None,
         notes,
     }
 }

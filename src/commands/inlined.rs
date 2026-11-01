@@ -171,6 +171,7 @@ fn list_answer(totals: &[Total], inlined: u64, code: u64, all: bool) -> FlatAnsw
             .map(|&(header, align)| (header.to_string(), align))
             .collect(),
         rows,
+        tree: None,
         notes: empty_copies_note(shown.iter().any(|total| total.bytes == 0)),
     }
 }

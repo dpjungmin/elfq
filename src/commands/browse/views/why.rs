@@ -21,7 +21,7 @@ pub fn tab(session: &Session, node: Node, name: &str) -> Option<Printed> {
     let keepers = session.keepers()?;
     let (binary, graph, names) = (session.binary, &session.graph, &session.names);
     let answer = why::answers(binary, graph, names, &keepers.tree, node, name, &note_name);
-    let command = session.command("why", Some(node), answer.cut);
+    let command = session.command("why", Some(node), answer.needs_all);
     Some(Printed::of_tab(answer, command).opening(Tab::Why, node))
 }
 
