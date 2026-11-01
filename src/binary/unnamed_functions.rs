@@ -20,26 +20,40 @@
 //! passed to another function, a table of callbacks or a vtable, and so do
 //! those in tables among the constants in code; their code is followed in
 //! turn. Such a word can also be a number that only looks like an address,
-//! so it starts a function only where (`splits_cleanly` has the details):
+//! so it starts a function only where (`KnownStarts::function_can_start`
+//! checks these in order, marked with their numbers):
 //!
-//! 1. it is in code, after the vector table, and not inside constants;
-//! 2. the code before it, if a function starts before it, ends there with
-//!    a return, a jump, data such as a literal pool, or a call that may
-//!    never return;
-//! 3. it is outside the padding between functions;
-//! 4. the code on either side still finds the constants it loads;
-//! 5. no jump crosses it, and none but a `b.w` lands on it.
+//! 1. it is in code, after the vector table;
+//! 2. it isn't inside constants: what starts last before it in its
+//!    section, if anything does, is a function;
+//! 3. the code of that function ends there with a return, a jump, data
+//!    such as a literal pool, or a call that may never return. Before the
+//!    first start in a section there may be data, so this isn't checked
+//!    there;
+//! 4. it is outside the padding between functions: the code there doesn't
+//!    start with padding, and isn't only padding up to the next start;
+//! 5. the code before it and the code after it, scanned apart, find
+//!    exactly what they find scanned together: no instruction spans it,
+//!    and each side still finds the constants it loads;
+//! 6. no jump crosses it, short of the padding before the next start, and
+//!    none but a `b.w`, which may be a tail call, lands on it. A jump from
+//!    after it may land on the start of the function before it.
 //!
 //! Some linker scripts put constants in `.text` after the code, as CMSIS's
 //! template does. Code loads their addresses from outside the function they
-//! follow, and such an address ends that function where:
+//! follow, and such an address ends that function where
+//! (`KnownStarts::constants_can_start` checks these in order, marked with
+//! their numbers):
 //!
 //! 1. it is in code, after the vector table;
-//! 2. the last thing that starts before it is a function, not constants;
+//! 2. the last thing that starts before it in its section is a function,
+//!    not constants: constants matter only where they end a function;
 //! 3. the code of that function ends there with a return, a jump or data,
 //!    not a call;
-//! 4. scanned alone, that code still finds what it did;
-//! 5. that code doesn't jump to it or past it, short of the next start.
+//! 4. scanned alone, that code finds exactly what it finds scanned on to
+//!    the next start, such as each constant it loads;
+//! 5. that code doesn't jump to it or past it, short of the next start,
+//!    not even with a `b.w`.
 //!
 //! Unlike a function, constants may start with zeros, which look like
 //! padding. Code followed before may have read the constants as code, so
@@ -126,8 +140,7 @@ pub(super) fn add(binary: &Binary, items: &mut Vec<Item>) {
         let constants: Vec<u64> = maybe_constants
             .into_iter()
             .filter(|&address| {
-                !starts.at.contains_key(&address)
-                    && starts.splits_cleanly(address, Start::Constants)
+                !starts.at.contains_key(&address) && starts.constants_can_start(address)
             })
             .collect();
         if constants.is_empty() {
@@ -222,8 +235,7 @@ fn follow<'a>(seeds: &KnownStarts<'a>, stored: &BTreeSet<u64>) -> Followed<'a> {
                 .copied()
                 .chain(tables)
                 .filter(|&address| {
-                    !starts.at.contains_key(&address)
-                        && starts.splits_cleanly(address, Start::Function)
+                    !starts.at.contains_key(&address) && starts.function_can_start(address)
                 })
                 .collect()
         } else {
@@ -318,6 +330,28 @@ fn code_start(binary: &Binary, section: &Section) -> u64 {
     }
 }
 
+/// Where something that starts at an address would cut the code of its
+/// section in two, as far as the known starts tell.
+struct Cut {
+    /// What starts last before the address in the section's code, which
+    /// is where the code before the address starts.
+    before: Before,
+    /// Where the code after the address ends: at the next start, or the
+    /// end of the section.
+    end: u64,
+}
+
+/// What starts last before an address in its section's code.
+enum Before {
+    /// A function, which starts at `start`.
+    Function { start: u64 },
+    /// Constants: nothing that starts inside them cuts any code.
+    Constants,
+    /// Nothing: the section's code starts at `code_start`, and may begin
+    /// with data.
+    Nothing { code_start: u64 },
+}
+
 impl KnownStarts<'_> {
     /// From each start of `kind`, a function or constants, to where what
     /// starts there ends.
@@ -339,127 +373,137 @@ impl KnownStarts<'_> {
         Some(next.map_or(end, |(&next, _)| next.min(end)))
     }
 
-    /// Whether a function, or constants, can start at `address` without
-    /// cutting the code before it in two, as far as the known starts tell.
-    /// Nothing starts at `address` yet. The code before it runs from the
-    /// last start before it in the section's code; the code after it runs
-    /// to the next start, or the end of the section. They can start there
-    /// when:
-    ///
-    /// 1. `address` is in a code section.
-    /// 2. It isn't before the section's code, which starts after the
-    ///    vector table when the table is in the section.
-    /// 3. If something starts before `address`, it is a function: inside
-    ///    constants, nothing is cut.
-    /// 4. Constants need a function before them: they matter only where
-    ///    they end one.
-    /// 5. If something starts before `address`, its code doesn't run on
-    ///    into `address` (see [`Ending`]), and before constants it doesn't
-    ///    end with a call either. Before the first start in a section
-    ///    there may be data, so this isn't checked there.
-    ///
-    /// For constants, also:
-    ///
-    /// 6. Scanning the code before them alone finds exactly what scanning
-    ///    on to the next start finds before `address`, such as each
-    ///    constant it loads.
-    /// 7. No jump in the code before them, not even a `b.w`, lands on
-    ///    `address` or after it, short of the next start.
-    ///
-    /// For a function, with the code after it cut where the padding before
-    /// the next start begins, also:
-    ///
-    /// 8. `address` is before that padding, and the code there doesn't
-    ///    start with padding: a function starts after the padding before
-    ///    it.
-    /// 9. Scanning the code before `address` and the code after it apart
-    ///    finds exactly what scanning them together finds: no instruction
-    ///    spans `address`, and each side still finds the constants it
-    ///    loads.
-    /// 10. No jump before `address` lands on it, except a `TailJump` such
-    ///     as a `b.w`, which may be a tail call; and none lands after it,
-    ///     short of that padding.
-    /// 11. No jump after `address` lands in the code before it, except on
-    ///     the start of the function there, if there is one.
-    fn splits_cleanly(&self, address: u64, kind: Start) -> bool {
-        // 1.
-        let Some(index) = self.binary.code_section_at(address) else {
-            return false;
-        };
-        let section = &self.binary.sections[index];
-        let section_end = section.address + section.size;
+    /// Where something that starts at `address` would cut the code, if
+    /// `address` is in code, after the vector table: rule 1 of both lists
+    /// in the module doc.
+    fn cut(&self, address: u64) -> Option<Cut> {
+        let section = &self.binary.sections[self.binary.code_section_at(address)?];
         let code_start = code_start(self.binary, section);
-        // 2.
         if address < code_start {
-            return false;
+            return None;
         }
-        let before = self.at.range(code_start..address).next_back();
-        let start = match (before, kind) {
-            // 3.
-            (Some((_, Start::Constants)), _) => return false,
-            (Some((&start, _)), _) => start,
-            // 4.
-            (None, Start::Constants) => return false,
-            (None, Start::Function) => code_start,
+        let before = match self.at.range(code_start..address).next_back() {
+            Some((&start, Start::Function)) => Before::Function { start },
+            Some((_, Start::Constants)) => Before::Constants,
+            None => Before::Nothing { code_start },
         };
+        let section_end = section.address + section.size;
         let end = self.at.range(address..section_end).next();
         let end = end.map_or(section_end, |(&end, _)| end);
-        let bytes = |from: u64, to: u64| self.binary.bytes(from, to - from).unwrap_or_default();
-        // Each instruction on its own: when code that ends with a call to a
-        // function that never returns runs on into the next function, as far
-        // as elfq can tell, an address it left in a register would make the
-        // next function's references differ when scanned with it.
-        let scan = |from: u64, to: u64| thumb(self.binary).scan_instructions(bytes(from, to), from);
-        // 5.
-        if before.is_some() {
-            match thumb(self.binary).ending(bytes(start, address), start) {
-                Ending::RunsOn => return false,
-                Ending::Call if kind == Start::Constants => return false,
-                _ => {}
-            }
-        }
-        let jumps_into = |reference: &CodeReference, from: u64, to: u64| match reference.kind {
-            CodeReferenceKind::Jump(target) | CodeReferenceKind::TailJump(target) => {
-                (from..to).contains(&target) && !self.at.contains_key(&target)
-            }
-            _ => false,
+        Some(Cut { before, end })
+    }
+
+    /// Whether a function can start at `address`, where nothing starts
+    /// yet, without cutting the code before it in two: the rules for a
+    /// function in the module doc, whose numbers the comments below
+    /// follow.
+    fn function_can_start(&self, address: u64) -> bool {
+        // 1.
+        let Some(cut) = self.cut(address) else {
+            return false;
         };
-        if kind == Start::Constants {
-            let whole = scan(start, end);
-            let alone = scan(start, address);
-            let before = &whole[..alone.len().min(whole.len())];
-            // 6.
-            return before == alone
-                && whole
-                    .get(alone.len())
-                    .is_none_or(|next| next.site >= address)
-                // 7.
-                && !alone
-                    .iter()
-                    .any(|reference| jumps_into(reference, address, end));
-        }
+        let start = match cut.before {
+            // 2.
+            Before::Constants => return false,
+            // 3.
+            Before::Function { start } => match self.ending(start, address) {
+                Ending::RunsOn => return false,
+                Ending::Call | Ending::Stops => start,
+            },
+            // 3 isn't checked: the section's code may begin with data.
+            Before::Nothing { code_start } => code_start,
+        };
         // Without the padding after the code, which can decode as a jump.
-        let end = start + thumb(self.binary).code_size(bytes(start, end), start);
-        // 8.
-        if address >= end || thumb(self.binary).leading_padding(bytes(address, end)) > 0 {
+        let end = start + thumb(self.binary).code_size(self.bytes(start, cut.end), start);
+        // 4.
+        if address >= end || thumb(self.binary).leading_padding(self.bytes(address, end)) > 0 {
             return false;
         }
-        // 9.
-        let whole = scan(start, end);
-        let mut halves = scan(start, address);
-        halves.extend(scan(address, end));
-        let crosses = whole.iter().any(|reference| {
+        // 5.
+        let whole = self.scan(start, end);
+        let mut halves = self.scan(start, address);
+        halves.extend(self.scan(address, end));
+        if whole != halves {
+            return false;
+        }
+        // 6.
+        !whole.iter().any(|reference| {
             if reference.site < address {
-                // 10. A `b.w` from before may be a tail call to a function
+                // A `b.w` from before may be a tail call to a function
                 // there, but other jumps to it stay inside one function.
                 reference.kind == CodeReferenceKind::Jump(address)
-                    || jumps_into(reference, address + 1, end)
+                    || self.jumps_into(reference, address + 1, end)
             } else {
-                // 11.
-                jumps_into(reference, start, address)
+                self.jumps_into(reference, start, address)
             }
-        });
-        whole == halves && !crosses
+        })
+    }
+
+    /// Whether constants can start at `address`, where nothing starts yet,
+    /// and end the function before them: the rules for constants in the
+    /// module doc, whose numbers the comments below follow.
+    fn constants_can_start(&self, address: u64) -> bool {
+        // 1.
+        let Some(cut) = self.cut(address) else {
+            return false;
+        };
+        // 2.
+        let start = match cut.before {
+            Before::Function { start } => start,
+            Before::Constants | Before::Nothing { .. } => return false,
+        };
+        // 3.
+        match self.ending(start, address) {
+            Ending::Stops => {}
+            Ending::RunsOn | Ending::Call => return false,
+        }
+        // 4. Scanned on, the code finds the same first, and nothing else
+        // before `address`.
+        let whole = self.scan(start, cut.end);
+        let alone = self.scan(start, address);
+        let (first, rest) = whole.split_at(alone.len().min(whole.len()));
+        if first != alone || rest.first().is_some_and(|next| next.site < address) {
+            return false;
+        }
+        // 5.
+        !alone
+            .iter()
+            .any(|reference| self.jumps_into(reference, address, cut.end))
+    }
+
+    /// How the code from `start` up to `address` ends.
+    fn ending(&self, start: u64, address: u64) -> Ending {
+        thumb(self.binary).ending(self.bytes(start, address), start)
+    }
+
+    /// The references in the code from `from` up to `to`, each instruction
+    /// read on its own: when code that ends with a call to a function that
+    /// never returns runs on into the next function, as far as elfq can
+    /// tell, an address it left in a register would make the next
+    /// function's references differ when scanned with it.
+    fn scan(&self, from: u64, to: u64) -> Vec<CodeReference> {
+        thumb(self.binary).scan_instructions(self.bytes(from, to), from)
+    }
+
+    /// The bytes from `from` up to `to`, or none where the file holds none.
+    fn bytes(&self, from: u64, to: u64) -> &[u8] {
+        self.binary.bytes(from, to - from).unwrap_or_default()
+    }
+
+    /// Whether `reference` is a jump that lands from `from` up to `to`,
+    /// other than on a known start.
+    fn jumps_into(&self, reference: &CodeReference, from: u64, to: u64) -> bool {
+        let target = match reference.kind {
+            CodeReferenceKind::Jump(target) | CodeReferenceKind::TailJump(target) => target,
+            CodeReferenceKind::Call(_)
+            | CodeReferenceKind::CallThrough(_)
+            | CodeReferenceKind::JumpThrough(_)
+            | CodeReferenceKind::IndirectCall
+            | CodeReferenceKind::IndirectJump
+            | CodeReferenceKind::Address(_)
+            | CodeReferenceKind::Memory(_) => return false,
+        };
+        (from..to).contains(&target) && !self.at.contains_key(&target)
     }
 }
 
