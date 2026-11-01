@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use crate::arch::startup::{Event, How, Iteration, LoopStore, Source, Store};
 use crate::arch::thumb::PC;
-use crate::arch::thumb::decode::{Effect, Operation, Registers, each};
+use crate::arch::thumb::decode::{Addressing, Effect, Operation, Registers, each};
 
 use super::count::{Mode, line_through};
 use super::loops::FoundLoop;
@@ -187,7 +187,10 @@ impl Walker<'_> {
     /// through, loads from (see
     /// [`OpenLoop::loads`](super::count::OpenLoop::loads)).
     pub(super) fn row_load(&mut self, run: &Run, index: usize, site: u64, effect: &Effect) {
-        let Operation::Load { base, .. } = effect.operation else {
+        let Operation::Load {
+            base, addressing, ..
+        } = effect.operation
+        else {
             return;
         };
         let Some(at) = self.access(&run.known, site, effect) else {
@@ -199,10 +202,15 @@ impl Walker<'_> {
         // Where the register points that the load adds an offset to, as
         // to the start of a row of a table, but for `[base, #imm]!`, which
         // moves it there first.
-        let before = effect.writeback.is_some_and(|writeback| writeback.before);
-        let pointer = match effect.index {
-            None if base != PC && !before => self.register(&run.known, base, site),
-            _ => None,
+        let pointer = match addressing {
+            Addressing::Offset(_) | Addressing::After(_) if base != PC => {
+                self.register(&run.known, base, site)
+            }
+            Addressing::Offset(_)
+            | Addressing::After(_)
+            | Addressing::Before(_)
+            | Addressing::Indexed { .. }
+            | Addressing::Unknown => None,
         };
         let word = RowWord {
             address: at,

@@ -90,7 +90,7 @@ use object::Endianness;
 use self::address_uses::{AddressUses, Use};
 use self::code::{Code, Condition};
 use self::state::{Contents, Kind, RESULT, State, Value};
-use super::decode::{Flow, LowBit, Operation, When, bit, each};
+use super::decode::{Addressing, Effect, Flow, LowBit, Operation, Transfer, When, bit, each};
 use super::{ARGUMENTS, Instruction, PC, SP};
 use crate::arch::CodeReference;
 use crate::arch::CodeReferenceKind::{self, *};
@@ -603,31 +603,29 @@ impl<'a> Function<'a> {
                 leaks = sum.may_be_unknown() && (a.may_be_stack() || b.may_be_stack());
                 Some((register, sum))
             }
-            Operation::Load {
-                register,
-                base,
-                offset: Some(offset),
-            } => {
-                let at = state
-                    .read(base, pc)
-                    .stack_offset()
-                    .map(|at| at.wrapping_add(offset));
+            Operation::Load { into, base, .. } => {
+                let at = plain_offset(&effect).and_then(|offset| {
+                    let base = state.read(base, pc).stack_offset()?;
+                    Some(base.wrapping_add(offset))
+                });
                 if let Some(at) = at {
                     self.uses.loads_back(state, at.div_euclid(4) * 4);
                 }
-                match (register, at) {
-                    (Some(register), Some(at)) if at % 4 == 0 => Some((register, state.word(at))),
+                match (into, at) {
+                    (Transfer::Word(register), Some(at)) if at % 4 == 0 => {
+                        Some((register, state.word(at)))
+                    }
                     _ => None,
                 }
             }
-            Operation::Load { .. } => None,
             Operation::Store {
-                register,
-                base,
-                offset,
-                size,
+                from, base, size, ..
             } => {
-                let value = register.map(|register| state.read(register, pc));
+                let value = match from {
+                    Transfer::Word(register) => Some(state.read(register, pc)),
+                    _ => None,
+                };
+                let offset = plain_offset(&effect);
                 self.store(state, value, state.read(base, pc), offset, size);
                 None
             }
@@ -731,20 +729,20 @@ impl<'a> Function<'a> {
             }
             // Its base, as an address to load from, unless it changes the
             // base too.
-            Operation::Load { register, base, .. }
-                if !writes_back(base) || register == Some(base) =>
+            Operation::Load { into, base, .. }
+                if !writes_back(base) || into == Transfer::Word(base) =>
             {
                 bit(base)
             }
             Operation::Store {
-                register,
-                base,
-                offset,
-                size,
+                from, base, size, ..
             } if !writes_back(base) => {
+                let offset = plain_offset(&effect);
                 let slot = offset.and_then(|offset| state.held(base).word_at(offset));
-                match register {
-                    Some(register) if size == 4 && slot.is_some() => bit(base) | bit(register),
+                match from {
+                    Transfer::Word(register) if size == 4 && slot.is_some() => {
+                        bit(base) | bit(register)
+                    }
                     _ => bit(base),
                 }
             }
@@ -822,31 +820,29 @@ impl<'a> Function<'a> {
             // Storing a value on the stack passes it on, to where the code
             // loads it back.
             Operation::Store {
-                register: Some(register),
+                from: Transfer::Word(register),
                 base,
-                offset: Some(offset),
                 size: 4,
-            } if state.held(base).word_at(offset).is_some() => {
+                ..
+            } if (plain_offset(&effect))
+                .is_some_and(|offset| state.held(base).word_at(offset).is_some()) =>
+            {
                 other &= !bit(register);
             }
             Operation::Push { registers, .. } if state.sp().is_some() => other &= !registers,
             // A load from the stack that elfq doesn't follow takes what it
             // loads out of sight: part of a word, or from a word it can't
             // tell.
-            Operation::Load {
-                register,
-                base,
-                offset,
-            } => {
+            Operation::Load { into, base, .. } => {
                 let base = state.read(base, pc);
                 // Through a register it reads that may hold an address on
                 // the stack, as its base or what it adds to the base.
                 let may_be_stack =
                     each(effect.reads).any(|register| state.held(register).may_be_stack());
-                match (base.stack_offset(), offset) {
+                match (base.stack_offset(), plain_offset(&effect)) {
                     (Some(at), Some(offset)) => {
                         let at = at.wrapping_add(offset);
-                        if register.is_none() || at % 4 != 0 {
+                        if !matches!(into, Transfer::Word(_)) || at % 4 != 0 {
                             self.uses.record_word(state, at.div_euclid(4) * 4);
                         }
                     }
@@ -1009,5 +1005,41 @@ impl<'a> Function<'a> {
         // A stable sort keeps the order of the references at one site.
         references.sort_by_key(|reference| reference.site);
         references
+    }
+}
+
+/// The offset from its base register at which the load or store that
+/// `effect` says reads or writes, when it is all there is to the address:
+/// `[base, #imm]`. `values` follows the words on the stack there: what a
+/// load reads, and what a store writes, the two words of an `strd`
+/// included (see [`Function::store`]). `ldm`, `stm` and `ldrd` have none,
+/// though they may start at an offset, and nor does an `strd` that writes
+/// back, even to a base in its pair, which the manual leaves
+/// unpredictable and decode gives an offset: `values` takes them all to
+/// read or write anywhere on the stack.
+fn plain_offset(effect: &Effect) -> Option<i32> {
+    match effect.operation {
+        Operation::Load {
+            into: Transfer::Words(_) | Transfer::Pair(..),
+            ..
+        }
+        | Operation::Store {
+            from: Transfer::Words(_),
+            ..
+        } => None,
+        Operation::Store {
+            from: Transfer::Pair(..),
+            base,
+            ..
+        } if effect.writes & bit(base) != 0 => None,
+        Operation::Load {
+            addressing: Addressing::Offset(offset),
+            ..
+        }
+        | Operation::Store {
+            addressing: Addressing::Offset(offset),
+            ..
+        } => Some(offset),
+        _ => None,
     }
 }

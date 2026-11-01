@@ -2,7 +2,9 @@
 
 use object::Endianness::Little;
 
+use super::plain_offset;
 use crate::arch::CodeReferenceKind::{self, *};
+use crate::arch::thumb::decode::decode;
 use crate::arch::thumb::scan;
 
 /// Code made of 16-bit units, as a disassembler shows them: a 32-bit
@@ -907,4 +909,46 @@ fn code_that_never_runs_makes_no_calls() {
     //   800010c: 4770       bx    lr
     let code = halfwords(&[0xf04f, 0x0300, 0xb113, 0xb510, 0x4798, 0xbd10, 0x4770]);
     assert_eq!(kinds(&code), [(0x0800_0104, Jump(0x0800_010c))]);
+}
+
+#[test]
+fn the_loads_and_stores_whose_words_on_the_stack_are_followed() {
+    // Those at a plain offset from their base, of a word, part of one or
+    // floating-point registers, and strd, which makes both its words
+    // unknown. Not ldm, stm or ldrd, which elfq takes to read or write
+    // anywhere on the stack, nor those that add a register or write
+    // back, an strd included even when its base is in its pair, nor ldrex
+    // and vldm, whose address elfq doesn't work out. The vldr and vstr of
+    // a system register have their offset even when they write back: 0
+    // when they change the base after.
+    let offset = |bytes: &[u8]| {
+        let first = u16::from_le_bytes([bytes[0], bytes[1]]);
+        let second = bytes
+            .get(2..4)
+            .map_or(0, |second| u16::from_le_bytes([second[0], second[1]]));
+        plain_offset(&decode(0, first, second).unwrap())
+    };
+    // ldr r1, [sp, #4], strb r0, [r7, #3], vldr s15, [r7, #4], strd r2,
+    // r3, [r0, #8], vstr FPSCR, [r0, #-4]! and vldr FPSCR, [r1], #8
+    assert_eq!(offset(&[0x01, 0x99]), Some(4));
+    assert_eq!(offset(&[0xf8, 0x70]), Some(3));
+    assert_eq!(offset(&[0xd7, 0xed, 0x01, 0x7a]), Some(4));
+    assert_eq!(offset(&[0xc0, 0xe9, 0x02, 0x23]), Some(8));
+    assert_eq!(offset(&[0x20, 0xed, 0x81, 0x2f]), Some(-4));
+    assert_eq!(offset(&[0xb1, 0xec, 0x82, 0x2f]), Some(0));
+    // ldrd r2, r3, [r1, #-8], ldmia.w r4, {r0-r3}, ldmdb r0, {r2, r3},
+    // ldmdb r0!, {r2, r3}, stmdb.w r0!, {r2, r3}, ldr.w r3, [r5], #4, ldr
+    // r0, [r1, r2], ldrex r0, [r1] and vldmia r0, {s0-s3}
+    assert_eq!(offset(&[0x51, 0xe9, 0x02, 0x23]), None);
+    assert_eq!(offset(&[0x94, 0xe8, 0x0f, 0x00]), None);
+    assert_eq!(offset(&[0x10, 0xe9, 0x0c, 0x00]), None);
+    assert_eq!(offset(&[0x30, 0xe9, 0x0c, 0x00]), None);
+    assert_eq!(offset(&[0x20, 0xe9, 0x0c, 0x00]), None);
+    assert_eq!(offset(&[0x55, 0xf8, 0x04, 0x3b]), None);
+    assert_eq!(offset(&[0x88, 0x58]), None);
+    assert_eq!(offset(&[0x51, 0xe8, 0x00, 0x0f]), None);
+    assert_eq!(offset(&[0x90, 0xec, 0x04, 0x0a]), None);
+    // strd r0, r1, [r0, #8]! and strd r0, r1, [r0], #8
+    assert_eq!(offset(&[0xe0, 0xe9, 0x02, 0x01]), None);
+    assert_eq!(offset(&[0xe0, 0xe8, 0x02, 0x01]), None);
 }

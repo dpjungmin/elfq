@@ -50,7 +50,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use object::Endianness;
 
-use super::decode::{self, Effect, Flow, LowBit, Operation, Registers, When};
+use super::decode::{self, Addressing, Effect, Flow, LowBit, Operation, Registers, Transfer, When};
 use super::{ARGUMENTS, CALL_CLOBBERS, SP, Scanner, branch, is_wide, literal};
 use crate::arch::CodeReferenceKind;
 use crate::arch::startup::{Call, DEPTH, End, Event, How, Program, Start, Through, Walk};
@@ -669,10 +669,12 @@ impl Walker<'_> {
                     return Step::MayBacktrack(End::Returns(site));
                 }
                 let at = match effect.operation {
+                    // ldr.w pc, [base, #imm]. Not an `ldm`, whose offset is
+                    // where its first word is, not pc's.
                     Operation::Load {
+                        into: Transfer::Other,
                         base,
-                        offset: Some(offset),
-                        ..
+                        addressing: Addressing::Offset(offset),
                     } => (self.register(known, base, site))
                         .map(|base| base.wrapping_add_signed(offset)),
                     // ldr.w pc, [pc, #imm], as in a veneer.

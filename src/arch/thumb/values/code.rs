@@ -10,7 +10,7 @@ use object::{Endian, Endianness};
 
 use crate::arch::CodeReference;
 use crate::arch::CodeReferenceKind::Jump;
-use crate::arch::thumb::decode::{self, Effect, Flow, Operation, SetsFlags, When};
+use crate::arch::thumb::decode::{self, Effect, Flow, Operation, SetsFlags, Transfer, When};
 use crate::arch::thumb::{Instruction, PC, SP};
 
 /// Which instructions of an `it` block run.
@@ -360,9 +360,6 @@ const UNREACHED: Effect = Effect {
     operation: Operation::Nothing,
     flow: Flow::Stop,
     flags: SetsFlags::Never,
-    writeback: None,
-    index: None,
-    words: None,
 };
 
 /// Whether code that the first instruction doesn't lead to may go on into
@@ -441,7 +438,7 @@ fn may_find_more(effects: impl IntoIterator<Item = Option<Effect>>) -> bool {
         matches!(
             effect.operation,
             Operation::Store {
-                register: Some(_),
+                from: Transfer::Word(_),
                 base: SP,
                 ..
             }
