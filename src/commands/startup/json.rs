@@ -7,7 +7,7 @@ use std::io::Write;
 use anyhow::Result;
 use serde::Serialize;
 
-use super::problems::{Kind, Problem, SectionStatus};
+use super::problems::{EarlyRun, Problem, SectionStatus};
 use super::ram_sections::RamSections;
 use super::start::MainFrom;
 use super::steps::number;
@@ -225,33 +225,54 @@ fn section_rows<'a>(answer: &Answer<'a>) -> Vec<Section<'a>> {
 fn problem_rows<'a>(answer: &Answer<'a>) -> Vec<ProblemRow<'a>> {
     let Facts { firmware, ram, .. } = *answer.facts;
     (answer.judged.problems.iter())
-        .map(|p| ProblemRow {
-            kind: p.kind.field(),
-            certain: p.certain(),
-            steps: p.steps.iter().map(|&index| number(index)).collect(),
-            sections: names(ram, &p.sections),
-            items: p.items.iter().filter_map(|&a| item(firmware, a)).collect(),
-            chain: chain(firmware, p),
-            before_step: p.before.map(number),
-            bytes: p.bytes,
-            from: p.from.map(address),
-            sites: house::addresses(&p.sites),
-            text: text::sentence(answer, p),
+        .map(|p| {
+            let mut row = ProblemRow {
+                kind: p.field(),
+                certain: p.certain(),
+                steps: p.steps().iter().map(|&index| number(index)).collect(),
+                sections: names(ram, p.sections()),
+                items: Vec::new(),
+                chain: Vec::new(),
+                before_step: None,
+                bytes: None,
+                from: None,
+                sites: Vec::new(),
+                text: text::sentence(answer, p),
+            };
+            // The keys of each kind; the rest stay empty or null.
+            match p {
+                Problem::RunsBeforeCopy(run) => {
+                    row.items = (run.functions.iter())
+                        .filter_map(|early| item(firmware, early.function))
+                        .collect();
+                    row.chain = chain(firmware, run);
+                    row.before_step = run.before.map(number);
+                    row.sites = house::addresses(&run.sites);
+                }
+                Problem::PartlyCopied { bytes, .. } | Problem::PartlyZeroed { bytes, .. } => {
+                    row.bytes = Some(*bytes);
+                }
+                Problem::CopiedFromElsewhere { from, .. } => row.from = Some(address(*from)),
+                Problem::NotCopied { .. }
+                | Problem::NotZeroed { .. }
+                | Problem::CantFollow { .. } => {}
+            }
+            row
         })
         .collect()
 }
 
-/// For code that runs before its copy in a step, the names of the
-/// functions that the step's call goes through to the first of the
-/// problem's functions, but for veneers.
-fn chain(firmware: &Firmware, p: &Problem) -> Vec<String> {
-    let (Kind::RunsBeforeCopy, Some(first)) = (p.kind, p.items.first()) else {
+/// For `run`, code that runs before its copy in a step, the names of the
+/// functions that the step's call goes through to the first of its
+/// functions, but for veneers.
+fn chain(firmware: &Firmware, run: &EarlyRun) -> Vec<String> {
+    let Some(first) = run.functions.first() else {
         return Vec::new();
     };
-    if p.steps.is_empty() {
+    if run.steps.is_empty() {
         return Vec::new();
     }
-    let chain = &p.chains[first];
+    let chain = &first.chain;
     (chain[..chain.len() - 1].iter())
         .filter(|&&a| !firmware.is_veneer(a))
         .map(|&a| firmware.name(a))

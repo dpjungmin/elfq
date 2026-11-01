@@ -7,7 +7,7 @@ use std::ops::Range;
 
 use anyhow::Result;
 
-use super::problems::{Kind, Note, Problem, Status};
+use super::problems::{EarlyRun, Note, Problem, Status};
 use super::ram_sections::RamSections;
 use super::start::{Main, MainFrom};
 use super::steps::{Does, Step, Way, number};
@@ -261,81 +261,95 @@ fn at_name(firmware: &Firmware, address: u64) -> String {
 /// The sentence that says what problem `p` is.
 pub(super) fn sentence(answer: &Answer, p: &Problem) -> String {
     let ram = answer.facts.ram;
-    let Some(&section) = p.sections.first() else {
-        return String::new();
-    };
-    let name = ram.name(section);
-    let size = ram.section(section).size;
-    // The number of the step it is about.
-    let step = p.steps.first().map_or(0, |&index| number(index));
-    match p.kind {
-        Kind::RunsBeforeCopy => runs_before_copy_text(answer, p, section),
-        Kind::NotCopied | Kind::NotZeroed => format!("Nothing {}.", set_up_text(ram, section)),
-        Kind::PartlyCopied => format!(
-            "Step {step} copies {} of {name}'s {size} bytes.",
-            p.bytes.unwrap_or(0),
+    match p {
+        Problem::RunsBeforeCopy(run) => runs_before_copy_text(answer, run),
+        Problem::NotCopied { section } | Problem::NotZeroed { section } => {
+            format!("Nothing {}.", set_up_text(ram, *section))
+        }
+        &Problem::PartlyCopied {
+            section,
+            step,
+            bytes,
+        } => format!(
+            "Step {} copies {bytes} of {}'s {} bytes.",
+            number(step),
+            ram.name(section),
+            ram.section(section).size
         ),
-        Kind::PartlyZeroed => format!(
-            "Step {step} zeroes {} of {name}'s {size} bytes.",
-            p.bytes.unwrap_or(0),
+        &Problem::PartlyZeroed {
+            section,
+            step,
+            bytes,
+        } => format!(
+            "Step {} zeroes {bytes} of {}'s {} bytes.",
+            number(step),
+            ram.name(section),
+            ram.section(section).size
         ),
-        Kind::CopiedFromElsewhere => format!(
-            "Step {step} copies {name} from {:#x}, but the file stores it at {:#x}.",
-            p.from.unwrap_or(0),
+        &Problem::CopiedFromElsewhere {
+            section,
+            step,
+            from,
+        } => format!(
+            "Step {} copies {} from {from:#x}, but the file stores it at {:#x}.",
+            number(step),
+            ram.name(section),
             ram.load_address(section)
         ),
-        Kind::CantFollow => {
+        Problem::CantFollow { sections, steps } => {
             // The steps may set up what the problem says nothing does.
-            let what = match p.sections[..] {
+            let what = match sections[..] {
                 [section] => set_up_text(ram, section),
-                _ => does_text(ram, &p.sections, ["copies", "zeroes"], " or "),
+                _ => does_text(ram, sections, ["copies", "zeroes"], " or "),
             };
-            let verb = if p.steps.len() == 1 { "does" } else { "do" };
+            let verb = if steps.len() == 1 { "does" } else { "do" };
             format!(
                 "Nothing {what}, unless {} {verb}.",
-                unread_text(answer.steps, &p.steps)
+                unread_text(answer.steps, steps)
             )
         }
     }
 }
 
-/// The sentence of problem `p`, of code that runs from the load image
-/// `section` before startup code copies it: "Step 1, SystemInit, calls
-/// clock_setup at 0x0 in .itcm before step 2 copies .itcm."
-fn runs_before_copy_text(answer: &Answer, p: &Problem, section: usize) -> String {
+/// The sentence of `run`, code that runs from a load image before startup
+/// code copies it: "Step 1, SystemInit, calls clock_setup at 0x0 in .itcm
+/// before step 2 copies .itcm."
+fn runs_before_copy_text(answer: &Answer, run: &EarlyRun) -> String {
     let firmware = answer.facts.firmware;
-    let name = answer.facts.ram.name(section);
-    let copied = copied_yet_text(answer, p, section);
-    if p.reset_runs_from_image() {
+    let name = answer.facts.ram.name(run.section);
+    let copied = copied_yet_text(answer, run);
+    if run.reset_runs_from_image() {
         let boot = answer.facts.reset.address;
         return format!(
             "{} runs at {boot:#x} in {name}, {copied}{}.",
             firmware.name(boot),
-            unless(answer, p)
+            unless(answer, run)
         );
     }
-    let what = match &p.items[..] {
-        [one] => at_name(firmware, *one),
-        items => {
-            let names: Vec<String> = items.iter().map(|&a| firmware.name(a)).collect();
+    let what = match &run.functions[..] {
+        [one] => at_name(firmware, one.function),
+        functions => {
+            let names: Vec<String> = (functions.iter())
+                .map(|early| firmware.name(early.function))
+                .collect();
             let names: Vec<&str> = names.iter().map(String::as_str).collect();
             names_text(&names, answer.all)
         }
     };
-    let direct = p.items.iter().all(|a| {
-        let chain = &p.chains[a];
-        (chain.iter()).filter(|&&c| !firmware.is_veneer(c)).count() <= 2
+    let direct = run.functions.iter().all(|early| {
+        let through = early.chain.iter().filter(|&&c| !firmware.is_veneer(c));
+        through.count() <= 2
     });
-    let verb = match (p.steps.len() == 1, direct) {
+    let verb = match (run.steps.len() == 1, direct) {
         (true, true) => "calls",
         (true, false) => "runs",
         (false, true) => "call",
         (false, false) => "run",
     };
-    let mut who = steps_text(&p.steps, true);
-    if let [one] = p.steps[..]
+    let mut who = steps_text(&run.steps, true);
+    if let [one] = run.steps[..]
         && let Some(function) = answer.steps[one].called()
-        && !p.items.contains(&function)
+        && !run.runs(function)
     {
         who = format!("{who}, {},", firmware.name(function));
     }
@@ -346,27 +360,28 @@ fn runs_before_copy_text(answer: &Answer, p: &Problem, section: usize) -> String
     };
     format!(
         "{who} {verb} {what} in {name}{separator}{copied}{}.",
-        unless(answer, p)
+        unless(answer, run)
     )
 }
 
-/// How far startup code has got with copying the load image `section`
-/// when code runs from it, for problem `p`: "before step 3 copies .data",
-/// "before anything copies .data", "which nothing has copied yet" or
-/// "which nothing copies".
-fn copied_yet_text(answer: &Answer, p: &Problem, section: usize) -> String {
-    let name = answer.facts.ram.name(section);
-    match p.before {
-        None if answer.judged.unread.contains_key(&section) => {
+/// How far startup code has got with copying the load image of `run` when
+/// code runs from it: "before step 3 copies .data", "before anything copies
+/// .data", "which nothing has copied yet" or "which nothing copies".
+fn copied_yet_text(answer: &Answer, run: &EarlyRun) -> String {
+    let name = answer.facts.ram.name(run.section);
+    match run.before {
+        None if answer.judged.unread.contains_key(&run.section) => {
             format!("before anything copies {name}")
         }
         None => "which nothing copies".to_string(),
         Some(index) => {
             let before = &answer.steps[index];
-            let inside = (p.uses.iter()).filter_map(|at| at.event()).any(|event| {
-                event < before.event && before.event < answer.facts.events.span(event)
-            });
-            if p.reset_runs_from_image() || inside || p.steps.contains(&index) {
+            let inside = (run.runs_at.iter())
+                .filter_map(|at| at.event())
+                .any(|event| {
+                    event < before.event && before.event < answer.facts.events.span(event)
+                });
+            if run.reset_runs_from_image() || inside || run.steps.contains(&index) {
                 "which nothing has copied yet".to_string()
             } else {
                 format!("before step {} copies {name}", number(index))
@@ -459,15 +474,16 @@ fn data_in<'a>(firmware: &'a Firmware, ram: &RamSections, section: usize) -> Vec
         .collect()
 }
 
-/// For code that runs from a load image after code elfq can't follow,
-/// which may copy it first: ", unless step 1 (a loop) copies it first".
-fn unless(answer: &Answer, p: &Problem) -> String {
-    if p.unless.is_empty() {
+/// For `run`, code that runs from a load image after code elfq can't
+/// follow, which may copy it first: ", unless step 1 (a loop) copies it
+/// first".
+fn unless(answer: &Answer, run: &EarlyRun) -> String {
+    if run.unless.is_empty() {
         return String::new();
     }
     format!(
         ", unless {} copies it first",
-        unread_text(answer.steps, &p.unless)
+        unread_text(answer.steps, &run.unless)
     )
 }
 
@@ -622,19 +638,21 @@ fn try_commands(answer: &Answer) -> Vec<String> {
     let mut lines = Vec::new();
     for p in &answer.judged.problems {
         // Code that runs inside a call, but not the reset handler's own.
-        let (Kind::RunsBeforeCopy, Some(&first)) = (p.kind, p.steps.first()) else {
+        let Problem::RunsBeforeCopy(run) = p else {
             continue;
         };
-        if p.reset_runs_from_image() {
+        let Some(&first) = run.steps.first() else {
+            continue;
+        };
+        if run.reset_runs_from_image() {
             continue;
         }
         let step = &answer.steps[first];
-        let section = p.sections[0];
-        let Section { address, size, .. } = ram.section(section);
+        let Section { address, size, .. } = ram.section(run.section);
         let Some(function) = step.called() else {
             continue;
         };
-        if p.items.contains(&function) || (*address..ram.end(section)).contains(&function) {
+        if run.runs(function) || (*address..ram.end(run.section)).contains(&function) {
             continue;
         }
         let line = format!(

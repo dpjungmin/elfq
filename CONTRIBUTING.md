@@ -162,8 +162,12 @@ this list, and add to it when you bring in a word.
   up, which are all in RAM: those with a load image, and those without
   contents, such as `.bss` (`RamSections`, in `ram_sections.rs`, named
   `ram`). **early run**: code that runs from a load image before startup
-  code copies it there (`EarlyRuns`, and the problem `runs before
-  copy`).
+  code copies it there (`EarlyRun`, which `EarlyRuns` finds, and the
+  problem `runs before copy`), and its functions (`EarlyFunction`). A
+  **hit** is a function in a load image that the reset handler or a call
+  runs, with the chain of functions that gets to it: for one that a
+  call's call tree finds, from the function that the call goes to down
+  to it; otherwise the function alone (`Hit`).
 - **state**: what the registers and the stack hold at one point in the
   code, in `arch/thumb/values/` (`State`). A section's state when `main`
   starts, in `startup`, is its status (`problems::Status`).
@@ -199,7 +203,7 @@ this list, and add to it when you bring in a word.
   (`Does::Unread`, and `unread.rs`). Where the JSON says `unknown` for a
   section's status, `can't follow` for the problem and `can't tell` for
   the note, the code keeps those words (`Status::Unknown`,
-  `Kind::CantFollow`, `Note::CantTell`).
+  `Problem::CantFollow`, `Note::CantTell`).
 
 Some code still uses one of these words for something else, as the Thumb
 walk's `Step` (what an instruction leads to) and `reach`'s `Step` (a row

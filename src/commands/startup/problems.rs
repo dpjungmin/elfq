@@ -55,35 +55,6 @@ impl Status {
     }
 }
 
-/// What a problem is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Kind {
-    /// Code runs from a load image before startup code copies it.
-    RunsBeforeCopy,
-    NotCopied,
-    /// `.bss` or `.sbss` isn't zeroed.
-    NotZeroed,
-    PartlyCopied,
-    PartlyZeroed,
-    CopiedFromElsewhere,
-    /// Code elfq can't follow may set up a load image, `.bss` or `.sbss`.
-    CantFollow,
-}
-
-impl Kind {
-    pub fn field(self) -> &'static str {
-        match self {
-            Kind::RunsBeforeCopy => "runs before copy",
-            Kind::NotCopied => "not copied",
-            Kind::NotZeroed => "not zeroed",
-            Kind::PartlyCopied => "partly copied",
-            Kind::PartlyZeroed => "partly zeroed",
-            Kind::CopiedFromElsewhere => "copied from elsewhere",
-            Kind::CantFollow => "can't follow",
-        }
-    }
-}
-
 /// Where in the walk code runs from a load image: the reset handler's own
 /// code, which comes before every event, or the call at an event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -102,45 +73,56 @@ impl RunsAt {
     }
 }
 
-pub(super) struct Problem {
-    pub kind: Kind,
-    pub sections: Vec<usize>,
-    /// The steps it is about, as indexes into the steps.
-    pub steps: Vec<usize>,
-    /// For code that runs before its copy: the functions in the load
-    /// image.
-    pub items: Vec<u64>,
-    /// How the step gets to each of `items`: the functions from the one it
-    /// calls to the item.
-    pub chains: HashMap<u64, Vec<u64>>,
-    /// The step that copies the section, as an index into the steps.
-    pub before: Option<usize>,
-    pub bytes: Option<u64>,
-    pub from: Option<u64>,
-    /// Where the code calls on into the load image.
-    pub sites: Vec<u64>,
-    /// Where in the walk the code runs from the load image.
-    pub uses: Vec<RunsAt>,
-    /// For code that runs before its copy, the unread steps up to where it
-    /// first runs that may copy the load image first, as indexes into the
-    /// steps.
-    pub unless: Vec<usize>,
+/// A problem with what startup code does, as facts that
+/// `text::sentence` words.
+pub(super) enum Problem {
+    /// Code runs from a load image before startup code copies it.
+    RunsBeforeCopy(EarlyRun),
+    /// Nothing copies the load image `section`.
+    NotCopied { section: usize },
+    /// Nothing zeroes `section`, which is `.bss` or `.sbss`.
+    NotZeroed { section: usize },
+    /// The step at index `step` copies `bytes` of the load image
+    /// `section`, short of its size.
+    PartlyCopied {
+        section: usize,
+        step: usize,
+        bytes: u64,
+    },
+    /// The step at index `step` zeroes `bytes` of `section`, which is
+    /// `.bss` or `.sbss`, short of its size.
+    PartlyZeroed {
+        section: usize,
+        step: usize,
+        bytes: u64,
+    },
+    /// The step at index `step` copies the load image `section` from
+    /// `from`, rather than from where the file stores it.
+    CopiedFromElsewhere {
+        section: usize,
+        step: usize,
+        from: u64,
+    },
+    /// Code elfq can't follow, at the unread steps at `steps`, as indexes
+    /// into the steps, may set up `sections`, which no step does: load
+    /// images, `.bss` or `.sbss`.
+    CantFollow {
+        sections: Vec<usize>,
+        steps: Vec<usize>,
+    },
 }
 
 impl Problem {
-    fn new(kind: Kind, sections: Vec<usize>) -> Problem {
-        Problem {
-            kind,
-            sections,
-            steps: Vec::new(),
-            items: Vec::new(),
-            chains: HashMap::new(),
-            before: None,
-            bytes: None,
-            from: None,
-            sites: Vec::new(),
-            uses: Vec::new(),
-            unless: Vec::new(),
+    /// The JSON's `kind`.
+    pub fn field(&self) -> &'static str {
+        match self {
+            Problem::RunsBeforeCopy(_) => "runs before copy",
+            Problem::NotCopied { .. } => "not copied",
+            Problem::NotZeroed { .. } => "not zeroed",
+            Problem::PartlyCopied { .. } => "partly copied",
+            Problem::PartlyZeroed { .. } => "partly zeroed",
+            Problem::CopiedFromElsewhere { .. } => "copied from elsewhere",
+            Problem::CantFollow { .. } => "can't follow",
         }
     }
 
@@ -148,23 +130,114 @@ impl Problem {
     /// which may be a problem or not, nor for code that runs from a load
     /// image after unread steps that may copy it first.
     pub fn certain(&self) -> bool {
-        self.kind != Kind::CantFollow && self.unless.is_empty()
+        match self {
+            Problem::RunsBeforeCopy(run) => run.certain(),
+            Problem::CantFollow { .. } => false,
+            Problem::NotCopied { .. }
+            | Problem::NotZeroed { .. }
+            | Problem::PartlyCopied { .. }
+            | Problem::PartlyZeroed { .. }
+            | Problem::CopiedFromElsewhere { .. } => true,
+        }
+    }
+
+    /// The steps it is about, as indexes into the steps.
+    pub fn steps(&self) -> &[usize] {
+        match self {
+            Problem::RunsBeforeCopy(run) => &run.steps,
+            Problem::NotCopied { .. } | Problem::NotZeroed { .. } => &[],
+            Problem::PartlyCopied { step, .. }
+            | Problem::PartlyZeroed { step, .. }
+            | Problem::CopiedFromElsewhere { step, .. } => std::slice::from_ref(step),
+            Problem::CantFollow { steps, .. } => steps,
+        }
+    }
+
+    /// The sections it is about.
+    pub fn sections(&self) -> &[usize] {
+        match self {
+            Problem::RunsBeforeCopy(EarlyRun { section, .. })
+            | Problem::NotCopied { section }
+            | Problem::NotZeroed { section }
+            | Problem::PartlyCopied { section, .. }
+            | Problem::PartlyZeroed { section, .. }
+            | Problem::CopiedFromElsewhere { section, .. } => std::slice::from_ref(section),
+            Problem::CantFollow { sections, .. } => sections,
+        }
+    }
+}
+
+/// Code that runs from a load image before startup code copies it there:
+/// an early run, which [`EarlyRuns`] finds.
+pub(super) struct EarlyRun {
+    /// The load image.
+    pub section: usize,
+    /// The step that copies it, as an index into the steps: none when no
+    /// step does.
+    pub before: Option<usize>,
+    /// The steps of the reset handler whose code holds the calls that run
+    /// code from it, as indexes into the steps.
+    pub steps: Vec<usize>,
+    /// The functions in it that run, in the order they were found.
+    pub functions: Vec<EarlyFunction>,
+    /// Where the code calls on into it.
+    pub sites: Vec<u64>,
+    /// Where in the walk the code runs from it.
+    pub runs_at: Vec<RunsAt>,
+    /// The first of those in the walk (see [`EarlyRun::first`]).
+    first: RunsAt,
+    /// The unread steps up to where the code first runs from it that may
+    /// copy it first, as indexes into the steps.
+    pub unless: Vec<usize>,
+}
+
+impl EarlyRun {
+    /// Code that runs from the load image `section`, which the step at
+    /// index `before` copies, first at `at`, before any of it is counted.
+    fn new(section: usize, before: Option<usize>, at: RunsAt) -> EarlyRun {
+        EarlyRun {
+            section,
+            before,
+            steps: Vec::new(),
+            functions: Vec::new(),
+            sites: Vec::new(),
+            runs_at: Vec::new(),
+            first: at,
+            unless: Vec::new(),
+        }
+    }
+
+    /// Whether the code certainly runs before the copy: no unread step
+    /// before it may copy the load image first.
+    pub fn certain(&self) -> bool {
+        self.unless.is_empty()
+    }
+
+    /// Whether the function at `address` is one of those that run from the
+    /// load image.
+    pub fn runs(&self, address: u64) -> bool {
+        (self.functions.iter()).any(|early| early.function == address)
     }
 
     /// Whether the reset handler's own code runs from the load image.
     pub fn reset_runs_from_image(&self) -> bool {
-        self.uses.contains(&RunsAt::ResetHandler)
+        self.runs_at.contains(&RunsAt::ResetHandler)
     }
 
     /// The first place in the walk where the code runs from the load
     /// image.
     pub fn first(&self) -> RunsAt {
-        self.uses
-            .iter()
-            .copied()
-            .min()
-            .unwrap_or(RunsAt::ResetHandler)
+        self.first
     }
+}
+
+/// A function in a load image that runs before startup code copies it.
+pub(super) struct EarlyFunction {
+    pub function: u64,
+    /// The functions that the code goes through to get to `function`,
+    /// from the one that the reset handler calls down to `function`
+    /// itself; for the reset handler's own code, the reset handler.
+    pub chain: Vec<u64>,
 }
 
 /// A note under the steps, as facts, which `text::note_text` words.
@@ -413,48 +486,45 @@ pub(super) fn judge(facts: &Facts, steps: &[Step]) -> Judged {
         main: main.and_then(Main::function),
         call_trees: HashMap::new(),
         callees: HashMap::new(),
-        problems: Vec::new(),
+        runs: Vec::new(),
     };
     early.find(steps, &judged);
     judged.keep_out = early.keep_out(steps, &judged);
-    let mut problems = early.problems;
-    for p in &mut problems {
-        let section = p.sections[0];
-        let plain: Vec<u64> = (p.items.iter().copied())
-            .filter(|&a| !firmware.is_veneer(a))
-            .collect();
-        if !plain.is_empty() {
-            p.items = plain;
+    let mut runs = early.runs;
+    for run in &mut runs {
+        if (run.functions.iter()).any(|early| !firmware.is_veneer(early.function)) {
+            (run.functions).retain(|early| !firmware.is_veneer(early.function));
         }
-        let first = p.first();
-        p.unless = (steps.iter().enumerate())
+        let first = run.first();
+        run.unless = (steps.iter().enumerate())
             .filter(|(_, step)| {
                 step.does == Does::Unread
                     && RunsAt::Event(step.event) <= first
-                    && step.may.contains(&section)
+                    && step.may.contains(&run.section)
             })
             .map(|(index, _)| index)
             .collect();
     }
-    judged.fatal = (problems.iter())
-        .filter(|p| p.certain())
-        .map(Problem::first)
+    judged.fatal = (runs.iter())
+        .filter(|run| run.certain())
+        .map(EarlyRun::first)
         .min();
     judged.statuses = (ram.sections.iter())
         .map(|&section| (section, judged.work_out_status(steps, ram, section)))
         .collect();
     // Load images not copied, copied short or from elsewhere; .bss and
     // .sbss not zeroed in full.
-    let ran_from: Vec<usize> = problems.iter().map(|p| p.sections[0]).collect();
+    let ran_from: Vec<usize> = runs.iter().map(|run| run.section).collect();
+    let mut problems: Vec<Problem> = runs.into_iter().map(Problem::RunsBeforeCopy).collect();
     for &section in &ram.sections {
         let status = judged.status(section).status;
         let setup = judged.init.get(&section).copied();
         match (status, setup) {
             (Status::NotCopied, _) if !ran_from.contains(&section) => {
-                problems.push(Problem::new(Kind::NotCopied, vec![section]));
+                problems.push(Problem::NotCopied { section });
             }
             (Status::NotZeroed, _) if ram.zeroed_by_rule(section) => {
-                problems.push(Problem::new(Kind::NotZeroed, vec![section]));
+                problems.push(Problem::NotZeroed { section });
             }
             (
                 Status::PartlyCopied
@@ -464,27 +534,32 @@ pub(super) fn judge(facts: &Facts, steps: &[Step]) -> Judged {
                 Some(setup),
             ) => {
                 let size = ram.section(section).size;
-                let mut p = if ram.is_load(section)
-                    && setup
-                        .from
-                        .is_some_and(|from| from != ram.load_address(section))
+                let step = setup.step;
+                let bytes = setup.bytes;
+                let p = if let Some(from) = setup.from
+                    && ram.is_load(section)
+                    && from != ram.load_address(section)
                 {
-                    let mut p = Problem::new(Kind::CopiedFromElsewhere, vec![section]);
-                    p.from = setup.from;
-                    p
-                } else if setup.bytes < size && ram.required(section) {
-                    let kind = if ram.is_load(section) {
-                        Kind::PartlyCopied
-                    } else {
-                        Kind::PartlyZeroed
-                    };
-                    let mut p = Problem::new(kind, vec![section]);
-                    p.bytes = Some(setup.bytes);
-                    p
+                    Problem::CopiedFromElsewhere {
+                        section,
+                        step,
+                        from,
+                    }
+                } else if bytes < size && ram.required(section) && ram.is_load(section) {
+                    Problem::PartlyCopied {
+                        section,
+                        step,
+                        bytes,
+                    }
+                } else if bytes < size && ram.required(section) {
+                    Problem::PartlyZeroed {
+                        section,
+                        step,
+                        bytes,
+                    }
                 } else {
                     continue;
                 };
-                p.steps = vec![setup.step];
                 problems.push(p);
             }
             _ => {}
@@ -506,9 +581,10 @@ pub(super) fn judge(facts: &Facts, steps: &[Step]) -> Judged {
         let sections = (unknown.iter().copied())
             .filter(|&section| ram.required(section))
             .collect();
-        let mut p = Problem::new(Kind::CantFollow, sections);
-        p.steps = indexes;
-        problems.push(p);
+        problems.push(Problem::CantFollow {
+            sections,
+            steps: indexes,
+        });
     }
     judged.problems = problems;
     judged.notes = notes(facts, steps, &judged);
@@ -525,7 +601,8 @@ struct EarlyRuns<'a> {
     call_trees: HashMap<u64, CallTree>,
     /// The functions that each function calls or jumps to.
     callees: HashMap<u64, Vec<u64>>,
-    problems: Vec<Problem>,
+    /// The early runs found so far, one for each load image.
+    runs: Vec<EarlyRun>,
 }
 
 /// The functions that run when a function runs, each with the function
@@ -550,14 +627,17 @@ struct Called {
 impl CallTree {
     /// The functions from `start` to `end`, in the order they were found,
     /// each with the chain of functions from the first to it.
-    fn within(&self, start: u64, end: u64) -> Vec<(u64, Vec<u64>)> {
+    fn within(&self, start: u64, end: u64) -> Vec<Hit> {
         let first = (self.by_address).partition_point(|&i| self.found[i].function < start);
         let mut indexes: Vec<usize> = (self.by_address[first..].iter().copied())
             .take_while(|&i| self.found[i].function < end)
             .collect();
         indexes.sort_unstable();
         (indexes.into_iter())
-            .map(|i| (self.found[i].function, self.chain(i)))
+            .map(|i| Hit {
+                function: self.found[i].function,
+                chain: self.chain(i),
+            })
             .collect()
     }
 
@@ -570,6 +650,41 @@ impl CallTree {
         }
         chain.reverse();
         chain
+    }
+}
+
+/// A function in a load image that the reset handler or a call runs,
+/// with the chain of functions that gets to it: for one that a call's
+/// call tree finds, from the function that the call goes to down to it
+/// (see [`CallTree::within`]); otherwise the function alone.
+#[derive(Debug, Clone)]
+struct Hit {
+    function: u64,
+    chain: Vec<u64>,
+}
+
+/// What runs code from a load image (see [`EarlyRuns::add`]).
+enum RunBy {
+    /// The reset handler, whose own code is in it.
+    ResetHandler,
+    /// The call at `event`, from `site`, in the step at index `step`,
+    /// inside the calls to `callers`, from the reset handler's own call
+    /// down.
+    Call {
+        event: usize,
+        site: u64,
+        step: Option<usize>,
+        callers: Vec<u64>,
+    },
+}
+
+impl RunBy {
+    /// Where in the walk it runs the code.
+    fn at(&self) -> RunsAt {
+        match self {
+            RunBy::ResetHandler => RunsAt::ResetHandler,
+            RunBy::Call { event, .. } => RunsAt::Event(*event),
+        }
     }
 }
 
@@ -595,16 +710,11 @@ impl EarlyRuns<'_> {
         let boot = reset.address;
         for &section in &ram.loads {
             if ram.section(section).address <= boot && boot < ram.end(section) {
-                let hits = [(boot, vec![boot])];
-                self.add(
-                    judged,
-                    section,
-                    RunsAt::ResetHandler,
-                    None,
-                    &hits,
-                    None,
-                    &[],
-                );
+                let hits = [Hit {
+                    function: boot,
+                    chain: vec![boot],
+                }];
+                self.add(judged, section, RunBy::ResetHandler, &hits);
             }
         }
         for &section in &ram.loads {
@@ -618,10 +728,14 @@ impl EarlyRuns<'_> {
                 let Some(call) = events.call(event) else {
                     continue;
                 };
+                let alone = |function| Hit {
+                    function,
+                    chain: vec![function],
+                };
                 let mut hits = if holds_copy {
                     (start..stop)
                         .contains(&target)
-                        .then(|| (target, vec![target]))
+                        .then(|| alone(target))
                         .into_iter()
                         .collect()
                 } else {
@@ -631,23 +745,19 @@ impl EarlyRuns<'_> {
                     .veneer(event)
                     .filter(|veneer| (start..stop).contains(veneer))
                 {
-                    match hits.iter_mut().find(|(a, _)| *a == veneer) {
-                        Some(hit) => hit.1 = vec![veneer],
-                        None => hits.push((veneer, vec![veneer])),
+                    match hits.iter_mut().find(|hit| hit.function == veneer) {
+                        Some(hit) => hit.chain = vec![veneer],
+                        None => hits.push(alone(veneer)),
                     }
                 }
                 if !hits.is_empty() {
-                    let step = step_at(steps, event);
-                    let callers = enclosing(events, event);
-                    self.add(
-                        judged,
-                        section,
-                        RunsAt::Event(event),
-                        step,
-                        &hits,
-                        Some(call.site),
-                        &callers,
-                    );
+                    let by = RunBy::Call {
+                        event,
+                        site: call.site,
+                        step: step_at(steps, event),
+                        callers: enclosing(events, event),
+                    };
+                    self.add(judged, section, by, &hits);
                 }
             }
         }
@@ -726,51 +836,52 @@ impl EarlyRuns<'_> {
     }
 
     /// Counts the functions of `hits`, each with its chain, as code that
-    /// runs from `section` at `at`, in the step at index `step`, from the
-    /// call at `site`, inside the calls to `callers`, which come before
-    /// each chain.
-    #[allow(clippy::too_many_arguments)]
-    fn add(
-        &mut self,
-        judged: &Judged,
-        section: usize,
-        at: RunsAt,
-        step: Option<usize>,
-        hits: &[(u64, Vec<u64>)],
-        site: Option<u64>,
-        callers: &[u64],
-    ) {
-        let index = match self.problems.iter().position(|p| p.sections[0] == section) {
+    /// runs from the load image `section` when `by` runs it.
+    fn add(&mut self, judged: &Judged, section: usize, by: RunBy, hits: &[Hit]) {
+        // The reset handler's own code is in the load image; a call's
+        // code calls on into it.
+        let (step, callers, sites): (Option<usize>, &[u64], Vec<u64>) = match &by {
+            RunBy::ResetHandler => (None, &[], hits.iter().map(|hit| hit.function).collect()),
+            RunBy::Call {
+                site,
+                step,
+                callers,
+                ..
+            } => (
+                *step,
+                callers,
+                (hits.iter())
+                    .flat_map(|hit| self.use_sites(&hit.chain, *site))
+                    .collect(),
+            ),
+        };
+        let index = match self.runs.iter().position(|run| run.section == section) {
             Some(index) => index,
             None => {
-                let mut p = Problem::new(Kind::RunsBeforeCopy, vec![section]);
-                p.before = judged.init.get(&section).map(|setup| setup.step);
-                self.problems.push(p);
-                self.problems.len() - 1
+                let before = judged.init.get(&section).map(|setup| setup.step);
+                self.runs.push(EarlyRun::new(section, before, by.at()));
+                self.runs.len() - 1
             }
         };
-        let mut sites = Vec::new();
-        for (a, chain) in hits {
-            if !self.problems[index].items.contains(a) {
-                self.problems[index].items.push(*a);
-                let full = callers.iter().chain(chain).copied().collect();
-                self.problems[index].chains.insert(*a, full);
-            }
-            match site {
-                Some(site) => sites.extend(self.use_sites(chain, site)),
-                None => sites.push(*a),
+        let run = &mut self.runs[index];
+        for hit in hits {
+            if !run.runs(hit.function) {
+                run.functions.push(EarlyFunction {
+                    function: hit.function,
+                    chain: callers.iter().chain(&hit.chain).copied().collect(),
+                });
             }
         }
-        let p = &mut self.problems[index];
-        p.uses.push(at);
+        run.runs_at.push(by.at());
+        run.first = run.first.min(by.at());
         if let Some(step) = step
-            && !p.steps.contains(&step)
+            && !run.steps.contains(&step)
         {
-            p.steps.push(step);
+            run.steps.push(step);
         }
         for site in sites {
-            if !p.sites.contains(&site) {
-                p.sites.push(site);
+            if !run.sites.contains(&site) {
+                run.sites.push(site);
             }
         }
     }
@@ -878,8 +989,8 @@ fn notes(facts: &Facts, steps: &[Step], judged: &Judged) -> Vec<Note> {
     }
     let status = |section| judged.status(section).status;
     let named: Vec<usize> = (judged.problems.iter())
-        .filter(|p| p.kind != Kind::CantFollow)
-        .flat_map(|p| p.sections.iter().copied())
+        .filter(|p| !matches!(p, Problem::CantFollow { .. }))
+        .flat_map(|p| p.sections().iter().copied())
         .collect();
     let later: Vec<usize> = (steps.iter().enumerate())
         .filter(|(_, step)| judged.may_never_run(step))
@@ -924,8 +1035,8 @@ fn notes(facts: &Facts, steps: &[Step], judged: &Judged) -> Vec<Note> {
     // Sections that the can't-follow problem doesn't name, which code elfq
     // can't follow may set up too.
     let in_problem: Vec<usize> = (judged.problems.iter())
-        .filter(|p| p.kind == Kind::CantFollow)
-        .flat_map(|p| p.sections.iter().copied())
+        .filter(|p| matches!(p, Problem::CantFollow { .. }))
+        .flat_map(|p| p.sections().iter().copied())
         .collect();
     let unknown: Vec<usize> = (ram.sections.iter().copied())
         .filter(|&section| status(section) == Status::Unknown && !in_problem.contains(&section))

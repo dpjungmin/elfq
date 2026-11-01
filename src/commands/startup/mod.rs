@@ -35,7 +35,7 @@
 //! index into `Binary::sections`; `event` is an event, as an index into
 //! the walk's events, and `loop_event` a loop's; `l` is a loop that the
 //! walk found (`arch::startup::Loop`). A step goes by its index in the
-//! steps, as in `Setup::step`, `Problem::steps` and `Problem::before`,
+//! steps, as in `Setup::step`, `Problem::steps` and `EarlyRun::before`,
 //! and where elfq writes it out, by its number, from 1 (`steps::number`).
 //! What every stage reads once the walk is done, from the file to how the
 //! walk ended, is in `Facts`, and where startup ends, which the text and
