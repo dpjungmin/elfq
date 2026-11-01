@@ -5,6 +5,7 @@
 //! arithmetic that overflows fails them too.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -142,9 +143,21 @@ fn parse_quickly(data: Vec<u8>) -> (Binary, Graph) {
 
 /// Saves `data` as `name` in a folder for the tests' files, and returns its
 /// path.
+///
+/// Tests run in parallel, and some save the same file, so it is written
+/// under a name of its own first and then renamed: elfq never reads a file
+/// that another test is still writing.
 pub fn save(name: &str, data: &[u8]) -> String {
-    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
-    std::fs::write(&path, data).unwrap();
+    static SAVED: AtomicUsize = AtomicUsize::new(0);
+    let folder = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    let partial = folder.join(format!(
+        "{name}.{}.{}.part",
+        std::process::id(),
+        SAVED.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::write(&partial, data).unwrap();
+    let path = folder.join(name);
+    std::fs::rename(&partial, &path).unwrap();
     path.to_str().unwrap().to_string()
 }
 

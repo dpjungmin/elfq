@@ -3,6 +3,7 @@
 use std::path::Path;
 use std::process::Stdio;
 
+use crate::damaged;
 use crate::support::{
     DEEP_SAMPLE, LIBRARY_SAMPLE, MOVED_SAMPLE, SAMPLE, TCM_EDITED_SAMPLE, TCM_ENTRY_MAIN_SAMPLE,
     TCM_INLINED_SAMPLE, TCM_MOVED_SAMPLE, TCM_OCRAM_SAMPLE, TCM_SAMPLE, TCM_SDRAM_SAMPLE,
@@ -3964,9 +3965,8 @@ fn a_file_whose_code_elfq_cant_read_says_so() {
     let mut data = std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join(SAMPLE)).unwrap();
     // e_machine, in the ELF header: EM_AARCH64.
     data[18..20].copy_from_slice(&183u16.to_le_bytes());
-    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("aarch64.elf");
-    std::fs::write(&path, data).unwrap();
-    let path = path.to_str().unwrap();
+    let path = damaged::save("aarch64.elf", &data);
+    let path = path.as_str();
 
     assert_output(
         &stdout(&[path]),
@@ -4691,9 +4691,8 @@ fn diff_needs_two_builds_of_one_program_with_section_headers() {
     let mut data = std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join(TCM_SAMPLE)).unwrap();
     data[0x20..0x24].fill(0);
     data[0x30..0x34].fill(0);
-    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("c-cortex-m7-no-section-headers.elf");
-    std::fs::write(&path, data).unwrap();
-    let path = path.to_str().unwrap();
+    let path = damaged::save("c-cortex-m7-no-section-headers.elf", &data);
+    let path = path.as_str();
     assert_output(
         &stderr(&[TCM_SAMPLE, "diff", path], 2),
         &format!("error: {path} has no section headers, which diff needs to find its memory\n"),
