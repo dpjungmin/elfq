@@ -6,10 +6,14 @@
 //! from reset, with the numbers it passes to the functions it calls.
 //!
 //! The encodings are those of the Armv7-M and Armv8-M architecture reference
-//! manuals: sections A5.2 (16-bit) and A5.3 (32-bit) in Armv7-M. An
-//! instruction this module doesn't know decodes to `None`, and `values`
-//! then follows nothing in its function, since such an instruction could
-//! write any register or branch anywhere.
+//! manuals. Each function that decodes a group of instructions names the
+//! table it follows by its heading in the Armv7-M manual (ARM DDI 0403E.e),
+//! which a search of the manual finds: the 16-bit ones are in section
+//! A5.2, the 32-bit ones in A5.3 and the floating-point ones in chapter A6.
+//! What Armv8-M adds, such as `sg` and `clrm`, is in its manual (ARM
+//! DDI 0553). An instruction this module doesn't know decodes to `None`,
+//! and `values` then follows nothing in its function, since such an
+//! instruction could write any register or branch anywhere.
 //!
 //! The sweep (`sweep.rs`) decodes the branches, literal loads, `adr`,
 //! `movw` and `movt` again on its own, since it reads every function and
@@ -390,7 +394,10 @@ pub(super) fn decode(address: u64, first: u16, second: u16) -> Option<Effect> {
     }
 }
 
-/// A 16-bit instruction.
+/// A 16-bit instruction, by the table in "16-bit Thumb instruction
+/// encoding" (A5.2). It decodes most of the tables under that one itself;
+/// "Data processing", "Special data instructions and branch and exchange"
+/// and "Miscellaneous 16-bit instructions" have a function each.
 fn narrow(address: u64, op: u16) -> Option<Effect> {
     let pc = address + 4;
     // The register fields most 16-bit instructions use.
@@ -614,8 +621,8 @@ fn narrow(address: u64, op: u16) -> Option<Effect> {
     Some(effect)
 }
 
-/// The 16-bit data-processing instructions, which work on the low
-/// registers: `ands`, `eors`, `lsls`, `lsrs`, `asrs`, `adcs`, `sbcs`,
+/// The 16-bit instructions in "Data processing" (A5.2), which work on the
+/// low registers: `ands`, `eors`, `lsls`, `lsrs`, `asrs`, `adcs`, `sbcs`,
 /// `rors`, `tst`, `rsbs`, `cmp`, `cmn`, `orrs`, `muls`, `bics` and `mvns`.
 fn data_processing(op: u16) -> Effect {
     let register = op & 7;
@@ -645,8 +652,9 @@ fn data_processing(op: u16) -> Effect {
     }
 }
 
-/// The 16-bit instructions that work on any register, and branch through
-/// one: `add`, `cmp`, `mov`, `bx` and `blx`.
+/// The 16-bit instructions in "Special data instructions and branch and
+/// exchange" (A5.2), which work on any register, and branch through one:
+/// `add`, `cmp`, `mov`, `bx` and `blx`.
 fn special(op: u16) -> Effect {
     let register = (op >> 4) & 8 | op & 7;
     let source = (op >> 3) & 0xf;
@@ -687,7 +695,8 @@ fn special(op: u16) -> Effect {
     }
 }
 
-/// The 16-bit instructions that start with 0b1011.
+/// The 16-bit instructions in "Miscellaneous 16-bit instructions" (A5.2),
+/// those that start with 0b1011.
 fn miscellaneous(address: u64, op: u16) -> Option<Effect> {
     let list = op & 0xff;
     let effect = match (op >> 8) & 0xf {
@@ -753,7 +762,9 @@ fn miscellaneous(address: u64, op: u16) -> Option<Effect> {
     Some(effect)
 }
 
-/// A 32-bit instruction, made of `first` and `second`.
+/// A 32-bit instruction, made of `first` and `second`, by the table in
+/// "32-bit Thumb instruction encoding" (A5.3). It decodes those in "Data
+/// processing (register)" and the two tables of multiplies itself.
 fn wide(address: u64, first: u16, second: u16) -> Option<Effect> {
     let pc = address + 4;
     let rn = first & 0xf;
@@ -817,8 +828,9 @@ fn reads(registers: &[u16]) -> Registers {
         .fold(0, |set, &register| set | bit(register))
 }
 
-/// `ldm`, `ldmdb`, `stm` and `stmdb` (`push.w` and `pop.w`), and
-/// Armv8.1-M's `clrm`.
+/// The instructions in "Load Multiple and Store Multiple" (A5.3): `ldm`,
+/// `ldmdb`, `stm` and `stmdb` (`push.w` and `pop.w`), and Armv8.1-M's
+/// `clrm`.
 fn load_store_multiple(first: u16, second: u16) -> Option<Effect> {
     // clrm {registers}, which zeroes them, and the flags with bit 15. It
     // takes the place of an `ldm` from pc, which Armv7-M doesn't allow.
@@ -897,6 +909,7 @@ fn load_store_multiple(first: u16, second: u16) -> Option<Effect> {
     })
 }
 
+/// The instructions in "Load/store dual or exclusive, table branch" (A5.3):
 /// `ldrd`, `strd`, the exclusive loads and stores, `tbb` and `tbh`, and
 /// Armv8-M's `sg`, `tt` and loads and stores with acquire and release.
 fn load_store_dual(first: u16, second: u16) -> Option<Effect> {
@@ -990,7 +1003,7 @@ fn load_store_dual(first: u16, second: u16) -> Option<Effect> {
     Some(effect)
 }
 
-/// The data-processing instructions with a shifted register: `and.w`,
+/// The instructions in "Data processing (shifted register)" (A5.3): `and.w`,
 /// `bic.w`, `orr.w`, `mov.w`, `orn`, `mvn.w`, `eor.w`, `pkhbt`, `add.w`,
 /// `adc.w`, `sbc.w`, `sub.w`, `rsb` and the shifts by an immediate, and
 /// `tst.w`, `teq`, `cmn.w` and `cmp.w`, which only set the flags.
@@ -1068,10 +1081,10 @@ fn shifted_register(first: u16, second: u16) -> Option<Effect> {
     })
 }
 
-/// The data-processing instructions with a modified immediate, a byte
-/// that can be shifted or repeated: `and`, `bic`, `orr`, `mov.w`, `orn`,
-/// `mvn`, `eor`, `add.w`, `adc`, `sbc`, `sub.w` and `rsb`, and `tst`,
-/// `teq`, `cmn` and `cmp`, which only set the flags.
+/// The instructions in "Data processing (modified immediate)" (A5.3), whose
+/// immediate is a byte that can be shifted or repeated: `and`, `bic`, `orr`,
+/// `mov.w`, `orn`, `mvn`, `eor`, `add.w`, `adc`, `sbc`, `sub.w` and `rsb`,
+/// and `tst`, `teq`, `cmn` and `cmp`, which only set the flags.
 fn modified_immediate(first: u16, second: u16) -> Option<Effect> {
     let op = (first >> 5) & 0xf;
     let s = first & 0x10 != 0;
@@ -1137,7 +1150,8 @@ fn modified_immediate(first: u16, second: u16) -> Option<Effect> {
 }
 
 /// The value of a modified immediate: a byte, repeated in some bytes of
-/// the word or rotated into place (`ThumbExpandImm` in the manual).
+/// the word or rotated into place, as "Modified immediate constants in
+/// Thumb instructions" (A5.3) says (`ThumbExpandImm` in the manual).
 fn expand_immediate(imm12: u32) -> u32 {
     let byte = imm12 & 0xff;
     if imm12 >> 10 == 0 {
@@ -1152,9 +1166,9 @@ fn expand_immediate(imm12: u32) -> u32 {
     }
 }
 
-/// The data-processing instructions with a plain 12- or 16-bit immediate:
-/// `addw`, `adr.w`, `movw`, `subw`, `movt`, and the saturating and bit
-/// field instructions.
+/// The instructions in "Data processing (plain binary immediate)" (A5.3),
+/// with a 12- or 16-bit immediate: `addw`, `adr.w`, `movw`, `subw`, `movt`,
+/// and the saturating and bit field instructions.
 fn plain_immediate(pc: u64, first: u16, second: u16) -> Option<Effect> {
     let rn = first & 0xf;
     let rd = (second >> 8) & 0xf;
@@ -1203,8 +1217,9 @@ fn plain_immediate(pc: u64, first: u16, second: u16) -> Option<Effect> {
     })
 }
 
-/// Branches and the instructions in their encoding space: `bl`, `b.w`,
-/// `b<cond>.w`, `msr`, `mrs`, hints such as `nop.w`, barriers and `udf.w`.
+/// The instructions in "Branches and miscellaneous control" (A5.3): `bl`,
+/// `b.w`, `b<cond>.w`, `msr`, `mrs`, hints such as `nop.w`, barriers and
+/// `udf.w`.
 fn branch_or_control(pc: u64, first: u16, second: u16) -> Option<Effect> {
     let effect = Effect::new(0, 0);
     let target = |kind| match kind {
@@ -1245,7 +1260,8 @@ fn branch_or_control(pc: u64, first: u16, second: u16) -> Option<Effect> {
     }
 }
 
-/// `str.w`, `strb.w` and `strh.w`, with any addressing.
+/// The instructions in "Store single data item" (A5.3): `str.w`, `strb.w`
+/// and `strh.w`, with any addressing.
 fn store(first: u16, second: u16) -> Option<Effect> {
     let rn = first & 0xf;
     let rt = second >> 12;
@@ -1347,8 +1363,9 @@ fn addressing(first: u16, second: u16) -> Option<Addressing> {
     }
 }
 
-/// `ldr.w`, `ldrb.w`, `ldrh.w`, `ldrsb` and `ldrsh`, with any addressing,
-/// and the preload hints `pld` and `pli`.
+/// The instructions in "Load word", "Load halfword, memory hints" and "Load
+/// byte, memory hints" (A5.3): `ldr.w`, `ldrb.w`, `ldrh.w`, `ldrsb` and
+/// `ldrsh`, with any addressing, and the preload hints `pld` and `pli`.
 fn load(pc: u64, first: u16, second: u16) -> Option<Effect> {
     let rn = first & 0xf;
     let rt = second >> 12;
@@ -1420,12 +1437,12 @@ fn load(pc: u64, first: u16, second: u16) -> Option<Effect> {
     )
 }
 
-/// The floating-point instructions, with Armv8.1-M's loads and stores of
-/// its system registers. Only those that move values to or from the core
+/// The instructions in "Coprocessor instructions" (A5.3): the floating-point
+/// ones, in sections A6.4 to A6.7, with Armv8.1-M's loads and stores of its
+/// system registers. Only those that move values to or from the core
 /// registers, and loads and stores that update their base register, touch
-/// the registers elfq follows. Those of other coprocessors, and
-/// Armv8.1-M's vector instructions, which share their encodings, aren't
-/// followed.
+/// the registers elfq follows. Those of other coprocessors, and Armv8.1-M's
+/// vector instructions, which share their encodings, aren't followed.
 fn coprocessor(first: u16, second: u16) -> Option<Effect> {
     // Coprocessor field 15, as some vector instructions have too, with P
     // or W set.
@@ -1555,9 +1572,11 @@ fn coprocessor(first: u16, second: u16) -> Option<Effect> {
     }
 }
 
-/// Armv8.1-M's vldr and vstr of a floating-point system register, such as
-/// the FPCXTNS that a function called from Non-secure code saves: one word
-/// at Rn plus or minus `imm7` * 4, or at Rn, which it then changes by that.
+/// Armv8.1-M's vldr and vstr of a floating-point system register, which
+/// the Armv8-M manual describes under "VLDR (System Register)" and "VSTR
+/// (System Register)", such as the FPCXTNS that a function called from
+/// Non-secure code saves: one word at Rn plus or minus `imm7` * 4, or at
+/// Rn, which it then changes by that.
 fn system_register(first: u16, second: u16) -> Option<Effect> {
     let rn = first & 0xf;
     let (p, u, w) = (first & 0x100 != 0, first & 0x80 != 0, first & 0x20 != 0);
