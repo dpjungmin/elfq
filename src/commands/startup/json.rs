@@ -7,11 +7,12 @@ use std::io::Write;
 use anyhow::Result;
 use serde::Serialize;
 
-use super::problems::{Kind, SectionStatus};
+use super::problems::{Kind, Problem, SectionStatus};
+use super::ram_sections::RamSections;
 use super::start::MainFrom;
-use super::steps::{Step, number};
+use super::steps::number;
 use super::text;
-use super::{Answer, Ending};
+use super::{Answer, Ending, Facts, Firmware};
 use crate::commands::json::{self as house, Item, address};
 use crate::graph::Node;
 
@@ -111,45 +112,93 @@ struct KeepOut<'a> {
 
 pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
     let firmware = answer.facts.firmware;
-    let binary = firmware.binary;
     let ram = answer.facts.ram;
-    let item =
-        |address: u64| (firmware.item(address)).map(|index| Item::new(binary, Node::Item(index)));
     let (main, main_at, main_from) = match answer.facts.ending() {
         Ending::EntryIsMain(main) | Ending::Main(main) => (
-            main.function().and_then(item),
+            (main.function()).and_then(|function| item(firmware, function)),
             Some(address(main.address)),
             Some(main.from.field()),
         ),
         Ending::EndlessLoop(head) => (None, Some(address(head)), Some(MainFrom::Loop.field())),
         Ending::Walk(_) => (None, None, None),
     };
-    let names = |sections: &[usize]| -> Vec<&str> {
-        sections.iter().map(|&section| ram.name(section)).collect()
-    };
-    let steps = (answer.steps.iter().enumerate())
-        .map(|(index, step): (usize, &Step)| StepRow {
-            step: number(index),
-            site: address(step.site),
-            does: step.does.word(),
-            how: step.way.field(),
-            register: step.way.register().map(text::register_name),
-            function: step.function.and_then(item),
-            veneer: step.veneer.map(address),
-            inside: item(step.inside),
-            from: (step.region.as_ref())
-                .and_then(|region| region.from)
-                .map(address),
-            to: step.region.as_ref().map(|region| address(region.to)),
-            size: step.region.as_ref().map(|region| region.size),
-            sections: (step.covers().iter())
-                .map(|cover| ram.name(cover.section))
-                .collect(),
-            table: step.table.map(address),
-            may_set_up: names(&step.may),
+    let notes = (answer.judged.notes.iter())
+        .map(|note| Note {
+            kind: note.field(),
+            sections: names(ram, note.sections()),
+            items: Vec::new(),
+            text: text::note_text(answer, note),
         })
         .collect();
-    let sections = (ram.sections.iter().copied())
+    let keep_out = (answer.judged.keep_out.iter())
+        .map(|keep_out| KeepOut {
+            section: ram.name(keep_out.section),
+            items: (keep_out.items.iter())
+                .map(|&index| Item::new(firmware.binary, Node::Item(index)))
+                .collect(),
+        })
+        .collect();
+    let value = Startup {
+        file: answer.path.display().to_string(),
+        entry: item(firmware, answer.facts.reset.address),
+        main,
+        main_at,
+        main_from,
+        complete: answer.judged.complete,
+        problems_certain: (answer.judged.problems.iter())
+            .filter(|p| p.certain())
+            .count(),
+        steps: step_rows(answer),
+        sections: section_rows(answer),
+        problems: problem_rows(answer),
+        notes,
+        keep_out,
+    };
+    house::write(&value, out)
+}
+
+/// The item whose bytes include `address`.
+fn item<'a>(firmware: &Firmware<'a>, address: u64) -> Option<Item<'a>> {
+    (firmware.item(address)).map(|index| Item::new(firmware.binary, Node::Item(index)))
+}
+
+/// The names of `sections`.
+fn names<'a>(ram: &RamSections<'a>, sections: &[usize]) -> Vec<&'a str> {
+    sections.iter().map(|&section| ram.name(section)).collect()
+}
+
+/// A row for each step.
+fn step_rows<'a>(answer: &Answer<'a>) -> Vec<StepRow<'a>> {
+    let Facts { firmware, ram, .. } = *answer.facts;
+    (answer.steps.iter().enumerate())
+        .map(|(index, step)| {
+            let region = step.region.as_ref();
+            StepRow {
+                step: number(index),
+                site: address(step.site),
+                does: step.does.word(),
+                how: step.way.field(),
+                register: step.way.register().map(text::register_name),
+                function: step.function.and_then(|function| item(firmware, function)),
+                veneer: step.veneer.map(address),
+                inside: item(firmware, step.inside),
+                from: region.and_then(|region| region.from).map(address),
+                to: region.map(|region| address(region.to)),
+                size: region.map(|region| region.size),
+                sections: (step.covers().iter())
+                    .map(|cover| ram.name(cover.section))
+                    .collect(),
+                table: step.table.map(address),
+                may_set_up: names(ram, &step.may),
+            }
+        })
+        .collect()
+}
+
+/// A row for each section that startup code sets up, with its status.
+fn section_rows<'a>(answer: &Answer<'a>) -> Vec<Section<'a>> {
+    let ram = answer.facts.ram;
+    (ram.sections.iter().copied())
         .map(|section| {
             let SectionStatus {
                 status,
@@ -169,65 +218,42 @@ pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
                 bytes,
             }
         })
-        .collect();
-    let problems = (answer.judged.problems.iter())
-        .map(|p| {
-            let chain = match (p.kind, p.items.first()) {
-                (Kind::RunsBeforeCopy, Some(first)) if !p.steps.is_empty() => {
-                    let chain = &p.chains[first];
-                    (chain[..chain.len() - 1].iter())
-                        .filter(|&&a| !firmware.is_veneer(a))
-                        .map(|&a| firmware.name(a))
-                        .collect()
-                }
-                _ => Vec::new(),
-            };
-            ProblemRow {
-                kind: p.kind.field(),
-                certain: p.certain(),
-                steps: p.steps.iter().map(|&index| number(index)).collect(),
-                sections: names(&p.sections),
-                items: p.items.iter().filter_map(|&a| item(a)).collect(),
-                chain,
-                before_step: p.before.map(number),
-                bytes: p.bytes,
-                from: p.from.map(address),
-                sites: house::addresses(&p.sites),
-                text: text::sentence(answer, p),
-            }
+        .collect()
+}
+
+/// A row for each problem, with its sentence.
+fn problem_rows<'a>(answer: &Answer<'a>) -> Vec<ProblemRow<'a>> {
+    let Facts { firmware, ram, .. } = *answer.facts;
+    (answer.judged.problems.iter())
+        .map(|p| ProblemRow {
+            kind: p.kind.field(),
+            certain: p.certain(),
+            steps: p.steps.iter().map(|&index| number(index)).collect(),
+            sections: names(ram, &p.sections),
+            items: p.items.iter().filter_map(|&a| item(firmware, a)).collect(),
+            chain: chain(firmware, p),
+            before_step: p.before.map(number),
+            bytes: p.bytes,
+            from: p.from.map(address),
+            sites: house::addresses(&p.sites),
+            text: text::sentence(answer, p),
         })
-        .collect();
-    let notes = (answer.judged.notes.iter())
-        .map(|note| Note {
-            kind: note.field(),
-            sections: names(note.sections()),
-            items: Vec::new(),
-            text: text::note_text(answer, note),
-        })
-        .collect();
-    let keep_out = (answer.judged.keep_out.iter())
-        .map(|keep_out| KeepOut {
-            section: ram.name(keep_out.section),
-            items: (keep_out.items.iter())
-                .map(|&index| Item::new(binary, Node::Item(index)))
-                .collect(),
-        })
-        .collect();
-    let value = Startup {
-        file: answer.path.display().to_string(),
-        entry: item(answer.facts.reset.address),
-        main,
-        main_at,
-        main_from,
-        complete: answer.judged.complete,
-        problems_certain: (answer.judged.problems.iter())
-            .filter(|p| p.certain())
-            .count(),
-        steps,
-        sections,
-        problems,
-        notes,
-        keep_out,
+        .collect()
+}
+
+/// For code that runs before its copy in a step, the names of the
+/// functions that the step's call goes through to the first of the
+/// problem's functions, but for veneers.
+fn chain(firmware: &Firmware, p: &Problem) -> Vec<String> {
+    let (Kind::RunsBeforeCopy, Some(first)) = (p.kind, p.items.first()) else {
+        return Vec::new();
     };
-    house::write(&value, out)
+    if p.steps.is_empty() {
+        return Vec::new();
+    }
+    let chain = &p.chains[first];
+    (chain[..chain.len() - 1].iter())
+        .filter(|&&a| !firmware.is_veneer(a))
+        .map(|&a| firmware.name(a))
+        .collect()
 }

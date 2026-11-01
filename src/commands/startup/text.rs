@@ -3,10 +3,11 @@
 //! JSON gives the same sentences for the problems and the notes.
 
 use std::io::Write;
+use std::ops::Range;
 
 use anyhow::Result;
 
-use super::problems::{Kind, Note, Problem, RunsAt, Status};
+use super::problems::{Kind, Note, Problem, Status};
 use super::ram_sections::RamSections;
 use super::start::{Main, MainFrom};
 use super::steps::{Does, Step, Way, number};
@@ -64,15 +65,13 @@ pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
 /// The first line: how many problems, or what startup does when there are
 /// none.
 fn lead(answer: &Answer) -> String {
-    let firmware = answer.facts.firmware;
-    let ram = answer.facts.ram;
-    let boot = firmware.name(answer.facts.reset.address);
+    let boot = answer.facts.firmware.name(answer.facts.reset.address);
     let ending = answer.facts.ending();
-    let problems = &answer.judged.problems;
+    let problems = answer.judged.problems.len();
     // Without startup code, as when the entry point is main.
     if let Ending::EntryIsMain(_) = ending {
         let main = boot;
-        return match problems.len() {
+        return match problems {
             0 => format!(
                 "No problems: the processor starts at {main}, so no startup code runs before it."
             ),
@@ -82,59 +81,30 @@ fn lead(answer: &Answer) -> String {
             ),
         };
     }
-    if !problems.is_empty() {
+    if problems > 0 {
         return format!(
             "{} in what {boot} does{}:",
-            plural(problems.len(), "problem", "problems"),
-            before_text(firmware, ending)
+            plural(problems, "problem", "problems"),
+            before_text(answer.facts.firmware, ending)
         );
     }
-    if ram.sections.is_empty() {
+    if answer.facts.ram.sections.is_empty() {
         return format!(
             "{boot} has nothing to copy or zero: the file stores every section where it runs, \
              and none starts as zeros."
         );
     }
-    // The sections in the order the steps set them up.
-    let mut ordered = ram.sections.clone();
-    let init = &answer.judged.init;
-    ordered.sort_by_key(|section| {
-        init.get(section)
-            .map_or(answer.steps.len(), |setup| setup.step)
-    });
-    let status = |section| answer.judged.status(section).status;
-    // What the steps from event `from` up to `to` copy and zero.
-    let parts = |from: usize, to: usize| {
-        let by = |section: usize| {
-            (init.get(&section))
-                .is_some_and(|setup| (from..to).contains(&answer.steps[setup.step].event))
-        };
-        let mut parts = Vec::new();
-        for (verb, wanted) in [("copies", Status::Copied), ("zeroes", Status::Zeroed)] {
-            let names: Vec<&str> = (ordered.iter().copied())
-                .filter(|&section| status(section) == wanted && by(section))
-                .map(|section| ram.name(section))
-                .collect();
-            if !names.is_empty() {
-                parts.push(format!("{verb} {}", names_text(&names, true)));
-            }
-        }
-        parts
-    };
-    let events = answer.facts.events;
-    // The last call the reset handler makes, when it doesn't return: it may
-    // do the copies and zeroings itself, as Zephyr's z_prep_c does.
-    let last = if let Ending::Walk(End::RunsOff(_)) = ending {
-        (0..events.list.len())
-            .rev()
-            .filter(|&event| events.level(event) == 0)
-            .find_map(|event| events.target(event).map(|target| (event, target)))
-    } else {
-        None
-    };
-    if let Some((event, last)) = last {
-        let before = parts(0, event);
-        let inside = parts(event, events.list.len());
+    lead_without_problems(answer, &boot, ending)
+}
+
+/// The lead when there are no problems and there is something to set up:
+/// what the steps copy and zero, then how startup ends, or what the reset
+/// handler's last call does when it doesn't return.
+fn lead_without_problems(answer: &Answer, boot: &str, ending: Ending) -> String {
+    let last = last_call(answer, ending);
+    if let Some(LastCall { event, function }) = last {
+        let before = set_up_parts(answer, 0..event);
+        let inside = set_up_parts(answer, event..answer.facts.events.list.len());
         if !inside.is_empty() {
             let inside = format!("{} and", inside.join(", "));
             let before = match before.is_empty() {
@@ -143,18 +113,70 @@ fn lead(answer: &Answer) -> String {
             };
             return format!(
                 "No problems: {boot} {before}calls {}, which {inside} doesn't return.",
-                firmware.name(last)
+                answer.facts.firmware.name(function)
             );
         }
     }
-    let parts = parts(0, usize::MAX);
+    let parts = set_up_parts(answer, 0..usize::MAX);
     let what = if parts.is_empty() {
         "copies and zeroes nothing".to_string()
     } else {
         parts.join(", ")
     };
-    let then = then_text(answer, ending, last.map(|(_, last)| last));
+    let then = then_text(answer, ending, last.map(|last| last.function));
     format!("No problems: {boot} {what}, {then}.")
+}
+
+/// The last call that the reset handler makes (see [`last_call`]).
+#[derive(Clone, Copy)]
+struct LastCall {
+    /// Where the call is in the walk's list of events.
+    event: usize,
+    /// The function that it calls, past a veneer.
+    function: u64,
+}
+
+/// The last call that the reset handler makes, when the walk runs off the
+/// end of its code after it, so that the call doesn't return: it may do
+/// the copies and zeroings itself, as Zephyr's z_prep_c does.
+fn last_call(answer: &Answer, ending: Ending) -> Option<LastCall> {
+    let Ending::Walk(End::RunsOff(_)) = ending else {
+        return None;
+    };
+    let events = answer.facts.events;
+    (0..events.list.len())
+        .rev()
+        .filter(|&event| events.level(event) == 0)
+        .find_map(|event| {
+            let function = events.target(event)?;
+            Some(LastCall { event, function })
+        })
+}
+
+/// What the steps at `events` copy and zero in full, in the order that the
+/// steps set the sections up: "copies .data", "zeroes .bss and .sbss".
+fn set_up_parts(answer: &Answer, events: Range<usize>) -> Vec<String> {
+    let ram = answer.facts.ram;
+    let init = &answer.judged.init;
+    let mut ordered = ram.sections.clone();
+    ordered.sort_by_key(|section| {
+        init.get(section)
+            .map_or(answer.steps.len(), |setup| setup.step)
+    });
+    let by = |section: usize| {
+        (init.get(&section)).is_some_and(|setup| events.contains(&answer.steps[setup.step].event))
+    };
+    let mut parts = Vec::new();
+    for (verb, wanted) in [("copies", Status::Copied), ("zeroes", Status::Zeroed)] {
+        let names: Vec<&str> = (ordered.iter().copied())
+            .filter(|&section| answer.judged.status(section).status == wanted && by(section))
+            .map(|section| ram.name(section))
+            .collect();
+        if !names.is_empty() {
+            parts.push(format!("{verb} {}", names_text(&names, true)));
+        }
+    }
+    parts
 }
 
 /// How startup ends, for the lead when there are problems: " before it
@@ -238,9 +260,7 @@ fn at_name(firmware: &Firmware, address: u64) -> String {
 
 /// The sentence that says what problem `p` is.
 pub(super) fn sentence(answer: &Answer, p: &Problem) -> String {
-    let firmware = answer.facts.firmware;
     let ram = answer.facts.ram;
-    let steps = answer.steps;
     let Some(&section) = p.sections.first() else {
         return String::new();
     };
@@ -249,68 +269,7 @@ pub(super) fn sentence(answer: &Answer, p: &Problem) -> String {
     // The number of the step it is about.
     let step = p.steps.first().map_or(0, |&index| number(index));
     match p.kind {
-        Kind::RunsBeforeCopy => {
-            let what = match &p.items[..] {
-                [one] => at_name(firmware, *one),
-                items => {
-                    let names: Vec<String> = items.iter().map(|&a| firmware.name(a)).collect();
-                    let names: Vec<&str> = names.iter().map(String::as_str).collect();
-                    names_text(&names, answer.all)
-                }
-            };
-            let reset_runs_from_image = p.uses.contains(&RunsAt::ResetHandler);
-            let tail = match p.before {
-                None if answer.judged.unread.contains_key(&section) => {
-                    format!("before anything copies {name}")
-                }
-                None => "which nothing copies".to_string(),
-                Some(index) => {
-                    let before = &steps[index];
-                    let inside = (p.uses.iter()).filter_map(|at| at.event()).any(|event| {
-                        event < before.event && before.event < answer.facts.events.span(event)
-                    });
-                    if reset_runs_from_image || inside || p.steps.contains(&index) {
-                        "which nothing has copied yet".to_string()
-                    } else {
-                        format!("before step {} copies {name}", number(index))
-                    }
-                }
-            };
-            if reset_runs_from_image {
-                let boot = answer.facts.reset.address;
-                return format!(
-                    "{} runs at {boot:#x} in {name}, {tail}{}.",
-                    firmware.name(boot),
-                    unless(answer, p)
-                );
-            }
-            let direct = p.items.iter().all(|a| {
-                let chain = &p.chains[a];
-                (chain.iter()).filter(|&&c| !firmware.is_veneer(c)).count() <= 2
-            });
-            let verb = match (p.steps.len() == 1, direct) {
-                (true, true) => "calls",
-                (true, false) => "runs",
-                (false, true) => "call",
-                (false, false) => "run",
-            };
-            let mut who = steps_text(&p.steps, true);
-            if let [one] = p.steps[..]
-                && let Some(function) = steps[one].called()
-                && !p.items.contains(&function)
-            {
-                who = format!("{who}, {},", firmware.name(function));
-            }
-            let separator = if tail.starts_with("before") {
-                " "
-            } else {
-                ", "
-            };
-            format!(
-                "{who} {verb} {what} in {name}{separator}{tail}{}.",
-                unless(answer, p)
-            )
-        }
+        Kind::RunsBeforeCopy => runs_before_copy_text(answer, p, section),
         Kind::NotCopied | Kind::NotZeroed => format!("Nothing {}.", set_up_text(ram, section)),
         Kind::PartlyCopied => format!(
             "Step {step} copies {} of {name}'s {size} bytes.",
@@ -334,8 +293,84 @@ pub(super) fn sentence(answer: &Answer, p: &Problem) -> String {
             let verb = if p.steps.len() == 1 { "does" } else { "do" };
             format!(
                 "Nothing {what}, unless {} {verb}.",
-                unread_text(steps, &p.steps)
+                unread_text(answer.steps, &p.steps)
             )
+        }
+    }
+}
+
+/// The sentence of problem `p`, of code that runs from the load image
+/// `section` before startup code copies it: "Step 1, SystemInit, calls
+/// clock_setup at 0x0 in .itcm before step 2 copies .itcm."
+fn runs_before_copy_text(answer: &Answer, p: &Problem, section: usize) -> String {
+    let firmware = answer.facts.firmware;
+    let name = answer.facts.ram.name(section);
+    let copied = copied_yet_text(answer, p, section);
+    if p.reset_runs_from_image() {
+        let boot = answer.facts.reset.address;
+        return format!(
+            "{} runs at {boot:#x} in {name}, {copied}{}.",
+            firmware.name(boot),
+            unless(answer, p)
+        );
+    }
+    let what = match &p.items[..] {
+        [one] => at_name(firmware, *one),
+        items => {
+            let names: Vec<String> = items.iter().map(|&a| firmware.name(a)).collect();
+            let names: Vec<&str> = names.iter().map(String::as_str).collect();
+            names_text(&names, answer.all)
+        }
+    };
+    let direct = p.items.iter().all(|a| {
+        let chain = &p.chains[a];
+        (chain.iter()).filter(|&&c| !firmware.is_veneer(c)).count() <= 2
+    });
+    let verb = match (p.steps.len() == 1, direct) {
+        (true, true) => "calls",
+        (true, false) => "runs",
+        (false, true) => "call",
+        (false, false) => "run",
+    };
+    let mut who = steps_text(&p.steps, true);
+    if let [one] = p.steps[..]
+        && let Some(function) = answer.steps[one].called()
+        && !p.items.contains(&function)
+    {
+        who = format!("{who}, {},", firmware.name(function));
+    }
+    let separator = if copied.starts_with("before") {
+        " "
+    } else {
+        ", "
+    };
+    format!(
+        "{who} {verb} {what} in {name}{separator}{copied}{}.",
+        unless(answer, p)
+    )
+}
+
+/// How far startup code has got with copying the load image `section`
+/// when code runs from it, for problem `p`: "before step 3 copies .data",
+/// "before anything copies .data", "which nothing has copied yet" or
+/// "which nothing copies".
+fn copied_yet_text(answer: &Answer, p: &Problem, section: usize) -> String {
+    let name = answer.facts.ram.name(section);
+    match p.before {
+        None if answer.judged.unread.contains_key(&section) => {
+            format!("before anything copies {name}")
+        }
+        None => "which nothing copies".to_string(),
+        Some(index) => {
+            let before = &answer.steps[index];
+            let inside = (p.uses.iter()).filter_map(|at| at.event()).any(|event| {
+                event < before.event && before.event < answer.facts.events.span(event)
+            });
+            if p.reset_runs_from_image() || inside || p.steps.contains(&index) {
+                "which nothing has copied yet".to_string()
+            } else {
+                format!("before step {} copies {name}", number(index))
+            }
         }
     }
 }
@@ -438,93 +473,10 @@ fn unless(answer: &Answer, p: &Problem) -> String {
 
 /// The cells of the row of `step`, at `index` in the steps.
 fn row(answer: &Answer, index: usize, step: &Step) -> Vec<String> {
-    let firmware = answer.facts.firmware;
-    let name = |address: u64| firmware.name(address);
-    let function = step.function.map(name).unwrap_or_default();
-    let via = if step.veneer.is_some() {
-        " via veneer"
-    } else {
-        ""
-    };
-    let in_inside = |what: String| {
-        if step.level > 0 {
-            format!("{what}, in {}", name(step.inside))
-        } else {
-            what
-        }
-    };
     let what = match step.does {
-        Does::Copy | Does::Zero => {
-            let names: Vec<&str> = (step.covers().iter())
-                .map(|cover| answer.facts.ram.name(cover.section))
-                .collect();
-            let names = names_text(&names, answer.all);
-            let what = match step.way {
-                Way::Loop => format!("{names}, by a loop in {function}"),
-                Way::Store => format!("{names}, by a store in {function}"),
-                // A call whose function the walk can't tell, which passes
-                // what a copy or a zeroing of the sections would.
-                Way::RegisterCall(register) => format!(
-                    "{names}, by a call through {} in {}",
-                    register_name(register),
-                    name(step.inside)
-                ),
-                Way::SupervisorCall => {
-                    format!("{names}, by a supervisor call in {}", name(step.inside))
-                }
-                _ => in_inside(format!("{names}, by {function}{via}")),
-            };
-            match step.table {
-                Some(table) => format!("{what}, from table {table:#x}"),
-                None => what,
-            }
-        }
-        Does::Call if step.way == Way::Inlined => {
-            format!("main, inlined into {}", name(step.inside))
-        }
-        Does::Call => {
-            let guessed = step.main
-                && answer
-                    .facts
-                    .main
-                    .is_some_and(|main| main.from == MainFrom::Guess);
-            let taken = if guessed { " (taken as main)" } else { "" };
-            in_inside(format!("{function}{via}{taken}"))
-        }
-        Does::Unread => match step.way {
-            Way::Loop => format!("a loop in {function}"),
-            Way::RegisterCall(register) => {
-                format!(
-                    "a call through {} in {}",
-                    register_name(register),
-                    name(step.inside)
-                )
-            }
-            Way::SupervisorCall => format!("a supervisor call in {}", name(step.inside)),
-            Way::Conditional => {
-                format!("a conditional call to {function} in {}", name(step.inside))
-            }
-            Way::Deep => format!(
-                "a call to {function} in {}, deeper than elfq follows",
-                name(step.inside)
-            ),
-            Way::Outside(target) => {
-                format!(
-                    "a call to {target:#x} in {}, outside the file",
-                    name(step.inside)
-                )
-            }
-            Way::Stop(end) => match end {
-                End::Branches { through, .. } => {
-                    format!("{} in {function}", branch_noun(through).one)
-                }
-                End::LeavesFile { .. } => format!("a jump out of the file in {function}"),
-                End::Undecoded(_) => format!("code in {function} that elfq can't decode"),
-                End::Rejoins(_) => format!("a loop in {function}"),
-                _ => format!("code in {function} past elfq's budget"),
-            },
-            Way::Call | Way::TailCall | Way::Inlined | Way::Store => function,
-        },
+        Does::Copy | Does::Zero => set_up_what(answer, step),
+        Does::Call => call_what(answer, step),
+        Does::Unread => unread_what(answer.facts.firmware, step),
     };
     let hex = |value: Option<u64>| value.map_or(String::new(), |value| format!("{value:#x}"));
     let region = step.region.as_ref();
@@ -537,6 +489,120 @@ fn row(answer: &Answer, index: usize, step: &Step) -> Vec<String> {
         format!("{:#x}", step.site),
         what,
     ]
+}
+
+/// The WHAT of a copy or zeroing: the sections, and what does it, as
+/// ".data, by memcpy" or ".bss, by a loop in Reset_Handler".
+fn set_up_what(answer: &Answer, step: &Step) -> String {
+    let firmware = answer.facts.firmware;
+    let names: Vec<&str> = (step.covers().iter())
+        .map(|cover| answer.facts.ram.name(cover.section))
+        .collect();
+    let names = names_text(&names, answer.all);
+    let function = function_name(firmware, step);
+    let inside = firmware.name(step.inside);
+    let what = match step.way {
+        Way::Loop => format!("{names}, by a loop in {function}"),
+        Way::Store => format!("{names}, by a store in {function}"),
+        // A call whose function the walk can't tell, which passes what a
+        // copy or a zeroing of the sections would.
+        Way::RegisterCall(register) => format!(
+            "{names}, by a call through {} in {inside}",
+            register_name(register)
+        ),
+        Way::SupervisorCall => format!("{names}, by a supervisor call in {inside}"),
+        Way::Call
+        | Way::TailCall
+        | Way::Inlined
+        | Way::Conditional
+        | Way::Deep
+        | Way::Outside(_)
+        | Way::Stop(_) => with_inside(
+            firmware,
+            step,
+            format!("{names}, by {function}{}", via(step)),
+        ),
+    };
+    match step.table {
+        Some(table) => format!("{what}, from table {table:#x}"),
+        None => what,
+    }
+}
+
+/// The WHAT of a call: the function it calls, or `main`'s code where a
+/// compiler inlined it.
+fn call_what(answer: &Answer, step: &Step) -> String {
+    let firmware = answer.facts.firmware;
+    if step.way == Way::Inlined {
+        return format!("main, inlined into {}", firmware.name(step.inside));
+    }
+    let guessed = step.main
+        && answer
+            .facts
+            .main
+            .is_some_and(|main| main.from == MainFrom::Guess);
+    let taken = if guessed { " (taken as main)" } else { "" };
+    let function = function_name(firmware, step);
+    with_inside(firmware, step, format!("{function}{}{taken}", via(step)))
+}
+
+/// The WHAT of code elfq can't follow: what kind of code it is, and where.
+fn unread_what(firmware: &Firmware, step: &Step) -> String {
+    let function = function_name(firmware, step);
+    let inside = firmware.name(step.inside);
+    match step.way {
+        Way::Loop => format!("a loop in {function}"),
+        Way::RegisterCall(register) => {
+            format!("a call through {} in {inside}", register_name(register))
+        }
+        Way::SupervisorCall => format!("a supervisor call in {inside}"),
+        Way::Conditional => format!("a conditional call to {function} in {inside}"),
+        Way::Deep => format!("a call to {function} in {inside}, deeper than elfq follows"),
+        Way::Outside(target) => format!("a call to {target:#x} in {inside}, outside the file"),
+        Way::Stop(end) => match end {
+            End::Branches { through, .. } => {
+                format!("{} in {function}", branch_noun(through).one)
+            }
+            End::LeavesFile { .. } => format!("a jump out of the file in {function}"),
+            End::Undecoded(_) => format!("code in {function} that elfq can't decode"),
+            End::Rejoins(_) => format!("a loop in {function}"),
+            // At elfq's budget: a step stops only where the walk stops
+            // short (see `End::stops_short`), so the other ends never come.
+            End::Budget(_)
+            | End::Main(_)
+            | End::Spins(_)
+            | End::Returns(_)
+            | End::Loops(_)
+            | End::RunsOff(_) => format!("code in {function} past elfq's budget"),
+        },
+        Way::Call | Way::TailCall | Way::Inlined | Way::Store => function,
+    }
+}
+
+/// The name of the function that `step` calls, or whose code holds it:
+/// nothing when the walk can't tell.
+fn function_name(firmware: &Firmware, step: &Step) -> String {
+    (step.function)
+        .map(|address| firmware.name(address))
+        .unwrap_or_default()
+}
+
+/// " via veneer" for a call that goes through a veneer.
+fn via(step: &Step) -> &'static str {
+    match step.veneer {
+        Some(_) => " via veneer",
+        None => "",
+    }
+}
+
+/// `what`, with the function whose code makes the call when that isn't
+/// the reset handler's own: "memcpy, in init".
+fn with_inside(firmware: &Firmware, step: &Step, what: String) -> String {
+    if step.level > 0 {
+        format!("{what}, in {}", firmware.name(step.inside))
+    } else {
+        what
+    }
 }
 
 /// The name of register `register`.
@@ -559,7 +625,7 @@ fn try_commands(answer: &Answer) -> Vec<String> {
         let (Kind::RunsBeforeCopy, Some(&first)) = (p.kind, p.steps.first()) else {
             continue;
         };
-        if p.uses.contains(&RunsAt::ResetHandler) {
+        if p.reset_runs_from_image() {
             continue;
         }
         let step = &answer.steps[first];
@@ -628,6 +694,20 @@ fn steps_text(indexes: &[usize], capital: bool) -> String {
 /// a call through r3)".
 fn unread_text(steps: &[Step], indexes: &[usize]) -> String {
     let unread: Vec<&Step> = indexes.iter().map(|&index| &steps[index]).collect();
+    let mut kinds = counted_kinds(&unread);
+    kinds.extend(named_kinds(&unread));
+    let kinds: Vec<&str> = kinds.iter().map(String::as_str).collect();
+    format!(
+        "{} ({})",
+        steps_text(indexes, false),
+        names_text(&kinds, true)
+    )
+}
+
+/// The kinds of code of the `unread` steps that say only what they are,
+/// each once, in the plural for more than one step: "a loop", "calls
+/// through registers", "a conditional call".
+fn counted_kinds(unread: &[&Step]) -> Vec<String> {
     let loops = (unread.iter())
         .filter(|step| matches!(step.way, Way::Loop | Way::Stop(End::Rejoins(_))))
         .count();
@@ -661,9 +741,16 @@ fn unread_text(steps: &[Step], indexes: &[usize]) -> String {
             _ => kinds.push(many.to_string()),
         }
     }
-    // Each kind once, for more than one step in the plural.
-    let mut groups: Vec<(String, Vec<String>)> = Vec::new();
-    for step in &unread {
+    kinds
+}
+
+/// The kinds of code of the `unread` steps where the walk stopped, or that
+/// call outside the file, each once: as one step's kind for one step, and
+/// in the plural for more, unless all are branches through one register.
+fn named_kinds(unread: &[&Step]) -> Vec<String> {
+    // Each kind in the plural, with what each of its steps is.
+    let mut groups: Vec<(&str, Vec<String>)> = Vec::new();
+    for step in unread {
         let noun = |one: &str, many| Noun {
             one: one.to_string(),
             many,
@@ -674,16 +761,40 @@ fn unread_text(steps: &[Step], indexes: &[usize]) -> String {
                 End::Branches { through, .. } => branch_noun(through),
                 End::LeavesFile { .. } => noun("a jump out of the file", "jumps out of the file"),
                 End::Undecoded(_) => noun("code elfq can't decode", "code elfq can't decode"),
+                // A loop, which counted_kinds counts.
                 End::Rejoins(_) => continue,
-                _ => noun("code past elfq's budget", "code past elfq's budget"),
+                // At elfq's budget: a step stops only where the walk stops
+                // short (see `End::stops_short`), so the other ends never
+                // come.
+                End::Budget(_)
+                | End::Main(_)
+                | End::Spins(_)
+                | End::Returns(_)
+                | End::Loops(_)
+                | End::RunsOff(_) => noun("code past elfq's budget", "code past elfq's budget"),
             },
-            _ => continue,
+            // What counted_kinds counts.
+            Way::Loop
+            | Way::RegisterCall(_)
+            | Way::SupervisorCall
+            | Way::Conditional
+            | Way::Deep => continue,
+            // Never code elfq can't follow: a call that it can't follow
+            // takes a way of its own (see `StepReader::on_call`), and
+            // inlined code is `main`'s.
+            Way::Call | Way::TailCall | Way::Inlined => continue,
+            // Stores are code elfq can't follow only when a store through
+            // a pointer that the walk can't tell meets their step (see
+            // `Pieces::unread_store`). No kind here names them, so the
+            // text gives such a step no kind.
+            Way::Store => continue,
         };
-        match groups.iter_mut().find(|(group, _)| group == many) {
+        match groups.iter_mut().find(|(group, _)| *group == many) {
             Some((_, ones)) => ones.push(one),
-            None => groups.push((many.to_string(), vec![one])),
+            None => groups.push((many, vec![one])),
         }
     }
+    let mut kinds = Vec::new();
     for (many, ones) in groups {
         match &ones[..] {
             [one] => kinds.push(one.clone()),
@@ -696,15 +807,10 @@ fn unread_text(steps: &[Step], indexes: &[usize]) -> String {
                     &first["a branch through ".len()..]
                 ));
             }
-            _ => kinds.push(many),
+            _ => kinds.push(many.to_string()),
         }
     }
-    let kinds: Vec<&str> = kinds.iter().map(String::as_str).collect();
-    format!(
-        "{} ({})",
-        steps_text(indexes, false),
-        names_text(&kinds, true)
-    )
+    kinds
 }
 
 /// A kind of code, as one of it and as several: "a jump table" and "jump
@@ -786,7 +892,13 @@ fn other_way(end: End) -> String {
         End::Undecoded(_) => format!("reaches code elfq can't decode at {site:#x}"),
         End::Spins(_) => format!("spins at {site:#x}"),
         End::Returns(_) => format!("returns at {site:#x}"),
-        _ => format!("ends at {site:#x}"),
+        // The walk takes a branch only when the other way ends one of the
+        // ways above (see `Event::Backtrack`), and then_text never passes
+        // `End::Main`: an end at `main` is an ending of its own (see
+        // `Facts::ending`).
+        End::Main(_) | End::Loops(_) | End::Rejoins(_) | End::RunsOff(_) | End::Budget(_) => {
+            format!("ends at {site:#x}")
+        }
     }
 }
 

@@ -151,6 +151,11 @@ impl Problem {
         self.kind != Kind::CantFollow && self.unless.is_empty()
     }
 
+    /// Whether the reset handler's own code runs from the load image.
+    pub fn reset_runs_from_image(&self) -> bool {
+        self.uses.contains(&RunsAt::ResetHandler)
+    }
+
     /// The first place in the walk where the code runs from the load
     /// image.
     pub fn first(&self) -> RunsAt {
