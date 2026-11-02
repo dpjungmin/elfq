@@ -336,6 +336,7 @@ of its tree) do. Those are names to fix, not meanings to copy.
 | `json.rs` | `--json` output |
 | `commands/callers_and_callees.rs` | `callers` and `callees`, which share their table and their ranges: their text and JSON for SYMBOL, for ranges of memory and with `--from` and `--to`, and the errors about those ranges |
 | `commands/diff.rs` | `diff` on pairs of builds: its text, its JSON, its exit status and the builds it refuses; and at the end, on builds made by changing a sample's bytes: a warning about the new build, bytes or blocks that alone differ, and a separate debug file and a file that puts nothing in memory, which it refuses |
+| `commands/overview_top_and_retained.rs` | The overview, `top` and `retained`, which share the tree of retained sizes and `--range`: their text and JSON, for the whole file and for a range, and the errors about ranges |
 | `commands/reach.rs` | `reach`'s text and JSON, with and without SYMBOL; and, run in the test's own process, `reach` on every item of the Cortex-M samples, against `callees`, `retained` and its own `--tree`, and with `--to` against `reach` without it and `callees --to`, and on every function of each stripped one against its twin with symbols; and without SYMBOL, each start of every sample against `reach START` |
 | `commands/startup.rs` | `startup` on the samples whose reset code has a mistake and some without, the exit status of every Cortex-M sample, and the files it refuses; and that `debug walk` lists the walk that `startup` reads |
 | `browse.rs` | `browse`'s screens, driven with keys on ratatui's `TestBackend`, a screen in memory; its errors; and on Linux, the program in a terminal that `script` makes. The checks that need its private types are unit tests; see below |
@@ -391,14 +392,17 @@ that gives it, `binary/listing.rs`, in `binary/listing/thumb_text.rs`:
 against objdump's text for each Cortex-M sample, in `testdata/tests/thumb`,
 and in each stripped sample, against the `$d` symbols of its twin.
 
-Two tests in `cli.rs` run the overview and every command it suggests on
-each `.elf` and `.so` file in `testdata/bin`, and `top` on each `.elf`
-file, so a new sample is tested as soon as it is committed.
+Two tests run the overview and every command it suggests on each `.elf`
+and `.so` file in `testdata/bin`, and `top` on each `.elf` file, so a
+new sample is tested as soon as it is committed:
+`every_command_the_overview_suggests_works`, in
+`commands/overview_top_and_retained.rs`, and
+`no_line_sums_up_a_single_item`, in `cli.rs`.
 
 To run one test, one file, or the unit tests of one module:
 
 ```sh
-cargo test --test it cli::top_shows_what_keeps_the_most_bytes
+cargo test --test it commands::overview_top_and_retained::top_shows_what_keeps_the_most_bytes
 cargo test --test it damaged::
 cargo test --lib arch::thumb
 ```

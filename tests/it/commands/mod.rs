@@ -5,5 +5,6 @@
 
 mod callers_and_callees;
 mod diff;
+mod overview_top_and_retained;
 mod reach;
 mod startup;

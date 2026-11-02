@@ -313,50 +313,6 @@ fn a_data_object_whose_size_would_end_past_the_last_address_is_dropped() {
 }
 
 #[test]
-fn a_function_of_unknown_size_is_named_where_its_load_image_is() {
-    // The last function in .itcm, which flash stores from 0x30000118 for
-    // the startup code to copy, without a size.
-    let path = ElfBytes::sample("testdata/bin/c-cortex-m7-nodebug.elf")
-        .set_symbol_size("__memcpy_veneer", 0)
-        .save("memcpy-veneer-unsized.elf");
-    assert_output(
-        &run(&[&path, "top", "--range", "0x30000118+8"]).error(),
-        "error: elfq doesn't know where __memcpy_veneer ends, so it can't count the bytes in \
-         0x30000118..0x30000120 (the load image of .itcm)\n",
-    );
-}
-
-#[test]
-fn the_overview_suggests_reach_for_a_handler_that_runs_in_normal_operation() {
-    // The overview of c-cortex-m4-nodebug.elf with `handler` in the given
-    // entries of the vector table, counted from the stack pointer's.
-    let overview = |handler: &str, entries: &[usize]| {
-        let mut data = ElfBytes::sample("testdata/bin/c-cortex-m4-nodebug.elf");
-        let address = data.symbol_address(handler);
-        for &entry in entries {
-            data.set_vector_entry(entry, address | 1);
-        }
-        run(&[&data.save(&format!("{handler}-in-the-table.elf"))]).printed(0)
-    };
-    // main reaches more code than SysTick_Handler, but runs from these
-    // entries only when something has gone wrong or while debugging: as
-    // the HardFault handler, as in most firmware; as the handler of every
-    // fault and of DebugMonitor, as in Zephyr's; and as the NMI handler.
-    for entries in [&[3][..], &[3, 4, 5, 6, 12], &[2]] {
-        let stdout = overview("main", entries);
-        assert!(
-            stdout.contains(" reach SysTick_Handler\n"),
-            "{entries:?}: {stdout}"
-        );
-    }
-    let stdout = overview("main", &[3, 15]);
-    assert!(stdout.contains(" reach main\n"), "{stdout}");
-    // Default_Handler, the SysTick handler now too, reaches nothing else.
-    let stdout = overview("Default_Handler", &[15]);
-    assert!(!stdout.contains(" reach "), "{stdout}");
-}
-
-#[test]
 fn sizes_that_add_up_past_the_largest_number_stop_there() {
     // Functions that overlap, each half as large as the address space.
     // Each is the last in its section, since one that runs on past the

@@ -1,5 +1,8 @@
-//! Roots, dominators and what is exclusive to what, checked against the
-//! answers in testdata/README.md.
+//! Roots, dominators and what is exclusive to what.
+//!
+//! They are checked against the answers in testdata/README.md. The tests
+//! of what the overview, `top` and `retained` print from them are in
+//! commands/overview_top_and_retained.rs.
 
 use elfq::binary::{Binary, ItemKind, Source};
 use elfq::graph::{DominatorTree, Graph, Node, RootKind};
