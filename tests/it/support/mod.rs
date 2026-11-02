@@ -3,7 +3,7 @@
 //! It holds the sample files, running elfq the way a user would, and
 //! checking whole outputs; and in [`elf`], changing a sample's bytes.
 
-pub mod elf;
+pub(crate) mod elf;
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -19,42 +19,42 @@ use elfq::graph::Node;
 use object::{Architecture, Object};
 
 /// The C sample for x86-64 Linux, which most tests run on.
-pub const SAMPLE: &str = "testdata/bin/c-x86_64.elf";
+pub(crate) const SAMPLE: &str = "testdata/bin/c-x86_64.elf";
 /// Firmware with code and data in several kinds of memory.
-pub const TCM_SAMPLE: &str = "testdata/bin/c-cortex-m7.elf";
+pub(crate) const TCM_SAMPLE: &str = "testdata/bin/c-cortex-m7.elf";
 /// Calls and inlined code nested 20 deep.
-pub const DEEP_SAMPLE: &str = "testdata/bin/c-deep.elf";
+pub(crate) const DEEP_SAMPLE: &str = "testdata/bin/c-deep.elf";
 /// The C sample for x86-64 Linux, built as a shared library.
-pub const LIBRARY_SAMPLE: &str = "testdata/bin/c-x86_64.so";
+pub(crate) const LIBRARY_SAMPLE: &str = "testdata/bin/c-x86_64.so";
 /// [`SAMPLE`] with one change, for diff: crc32 logs an empty frame.
-pub const MOVED_SAMPLE: &str = "testdata/bin/c-x86_64-moved.elf";
+pub(crate) const MOVED_SAMPLE: &str = "testdata/bin/c-x86_64-moved.elf";
 /// [`TCM_SAMPLE`] with the same change, and filter_tap out of ITCM.
-pub const TCM_MOVED_SAMPLE: &str = "testdata/bin/c-cortex-m7-moved.elf";
+pub(crate) const TCM_MOVED_SAMPLE: &str = "testdata/bin/c-cortex-m7-moved.elf";
 /// [`TCM_SAMPLE`] with DTCM linked at 0x80000000.
-pub const TCM_SDRAM_SAMPLE: &str = "testdata/bin/c-cortex-m7-sdram.elf";
+pub(crate) const TCM_SDRAM_SAMPLE: &str = "testdata/bin/c-cortex-m7-sdram.elf";
 /// [`TCM_SAMPLE`] with tx_head in OCRAM, which the reset handler doesn't
 /// zero.
-pub const TCM_OCRAM_SAMPLE: &str = "testdata/bin/c-cortex-m7-ocram.elf";
+pub(crate) const TCM_OCRAM_SAMPLE: &str = "testdata/bin/c-cortex-m7-ocram.elf";
 /// [`TCM_SAMPLE`] with decode_header inlined into process_frame.
-pub const TCM_INLINED_SAMPLE: &str = "testdata/bin/c-cortex-m7-inlined.elf";
+pub(crate) const TCM_INLINED_SAMPLE: &str = "testdata/bin/c-cortex-m7-inlined.elf";
 /// [`TCM_SAMPLE`] with two constants changed: one that decode_header
 /// compares with, and one of fir_coeffs.
-pub const TCM_EDITED_SAMPLE: &str = "testdata/bin/c-cortex-m7-edited.elf";
+pub(crate) const TCM_EDITED_SAMPLE: &str = "testdata/bin/c-cortex-m7-edited.elf";
 /// [`TCM_SAMPLE`] linked with `main` as its entry point, so that no word of
 /// its vector table holds the entry point.
-pub const TCM_ENTRY_MAIN_SAMPLE: &str = "testdata/bin/c-cortex-m7-entry-main.elf";
+pub(crate) const TCM_ENTRY_MAIN_SAMPLE: &str = "testdata/bin/c-cortex-m7-entry-main.elf";
 
 /// The C sample, built for each instruction set that elfq reads.
 ///
 /// testdata/README.md gives their answers.
-pub const C_SAMPLES: [&str; 2] = [SAMPLE, "testdata/bin/c-cortex-m4.elf"];
+pub(crate) const C_SAMPLES: [&str; 2] = [SAMPLE, "testdata/bin/c-cortex-m4.elf"];
 
 /// The builds of c/far.c with symbols, which call through veneers.
 ///
 /// Their calls between RAM, flash and ROM go through the veneers that GNU
 /// ld and LLD add for Cortex-M, all but two of LLD's (see
 /// `testdata/README.md`).
-pub const FAR_SAMPLES: [&str; 8] = [
+pub(crate) const FAR_SAMPLES: [&str; 8] = [
     "testdata/bin/far-gnu-m4-nodebug.elf",
     "testdata/bin/far-gnu-m4-pure-nodebug.elf",
     "testdata/bin/far-gnu-m4-pic-nodebug.elf",
@@ -68,12 +68,12 @@ pub const FAR_SAMPLES: [&str; 8] = [
 /// Where the sample at `path` is, from wherever the test runs. Tests name a
 /// sample by its path relative to the crate, as [`SAMPLE`] and
 /// [`samples`] give it, since that is what elfq is given as FILE.
-pub fn sample_path(path: &str) -> PathBuf {
+pub(crate) fn sample_path(path: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(path)
 }
 
 /// Every sample file, as a path relative to the crate.
-pub fn samples() -> Vec<String> {
+pub(crate) fn samples() -> Vec<String> {
     let bin = concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/bin");
     let mut samples: Vec<String> = std::fs::read_dir(bin)
         .unwrap()
@@ -90,7 +90,7 @@ pub fn samples() -> Vec<String> {
 ///
 /// The machine in a sample's ELF header says what its code is for. They
 /// come in the order of [`samples`].
-pub fn samples_for(architecture: Architecture) -> Vec<String> {
+pub(crate) fn samples_for(architecture: Architecture) -> Vec<String> {
     let samples: Vec<String> = samples()
         .into_iter()
         .filter(|path| {
@@ -104,12 +104,12 @@ pub fn samples_for(architecture: Architecture) -> Vec<String> {
 }
 
 /// Loads the sample at `path`, relative to the crate, as [`SAMPLE`].
-pub fn load_sample(path: &str) -> Binary {
+pub(crate) fn load_sample(path: &str) -> Binary {
     Binary::load(&sample_path(path)).unwrap_or_else(|err| panic!("{path}: {err:#}"))
 }
 
 /// What elfq finds for `name` as a SYMBOL.
-pub fn node(binary: &Binary, name: &str) -> Node {
+pub(crate) fn node(binary: &Binary, name: &str) -> Node {
     symbol::find(binary, name)
         .unwrap_or_else(|err| panic!("{name}: {err}"))
         .node
@@ -120,7 +120,7 @@ pub fn node(binary: &Binary, name: &str) -> Node {
 /// There, sample paths such as [`SAMPLE`] work. [`run`] runs it; a test
 /// that needs more, such as a pipe for its input, starts it itself and
 /// reads what it did with [`Run::new`].
-pub fn command() -> Command {
+pub(crate) fn command() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_elfq"));
     command.current_dir(env!("CARGO_MANIFEST_DIR"));
     command
@@ -128,7 +128,7 @@ pub fn command() -> Command {
 
 /// Runs elfq with `args` and returns the [`Run`], for the test to check.
 #[track_caller]
-pub fn run(args: &[&str]) -> Run {
+pub(crate) fn run(args: &[&str]) -> Run {
     let output = command().args(args).output().unwrap();
     Run::new(&format!("elfq {}", args.join(" ")), output)
 }
@@ -143,20 +143,20 @@ pub fn run(args: &[&str]) -> Run {
 /// A `Run` that nothing reads checks nothing, so the compiler warns about
 /// one.
 #[must_use = "read it with printed, json, error or exited, which check it"]
-pub struct Run {
+pub(crate) struct Run {
     /// What ran, for the message of a check that fails.
     command: String,
     /// The exit status.
-    pub status: i32,
+    status: i32,
     /// What elfq printed on stdout.
-    pub stdout: String,
+    pub(crate) stdout: String,
     /// What elfq printed on stderr.
-    pub stderr: String,
+    pub(crate) stderr: String,
 }
 
 /// The exit status that a test expects elfq to end with.
 #[derive(Clone, Copy)]
-pub enum Exit {
+pub(crate) enum Exit {
     /// This status.
     ///
     /// It is 0 for an answer, 1 for an answer that a script may act on, as
@@ -172,7 +172,7 @@ pub enum Exit {
 
 impl Exit {
     /// Whether elfq exiting with `status` is what the test expects.
-    pub fn allows(self, status: i32) -> bool {
+    pub(crate) fn allows(self, status: i32) -> bool {
         match self {
             Exit::Status(expected) => status == expected,
             Exit::ZeroOrOne => status == 0 || status == 1,
@@ -201,7 +201,7 @@ impl Run {
     /// The test starts it with [`command`], as for a pipe. `command_line`
     /// says what ran, for the message of a check that fails.
     #[track_caller]
-    pub fn new(command_line: &str, output: Output) -> Run {
+    pub(crate) fn new(command_line: &str, output: Output) -> Run {
         let Some(status) = output.status.code() else {
             panic!("`{command_line}` ended without an exit status: {output:?}");
         };
@@ -218,7 +218,7 @@ impl Run {
     /// It checks that elfq exited with `status` and printed nothing on
     /// stderr.
     #[track_caller]
-    pub fn printed(self, status: impl Into<Exit>) -> String {
+    pub(crate) fn printed(self, status: impl Into<Exit>) -> String {
         let status = status.into();
         self.check(
             status.allows(self.status) && self.stderr.is_empty(),
@@ -231,7 +231,7 @@ impl Run {
     ///
     /// It makes the checks of [`Run::printed`].
     #[track_caller]
-    pub fn json(self, status: impl Into<Exit>) -> Value {
+    pub(crate) fn json(self, status: impl Into<Exit>) -> Value {
         let command = self.command.clone();
         let text = self.printed(status);
         match serde_json::from_str(&text) {
@@ -244,7 +244,7 @@ impl Run {
     ///
     /// It checks that elfq exited with 2 and printed nothing on stdout.
     #[track_caller]
-    pub fn error(self) -> String {
+    pub(crate) fn error(self) -> String {
         self.check(
             self.status == 2 && self.stdout.is_empty(),
             "exit status 2 and nothing on stdout",
@@ -257,7 +257,7 @@ impl Run {
     /// It is for a test that checks both streams itself, as one that
     /// expects a warning on stderr with the answer on stdout.
     #[track_caller]
-    pub fn exited(self, status: impl Into<Exit>) -> Run {
+    pub(crate) fn exited(self, status: impl Into<Exit>) -> Run {
         let status = status.into();
         self.check(status.allows(self.status), &format!("exit status {status}"));
         self
@@ -300,7 +300,7 @@ fn decode(command_line: &str, stream: &str, bytes: Vec<u8>) -> String {
 /// It checks that elfq answered with exit status 0 and printed nothing on
 /// stderr: [`Run::printed`] with 0.
 #[track_caller]
-pub fn stdout(args: &[&str]) -> String {
+pub(crate) fn stdout(args: &[&str]) -> String {
     run(args).printed(0)
 }
 
@@ -309,7 +309,7 @@ pub fn stdout(args: &[&str]) -> String {
 /// It checks that elfq exited with 2 and printed nothing on stdout:
 /// [`Run::error`].
 #[track_caller]
-pub fn stderr(args: &[&str]) -> String {
+pub(crate) fn stderr(args: &[&str]) -> String {
     run(args).error()
 }
 
@@ -319,7 +319,7 @@ pub fn stderr(args: &[&str]) -> String {
 /// ranges it was given, which status 1 says, and printed nothing on
 /// stderr: [`Run::printed`] with 1.
 #[track_caller]
-pub fn crossing(args: &[&str]) -> String {
+pub(crate) fn crossing(args: &[&str]) -> String {
     run(args).printed(1)
 }
 
@@ -328,13 +328,13 @@ pub fn crossing(args: &[&str]) -> String {
 /// It checks that elfq answered with exit status 0 and printed nothing on
 /// stderr: [`Run::json`] with 0.
 #[track_caller]
-pub fn elfq_json(args: &[&str]) -> Value {
+pub(crate) fn elfq_json(args: &[&str]) -> Value {
     run(&[args, &["--json"]].concat()).json(0)
 }
 
 /// The names of the items in a list of objects that each have an `item`, or
 /// are items.
-pub fn names(list: &Value) -> Vec<&str> {
+pub(crate) fn names(list: &Value) -> Vec<&str> {
     list.as_array()
         .unwrap()
         .iter()
@@ -348,7 +348,7 @@ pub fn names(list: &Value) -> Vec<&str> {
 /// compare with the rows of the JSON. It checks that elfq answered with
 /// exit status 0 and printed nothing on stderr.
 #[track_caller]
-pub fn text_rows(args: &[&str]) -> Vec<String> {
+pub(crate) fn text_rows(args: &[&str]) -> Vec<String> {
     let text = run(&[args, &["--all"]].concat()).printed(0);
     // The table starts after the first blank line, with its header, and
     // the names start where the header's last column does.
@@ -375,7 +375,7 @@ pub fn text_rows(args: &[&str]) -> Vec<String> {
 /// A test of what elfq prints on stderr, or of its exit status as such,
 /// uses [`run`].
 #[track_caller]
-pub fn run_in_process(sample: &str, args: &[&str]) -> (Outcome, String) {
+pub(crate) fn run_in_process(sample: &str, args: &[&str]) -> (Outcome, String) {
     let path = sample_path(sample);
     let command_line = [&["elfq", path.to_str().unwrap()], args].concat();
     let cli = Cli::try_parse_from(command_line).unwrap();
@@ -391,7 +391,7 @@ pub fn run_in_process(sample: &str, args: &[&str]) -> (Outcome, String) {
 /// the first line that differs and then prints the whole output as it is,
 /// ready to paste into the test.
 #[track_caller]
-pub fn assert_output(actual: &str, expected: &str) {
+pub(crate) fn assert_output(actual: &str, expected: &str) {
     if actual == expected {
         return;
     }
