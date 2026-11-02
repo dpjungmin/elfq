@@ -12,17 +12,17 @@
 use super::item::Tab;
 use super::printed::{Lines, Printed, note_name, table_lines};
 use crate::binary::total;
-use crate::commands::browse::session::Session;
+use crate::commands::browse::session::{Keepers, Session};
 use crate::commands::retained::{self, SymbolInTree};
 use crate::commands::{json, text};
 use crate::graph::{DominatorTree, Node};
 use crate::render::{Align, Table};
 
 /// What removing the item at `index` would save, as `retained SYMBOL`
-/// says it, which names it `name` (see [`Session::lead_name`]), once the
-/// session has worked out what keeps each item.
-pub fn tab(session: &Session, index: usize, name: &str) -> Option<Printed> {
-    let retained = session.retained_tree()?;
+/// says it, which names it `name` (see [`Session::lead_name`]), from
+/// `keepers`, what the session has worked out keeps each item.
+pub fn tab(session: &Session, keepers: &Keepers, index: usize, name: &str) -> Printed {
+    let retained = session.retained_tree(keepers);
     let symbol = SymbolInTree {
         retained: &retained,
         index,
@@ -31,10 +31,9 @@ pub fn tab(session: &Session, index: usize, name: &str) -> Option<Printed> {
     let answer = retained::answers(&symbol, &note_name);
     let node = Node::Item(index);
     let command = session.command("retained", Some(node), answer.needs_all);
-    let printed = (Printed::of_tab(answer, command))
+    (Printed::of_tab(answer, command))
         .with_below(by_block(session, &retained.tree, node))
-        .opening(Tab::Retained, node);
-    Some(printed)
+        .opening(Tab::Retained, node)
 }
 
 /// The bytes that removing `node` would save in each block of memory, as
@@ -111,7 +110,8 @@ mod tests {
                 if retained::refusal(&binary, node).is_err() {
                     continue;
                 }
-                let tab = tab(&session, index, &session.lead_name(node)).unwrap();
+                let keepers = session.keepers().unwrap();
+                let tab = tab(&session, keepers, index, &session.lead_name(node));
                 let name = path.display();
                 // The command parses as elfq's arguments, after the shell
                 // has split it into words, and finds the item in the file.
@@ -187,7 +187,7 @@ mod tests {
             let Node::Item(index) = session.names.find(name).unwrap().node else {
                 panic!("{name} is not an item");
             };
-            let mut tab = tab(&session, index, name).unwrap();
+            let mut tab = tab(&session, session.keepers().unwrap(), index, name);
             for (width, height) in (6..=24).flat_map(|height| [(80, height), (100, height)]) {
                 let screen = tab.drawn((width, height));
                 let lines: Vec<&str> = screen.lines().collect();

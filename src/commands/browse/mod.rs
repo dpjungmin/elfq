@@ -1,14 +1,15 @@
-//! `elfq FILE browse [SYMBOL]`: a function's code in the terminal, with a
-//! link on each line that calls, jumps to or uses another item, to follow
-//! as in a web browser: Enter opens the item's page, and Esc comes back.
-//! An item's page also lists, on tabs 2 to 6, what the item calls or
-//! uses, what calls or uses it, everything it reaches, why it is in the
-//! file, and what removing it would save, and its header says what keeps
-//! it in the file. A data object's page shows, in place of code, the
-//! pointers it holds, each a link, a vector table's entries, or the strings
-//! of an object that holds only strings.
-//! Without SYMBOL, browse opens on where the program starts, each start a
-//! link to its page.
+//! `elfq FILE browse [SYMBOL]`: the code in the terminal, as linked pages.
+//!
+//! An item's page shows a function's code, with a link on each line that
+//! calls, jumps to or uses another item, to follow as in a web browser:
+//! Enter opens the item's page, and Esc comes back. The page also lists,
+//! on tabs 2 to 6, what the item calls or uses, what calls or uses it,
+//! everything it reaches, why it is in the file, and what removing it
+//! would save, and its header says what keeps it in the file. A data
+//! object's page shows, in place of code, the pointers it holds, each a
+//! link, a vector table's entries, or the strings of an object that
+//! holds only strings. Without SYMBOL, browse opens on where the program
+//! starts, each start a link to its page.
 //!
 //! The parts, each in its own file:
 //!
@@ -19,9 +20,10 @@
 //! - `app.rs`: the pages the user has opened, as a browser's history, and
 //!   the screen's layout around the page on top.
 //! - `views/`: the pages, one file per kind, the tabs of an item's page
-//!   other than its code, the go-to box, `printed.rs`, which draws a
-//!   command's answer for the pages and tabs that show one, and
-//!   `names.rs`, which shortens long names to fit a column. A page draws
+//!   other than tab 1, one file each, the go-to box, `printed.rs`, which
+//!   draws a command's answer for the pages and tabs that show one, and
+//!   `names.rs`, which shortens long names to fit a column. `item.rs` is an
+//!   item's page, with its parts in `item/` (see its map). A page draws
 //!   itself, and answers an action by moving, by opening another page, or
 //!   with a message.
 //!
@@ -30,11 +32,12 @@
 //! drive the browser with keys and read what it draws, without a terminal.
 //! Keys that come faster than a large file's answers, as a paste's do,
 //! aren't each answered and drawn in turn: what is typed into go to or
-//! find's prompt waits for the next draw, which comes when no key is left waiting. A page or
-//! tab that takes a while to work out, as the start page of a large
-//! program, or everything its main reaches, is drawn first with a status
-//! line that says so, and so is the first page, before the session works
-//! out what keeps each item, which the headers of items' pages say.
+//! find's prompt waits for the next draw, which comes when no key is
+//! left waiting. A page or tab that takes a while to work out, as the
+//! start page of a large program, or everything its main reaches, is
+//! drawn first with a status line that says so, and so is the first
+//! page, before the session works out what keeps each item, which the
+//! headers of items' pages say. [`event_loop`] numbers these rules.
 
 mod app;
 mod keys;
@@ -66,9 +69,11 @@ pub enum Stop {
     Suspend,
 }
 
-/// Browses the file at `path`, starting at what `symbol` names, until the
-/// user quits. The file's warnings go to stderr after that, once the
-/// screen is back, or before the error when browse refuses the file.
+/// Browses the file at `path`, starting at what `symbol` names.
+///
+/// It stops when the user quits. The file's warnings go to stderr after
+/// that, once the screen is back, or before the error when browse refuses
+/// the file.
 pub fn run(path: &Path, symbol: Option<&str>) -> Result<()> {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         bail!(
@@ -84,9 +89,10 @@ pub fn run(path: &Path, symbol: Option<&str>) -> Result<()> {
     result
 }
 
-/// Browses `binary`, loaded from `path`, on the real terminal until the
-/// user quits. When elfq can't read the file's code, it says so before it
-/// takes the terminal.
+/// Browses `binary`, loaded from `path`, on the real terminal.
+///
+/// It stops when the user quits. When elfq can't read the file's code, it
+/// says so before it takes the terminal.
 fn browse(path: &Path, binary: &Binary, symbol: Option<&str>) -> Result<()> {
     let session = Session::new(path, binary)?;
     let mut app = Kept::new(App::new(session, symbol));
@@ -97,8 +103,9 @@ fn browse(path: &Path, binary: &Binary, symbol: Option<&str>) -> Result<()> {
     result
 }
 
-/// Runs the event loop on the real terminal until the user quits,
-/// stepping out for each Ctrl-Z.
+/// Runs the event loop on the real terminal until the user quits.
+///
+/// It steps out for each Ctrl-Z.
 fn read_keys(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
     let next_event = || Ok(Some(event::read()?));
     let more_waiting = || Ok(event::poll(Duration::ZERO)?);
@@ -108,17 +115,21 @@ fn read_keys(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
     Ok(())
 }
 
-/// Draws `app` on `terminal`, then gives it each key that `next_event`
-/// returns, and draws it again, until the user quits or suspends, or
-/// `next_event` returns `None`. While `more_waiting` says that another
-/// key is already waiting, as when the user pastes or types faster than
-/// the screen keeps up, it takes that key before drawing, if the key can
-/// wait for the draw (see [`App::can_wait_to_draw`]). Any other key is
-/// handled on the screen that the keys before it give, as when each is
-/// drawn in turn, since it moves by what the screen shows. When a key
-/// leaves the page something to work out, the screen is drawn first, to
-/// say so (see [`App::has_work`]), and so is the first page, before what
-/// keeps each item is worked out for its header.
+/// Draws `app` on `terminal` and gives it each key, until it stops.
+///
+/// It takes each key that `next_event` returns, and draws `app` again,
+/// until the user quits or suspends, or `next_event` returns `None`.
+///
+/// 1. While `more_waiting` says that another key is already waiting, as
+///    when the user pastes or types faster than the screen keeps up, it
+///    takes that key before drawing, if the key can wait for the draw
+///    (see [`App::can_wait_to_draw`]).
+/// 2. Any other key is handled on the screen that the keys before it
+///    give, as when each is drawn in turn, since it moves by what the
+///    screen shows.
+/// 3. When a key leaves the page something to work out, the screen is
+///    drawn first, to say so (see [`App::has_work`]). So is the first
+///    page, before what keeps each item is worked out for its header.
 pub fn event_loop<B: Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
@@ -131,12 +142,13 @@ where
     // Whether the screen doesn't show the keys taken yet.
     let mut behind = true;
     loop {
+        // Rule 1.
         if behind && !more_waiting()? {
             terminal.draw(|frame| app.draw(frame))?;
             behind = false;
-            // What the screen leaves to work out, as what keeps each item
-            // once the first page is drawn, is done after a draw that says
-            // so, as above.
+            // Rule 3: what the screen leaves to work out, as what keeps
+            // each item once the first page is drawn, is done after a draw
+            // that says so.
             if app.has_work() {
                 app.work();
                 behind = true;
@@ -151,14 +163,15 @@ where
         if let Event::Key(key) = event
             && key.kind == KeyEventKind::Press
         {
+            // Rule 2.
             if behind && !app.can_wait_to_draw(key) {
                 terminal.draw(|frame| app.draw(frame))?;
             }
             if let Some(stop) = app.key(key) {
                 return Ok(stop);
             }
-            // What takes a while to work out, as where a large program
-            // starts, is said on the screen first.
+            // Rule 3: what takes a while to work out, as where a large
+            // program starts, is said on the screen first.
             if app.has_work() {
                 terminal.draw(|frame| app.draw(frame))?;
                 app.work();
@@ -168,8 +181,10 @@ where
     }
 }
 
-/// Gives the terminal back and stops elfq, as Ctrl-Z stops other programs,
-/// then takes the screen again when the shell continues it.
+/// Stops elfq for Ctrl-Z, and takes the screen again when it continues.
+///
+/// It gives the terminal back first, as other programs do when Ctrl-Z stops
+/// them.
 #[cfg(unix)]
 fn suspend(terminal: &mut DefaultTerminal) -> Result<()> {
     use std::sync::Arc;

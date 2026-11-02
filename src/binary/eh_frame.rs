@@ -89,8 +89,8 @@ pub(super) fn read(file: &object::File) -> Result<UnwindTable> {
 pub(super) fn used_by_unwinder(binary: &Binary, personalities: &[Pointer]) -> Vec<u64> {
     let mut used = Vec::new();
     for &pointer in personalities {
-        if let Pointer::Indirect(stored_at) = pointer {
-            used.push(stored_at);
+        if let Pointer::Indirect(slot) = pointer {
+            used.push(slot);
         }
         used.extend(personality_address(binary, pointer));
     }
@@ -100,15 +100,12 @@ pub(super) fn used_by_unwinder(binary: &Binary, personalities: &[Pointer]) -> Ve
 /// Where a personality routine is, given the unwind table's pointer to
 /// it. `None` when it is in a shared library.
 fn personality_address(binary: &Binary, pointer: Pointer) -> Option<u64> {
-    let stored_at = match pointer {
+    let slot = match pointer {
         Pointer::Direct(address) => return Some(address),
-        Pointer::Indirect(stored_at) => stored_at,
+        Pointer::Indirect(slot) => slot,
     };
-    match binary.relocation_at(stored_at) {
-        Some(relocation) => match relocation.target {
-            RelocationTarget::Address(address) => Some(address),
-            RelocationTarget::Import(_) => None,
-        },
-        None => binary.pointer_at(stored_at),
+    match binary.stored_at(slot)? {
+        RelocationTarget::Address(address) => Some(address),
+        RelocationTarget::Import(_) => None,
     }
 }

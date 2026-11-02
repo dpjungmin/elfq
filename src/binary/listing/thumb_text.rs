@@ -7,7 +7,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use super::item::listing;
 use crate::arch::Line;
 use crate::binary::{AddressRange, Binary, ItemKind};
 
@@ -20,7 +19,7 @@ fn functions(binary: &Binary) -> Vec<(Vec<Line>, u64)> {
             continue;
         }
         if let Some(bytes) = binary.bytes(item.address, item.size)
-            && let Some(lines) = listing(binary, item, bytes)
+            && let Some(lines) = binary.listing(item, bytes)
         {
             functions.push((lines, item.address + item.size));
         }

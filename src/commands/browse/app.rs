@@ -1,7 +1,9 @@
-//! The browser's state: the pages the user has opened, kept as a web
-//! browser keeps its history, so that Back and Forward move through them,
-//! the go-to box, find's prompt, and how the screen is laid out around the
-//! page on top.
+//! The browser's state, and the screen's layout around the page on top.
+//!
+//! The state is the pages the user has opened, kept as a web browser
+//! keeps its history, so that Back and Forward move through them, the
+//! go-to box, find's prompt, and what the screen has yet to work out, in
+//! order (`Work`, `App::pending`).
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
@@ -14,8 +16,8 @@ use super::Stop;
 use super::keys::{self, Action};
 use super::session::Session;
 use super::views::{
-    Go, Help, ItemPage, Picker, View, cut, cut_left, draw_lines, first_line, keep_lines,
-    start_page, wrap,
+    Go, Help, ItemPage, Picker, SlowTab, StartPage, View, cut, cut_left, draw_lines, first_line,
+    keep_lines, wrap,
 };
 use crate::binary::hex_number;
 
@@ -46,6 +48,39 @@ pub struct App<'a> {
     searched: Option<String>,
 }
 
+/// What the screen has yet to work out, which the status line says first.
+///
+/// Each can take a while in a large file (see [`App::pending`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Work {
+    /// The start page, until it is worked out.
+    StartPage,
+    /// What keeps each item.
+    ///
+    /// The headers of items' pages say it, and tabs 5 and 6 need it.
+    Keepers,
+    /// A tab of the item's page on the screen, the first time it is shown.
+    Tab(SlowTab),
+}
+
+impl Work {
+    /// What the status line says while `session` works it out.
+    fn message(self, session: &Session) -> String {
+        match self {
+            Work::StartPage => format!("working out where {} starts…", session.file_name()),
+            Work::Keepers => "working out what keeps each item…".to_string(),
+            Work::Tab(tab) => {
+                let title = session.title(tab.node());
+                match tab {
+                    SlowTab::Reach(_) => format!("working out what {title} reaches…"),
+                    SlowTab::Why(_) => format!("working out what keeps {title} in the file…"),
+                    SlowTab::Retained(_) => format!("working out what only {title} leads to…"),
+                }
+            }
+        }
+    }
+}
+
 /// Where find looks from the selected row.
 #[derive(Clone, Copy)]
 enum FindFrom {
@@ -71,20 +106,20 @@ impl<'a> App<'a> {
                 more - 1
             ),
         });
-        let mut first = View::Start(None);
+        let mut first = View::Start(StartPage::new());
         let mut picker = None;
-        if let Some(query) = symbol {
-            match session.names.find(query) {
+        if let Some(typed) = symbol {
+            match session.names.find(typed) {
                 Ok(found) => {
                     // An address selects the line that holds it.
-                    let at = hex_number(query).and_then(Result::ok);
+                    let at = hex_number(typed).and_then(Result::ok);
                     let lead = found.lead_name(session.binary);
                     let page = ItemPage::new(&session, found.node, at, &lead);
                     first = View::Item(Box::new(page));
                 }
                 // The CLI's error goes over the rows.
                 Err(error) => {
-                    picker = Some(Picker::noted(&session, query, first_line(&error)));
+                    picker = Some(Picker::noted(&session, typed, first_line(&error)));
                 }
             }
         }
@@ -97,68 +132,80 @@ impl<'a> App<'a> {
             finding: None,
             searched: None,
         };
-        // The start page is worked out before it is first drawn. What
+        // Only the start page is worked out before the first draw. What
         // keeps each item waits until the first page is drawn, with a
         // status line that says so (see `event_loop`).
-        app.work_out_start_page();
+        if app.pending() == Some(Work::StartPage) {
+            app.run(Work::StartPage);
+        }
         app
     }
 
-    /// What the browser has yet to work out for the screen, which the
-    /// status line says while it does, once the go-to box isn't over the
-    /// page: the start page; what keeps each item, which the headers of
-    /// items' pages say, once after the first page is drawn; and tab 4, 5
-    /// or 6 of an item's page, the first time it is shown.
-    fn waiting(&self) -> Option<String> {
+    /// What the screen has yet to work out first, if anything.
+    ///
+    /// The order is this:
+    ///
+    /// 1. The start page, which has nothing to show until it is worked
+    ///    out.
+    /// 2. What keeps each item, once, after the first page is drawn, on
+    ///    any page: the headers of items' pages say it, and tabs 5 and 6
+    ///    need it.
+    /// 3. Tab 4, 5 or 6 of an item's page, the first time it is shown.
+    ///
+    /// Nothing is while the go-to box is open, so that what is typed there
+    /// is answered at once, and so that the start page under the box, as
+    /// when SYMBOL finds no item, is worked out only once the box closes
+    /// over it. Find's prompt needs no such rule: it opens only on a page
+    /// that [`App::key`] has worked out, and what is typed there opens no
+    /// page.
+    fn pending(&self) -> Option<Work> {
         if self.picker.is_some() {
             return None;
         }
         match self.history.last()? {
-            View::Start(None) => Some(format!(
-                "working out where {} starts…",
-                self.session.file_name()
-            )),
-            _ if self.session.needs_keepers() => {
-                Some("working out what keeps each item…".to_string())
-            }
-            View::Item(page) => page.waiting(),
-            _ => None,
+            View::Start(start) if !start.is_worked_out() => Some(Work::StartPage),
+            _ if self.session.needs_keepers() => Some(Work::Keepers),
+            View::Item(page) => page.pending().map(Work::Tab),
+            View::Start(_) | View::Help(_) => None,
         }
     }
 
-    /// Whether the page on the screen has something to work out, which
-    /// can take a while in a large file: then the event loop draws the
+    /// Whether the screen has something to work out.
+    ///
+    /// That can take a while in a large file, so the event loop draws the
     /// screen, which says so, before [`App::work`] does it.
     pub fn has_work(&self) -> bool {
-        self.waiting().is_some()
+        self.pending().is_some()
     }
 
-    /// Works out what the screen has yet to (see [`App::has_work`]).
+    /// Works out what the screen has yet to.
+    ///
+    /// It works out each in the order that `App::pending` gives.
     pub fn work(&mut self) {
-        self.work_out_start_page();
-        if self.picker.is_none() && self.session.needs_keepers() {
-            self.session.work_out_keepers();
-            // The pages so far say it in their headers too.
-            for view in self.history.iter_mut().chain(&mut self.forward) {
-                if let View::Item(page) = view {
-                    page.add_keeping(&self.session);
+        while let Some(work) = self.pending() {
+            self.run(work);
+            // Each piece of work leaves another, or none, so the loop ends.
+            debug_assert_ne!(self.pending(), Some(work), "{work:?} is still pending");
+        }
+    }
+
+    /// Works out `work`.
+    fn run(&mut self, work: Work) {
+        match work {
+            // The page on the screen knows what it waits for.
+            Work::StartPage | Work::Tab(_) => {
+                let view = (self.history.last_mut()).expect("the first page is never closed");
+                view.work_out(&self.session);
+            }
+            Work::Keepers => {
+                self.session.work_out_keepers();
+                // The pages so far say it in their headers too.
+                for view in self.history.iter_mut().chain(&mut self.forward) {
+                    if let View::Item(page) = view {
+                        page.add_keeping(&self.session);
+                    }
                 }
             }
-        }
-        if let Some(View::Item(page)) = self.history.last_mut()
-            && page.waiting().is_some()
-        {
-            page.work(&self.session);
-        }
-    }
-
-    /// Works out the start page, if it is on the screen and the go-to box
-    /// isn't over it.
-    fn work_out_start_page(&mut self) {
-        if self.picker.is_none()
-            && let Some(View::Start(start @ None)) = self.history.last_mut()
-        {
-            *start = Some(Box::new(start_page(&self.session)));
         }
     }
 
@@ -361,7 +408,7 @@ impl<'a> App<'a> {
     /// cuts it, as it cuts a long string, and the status line has nothing
     /// else to say: the status line shows it in full.
     fn value_lines(&self, width: usize) -> Vec<String> {
-        let busy = self.waiting().is_some() || self.finding.is_some() || self.message.is_some();
+        let busy = self.has_work() || self.finding.is_some() || self.message.is_some();
         match (&self.picker, busy, self.history.last()) {
             // Broken where each line ends, rather than at spaces, so that
             // every character shows, as the row would show it.
@@ -443,7 +490,7 @@ impl<'a> App<'a> {
             frame.render_widget(Line::raw(hint).dim(), hints);
             return;
         }
-        let waiting = self.waiting();
+        let waiting = self.pending().map(|work| work.message(&self.session));
         let view = self
             .history
             .last_mut()
@@ -515,11 +562,15 @@ mod tests {
         let binary = Binary::load(&path).unwrap();
         let session = Session::new(&path, &binary).unwrap();
         let mut app = App::new(session, Some("no_such_symbol"));
-        assert!(matches!(app.history[..], [View::Start(None)]) && !app.has_work());
+        let worked_out = |app: &App| match &app.history[..] {
+            [View::Start(start)] => start.is_worked_out(),
+            _ => panic!("the start page isn't the only page"),
+        };
+        assert!(!worked_out(&app) && !app.has_work());
         app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(app.has_work());
         app.work();
-        assert!(matches!(app.history[..], [View::Start(Some(_))]) && !app.has_work());
+        assert!(worked_out(&app) && !app.has_work());
     }
 
     #[test]
@@ -538,8 +589,8 @@ mod tests {
             // Not in a shared library, about whose items `retained` and
             // `why` don't answer.
             let waits = !sample.ends_with(".so");
-            let waiting = app.waiting();
-            let says = waiting.as_deref() == Some("working out what keeps each item…");
+            let says = app.pending().map(|work| work.message(&app.session));
+            let says = says.as_deref() == Some("working out what keeps each item…");
             assert_eq!(says, waits, "{sample} {symbol:?}");
             app.work();
             assert!(!app.has_work(), "{sample} {symbol:?}");
@@ -567,7 +618,8 @@ mod tests {
         ];
         for (key, says) in tabs {
             app.key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE));
-            assert_eq!(app.waiting().as_deref(), Some(says));
+            let work = app.pending().map(|work| work.message(&app.session));
+            assert_eq!(work.as_deref(), Some(says));
             app.work();
             assert!(!app.has_work(), "{key}");
         }

@@ -62,13 +62,20 @@
 //! - `startup.rs` gives the startup walk (`arch::startup::Program`) the
 //!   file's code, the words that memory holds at reset, as in flash or a
 //!   load image, and where its functions are.
+//! - `listing.rs`, with the `tui` feature, gives a function's code as
+//!   `arch` prints it, with the data that `$d` symbols mark among it, for
+//!   `browse` (`Binary::listing`).
 //!
 //! The unit tests of `names.rs` and `vector_table.rs` are in
-//! `names/tests.rs` and `vector_table/tests.rs`.
+//! `names/tests.rs` and `vector_table/tests.rs`, and those of `listing.rs`,
+//! which check the Thumb text against objdump's, in
+//! `listing/thumb_text.rs`.
 
 mod attributes;
 mod eh_frame;
 mod header;
+#[cfg(feature = "tui")]
+mod listing;
 mod load;
 pub mod made_names;
 mod memory;
@@ -570,6 +577,17 @@ impl Binary {
             }
         }
         None
+    }
+
+    /// What the program finds in the pointer-sized word at `address`.
+    ///
+    /// That is what the dynamic loader writes there, if it writes
+    /// something, or else what the file holds (see [`Binary::pointer_at`]).
+    pub fn stored_at(&self, address: u64) -> Option<RelocationTarget> {
+        match self.relocation_at(address) {
+            Some(relocation) => Some(relocation.target),
+            None => self.pointer_at(address).map(RelocationTarget::Address),
+        }
     }
 
     /// The relocation that stores a pointer at `address`, if any.

@@ -7,6 +7,44 @@
 //! commands print. What keeps each item, which the pages' headers say as
 //! `retained` and `why` do, takes a while to work out in a large program,
 //! so it is worked out once, after the first page is drawn.
+//!
+//! # Names
+//!
+//! The pages name an item or import in six ways, each in its own places:
+//!
+//! - Its full name, from `Node::name`, as in `app::log(unsigned int)`: in
+//!   the name column of a command's rows, which `names.rs` fits to the
+//!   column, in the link previews on the status line, and in an import's
+//!   title. Tab 3's first line has it, as in "Nothing in the file calls or
+//!   uses vfiprintf.", which shows only when nothing does (see
+//!   [`Session::callers`]). So does what u says where no one item keeps the
+//!   item, as in "Removing any single item wouldn't remove vfiprintf."
+//! - Its row name, from [`Session::row_name`], as in `frames` or
+//!   `0x30000de8`: in the notes on tab 1's lines, as in `uses
+//!   frames+0x8`, in what tab 1 says when it has no lines, and in an
+//!   item's title. `reach` names an item so after "used by". It is the
+//!   shortest name that finds only the item as SYMBOL, keeping a PLT
+//!   stub's `@plt`, or failing that, the item's address.
+//! - Its short name, from [`Session::short_name`], as in `crc32`: after
+//!   "kept by" and "used by", in the rows of `retained` and `why` and in
+//!   the header. It is the shortest form of its name that finds only it,
+//!   or failing that, its whole name, so it is never an address.
+//! - The header's name, on an item's page: its full name, then the note of
+//!   the SYMBOL that the user typed (`Symbol::note`), as in
+//!   `Default_Handler (also named NMI_Handler)`. The page gets it as
+//!   `header_name`, from `Symbol::lead_name` or the go-to box's
+//!   `Found::lead`, and a page that a link opens gets the full name alone.
+//!   `Header.name` holds the full name, and `Header.after_name` starts with
+//!   the note. It differs from the lead name only in whose note it has: the
+//!   SYMBOL that the user typed, not the query.
+//! - Its lead name, from [`Session::lead_name`], as in `sniprintf (also
+//!   named snprintf)`: in the first line of the answer under tabs 2, 4, 5
+//!   and 6, and in what u says of a root or of an item that nothing
+//!   reaches. It is what the command says, given the query as SYMBOL.
+//! - Its query, from `Names::query_for`, as in `log(unsigned int)`: as
+//!   SYMBOL, quoted for the shell, in the command under a tab (see
+//!   [`Session::command`]). It is the shortest thing to type that finds
+//!   only it, which can be another of its names, or an item's address.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -15,7 +53,7 @@ use std::rc::{Rc, Weak};
 
 use anyhow::Result;
 
-use super::views::PageCode;
+use super::views::Listing;
 use crate::binary::{Binary, FileKind, ItemKind, MemoryBlock, memory_blocks};
 use crate::commands::callers;
 use crate::commands::checks::reference_graph;
@@ -33,42 +71,51 @@ pub struct Session<'a> {
     pub(super) graph: Graph,
     /// What SYMBOL finds, and the short names that rows use.
     pub(super) names: Names<'a>,
-    /// Where each veneer, or PLT stub for one of the file's own functions,
-    /// goes, by the index of its item.
+    /// Where each veneer goes, by the index of its item.
+    ///
+    /// A PLT stub for one of the file's own functions counts as a veneer.
     pub(super) veneers: HashMap<usize, VeneerTarget>,
-    /// The blocks of memory that the sections occupy, as the overview
-    /// lists them.
+    /// The blocks of memory that the sections occupy.
+    ///
+    /// They are as the overview lists them.
     pub(super) blocks: Vec<MemoryBlock>,
-    /// The name that rows give each item, by its index, worked out the
-    /// first time a row names it: a page names an item on every line that
-    /// uses it.
+    /// The row name of each item, by its index, worked out once.
+    ///
+    /// A page names an item on every line that uses it, so the name is
+    /// kept the first time.
     row_names: RefCell<HashMap<usize, String>>,
-    /// What rows call each item or import after "kept by" or "used by",
-    /// worked out the first time a header names it.
+    /// The short name of each item or import, once a header names it.
     short_names: RefCell<HashMap<Node, String>>,
-    /// Each item's code as its page shows it, by the item's index, shared
-    /// by every page open on the item, so that opening it again, as from
-    /// go to, needn't work it out again. It is freed with the last of
+    /// Each item's listing, as tab 1 of its page shows it, by its index.
+    ///
+    /// Every page open on the item shares it, so that opening it again, as
+    /// from go to, needn't work it out again. It is freed with the last of
     /// those pages.
-    page_codes: RefCell<HashMap<usize, Weak<PageCode>>>,
-    /// What keeps each item, once worked out (see
-    /// [`Session::work_out_keepers`]).
+    listings: RefCell<HashMap<usize, Weak<Listing>>>,
+    /// What keeps each item, once worked out.
+    ///
+    /// [`Session::work_out_keepers`] works it out.
     keepers: Option<Keepers>,
 }
 
-/// What keeps each item, and the shortest chain to each from where the
-/// program starts, as `retained` and `why` find them.
+/// What keeps each item, and the shortest chain to each.
+///
+/// The chains start where the program starts. `retained` and `why` find
+/// the same.
 pub struct Keepers {
-    /// Which item keeps which: the dominator tree that `retained` builds,
-    /// without a range.
+    /// Which item keeps which.
+    ///
+    /// It is the dominator tree that `retained` builds, without a range.
     pub tree: DominatorTree,
     /// The shortest chain from where the program starts to each item.
     pub paths: ShortestPaths,
 }
 
 impl<'a> Session<'a> {
-    /// Builds what the pages need for `binary`, loaded from `path`, or says
-    /// why elfq can't read its code, as every command that reads code does.
+    /// Builds what the pages need for `binary`, loaded from `path`.
+    ///
+    /// Where elfq can't read its code, it says why, as every command that
+    /// reads code does.
     pub fn new(path: &Path, binary: &'a Binary) -> Result<Session<'a>> {
         let graph = reference_graph(binary)?;
         let veneers = {
@@ -87,7 +134,7 @@ impl<'a> Session<'a> {
             blocks: memory_blocks(&binary.sections),
             row_names: RefCell::new(HashMap::new()),
             short_names: RefCell::new(HashMap::new()),
-            page_codes: RefCell::new(HashMap::new()),
+            listings: RefCell::new(HashMap::new()),
             keepers: None,
         })
     }
@@ -97,25 +144,27 @@ impl<'a> Session<'a> {
         self.keepers.as_ref()
     }
 
-    /// Whether the session has yet to work out what keeps each item, which
-    /// it needn't in a shared library, where `retained` and `why` answer
+    /// Whether the session has yet to work out what keeps each item.
+    ///
+    /// It needn't in a shared library, where `retained` and `why` answer
     /// about no item.
     pub(super) fn needs_keepers(&self) -> bool {
         self.keepers.is_none() && self.binary.kind != FileKind::SharedLibrary
     }
 
-    /// The tree of retained sizes that `retained SYMBOL` lists, without a
-    /// range, from what keeps each item, once the session has worked it
-    /// out, and with the session's names.
-    pub(super) fn retained_tree(&self) -> Option<RetainedTree<'_, 'a>> {
-        let keepers = self.keepers()?;
+    /// The tree of retained sizes that `retained SYMBOL` lists.
+    ///
+    /// It is built without a range, from `keepers`, what keeps each item,
+    /// and with the session's names.
+    pub(super) fn retained_tree<'s>(&'s self, keepers: &'s Keepers) -> RetainedTree<'s, 'a> {
         let (binary, graph, names) = (self.binary, &self.graph, &self.names);
-        Some(RetainedTree::borrowing(binary, graph, &keepers.tree, names))
+        RetainedTree::borrowing(binary, graph, &keepers.tree, names)
     }
 
-    /// Works out what keeps each item, and the shortest chain to each from
-    /// where the program starts, once. In a large program, this takes a
-    /// while, which the status line says.
+    /// Works out what keeps each item, and the shortest chain to each, once.
+    ///
+    /// The chains start where the program starts. In a large program, this
+    /// takes a while, which the status line says.
     pub(super) fn work_out_keepers(&mut self) {
         if self.needs_keepers() {
             self.keepers = Some(Keepers {
@@ -125,16 +174,20 @@ impl<'a> Session<'a> {
         }
     }
 
-    /// What uses `node`, as `callers SYMBOL --all` lists it, but with
-    /// `node`'s own name in the first line, as the page's header names it.
+    /// What uses `node`, as `callers SYMBOL --all` lists it.
+    ///
+    /// Its first line has `node`'s full name, which the page's header starts
+    /// with.
     pub(super) fn callers(&self, node: Node) -> FlatAnswer {
         let name = node.name(self.binary);
         callers::answer(self.binary, &self.graph, node, name, true)
     }
 
-    /// `node`'s name as the first line of a command's answer about it
-    /// gives it, when the command is given the shortest name that finds it,
-    /// as the command under a tab is: "sniprintf (also named snprintf)".
+    /// `node`'s name as the answer under tabs 2, 4, 5 and 6 gives it.
+    ///
+    /// The command under the tab is given `node`'s query as SYMBOL, and its
+    /// first line says what SYMBOL gave: "sniprintf (also named snprintf)".
+    /// See the names in the module doc.
     pub(super) fn lead_name(&self, node: Node) -> String {
         match self.names.find(&self.names.query_for(node)) {
             Ok(symbol) => symbol.lead_name(self.binary),
@@ -142,12 +195,12 @@ impl<'a> Session<'a> {
         }
     }
 
-    /// The command that prints what a page shows about `node`, or without
-    /// one, about the file, ready to paste into a shell, as in `$ elfq
-    /// testdata/bin/cpp-x86_64.elf callers 'log(unsigned int)'`: the file
-    /// as the user typed it, and the shortest name that finds `node` as
-    /// SYMBOL, both quoted for the shell, then `--all` when `all` asks for
-    /// it.
+    /// The command that prints what a page shows, to paste into a shell.
+    ///
+    /// It is about `node`, or without one, about the file, as in `$ elfq
+    /// testdata/bin/cpp-x86_64.elf callers 'log(unsigned int)'`. It names
+    /// the file as the user typed it, and `node` by its query as SYMBOL,
+    /// both quoted for the shell, then `--all` when `all` asks for it.
     pub(super) fn command(&self, command: &str, node: Option<Node>, all: bool) -> String {
         let mut line = CommandLine::new(&self.path, command);
         if let Some(node) = node {
@@ -156,12 +209,13 @@ impl<'a> Session<'a> {
         format!("$ {}", line.flag("--all", all))
     }
 
-    /// The node whose page stands for `node`: for an import, its PLT stub
-    /// when it has one, since the import's name finds the stub as SYMBOL,
-    /// in every command. So code that uses the import through the global
-    /// offset table, as code built with `-fno-plt` calls it, leads to the
-    /// same page as code that calls the stub. An import without a stub
-    /// has a page of its own.
+    /// The node whose page stands for `node`.
+    ///
+    /// For an import, that is its PLT stub when it has one, since the
+    /// import's name finds the stub as SYMBOL, in every command. So code
+    /// that uses the import through the global offset table, as code built
+    /// with `-fno-plt` calls it, leads to the same page as code that calls
+    /// the stub. An import without a stub has a page of its own.
     pub(super) fn page_node(&self, node: Node) -> Node {
         match node {
             Node::Import(index) => match self.names.nodes(&self.binary.imports[index]) {
@@ -179,8 +233,10 @@ impl<'a> Session<'a> {
             .position(|block| block.range.contains(address))
     }
 
-    /// The name that rows give item `index`: the shortest that finds only
-    /// it as SYMBOL, as in "crc_table, kept by crc32".
+    /// The row name of item `index` (see the names in the module doc).
+    ///
+    /// It is the shortest name that finds only the item as SYMBOL, or
+    /// failing that, its address: `frames` in the note `uses frames+0x8`.
     pub(super) fn row_name(&self, index: usize) -> String {
         if let Some(name) = self.row_names.borrow().get(&index) {
             return name.clone();
@@ -190,11 +246,25 @@ impl<'a> Session<'a> {
         name
     }
 
-    /// What the rows of `retained` and `why` call `node` after "kept by"
-    /// or "used by", to name the row they hang under, as in "crc_table,
-    /// kept by crc32": the shortest form of its name that finds only it,
-    /// or failing that, its whole name, where [`Session::row_name`] gives
-    /// an address.
+    /// The name of `node`'s page in the title line's trail.
+    ///
+    /// It is an item's row name, and an import's full name (see the names
+    /// in the module doc). The status line names the page so while a tab of
+    /// it is worked out, as in "working out what main reaches…".
+    pub(super) fn title(&self, node: Node) -> String {
+        match node {
+            Node::Item(index) => self.row_name(index),
+            Node::Import(_) => node.name(self.binary).to_string(),
+        }
+    }
+
+    /// The short name of `node` (see the names in the module doc).
+    ///
+    /// The rows of `retained` and `why` call `node` so after "kept by" or
+    /// "used by", to name the row they hang under: `crc32` in "crc_table,
+    /// kept by crc32". It is the shortest form of its name that finds only
+    /// it, or failing that, its whole name, where [`Session::row_name`]
+    /// gives an address.
     pub(super) fn short_name(&self, node: Node) -> String {
         if let Some(name) = self.short_names.borrow().get(&node) {
             return name.clone();
@@ -204,16 +274,16 @@ impl<'a> Session<'a> {
         name
     }
 
-    /// Item `index`'s code, as its page shows it.
-    pub(super) fn page_code(&self, index: usize) -> Rc<PageCode> {
-        if let Some(code) = self.page_codes.borrow().get(&index).and_then(Weak::upgrade) {
-            return code;
+    /// Item `index`'s listing, as tab 1 of its page shows it.
+    pub(super) fn listing(&self, index: usize) -> Rc<Listing> {
+        if let Some(listing) = self.listings.borrow().get(&index).and_then(Weak::upgrade) {
+            return listing;
         }
-        let code = Rc::new(PageCode::new(self, index));
-        self.page_codes
+        let listing = Rc::new(Listing::of_item(self, index));
+        self.listings
             .borrow_mut()
-            .insert(index, Rc::downgrade(&code));
-        code
+            .insert(index, Rc::downgrade(&listing));
+        listing
     }
 
     /// The file's name, without its folders, for the title line.
