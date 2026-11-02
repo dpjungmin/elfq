@@ -459,18 +459,18 @@ worked out. Those are names to fix, not meanings to copy.
 - **Integration tests** in `tests/it/` use the samples in `testdata/bin`.
   Most run the elfq program, the way a user would: each command's tests,
   in `commands/`; the tests of what the commands share, in
-  `across_commands/`; and `docs.rs`, which runs the examples in the docs.
-  Those in `library/` call the library, as `Binary::load` and
-  `Graph::build`. `damaged.rs` and `commands/browse.rs` do both, and so
-  do one test in `commands/callers_and_callees.rs`, the test in
-  `across_commands/errors_and_help.rs` that takes the commands' names
-  from `cli::command_names`, and the checks at the end of
-  `commands/reach.rs`. Those checks load samples to list the items they
-  check, and run commands in the test's own process, with
-  `run_in_process`, which is quicker for the hundreds they run. The
-  answers that integration tests expect are those in
-  [testdata/README.md](testdata/README.md), which says, for example,
-  what calls `log_msg` in each sample.
+  `across_commands/`; and `docs.rs`, which runs the examples in the docs
+  and checks the paths that CONTRIBUTING.md and design.md cite. Those in
+  `library/` call the library, as `Binary::load` and `Graph::build`.
+  `damaged.rs` and `commands/browse.rs` do both, and so do one test in
+  `commands/callers_and_callees.rs`, the test in
+  `across_commands/errors_and_help.rs` that takes the commands' names from
+  `cli::command_names`, and the checks at the end of `commands/reach.rs`.
+  Those checks load samples to list the items they check, and run commands
+  in the test's own process, with `run_in_process`, which is quicker for
+  the hundreds they run. The answers that integration tests expect are
+  those in [testdata/README.md](testdata/README.md), which says, for
+  example, what calls `log_msg` in each sample.
 
 | File in `tests/it/` | What it tests |
 |---|---|
@@ -495,7 +495,7 @@ worked out. Those are names to fix, not meanings to copy.
 | `library/symbol.rs` | Looking up SYMBOL |
 | `library/inlined.rs` | Inlined copies, from DWARF |
 | `damaged.rs` | Damaged and unusual files, made by changing a sample's bytes |
-| `docs.rs` | The `$ elfq` examples in README.md, docs/design.md and docs/examples.md, and that design.md names every JSON key |
+| `docs.rs` | The `$ elfq` examples in README.md, docs/design.md and docs/examples.md; that design.md names every JSON key; and that the paths and module paths that CONTRIBUTING.md and design.md cite are there |
 
 **Where a test goes.** A test of one command goes in that command's file
 in `commands/`, its text and its JSON together. A test that runs several
@@ -631,6 +631,23 @@ on stderr. The command is split at spaces, with no shell quoting, and its
 exit status may be 0 or 1. The text around an example often repeats its
 numbers and names, as docs/examples.md does, so when an example's output
 changes, check that the text around it still matches the new output.
+
+**Paths in the docs.** `the_paths_the_docs_cite_are_there`, in `docs.rs`,
+checks what CONTRIBUTING.md and docs/design.md cite outside their code
+blocks: each path in `src/`, `tests/`, `testdata/`, `scripts/` or `docs/`,
+each shorter path to a Rust file or a folder, such as `views/item.rs`,
+each link's target, and each module path, such as `symbol::find`: its
+modules must be there, and the name after them must be defined in the last
+one's file or imported there with `use`. When you move or rename a file,
+or a function cited with its module path, the test names every citation to
+change. A name cited alone or after its type, such as
+`check_code_is_readable` or `Symbol::lead_name`, isn't checked, and nor is
+a path with a placeholder, such as `src/arch/<name>.rs`, or one through a
+`target` folder: write a file to add, or one that is gone, that way or in
+a code block. Write a path into another crate from the crate's name, as
+`object::elf::SHT_NOBITS`, and add the crate to the test's
+`OTHER_FIRST_NAMES`, since a short `elf::` would be read as a path into
+elfq's own module of that name.
 
 **Damaged files.** `damaged.rs` makes its files from a sample's bytes, so
 that the hangs and crashes they once caused stay fixed. It and the other
