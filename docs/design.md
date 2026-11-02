@@ -682,7 +682,7 @@ these:
 
 Any other number is compared as it is, such as one that an x86-64
 instruction compares with or adds. Then, where a distance in the code
-leads to places that aren't the same place in partners, as a call to a
+leads to places that aren't the same offset in partners, as a call to a
 veneer that only one build has, or a load from a global offset table
 entry, which no item holds, the code there must use the partners of the
 items it used, in the same ways, where a call through a veneer, or

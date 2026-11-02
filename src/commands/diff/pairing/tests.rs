@@ -2,7 +2,7 @@ use object::SectionKind;
 
 use super::*;
 use crate::binary::Section;
-use crate::graph::Reference;
+use crate::graph::{Graph, Reference};
 
 /// An item for [`binary`]: a function in `.text` when `kind` is one,
 /// else data, in `.rodata` with `bytes`, or with `bss`, in `.bss`, of
@@ -113,15 +113,22 @@ fn pairs(
             .collect(),
         ..Graph::default()
     };
-    let (old, new) = (binary(old), binary(new));
-    let (old_graph, new_graph) = (graph(&old), graph(&new));
-    let side = |binary, graph| Side { binary, graph };
-    let pairing = pair(side(&old, &old_graph), side(&new, &new_graph));
-    old.items
+    let build = |specs| {
+        let binary = binary(specs);
+        Build {
+            graph: graph(&binary),
+            binary,
+            tree: None,
+        }
+    };
+    let (old, new) = (build(old), build(new));
+    let pairing = pair(&old, &new);
+    old.binary
+        .items
         .iter()
         .zip(pairing.old_to_new)
         .map(|(item, partner)| {
-            let partner = partner.map(|(index, rule)| (new.items[index].name.clone(), rule));
+            let partner = partner.map(|(index, rule)| (new.binary.items[index].name.clone(), rule));
             (item.name.clone(), partner)
         })
         .collect()
@@ -136,7 +143,7 @@ fn unpaired(old: &str) -> (String, Option<(String, PairedBy)>) {
 }
 
 #[test]
-fn rule_1_pairs_by_name_only_one_item_on_each_side_and_of_one_kind() {
+fn rule_1_pairs_by_name_only_one_item_of_each_build_and_of_one_kind() {
     // Two static functions named `twice` pair with neither, and a
     // function never pairs with data.
     assert_eq!(

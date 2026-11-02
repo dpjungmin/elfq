@@ -20,14 +20,14 @@
 //!   distance from the table, whose values in the two builds correspond
 //!   (see [`Edits::correspond`]).
 //!
-//! Then, where the distances in the partners' code lead to places that
-//! aren't the same place in partners, the code must use the partners of
-//! what it used there, in the same ways, through veneers and the PLT stubs
-//! of a library's own functions, and the same imports. A use of an item
-//! that is new or gone, which has a row of its own, doesn't count. What
-//! the words and numbers point at isn't compared again as a use: they are
-//! compared already, and the graph takes a pointer to the end of an array
-//! for a use of whatever follows it.
+//! Then, where the distances in the partners' code don't lead to the same
+//! offset in partners, the code must use the partners of what it used there,
+//! in the same ways, through veneers and the PLT stubs of a library's own
+//! functions, and the same imports. A use of an item that is new or gone,
+//! which has a row of its own, doesn't count. What the words and numbers
+//! point at isn't compared again as a use: they are compared already, and
+//! the graph takes a pointer to the end of an array for a use of whatever
+//! follows it.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -68,7 +68,7 @@ enum Used<'a> {
 /// Where an address is: in which item, as an index into a build's items,
 /// and how far into it.
 #[derive(Debug, Clone, Copy)]
-struct Place {
+struct ItemOffset {
     item: usize,
     offset: u64,
 }
@@ -226,7 +226,7 @@ impl<'a> Edits<'a> {
     }
 
     /// Whether `old_pointer` and `new_pointer`, the bytes of a pointer at
-    /// the same place in partners, hold addresses that correspond.
+    /// the same offset in partners, hold addresses that correspond.
     fn pointers_correspond(&self, old_pointer: &[u8], new_pointer: &[u8]) -> bool {
         self.correspond(
             word(old_pointer, self.old.binary.endianness),
@@ -235,8 +235,8 @@ impl<'a> Edits<'a> {
     }
 
     /// Whether the 32-bit entries in `old_word` and `new_word`, at the same
-    /// place in tables at `old_table` and `new_table` in each build, lead
-    /// to places that correspond where they differ, each entry being a
+    /// offset in tables at `old_table` and `new_table` in each build, lead
+    /// to addresses that correspond where they differ, each entry being a
     /// distance from its table, as in an x86-64 jump table.
     fn entries_correspond(
         &self,
@@ -257,14 +257,14 @@ impl<'a> Edits<'a> {
     }
 
     /// Whether two values that a pair of words or instructions hold are the
-    /// same address in each build: (a) the same place in partners (see
-    /// [`Edits::same_place_in_partners`]); (b) in items that only one build
+    /// same address in each build: (a) the same offset in partners (see
+    /// [`Edits::same_offset_in_partners`]); (b) in items that only one build
     /// has, which have rows of their own (see [`Edits::in_unpaired_items`]);
     /// (c) at the same text (see [`same_text`]); or (d) the same start or
     /// end of a section (see [`same_edge`]).
     fn correspond(&self, old_address: u64, new_address: u64) -> bool {
         let (old_binary, new_binary) = (&self.old.binary, &self.new.binary);
-        self.same_place_in_partners(old_address, new_address)
+        self.same_offset_in_partners(old_address, new_address)
             || self.in_unpaired_items(old_address, new_address)
             || same_text(old_binary, old_address, new_binary, new_address)
             || same_edge(old_binary, old_address, new_binary, new_address)
@@ -274,15 +274,14 @@ impl<'a> Edits<'a> {
     /// `new_address` point into partners at the same offset, a function's
     /// Thumb bit and all, or just past the end of partners, as a pointer to
     /// the end of an array does.
-    fn same_place_in_partners(&self, old_address: u64, new_address: u64) -> bool {
+    fn same_offset_in_partners(&self, old_address: u64, new_address: u64) -> bool {
         let (old_binary, new_binary) = (&self.old.binary, &self.new.binary);
         let into = match (
-            place_of(old_binary, old_address),
-            place_of(new_binary, new_address),
+            item_offset_of(old_binary, old_address),
+            item_offset_of(new_binary, new_address),
         ) {
-            (Some(old_place), Some(new_place)) => {
-                self.partner(old_place.item) == Some(new_place.item)
-                    && old_place.offset == new_place.offset
+            (Some(old), Some(new)) => {
+                self.partner(old.item) == Some(new.item) && old.offset == new.offset
             }
             _ => false,
         };
@@ -300,10 +299,9 @@ impl<'a> Edits<'a> {
     /// `new_address` both point into items without a partner.
     fn in_unpaired_items(&self, old_address: u64, new_address: u64) -> bool {
         let (old_binary, new_binary) = (&self.old.binary, &self.new.binary);
-        place_of(old_binary, old_address)
-            .is_some_and(|old_place| self.partner(old_place.item).is_none())
-            && place_of(new_binary, new_address)
-                .is_some_and(|new_place| self.pairing.new_to_old[new_place.item].is_none())
+        item_offset_of(old_binary, old_address).is_some_and(|old| self.partner(old.item).is_none())
+            && item_offset_of(new_binary, new_address)
+                .is_some_and(|new| self.pairing.new_to_old[new.item].is_none())
     }
 
     /// The partner of the old build's item `old_item`, as an index into the
@@ -313,7 +311,7 @@ impl<'a> Edits<'a> {
     }
 
     /// The offsets of the instructions whose distances, in the partners'
-    /// code, as `operands` gives them, don't lead to the same place in
+    /// code, as `operands` gives them, don't lead to the same offset in
     /// partners, in order. Only case (a) of [`Edits::correspond`]
     /// counts here: a call to a veneer that only one build has, or a load
     /// from a global offset table, which no item holds, leads elsewhere,
@@ -322,15 +320,15 @@ impl<'a> Edits<'a> {
         let (old_operands, new_operands) = (&operands.old, &operands.new);
         let old_targets: HashMap<usize, u64> = old_operands.targets.iter().copied().collect();
         let new_targets: HashMap<usize, u64> = new_operands.targets.iter().copied().collect();
-        let same_place = |offset: &usize, old_target: &u64| {
+        let same_offset = |offset: &usize, old_target: &u64| {
             new_targets
                 .get(offset)
-                .is_some_and(|&new_target| self.same_place_in_partners(*old_target, new_target))
+                .is_some_and(|&new_target| self.same_offset_in_partners(*old_target, new_target))
         };
         let only_new = |offset: &usize| !old_targets.contains_key(offset);
         let new_offsets = new_operands.targets.iter().map(|&(offset, _)| offset);
         let mut offsets: Vec<usize> = (old_operands.targets.iter())
-            .filter(|(offset, target)| !same_place(offset, target))
+            .filter(|(offset, target)| !same_offset(offset, target))
             .map(|&(offset, _)| offset)
             .chain(new_offsets.filter(only_new))
             .collect();
@@ -503,14 +501,14 @@ fn through(veneers: &Veneers, mut item: usize) -> Node {
 /// Where `value` points into an item of `binary`. On Thumb, a function's
 /// address with the Thumb bit set points into the function, even when its
 /// size is 0.
-fn place_of(binary: &Binary, value: u64) -> Option<Place> {
+fn item_offset_of(binary: &Binary, value: u64) -> Option<ItemOffset> {
     let item = binary.item_at(value).or_else(|| {
         let index = binary.item_at(value.checked_sub(1)?)?;
         let thumb = binary.thumb && value % 2 == 1;
         (thumb && binary.items[index].kind == ItemKind::Function).then_some(index)
     })?;
     let offset = value - binary.items[item].address;
-    Some(Place { item, offset })
+    Some(ItemOffset { item, offset })
 }
 
 /// The item of `binary` that ends just before `value`, as an index into its

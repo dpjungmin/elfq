@@ -187,6 +187,12 @@ this list, and add to it when you bring in a word.
   `TreeAnswer` the text of one whose table holds a tree, as `why` and
   `retained` write it. Browse shows both; `TabAnswer` is a `TreeAnswer`
   as a tab of browse shows it.
+- **build**: in `diff`, one of the two files it compares, the old one or
+  the new one (`Build`, which holds the file, its graph and its
+  dominator tree). `old` and `new` name what is each build's; what a
+  build loads (`LoadedMemory`) is `old_memory` or `new_memory` in diff's
+  `Answer` and in the functions of `diff/mod.rs` that make one, and
+  `old` or `new` elsewhere.
 - **partners**: in `diff`, an item of the old build and the item of the
   new build that it is paired with, by the rule that `PairedBy` names
   (`pairing.rs`). **change**: an item that changed from one build to the
@@ -203,7 +209,9 @@ this list, and add to it when you bring in a word.
   section index, named `section`. **block**: a run of addresses that
   sections occupy, as the overview's MEMORY table lists
   (`MemoryBlock`). **load image**: where the file stores the bytes of a
-  section such as `.data`, for startup code to copy to its address.
+  section such as `.data`, for startup code to copy to its address; the
+  load image's address is the section's **load address**
+  (`Section::load_address`).
   **RAM sections**: in `startup`, the sections that startup code sets
   up, which are all in RAM: those with a load image, and those without
   contents, such as `.bss` (`RamSections`, in `ram_sections.rs`, named

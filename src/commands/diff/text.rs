@@ -48,7 +48,7 @@ pub(super) fn write(answer: &Answer, all: bool, out: &mut dyn Write) -> Result<(
     }
     writeln!(out, "From {old_path} to {new_path}: {}", lead(answer))?;
     if answer.compared.is_none() {
-        let path = match answer.old.has_symbols {
+        let path = match answer.old_memory.has_symbols {
             true => &new_path,
             false => &old_path,
         };
@@ -246,7 +246,7 @@ fn sections_line(answer: &Answer, all: bool) -> String {
     let names: Vec<String> = answer
         .sections_that_differ
         .iter()
-        .map(|differs| section_label(differs.name, differs.only_load_image))
+        .map(|differs| section_label(differs.name, differs.only_load_address))
         .collect();
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
     format!("Sections that differ: {}.", names_text(&names, all))
@@ -606,7 +606,7 @@ fn try_why(compared: &Compared, heads: &[usize]) -> Option<String> {
 /// "The memory stays at 15728 bytes (.text +16, .eh_frame +8)." or "The
 /// memory went from 224 to 208 bytes (.itcm -16)."
 fn size_line(answer: &Answer, block: &Block, all: bool) -> String {
-    let resized = resized_text(&block.sections(answer.old, answer.new), all);
+    let resized = resized_text(&block.sections(answer.old_memory, answer.new_memory), all);
     let resized = if resized.is_empty() {
         String::new()
     } else {
@@ -658,8 +658,8 @@ fn memory_table(answer: &Answer, all: bool) -> Table {
 /// one build has names what is in it, as the overview's table does.
 fn sections_cell(answer: &Answer, block: &Block, all: bool) -> String {
     let (memory, places) = match (block.old.is_empty(), block.new.is_empty()) {
-        (true, _) => (answer.new, &block.new),
-        (_, true) => (answer.old, &block.old),
+        (true, _) => (answer.new_memory, &block.new),
+        (_, true) => (answer.old_memory, &block.old),
         _ => return resized_cell(answer, block, all),
     };
     let names = |load_image: bool| -> Vec<&str> {
@@ -675,7 +675,7 @@ fn sections_cell(answer: &Answer, block: &Block, all: bool) -> String {
 /// The sections whose size changed in a block that both builds have, or
 /// "bytes differ", or nothing.
 fn resized_cell(answer: &Answer, block: &Block, all: bool) -> String {
-    let sections = block.sections(answer.old, answer.new);
+    let sections = block.sections(answer.old_memory, answer.new_memory);
     match resized_text(&sections, all) {
         resized if !resized.is_empty() => resized,
         _ if block.same_bytes => String::new(),
@@ -755,8 +755,8 @@ mod tests {
         let answer = Answer {
             old_path: path,
             new_path: path,
-            old,
-            new,
+            old_memory: old,
+            new_memory: new,
             same_memory,
             blocks: shared_blocks(old, new, same_memory),
             sections_that_differ: sections_that_differ(old, new),

@@ -3,11 +3,11 @@
 //!
 //! The rules run in order, each a function below. Each looks only at the
 //! items that are still unpaired, and pairs two items by a key, such as a
-//! name, only when exactly one item on each side has it, and both are
-//! functions or both data. A key that two items on one side share pairs
+//! name, only when exactly one item of each build has it, and both are
+//! functions or both data. A key that two items of one build share pairs
 //! neither, and so does an item whose keys lead to two items of the other
-//! side. A wrong pair never changes a total or the exit status, which come
-//! from the bytes in each block, only what the rows call an item.
+//! build. A wrong pair never changes a total or the exit status, which
+//! come from the bytes in each block, only what the rows call an item.
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
@@ -15,8 +15,9 @@ use std::hash::Hash;
 
 use serde::Serialize;
 
+use super::Build;
 use crate::binary::{Binary, Item, ItemKind, Source, names};
-use crate::graph::{Graph, Node, ReferenceKind};
+use crate::graph::{Node, ReferenceKind};
 
 /// The rule that paired two items, as JSON's `paired_by` says it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -43,27 +44,21 @@ pub(super) struct Pairing {
     pub new_to_old: Vec<Option<usize>>,
 }
 
-/// A build, as the rules see it.
-#[derive(Clone, Copy)]
-pub(super) struct Side<'a> {
-    pub binary: &'a Binary,
-    pub graph: &'a Graph,
-}
-
 /// Pairs the items of `old` with those of `new`, by the rules in order.
-pub(super) fn pair(old: Side, new: Side) -> Pairing {
+pub(super) fn pair(old: &Build, new: &Build) -> Pairing {
+    let (old_binary, new_binary) = (&old.binary, &new.binary);
     let mut pairing = Pairing {
-        old_to_new: vec![None; old.binary.items.len()],
-        new_to_old: vec![None; new.binary.items.len()],
+        old_to_new: vec![None; old_binary.items.len()],
+        new_to_old: vec![None; new_binary.items.len()],
     };
-    by_name(&mut pairing, old.binary, new.binary);
-    by_other_name(&mut pairing, old.binary, new.binary);
-    by_copy_name(&mut pairing, old.binary, new.binary);
-    by_bytes(&mut pairing, old.binary, new.binary);
-    by_first_string(&mut pairing, old.binary, new.binary);
-    by_short_contents(&mut pairing, old.binary, new.binary);
+    by_name(&mut pairing, old_binary, new_binary);
+    by_other_name(&mut pairing, old_binary, new_binary);
+    by_copy_name(&mut pairing, old_binary, new_binary);
+    by_bytes(&mut pairing, old_binary, new_binary);
+    by_first_string(&mut pairing, old_binary, new_binary);
+    by_short_contents(&mut pairing, old_binary, new_binary);
     by_uses(&mut pairing, old, new);
-    by_place(&mut pairing, old.binary, new.binary);
+    by_place(&mut pairing, old_binary, new_binary);
     pairing
 }
 
@@ -142,14 +137,14 @@ fn by_short_contents(pairing: &mut Pairing, old: &Binary, new: &Binary) {
 /// alike, as the static variables of one function, those of one name pair
 /// too, a name that GCC numbered counting as itself and as the name before
 /// the number, as `buf` of `buf.3`.
-fn by_uses(pairing: &mut Pairing, old: Side, new: Side) {
+fn by_uses(pairing: &mut Pairing, old: &Build, new: &Build) {
     let old_users = users(old, |index| pairing.old_to_new[index].is_none());
     let new_users = users(new, |index| pairing.new_to_old[index].is_none());
     let old_key = |index: usize| {
         let Some(users) = old_users.get(&index) else {
             return Vec::new();
         };
-        // Each user as its partner, so that the keys of both sides name
+        // Each user as its partner, so that the keys of both builds name
         // the new build's items.
         let Some(mut partners) = users
             .iter()
@@ -160,7 +155,7 @@ fn by_uses(pairing: &mut Pairing, old: Side, new: Side) {
         };
         partners.sort_unstable();
         partners.dedup();
-        uses_keys(old.binary, index, partners)
+        uses_keys(&old.binary, index, partners)
     };
     let new_key = |index: usize| {
         let Some(users) = new_users.get(&index) else {
@@ -175,11 +170,11 @@ fn by_uses(pairing: &mut Pairing, old: Side, new: Side) {
         let mut users = users.clone();
         users.sort_unstable();
         users.dedup();
-        uses_keys(new.binary, index, users)
+        uses_keys(&new.binary, index, users)
     };
-    let old_keys = keys_of(old.binary, pairing, true, old_key);
-    let new_keys = keys_of(new.binary, pairing, false, new_key);
-    pairing.pair_keys(old.binary, new.binary, PairedBy::Uses, old_keys, new_keys);
+    let old_keys = keys_of(&old.binary, pairing, true, old_key);
+    let new_keys = keys_of(&new.binary, pairing, false, new_key);
+    pairing.pair_keys(&old.binary, &new.binary, PairedBy::Uses, old_keys, new_keys);
 }
 
 /// Rule 8: the only object without a name in a section of that name that
@@ -198,7 +193,7 @@ fn by_place(pairing: &mut Pairing, old: &Binary, new: &Binary) {
 
 impl Pairing {
     /// Pairs, of the items still unpaired, each item of `old` with the item
-    /// of `new` that has one of its keys, when only that item of each side
+    /// of `new` that has one of its keys, when only that item of each build
     /// has the key, and both are of one kind. `key` gives the keys of an
     /// item of either build, by its index.
     fn pair_unique<'a, K, I>(
@@ -216,9 +211,9 @@ impl Pairing {
         self.pair_keys(old, new, rule, old_keys, new_keys);
     }
 
-    /// Pairs by the keys of the unpaired items of each side, as
+    /// Pairs by the keys of the unpaired items of each build, as
     /// [`Pairing::pair_unique`] does: two items pair when every key that
-    /// only one item of each side has leads from each to the other. Where
+    /// only one item of each build has leads from each to the other. Where
     /// identical code folding gave one function the names of two, it pairs
     /// with neither, whichever build is the old one.
     fn pair_keys<K: Hash + Eq + Send>(
@@ -229,8 +224,8 @@ impl Pairing {
         old_keys: Vec<(usize, K)>,
         new_keys: Vec<(usize, K)>,
     ) {
-        // Keys are kept apart by the kind of item that has them. Each side's
-        // are hashed on a thread of its own.
+        // Keys are kept apart by the kind of item that has them. Each
+        // build's are hashed on a thread of its own.
         let (old_holders, new_holders) =
             super::on_both((old, old_keys), (new, new_keys), |(binary, keys)| {
                 holders(
@@ -238,7 +233,7 @@ impl Pairing {
                         .map(|(index, key)| (index, (binary.items[index].kind, key))),
                 )
             });
-        // Where each item's keys lead on the other side.
+        // Where each item's keys lead in the other build.
         let mut old_leads = vec![Lead::Nowhere; old.items.len()];
         let mut new_leads = vec![Lead::Nowhere; new.items.len()];
         for (key, holder) in &old_holders {
@@ -258,7 +253,7 @@ impl Pairing {
     }
 }
 
-/// Where an item's keys lead on the other side.
+/// Where an item's keys lead in the other build.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Lead {
     Nowhere,
@@ -318,18 +313,18 @@ fn holders<K: Hash + Eq>(keys: impl Iterator<Item = (usize, K)>) -> HashMap<K, O
     holders
 }
 
-/// The items that use each unpaired data object of `side`, with how, by the
-/// object's index: those for which `unpaired` is true. An item's use of
+/// The items that use each unpaired data object of `build`, with how, by
+/// the object's index: those for which `unpaired` is true. An item's use of
 /// itself doesn't count.
 fn users(
-    side: Side,
+    build: &Build,
     unpaired: impl Fn(usize) -> bool,
 ) -> HashMap<usize, Vec<(usize, ReferenceKind)>> {
     let mut users: HashMap<usize, Vec<(usize, ReferenceKind)>> = HashMap::new();
-    for reference in &side.graph.references {
+    for reference in &build.graph.references {
         if let Node::Item(index) = reference.to
             && index != reference.from
-            && side.binary.items[index].kind == ItemKind::Data
+            && build.binary.items[index].kind == ItemKind::Data
             && unpaired(index)
         {
             users

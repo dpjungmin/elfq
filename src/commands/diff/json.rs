@@ -134,9 +134,9 @@ struct ItemJson<'a> {
 }
 
 /// An item in one build, for the keys of [`ItemJson`] that start with
-/// `old_` or `new_`.
+/// `old_` or `new_`: all `None` for the build that doesn't have it.
 #[derive(Default)]
-struct Side<'a> {
+struct InBuild<'a> {
     address: Option<String>,
     size: Option<u64>,
     section: Option<&'a str>,
@@ -224,8 +224,8 @@ fn block_json<'a>(
     let place_size = |place: Option<Place>| place.map(|place| place.size);
     let parts = answer.compared.as_ref().map(|compared| {
         let items = &compared.items;
-        let old = block.parts(true, answer.old, &items.old.binary, holds_items);
-        let new = block.parts(false, answer.new, &items.new.binary, holds_items);
+        let old = block.parts(true, answer.old_memory, &items.old.binary, holds_items);
+        let new = block.parts(false, answer.new_memory, &items.new.binary, holds_items);
         let delta = |old: u64, new: u64| i128::from(new) - i128::from(old);
         (
             delta(old.items, new.items),
@@ -243,7 +243,7 @@ fn block_json<'a>(
         section_bytes: parts.map(|parts| parts.1),
         padding_bytes: parts.map(|parts| parts.2),
         sections: block
-            .sections(answer.old, answer.new)
+            .sections(answer.old_memory, answer.new_memory)
             .into_iter()
             .map(|section| SectionJson {
                 name: section.name,
@@ -301,18 +301,15 @@ impl<'c, 'a> ItemsJson<'c, 'a> {
     fn row(&self, compared: &Compared<'a>, change: &Change) -> ItemJson<'a> {
         let items = &compared.items;
         let item = items.item(change);
-        let side = |build: &'a Build, index: Option<usize>, item_blocks: &[Option<usize>]| {
-            index.map_or_else(Side::default, |index| {
-                side(
-                    build,
-                    index,
-                    item_blocks[index].map(|block| &self.blocks[block]),
-                )
+        let in_build = |build: &'a Build, index: Option<usize>, item_blocks: &[Option<usize>]| {
+            index.map_or_else(InBuild::default, |index| {
+                let block = item_blocks[index].map(|block| &self.blocks[block]);
+                InBuild::new(build, index, block)
             })
         };
         let (old, new) = (
-            side(items.old, change.old_index(), &items.old_blocks),
-            side(items.new, change.new_index(), &items.new_blocks),
+            in_build(items.old, change.old_index(), &items.old_blocks),
+            in_build(items.new, change.new_index(), &items.new_blocks),
         );
         let estimated = |build: &Build, index: Option<usize>| {
             index.is_some_and(|index| build.binary.items[index].size_estimated)
@@ -363,27 +360,30 @@ impl Serialize for ItemsJson<'_, '_> {
     }
 }
 
-/// The item at `index` in `build`, in `block`.
-fn side<'a>(build: &'a Build, index: usize, block: Option<&Block>) -> Side<'a> {
-    let binary = &build.binary;
-    let item = &binary.items[index];
-    let node = Node::Item(index);
-    let tree = build.tree.as_ref();
-    let kept_by = match tree.and_then(|tree| tree.parent(node)) {
-        Some(Node::Item(parent)) => Some(KeptBy {
-            name: &binary.items[parent].name,
-            address: address(binary.items[parent].address),
-        }),
-        _ => None,
-    };
-    Side {
-        address: Some(address(item.address)),
-        size: (item.size > 0).then_some(item.size),
-        section: Some(&binary.sections[item.section].name),
-        block: block.map(|block| address(block.range.start)),
-        kept_by,
-        retained: tree
-            .filter(|tree| tree.is_reachable(node))
-            .map(|tree| tree.retained(node)),
+impl<'a> InBuild<'a> {
+    /// The item at `index` in `build`, in `block`.
+    fn new(build: &'a Build, index: usize, block: Option<&Block>) -> InBuild<'a> {
+        let binary = &build.binary;
+        let item = &binary.items[index];
+        let node = Node::Item(index);
+        let tree = build.tree.as_ref();
+        let kept_by = match tree.and_then(|tree| tree.parent(node)) {
+            Some(Node::Item(parent)) => Some(KeptBy {
+                name: &binary.items[parent].name,
+                address: address(binary.items[parent].address),
+            }),
+            // An import uses nothing, so it keeps nothing.
+            Some(Node::Import(_)) | None => None,
+        };
+        InBuild {
+            address: Some(address(item.address)),
+            size: (item.size > 0).then_some(item.size),
+            section: Some(&binary.sections[item.section].name),
+            block: block.map(|block| address(block.range.start)),
+            kept_by,
+            retained: tree
+                .filter(|tree| tree.is_reachable(node))
+                .map(|tree| tree.retained(node)),
+        }
     }
 }

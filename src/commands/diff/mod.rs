@@ -17,13 +17,17 @@
 //! tables from what changed, for the text, and `text.rs` and `json.rs`
 //! write the answer.
 //!
-//! Names mean the same across these files. Two items that are paired, one
-//! in each build, are *partners*. A *change* is an item that changed
-//! ([`Change`](changes::Change)), and `at` is its place in
-//! `Items::changes`. A *delta* is how many bytes something grew by, less
-//! than 0 when it shrank: a change's item, a block, a section or a row of
-//! CHANGE. An item's place in its build's items is its `index`, or in
-//! `edited.rs`, `old_item` or `new_item`, and a block's place in
+//! Names mean the same across these files. The two files are the old and
+//! the new *build* ([`Build`]), and `old` and `new` name what is each
+//! build's. What a build loads ([`LoadedMemory`]) is its `old_memory` or
+//! `new_memory` in [`Answer`] and in `run` and `Answer::new`, which make
+//! the answer, and `old` or `new` elsewhere, as in `check` and `blocks.rs`.
+//! Two items that are paired, one in each build, are *partners*. A *change*
+//! is an item that changed ([`Change`](changes::Change)), and `at` is its
+//! place in `Items::changes`. A *delta* is how many bytes something grew
+//! by, less than 0 when it shrank: a change's item, a block, a section or a
+//! row of CHANGE. An item's place in its build's items is its `index`, or
+//! in `edited.rs`, `old_item` or `new_item`, and a block's place in
 //! `Answer::blocks` is its `block`.
 
 mod blocks;
@@ -51,7 +55,7 @@ use crate::STACK_SIZE;
 use crate::binary::{Binary, FileKind, LoadedMemory, same_memory};
 use crate::cli::Format;
 use crate::graph::{DominatorTree, Graph};
-use blocks::{Block, Differs};
+use blocks::{Block, SectionDiffers};
 use changes::{Items, Status};
 use crossings::Crossing;
 
@@ -59,15 +63,18 @@ use crossings::Crossing;
 struct Answer<'a> {
     old_path: &'a Path,
     new_path: &'a Path,
-    old: &'a LoadedMemory<'a>,
-    new: &'a LoadedMemory<'a>,
+    /// What the old build loads, as its headers say. `compared` holds the
+    /// builds themselves, when diff loads them.
+    old_memory: &'a LoadedMemory<'a>,
+    /// What the new build loads.
+    new_memory: &'a LoadedMemory<'a>,
     /// Whether both builds load the same bytes at the same addresses.
     same_memory: bool,
     blocks: Vec<Block>,
     /// The sections whose address, size, load image or bytes differ, or
     /// that only one build has, in address order: none when the memory is
     /// the same.
-    sections_that_differ: Vec<Differs<'a>>,
+    sections_that_differ: Vec<SectionDiffers<'a>>,
     /// The builds' items, paired, when the memory differs and both builds
     /// have a symbol table.
     compared: Option<Compared<'a>>,
@@ -111,38 +118,38 @@ pub fn run(
     };
     let (old_data, new_data) = on_both(old_path, new_path, read);
     let (old_data, new_data) = (old_data?, new_data?);
-    let old = read_memory(old_path, &old_data)?;
-    let new = read_memory(new_path, &new_data)?;
-    for (path, memory) in [(old_path, &old), (new_path, &new)] {
+    let old_memory = read_memory(old_path, &old_data)?;
+    let new_memory = read_memory(new_path, &new_data)?;
+    for (path, memory) in [(old_path, &old_memory), (new_path, &new_memory)] {
         write_warnings(path, &memory.warnings, &[]);
     }
-    check(old_path, &old, new_path, &new)?;
-    let same_memory = same_memory(&old, &new);
-    if same_memory || !old.has_symbols || !new.has_symbols {
-        let mut answer = Answer::new(old_path, new_path, &old, &new, same_memory);
+    check(old_path, &old_memory, new_path, &new_memory)?;
+    let same_memory = same_memory(&old_memory, &new_memory);
+    if same_memory || !old_memory.has_symbols || !new_memory.has_symbols {
+        let mut answer = Answer::new(old_path, new_path, &old_memory, &new_memory, same_memory);
         // Only load the new build when a load image differs and its
         // headers say startup may read it.
         answer.try_startup = format != Format::Json
             && answer.load_image_differs()
-            && new.architecture == Architecture::Arm
+            && new_memory.architecture == Architecture::Arm
             && startup::check_header(new_path).is_ok()
             && Binary::parse(&new_data).is_ok_and(|binary| startup::reads(new_path, &binary));
         return write(&answer, all, format, out);
     }
     // elfq can't yet tell what keeps items in a shared library, and the
     // rows say what keeps items in both builds or in neither.
-    let trees = ![old.kind, new.kind].contains(&FileKind::SharedLibrary);
+    let trees = ![old_memory.kind, new_memory.kind].contains(&FileKind::SharedLibrary);
     // The builds take the files' bytes, which the headers read above
     // borrow, and the headers are read again from them.
-    let warned = [old.warnings, new.warnings];
+    let warned = [old_memory.warnings, new_memory.warnings];
     let (old_build, new_build) = on_both(
         (old_path, old_data),
         (new_path, new_data),
         |(path, data)| Build::load(path, data, trees),
     );
     let (old_build, new_build) = (Kept::new(old_build?), Kept::new(new_build?));
-    let old = read_memory(old_path, old_build.binary.file_data())?;
-    let new = read_memory(new_path, new_build.binary.file_data())?;
+    let old_memory = read_memory(old_path, old_build.binary.file_data())?;
+    let new_memory = read_memory(new_path, new_build.binary.file_data())?;
     for ((path, build), warned) in [(old_path, &old_build), (new_path, &new_build)]
         .into_iter()
         .zip(&warned)
@@ -151,7 +158,7 @@ pub fn run(
     }
     let old_names = Kept::new(Names::new(&old_build.binary));
     let new_names = Kept::new(Names::new(&new_build.binary));
-    let mut answer = Answer::new(old_path, new_path, &old, &new, false);
+    let mut answer = Answer::new(old_path, new_path, &old_memory, &new_memory, false);
     let items = changes::compare(&old_build, &new_build, &answer.blocks);
     let crossings = if answer.blocks.len() > 1 {
         crossings::compare(&items, &answer.blocks)
@@ -172,26 +179,26 @@ pub fn run(
 }
 
 impl<'a> Answer<'a> {
-    /// The answer for builds whose headers `old` and `new` read, before
-    /// their items are compared.
+    /// The answer for builds whose headers `old_memory` and `new_memory`
+    /// read, before their items are compared.
     fn new(
         old_path: &'a Path,
         new_path: &'a Path,
-        old: &'a LoadedMemory<'a>,
-        new: &'a LoadedMemory<'a>,
+        old_memory: &'a LoadedMemory<'a>,
+        new_memory: &'a LoadedMemory<'a>,
         same_memory: bool,
     ) -> Answer<'a> {
         Answer {
             old_path,
             new_path,
-            old,
-            new,
+            old_memory,
+            new_memory,
             same_memory,
-            blocks: blocks::shared_blocks(old, new, same_memory),
+            blocks: blocks::shared_blocks(old_memory, new_memory, same_memory),
             sections_that_differ: if same_memory {
                 Vec::new()
             } else {
-                blocks::sections_that_differ(old, new)
+                blocks::sections_that_differ(old_memory, new_memory)
             },
             compared: None,
             try_startup: false,
@@ -200,7 +207,7 @@ impl<'a> Answer<'a> {
 
     /// Whether a section with a load image in either build differs.
     fn load_image_differs(&self) -> bool {
-        (self.sections_that_differ.iter()).any(|differs| differs.load_image)
+        (self.sections_that_differ.iter()).any(|differs| differs.has_load_image)
     }
 }
 

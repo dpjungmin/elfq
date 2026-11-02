@@ -289,13 +289,14 @@ fn span(places: &[Place]) -> Option<u64> {
 /// A section whose address, size, load image or bytes differ between the
 /// builds, or that only one has.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct Differs<'a> {
+pub(super) struct SectionDiffers<'a> {
     pub name: &'a str,
-    /// Whether only the address of its load image differs.
-    pub only_load_image: bool,
+    /// Whether only its load address, the address of its load image,
+    /// differs.
+    pub only_load_address: bool,
     /// Whether it has a load image in either build, which startup code
     /// copies.
-    pub load_image: bool,
+    pub has_load_image: bool,
 }
 
 /// The allocated sections whose address, size, load image or bytes differ
@@ -307,7 +308,7 @@ pub(super) struct Differs<'a> {
 pub(super) fn sections_that_differ<'a>(
     old: &'a LoadedMemory,
     new: &'a LoadedMemory,
-) -> Vec<Differs<'a>> {
+) -> Vec<SectionDiffers<'a>> {
     let allocated = |memory: &'a LoadedMemory| {
         (0..memory.sections.len()).filter(|&section| {
             memory.sections[section].allocated && memory.sections[section].size > 0
@@ -324,11 +325,11 @@ pub(super) fn sections_that_differ<'a>(
             .push_back(section);
     }
     // Each section that differs, with the address it is listed by.
-    let mut differ: Vec<(u64, Differs)> = Vec::new();
-    let only = |section: &'a Section| Differs {
+    let mut differ: Vec<(u64, SectionDiffers)> = Vec::new();
+    let only = |section: &'a Section| SectionDiffers {
         name: &section.name,
-        only_load_image: false,
-        load_image: section.load_address.is_some(),
+        only_load_address: false,
+        has_load_image: section.load_address.is_some(),
     };
     for new_index in allocated(new) {
         let section = &new.sections[new_index];
@@ -344,14 +345,14 @@ pub(super) fn sections_that_differ<'a>(
             && old_section.size == section.size
             && thread_local(old_section.kind) == thread_local(section.kind)
             && old.bytes(old_index).same_as(new.bytes(new_index));
-        let same_load_image = old_section.load_address == section.load_address;
-        if !(same_section && same_load_image) {
+        let same_load_address = old_section.load_address == section.load_address;
+        if !(same_section && same_load_address) {
             differ.push((
                 old_section.address.min(section.address),
-                Differs {
+                SectionDiffers {
                     name: &section.name,
-                    only_load_image: same_section,
-                    load_image: old_section.load_address.is_some()
+                    only_load_address: same_section,
+                    has_load_image: old_section.load_address.is_some()
                         || section.load_address.is_some(),
                 },
             ));
@@ -523,10 +524,10 @@ mod tests {
             .find(|differs| differs.name == ".data");
         assert_eq!(
             data,
-            Some(Differs {
+            Some(SectionDiffers {
                 name: ".data",
-                only_load_image: true,
-                load_image: true,
+                only_load_address: true,
+                has_load_image: true,
             })
         );
         // ITCM's code has a load image, the vector table none.
@@ -534,7 +535,7 @@ mod tests {
         let old = LoadedMemory::read(&old).unwrap();
         let new = LoadedMemory::read(&new).unwrap();
         let load_images: Vec<(&str, bool)> = (sections_that_differ(&old, &new).iter())
-            .map(|differs| (differs.name, differs.load_image))
+            .map(|differs| (differs.name, differs.has_load_image))
             .collect();
         assert_eq!(
             load_images,
@@ -559,10 +560,10 @@ mod tests {
                 .find(|differs| differs.name == ".itcm");
             assert_eq!(
                 itcm,
-                Some(Differs {
+                Some(SectionDiffers {
                     name: ".itcm",
-                    only_load_image: false,
-                    load_image: true,
+                    only_load_address: false,
+                    has_load_image: true,
                 })
             );
         }

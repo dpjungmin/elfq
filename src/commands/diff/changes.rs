@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use super::Build;
 use super::blocks::Block;
 use super::edited::Edits;
-use super::pairing::{self, PairedBy, Pairing, Side};
+use super::pairing::{self, PairedBy, Pairing};
 use crate::binary::{Binary, Item, ItemKind};
 use crate::commands::symbol::Names;
 
@@ -155,11 +155,7 @@ pub(super) struct Items<'a> {
 
 /// Pairs the items of the builds and works out what changed.
 pub(super) fn compare<'a>(old: &'a Build, new: &'a Build, blocks: &[Block]) -> Items<'a> {
-    let side = |build: &'a Build| Side {
-        binary: &build.binary,
-        graph: &build.graph,
-    };
-    let pairing = pairing::pair(side(old), side(new));
+    let pairing = pairing::pair(old, new);
     let old_blocks = item_blocks(&old.binary, blocks);
     let new_blocks = item_blocks(&new.binary, blocks);
     let edits = Edits::new(old, new, &pairing);
