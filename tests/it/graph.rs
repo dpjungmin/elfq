@@ -4,7 +4,8 @@ use elfq::binary::{Binary, ItemKind, Source};
 use elfq::graph::{Graph, Node, ReferenceKind};
 
 use crate::support::{
-    LIBRARY_SAMPLE, SAMPLE, TCM_ENTRY_MAIN_SAMPLE, TCM_SAMPLE, load_sample, node,
+    C_SAMPLES, FAR_SAMPLES, LIBRARY_SAMPLE, SAMPLE, TCM_ENTRY_MAIN_SAMPLE, TCM_SAMPLE, load_sample,
+    node,
 };
 
 use ReferenceKind::*;
@@ -57,9 +58,6 @@ fn text(binary: &Binary, name: &str) -> String {
 fn pairs(expected: &[(&str, ReferenceKind)]) -> Vec<(String, ReferenceKind)> {
     expected.iter().map(|&(n, k)| (n.to_string(), k)).collect()
 }
-
-/// The C sample, built for x86-64 Linux and for Cortex-M.
-const C_SAMPLES: [&str; 2] = [SAMPLE, "testdata/bin/c-cortex-m4.elf"];
 
 #[test]
 fn a_shared_helper_has_every_caller() {
@@ -304,19 +302,6 @@ fn calls_between_flash_and_itcm_go_through_veneers() {
         pairs(&[("app_tick", TailCall)])
     );
 }
-
-/// c/far.c, built with the veneers that GNU ld and LLD add for Cortex-M,
-/// all but two of LLD's (see `testdata/README.md`).
-const FAR_SAMPLES: [&str; 8] = [
-    "testdata/bin/far-gnu-m4-nodebug.elf",
-    "testdata/bin/far-gnu-m4-pure-nodebug.elf",
-    "testdata/bin/far-gnu-m4-pic-nodebug.elf",
-    "testdata/bin/far-gnu-m0-nodebug.elf",
-    "testdata/bin/far-lld-m4-nodebug.elf",
-    "testdata/bin/far-lld-m4-pic-nodebug.elf",
-    "testdata/bin/far-lld-m0-nodebug.elf",
-    "testdata/bin/far-lld-m0-pure-nodebug.elf",
-];
 
 #[test]
 fn each_veneer_jumps_to_its_target() {

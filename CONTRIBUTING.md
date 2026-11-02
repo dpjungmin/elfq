@@ -330,7 +330,7 @@ of its tree) do. Those are names to fix, not meanings to copy.
 
 | File in `tests/it/` | What it tests |
 |---|---|
-| `support/` | No tests: in `mod.rs`, the samples' paths (`SAMPLE` and others), `run`, which runs the program and returns a `Run` to check, `run_in_process`, and `assert_output`; in `elf.rs`, changing a sample's bytes and saving the file |
+| `support/` | No tests: in `mod.rs`, the samples' paths (`SAMPLE` and others), the lists that several modules check (`C_SAMPLES`, `FAR_SAMPLES`), `samples_for`, which lists the samples for one architecture, `run`, which runs the program and returns a `Run` to check, `run_in_process`, and `assert_output`; in `elf.rs`, changing a sample's bytes and saving the file |
 | `cli.rs` | Each command's whole text output, errors, exit statuses and help |
 | `json.rs` | `--json` output |
 | `items.rs` | Finding items: symbols, PLT stubs, unwind tables, functions in stripped firmware, unnamed data |
@@ -405,7 +405,13 @@ such as `testdata/bin/c-x86_64.elf`, which is what elfq takes as FILE:
 `SAMPLE` and the other constants in `support/` hold that path, `samples()`
 lists every sample that way, and `load_sample` and `run_in_process` take
 it. Only `screen` and `burst`, in `browse.rs`, take the file's name, as the
-screen's first line shows it.
+screen's first line shows it. The lists that several modules check are in
+`support/` too: `C_SAMPLES`, the C sample for each instruction set, and
+`FAR_SAMPLES`, the builds of `c/far.c` with symbols, whose calls between
+RAM, flash and ROM go through veneers. So is `samples_for`, which lists
+the samples for one architecture, from the machine in their ELF headers,
+beside `samples()` and `sample_path`. Any other constant or list that
+only one module uses stays in it.
 
 **Running elfq.** A test runs the program with `run(ARGS)`, from
 `support/`, and says what it expects of the `Run` it gets back:
@@ -641,8 +647,8 @@ page, which the capture prints.
 5. **Samples.** Build the C sample for it in `testdata/build.sh`, with
    `variants` for the copies without DWARF and without symbols, and say
    what it holds in testdata/README.md. Add it to `C_SAMPLES` in
-   `tests/it/graph.rs` and `tests/it/retained.rs`, which check its answers
-   against testdata/README.md.
+   `tests/it/support/mod.rs`; `graph.rs` and `retained.rs` check its
+   answers against testdata/README.md.
 6. **Tests that need code elfq can't read.**
    `a_file_whose_code_elfq_cant_read_says_so` in `tests/it/cli.rs` marks a
    file as AArch64; when that is the one you add, pick another machine.

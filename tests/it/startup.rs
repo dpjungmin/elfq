@@ -4,13 +4,14 @@
 
 use std::path::Path;
 
+use object::Architecture;
 use serde_json::{Value, json};
 
 use crate::support::elf::{
     self, SIZE, isr_vector, load_image_header, set_section_field, set_word, word,
 };
 use crate::support::{
-    Exit, Run, SAMPLE, TCM_ENTRY_MAIN_SAMPLE, TCM_SAMPLE, assert_output, command, run, samples,
+    Exit, Run, SAMPLE, TCM_ENTRY_MAIN_SAMPLE, TCM_SAMPLE, assert_output, command, run, samples_for,
 };
 
 /// [`TCM_SAMPLE`] with memcpy linked into ITCM, which Reset_Handler calls
@@ -440,11 +441,7 @@ fn debug_walk_lists_the_walk_that_startup_reads() {
     // processor starts, and when startup's walk gets to main, this one
     // gets to the same main, found the same way: from its symbol, debug
     // info, a guess or the reset handler's endless loop.
-    for sample in samples() {
-        let name = sample.trim_start_matches("testdata/bin/");
-        if name.contains("x86_64") || name == "c-deep.elf" || name == "c-plt.so" {
-            continue;
-        }
+    for sample in samples_for(Architecture::Arm) {
         let walk = run(&[&sample, "debug", "walk"]).printed(0);
         let first = walk.lines().next().unwrap();
         let answer = startup(&sample, &["--json"]).json(Exit::ZeroOrOne);
@@ -842,11 +839,7 @@ fn keep_out_names_what_runs_before_each_copy_of_code() {
     // In every sample, the reset handler comes first, and the functions
     // that a row lists in its own section are those that a problem says
     // run from it before its copy.
-    for sample in samples() {
-        let name = sample.trim_start_matches("testdata/bin/");
-        if name.contains("x86_64") || name == "c-deep.elf" || name == "c-plt.so" {
-            continue;
-        }
+    for sample in samples_for(Architecture::Arm) {
         let answer = startup(&sample, &["--json"]).json(Exit::ZeroOrOne);
         for row in answer["keep_out"].as_array().unwrap() {
             let section = &row["section"];
@@ -908,21 +901,17 @@ fn the_overview_suggests_startup_only_for_firmware_that_startup_reads() {
 #[test]
 fn every_arm_sample_gets_an_answer_and_the_exit_status_it_means() {
     let problems = [
-        "c-cortex-m7-reset-itcm",
-        "c-cortex-m7-rom",
-        "c-cortex-m7-sysinit",
-        "c-cortex-m7-trap",
-        "c-softfloat",
-        "c-strtod",
-        "c-vfp",
-        "far-",
+        "testdata/bin/c-cortex-m7-reset-itcm",
+        "testdata/bin/c-cortex-m7-rom",
+        "testdata/bin/c-cortex-m7-sysinit",
+        "testdata/bin/c-cortex-m7-trap",
+        "testdata/bin/c-softfloat",
+        "testdata/bin/c-strtod",
+        "testdata/bin/c-vfp",
+        "testdata/bin/far-",
     ];
-    for sample in samples() {
-        let name = sample.trim_start_matches("testdata/bin/");
-        if name.contains("x86_64") || name == "c-deep.elf" || name == "c-plt.so" {
-            continue;
-        }
-        let expected = if problems.iter().any(|prefix| name.starts_with(prefix)) {
+    for sample in samples_for(Architecture::Arm) {
+        let expected = if problems.iter().any(|prefix| sample.starts_with(prefix)) {
             1
         } else {
             0
@@ -955,16 +944,14 @@ fn every_arm_sample_gets_an_answer_and_the_exit_status_it_means() {
 
 #[test]
 fn startup_reads_only_cortex_m_firmware() {
-    for sample in samples() {
-        if sample.contains("x86_64") || sample.ends_with("c-deep.elf") || sample.ends_with(".so") {
-            assert_output(
-                &startup(&sample, &[]).error(),
-                &format!(
-                    "error: {sample} is x86-64 code; startup reads the reset code of Cortex-M \
-                     firmware\n"
-                ),
-            );
-        }
+    for sample in samples_for(Architecture::X86_64) {
+        assert_output(
+            &startup(&sample, &[]).error(),
+            &format!(
+                "error: {sample} is x86-64 code; startup reads the reset code of Cortex-M \
+                 firmware\n"
+            ),
+        );
     }
     // Copies of the firmware with their headers changed: e_type, e_machine,
     // the first program header's p_type, and e_shoff, e_shnum and

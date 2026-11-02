@@ -16,6 +16,7 @@ use elfq::binary::Binary;
 use elfq::cli::Cli;
 use elfq::commands::{Outcome, symbol};
 use elfq::graph::Node;
+use object::{Architecture, Object};
 
 /// The C sample for x86-64 Linux, which most tests run on.
 pub const SAMPLE: &str = "testdata/bin/c-x86_64.elf";
@@ -43,6 +44,27 @@ pub const TCM_EDITED_SAMPLE: &str = "testdata/bin/c-cortex-m7-edited.elf";
 /// its vector table holds the entry point.
 pub const TCM_ENTRY_MAIN_SAMPLE: &str = "testdata/bin/c-cortex-m7-entry-main.elf";
 
+/// The C sample, built for each instruction set that elfq reads.
+///
+/// testdata/README.md gives their answers.
+pub const C_SAMPLES: [&str; 2] = [SAMPLE, "testdata/bin/c-cortex-m4.elf"];
+
+/// The builds of c/far.c with symbols, which call through veneers.
+///
+/// Their calls between RAM, flash and ROM go through the veneers that GNU
+/// ld and LLD add for Cortex-M, all but two of LLD's (see
+/// `testdata/README.md`).
+pub const FAR_SAMPLES: [&str; 8] = [
+    "testdata/bin/far-gnu-m4-nodebug.elf",
+    "testdata/bin/far-gnu-m4-pure-nodebug.elf",
+    "testdata/bin/far-gnu-m4-pic-nodebug.elf",
+    "testdata/bin/far-gnu-m0-nodebug.elf",
+    "testdata/bin/far-lld-m4-nodebug.elf",
+    "testdata/bin/far-lld-m4-pic-nodebug.elf",
+    "testdata/bin/far-lld-m0-nodebug.elf",
+    "testdata/bin/far-lld-m0-pure-nodebug.elf",
+];
+
 /// Where the sample at `path` is, from wherever the test runs. Tests name a
 /// sample by its path relative to the crate, as [`SAMPLE`] and
 /// [`samples`] give it, since that is what elfq is given as FILE.
@@ -61,6 +83,23 @@ pub fn samples() -> Vec<String> {
         .collect();
     samples.sort();
     assert!(samples.len() > 10);
+    samples
+}
+
+/// Every sample whose code is for `architecture`.
+///
+/// The machine in a sample's ELF header says what its code is for. They
+/// come in the order of [`samples`].
+pub fn samples_for(architecture: Architecture) -> Vec<String> {
+    let samples: Vec<String> = samples()
+        .into_iter()
+        .filter(|path| {
+            let data = std::fs::read(sample_path(path)).unwrap();
+            let file = object::File::parse(&*data).unwrap_or_else(|err| panic!("{path}: {err}"));
+            file.architecture() == architecture
+        })
+        .collect();
+    assert!(!samples.is_empty(), "{architecture:?}");
     samples
 }
 

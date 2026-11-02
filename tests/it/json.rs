@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use elfq::binary::{ItemKind, Source};
 
 use crate::support::{
-    DEEP_SAMPLE, Exit, LIBRARY_SAMPLE, MOVED_SAMPLE, Run, SAMPLE, TCM_EDITED_SAMPLE,
+    DEEP_SAMPLE, Exit, FAR_SAMPLES, LIBRARY_SAMPLE, MOVED_SAMPLE, Run, SAMPLE, TCM_EDITED_SAMPLE,
     TCM_INLINED_SAMPLE, TCM_MOVED_SAMPLE, TCM_SAMPLE, TCM_SDRAM_SAMPLE, load_sample, run,
 };
 
@@ -382,23 +382,11 @@ fn rows_by_address(answer: &Value) -> Vec<[String; 5]> {
 
 #[test]
 fn ranges_follow_calls_through_veneers() {
-    // c/far.c, built with the veneers that GNU ld and LLD add, all but
-    // two of LLD's (see testdata/README.md).
     // Cortex-M0 has no tail call this far, and code built for it with
     // -mpure-code makes counter's address a byte at a time, which elfq
     // doesn't follow.
-    for name in [
-        "gnu-m4",
-        "gnu-m4-pure",
-        "gnu-m4-pic",
-        "gnu-m0",
-        "lld-m4",
-        "lld-m4-pic",
-        "lld-m0",
-        "lld-m0-pure",
-    ] {
-        let path = format!("testdata/bin/far-{name}-nodebug.elf");
-        let callees = run(&[&path, "callees", "0x0+64K", "--json"]).json(1);
+    for path in FAR_SAMPLES {
+        let callees = run(&[path, "callees", "0x0+64K", "--json"]).json(1);
         let mut rows: Vec<(&str, &str, &str, bool)> = callees["callees"]
             .as_array()
             .unwrap()
@@ -413,7 +401,7 @@ fn ranges_follow_calls_through_veneers() {
             })
             .collect();
         rows.retain(|row| row.0 != "counter");
-        let tail_call = if name.contains("m0") {
+        let tail_call = if path.contains("m0") {
             "call"
         } else {
             "tail call"
@@ -425,11 +413,11 @@ fn ranges_follow_calls_through_veneers() {
                 ("flash_tail", "ram_tails_flash", tail_call, true),
                 ("flash_work", "ram_calls_flash", "call", true),
             ],
-            "{name}"
+            "{path}"
         );
         // The ROM routine has no item, so elfq can't follow the calls, and
         // can't tell whether the tail call goes to a function.
-        let jump = if name.contains("m0") { "call" } else { "jump" };
+        let jump = if path.contains("m0") { "call" } else { "jump" };
         let unresolved: Vec<(&str, &str, &str, bool)> = callees["unresolved"]
             .as_array()
             .unwrap()
@@ -452,18 +440,18 @@ fn ranges_follow_calls_through_veneers() {
                 ("ram_calls_rom", "call", "0x1fff0000", true),
                 ("ram_tails_rom", jump, "0x1fff0000", true),
             ],
-            "{name}"
+            "{path}"
         );
         assert_eq!(callees["complete"], false);
 
         // Without symbols, the veneers are known by their code, and the
         // rows are the same.
-        let path = format!("testdata/bin/far-{name}-stripped.elf");
-        let stripped = run(&[&path, "callees", "0x0+64K", "--json"]).json(1);
+        let stripped_path = path.replace("-nodebug", "-stripped");
+        let stripped = run(&[&stripped_path, "callees", "0x0+64K", "--json"]).json(1);
         assert_eq!(
             rows_by_address(&stripped),
             rows_by_address(&callees),
-            "{name}"
+            "{path}"
         );
     }
 }

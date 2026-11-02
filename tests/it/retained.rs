@@ -4,7 +4,7 @@
 use elfq::binary::{Binary, ItemKind, Source};
 use elfq::graph::{DominatorTree, Graph, Node, RootKind};
 
-use crate::support::{SAMPLE, load_sample, node};
+use crate::support::{C_SAMPLES, SAMPLE, load_sample, node};
 
 fn load(path: &str) -> (Binary, Graph, DominatorTree) {
     let binary = load_sample(path);
@@ -47,15 +47,18 @@ fn parent(binary: &Binary, tree: &DominatorTree, name: &str) -> Option<String> {
         .map(|parent| parent.name(binary).to_string())
 }
 
-const C_SAMPLES: [&str; 3] = [
-    SAMPLE,
-    "testdata/bin/c-x86_64-nodebug.elf",
-    "testdata/bin/c-cortex-m4.elf",
-];
+/// [`C_SAMPLES`], and the x86-64 one without DWARF.
+///
+/// What keeps what mustn't depend on DWARF.
+fn c_samples_and_nodebug() -> impl Iterator<Item = &'static str> {
+    C_SAMPLES
+        .into_iter()
+        .chain(["testdata/bin/c-x86_64-nodebug.elf"])
+}
 
 #[test]
 fn process_frame_keeps_its_helpers_tables_and_messages() {
-    for sample in C_SAMPLES {
+    for sample in c_samples_and_nodebug() {
         let (binary, _, tree) = load(sample);
         assert_eq!(
             exclusive(&binary, &tree, "process_frame"),
@@ -88,7 +91,7 @@ fn process_frame_keeps_its_helpers_tables_and_messages() {
 
 #[test]
 fn each_item_hangs_under_what_alone_leads_to_it() {
-    for sample in C_SAMPLES {
+    for sample in c_samples_and_nodebug() {
         let (binary, _, tree) = load(sample);
         let parent = |name| parent(&binary, &tree, name);
         assert_eq!(parent("crc_table").as_deref(), Some("crc32"), "{sample}");

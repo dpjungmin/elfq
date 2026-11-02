@@ -11,25 +11,20 @@ use serde_json::Value;
 use elfq::binary::{AddressRange, Binary, ItemKind};
 use elfq::commands::Outcome;
 
-use crate::support::{Exit, SAMPLE, TCM_SAMPLE, load_sample, run_in_process, sample_path, samples};
+use crate::support::{
+    Exit, FAR_SAMPLES, SAMPLE, TCM_SAMPLE, load_sample, run_in_process, sample_path, samples,
+};
 
-/// The Cortex-M samples with symbols, whose every item the checks run on:
-/// the C and Rust samples, and each build with veneers to and from RAM and
-/// ROM.
-const SAMPLES: [&str; 13] = [
+/// The C and Rust samples for Cortex-M with symbols.
+///
+/// The checks run on every item of these and of [`FAR_SAMPLES`], the
+/// builds of c/far.c; see [`on_each_sample`].
+const C_AND_RUST_SAMPLES: [&str; 5] = [
     "testdata/bin/c-cortex-m4.elf",
     "testdata/bin/c-cortex-m4-cmsis-nodebug.elf",
     TCM_SAMPLE,
     "testdata/bin/c-softfloat-nodebug.elf",
     "testdata/bin/rust-cortex-m4-nodebug.elf",
-    "testdata/bin/far-gnu-m0-nodebug.elf",
-    "testdata/bin/far-gnu-m4-nodebug.elf",
-    "testdata/bin/far-gnu-m4-pic-nodebug.elf",
-    "testdata/bin/far-gnu-m4-pure-nodebug.elf",
-    "testdata/bin/far-lld-m0-nodebug.elf",
-    "testdata/bin/far-lld-m0-pure-nodebug.elf",
-    "testdata/bin/far-lld-m4-nodebug.elf",
-    "testdata/bin/far-lld-m4-pic-nodebug.elf",
 ];
 
 /// What `elfq SAMPLE ARGS` prints, run in this process.
@@ -339,7 +334,7 @@ fn check_to(sample: &str) -> usize {
             )
         })
         .collect();
-    if sample.starts_with("testdata/bin/far-") {
+    if FAR_SAMPLES.contains(&sample) {
         ranges.push("0x1fff0000+64K".to_string());
     }
     let symbols = [ItemKind::Function, ItemKind::Data].map(|kind| symbols(&binary, kind));
@@ -665,11 +660,17 @@ fn check_twin(sample: &str) -> usize {
     checked
 }
 
-/// Runs `check` on each of the samples, each on a thread of its own, and
-/// adds up what they return.
+/// Runs `check` on each sample, each on a thread of its own.
+///
+/// The samples are [`C_AND_RUST_SAMPLES`] and [`FAR_SAMPLES`]. It adds up
+/// what the checks return.
 fn on_each_sample(check: fn(&str) -> usize) -> usize {
     std::thread::scope(|scope| {
-        let threads = SAMPLES.map(|sample| scope.spawn(move || check(sample)));
+        let threads: Vec<_> = C_AND_RUST_SAMPLES
+            .into_iter()
+            .chain(FAR_SAMPLES)
+            .map(|sample| scope.spawn(move || check(sample)))
+            .collect();
         threads
             .into_iter()
             .map(|thread| thread.join().unwrap())
