@@ -7,15 +7,17 @@ use serde_json::{Value, json};
 use elfq::binary::{ItemKind, Source};
 
 use crate::support::{
-    DEEP_SAMPLE, LIBRARY_SAMPLE, MOVED_SAMPLE, SAMPLE, TCM_EDITED_SAMPLE, TCM_INLINED_SAMPLE,
-    TCM_MOVED_SAMPLE, TCM_SAMPLE, TCM_SDRAM_SAMPLE, command, elfq, load_sample,
+    DEEP_SAMPLE, Exit, LIBRARY_SAMPLE, MOVED_SAMPLE, Run, SAMPLE, TCM_EDITED_SAMPLE,
+    TCM_INLINED_SAMPLE, TCM_MOVED_SAMPLE, TCM_SAMPLE, TCM_SDRAM_SAMPLE, load_sample, run,
 };
 
-/// Runs elfq with `--json`, expecting success, and parses what it printed.
+/// What elfq printed on stdout with `args` and `--json`, parsed.
+///
+/// It checks that elfq answered with exit status 0 and printed nothing on
+/// stderr: [`Run::json`] with 0.
+#[track_caller]
 fn elfq_json(args: &[&str]) -> Value {
-    let output = command().args(args).arg("--json").output().unwrap();
-    assert!(output.status.success(), "{output:?}");
-    serde_json::from_slice(&output.stdout).unwrap()
+    run(&[args, &["--json"]].concat()).json(0)
 }
 
 /// The names of the items in a list of objects that each have an `item`, or
@@ -96,8 +98,7 @@ fn items_have_the_same_keys_everywhere() {
 fn each_row_is_a_line() {
     // The first line holds the answer up to its first list, and each row of
     // a list has a line of its own, so that grep finds a row.
-    let output = elfq(&[SAMPLE, "callers", "log_msg", "--json"]);
-    let text = String::from_utf8(output.stdout).unwrap();
+    let text = run(&[SAMPLE, "callers", "log_msg", "--json"]).printed(0);
     let lines: Vec<&str> = text.lines().collect();
     assert!(
         lines[0].starts_with(r#"{"symbol":{"name":"log_msg","#),
@@ -117,8 +118,7 @@ fn each_row_is_a_line() {
     assert_eq!(lines[6..], [r#"],"complete":true}"#]);
 
     // An empty list takes no line.
-    let output = elfq(&[SAMPLE, "retained", "debug_dump", "--json"]);
-    let text = String::from_utf8(output.stdout).unwrap();
+    let text = run(&[SAMPLE, "retained", "debug_dump", "--json"]).printed(0);
     assert_eq!(text.lines().count(), 1, "{text}");
 }
 
@@ -231,10 +231,8 @@ fn symbol_lists_its_other_names() {
 
 #[test]
 fn ranges_list_what_crosses_their_edge() {
-    let output = elfq(&[TCM_SAMPLE, "callees", "0x0+256K", "--json"]);
-    // Something leaves the range.
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let callees: Value = serde_json::from_slice(&output.stdout).unwrap();
+    // Something leaves the range: exit status 1.
+    let callees = run(&[TCM_SAMPLE, "callees", "0x0+256K", "--json"]).json(1);
     assert_eq!(
         callees["ranges"],
         json!([{ "start": "0x0", "end": "0x40000" }])
@@ -265,9 +263,7 @@ fn ranges_list_what_crosses_their_edge() {
     assert_eq!(dtcm["callees"], json!([]));
     assert_eq!(dtcm["complete"], true);
 
-    let output = elfq(&[SAMPLE, "callers", "0x1260+0x20", "--json"]);
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let callers: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let callers = run(&[SAMPLE, "callers", "0x1260+0x20", "--json"]).json(1);
     assert_eq!(names(&callers["callers"]), ["main", "main"]);
     assert_eq!(callers["callers"][0]["callee"]["name"], "on_timer");
     assert_eq!(callers["callers"][0]["how"], "address taken");
@@ -279,23 +275,22 @@ fn ranges_list_what_crosses_their_edge() {
 
 #[test]
 fn from_and_to_list_their_ranges() {
-    let output = elfq(&[
+    let callers = run(&[
         TCM_SAMPLE,
         "callers",
         "0x20000000+256K",
         "--from",
         "0x0+256K",
         "--json",
-    ]);
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let callers: Value = serde_json::from_slice(&output.stdout).unwrap();
+    ])
+    .json(1);
     assert_eq!(
         callers["from"],
         json!([{ "start": "0x0", "end": "0x40000" }])
     );
     assert_eq!(names(&callers["callers"]), ["crc32", "SysTick_Handler"]);
 
-    let output = elfq(&[
+    let callees = run(&[
         TCM_SAMPLE,
         "callees",
         "0x0+256K",
@@ -304,9 +299,8 @@ fn from_and_to_list_their_ranges() {
         "--to",
         "0x20240000+512K",
         "--json",
-    ]);
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let callees: Value = serde_json::from_slice(&output.stdout).unwrap();
+    ])
+    .json(1);
     assert_eq!(
         callees["to"],
         json!([
@@ -321,16 +315,15 @@ fn from_and_to_list_their_ranges() {
 
     // callers lists the calls into code that no item holds, as callees
     // does.
-    let output = elfq(&[
+    let callers = run(&[
         "testdata/bin/far-gnu-m4-nodebug.elf",
         "callers",
         "0x1fff0000+64K",
         "--from",
         "0x30000000+16M",
         "--json",
-    ]);
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let callers: Value = serde_json::from_slice(&output.stdout).unwrap();
+    ])
+    .json(1);
     let unresolved = &callers["unresolved"][0];
     assert_eq!(unresolved["caller"]["name"], "flash_calls_rom");
     assert_eq!(unresolved["target"], "0x1fff0000");
@@ -338,16 +331,15 @@ fn from_and_to_list_their_ranges() {
     assert_eq!(callers["callers"], json!([]));
     assert_eq!(callers["complete"], true);
     // And callees --to the ROM, the same call, as complete.
-    let output = elfq(&[
+    let callees = run(&[
         "testdata/bin/far-gnu-m4-nodebug.elf",
         "callees",
         "0x30000000+16M",
         "--to",
         "0x1fff0000+64K",
         "--json",
-    ]);
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let callees: Value = serde_json::from_slice(&output.stdout).unwrap();
+    ])
+    .json(1);
     assert_eq!(
         callees["unresolved"][0]["caller"]["name"],
         "flash_calls_rom"
@@ -406,9 +398,7 @@ fn ranges_follow_calls_through_veneers() {
         "lld-m0-pure",
     ] {
         let path = format!("testdata/bin/far-{name}-nodebug.elf");
-        let output = elfq(&[&path, "callees", "0x0+64K", "--json"]);
-        assert_eq!(output.status.code(), Some(1), "{output:?}");
-        let callees: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let callees = run(&[&path, "callees", "0x0+64K", "--json"]).json(1);
         let mut rows: Vec<(&str, &str, &str, bool)> = callees["callees"]
             .as_array()
             .unwrap()
@@ -469,8 +459,7 @@ fn ranges_follow_calls_through_veneers() {
         // Without symbols, the veneers are known by their code, and the
         // rows are the same.
         let path = format!("testdata/bin/far-{name}-stripped.elf");
-        let output = elfq(&[&path, "callees", "0x0+64K", "--json"]);
-        let stripped: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let stripped = run(&[&path, "callees", "0x0+64K", "--json"]).json(1);
         assert_eq!(
             rows_by_address(&stripped),
             rows_by_address(&callees),
@@ -734,12 +723,14 @@ fn own_bytes(rows: &Value) -> u64 {
         .sum()
 }
 
-/// The names in the rows of a command's table with `--all`, in order,
-/// without what each says about the row it hangs under, to compare with
-/// the rows of the JSON.
+/// The names in the rows of a command's table with `--all`, in order.
+///
+/// They are without what each says about the row it hangs under, to
+/// compare with the rows of the JSON. It checks that elfq answered with
+/// exit status 0 and printed nothing on stderr.
+#[track_caller]
 fn text_rows(args: &[&str]) -> Vec<String> {
-    let output = elfq(&[args, &["--all"]].concat());
-    let text = String::from_utf8(output.stdout).unwrap();
+    let text = run(&[args, &["--all"]].concat()).printed(0);
     // The table starts after the first blank line, with its header, and
     // the names start where the header's last column does.
     let mut lines = text.lines().skip_while(|line| !line.is_empty()).skip(1);
@@ -1047,16 +1038,15 @@ fn reach_has_the_whole_tree() {
 
 #[test]
 fn reach_to_has_the_chains_to_what_is_in_its_ranges() {
-    let output = elfq(&[
+    let reach = run(&[
         TCM_SAMPLE,
         "reach",
         "SysTick_Handler",
         "--to",
         "0x30000000+16M",
         "--json",
-    ]);
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let reach: Value = serde_json::from_slice(&output.stdout).unwrap();
+    ])
+    .json(1);
     assert_eq!(
         reach["to"],
         json!([{"start": "0x30000000", "end": "0x31000000"}])
@@ -1096,32 +1086,30 @@ fn reach_to_has_the_chains_to_what_is_in_its_ranges() {
     assert_eq!(reach["complete"], false);
 
     // It can't go to ITCM, whose functions no pointer goes to.
-    let output = elfq(&[
+    let itcm = run(&[
         TCM_SAMPLE,
         "reach",
         "dispatch_event",
         "--to",
         "0x0+256K",
         "--json",
-    ]);
-    assert_eq!(output.status.code(), Some(0), "{output:?}");
-    let itcm: Value = serde_json::from_slice(&output.stdout).unwrap();
+    ])
+    .json(0);
     assert_eq!(itcm["items"].as_array().unwrap().len(), 1);
     assert_eq!(itcm["unresolved"], json!([]));
     assert_eq!(itcm["complete"], true);
 
     // Calls to a known address in the ranges are a whole answer. The
     // veneer that makes the call is on the chain to it.
-    let output = elfq(&[
+    let rom = run(&[
         "testdata/bin/far-gnu-m4-nodebug.elf",
         "reach",
         "ram_calls_rom",
         "--to",
         "0x1fff0000+64K",
         "--json",
-    ]);
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let rom: Value = serde_json::from_slice(&output.stdout).unwrap();
+    ])
+    .json(1);
     assert_eq!(rom["items"][1]["name"], "__rom_routine_veneer");
     assert_eq!(rom["items"][1]["parent"], 0);
     assert_eq!(rom["items"].as_array().unwrap().len(), 2);
@@ -1137,8 +1125,7 @@ fn reach_to_has_the_chains_to_what_is_in_its_ranges() {
 fn reach_without_symbol_has_each_start() {
     // Each start is a line, with its bytes in each block apart, and every
     // exception that it handles.
-    let output = elfq(&[TCM_SAMPLE, "reach", "--json"]);
-    let text = String::from_utf8(output.stdout).unwrap();
+    let text = run(&[TCM_SAMPLE, "reach", "--json"]).printed(0);
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(lines.len(), 6, "{text}");
     assert_eq!(lines[0], r#"{"starts":["#);
@@ -1215,27 +1202,21 @@ fn reach_without_symbol_has_each_start() {
 
 #[test]
 fn debug_commands_print_only_text() {
-    let output = elfq(&[SAMPLE, "debug", "items", "--json"]);
-    assert_eq!(output.status.code(), Some(2));
     assert_eq!(
-        String::from_utf8(output.stderr).unwrap(),
+        run(&[SAMPLE, "debug", "items", "--json"]).error(),
         "error: the debug commands print only text\n"
     );
 }
 
-/// Runs `elfq OLD diff NEW --json`, expecting nothing on stderr, and
-/// returns its exit status and the answer.
-fn diff_json(old: &str, new: &str) -> (i32, Value) {
-    let output = elfq(&[old, "diff", new, "--json"]);
-    assert!(output.stderr.is_empty(), "{output:?}");
-    let answer = serde_json::from_slice(&output.stdout).unwrap();
-    (output.status.code().unwrap(), answer)
+/// Runs `elfq OLD diff NEW --json`.
+#[track_caller]
+fn diff_json(old: &str, new: &str) -> Run {
+    run(&[old, "diff", new, "--json"])
 }
 
 #[test]
 fn diff_has_each_block_and_its_sections() {
-    let (status, answer) = diff_json(TCM_SAMPLE, TCM_MOVED_SAMPLE);
-    assert_eq!(status, 1);
+    let answer = diff_json(TCM_SAMPLE, TCM_MOVED_SAMPLE).json(1);
     let blocks = answer["blocks"].as_array().unwrap();
     assert_eq!(blocks.len(), 4);
     // The sections that differ are named in address order, those whose
@@ -1297,7 +1278,7 @@ fn diff_has_each_block_and_its_sections() {
         })
     );
     // A block that only one build has.
-    let (_, answer) = diff_json(TCM_SAMPLE, TCM_SDRAM_SAMPLE);
+    let answer = diff_json(TCM_SAMPLE, TCM_SDRAM_SAMPLE).json(1);
     let gone = &answer["blocks"][1];
     assert_eq!(
         [
@@ -1316,9 +1297,7 @@ fn diff_has_each_block_and_its_sections() {
     assert_eq!(gone["sections"][0]["new_address"], Value::Null);
     // The same memory has its blocks too, and each row is a line.
     let stripped = "testdata/bin/c-cortex-m7-stripped.elf";
-    let output = elfq(&[TCM_SAMPLE, "diff", stripped, "--json"]);
-    assert_eq!(output.status.code(), Some(0));
-    let text = String::from_utf8(output.stdout).unwrap();
+    let text = diff_json(TCM_SAMPLE, stripped).printed(0);
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(lines.len(), 6, "{text}");
     assert_eq!(
@@ -1337,7 +1316,7 @@ fn diff_has_each_block_and_its_sections() {
 
 #[test]
 fn diff_has_each_item_that_changed() {
-    let (_, answer) = diff_json(TCM_SAMPLE, TCM_MOVED_SAMPLE);
+    let answer = diff_json(TCM_SAMPLE, TCM_MOVED_SAMPLE).json(1);
     let items = answer["items"].as_array().unwrap();
     // Largest change first, and of the same change, by name.
     let names: Vec<&str> = items
@@ -1383,7 +1362,7 @@ fn diff_has_each_item_that_changed() {
     assert_eq!(items[4]["new_block"], "0x30000000");
     // A gone function says where the new build's DWARF says the compiler
     // inlined it.
-    let (_, answer) = diff_json(TCM_SAMPLE, TCM_INLINED_SAMPLE);
+    let answer = diff_json(TCM_SAMPLE, TCM_INLINED_SAMPLE).json(1);
     let gone = &answer["items"][0];
     assert_eq!(gone["name"], "decode_header");
     assert_eq!(gone["status"], "gone");
@@ -1392,7 +1371,7 @@ fn diff_has_each_item_that_changed() {
     assert_eq!(gone["inlined_into"], json!(["process_frame"]));
     // An edited item keeps its size, and `unchanged` counts only the items
     // that are the same.
-    let (_, answer) = diff_json(TCM_SAMPLE, TCM_EDITED_SAMPLE);
+    let answer = diff_json(TCM_SAMPLE, TCM_EDITED_SAMPLE).json(1);
     let edited: Vec<(&str, &str, i64)> = answer["items"]
         .as_array()
         .unwrap()
@@ -1415,7 +1394,7 @@ fn diff_has_each_item_that_changed() {
 
 #[test]
 fn diff_has_each_use_between_blocks_that_is_new_or_gone() {
-    let (_, answer) = diff_json(TCM_SAMPLE, TCM_MOVED_SAMPLE);
+    let answer = diff_json(TCM_SAMPLE, TCM_MOVED_SAMPLE).json(1);
     let crossings = answer["crossings"].as_array().unwrap();
     // Two calls from the ITCM to flash are new, through veneers, and so is
     // crc32's use of its new message; filter_tap, now in flash, no longer
@@ -1460,8 +1439,7 @@ fn diff_has_each_use_between_blocks_that_is_new_or_gone() {
             block["start"].as_str().unwrap(),
             block["end"].as_str().unwrap()
         );
-        let output = elfq(&[build, "callees", &range, "--json"]);
-        let callees: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let callees = run(&[build, "callees", &range, "--json"]).json(1);
         let mut listed = row.clone();
         listed.as_object_mut().unwrap().remove("status");
         assert!(
@@ -1472,8 +1450,12 @@ fn diff_has_each_use_between_blocks_that_is_new_or_gone() {
     // The docs' check for CI fails on the new calls, but passes when only
     // data moved, and when calls are only gone.
     assert!(!passes_ci_check(&answer));
-    assert!(passes_ci_check(&diff_json(TCM_SAMPLE, TCM_SDRAM_SAMPLE).1));
-    assert!(passes_ci_check(&diff_json(TCM_MOVED_SAMPLE, TCM_SAMPLE).1));
+    assert!(passes_ci_check(
+        &diff_json(TCM_SAMPLE, TCM_SDRAM_SAMPLE).json(1)
+    ));
+    assert!(passes_ci_check(
+        &diff_json(TCM_MOVED_SAMPLE, TCM_SAMPLE).json(1)
+    ));
     // None in one block, nor without a symbol table.
     let stripped = "testdata/bin/c-cortex-m7-moved-stripped.elf";
     for (old, new) in [
@@ -1481,13 +1463,17 @@ fn diff_has_each_use_between_blocks_that_is_new_or_gone() {
         (LIBRARY_SAMPLE, "testdata/bin/c-x86_64-moved.so"),
         (TCM_SAMPLE, stripped),
     ] {
-        assert_eq!(diff_json(old, new).1["crossings"], json!([]), "{old} {new}");
+        assert_eq!(
+            diff_json(old, new).json(1)["crossings"],
+            json!([]),
+            "{old} {new}"
+        );
     }
     // So without a symbol table, the check fails, though it finds no new
     // call, unless the memory is the same.
-    assert!(!passes_ci_check(&diff_json(TCM_SAMPLE, stripped).1));
+    assert!(!passes_ci_check(&diff_json(TCM_SAMPLE, stripped).json(1)));
     let same = "testdata/bin/c-cortex-m7-stripped.elf";
-    assert!(passes_ci_check(&diff_json(TCM_SAMPLE, same).1));
+    assert!(passes_ci_check(&diff_json(TCM_SAMPLE, same).json(0)));
 }
 
 /// Whether the check for CI in the docs passes, as jq works it out:
@@ -1524,7 +1510,7 @@ fn diff_blocks_add_up() {
         .iter()
         .flat_map(|&(old, new)| [(old, new), (new, old)])
     {
-        let (_, answer) = diff_json(old, new);
+        let answer = diff_json(old, new).json(1);
         // What each item changed its block's items' bytes by: a moved item
         // leaves its old block and comes into its new one.
         let mut credits: BTreeMap<&str, i64> = BTreeMap::new();
@@ -1556,7 +1542,7 @@ fn diff_blocks_add_up() {
 #[test]
 fn diff_says_what_keeps_an_item_as_top_does() {
     for (old, new) in DIFF_PAIRS {
-        let (_, answer) = diff_json(old, new);
+        let answer = diff_json(old, new).json(1);
         if old.ends_with(".so") || new.ends_with(".so") {
             // With a shared library on either side, neither build has a
             // tree.
@@ -1568,8 +1554,7 @@ fn diff_says_what_keeps_an_item_as_top_does() {
             continue;
         }
         for (side, path) in [("old", old), ("new", new)] {
-            let top: Value =
-                serde_json::from_slice(&elfq(&[path, "top", "--all", "--json"]).stdout).unwrap();
+            let top = run(&[path, "top", "--all", "--json"]).json(0);
             let rows = top["items"].as_array().unwrap();
             let by_address: BTreeMap<&str, &Value> = rows
                 .iter()
@@ -1623,7 +1608,8 @@ fn diff_has_the_blocks_that_the_overview_lists() {
             "testdata/bin/far-lld-m4-nodebug.elf",
         ),
     ] {
-        let (_, answer) = diff_json(old, new);
+        // Builds that load the same memory exit with 0, and others with 1.
+        let answer = diff_json(old, new).json(Exit::ZeroOrOne);
         for (path, side) in [(old, "old"), (new, "new")] {
             let overview = elfq_json(&[path]);
             let mut overview_blocks = overview["memory"].as_array().unwrap().iter().peekable();
