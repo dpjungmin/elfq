@@ -130,7 +130,8 @@ pub(super) fn write(answer: &Answer, all: bool, out: &mut dyn Write) -> Result<(
 }
 
 /// The Try list: `why` with `query`, and `startup` when
-/// [`Answer::try_startup`] says to.
+/// [`Answer::try_startup`] says to (see
+/// [`suggest_startup`](super::suggest_startup)).
 fn write_try(answer: &Answer, query: Option<String>, out: &mut dyn Write) -> Result<()> {
     let commands: Vec<String> = [
         query.map(|query| format!("why {query}")),
