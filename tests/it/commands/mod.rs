@@ -3,4 +3,5 @@
 //! They check what the elfq program prints for the command, its errors and
 //! its exit statuses.
 
+mod diff;
 mod startup;
