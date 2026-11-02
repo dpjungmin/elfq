@@ -296,9 +296,9 @@ this list, and add to it when you bring in a word.
   `Problem::CantFollow`, `Note::CantTell`).
 - **run**: in the tests, one run of the elfq program, with its exit
   status and what it printed on stdout and stderr (`Run`, in
-  `tests/it/support.rs`), which `run` gives; its `printed` is what elfq
-  printed on stdout alone. `run_in_process` runs a command inside the
-  test instead, and gives no `Run`. An early run, in `startup`, is
+  `tests/it/support/mod.rs`), which `run` gives; its `printed` is what
+  elfq printed on stdout alone. `run_in_process` runs a command inside
+  the test instead, and gives no `Run`. An early run, in `startup`, is
   unrelated, and so are the private `Run`s of the startup walk and of
   `binary/memory.rs`.
 
@@ -330,7 +330,7 @@ of its tree) do. Those are names to fix, not meanings to copy.
 
 | File in `tests/it/` | What it tests |
 |---|---|
-| `support.rs` | No tests: the samples' paths (`SAMPLE` and others), `run`, which runs the program and returns a `Run` to check, `run_in_process`, and `assert_output` |
+| `support/` | No tests: in `mod.rs`, the samples' paths (`SAMPLE` and others), `run`, which runs the program and returns a `Run` to check, `run_in_process`, and `assert_output`; in `elf.rs`, changing a sample's bytes and saving the file |
 | `cli.rs` | Each command's whole text output, errors, exit statuses and help |
 | `json.rs` | `--json` output |
 | `items.rs` | Finding items: symbols, PLT stubs, unwind tables, functions in stripped firmware, unnamed data |
@@ -401,7 +401,7 @@ cargo test --lib arch::thumb
 ```
 
 **Running elfq.** A test runs the program with `run(ARGS)`, from
-`support.rs`, and says what it expects of the `Run` it gets back:
+`support/`, and says what it expects of the `Run` it gets back:
 `printed(STATUS)` gives what elfq printed on stdout, `json(STATUS)` gives
 that parsed as JSON, and `error()` gives the error, which comes with exit
 status 2. Each checks the exit status, and that elfq printed nothing on
@@ -433,8 +433,10 @@ numbers and names, as docs/examples.md does, so when an example's output
 changes, check that the text around it still matches the new output.
 
 **Damaged files.** `damaged.rs` makes its files from a sample's bytes, so
-that the hangs and crashes they once caused stay fixed. A test saves its
-file with `save`, which returns the path to give `run`. Tests run in a
+that the hangs and crashes they once caused stay fixed. The functions that
+change the bytes are in `support/elf.rs`, for the other tests that need
+such a file too. A test saves its file with `save`, which returns the path
+to give `run`. Tests run in a
 debug build, so arithmetic that overflows fails them too. A test that uses
 `parse_quickly` fails if loading the file takes more than 10 seconds: add
 one when you make elfq quick to load a file that took far too long.

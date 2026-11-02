@@ -3,11 +3,10 @@
 use std::path::Path;
 use std::process::Stdio;
 
-use crate::damaged;
 use crate::support::{
     DEEP_SAMPLE, Exit, LIBRARY_SAMPLE, MOVED_SAMPLE, Run, SAMPLE, TCM_EDITED_SAMPLE,
     TCM_ENTRY_MAIN_SAMPLE, TCM_INLINED_SAMPLE, TCM_MOVED_SAMPLE, TCM_OCRAM_SAMPLE, TCM_SAMPLE,
-    TCM_SDRAM_SAMPLE, assert_output, command, run, samples, stderr, stdout,
+    TCM_SDRAM_SAMPLE, assert_output, command, elf, run, samples, stderr, stdout,
 };
 
 /// Splits a command line into its arguments as a shell would, for the
@@ -3900,7 +3899,7 @@ fn a_file_whose_code_elfq_cant_read_says_so() {
     let mut data = std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join(SAMPLE)).unwrap();
     // e_machine, in the ELF header: EM_AARCH64.
     data[18..20].copy_from_slice(&183u16.to_le_bytes());
-    let path = damaged::save("aarch64.elf", &data);
+    let path = elf::save("aarch64.elf", &data);
     let path = path.as_str();
 
     assert_output(
@@ -4612,7 +4611,7 @@ fn diff_needs_two_builds_of_one_program_with_section_headers() {
     let mut data = std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join(TCM_SAMPLE)).unwrap();
     data[0x20..0x24].fill(0);
     data[0x30..0x34].fill(0);
-    let path = damaged::save("c-cortex-m7-no-section-headers.elf", &data);
+    let path = elf::save("c-cortex-m7-no-section-headers.elf", &data);
     let path = path.as_str();
     assert_output(
         &stderr(&[TCM_SAMPLE, "diff", path]),

@@ -1,5 +1,9 @@
-//! What several test modules share: the sample files, running elfq the way
-//! a user would, and checking whole outputs.
+//! What several test modules share.
+//!
+//! It holds the sample files, running elfq the way a user would, and
+//! checking whole outputs; and in [`elf`], changing a sample's bytes.
+
+pub mod elf;
 
 use std::fmt;
 use std::path::{Path, PathBuf};

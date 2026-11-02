@@ -12,8 +12,7 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use crate::damaged;
-use crate::support::{SAMPLE, assert_output, load_sample, run, sample_path};
+use crate::support::{SAMPLE, assert_output, elf, load_sample, run, sample_path};
 
 /// A key as a test script writes it: a name such as `Enter`, `Tab`, `Esc`
 /// or `Ctrl-O`, or text, typed a character at a time.
@@ -1244,7 +1243,7 @@ fn a_load_from_a_literal_pool_notes_what_it_reads() {
 fn thumb_code_of_other_cores_lists_only_the_lines_that_use_another_item() {
     // The sample as if it were built for a Cortex-M33, whose instructions
     // elfq doesn't print.
-    let data = damaged::for_arm_version("c-cortex-m7.elf", Some(17));
+    let data = elf::for_arm_version("c-cortex-m7.elf", Some(17));
     let binary = Binary::parse(&data).unwrap();
     let page = |symbol| browse("c-cortex-m7.elf", &binary, Some(symbol), (80, 24), &[]).0;
     assert_output(
@@ -1307,7 +1306,7 @@ file is for Armv8-M Mainline. No line of Default_Handler uses another item.
 ",
     );
     // A file that doesn't say which core it is for.
-    let data = damaged::for_arm_version("c-cortex-m7.elf", None);
+    let data = elf::for_arm_version("c-cortex-m7.elf", None);
     let binary = Binary::parse(&data).unwrap();
     assert_output(
         &browse(
@@ -1532,7 +1531,7 @@ fn q_ctrl_c_and_ctrl_z_stop_the_event_loop() {
 
 #[test]
 fn the_files_first_warning_is_on_the_first_page() {
-    let data = damaged::past_the_end(&[".plt"]);
+    let data = elf::past_the_end(&[".plt"]);
     let binary = Binary::parse(&data).unwrap();
     let (screen, _) = browse("plt-offset.elf", &binary, Some("main"), (80, 24), &[]);
     assert_eq!(
@@ -1543,7 +1542,7 @@ fn the_files_first_warning_is_on_the_first_page() {
     let (screen, _) = browse("plt-offset.elf", &binary, Some("main"), (80, 24), &["j"]);
     assert_eq!(selected_and_status(&screen).1, "");
     // The others are counted.
-    let data = damaged::past_the_end(&[".plt", ".plt.sec"]);
+    let data = elf::past_the_end(&[".plt", ".plt.sec"]);
     let binary = Binary::parse(&data).unwrap();
     let (screen, _) = browse("plt-offset.elf", &binary, Some("main"), (100, 30), &[]);
     assert_eq!(
@@ -1557,7 +1556,7 @@ fn a_long_chain_of_calls_can_be_followed() {
     // 10,000 functions that each call the one before, from the entry
     // point, which the start page lists. The browser runs on the test's
     // own thread, with its small stack.
-    let data = damaged::chain_of_calls(10_000);
+    let data = elf::chain_of_calls(10_000);
     let binary = Binary::parse(&data).unwrap();
     let (screen, _) = browse(
         "long-chain.elf",
@@ -2928,7 +2927,7 @@ fn in_a_terminal(args: &[&str], keys: &str) -> Option<(Option<i32>, String)> {
 #[cfg(target_os = "linux")]
 fn the_files_warnings_are_printed_when_browse_quits_or_refuses_it() {
     let warning = "warning: section .plt runs past the end of the file";
-    let path = damaged::save("plt-offset.elf", &damaged::past_the_end(&[".plt"]));
+    let path = elf::save("plt-offset.elf", &elf::past_the_end(&[".plt"]));
     let Some((status, output)) = in_a_terminal(&[&path, "browse", "log_msg"], "q") else {
         eprintln!("no `script` to run elfq in a terminal");
         return;
@@ -2939,9 +2938,9 @@ fn the_files_warnings_are_printed_when_browse_quits_or_refuses_it() {
     assert!(output[back..].contains(warning), "{output:?}");
     // And before the error, as the other commands print it, when elfq
     // can't read the file's code.
-    let mut data = damaged::past_the_end(&[".plt"]);
+    let mut data = elf::past_the_end(&[".plt"]);
     data[18..20].copy_from_slice(&183u16.to_le_bytes());
-    let path = damaged::save("plt-offset-aarch64.elf", &data);
+    let path = elf::save("plt-offset-aarch64.elf", &data);
     let (status, output) = in_a_terminal(&[&path, "browse"], "").unwrap();
     assert_eq!(status, Some(2), "{output:?}");
     assert_eq!(

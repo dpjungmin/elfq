@@ -4,10 +4,11 @@
 
 use std::path::Path;
 
-use object::{Object, ObjectSection};
 use serde_json::{Value, json};
 
-use crate::damaged::{self, SIZE, set_section_field};
+use crate::support::elf::{
+    self, SIZE, isr_vector, load_image_header, set_section_field, set_word, word,
+};
 use crate::support::{
     Exit, Run, SAMPLE, TCM_ENTRY_MAIN_SAMPLE, TCM_SAMPLE, assert_output, command, run, samples,
 };
@@ -55,40 +56,7 @@ fn startup(file: &str, options: &[&str]) -> Run {
 fn changed(sample: &str, name: &str, change: &dyn Fn(&mut Vec<u8>)) -> String {
     let mut data = std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join(sample)).unwrap();
     change(&mut data);
-    damaged::save(name, &data)
-}
-
-/// The 4 bytes at `at`. The samples are little-endian.
-fn word(data: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes(data[at..at + 4].try_into().unwrap())
-}
-
-fn set_word(data: &mut [u8], at: usize, value: u32) {
-    data[at..at + 4].copy_from_slice(&value.to_le_bytes());
-}
-
-/// Where the vector table, the section `.isr_vector`, is in the file
-/// `data`.
-fn isr_vector(data: &[u8]) -> usize {
-    let file = object::File::parse(data).unwrap();
-    let (table, _) = (file.section_by_name(".isr_vector").unwrap())
-        .file_range()
-        .unwrap();
-    table as usize
-}
-
-/// Where the program header of the load image for `address` is in the
-/// 32-bit file `data`: of the segment there whose load address isn't its
-/// address.
-fn load_image_header(data: &[u8], address: u32) -> usize {
-    let half = |at: usize| usize::from(u16::from_le_bytes([data[at], data[at + 1]]));
-    // e_phoff, e_phentsize and e_phnum; and in a program header, p_vaddr
-    // and p_paddr.
-    let (headers, size, count) = (word(data, 0x1c) as usize, half(0x2a), half(0x2c));
-    (0..count)
-        .map(|n| headers + n * size)
-        .find(|&at| word(data, at + 8) == address && word(data, at + 12) != address)
-        .unwrap()
+    elf::save(name, &data)
 }
 
 #[test]
@@ -926,7 +894,7 @@ fn the_overview_suggests_startup_only_for_firmware_that_startup_reads() {
     // are no longer allocated, as sh_flags lacks SHF_ALLOC (2) and keeps
     // SHF_EXECINSTR (4) or SHF_WRITE (1), so startup has nothing to set up.
     let no_ram = changed(TCM_SAMPLE, "c-cortex-m7-overview-no-ram.elf", &|data| {
-        const FLAGS: damaged::Field = (0x08, 0x08);
+        const FLAGS: elf::Field = (0x08, 0x08);
         set_section_field(data, ".itcm", FLAGS, 4);
         for section in [".data", ".bss", ".ocram_bss"] {
             set_section_field(data, section, FLAGS, 1);
