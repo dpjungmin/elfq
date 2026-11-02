@@ -379,8 +379,7 @@ mod tests {
         std::fs::read(path).unwrap()
     }
 
-    /// Each block's start and end, and the names of what each build has
-    /// in it, load images marked.
+    /// The names of what a build has in a block, load images marked.
     fn describe(memory: &LoadedMemory, places: &[Place]) -> Vec<String> {
         places
             .iter()

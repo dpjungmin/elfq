@@ -8,7 +8,7 @@
 
 use std::cell::RefCell;
 use std::cmp::Reverse;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 
 use anyhow::Result;
@@ -34,6 +34,9 @@ use crate::render::{Align, Table};
 /// names before "and 5 more", unless `--all` asks for every one.
 const RESIZED_NAMED: usize = 3;
 
+/// Writes diff's answer as text (see the module doc for its parts). With
+/// `all`, it shows every row and every name, where it otherwise shows the
+/// largest and counts the rest.
 pub(super) fn write(answer: &Answer, all: bool, out: &mut dyn Write) -> Result<()> {
     let (old_path, new_path) = (answer.old_path.display(), answer.new_path.display());
     if answer.same_memory {
@@ -212,28 +215,14 @@ fn lead(answer: &Answer) -> String {
         // In one block, or only in .tbss, which is in none.
         return "the bytes differ.".to_string();
     };
-    let changes = &compared.items.changes;
-    let counts: Vec<String> = [
-        Status::Moved,
-        Status::New,
-        Status::Gone,
-        Status::Grew,
-        Status::Shrank,
-        Status::Edited,
-    ]
-    .into_iter()
-    .map(|status| {
-        (
-            changes
-                .iter()
-                .filter(|change| change.status() == status)
-                .count(),
-            status,
-        )
-    })
-    .filter(|&(count, _)| count > 0)
-    .map(|(count, status)| format!("{count} {}", status.word()))
-    .collect();
+    // Each status that some item has, in the order of Status.
+    let mut counts: BTreeMap<Status, usize> = BTreeMap::new();
+    for change in &compared.items.changes {
+        *counts.entry(change.status()).or_insert(0) += 1;
+    }
+    let counts: Vec<String> = (counts.into_iter())
+        .map(|(status, count)| format!("{count} {}", status.word()))
+        .collect();
     if !counts.is_empty() {
         format!("{}.", counts.join(", "))
     } else if blocks
@@ -257,10 +246,7 @@ fn sections_line(answer: &Answer, all: bool) -> String {
     let names: Vec<String> = answer
         .sections_that_differ
         .iter()
-        .map(|differs| match differs.only_load_image {
-            true => format!("load image of {}", differs.name),
-            false => differs.name.to_string(),
-        })
+        .map(|differs| section_label(differs.name, differs.only_load_image))
         .collect();
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
     format!("Sections that differ: {}.", names_text(&names, all))
@@ -708,7 +694,10 @@ fn resized_text(sections: &[SectionPair], all: bool) -> String {
     let shown = shown_resized(sections, all);
     let mut text = shown
         .iter()
-        .map(|section| format!("{} {}", section_name(section), signed(section.delta())))
+        .map(|section| {
+            let label = section_label(section.name, section.load_image);
+            format!("{label} {}", signed(section.delta()))
+        })
         .collect::<Vec<_>>()
         .join(", ");
     if shown.len() < changed {
@@ -732,12 +721,12 @@ fn shown_resized<'s, 'a>(sections: &'s [SectionPair<'a>], all: bool) -> Vec<&'s 
     largest.into_iter().map(|index| changed[index]).collect()
 }
 
-/// A section's name, or "load image of .data" for its load image.
-fn section_name(section: &SectionPair) -> String {
-    if section.load_image {
-        format!("load image of {}", section.name)
-    } else {
-        section.name.to_string()
+/// A section's name, as `.data`, or with `load_image`, its load image's,
+/// as "load image of .data".
+fn section_label(name: &str, load_image: bool) -> String {
+    match load_image {
+        true => format!("load image of {name}"),
+        false => name.to_string(),
     }
 }
 

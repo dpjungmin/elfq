@@ -13,8 +13,9 @@ use super::pairing::{self, PairedBy, Pairing, Side};
 use crate::binary::{Binary, Item, ItemKind};
 use crate::commands::symbol::Names;
 
-/// What happened to an item.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What happened to an item. The first line of the text counts the items
+/// of each status in this order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Status {
     /// It is in another block of memory.
     Moved,

@@ -35,7 +35,7 @@ use std::collections::HashMap;
 use object::{Architecture, Endianness};
 
 use super::Build;
-use super::pairing::Pairing;
+use super::pairing::{Pairing, is_text_byte};
 use crate::arch::{InstructionSet, Operands};
 use crate::binary::{Binary, Item, ItemKind, RelocationTarget, word};
 use crate::graph::{Node, ReferenceKind, VeneerTarget, Veneers};
@@ -463,11 +463,10 @@ fn same_text(a: &Binary, old_address: u64, b: &Binary, new_address: u64) -> bool
     if x_name != y_name {
         return false;
     }
-    let printable = |byte: u8| byte.is_ascii_graphic() || b" \t\n\r".contains(&byte);
     let same = x
         .iter()
         .zip(y)
-        .take_while(|&(x, y)| x == y && printable(*x))
+        .take_while(|&(x, y)| x == y && is_text_byte(*x))
         .count();
     let whole = same > 0 && x.get(same) == Some(&0) && y.get(same) == Some(&0);
     whole || same >= 3

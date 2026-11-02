@@ -117,9 +117,14 @@ fn by_first_string(pairing: &mut Pairing, old: &Binary, new: &Binary) {
         }
         let bytes = binary.bytes(item.address, item.size)?;
         let end = bytes.iter().position(|&byte| byte == 0)?;
-        let text = |byte: &u8| matches!(byte, b' '..=b'~' | b'\t' | b'\n' | b'\r');
-        (end > 0 && bytes[..end].iter().all(text)).then_some(&bytes[..end])
+        (end > 0 && bytes[..end].iter().all(|&byte| is_text_byte(byte))).then_some(&bytes[..end])
     });
+}
+
+/// Whether `byte` is printable ASCII, a space, a tab or a line break: a
+/// byte of a string's text.
+pub(super) fn is_text_byte(byte: u8) -> bool {
+    byte.is_ascii_graphic() || b" \t\n\r".contains(&byte)
 }
 
 /// Rule 6: the same size and the same few bytes, fewer than 4 once the

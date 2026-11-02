@@ -161,6 +161,7 @@ struct KeptBy<'a> {
     address: String,
 }
 
+/// Writes diff's answer as JSON (see the module doc for what it holds).
 pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
     let compared = answer.compared.as_ref();
     let bytes = |build: &Build| total(build.binary.items.iter().map(|item| item.size));

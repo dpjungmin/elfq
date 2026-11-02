@@ -47,12 +47,13 @@ impl<'a> Items<'a> {
             (blocks[parent] == blocks[index]).then_some(parent_change)
         };
         // Each path up is walked once: the heads found are kept.
-        let mut heads: Vec<Option<usize>> = vec![None; self.changes.len()];
+        let mut found: Vec<Option<usize>> = vec![None; self.changes.len()];
+        let mut heads = Vec::with_capacity(self.changes.len());
         for start in 0..self.changes.len() {
             let mut path = Vec::new();
             let mut at = start;
             let head = loop {
-                if let Some(head) = heads[at] {
+                if let Some(head) = found[at] {
                     break head;
                 }
                 path.push(at);
@@ -62,13 +63,11 @@ impl<'a> Items<'a> {
                 }
             };
             for at in path {
-                heads[at] = Some(head);
+                found[at] = Some(head);
             }
+            heads.push(head);
         }
         heads
-            .into_iter()
-            .map(|head| head.unwrap_or_default())
-            .collect()
     }
 
     /// The MOVED table's rows, largest first, before they are written: one
