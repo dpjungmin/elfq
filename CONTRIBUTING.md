@@ -201,6 +201,28 @@ only with the `tui` feature.
   `support/elf.rs`; and a test of one command goes in
   `tests/it/commands/<name>.rs`. See [Tests](#tests). Two tests don't
   do this yet (see [below](#where-the-code-doesnt-follow-these-yet)).
+- **Visibility says how far a declaration's uses reach.** A function,
+  type, constant or field is private unless code outside its module uses
+  it. It is `pub(super)` when only its parent module and the parent's
+  other children use it, `pub(in crate::commands)`,
+  `pub(in crate::commands::browse)` or `pub(in crate::arch)` when its
+  uses lie further apart inside one of those, and `pub(crate)` when they
+  cross top-level modules. `pub` is only for what `src/main.rs` and
+  `tests/it` use, such as `commands::run`, `Binary::load` and browse's
+  `App`, and for what those show, as `Graph::roots` shows `Root`. The
+  helpers in `tests/it/support/` are `pub(crate)`. A declaration that
+  only browse uses is behind `#[cfg(feature = "tui")]`, as
+  `callers::answer` is, since CI's clippy also builds without `tui` and
+  refuses dead code. A doc link counts as a use, as `arch/startup.rs`
+  links to the startup walk's limits in `arch/thumb/startup/mod.rs`, and
+  a `pub` declaration's doc may link to a `pub(crate)` one, which
+  `Cargo.toml` allows. The `unreachable_pub` lint, set in `Cargo.toml`
+  and an error in CI's clippy, finds a `pub` declaration that nothing
+  outside the crate can reach, but never looks at fields. The rest is
+  kept by hand: a `pub` field of a struct that isn't `pub`, a `pub`
+  declaration that outside code could reach but doesn't use, as in a
+  module that `lib.rs` makes public, and a `pub(crate)` or `pub(super)`
+  that could be narrower.
 
 ### Where the code doesn't follow these yet
 
@@ -677,13 +699,12 @@ is a short one to copy.
    again. `elfq help COMMAND` and the hint for a command typed before the
    file find the new command by themselves.
 2. **The command, in `src/commands/<name>.rs`.** Start with a `//!` line
-   that shows how to type it, then the `run` function that
-   `commands/mod.rs` calls. It takes what the command needs: the
-   `Binary` (and the file's path, if the answer names the file, as
-   `overview` does), the arguments it reads, the `Format` and the
-   output. It returns `Result<Outcome>`: `Outcome::Answered`, or for exit
-   status 1 another variant, as `callers` and `callees` return for
-   ranges.
+   that shows how to type it, then a `pub(super) fn run`, which
+   `commands/mod.rs` calls. It takes what the command needs: the `Binary`
+   (and the file's path, if the answer names the file, as `overview`
+   does), the arguments it reads, the `Format` and the output. It returns
+   `Result<Outcome>`: `Outcome::Answered`, or for exit status 1 another
+   variant, as `callers` and `callees` return for ranges.
 3. **Wiring, in `src/commands/mod.rs` and `arguments.rs`.** Add
    `mod <name>;` and an arm in `run`. In `arguments.rs`, `check_tree`,
    `check_range` and `check_json` each have an arm for every command, and
@@ -778,9 +799,10 @@ is a short one to copy.
 item's page. An item's page, `item.rs` with its parts in `item/`, is
 the biggest view, and not the one to start from.
 
-1. **The page, in `views/<name>.rs`.** A struct with a `draw` function
-   that draws it in the area it is given, and a `handle` function that
-   does what an `Action` asks. A page that lists rows keeps a `Cursor`,
+1. **The page, in `views/<name>.rs`.** A struct with a
+   `pub(super) fn draw`, which draws it in the area it is given, and a
+   `pub(super) fn handle`, which does what an `Action` asks; `View`, in
+   `views/mod.rs`, calls both. A page that lists rows keeps a `Cursor`,
    which scrolls them and draws only those on the screen. A `handle` whose
    actions can lead off the page returns an `Option<Go>`: following a link
    returns `Go::Open` with the page to open, and `Go::Say` puts a line on
@@ -811,10 +833,10 @@ the biggest view, and not the one to start from.
    the rest and `Work::message` words for the status line, and
    `App::work` works it out after a draw that says so, through the
    page's own `work_out`, which `View::work_out` calls.
-   A tab of an item's page, such as `callees.rs`, is drawn and handles
-   actions in the same way, but `ItemPage`, in `item.rs`, holds it in a
-   `Pane` of its own: add it to `Tab` and `Tab::ALL`, with its number and
-   the name of the command that prints the same answer in
+   A tab of an item's page, such as `callees.rs`, is a `Printed` too,
+   which its `pub(super) fn tab` makes, but `ItemPage`, in `item.rs`,
+   holds it in a `Pane` of its own: add it to `Tab` and `Tab::ALL`, with
+   its number and the name of the command that prints the same answer in
    `Tab::number_and_name`, and its pane to those that `ItemPage::new`
    lists. Where some items can't have the tab, the pane says why in the
    command's own words, from its check, such as `why::refusal`. A tab
@@ -854,12 +876,13 @@ page, which the capture prints.
 
 ## Adding an instruction set
 
-1. **The scanner, in `src/arch/<name>.rs`.** Its `scan` function takes one
-   function's bytes and address and returns a `CodeReference` for each
-   address the code calls, jumps to or uses; `CodeReferenceKind` in
-   `src/arch/mod.rs` lists the kinds. It must not panic on any bytes: a
-   truncated instruction ends the scan. Unit tests beside it check it on
-   bytes from a sample's disassembly.
+1. **The scanner, in `src/arch/<name>.rs`.** Its `pub(super) fn scan`,
+   which `InstructionSet::scan` calls, takes one function's bytes and
+   address and returns a `CodeReference` for each address the code calls,
+   jumps to or uses; `CodeReferenceKind` in `src/arch/mod.rs` lists the
+   kinds. It must not panic on any bytes: a truncated instruction ends the
+   scan. Unit tests beside it check it on bytes from a sample's
+   disassembly.
 2. **Wiring, in `src/arch/mod.rs`.** Add `mod <name>;`, a variant of
    `InstructionSet`, and an arm for it in `InstructionSet::of`: until `of`
    names it, elfq never reads the code and says it can't read it. The
