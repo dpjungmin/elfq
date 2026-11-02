@@ -319,8 +319,8 @@ of its tree) do. Those are names to fix, not meanings to copy.
   algorithm on a small graph built by hand (`graph/dominators.rs`,
   `graph/paths.rs`).
 - **Integration tests** in `tests/it/` use the samples in `testdata/bin`.
-  `cli.rs`, `json.rs`, `startup.rs` and `docs.rs` run the elfq program,
-  the way a user would. Those in `library/` call the library, as
+  `cli.rs`, `json.rs`, `docs.rs` and those in `commands/` run the elfq
+  program, the way a user would. Those in `library/` call the library, as
   `Binary::load` and `Graph::build`. `damaged.rs` and `browse.rs` do
   both, and so does one test in `json.rs`; `reach.rs` runs commands in
   its own process, with `run_in_process`, which is quicker for the
@@ -334,7 +334,7 @@ of its tree) do. Those are names to fix, not meanings to copy.
 | `cli.rs` | Each command's whole text output, errors, exit statuses and help |
 | `json.rs` | `--json` output |
 | `reach.rs` | `reach` on every item of the Cortex-M samples, against `callees`, `retained` and its own `--tree`, and with `--to` against `reach` without it and `callees --to`, and on every function of each stripped one against its twin with symbols; and without SYMBOL, each start of every sample against `reach START` |
-| `startup.rs` | `startup` on the samples whose reset code has a mistake and some without, the exit status of every Cortex-M sample, and the files it refuses; and that `debug walk` lists the walk that `startup` reads |
+| `commands/startup.rs` | `startup` on the samples whose reset code has a mistake and some without, the exit status of every Cortex-M sample, and the files it refuses; and that `debug walk` lists the walk that `startup` reads |
 | `browse.rs` | `browse`'s screens, driven with keys on ratatui's `TestBackend`, a screen in memory; its errors; and on Linux, the program in a terminal that `script` makes. The checks that need its private types are unit tests; see below |
 | `library/items.rs` | Finding items: symbols, PLT stubs, unwind tables, functions in stripped firmware, unnamed data |
 | `library/graph.rs` | The reference graph: callers, callees, pointers in data, veneers |
