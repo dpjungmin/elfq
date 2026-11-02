@@ -10,19 +10,18 @@
 
 use super::item::Tab;
 use super::printed::{Printed, note_name};
-use crate::commands::browse::session::Session;
+use crate::commands::browse::session::{Keepers, Session};
 use crate::commands::why;
 use crate::graph::Node;
 
 /// Why `node` is in the file, as `why SYMBOL` says it, which names it
-/// `name` (see [`Session::lead_name`]), once the session has worked out
-/// what keeps each item.
-pub fn tab(session: &Session, node: Node, name: &str) -> Option<Printed> {
-    let keepers = session.keepers()?;
+/// `name` (see [`Session::lead_name`]), from `keepers`, what the session
+/// has worked out keeps each item.
+pub fn tab(session: &Session, keepers: &Keepers, node: Node, name: &str) -> Printed {
     let (binary, graph, names) = (session.binary, &session.graph, &session.names);
     let answer = why::answers(binary, graph, names, &keepers.tree, node, name, &note_name);
     let command = session.command("why", Some(node), answer.needs_all);
-    Some(Printed::of_tab(answer, command).opening(Tab::Why, node))
+    Printed::of_tab(answer, command).opening(Tab::Why, node)
 }
 
 #[cfg(test)]
@@ -48,11 +47,13 @@ mod tests {
                 if session.page_node(node) != node {
                     continue;
                 }
-                let Some(tab) = tab(&session, node, &session.lead_name(node)) else {
-                    // `why` answers about no item of a shared library.
+                // `why` answers about no item of a shared library, where
+                // the session doesn't work out what keeps each item.
+                let Some(keepers) = session.keepers() else {
                     assert!(why::refusal(&binary, node).is_err());
                     continue;
                 };
+                let tab = tab(&session, keepers, node, &session.lead_name(node));
                 let name = path.display();
                 // The command parses as elfq's arguments, after the shell
                 // has split it into words, and finds the item in the file.

@@ -199,6 +199,11 @@ this list, and add to it when you bring in a word.
   `views/item/line_notes.rs`). The notes under a command's table, the
   note that SYMBOL adds to an item's name (`Symbol::note`) and startup's
   notes (`problems::Note`) are other things.
+- **pane**: in browse, what one tab of an item's page holds (`Pane`, in
+  `views/item.rs`): its listing, with the cursor over its lines
+  (`ListingPane`), or a command's answer, why the item can't have the
+  tab, or for a tab worked out after the page opens, what working it out
+  takes (`Later`).
 - **header**: in browse, the lines above the tabs of an item's page
   (`Header`, in `views/item/header.rs`). The ELF header, which
   `binary/header.rs` reads, and the header line of a table are other
@@ -330,6 +335,7 @@ of its tree) do. Those are names to fix, not meanings to copy.
 The checks of `browse` that need its private types are unit tests in
 `src/commands/browse/`:
 
+- `views/item.rs`: that the help names every tab, with its key.
 - `views/item/code.rs`: every line's link and note, on every sample.
 - `views/item/listing.rs`: what the status line says that Enter opens,
   on every line that links, in every function of every sample.
@@ -520,15 +526,19 @@ the biggest view, and not the one to start from.
    A page that takes a while to work out says so first: `App::work` works
    it out after a draw that says what it is doing.
    A tab of an item's page, such as `callees.rs`, is drawn and handles
-   actions in the same way, but `ItemPage`, in `item.rs`, holds it: add it
-   to `Tab` and `Tab::ALL`, with its number and the name of the command
-   that prints the same answer in `Tab::number_and_name`, and its arm in
-   each of `ItemPage`'s functions that match on `Tab`, `why_not` for the
-   items that can't have it, `show` for one worked out the first time it
-   is shown, as tab 2 is, or `waiting` and `work` for one that can take
-   seconds, as tabs 4 to 6 are, and `printed`; the compiler asks for
-   those, but not for `Tab::ALL`. Its key goes in the "1 2 3 4 5 6" row of
-   `BINDINGS`, with its help text (step 3). Its rows come from that
+   actions in the same way, but `ItemPage`, in `item.rs`, holds it in a
+   `Pane` of its own: add it to `Tab` and `Tab::ALL`, with its number and
+   the name of the command that prints the same answer in
+   `Tab::number_and_name`, and its pane to those that `ItemPage::new`
+   lists. Where some items can't have the tab, the pane says why in the
+   command's own words, from its check, such as `why::refusal`. A tab
+   worked out the first time it is shown, as tab 2 is, waits as a variant
+   of `Later`, and one that can take seconds, as tabs 4 to 6 can, as a
+   `SlowTab`, until the screen says that it is working it out, in the
+   words of `ItemPage::waiting`; `Later::work_out` works out both. The
+   compiler asks for their arms, but not for `Tab::ALL`. Its key goes in
+   the "1 2 3 4 5 6" row of `BINDINGS`, with its help text (step 3), which
+   a test in `item.rs` checks against `Tab::ALL`. Its rows come from that
    command's own code, as `callees::answer`, so that they can't drift from
    what it prints.
 3. **Keys.** A key goes in `BINDINGS` in `keys.rs`, with the new `Action`,

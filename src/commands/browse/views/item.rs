@@ -21,11 +21,13 @@
 //!
 //! The parts, each in its own file:
 //!
-//! - This file: [`Tab`], and [`ItemPage`], which holds the header and the
-//!   tabs, and passes each action to the tab on the screen.
+//! - This file: [`Tab`], and [`ItemPage`], which holds the header and a
+//!   [`Pane`] for each tab, and passes each action to the tab on the
+//!   screen. A tab that is worked out after the page opens waits in its
+//!   pane as a [`Later`], and one that can take seconds as a [`SlowTab`].
 //! - `header.rs`: `Header`, what the header says: the facts about the
 //!   item, and what keeps it.
-//! - `listing.rs`: `Listing`, what tab 1 lists, and `ListingTab`, which
+//! - `listing.rs`: `Listing`, what tab 1 lists, and `ListingPane`, which
 //!   draws it, moves over its lines and follows their links.
 //! - `code.rs`: `function_listing`, the lines of a function's code.
 //! - `contents.rs`: `data_listing`, the rows of a data object's contents,
@@ -33,6 +35,7 @@
 //! - `line_notes.rs`: `LineNotes`, the note and link of each line or row,
 //!   from what the graph knows about the item.
 
+use anyhow::Result;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Stylize;
@@ -45,7 +48,7 @@ use crate::commands::checks::readable_item;
 use crate::commands::{retained, text, why};
 use crate::graph::Node;
 use header::Header;
-use listing::ListingTab;
+use listing::ListingPane;
 
 mod code;
 mod contents;
@@ -54,6 +57,11 @@ mod line_notes;
 mod listing;
 
 pub use listing::Listing;
+
+/// What u says where the session hasn't worked out what keeps each item.
+///
+/// So would a tab 5 or 6 worked out too early (see [`Later::work_out`]).
+const NO_KEEPERS: &str = "elfq hasn't worked out what keeps each item yet";
 
 /// The tabs of an item's page.
 ///
@@ -99,6 +107,12 @@ impl Tab {
         }
     }
 
+    /// Its place in [`Tab::ALL`], and in an item's page's panes.
+    fn index(self) -> usize {
+        let (number, _) = self.number_and_name();
+        usize::from(number) - 1
+    }
+
     /// The tab that the key numbered `number` shows.
     fn of_key(number: u8) -> Option<Tab> {
         Tab::ALL
@@ -118,6 +132,93 @@ impl Tab {
     }
 }
 
+/// What one tab of an item's page holds.
+///
+/// Each tab has one: why the item can't have the tab, what working it
+/// out takes until it is, or what it shows.
+enum Pane {
+    /// Why the item can't have the tab, as pressing its key says.
+    ///
+    /// It is in the words of the command that would print the tab.
+    Refused(String),
+    /// A tab that is worked out after the page opens, until it is.
+    NotYet(Later),
+    /// Tab 1: a function's code, or a data object's contents.
+    Listing(ListingPane),
+    /// Tabs 2 to 6: a command's answer.
+    Printed(Box<Printed>),
+}
+
+/// A tab that is worked out after its page opens, with what that takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Later {
+    /// Tab 2, the first time it is shown.
+    ///
+    /// It lists what the item at this index calls or uses.
+    Callees(usize),
+    /// Tab 4, 5 or 6, once the screen says so.
+    Slow(SlowTab),
+}
+
+/// A tab that can take seconds to work out in a large file.
+///
+/// It is worked out only once the screen says so, the first time it is
+/// shown (see `App::work`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlowTab {
+    /// Tab 4: what the item at this index calls or uses, at any depth.
+    Reach(usize),
+    /// Tab 5: why this item or import is in the file.
+    Why(Node),
+    /// Tab 6: what removing the item at this index would save.
+    Retained(usize),
+}
+
+impl SlowTab {
+    /// The item or import whose page it is on.
+    pub fn node(self) -> Node {
+        match self {
+            SlowTab::Reach(index) | SlowTab::Retained(index) => Node::Item(index),
+            SlowTab::Why(node) => node,
+        }
+    }
+}
+
+impl Later {
+    /// The item or import whose page it is on.
+    fn node(self) -> Node {
+        match self {
+            Later::Callees(index) => Node::Item(index),
+            Later::Slow(tab) => tab.node(),
+        }
+    }
+
+    /// Works it out: the answer of the command that prints the tab.
+    ///
+    /// Tabs 5 and 6 need what keeps each item, which `App::work` has the
+    /// session work out before any tab. Were it missing, the tab would be
+    /// refused with NO_KEEPERS rather than left waiting, so that the event
+    /// loop still gets to the next key.
+    fn work_out(self, session: &Session) -> Pane {
+        let name = session.lead_name(self.node());
+        let printed = match (self, session.keepers()) {
+            (Later::Callees(index), _) => super::callees::tab(session, index, &name),
+            (Later::Slow(SlowTab::Reach(index)), _) => super::reach::tab(session, index, &name),
+            (Later::Slow(SlowTab::Why(node)), Some(keepers)) => {
+                super::why::tab(session, keepers, node, &name)
+            }
+            (Later::Slow(SlowTab::Retained(index)), Some(keepers)) => {
+                super::retained::tab(session, keepers, index, &name)
+            }
+            (Later::Slow(SlowTab::Why(_) | SlowTab::Retained(_)), None) => {
+                return Pane::Refused(NO_KEEPERS.to_string());
+            }
+        };
+        Pane::Printed(Box::new(printed))
+    }
+}
+
+/// An item's page: its header, and a pane for each tab.
 pub struct ItemPage {
     /// The item or import.
     node: Node,
@@ -134,36 +235,8 @@ pub struct ItemPage {
     /// Each page in the history keeps its own, so that Back shows the tab
     /// that was left.
     tab: Tab,
-    /// Tab 1: a function's code, or a data object's contents.
-    ///
-    /// An import has neither here, so for an import it is why not, as
-    /// pressing 1 says.
-    listing: Result<ListingTab, String>,
-    /// The item's index for tabs 2 and 4, or why they can't read its code.
-    ///
-    /// The why is in the words of `callees` and `reach`, as pressing 2 or 4
-    /// says it: it is an import, or a function whose end elfq doesn't know.
-    readable: Result<usize, String>,
-    /// The item's index for tab 6, or why `retained` can't answer about it.
-    ///
-    /// The why is in the command's words, as pressing 6 and u say it: as
-    /// for `readable`, or the file is a shared library.
-    retainable: Result<usize, String>,
-    /// Why `why` can't answer about the item, if it can't.
-    ///
-    /// It is in the command's words, as pressing 5 says it: the file is a
-    /// shared library.
-    why_refused: Option<String>,
-    /// Tab 2, once it has been shown.
-    callees: Option<Printed>,
-    /// Tab 3.
-    callers: Printed,
-    /// Tab 4, once it has been shown.
-    reach: Option<Printed>,
-    /// Tab 5, once it has been shown.
-    why: Option<Printed>,
-    /// Tab 6, once it has been shown.
-    retained: Option<Printed>,
+    /// What each tab holds, at the tab's index (see [`Tab::index`]).
+    panes: [Pane; Tab::ALL.len()],
 }
 
 impl ItemPage {
@@ -176,91 +249,136 @@ impl ItemPage {
     /// object's on its contents, when they have rows. Otherwise, as for an
     /// import, which has no code here, the page opens on its callers.
     pub fn new(session: &Session, node: Node, at: Option<u64>, header_name: &str) -> ItemPage {
+        let binary = session.binary;
         let answer = session.callers(node);
         let (title, listing) = match node {
             Node::Item(index) => {
-                let listing = ListingTab::new(session, index, at);
-                (session.row_name(index), Ok(listing))
+                let listing = ListingPane::new(session, index, at);
+                (session.row_name(index), Pane::Listing(listing))
             }
             Node::Import(_) => {
-                let title = node.name(session.binary).to_string();
-                (title, Err(imported(session, node)))
+                let title = node.name(binary).to_string();
+                (title, Pane::Refused(imported(session, node)))
             }
         };
-        let retainable = retained::refusal(session.binary, node);
-        let retainable = retainable.map_err(|error| error.to_string());
-        let why_refused = why::refusal(session.binary, node).err();
-        let why_refused = why_refused.map(|error| error.to_string());
-        let mut header = Header::new(session, node, header_name, answer.node_count());
-        header.add_keeping(session, retainable.is_ok(), why_refused.is_none());
-        ItemPage {
+        let header = Header::new(session, node, header_name, answer.node_count());
+        // A tab worked out later, or why the item can't have it, as the
+        // command that prints the tab says it.
+        let pane = |tab: Result<Later>| match tab {
+            Ok(later) => Pane::NotYet(later),
+            Err(error) => Pane::Refused(error.to_string()),
+        };
+        let slow = |tab: Result<SlowTab>| pane(tab.map(Later::Slow));
+        let mut page = ItemPage {
             node,
             title,
             short_title: None,
             header,
-            tab: match &listing {
-                Ok(listing) if listing.opens_page() => Tab::Code,
-                _ => Tab::Callers,
-            },
-            listing,
-            readable: readable_item(session.binary, node).map_err(|error| error.to_string()),
-            retainable,
-            why_refused,
-            callees: None,
-            callers: super::callers::tab(session, node, answer),
-            reach: None,
-            why: None,
-            retained: None,
+            tab: Tab::Callers,
+            // In the order of the tabs' numbers.
+            panes: [
+                listing,
+                pane(readable_item(binary, node).map(Later::Callees)),
+                Pane::Printed(Box::new(super::callers::tab(session, node, answer))),
+                slow(readable_item(binary, node).map(SlowTab::Reach)),
+                slow(why::refusal(binary, node).map(|()| SlowTab::Why(node))),
+                slow(retained::refusal(binary, node).map(SlowTab::Retained)),
+            ],
+        };
+        if page.opens_on(Tab::Code) {
+            page.tab = Tab::Code;
         }
+        page.add_keeping(session);
+        page
     }
 
-    /// The page on `tab`, if it has it, as a link from that tab opens it.
+    /// The page on `tab`, if it can open on it.
     ///
-    /// But a data object whose contents have no rows stays on its callers,
-    /// as its page opens: its tab 1 only says where its bytes are.
+    /// A link from that tab opens the page so (see [`ItemPage::opens_on`]).
     pub fn on(mut self, session: &Session, tab: Tab) -> ItemPage {
-        let shown = match tab {
-            Tab::Code => self.listing.as_ref().is_ok_and(ListingTab::opens_page),
-            _ => self.why_not(tab).is_none(),
-        };
-        if shown {
+        if self.opens_on(tab) {
             self.show(session, tab);
         }
         self
+    }
+
+    /// Whether the page can open on `tab`.
+    ///
+    /// It can on a tab the item has, but on tab 1 only when it has rows: a
+    /// data object whose contents have none stays on its callers, as its
+    /// page opens, since its tab 1 only says where its bytes are.
+    fn opens_on(&self, tab: Tab) -> bool {
+        match self.pane_of(tab) {
+            Pane::Listing(listing) => listing.opens_page(),
+            Pane::Refused(_) => false,
+            Pane::NotYet(_) | Pane::Printed(_) => true,
+        }
     }
 
     /// Adds what keeps the item to the header, once it is worked out.
     ///
     /// It adds it only where `retained` or `why` answers about the item.
     pub fn add_keeping(&mut self, session: &Session) {
-        let (retained, why) = (self.retainable.is_ok(), self.why_refused.is_none());
+        let (retained, why) = (self.has(Tab::Retained), self.has(Tab::Why));
         self.header.add_keeping(session, retained, why);
+    }
+
+    /// What `tab` holds.
+    fn pane_of(&self, tab: Tab) -> &Pane {
+        &self.panes[tab.index()]
+    }
+
+    /// What the tab on the screen holds.
+    fn pane(&self) -> &Pane {
+        self.pane_of(self.tab)
+    }
+
+    /// What the tab on the screen holds, to change.
+    fn pane_mut(&mut self) -> &mut Pane {
+        &mut self.panes[self.tab.index()]
+    }
+
+    /// Whether the item has `tab`.
+    fn has(&self, tab: Tab) -> bool {
+        self.why_not(tab).is_none()
     }
 
     /// Why the item doesn't have `tab`, if it doesn't.
     ///
     /// It is in the words of the command that would print the tab.
     fn why_not(&self, tab: Tab) -> Option<&str> {
-        match tab {
-            Tab::Code => self.listing.as_ref().err(),
-            Tab::Callees | Tab::Reach => self.readable.as_ref().err(),
-            Tab::Callers => None,
-            Tab::Why => self.why_refused.as_ref(),
-            Tab::Retained => self.retainable.as_ref().err(),
+        match self.pane_of(tab) {
+            Pane::Refused(why) => Some(why),
+            Pane::NotYet(_) | Pane::Listing(_) | Pane::Printed(_) => None,
         }
-        .map(String::as_str)
     }
 
     /// Puts `tab`, which the item has, on the screen.
     ///
     /// It works out tab 2 the first time. Tabs 4, 5 and 6 can take seconds,
-    /// so [`ItemPage::work`] works them out, once the screen says so.
+    /// so [`ItemPage::work_out`] works them out, once the screen says so.
     fn show(&mut self, session: &Session, tab: Tab) {
-        if let (Tab::Callees, None, Ok(index)) = (tab, &self.callees, &self.readable) {
-            let name = session.lead_name(self.node);
-            self.callees = Some(super::callees::tab(session, *index, &name));
+        if let Pane::NotYet(later) = self.panes[tab.index()] {
+            match later {
+                Later::Callees(_) => self.panes[tab.index()] = later.work_out(session),
+                // Slow tabs wait for `App::work`.
+                Later::Slow(_) => {}
+            }
         }
         self.tab = tab;
+    }
+
+    /// The tab on the screen, if it waits for the screen to say so.
+    ///
+    /// That is tab 4, 5 or 6, the first time it is shown.
+    pub fn pending(&self) -> Option<SlowTab> {
+        match self.pane() {
+            Pane::NotYet(Later::Slow(tab)) => Some(*tab),
+            Pane::NotYet(Later::Callees(_))
+            | Pane::Refused(_)
+            | Pane::Listing(_)
+            | Pane::Printed(_) => None,
+        }
     }
 
     /// What the tab on the screen has yet to work out, if anything.
@@ -269,59 +387,19 @@ impl ItemPage {
     /// reaches…".
     pub fn waiting(&self) -> Option<String> {
         let title = &self.title;
-        match self.tab {
-            Tab::Reach if self.reach.is_none() => {
-                Some(format!("working out what {title} reaches…"))
-            }
-            Tab::Why if self.why.is_none() => {
-                Some(format!("working out what keeps {title} in the file…"))
-            }
-            Tab::Retained if self.retained.is_none() => {
-                Some(format!("working out what only {title} leads to…"))
-            }
-            _ => None,
-        }
+        Some(match self.pending()? {
+            SlowTab::Reach(_) => format!("working out what {title} reaches…"),
+            SlowTab::Why(_) => format!("working out what keeps {title} in the file…"),
+            SlowTab::Retained(_) => format!("working out what only {title} leads to…"),
+        })
     }
 
-    /// Works out what the tab on the screen has yet to.
+    /// Works out the tab on the screen, if it waits to be.
     ///
-    /// Tabs 5 and 6 wait for the session to work out what keeps each item.
-    pub fn work(&mut self, session: &Session) {
-        let name = session.lead_name(self.node);
-        match (self.tab, &self.readable, &self.retainable) {
-            (Tab::Reach, Ok(index), _) if self.reach.is_none() => {
-                self.reach = Some(super::reach::tab(session, *index, &name));
-            }
-            (Tab::Why, _, _) if self.why.is_none() => {
-                self.why = super::why::tab(session, self.node, &name);
-            }
-            (Tab::Retained, _, Ok(index)) if self.retained.is_none() => {
-                self.retained = super::retained::tab(session, *index, &name);
-            }
-            _ => {}
-        }
-    }
-
-    /// The tab on the screen, when it shows a command's answer.
-    fn printed(&self) -> Option<&Printed> {
-        match self.tab {
-            Tab::Code => None,
-            Tab::Callees => self.callees.as_ref(),
-            Tab::Callers => Some(&self.callers),
-            Tab::Reach => self.reach.as_ref(),
-            Tab::Why => self.why.as_ref(),
-            Tab::Retained => self.retained.as_ref(),
-        }
-    }
-
-    fn printed_mut(&mut self) -> Option<&mut Printed> {
-        match self.tab {
-            Tab::Code => None,
-            Tab::Callees => self.callees.as_mut(),
-            Tab::Callers => Some(&mut self.callers),
-            Tab::Reach => self.reach.as_mut(),
-            Tab::Why => self.why.as_mut(),
-            Tab::Retained => self.retained.as_mut(),
+    /// That is the tab that [`ItemPage::pending`] gives.
+    pub fn work_out(&mut self, session: &Session) {
+        if let Some(tab) = self.pending() {
+            *self.pane_mut() = Later::Slow(tab).work_out(session);
         }
     }
 
@@ -348,8 +426,7 @@ impl ItemPage {
 
     /// The tabs it has, in the order of their numbers.
     fn tabs(&self) -> Vec<Tab> {
-        let has = |tab: &Tab| self.why_not(*tab).is_none();
-        Tab::ALL.into_iter().filter(has).collect()
+        Tab::ALL.into_iter().filter(|&tab| self.has(tab)).collect()
     }
 
     pub fn draw(&mut self, frame: &mut Frame, area: Rect) {
@@ -367,10 +444,11 @@ impl ItemPage {
 
         frame.render_widget(self.tab_line(width), tabs);
 
-        if let (Tab::Code, Ok(listing)) = (self.tab, &mut self.listing) {
-            listing.draw(frame, body);
-        } else if let Some(printed) = self.printed_mut() {
-            printed.draw(frame, body);
+        match self.pane_mut() {
+            Pane::Listing(listing) => listing.draw(frame, body),
+            Pane::Printed(printed) => printed.draw(frame, body),
+            // Nothing yet, while the status line says what is worked out.
+            Pane::NotYet(_) | Pane::Refused(_) => {}
         }
     }
 
@@ -382,7 +460,7 @@ impl ItemPage {
     /// for that, `width` columns wide, one space parts them.
     fn tab_line(&self, width: usize) -> Line<'static> {
         let tabs = self.tabs();
-        let data = self.listing.as_ref().is_ok_and(ListingTab::is_data);
+        let data = matches!(self.pane_of(Tab::Code), Pane::Listing(listing) if listing.is_data());
         let label = |tab: Tab| tab.label(data);
         let wide: usize = tabs.iter().map(|&tab| label(tab).chars().count() + 3).sum();
         let pad = if wide <= width { " " } else { "" };
@@ -411,10 +489,11 @@ impl ItemPage {
             self.show(session, tab);
             return None;
         }
-        if let (Tab::Code, Ok(listing)) = (self.tab, &mut self.listing) {
-            return listing.handle(session, action);
+        match self.pane_mut() {
+            Pane::Listing(listing) => listing.handle(session, action),
+            Pane::Printed(printed) => printed.handle(session, action),
+            Pane::NotYet(_) | Pane::Refused(_) => None,
         }
-        self.printed_mut()?.handle(session, action)
     }
 
     /// Opens the page of the item that keeps this one, as u asks.
@@ -428,15 +507,17 @@ impl ItemPage {
     fn keeper(&self, session: &Session) -> Go {
         let binary = session.binary;
         let node = self.node;
-        if let (None, Some(root)) = (&self.why_refused, session.graph.root(node)) {
+        if self.has(Tab::Why)
+            && let Some(root) = session.graph.root(node)
+        {
             let name = session.lead_name(node);
             return Go::Say(text::root_sentence(binary, &name, root));
         }
-        if let Err(why) = &self.retainable {
-            return Go::Say(why.clone());
+        if let Some(why) = self.why_not(Tab::Retained) {
+            return Go::Say(why.to_string());
         }
         let Some(keepers) = session.keepers() else {
-            return Go::Say("elfq hasn't worked out what keeps each item yet".to_string());
+            return Go::Say(NO_KEEPERS.to_string());
         };
         if !keepers.tree.is_reachable(node) {
             return Go::Say(text::nothing_reaches(&session.lead_name(node)));
@@ -452,9 +533,9 @@ impl ItemPage {
     /// It says whether it did: it does only if there was a jump and the
     /// code is on the screen.
     pub fn back(&mut self) -> bool {
-        match (self.tab, &mut self.listing) {
-            (Tab::Code, Ok(listing)) => listing.back(),
-            _ => false,
+        match self.pane_mut() {
+            Pane::Listing(listing) => listing.back(),
+            Pane::Printed(_) | Pane::NotYet(_) | Pane::Refused(_) => false,
         }
     }
 
@@ -463,9 +544,10 @@ impl ItemPage {
     /// An example: "→ strlen@plt function at 0x1080, 16 bytes, in
     /// .plt.sec".
     pub fn preview(&self, session: &Session) -> Option<String> {
-        match (self.tab, &self.listing) {
-            (Tab::Code, Ok(listing)) => listing.preview(session),
-            _ => self.printed()?.preview(session),
+        match self.pane() {
+            Pane::Listing(listing) => listing.preview(session),
+            Pane::Printed(printed) => printed.preview(session),
+            Pane::NotYet(_) | Pane::Refused(_) => None,
         }
     }
 
@@ -474,41 +556,44 @@ impl ItemPage {
     /// That happens to a long string in a data object's contents, on a
     /// screen `width` columns wide.
     pub fn value(&self, width: usize) -> Option<&str> {
-        match (self.tab, &self.listing) {
-            (Tab::Code, Ok(listing)) => listing.value(width),
-            _ => None,
+        match self.pane() {
+            Pane::Listing(listing) => listing.value(width),
+            Pane::Printed(_) | Pane::NotYet(_) | Pane::Refused(_) => None,
         }
     }
 
     /// Whether some line or row links to another item.
     pub fn has_links(&self) -> bool {
-        match (self.tab, &self.listing) {
-            (Tab::Code, Ok(listing)) => listing.has_links(),
-            _ => self.printed().is_some_and(Printed::has_links),
+        match self.pane() {
+            Pane::Listing(listing) => listing.has_links(),
+            Pane::Printed(printed) => printed.has_links(),
+            Pane::NotYet(_) | Pane::Refused(_) => false,
         }
     }
 
     /// The cursor over the tab's lines or rows.
     pub fn cursor(&mut self) -> Option<&mut Cursor> {
-        if self.tab == Tab::Code {
-            return self.listing.as_mut().ok().map(ListingTab::cursor);
+        match self.pane_mut() {
+            Pane::Listing(listing) => Some(listing.cursor()),
+            Pane::Printed(printed) => Some(printed.cursor()),
+            Pane::NotYet(_) | Pane::Refused(_) => None,
         }
-        self.printed_mut().map(Printed::cursor)
     }
 
     /// What find calls the tab's rows: "line" on a function's code.
     pub fn row_noun(&self) -> &'static str {
-        match (self.tab, &self.listing) {
-            (Tab::Code, Ok(listing)) if !listing.is_data() => "line",
-            _ => "row",
+        match self.pane() {
+            Pane::Listing(listing) if !listing.is_data() => "line",
+            Pane::Listing(_) | Pane::Printed(_) | Pane::NotYet(_) | Pane::Refused(_) => "row",
         }
     }
 
     /// The tab's lines or rows that have `lowercase`, ignoring case.
     pub fn rows_with(&self, lowercase: &str) -> Vec<usize> {
-        match (self.tab, &self.listing) {
-            (Tab::Code, Ok(listing)) => listing.rows_with(lowercase),
-            _ => (self.printed()).map_or_else(Vec::new, |printed| printed.rows_with(lowercase)),
+        match self.pane() {
+            Pane::Listing(listing) => listing.rows_with(lowercase),
+            Pane::Printed(printed) => printed.rows_with(lowercase),
+            Pane::NotYet(_) | Pane::Refused(_) => Vec::new(),
         }
     }
 
@@ -517,9 +602,57 @@ impl ItemPage {
     /// A function's code has none. Under a data object's contents is the
     /// objdump command that prints its bytes.
     pub fn command(&self) -> Option<&str> {
-        match (self.tab, &self.listing) {
-            (Tab::Code, Ok(listing)) => listing.command(),
-            _ => self.printed().map(Printed::command),
+        match self.pane() {
+            Pane::Listing(listing) => listing.command(),
+            Pane::Printed(printed) => Some(printed.command()),
+            Pane::NotYet(_) | Pane::Refused(_) => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+
+    use super::*;
+    use crate::commands::browse::keys::BINDINGS;
+
+    #[test]
+    fn the_help_names_every_tab_with_its_key() {
+        let shows_a_tab =
+            |&(_, _, action): &(KeyCode, KeyModifiers, Action)| matches!(action, Action::Tab(_));
+        let binding = (BINDINGS.iter())
+            .find(|binding| binding.keys.iter().any(shows_a_tab))
+            .unwrap();
+        // "tabs: 1 code or contents, 2 callees, …", in the order of
+        // Tab::ALL, which has every tab once.
+        let named: Vec<&str> = (binding.what.strip_prefix("tabs: ").unwrap())
+            .split(", ")
+            .collect();
+        assert_eq!(named.len(), Tab::ALL.len(), "{}", binding.what);
+        assert_eq!(binding.keys.len(), Tab::ALL.len());
+        for (tab, named) in Tab::ALL.into_iter().zip(named) {
+            // Tab 1 is "1 code or contents", as a data object's page names
+            // it.
+            let (on_code, on_data) = (tab.label(false), tab.label(true));
+            let words = if on_data == on_code {
+                on_code
+            } else {
+                let (_, name) = on_data.split_once(' ').unwrap();
+                format!("{on_code} or {name}")
+            };
+            assert_eq!(named, words, "{tab:?}");
+            let (number, _) = tab.number_and_name();
+            let key = number.to_string();
+            assert!(
+                binding.label.split(' ').any(|label| label == key),
+                "{tab:?}"
+            );
+            let code = KeyCode::Char(char::from(b'0' + number));
+            let binds = (code, KeyModifiers::NONE, Action::Tab(number));
+            assert!(binding.keys.contains(&binds), "{tab:?}");
+            assert_eq!(Tab::of_key(number), Some(tab));
+            assert_eq!(Tab::ALL[tab.index()], tab);
         }
     }
 }

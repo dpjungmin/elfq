@@ -3,7 +3,7 @@
 //! A [`Listing`] is what the tab lists: a function's code, which
 //! `code.rs` builds, or a data object's contents, which `contents.rs`
 //! builds, one line each, with the notes and links that `line_notes.rs`
-//! writes. A [`ListingTab`] draws a listing, moves over its lines and
+//! writes. A [`ListingPane`] draws a listing, moves over its lines and
 //! follows their links.
 
 use std::fmt::Write;
@@ -66,8 +66,8 @@ pub(super) struct ListingLine {
     pub(super) link: Option<Link>,
 }
 
-/// Tab 1 on the screen: an item's listing, and the cursor over its lines.
-pub(super) struct ListingTab {
+/// Tab 1's pane: an item's listing, and the cursor over its lines.
+pub(super) struct ListingPane {
     /// The item, by its index.
     index: usize,
     listing: Rc<Listing>,
@@ -174,20 +174,20 @@ impl Listing {
     }
 }
 
-impl ListingTab {
+impl ListingPane {
     /// The listing of item `index`, with the line that holds `at` selected.
-    pub(super) fn new(session: &Session, index: usize, at: Option<u64>) -> ListingTab {
+    pub(super) fn new(session: &Session, index: usize, at: Option<u64>) -> ListingPane {
         let listing = session.listing(index);
-        let mut tab = ListingTab {
+        let mut pane = ListingPane {
             index,
             cursor: Cursor::new(listing.lines.len()),
             listing,
             jumps: Vec::new(),
         };
         if let Some(at) = at {
-            tab.select_address(at);
+            pane.select_address(at);
         }
-        tab
+        pane
     }
 
     /// Whether it shows a data object's contents.
@@ -453,13 +453,13 @@ mod tests {
             let functions = (0..binary.items.len())
                 .filter(|&index| binary.items[index].kind == ItemKind::Function);
             for index in functions {
-                let mut tab = ListingTab::new(session, index, None);
-                for row in 0..tab.listing.lines.len() {
-                    let Some(Link::Node { node, via, .. }) = tab.listing.lines[row].link else {
+                let mut pane = ListingPane::new(session, index, None);
+                for row in 0..pane.listing.lines.len() {
+                    let Some(Link::Node { node, via, .. }) = pane.listing.lines[row].link else {
                         continue;
                     };
-                    tab.cursor.select(row);
-                    let preview = tab.preview(session).unwrap();
+                    pane.cursor.select(row);
+                    let preview = pane.preview(session).unwrap();
                     let opened = session.page_node(node);
                     let name = match opened {
                         _ if matches!(node, Node::Import(_)) && opened == Node::Item(index) => {

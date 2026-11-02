@@ -152,14 +152,13 @@ impl<'a> Session<'a> {
         self.keepers.is_none() && self.binary.kind != FileKind::SharedLibrary
     }
 
-    /// The tree of retained sizes that `retained SYMBOL` lists, if known.
+    /// The tree of retained sizes that `retained SYMBOL` lists.
     ///
-    /// It is built without a range, from what keeps each item, once the
-    /// session has worked it out, and with the session's names.
-    pub(super) fn retained_tree(&self) -> Option<RetainedTree<'_, 'a>> {
-        let keepers = self.keepers()?;
+    /// It is built without a range, from `keepers`, what keeps each item,
+    /// and with the session's names.
+    pub(super) fn retained_tree<'s>(&'s self, keepers: &'s Keepers) -> RetainedTree<'s, 'a> {
         let (binary, graph, names) = (self.binary, &self.graph, &self.names);
-        Some(RetainedTree::borrowing(binary, graph, &keepers.tree, names))
+        RetainedTree::borrowing(binary, graph, &keepers.tree, names)
     }
 
     /// Works out what keeps each item, and the shortest chain to each, once.

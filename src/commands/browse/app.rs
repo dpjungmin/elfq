@@ -145,10 +145,8 @@ impl<'a> App<'a> {
                 }
             }
         }
-        if let Some(View::Item(page)) = self.history.last_mut()
-            && page.waiting().is_some()
-        {
-            page.work(&self.session);
+        if let Some(View::Item(page)) = self.history.last_mut() {
+            page.work_out(&self.session);
         }
     }
 
