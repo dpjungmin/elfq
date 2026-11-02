@@ -19,6 +19,7 @@ const CPU_ARCH_PROFILE: u64 = 7;
 
 // The versions of the architecture, as Tag_CPU_arch gives them, that the
 // Cortex-M checks below ask about: Armv7, and those of Cortex-M cores.
+#[cfg(feature = "tui")]
 const ARMV7: u64 = 10;
 const ARMV6_M: u64 = 11;
 const ARMV6S_M: u64 = 12;
@@ -32,7 +33,8 @@ const ARMV8_1_M_MAINLINE: u64 = 21;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ArmArchitecture {
     /// Tag_CPU_arch: 10 for Armv7, 13 for Armv7E-M, 17 for Armv8-M
-    /// Mainline, and so on (see [`ArmArchitecture::name`]).
+    /// Mainline, and so on (see `ArmArchitecture::name`, built only with
+    /// the tui feature).
     pub version: u64,
     /// Tag_CPU_arch_profile, such as `b'M'`, when the file gives one.
     pub profile: Option<u8>,
@@ -40,6 +42,7 @@ pub struct ArmArchitecture {
 
 impl ArmArchitecture {
     /// Its name, as Arm writes it: `Armv7E-M`.
+    #[cfg(feature = "tui")]
     pub fn name(&self) -> String {
         let name = match self.version {
             0 => "an Arm architecture before Armv4",
@@ -103,6 +106,7 @@ impl ArmArchitecture {
     /// Armv6-M (Cortex-M0 and M0+, M1), Armv6S-M, Armv7-M (Cortex-M3) or
     /// Armv7E-M (Cortex-M4 and M7). Armv8-M cores, such as the Cortex-M33,
     /// add instructions that take the place of others.
+    #[cfg(feature = "tui")]
     pub fn is_cortex_m_up_to_v7(&self) -> bool {
         matches!(self.version, ARMV6_M | ARMV6S_M | ARMV7E_M)
             || (self.version == ARMV7 && self.profile == Some(b'M'))
@@ -254,6 +258,7 @@ mod tests {
         assert_eq!(read(&[5, b'7']), None);
     }
 
+    #[cfg(feature = "tui")]
     #[test]
     fn names_and_the_cores_that_get_text() {
         let architecture = |version, profile| ArmArchitecture { version, profile };
@@ -345,9 +350,12 @@ mod tests {
             assert_eq!(found.map(|a| a.version), expected.map(|e| e.0), "{name}");
             if let Some(found) = found {
                 arm += 1;
-                assert_eq!(found.name(), expected.unwrap().1, "{name}");
                 assert_eq!(found.profile, Some(b'M'), "{name}");
-                assert!(found.is_cortex_m_up_to_v7(), "{name}");
+                #[cfg(feature = "tui")]
+                {
+                    assert_eq!(found.name(), expected.unwrap().1, "{name}");
+                    assert!(found.is_cortex_m_up_to_v7(), "{name}");
+                }
             }
         }
         assert!(arm >= 20, "{arm}");

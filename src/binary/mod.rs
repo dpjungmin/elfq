@@ -167,7 +167,9 @@ pub struct Binary {
     pub arm_architecture: Option<ArmArchitecture>,
     /// The stretches of code that the file's `$d` symbols mark as data,
     /// such as literal pools, sorted. Only 32-bit Arm files have them,
-    /// unless they are stripped (see [`Binary::data_in_code`]).
+    /// unless they are stripped (see `Binary::data_in_code`, built only with
+    /// the tui feature).
+    #[cfg_attr(not(feature = "tui"), expect(dead_code))]
     data_in_code: Vec<AddressRange>,
     /// Problems that did not stop loading but may make answers incomplete.
     pub warnings: Vec<String>,
@@ -347,6 +349,7 @@ impl Binary {
     /// symbols mark as data among code, in order. Arm's ELF ABI has
     /// assemblers mark data, such as a literal pool, with `$d`, and code
     /// again with `$t` or `$a`. Stripped files have none.
+    #[cfg(feature = "tui")]
     pub fn data_in_code(&self, address: u64, size: u64) -> impl Iterator<Item = AddressRange> + '_ {
         let end = address.saturating_add(size);
         let first = self
