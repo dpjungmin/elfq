@@ -11,8 +11,6 @@
 
 use std::collections::{HashMap, HashSet};
 
-use object::SectionKind;
-
 use super::Facts;
 use super::events::Events;
 use super::ram_sections::RamSections;
@@ -900,7 +898,7 @@ impl<'a> EarlyRunFinder<'a> {
         } = *self.facts;
         let mut rows = Vec::new();
         for &section in &ram.sections {
-            if !ram.is_load(section) || ram.section(section).kind != SectionKind::Text {
+            if !ram.is_load(section) || !ram.section(section).is_code() {
                 continue;
             }
             let mut items: Vec<usize> = Vec::new();

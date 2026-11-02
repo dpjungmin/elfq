@@ -5,7 +5,7 @@
 use std::collections::{BTreeSet, HashSet};
 use std::rc::Rc;
 
-use crate::arch::startup::{Event, LoopStore, Source, Store};
+use crate::arch::startup::{Event, FunctionBounds, LoopStore, Source, Store};
 use crate::arch::thumb::SP;
 use crate::arch::thumb::decode::Flow;
 
@@ -51,7 +51,7 @@ pub(super) struct OpenLoop {
     /// written yet.
     pub(super) carried: [Option<Source>; 16],
     /// The function that the loop is in.
-    pub(super) bounds: Option<(u64, u64)>,
+    pub(super) bounds: Option<FunctionBounds>,
 }
 
 /// What the walk knows of the code of a loop that it goes through iteration

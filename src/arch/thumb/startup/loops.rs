@@ -7,7 +7,7 @@
 //! function finder took for a function ([`Walker::went_through`] and
 //! [`Walker::runs_into`]).
 
-use crate::arch::startup::{End, Event, Loop, LoopStore, Runs};
+use crate::arch::startup::{End, Event, FunctionBounds, Loop, LoopStore, Runs};
 use crate::arch::thumb::SP;
 use crate::arch::thumb::decode::{Flow, Operation, When};
 
@@ -27,12 +27,10 @@ impl Walker<'_> {
     /// `target`, as a loop's code that a function finder took for another
     /// function.
     pub(super) fn went_through(&self, run: &Run, target: u64) -> bool {
-        let Some((start, end)) = self.program.function_at(target) else {
+        let Some(function) = self.program.function_at(target) else {
             return false;
         };
-        run.order
-            .iter()
-            .any(|address| (start..end).contains(address))
+        run.order.iter().any(|&address| function.contains(address))
     }
 
     /// Whether the code from `target` runs on into the function the walk
@@ -40,7 +38,8 @@ impl Walker<'_> {
     /// when a function finder takes the loop's test, which a call goes to,
     /// for the function's start.
     pub(super) fn runs_into(&mut self, run: &Run, target: u64) -> bool {
-        let Some((start, _)) = run.bounds.filter(|&(start, _)| target < start) else {
+        let Some(FunctionBounds { start, .. }) = run.bounds.filter(|bounds| target < bounds.start)
+        else {
             return false;
         };
         let bounds = self.program.function_at(target);
@@ -285,8 +284,13 @@ impl Walker<'_> {
     /// code ends: the block at `start`, which a branch at `site` goes to,
     /// ends with a branch back to the loop's test, which leads to `site`,
     /// in the function.
-    fn out_of_line_body(&self, start: u64, site: u64, bounds: Option<(u64, u64)>) -> Option<u64> {
-        let lowest = bounds.map_or(site.saturating_sub(0x400), |(start, _)| start);
+    fn out_of_line_body(
+        &self,
+        start: u64,
+        site: u64,
+        bounds: Option<FunctionBounds>,
+    ) -> Option<u64> {
+        let lowest = bounds.map_or(site.saturating_sub(0x400), |bounds| bounds.start);
         for instruction in straight_line(self.program, start).take(16) {
             let address = instruction.address;
             if address >= start + 64 {

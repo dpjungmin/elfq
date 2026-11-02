@@ -9,7 +9,7 @@
 //! 3. a short name: the end of an item's path, as in `process_frame` for
 //!    `app::process_frame`, or `Gain::run` for
 //!    `<app::Gain as app::Stage>::run` (see
-//!    [`short_names`](crate::binary::short_names)).
+//!    [`short_names`](crate::binary::names::short_names)).
 //!
 //! When SYMBOL gives another of an item's names, or an address inside it,
 //! the answer's first line says so (see [`Symbol::lead_name`]).

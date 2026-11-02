@@ -3,7 +3,7 @@
 //! call that it doesn't follow to a return may change
 //! ([`Walker::clobbers`]).
 
-use crate::arch::startup::{Call, End, Event, How, Through};
+use crate::arch::startup::{Call, End, Event, FunctionBounds, How, Through};
 use crate::arch::thumb::decode::{Effect, Flow, Operation, Registers};
 use crate::arch::thumb::{ARGUMENTS, CALL_CLOBBERS, LR, SP};
 
@@ -60,7 +60,7 @@ impl Walker<'_> {
         };
         let mut address = start;
         while address < end {
-            if function && self.is_data(Some((start, end)), address) {
+            if function && self.is_data(Some(FunctionBounds { start, end }), address) {
                 address += 2;
                 continue;
             }
@@ -101,7 +101,9 @@ impl Walker<'_> {
     /// leaves (see `Known::results`).
     fn clobbers(&mut self, target: Option<u64>) -> (Registers, u8) {
         let function = target.and_then(|target| self.program.function_at(target));
-        let Some((start, end)) = function.filter(|&(start, _)| Some(start) == target) else {
+        let Some(FunctionBounds { start, end }) =
+            function.filter(|function| Some(function.start) == target)
+        else {
             return (CALL_CLOBBERS, ARGUMENTS as u8);
         };
         if let Some(&clobbers) = self.clobbers.get(&start) {

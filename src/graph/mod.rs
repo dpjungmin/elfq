@@ -452,12 +452,12 @@ fn items_used_at(binary: &Binary, address: u64) -> Vec<usize> {
     let block = binary
         .merged_variables
         .iter()
-        .find(|&&(start, _)| start == address);
+        .find(|block| block.start == address);
     match block {
-        Some(&(start, size)) => {
-            let first = binary.items.partition_point(|item| item.address < start);
+        Some(block) => {
+            let first = (binary.items).partition_point(|item| item.address < block.start);
             (first..binary.items.len())
-                .take_while(|&index| binary.items[index].address < start + size)
+                .take_while(|&index| binary.items[index].address < block.end)
                 .collect()
         }
         None => binary.item_at(address).into_iter().collect(),

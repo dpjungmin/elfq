@@ -3,7 +3,7 @@
 //! that it compares with serve the go-to box in `browse` too.
 
 use super::Names;
-use crate::binary::{demangle, for_each_short_name, short_names};
+use crate::binary::names;
 use crate::commands::text;
 use crate::graph::Node;
 
@@ -90,7 +90,11 @@ impl<'a> Names<'a> {
             let close: Vec<(usize, String)> = self
                 .names_of(node)
                 .into_iter()
-                .flat_map(|name| short_names(name).into_iter().chain([name.to_string()]))
+                .flat_map(|name| {
+                    names::short_names(name)
+                        .into_iter()
+                        .chain([name.to_string()])
+                })
                 .filter_map(|name| Some((distance(&name.to_lowercase())?, name)))
                 .collect();
             let nearest = close.iter().map(|(distance, _)| *distance).min()?;
@@ -116,9 +120,9 @@ impl<'a> Names<'a> {
         let mut similar: Vec<(usize, usize, &str, Node)> = (0..suggestable.nodes.len())
             .filter_map(|at| {
                 let (node, short_names, parts) = suggestable.short_names(at);
-                let names = lowercase.names(self.position(node));
+                let lowercase_names = lowercase.names(self.position(node));
                 let mut nearest = None;
-                for name in names.chain(short_names) {
+                for name in lowercase_names.chain(short_names) {
                     match distance(name) {
                         Some(0) => {
                             nearest = Some(0);
@@ -161,7 +165,7 @@ impl<'a> Names<'a> {
             // only in a part that it leaves out, such as a generic argument.
             let suggestion = closest
                 .into_iter()
-                .filter(|name| demangle(name).is_none() && self.finds_only(name, node))
+                .filter(|name| names::demangle(name).is_none() && self.finds_only(name, node))
                 .min_by(|a, b| a.len().cmp(&b.len()).then(a.cmp(b)))
                 .or_else(|| {
                     let query_for = self.query_for(node);
@@ -242,11 +246,11 @@ impl<'a> Names<'a> {
             for node in items.chain(imports) {
                 let (first_end, first_part) = (suggestable.ends.len(), suggestable.parts.len());
                 suggestable.nodes.push((node, first_end, first_part));
-                let names = lowercase.starts[self.position(node)]..;
-                for (at, name) in names.zip(self.names_of(node)) {
+                let starts = lowercase.starts[self.position(node)]..;
+                for (at, name) in starts.zip(self.names_of(node)) {
                     // Each short name once, where it is a part of `name`
                     // when it can be.
-                    for_each_short_name(name, |short_name, start| {
+                    names::for_each_short_name(name, |short_name, start| {
                         if short_name == name {
                             return;
                         }

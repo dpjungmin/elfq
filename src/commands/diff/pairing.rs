@@ -15,7 +15,7 @@ use std::hash::Hash;
 
 use serde::Serialize;
 
-use crate::binary::{Binary, Item, ItemKind, Source, without_copy_suffixes};
+use crate::binary::{Binary, Item, ItemKind, Source, names};
 use crate::graph::{Graph, Node, ReferenceKind};
 
 /// The rule that paired two items, as JSON's `paired_by` says it.
@@ -92,7 +92,7 @@ fn by_other_name(pairing: &mut Pairing, old: &Binary, new: &Binary) {
 fn by_copy_name(pairing: &mut Pairing, old: &Binary, new: &Binary) {
     pairing.pair_unique(old, new, PairedBy::Name, |binary, index| {
         let item = &binary.items[index];
-        pairs_by_name(item, &item.name).then(|| without_copy_suffixes(&item.name))
+        pairs_by_name(item, &item.name).then(|| names::without_copy_suffixes(&item.name))
     });
 }
 
@@ -394,16 +394,18 @@ fn trimmed_bytes<'b>(binary: &'b Binary, item: &Item) -> Option<&'b [u8]> {
 /// `anon.` objects. Such names never pair items.
 pub(super) fn is_made_name(item: &Item, name: &str) -> bool {
     match item.source {
-        Source::EhFrame | Source::EntryPoint | Source::Reached | Source::Reference => true,
-        // `.text@0x8000000`, for a vector table that is only part of its
-        // section, has an address; `.init_array` doesn't.
-        Source::Section => name.contains("@0x"),
         Source::SymbolTable | Source::DynamicSymbolTable | Source::Plt => {
             name.starts_with(".L")
                 || name == ".str"
                 || name.starts_with(".str.")
                 || is_anonymous(name)
         }
+        // An item that elfq names has no aliases, so `name` is that name.
+        Source::EhFrame
+        | Source::EntryPoint
+        | Source::Reached
+        | Source::Reference
+        | Source::Section => item.has_made_name(),
     }
 }
 
@@ -423,7 +425,7 @@ pub(super) fn numbered_name<'n>(item: &Item, name: &'n str) -> Option<&'n str> {
     if item.kind != ItemKind::Data {
         return None;
     }
-    let (before, number) = without_copy_suffixes(name).rsplit_once('.')?;
+    let (before, number) = names::without_copy_suffixes(name).rsplit_once('.')?;
     let is_number = !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit());
     let mut c_name = before.bytes();
     let is_c_name = c_name

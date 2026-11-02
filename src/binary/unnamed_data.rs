@@ -12,9 +12,7 @@
 //! Firmware has no list of stored pointers, and a word in its data could be
 //! a pointer or just a number, so there only code finds unnamed data.
 
-use object::SectionKind;
-
-use super::{Binary, Item, ItemKind, RelocationTarget, Section, Source};
+use super::{Binary, Item, ItemKind, RelocationTarget, Source, made_names};
 use crate::arch::CodeReferenceKind;
 
 /// Returns an item for each unnamed data object, sorted by address.
@@ -32,7 +30,7 @@ pub(super) fn items(binary: &Binary) -> Vec<Item> {
                 let section = &binary.sections[index];
                 // In Thumb code, what no function covers is constants, as
                 // when a linker script puts `.rodata` in `.text`.
-                holds_data(section) || (binary.thumb && section.kind == SectionKind::Text)
+                section.holds_data() || (binary.thumb && section.is_code())
             })
         })
         .collect();
@@ -52,7 +50,7 @@ pub(super) fn items(binary: &Binary) -> Vec<Item> {
             .min(next_start)
             .min(next_item);
         items.push(Item {
-            name: format!("{}@{start:#x}", section.name),
+            name: made_names::data_name_at(section, start),
             aliases: Vec::new(),
             kind: ItemKind::Data,
             address: start,
@@ -90,43 +88,4 @@ fn referenced_addresses(binary: &Binary) -> Vec<u64> {
         }
     }
     addresses
-}
-
-/// Whether `section` holds data, whose unnamed objects get items. Not code,
-/// though in Thumb files the constants in code get items too (see
-/// `items`), and not the global offset table: elfq follows the pointers
-/// stored there to what they point at instead.
-pub(super) fn holds_data(section: &Section) -> bool {
-    matches!(
-        section.kind,
-        SectionKind::Data
-            | SectionKind::ReadOnlyData
-            | SectionKind::ReadOnlyString
-            | SectionKind::UninitializedData
-    ) && !matches!(section.name.as_str(), ".got" | ".got.plt")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn only_data_sections_hold_unnamed_data() {
-        let section = |name: &str, kind| Section {
-            name: name.to_string(),
-            address: 0x1000,
-            size: 0x100,
-            kind,
-            allocated: true,
-            file_range: None,
-            entry_size: 0,
-            load_address: None,
-        };
-        assert!(holds_data(&section(".rodata", SectionKind::ReadOnlyData)));
-        assert!(holds_data(&section(".data.rel.ro", SectionKind::Data)));
-        assert!(holds_data(&section(".bss", SectionKind::UninitializedData)));
-        assert!(!holds_data(&section(".text", SectionKind::Text)));
-        assert!(!holds_data(&section(".got", SectionKind::Data)));
-        assert!(!holds_data(&section(".tdata", SectionKind::Tls)));
-    }
 }

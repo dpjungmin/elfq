@@ -13,7 +13,7 @@ use super::start::{Main, MainFrom};
 use super::steps::{Does, Step, Way, number};
 use super::{Answer, Ending, Facts, Firmware};
 use crate::arch::startup::{End, Through, loop_head};
-use crate::binary::{ItemKind, Section};
+use crate::binary::{ItemKind, Section, made_names};
 use crate::commands::text::{self as house, names_text, plural, shell_quote};
 use crate::render::{Align, Table};
 
@@ -251,7 +251,7 @@ fn main_text(firmware: &Firmware, main: Main) -> String {
 /// says it.
 fn at_name(firmware: &Firmware, address: u64) -> String {
     let name = firmware.name(address);
-    if name.contains('@') || name.starts_with("fn_0x") {
+    if made_names::says_address(&name) {
         name
     } else {
         format!("{name} at {address:#x}")
@@ -468,7 +468,7 @@ fn data_in<'a>(firmware: &'a Firmware, ram: &RamSections, section: usize) -> Vec
             item.kind == ItemKind::Data
                 && start <= item.address
                 && item.address < ram.end(section)
-                && !item.name.contains('@')
+                && !made_names::says_data_address(&item.name)
         })
         .map(|item| item.name.as_str())
         .collect()

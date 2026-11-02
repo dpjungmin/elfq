@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use super::item::listing;
 use crate::arch::Line;
-use crate::binary::{Binary, ItemKind};
+use crate::binary::{AddressRange, Binary, ItemKind};
 
 /// The lines of each function of `binary`, as its page prints them, and
 /// where the function ends.
@@ -115,14 +115,14 @@ fn stripped_samples_print_data_where_their_twins_mark_it() {
     let mut wrong = Vec::new();
     for (name, stripped) in cortex_m_samples("-stripped.elf") {
         let twin = Binary::load(&testdata().join(format!("bin/{name}-nodebug.elf"))).unwrap();
-        let data: Vec<(u64, u64)> = twin.data_in_code(0, u64::MAX).collect();
+        let data: Vec<AddressRange> = twin.data_in_code(0, u64::MAX).collect();
         stretches += data.len();
         for (lines, end) in functions(&stripped) {
             let ends = lines.iter().skip(1).map(|line| line.address).chain([end]);
             for (line, line_end) in lines.iter().zip(ends) {
                 let marked = data
                     .iter()
-                    .any(|&(start, data_end)| start < line_end && line.address < data_end);
+                    .any(|stretch| stretch.start < line_end && line.address < stretch.end);
                 let instruction =
                     !line.mnemonic.starts_with('.') || line.mnemonic.starts_with(".inst");
                 if marked && instruction {

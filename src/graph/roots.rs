@@ -19,7 +19,7 @@
 
 use object::SectionKind;
 
-use crate::binary::{Binary, FileKind, STARTUP_ARRAYS, Source};
+use crate::binary::{Binary, FileKind};
 
 use super::{Node, item_starting_at, pointer_target};
 
@@ -75,23 +75,18 @@ pub(super) fn find(binary: &Binary) -> Vec<Root> {
         if !section.allocated {
             continue;
         }
-        let name = section.name.as_str();
-        if STARTUP_CODE.contains(&name)
-            || STARTUP_ARRAYS.contains(&name)
+        if STARTUP_CODE.contains(&section.name.as_str())
+            || section.is_startup_array()
             || section.kind == SectionKind::Note
         {
             add(items_in_section(binary, index), RootKind::InSection(index));
         }
-        if STARTUP_ARRAYS.contains(&name) {
+        if section.is_startup_array() {
             add(listed_in(binary, index), RootKind::ListedIn(index));
         }
     }
-    // PLT headers are named after their section; the stubs after what they
-    // jump to.
-    let plt_headers = (0..binary.items.len()).filter(|&index| {
-        let item = &binary.items[index];
-        item.source == Source::Plt && item.name == binary.sections[item.section].name
-    });
+    let plt_headers =
+        (0..binary.items.len()).filter(|&index| binary.is_plt_header(&binary.items[index]));
     add(plt_headers.map(Node::Item).collect(), RootKind::PltHeader);
     let personalities = binary.used_by_unwinder.iter();
     add(
@@ -151,9 +146,9 @@ fn vector_table(binary: &Binary) -> (Vec<Node>, Vec<Node>) {
     let items = slots.filter_map(|slot| binary.item_at(slot).map(Node::Item));
     // A handler can start at address 0, as in a Cortex-M7's ITCM, where
     // `item_starting_at` would see a null pointer.
-    let handlers = table.handlers.iter().filter_map(|&handler| {
-        let index = binary.item_at(handler)?;
-        (binary.items[index].address == handler).then_some(Node::Item(index))
+    let handlers = table.handlers.iter().filter_map(|handler| {
+        let index = binary.item_at(handler.address)?;
+        (binary.items[index].address == handler.address).then_some(Node::Item(index))
     });
     (items.collect(), handlers.collect())
 }

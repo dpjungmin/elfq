@@ -2,15 +2,13 @@
 //! it runs, what memory holds at reset, and where its functions are.
 //! docs/design.md's "Startup, end to end" shows where this fits.
 
-use object::SectionKind;
-
 use super::{Binary, ItemKind, word};
-use crate::arch::startup::Program;
+use crate::arch::startup::{FunctionBounds, Program};
 
 impl Program for Binary {
     fn code(&self, address: u64) -> Option<&[u8]> {
         let section = &self.sections[self.section_at(address)?];
-        if section.kind != SectionKind::Text {
+        if !section.is_code() {
             return None;
         }
         let rest = section.address + section.size - address;
@@ -38,9 +36,11 @@ impl Program for Binary {
         (bytes.len() == 4).then(|| word(bytes, self.endianness) as u32)
     }
 
-    fn function_at(&self, address: u64) -> Option<(u64, u64)> {
+    fn function_at(&self, address: u64) -> Option<FunctionBounds> {
         let item = &self.items[self.item_at(address)?];
-        (item.kind == ItemKind::Function && item.size > 0)
-            .then(|| (item.address, item.address + item.size))
+        (item.kind == ItemKind::Function && item.size > 0).then(|| FunctionBounds {
+            start: item.address,
+            end: item.address + item.size,
+        })
     }
 }

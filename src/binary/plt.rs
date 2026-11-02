@@ -1,4 +1,5 @@
-//! Names for PLT stubs.
+//! Items for PLT stubs, named after what they jump to, and the file's own
+//! functions that stubs jump to.
 //!
 //! Code calls a function in a shared library through a stub in the procedure
 //! linkage table (`.plt`, `.plt.sec` or `.plt.got`), which jumps through a
@@ -79,13 +80,9 @@ pub(super) fn stubs(binary: &Binary, symbols: &[Item]) -> Vec<Item> {
 pub(super) fn own_function_stubs(binary: &Binary) -> HashMap<usize, usize> {
     let mut stubs = HashMap::new();
     for (index, stub) in binary.items.iter().enumerate() {
-        // Headers are named after their section.
-        let Some(name) = stub.name.strip_suffix("@plt") else {
+        let Some(name) = name_jumped_to(stub) else {
             continue;
         };
-        if stub.source != Source::Plt {
-            continue;
-        }
         let Some(entry) = binary.bytes(stub.address, stub.size) else {
             continue;
         };
@@ -103,6 +100,26 @@ pub(super) fn own_function_stubs(binary: &Binary) -> HashMap<usize, usize> {
         }
     }
     stubs
+}
+
+/// For a PLT stub, the name of what it jumps to, read from the stub's own
+/// name, as [`stubs`] made it: `write` for `write@plt`. `None` for any
+/// other item, and for a table's header unless its section's own name ends
+/// in `@plt` (see [`Binary::is_plt_header`]).
+fn name_jumped_to(item: &Item) -> Option<&str> {
+    if item.source != Source::Plt {
+        return None;
+    }
+    item.name.strip_suffix("@plt")
+}
+
+impl Binary {
+    /// Whether `item` is the header of a procedure linkage table. [`stubs`]
+    /// names a header after its section, as `.plt`, and a stub after what
+    /// it jumps to, as `write@plt` (see `name_jumped_to`).
+    pub(crate) fn is_plt_header(&self, item: &Item) -> bool {
+        item.source == Source::Plt && item.name == self.sections[item.section].name
+    }
 }
 
 /// Where the PLT entry at `address` jumps: what the dynamic loader stores in

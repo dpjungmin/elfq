@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use crate::arch::startup::{Event, LoopStore, Source};
+use crate::arch::startup::{Event, FunctionBounds, LoopStore, Source};
 use crate::arch::thumb::SP;
 use crate::arch::thumb::decode::{Registers, each};
 
@@ -257,7 +257,7 @@ pub(super) struct Alternative {
     /// How many instructions the walk had gone through.
     pub(super) order: usize,
     pub(super) pending: Vec<(u64, u64)>,
-    pub(super) bounds: Option<(u64, u64)>,
+    pub(super) bounds: Option<FunctionBounds>,
 }
 
 /// The words that code stored from when memory held `before` to when it

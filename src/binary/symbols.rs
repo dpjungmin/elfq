@@ -7,7 +7,18 @@ use std::collections::{HashMap, HashSet};
 use object::{Object, ObjectSymbol, SymbolKind, SymbolSection};
 
 use super::names::demangle;
-use super::{Item, ItemKind, Section, Source, code_address};
+use super::{AddressRange, Item, ItemKind, Section, Source, code_address};
+
+/// What elfq reads from the symbol tables.
+pub(super) struct SymbolTables {
+    /// One item per kind and address that has function or data symbols,
+    /// sorted by kind, then by address.
+    pub items: Vec<Item>,
+    /// The blocks of merged variables (see [`Binary::merged_variables`]).
+    ///
+    /// [`Binary::merged_variables`]: super::Binary::merged_variables
+    pub merged_variables: Vec<AddressRange>,
+}
 
 /// A symbol that can become an item, before aliases are merged.
 struct Candidate {
@@ -32,10 +43,8 @@ enum Binding {
     Global,
 }
 
-/// Returns one item per kind and address that has function or data symbols,
-/// sorted by kind, then by address, and the blocks of merged variables, as
-/// `(address, size)`.
-pub(super) fn items(file: &object::File, sections: &[Section]) -> (Vec<Item>, Vec<(u64, u64)>) {
+/// Reads the symbol tables.
+pub(super) fn read(file: &object::File, sections: &[Section]) -> SymbolTables {
     // A shared library has most of the symbols in `.dynsym` in `.symtab`
     // too, and demangling takes a while: each of those is demangled once,
     // and the second table takes its name from the first.
@@ -63,8 +72,11 @@ pub(super) fn items(file: &object::File, sections: &[Section]) -> (Vec<Item>, Ve
             Some(&names),
         )
     }));
-    let blocks = drop_containers(&mut candidates);
-    (merge_aliases(candidates), blocks)
+    let merged_variables = drop_containers(&mut candidates);
+    SymbolTables {
+        items: merge_aliases(candidates),
+        merged_variables,
+    }
 }
 
 /// The candidate that `symbol` makes, if any. `names` has the readable
@@ -99,7 +111,7 @@ fn candidate(
     // table or an estimate, as one without a size does, and a data object
     // without a size is dropped below, and becomes unnamed data where
     // something refers to it.
-    let size = super::fitting_size(address, symbol.size()).unwrap_or(0);
+    let size = super::sections::fitting_size(address, symbol.size()).unwrap_or(0);
     // Zero-size data symbols mark positions, like `_edata`; they hold nothing.
     if kind == ItemKind::Data && size == 0 {
         return None;
@@ -186,9 +198,9 @@ fn add_alias(item: &mut Item, name: String) {
 
 /// Drops data symbols that only enclose other data symbols, such as LLVM's
 /// `.L_MergedGlobals`, which covers several variables placed side by side.
-/// The variables inside are the items. Returns the dropped symbols, as
-/// `(address, size)`.
-fn drop_containers(candidates: &mut Vec<Candidate>) -> Vec<(u64, u64)> {
+/// The variables inside are the items. Returns where the dropped symbols
+/// were.
+fn drop_containers(candidates: &mut Vec<Candidate>) -> Vec<AddressRange> {
     candidates.sort_by_key(|c| (c.kind, c.address, Reverse(c.size)));
     let shape = |c: &Candidate| (c.kind, c.address, c.size);
     let keep: Vec<bool> = (0..candidates.len())
@@ -209,24 +221,38 @@ fn drop_containers(candidates: &mut Vec<Candidate>) -> Vec<(u64, u64)> {
         .iter()
         .zip(&keep)
         .filter(|(_, keep)| !**keep)
-        .map(|(candidate, _)| (candidate.address, candidate.size))
+        .map(|(candidate, _)| AddressRange {
+            start: candidate.address,
+            end: candidate.address + candidate.size,
+        })
         .collect();
     let mut keep = keep.into_iter();
     candidates.retain(|_| keep.next().unwrap_or(true));
     containers
 }
 
-/// The stretches of code that the file's `$d` symbols mark as data, as
-/// `(start, end)`, sorted. Arm's ELF ABI has assemblers mark where Thumb
-/// code starts with a `$t` symbol, Arm code with `$a`, and data among code,
-/// such as a literal pool, with `$d`; each stretch runs to the next such
-/// symbol in its section, or to the section's end. Stripping removes them.
-pub(super) fn data_in_code(file: &object::File, sections: &[Section]) -> Vec<(u64, u64)> {
+/// A mapping symbol: `$d`, which marks where data among code starts, or
+/// `$t` or `$a`, which mark where code starts again. Ordered by section,
+/// then address, then with `$t` and `$a` before `$d`.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct MappingSymbol {
+    /// Its section, as an index into the sections.
+    section: usize,
+    address: u64,
+    /// Whether it is `$d`.
+    marks_data: bool,
+}
+
+/// The stretches of code that the file's `$d` symbols mark as data,
+/// sorted. Arm's ELF ABI has assemblers mark where Thumb code starts with
+/// a `$t` symbol, Arm code with `$a`, and data among code, such as a
+/// literal pool, with `$d`; each stretch runs to the next such symbol in
+/// its section, or to the section's end. Stripping removes them.
+pub(super) fn data_in_code(file: &object::File, sections: &[Section]) -> Vec<AddressRange> {
     if file.architecture() != object::Architecture::Arm {
         return Vec::new();
     }
-    // Each mapping symbol, as (section, address, whether it marks data).
-    let mut marks: Vec<(usize, u64, bool)> = file
+    let mut marks: Vec<MappingSymbol> = file
         .symbols()
         .filter_map(|symbol| {
             let name = symbol.name_bytes().ok()?;
@@ -234,23 +260,30 @@ pub(super) fn data_in_code(file: &object::File, sections: &[Section]) -> Vec<(u6
             if !matches!(kind, b"$d" | b"$t" | b"$a") || !matches!(name.get(2), None | Some(b'.')) {
                 return None;
             }
-            Some((symbol.section_index()?.0, symbol.address(), kind == b"$d"))
+            Some(MappingSymbol {
+                section: symbol.section_index()?.0,
+                address: symbol.address(),
+                marks_data: kind == b"$d",
+            })
         })
         .collect();
     marks.sort_unstable();
     let mut stretches = Vec::new();
-    for (index, &(section, start, data)) in marks.iter().enumerate() {
-        let Some(info) = sections.get(section).filter(|info| info.allocated) else {
+    for (index, mark) in marks.iter().enumerate() {
+        let Some(info) = sections.get(mark.section).filter(|info| info.allocated) else {
             continue;
         };
         let end = match marks.get(index + 1) {
-            Some(&(next_section, next, _)) if next_section == section => next,
+            Some(next) if next.section == mark.section => next.address,
             _ => info.address + info.size,
         };
-        if data && start < end {
-            stretches.push((start, end));
+        if mark.marks_data && mark.address < end {
+            stretches.push(AddressRange {
+                start: mark.address,
+                end,
+            });
         }
     }
-    stretches.sort_unstable();
+    stretches.sort_unstable_by_key(|stretch| (stretch.start, stretch.end));
     stretches
 }

@@ -7,7 +7,7 @@ use super::each_iteration::same_words;
 use super::execute::{add, holds, subtract};
 use super::walk_state::Flags;
 use super::{branches_past, passes_result, walk};
-use crate::arch::startup::{DEPTH, Event, How, Program, Start, Walk};
+use crate::arch::startup::{DEPTH, Event, FunctionBounds, How, Program, Start, Walk};
 
 /// Where the code of each test is, as in flash.
 const FLASH: u64 = 0x0800_0000;
@@ -19,7 +19,7 @@ const FLASH: u64 = 0x0800_0000;
 struct Flash {
     code: Vec<u8>,
     /// Where each function starts and ends.
-    functions: Vec<(u64, u64)>,
+    functions: Vec<FunctionBounds>,
 }
 
 impl Program for Flash {
@@ -33,8 +33,8 @@ impl Program for Flash {
         Some(u32::from_le_bytes(bytes.try_into().ok()?))
     }
 
-    fn function_at(&self, address: u64) -> Option<(u64, u64)> {
-        (self.functions.iter().copied()).find(|&(start, end)| (start..end).contains(&address))
+    fn function_at(&self, address: u64) -> Option<FunctionBounds> {
+        (self.functions.iter().copied()).find(|function| function.contains(address))
     }
 }
 
@@ -53,7 +53,9 @@ fn walk_units(units: &[u16], functions: &[u64], main: Option<u64>, follow: u32) 
     let end = FLASH + code.len() as u64;
     let ends = functions.iter().skip(1).copied().chain([end]);
     let flash = Flash {
-        functions: functions.iter().copied().zip(ends).collect(),
+        functions: (functions.iter().copied().zip(ends))
+            .map(|(start, end)| FunctionBounds { start, end })
+            .collect(),
         code,
     };
     let start = Start {
@@ -2375,7 +2377,7 @@ fn flash(units: &[u16]) -> Flash {
     let code: Vec<u8> = units.iter().flat_map(|unit| unit.to_le_bytes()).collect();
     let end = FLASH + code.len() as u64;
     Flash {
-        functions: vec![(FLASH, end)],
+        functions: vec![FunctionBounds { start: FLASH, end }],
         code,
     }
 }

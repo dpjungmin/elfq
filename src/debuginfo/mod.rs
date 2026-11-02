@@ -217,7 +217,7 @@ impl<'a, 'd> Walk<'a, 'd> {
             };
             // Rust and C++ linkage names demangle to their whole path;
             // DW_AT_name has only the last part.
-            if let Some(demangled) = linkage_name.as_deref().and_then(binary::demangle) {
+            if let Some(demangled) = linkage_name.as_deref().and_then(binary::names::demangle) {
                 return Ok(Some(demangled));
             }
             if let Some(value) = entry.attr_value(gimli::DW_AT_name) {

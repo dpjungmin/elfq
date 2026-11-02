@@ -61,9 +61,9 @@ terminal is as it was; `.github/workflows/ci.yml` has the command.
 | `src/commands/diff/` | `elfq FILE diff NEW`: `mod.rs` reads both files and gives the exit status, `blocks.rs` works out the blocks of memory that both builds share and what changed in each, `pairing.rs` pairs the builds' items, `rows.rs` works out what changed and the rows of MOVED and CHANGE, `edited.rs` which items of the same size are edited, `crossings.rs` the uses between blocks that are new or gone, and `text.rs` and `json.rs` write the answer. |
 | `src/commands/startup/` | `elfq FILE startup`: `mod.rs` refuses files that aren't Cortex-M firmware from their headers, and runs the rest, `start.rs` finds the reset handler and `main`, `ram_sections.rs` lists the load images and sections without contents that startup code sets up, and matches what a call or a loop copies or zeroes to them, `events.rs` says what the steps read of each of the walk's events, `steps.rs` reads the walk's calls and loops as the steps that copy and zero sections, with `pieces.rs`, which joins the bytes that loops and stores copy or zero into steps, and `unread.rs`, which works out what code that elfq can't follow may set up, `problems.rs` works out the state of each section when `main` starts, the problems and the notes, and `text.rs` and `json.rs` write the answer. `debug.rs` lists the events of the walk that the steps read, for `elfq FILE debug walk`. The unit tests build their walks with `fixtures.rs`; those of `problems.rs` and `steps.rs` are in `problems/tests.rs` and `steps/tests.rs`. |
 | `src/arch/` | Finding the addresses that machine code calls or uses, one module per instruction set (x86-64 and Thumb). The rest of elfq reads code through `InstructionSet`, in `mod.rs`, which a file whose code elfq can't read doesn't have. Thumb's has three parts: `thumb/sweep.rs` reads each instruction on its own, `thumb/decode.rs` says what an instruction does with the registers and the stack, and `thumb/values/` follows the addresses that code puts in registers to where a branch through one goes, as for long calls and veneers; `thumb/mod.rs` begins with a map of its files. `listing.rs` prints a function's code as text, for `browse`: x86-64 with iced-x86's formatter, and Thumb with thumb-asm, in the lines that `thumb::layout` cuts the code into with the same sweep as `scan`. `operands` finds the bits of a function's code that say where something is, such as the distance in a call, for `diff` to tell code that changed from code that only moved. `startup.rs` and `thumb/startup/` follow the code that a Cortex-M processor runs from reset, with the numbers in its registers and memory, for `startup`; `thumb/startup/mod.rs` begins with a map of its files, and design.md's [Startup, end to end](docs/design.md#startup-end-to-end) shows how the four `startup` modules hand off to each other. |
-| `src/binary/` | Reading an ELF file: its functions and data objects ("items") and where they were found, their names, imports, stored pointers and memory blocks, and in Arm files the core the code is for (`attributes.rs`) and the data that `$d` symbols mark among code. `memory.rs` reads only the headers and the bytes that the sections put in memory, which `diff` compares, and `header.rs` only the ELF header and program headers, for `startup` to refuse a file for another processor before loading it. Unnamed data, such as string literals, is found from what code and pointers refer to. Each function's code is scanned once, as the file loads (`Binary::code_references`). |
+| `src/binary/` | Reading an ELF file: its functions and data objects ("items") and where they were found, their names, imports, stored pointers and memory blocks, and in Arm files the core the code is for (`attributes.rs`) and the data that `$d` symbols mark among code. `mod.rs` holds the types and the queries on them, and begins with the steps of loading a file and a map of the files; `load.rs` takes those steps, and `sections.rs` parses the file, refusing one that isn't a linked program or library, and reads the section headers, for `load.rs` and `memory.rs`. `memory.rs` reads only the headers and the bytes that the sections put in memory, which `diff` compares, and `header.rs` only the ELF header and program headers, for `startup` to refuse a file for another processor before loading it. Unnamed data, such as string literals, is found from what code and pointers refer to. Each function's code is scanned once, as the file loads (`Binary::code_references`). `names.rs` makes mangled names readable and works out the short names that people type for long ones; its module doc says how a short name is found quickly. `made_names.rs` makes the names of items that no symbol names, such as `fn_0x8000040`, and tells them apart. `startup.rs` gives the startup walk (`arch::startup::Program`) the file's code, the words that memory holds at reset, as in flash or a load image, and where its functions are. The unit tests of `names.rs` and `vector_table.rs` are in `names/tests.rs` and `vector_table/tests.rs`. |
 | `src/graph/` | The reference graph that connects items, the roots where the program starts, the dominator tree that says what is exclusive to what, the shortest paths that `why` and `reach` show, the bytes that a function reaches (`reached.rs`), the items in ranges of memory (`items_in_ranges.rs`) and the references that cross the ranges' boundary, narrowed with `--from` or `--to` (`boundary.rs`), and where a linker's veneers jump to. |
-| `src/debuginfo/` | Reading DWARF, when the file has it: the copies of functions that the compiler inlined, for `inlined`, and for the error when SYMBOL names a function that the compiler inlined everywhere. |
+| `src/debuginfo/` | Reading DWARF, when the file has it: the copies of functions that the compiler inlined, for `inlined`, for the error when SYMBOL names a function that the compiler inlined everywhere, and for `startup`, to find a `main` that the compiler inlined. |
 | `src/render/` | Text output: tables, and the trees in their last column (`tree.rs`), which every command shows the same way: as rows that name the row they hang under (in `why`, only where chains branch), or drawn with `--tree`. |
 | `tests/it/` | Integration tests, built as one test program (`main.rs` lists its modules). See [Tests](#tests). |
 | `testdata/` | The sample programs and the ELF files built from them. See [Sample binaries](#sample-binaries). |
@@ -137,12 +137,45 @@ this list, and add to it when you bring in a word.
 
 - **item**: a function or data object in the file (`binary::Item`). Its
   place in `Binary::items` is an item index, named `index` or `item`.
+- **range**: the addresses from a start up to, but not including, an end
+  (`binary::AddressRange`), as `--range` reads them. An item keeps an
+  address and a size instead, and `Item::range` gives the range they
+  make. A section's or segment's `file_range`, named after the `object`
+  crate's, is an offset and a size in the file. **bounds**: where a
+  function starts and ends, in `arch`, which can't use `AddressRange`
+  (`arch::startup::FunctionBounds`).
+- **load**: elfq loads a file once, before a command answers: it reads
+  the sections, symbols and relocations and finds the items
+  (`Binary::load`, in `load.rs`). A section's load image, below, the
+  loadable segments that program headers list (`PT_LOAD`),
+  `LoadedMemory`, what a file puts in memory when it runs, and a Thumb
+  load, an instruction that reads memory, are other things.
 - **import**: a function from a shared library, which the file calls but
   doesn't hold. **node**: an item or an import, as the graph connects
   them (`graph::Node`). **root**: a node where the program starts, such as
   the entry point or a handler that the vector table lists (`graph::Root`).
 - **use**: a reference from one node to another, such as a call, a jump
   or a stored pointer: what `callers` and `callees` list.
+- **handler**: code that an entry of the Cortex-M vector table names,
+  which the processor runs for that entry's **exception**. An exception
+  is numbered by its entry, counting the stack pointer's as 0.
+  `binary::Handler` holds the two: the exception, and where the code
+  that handles it starts. The exceptions and panics that the unwinder
+  handles, in `eh_frame.rs`, are unrelated.
+- **short name**: a shorter name that also means a long one, as
+  `process_frame` means `app::process_frame` (`binary::names`). Items
+  are filed under their short names' keys, the last parts of their
+  paths, so that finding one needs only the short names of a few
+  (`names::short_name_key`). A name's **words**, in `names`, are its
+  runs of letters, digits, `_` and characters outside ASCII, unrelated
+  to the words of memory that `Binary::words` reads.
+- **made name**: a name made from where an item is, or from a counter or
+  a hash, so that it says nothing of which function or data the item
+  is: elfq's names for items that no symbol names, such as
+  `fn_0x8000040` and `.rodata@0x2004`, which change from build to
+  build, and `entry`, which names only where execution starts
+  (`binary::made_names`, `Item::has_made_name`); and in diff's pairing,
+  a compiler's, such as a `.L` label (`pairing::is_made_name`).
 - **keeps**, **kept by**: retained's words. An item keeps another when
   every chain from a root to the other goes through it, so removing it
   frees the other; the closest such item is what the other is kept by.

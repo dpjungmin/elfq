@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use elfq::binary::{Binary, Item, ItemKind, RelocationTarget, Source};
+use elfq::binary::{Binary, Handler, Item, ItemKind, RelocationTarget, Source};
 
 use crate::support::load_sample;
 
@@ -288,18 +288,27 @@ fn the_vector_table_is_found_by_its_shape() {
         // the CMSIS layout, where the table is first in `.text`, at the
         // first word of code.
         assert_eq!((table.address, table.size), (address, 0x40), "{sample}");
-        assert_eq!(table.handlers[0], stripped.entry, "{sample}");
-        for &handler in &table.handlers {
+        let reset = Handler {
+            exception: 1,
+            address: stripped.entry,
+        };
+        assert_eq!(table.handlers[0], reset, "{sample}");
+        for handler in &table.handlers {
+            let address = handler.address;
             assert!(
-                functions(&named).iter().any(|f| f.address == handler),
-                "{sample}: no function starts at {handler:#x}"
+                functions(&named).iter().any(|f| f.address == address),
+                "{sample}: no function starts at {address:#x}"
             );
         }
         assert_eq!(named.vector_table.as_ref(), Some(table), "{sample}");
     }
     // The Cortex-M7 sample's SysTick handler is in ITCM, at address 0.
     let m7 = load_sample("c-cortex-m7-stripped.elf");
-    assert_eq!(m7.vector_table.unwrap().handlers.last(), Some(&0));
+    let systick = Handler {
+        exception: 15,
+        address: 0,
+    };
+    assert_eq!(m7.vector_table.unwrap().handlers.last(), Some(&systick));
     assert_eq!(load_sample("c-x86_64.elf").vector_table, None);
 }
 

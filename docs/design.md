@@ -1170,12 +1170,13 @@ finds its items and has `arch` read each function's code once; `graph`
 connects the items by the references found there, and works out the roots,
 the dominator tree and the shortest chains; and the command picks what to
 show and writes it, as a table that `render` lays out, or as JSON.
-`debuginfo` reads DWARF beside the graph, for `inlined`, and to say when
-SYMBOL names a function that the compiler inlined. [Life of a
+`debuginfo` reads DWARF beside the graph, for `inlined`, to say when
+SYMBOL names a function that the compiler inlined, and for `startup`, to
+find a `main` that the compiler inlined. [Life of a
 command](#life-of-a-command) follows one command through the functions
 that do this.
 
-1. **Load** the file with the `object` crate: sections, with where the
+1. **Read** the file with the `object` crate: sections, with where the
    program headers store their load images, symbols, entry point, dynamic
    relocations.
 2. **Discover items**, each with an address, size and a record of how it
@@ -1198,16 +1199,15 @@ that do this.
    5. The entry point, as a function named `entry`, when it is in code, no
       function covers it, and it isn't in the vector table, as it is in
       firmware linked with no entry point whose `.text` begins with the
-      table.
-   6. The Cortex-M vector table, when no item covers any of it, named after
-      its section, or after the section and address (`.text@0x8000000`)
-      when it is only part of it.
-   7. In Thumb executables where neither the symbol tables nor `.eh_frame`
+      table. The Cortex-M vector table, when no item covers any of it,
+      named after its section, or after the section and address
+      (`.text@0x8000000`) when it is only part of it.
+   6. In Thumb executables where neither the symbol tables nor `.eh_frame`
       list a function, the functions that the code leads to from the entry
       point, the vector table's handlers and the startup arrays, and those
       whose Thumb addresses code loads or data holds, where the code before
       them ends (see `unnamed_functions.rs`).
-   8. Data that code or a stored pointer refers to where there is no item,
+   7. Data that code or a stored pointer refers to where there is no item,
       in a data section other than the global offset table or, in Thumb
       files, in code: vtables, string literals and, in stripped files,
       variables and the constants that some linker scripts put in `.text`.
@@ -1215,7 +1215,7 @@ that do this.
       to and runs to the next one, the next item or the end of its section;
       elfq never guesses which function it belongs to.
 
-   Before 8, a function whose size runs past the start of another function
+   Before 7, a function whose size runs past the start of another function
    in its section ends there when the functions that start inside it run
    to its end, as an entry point that shares its code with the next does;
    and each function still of unknown size runs to the next item in its
@@ -1310,9 +1310,10 @@ that do this.
    inlined-subroutine entry is a copy of one function in another, with the
    address ranges of its code. `inlined` adds them up. Copies whose code the
    linker dropped still have entries, so elfq skips those that don't start
-   inside an item. A SYMBOL that no item has is looked for among them too.
-   Nothing above depends on DWARF; source locations could make output
-   easier to follow later.
+   inside an item. A SYMBOL that no item has is looked for among them too,
+   and for `startup`, a `main` that the compiler inlined. Nothing above
+   depends on DWARF; source locations could make output easier to follow
+   later.
 
 ## Life of a command
 
@@ -1327,13 +1328,15 @@ in order. Its output is the first example under [Commands](#commands).
 2. **Dispatch.** `commands::run` checks that the arguments go together
    (`arguments::check_before_loading`), before it reads the file, then
    loads the file, prints any warnings about it, and calls `retained::run`.
-3. **Loading.** `binary::Binary::load` reads the file with the `object`
-   crate: its sections, the dynamic relocations, which name the imports and
-   the pointers the loader stores, and in Thumb files the vector table
-   (`vector_table::find`). Then it finds the items: `symbols::items`,
-   `plt::stubs`, the startup arrays, `eh_frame::read`, the entry point, the
-   vector table, in stripped firmware `unnamed_functions::add`. Then it has
-   `InstructionSet::scan` read each function's code once
+3. **Loading.** `binary::Binary::load`, in binary/load.rs, reads the
+   file with the `object` crate. `read_all_but_items` reads its
+   sections, the dynamic relocations, which name the imports and the
+   pointers the loader stores, and in Thumb files the vector table
+   (`vector_table::find`). Then `from_vec` finds the items, in the steps
+   that the module doc of `binary` numbers: `symbols::read`,
+   `plt::stubs`, the startup arrays, `eh_frame::read`, the entry point,
+   the vector table, in stripped firmware `unnamed_functions::add`. Then
+   it has `InstructionSet::scan` read each function's code once
    (`scan_functions`), and last `unnamed_data::items` finds there the
    addresses of data that no symbol names.
 4. **SYMBOL.** `retained::run` checks that elfq can read the file's code
@@ -1341,11 +1344,11 @@ in order. Its output is the first example under [Commands](#commands).
    `Names::find`: by address, by full name, or by the end of a name.
    Working out the ends of every name takes a while in a large file, so
    `Names` files each item under the last part of the paths that its
-   names' ends can have (`short_name_keys`), and works out the ends of
-   only the items filed under `process_frame`. `retained::refusal` refuses
-   an import, and a function whose end elfq doesn't know
-   (`readable_item`), then a shared library, before `run` builds the
-   graph.
+   names' ends can have (`names::short_name_keys`), and works out the
+   ends of only the items filed under `process_frame`.
+   `retained::refusal` refuses an import, and a function whose end elfq
+   doesn't know (`readable_item`), then a shared library, before `run`
+   builds the graph.
 5. **The graph.** `retained::run` has `graph::Graph::build` turn what
    `InstructionSet::scan` found in each function's code into references, or
    into unresolved calls. `Graph::build` then adds the pointers stored in
@@ -1396,7 +1399,7 @@ commands/    2 commands::run   4 retained::run, Names::find
              7 retained::answer, RetainedTree::largest, tree_row
 cli/         1 Cli, Command
 render/      7 Table::tree, Table::write
-debuginfo/   (for inlined, and SYMBOL that the compiler inlined)
+debuginfo/   (for inlined, an inlined SYMBOL, and startup's inlined main)
 graph/       5 Graph::build, roots::find   6 DominatorTree::build
 binary/      3 Binary::load, scan_functions, unnamed_data::items
 arch/        3 InstructionSet::scan
