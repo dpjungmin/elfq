@@ -40,7 +40,7 @@ pub(super) struct RamSections<'a> {
 }
 
 impl<'a> RamSections<'a> {
-    pub fn new(binary: &'a Binary) -> RamSections<'a> {
+    pub(super) fn new(binary: &'a Binary) -> RamSections<'a> {
         let allocated = || {
             (0..binary.sections.len()).filter(|&section| {
                 let Section {
@@ -72,22 +72,22 @@ impl<'a> RamSections<'a> {
         }
     }
 
-    pub fn section(&self, section: usize) -> &'a Section {
+    pub(super) fn section(&self, section: usize) -> &'a Section {
         &self.binary.sections[section]
     }
 
-    pub fn name(&self, section: usize) -> &'a str {
+    pub(super) fn name(&self, section: usize) -> &'a str {
         &self.section(section).name
     }
 
     /// Whether `section` is a load image, rather than a section without
     /// contents.
-    pub fn is_load(&self, section: usize) -> bool {
+    pub(super) fn is_load(&self, section: usize) -> bool {
         self.section(section).load_address.is_some()
     }
 
     /// Where the file stores `section`'s bytes.
-    pub fn load_address(&self, section: usize) -> u64 {
+    pub(super) fn load_address(&self, section: usize) -> u64 {
         let Section {
             address,
             load_address,
@@ -96,31 +96,31 @@ impl<'a> RamSections<'a> {
         load_address.unwrap_or(*address)
     }
 
-    pub fn end(&self, section: usize) -> u64 {
+    pub(super) fn end(&self, section: usize) -> u64 {
         let Section { address, size, .. } = self.section(section);
         address + size
     }
 
     /// Whether a problem is to say when startup code doesn't set `section`
     /// up as it should: a load image, `.bss` or `.sbss`.
-    pub fn required(&self, section: usize) -> bool {
+    pub(super) fn required(&self, section: usize) -> bool {
         self.is_load(section) || ZEROED.contains(&self.name(section))
     }
 
     /// Whether `section` is `.bss` or `.sbss`.
-    pub fn zeroed_by_rule(&self, section: usize) -> bool {
+    pub(super) fn zeroed_by_rule(&self, section: usize) -> bool {
         ZEROED.contains(&self.name(section))
     }
 
     /// The section that startup code sets up that holds `address`.
-    pub fn holding(&self, address: u64) -> Option<usize> {
+    pub(super) fn holding(&self, address: u64) -> Option<usize> {
         (self.sections.iter().copied()).find(|&section| {
             self.section(section).address <= address && address < self.end(section)
         })
     }
 
     /// Whether a section that startup code sets up starts at `address`.
-    pub fn starts_section(&self, address: u64) -> bool {
+    pub(super) fn starts_section(&self, address: u64) -> bool {
         self.sections
             .iter()
             .any(|&section| self.section(section).address == address)
@@ -151,7 +151,7 @@ impl<'a> RamSections<'a> {
     /// starts and r1 where the file stores bytes, or a zeroing of sections
     /// without contents, as `memset(to, 0, size)`, when r0 is where a
     /// section starts and r1 is 0.
-    pub fn match_call(&self, arguments: &[Option<u32>; 4]) -> Option<Match> {
+    pub(super) fn match_call(&self, arguments: &[Option<u32>; 4]) -> Option<Match> {
         let [Some(to), from, Some(size), _] = *arguments else {
             return None;
         };
@@ -168,7 +168,13 @@ impl<'a> RamSections<'a> {
     /// zeroes them: a copy of load images, when one starts at `to` and the
     /// file stores bytes at `from`, or a zeroing of the sections without
     /// contents that start in them, when a section starts at `to`.
-    pub fn matched(&self, does: Does, to: u64, from: Option<u64>, size: u64) -> Option<Match> {
+    pub(super) fn matched(
+        &self,
+        does: Does,
+        to: u64,
+        from: Option<u64>,
+        size: u64,
+    ) -> Option<Match> {
         let covers = match does {
             Does::Copy => {
                 let from = from?;
@@ -200,7 +206,7 @@ impl<'a> RamSections<'a> {
 
     /// Whether any byte from `bytes` is in a section that startup code
     /// sets up.
-    pub fn overlaps(&self, bytes: Range<u64>) -> bool {
+    pub(super) fn overlaps(&self, bytes: Range<u64>) -> bool {
         (self.sections.iter()).any(|&section| {
             self.section(section).address < bytes.end && bytes.start < self.end(section)
         })
@@ -228,7 +234,7 @@ impl<'a> RamSections<'a> {
     /// `section` and the sections of its kind that follow it with no gap,
     /// which a copy or zeroing of a region covers too: a load image whose
     /// load image follows `section`'s with no gap either.
-    pub fn run_from(&self, section: usize) -> Vec<usize> {
+    pub(super) fn run_from(&self, section: usize) -> Vec<usize> {
         let mut run = vec![section];
         for &next in &self.sections {
             let last = *run.last().expect("a run starts with section");

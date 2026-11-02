@@ -34,7 +34,7 @@ use crossing::{Entering, Leaving};
 /// Which way the references cross the boundary: out of the ranges for
 /// `callees`, into them for `callers`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Direction {
+pub(super) enum Direction {
     /// Out of the ranges: what the items in them use outside them.
     Out,
     /// Into the ranges: what uses the items in them from outside.
@@ -43,7 +43,7 @@ pub enum Direction {
 
 impl Direction {
     /// The command that asks about crossings this way.
-    pub fn command(self) -> &'static str {
+    pub(super) fn command(self) -> &'static str {
         match self {
             Direction::Out => "callees",
             Direction::In => "callers",
@@ -51,7 +51,7 @@ impl Direction {
     }
 
     /// The option that gives the ranges on the far side.
-    pub fn option(self) -> &'static str {
+    pub(super) fn option(self) -> &'static str {
         match self {
             Direction::Out => "--to",
             Direction::In => "--from",
@@ -59,7 +59,7 @@ impl Direction {
     }
 
     /// The other way.
-    pub fn other(self) -> Direction {
+    pub(super) fn other(self) -> Direction {
         match self {
             Direction::Out => Direction::In,
             Direction::In => Direction::Out,
@@ -68,7 +68,7 @@ impl Direction {
 }
 
 /// What a range check asks.
-pub struct RangeCheck<'a> {
+pub(super) struct RangeCheck<'a> {
     /// The ranges in place of SYMBOL, or the range that SYMBOL occupies.
     pub ranges: &'a [AddressRange],
     /// SYMBOL, as the answer names it, when `ranges` is its range.
@@ -104,7 +104,7 @@ impl RangeCheck<'_> {
 /// every crossing, and with `all`, every name in its sentences. The answer
 /// is [`Outcome::Crossed`] when it lists something, or says that something
 /// may cross.
-pub fn run(
+pub(super) fn run(
     binary: &Binary,
     graph: &Graph,
     check: &RangeCheck,

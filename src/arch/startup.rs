@@ -76,7 +76,7 @@ pub struct Start {
 }
 
 /// How many calls deep a walk follows at most.
-pub const DEPTH: u32 = 3;
+pub(crate) const DEPTH: u32 = 3;
 
 /// What a walk found, in the order the code runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -334,7 +334,7 @@ impl Loop {
 
 /// The head of the last loop in `events` whose branch back is at `back`,
 /// as where a walk that ends at [`End::Loops`] loops for good.
-pub fn loop_head(events: &[Event], back: u64) -> Option<u64> {
+pub(crate) fn loop_head(events: &[Event], back: u64) -> Option<u64> {
     events.iter().rev().find_map(|event| match event {
         Event::Loop(l) if l.back == back => Some(l.head),
         _ => None,

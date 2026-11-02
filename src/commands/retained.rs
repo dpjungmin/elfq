@@ -56,7 +56,7 @@ struct RetainedJson<'a> {
 }
 
 /// Answers `elfq FILE retained SYMBOL`: what removing SYMBOL would save.
-pub fn run(
+pub(super) fn run(
     binary: &Binary,
     symbol: &str,
     range: Option<AddressRange>,

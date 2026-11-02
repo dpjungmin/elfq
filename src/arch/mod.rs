@@ -27,12 +27,12 @@
 
 #[cfg(feature = "tui")]
 mod listing;
-pub mod startup;
+pub(crate) mod startup;
 mod thumb;
 mod x86_64;
 
 #[cfg(feature = "tui")]
-pub use listing::{Line, Refers};
+pub(crate) use listing::{Line, Refers};
 
 use object::{Architecture, Endianness};
 

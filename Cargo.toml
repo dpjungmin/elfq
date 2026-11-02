@@ -40,6 +40,7 @@ tui = ["dep:ratatui", "dep:rustix", "dep:signal-hook", "dep:thumb-asm", "iced-x8
 
 [lints.rust]
 unsafe_code = "forbid"
+unreachable_pub = "warn"
 
 # Debug builds, which `cargo run` and the tests use, are optimized a little:
 # unoptimized, elfq takes five or six times as long on a large file, and the

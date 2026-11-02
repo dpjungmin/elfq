@@ -78,7 +78,7 @@ const WORDS: [(&str, &str); 14] = [
 /// How far in what a key or a word means starts, and its wrapped lines.
 const INDENT: usize = 23;
 
-pub struct Help {
+pub(in crate::commands::browse) struct Help {
     /// Its lines before they are wrapped, each with whether it is a
     /// heading.
     lines: Vec<(String, bool)>,
@@ -91,7 +91,7 @@ pub struct Help {
 }
 
 impl Help {
-    pub fn new() -> Help {
+    pub(in crate::commands::browse) fn new() -> Help {
         let entry = |name: &str, what: &str| (format!("  {name:<20} {what}"), false);
         let mut lines = vec![("Keys".to_string(), true)];
         lines.extend(keys::bindings().map(|binding| entry(binding.label, binding.what)));
@@ -133,7 +133,7 @@ impl Help {
         wrapped
     }
 
-    pub fn draw(&mut self, frame: &mut Frame, area: Rect) {
+    pub(super) fn draw(&mut self, frame: &mut Frame, area: Rect) {
         let lines = self.wrapped(usize::from(area.width));
         let height = usize::from(area.height);
         self.page = height.max(1);
@@ -148,7 +148,7 @@ impl Help {
     }
 
     /// Scrolls as `action` says.
-    pub fn handle(&mut self, action: Action) {
+    pub(super) fn handle(&mut self, action: Action) {
         let at = self.offset;
         self.offset = match action {
             Action::Up => at.saturating_sub(1),

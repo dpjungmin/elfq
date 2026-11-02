@@ -38,7 +38,7 @@ pub(super) enum Status {
 }
 
 impl Status {
-    pub fn field(self) -> &'static str {
+    pub(super) fn field(self) -> &'static str {
         match self {
             Status::Copied => "copied",
             Status::PartlyCopied => "partly copied",
@@ -63,7 +63,7 @@ pub(super) enum RunsAt {
 
 impl RunsAt {
     /// The event of the call, when it is one.
-    pub fn event(self) -> Option<usize> {
+    pub(super) fn event(self) -> Option<usize> {
         match self {
             RunsAt::ResetHandler => None,
             RunsAt::Event(event) => Some(event),
@@ -112,7 +112,7 @@ pub(super) enum Problem {
 
 impl Problem {
     /// The JSON's `kind`.
-    pub fn field(&self) -> &'static str {
+    pub(super) fn field(&self) -> &'static str {
         match self {
             Problem::RunsBeforeCopy(_) => "runs before copy",
             Problem::NotCopied { .. } => "not copied",
@@ -127,7 +127,7 @@ impl Problem {
     /// Whether the problem is certain: not for code elfq can't follow,
     /// which may be a problem or not, nor for code that runs from a load
     /// image after unread steps that may copy it first.
-    pub fn certain(&self) -> bool {
+    pub(super) fn certain(&self) -> bool {
         match self {
             Problem::RunsBeforeCopy(run) => run.certain(),
             Problem::CantFollow { .. } => false,
@@ -140,7 +140,7 @@ impl Problem {
     }
 
     /// The steps it is about, as indexes into the steps.
-    pub fn steps(&self) -> &[usize] {
+    pub(super) fn steps(&self) -> &[usize] {
         match self {
             Problem::RunsBeforeCopy(run) => &run.steps,
             Problem::NotCopied { .. } | Problem::NotZeroed { .. } => &[],
@@ -152,7 +152,7 @@ impl Problem {
     }
 
     /// The sections it is about.
-    pub fn sections(&self) -> &[usize] {
+    pub(super) fn sections(&self) -> &[usize] {
         match self {
             Problem::RunsBeforeCopy(EarlyRun { section, .. })
             | Problem::NotCopied { section }
@@ -207,24 +207,24 @@ impl EarlyRun {
 
     /// Whether the code certainly runs before the copy: no unread step
     /// before it may copy the load image first.
-    pub fn certain(&self) -> bool {
+    fn certain(&self) -> bool {
         self.unless.is_empty()
     }
 
     /// Whether the function at `address` is one of those that run from the
     /// load image.
-    pub fn runs(&self, address: u64) -> bool {
+    pub(super) fn runs(&self, address: u64) -> bool {
         (self.functions.iter()).any(|early| early.function == address)
     }
 
     /// Whether the reset handler's own code runs from the load image.
-    pub fn reset_runs_from_image(&self) -> bool {
+    pub(super) fn reset_runs_from_image(&self) -> bool {
         self.runs_at.contains(&RunsAt::ResetHandler)
     }
 
     /// The first place in the walk where the code runs from the load
     /// image.
-    pub fn first(&self) -> RunsAt {
+    fn first(&self) -> RunsAt {
         self.first
     }
 }
@@ -280,7 +280,7 @@ pub(super) enum Note {
 
 impl Note {
     /// The JSON's `kind`.
-    pub fn field(&self) -> &'static str {
+    pub(super) fn field(&self) -> &'static str {
         match self {
             Note::NoVectorTable => "no vector table",
             Note::ResetInNoFunction { .. } => "reset in no function",
@@ -294,7 +294,7 @@ impl Note {
     }
 
     /// The sections it is about.
-    pub fn sections(&self) -> &[usize] {
+    pub(super) fn sections(&self) -> &[usize] {
         match self {
             Note::NoVectorTable
             | Note::ResetInNoFunction { .. }
@@ -502,7 +502,7 @@ pub(super) struct KeepOut {
 impl Judged {
     /// The state of `section`, one of the RAM sections, when `main` starts,
     /// with the step that sets it up and how many of its bytes.
-    pub fn status(&self, section: usize) -> SectionStatus {
+    pub(super) fn status(&self, section: usize) -> SectionStatus {
         self.statuses.status(section)
     }
 }

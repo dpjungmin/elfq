@@ -67,7 +67,7 @@ struct Step<'a> {
 /// Answers `elfq FILE why SYMBOL`: the shortest chains from where the
 /// program starts through each item that keeps SYMBOL. The text shows those
 /// through the nearest 10, or with `all`, through every one.
-pub fn run(
+pub(super) fn run(
     binary: &Binary,
     symbol: &str,
     all: bool,

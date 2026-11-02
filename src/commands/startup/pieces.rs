@@ -64,7 +64,7 @@ impl Piece {
     ///    after or before where they store them, the same distance for
     ///    every store; or else zero, each time storing 0, which they don't
     ///    load.
-    pub fn of_loop(ram: &RamSections, l: &Loop, home: Home) -> Option<Piece> {
+    pub(super) fn of_loop(ram: &RamSections, l: &Loop, home: Home) -> Option<Piece> {
         // 1.
         let stores: Vec<&LoopStore> = (l.stores()?.iter())
             .filter(|store| store.times > 0 && ram.overlaps(stored_bytes(store)))
@@ -99,7 +99,7 @@ impl Piece {
     /// The bytes that `store`, outside loops, of the code at `home`, copies
     /// or zeroes: a copy when the walk can tell where it loaded its words
     /// from, or a zeroing when it stores 0.
-    pub fn of_store(ram: &RamSections, store: &Store, home: Home) -> Option<Piece> {
+    pub(super) fn of_store(ram: &RamSections, store: &Store, home: Home) -> Option<Piece> {
         let address = store.address?;
         let (to, size) = (u64::from(address), u64::from(store.size));
         if store.conditional || size == 0 || !ram.overlaps(to..to + size) {
@@ -184,7 +184,7 @@ impl Pieces {
     ///    loop may set up (see `unread.rs`).
     /// 3. Else the joined bytes make a step, or extend the step of a piece
     ///    they join, and take the place of the pieces they join.
-    pub fn add(
+    pub(super) fn add(
         &mut self,
         ram: &RamSections,
         piece: Piece,
@@ -248,7 +248,7 @@ impl Pieces {
     /// leaves to code after it, that step becomes code that elfq can't
     /// follow, which may set up the sections it covered and those that
     /// follow the section with no gap.
-    pub fn unread_store(
+    pub(super) fn unread_store(
         &mut self,
         ram: &RamSections,
         store: &Store,

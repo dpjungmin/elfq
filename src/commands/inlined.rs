@@ -27,7 +27,7 @@ use crate::render::{Align, TreeRow, TreeShape};
 
 /// Answers `elfq FILE inlined`, or with `symbol`, `inlined SYMBOL`. Needs
 /// DWARF.
-pub fn run(
+pub(super) fn run(
     path: &Path,
     binary: &Binary,
     symbol: Option<&str>,

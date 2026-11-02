@@ -31,7 +31,7 @@ pub(super) struct Reset {
 impl Reset {
     /// The reset handler that the vector table gives, when it is in a
     /// function, or else the entry point, when that is.
-    pub fn find(path: &Path, binary: &Binary) -> Result<Reset> {
+    pub(super) fn find(path: &Path, binary: &Binary) -> Result<Reset> {
         let in_function = |address| function_holding(binary, address).is_some();
         let table = binary.vector_table.as_ref();
         let stack_pointer =
@@ -72,7 +72,7 @@ impl Reset {
 
     /// Walks the code from the reset handler, `follow` calls deep, ending
     /// at `main`.
-    pub fn walk(&self, code: Code, main: Option<u64>, follow: u32) -> Walk {
+    pub(super) fn walk(&self, code: Code, main: Option<u64>, follow: u32) -> Walk {
         walk_from(code, self.address, self.stack_pointer, main, follow)
     }
 }
@@ -122,7 +122,7 @@ pub(super) enum MainFrom {
 
 impl MainFrom {
     /// The JSON's `main_from`.
-    pub fn field(self) -> &'static str {
+    pub(super) fn field(self) -> &'static str {
         match self {
             MainFrom::Symbol => "symbol",
             MainFrom::DebugInfo => "debug info",
@@ -135,7 +135,7 @@ impl MainFrom {
 impl Main {
     /// The function that is `main`, as a call's target: none for an
     /// inlined `main` or the reset handler's loop.
-    pub fn function(self) -> Option<u64> {
+    pub(super) fn function(self) -> Option<u64> {
         matches!(self.from, MainFrom::Symbol | MainFrom::Guess).then_some(self.address)
     }
 }

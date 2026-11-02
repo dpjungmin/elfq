@@ -34,7 +34,7 @@ pub(super) struct Events<'w> {
 impl<'w> Events<'w> {
     /// The events in `list`, of a walk from the reset handler, at
     /// `reset_handler`.
-    pub fn new(firmware: &Firmware, reset_handler: u64, list: &'w [Event]) -> Events<'w> {
+    pub(super) fn new(firmware: &Firmware, reset_handler: u64, list: &'w [Event]) -> Events<'w> {
         let veneer_jumps: Vec<bool> = (0..list.len())
             .map(|event| {
                 let Event::Call(call) = &list[event] else {
@@ -108,25 +108,25 @@ impl<'w> Events<'w> {
         }
     }
 
-    pub fn level(&self, event: usize) -> u32 {
+    pub(super) fn level(&self, event: usize) -> u32 {
         self.levels[event]
     }
 
     /// The function whose code holds `event`: the reset handler at level
     /// 0, and at level n, the one that the last call at level n - 1 goes
     /// to, past a veneer.
-    pub fn function(&self, event: usize) -> u64 {
+    pub(super) fn function(&self, event: usize) -> u64 {
         self.functions[event]
     }
 
     /// The function that calls the one whose code holds `event`, or the
     /// reset handler at level 0.
-    pub fn caller(&self, event: usize) -> u64 {
+    pub(super) fn caller(&self, event: usize) -> u64 {
         self.callers[event]
     }
 
     /// The call at `event`, unless it is a veneer's jump.
-    pub fn call(&self, event: usize) -> Option<&'w Call> {
+    pub(super) fn call(&self, event: usize) -> Option<&'w Call> {
         match &self.list[event] {
             Event::Call(call) if !self.veneer_jumps[event] => Some(call),
             _ => None,
@@ -134,19 +134,19 @@ impl<'w> Events<'w> {
     }
 
     /// Where the call at `event` goes, past a veneer.
-    pub fn target(&self, event: usize) -> Option<u64> {
+    pub(super) fn target(&self, event: usize) -> Option<u64> {
         self.targets[event].map(|target| target.function)
     }
 
     /// The veneer that the call at `event` goes through.
-    pub fn veneer(&self, event: usize) -> Option<u64> {
+    pub(super) fn veneer(&self, event: usize) -> Option<u64> {
         self.targets[event].and_then(|target| target.veneer)
     }
 
     /// Where the events of the code that the call at `event` runs end: the
     /// first event after it that is no deeper, but for a backtrack (see
     /// `Walk::events`).
-    pub fn span(&self, event: usize) -> usize {
+    pub(super) fn span(&self, event: usize) -> usize {
         let level = self.levels[event];
         (event + 1..self.list.len())
             .find(|&later| {
@@ -177,7 +177,7 @@ pub(super) struct Iterations {
 }
 
 impl Iterations {
-    pub fn new(list: &[Event]) -> Iterations {
+    pub(super) fn new(list: &[Event]) -> Iterations {
         let mut of = vec![None; list.len()];
         let mut rows = vec![None; list.len()];
         // A loop inside another closes first, so its iterations come first.
@@ -201,12 +201,12 @@ impl Iterations {
     }
 
     /// The iteration that `event` is in (see [`Home`](super::pieces::Home)).
-    pub fn of(&self, event: usize) -> Option<WalkedIteration> {
+    pub(super) fn of(&self, event: usize) -> Option<WalkedIteration> {
         self.of.get(event).copied().flatten()
     }
 
     /// Where the iteration that `event` is in reads its row of a table.
-    pub fn row(&self, event: usize) -> Option<u32> {
+    pub(super) fn row(&self, event: usize) -> Option<u32> {
         self.rows.get(event).copied().flatten()
     }
 }

@@ -108,7 +108,7 @@ pub(super) struct Item<'a> {
 }
 
 impl<'a> Item<'a> {
-    pub fn new(binary: &'a Binary, node: Node) -> Item<'a> {
+    pub(super) fn new(binary: &'a Binary, node: Node) -> Item<'a> {
         match node {
             Node::Item(index) => {
                 let item = &binary.items[index];
@@ -146,7 +146,7 @@ pub(super) struct Symbol<'a> {
 }
 
 impl<'a> Symbol<'a> {
-    pub fn new(binary: &'a Binary, node: Node) -> Symbol<'a> {
+    pub(super) fn new(binary: &'a Binary, node: Node) -> Symbol<'a> {
         let aliases = match node {
             Node::Item(index) => binary.items[index]
                 .aliases
@@ -250,7 +250,7 @@ pub(super) struct Range {
 }
 
 impl Range {
-    pub fn new(range: AddressRange) -> Range {
+    pub(super) fn new(range: AddressRange) -> Range {
         Range {
             start: address(range.start),
             end: address(range.end),
@@ -275,7 +275,7 @@ pub(super) struct Block<'a> {
 }
 
 impl<'a> Block<'a> {
-    pub fn new(binary: &'a Binary, block: &MemoryBlock) -> Block<'a> {
+    pub(super) fn new(binary: &'a Binary, block: &MemoryBlock) -> Block<'a> {
         Block {
             range: Range::new(block.range),
             size: block.range.end - block.range.start,

@@ -61,7 +61,7 @@ struct OverviewJson<'a> {
 }
 
 /// Answers `elfq FILE`, for the whole file or only the bytes in `range`.
-pub fn run(
+pub(super) fn run(
     path: &Path,
     binary: &Binary,
     range: Option<AddressRange>,

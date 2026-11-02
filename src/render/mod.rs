@@ -7,12 +7,12 @@ use std::io::{self, Write};
 mod tree;
 
 #[cfg(feature = "tui")]
-pub use tree::flat_rows;
-pub use tree::{TreeRow, TreeShape};
+pub(crate) use tree::flat_rows;
+pub(crate) use tree::{TreeRow, TreeShape};
 
 /// How a column's cells line up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Align {
+pub(crate) enum Align {
     Left,
     /// For numbers, so their digits line up.
     Right,
@@ -21,7 +21,7 @@ pub enum Align {
 /// A plain-text table: a header row, then one line per row, with columns
 /// separated by two spaces.
 #[derive(Debug)]
-pub struct Table {
+pub(crate) struct Table {
     headers: Vec<String>,
     /// How each column's cells line up.
     aligns: Vec<Align>,
@@ -32,7 +32,7 @@ pub struct Table {
 impl Table {
     /// An empty table with these columns: each a header, and how its cells
     /// line up.
-    pub fn new(columns: &[(impl AsRef<str>, Align)]) -> Table {
+    pub(crate) fn new(columns: &[(impl AsRef<str>, Align)]) -> Table {
         Table {
             headers: columns
                 .iter()
@@ -44,14 +44,14 @@ impl Table {
     }
 
     /// Adds a row. It must have one cell per column.
-    pub fn row(&mut self, cells: Vec<String>) {
+    pub(crate) fn row(&mut self, cells: Vec<String>) {
         assert_eq!(cells.len(), self.headers.len(), "wrong number of cells");
         self.rows.push(cells);
     }
 
     /// Writes the header, then the rows, each column as wide as its widest
     /// cell, with no spaces at the ends of lines.
-    pub fn write(&self, out: &mut dyn Write) -> io::Result<()> {
+    pub(crate) fn write(&self, out: &mut dyn Write) -> io::Result<()> {
         let mut widths: Vec<usize> = self.headers.iter().map(|h| h.chars().count()).collect();
         for row in &self.rows {
             for (width, cell) in widths.iter_mut().zip(row) {

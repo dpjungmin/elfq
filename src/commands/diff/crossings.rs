@@ -53,7 +53,7 @@ impl From<NewOrGone> for Status {
 
 impl Crossing {
     /// The build whose row it is.
-    pub fn build<'a>(&self, items: &Items<'a>) -> &'a Build {
+    pub(super) fn build<'a>(&self, items: &Items<'a>) -> &'a Build {
         match self.status {
             NewOrGone::New => items.new,
             NewOrGone::Gone => items.old,
@@ -62,7 +62,7 @@ impl Crossing {
 
     /// Whether it is a call or a tail call, which the text lists, rather
     /// than a use of an item's address or bytes, which it only counts.
-    pub fn is_call(&self) -> bool {
+    pub(super) fn is_call(&self) -> bool {
         self.row.kind.is_call()
     }
 }

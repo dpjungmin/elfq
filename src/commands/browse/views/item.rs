@@ -56,7 +56,7 @@ mod header;
 mod line_notes;
 mod listing;
 
-pub use listing::Listing;
+pub(in crate::commands::browse) use listing::Listing;
 
 /// What u says where the session hasn't worked out what keeps each item.
 ///
@@ -69,7 +69,7 @@ const NO_KEEPERS: &str = "elfq hasn't worked out what keeps each item yet";
 /// that prints the same answer, so that the numbers stay the same as more
 /// tabs come.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Tab {
+pub(super) enum Tab {
     /// 1: a function's code, or a data object's contents.
     Code,
     /// 2: what the item calls or uses.
@@ -165,7 +165,7 @@ enum Later {
 /// It is worked out only once the screen says so, the first time it is
 /// shown (see `App::pending`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SlowTab {
+pub(in crate::commands::browse) enum SlowTab {
     /// Tab 4: what the item at this index calls or uses, at any depth.
     Reach(usize),
     /// Tab 5: why this item or import is in the file.
@@ -176,7 +176,7 @@ pub enum SlowTab {
 
 impl SlowTab {
     /// The item or import whose page it is on.
-    pub fn node(self) -> Node {
+    pub(in crate::commands::browse) fn node(self) -> Node {
         match self {
             SlowTab::Reach(index) | SlowTab::Retained(index) => Node::Item(index),
             SlowTab::Why(node) => node,
@@ -219,7 +219,7 @@ impl Later {
 }
 
 /// An item's page: its header, and a pane for each tab.
-pub struct ItemPage {
+pub(in crate::commands::browse) struct ItemPage {
     /// The item or import.
     node: Node,
     /// Its name in the title line's trail.
@@ -248,7 +248,12 @@ impl ItemPage {
     /// `session.rs`). A function's page opens on its code, and a data
     /// object's on its contents, when they have rows. Otherwise, as for an
     /// import, which has no code here, the page opens on its callers.
-    pub fn new(session: &Session, node: Node, at: Option<u64>, header_name: &str) -> ItemPage {
+    pub(in crate::commands::browse) fn new(
+        session: &Session,
+        node: Node,
+        at: Option<u64>,
+        header_name: &str,
+    ) -> ItemPage {
         let binary = session.binary;
         let answer = session.callers(node);
         let listing = match node {
@@ -289,7 +294,7 @@ impl ItemPage {
     /// The page on `tab`, if it can open on it.
     ///
     /// A link from that tab opens the page so (see [`ItemPage::opens_on`]).
-    pub fn on(mut self, session: &Session, tab: Tab) -> ItemPage {
+    pub(super) fn on(mut self, session: &Session, tab: Tab) -> ItemPage {
         if self.opens_on(tab) {
             self.show(session, tab);
         }
@@ -312,7 +317,7 @@ impl ItemPage {
     /// Adds what keeps the item to the header, once it is worked out.
     ///
     /// It adds it only where `retained` or `why` answers about the item.
-    pub fn add_keeping(&mut self, session: &Session) {
+    pub(in crate::commands::browse) fn add_keeping(&mut self, session: &Session) {
         let (retained, why) = (self.has(Tab::Retained), self.has(Tab::Why));
         self.header.add_keeping(session, retained, why);
     }
@@ -365,7 +370,7 @@ impl ItemPage {
     /// The tab on the screen, if it waits for the screen to say so.
     ///
     /// That is tab 4, 5 or 6, the first time it is shown.
-    pub fn pending(&self) -> Option<SlowTab> {
+    pub(in crate::commands::browse) fn pending(&self) -> Option<SlowTab> {
         match self.pane() {
             Pane::NotYet(Later::Slow(tab)) => Some(*tab),
             Pane::NotYet(Later::Callees(_))
@@ -378,7 +383,7 @@ impl ItemPage {
     /// Works out the tab on the screen, if it waits to be.
     ///
     /// That is the tab that [`ItemPage::pending`] gives.
-    pub fn work_out(&mut self, session: &Session) {
+    pub(super) fn work_out(&mut self, session: &Session) {
         if let Some(tab) = self.pending() {
             *self.pane_mut() = Later::Slow(tab).work_out(session);
         }
@@ -388,7 +393,7 @@ impl ItemPage {
     ///
     /// It is shortened once for each room, since the name of a C++ function
     /// can take thousands of characters.
-    pub fn title(&mut self, room: usize) -> &str {
+    pub(super) fn title(&mut self, room: usize) -> &str {
         if self
             .short_title
             .as_ref()
@@ -400,7 +405,7 @@ impl ItemPage {
     }
 
     /// The numbers of the tabs it has, in order.
-    pub fn tab_numbers(&self) -> Vec<u8> {
+    pub(super) fn tab_numbers(&self) -> Vec<u8> {
         let tabs = self.tabs().into_iter();
         tabs.map(|tab| tab.number_and_name().0).collect()
     }
@@ -410,7 +415,7 @@ impl ItemPage {
         Tab::ALL.into_iter().filter(|&tab| self.has(tab)).collect()
     }
 
-    pub fn draw(&mut self, frame: &mut Frame, area: Rect) {
+    pub(super) fn draw(&mut self, frame: &mut Frame, area: Rect) {
         let width = usize::from(area.width);
         let top = self
             .header
@@ -457,7 +462,11 @@ impl ItemPage {
         Line::from(line)
     }
 
-    pub fn handle(&mut self, session: &Session, action: Action) -> Option<Go> {
+    pub(in crate::commands::browse) fn handle(
+        &mut self,
+        session: &Session,
+        action: Action,
+    ) -> Option<Go> {
         if action == Action::Keeper {
             return Some(self.keeper(session));
         }
@@ -513,7 +522,7 @@ impl ItemPage {
     ///
     /// It says whether it did: it does only if there was a jump and the
     /// code is on the screen.
-    pub fn back(&mut self) -> bool {
+    pub(super) fn back(&mut self) -> bool {
         match self.pane_mut() {
             Pane::Listing(listing) => listing.back(),
             Pane::Printed(_) | Pane::NotYet(_) | Pane::Refused(_) => false,
@@ -524,7 +533,7 @@ impl ItemPage {
     ///
     /// An example: "→ strlen@plt function at 0x1080, 16 bytes, in
     /// .plt.sec".
-    pub fn preview(&self, session: &Session) -> Option<String> {
+    pub(super) fn preview(&self, session: &Session) -> Option<String> {
         match self.pane() {
             Pane::Listing(listing) => listing.preview(session),
             Pane::Printed(printed) => printed.preview(session),
@@ -536,7 +545,7 @@ impl ItemPage {
     ///
     /// That happens to a long string in a data object's contents, on a
     /// screen `width` columns wide.
-    pub fn value(&self, width: usize) -> Option<&str> {
+    pub(super) fn value(&self, width: usize) -> Option<&str> {
         match self.pane() {
             Pane::Listing(listing) => listing.value(width),
             Pane::Printed(_) | Pane::NotYet(_) | Pane::Refused(_) => None,
@@ -544,7 +553,7 @@ impl ItemPage {
     }
 
     /// Whether some line or row links to another item.
-    pub fn has_links(&self) -> bool {
+    pub(super) fn has_links(&self) -> bool {
         match self.pane() {
             Pane::Listing(listing) => listing.has_links(),
             Pane::Printed(printed) => printed.has_links(),
@@ -553,7 +562,7 @@ impl ItemPage {
     }
 
     /// The cursor over the tab's lines or rows.
-    pub fn cursor(&mut self) -> Option<&mut Cursor> {
+    pub(super) fn cursor(&mut self) -> Option<&mut Cursor> {
         match self.pane_mut() {
             Pane::Listing(listing) => Some(listing.cursor()),
             Pane::Printed(printed) => Some(printed.cursor()),
@@ -562,7 +571,7 @@ impl ItemPage {
     }
 
     /// What find calls the tab's rows: "line" on a function's code.
-    pub fn row_noun(&self) -> &'static str {
+    pub(super) fn row_noun(&self) -> &'static str {
         match self.pane() {
             Pane::Listing(listing) if !listing.is_data() => "line",
             Pane::Listing(_) | Pane::Printed(_) | Pane::NotYet(_) | Pane::Refused(_) => "row",
@@ -570,7 +579,7 @@ impl ItemPage {
     }
 
     /// The tab's lines or rows that have `lowercase`, ignoring case.
-    pub fn rows_with(&self, lowercase: &str) -> Vec<usize> {
+    pub(super) fn rows_with(&self, lowercase: &str) -> Vec<usize> {
         match self.pane() {
             Pane::Listing(listing) => listing.rows_with(lowercase),
             Pane::Printed(printed) => printed.rows_with(lowercase),
@@ -582,7 +591,7 @@ impl ItemPage {
     ///
     /// A function's code has none. Under a data object's contents is the
     /// objdump command that prints its bytes.
-    pub fn command(&self) -> Option<&str> {
+    pub(super) fn command(&self) -> Option<&str> {
         match self.pane() {
             Pane::Listing(listing) => listing.command(),
             Pane::Printed(printed) => Some(printed.command()),

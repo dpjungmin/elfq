@@ -84,7 +84,7 @@ impl<T> Deref for Held<'_, T> {
 
 impl<'g, 'a> RetainedTree<'g, 'a> {
     /// Builds the dominator tree of `graph`, the file's reference graph.
-    pub fn new(
+    pub(super) fn new(
         binary: &'a Binary,
         graph: &'g Graph,
         range: Option<AddressRange>,
@@ -94,7 +94,7 @@ impl<'g, 'a> RetainedTree<'g, 'a> {
 
     /// The same, with `names` to name items by, such as those that found
     /// SYMBOL, so that the work of finding names is done only once.
-    pub fn naming(
+    pub(super) fn naming(
         binary: &'a Binary,
         graph: &'g Graph,
         range: Option<AddressRange>,
@@ -115,7 +115,7 @@ impl<'g, 'a> RetainedTree<'g, 'a> {
     /// `graph` that the caller built before, with `names` to name items by,
     /// so that neither is worked out again.
     #[cfg(feature = "tui")]
-    pub fn borrowing(
+    pub(super) fn borrowing(
         binary: &'a Binary,
         graph: &'g Graph,
         tree: &'g DominatorTree,
@@ -132,32 +132,32 @@ impl<'g, 'a> RetainedTree<'g, 'a> {
     }
 
     /// The names that find each item, as SYMBOL takes them.
-    pub fn names(&self) -> &Names<'a> {
+    pub(super) fn names(&self) -> &Names<'a> {
         &self.names
     }
 
     /// The bytes of the file that sizes count: all of them, or those in
     /// the range.
-    pub fn bytes(&self) -> u64 {
+    pub(super) fn bytes(&self) -> u64 {
         total((0..self.binary.items.len()).map(|index| self.own(index)))
     }
 
     /// The bytes that the items where the program starts keep, and so
     /// everything reachable: all the bytes that sizes count, but those of
     /// items that nothing reaches.
-    pub fn kept(&self) -> u64 {
+    pub(super) fn kept(&self) -> u64 {
         total(self.tree.top().iter().map(|&node| self.tree.retained(node)))
     }
 
     /// The item's own bytes that sizes count: all of them, or those in the
     /// range, its load image's too (see [`Binary::bytes_in`]).
-    pub fn own(&self, index: usize) -> u64 {
+    pub(super) fn own(&self, index: usize) -> u64 {
         self.binary.bytes_in(&self.binary.items[index], self.range)
     }
 
     /// How many of the item's own bytes that sizes count are in its load
     /// image: 0 without a range.
-    pub fn load_image(&self, index: usize) -> u64 {
+    pub(super) fn load_image(&self, index: usize) -> u64 {
         self.range.map_or(0, |range| {
             self.binary
                 .load_image_bytes_in(&self.binary.items[index], range)
@@ -187,7 +187,7 @@ impl<'g, 'a> RetainedTree<'g, 'a> {
     /// both; "(through a pointer)" for a function below the top that only
     /// pointers lead to, and so counts for whatever holds its address; or
     /// both, as in "(load image, through a pointer)".
-    pub fn mark(&self, index: usize) -> Option<String> {
+    pub(super) fn mark(&self, index: usize) -> Option<String> {
         let load_image = match self.load_image(index) {
             0 => None,
             bytes if bytes == self.own(index) => Some("load image"),
@@ -211,7 +211,7 @@ impl<'g, 'a> RetainedTree<'g, 'a> {
     /// for. Every item that something reaches competes for a row, with a
     /// range those with no bytes of their own in it too, when they keep
     /// some. `retained` lets only items with bytes of their own compete.
-    pub fn largest_table(&self, count: usize, format: Format) -> TreeTable {
+    pub(super) fn largest_table(&self, count: usize, format: Format) -> TreeTable {
         let tree = &self.tree;
         let reachable: Vec<usize> = (0..self.binary.items.len())
             .filter(|&index| tree.is_reachable(Node::Item(index)))
@@ -230,7 +230,7 @@ impl<'g, 'a> RetainedTree<'g, 'a> {
     /// largest of `items` that get rows, every item between each of them
     /// and the roots, and a lone item that would be left out on its own
     /// (see [`tree_answer::add_lone`]).
-    pub fn largest(&self, roots: &[Node], items: &[usize], count: usize) -> HashSet<usize> {
+    pub(super) fn largest(&self, roots: &[Node], items: &[usize], count: usize) -> HashSet<usize> {
         let is_root: HashSet<Node> = roots.iter().copied().collect();
         let candidates = items.iter().copied().filter(|&index| self.counts(index));
         let largest = tree_answer::largest(candidates, |index| self.retained(index), count);
@@ -264,7 +264,12 @@ impl<'g, 'a> RetainedTree<'g, 'a> {
     /// The row of the item at `index`, with the rows of its shown children
     /// under it, for a table that shows them in `shape`. As rows, those
     /// call it by its short name.
-    pub fn tree_row(&self, shown: &HashSet<usize>, index: usize, shape: TreeShape) -> TreeRow {
+    pub(super) fn tree_row(
+        &self,
+        shown: &HashSet<usize>,
+        index: usize,
+        shape: TreeShape,
+    ) -> TreeRow {
         let cells = vec![self.retained(index).to_string(), self.own_text(index)];
         let children = self.rows(shown, self.tree.children(Node::Item(index)), shape);
         let name = &self.binary.items[index].name;
@@ -316,7 +321,7 @@ impl<'g, 'a> RetainedTree<'g, 'a> {
     /// order of the text's rows: each item, largest first, followed by what
     /// it keeps. Imports are left out, since their code isn't in the file,
     /// and so are items that keep none of the range's bytes.
-    pub fn to_json(&self, nodes: &[Node]) -> Vec<KeptItem<'a>> {
+    pub(super) fn to_json(&self, nodes: &[Node]) -> Vec<KeptItem<'a>> {
         let mut rows = Vec::new();
         self.add_json(nodes, None, &mut rows);
         rows
@@ -340,7 +345,7 @@ impl<'g, 'a> RetainedTree<'g, 'a> {
         }
     }
 
-    pub fn retained(&self, index: usize) -> u64 {
+    pub(super) fn retained(&self, index: usize) -> u64 {
         self.tree.retained(Node::Item(index))
     }
 }

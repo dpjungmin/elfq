@@ -26,7 +26,7 @@ use crate::render::{Align, flat_rows};
 
 /// Lines of a command's text around the table, before it or under its
 /// notes.
-pub enum Lines {
+pub(super) enum Lines {
     /// Words, which wrap to fit the screen.
     Words(String),
     /// The lines of a table without links, such as the blocks of memory,
@@ -36,7 +36,7 @@ pub enum Lines {
 }
 
 /// A row of the table.
-pub struct PrintedRow {
+struct PrintedRow {
     /// Every cell but the last.
     pub cells: Vec<String>,
     /// The last cell: a name, which is shortened to fit, then what the row
@@ -68,7 +68,7 @@ const NAME_WIDTH: usize = 16;
 /// screen with little room for it, shortens that item's name to.
 const NOTE_NAME_WIDTH: usize = 40;
 
-pub struct Printed {
+pub(super) struct Printed {
     /// Lines of another command, before the answer's own, which give way
     /// first on a short screen: the overview's, on the start page.
     context: Vec<Lines>,
@@ -126,7 +126,7 @@ impl Printed {
     /// The answer with these lines before the table, the table's columns
     /// and rows, and notes under them, printed by `command`. Enter opens a
     /// row's item on its code.
-    pub fn new(
+    fn new(
         above: Vec<Lines>,
         columns: Vec<(String, Align)>,
         rows: Vec<PrintedRow>,
@@ -167,7 +167,7 @@ impl Printed {
 
     /// `answer`, an answer of `callers`, `callees` or `reach`, printed by
     /// `command`. Each row opens the item it is about.
-    pub fn of_flat(answer: FlatAnswer, command: String) -> Printed {
+    pub(super) fn of_flat(answer: FlatAnswer, command: String) -> Printed {
         let mut above: Vec<Lines> = answer.lead.into_iter().map(Lines::Words).collect();
         if let Some(memory) = answer.memory {
             above.push(Lines::Table(table_lines(&memory)));
@@ -188,7 +188,7 @@ impl Printed {
     /// printed by `command`, with every row and name, and its notes in
     /// shorter forms for when they don't fit (see rule 4 of
     /// [`Printed::lay_out`]).
-    pub fn of_tab(answer: TabAnswer, command: String) -> Printed {
+    pub(super) fn of_tab(answer: TabAnswer, command: String) -> Printed {
         let mut printed = Printed::of_tree(answer.answer, command);
         printed.brief = Some(answer.brief);
         printed.briefest = Some(answer.briefest);
@@ -219,20 +219,20 @@ impl Printed {
     }
 
     /// The same, after `context`, lines of another command.
-    pub fn with_context(mut self, context: Vec<Lines>) -> Printed {
+    pub(super) fn with_context(mut self, context: Vec<Lines>) -> Printed {
         self.context = context;
         self
     }
 
     /// The same, but with `brief`, the notes as the command words them
     /// without `--all`, to show when the notes in full don't fit.
-    pub fn with_brief(mut self, brief: Vec<String>) -> Printed {
+    pub(super) fn with_brief(mut self, brief: Vec<String>) -> Printed {
         self.brief = Some(brief);
         self
     }
 
     /// The same, with `below`, lines of other commands, under the notes.
-    pub fn with_below(mut self, below: Vec<Lines>) -> Printed {
+    pub(super) fn with_below(mut self, below: Vec<Lines>) -> Printed {
         self.below = below;
         self
     }
@@ -240,14 +240,14 @@ impl Printed {
     /// The same, but Enter opens a row's item on `tab`, when it has that
     /// tab, as a link opens a page on the tab that it is on. `page` is the
     /// item or import whose page it is on.
-    pub fn opening(mut self, tab: Tab, page: Node) -> Printed {
+    pub(super) fn opening(mut self, tab: Tab, page: Node) -> Printed {
         self.tab = tab;
         self.page = Some(page);
         self
     }
 
     /// The command that prints the same answer.
-    pub fn command(&self) -> &str {
+    pub(super) fn command(&self) -> &str {
         &self.command
     }
 
@@ -255,7 +255,7 @@ impl Printed {
     /// it, as [`Printed::lay_out`] lays them out. A row too wide for the
     /// screen is cut at its edge, ending in "…", rather than any of its
     /// numbers.
-    pub fn draw(&mut self, frame: &mut Frame, area: Rect) {
+    pub(super) fn draw(&mut self, frame: &mut Frame, area: Rect) {
         let width = usize::from(area.width);
         self.lay_out(width, usize::from(area.height));
         let LaidOut {
@@ -479,7 +479,7 @@ impl Printed {
         (widths, room.max(0) as usize)
     }
 
-    pub fn handle(&mut self, session: &Session, action: Action) -> Option<Go> {
+    pub(super) fn handle(&mut self, session: &Session, action: Action) -> Option<Go> {
         if self.cursor.handle(action) {
             return None;
         }
@@ -507,23 +507,23 @@ impl Printed {
 
     /// What the selected row opens, in full: "→ app_tick  function at
     /// 0x300002e4, 60 bytes, in .text".
-    pub fn preview(&self, session: &Session) -> Option<String> {
+    pub(super) fn preview(&self, session: &Session) -> Option<String> {
         let (node, _) = self.rows.get(self.cursor.selected)?.link?;
         Some(link_preview(session, node, self.page, None))
     }
 
     /// Whether some row opens an item.
-    pub fn has_links(&self) -> bool {
+    pub(super) fn has_links(&self) -> bool {
         self.rows.iter().any(|row| row.link.is_some())
     }
 
-    pub fn cursor(&mut self) -> &mut Cursor {
+    pub(super) fn cursor(&mut self) -> &mut Cursor {
         &mut self.cursor
     }
 
     /// The rows that have `lowercase` in a cell, or in the last one's name
     /// in full or what follows it, ignoring case.
-    pub fn rows_with(&self, lowercase: &str) -> Vec<usize> {
+    pub(super) fn rows_with(&self, lowercase: &str) -> Vec<usize> {
         let has = |text: &str| has_ignoring_case(text, lowercase);
         (self.rows.iter().enumerate())
             .filter(|(_, row)| {
@@ -551,7 +551,7 @@ fn blocks(lines: &[Lines], width: usize) -> Vec<(bool, Vec<String>)> {
 
 /// `name` as a note that names only the first item of a list shows it,
 /// on a screen with little room for the notes.
-pub fn note_name(name: &str) -> String {
+pub(super) fn note_name(name: &str) -> String {
     fit_name(name, NOTE_NAME_WIDTH)
 }
 
@@ -581,7 +581,7 @@ fn keep_blocks(blocks: Vec<(bool, Vec<String>)>, most: usize, width: usize) -> V
 }
 
 /// The lines of `table`, as the commands write it.
-pub fn table_lines(table: &crate::render::Table) -> Vec<String> {
+pub(super) fn table_lines(table: &crate::render::Table) -> Vec<String> {
     let mut out = Vec::new();
     table.write(&mut out).expect("writing to memory");
     String::from_utf8_lossy(&out)
@@ -608,7 +608,7 @@ impl Printed {
     /// Its lines as the command prints them, without the empty lines: the
     /// lines before the table, the table, with every name in full, and the
     /// notes.
-    pub fn printed(&self) -> Vec<String> {
+    pub(super) fn printed(&self) -> Vec<String> {
         let mut lines = Lines::printed(&self.context);
         lines.extend(Lines::printed(&self.above));
         if !self.rows.is_empty() {
@@ -625,23 +625,23 @@ impl Printed {
     }
 
     /// The lines under the notes, as their commands print them.
-    pub fn below(&self) -> Vec<String> {
+    pub(super) fn below(&self) -> Vec<String> {
         Lines::printed(&self.below)
     }
 
     /// The names that the rows' last cells start with.
-    pub fn names(&self) -> Vec<&str> {
+    pub(super) fn names(&self) -> Vec<&str> {
         self.rows.iter().map(|row| row.name.as_str()).collect()
     }
 
     /// What is left for the last column on a screen `width` columns wide.
-    pub fn name_room(&self, width: usize) -> usize {
+    pub(super) fn name_room(&self, width: usize) -> usize {
         self.columns(width).1
     }
 
     /// What it draws on a screen `width` columns wide and `height` lines
     /// high, as lines without the spaces at their ends.
-    pub fn drawn(&mut self, (width, height): (u16, u16)) -> String {
+    pub(super) fn drawn(&mut self, (width, height): (u16, u16)) -> String {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 

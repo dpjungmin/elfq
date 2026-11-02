@@ -84,7 +84,7 @@ pub(super) struct ListingPane {
 /// keeps it, so that every page opened on the item shares it, and it is
 /// worked out once. [`Listing::new`] is the only way to make one, so
 /// that the widest cells always match the lines.
-pub struct Listing {
+pub(in crate::commands::browse) struct Listing {
     /// Whether it is a function's code or a data object's contents.
     kind: ItemKind,
     lines: Vec<ListingLine>,
@@ -111,7 +111,7 @@ pub struct Listing {
 
 impl Listing {
     /// Item `index`'s listing, as tab 1 of its page shows it.
-    pub fn of_item(session: &Session, index: usize) -> Listing {
+    pub(in crate::commands::browse) fn of_item(session: &Session, index: usize) -> Listing {
         match session.binary.items[index].kind {
             ItemKind::Function => function_listing(session, index),
             ItemKind::Data => data_listing(session, index),

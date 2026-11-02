@@ -102,7 +102,7 @@ pub struct Session<'a> {
 ///
 /// The chains start where the program starts. `retained` and `why` find
 /// the same.
-pub struct Keepers {
+pub(super) struct Keepers {
     /// Which item keeps which.
     ///
     /// It is the dominator tree that `retained` builds, without a range.

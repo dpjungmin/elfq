@@ -11,7 +11,7 @@ use crate::binary::{Binary, Item, ItemKind};
 use crate::render::{Align, Table};
 
 /// Answers `elfq FILE debug items`.
-pub fn run(binary: &Binary, out: &mut dyn Write) -> Result<Outcome> {
+pub(super) fn run(binary: &Binary, out: &mut dyn Write) -> Result<Outcome> {
     writeln!(
         out,
         "{} {}, entry {:#x}: {}, {}",

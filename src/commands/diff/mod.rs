@@ -116,7 +116,7 @@ struct Request<'a> {
 /// same memory, and [`Outcome::Differs`] when they don't. It reads both
 /// files, warns about them and refuses those it can't compare, and loads
 /// both builds when it compares their items too.
-pub fn run(
+pub(super) fn run(
     old_path: &Path,
     new_path: &Path,
     all: bool,

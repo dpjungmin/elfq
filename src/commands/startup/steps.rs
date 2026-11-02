@@ -44,7 +44,7 @@ pub(super) enum Does {
 }
 
 impl Does {
-    pub fn word(self) -> &'static str {
+    pub(super) fn word(self) -> &'static str {
         match self {
             Does::Copy => "copy",
             Does::Zero => "zero",
@@ -87,7 +87,7 @@ pub(super) enum Way {
 
 impl Way {
     /// The JSON's `how`.
-    pub fn field(self) -> &'static str {
+    pub(super) fn field(self) -> &'static str {
         match self {
             Way::Call => "call",
             Way::TailCall => "tail call",
@@ -103,7 +103,7 @@ impl Way {
     }
 
     /// The register that a call through a register goes through.
-    pub fn register(self) -> Option<u16> {
+    pub(super) fn register(self) -> Option<u16> {
         match self {
             Way::RegisterCall(register) => Some(register),
             Way::Call
@@ -226,7 +226,7 @@ impl Step {
     /// The step of `call`, at `event`, which goes `way`: a call, until
     /// [`Step::set_up`] makes it a copy or zeroing, or
     /// [`Step::make_unread`] code that elfq can't follow.
-    pub fn call(events: &Events, event: usize, call: &Call, way: Way) -> Step {
+    fn call(events: &Events, event: usize, call: &Call, way: Way) -> Step {
         Step {
             veneer: events.veneer(event),
             ..Step::new(
@@ -244,7 +244,7 @@ impl Step {
     /// The step at `event` that joined pieces of the code at `home` make
     /// (see `pieces.rs`): the copy or zeroing that `matched` says, by a
     /// loop or by stores, as `way` says, whose first store is `site`.
-    pub fn of_pieces(event: usize, site: u64, way: Way, home: Home, matched: Match) -> Step {
+    pub(super) fn of_pieces(event: usize, site: u64, way: Way, home: Home, matched: Match) -> Step {
         let Home {
             level, function, ..
         } = home;
@@ -264,7 +264,12 @@ impl Step {
 
     /// The step of the loop `l`, at `loop_event`, when elfq can't follow
     /// it: code that may set up `may`.
-    pub fn unread_loop(events: &Events, loop_event: usize, l: &Loop, may: Vec<usize>) -> Step {
+    pub(super) fn unread_loop(
+        events: &Events,
+        loop_event: usize,
+        l: &Loop,
+        may: Vec<usize>,
+    ) -> Step {
         let function = events.function(loop_event);
         Step {
             may,
@@ -283,7 +288,7 @@ impl Step {
     /// The step of the stop at `event`, where a function that the call at
     /// `site` runs goes where the walk can't follow, or on past its budget,
     /// as `way` says: code that may set up `may`.
-    pub fn stop(events: &Events, event: usize, site: u64, way: Way, may: Vec<usize>) -> Step {
+    fn stop(events: &Events, event: usize, site: u64, way: Way, may: Vec<usize>) -> Step {
         Step {
             may,
             ..Step::new(
@@ -332,13 +337,13 @@ impl Step {
     }
 
     /// Makes the step the copy or zeroing that `matched` says.
-    pub fn set_up(&mut self, matched: Match) {
+    pub(super) fn set_up(&mut self, matched: Match) {
         self.does = matched.does;
         self.region = Some(matched.region);
     }
 
     /// Makes the step code that elfq can't follow, which may set up `may`.
-    pub fn make_unread(&mut self, may: Vec<usize>) {
+    pub(super) fn make_unread(&mut self, may: Vec<usize>) {
         self.does = Does::Unread;
         self.region = None;
         self.may = may;
@@ -346,7 +351,7 @@ impl Step {
 
     /// The sections that the step copies or zeroes, with the numbers it
     /// passes: none for a step of another kind.
-    pub fn covers(&self) -> &[Cover] {
+    pub(super) fn covers(&self) -> &[Cover] {
         self.region.as_ref().map_or(&[], |region| &region.covers)
     }
 

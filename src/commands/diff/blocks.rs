@@ -124,26 +124,26 @@ impl Block {
     /// The bytes from the old build's first section or load image in the
     /// block to its furthest end, gaps included, as the overview counts a
     /// block, or `None` when the old build has none there.
-    pub fn old_size(&self) -> Option<u64> {
+    pub(super) fn old_size(&self) -> Option<u64> {
         span(&self.old)
     }
 
     /// The same for the new build.
-    pub fn new_size(&self) -> Option<u64> {
+    pub(super) fn new_size(&self) -> Option<u64> {
         span(&self.new)
     }
 
     /// How many bytes the block grew by, from the old build to the new:
     /// less than 0 when it shrank. A build that has nothing in the block
     /// counts as 0.
-    pub fn delta(&self) -> i128 {
+    pub(super) fn delta(&self) -> i128 {
         let size = |size: Option<u64>| i128::from(size.unwrap_or(0));
         size(self.new_size()) - size(self.old_size())
     }
 
     /// The block's sections and load images, each with where it is in
     /// each build, in address order.
-    pub fn sections<'a>(
+    pub(super) fn sections<'a>(
         &self,
         old: &'a LoadedMemory,
         new: &'a LoadedMemory,
@@ -214,7 +214,7 @@ impl Block {
     /// true, or the new build's, each of whose sections and items `memory`
     /// and `binary` hold: all 0 when the build has nothing in the block.
     /// `holds_items` names the sections that hold items in either build.
-    pub fn parts(
+    pub(super) fn parts(
         &self,
         old: bool,
         memory: &LoadedMemory,
@@ -269,7 +269,7 @@ impl Block {
 impl SectionPair<'_> {
     /// How many bytes it grew by: less than 0 when it shrank, and all of
     /// its bytes when only one build has it.
-    pub fn delta(&self) -> i128 {
+    pub(super) fn delta(&self) -> i128 {
         let size = |place: Option<Place>| i128::from(place.map_or(0, |place| place.size));
         size(self.new) - size(self.old)
     }

@@ -95,7 +95,7 @@ use crate::render::Align;
 /// `--tree`, as a tree. `to`, the ranges of `--to`, limits the answer to
 /// what SYMBOL reaches in them, with every row, and then the answer is
 /// [`Outcome::Crossed`] when it lists something.
-pub fn run(
+pub(super) fn run(
     binary: &Binary,
     symbol: &str,
     to: &[AddressRange],
@@ -136,7 +136,7 @@ fn check_to(binary: &Binary, graph: &Graph, to: &[AddressRange]) -> Result<()> {
 /// every start, and names every function that elfq can't read. `to`, the
 /// ranges of `--to`, `range`, that of `--range`, and `--tree` need SYMBOL,
 /// and are refused.
-pub fn run_starts(
+pub(super) fn run_starts(
     path: &Path,
     binary: &Binary,
     to: &[AddressRange],

@@ -16,7 +16,7 @@ use crate::graph::Node;
 /// What the item at `index` calls or uses, as `callees SYMBOL` lists it,
 /// which names it `name` (see [`Session::lead_name`]): HOW, AT and
 /// CALLEE, each row opening the callee.
-pub fn tab(session: &Session, index: usize, name: &str) -> Printed {
+pub(super) fn tab(session: &Session, index: usize, name: &str) -> Printed {
     let (binary, graph) = (session.binary, &session.graph);
     let mut answer = callees::answer(binary, graph, index, name, true);
     // `callees SYMBOL` lists the rows of the 30 largest callees, unless

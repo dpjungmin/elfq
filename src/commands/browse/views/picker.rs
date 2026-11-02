@@ -30,7 +30,7 @@ const MOST: usize = 500;
 const NOTE_LINES: usize = 3;
 
 /// One row of the box.
-pub struct Found {
+pub(in crate::commands::browse) struct Found {
     /// The item or import.
     pub node: Node,
     /// The address typed, when the item holds it.
@@ -40,7 +40,7 @@ pub struct Found {
     pub lead: Option<String>,
 }
 
-pub struct Picker {
+pub(in crate::commands::browse) struct Picker {
     /// What the user has typed.
     pub text: String,
     /// The items whose names have it.
@@ -63,7 +63,7 @@ pub struct Picker {
 
 impl Picker {
     /// The box with `text` typed in.
-    pub fn new(session: &Session, text: &str) -> Picker {
+    pub(in crate::commands::browse) fn new(session: &Session, text: &str) -> Picker {
         let mut picker = Picker {
             text: text.to_string(),
             found: Vec::new(),
@@ -80,14 +80,18 @@ impl Picker {
 
     /// The box with `text` typed in, and `note` over the rows until the
     /// text changes, such as "`log` could mean 2 functions".
-    pub fn noted(session: &Session, text: &str, note: String) -> Picker {
+    pub(in crate::commands::browse) fn noted(
+        session: &Session,
+        text: &str,
+        note: String,
+    ) -> Picker {
         let mut picker = Picker::new(session, text);
         picker.note = Some((text.to_string(), note));
         picker
     }
 
     /// Types `c`, or with `None`, takes the last character back.
-    pub fn type_char(&mut self, c: Option<char>) {
+    pub(in crate::commands::browse) fn type_char(&mut self, c: Option<char>) {
         match c {
             Some(c) => self.text.push(c),
             None => {
@@ -184,18 +188,23 @@ impl Picker {
         self.fitted = FittedRows::default();
     }
 
-    pub fn handle(&mut self, session: &Session, action: Action) {
+    pub(in crate::commands::browse) fn handle(&mut self, session: &Session, action: Action) {
         self.catch_up(session);
         self.cursor.handle(action);
     }
 
     /// The selected row.
-    pub fn selected(&mut self, session: &Session) -> Option<&Found> {
+    pub(in crate::commands::browse) fn selected(&mut self, session: &Session) -> Option<&Found> {
         self.catch_up(session);
         self.found.get(self.cursor.selected)
     }
 
-    pub fn draw(&mut self, session: &Session, frame: &mut Frame, area: Rect) {
+    pub(in crate::commands::browse) fn draw(
+        &mut self,
+        session: &Session,
+        frame: &mut Frame,
+        area: Rect,
+    ) {
         self.catch_up(session);
         let binary = session.binary;
         let width = usize::from(area.width);
@@ -351,7 +360,7 @@ impl Found {
 /// The first line of an error that SYMBOL gets, such as "`log` could mean 2
 /// functions", without what it says about the list of names that the CLI
 /// prints after it.
-pub fn first_line(error: &anyhow::Error) -> String {
+pub(in crate::commands::browse) fn first_line(error: &anyhow::Error) -> String {
     let error = error.to_string();
     let line = error.lines().next().unwrap_or_default();
     let line = line.trim_end_matches(':');
