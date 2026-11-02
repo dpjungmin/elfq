@@ -191,8 +191,10 @@ only with the `tui` feature.
   call says what it means. A sort key used in one place may stay a
   tuple. Much of the code doesn't do this yet (see
   [below](#where-the-code-doesnt-follow-these-yet)).
-- **One word, one meaning.** A word means one thing across elfq: check a
-  new name against [Words](#words), and add the words you bring in.
+- **One word, one meaning.** A word means one thing across elfq,
+  plumbing takes none of the words that name elfq's things, and indexes
+  and addresses are named apart. Check a new name against
+  [Words](#words), and add the words you bring in.
 - **A test runs elfq through `support/`.** A test of the program runs
   it with `run`, or with `command` when it needs more, such as a pipe
   for its input; it changes a sample's bytes with `ElfBytes`, in
@@ -248,10 +250,20 @@ code.
 
 A word means one thing across elfq, so that a name read in one module
 means the same in the next. Check a new file, type or field name against
-this list, and add to it when you bring in a word.
+this list, and add to it when you bring in a word. Plumbing, such as a
+helper type, doesn't take a word of the list; where code still does, as
+`Kept` and the private `Run`s below, the entry says so.
 
 - **item**: a function or data object in the file (`binary::Item`). Its
   place in `Binary::items` is an item index, named `index` or `item`.
+- **index**, **address**: an index is a place in a list, and an address
+  a place in memory, and their names keep them apart. An index is named
+  `index`, or after what it is the place of, as `item`, `section`,
+  `event` or `step`; an address is named `address`, or after what is
+  there, as `site` for an instruction's and `target` for where a call or
+  jump goes, and never `item` or `index`. Where both are about, the
+  names say which, as in diff's `edited.rs`: `old_item` is an index, and
+  `old_address` an address.
 - **range**: the addresses from a start up to, but not including, an end
   (`binary::AddressRange`), as `--range` reads them. An item keeps an
   address and a size instead, and `Item::range` gives the range they
@@ -266,9 +278,9 @@ this list, and add to it when you bring in a word.
   `LoadedMemory`, what a file puts in memory when it runs, and a Thumb
   load, an instruction that reads memory, are other things.
 - **import**: a function from a shared library, which the file calls but
-  doesn't hold. **node**: an item or an import, as the graph connects
-  them (`graph::Node`). **root**: a node where the program starts, such as
-  the entry point or a handler that the vector table lists (`graph::Root`).
+  doesn't hold. **node**: an item or an import, as the graph connects them
+  (`graph::Node`). **root**: a node where the program starts, such as the
+  entry point or a handler that the vector table lists (`graph::Root`).
 - **use**: a reference from one node to another, such as a call, a jump
   or a stored pointer: what `callers` and `callees` list.
 - **handler**: code that an entry of the Cortex-M vector table names,
@@ -371,8 +383,12 @@ this list, and add to it when you bring in a word.
   call's call tree finds, from the function that the call goes to down
   to it; otherwise the function alone (`Hit`).
 - **state**: what the registers and the stack hold at one point in the
-  code, in `arch/thumb/values/` (`State`). A section's state when `main`
-  starts, in `startup`, is its status (`problems::Status`).
+  code, in `arch/thumb/values/` (`State`). What the startup walk knows at
+  one point, of the registers, the flags and the words that code stored,
+  is `Known`, in `arch/thumb/startup/walk_state.rs`. A section's state
+  when `main` starts, in `startup`, is its status (`problems::Status`).
+- **row**: a line of a table that elfq prints; a loop over a table of
+  sections also reads one row of that table each time it runs.
 - **shape**: how a table shows a tree: as rows that name the row they
   hang under, or drawn with `--tree` (`TreeShape`). A command's
   **format** is text, tree or JSON (`Format`).
@@ -389,20 +405,21 @@ this list, and add to it when you bring in a word.
   startup ends: at `main`, at the reset handler's endless loop, or where
   the walk ended before either (`Ending`); the walk's own end is an
   `End`.
-  **row**: a line of a table that elfq prints; a loop over a table of
-  sections also reads one row of that table each time it runs.
 - **event**: one thing that the startup walk records, such as a call, a
   store or a loop (`arch::startup::Event`); its place in the walk's list
   is an event index, named `event`, or `loop_event` for a loop's.
   Browse's event loop, which reads the terminal's keys (crossterm's
-  `Event`), is unrelated. **walked loop**: a loop that the walk went
-  through one iteration at a time, as a loop over a table of sections,
-  so that each iteration's calls and stores are events of their own
-  (`Loop::walked_iterations`). **call tree**: in `startup`, the
-  functions that run when a function runs, each with the function that
-  calls it on a shortest chain from the first (`CallTree`). **piece**:
-  bytes that a loop or stores copy or zero one after another, which
-  join into a step (`startup`'s `pieces.rs`).
+  `Event`), is unrelated. **iteration**: one time through a loop's code,
+  from its head; a loop that runs 5 times has 5 iterations, and the last
+  goes only as far as where it leaves (`Runs::Counted`). Types and fields
+  name it so, as `Iteration` and `Runs::EachIteration` do.
+  **walked loop**: a loop that the walk went through one iteration at a
+  time, as a loop over a table of sections, so that each iteration's calls
+  and stores are events of their own (`Loop::walked_iterations`).
+  **call tree**: in `startup`, the functions that run when a function
+  runs, each with the function that calls it on a shortest chain from the
+  first (`CallTree`). **piece**: bytes that a loop or stores copy or zero
+  one after another, which join into a step (`startup`'s `pieces.rs`).
   **unread**: code that elfq can't follow, such as a call through a
   register, which may set up any section not set up yet
   (`Does::Unread`, and `unread.rs`). Where the JSON says `unknown` for a
@@ -417,9 +434,15 @@ this list, and add to it when you bring in a word.
   unrelated, and so are the private `Run`s of the startup walk and of
   `binary/memory.rs`.
 
-Some code still uses one of these words for something else, as the Thumb
-walk's `Step` (what an instruction leads to) and `reach`'s `Step` (a row
-of its tree) do. Those are names to fix, not meanings to copy.
+Some code still uses one of these words for something else. The Thumb
+walk's `Step` is what an instruction leads to; `reach`'s `Step` is
+SYMBOL, or an item or import that it reaches, at its place in the tree,
+whose place in the search is a `StepId`; and a loop's `LoopStore::step`
+is how far a store moves each iteration, which `pieces.rs` reads beside
+`Piece::step`, a step index. The functions named `answer`, as
+`callers::answer`, `callees::answer` and `top`'s, return the text of an
+answer, a `FlatAnswer` or a `TreeAnswer`, rather than what the command
+worked out. Those are names to fix, not meanings to copy.
 
 ## Tests
 
