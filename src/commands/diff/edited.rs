@@ -72,6 +72,14 @@ struct Place {
     offset: u64,
 }
 
+/// What may be text at an address, for [`same_text`]: the name of the
+/// section that holds it, and up to [`TEXT_COMPARED`] of the section's
+/// bytes from there.
+struct TextAt<'a> {
+    section_name: &'a str,
+    bytes: &'a [u8],
+}
+
 /// The bytes of an item that the program starts with: the file's, with
 /// the addresses that the loader writes at relocations, and the imports
 /// that it writes, by name and offset.
@@ -97,33 +105,38 @@ impl<'a> Edits<'a> {
     /// they say where something is, or their code uses different items in
     /// the new build than in the old.
     pub fn edited(&self, old_item: usize, new_item: usize) -> bool {
-        let (a, b) = (&self.old.binary, &self.new.binary);
-        let (old, new) = (&a.items[old_item], &b.items[new_item]);
-        let (Some(x), Some(y)) = (loaded(a, old), loaded(b, new)) else {
+        let (old_binary, new_binary) = (&self.old.binary, &self.new.binary);
+        let (old, new) = (&old_binary.items[old_item], &new_binary.items[new_item]);
+        let (Some(old_loaded), Some(new_loaded)) =
+            (loaded(old_binary, old), loaded(new_binary, new))
+        else {
             return false;
         };
-        if x == y {
+        if old_loaded == new_loaded {
             // The same code can still read another import from a global
             // offset table entry, which the loader fills in.
             return imports(self.old, old_item) != imports(self.new, new_item);
         }
-        if x.imports != y.imports {
+        if old_loaded.imports != new_loaded.imports {
             return true;
         }
         let code = old.kind == ItemKind::Function;
         // diff refuses builds for two architectures, and reads the new
         // build's code as it reads the old build's: as Thumb when the old
         // build's is, even where the new build doesn't say it is.
-        let instruction_sets =
-            a.instruction_set()
-                .zip(InstructionSet::of(b.architecture, a.thumb, b.endianness));
+        let instruction_sets = old_binary.instruction_set().zip(InstructionSet::of(
+            new_binary.architecture,
+            old_binary.thumb,
+            new_binary.endianness,
+        ));
         let operands = instruction_sets.filter(|_| code).map(|(old_set, new_set)| {
             (
-                old_set.operands(&x.bytes, old.address),
-                new_set.operands(&y.bytes, new.address),
+                old_set.operands(&old_loaded.bytes, old.address),
+                new_set.operands(&new_loaded.bytes, new.address),
             )
         });
-        self.bytes_edited(old, &x.bytes, new, &y.bytes, operands.as_ref())
+        let (old_bytes, new_bytes) = (&old_loaded.bytes, &new_loaded.bytes);
+        self.bytes_edited(old, old_bytes, new, new_bytes, operands.as_ref())
             || operands.is_some_and(|(old_operands, new_operands)| {
                 let offsets = self.distances_elsewhere(&old_operands, &new_operands);
                 self.uses_edited(old_item, new_item, &offsets)
@@ -243,11 +256,11 @@ impl<'a> Edits<'a> {
     /// (c) at the same text (see [`same_text`]); or (d) the same start or
     /// end of a section (see [`same_edge`]).
     fn correspond(&self, old_address: u64, new_address: u64) -> bool {
-        let (a, b) = (&self.old.binary, &self.new.binary);
+        let (old_binary, new_binary) = (&self.old.binary, &self.new.binary);
         self.same_place_in_partners(old_address, new_address)
             || self.in_unpaired_items(old_address, new_address)
-            || same_text(a, old_address, b, new_address)
-            || same_edge(a, old_address, b, new_address)
+            || same_text(old_binary, old_address, new_binary, new_address)
+            || same_edge(old_binary, old_address, new_binary, new_address)
     }
 
     /// Case (a) of [`Edits::correspond`]: whether `old_address` and
@@ -255,13 +268,22 @@ impl<'a> Edits<'a> {
     /// Thumb bit and all, or just past the end of partners, as a pointer to
     /// the end of an array does.
     fn same_place_in_partners(&self, old_address: u64, new_address: u64) -> bool {
-        let (a, b) = (&self.old.binary, &self.new.binary);
-        let into = match (place(a, old_address), place(b, new_address)) {
-            (Some(x), Some(y)) => self.partner(x.item) == Some(y.item) && x.offset == y.offset,
+        let (old_binary, new_binary) = (&self.old.binary, &self.new.binary);
+        let into = match (
+            place_of(old_binary, old_address),
+            place_of(new_binary, new_address),
+        ) {
+            (Some(old_place), Some(new_place)) => {
+                self.partner(old_place.item) == Some(new_place.item)
+                    && old_place.offset == new_place.offset
+            }
             _ => false,
         };
-        let past_the_end = match (end(a, old_address), end(b, new_address)) {
-            (Some(x), Some(y)) => self.partner(x) == Some(y),
+        let past_the_end = match (
+            item_ending_at(old_binary, old_address),
+            item_ending_at(new_binary, new_address),
+        ) {
+            (Some(old_item), Some(new_item)) => self.partner(old_item) == Some(new_item),
             _ => false,
         };
         into || past_the_end
@@ -270,9 +292,11 @@ impl<'a> Edits<'a> {
     /// Case (b) of [`Edits::correspond`]: whether `old_address` and
     /// `new_address` both point into items without a partner.
     fn in_unpaired_items(&self, old_address: u64, new_address: u64) -> bool {
-        let (a, b) = (&self.old.binary, &self.new.binary);
-        place(a, old_address).is_some_and(|x| self.partner(x.item).is_none())
-            && place(b, new_address).is_some_and(|y| self.pairing.new_to_old[y.item].is_none())
+        let (old_binary, new_binary) = (&self.old.binary, &self.new.binary);
+        place_of(old_binary, old_address)
+            .is_some_and(|old_place| self.partner(old_place.item).is_none())
+            && place_of(new_binary, new_address)
+                .is_some_and(|new_place| self.pairing.new_to_old[new_place.item].is_none())
     }
 
     /// The partner of the old build's item `old_item`, as an index into the
@@ -290,10 +314,10 @@ impl<'a> Edits<'a> {
     fn distances_elsewhere(&self, old_operands: &Operands, new_operands: &Operands) -> Vec<usize> {
         let old_targets: HashMap<usize, u64> = old_operands.targets.iter().copied().collect();
         let new_targets: HashMap<usize, u64> = new_operands.targets.iter().copied().collect();
-        let same_place = |offset: &usize, target: &u64| {
+        let same_place = |offset: &usize, old_target: &u64| {
             new_targets
                 .get(offset)
-                .is_some_and(|&other| self.same_place_in_partners(*target, other))
+                .is_some_and(|&new_target| self.same_place_in_partners(*old_target, new_target))
         };
         let only_new = |offset: &usize| !old_targets.contains_key(offset);
         let new_offsets = new_operands.targets.iter().map(|&(offset, _)| offset);
@@ -433,7 +457,7 @@ fn through(veneers: &Veneers, mut item: usize) -> Node {
 /// Where `value` points into an item of `binary`. On Thumb, a function's
 /// address with the Thumb bit set points into the function, even when its
 /// size is 0.
-fn place(binary: &Binary, value: u64) -> Option<Place> {
+fn place_of(binary: &Binary, value: u64) -> Option<Place> {
     let item = binary.item_at(value).or_else(|| {
         let index = binary.item_at(value.checked_sub(1)?)?;
         let thumb = binary.thumb && value % 2 == 1;
@@ -445,7 +469,7 @@ fn place(binary: &Binary, value: u64) -> Option<Place> {
 
 /// The item of `binary` that ends just before `value`, as an index into its
 /// items.
-fn end(binary: &Binary, value: u64) -> Option<usize> {
+fn item_ending_at(binary: &Binary, value: u64) -> Option<usize> {
     let index = binary.item_at(value.checked_sub(1)?)?;
     let item = &binary.items[index];
     (item.address + item.size == value).then_some(index)
@@ -455,39 +479,43 @@ fn end(binary: &Binary, value: u64) -> Option<usize> {
 /// `new_address` point into sections of the same name, at the same text: a
 /// whole string that ends in a 0 byte, or at least 3 characters, as a Rust
 /// string has no 0 byte.
-fn same_text(a: &Binary, old_address: u64, b: &Binary, new_address: u64) -> bool {
-    let (Some((x_name, x)), Some((y_name, y))) = (text(a, old_address), text(b, new_address))
-    else {
+fn same_text(old_binary: &Binary, old_address: u64, new_binary: &Binary, new_address: u64) -> bool {
+    let (Some(old_text), Some(new_text)) = (
+        text_at(old_binary, old_address),
+        text_at(new_binary, new_address),
+    ) else {
         return false;
     };
-    if x_name != y_name {
+    if old_text.section_name != new_text.section_name {
         return false;
     }
-    let same = x
-        .iter()
-        .zip(y)
-        .take_while(|&(x, y)| x == y && is_text_byte(*x))
+    let (old_bytes, new_bytes) = (old_text.bytes, new_text.bytes);
+    let same = (old_bytes.iter())
+        .zip(new_bytes)
+        .take_while(|&(old_byte, new_byte)| old_byte == new_byte && is_text_byte(*old_byte))
         .count();
-    let whole = same > 0 && x.get(same) == Some(&0) && y.get(same) == Some(&0);
+    let whole = same > 0 && old_bytes.get(same) == Some(&0) && new_bytes.get(same) == Some(&0);
     whole || same >= 3
 }
 
-/// The name of the section that holds `address`, and up to
-/// [`TEXT_COMPARED`] of its bytes from there.
-fn text(binary: &Binary, address: u64) -> Option<(&str, &[u8])> {
+/// The bytes at `address` that [`same_text`] reads as text, with the name
+/// of the section that holds them.
+fn text_at(binary: &Binary, address: u64) -> Option<TextAt<'_>> {
     let section = &binary.sections[binary.section_at(address)?];
     let end = section.address + section.size;
-    let bytes = binary.bytes(address, (end - address).min(TEXT_COMPARED))?;
-    Some((section.name.as_str(), bytes))
+    Some(TextAt {
+        section_name: section.name.as_str(),
+        bytes: binary.bytes(address, (end - address).min(TEXT_COMPARED))?,
+    })
 }
 
 /// Case (d) of [`Edits::correspond`]: whether `old_address` and
 /// `new_address` are the same start or end of a section of the same name,
 /// or of its load image.
-fn same_edge(a: &Binary, old_address: u64, b: &Binary, new_address: u64) -> bool {
-    let old_edges = edges(a, old_address);
+fn same_edge(old_binary: &Binary, old_address: u64, new_binary: &Binary, new_address: u64) -> bool {
+    let old_edges = edges(old_binary, old_address);
     !old_edges.is_empty()
-        && edges(b, new_address)
+        && edges(new_binary, new_address)
             .iter()
             .any(|edge| old_edges.contains(edge))
 }
