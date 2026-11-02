@@ -320,11 +320,11 @@ of its tree) do. Those are names to fix, not meanings to copy.
   `graph/paths.rs`).
 - **Integration tests** in `tests/it/` use the samples in `testdata/bin`.
   `cli.rs`, `json.rs`, `startup.rs` and `docs.rs` run the elfq program,
-  the way a user would. The others call the library, as `Binary::load`
-  and `Graph::build`. `damaged.rs` and `browse.rs` do both, and so does
-  one test in `json.rs`; `reach.rs` runs commands in its own process,
-  with `run_in_process`, which is quicker for the hundreds it runs. The
-  answers they expect are those in
+  the way a user would. Those in `library/` call the library, as
+  `Binary::load` and `Graph::build`. `damaged.rs` and `browse.rs` do
+  both, and so does one test in `json.rs`; `reach.rs` runs commands in
+  its own process, with `run_in_process`, which is quicker for the
+  hundreds it runs. The answers they expect are those in
   [testdata/README.md](testdata/README.md), which says, for example, what
   calls `log_msg` in each sample.
 
@@ -333,16 +333,16 @@ of its tree) do. Those are names to fix, not meanings to copy.
 | `support/` | No tests: in `mod.rs`, the samples' paths (`SAMPLE` and others), the lists that several modules check (`C_SAMPLES`, `FAR_SAMPLES`), `samples_for`, which lists the samples for one architecture, `run`, which runs the program and returns a `Run` to check, `run_in_process`, and `assert_output`; in `elf.rs`, `ElfBytes`, which changes a sample's bytes field by field and saves the file |
 | `cli.rs` | Each command's whole text output, errors, exit statuses and help |
 | `json.rs` | `--json` output |
-| `items.rs` | Finding items: symbols, PLT stubs, unwind tables, functions in stripped firmware, unnamed data |
-| `graph.rs` | The reference graph: callers, callees, pointers in data, veneers |
-| `retained.rs` | Roots, and what is exclusive to what |
-| `why.rs` | The shortest chains |
 | `reach.rs` | `reach` on every item of the Cortex-M samples, against `callees`, `retained` and its own `--tree`, and with `--to` against `reach` without it and `callees --to`, and on every function of each stripped one against its twin with symbols; and without SYMBOL, each start of every sample against `reach START` |
 | `startup.rs` | `startup` on the samples whose reset code has a mistake and some without, the exit status of every Cortex-M sample, and the files it refuses; and that `debug walk` lists the walk that `startup` reads |
-| `symbol.rs` | Looking up SYMBOL |
-| `inlined.rs` | Inlined copies, from DWARF |
-| `damaged.rs` | Damaged and unusual files, made by changing a sample's bytes |
 | `browse.rs` | `browse`'s screens, driven with keys on ratatui's `TestBackend`, a screen in memory; its errors; and on Linux, the program in a terminal that `script` makes. The checks that need its private types are unit tests; see below |
+| `library/items.rs` | Finding items: symbols, PLT stubs, unwind tables, functions in stripped firmware, unnamed data |
+| `library/graph.rs` | The reference graph: callers, callees, pointers in data, veneers |
+| `library/retained.rs` | Roots, and what is exclusive to what |
+| `library/why.rs` | The shortest chains |
+| `library/symbol.rs` | Looking up SYMBOL |
+| `library/inlined.rs` | Inlined copies, from DWARF |
+| `damaged.rs` | Damaged and unusual files, made by changing a sample's bytes |
 | `docs.rs` | The `$ elfq` examples in README.md, docs/design.md and docs/examples.md, and that design.md names every JSON key |
 
 The checks of `browse` that need its private types are unit tests in
@@ -649,8 +649,8 @@ page, which the capture prints.
 5. **Samples.** Build the C sample for it in `testdata/build.sh`, with
    `variants` for the copies without DWARF and without symbols, and say
    what it holds in testdata/README.md. Add it to `C_SAMPLES` in
-   `tests/it/support/mod.rs`; `graph.rs` and `retained.rs` check its
-   answers against testdata/README.md.
+   `tests/it/support/mod.rs`; `library/graph.rs` and
+   `library/retained.rs` check its answers against testdata/README.md.
 6. **Tests that need code elfq can't read.**
    `ElfBytes::mark_code_unreadable`, in `tests/it/support/elf.rs`, marks a
    file as AArch64 for them. When AArch64 is the one you add, pick another
