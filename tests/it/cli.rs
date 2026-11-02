@@ -5,17 +5,10 @@ use std::process::Stdio;
 
 use crate::damaged;
 use crate::support::{
-    DEEP_SAMPLE, LIBRARY_SAMPLE, MOVED_SAMPLE, SAMPLE, TCM_EDITED_SAMPLE, TCM_ENTRY_MAIN_SAMPLE,
-    TCM_INLINED_SAMPLE, TCM_MOVED_SAMPLE, TCM_OCRAM_SAMPLE, TCM_SAMPLE, TCM_SDRAM_SAMPLE,
-    assert_output, command, elfq, samples,
+    DEEP_SAMPLE, Exit, LIBRARY_SAMPLE, MOVED_SAMPLE, Run, SAMPLE, TCM_EDITED_SAMPLE,
+    TCM_ENTRY_MAIN_SAMPLE, TCM_INLINED_SAMPLE, TCM_MOVED_SAMPLE, TCM_OCRAM_SAMPLE, TCM_SAMPLE,
+    TCM_SDRAM_SAMPLE, assert_output, command, run, samples, stderr, stdout,
 };
-
-/// Runs elfq, expecting success, and returns what it printed.
-fn stdout(args: &[&str]) -> String {
-    let output = elfq(args);
-    assert!(output.status.success(), "{output:?}");
-    String::from_utf8(output.stdout).unwrap()
-}
 
 /// Splits a command line into its arguments as a shell would, for the
 /// quotes that elfq puts around a name such as `'log(char const*)'`.
@@ -34,14 +27,6 @@ fn shell_words(line: &str) -> Vec<String> {
     }
     words.push(word);
     words
-}
-
-/// Runs elfq, expecting failure with `code`, and returns its error output.
-fn stderr(args: &[&str], code: i32) -> String {
-    let output = elfq(args);
-    assert_eq!(output.status.code(), Some(code), "{output:?}");
-    assert!(output.stdout.is_empty());
-    String::from_utf8(output.stderr).unwrap()
 }
 
 #[test]
@@ -190,7 +175,7 @@ fn commands_that_need_roots_refuse_a_shared_library() {
     ] {
         let args = [&[LIBRARY_SAMPLE][..], args].concat();
         assert_output(
-            &stderr(&args, 2),
+            &stderr(&args),
             &format!("error: elfq can't yet tell {what} in a shared library\n"),
         );
     }
@@ -208,13 +193,12 @@ fn every_command_the_overview_suggests_works() {
             let mut args = vec![sample.clone()];
             args.extend(shell_words(line));
             let args: Vec<&str> = args.iter().map(String::as_str).collect();
-            let output = elfq(&args);
+            let suggested = run(&args);
             // startup exits 1 for a problem it finds.
-            let problems = line == "startup" && output.status.code() == Some(1);
-            assert!(
-                (output.status.success() || problems) && output.stderr.is_empty(),
-                "{args:?}\n{output:?}"
-            );
+            match line {
+                "startup" => suggested.printed(Exit::ZeroOrOne),
+                _ => suggested.printed(0),
+            };
         }
     }
 }
@@ -409,7 +393,7 @@ fn only_trees_are_drawn() {
         &[SAMPLE, "--json", "--tree"],
     ] {
         assert_output(
-            &stderr(args, 2),
+            &stderr(args),
             "error: --tree draws trees in the text, so it doesn't go with --json\n",
         );
     }
@@ -420,7 +404,7 @@ fn only_trees_are_drawn() {
         &[SAMPLE, "debug", "items", "--tree"],
     ] {
         assert_output(
-            &stderr(args, 2),
+            &stderr(args),
             "error: only the overview, top, retained, why, reach SYMBOL and inlined SYMBOL take --tree\n",
         );
     }
@@ -612,7 +596,7 @@ RETAINED   OWN  ITEM
     );
     // Range checks look only where the program uses its code and data.
     assert_output(
-        &stderr(&[TCM_SAMPLE, "callers", "0x30000040+224"], 2),
+        &stderr(&[TCM_SAMPLE, "callers", "0x30000040+224"]),
         "error: elfq found no functions or data in 0x30000040..0x30000120 (the load image of \
          .itcm); the program uses .itcm at 0x00000000..0x000000e0\n",
     );
@@ -674,29 +658,29 @@ RETAINED  OWN  ITEM
 #[test]
 fn a_range_must_hold_something() {
     assert_output(
-        &stderr(&[TCM_SAMPLE, "top", "--range", "0x40000000+4K"], 2),
+        &stderr(&[TCM_SAMPLE, "top", "--range", "0x40000000+4K"]),
         "error: the file has nothing in 0x40000000..0x40001000; the overview lists its ranges\n",
     );
     // The range is written as the overview writes it, whatever its spelling.
     assert_output(
-        &stderr(&[TCM_SAMPLE, "top", "--range", "0x4000000+16"], 2),
+        &stderr(&[TCM_SAMPLE, "top", "--range", "0x4000000+16"]),
         "error: the file has nothing in 0x04000000..0x04000010; the overview lists its ranges\n",
     );
     // A file in one block of addresses has no list of them in its overview,
     // so the error names the block.
     assert_output(
-        &stderr(&[SAMPLE, "top", "--range", "0x900000+4K"], 2),
+        &stderr(&[SAMPLE, "top", "--range", "0x900000+4K"]),
         "error: the file has nothing in 0x00900000..0x00901000, only in 0x00000318..0x00004088\n",
     );
     // A section with no functions or data, such as the unwind table.
     assert_output(
-        &stderr(&[SAMPLE, "--range", "0x25f0+0x2c8"], 2),
+        &stderr(&[SAMPLE, "--range", "0x25f0+0x2c8"]),
         "error: elfq found no functions or data in 0x000025f0..0x000028b8 (.eh_frame)\n",
     );
     // A function with no size in the symbol table, as in hand-written
     // assembly: glibc's `_init`.
     assert_output(
-        &stderr(&[SAMPLE, "top", "--range", "0x1000+4"], 2),
+        &stderr(&[SAMPLE, "top", "--range", "0x1000+4"]),
         "error: elfq doesn't know where _init ends, so it can't count the bytes in \
          0x00001000..0x00001004 (.init)\n",
     );
@@ -715,16 +699,16 @@ fn a_range_must_hold_something() {
             "doesn't know where _init ends",
         ),
     ] {
-        let text = stderr(args, 2);
+        let text = stderr(args);
         assert!(text.contains(error), "{text}");
-        assert_output(&stderr(&[args, &["--json"][..]].concat(), 2), &text);
+        assert_output(&stderr(&[args, &["--json"][..]].concat()), &text);
     }
     assert!(
-        stderr(&[TCM_SAMPLE, "--range", "0x20000000"], 2)
+        stderr(&[TCM_SAMPLE, "--range", "0x20000000"])
             .contains("expected START..END or START+SIZE")
     );
     assert_output(
-        &stderr(&[TCM_SAMPLE, "why", "crc32", "--range", "0+1K"], 2),
+        &stderr(&[TCM_SAMPLE, "why", "crc32", "--range", "0+1K"]),
         "error: only the overview, top and retained take --range\n",
     );
 }
@@ -872,7 +856,7 @@ fn no_line_sums_up_a_single_item() {
 #[test]
 fn long_lists_name_the_first_few() {
     let sample = "testdata/bin/rust-x86_64-nodebug.elf";
-    let choices = stderr(&[sample, "callers", "fmt"], 2);
+    let choices = stderr(&[sample, "callers", "fmt"]);
     assert!(
         choices.starts_with("error: `fmt` could mean 53 functions;"),
         "{choices}"
@@ -1481,7 +1465,7 @@ BYTES  COPIES  FUNCTION
 #[test]
 fn inlined_needs_dwarf() {
     assert_output(
-        &stderr(&["testdata/bin/c-x86_64-nodebug.elf", "inlined"], 2),
+        &stderr(&["testdata/bin/c-x86_64-nodebug.elf", "inlined"]),
         "error: testdata/bin/c-x86_64-nodebug.elf has no DWARF debug info; build it with debug \
          info and don't strip it\n",
     );
@@ -1677,7 +1661,7 @@ Removing vtable for app::Gain would remove app::Gain::run(short*, unsigned long)
     );
     // Overloads share a name, so their parameters tell them apart.
     assert_output(
-        &stderr(&[CPP, "callers", "log"], 2),
+        &stderr(&[CPP, "callers", "log"]),
         "\
 error: `log` could mean 2 functions; use one on the left instead:
   'log(char const*)'   app::log(char const*)
@@ -1798,12 +1782,14 @@ uses  0x3a60a, 0x3a66d  std::rt::lang_start_internal
     );
 }
 
-/// Runs elfq, expecting it to find something that crosses the edge of the
-/// ranges it was given (exit status 1), and returns what it printed.
+/// What elfq printed on stdout with `args`, ending with exit status 1.
+///
+/// It checks that elfq found something that crosses the edge of the
+/// ranges it was given, which status 1 says, and printed nothing on
+/// stderr: [`Run::printed`] with 1.
+#[track_caller]
 fn crossing(args: &[&str]) -> String {
-    let output = elfq(args);
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    String::from_utf8(output.stdout).unwrap()
+    run(args).printed(1)
 }
 
 #[test]
@@ -2347,37 +2333,31 @@ ADDRESS     SIZE  HOW              AT    CALLEE
     );
     // callees asks about code it can read, so not about the ROM alone.
     assert_output(
-        &stderr(&[far, "callees", "0x1fff0000+64K"], 2),
+        &stderr(&[far, "callees", "0x1fff0000+64K"]),
         "error: the file has nothing in 0x1fff0000..0x20000000; the overview lists its ranges\n",
     );
     // A --to range must hold something outside the ranges asked about, and
     // code there that the file calls counts only when it is outside them.
     assert_output(
-        &stderr(
-            &[
-                far,
-                "callees",
-                "0x1fff0000..0x20000004",
-                "--to",
-                "0x1fff0000..0x20000004",
-            ],
-            2,
-        ),
+        &stderr(&[
+            far,
+            "callees",
+            "0x1fff0000..0x20000004",
+            "--to",
+            "0x1fff0000..0x20000004",
+        ]),
         "error: --to 0x1fff0000..0x20000004 holds nothing outside 0x1fff0000..0x20000004, and \
          callees lists only what it uses outside it\n",
     );
     assert_output(
-        &stderr(
-            &[
-                far,
-                "callers",
-                "0x0+64K",
-                "0x1fff0000..0x1fff0004",
-                "--from",
-                "0x1fff0000..0x20000004",
-            ],
-            2,
-        ),
+        &stderr(&[
+            far,
+            "callers",
+            "0x0+64K",
+            "0x1fff0000..0x1fff0004",
+            "--from",
+            "0x1fff0000..0x20000004",
+        ]),
         "error: --from 0x1fff0000..0x20000004 and 0x1fff0000..0x1fff0004 both hold the code at \
          0x1fff0000; give ranges that don't share it\n",
     );
@@ -3137,13 +3117,13 @@ ADDRESS  SIZE  HOW  AT  ITEM
 ",
     );
     assert_output(
-        &stderr(&[TCM_SAMPLE, "callees", "crc32", "--to", "0x10+48"], 2),
+        &stderr(&[TCM_SAMPLE, "callees", "crc32", "--to", "0x10+48"]),
         "error: --to 0x00000010..0x00000040 holds nothing outside crc32, and callees lists only \
          what it uses outside it\n",
     );
     // A range that holds nothing is most likely mistyped.
     assert_output(
-        &stderr(&[TCM_SAMPLE, "reach", "main", "--to", "0x40000000+4K"], 2),
+        &stderr(&[TCM_SAMPLE, "reach", "main", "--to", "0x40000000+4K"]),
         "error: --to 0x40000000..0x40001000 holds no functions or data, and no code in the file \
          calls or jumps there\n",
     );
@@ -3222,11 +3202,11 @@ ADDRESS     SIZE  HOW        ITEM
 #[test]
 fn reach_needs_an_item_whose_code_elfq_can_read() {
     assert_output(
-        &stderr(&[SAMPLE, "reach", "_init"], 2),
+        &stderr(&[SAMPLE, "reach", "_init"]),
         "error: elfq doesn't know where _init ends, so it can't read its code\n",
     );
     assert_output(
-        &stderr(&[SAMPLE, "reach", "__libc_start_main"], 2),
+        &stderr(&[SAMPLE, "reach", "__libc_start_main"]),
         "error: __libc_start_main is imported from a shared library, so its code isn't in this \
          file\n",
     );
@@ -3397,13 +3377,9 @@ fn reach_without_symbol_refuses_what_needs_one() {
              0x00001000..0x00002000 --tree\n",
         ),
     ] {
-        assert_output(&stderr(args, 2), expected);
+        assert_output(&stderr(args), expected);
         let (_, suggested) = expected.trim_end().split_once("such as elfq ").unwrap();
-        let output = elfq(&suggested.split(' ').collect::<Vec<&str>>());
-        assert!(
-            matches!(output.status.code(), Some(0 | 1)),
-            "{suggested}: {output:?}"
-        );
+        run(&suggested.split(' ').collect::<Vec<&str>>()).printed(Exit::ZeroOrOne);
     }
 }
 
@@ -3419,8 +3395,9 @@ fn a_reader_that_stops_early_keeps_the_exit_status() {
         (&["reach", "main", "--to", "0x1000+0x40000", "--json"], 1),
         (&["top", "--all"], 0),
     ] {
+        let sample = "testdata/bin/rust-x86_64-nodebug.elf";
         let mut child = command()
-            .arg("testdata/bin/rust-x86_64-nodebug.elf")
+            .arg(sample)
             .args(args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -3428,8 +3405,8 @@ fn a_reader_that_stops_early_keeps_the_exit_status() {
             .unwrap();
         drop(child.stdout.take());
         let output = child.wait_with_output().unwrap();
-        assert_eq!(output.status.code(), Some(code), "{args:?}: {output:?}");
-        assert!(output.stderr.is_empty(), "{args:?}: {output:?}");
+        let command = format!("elfq {sample} {}", args.join(" "));
+        Run::new(&command, output).printed(code);
     }
 }
 
@@ -3456,15 +3433,15 @@ fn an_error_keeps_its_exit_status_when_nothing_reads_it() {
 #[test]
 fn ranges_in_place_of_symbol_must_be_ranges_with_something_in_them() {
     assert_output(
-        &stderr(&[TCM_SAMPLE, "callees", "0x40000000+4K"], 2),
+        &stderr(&[TCM_SAMPLE, "callees", "0x40000000+4K"]),
         "error: the file has nothing in 0x40000000..0x40001000; the overview lists its ranges\n",
     );
     assert_output(
-        &stderr(&[TCM_SAMPLE, "callees", "0x0+256K", "main"], 2),
+        &stderr(&[TCM_SAMPLE, "callees", "0x0+256K", "main"]),
         "error: `main` isn't a range; give one SYMBOL, or ranges such as 0x0+256K\n",
     );
     assert_output(
-        &stderr(&[TCM_SAMPLE, "callers", "0x100..0x0"], 2),
+        &stderr(&[TCM_SAMPLE, "callers", "0x100..0x0"]),
         "error: `0x100..0x0` isn't a range: the range must end after it starts\n",
     );
     // --range is for sizes; ranges to check go in place of SYMBOL.
@@ -3473,27 +3450,24 @@ fn ranges_in_place_of_symbol_must_be_ranges_with_something_in_them() {
         &[TCM_SAMPLE, "--range", "0+1K", "callees"],
     ] {
         assert_output(
-            &stderr(args, 2),
+            &stderr(args),
             "error: callees takes ranges in place of SYMBOL, not with --range: \
              elfq testdata/bin/c-cortex-m7.elf callees 0x00000000..0x00000400\n",
         );
     }
     assert_output(
-        &stderr(&[TCM_SAMPLE, "callees", "--range", "0+1K", "--json"], 2),
+        &stderr(&[TCM_SAMPLE, "callees", "--range", "0+1K", "--json"]),
         "error: callees takes ranges in place of SYMBOL, not with --range: \
          elfq testdata/bin/c-cortex-m7.elf callees 0x00000000..0x00000400 --json\n",
     );
     assert_output(
-        &stderr(
-            &[
-                TCM_SAMPLE,
-                "callers",
-                "0x0+256K",
-                "--range",
-                "0x20000000+256K",
-            ],
-            2,
-        ),
+        &stderr(&[
+            TCM_SAMPLE,
+            "callers",
+            "0x0+256K",
+            "--range",
+            "0x20000000+256K",
+        ]),
         "error: callers takes ranges in place of SYMBOL, not with --range: \
          elfq testdata/bin/c-cortex-m7.elf callers 0x0+256K 0x20000000..0x20040000; to list \
          only the callers in 0x20000000..0x20040000: elfq testdata/bin/c-cortex-m7.elf callers \
@@ -3503,50 +3477,41 @@ fn ranges_in_place_of_symbol_must_be_ranges_with_something_in_them() {
     // a range given, where nothing is outside them, or shares an item with
     // them, as app_tick; and neither when the file has nothing there.
     assert_output(
-        &stderr(&[TCM_SAMPLE, "callers", "0x0+256K", "--range", "0x0+1K"], 2),
+        &stderr(&[TCM_SAMPLE, "callers", "0x0+256K", "--range", "0x0+1K"]),
         "error: callers takes ranges in place of SYMBOL, not with --range: \
          elfq testdata/bin/c-cortex-m7.elf callers 0x0+256K 0x00000000..0x00000400\n",
     );
     assert_output(
-        &stderr(
-            &[
-                TCM_SAMPLE,
-                "callers",
-                "0x30000000+0x400",
-                "--range",
-                "0x30000300+0x400",
-            ],
-            2,
-        ),
+        &stderr(&[
+            TCM_SAMPLE,
+            "callers",
+            "0x30000000+0x400",
+            "--range",
+            "0x30000300+0x400",
+        ]),
         "error: callers takes ranges in place of SYMBOL, not with --range: \
          elfq testdata/bin/c-cortex-m7.elf callers 0x30000000+0x400 0x30000300..0x30000700\n",
     );
     assert_output(
-        &stderr(
-            &[
-                TCM_SAMPLE,
-                "callers",
-                "0x0+256K",
-                "--range",
-                "0x40000000+16",
-            ],
-            2,
-        ),
+        &stderr(&[
+            TCM_SAMPLE,
+            "callers",
+            "0x0+256K",
+            "--range",
+            "0x40000000+16",
+        ]),
         "error: only the overview, top and retained take --range\n",
     );
     // Keeping the --from given.
     assert_output(
-        &stderr(
-            &[
-                TCM_SAMPLE,
-                "callers",
-                "--range",
-                "0x20000000+256K",
-                "--from",
-                "0x0+256K",
-            ],
-            2,
-        ),
+        &stderr(&[
+            TCM_SAMPLE,
+            "callers",
+            "--range",
+            "0x20000000+256K",
+            "--from",
+            "0x0+256K",
+        ]),
         "error: callers takes ranges in place of SYMBOL, not with --range: \
          elfq testdata/bin/c-cortex-m7.elf callers 0x20000000..0x20040000 --from \
          0x00000000..0x00040000\n",
@@ -3580,7 +3545,7 @@ fn ranges_in_place_of_symbol_must_be_ranges_with_something_in_them() {
         ],
     ] {
         assert_output(
-            &stderr(args, 2),
+            &stderr(args),
             "error: only the overview, top and retained take --range\n",
         );
     }
@@ -3616,45 +3581,39 @@ fn ranges_in_place_of_symbol_must_be_ranges_with_something_in_them() {
              file calls or jumps there\n",
         ),
     ] {
-        assert_output(&stderr(args, 2), error);
+        assert_output(&stderr(args), error);
     }
     // A mistyped name comes first.
     assert_output(
-        &stderr(&[TCM_SAMPLE, "callers", "crc32x", "--range", "0+1K"], 2),
+        &stderr(&[TCM_SAMPLE, "callers", "crc32x", "--range", "0+1K"]),
         "error: no function or data object is named `crc32x`; did you mean crc32?\n",
     );
     assert_output(
-        &stderr(
-            &[
-                TCM_SAMPLE,
-                "callers",
-                "crc32",
-                "apply_filter",
-                "--range",
-                "0+1K",
-            ],
-            2,
-        ),
+        &stderr(&[
+            TCM_SAMPLE,
+            "callers",
+            "crc32",
+            "apply_filter",
+            "--range",
+            "0+1K",
+        ]),
         "error: `crc32` isn't a range; give one SYMBOL, or ranges such as 0x0+256K\n",
     );
     assert_output(
-        &stderr(&[TCM_SAMPLE, "callees", "crc32", "--range", "0+1K"], 2),
+        &stderr(&[TCM_SAMPLE, "callees", "crc32", "--range", "0+1K"]),
         "error: callees takes --to, not --range, to list only the callees in a range: \
          elfq testdata/bin/c-cortex-m7.elf callees crc32 --to 0x00000000..0x00000400\n",
     );
     assert_output(
-        &stderr(
-            &[
-                TCM_SAMPLE,
-                "callers",
-                "crc32",
-                "--from",
-                "0x30000000+16M",
-                "--range",
-                "0+1K",
-            ],
-            2,
-        ),
+        &stderr(&[
+            TCM_SAMPLE,
+            "callers",
+            "crc32",
+            "--from",
+            "0x30000000+16M",
+            "--range",
+            "0+1K",
+        ]),
         "error: callers takes --from, not --range, to list only the callers in a range: \
          elfq testdata/bin/c-cortex-m7.elf callers crc32 --from 0x30000000..0x31000000 --from \
          0x00000000..0x00000400\n",
@@ -3662,133 +3621,109 @@ fn ranges_in_place_of_symbol_must_be_ranges_with_something_in_them() {
     // The ranges of --from and --to must each hold something outside the
     // ranges asked about, or they are most likely mistyped.
     assert_output(
-        &stderr(
-            &[TCM_SAMPLE, "callers", "0x0+256K", "--from", "0x40000000+4K"],
-            2,
-        ),
+        &stderr(&[TCM_SAMPLE, "callers", "0x0+256K", "--from", "0x40000000+4K"]),
         "error: the file has nothing in 0x40000000..0x40001000; the overview lists its ranges\n",
     );
     assert_output(
-        &stderr(&[TCM_SAMPLE, "callees", "0x0+256K", "--to", "0x0+1K"], 2),
+        &stderr(&[TCM_SAMPLE, "callees", "0x0+256K", "--to", "0x0+1K"]),
         "error: --to 0x00000000..0x00000400 holds nothing outside 0x00000000..0x00040000, and \
          callees lists only what it uses outside it\n",
     );
     assert_output(
-        &stderr(
-            &[
-                TCM_SAMPLE,
-                "callees",
-                "0x0+256K",
-                "0x20000000+256K",
-                "--to",
-                "0x10+16",
-            ],
-            2,
-        ),
+        &stderr(&[
+            TCM_SAMPLE,
+            "callees",
+            "0x0+256K",
+            "0x20000000+256K",
+            "--to",
+            "0x10+16",
+        ]),
         "error: --to 0x00000010..0x00000020 holds nothing outside 0x00000000..0x00040000 and \
          0x20000000..0x20040000, and callees lists only what they use outside them\n",
     );
     // --to can name a ROM only when code calls there.
     assert_output(
-        &stderr(
-            &[TCM_SAMPLE, "callees", "0x0+256K", "--to", "0x1fff0000+64K"],
-            2,
-        ),
+        &stderr(&[TCM_SAMPLE, "callees", "0x0+256K", "--to", "0x1fff0000+64K"]),
         "error: --to 0x1fff0000..0x20000000 holds no functions or data, and no code in the \
          file calls or jumps there\n",
     );
     // An item in both would be on both sides, unless everything in the
     // ranges asked about is in the others too.
     assert_output(
-        &stderr(
-            &[
-                TCM_SAMPLE,
-                "callers",
-                "0x30000498..0x300005b2",
-                "--from",
-                "0x30000570..0x300005f6",
-            ],
-            2,
-        ),
+        &stderr(&[
+            TCM_SAMPLE,
+            "callers",
+            "0x30000498..0x300005b2",
+            "--from",
+            "0x30000570..0x300005f6",
+        ]),
         "error: --from 0x30000570..0x300005f6 and 0x30000498..0x300005b2 both hold main; give \
          ranges that don't share it\n",
     );
     assert_output(
-        &stderr(
-            &[
-                TCM_SAMPLE,
-                "callees",
-                "0x30000668+96",
-                "0x2000044a+2",
-                "--to",
-                "0x20000444..0x2000044a",
-            ],
-            2,
-        ),
+        &stderr(&[
+            TCM_SAMPLE,
+            "callees",
+            "0x30000668+96",
+            "0x2000044a+2",
+            "--to",
+            "0x20000444..0x2000044a",
+        ]),
         "error: --to 0x20000444..0x2000044a and 0x2000044a..0x2000044c both hold tx_tail; give \
          ranges that don't share it\n",
     );
     // Each range on its own, though another is fine.
     assert_output(
-        &stderr(
-            &[
-                TCM_SAMPLE,
-                "callers",
-                "0x0+256K",
-                "0x20000000+256K",
-                "--from",
-                "0x20240000+512K",
-                "--from",
-                "0x20000000+1K",
-            ],
-            2,
-        ),
+        &stderr(&[
+            TCM_SAMPLE,
+            "callers",
+            "0x0+256K",
+            "0x20000000+256K",
+            "--from",
+            "0x20240000+512K",
+            "--from",
+            "0x20000000+1K",
+        ]),
         "error: --from 0x20000000..0x20000400 holds nothing outside 0x00000000..0x00040000 and \
          0x20000000..0x20040000, and callers lists only what uses them from outside\n",
     );
     assert_output(
-        &stderr(&[TCM_SAMPLE, "callers", "crc32", "--from", "0x10+16"], 2),
+        &stderr(&[TCM_SAMPLE, "callers", "crc32", "--from", "0x10+16"]),
         "error: --from 0x00000010..0x00000020 holds nothing outside crc32, and callers lists \
          only what uses it from outside\n",
     );
     // An import has no range in the file, and callees can't read code
     // whose end elfq doesn't know.
     assert_output(
-        &stderr(
-            &[SAMPLE, "callers", "__libc_start_main", "--from", "0x0+16M"],
-            2,
-        ),
+        &stderr(&[SAMPLE, "callers", "__libc_start_main", "--from", "0x0+16M"]),
         "error: __libc_start_main is imported from a shared library, so it has no range in \
          this file for --from\n",
     );
     assert_output(
-        &stderr(&[SAMPLE, "callees", "_init", "--to", "0x0+16M"], 2),
+        &stderr(&[SAMPLE, "callees", "_init", "--to", "0x0+16M"]),
         "error: elfq doesn't know where _init ends, so it can't read its code\n",
     );
     // Each option takes one range.
     assert_output(
-        &stderr(
-            &[
-                TCM_SAMPLE,
-                "callers",
-                "0x0+256K",
-                "--from",
-                "0x0+1K,0x20000000+1K",
-            ],
-            2,
-        ),
+        &stderr(&[
+            TCM_SAMPLE,
+            "callers",
+            "0x0+256K",
+            "--from",
+            "0x0+1K,0x20000000+1K",
+        ]),
         "error: invalid value '0x0+1K,0x20000000+1K' for '--from <RANGE>': --from takes one \
          range; give it again for each: --from 0x0+1K --from 0x20000000+1K\n\n\
          For more information, try '--help'.\n",
     );
     assert_output(
-        &stderr(&[TCM_SAMPLE, "callees", "0x0+256K", "--to", "0x0+1K,"], 2),
+        &stderr(&[TCM_SAMPLE, "callees", "0x0+256K", "--to", "0x0+1K,"]),
         "error: invalid value '0x0+1K,' for '--to <RANGE>': --to takes one range; leave out \
          the comma\n\n\
          For more information, try '--help'.\n",
     );
     assert_output(
-        &stderr(&[TCM_SAMPLE, "callers"], 2),
+        &stderr(&[TCM_SAMPLE, "callers"]),
         "error: callers needs a SYMBOL, or ranges such as 0x0+256K\n",
     );
 }
@@ -3906,7 +3841,7 @@ fn arguments_that_dont_go_together_are_refused_before_the_file_is_read() {
             "error: reach takes one SYMBOL, not ranges\n",
         ),
     ] {
-        assert_output(&stderr(args, 2), error);
+        assert_output(&stderr(args), error);
     }
 }
 
@@ -3954,7 +3889,7 @@ fn debug_walk_lists_what_the_code_run_from_reset_does() {
     );
     // Only Thumb code.
     assert_output(
-        &stderr(&[SAMPLE, "debug", "walk"], 2),
+        &stderr(&[SAMPLE, "debug", "walk"]),
         "error: elfq walks only Thumb code, which Cortex-M processors run\n",
     );
 }
@@ -3997,7 +3932,7 @@ elfq can't yet read Aarch64 code to tell what calls what.
         &[path, "callers", "--range", "0x1000+0x100"],
     ] {
         assert_output(
-            &stderr(args, 2),
+            &stderr(args),
             "error: elfq can't yet read Aarch64 code to tell what calls what\n",
         );
     }
@@ -4006,11 +3941,11 @@ elfq can't yet read Aarch64 code to tell what calls what.
 #[test]
 fn errors_go_to_stderr_with_exit_code_2() {
     assert_output(
-        &stderr(&["Cargo.toml"], 2),
+        &stderr(&["Cargo.toml"]),
         "error: cannot load Cargo.toml: not an ELF file\n",
     );
     assert_output(
-        &stderr(&[SAMPLE, "callers", "proces_frame"], 2),
+        &stderr(&[SAMPLE, "callers", "proces_frame"]),
         "error: no function or data object is named `proces_frame`; did you mean process_frame?\n",
     );
 }
@@ -4019,12 +3954,12 @@ fn errors_go_to_stderr_with_exit_code_2() {
 fn errors_say_what_to_try() {
     // A range typed with `-` or `:` between its ends.
     let dash = "error: `0x0-0x40000` isn't a range: did you mean 0x0..0x40000?\n";
-    assert_output(&stderr(&[TCM_SAMPLE, "callees", "0x0-0x40000"], 2), dash);
+    assert_output(&stderr(&[TCM_SAMPLE, "callees", "0x0-0x40000"]), dash);
     assert_output(
-        &stderr(&[TCM_SAMPLE, "callers", "0x0..0x100", "0x0-0x40000"], 2),
+        &stderr(&[TCM_SAMPLE, "callers", "0x0..0x100", "0x0-0x40000"]),
         dash,
     );
-    let error = stderr(&[TCM_SAMPLE, "top", "--range", "0x0:0x40000"], 2);
+    let error = stderr(&[TCM_SAMPLE, "top", "--range", "0x0:0x40000"]);
     assert!(
         error.starts_with(
             "error: invalid value '0x0:0x40000' for '--range <RANGE>': did you mean \
@@ -4034,20 +3969,17 @@ fn errors_say_what_to_try() {
     );
     // A second number smaller than the first is a size.
     assert_output(
-        &stderr(&[TCM_SAMPLE, "callers", "0x20000000:256K"], 2),
+        &stderr(&[TCM_SAMPLE, "callers", "0x20000000:256K"]),
         "error: `0x20000000:256K` isn't a range: did you mean 0x20000000+256K?\n",
     );
     // Ends that make no range get the forms a range takes.
     assert_output(
-        &stderr(&[TCM_SAMPLE, "callers", "0x40000-0x0"], 2),
+        &stderr(&[TCM_SAMPLE, "callers", "0x40000-0x0"]),
         "error: `0x40000-0x0` isn't a range: expected START..END or START+SIZE, such as \
          0x0+256K\n",
     );
     // Several ranges joined by commas.
-    let error = stderr(
-        &[TCM_SAMPLE, "top", "--range", "0x0..0x100,0x200..0x300"],
-        2,
-    );
+    let error = stderr(&[TCM_SAMPLE, "top", "--range", "0x0..0x100,0x200..0x300"]);
     assert!(
         error.starts_with(
             "error: invalid value '0x0..0x100,0x200..0x300' for '--range <RANGE>': --range takes \
@@ -4056,63 +3988,54 @@ fn errors_say_what_to_try() {
         "{error}"
     );
     assert_output(
-        &stderr(&[TCM_SAMPLE, "callers", "0x0..0x100,0x200..0x300"], 2),
+        &stderr(&[TCM_SAMPLE, "callers", "0x0..0x100,0x200..0x300"]),
         "error: `0x0..0x100,0x200..0x300` isn't a range; give each range as its own argument: \
          0x0..0x100 0x200..0x300\n",
     );
     assert_output(
-        &stderr(&[TCM_SAMPLE, "callers", "0x0..0x100,", "0x200..0x300"], 2),
+        &stderr(&[TCM_SAMPLE, "callers", "0x0..0x100,", "0x200..0x300"]),
         "error: `0x0..0x100,` isn't a range; leave out the comma\n",
     );
     assert_output(
-        &stderr(&[TCM_SAMPLE, "callers", "0x0..0x100,0x200"], 2),
+        &stderr(&[TCM_SAMPLE, "callers", "0x0..0x100,0x200"]),
         "error: `0x200` isn't a range: expected START..END or START+SIZE, such as 0x0+256K\n",
     );
 
     // A file without a symbol table names its items by address.
     assert_output(
-        &stderr(
-            &["testdata/bin/c-cortex-m4-stripped.elf", "callers", "main"],
-            2,
-        ),
+        &stderr(&["testdata/bin/c-cortex-m4-stripped.elf", "callers", "main"]),
         "error: no function or data object is named `main`; the file has no symbol table, so \
          elfq names its functions and data by address, like fn_0x8000040 and .rodata@0x80008f0\n",
     );
 
     // A function that the compiler inlined everywhere has no item.
     assert_output(
-        &stderr(&[SAMPLE, "callers", "append"], 2),
+        &stderr(&[SAMPLE, "callers", "append"]),
         "error: no function or data object is named `append`; the compiler inlined all 6 copies \
          of it into report, which `inlined report` lists\n",
     );
     assert_output(
-        &stderr(
-            &[
-                "testdata/bin/rust-cortex-m4.elf",
-                "inlined",
-                "copy_forward_bytes",
-            ],
-            2,
-        ),
+        &stderr(&[
+            "testdata/bin/rust-cortex-m4.elf",
+            "inlined",
+            "copy_forward_bytes",
+        ]),
         "error: no function or data object is named `copy_forward_bytes`; the compiler inlined \
          both copies of it into memcpy, which `inlined memcpy` lists\n",
     );
     assert_output(
-        &stderr(
-            &[
-                "testdata/bin/rust-cortex-m4.elf",
-                "why",
-                "atomic_add::<u32, u32>",
-            ],
-            2,
-        ),
+        &stderr(&[
+            "testdata/bin/rust-cortex-m4.elf",
+            "why",
+            "atomic_add::<u32, u32>",
+        ]),
         "error: no function or data object is named `atomic_add::<u32, u32>`; the compiler \
          inlined all 9 copies of it into process_frame, app_main, on_button, on_data, on_timer \
          and sys_tick; `inlined process_frame` lists those in process_frame\n",
     );
     // Suggestions still follow, as the name may not be the one meant.
     assert_output(
-        &stderr(&["testdata/bin/c-deep.elf", "why", "printf"], 2),
+        &stderr(&["testdata/bin/c-deep.elf", "why", "printf"]),
         "error: no function or data object is named `printf`; the compiler inlined its one copy \
          into main, which `inlined main` lists; did you mean __printf_chk?\n",
     );
@@ -4121,13 +4044,13 @@ fn errors_say_what_to_try() {
 #[test]
 fn a_command_typed_before_the_file_gets_a_hint() {
     assert_output(
-        &stderr(&["callers", SAMPLE, "log_msg"], 2),
+        &stderr(&["callers", SAMPLE, "log_msg"]),
         "error: the file comes before the command, as in: \
          elfq testdata/bin/c-x86_64.elf callers log_msg\n",
     );
     // diff's two files go on either side of it.
     assert_output(
-        &stderr(&["diff", "a.elf", "b.elf"], 2),
+        &stderr(&["diff", "a.elf", "b.elf"]),
         "error: the file comes before the command, as in: elfq a.elf diff b.elf\n",
     );
 }
@@ -4144,9 +4067,9 @@ fn help_comes_before_a_command_too() {
     assert_output(&stdout(&["help", "top", "--json"]), &help);
     // A misspelled command gets the same error as after a file.
     assert!(
-        stderr(&["help", "retaind"], 2).contains("a similar subcommand exists: 'retained'"),
+        stderr(&["help", "retaind"]).contains("a similar subcommand exists: 'retained'"),
         "{}",
-        stderr(&["help", "retaind"], 2)
+        stderr(&["help", "retaind"])
     );
 }
 
@@ -4173,28 +4096,25 @@ fn an_argument_that_is_not_utf8_is_an_error() {
             .arg(OsStr::from_bytes(b"\xff"))
             .output()
             .unwrap();
-        assert_eq!(output.status.code(), Some(2), "{output:?}");
-        let error = String::from_utf8_lossy(&output.stderr);
+        let command = format!("elfq {} \\xff", args.join(" "));
+        let error = Run::new(&command, output).error();
         assert!(error.starts_with("error: "), "{error}");
     }
 }
 
 #[test]
 fn no_arguments_prints_help() {
-    let help = stderr(&[], 2);
+    let help = stderr(&[]);
     assert!(
         help.contains("Usage: elfq [OPTIONS] <FILE> [COMMAND]"),
         "{help}"
     );
 }
 
-/// Runs `elfq OLD diff NEW` with `options`, expecting nothing on stderr,
-/// and returns its exit status and what it printed.
-fn diff(old: &str, new: &str, options: &[&str]) -> (i32, String) {
-    let output = elfq(&[&[old, "diff", new], options].concat());
-    assert!(output.stderr.is_empty(), "{output:?}");
-    let status = output.status.code().unwrap();
-    (status, String::from_utf8(output.stdout).unwrap())
+/// Runs `elfq OLD diff NEW` with `options`.
+#[track_caller]
+fn diff(old: &str, new: &str, options: &[&str]) -> Run {
+    run(&[&[old, "diff", new], options].concat())
 }
 
 #[test]
@@ -4203,8 +4123,7 @@ fn firmware_shows_each_block_of_memory_and_the_items_that_changed() {
     // by a call to log_msg, through another, with its message in .rodata.
     // So apply_filter calls filter_tap in flash, and crc32 log_msg, and
     // filter_tap no longer uses fir_coeffs from the ITCM.
-    let (status, text) = diff(TCM_SAMPLE, TCM_MOVED_SAMPLE, &[]);
-    assert_eq!(status, 1);
+    let text = diff(TCM_SAMPLE, TCM_MOVED_SAMPLE, &[]).printed(1);
     assert_output(
         &text,
         "\
@@ -4245,10 +4164,10 @@ Try:
         let (_, calls) = text.split_once("new or gone:\n").unwrap();
         calls.split_once("\n\n").unwrap().1.to_string()
     };
-    let (_, all) = diff(TCM_SAMPLE, TCM_MOVED_SAMPLE, &["--all"]);
+    let all = diff(TCM_SAMPLE, TCM_MOVED_SAMPLE, &["--all"]).printed(1);
     assert_eq!(calls(&all), calls(&text));
     // The other way round, the calls are gone, and the uses of data swap.
-    let (_, back) = diff(TCM_MOVED_SAMPLE, TCM_SAMPLE, &[]);
+    let back = diff(TCM_MOVED_SAMPLE, TCM_SAMPLE, &[]).printed(1);
     assert!(
         back.contains(
             "\ngone    0x30000188    52  call via veneer  0x36  filter_tap, used by apply_filter\n\
@@ -4263,12 +4182,12 @@ Try:
 #[test]
 fn a_build_without_symbols_is_compared_by_its_bytes() {
     // The memory is the same as with symbols, but nothing names the items.
-    let (status, text) = diff(
+    let text = diff(
         "testdata/bin/c-cortex-m7-stripped.elf",
         "testdata/bin/c-cortex-m7-moved-stripped.elf",
         &[],
-    );
-    assert_eq!(status, 1);
+    )
+    .printed(1);
     assert_output(
         &text,
         "\
@@ -4288,12 +4207,12 @@ Try:
 ",
     );
     // Only the new build without: it is the one named.
-    let (status, text) = diff(
+    let text = diff(
         TCM_SAMPLE,
         "testdata/bin/c-cortex-m7-moved-stripped.elf",
         &[],
-    );
-    assert_eq!(status, 1);
+    )
+    .printed(1);
     assert!(
         text.contains(
             "\ntestdata/bin/c-cortex-m7-moved-stripped.elf has no symbol table, so diff \
@@ -4310,8 +4229,7 @@ fn one_block_of_memory_gets_a_line() {
     // size, but keeps the frame in r12 rather than r8 across its call to
     // crc32: GCC knew the old crc32 left r8 alone, and the new one calls
     // log_msg.
-    let (status, text) = diff(SAMPLE, MOVED_SAMPLE, &[]);
-    assert_eq!(status, 1);
+    let text = diff(SAMPLE, MOVED_SAMPLE, &[]).printed(1);
     assert_output(
         &text,
         "\
@@ -4330,7 +4248,7 @@ CHANGE  OLD  NEW  ADDRESS  ITEM
     );
     // The other way round, the changes are the other way round, and what
     // was new is gone.
-    let (_, back) = diff(MOVED_SAMPLE, SAMPLE, &[]);
+    let back = diff(MOVED_SAMPLE, SAMPLE, &[]).printed(1);
     assert!(
         back.contains("The memory stays at 15728 bytes (.text -16, .eh_frame -8).\n"),
         "{back}"
@@ -4347,8 +4265,7 @@ fn data_moved_to_another_memory_is_a_gone_and_a_new_block() {
     // offset, and the code and flash hold their addresses. Only the vector
     // table is edited: its first word, the initial stack pointer, went from
     // the end of DTCM at 0x20040000 to 0x80040000, where no section ends.
-    let (status, text) = diff(TCM_SAMPLE, TCM_SDRAM_SAMPLE, &[]);
-    assert_eq!(status, 1);
+    let text = diff(TCM_SAMPLE, TCM_SDRAM_SAMPLE, &[]).printed(1);
     assert_output(
         &text,
         "\
@@ -4377,7 +4294,7 @@ Try:
 ",
     );
     // --all lists each, largest first.
-    let (_, all) = diff(TCM_SAMPLE, TCM_SDRAM_SAMPLE, &["--all"]);
+    let all = diff(TCM_SAMPLE, TCM_SDRAM_SAMPLE, &["--all"]).printed(1);
     let (_, moved) = all.split_once("TO          MOVED\n").unwrap();
     let (moved, _) = moved.split_once("\n\n").unwrap();
     let rows: Vec<&str> = moved.lines().collect();
@@ -4393,8 +4310,7 @@ fn an_item_moved_to_another_block_asks_for_startup() {
     // tx_head moved from .bss to .ocram_bss, which the reset handler
     // doesn't zero, while no load image changed: the item that moved is
     // why diff asks for startup.
-    let (status, text) = diff(TCM_SAMPLE, TCM_OCRAM_SAMPLE, &[]);
-    assert_eq!(status, 1);
+    let text = diff(TCM_SAMPLE, TCM_OCRAM_SAMPLE, &[]).printed(1);
     assert_output(
         &text,
         "\
@@ -4424,8 +4340,7 @@ Try:
 fn an_item_that_changed_but_kept_its_size_is_edited() {
     // The number in decode_header's movw and the last of fir_coeffs
     // changed, and nothing moved.
-    let (status, text) = diff(TCM_SAMPLE, TCM_EDITED_SAMPLE, &[]);
-    assert_eq!(status, 1);
+    let text = diff(TCM_SAMPLE, TCM_EDITED_SAMPLE, &[]).printed(1);
     assert_output(
         &text,
         "\
@@ -4450,8 +4365,7 @@ No call between blocks is new or gone.
 
 #[test]
 fn a_shared_library_has_no_kept_by() {
-    let (status, text) = diff(LIBRARY_SAMPLE, "testdata/bin/c-x86_64-moved.so", &[]);
-    assert_eq!(status, 1);
+    let text = diff(LIBRARY_SAMPLE, "testdata/bin/c-x86_64-moved.so", &[]).printed(1);
     assert_output(
         &text,
         "\
@@ -4474,8 +4388,7 @@ CHANGE  OLD  NEW  ADDRESS  ITEM
 fn all_names_every_change() {
     // A program and its shared library: many sections changed size, and
     // the rows say what keeps an item in neither build.
-    let (status, text) = diff(SAMPLE, LIBRARY_SAMPLE, &[]);
-    assert_eq!(status, 1);
+    let text = diff(SAMPLE, LIBRARY_SAMPLE, &[]).printed(1);
     assert!(
         text.contains(
             "\nThe memory went from 15728 to 15936 bytes (.dynsym +192, .rela.plt +168, .plt \
@@ -4488,7 +4401,7 @@ fn all_names_every_change() {
         text.contains("\n    -4    4       0x2000   _IO_stdin_used (gone)\n"),
         "{text}"
     );
-    let (_, all) = diff(SAMPLE, LIBRARY_SAMPLE, &["--all"]);
+    let all = diff(SAMPLE, LIBRARY_SAMPLE, &["--all"]).printed(1);
     assert!(
         all.contains(
             "\nThe memory went from 15728 to 15936 bytes (.note.gnu.property -16, .gnu.hash +36, \
@@ -4511,7 +4424,7 @@ fn all_names_every_change() {
     // Without a symbol table, no row says why the memory differs, and the
     // last line names the sections that differ: 10, or every one.
     let stripped = "testdata/bin/c-x86_64-stripped.elf";
-    let (_, text) = diff(stripped, LIBRARY_SAMPLE, &[]);
+    let text = diff(stripped, LIBRARY_SAMPLE, &[]).printed(1);
     assert!(
         text.ends_with(
             "\nSections that differ: .note.gnu.property, .note.gnu.build-id, .gnu.hash, .interp, \
@@ -4520,7 +4433,7 @@ fn all_names_every_change() {
         ),
         "{text}"
     );
-    let (_, all) = diff(stripped, LIBRARY_SAMPLE, &["--all"]);
+    let all = diff(stripped, LIBRARY_SAMPLE, &["--all"]).printed(1);
     assert!(
         all.ends_with(
             "\nSections that differ: .note.gnu.property, .note.gnu.build-id, .gnu.hash, .interp, \
@@ -4532,7 +4445,7 @@ fn all_names_every_change() {
     );
     // Two programs for other chips: blocks that only one has name what is
     // in them, as the overview does, whole.
-    let (_, firmware) = diff("testdata/bin/c-cortex-m4.elf", TCM_SAMPLE, &[]);
+    let firmware = diff("testdata/bin/c-cortex-m4.elf", TCM_SAMPLE, &[]).printed(1);
     assert!(
         firmware.contains(
             "0x08000000..0x08000e0c (gone)  3596     -   -3596  .isr_vector .text .rodata \
@@ -4554,8 +4467,7 @@ fn a_gone_function_says_where_the_compiler_inlined_it() {
     // decode_header, inlined into process_frame, its only caller: so the
     // row doesn't say that process_frame kept it too. process_frame, which
     // holds its code now, kept its size, and is edited.
-    let (status, text) = diff(TCM_SAMPLE, TCM_INLINED_SAMPLE, &[]);
-    assert_eq!(status, 1);
+    let text = diff(TCM_SAMPLE, TCM_INLINED_SAMPLE, &[]).printed(1);
     assert!(
         text.contains(
             "\nCHANGE  OLD  NEW  ADDRESS     ITEM\n   \
@@ -4570,12 +4482,12 @@ fn a_gone_function_says_where_the_compiler_inlined_it() {
 fn the_change_table_shows_the_largest_rows_of_every_block() {
     // A program with newlib's strtod in place of the sample's code: more
     // rows than the table has room for, in two blocks.
-    let (status, text) = diff(
+    let text = diff(
         "testdata/bin/c-cortex-m4.elf",
         "testdata/bin/c-strtod.elf",
         &[],
-    );
-    assert_eq!(status, 1);
+    )
+    .printed(1);
     let (_, table) = text.split_once("ADDRESS     ITEM\n").unwrap();
     let (table, _) = table.split_once("\n\n").unwrap();
     let rows: Vec<&str> = table.lines().collect();
@@ -4600,11 +4512,12 @@ fn the_change_table_shows_the_largest_rows_of_every_block() {
     );
     // The other way round, strtod is gone, and OLD gives its bytes and
     // those of the gone items it kept, so that NEW less OLD is CHANGE.
-    let (_, back) = diff(
+    let back = diff(
         "testdata/bin/c-strtod.elf",
         "testdata/bin/c-cortex-m4.elf",
         &[],
-    );
+    )
+    .printed(1);
     assert!(
         back.contains(
             "\n-16744  16744        0x8001074   strtod (gone, with 114 gone items it kept), kept \
@@ -4613,12 +4526,12 @@ fn the_change_table_shows_the_largest_rows_of_every_block() {
         "{back}"
     );
     // Each block's rows add up to what its items' bytes changed by.
-    let (_, json) = diff(
+    let answer = diff(
         "testdata/bin/c-cortex-m4.elf",
         "testdata/bin/c-strtod.elf",
         &["--json"],
-    );
-    let answer: serde_json::Value = serde_json::from_str(&json).unwrap();
+    )
+    .json(1);
     let change = |rows: &[&str]| -> i64 {
         rows.iter()
             .map(|row| {
@@ -4652,8 +4565,7 @@ fn builds_that_load_the_same_memory_exit_0() {
         ("c-x86_64.so", "c-x86_64.so"),
     ] {
         let (old, new) = (format!("testdata/bin/{old}"), format!("testdata/bin/{new}"));
-        let (status, text) = diff(&old, &new, &[]);
-        assert_eq!(status, 0, "{old} {new}: {text}");
+        let text = diff(&old, &new, &[]).printed(0);
         assert_output(
             &text,
             &format!("{old} and {new} hold the same bytes at the same addresses.\n"),
@@ -4661,8 +4573,7 @@ fn builds_that_load_the_same_memory_exit_0() {
     }
     // Each file holds the same memory as itself.
     for sample in samples() {
-        let (status, text) = diff(&sample, &sample, &[]);
-        assert_eq!(status, 0, "{sample}: {text}");
+        diff(&sample, &sample, &[]).printed(0);
     }
 }
 
@@ -4684,16 +4595,15 @@ fn builds_that_load_other_memory_exit_1() {
         ),
         (TCM_SAMPLE, TCM_INLINED_SAMPLE),
     ] {
-        let (status, text) = diff(old, new, &[]);
-        assert_eq!(status, 1, "{old} {new}: {text}");
-        assert_eq!(diff(old, new, &["--json"]).0, 1, "{old} {new}");
+        diff(old, new, &[]).printed(1);
+        diff(old, new, &["--json"]).json(1);
     }
 }
 
 #[test]
 fn diff_needs_two_builds_of_one_program_with_section_headers() {
     assert_output(
-        &stderr(&[TCM_SAMPLE, "diff", SAMPLE], 2),
+        &stderr(&[TCM_SAMPLE, "diff", SAMPLE]),
         "error: testdata/bin/c-cortex-m7.elf is 32-bit Arm and testdata/bin/c-x86_64.elf is \
          x86-64; diff compares two builds of one program\n",
     );
@@ -4705,19 +4615,19 @@ fn diff_needs_two_builds_of_one_program_with_section_headers() {
     let path = damaged::save("c-cortex-m7-no-section-headers.elf", &data);
     let path = path.as_str();
     assert_output(
-        &stderr(&[TCM_SAMPLE, "diff", path], 2),
+        &stderr(&[TCM_SAMPLE, "diff", path]),
         &format!("error: {path} has no section headers, which diff needs to find its memory\n"),
     );
     assert_output(
-        &stderr(&[path, "diff", TCM_SAMPLE, "--json"], 2),
+        &stderr(&[path, "diff", TCM_SAMPLE, "--json"]),
         &format!("error: {path} has no section headers, which diff needs to find its memory\n"),
     );
     assert_output(
-        &stderr(&[TCM_SAMPLE, "diff", "Cargo.toml"], 2),
+        &stderr(&[TCM_SAMPLE, "diff", "Cargo.toml"]),
         "error: cannot load Cargo.toml: not an ELF file\n",
     );
     assert_output(
-        &stderr(&["missing.elf", "diff", TCM_SAMPLE], 2),
+        &stderr(&["missing.elf", "diff", TCM_SAMPLE]),
         "error: cannot read missing.elf: No such file or directory (os error 2)\n",
     );
 }

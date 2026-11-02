@@ -294,6 +294,11 @@ this list, and add to it when you bring in a word.
   section's status, `can't follow` for the problem and `can't tell` for
   the note, the code keeps those words (`Status::Unknown`,
   `Problem::CantFollow`, `Note::CantTell`).
+- **run**: in the tests, one run of the elfq program, with its exit
+  status and what it printed on stdout and stderr (`Run`, in
+  `tests/it/support.rs`), which `run` gives; its `printed` is what elfq
+  printed on stdout alone. An early run, in `startup`, is unrelated, and
+  so are the private `Run`s of the startup walk and of `binary/memory.rs`.
 
 Some code still uses one of these words for something else, as the Thumb
 walk's `Step` (what an instruction leads to) and `reach`'s `Step` (a row
@@ -322,7 +327,7 @@ of its tree) do. Those are names to fix, not meanings to copy.
 
 | File in `tests/it/` | What it tests |
 |---|---|
-| `support.rs` | No tests: the samples' paths (`SAMPLE` and others), `elfq`, which runs the program, and `assert_output` |
+| `support.rs` | No tests: the samples' paths (`SAMPLE` and others), `run`, which runs the program and returns a `Run` to check, and `assert_output` |
 | `cli.rs` | Each command's whole text output, errors, exit statuses and help |
 | `json.rs` | `--json` output |
 | `items.rs` | Finding items: symbols, PLT stubs, unwind tables, functions in stripped firmware, unnamed data |
@@ -391,6 +396,16 @@ cargo test --test it cli::top_shows_what_keeps_the_most_bytes
 cargo test --test it damaged::
 cargo test --lib arch::thumb
 ```
+
+**Running elfq.** A test runs the program with `run(ARGS)`, from
+`support.rs`, and says what it expects of the `Run` it gets back:
+`printed(STATUS)` gives what elfq printed on stdout, `json(STATUS)` gives
+that parsed as JSON, and `error()` gives the error, which comes with exit
+status 2. Each checks the exit status, and that elfq printed nothing on
+the other stream, so that a warning the test doesn't expect fails it.
+`stdout(ARGS)` is `run(ARGS).printed(0)`, and `stderr(ARGS)` is
+`run(ARGS).error()`. Where the status may be 0 or 1, as for a command run
+on every sample, `Exit::ZeroOrOne` stands for either.
 
 **When output changes.** Most tests in `cli.rs` check a command's whole
 output with `assert_output`. When you change what elfq prints on purpose,

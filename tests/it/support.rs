@@ -1,8 +1,11 @@
 //! What several test modules share: the sample files, running elfq the way
 //! a user would, and checking whole outputs.
 
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+
+use serde_json::Value;
 
 use elfq::binary::Binary;
 use elfq::commands::symbol;
@@ -67,8 +70,11 @@ pub fn node(binary: &Binary, name: &str) -> Node {
         .node
 }
 
-/// The elfq program, set to run in the crate's root so that sample paths
-/// such as [`SAMPLE`] work.
+/// The elfq program, set to run in the crate's root.
+///
+/// There, sample paths such as [`SAMPLE`] work. [`run`] runs it; a test
+/// that needs more, such as a pipe for its input, starts it itself and
+/// reads what it did with [`Run::new`].
 pub fn command() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_elfq"));
     command.current_dir(env!("CARGO_MANIFEST_DIR"));
@@ -78,6 +84,180 @@ pub fn command() -> Command {
 /// Runs elfq with `args` and returns what it did.
 pub fn elfq(args: &[&str]) -> Output {
     command().args(args).output().unwrap()
+}
+
+/// Runs elfq with `args` and returns the [`Run`], for the test to check.
+#[track_caller]
+pub fn run(args: &[&str]) -> Run {
+    let output = command().args(args).output().unwrap();
+    Run::new(&format!("elfq {}", args.join(" ")), output)
+}
+
+/// One run of elfq: its exit status and what it printed.
+///
+/// Tests read it with [`Run::printed`], [`Run::json`] or [`Run::error`],
+/// which check the exit status and that elfq printed nothing on the other
+/// stream, so that a warning or an answer that a test doesn't expect fails
+/// it. A `Run` that nothing reads checks nothing, so the compiler warns
+/// about one.
+#[must_use = "read it with printed, json or error, which check it"]
+pub struct Run {
+    /// What ran, for the message of a check that fails.
+    command: String,
+    /// The exit status.
+    pub status: i32,
+    /// What elfq printed on stdout.
+    pub stdout: String,
+    /// What elfq printed on stderr.
+    pub stderr: String,
+}
+
+/// The exit status that a test expects elfq to end with.
+#[derive(Clone, Copy)]
+pub enum Exit {
+    /// This status.
+    ///
+    /// It is 0 for an answer, 1 for an answer that a script may act on, as
+    /// when something crosses the edge of a range or two builds differ,
+    /// and 2 for an error.
+    Status(i32),
+    /// 0 or 1: an answer, whether or not it holds something to act on.
+    ///
+    /// It is for a test that runs many commands, or one on many files, and
+    /// doesn't check which of the two each gives.
+    ZeroOrOne,
+}
+
+impl Exit {
+    /// Whether elfq exiting with `status` is what the test expects.
+    fn allows(self, status: i32) -> bool {
+        match self {
+            Exit::Status(expected) => status == expected,
+            Exit::ZeroOrOne => status == 0 || status == 1,
+        }
+    }
+}
+
+impl From<i32> for Exit {
+    fn from(status: i32) -> Exit {
+        Exit::Status(status)
+    }
+}
+
+impl fmt::Display for Exit {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Exit::Status(status) => write!(f, "{status}"),
+            Exit::ZeroOrOne => write!(f, "0 or 1"),
+        }
+    }
+}
+
+impl Run {
+    /// What elfq did, from the `output` of a run that a test starts itself.
+    ///
+    /// The test starts it with [`command`], as for a pipe. `command_line`
+    /// says what ran, for the message of a check that fails.
+    #[track_caller]
+    pub fn new(command_line: &str, output: Output) -> Run {
+        let Some(status) = output.status.code() else {
+            panic!("`{command_line}` ended without an exit status: {output:?}");
+        };
+        Run {
+            command: command_line.to_string(),
+            status,
+            stdout: decode(command_line, "stdout", output.stdout),
+            stderr: decode(command_line, "stderr", output.stderr),
+        }
+    }
+
+    /// What elfq printed on stdout.
+    ///
+    /// It checks that elfq exited with `status` and printed nothing on
+    /// stderr.
+    #[track_caller]
+    pub fn printed(self, status: impl Into<Exit>) -> String {
+        let status = status.into();
+        self.check(
+            status.allows(self.status) && self.stderr.is_empty(),
+            &format!("exit status {status} and nothing on stderr"),
+        );
+        self.stdout
+    }
+
+    /// What elfq printed on stdout, parsed as JSON.
+    ///
+    /// It makes the checks of [`Run::printed`].
+    #[track_caller]
+    pub fn json(self, status: impl Into<Exit>) -> Value {
+        let command = self.command.clone();
+        let text = self.printed(status);
+        match serde_json::from_str(&text) {
+            Ok(value) => value,
+            Err(err) => panic!("`{command}` printed no JSON ({err}):\n{text}"),
+        }
+    }
+
+    /// The error that elfq printed on stderr.
+    ///
+    /// It checks that elfq exited with 2 and printed nothing on stdout.
+    #[track_caller]
+    pub fn error(self) -> String {
+        self.check(
+            self.status == 2 && self.stdout.is_empty(),
+            "exit status 2 and nothing on stdout",
+        );
+        self.stderr
+    }
+
+    /// Panics unless the expectation `holds`.
+    ///
+    /// The message says what the test `expected` and what elfq did.
+    #[track_caller]
+    fn check(&self, holds: bool, expected: &str) {
+        assert!(holds, "expected {expected}, but {self:?}");
+    }
+}
+
+impl fmt::Debug for Run {
+    /// What ran and what it did, a stream to a paragraph.
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "`{}` exited with {}", self.command, self.status)?;
+        for (name, text) in [("stdout", &self.stdout), ("stderr", &self.stderr)] {
+            match text.is_empty() {
+                true => write!(f, "\n\nIt printed nothing on {name}.")?,
+                false => write!(f, "\n\nIt printed on {name}:\n{text}")?,
+            }
+        }
+        Ok(())
+    }
+}
+
+/// `bytes`, which `command_line` printed on `stream`, as text.
+#[track_caller]
+fn decode(command_line: &str, stream: &str, bytes: Vec<u8>) -> String {
+    match String::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(err) => panic!("`{command_line}` printed text that isn't UTF-8 on {stream}: {err}"),
+    }
+}
+
+/// What elfq printed on stdout with `args`.
+///
+/// It checks that elfq answered with exit status 0 and printed nothing on
+/// stderr: [`Run::printed`] with 0.
+#[track_caller]
+pub fn stdout(args: &[&str]) -> String {
+    run(args).printed(0)
+}
+
+/// The error that elfq printed on stderr with `args`.
+///
+/// It checks that elfq exited with 2 and printed nothing on stdout:
+/// [`Run::error`].
+#[track_caller]
+pub fn stderr(args: &[&str]) -> String {
+    run(args).error()
 }
 
 /// Checks that elfq printed `expected`. When it didn't, the failure names
