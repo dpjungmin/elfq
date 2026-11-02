@@ -135,7 +135,7 @@ fn a_shared_library_has_the_same_callers_as_the_program() {
             .collect();
         (callers, answer["complete"].clone())
     };
-    let library = load_sample("c-x86_64.so");
+    let library = load_sample(LIBRARY_SAMPLE);
     let functions = library
         .items
         .iter()

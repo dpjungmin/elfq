@@ -3,7 +3,7 @@
 use elfq::binary::{Binary, names};
 use elfq::commands::symbol;
 
-use crate::support::{load_sample, samples};
+use crate::support::{LIBRARY_SAMPLE, SAMPLE, load_sample, samples};
 
 /// The name of what `query` finds.
 fn found(binary: &Binary, query: &str) -> String {
@@ -27,7 +27,7 @@ fn error(binary: &Binary, query: &str) -> String {
 
 #[test]
 fn names_addresses_and_imports() {
-    let binary = load_sample("c-x86_64.elf");
+    let binary = load_sample(SAMPLE);
     assert_eq!(found(&binary, "process_frame"), "process_frame");
     assert_eq!(found(&binary, "0x1700"), "process_frame");
     assert_eq!(found(&binary, "0x1705"), "process_frame");
@@ -44,7 +44,7 @@ fn names_addresses_and_imports() {
 
 #[test]
 fn the_first_line_says_what_symbol_gave_when_it_isnt_the_name() {
-    let binary = load_sample("c-x86_64.elf");
+    let binary = load_sample(SAMPLE);
     assert_eq!(lead_name(&binary, "process_frame"), "process_frame");
     assert_eq!(lead_name(&binary, "0x1700"), "process_frame");
     assert_eq!(
@@ -55,7 +55,7 @@ fn the_first_line_says_what_symbol_gave_when_it_isnt_the_name() {
     assert_eq!(lead_name(&binary, "write"), "write@plt");
     // A Thumb function's start, with bit 0 set as its symbol has it, is
     // its start.
-    let binary = load_sample("c-cortex-m4.elf");
+    let binary = load_sample("testdata/bin/c-cortex-m4.elf");
     assert_eq!(lead_name(&binary, "0x80002c9"), "process_frame");
     assert_eq!(
         lead_name(&binary, "0x80002ca"),
@@ -63,19 +63,19 @@ fn the_first_line_says_what_symbol_gave_when_it_isnt_the_name() {
     );
 
     // A weak alias is another name.
-    let binary = load_sample("c-cortex-m4.elf");
+    let binary = load_sample("testdata/bin/c-cortex-m4.elf");
     assert_eq!(
         lead_name(&binary, "NMI_Handler"),
         "Default_Handler (also named NMI_Handler)"
     );
-    let binary = load_sample("c-plt.so");
+    let binary = load_sample("testdata/bin/c-plt.so");
     assert_eq!(
         lead_name(&binary, "square_resolver@plt"),
         "square@plt (also named square_resolver@plt)"
     );
 
     // A mangled symbol and a short name are the item's own name.
-    let binary = load_sample("cpp-x86_64.elf");
+    let binary = load_sample("testdata/bin/cpp-x86_64.elf");
     let run = "app::Gain::run(short*, unsigned long)";
     assert_eq!(lead_name(&binary, "_ZN3app4Gain3runEPsm"), run);
     assert_eq!(lead_name(&binary, "Gain::run"), run);
@@ -83,7 +83,7 @@ fn the_first_line_says_what_symbol_gave_when_it_isnt_the_name() {
 
 #[test]
 fn a_shared_librarys_function_is_not_its_stub() {
-    let binary = load_sample("c-x86_64.so");
+    let binary = load_sample(LIBRARY_SAMPLE);
     assert_eq!(found(&binary, "log_msg"), "log_msg");
     assert_eq!(found(&binary, "log_msg@plt"), "log_msg@plt");
     // A typo suggests only the function, not its stub.
@@ -98,7 +98,7 @@ fn a_shared_librarys_function_is_not_its_stub() {
 
     // In C++ too, the end of a name means the function, while the end of
     // its stub's name, with `@plt`, means the stub.
-    let binary = load_sample("cpp-x86_64.so");
+    let binary = load_sample("testdata/bin/cpp-x86_64.so");
     assert_eq!(
         found(&binary, "process_frame"),
         "app::process_frame(app::Frame const&, app::Stage&)"
@@ -117,7 +117,7 @@ fn a_shared_librarys_function_is_not_its_stub() {
 
 #[test]
 fn the_end_of_a_rust_path_is_enough() {
-    let binary = load_sample("rust-x86_64-nodebug.elf");
+    let binary = load_sample("testdata/bin/rust-x86_64-nodebug.elf");
     assert_eq!(
         found(&binary, "process_frame"),
         "elfq_sample::process_frame"
@@ -144,7 +144,7 @@ fn the_end_of_a_rust_path_is_enough() {
 
 #[test]
 fn an_exact_name_beats_the_end_of_a_path() {
-    let binary = load_sample("rust-x86_64-nodebug.elf");
+    let binary = load_sample("testdata/bin/rust-x86_64-nodebug.elf");
     // The C `main` that the Rust runtime provides, not `elfq_sample::main`.
     assert_eq!(found(&binary, "main"), "main");
     // The `write` imported from the C library, not `core::fmt::write`.
@@ -153,7 +153,7 @@ fn an_exact_name_beats_the_end_of_a_path() {
 
 #[test]
 fn a_name_that_could_mean_several_items_lists_them() {
-    let binary = load_sample("rust-x86_64-nodebug.elf");
+    let binary = load_sample("testdata/bin/rust-x86_64-nodebug.elf");
     assert_eq!(
         error(&binary, "checksum"),
         "`checksum` could mean 3 functions; use one on the left instead:
@@ -191,7 +191,7 @@ fn a_name_that_could_mean_several_items_lists_them() {
 
 #[test]
 fn a_name_longer_than_40_characters_gives_way_to_an_address() {
-    let binary = load_sample("rust-x86_64-nodebug.elf");
+    let binary = load_sample("testdata/bin/rust-x86_64-nodebug.elf");
     let message = error(&binary, "drop_glue");
     let mut lines = message.lines();
     assert_eq!(
@@ -226,7 +226,7 @@ fn a_name_longer_than_40_characters_gives_way_to_an_address() {
 
 #[test]
 fn typos_get_suggestions() {
-    let binary = load_sample("c-x86_64.elf");
+    let binary = load_sample(SAMPLE);
     assert_eq!(
         error(&binary, "proces_frame"),
         "no function or data object is named `proces_frame`; did you mean process_frame?"
@@ -237,7 +237,7 @@ fn typos_get_suggestions() {
     );
 
     // Suggestions are what to type, not the full name.
-    let binary = load_sample("rust-x86_64-nodebug.elf");
+    let binary = load_sample("testdata/bin/rust-x86_64-nodebug.elf");
     assert_eq!(
         error(&binary, "proces_frame"),
         "no function or data object is named `proces_frame`; did you mean process_frame?"
@@ -248,7 +248,7 @@ fn typos_get_suggestions() {
     );
 
     // Of an item's names, a typo away beats containing what was typed.
-    let binary = load_sample("c-cortex-m4.elf");
+    let binary = load_sample("testdata/bin/c-cortex-m4.elf");
     assert_eq!(
         error(&binary, "Dfault_Handler"),
         "no function or data object is named `Dfault_Handler`; did you mean Default_Handler?"
@@ -260,7 +260,7 @@ fn typos_get_suggestions() {
 
     // An alias can be what comes closest, though the item's shortest name
     // is another.
-    let binary = load_sample("c-softfloat-nodebug.elf");
+    let binary = load_sample("testdata/bin/c-softfloat-nodebug.elf");
     assert_eq!(
         error(&binary, "aeabi_dad"),
         "no function or data object is named `aeabi_dad`; did you mean __aeabi_dadd?"
@@ -272,7 +272,7 @@ fn typos_get_suggestions() {
     // functions, but finds all three, so nothing is suggested. A name
     // whose length is more typos away than the query allows counts as one
     // typo further.
-    let binary = load_sample("cpp-x86_64.elf");
+    let binary = load_sample("testdata/bin/cpp-x86_64.elf");
     for query in ["app::checks", "app::l", "p::log", "p::checksum"] {
         assert_eq!(
             error(&binary, query),
@@ -291,7 +291,7 @@ fn every_short_name_has_one_of_its_names_keys() {
     // items that one of their names files under the short name's key.
     let mut checked = 0;
     for sample in samples() {
-        let binary = load_sample(sample.trim_start_matches("testdata/bin/"));
+        let binary = load_sample(&sample);
         for name in binary.items.iter().flat_map(|item| item.names()) {
             let keys = names::short_name_keys(name);
             for short_name in names::short_names(name) {
@@ -311,7 +311,7 @@ fn every_short_name_has_one_of_its_names_keys() {
 fn short_names_with_a_key_are_the_short_names_that_have_it() {
     // Only these are worked out for a key that a query has.
     for sample in samples() {
-        let binary = load_sample(sample.trim_start_matches("testdata/bin/"));
+        let binary = load_sample(&sample);
         for name in binary.items.iter().flat_map(|item| item.names()) {
             let short = names::short_names(name);
             for key in names::short_name_keys(name) {
@@ -338,7 +338,7 @@ fn the_words_of_a_short_name_are_words_of_its_name() {
     // a name ends with it.
     let mut checked = 0;
     for sample in samples() {
-        let binary = load_sample(sample.trim_start_matches("testdata/bin/"));
+        let binary = load_sample(&sample);
         for name in binary.items.iter().flat_map(|item| item.names()) {
             let short = names::short_names(name);
             let of_name: Vec<&str> = names::words(name).collect();

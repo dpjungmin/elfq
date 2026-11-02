@@ -400,6 +400,13 @@ cargo test --test it damaged::
 cargo test --lib arch::thumb
 ```
 
+**Samples.** A test names a sample by its path from the crate's root,
+such as `testdata/bin/c-x86_64.elf`, which is what elfq takes as FILE:
+`SAMPLE` and the other constants in `support/` hold that path, `samples()`
+lists every sample that way, and `load_sample` and `run_in_process` take
+it. Only `screen` and `burst`, in `browse.rs`, take the file's name, as the
+screen's first line shows it.
+
 **Running elfq.** A test runs the program with `run(ARGS)`, from
 `support/`, and says what it expects of the `Run` it gets back:
 `printed(STATUS)` gives what elfq printed on stdout, `json(STATUS)` gives

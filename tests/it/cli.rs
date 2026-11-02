@@ -4552,19 +4552,27 @@ fn builds_that_load_the_same_memory_exit_0() {
     // rust-x86_64's .tbss shares its addresses with .fini_array, .init_array
     // and .data.rel.ro.
     for (old, new) in [
-        ("c-cortex-m7-nodebug.elf", "c-cortex-m7-stripped.elf"),
-        ("c-cortex-m7.elf", "c-cortex-m7-stripped.elf"),
         (
-            "c-cortex-m7-moved-nodebug.elf",
-            "c-cortex-m7-moved-stripped.elf",
+            "testdata/bin/c-cortex-m7-nodebug.elf",
+            "testdata/bin/c-cortex-m7-stripped.elf",
         ),
-        ("c-x86_64-nodebug.elf", "c-x86_64-stripped.elf"),
-        ("c-x86_64-moved.elf", "c-x86_64-moved-stripped.elf"),
-        ("rust-x86_64-nodebug.elf", "rust-x86_64-stripped.elf"),
-        ("c-x86_64.so", "c-x86_64.so"),
+        (TCM_SAMPLE, "testdata/bin/c-cortex-m7-stripped.elf"),
+        (
+            "testdata/bin/c-cortex-m7-moved-nodebug.elf",
+            "testdata/bin/c-cortex-m7-moved-stripped.elf",
+        ),
+        (
+            "testdata/bin/c-x86_64-nodebug.elf",
+            "testdata/bin/c-x86_64-stripped.elf",
+        ),
+        (MOVED_SAMPLE, "testdata/bin/c-x86_64-moved-stripped.elf"),
+        (
+            "testdata/bin/rust-x86_64-nodebug.elf",
+            "testdata/bin/rust-x86_64-stripped.elf",
+        ),
+        (LIBRARY_SAMPLE, LIBRARY_SAMPLE),
     ] {
-        let (old, new) = (format!("testdata/bin/{old}"), format!("testdata/bin/{new}"));
-        let text = diff(&old, &new, &[]).printed(0);
+        let text = diff(old, new, &[]).printed(0);
         assert_output(
             &text,
             &format!("{old} and {new} hold the same bytes at the same addresses.\n"),

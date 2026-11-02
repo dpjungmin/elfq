@@ -12,7 +12,7 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use crate::support::{SAMPLE, assert_output, elf, load_sample, run, sample_path};
+use crate::support::{SAMPLE, TCM_SAMPLE, assert_output, elf, load_sample, run, sample_path};
 
 /// A key as a test script writes it: a name such as `Enter`, `Tab`, `Esc`
 /// or `Ctrl-O`, or text, typed a character at a time.
@@ -79,10 +79,14 @@ fn browse(
     (screen, stop)
 }
 
-/// The screen of the browser on `sample`, as [`browse`] gives it.
+/// The screen of the browser on the sample named `sample` in testdata/bin.
+///
+/// It is as [`browse`] gives it. It takes the file's name alone, where
+/// other helpers take its path, since that is how the screen's first line
+/// names it.
 fn screen(sample: &str, symbol: Option<&str>, size: (u16, u16), script: &[&str]) -> String {
     let path = format!("testdata/bin/{sample}");
-    browse(&path, &load_sample(sample), symbol, size, script).0
+    browse(&path, &load_sample(&path), symbol, size, script).0
 }
 
 /// The selected line of `screen`, and its status line, the one before
@@ -736,7 +740,7 @@ from a root: _start › main › app_tick › log_msg
         cancelled.starts_with("c-x86_64.elf › main\n"),
         "{cancelled}"
     );
-    let binary = load_sample("c-x86_64.elf");
+    let binary = load_sample(SAMPLE);
     let stop = |script: &[&str]| browse(SAMPLE, &binary, None, (80, 24), script).1;
     assert_eq!(stop(&["g", "Ctrl-C"]), Stop::Quit);
     #[cfg(unix)]
@@ -1243,7 +1247,7 @@ fn a_load_from_a_literal_pool_notes_what_it_reads() {
 fn thumb_code_of_other_cores_lists_only_the_lines_that_use_another_item() {
     // The sample as if it were built for a Cortex-M33, whose instructions
     // elfq doesn't print.
-    let data = elf::for_arm_version("c-cortex-m7.elf", Some(17));
+    let data = elf::for_arm_version(TCM_SAMPLE, Some(17));
     let binary = Binary::parse(&data).unwrap();
     let page = |symbol| browse("c-cortex-m7.elf", &binary, Some(symbol), (80, 24), &[]).0;
     assert_output(
@@ -1306,7 +1310,7 @@ file is for Armv8-M Mainline. No line of Default_Handler uses another item.
 ",
     );
     // A file that doesn't say which core it is for.
-    let data = elf::for_arm_version("c-cortex-m7.elf", None);
+    let data = elf::for_arm_version(TCM_SAMPLE, None);
     let binary = Binary::parse(&data).unwrap();
     assert_output(
         &browse(
@@ -1519,7 +1523,7 @@ from a root: _start › main
 
 #[test]
 fn q_ctrl_c_and_ctrl_z_stop_the_event_loop() {
-    let binary = load_sample("c-x86_64.elf");
+    let binary = load_sample(SAMPLE);
     let stop = |script: &[&str]| browse(SAMPLE, &binary, None, (80, 24), script).1;
     assert_eq!(stop(&["q"]), Stop::Quit);
     assert_eq!(stop(&["Ctrl-C"]), Stop::Quit);
@@ -1600,7 +1604,7 @@ from a root: entry › fn_0x8113870 › fn_0x8113868 › fn_0x8113860
 fn code_that_elfq_cant_read_is_refused() {
     // The x86-64 sample, marked as AArch64 code, as in the test of the
     // commands' message.
-    let mut data = std::fs::read(sample_path("c-x86_64.elf")).unwrap();
+    let mut data = std::fs::read(sample_path(SAMPLE)).unwrap();
     data[18..20].copy_from_slice(&183u16.to_le_bytes());
     let binary = Binary::parse(&data).unwrap();
     let error = Session::new(Path::new("aarch64.elf"), &binary)
@@ -2683,7 +2687,7 @@ fn find_has_no_rows_on_the_help_and_ctrl_c_and_ctrl_z_work_while_typing() {
     let (_, status) = selected_and_status(&page);
     assert_eq!(status, "this page has no rows to find in", "{page}");
     assert!(!page.contains("/ find"), "{page}");
-    let binary = load_sample("c-x86_64.elf");
+    let binary = load_sample(SAMPLE);
     let stop = |script: &[&str]| browse(SAMPLE, &binary, None, (80, 24), script).1;
     // q types into the prompt.
     let page = screen("c-x86_64.elf", None, (80, 24), &["/", "q"]);
@@ -2737,7 +2741,7 @@ fn the_keys_move_as_the_help_says() {
 #[test]
 fn only_key_presses_count() {
     // Windows also reports each key's release.
-    let binary = load_sample("c-x86_64.elf");
+    let binary = load_sample(SAMPLE);
     let session = Session::new(Path::new(SAMPLE), &binary).unwrap();
     let mut app = App::new(session, Some("log_msg"));
     let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
@@ -2759,13 +2763,14 @@ fn only_key_presses_count() {
     assert!(row.starts_with("> 0x1610 "), "{row}");
 }
 
-/// The browser on `sample`, as [`browse`] gives it, but with each key
-/// waiting before the browser takes it, as when the user pastes them or
-/// types faster than the screen keeps up: the screen, and how many times
-/// it was drawn.
+/// The browser on the sample named `sample`, with each key waiting.
+///
+/// It takes the name as [`screen`] does, but each key waits before the
+/// browser takes it, as when the user pastes them or types faster than the
+/// screen keeps up. It gives the screen, and how many times it was drawn.
 fn burst(sample: &str, (width, height): (u16, u16), script: &[&str]) -> (String, usize) {
-    let binary = load_sample(sample);
     let path = format!("testdata/bin/{sample}");
+    let binary = load_sample(&path);
     let session = Session::new(Path::new(&path), &binary).unwrap();
     let mut app = App::new(session, None);
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();

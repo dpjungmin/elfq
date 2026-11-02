@@ -16,7 +16,10 @@ use crate::support::elf::{
     replace_section, sample, save, section_header, section_headers_32, set_section_field,
     set_symbol_size, write,
 };
-use crate::support::{Run, SAMPLE, assert_output, load_sample, run, sample_path};
+use crate::support::{
+    LIBRARY_SAMPLE, Run, SAMPLE, TCM_INLINED_SAMPLE, TCM_SAMPLE, assert_output, load_sample, run,
+    sample_path,
+};
 
 /// `bytes` after their length in 4 bytes, as DWARF starts a unit or a
 /// list of ranges.
@@ -51,7 +54,7 @@ fn the_addend_of_a_pointer_that_a_plt_stub_jumps_through_is_ignored() {
     // stub as the addend, which the dynamic loader ignores. The stubs in
     // `.plt` jump through JUMP_SLOT pointers, listed in `.rela.plt`, and
     // those in `.plt.got` through GLOB_DAT ones, listed in `.rela.dyn`.
-    let mut data = sample("c-plt.so");
+    let mut data = sample("testdata/bin/c-plt.so");
     let file = object::File::parse(&*data).unwrap();
     let tables = [".rela.plt", ".rela.dyn"]
         .map(|name| file.section_by_name(name).unwrap().file_range().unwrap());
@@ -67,7 +70,7 @@ fn the_addend_of_a_pointer_that_a_plt_stub_jumps_through_is_ignored() {
         }
     }
     let (binary, _) = parse(&data);
-    let stubs = load_sample("c-plt.so").own_function_stubs();
+    let stubs = load_sample("testdata/bin/c-plt.so").own_function_stubs();
     assert_eq!(stubs.len(), 6);
     assert_eq!(binary.own_function_stubs(), stubs);
 }
@@ -76,16 +79,16 @@ fn the_addend_of_a_pointer_that_a_plt_stub_jumps_through_is_ignored() {
 fn a_section_larger_than_the_file_is_read_as_far_as_the_file_goes() {
     // What the exit array lists is still found, along with whatever the
     // rest of the file holds, which the array now seems to run into.
-    let mut data = sample("c-x86_64.elf");
+    let mut data = sample(SAMPLE);
     set_section_field(&mut data, ".fini_array", SIZE, 1 << 40);
     let (_, graph) = parse_quickly(data);
-    let roots = Graph::build(&load_sample("c-x86_64.elf")).roots;
+    let roots = Graph::build(&load_sample(SAMPLE)).roots;
     assert!(roots.iter().all(|root| graph.roots.contains(root)));
 
-    let mut data = sample("c-cortex-m4-stripped.elf");
+    let mut data = sample("testdata/bin/c-cortex-m4-stripped.elf");
     set_section_field(&mut data, ".isr_vector", SIZE, 0xa400_0040);
     let (binary, _) = parse_quickly(data);
-    let vector_table = load_sample("c-cortex-m4-stripped.elf").vector_table;
+    let vector_table = load_sample("testdata/bin/c-cortex-m4-stripped.elf").vector_table;
     assert_eq!(binary.vector_table, vector_table);
 }
 
@@ -99,12 +102,12 @@ fn a_huge_bss_holds_no_pointers() {
             .filter(|reference| reference.kind == ReferenceKind::Pointer)
             .collect::<Vec<_>>()
     };
-    let mut data = sample("c-cortex-m4.elf");
+    let mut data = sample("testdata/bin/c-cortex-m4.elf");
     set_section_field(&mut data, ".bss", SIZE, 0xffff_0000);
     let (_, graph) = parse_quickly(data);
     assert_eq!(
         pointers(graph),
-        pointers(Graph::build(&load_sample("c-cortex-m4.elf")))
+        pointers(Graph::build(&load_sample("testdata/bin/c-cortex-m4.elf")))
     );
 }
 
@@ -115,7 +118,7 @@ fn words_are_read_from_the_section_that_holds_each() {
     // `.ARM.exidx`, later in the table, is moved to hold all 64 of them,
     // from the same bytes of the file. The handlers listed past the first 8
     // bytes come from `.ARM.exidx`.
-    let mut data = sample("c-cortex-m4.elf");
+    let mut data = sample("testdata/bin/c-cortex-m4.elf");
     set_section_field(&mut data, ".isr_vector", SIZE, 8);
     set_section_field(&mut data, ".ARM.exidx", ADDRESS, 0x0800_0000);
     set_section_field(&mut data, ".ARM.exidx", OFFSET, 0x1000);
@@ -128,7 +131,7 @@ fn words_are_read_from_the_section_that_holds_each() {
             .collect::<Vec<_>>()
     };
     let (_, graph) = parse(&data);
-    let table = in_table(Graph::build(&load_sample("c-cortex-m4.elf")));
+    let table = in_table(Graph::build(&load_sample("testdata/bin/c-cortex-m4.elf")));
     assert_eq!(table.len(), 10);
     assert_eq!(in_table(graph), table);
 }
@@ -139,7 +142,7 @@ fn words_come_from_a_section_that_starts_inside_another() {
     // `.isr_vector`, listed before it, to start halfway through them and
     // hold bytes of `.text`. From there on the words are `.isr_vector`'s,
     // as when each is read on its own.
-    let mut data = sample("c-cortex-m4-stripped.elf");
+    let mut data = sample("testdata/bin/c-cortex-m4-stripped.elf");
     set_section_field(&mut data, ".ARM.exidx", ADDRESS, 0x0800_0000);
     set_section_field(&mut data, ".ARM.exidx", OFFSET, 0x1000);
     set_section_field(&mut data, ".ARM.exidx", SIZE, 0x40);
@@ -153,7 +156,7 @@ fn words_come_from_a_section_that_starts_inside_another() {
         .collect();
     let words: Vec<(u64, u64)> = binary.words(0x0800_0000, 0x0800_0040).collect();
     assert_eq!(words, one_at_a_time);
-    let table = load_sample("c-cortex-m4-stripped.elf");
+    let table = load_sample("testdata/bin/c-cortex-m4-stripped.elf");
     assert_ne!(Some(words[8].1), table.pointer_at(0x0800_0020));
 }
 
@@ -162,7 +165,7 @@ fn the_vector_table_ends_where_the_file_holds_no_bytes() {
     // `.isr_vector` now covers 8 bytes in the middle of the table, which
     // the file doesn't hold, and `.rodata` the whole table. The table ends
     // before them, though the file holds the entries after them.
-    let mut data = sample("c-cortex-m4-stripped.elf");
+    let mut data = sample("testdata/bin/c-cortex-m4-stripped.elf");
     set_section_field(&mut data, ".isr_vector", ADDRESS, 0x0800_0010);
     set_section_field(&mut data, ".isr_vector", OFFSET, 0x10_0000);
     set_section_field(&mut data, ".isr_vector", SIZE, 8);
@@ -186,7 +189,7 @@ fn the_search_for_the_vector_table_skips_a_huge_bss() {
     // With an entry point that no vector table lists, elfq looks for one
     // in every section, `.bss` too, and finds none. It then finds the table
     // at the start of `.isr_vector`, by how the table begins.
-    let mut data = sample("c-cortex-m4.elf");
+    let mut data = sample("testdata/bin/c-cortex-m4.elf");
     // `e_entry`, in the file's header.
     write(&mut data, 0x18, 4, 0x0800_0001);
     set_section_field(&mut data, ".bss", SIZE, 0xffff_0000);
@@ -202,7 +205,7 @@ fn stripped_cortex_m_firmware_is_thumb_though_its_entry_point_is_even() {
     // starts, an even address: here on_timer's, as ld sets it. Stripped,
     // it has no symbols either, but its build attributes name a Cortex-M
     // core.
-    let mut data = sample("c-cortex-m7-entry-main-stripped.elf");
+    let mut data = sample("testdata/bin/c-cortex-m7-entry-main-stripped.elf");
     // `e_entry`, in the file's header.
     write(&mut data, 0x18, 4, 0x3000_0140);
     let (binary, _) = parse(&data);
@@ -216,7 +219,7 @@ fn an_entry_point_in_the_vector_table_is_no_function() {
     // Linked with no entry point, firmware whose `.text` begins with the
     // vector table has its entry point there. The table is data all the
     // same: no function starts there, and nothing reads it as code.
-    let mut data = sample("c-cortex-m4-cmsis-stripped.elf");
+    let mut data = sample("testdata/bin/c-cortex-m4-cmsis-stripped.elf");
     write(&mut data, 0x18, 4, 0x0800_0000);
     let (binary, _) = parse(&data);
     let table = binary.vector_table.clone().unwrap();
@@ -243,7 +246,7 @@ fn an_entry_point_in_the_vector_table_is_no_function() {
 
 #[test]
 fn a_section_that_would_end_past_the_last_address_is_ignored() {
-    let mut data = sample("c-x86_64.elf");
+    let mut data = sample(SAMPLE);
     set_section_field(&mut data, ".fini_array", SIZE, u64::MAX - 15);
     let path = save("fini-array-size.elf", &data);
     let top = run(&[&path, "top", "--all"]).exited(0);
@@ -257,7 +260,7 @@ fn a_section_that_would_end_past_the_last_address_is_ignored() {
 fn a_section_that_ends_at_the_last_address_is_kept() {
     // Its last byte is at the last address, so its end is one past it,
     // which a u64 can't hold: the section loses that byte instead.
-    let mut data = sample("c-x86_64.elf");
+    let mut data = sample(SAMPLE);
     set_section_field(&mut data, ".fini_array", ADDRESS, u64::MAX - 7);
     // elfq doesn't warn about it.
     run(&[&save("fini-array-at-the-top.elf", &data), "top", "--all"]).printed(0);
@@ -271,7 +274,7 @@ fn a_section_that_ends_at_the_last_address_is_kept() {
 fn a_section_that_isnt_allocated_keeps_its_addresses() {
     // elfq uses no addresses from it, so they can't be damaged, and the
     // inlined copies its debug info lists are still found.
-    let mut data = sample("c-x86_64.elf");
+    let mut data = sample(SAMPLE);
     set_section_field(&mut data, ".debug_info", ADDRESS, u64::MAX - 15);
     let damaged = run(&[&save("debug-info-address.elf", &data), "inlined"]).printed(0);
     assert_output(&damaged, &run(&[SAMPLE, "inlined"]).printed(0));
@@ -296,7 +299,7 @@ fn a_section_that_runs_past_the_end_of_the_file_keeps_its_addresses() {
 #[test]
 fn diff_names_the_file_that_a_warning_is_about() {
     let path = save("plt-offset-diff.elf", &past_the_end(&[".plt"]));
-    let compared = diff("c-x86_64.elf", &path, &[]).exited(1);
+    let compared = diff(SAMPLE, &path, &[]).exited(1);
     assert_output(
         &compared.stderr,
         &format!("warning: {path}: section .plt runs past the end of the file\n"),
@@ -315,8 +318,7 @@ fn diff_names_the_file_that_a_warning_is_about() {
 
 /// Runs `elfq SAMPLE diff NEW` with `options`.
 ///
-/// SAMPLE is the sample named `sample`, and NEW the file at the path
-/// `new`.
+/// SAMPLE is the sample at `sample`, and NEW the file at the path `new`.
 #[track_caller]
 fn diff(sample: &str, new: &str, options: &[&str]) -> Run {
     let old = sample_path(sample);
@@ -327,11 +329,11 @@ fn diff(sample: &str, new: &str, options: &[&str]) -> Run {
 fn diff_names_a_section_whose_bytes_alone_differ() {
     // Another build ID, as after a change only in debug info: no item
     // changed, and the last line says where the bytes differ.
-    let mut data = sample("c-x86_64.elf");
+    let mut data = sample(SAMPLE);
     let (offset, size) = file_range(&data, ".note.gnu.build-id");
     data[offset + size - 1] ^= 1;
     let path = save("build-id.elf", &data);
-    let text = diff("c-x86_64.elf", &path, &[]).printed(1);
+    let text = diff(SAMPLE, &path, &[]).printed(1);
     assert!(
         text.ends_with(
             ": no item changed size or block, but bytes differ.\n\
@@ -342,17 +344,17 @@ fn diff_names_a_section_whose_bytes_alone_differ() {
         ),
         "{text}"
     );
-    let json = diff("c-x86_64.elf", &path, &["--json"]).printed(1);
+    let json = diff(SAMPLE, &path, &["--json"]).printed(1);
     assert!(
         json.contains("\"sections_that_differ\":[\n\".note.gnu.build-id\"\n],"),
         "{json}"
     );
     // In firmware, the block's row says only that bytes differ. A byte of
     // the unwind table, which holds no item, edits none.
-    let mut data = sample("c-cortex-m7.elf");
+    let mut data = sample(TCM_SAMPLE);
     let (offset, _) = file_range(&data, ".ARM.exidx");
     data[offset] ^= 1;
-    let text = diff("c-cortex-m7.elf", &save("exidx-byte.elf", &data), &[]).printed(1);
+    let text = diff(TCM_SAMPLE, &save("exidx-byte.elf", &data), &[]).printed(1);
     assert!(
         text.contains("\n0x30000000..0x30000edc  3804  3804       0  bytes differ\n"),
         "{text}"
@@ -366,10 +368,10 @@ fn diff_names_a_section_whose_bytes_alone_differ() {
     );
     // In a shared library, with no row, nothing says that rows can't say
     // what keeps items.
-    let mut data = sample("c-x86_64.so");
+    let mut data = sample(LIBRARY_SAMPLE);
     let (offset, _) = file_range(&data, ".eh_frame_hdr");
     data[offset + 0x10] ^= 1;
-    let text = diff("c-x86_64.so", &save("eh-frame-hdr-byte.so", &data), &[]).printed(1);
+    let text = diff(LIBRARY_SAMPLE, &save("eh-frame-hdr-byte.so", &data), &[]).printed(1);
     assert!(
         text.ends_with(
             ": no item changed size or block, but bytes differ.\n\
@@ -387,7 +389,7 @@ fn diff_says_where_a_gone_function_was_inlined_only_when_its_name_finds_nothing(
     // The build where decode_header is inlined, with its variable
     // systick_count named decode_header: a gone function's name that finds
     // an item names no function that is only inlined.
-    let mut data = sample("c-cortex-m7-inlined.elf");
+    let mut data = sample(TCM_INLINED_SAMPLE);
     let (offset, size) = file_range(&data, ".strtab");
     let strtab = &mut data[offset..offset + size];
     let at = strtab
@@ -395,7 +397,7 @@ fn diff_says_where_a_gone_function_was_inlined_only_when_its_name_finds_nothing(
         .position(|name| name == b"systick_count\0")
         .unwrap();
     strtab[at..at + 13].copy_from_slice(b"decode_header");
-    let text = diff("c-cortex-m7.elf", &save("renamed.elf", &data), &[]).printed(1);
+    let text = diff(TCM_SAMPLE, &save("renamed.elf", &data), &[]).printed(1);
     assert!(
         text.contains("  decode_header (gone), kept by process_frame\n"),
         "{text}"
@@ -406,9 +408,9 @@ fn diff_says_where_a_gone_function_was_inlined_only_when_its_name_finds_nothing(
 fn diff_says_when_only_blocks_differ() {
     // .ARM.exidx, which holds no item, at an address of its own: a new
     // block, and the old one ends sooner, but every item is where it was.
-    let mut data = sample("c-cortex-m7.elf");
+    let mut data = sample(TCM_SAMPLE);
     set_section_field(&mut data, ".ARM.exidx", ADDRESS, 0x6000_0000);
-    let text = diff("c-cortex-m7.elf", &save("exidx-elsewhere.elf", &data), &[]).printed(1);
+    let text = diff(TCM_SAMPLE, &save("exidx-elsewhere.elf", &data), &[]).printed(1);
     assert!(
         text.contains(": no item changed, but the blocks of memory differ.\n"),
         "{text}"
@@ -427,10 +429,10 @@ fn diff_says_when_only_blocks_differ() {
 fn diff_counts_the_bytes_that_sections_overlap_on_once() {
     // .rodata, grown by 8 bytes, holds the bytes of .ARM.exidx after it
     // too, at the same addresses.
-    let mut data = sample("c-cortex-m7.elf");
+    let mut data = sample(TCM_SAMPLE);
     set_section_field(&mut data, ".rodata", SIZE, 0xf4 + 8);
     let path = save("rodata-over-exidx.elf", &data);
-    let text = diff("c-cortex-m7.elf", &path, &[]).printed(0);
+    let text = diff(TCM_SAMPLE, &path, &[]).printed(0);
     assert!(text.ends_with(" hold the same bytes at the same addresses.\n"));
 }
 
@@ -438,7 +440,7 @@ fn diff_counts_the_bytes_that_sections_overlap_on_once() {
 fn diff_refuses_a_separate_debug_file() {
     // objcopy --only-keep-debug keeps the header of each section that the
     // program loads, but makes it take no room in the file, as .bss does.
-    let mut data = sample("c-cortex-m7.elf");
+    let mut data = sample(TCM_SAMPLE);
     for (header, flags) in section_headers_32(&data) {
         if flags & ALLOCATED != 0 {
             // `sh_type`, as SHT_NOBITS.
@@ -447,7 +449,7 @@ fn diff_refuses_a_separate_debug_file() {
     }
     let path = save("c-cortex-m7.debug", &data);
     assert_output(
-        &diff("c-cortex-m7.elf", &path, &[]).error(),
+        &diff(TCM_SAMPLE, &path, &[]).error(),
         &format!(
             "error: {path} stores none of its code, as a separate debug file doesn't; diff \
              needs the program itself\n"
@@ -457,20 +459,20 @@ fn diff_refuses_a_separate_debug_file() {
 
 #[test]
 fn diff_refuses_a_file_that_puts_nothing_in_memory() {
-    let mut data = sample("c-cortex-m7.elf");
+    let mut data = sample(TCM_SAMPLE);
     for (header, flags) in section_headers_32(&data) {
         write(&mut data, header + 8, 4, u64::from(flags & !ALLOCATED));
     }
     let path = save("c-cortex-m7-unallocated.elf", &data);
     assert_output(
-        &diff("c-cortex-m7.elf", &path, &[]).error(),
+        &diff(TCM_SAMPLE, &path, &[]).error(),
         &format!("error: {path} puts nothing in memory, so diff has nothing to compare\n"),
     );
 }
 
 #[test]
 fn a_function_whose_size_would_end_past_the_last_address_gets_another() {
-    let mut data = sample("c-x86_64.elf");
+    let mut data = sample(SAMPLE);
     set_symbol_size(&mut data, "main", u64::MAX);
     let (binary, _) = parse(&data);
     let main = binary
@@ -486,7 +488,7 @@ fn a_function_whose_size_would_end_past_the_last_address_gets_another() {
 fn a_data_object_whose_size_would_end_past_the_last_address_is_dropped() {
     // As one without a size is: what code refers to there becomes unnamed
     // data, sized up to the next item.
-    let mut data = sample("c-x86_64.elf");
+    let mut data = sample(SAMPLE);
     set_symbol_size(&mut data, "handlers", u64::MAX);
     let (binary, _) = parse(&data);
     assert!(binary.items.iter().all(|item| item.name != "handlers"));
@@ -502,7 +504,7 @@ fn a_data_object_whose_size_would_end_past_the_last_address_is_dropped() {
 fn a_function_of_unknown_size_is_named_where_its_load_image_is() {
     // The last function in .itcm, which flash stores from 0x30000118 for
     // the startup code to copy, without a size.
-    let mut data = sample("c-cortex-m7-nodebug.elf");
+    let mut data = sample("testdata/bin/c-cortex-m7-nodebug.elf");
     set_symbol_size(&mut data, "__memcpy_veneer", 0);
     let path = save("memcpy-veneer-unsized.elf", &data);
     assert_output(
@@ -516,7 +518,7 @@ fn a_function_of_unknown_size_is_named_where_its_load_image_is() {
 fn reach_names_what_it_reaches_but_cant_read() {
     // apply_filter calls memcpy through __memcpy_veneer, which has no size
     // now, so memcpy isn't there.
-    let mut data = sample("c-cortex-m7-nodebug.elf");
+    let mut data = sample("testdata/bin/c-cortex-m7-nodebug.elf");
     set_symbol_size(&mut data, "__memcpy_veneer", 0);
     let path = save("reach-unsized-veneer.elf", &data);
     assert_output(
@@ -577,7 +579,7 @@ fn the_overview_suggests_reach_for_a_handler_that_runs_in_normal_operation() {
     // The overview of c-cortex-m4-nodebug.elf with `handler` in the given
     // entries of the vector table, counted from the stack pointer's.
     let overview = |handler: &str, entries: &[usize]| {
-        let mut data = sample("c-cortex-m4-nodebug.elf");
+        let mut data = sample("testdata/bin/c-cortex-m4-nodebug.elf");
         let file = object::File::parse(&*data).unwrap();
         let (table, _) = file
             .section_by_name(".isr_vector")
@@ -611,7 +613,7 @@ fn the_overview_suggests_reach_for_a_handler_that_runs_in_normal_operation() {
 #[test]
 fn reach_lists_an_item_in_no_block_after_the_blocks() {
     // tx_buffer, in a section of size 0 now, so in no block of memory.
-    let mut data = sample("c-cortex-m7-nodebug.elf");
+    let mut data = sample("testdata/bin/c-cortex-m7-nodebug.elf");
     set_section_field(&mut data, ".ocram_bss", SIZE, 0);
     let path = save("reach-no-block.elf", &data);
     assert_output(
@@ -642,7 +644,7 @@ fn sizes_that_add_up_past_the_largest_number_stop_there() {
     // Functions that overlap, each half as large as the address space.
     // Each is the last in its section, since one that runs on past the
     // start of another in its section would end there.
-    let mut data = sample("c-x86_64.elf");
+    let mut data = sample(SAMPLE);
     for function in ["_init", "platform_write", "_fini"] {
         set_symbol_size(&mut data, function, 1 << 63);
     }
@@ -660,11 +662,11 @@ fn sizes_that_add_up_past_the_largest_number_stop_there() {
 #[test]
 fn a_64_bit_file_marked_as_arm_is_not_read_as_thumb() {
     // Thumb code only comes in 32-bit files, whatever the entry point says.
-    let mut data = sample("c-x86_64.elf");
+    let mut data = sample(SAMPLE);
     // `e_machine` and `e_entry`, in the file's header: EM_ARM, and an odd
     // entry point, as Thumb code has.
     write(&mut data, 0x12, 2, 40);
-    let entry = load_sample("c-x86_64.elf").entry;
+    let entry = load_sample(SAMPLE).entry;
     write(&mut data, 0x18, 8, entry | 1);
     let (binary, _) = parse(&data);
     assert!(!binary.thumb);
@@ -699,7 +701,7 @@ fn inlined_copies_that_add_up_past_the_largest_number_stop_there() {
     }
     ranges.push(0);
 
-    let mut data = sample("c-x86_64.elf");
+    let mut data = sample(SAMPLE);
     replace_section(&mut data, ".debug_info", &with_length(&unit));
     replace_section(&mut data, ".debug_abbrev", &abbrev);
     replace_section(&mut data, ".debug_rnglists", &with_length(&ranges));
@@ -733,7 +735,7 @@ fn an_inlined_copy_that_would_end_past_the_last_address_has_no_bytes() {
     let abbrev = [
         1, 0x1d, 0, 0x11, 0x01, 0x12, 0x07, 0, 0, 2, 0x11, 1, 0, 0, 0,
     ];
-    let items = load_sample("c-x86_64.elf").items;
+    let items = load_sample(SAMPLE).items;
     let main = items.iter().find(|item| item.name == "main").unwrap();
     // DWARF 4, abbreviations at offset 0, 8-byte addresses. Then the
     // compile unit, the copy in main, and the end of the unit's children.
@@ -742,7 +744,7 @@ fn an_inlined_copy_that_would_end_past_the_last_address_has_no_bytes() {
     unit.extend(0xffff_ffff_ffff_ff00u64.to_le_bytes());
     unit.push(0);
 
-    let mut data = sample("c-x86_64.elf");
+    let mut data = sample(SAMPLE);
     replace_section(&mut data, ".debug_info", &with_length(&unit));
     replace_section(&mut data, ".debug_abbrev", &abbrev);
     // As in a release build, the range is dropped, and the copy is found at
@@ -767,7 +769,7 @@ fn each_dwarf_unit_is_read_to_the_end_of_its_root() {
     // copy without children, at the address its DW_AT_low_pc gives, and 2 a
     // compile unit with children and no attributes.
     let abbrev = [1, 0x1d, 0, 0x11, 0x01, 0, 0, 2, 0x11, 1, 0, 0, 0];
-    let items = load_sample("c-x86_64.elf").items;
+    let items = load_sample(SAMPLE).items;
     let main = items.iter().find(|item| item.name == "main").unwrap();
     // The compile unit, a copy in main, and the end of the unit's children.
     let mut entries = vec![2, 1];
@@ -789,7 +791,7 @@ A copy of 0 bytes is one the compiler merged into the code around it.
         ("dwarf-leading-null.elf", [&[0], &entries[..]].concat()),
     ] {
         let unit = [&[4, 0, 0, 0, 0, 0, 8], &entries[..]].concat();
-        let mut data = sample("c-x86_64.elf");
+        let mut data = sample(SAMPLE);
         replace_section(&mut data, ".debug_info", &with_length(&unit));
         replace_section(&mut data, ".debug_abbrev", &abbrev);
         assert_output(&run(&[&save(name, &data), "inlined"]).printed(0), expected);
@@ -810,7 +812,7 @@ fn dwarf_that_nests_deeply_is_read() {
     unit.extend(std::iter::repeat_n(1, depth));
     unit.extend(std::iter::repeat_n(0, depth + 1));
 
-    let mut data = sample("c-x86_64.elf");
+    let mut data = sample(SAMPLE);
     replace_section(&mut data, ".debug_info", &with_length(&unit));
     replace_section(&mut data, ".debug_abbrev", &abbrev);
     assert_output(
@@ -821,7 +823,7 @@ fn dwarf_that_nests_deeply_is_read() {
 
 #[test]
 fn dwarf_that_cant_be_read_says_so() {
-    let mut data = sample("c-x86_64.elf");
+    let mut data = sample(SAMPLE);
     set_section_field(&mut data, ".debug_info", SIZE, 0x10);
     let path = save("short-dwarf.elf", &data);
     assert_output(
@@ -840,7 +842,7 @@ fn inlined_copies_that_nest_deeply_are_summed_up() {
     // Copies inlined into main, each into the one before, 100,000 deep:
     // all but the first few are summed up in one row.
     let depth = 100_000;
-    let items = load_sample("c-x86_64.elf").items;
+    let items = load_sample(SAMPLE).items;
     let main = items.iter().find(|item| item.name == "main").unwrap();
     // Abbreviation 1 is an inlined copy with children, at the address its
     // DW_AT_low_pc gives, and 2 a compile unit with children and no
@@ -855,7 +857,7 @@ fn inlined_copies_that_nest_deeply_are_summed_up() {
     }
     unit.extend(std::iter::repeat_n(0, depth + 1));
 
-    let mut data = sample("c-x86_64.elf");
+    let mut data = sample(SAMPLE);
     replace_section(&mut data, ".debug_info", &with_length(&unit));
     replace_section(&mut data, ".debug_abbrev", &abbrev);
     let path = save("deep-inlined-copies.elf", &data);
@@ -921,7 +923,7 @@ fn a_function_inlined_everywhere_is_told_from_one_kept_in_part() {
     // GCC can inline the start of a function and keep the rest out of line,
     // as `append.part.0`. Then not every copy of `append` was inlined, and
     // the error suggests the part. `process_frame` has as many letters.
-    let mut data = sample("c-x86_64.elf");
+    let mut data = sample(SAMPLE);
     let file = object::File::parse(&*data).unwrap();
     let (start, size) = file
         .section_by_name(".strtab")
@@ -945,7 +947,7 @@ fn a_function_inlined_everywhere_is_told_from_one_kept_in_part() {
 fn a_file_with_dwarf_but_no_symbol_table_says_so() {
     // Without names, elfq can't tell a function that the compiler inlined
     // everywhere from one it named by address.
-    let mut data = sample("c-x86_64.elf");
+    let mut data = sample(SAMPLE);
     // `sh_type`, which says what a section holds, takes the 4 bytes after
     // its name in either size of file: 1 is `SHT_PROGBITS`, plain bytes.
     let (header, _) = section_header(&data, ".symtab");
@@ -975,7 +977,7 @@ fn reach_names_the_exceptions_that_the_architecture_has() {
     };
     // In the reserved entries too, which the processor never takes, so
     // they aren't named or counted.
-    let mut data = sample("c-cortex-m7.elf");
+    let mut data = sample(TCM_SAMPLE);
     let file = object::File::parse(&*data).unwrap();
     let (table, _) = file
         .section_by_name(".isr_vector")
@@ -1007,7 +1009,7 @@ fn reach_names_the_exceptions_that_the_architecture_has() {
     );
     // Armv6S-M, as on a Cortex-M0, has no MemManage, BusFault, UsageFault
     // or DebugMonitor: their entries are reserved.
-    let data = for_arm_version("c-cortex-m7.elf", Some(12));
+    let data = for_arm_version(TCM_SAMPLE, Some(12));
     assert_eq!(
         exceptions(&save("armv6s-m.elf", &data)),
         serde_json::json!(["NMI", "HardFault", "SVCall", "PendSV"])

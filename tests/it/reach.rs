@@ -11,25 +11,25 @@ use serde_json::Value;
 use elfq::binary::{AddressRange, Binary, ItemKind};
 use elfq::commands::Outcome;
 
-use crate::support::{Exit, load_sample, run_in_process, sample_path, samples};
+use crate::support::{Exit, SAMPLE, TCM_SAMPLE, load_sample, run_in_process, sample_path, samples};
 
 /// The Cortex-M samples with symbols, whose every item the checks run on:
 /// the C and Rust samples, and each build with veneers to and from RAM and
 /// ROM.
 const SAMPLES: [&str; 13] = [
-    "c-cortex-m4.elf",
-    "c-cortex-m4-cmsis-nodebug.elf",
-    "c-cortex-m7.elf",
-    "c-softfloat-nodebug.elf",
-    "rust-cortex-m4-nodebug.elf",
-    "far-gnu-m0-nodebug.elf",
-    "far-gnu-m4-nodebug.elf",
-    "far-gnu-m4-pic-nodebug.elf",
-    "far-gnu-m4-pure-nodebug.elf",
-    "far-lld-m0-nodebug.elf",
-    "far-lld-m0-pure-nodebug.elf",
-    "far-lld-m4-nodebug.elf",
-    "far-lld-m4-pic-nodebug.elf",
+    "testdata/bin/c-cortex-m4.elf",
+    "testdata/bin/c-cortex-m4-cmsis-nodebug.elf",
+    TCM_SAMPLE,
+    "testdata/bin/c-softfloat-nodebug.elf",
+    "testdata/bin/rust-cortex-m4-nodebug.elf",
+    "testdata/bin/far-gnu-m0-nodebug.elf",
+    "testdata/bin/far-gnu-m4-nodebug.elf",
+    "testdata/bin/far-gnu-m4-pic-nodebug.elf",
+    "testdata/bin/far-gnu-m4-pure-nodebug.elf",
+    "testdata/bin/far-lld-m0-nodebug.elf",
+    "testdata/bin/far-lld-m0-pure-nodebug.elf",
+    "testdata/bin/far-lld-m4-nodebug.elf",
+    "testdata/bin/far-lld-m4-pic-nodebug.elf",
 ];
 
 /// What `elfq SAMPLE ARGS` prints, run in this process.
@@ -128,12 +128,11 @@ fn item(item: &Value) -> (String, String) {
 #[test]
 fn each_start_reaches_what_reach_start_counts() {
     let mut checked = 0;
-    for path in samples() {
-        let sample = path.strip_prefix("testdata/bin/").unwrap();
-        let starts = json_in_process(sample, &["reach"], 0);
+    for sample in samples() {
+        let starts = json_in_process(&sample, &["reach"], 0);
         for start in starts["starts"].as_array().unwrap() {
             let address = start["address"].as_str().unwrap();
-            let reach = json_in_process(sample, &["reach", address], 0);
+            let reach = json_in_process(&sample, &["reach", address], 0);
             let context = format!("{sample} reach {address}");
             assert_eq!(item(&reach["symbol"]), item(start), "{context}");
             for key in ["code_bytes", "data_bytes", "complete"] {
@@ -297,7 +296,11 @@ fn reach_draws_plt_stubs_and_imports_in_the_tree() {
         }
     };
     std::thread::scope(|scope| {
-        for sample in ["c-x86_64.elf", "cpp-x86_64.elf", "c-plt.so"] {
+        for sample in [
+            SAMPLE,
+            "testdata/bin/cpp-x86_64.elf",
+            "testdata/bin/c-plt.so",
+        ] {
             scope.spawn(move || check(sample));
         }
     });
@@ -336,7 +339,7 @@ fn check_to(sample: &str) -> usize {
             )
         })
         .collect();
-    if sample.starts_with("far-") {
+    if sample.starts_with("testdata/bin/far-") {
         ranges.push("0x1fff0000+64K".to_string());
     }
     let symbols = [ItemKind::Function, ItemKind::Data].map(|kind| symbols(&binary, kind));

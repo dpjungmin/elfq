@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use object::{Object, ObjectSection, ObjectSymbol};
 
-use crate::support::sample_path;
+use crate::support::{SAMPLE, sample_path};
 
 /// Where a field is in a section header: in a 64-bit file, and in a
 /// 32-bit one.
@@ -18,9 +18,9 @@ pub const OFFSET: Field = (0x18, 0x10);
 /// `sh_size`, the section's size.
 pub const SIZE: Field = (0x20, 0x14);
 
-/// The sample `name`, as bytes to change.
-pub fn sample(name: &str) -> Vec<u8> {
-    std::fs::read(sample_path(name)).unwrap()
+/// The sample at `path`, as bytes to change.
+pub fn sample(path: &str) -> Vec<u8> {
+    std::fs::read(sample_path(path)).unwrap()
 }
 
 /// Writes `value` over the `width` bytes at `at`. The samples are
@@ -85,12 +85,13 @@ pub fn replace_section(data: &mut Vec<u8>, section: &str, bytes: &[u8]) {
     set_section_field(data, section, SIZE, bytes.len() as u64);
 }
 
-/// The sample `name`, with build attributes that say only that its code is
-/// for version `version` of the Arm architecture (Tag_CPU_arch), on a
-/// Cortex-M core; or with an empty `.ARM.attributes`, which says nothing,
-/// when `version` is `None`.
-pub fn for_arm_version(name: &str, version: Option<u8>) -> Vec<u8> {
-    let mut data = sample(name);
+/// The sample at `path`, with build attributes for Arm version `version`.
+///
+/// The attributes say only that its code is for that version of the Arm
+/// architecture (Tag_CPU_arch), on a Cortex-M core; or, when `version` is
+/// `None`, `.ARM.attributes` is empty, which says nothing.
+pub fn for_arm_version(path: &str, version: Option<u8>) -> Vec<u8> {
+    let mut data = sample(path);
     let mut section = Vec::new();
     if let Some(version) = version {
         // Version `A`, then the `aeabi` vendor's attributes, then those of
@@ -129,7 +130,7 @@ pub fn save(name: &str, data: &[u8]) -> String {
 /// The x86-64 sample, with the bytes of each of `sections` past the end
 /// of the file.
 pub fn past_the_end(sections: &[&str]) -> Vec<u8> {
-    let mut data = sample("c-x86_64.elf");
+    let mut data = sample(SAMPLE);
     for section in sections {
         set_section_field(&mut data, section, OFFSET, u64::MAX - 15);
     }
@@ -175,7 +176,7 @@ pub fn chain_of_calls(count: usize) -> Vec<u8> {
     }
     let code: Vec<u8> = code.iter().flat_map(|half| half.to_le_bytes()).collect();
 
-    let mut data = sample("c-cortex-m4-stripped.elf");
+    let mut data = sample("testdata/bin/c-cortex-m4-stripped.elf");
     let address = 0x0810_0000;
     replace_section(&mut data, ".text", &code);
     set_section_field(&mut data, ".text", ADDRESS, address);

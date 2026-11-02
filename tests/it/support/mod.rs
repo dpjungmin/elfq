@@ -43,11 +43,11 @@ pub const TCM_EDITED_SAMPLE: &str = "testdata/bin/c-cortex-m7-edited.elf";
 /// its vector table holds the entry point.
 pub const TCM_ENTRY_MAIN_SAMPLE: &str = "testdata/bin/c-cortex-m7-entry-main.elf";
 
-/// The path of the sample `name` in testdata/bin.
-pub fn sample_path(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("testdata/bin")
-        .join(name)
+/// Where the sample at `path` is, from wherever the test runs. Tests name a
+/// sample by its path relative to the crate, as [`SAMPLE`] and
+/// [`samples`] give it, since that is what elfq is given as FILE.
+pub fn sample_path(path: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join(path)
 }
 
 /// Every sample file, as a path relative to the crate.
@@ -64,9 +64,9 @@ pub fn samples() -> Vec<String> {
     samples
 }
 
-/// Loads the sample `name` from testdata/bin.
-pub fn load_sample(name: &str) -> Binary {
-    Binary::load(&sample_path(name)).unwrap_or_else(|err| panic!("{name}: {err:#}"))
+/// Loads the sample at `path`, relative to the crate, as [`SAMPLE`].
+pub fn load_sample(path: &str) -> Binary {
+    Binary::load(&sample_path(path)).unwrap_or_else(|err| panic!("{path}: {err:#}"))
 }
 
 /// What elfq finds for `name` as a SYMBOL.
@@ -274,7 +274,7 @@ pub fn stderr(args: &[&str]) -> String {
     run(args).error()
 }
 
-/// Runs `elfq SAMPLE ARGS` in this process, for the sample named `sample`.
+/// Runs `elfq SAMPLE ARGS` in this process, for the sample at `sample`.
 ///
 /// It returns what elfq printed on stdout, with the outcome that sets its
 /// exit status. It is much quicker than [`run`], which starts the
