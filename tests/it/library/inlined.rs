@@ -1,7 +1,9 @@
-//! The inlined copies that DWARF lists in the samples. The names inlined
-//! into process_frame and report are those in testdata/README.md, and the
-//! sizes of process_frame's copies in c-x86_64.elf are those that ddbug
-//! 0.6.1 printed (docs/survey.md).
+//! The inlined copies that DWARF lists in the samples.
+//!
+//! The names inlined into process_frame and report are those in
+//! testdata/README.md, and the sizes of process_frame's copies in
+//! c-x86_64.elf are those that ddbug 0.6.1 printed (docs/survey.md). The
+//! tests of what `inlined` prints are in commands/inlined.rs.
 
 use elfq::binary::Binary;
 use elfq::debuginfo::{InlinedCopy, inlined_copies};
