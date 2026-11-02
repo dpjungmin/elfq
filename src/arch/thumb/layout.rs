@@ -32,8 +32,8 @@ pub(in crate::arch) enum Piece {
 /// sweep decoded before a later load showed that it is data. With it, the
 /// two sweeps can cut the code differently after a mark, until they meet
 /// again: `every_use_that_elfq_finds_starts_a_line_of_code`, in
-/// `commands/browse/views/item.rs`, checks on every sample that every use
-/// that the graph lists still starts a line.
+/// `commands/browse/views/item/code.rs`, checks on every sample that every
+/// use that the graph lists still starts a line.
 pub(in crate::arch) fn layout(
     code: &[u8],
     address: u64,

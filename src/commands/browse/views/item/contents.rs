@@ -21,7 +21,8 @@
 //! to paste, unless its section takes no room in the file, as `.bss`
 //! doesn't.
 
-use super::{CodeLine, Notes, PageCode, strings, widest};
+use super::line_notes::Notes;
+use super::listing::{CodeLine, PageCode, widest};
 use crate::binary::{Binary, ItemKind, RelocationTarget, exception_name};
 use crate::commands::browse::session::Session;
 use crate::commands::text;
@@ -195,10 +196,75 @@ fn file_holds_other(binary: &Binary, address: u64) -> bool {
     }
 }
 
+/// The bytes of data object `index`, when it holds strings and nothing
+/// else, as a string literal or a table of them does: printable text from
+/// its first byte on, each string ending in a 0 byte, and no pointer,
+/// neither one that elfq finds nor one that the dynamic loader writes,
+/// whose bytes can look like text.
+fn only_strings<'a>(session: &Session<'a>, index: usize) -> Option<&'a [u8]> {
+    let binary = session.binary;
+    let item = &binary.items[index];
+    if item.kind != ItemKind::Data || !session.graph.references_from(index).is_empty() {
+        return None;
+    }
+    // The relocations are in order of address.
+    let after =
+        (binary.relocations).partition_point(|relocation| relocation.address < item.address);
+    if (binary.relocations.get(after)).is_some_and(|relocation| item.contains(relocation.address)) {
+        return None;
+    }
+    let bytes = binary.bytes(item.address, item.size)?;
+    let text = |&byte: &u8| byte == 0 || printable(byte);
+    let strings = bytes.first() != Some(&0) && bytes.last() == Some(&0) && bytes.iter().all(text);
+    strings.then_some(bytes)
+}
+
+/// The strings that data object `index` holds, each at its address,
+/// quoted as Rust writes strings: `"tick\n"`, when it holds strings and
+/// nothing else (see `only_strings`). The 0 bytes that pad a string have
+/// none.
+fn strings(session: &Session, index: usize) -> Vec<(u64, String)> {
+    let Some(bytes) = only_strings(session, index) else {
+        return Vec::new();
+    };
+    let mut strings = Vec::new();
+    let mut address = session.binary.items[index].address;
+    for text in bytes.split(|&byte| byte == 0) {
+        if !text.is_empty() {
+            strings.push((address, quoted(text)));
+        }
+        address += text.len() as u64 + 1;
+    }
+    strings
+}
+
+/// The string at `at` in data object `index`, as the object's contents
+/// list it, for the note of a line that uses it or points to it: `uses
+/// .rodata@0x30000de8 "tick\n"`.
+pub(super) fn string_at(session: &Session, index: usize, at: u64) -> Option<String> {
+    let start = usize::try_from(at.checked_sub(session.binary.items[index].address)?).ok()?;
+    let bytes = only_strings(session, index)?;
+    let text = bytes.get(start..)?;
+    let text = &text[..text.iter().position(|&byte| byte == 0)?];
+    let starts = start == 0 || bytes[start - 1] == 0;
+    (starts && !text.is_empty()).then(|| quoted(text))
+}
+
+/// Whether `byte` is printable text: a letter, digit, punctuation, a space,
+/// a tab or a new line.
+fn printable(byte: u8) -> bool {
+    byte.is_ascii_graphic() || b" \t\n".contains(&byte)
+}
+
+/// `text`, printable text, quoted as Rust writes strings.
+fn quoted(text: &[u8]) -> String {
+    format!("{:?}", String::from_utf8_lossy(text))
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::super::{samples, shell_words};
-    use super::super::{Link, quoted};
+    use super::super::listing::Link;
     use super::*;
     use crate::cli::Format;
     use crate::commands::{callees, json};
