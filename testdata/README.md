@@ -11,10 +11,20 @@ testdata/
 ├── thumb-text.sh  Writes objdump's text for the Cortex-M samples' code to tests/thumb/.
 ├── bin/           The built files (committed).
 ├── tests/         objdump's text for the Cortex-M samples' code (committed).
-├── c/             C samples: app.c plus a platform file per target, deep.c, plt.c, far.c, softfloat.c, vfp.c, strtod.c, sysinit.c, steps.c, loops.c, loops-O0.c, tables.c and noreturn.c.
+├── c/             C samples, listed below.
 ├── cpp/           C++ sample: the kinds of names C++ compilers make.
 └── rust/          Rust sample: the same program, plus Rust-only patterns.
 ```
+
+`c/` holds `app.c`, the program that most C samples are built from, with
+`platform.h` and a platform file for each target (`platform_host.c`,
+`platform_cortexm.c` and `platform_cortexm7.c`), and `crc32_table.inc`,
+the CRC table that `app.c` and `cpp/app.cpp` include; the other samples'
+own files (`deep.c`, `plt.c`, `far.c`, `softfloat.c`, `vfp.c`, `strtod.c`,
+`sysinit.c`, `steps.c`, `loops.c`, `loops-O0.c`, `tables.c`, `sections.c`,
+`pico.c`, `rom.c` and `noreturn.c`); and the linker scripts
+(`cortex-m4.ld`, `cortex-m4-cmsis.ld`, `cortex-m7.ld`, `far.ld` and
+`pico.ld`).
 
 ## Files in bin/
 
@@ -47,8 +57,10 @@ testdata/
 
 Each comes in up to three variants, matching what people usually have
 (`c-deep.elf`, `c-x86_64.so`, `c-x86_64-moved.so`, `c-cortex-m7-sdram.elf`,
-`c-cortex-m7-ocram.elf`, `c-cortex-m7-inlined.elf`, `c-cortex-m7-edited.elf`, `c-cortex-m7-steps.elf`,
-`c-cortex-m7-noreturn.elf`, `cpp-x86_64.so` and `c-plt.so` only in the first, `c-softfloat` only in the second,
+`c-cortex-m7-ocram.elf`, `c-cortex-m7-inlined.elf`,
+`c-cortex-m7-edited.elf`, `c-cortex-m7-steps.elf`,
+`c-cortex-m7-noreturn.elf`, `c-cortex-m7-rom.elf`, `cpp-x86_64.so` and
+`c-plt.so` only in the first, `c-softfloat` only in the second,
 `c-cortex-m4-cmsis` and `far-*` only in the last two):
 
 | Suffix | Symbols | DWARF | Typical of |
@@ -59,6 +71,10 @@ Each comes in up to three variants, matching what people usually have
 
 `rust-x86_64.elf` (with DWARF) is not committed: the standard library's debug
 info makes it over 4 MB. `build.sh` creates it and then deletes it.
+
+The tests that go through every sample read each `.elf` and `.so` file in
+`bin/`, so a file added there is tested as soon as it is committed.
+CONTRIBUTING.md's Tests section names those tests.
 
 All files are built with `-O2` (C) or `--release` (Rust), but for
 `c-cortex-m7-loops-O0*.elf`, built with `-O0`. The x86-64 C build uses

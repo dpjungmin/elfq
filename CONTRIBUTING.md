@@ -462,16 +462,19 @@ worked out. Those are names to fix, not meanings to copy.
   `across_commands/`; and `docs.rs`, which runs the examples in the docs.
   Those in `library/` call the library, as `Binary::load` and
   `Graph::build`. `damaged.rs` and `commands/browse.rs` do both, and so
-  does one test in `commands/callers_and_callees.rs`. The checks at the
-  end of `commands/reach.rs` run commands in the test's own process, with
+  do one test in `commands/callers_and_callees.rs`, the test in
+  `across_commands/errors_and_help.rs` that takes the commands' names
+  from `cli::command_names`, and the checks at the end of
+  `commands/reach.rs`. Those checks load samples to list the items they
+  check, and run commands in the test's own process, with
   `run_in_process`, which is quicker for the hundreds they run. The
-  answers they expect are those in
-  [testdata/README.md](testdata/README.md), which says, for example, what
-  calls `log_msg` in each sample.
+  answers that integration tests expect are those in
+  [testdata/README.md](testdata/README.md), which says, for example,
+  what calls `log_msg` in each sample.
 
 | File in `tests/it/` | What it tests |
 |---|---|
-| `support/` | No tests: in `mod.rs`, the samples' paths (`SAMPLE` and others), the lists that several modules check (`C_SAMPLES`, `FAR_SAMPLES`), `samples_for`, which lists the samples for one architecture, `run`, which runs the program and returns a `Run` to check, its shortcuts `stdout`, `stderr`, `crossing`, `elfq_json` and `text_rows`, `names`, which reads the names in a list of elfq's JSON, `run_in_process`, and `assert_output`; in `elf.rs`, `ElfBytes`, which changes a sample's bytes field by field and saves the file |
+| `support/` | No tests: in `mod.rs`, the samples' paths (`SAMPLE` and others), the lists that several modules check (`C_SAMPLES`, `FAR_SAMPLES`), `samples()`, which lists every sample, and `samples_for`, which lists those for one architecture, `sample_path` and `load_sample`, `node`, which finds SYMBOL in a loaded sample, `command`, the program set to run in the crate's root, `run`, which runs it and returns a `Run` to check, with `Exit`, its shortcuts `stdout`, `stderr`, `crossing`, `elfq_json` and `text_rows`, `names`, which reads the names in a list of elfq's JSON, `run_in_process`, and `assert_output`; in `elf.rs`, `ElfBytes`, which changes a sample's bytes field by field and saves the file, and the changed files that several modules use, such as `without_section_headers` |
 | `commands/browse.rs` | `browse`'s screens, driven with keys on ratatui's `TestBackend`, a screen in memory; its errors; and on Linux, the program in a terminal that `script` makes. The checks that need its private types are unit tests; see below |
 | `commands/callers_and_callees.rs` | `callers` and `callees`, which share their table and their ranges: their text and JSON for SYMBOL, for ranges of memory and with `--from` and `--to`, and the errors about those ranges |
 | `commands/debug.rs` | `debug items` and `debug walk`; the tests that `debug walk` lists the walk that `startup` reads are in `commands/startup.rs` |
@@ -542,21 +545,29 @@ The checks of `browse` that need its private types are unit tests in
   page is drawn, and that the start page under the go-to box is worked
   out only once the box closes.
 
-The Thumb text that a function's page shows is tested beside the code
-that gives it, `binary/listing.rs`, in `binary/listing/thumb_text.rs`:
-against objdump's text for each Cortex-M sample, in `testdata/tests/thumb`,
-and in each stripped sample, against the `$d` symbols of its twin.
+The Thumb text that a function's page shows is tested beside the code that
+gives it, `binary/listing.rs`, in `binary/listing/thumb_text.rs`: against
+objdump's text for each Cortex-M sample, in `testdata/tests/thumb`, and in
+each stripped sample, against the `$d` symbols of its twin.
 
-Two tests run the overview and every command it suggests on each `.elf`
-and `.so` file in `testdata/bin`, and `top` on each `.elf` file, so a
-new sample is tested as soon as it is committed:
-`every_command_the_overview_suggests_works`, in
+A test that goes through `samples()`, or `samples_for`, which picks from
+it, reads every `.elf` and `.so` file in `testdata/bin`, so it tests a new
+sample as soon as it is committed, wherever the test is. Such tests are in
+`commands/overview_top_and_retained.rs`, `commands/reach.rs`,
+`commands/diff.rs`, `commands/startup.rs`, `across_commands/tables.rs` and
+`library/symbol.rs`; browse's unit tests go through a `samples()` of their
+own, in `src/commands/browse/views/mod.rs`, and other unit tests list the
+files in `testdata/bin` themselves: `every_sample_names_its_core`, in
+`binary/attributes.rs`, and the tests of the Thumb text, in
+`binary/listing/thumb_text.rs`. Two of the tests in `tests/it/` run the
+overview and every command it suggests on every sample, and `top` on each
+`.elf` file: `every_command_the_overview_suggests_works`, in
 `commands/overview_top_and_retained.rs`, and
 `no_line_sums_up_a_single_item`, in `across_commands/tables.rs`. Each
 takes seconds. The test harness starts tests in the order of their paths,
 a few at a time, so a test that slow belongs where its path sorts early,
-as `across_commands::tables::no_line_sums_up_a_single_item` does: one
-that starts last keeps the whole run waiting for it.
+as `across_commands::tables::no_line_sums_up_a_single_item` does: one that
+starts last keeps the whole run waiting for it.
 
 To run one test, one file, or the unit tests of one module:
 
@@ -609,9 +620,9 @@ output with `assert_output`. When you change what elfq prints on purpose,
 the test that fails shows the first line that differs, then the new output
 in full, after "The whole output:". Check it, then paste it over the
 expected text, which starts at the beginning of the line after `"\`. Some
-expected texts are `format!` templates, with placeholders such as `{path}`;
-put those back. A test that checks several outputs stops at the first that
-differs, so run it again until it passes.
+expected texts are `format!` templates, with placeholders such as
+`{path}`; put those back. A test that checks several outputs stops at the
+first that differs, so run it again until it passes.
 
 **The examples in the docs.** A code block in README.md, docs/design.md or
 docs/examples.md whose first line starts with `$ elfq ` is run by
@@ -626,11 +637,12 @@ that the hangs and crashes they once caused stay fixed. It and the other
 tests that need such a file change the bytes with `ElfBytes`, in
 `support/elf.rs`, which sets a field of the ELF header, a section header
 or a program header by its name, such as `HeaderField::EntryPoint` or
-`SectionField::Size`, to a number or to one of `object::elf`'s constants.
-Its `save` writes the file and returns the path to give `run`. Tests run
-in a debug build, so arithmetic that overflows fails them too. A test that
-uses `parse_quickly` fails if loading the file takes more than 10 seconds:
-add one when you make elfq quick to load a file that took far too long.
+`SectionField::Size`, to a number or to one of `object::elf`'s constants,
+and changes a symbol's name or size, or a section's bytes. Its `save`
+writes the file and returns the path to give `run`. Tests run in a debug
+build, so arithmetic that overflows fails them too. A test that uses
+`parse_quickly` fails if loading the file takes more than 10 seconds: add
+one when you make elfq quick to load a file that took far too long.
 
 ## Adding a command
 
@@ -722,14 +734,20 @@ is a short one to copy.
    `why`'s `Chains` has. A value kept only until an error return and
    then moved on, as `retained::run` keeps its `Names`, is taken back out
    with `into_inner`.
-9. **Tests.** Give the command a file of its own in `tests/it/commands/`,
-   named after it and listed in `commands/mod.rs`. Pin its text output
-   there with `assert_output`, and test its JSON there too. Add the
-   command to the tests in `tests/it/across_commands/errors_and_help.rs`
-   that go through commands one by one:
+9. **Tests.** Add `tests/it/commands/<name>.rs`, and list it in
+   `tests/it/commands/mod.rs`. `tests/it/commands/inlined.rs` is a short
+   one to copy: a test of its text for each kind of answer, pinned with
+   `assert_output`, one of its JSON, and one of its error. A command
+   whose exit status means something checks it on every sample it reads,
+   as `every_arm_sample_gets_an_answer_and_the_exit_status_it_means` in
+   `startup.rs` does, and one that refuses some files tests those, as
+   `startup_reads_only_cortex_m_firmware` does. Add the command to the
+   tests in `tests/it/across_commands/errors_and_help.rs` that go through
+   commands one by one:
    `arguments_that_dont_go_together_are_refused_before_the_file_is_read`,
    `a_file_whose_code_elfq_cant_read_says_so` if it reads code, and
-   `commands_that_need_roots_refuse_a_shared_library` if it needs the roots.
+   `commands_that_need_roots_refuse_a_shared_library` if it needs the
+   roots.
 10. **Docs.** List it in README.md and in the Commands table in
     docs/design.md, and its JSON keys in design.md's JSON section. Add
     answers of it to `JSON_ANSWERS` in `tests/it/docs.rs` with an entry
@@ -871,7 +889,9 @@ change. For a Cortex-M sample, also run `testdata/thumb-text.sh`, which
 writes objdump's text for its code to `testdata/tests/thumb`, where the
 tests of `browse`'s Thumb text read it, and commit that too. Then read
 docs/examples.md again: it says what the samples' source does, down to
-line numbers in testdata/rust/src/main.rs, and no test checks that.
+line numbers in testdata/rust/src/main.rs, and no test checks that. A new
+file in `testdata/bin` is tested as soon as it is committed, by every test
+that goes through `samples()`, wherever the test is (see [Tests](#tests)).
 
 ## Checking that output didn't change
 
