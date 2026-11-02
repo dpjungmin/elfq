@@ -297,8 +297,10 @@ this list, and add to it when you bring in a word.
 - **run**: in the tests, one run of the elfq program, with its exit
   status and what it printed on stdout and stderr (`Run`, in
   `tests/it/support.rs`), which `run` gives; its `printed` is what elfq
-  printed on stdout alone. An early run, in `startup`, is unrelated, and
-  so are the private `Run`s of the startup walk and of `binary/memory.rs`.
+  printed on stdout alone. `run_in_process` runs a command inside the
+  test instead, and gives no `Run`. An early run, in `startup`, is
+  unrelated, and so are the private `Run`s of the startup walk and of
+  `binary/memory.rs`.
 
 Some code still uses one of these words for something else, as the Thumb
 walk's `Step` (what an instruction leads to) and `reach`'s `Step` (a row
@@ -317,17 +319,18 @@ of its tree) do. Those are names to fix, not meanings to copy.
   algorithm on a small graph built by hand (`graph/dominators.rs`,
   `graph/paths.rs`).
 - **Integration tests** in `tests/it/` use the samples in `testdata/bin`.
-  `cli.rs`, `json.rs` and `docs.rs` run the elfq program, the way a user
-  would. The others call the library, as `Binary::load` and
-  `Graph::build`. `damaged.rs` and `browse.rs` do both, and so does one
-  test in `json.rs`; `reach.rs` runs commands in its own process, through
-  `commands::run`, which is quicker for the hundreds it runs. The answers they expect are
-  those in [testdata/README.md](testdata/README.md), which says, for
-  example, what calls `log_msg` in each sample.
+  `cli.rs`, `json.rs`, `startup.rs` and `docs.rs` run the elfq program,
+  the way a user would. The others call the library, as `Binary::load`
+  and `Graph::build`. `damaged.rs` and `browse.rs` do both, and so does
+  one test in `json.rs`; `reach.rs` runs commands in its own process,
+  with `run_in_process`, which is quicker for the hundreds it runs. The
+  answers they expect are those in
+  [testdata/README.md](testdata/README.md), which says, for example, what
+  calls `log_msg` in each sample.
 
 | File in `tests/it/` | What it tests |
 |---|---|
-| `support.rs` | No tests: the samples' paths (`SAMPLE` and others), `run`, which runs the program and returns a `Run` to check, and `assert_output` |
+| `support.rs` | No tests: the samples' paths (`SAMPLE` and others), `run`, which runs the program and returns a `Run` to check, `run_in_process`, and `assert_output` |
 | `cli.rs` | Each command's whole text output, errors, exit statuses and help |
 | `json.rs` | `--json` output |
 | `items.rs` | Finding items: symbols, PLT stubs, unwind tables, functions in stripped firmware, unnamed data |
@@ -408,6 +411,9 @@ the other stream, so that a warning the test doesn't expect fails it.
 on every sample, `Exit::ZeroOrOne` stands for either. A test that expects a
 warning with the answer calls `exited(STATUS)`, which checks the status
 alone, and then reads the `Run`'s `stdout` and `stderr` itself.
+`run_in_process(SAMPLE, ARGS)` runs a command inside the test instead: it
+gives no `Run`, only what elfq printed on stdout and the outcome that sets
+its exit status, and an error panics.
 
 **When output changes.** Most tests in `cli.rs` check a command's whole
 output with `assert_output`. When you change what elfq prints on purpose,

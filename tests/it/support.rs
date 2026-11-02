@@ -5,10 +5,12 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use clap::Parser;
 use serde_json::Value;
 
 use elfq::binary::Binary;
-use elfq::commands::symbol;
+use elfq::cli::Cli;
+use elfq::commands::{Outcome, symbol};
 use elfq::graph::Node;
 
 /// The C sample for x86-64 Linux, which most tests run on.
@@ -127,7 +129,7 @@ pub enum Exit {
 
 impl Exit {
     /// Whether elfq exiting with `status` is what the test expects.
-    fn allows(self, status: i32) -> bool {
+    pub fn allows(self, status: i32) -> bool {
         match self {
             Exit::Status(expected) => status == expected,
             Exit::ZeroOrOne => status == 0 || status == 1,
@@ -266,6 +268,28 @@ pub fn stdout(args: &[&str]) -> String {
 #[track_caller]
 pub fn stderr(args: &[&str]) -> String {
     run(args).error()
+}
+
+/// Runs `elfq SAMPLE ARGS` in this process, for the sample named `sample`.
+///
+/// It returns what elfq printed on stdout, with the outcome that sets its
+/// exit status. It is much quicker than [`run`], which starts the
+/// program, so a test that runs elfq hundreds of times, as on each item of
+/// a sample, uses it. It sees less than a user would: an error panics,
+/// and a warning goes to the test's own stderr, where nothing checks it.
+/// A test of what elfq prints on stderr, or of its exit status as such,
+/// uses [`run`].
+#[track_caller]
+pub fn run_in_process(sample: &str, args: &[&str]) -> (Outcome, String) {
+    let path = sample_path(sample);
+    let command_line = [&["elfq", path.to_str().unwrap()], args].concat();
+    let cli = Cli::try_parse_from(command_line).unwrap();
+    let mut out = Vec::new();
+    let outcome = match elfq::commands::run(&cli, &mut out) {
+        Ok(outcome) => outcome,
+        Err(err) => panic!("{sample} {args:?}: {err:#}"),
+    };
+    (outcome, String::from_utf8(out).unwrap())
 }
 
 /// Checks that elfq printed `expected`. When it didn't, the failure names

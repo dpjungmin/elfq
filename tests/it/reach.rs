@@ -6,14 +6,12 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use clap::Parser;
 use serde_json::Value;
 
 use elfq::binary::{AddressRange, Binary, ItemKind};
-use elfq::cli::Cli;
 use elfq::commands::Outcome;
 
-use crate::support::{load_sample, sample_path, samples};
+use crate::support::{Exit, load_sample, run_in_process, sample_path, samples};
 
 /// The Cortex-M samples with symbols, whose every item the checks run on:
 /// the C and Rust samples, and each build with veneers to and from RAM and
@@ -34,27 +32,43 @@ const SAMPLES: [&str; 13] = [
     "far-lld-m4-pic-nodebug.elf",
 ];
 
-/// What `elfq SAMPLE ARGS` prints, run in this process, which is much
-/// quicker than starting elfq for each function.
-fn output(sample: &str, args: &[&str]) -> String {
-    run(sample, args).1
+/// What `elfq SAMPLE ARGS` prints, run in this process.
+///
+/// It runs with [`run_in_process`], which is much quicker than starting
+/// elfq for each function, and checks, as `Run::printed` does, that the
+/// outcome means exit status `status`. Nothing checks stderr: a warning
+/// goes to the test's own.
+#[track_caller]
+fn text_in_process(sample: &str, args: &[&str], status: impl Into<Exit>) -> String {
+    let status = status.into();
+    let (outcome, text) = run_in_process(sample, args);
+    let exit = match outcome {
+        Outcome::Answered => 0,
+        Outcome::Crossed | Outcome::Differs | Outcome::Problems => 1,
+    };
+    let command = format!("elfq {sample} {}", args.join(" "));
+    assert!(
+        status.allows(exit),
+        "expected exit status {status}, but `{command}` ended with {outcome:?}, \
+         exit status {exit}:\n{text}"
+    );
+    text
 }
 
-/// What `elfq SAMPLE ARGS` prints, as [`output`] runs it, and the exit
-/// status it means.
-fn run(sample: &str, args: &[&str]) -> (Outcome, String) {
-    let path = sample_path(sample);
-    let command_line = [&["elfq", path.to_str().unwrap()], args].concat();
-    let cli = Cli::try_parse_from(command_line).unwrap();
-    let mut out = Vec::new();
-    let outcome = elfq::commands::run(&cli, &mut out)
-        .unwrap_or_else(|err| panic!("{sample} {args:?}: {err:#}"));
-    (outcome, String::from_utf8(out).unwrap())
-}
-
-/// The answer to `elfq SAMPLE ARGS --json`.
-fn answer(sample: &str, args: &[&str]) -> Value {
-    serde_json::from_str(&output(sample, &[args, &["--json"]].concat())).unwrap()
+/// What `elfq SAMPLE ARGS --json` prints, run in this process, parsed.
+///
+/// It makes the checks of [`text_in_process`].
+#[track_caller]
+fn json_in_process(sample: &str, args: &[&str], status: impl Into<Exit>) -> Value {
+    let args = [args, &["--json"]].concat();
+    let text = text_in_process(sample, &args, status);
+    match serde_json::from_str(&text) {
+        Ok(value) => value,
+        Err(err) => panic!(
+            "`elfq {sample} {}` printed no JSON ({err}):\n{text}",
+            args.join(" ")
+        ),
+    }
 }
 
 /// A row of the tree that `--tree` draws: how deep it is, counting from 0,
@@ -116,10 +130,10 @@ fn each_start_reaches_what_reach_start_counts() {
     let mut checked = 0;
     for path in samples() {
         let sample = path.strip_prefix("testdata/bin/").unwrap();
-        let starts = answer(sample, &["reach"]);
+        let starts = json_in_process(sample, &["reach"], 0);
         for start in starts["starts"].as_array().unwrap() {
             let address = start["address"].as_str().unwrap();
-            let reach = answer(sample, &["reach", address]);
+            let reach = json_in_process(sample, &["reach", address], 0);
             let context = format!("{sample} reach {address}");
             assert_eq!(item(&reach["symbol"]), item(start), "{context}");
             for key in ["code_bytes", "data_bytes", "complete"] {
@@ -150,7 +164,7 @@ fn check_tree(sample: &str) -> usize {
     let binary = load_sample(sample);
     let symbols = [ItemKind::Function, ItemKind::Data].map(|kind| symbols(&binary, kind));
     for symbol in symbols.concat() {
-        let reach = answer(sample, &["reach", &symbol]);
+        let reach = json_in_process(sample, &["reach", &symbol], 0);
         let context = format!("{sample} reach {symbol}");
         let items = reach["items"].as_array().unwrap();
 
@@ -187,7 +201,7 @@ fn check_tree(sample: &str) -> usize {
         }
 
         // What SYMBOL uses itself hangs under it.
-        let callees = answer(sample, &["callees", &symbol]);
+        let callees = json_in_process(sample, &["callees", &symbol], 0);
         let used: BTreeSet<(String, String)> = callees["callees"]
             .as_array()
             .unwrap()
@@ -203,7 +217,7 @@ fn check_tree(sample: &str) -> usize {
         assert_eq!(children, used, "{context}");
 
         // What removing SYMBOL would save is in what it reaches.
-        let retained = answer(sample, &["retained", &symbol]);
+        let retained = json_in_process(sample, &["retained", &symbol], 0);
         for kept in retained["items"].as_array().unwrap() {
             assert!(reached.contains(&item(kept)), "{context}: {kept}");
         }
@@ -220,7 +234,7 @@ fn check_tree(sample: &str) -> usize {
 /// more", count the rest, and none sums up a single item.
 fn check_drawn(sample: &str, symbol: &str, items: &[Value]) {
     let context = format!("{sample} reach {symbol} --tree");
-    let all = output(sample, &["reach", symbol, "--tree", "--all"]);
+    let all = text_in_process(sample, &["reach", symbol, "--tree", "--all"], 0);
     let rows: Vec<Drawn> = drawn(&all)
         .into_iter()
         .filter(|row| row.name != "(outside any function)")
@@ -256,7 +270,7 @@ fn check_drawn(sample: &str, symbol: &str, items: &[Value]) {
         .collect();
     assert_eq!(found, expected, "{context} --all");
 
-    let capped = output(sample, &["reach", symbol, "--tree"]);
+    let capped = text_in_process(sample, &["reach", symbol, "--tree"], 0);
     let counted: usize = drawn(&capped)
         .iter()
         .filter(|row| row.name != "(outside any function)")
@@ -278,7 +292,7 @@ fn reach_draws_plt_stubs_and_imports_in_the_tree() {
     let check = |sample: &str| {
         let binary = load_sample(sample);
         for symbol in symbols(&binary, ItemKind::Function) {
-            let reach = answer(sample, &["reach", &symbol]);
+            let reach = json_in_process(sample, &["reach", &symbol], 0);
             check_drawn(sample, &symbol, reach["items"].as_array().unwrap());
         }
     };
@@ -309,7 +323,7 @@ fn reach_to_lists_the_rows_that_callees_to_lists() {
 /// which `callees` doesn't (see `reach_to_lists_a_veneer_and_its_target`).
 fn check_to(sample: &str) -> usize {
     let binary = load_sample(sample);
-    let overview = answer(sample, &[]);
+    let overview = json_in_process(sample, &[], 0);
     let mut ranges: Vec<String> = overview["memory"]
         .as_array()
         .unwrap()
@@ -330,7 +344,7 @@ fn check_to(sample: &str) -> usize {
         .concat()
         .into_iter()
         .map(|symbol| {
-            let whole = answer(sample, &["reach", &symbol]);
+            let whole = json_in_process(sample, &["reach", &symbol], 0);
             (symbol, whole)
         })
         .collect();
@@ -349,7 +363,7 @@ fn check_to(sample: &str) -> usize {
     let pointer: HashMap<&String, bool> = ranges
         .iter()
         .map(|range| {
-            let callers = answer(sample, &["callers", range]);
+            let callers = json_in_process(sample, &["callers", range], Exit::ZeroOrOne);
             (
                 range,
                 !callers["through_pointer"].as_array().unwrap().is_empty(),
@@ -363,8 +377,8 @@ fn check_to(sample: &str) -> usize {
         for range in &ranges {
             let context = format!("{sample} reach {symbol} --to {range}");
             let to: AddressRange = range.parse().unwrap();
-            let (outcome, text) = run(sample, &["reach", symbol, "--to", range]);
-            let reach = answer(sample, &["reach", symbol, "--to", range]);
+            let (outcome, text) = run_in_process(sample, &["reach", symbol, "--to", range]);
+            let reach = json_in_process(sample, &["reach", symbol, "--to", range], Exit::ZeroOrOne);
 
             // The calls and jumps that elfq can't follow in what SYMBOL
             // reaches that may go to RANGE: those to an address in it, and
@@ -522,7 +536,11 @@ fn check_to(sample: &str) -> usize {
                 let listed = outside.iter().any(|&index| {
                     let rows = callees.entry((index, range.clone())).or_insert_with(|| {
                         let address = format!("{:#x}", binary.items[index].address);
-                        table(&output(sample, &["callees", &address, "--to", range]))
+                        table(&text_in_process(
+                            sample,
+                            &["callees", &address, "--to", range],
+                            1,
+                        ))
                     });
                     rows.contains(row)
                 });
@@ -613,7 +631,7 @@ fn check_twin(sample: &str) -> usize {
     // differ: without symbols, elfq can take data objects next to each
     // other for one.
     let tree = |sample: &str, function: &str| -> BTreeSet<[String; 3]> {
-        let reach = answer(sample, &["reach", function]);
+        let reach = json_in_process(sample, &["reach", function], 0);
         let items = reach["items"].as_array().unwrap();
         items
             .iter()
