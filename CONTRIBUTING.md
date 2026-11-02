@@ -618,67 +618,88 @@ is a short one to copy.
    before the hidden `Debug`. Its name, in lowercase with `-` between
    words (`SizeOf` is typed `size-of`), is the command's name, and its
    `///` line is what `elfq --help` lists. Give it an `after_help` with a
-   longer explanation, a constant in `help.rs` in `Command`'s order, as the
-   others have, and a line in `EXAMPLES` there. Its arguments go in a
+   longer explanation, a constant in `help.rs` in `Command`'s order, as
+   the others have, and a line in `EXAMPLES` there. Its arguments go in a
    struct of their own, as `RetainedArgs` holds SYMBOL and `--all`.
    `--json`, `--tree` and `--range` are global, so don't declare them
    again. `elfq help COMMAND` and the hint for a command typed before the
    file find the new command by themselves.
 2. **The command, in `src/commands/<name>.rs`.** Start with a `//!` line
-   that shows how to type it, then a `run` function that takes what it
-   needs: the `Binary` (and the file's path, if the answer names the file,
-   as `overview` does), the arguments it reads, the `Format` and the
-   output. It returns
-   `Result<Outcome>`: `Outcome::Answered`, or for exit status 1 another
-   variant, as `callers` and `callees` return for ranges.
+   that shows how to type it, then the `run` function that
+   `commands/mod.rs` calls. It takes what the command needs: the
+   `Binary` (and the file's path, if the answer names the file, as
+   `overview` does), the arguments it reads, the `Format` and the
+   output. It returns `Result<Outcome>`: `Outcome::Answered`, or for exit
+   status 1 another variant, as `callers` and `callees` return for
+   ranges.
 3. **Wiring, in `src/commands/mod.rs` and `arguments.rs`.** Add
    `mod <name>;` and an arm in `run`. In `arguments.rs`, `check_tree`,
    `check_range` and `check_json` each have an arm for every command, and
-   the compiler asks for the new one in each: put it with the commands that
-   take `--tree`, `--range` or `--json`, or with those that refuse it. A
-   command that takes `--range` gets `range` from its arm in `run`; name
-   it in `RANGE_REFUSED`, the error that lists the commands that take
-   `--range`, in the tests that check that error, which a search of
+   the compiler asks for the new one in each: put it with the commands
+   that take `--tree`, `--range` or `--json`, or with those that refuse
+   it. A command that takes `--range` gets `range` from its arm in `run`;
+   name it in `RANGE_REFUSED`, the error that lists the commands that
+   take `--range`, in the tests that check that error, which a search of
    `tests/it/` for its text finds, and in the `--range` help in
-   `cli/mod.rs`, README.md and docs/design.md. A
-   command that shows a tree goes likewise in `check_tree`'s error, its
-   tests and the `--tree` help.
+   `cli/mod.rs`, README.md and docs/design.md. A command that shows a
+   tree goes likewise in `check_tree`'s error, its tests and the
+   `--tree` help.
 4. **SYMBOL.** If the command reads code, call `check_code_is_readable`
    first, so that a file whose code elfq can't read says so even when
-   SYMBOL names nothing. `symbol::find` turns SYMBOL into a `Symbol`, whose
-   `node` may be an import; an answer that names other items too keeps
-   one `Names` and calls `Names::find`, as `retained` and `why` do, so
-   that the names are worked out once. `item_in_file` or `readable_item`
-   gives its item, or an error that says why there is none. These checks
-   are in `checks.rs`. The answer's first line names it with `Symbol::lead_name`,
-   which says when SYMBOL gave another of its names or an address inside
-   it. A command that needs the roots refuses shared libraries, as `top`,
-   `retained` and `why` do.
-5. **The answer.** Work it out first, then write it. Text is a
-   `FlatAnswer` for a table of one row to a line, or a `TreeAnswer` for a
-   table that holds a tree of `TreeRow`s, as `top` builds one, with the
-   shared wording in `text.rs`. A tree cut down to its largest rows uses
-   the functions at the end of `tree_answer.rs`, as `top` does through
-   `RetainedTree::largest`. JSON is a struct that derives `Serialize`, made of the shapes
-   in `json.rs`, such as `json::Symbol` for SYMBOL's item, which adds its
-   `aliases`, and `json::Item` for every other item, and written with
-   `json::write`. Every key is always there, `null` when it has no value.
-   `json::write` puts each element of a list that the answer's object
-   holds on a line of its own, so give the rows their own list there, as
-   a flat list rather than a tree. A tree's rows go in the text's order,
-   each with an `id` counting from 0 and the `parent` id of the row it
-   hangs under, or `null`, as `RetainedTree::to_json` makes them.
-   Keep what the command builds that is large, such as the graph,
-   `Names` or a `RetainedTree`, in a `Kept`, from `kept.rs` (`let graph =
-   Kept::new(Graph::build(binary));`), so that elfq ends without freeing
-   it a piece at a time. A `Kept` is dropped when it goes out of scope,
-   so the compiler checks that what its value borrows outlives it:
-   declare it after what it borrows, and give a struct that borrows
-   kept values a lifetime for them apart from the file's, as `why`'s
-   `Chains` has. A value kept only until an error return and then moved
-   on, as `retained::run` keeps its `Names`, is taken back out with
-   `into_inner`.
-6. **Tests.** Give the command a file of its own in `tests/it/commands/`,
+   SYMBOL names nothing. `Names`, in `commands/symbol/lookup.rs`, finds
+   what a name means and names items for the user. A command whose
+   answer names items with it keeps the one that finds SYMBOL, so that
+   the names are worked out once, as `why`, `retained` and `reach` do:
+   `let names = Kept::new(Names::new(binary));`, then
+   `names.find(symbol)?`, which gives a `Symbol`. One whose answer needs
+   no `Names` calls `symbol::find`, which frees its `Names` before the
+   answer, as `inlined` does. `callers` and `callees`, which take ranges
+   of memory in place of SYMBOL too, call `symbol::subject`, whose
+   `Subject` holds a `Symbol` or the ranges. A `Symbol`'s `node` may be
+   an import. `item_in_file` or `readable_item`, in `checks.rs`, gives
+   its item, or an error that says why there is none, and the command's
+   own checks come next, as in `retained::refusal` and `why::refusal`; a
+   command that needs the roots refuses shared libraries, as `top`,
+   `retained` and `why` do. The answer's first line names SYMBOL with
+   `Symbol::lead_name`, which says when SYMBOL gave another of its names
+   or an address inside it.
+5. **The answer.** Work out the facts once, then write them as text or
+   as JSON. Every error, such as a refusal, comes before the first line
+   is written, so that elfq prints a whole answer or only an error.
+   `top.rs` shows this in one file: its facts are a `RetainedTree`,
+   which `run` writes as a `TopJson`, or through `answer` as a
+   `TreeAnswer`. A command with many facts gets a folder, and an `Answer`
+   that holds them, which its own `text.rs` and `json.rs` write, as
+   `startup/` and `diff/` do.
+6. **Text.** The text of an answer is a `FlatAnswer` for a table of one
+   row to a line, as `callers` builds one, or a `TreeAnswer` for a table
+   that holds a tree of `TreeRow`s, as `top` builds one; browse shows
+   either on a page. The wording that commands share is in `text.rs`. A
+   tree cut down to its largest rows uses the functions at the end of
+   `tree_answer.rs`, as `top` does through `RetainedTree::largest`.
+   `startup/` and `diff/`, which browse doesn't show, build their tables
+   with `render::Table` themselves.
+7. **JSON.** The JSON is a struct that derives `Serialize`, made of the
+   shapes in `json.rs`, such as `json::Symbol` for SYMBOL's item, which
+   adds its `aliases`, and `json::Item` for every other item, and
+   written with `json::write`. Every key is always there, `null` when it
+   has no value. `json::write` puts each element of a list that the
+   answer's object holds on a line of its own, so give the rows their
+   own list there, as a flat list rather than a tree. A tree's rows go
+   in the text's order, each with an `id` counting from 0 and the
+   `parent` id of the row it hangs under, or `null`, as
+   `RetainedTree::to_json` makes them.
+8. **Large values.** Keep what the command builds that is large, such as
+   the graph, `Names` or a `RetainedTree`, in a `Kept`, from `kept.rs`
+   (`let graph = Kept::new(Graph::build(binary));`), so that elfq ends
+   without freeing it a piece at a time. A `Kept` is dropped when it goes
+   out of scope, so the compiler checks that what its value borrows
+   outlives it: declare it after what it borrows, and give a struct that
+   borrows kept values a lifetime for them apart from the file's, as
+   `why`'s `Chains` has. A value kept only until an error return and
+   then moved on, as `retained::run` keeps its `Names`, is taken back out
+   with `into_inner`.
+9. **Tests.** Give the command a file of its own in `tests/it/commands/`,
    named after it and listed in `commands/mod.rs`. Pin its text output
    there with `assert_output`, and test its JSON there too. Add the
    command to the tests in `tests/it/across_commands/errors_and_help.rs`
@@ -686,10 +707,11 @@ is a short one to copy.
    `arguments_that_dont_go_together_are_refused_before_the_file_is_read`,
    `a_file_whose_code_elfq_cant_read_says_so` if it reads code, and
    `commands_that_need_roots_refuse_a_shared_library` if it needs the roots.
-7. **Docs.** List it in README.md and in the Commands table in
-   docs/design.md, and its JSON keys in design.md's JSON section. Add
-   answers of it to `JSON_ANSWERS` in `tests/it/docs.rs` with an entry in
-   each of its lists: the test checks that the section names every key.
+10. **Docs.** List it in README.md and in the Commands table in
+    docs/design.md, and its JSON keys in design.md's JSON section. Add
+    answers of it to `JSON_ANSWERS` in `tests/it/docs.rs` with an entry
+    in each of its lists: the test checks that the section names every
+    key.
 
 ## Adding a view
 
