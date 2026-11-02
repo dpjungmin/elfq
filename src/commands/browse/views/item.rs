@@ -163,7 +163,7 @@ enum Later {
 /// A tab that can take seconds to work out in a large file.
 ///
 /// It is worked out only once the screen says so, the first time it is
-/// shown (see `App::work`).
+/// shown (see `App::pending`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SlowTab {
     /// Tab 4: what the item at this index calls or uses, at any depth.
@@ -195,10 +195,10 @@ impl Later {
 
     /// Works it out: the answer of the command that prints the tab.
     ///
-    /// Tabs 5 and 6 need what keeps each item, which `App::work` has the
+    /// Tabs 5 and 6 need what keeps each item, which `App::pending` has the
     /// session work out before any tab. Were it missing, the tab would be
-    /// refused with NO_KEEPERS rather than left waiting, so that the event
-    /// loop still gets to the next key.
+    /// refused with NO_KEEPERS rather than left waiting, so that
+    /// `App::work`'s loop still ends.
     fn work_out(self, session: &Session) -> Pane {
         let name = session.lead_name(self.node());
         let printed = match (self, session.keepers()) {
@@ -251,15 +251,9 @@ impl ItemPage {
     pub fn new(session: &Session, node: Node, at: Option<u64>, header_name: &str) -> ItemPage {
         let binary = session.binary;
         let answer = session.callers(node);
-        let (title, listing) = match node {
-            Node::Item(index) => {
-                let listing = ListingPane::new(session, index, at);
-                (session.row_name(index), Pane::Listing(listing))
-            }
-            Node::Import(_) => {
-                let title = node.name(binary).to_string();
-                (title, Pane::Refused(imported(session, node)))
-            }
+        let listing = match node {
+            Node::Item(index) => Pane::Listing(ListingPane::new(session, index, at)),
+            Node::Import(_) => Pane::Refused(imported(session, node)),
         };
         let header = Header::new(session, node, header_name, answer.node_count());
         // A tab worked out later, or why the item can't have it, as the
@@ -271,7 +265,7 @@ impl ItemPage {
         let slow = |tab: Result<SlowTab>| pane(tab.map(Later::Slow));
         let mut page = ItemPage {
             node,
-            title,
+            title: session.title(node),
             short_title: None,
             header,
             tab: Tab::Callers,
@@ -361,7 +355,7 @@ impl ItemPage {
         if let Pane::NotYet(later) = self.panes[tab.index()] {
             match later {
                 Later::Callees(_) => self.panes[tab.index()] = later.work_out(session),
-                // Slow tabs wait for `App::work`.
+                // Slow tabs wait for `App::pending`.
                 Later::Slow(_) => {}
             }
         }
@@ -379,19 +373,6 @@ impl ItemPage {
             | Pane::Listing(_)
             | Pane::Printed(_) => None,
         }
-    }
-
-    /// What the tab on the screen has yet to work out, if anything.
-    ///
-    /// The status line says it while it does: "working out what main
-    /// reaches…".
-    pub fn waiting(&self) -> Option<String> {
-        let title = &self.title;
-        Some(match self.pending()? {
-            SlowTab::Reach(_) => format!("working out what {title} reaches…"),
-            SlowTab::Why(_) => format!("working out what keeps {title} in the file…"),
-            SlowTab::Retained(_) => format!("working out what only {title} leads to…"),
-        })
     }
 
     /// Works out the tab on the screen, if it waits to be.

@@ -36,7 +36,7 @@ use crate::graph::Node;
 use item::Tab;
 
 pub use help::Help;
-pub use item::{ItemPage, Listing};
+pub use item::{ItemPage, Listing, SlowTab};
 pub use names::{FittedRows, fit_name, name_fitter};
 pub use picker::{Picker, first_line};
 pub use start::StartPage;
@@ -76,6 +76,18 @@ impl View {
             View::Start(start) => start.draw(frame, area),
             View::Item(page) => page.draw(frame, area),
             View::Help(help) => help.draw(frame, area),
+        }
+    }
+
+    /// Works out what the page waits to show, if anything.
+    ///
+    /// That is what the start page shows, or tab 4, 5 or 6 of an item's
+    /// page, the first time it is shown (see `App::pending`).
+    pub fn work_out(&mut self, session: &Session) {
+        match self {
+            View::Start(start) => start.work_out(session),
+            View::Item(page) => page.work_out(session),
+            View::Help(_) => {}
         }
     }
 

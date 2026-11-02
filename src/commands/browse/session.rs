@@ -246,6 +246,18 @@ impl<'a> Session<'a> {
         name
     }
 
+    /// The name of `node`'s page in the title line's trail.
+    ///
+    /// It is an item's row name, and an import's full name (see the names
+    /// in the module doc). The status line names the page so while a tab of
+    /// it is worked out, as in "working out what main reaches…".
+    pub(super) fn title(&self, node: Node) -> String {
+        match node {
+            Node::Item(index) => self.row_name(index),
+            Node::Import(_) => node.name(self.binary).to_string(),
+        }
+    }
+
     /// The short name of `node` (see the names in the module doc).
     ///
     /// The rows of `retained` and `why` call `node` so after "kept by" or

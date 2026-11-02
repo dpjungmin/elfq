@@ -12,7 +12,7 @@
 //! Without SYMBOL, browse works it out before it takes the screen. When
 //! SYMBOL finds several items or none, the go-to box opens over it, and
 //! it is worked out the first time it is on the screen without the box,
-//! after a draw that says so (see `App::work`).
+//! after a draw that says so (see `App::pending`).
 
 use ratatui::Frame;
 use ratatui::layout::Rect;

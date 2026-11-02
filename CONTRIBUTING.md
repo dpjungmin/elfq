@@ -204,6 +204,11 @@ this list, and add to it when you bring in a word.
   (`ListingPane`), or a command's answer, why the item can't have the
   tab, or for a tab worked out after the page opens, what working it out
   takes (`Later`).
+- **work**: in browse, what the screen has yet to work out, which can
+  take a while, so the status line says it first: the start page, what
+  keeps each item, or tab 4, 5 or 6 of an item's page (`Work`, in
+  `app.rs`). `App::pending` gives the next, in their order. Tab 2 is
+  worked out at once, the first time it is shown, so it isn't work.
 - **header**: in browse, the lines above the tabs of an item's page
   (`Header`, in `views/item/header.rs`). The ELF header, which
   `binary/header.rs` reads, and the header line of a table are other
@@ -524,8 +529,11 @@ the biggest view, and not the one to start from.
    lines before its table, the rows, each with the item it opens, and
    the notes; it draws them and answers the keys. The start page
    (`StartPage`, in `start.rs`) holds one once it is worked out.
-   A page that takes a while to work out says so first: `App::work` calls
-   its `work_out` after a draw that says what it is doing.
+   A page that takes a while to work out says so first: it waits as a
+   variant of `Work`, in `app.rs`, which `App::pending` puts in order with
+   the rest and `Work::message` words for the status line, and
+   `App::work` works it out after a draw that says so, through the
+   page's own `work_out`, which `View::work_out` calls.
    A tab of an item's page, such as `callees.rs`, is drawn and handles
    actions in the same way, but `ItemPage`, in `item.rs`, holds it in a
    `Pane` of its own: add it to `Tab` and `Tab::ALL`, with its number and
@@ -536,7 +544,7 @@ the biggest view, and not the one to start from.
    worked out the first time it is shown, as tab 2 is, waits as a variant
    of `Later`, and one that can take seconds, as tabs 4 to 6 can, as a
    `SlowTab`, until the screen says that it is working it out, in the
-   words of `ItemPage::waiting`; `Later::work_out` works out both. The
+   words of `Work::message`; `Later::work_out` works out both. The
    compiler asks for their arms, but not for `Tab::ALL`. Its key goes in
    the "1 2 3 4 5 6" row of `BINDINGS`, with its help text (step 3), which
    a test in `item.rs` checks against `Tab::ALL`. Its rows come from that
