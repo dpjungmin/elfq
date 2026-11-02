@@ -24,8 +24,9 @@ change takes about as long.
 `elfq FILE debug items` lists every function and data object elfq found and
 where it found it, and `elfq FILE debug walk` lists what the code that a
 Cortex-M processor runs from reset does before `main`, as elfq follows it:
-calls with their arguments, stores, loops and how it ends. They are hidden
-from `--help` because they are only for developing elfq.
+calls with their arguments, stores, loops and how it ends. It starts and
+ends where `startup` does, so it lists the walk that `startup` reads. They
+are hidden from `--help` because they are only for developing elfq.
 
 The tests read the prebuilt sample binaries in `testdata/bin`, so you need no
 cross compilers. Before opening a pull request, run what CI runs:
@@ -58,7 +59,7 @@ terminal is as it was; `.github/workflows/ci.yml` has the command.
 | `src/commands/browse/` | `elfq FILE browse`, with the `tui` feature: `mod.rs` takes over the terminal and runs the event loop, `session.rs` holds the loaded file and asks the commands' code for answers, `keys.rs` is the table of keys, `app.rs` the history of pages, the go-to box, find's prompt and the screen's layout, and `views/` the pages, the go-to box and the tabs of an item's page other than a function's code, one file each (a data object's contents, its tab 1, are in `item/contents.rs`), `printed.rs`, which draws a command's answer for the pages and tabs that show one, and `names.rs`, which shortens long C++ and Rust names to fit a column. |
 | `src/commands/reach/` | `elfq FILE reach [SYMBOL]`: `mod.rs` holds what the search from SYMBOL finds, with the words the code uses for its parts, and `Text`, which words it for people, `find.rs` the search, `rows.rs` writes the answer by block of memory, which browse shows too, `to.rs` the answer with `--to`, `tree.rs` the tree of `--tree` and `json.rs` the JSON, and `starts.rs` answers without SYMBOL, as browse's start page does. |
 | `src/commands/diff/` | `elfq FILE diff NEW`: `mod.rs` reads both files and gives the exit status, `blocks.rs` works out the blocks of memory that both builds share and what changed in each, `pairing.rs` pairs the builds' items, `rows.rs` works out what changed and the rows of MOVED and CHANGE, `edited.rs` which items of the same size are edited, `crossings.rs` the uses between blocks that are new or gone, and `text.rs` and `json.rs` write the answer. |
-| `src/commands/startup/` | `elfq FILE startup`: `mod.rs` refuses files that aren't Cortex-M firmware from their headers, and runs the rest, `start.rs` finds the reset handler and `main`, `steps.rs` reads the walk's calls and loops as the steps that copy and zero sections, `problems.rs` works out the state of each section when `main` starts, the problems and the notes, and `text.rs` and `json.rs` write the answer. |
+| `src/commands/startup/` | `elfq FILE startup`: `mod.rs` refuses files that aren't Cortex-M firmware from their headers, and runs the rest, `start.rs` finds the reset handler and `main`, `ram_sections.rs` lists the load images and sections without contents that startup code sets up, and matches what a call or a loop copies or zeroes to them, `events.rs` says what the steps read of each of the walk's events, `steps.rs` reads the walk's calls and loops as the steps that copy and zero sections, with `pieces.rs`, which joins the bytes that loops and stores copy or zero into steps, and `unread.rs`, which works out what code that elfq can't follow may set up, `problems.rs` works out the state of each section when `main` starts, the problems and the notes, and `text.rs` and `json.rs` write the answer. `debug.rs` lists the events of the walk that the steps read, for `elfq FILE debug walk`. The unit tests build their walks with `fixtures.rs`; those of `problems.rs` and `steps.rs` are in `problems/tests.rs` and `steps/tests.rs`. |
 | `src/arch/` | Finding the addresses that machine code calls or uses, one module per instruction set (x86-64 and Thumb). The rest of elfq reads code through `InstructionSet`, in `mod.rs`, which a file whose code elfq can't read doesn't have. Thumb's has three parts: `thumb/sweep.rs` reads each instruction on its own, `thumb/decode.rs` says what an instruction does with the registers and the stack, and `thumb/values/` follows the addresses that code puts in registers to where a branch through one goes, as for long calls and veneers; `thumb/mod.rs` begins with a map of its files. `listing.rs` prints a function's code as text, for `browse`: x86-64 with iced-x86's formatter, and Thumb with thumb-asm, in the lines that `thumb::layout` cuts the code into with the same sweep as `scan`. `operands` finds the bits of a function's code that say where something is, such as the distance in a call, for `diff` to tell code that changed from code that only moved. `startup.rs` and `thumb/startup/` follow the code that a Cortex-M processor runs from reset, with the numbers in its registers and memory, for `startup`; `thumb/startup/mod.rs` begins with a map of its files, and design.md's [Startup, end to end](docs/design.md#startup-end-to-end) shows how the four `startup` modules hand off to each other. |
 | `src/binary/` | Reading an ELF file: its functions and data objects ("items") and where they were found, their names, imports, stored pointers and memory blocks, and in Arm files the core the code is for (`attributes.rs`) and the data that `$d` symbols mark among code. `memory.rs` reads only the headers and the bytes that the sections put in memory, which `diff` compares, and `header.rs` only the ELF header and program headers, for `startup` to refuse a file for another processor before loading it. Unnamed data, such as string literals, is found from what code and pointers refer to. Each function's code is scanned once, as the file loads (`Binary::code_references`). |
 | `src/graph/` | The reference graph that connects items, the roots where the program starts, the dominator tree that says what is exclusive to what, the shortest paths that `why` and `reach` show, the bytes that a function reaches (`reached.rs`), the items in ranges of memory (`items_in_ranges.rs`) and the references that cross the ranges' boundary, narrowed with `--from` or `--to` (`boundary.rs`), and where a linker's veneers jump to. |
@@ -153,10 +154,21 @@ this list, and add to it when you bring in a word.
   `TreeAnswer` the text of one whose table holds a tree, as `why` and
   `retained` write it. Browse shows both; `TabAnswer` is a `TreeAnswer`
   as a tab of browse shows it.
-- **section**: an ELF section. **block**: a run of addresses that
+- **section**: an ELF section. Its place in `Binary::sections` is a
+  section index, named `section`. **block**: a run of addresses that
   sections occupy, as the overview's MEMORY table lists
   (`MemoryBlock`). **load image**: where the file stores the bytes of a
   section such as `.data`, for startup code to copy to its address.
+  **RAM sections**: in `startup`, the sections that startup code sets
+  up, which are all in RAM: those with a load image, and those without
+  contents, such as `.bss` (`RamSections`, in `ram_sections.rs`, named
+  `ram`). **early run**: code that runs from a load image before startup
+  code copies it there (`EarlyRun`, which `EarlyRunFinder` finds, and the
+  problem `runs before copy`), and its functions (`EarlyFunction`). A
+  **hit** is a function in a load image that the reset handler or a call
+  runs, with the chain of functions that gets to it: for one that a
+  call's call tree finds, from the function that the call goes to down
+  to it; otherwise the function alone (`Hit`).
 - **state**: what the registers and the stack hold at one point in the
   code, in `arch/thumb/values/` (`State`). A section's state when `main`
   starts, in `startup`, is its status (`problems::Status`).
@@ -164,9 +176,38 @@ this list, and add to it when you bring in a word.
   hang under, or drawn with `--tree` (`TreeShape`). A command's
   **format** is text, tree or JSON (`Format`).
 - **step**: one thing that startup code does, such as copying a section
-  (`startup::steps::Step`). **row**: a line of a table that elfq prints;
-  a loop over a table of sections also reads one row of that table each
-  time it runs.
+  (`startup::steps::Step`). Its place in the steps is a step index;
+  where elfq writes a step out, it gives its number, from 1
+  (`steps::number`). **region**: what a copy or zeroing copies or
+  zeroes: how many bytes, where, and for a copy, where from, with the
+  sections that start in them (`ram_sections::Region`). **setup**: the
+  first step that sets up a section (`problems::Setup`); `Setups` holds
+  each section's, with the unread steps that may set up the others.
+  **facts**: in `startup`, what each stage reads once the walk is done,
+  from the file to how the walk ended (`Facts`). **ending**: where
+  startup ends: at `main`, at the reset handler's endless loop, or where
+  the walk ended before either (`Ending`); the walk's own end is an
+  `End`.
+  **row**: a line of a table that elfq prints; a loop over a table of
+  sections also reads one row of that table each time it runs.
+- **event**: one thing that the startup walk records, such as a call, a
+  store or a loop (`arch::startup::Event`); its place in the walk's list
+  is an event index, named `event`, or `loop_event` for a loop's.
+  Browse's event loop, which reads the terminal's keys (crossterm's
+  `Event`), is unrelated. **walked loop**: a loop that the walk went
+  through one iteration at a time, as a loop over a table of sections,
+  so that each iteration's calls and stores are events of their own
+  (`Loop::walked_iterations`). **call tree**: in `startup`, the
+  functions that run when a function runs, each with the function that
+  calls it on a shortest chain from the first (`CallTree`). **piece**:
+  bytes that a loop or stores copy or zero one after another, which
+  join into a step (`startup`'s `pieces.rs`).
+  **unread**: code that elfq can't follow, such as a call through a
+  register, which may set up any section not set up yet
+  (`Does::Unread`, and `unread.rs`). Where the JSON says `unknown` for a
+  section's status, `can't follow` for the problem and `can't tell` for
+  the note, the code keeps those words (`Status::Unknown`,
+  `Problem::CantFollow`, `Note::CantTell`).
 
 Some code still uses one of these words for something else, as the Thumb
 walk's `Step` (what an instruction leads to) and `reach`'s `Step` (a row
@@ -177,10 +218,13 @@ of its tree) do. Those are names to fix, not meanings to copy.
 `cargo test` runs two kinds of tests:
 
 - **Unit tests** sit beside the code, in a `tests` module at the end of a
-  file, or in a folder's `tests.rs` when they would make up most of its
-  `mod.rs`, as in `arch/thumb/startup/`. They check one function: a
-  decoder on bytes from a sample's disassembly, or an algorithm on a
-  small graph built by hand (`graph/dominators.rs`, `graph/paths.rs`).
+  file, or in a `tests.rs` of their own when they are long: a folder's,
+  when they would make up most of its `mod.rs`, as in
+  `arch/thumb/startup/`, or in a folder named after the file, as
+  `arch/thumb/decode/tests.rs` holds `decode.rs`'s. They check one
+  function: a decoder on bytes from a sample's disassembly, or an
+  algorithm on a small graph built by hand (`graph/dominators.rs`,
+  `graph/paths.rs`).
 - **Integration tests** in `tests/it/` use the samples in `testdata/bin`.
   `cli.rs`, `json.rs` and `docs.rs` run the elfq program, the way a user
   would. The others call the library, as `Binary::load` and
@@ -200,7 +244,7 @@ of its tree) do. Those are names to fix, not meanings to copy.
 | `retained.rs` | Roots, and what is exclusive to what |
 | `why.rs` | The shortest chains |
 | `reach.rs` | `reach` on every item of the Cortex-M samples, against `callees`, `retained` and its own `--tree`, and with `--to` against `reach` without it and `callees --to`, and on every function of each stripped one against its twin with symbols; and without SYMBOL, each start of every sample against `reach START` |
-| `startup.rs` | `startup` on the samples whose reset code has a mistake and some without, the exit status of every Cortex-M sample, and the files it refuses |
+| `startup.rs` | `startup` on the samples whose reset code has a mistake and some without, the exit status of every Cortex-M sample, and the files it refuses; and that `debug walk` lists the walk that `startup` reads |
 | `symbol.rs` | Looking up SYMBOL |
 | `inlined.rs` | Inlined copies, from DWARF |
 | `damaged.rs` | Damaged and unusual files, made by changing a sample's bytes |

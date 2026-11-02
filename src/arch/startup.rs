@@ -314,6 +314,15 @@ impl Loop {
     }
 }
 
+/// The head of the last loop in `events` whose branch back is at `back`,
+/// as where a walk that ends at [`End::Loops`] loops for good.
+pub fn loop_head(events: &[Event], back: u64) -> Option<u64> {
+    events.iter().rev().find_map(|event| match event {
+        Event::Loop(l) if l.back == back => Some(l.head),
+        _ => None,
+    })
+}
+
 /// One iteration of a loop that the walk went through each time it runs
 /// (see [`Runs::EachIteration`]).
 #[derive(Debug, Clone, PartialEq, Eq)]

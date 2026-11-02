@@ -85,6 +85,16 @@ fn set_word(data: &mut [u8], at: usize, value: u32) {
     data[at..at + 4].copy_from_slice(&value.to_le_bytes());
 }
 
+/// Where the vector table, the section `.isr_vector`, is in the file
+/// `data`.
+fn isr_vector(data: &[u8]) -> usize {
+    let file = object::File::parse(data).unwrap();
+    let (table, _) = (file.section_by_name(".isr_vector").unwrap())
+        .file_range()
+        .unwrap();
+    table as usize
+}
+
 /// Where the program header of the load image for `address` is in the
 /// 32-bit file `data`: of the segment there whose load address isn't its
 /// address.
@@ -497,6 +507,98 @@ from Reset_Handler (0x30000008), stack pointer 0x20040000, main 0x30000060
 }
 
 #[test]
+fn debug_walk_lists_the_walk_that_startup_reads() {
+    // In every Arm sample, the walk starts where startup's answer says the
+    // processor starts, and when startup's walk gets to main, this one
+    // gets to the same main, found the same way: from its symbol, debug
+    // info, a guess or the reset handler's endless loop.
+    for sample in samples() {
+        let name = sample.trim_start_matches("testdata/bin/");
+        if name.contains("x86_64") || name == "c-deep.elf" || name == "c-plt.so" {
+            continue;
+        }
+        let output = elfq(&[&sample, "debug", "walk"]);
+        assert!(output.status.success(), "{output:?}");
+        let walk = String::from_utf8(output.stdout).unwrap();
+        let first = walk.lines().next().unwrap();
+        let (_, answer) = answer(&sample);
+        let entry = answer["entry"]["address"].as_str().unwrap();
+        assert!(
+            first.contains(&format!("({entry}), stack pointer ")),
+            "{sample}: {first}"
+        );
+        let reaches_main = walk.ends_with("ends: reaches main\n");
+        let (Some(at), Some(from)) = (answer["main_at"].as_str(), answer["main_from"].as_str())
+        else {
+            assert!(!reaches_main, "{sample}: {walk}");
+            continue;
+        };
+        let main = match from {
+            "symbol" => at.to_string(),
+            from => format!("{at} ({from})"),
+        };
+        assert!(
+            first.ends_with(&format!(", main {main}")),
+            "{sample}: {first}"
+        );
+        assert!(reaches_main, "{sample}: {walk}");
+    }
+    // As in a stripped file, which has no symbol main.
+    let output = elfq(&["testdata/bin/c-cortex-m7-stripped.elf", "debug", "walk"]);
+    assert!(output.status.success(), "{output:?}");
+    let walk = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        walk.starts_with(
+            "from entry (0x300005f8), stack pointer 0x20040000, main 0x30000570 (guess)\n"
+        ),
+        "{walk}"
+    );
+}
+
+#[test]
+fn debug_walk_starts_where_startup_does() {
+    // A vector table whose reset handler is in no function, but in the two
+    // bytes that pad the code before Reset_Handler, the entry point: the
+    // walk starts at the entry point, as startup reads from there.
+    let padding = changed(TCM_SAMPLE, "c-cortex-m7-reset-in-padding.elf", &|data| {
+        let table = isr_vector(data);
+        set_word(data, table + 4, 0x3000_05f7);
+    });
+    let output = elfq(&[&padding, "debug", "walk"]);
+    assert!(output.status.success(), "{output:?}");
+    let walk = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(
+        walk.lines().next().unwrap(),
+        "from Reset_Handler (0x300005f8), stack pointer 0x20040000, main 0x30000570"
+    );
+    assert!(walk.ends_with("ends: reaches main\n"), "{walk}");
+    // With the entry point in no function either, in RAM, it refuses the
+    // file as startup does.
+    let neither = changed(
+        TCM_SAMPLE,
+        "c-cortex-m7-reset-and-entry-in-no-function.elf",
+        &|data| {
+            let table = isr_vector(data);
+            set_word(data, table + 4, 0x3000_05f7);
+            // e_entry.
+            set_word(data, 0x18, 0x2000_0001);
+        },
+    );
+    let output = elfq(&[&neither, "debug", "walk"]);
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    let error = String::from_utf8(output.stderr).unwrap();
+    assert_output(&error, &refusal(&neither, &[]));
+    assert_output(
+        &error,
+        &format!(
+            "error: {neither}'s vector table gives 0x300005f6 for reset, which is in no \
+             function, and its entry point 0x20000000 is in none either\n"
+        ),
+    );
+}
+
+#[test]
 fn setup_in_a_call_that_doesnt_return_is_what_that_call_does() {
     // prep copies and zeroes, then starts the program's threads, which
     // call main through a pointer.
@@ -875,11 +977,8 @@ fn the_overview_suggests_startup_only_for_firmware_that_startup_reads() {
     );
     // A reset handler and entry point in no function.
     let no_reset = changed(TCM_SAMPLE, "c-cortex-m7-overview-no-reset.elf", &|data| {
-        let file = object::File::parse(&**data).unwrap();
-        let (table, _) = (file.section_by_name(".isr_vector").unwrap())
-            .file_range()
-            .unwrap();
-        set_word(data, table as usize + 4, 0x2000_0001);
+        let table = isr_vector(data);
+        set_word(data, table + 4, 0x2000_0001);
         set_word(data, 0x18, 0x2000_0001);
     });
     // No load image or section without contents: the sections that were

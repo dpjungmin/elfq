@@ -8,9 +8,10 @@ use std::path::Path;
 
 use anyhow::{Result, bail};
 
-use super::Firmware;
-use super::steps::{Events, Memory};
-use crate::arch::startup::{Call, Code, DEPTH, End, Event, How, Start, Walk};
+use super::events::Events;
+use super::ram_sections::RamSections;
+use super::{Firmware, function_holding};
+use crate::arch::startup::{Call, Code, DEPTH, End, Event, How, Start, Walk, loop_head};
 use crate::binary::{Binary, ItemKind};
 use crate::debuginfo;
 
@@ -31,11 +32,7 @@ impl Reset {
     /// The reset handler that the vector table gives, when it is in a
     /// function, or else the entry point, when that is.
     pub fn find(path: &Path, binary: &Binary) -> Result<Reset> {
-        let in_function = |address| {
-            binary
-                .item_at(address)
-                .is_some_and(|index| binary.items[index].kind == ItemKind::Function)
-        };
+        let in_function = |address| function_holding(binary, address).is_some();
         let table = binary.vector_table.as_ref();
         let stack_pointer =
             table.and_then(|table| binary.pointer_at(table.address).map(|word| word as u32));
@@ -144,9 +141,9 @@ impl Main {
 }
 
 /// Where startup ends: the function named `main`, or where debug info
-/// says a compiler inlined it, or in a stripped file, what [`guess`] and
+/// says a compiler inlined it, or without either, what [`guess`] and
 /// [`c_runtime`] take for it.
-pub(super) fn find_main(firmware: &Firmware, memory: &Memory, reset: &Reset) -> Option<Main> {
+pub(super) fn find_main(firmware: &Firmware, ram: &RamSections, reset: &Reset) -> Option<Main> {
     let binary = firmware.binary;
     let named = |name: &String| name == "main";
     if let Some(item) = binary.items.iter().find(|item| {
@@ -166,9 +163,9 @@ pub(super) fn find_main(firmware: &Firmware, memory: &Memory, reset: &Reset) -> 
             from: MainFrom::DebugInfo,
         });
     }
-    let guessed = guess(firmware, memory, reset)?;
+    let guessed = guess(firmware, ram, reset)?;
     if guessed.from == MainFrom::Guess
-        && let Some(address) = c_runtime(firmware, memory, reset, guessed.address)
+        && let Some(address) = c_runtime(firmware, ram, reset, guessed.address)
     {
         return Some(Main {
             address,
@@ -179,42 +176,57 @@ pub(super) fn find_main(firmware: &Firmware, memory: &Memory, reset: &Reset) -> 
 }
 
 /// Without a symbol `main`, as in a stripped file, `main` taken from the
-/// reset handler's own code: the function it calls last before it spins,
-/// returns, loops or runs off its end, or where it can't read on. When
-/// that call can't return, and the call before it only hands it its
-/// result, as in `exit(main())`, `main` is the call before, unless that
-/// call copies or zeroes a section. When a loop goes back over the last
-/// call, the reset handler is the program, and its loop ends startup.
-/// Code that runs back into code that the walk went through elsewhere is a
-/// loop that elfq can't follow, after which startup may go on: no `main`,
-/// unless the code after the last call runs back into a loop that ran
-/// before it, where the compiler put that loop's code after a call that
-/// doesn't return.
-fn guess(firmware: &Firmware, memory: &Memory, reset: &Reset) -> Option<Main> {
+/// reset handler's own code, walked without following its calls:
+///
+/// 1. When it makes no call that the walk can tell the target of, there is
+///    no `main`.
+/// 2. When the walk ends going back to code at or before the last call, a
+///    loop's head or code that it went through, a loop goes back over that
+///    call: the reset handler is the program, and startup ends at the
+///    loop's head ([`MainFrom::Loop`]). Not when an earlier branch goes
+///    past the call: then the call doesn't return, and the compiler put
+///    other code after it, such as a loop's body.
+/// 3. Else, when the code after the last call spins, returns, loops, runs
+///    off its end, or can't be read on, `main` is the function that the
+///    last call goes to.
+/// 4. Code that runs back into code that the walk went through elsewhere
+///    is a loop that elfq can't follow, after which startup may go on: no
+///    `main`, unless it runs back into a loop that ran before the last
+///    call, where the compiler put that loop's code after a call that
+///    doesn't return; then `main` is as in 3. Any other end, such as a
+///    branch through a register, gives no `main` either.
+/// 5. When the code runs off its end after the last call, so that the call
+///    can't return, and the call before it only hands it its result, as in
+///    `exit(main())`, `main` is the function that the call before goes to.
+///    Not when that call copies or zeroes a section, as in `memset(...);
+///    main();` with a `main` that never returns, nor when the last call's
+///    function sets up a section (see [`sets_up`]): then it starts a C
+///    runtime, as `bl SystemInit; bl _mainCRTStartup` does, rather than
+///    exiting.
+fn guess(firmware: &Firmware, ram: &RamSections, reset: &Reset) -> Option<Main> {
     let walk = reset.walk(firmware.code, None, 0);
-    let calls: Vec<(usize, &Call, u64)> = (walk.events.iter().enumerate())
-        .filter_map(|(k, event)| match event {
-            Event::Call(call) => Some((k, call, firmware.resolve(call.target?).0)),
+    let calls: Vec<(usize, &Call, u64)> = (0..walk.events.len())
+        .filter_map(|event| match &walk.events[event] {
+            Event::Call(call) => Some((event, call, firmware.resolve(call.target?).function)),
             _ => None,
         })
         .collect();
+    // 1.
     let &(last_event, last_call, last) = calls.last()?;
     let last_site = last_call.site;
-    let ran_before = |at: u64| {
-        (walk.events[..last_event].iter())
-            .any(|event| matches!(event, Event::Loop(l) if l.head <= at && at <= l.back))
-    };
+    // 2.
     let back = match walk.end {
-        End::Loops(site) => walk.events.iter().rev().find_map(|event| match event {
-            Event::Loop(l) if l.back == site => Some(l.head),
-            _ => None,
-        }),
+        End::Loops(site) => loop_head(&walk.events, site),
         End::Rejoins(at) => Some(at),
-        _ => None,
+        End::Main(_)
+        | End::Spins(_)
+        | End::Returns(_)
+        | End::RunsOff(_)
+        | End::Undecoded(_)
+        | End::Branches { .. }
+        | End::LeavesFile { .. }
+        | End::Budget(_) => None,
     };
-    // Unless the code after the call is where an earlier branch goes: then
-    // the call doesn't return, and the compiler put other code after it,
-    // such as a loop's body.
     if let Some(head) = back
         && head <= last_site
         && !firmware.code.branches_past(reset.address, last_site)
@@ -224,26 +236,29 @@ fn guess(firmware: &Firmware, memory: &Memory, reset: &Reset) -> Option<Main> {
             from: MainFrom::Loop,
         });
     }
+    let ran_before = |at: u64| {
+        (walk.events[..last_event].iter())
+            .any(|event| matches!(event, Event::Loop(l) if l.head <= at && at <= l.back))
+    };
     let ends = match walk.end {
+        // 3.
         End::Spins(_) | End::Returns(_) | End::Loops(_) | End::RunsOff(_) | End::Undecoded(_) => {
             true
         }
+        // 4.
         End::Rejoins(at) => ran_before(at),
-        _ => false,
+        End::Main(_) | End::Branches { .. } | End::LeavesFile { .. } | End::Budget(_) => false,
     };
     if !ends {
         return None;
     }
     let mut main = last;
-    // A call before that copies or zeroes a section isn't `main`, as in
-    // `memset(...); main();` with a `main` that never returns. A last call
-    // that copies or zeroes a section starts a C runtime, as `bl
-    // SystemInit; bl _mainCRTStartup` does, rather than exiting.
+    // 5.
     if let End::RunsOff(_) = walk.end
         && let [.., (_, before_call, before), _] = calls[..]
         && firmware.code.passes_result(before_call.site, last_site)
-        && memory.match_call(&before_call.passes()).is_none()
-        && !sets_up(firmware.code, memory, reset, last)
+        && ram.match_call(&before_call.passes()).is_none()
+        && !sets_up(firmware.code, ram, reset, last)
     {
         main = before;
     }
@@ -257,12 +272,12 @@ fn guess(firmware: &Firmware, memory: &Memory, reset: &Reset) -> Option<Main> {
 /// a section that startup code sets up in r0, and a length in r2, in its
 /// own code or code it jumps to, as picolibc's `_start` jumps to
 /// `_cstart`.
-fn sets_up(code: Code, memory: &Memory, reset: &Reset, address: u64) -> bool {
+fn sets_up(code: Code, ram: &RamSections, reset: &Reset, address: u64) -> bool {
     let walk = walk_from(code, address, reset.stack_pointer, None, 1);
     walk.events.iter().any(|event| match event {
         Event::Call(call) if call.depth == 0 => {
             let [r0, _, r2, _] = call.passes();
-            r2.is_some() && r0.is_some_and(|r0| memory.starts_section(u64::from(r0)))
+            r2.is_some() && r0.is_some_and(|r0| ram.starts_section(u64::from(r0)))
         }
         _ => false,
     })
@@ -272,17 +287,17 @@ fn sets_up(code: Code, memory: &Memory, reset: &Reset, address: u64) -> bool {
 /// it starts a C runtime, as newlib's `_mainCRTStartup` does, and `main`
 /// is the last function it calls that sets up nothing, or the one before
 /// that when the last only takes its result, as `exit(main())` does.
-fn c_runtime(firmware: &Firmware, memory: &Memory, reset: &Reset, guess: u64) -> Option<u64> {
+fn c_runtime(firmware: &Firmware, ram: &RamSections, reset: &Reset, guess: u64) -> Option<u64> {
     let walk = reset.walk(firmware.code, None, DEPTH);
-    let events = Events::new(firmware, &walk.events);
+    let events = Events::new(firmware, reset.address, &walk.events);
     let call_to_guess = (0..events.list.len())
-        .find(|&k| events.level(k) == 0 && events.target(k) == Some(guess))?;
+        .find(|&event| events.level(event) == 0 && events.target(event) == Some(guess))?;
     let inside = call_to_guess + 1..events.span(call_to_guess);
     let set_up = |range: std::ops::Range<usize>, level: u32| -> BTreeSet<usize> {
         range
-            .filter(|&k| events.level(k) >= level)
-            .filter_map(|k| memory.match_call(&events.call(k)?.passes()))
-            .flat_map(|matched| matched.covers.into_iter().map(|cover| cover.section))
+            .filter(|&event| events.level(event) >= level)
+            .filter_map(|event| ram.match_call(&events.call(event)?.passes()))
+            .flat_map(|matched| matched.region.covers.into_iter().map(|cover| cover.section))
             .collect()
     };
     let earlier = set_up(0..call_to_guess, 0);
@@ -293,22 +308,22 @@ fn c_runtime(firmware: &Firmware, memory: &Memory, reset: &Reset, guess: u64) ->
     // handler, and those of the code it jumps to when that sets up a
     // section, as picolibc's `_start` jumps to `_cstart`.
     let ran: HashSet<u64> = (0..call_to_guess)
-        .filter_map(|k| events.call(k).map(|call| call.site))
+        .filter_map(|event| events.call(event).map(|call| call.site))
         .collect();
     let mut own = 1;
     let mut calls = Vec::new();
-    for k in inside {
-        let Some(call) = events.call(k).filter(|_| events.level(k) == own) else {
+    for event in inside {
+        let Some(call) = events.call(event).filter(|_| events.level(event) == own) else {
             continue;
         };
         if ran.contains(&call.site) {
             break;
         }
-        if events.target(k).is_none() {
+        if events.target(event).is_none() {
             continue;
         }
-        if set_up(k..events.span(k), 1).is_empty() {
-            calls.push(k);
+        if set_up(event..events.span(event), 1).is_empty() {
+            calls.push(event);
         } else if call.how == How::Jump && call.followed {
             own += 1;
         }

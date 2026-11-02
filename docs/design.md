@@ -1419,11 +1419,10 @@ table (`vector_table::find`).
    when the table gives no reset handler in a function. It builds the
    graph, which tells where a call goes past a veneer and what each
    function calls (`Firmware`), and lists the load images and the
-   sections without contents (`steps::Memory`).
-   `start::find_main` takes `main` from its symbol, from where DWARF
-   says a compiler inlined it, or in a stripped file from what the reset
-   handler calls last, which a first walk that follows no calls finds
-   (`guess`).
+   sections without contents (`RamSections`). `start::find_main` takes
+   `main` from its symbol, from where DWARF says a compiler inlined it,
+   or in a stripped file from what the reset handler calls last, which a
+   first walk that follows no calls finds (`guess`).
 2. **The walk** (`arch/startup.rs`). Where it checks that the code is
    Arm, the command asks the file's `InstructionSet` for the `Code` that
    the walk reads, with the file as a `Program`: Thumb has the only walk.
@@ -1443,17 +1442,22 @@ table (`vector_table::find`).
    reset, as in flash or a load image, and the function that holds an
    address.
 5. **The answer**, back in `commands/startup/`. `Events::new` works out
-   what the steps read of each event: how many calls deep it is, and
-   where a call goes past a veneer. `steps::build` reads the events as
-   steps: the copies, the zeroings, the calls around them and the code
-   that elfq can't follow. `problems::judge` works out the state of each
-   section when `main` starts, and the problems and the notes. Then
+   what the steps read of each event: how many calls deep it is, in
+   whose code, and where a call goes past a veneer. `Facts` holds what
+   each stage after that reads: the file, the RAM sections, the reset
+   handler, `main`, the events and how the walk ended. `steps::build`
+   reads the events as steps: the copies, the zeroings, the calls
+   around them and the code that elfq can't follow, in passes that the
+   module doc of `steps.rs` lists. `problems::judge` works out the state
+   of each section when `main` starts, and the problems and the notes,
+   as facts that `text.rs` words, for the JSON's `text` keys too. Then
    `text::write`, or `json::write` with `--json`, writes the `Answer`,
    and `run` returns `Outcome::Problems`, for exit status 1, when there
    is a problem.
 
-`elfq FILE debug walk` (`commands/debug_walk.rs`) does only steps 2 to 4,
-from the reset handler, and lists the events.
+`elfq FILE debug walk` (`commands/startup/debug.rs`) finds the reset
+handler and `main` as step 1 does, walks as steps 2 to 4 do, and lists
+the events: the walk that `startup` reads.
 
 ## Dependencies
 
