@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use object::Endian;
 
-use super::contents::{self, string_at};
+use super::contents::string_at;
 use super::listing::{CodeLine, Link};
 use crate::arch::{self, CodeReferenceKind, Refers};
 use crate::binary::{ItemKind, RelocationTarget};
@@ -53,9 +53,7 @@ impl<'s, 'a> Notes<'s, 'a> {
         }
         if item.kind == ItemKind::Data {
             for reference in graph.references_from(index) {
-                if let Some(RelocationTarget::Address(address)) =
-                    contents::stored_at(binary, reference.site)
-                {
+                if let Some(RelocationTarget::Address(address)) = binary.stored_at(reference.site) {
                     used.entry(reference.site).or_insert(address);
                 }
             }

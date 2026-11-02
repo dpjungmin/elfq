@@ -1,8 +1,8 @@
 #!/bin/sh
 # Writes tests/thumb/NAME.txt for each Cortex-M sample NAME-nodebug.elf in
 # bin: objdump's text for its code, which the tests check browse's Thumb
-# text against (src/commands/browse/views/thumb_text.rs), so that they don't
-# need objdump.
+# text against (src/binary/listing/thumb_text.rs), so that they don't need
+# objdump.
 #
 # Each line is ADDRESS, MNEMONIC and OPERANDS, split by tabs, as
 # `objdump -d -z` prints them, without its comments and with an address in

@@ -161,22 +161,12 @@ fn plain_line(address: u64, value: String) -> CodeLine {
     }
 }
 
-/// What the program finds in the pointer-sized word at `address`: what
-/// the dynamic loader writes there, if it writes something, or else what
-/// the file holds.
-pub(super) fn stored_at(binary: &Binary, address: u64) -> Option<RelocationTarget> {
-    match binary.relocation_at(address) {
-        Some(relocation) => Some(relocation.target),
-        None => binary.pointer_at(address).map(RelocationTarget::Address),
-    }
-}
-
 /// The pointer-sized word at `address`, in hex with all its digits, as the
-/// program finds it (see `stored_at`). A pointer to an import has no
-/// address in this file, so it is "imported".
+/// program finds it (see [`Binary::stored_at`]). A pointer to an import has
+/// no address in this file, so it is "imported".
 fn value(binary: &Binary, address: u64) -> String {
     let digits = 2 + 2 * binary.pointer_size as usize;
-    match stored_at(binary, address) {
+    match binary.stored_at(address) {
         Some(RelocationTarget::Address(word)) => format!("{word:#0digits$x}"),
         Some(RelocationTarget::Import(_)) => "imported".to_string(),
         None => String::new(),
@@ -186,12 +176,10 @@ fn value(binary: &Binary, address: u64) -> String {
 /// Whether the file holds another word at `address` than the one the
 /// dynamic loader writes there, such as 0, which is what objdump prints.
 fn file_holds_other(binary: &Binary, address: u64) -> bool {
-    match binary
-        .relocation_at(address)
-        .map(|relocation| relocation.target)
-    {
-        Some(RelocationTarget::Address(target)) => binary.pointer_at(address) != Some(target),
-        Some(RelocationTarget::Import(_)) => true,
+    match binary.relocation_at(address) {
+        Some(relocation) => {
+            binary.pointer_at(address).map(RelocationTarget::Address) != Some(relocation.target)
+        }
         None => false,
     }
 }

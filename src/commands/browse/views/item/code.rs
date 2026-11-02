@@ -3,9 +3,9 @@
 
 use object::Architecture;
 
+use super::contents;
 use super::line_notes::Notes;
 use super::listing::{CodeLine, PageCode, widest};
-use super::{contents, listing};
 use crate::binary::{Binary, ItemKind};
 use crate::commands::browse::session::Session;
 use crate::commands::checks::readable_item;
@@ -101,7 +101,7 @@ fn code(session: &Session, index: usize) -> Result<Code, String> {
     };
     let notes = Notes::new(session, index);
     let why = match no_text(binary) {
-        None => match listing(binary, item, bytes) {
+        None => match binary.listing(item, bytes) {
             Some(listing) => return Ok(Code::Instructions(notes.lines(&listing))),
             None => "elfq doesn't print this code".to_string(),
         },

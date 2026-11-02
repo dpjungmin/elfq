@@ -10,6 +10,10 @@
 //! size, is printed as `.inst`, and the data among the instructions as
 //! `.word`, `.short` or `.byte`. This file is all that knows about
 //! thumb-asm, so another printer could take its place.
+//!
+//! The tests that check the Thumb text against objdump's, for each
+//! Cortex-M sample, are in `binary/listing/thumb_text.rs`, since they need
+//! a `Binary`.
 
 use std::ops::Range;
 

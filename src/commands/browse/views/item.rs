@@ -21,8 +21,7 @@
 //! The parts, each in its own file:
 //!
 //! - This file: [`Tab`], and [`ItemPage`], which holds the header and the
-//!   tabs, and passes each action to the tab on the screen. It also has
-//!   `listing`, the lines of a function's code as `arch` prints them.
+//!   tabs, and passes each action to the tab on the screen.
 //! - `header.rs`: the facts that the header gives, and what keeps the
 //!   item.
 //! - `listing.rs`: tab 1 on the screen: its lines, the cursor over them,
@@ -40,8 +39,6 @@ use ratatui::text::{Line, Span};
 
 use super::printed::Printed;
 use super::{Cursor, Go, draw_lines, fit_name, follow, imported, keep_lines, name_fitter, wrap};
-use crate::arch;
-use crate::binary::{Binary, Item};
 use crate::commands::browse::{keys::Action, session::Session};
 use crate::commands::checks::readable_item;
 use crate::commands::{retained, text, why};
@@ -572,20 +569,4 @@ impl ItemPage {
             _ => self.printed().map(Printed::command),
         }
     }
-}
-
-/// The lines of `item`'s code, whose bytes are `bytes`, as `arch` prints
-/// them, with the data that the file marks there (see
-/// [`Binary::data_in_code`]); `None` when elfq can't read the file's
-/// code, which browse refuses before it opens (see `Session::new`).
-pub(super) fn listing(binary: &Binary, item: &Item, bytes: &[u8]) -> Option<Vec<arch::Line>> {
-    // The marks, as offsets into `bytes`.
-    let marked: Vec<std::ops::Range<usize>> = binary
-        .data_in_code(item.address, item.size)
-        .map(|stretch| {
-            (stretch.start - item.address) as usize..(stretch.end - item.address) as usize
-        })
-        .collect();
-    let instruction_set = binary.instruction_set()?;
-    Some(instruction_set.listing(bytes, item.address, &marked))
 }
