@@ -330,7 +330,7 @@ of its tree) do. Those are names to fix, not meanings to copy.
 
 | File in `tests/it/` | What it tests |
 |---|---|
-| `support/` | No tests: in `mod.rs`, the samples' paths (`SAMPLE` and others), the lists that several modules check (`C_SAMPLES`, `FAR_SAMPLES`), `samples_for`, which lists the samples for one architecture, `run`, which runs the program and returns a `Run` to check, `run_in_process`, and `assert_output`; in `elf.rs`, `ElfBytes`, which changes a sample's bytes field by field and saves the file |
+| `support/` | No tests: in `mod.rs`, the samples' paths (`SAMPLE` and others), the lists that several modules check (`C_SAMPLES`, `FAR_SAMPLES`), `samples_for`, which lists the samples for one architecture, `run`, which runs the program and returns a `Run` to check, its shortcuts `stdout`, `stderr`, `crossing`, `elfq_json` and `text_rows`, `names`, which reads the names in a list of elfq's JSON, `run_in_process`, and `assert_output`; in `elf.rs`, `ElfBytes`, which changes a sample's bytes field by field and saves the file |
 | `cli.rs` | Each command's whole text output, errors, exit statuses and help |
 | `json.rs` | `--json` output |
 | `reach.rs` | `reach` on every item of the Cortex-M samples, against `callees`, `retained` and its own `--tree`, and with `--to` against `reach` without it and `callees --to`, and on every function of each stripped one against its twin with symbols; and without SYMBOL, each start of every sample against `reach START` |
@@ -419,11 +419,17 @@ only one module uses stays in it.
 that parsed as JSON, and `error()` gives the error, which comes with exit
 status 2. Each checks the exit status, and that elfq printed nothing on
 the other stream, so that a warning the test doesn't expect fails it.
-`stdout(ARGS)` is `run(ARGS).printed(0)`, and `stderr(ARGS)` is
-`run(ARGS).error()`. Where the status may be 0 or 1, as for a command run
-on every sample, `Exit::ZeroOrOne` stands for either. A test that expects a
-warning with the answer calls `exited(STATUS)`, which checks the status
-alone, and then reads the `Run`'s `stdout` and `stderr` itself.
+The shortcuts in `support/` each run elfq and read the `Run` one way:
+`stdout(ARGS)` is `run(ARGS).printed(0)`, `stderr(ARGS)` is
+`run(ARGS).error()`, `crossing(ARGS)` is `run(ARGS).printed(1)`, for an
+answer that finds uses crossing the edge of its ranges, `elfq_json(ARGS)`
+is `run(ARGS --json).json(0)`, and `text_rows(ARGS)` is the names in the
+rows of `run(ARGS --all).printed(0)`. `names(LIST)` gives the names of the
+items in a list of elfq's JSON. Where the status may be 0 or 1, as for a
+command run on every sample, `Exit::ZeroOrOne` stands for either. A test
+that expects a warning with the answer calls `exited(STATUS)`, which
+checks the status alone, and then reads the `Run`'s `stdout` and `stderr`
+itself.
 `run_in_process(SAMPLE, ARGS)` runs a command inside the test instead: it
 gives no `Run`, only what elfq printed on stdout and the outcome that sets
 its exit status, and an error panics.

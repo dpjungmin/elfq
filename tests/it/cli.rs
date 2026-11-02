@@ -6,7 +6,7 @@ use crate::support::elf::{ElfBytes, without_section_headers};
 use crate::support::{
     DEEP_SAMPLE, Exit, LIBRARY_SAMPLE, MOVED_SAMPLE, Run, SAMPLE, TCM_EDITED_SAMPLE,
     TCM_ENTRY_MAIN_SAMPLE, TCM_INLINED_SAMPLE, TCM_MOVED_SAMPLE, TCM_OCRAM_SAMPLE, TCM_SAMPLE,
-    TCM_SDRAM_SAMPLE, assert_output, command, run, samples, stderr, stdout,
+    TCM_SDRAM_SAMPLE, assert_output, command, crossing, run, samples, stderr, stdout,
 };
 
 /// Splits a command line into its arguments as a shell would, for the
@@ -1779,16 +1779,6 @@ uses  0x3a60a, 0x3a66d  std::rt::lang_start_internal
         stats.contains("\nuses  0x8000332  process_frame\n"),
         "{stats}"
     );
-}
-
-/// What elfq printed on stdout with `args`, ending with exit status 1.
-///
-/// It checks that elfq found something that crosses the edge of the
-/// ranges it was given, which status 1 says, and printed nothing on
-/// stderr: [`Run::printed`] with 1.
-#[track_caller]
-fn crossing(args: &[&str]) -> String {
-    run(args).printed(1)
 }
 
 #[test]

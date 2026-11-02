@@ -313,6 +313,58 @@ pub fn stderr(args: &[&str]) -> String {
     run(args).error()
 }
 
+/// What elfq printed on stdout with `args`, ending with exit status 1.
+///
+/// It checks that elfq found something that crosses the edge of the
+/// ranges it was given, which status 1 says, and printed nothing on
+/// stderr: [`Run::printed`] with 1.
+#[track_caller]
+pub fn crossing(args: &[&str]) -> String {
+    run(args).printed(1)
+}
+
+/// What elfq printed on stdout with `args` and `--json`, parsed.
+///
+/// It checks that elfq answered with exit status 0 and printed nothing on
+/// stderr: [`Run::json`] with 0.
+#[track_caller]
+pub fn elfq_json(args: &[&str]) -> Value {
+    run(&[args, &["--json"]].concat()).json(0)
+}
+
+/// The names of the items in a list of objects that each have an `item`, or
+/// are items.
+pub fn names(list: &Value) -> Vec<&str> {
+    list.as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry.get("item").unwrap_or(entry)["name"].as_str().unwrap())
+        .collect()
+}
+
+/// The names in the rows of a command's table with `--all`, in order.
+///
+/// They are without what each says about the row it hangs under, to
+/// compare with the rows of the JSON. It checks that elfq answered with
+/// exit status 0 and printed nothing on stderr.
+#[track_caller]
+pub fn text_rows(args: &[&str]) -> Vec<String> {
+    let text = run(&[args, &["--all"]].concat()).printed(0);
+    // The table starts after the first blank line, with its header, and
+    // the names start where the header's last column does.
+    let mut lines = text.lines().skip_while(|line| !line.is_empty()).skip(1);
+    let header = lines.next().unwrap();
+    let start = header.rfind(' ').unwrap() + 1;
+    lines
+        .take_while(|line| !line.is_empty())
+        .map(|line| {
+            let name = line[start..].split(", kept by ").next().unwrap();
+            let name = name.split(", inlined into ").next().unwrap();
+            name.trim_end_matches(" (through a pointer)").to_string()
+        })
+        .collect()
+}
+
 /// Runs `elfq SAMPLE ARGS` in this process, for the sample at `sample`.
 ///
 /// It returns what elfq printed on stdout, with the outcome that sets its
