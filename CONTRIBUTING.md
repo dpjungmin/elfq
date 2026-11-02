@@ -59,7 +59,7 @@ terminal is as it was; `.github/workflows/ci.yml` has the command.
 | `src/commands/reach/` | `elfq FILE reach [SYMBOL]`: `mod.rs` holds what the search from SYMBOL finds, with the words the code uses for its parts, and `Text`, which words it for people, `find.rs` the search, `rows.rs` writes the answer by block of memory, which browse shows too, `to.rs` the answer with `--to`, `tree.rs` the tree of `--tree` and `json.rs` the JSON, and `starts.rs` answers without SYMBOL, as browse's start page does. |
 | `src/commands/diff/` | `elfq FILE diff NEW`: `mod.rs` reads both files and gives the exit status, `blocks.rs` works out the blocks of memory that both builds share and what changed in each, `pairing.rs` pairs the builds' items, `rows.rs` works out what changed and the rows of MOVED and CHANGE, `edited.rs` which items of the same size are edited, `crossings.rs` the uses between blocks that are new or gone, and `text.rs` and `json.rs` write the answer. |
 | `src/commands/startup/` | `elfq FILE startup`: `mod.rs` refuses files that aren't Cortex-M firmware from their headers, and runs the rest, `start.rs` finds the reset handler and `main`, `steps.rs` reads the walk's calls and loops as the steps that copy and zero sections, `problems.rs` works out the state of each section when `main` starts, the problems and the notes, and `text.rs` and `json.rs` write the answer. |
-| `src/arch/` | Finding the addresses that machine code calls or uses, one module per instruction set (x86-64 and Thumb). Thumb's has three parts: `thumb/mod.rs` reads each instruction on its own, `thumb/decode.rs` says what an instruction does with the registers and the stack, and `thumb/values/` follows the addresses that code puts in registers to where a branch through one goes, as for long calls and veneers. `listing.rs` prints a function's code as text, for `browse`: x86-64 with iced-x86's formatter, and Thumb with thumb-asm, in the lines that `thumb::layout` cuts the code into with the same sweep as `scan`. `operands` finds the bits of a function's code that say where something is, such as the distance in a call, for `diff` to tell code that changed from code that only moved. `startup.rs` and `thumb/startup.rs` follow the code that a Cortex-M processor runs from reset, with the numbers in its registers and memory, for `startup`. |
+| `src/arch/` | Finding the addresses that machine code calls or uses, one module per instruction set (x86-64 and Thumb). Thumb's has three parts: `thumb/sweep.rs` reads each instruction on its own, `thumb/decode.rs` says what an instruction does with the registers and the stack, and `thumb/values/` follows the addresses that code puts in registers to where a branch through one goes, as for long calls and veneers; `thumb/mod.rs` begins with a map of its files. `listing.rs` prints a function's code as text, for `browse`: x86-64 with iced-x86's formatter, and Thumb with thumb-asm, in the lines that `thumb::layout` cuts the code into with the same sweep as `scan`. `operands` finds the bits of a function's code that say where something is, such as the distance in a call, for `diff` to tell code that changed from code that only moved. `startup.rs` and `thumb/startup/` follow the code that a Cortex-M processor runs from reset, with the numbers in its registers and memory, for `startup`; `thumb/startup/mod.rs` begins with a map of its files, and design.md's [Startup, end to end](docs/design.md#startup-end-to-end) shows how the four `startup` modules hand off to each other. |
 | `src/binary/` | Reading an ELF file: its functions and data objects ("items") and where they were found, their names, imports, stored pointers and memory blocks, and in Arm files the core the code is for (`attributes.rs`) and the data that `$d` symbols mark among code. `memory.rs` reads only the headers and the bytes that the sections put in memory, which `diff` compares, and `header.rs` only the ELF header and program headers, for `startup` to refuse a file for another processor before loading it. Unnamed data, such as string literals, is found from what code and pointers refer to. Each function's code is scanned once, as the file loads (`Binary::code_references`). |
 | `src/graph/` | The reference graph that connects items, the roots where the program starts, the dominator tree that says what is exclusive to what, the shortest paths that `why` and `reach` show, the bytes that a function reaches (`reached.rs`), the items in ranges of memory (`items_in_ranges.rs`) and the references that cross the ranges' boundary, narrowed with `--from` or `--to` (`boundary.rs`), and where a linker's veneers jump to. |
 | `src/debuginfo/` | Reading DWARF, when the file has it: the copies of functions that the compiler inlined, for `inlined`, and for the error when SYMBOL names a function that the compiler inlined everywhere. |
@@ -85,8 +85,10 @@ arch/        machine code
 ```
 
 So `arch` knows nothing about items, `binary` nothing about the graph, and
-`render` nothing about ELF files. No tool checks this; a `use crate::` line
-that reaches up the list is a sign that the code belongs lower down.
+`render` nothing about ELF files: a tree's row carries a `graph::Node` only
+so that browse can open the item the row is about. No tool checks this; a
+`use crate::` line that reaches up the list is a sign that the code belongs
+lower down.
 
 `commands/browse/` is a command too, at the top of `commands/`: it asks the
 other commands' code for its answers, as `callers::answer` for "used by
@@ -174,9 +176,10 @@ of its tree) do. Those are names to fix, not meanings to copy.
 `cargo test` runs two kinds of tests:
 
 - **Unit tests** sit beside the code, in a `tests` module at the end of a
-  file. They check one function: a decoder on bytes from a sample's
-  disassembly, or an algorithm on a small graph built by hand
-  (`graph/dominators.rs`, `graph/paths.rs`).
+  file, or in a folder's `tests.rs` when they would make up most of its
+  `mod.rs`, as in `arch/thumb/startup/`. They check one function: a
+  decoder on bytes from a sample's disassembly, or an algorithm on a
+  small graph built by hand (`graph/dominators.rs`, `graph/paths.rs`).
 - **Integration tests** in `tests/it/` use the samples in `testdata/bin`.
   `cli.rs`, `json.rs` and `docs.rs` run the elfq program, the way a user
   would. The others call the library, as `Binary::load` and
@@ -431,16 +434,19 @@ page, which the capture prints.
    `src/arch/mod.rs` lists the kinds. It must not panic on any bytes: a
    truncated instruction ends the scan. Unit tests beside it check it on
    bytes from a sample's disassembly.
-2. **Wiring, in `src/arch/mod.rs`.** Add `mod <name>;`, an arm in `scan`
-   and an arm in `is_supported`: until `is_supported` says yes, elfq never
-   scans the code and says it can't read it. An arm in `is_veneer` lets
-   `callers` and `callees` of ranges, and `reach`, see through a linker's
-   veneers. An arm in `runs_on` lets an entry point that shares its code
-   with the next function, as libgcc's `__aeabi_dsub` does with
-   `__adddf3`, run on into it as a tail call; without one, such entry
-   points use nothing.
-   `code_size`, `leading_padding` and `ending` matter only for finding the
-   functions in stripped firmware, which elfq does only for Thumb.
+2. **Wiring, in `src/arch/mod.rs`.** Add `mod <name>;`, an arm in `scan`,
+   an arm in `operands` and an arm in `is_supported`: until `is_supported`
+   says yes, elfq never scans the code and says it can't read it, and
+   without an arm in `operands`, `diff` calls a function edited whenever
+   the distance in one of its calls changes, as when it or what it calls
+   moves. An arm in `is_veneer` lets `callers` and `callees` of ranges,
+   and `reach`, see through a linker's veneers. An arm in `runs_on` lets
+   an entry point that shares its code with the next function, as libgcc's
+   `__aeabi_dsub` does with `__adddf3`, run on into it as a tail call;
+   without one, such entry points use nothing.
+   `code_size`, `leading_padding`, `ending` and `scan_instructions` matter
+   only for finding the functions in stripped firmware, which elfq does
+   only for Thumb.
 3. **Its name.** Add it to `text::architecture_name`, which the overview
    prints.
 4. **Linux programs.** Dynamic relocations (`binary/relocations.rs`) and

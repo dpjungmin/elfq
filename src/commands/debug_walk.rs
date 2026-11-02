@@ -38,7 +38,7 @@ pub fn run(binary: &Binary, out: &mut dyn Write) -> Result<Outcome> {
         ("DEPTH", Align::Right),
         ("WHAT", Align::Left),
     ]);
-    for (index, event) in walk.events.iter().enumerate() {
+    for event in &walk.events {
         let (site, depth, what) = match event {
             Event::Call(call) => {
                 let target = call.target.map(|target| name(binary, target));
@@ -105,21 +105,24 @@ pub fn run(binary: &Binary, out: &mut dyn Write) -> Result<Outcome> {
                 (store.site, store.depth, what)
             }
             Event::Loop(l) => {
-                let what = match index - l.first_event {
+                let what = match l.events.len() {
                     0 => format!("loop back from {:#x}", l.back),
                     1 => format!("loop back from {:#x} over the row above", l.back),
                     n => format!("loop back from {:#x} over the {n} rows above", l.back),
                 };
-                let mut what = match l.passes {
+                let mut what = match l.iterations() {
                     Some(1) => format!("{what}, runs once"),
                     Some(passes) => format!("{what}, runs {passes} times"),
                     None => what,
                 };
-                // The walk went through its code each time, and where the
-                // times read the rows of a table from.
-                if !l.times.is_empty() {
+                // The walk went through its code each iteration, and where
+                // they read the rows of a table from.
+                let iterations = l.walked_iterations();
+                if !iterations.is_empty() {
                     what = format!("{what}, each time walked");
-                    let rows: Vec<u32> = l.times.iter().filter_map(|time| time.row).collect();
+                    let rows: Vec<u32> = (iterations.iter())
+                        .filter_map(|iteration| iteration.row)
+                        .collect();
                     match rows[..] {
                         [] => {}
                         [row] => what = format!("{what}, reading a row at {row:#x}"),
@@ -129,9 +132,9 @@ pub fn run(binary: &Binary, out: &mut dyn Write) -> Result<Outcome> {
                         }
                     }
                 }
-                // What each of its stores does over all the times it runs:
-                // where it stores the first time, and how far that moves.
-                for store in l.stores.iter().flatten() {
+                // What each of its stores does over all its iterations:
+                // where it stores in the first, and how far that moves.
+                for store in l.stores().into_iter().flatten() {
                     let size = match store.size {
                         1 => "1 byte".to_string(),
                         size => format!("{size} bytes"),
@@ -154,7 +157,7 @@ pub fn run(binary: &Binary, out: &mut dyn Write) -> Result<Outcome> {
                         at(store.address, store.step)
                     );
                 }
-                let what = match l.end {
+                let what = match l.stopped() {
                     Some(end) => format!(
                         "{what}; its code stops short: {} at {:#x}",
                         end_text(end),

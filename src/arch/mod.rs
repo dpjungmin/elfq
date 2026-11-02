@@ -185,7 +185,8 @@ pub fn scan_instructions(
 /// pool, each in its 16- and 32-bit forms, and the numbers that `movw` and
 /// `movt` put together. Thumb code is swept as [`scan`] sweeps it, so the
 /// constants and jump tables it reads hold no distances. Nothing for other
-/// instruction sets.
+/// instruction sets, so diff calls a function's code changed whenever its
+/// bytes differ.
 pub fn operands(
     architecture: Architecture,
     endianness: Endianness,

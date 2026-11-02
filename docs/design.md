@@ -759,7 +759,7 @@ reset handler is the program, and startup ends at its endless loop. When
 the walk runs back into code that it went through other than that way,
 startup may go on past it, so elfq takes no `main`.
 
-The walk (`arch::startup`, for Thumb in `arch/thumb/startup.rs`) goes
+The walk (`arch::startup`, for Thumb in `arch/thumb/startup/`) goes
 one way through the code, as the processor would, keeping the numbers
 that it can work out in registers, on the stack and in the memory that
 the code writes, and the condition flags, so that it takes a branch the
@@ -1406,6 +1406,54 @@ arch/        3 arch::scan
 [CONTRIBUTING.md](../CONTRIBUTING.md#where-things-live) says what each
 file holds, the rules that keep these layers apart, how elfq is tested, and
 how to add a command or an instruction set.
+
+### Startup, end to end
+
+`elfq firmware.elf startup` goes through four modules named `startup`,
+from the command down to the file and back up. Arguments, dispatch,
+loading and the exit status go as above; loading has found the vector
+table (`vector_table::find`).
+
+1. **The command** (`commands/startup/`). `startup::run` has
+   `Reset::find` take the reset handler from the vector table, and the
+   stack pointer at reset from its first word, or take the entry point
+   when the table gives no reset handler in a function. It builds the
+   graph, which tells where a call goes past a veneer and what each
+   function calls (`Firmware`), and lists the load images and the
+   sections without contents (`steps::Memory`).
+   `start::find_main` takes `main` from its symbol, from where DWARF
+   says a compiler inlined it, or in a stripped file from what the reset
+   handler calls last, which a first walk that follows no calls finds
+   (`guess`).
+2. **The walk** (`arch/startup.rs`). `Reset::walk` hands
+   `arch::startup::walk` a `Start`: the reset handler, the stack pointer,
+   `main`, and how many calls deep to follow (`DEPTH`), with the file as
+   a `Program`. `walk` picks the walk for the file's instruction set, and
+   Thumb has the only one. `passes_result` and `branches_past`, which
+   `guess` asks about the code around a call, go the same way.
+3. **Thumb** (`arch/thumb/startup/`). `thumb::startup::walk` goes
+   through the code one instruction at a time (`Walker::step`), with what
+   `thumb::decode` says each does, follows calls and counts loops. It
+   hands back a `Walk`: the events in the order the code runs (calls,
+   stores, loops, backtracks and stops, each an `Event`) and how the walk
+   ended (an `End`).
+4. **The file** (`binary/startup.rs`). The walk reads the file only
+   through `Program`, which `Binary` implements: the code at an address
+   as it runs once copied into place, the word that memory holds at
+   reset, as in flash or a load image, and the function that holds an
+   address.
+5. **The answer**, back in `commands/startup/`. `Events::new` works out
+   what the steps read of each event: how many calls deep it is, and
+   where a call goes past a veneer. `steps::build` reads the events as
+   steps: the copies, the zeroings, the calls around them and the code
+   that elfq can't follow. `problems::judge` works out the state of each
+   section when `main` starts, and the problems and the notes. Then
+   `text::write`, or `json::write` with `--json`, writes the `Answer`,
+   and `run` returns `Outcome::Problems`, for exit status 1, when there
+   is a problem.
+
+`elfq FILE debug walk` (`commands/debug_walk.rs`) does only steps 2 to 4,
+from the reset handler, and lists the events.
 
 ## Dependencies
 
