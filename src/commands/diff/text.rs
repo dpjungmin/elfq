@@ -89,7 +89,7 @@ pub(super) fn write(answer: &Answer, all: bool, out: &mut dyn Write) -> Result<(
     }
     let heads = items.heads();
     let moved = items.moved_rows(all);
-    let change_rows = items.change_rows(&heads, blocks.len(), all);
+    let change_rows = items.change_rows(&heads, all);
     compared
         .old_names
         .will_name(moved.len() + change_rows.len());
