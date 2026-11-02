@@ -49,7 +49,7 @@
 /// The readable name of a mangled Rust or C++ symbol, or `None` when
 /// `symbol` isn't one. Rust names leave out the hashes that tell builds of a
 /// crate apart.
-pub fn demangle(symbol: &str) -> Option<String> {
+pub(crate) fn demangle(symbol: &str) -> Option<String> {
     if let Ok(name) = rustc_demangle::try_demangle(symbol) {
         return Some(format!("{name:#}"));
     }
@@ -124,7 +124,7 @@ pub fn short_names_with_key(name: &str, key: &str) -> Vec<String> {
 
 /// Whether `short_name` is one of `name`'s [`short_names`], without
 /// working out the others with other keys or putting them in order.
-pub fn has_short_name(name: &str, short_name: &str) -> bool {
+pub(crate) fn has_short_name(name: &str, short_name: &str) -> bool {
     let Some(key) = short_name_key(short_name) else {
         return false;
     };
@@ -148,7 +148,7 @@ fn short_names_ending(name: &str, key: Option<&str>) -> Vec<String> {
 /// Calls `visit` with each of `name`'s [`short_names`], and with where it
 /// starts in `name` when it is a part of it, without the work of putting
 /// them in order: some more than once, and perhaps `name` itself.
-pub fn for_each_short_name(name: &str, mut visit: impl FnMut(&str, Option<usize>)) {
+pub(crate) fn for_each_short_name(name: &str, mut visit: impl FnMut(&str, Option<usize>)) {
     for_each_short_name_ending(name, None, &mut visit);
 }
 
@@ -446,7 +446,7 @@ fn for_each_path(name: &str, ending: Option<&str>, mut visit: impl FnMut(&str, &
 /// `@plt`, `(` for parameters, `<` for generic arguments and `[` for a
 /// clone suffix. Most names, as in C, have none of them, and no short
 /// names.
-pub fn can_be_shorter(name: &str) -> bool {
+pub(crate) fn can_be_shorter(name: &str) -> bool {
     // Looking for each character on its own is quicker than for any of
     // them at once.
     [':', '(', '<', '['].into_iter().any(|c| name.contains(c)) || name.ends_with("@plt")
@@ -505,7 +505,7 @@ const COPY_SUFFIXES: [&str; 8] = [
 /// `dev_read.constprop.0` and `dev_read.llvm.4123` become `dev_read`, and
 /// `log(unsigned int) [clone .isra.0]` becomes `log(unsigned int)`. LLVM's
 /// `.llvm.` number changes with every build.
-pub fn without_copy_suffixes(name: &str) -> &str {
+pub(crate) fn without_copy_suffixes(name: &str) -> &str {
     let mut name = &name[..clone_suffix_at(name).unwrap_or(name.len())];
     loop {
         // The numbers after the suffix, as in `.isra.0.1`.

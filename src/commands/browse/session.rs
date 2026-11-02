@@ -106,9 +106,9 @@ pub(super) struct Keepers {
     /// Which item keeps which.
     ///
     /// It is the dominator tree that `retained` builds, without a range.
-    pub tree: DominatorTree,
+    pub(super) tree: DominatorTree,
     /// The shortest chain from where the program starts to each item.
-    pub paths: ShortestPaths,
+    pub(super) paths: ShortestPaths,
 }
 
 impl<'a> Session<'a> {

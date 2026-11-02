@@ -7,27 +7,32 @@ use crate::binary::{Binary, CodeAndData, MemoryBlock};
 
 /// What an item reaches, added up as `reach SYMBOL` counts it, but found
 /// without the tree.
-pub struct Reached {
+pub(crate) struct Reached {
     /// The bytes of the item and of what it reaches.
-    pub bytes: CodeAndData,
+    pub(crate) bytes: CodeAndData,
     /// The same, in each of the blocks of memory that [`Reached::find`] was
     /// given.
-    pub blocks: Vec<CodeAndData>,
+    pub(crate) blocks: Vec<CodeAndData>,
     /// How many items other than itself it reaches.
-    pub count: usize,
+    pub(crate) count: usize,
     /// Whether the item or what it reaches has a call or jump that elfq
     /// can't follow, but for the jump in a PLT's header to the dynamic
     /// loader.
-    pub unfollowed: bool,
+    pub(crate) unfollowed: bool,
     /// Whether it is, or reaches, a function whose end elfq doesn't know,
     /// so that it can't read its code.
-    pub unreadable: bool,
+    pub(crate) unreadable: bool,
 }
 
 impl Reached {
     /// Adds up what the item at `index` reaches in `graph`, the file's
     /// reference graph, in all and in each of `blocks`.
-    pub fn find(binary: &Binary, graph: &Graph, index: usize, blocks: &[MemoryBlock]) -> Reached {
+    pub(crate) fn find(
+        binary: &Binary,
+        graph: &Graph,
+        index: usize,
+        blocks: &[MemoryBlock],
+    ) -> Reached {
         let mut reached = Reached {
             bytes: CodeAndData::default(),
             blocks: vec![CodeAndData::default(); blocks.len()],
@@ -70,7 +75,7 @@ impl Reached {
     /// Whether elfq can follow every call and jump in the item and what it
     /// reaches, and knows where each function among them ends, as
     /// `complete` in `reach SYMBOL --json` says.
-    pub fn complete(&self) -> bool {
+    pub(crate) fn complete(&self) -> bool {
         !self.unfollowed && !self.unreadable
     }
 }

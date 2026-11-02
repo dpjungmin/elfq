@@ -12,7 +12,7 @@ use crate::binary::{AddressRange, Binary, ItemKind};
 use super::{Graph, Node, ReferenceKind, RootKind};
 
 /// The items in some ranges of memory.
-pub struct ItemsInRanges<'a> {
+pub(crate) struct ItemsInRanges<'a> {
     binary: &'a Binary,
     /// The ranges as given: an item with any byte in one of them is inside.
     ranges: &'a [AddressRange],
@@ -23,7 +23,7 @@ pub struct ItemsInRanges<'a> {
 impl<'a> ItemsInRanges<'a> {
     /// Works out which items are in `ranges`: those with any byte in one of
     /// them, where an item of unknown size counts as its first byte.
-    pub fn new(binary: &'a Binary, ranges: &'a [AddressRange]) -> ItemsInRanges<'a> {
+    pub(crate) fn new(binary: &'a Binary, ranges: &'a [AddressRange]) -> ItemsInRanges<'a> {
         let inside = binary.items.iter().map(|item| item.is_in(ranges)).collect();
         ItemsInRanges {
             binary,
@@ -34,12 +34,12 @@ impl<'a> ItemsInRanges<'a> {
 
     /// Whether the item at `index`, an index into [`Binary::items`], is in
     /// the ranges.
-    pub fn contains_item(&self, index: usize) -> bool {
+    pub(crate) fn contains_item(&self, index: usize) -> bool {
         self.inside[index]
     }
 
     /// Whether `node` is an item in the ranges. An import never is.
-    pub fn contains(&self, node: Node) -> bool {
+    pub(super) fn contains(&self, node: Node) -> bool {
         match node {
             Node::Item(index) => self.inside[index],
             Node::Import(_) => false,
@@ -47,13 +47,13 @@ impl<'a> ItemsInRanges<'a> {
     }
 
     /// Whether `address` is in the ranges.
-    pub fn contains_address(&self, address: u64) -> bool {
+    pub(super) fn contains_address(&self, address: u64) -> bool {
         self.ranges.iter().any(|range| range.contains(address))
     }
 
     /// The functions in the ranges whose code elfq can't read, since it
     /// doesn't know where they end.
-    pub fn unreadable(&self) -> Vec<usize> {
+    pub(crate) fn unreadable(&self) -> Vec<usize> {
         self.functions()
             .filter(|&index| self.binary.items[index].size == 0)
             .collect()
@@ -63,7 +63,7 @@ impl<'a> ItemsInRanges<'a> {
     /// that code outside them may call them through a pointer, which elfq
     /// can't see. A pointer in the vector table doesn't count: only the
     /// processor calls through it. `graph` is the file's graph.
-    pub fn callable_through_pointer(&self, graph: &Graph) -> Vec<usize> {
+    pub(crate) fn callable_through_pointer(&self, graph: &Graph) -> Vec<usize> {
         let vector_tables: Vec<Node> = graph
             .roots
             .iter()

@@ -36,20 +36,20 @@ use super::{
 /// One use across the boundary: `from` uses `to`, directly or through a
 /// veneer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Crossing {
+pub(crate) struct Crossing {
     /// The item that makes the reference, such as the caller, as an index
     /// into [`Binary::items`].
-    pub from: usize,
+    pub(crate) from: usize,
     /// What it uses: for a call through a veneer, the veneer's target.
-    pub to: Node,
+    pub(crate) to: Node,
     /// How `from` uses `to`: for a call through a veneer, how it uses the
     /// veneer.
-    pub kind: ReferenceKind,
+    pub(crate) kind: ReferenceKind,
     /// Where the reference is: for a call through a veneer, the call.
-    pub site: u64,
+    pub(crate) site: u64,
     /// The veneer that a call goes through, as an index into
     /// [`Binary::items`].
-    pub veneer: Option<usize>,
+    pub(crate) veneer: Option<usize>,
 }
 
 impl Crossing {
@@ -70,19 +70,23 @@ impl Crossing {
 /// pointer, or to code outside every item, such as a routine in a
 /// microcontroller's ROM.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Unfollowed {
+pub(crate) struct Unfollowed {
     /// The call or jump. For a call through a veneer, the call to the
     /// veneer, with the veneer's target; a tail call is a jump.
-    pub unresolved: Unresolved,
+    pub(crate) unresolved: Unresolved,
     /// The veneer that a call goes through, as an index into
     /// [`Binary::items`].
-    pub veneer: Option<usize>,
+    pub(crate) veneer: Option<usize>,
 }
 
 impl Unfollowed {
     /// `call`, a call to `veneer`, as a call or jump that elfq can't
     /// follow to `target`, where the veneer jumps.
-    pub fn through_veneer(call: &Reference, veneer: usize, target: Option<u64>) -> Unfollowed {
+    pub(crate) fn through_veneer(
+        call: &Reference,
+        veneer: usize,
+        target: Option<u64>,
+    ) -> Unfollowed {
         Unfollowed {
             unresolved: Unresolved {
                 from: call.from,
@@ -98,11 +102,11 @@ impl Unfollowed {
 /// What crosses the boundary one way: the uses across it, and the calls
 /// and jumps that elfq can't follow that may cross it.
 #[derive(Debug)]
-pub struct Crossings {
+pub(crate) struct Crossings {
     /// The uses across it.
-    pub uses: Vec<Crossing>,
+    pub(crate) uses: Vec<Crossing>,
     /// Sorted by the item they are in, then by site.
-    pub unfollowed: Vec<Unfollowed>,
+    pub(crate) unfollowed: Vec<Unfollowed>,
 }
 
 /// How a reference across the boundary is reported, once veneers are seen
@@ -124,7 +128,7 @@ enum Report<'r> {
 }
 
 /// The boundary of some ranges of memory.
-pub struct Boundary<'a> {
+pub(crate) struct Boundary<'a> {
     binary: &'a Binary,
     /// `binary`'s graph.
     graph: &'a Graph,
@@ -140,7 +144,11 @@ pub struct Boundary<'a> {
 
 impl<'a> Boundary<'a> {
     /// The boundary of `ranges` in `binary`, whose graph is `graph`.
-    pub fn new(binary: &'a Binary, graph: &'a Graph, ranges: &'a [AddressRange]) -> Boundary<'a> {
+    pub(crate) fn new(
+        binary: &'a Binary,
+        graph: &'a Graph,
+        ranges: &'a [AddressRange],
+    ) -> Boundary<'a> {
         Boundary {
             binary,
             graph,
@@ -151,17 +159,17 @@ impl<'a> Boundary<'a> {
     }
 
     /// The items in the ranges.
-    pub fn items(&self) -> &ItemsInRanges<'a> {
+    pub(crate) fn items(&self) -> &ItemsInRanges<'a> {
         &self.items
     }
 
     /// The uses of the rest of the file by the items in the ranges.
-    pub fn leaving(&self) -> Vec<Crossing> {
+    pub(crate) fn leaving(&self) -> Vec<Crossing> {
         self.crossings(true)
     }
 
     /// The uses of the items in the ranges by the rest of the file.
-    pub fn entering(&self) -> Vec<Crossing> {
+    fn entering(&self) -> Vec<Crossing> {
         self.crossings(false)
     }
 
@@ -171,7 +179,7 @@ impl<'a> Boundary<'a> {
     /// elfq can't follow that may go there: to an address in them, or
     /// through a pointer when a function there, outside the ranges, has its
     /// address taken or stored.
-    pub fn leaving_to(&self, to: &[AddressRange]) -> Crossings {
+    pub(crate) fn leaving_to(&self, to: &[AddressRange]) -> Crossings {
         if to.is_empty() {
             return Crossings {
                 uses: self.leaving(),
@@ -228,7 +236,7 @@ impl<'a> Boundary<'a> {
     /// the calls and jumps from there into code in the ranges that is
     /// outside every item, as in a chip's ROM. When `from` has ranges, only
     /// what is in them.
-    pub fn entering_from(&self, from: &[AddressRange]) -> Crossings {
+    pub(crate) fn entering_from(&self, from: &[AddressRange]) -> Crossings {
         if from.is_empty() {
             return Crossings {
                 uses: self.entering(),

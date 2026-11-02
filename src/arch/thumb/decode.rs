@@ -34,17 +34,17 @@ pub(super) type Registers = u16;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Effect {
     /// The registers it reads.
-    pub reads: Registers,
+    pub(super) reads: Registers,
     /// The registers it writes. Unless `operation` says what number goes
     /// into one, it holds something elfq can't follow.
-    pub writes: Registers,
+    pub(super) writes: Registers,
     /// What it does with the numbers in the registers, when elfq can follow
     /// it.
-    pub operation: Operation,
+    pub(super) operation: Operation,
     /// Where the processor goes after it.
-    pub flow: Flow,
+    pub(super) flow: Flow,
     /// When it changes the condition flags (see [`Effect::sets_flags`]).
-    pub flags: SetsFlags,
+    pub(super) flags: SetsFlags,
 }
 
 /// Where a load or store reads or writes, from its base register.

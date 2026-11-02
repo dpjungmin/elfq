@@ -58,7 +58,7 @@ impl VectorTable {
     /// interrupts. The others come at reset, when something has gone wrong
     /// (the faults, and NMI, which most chips raise for a hardware error),
     /// while debugging (DebugMonitor), or never (reserved entries).
-    pub fn runs_in_normal_operation(&self, address: u64) -> bool {
+    pub(crate) fn runs_in_normal_operation(&self, address: u64) -> bool {
         self.exceptions_of(address)
             .any(|exception| ROUTINE.contains(&exception) || exception >= FIRST_INTERRUPT)
     }
@@ -76,13 +76,13 @@ impl VectorTable {
     }
 
     /// Whether the table holds `address`.
-    pub fn contains(&self, address: u64) -> bool {
+    pub(super) fn contains(&self, address: u64) -> bool {
         (self.address..self.address + self.size).contains(&address)
     }
 
     /// The exceptions that the code at `address` handles, by their entries'
     /// numbers, in the table's order: none when no entry lists it.
-    pub fn exceptions_of(&self, address: u64) -> impl Iterator<Item = u64> + '_ {
+    pub(crate) fn exceptions_of(&self, address: u64) -> impl Iterator<Item = u64> + '_ {
         self.handlers
             .iter()
             .filter(move |handler| handler.address == address)
@@ -96,7 +96,7 @@ impl VectorTable {
 /// "reserved" for the entries that the architecture reserves (see
 /// [`is_reserved`]), or "IRQ 3" for the chip's fourth interrupt. Entry 0 is
 /// "initial SP".
-pub fn exception_name(number: u64, architecture: Option<ArmArchitecture>) -> String {
+pub(crate) fn exception_name(number: u64, architecture: Option<ArmArchitecture>) -> String {
     if is_reserved(number, architecture) {
         return "reserved".to_string();
     }
@@ -123,7 +123,7 @@ pub fn exception_name(number: u64, architecture: Option<ArmArchitecture>) -> Str
 /// and when the file doesn't say; also 4 to 6 and 12 on Armv6-M and
 /// Armv8-M Baseline, which have no MemManage, BusFault, UsageFault or
 /// DebugMonitor; and not 7 on Armv8-M Mainline, where it is SecureFault.
-pub fn is_reserved(number: u64, architecture: Option<ArmArchitecture>) -> bool {
+pub(crate) fn is_reserved(number: u64, architecture: Option<ArmArchitecture>) -> bool {
     let reserved = RESERVED.contains(&number);
     match architecture {
         Some(architecture) if architecture.is_baseline() => {

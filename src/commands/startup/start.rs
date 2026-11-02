@@ -18,14 +18,14 @@ use crate::debuginfo;
 /// Where the processor starts running code.
 pub(super) struct Reset {
     /// The reset handler, or without a vector table, the entry point.
-    pub address: u64,
+    pub(super) address: u64,
     /// The vector table's first word, the stack pointer at reset.
-    pub stack_pointer: Option<u32>,
+    pub(super) stack_pointer: Option<u32>,
     /// Where the vector table is.
-    pub table: Option<u64>,
+    pub(super) table: Option<u64>,
     /// What the vector table gives for reset, when that is in no function,
     /// so that elfq reads from the entry point.
-    pub outside: Option<u64>,
+    pub(super) outside: Option<u64>,
 }
 
 impl Reset {
@@ -99,8 +99,8 @@ fn walk_from(
 pub(super) struct Main {
     /// Where `main` starts, or the head of the reset handler's endless
     /// loop.
-    pub address: u64,
-    pub from: MainFrom,
+    pub(super) address: u64,
+    pub(super) from: MainFrom,
 }
 
 /// How elfq knows where `main` is.

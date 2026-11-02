@@ -38,18 +38,18 @@ pub(super) enum Lines {
 /// A row of the table.
 struct PrintedRow {
     /// Every cell but the last.
-    pub cells: Vec<String>,
+    cells: Vec<String>,
     /// The last cell: a name, which is shortened to fit, then what the row
     /// says about it, such as ", used by main".
-    pub name: String,
-    pub rest: String,
+    name: String,
+    rest: String,
     /// Where in `rest` the name of the row that this one hangs under
     /// starts, if `rest` ends with one, as `main` in ", kept by main": it
     /// is shortened to fit, as the row's own name is.
-    pub under: Option<usize>,
+    under: Option<usize>,
     /// The item or import that Enter opens, and the address in it to
     /// select.
-    pub link: Option<(Node, Option<u64>)>,
+    link: Option<(Node, Option<u64>)>,
 }
 
 /// The columns of words, which give way to the names on a narrow screen

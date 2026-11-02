@@ -10,7 +10,7 @@ use crate::arch::startup::{Call, Event, How};
 
 /// The walk's events, with what the steps read of them.
 pub(super) struct Events<'w> {
-    pub list: &'w [Event],
+    pub(super) list: &'w [Event],
     /// How many calls deep from the reset handler each event is, counting
     /// a tail call that the walk went into as a call, where the walk counts
     /// the function it jumps to at the depth of the one that jumps. A
@@ -160,8 +160,8 @@ impl<'w> Events<'w> {
 /// iteration's first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct WalkedIteration {
-    pub loop_event: usize,
-    pub first_event: usize,
+    pub(super) loop_event: usize,
+    first_event: usize,
 }
 
 /// The iterations of loops that the walk went through one by one (see

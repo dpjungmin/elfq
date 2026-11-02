@@ -37,13 +37,14 @@ mod reached;
 mod roots;
 mod veneers;
 
-pub use boundary::{Boundary, Crossing, Crossings, Unfollowed};
+pub(crate) use boundary::{Boundary, Crossing, Unfollowed};
 pub use dominators::DominatorTree;
-pub use items_in_ranges::ItemsInRanges;
+pub(crate) use items_in_ranges::ItemsInRanges;
 pub use paths::ShortestPaths;
-pub use reached::Reached;
-pub use roots::{Root, RootKind, listed_in};
-pub use veneers::{VeneerTarget, Veneers};
+pub(crate) use reached::Reached;
+pub(crate) use roots::listed_in;
+pub use roots::{Root, RootKind};
+pub(crate) use veneers::{VeneerTarget, Veneers};
 
 use std::collections::HashSet;
 
@@ -99,7 +100,7 @@ pub enum ReferenceKind {
 impl ReferenceKind {
     /// Whether it is a call or a tail call, rather than a use of an item's
     /// address or bytes.
-    pub fn is_call(self) -> bool {
+    pub(crate) fn is_call(self) -> bool {
         matches!(self, ReferenceKind::Call | ReferenceKind::TailCall)
     }
 }
@@ -108,7 +109,7 @@ impl ReferenceKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Unresolved {
     /// The function it is in, as an index into [`Binary::items`].
-    pub from: usize,
+    pub(crate) from: usize,
     /// The instruction's address.
     pub site: u64,
     /// Whether it is a call rather than a jump.
@@ -122,7 +123,7 @@ pub struct Unresolved {
 impl Unresolved {
     /// Whether it goes through a pointer set at run time, rather than to
     /// code outside every item.
-    pub fn is_indirect(&self) -> bool {
+    pub(crate) fn is_indirect(&self) -> bool {
         self.target.is_none()
     }
 
@@ -130,7 +131,7 @@ impl Unresolved {
     /// whether the address is in them, and when it goes through a pointer,
     /// `through_pointer`, which says whether a function in them has its
     /// address taken or stored.
-    pub fn may_go_to(&self, ranges: &[AddressRange], through_pointer: bool) -> bool {
+    pub(crate) fn may_go_to(&self, ranges: &[AddressRange], through_pointer: bool) -> bool {
         match self.target {
             Some(target) => ranges.iter().any(|range| range.contains(target)),
             None => through_pointer,
@@ -146,7 +147,7 @@ pub struct Graph {
     /// Every reference, sorted by the item that makes it, then by site.
     pub references: Vec<Reference>,
     /// Calls and jumps the graph can't follow, sorted the same way.
-    pub unresolved: Vec<Unresolved>,
+    pub(crate) unresolved: Vec<Unresolved>,
     /// Where the program starts running, such as the entry point; see
     /// `roots.rs`. Sorted by node.
     pub roots: Vec<Root>,
@@ -193,7 +194,7 @@ impl Graph {
     }
 
     /// Why the program starts at `node`, if it is one of the roots.
-    pub fn root(&self, node: Node) -> Option<&Root> {
+    pub(crate) fn root(&self, node: Node) -> Option<&Root> {
         let index = self
             .roots
             .binary_search_by_key(&node, |root| root.node)
@@ -203,7 +204,7 @@ impl Graph {
 
     /// Whether `node` is a PLT's header, whose one jump goes to the dynamic
     /// loader.
-    pub fn is_plt_header(&self, node: Node) -> bool {
+    pub(crate) fn is_plt_header(&self, node: Node) -> bool {
         self.root(node)
             .is_some_and(|root| root.kind == RootKind::PltHeader)
     }
@@ -218,7 +219,7 @@ impl Graph {
     /// The addresses outside every item that calls and jumps in the file
     /// go to, as to a routine in a chip's ROM, in the order of
     /// [`Graph::unresolved`].
-    pub fn code_outside_items(&self) -> Vec<u64> {
+    pub(crate) fn code_outside_items(&self) -> Vec<u64> {
         self.unresolved
             .iter()
             .filter_map(|unresolved| unresolved.target)
@@ -378,7 +379,7 @@ impl Node {
 
     /// The item's own size, or 0 for an import, whose code is in another
     /// file.
-    pub fn size(self, binary: &Binary) -> u64 {
+    pub(crate) fn size(self, binary: &Binary) -> u64 {
         match self {
             Node::Item(index) => binary.items[index].size,
             Node::Import(_) => 0,
@@ -428,7 +429,7 @@ fn index(items: usize, node: Node) -> usize {
 
 /// The item that starts at `address`, as a pointer stored in data names
 /// it. On Arm, a pointer to a Thumb function is its address plus 1.
-pub fn item_starting_at(binary: &Binary, address: u64) -> Option<usize> {
+pub(crate) fn item_starting_at(binary: &Binary, address: u64) -> Option<usize> {
     let starts_at = |address| {
         let index = binary.item_at(address)?;
         (binary.items[index].address == address).then_some(index)

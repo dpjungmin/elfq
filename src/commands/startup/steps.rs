@@ -150,39 +150,39 @@ impl Way {
 pub(super) struct Step {
     /// Where its event is in the walk, which orders the steps; the number
     /// of events for a step at the walk's end.
-    pub event: usize,
+    pub(super) event: usize,
     /// Where the step begins in the walk's events: at `event`, or for a
     /// call to a function that does one step, which the step stands for,
     /// at the call's (see [`merge_one_step_calls`]).
-    pub begins: usize,
+    pub(super) begins: usize,
     /// Its instruction.
-    pub site: u64,
-    pub does: Does,
-    pub way: Way,
+    pub(super) site: u64,
+    pub(super) does: Does,
+    pub(super) way: Way,
     /// The function it calls, or whose code holds it (see the list above).
-    pub function: Option<u64>,
+    pub(super) function: Option<u64>,
     /// The function whose code makes the call, or holds the step (see the
     /// list above).
-    pub inside: u64,
+    pub(super) inside: u64,
     /// How many calls deep from the reset handler it is (see
     /// [`Events::level`]).
-    pub level: u32,
+    pub(super) level: u32,
     /// For a call, the veneer that it goes through.
-    pub veneer: Option<u64>,
+    pub(super) veneer: Option<u64>,
     /// Whether it is the call to `main`.
-    pub main: bool,
+    pub(super) main: bool,
     /// For a call that the reset handler makes, other than to `main`, that
     /// neither copies nor zeroes, where the events of the code it runs end,
     /// for [`merge_one_step_calls`] to read.
-    pub span: Option<usize>,
+    span: Option<usize>,
     /// For a copy or zeroing, what it copies or zeroes.
-    pub region: Option<Region>,
+    pub(super) region: Option<Region>,
     /// For a copy or zeroing in an iteration of a loop over a table of
     /// sections, where the iteration reads its row of the table (see
     /// [`Iteration::row`](crate::arch::startup::Iteration::row)).
-    pub table: Option<u64>,
+    pub(super) table: Option<u64>,
     /// For code elfq can't follow, the sections it may set up.
-    pub may: Vec<usize>,
+    pub(super) may: Vec<usize>,
 }
 
 impl Step {

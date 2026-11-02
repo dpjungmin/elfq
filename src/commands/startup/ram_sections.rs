@@ -31,12 +31,12 @@ pub(super) struct RamSections<'a> {
     binary: &'a Binary,
     /// The load images: sections whose bytes the file stores elsewhere,
     /// for startup code to copy into place.
-    pub loads: Vec<usize>,
+    pub(super) loads: Vec<usize>,
     /// The sections without contents, such as `.bss`, which start as
     /// zeros.
-    pub zeros: Vec<usize>,
+    pub(super) zeros: Vec<usize>,
     /// Both, by address.
-    pub sections: Vec<usize>,
+    pub(super) sections: Vec<usize>,
 }
 
 impl<'a> RamSections<'a> {
@@ -264,27 +264,27 @@ impl<'a> RamSections<'a> {
 /// What code does to the sections, as [`RamSections::match_call`] and
 /// [`RamSections::matched`] tell: a copy or a zeroing, of a region.
 pub(super) struct Match {
-    pub does: Does,
-    pub region: Region,
+    pub(super) does: Does,
+    pub(super) region: Region,
 }
 
 /// What a copy or zeroing copies or zeroes: `size` bytes at `to`, for a
 /// copy from `from`, and the sections that start in them.
 pub(super) struct Region {
-    pub to: u64,
-    pub from: Option<u64>,
-    pub size: u64,
-    pub covers: Vec<Cover>,
+    pub(super) to: u64,
+    pub(super) from: Option<u64>,
+    pub(super) size: u64,
+    pub(super) covers: Vec<Cover>,
 }
 
 /// A section that a step copies or zeroes.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Cover {
-    pub section: usize,
+    pub(super) section: usize,
     /// How many of its bytes the step covers.
-    pub bytes: u64,
+    pub(super) bytes: u64,
     /// For a copy, where it copies them from.
-    pub from: Option<u64>,
+    pub(super) from: Option<u64>,
 }
 
 #[cfg(test)]

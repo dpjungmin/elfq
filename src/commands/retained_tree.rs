@@ -50,11 +50,11 @@ pub(super) struct KeptItem<'a> {
 
 /// A binary's graph and dominator tree.
 pub(super) struct RetainedTree<'g, 'a> {
-    pub binary: &'a Binary,
-    pub graph: &'g Graph,
-    pub tree: Held<'g, DominatorTree>,
+    pub(super) binary: &'a Binary,
+    pub(super) graph: &'g Graph,
+    pub(super) tree: Held<'g, DominatorTree>,
     /// The range of memory that sizes count, if not all of it.
-    pub range: Option<AddressRange>,
+    pub(super) range: Option<AddressRange>,
     /// The items that something calls directly, rather than only through a
     /// pointer.
     called: HashSet<usize>,

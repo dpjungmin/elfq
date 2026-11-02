@@ -137,13 +137,13 @@ impl DominatorTree {
 
     /// The nodes that `node` dominates directly, largest retained size
     /// first.
-    pub fn children(&self, node: Node) -> &[Node] {
+    pub(crate) fn children(&self, node: Node) -> &[Node] {
         &self.children[self.index(node)]
     }
 
     /// The nodes directly under the tree's top: the roots, and the nodes
     /// that several roots reach, largest retained size first.
-    pub fn top(&self) -> &[Node] {
+    pub(crate) fn top(&self) -> &[Node] {
         &self.top
     }
 

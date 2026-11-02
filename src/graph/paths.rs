@@ -49,7 +49,7 @@ impl ShortestPaths {
 
     /// Searches from `node` alone, whether or not a root reaches it: the
     /// search reaches what `node` uses, directly or not.
-    pub fn from(binary: &Binary, graph: &Graph, node: Node) -> ShortestPaths {
+    pub(crate) fn from(binary: &Binary, graph: &Graph, node: Node) -> ShortestPaths {
         let items = binary.items.len();
         ShortestPaths::search(items, items + binary.imports.len(), graph, [node], None)
     }
@@ -123,19 +123,19 @@ impl ShortestPaths {
 
     /// Whether the search reached `node`: it started from `node`, or a
     /// reached item uses it. Never true for the node that the search avoids.
-    pub fn is_reached(&self, node: Node) -> bool {
+    pub(crate) fn is_reached(&self, node: Node) -> bool {
         self.distance(node).is_some()
     }
 
     /// How many references the shortest path to `node` has, or `None` when
     /// the search didn't reach it.
-    pub fn distance(&self, node: Node) -> Option<usize> {
+    pub(crate) fn distance(&self, node: Node) -> Option<usize> {
         self.distance[index(self.items, node)]
     }
 
     /// The last reference on the shortest path to `node`, which reaches
     /// it. `None` when the search started from `node`, or didn't reach it.
-    pub fn via(&self, node: Node) -> Option<Reference> {
+    pub(crate) fn via(&self, node: Node) -> Option<Reference> {
         self.via[index(self.items, node)]
     }
 

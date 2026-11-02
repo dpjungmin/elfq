@@ -12,26 +12,26 @@ use object::elf::{
 };
 
 /// What a file's ELF header and program headers say about it.
-pub struct ElfHeader {
+pub(crate) struct ElfHeader {
     /// `e_machine`: the processor the code is for, such as
     /// [`object::elf::EM_ARM`].
-    pub machine: Machine,
+    pub(crate) machine: Machine,
     /// `e_type`: the kind of file, such as [`object::elf::ET_DYN`] for a
     /// shared library.
-    pub file_type: FileType,
+    pub(crate) file_type: FileType,
     /// Whether a program header names a program interpreter, as a program
     /// that an operating system loads has.
-    pub has_interpreter: bool,
+    pub(crate) has_interpreter: bool,
     /// Whether a program header gives a dynamic section.
-    pub has_dynamic: bool,
+    pub(crate) has_dynamic: bool,
     /// Whether the file has section headers.
-    pub has_sections: bool,
+    pub(crate) has_sections: bool,
 }
 
 impl ElfHeader {
     /// The headers of the ELF file at `path`, or `None` when it isn't one.
     /// Program headers that the file ends before are left out.
-    pub fn read(path: &Path) -> io::Result<Option<ElfHeader>> {
+    pub(crate) fn read(path: &Path) -> io::Result<Option<ElfHeader>> {
         ElfHeader::read_from(&mut File::open(path)?)
     }
 

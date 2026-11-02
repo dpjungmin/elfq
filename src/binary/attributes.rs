@@ -31,19 +31,19 @@ const ARMV8_1_M_MAINLINE: u64 = 21;
 /// The version of the Arm architecture that a file's code is built for, as
 /// its build attributes say.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ArmArchitecture {
+pub(crate) struct ArmArchitecture {
     /// Tag_CPU_arch: 10 for Armv7, 13 for Armv7E-M, 17 for Armv8-M
     /// Mainline, and so on (see `ArmArchitecture::name`, built only with
     /// the tui feature).
-    pub version: u64,
+    pub(super) version: u64,
     /// Tag_CPU_arch_profile, such as `b'M'`, when the file gives one.
-    pub profile: Option<u8>,
+    pub(super) profile: Option<u8>,
 }
 
 impl ArmArchitecture {
     /// Its name, as Arm writes it: `Armv7E-M`.
     #[cfg(feature = "tui")]
-    pub fn name(&self) -> String {
+    pub(crate) fn name(&self) -> String {
         let name = match self.version {
             0 => "an Arm architecture before Armv4",
             1 => "Armv4",
@@ -81,7 +81,7 @@ impl ArmArchitecture {
     /// Whether it is the architecture of a Cortex-M core, which runs only
     /// Thumb code: the profile is M, or the version is one that only
     /// Cortex-M cores have, Armv6-M to Armv8.1-M Mainline.
-    pub fn is_cortex_m(&self) -> bool {
+    pub(super) fn is_cortex_m(&self) -> bool {
         self.profile == Some(b'M')
             || self.is_baseline()
             || self.version == ARMV7E_M
@@ -92,13 +92,13 @@ impl ArmArchitecture {
     /// architectures of the smallest Cortex-M cores, such as the Cortex-M0
     /// and M23, which have fewer instructions and exceptions than the
     /// others.
-    pub fn is_baseline(&self) -> bool {
+    pub(super) fn is_baseline(&self) -> bool {
         matches!(self.version, ARMV6_M | ARMV6S_M | ARMV8_M_BASELINE)
     }
 
     /// Whether it is Armv8-M Mainline or Armv8.1-M Mainline, as on a
     /// Cortex-M33 or M55.
-    pub fn is_v8_m_mainline(&self) -> bool {
+    pub(super) fn is_v8_m_mainline(&self) -> bool {
         matches!(self.version, ARMV8_M_MAINLINE | ARMV8_1_M_MAINLINE)
     }
 
@@ -107,7 +107,7 @@ impl ArmArchitecture {
     /// Armv7E-M (Cortex-M4 and M7). Armv8-M cores, such as the Cortex-M33,
     /// add instructions that take the place of others.
     #[cfg(feature = "tui")]
-    pub fn is_cortex_m_up_to_v7(&self) -> bool {
+    pub(crate) fn is_cortex_m_up_to_v7(&self) -> bool {
         matches!(self.version, ARMV6_M | ARMV6S_M | ARMV7E_M)
             || (self.version == ARMV7 && self.profile == Some(b'M'))
     }

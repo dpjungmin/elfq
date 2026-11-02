@@ -27,19 +27,19 @@ use super::thumb::{self, Piece};
 
 /// One instruction, or one piece of data among them.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Line {
-    pub address: u64,
+pub(crate) struct Line {
+    pub(crate) address: u64,
     /// Such as `call`, or `.word` for data.
-    pub mnemonic: String,
+    pub(crate) mnemonic: String,
     /// Such as `rsi, [rip+0x1b1]`, or empty.
-    pub operands: String,
+    pub(crate) operands: String,
     /// What the line refers to, other than registers.
-    pub refers: Option<Refers>,
+    pub(crate) refers: Option<Refers>,
 }
 
 /// What a line refers to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Refers {
+pub(crate) enum Refers {
     /// A direct call or jump to this address. The operands end with it,
     /// so that the browser can put a name in its place.
     Branch(u64),
@@ -63,7 +63,7 @@ impl InstructionSet {
     /// `marked` lists the bytes that the file marks as data there, as
     /// offsets into `code` (see `Binary::data_in_code`); Thumb code prints
     /// them as data, in the file's byte order.
-    pub fn listing(self, code: &[u8], address: u64, marked: &[Range<usize>]) -> Vec<Line> {
+    pub(crate) fn listing(self, code: &[u8], address: u64, marked: &[Range<usize>]) -> Vec<Line> {
         match self {
             Self::X86_64 => x86_64_lines(code, address),
             Self::Thumb { endianness } => thumb_lines(code, address, endianness, marked),

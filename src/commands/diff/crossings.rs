@@ -25,12 +25,12 @@ use crate::graph::{Boundary, Node, ReferenceKind};
 /// BLOCK` in that build lists it: the new build's for a new use, and the
 /// old build's for a gone one.
 pub(super) struct Crossing {
-    pub status: NewOrGone,
+    pub(super) status: NewOrGone,
     /// The item that is used, as an index into the build's items.
-    pub callee: usize,
+    pub(super) callee: usize,
     /// The item in another block that uses it, how, through which veneer,
     /// and where.
-    pub row: CrossingRow,
+    pub(super) row: CrossingRow,
 }
 
 /// Whether a use between blocks is new or gone.

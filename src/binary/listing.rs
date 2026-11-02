@@ -19,7 +19,7 @@ impl Binary {
     /// mark there print as data (see [`Binary::data_in_code`]). It is `None`
     /// when elfq can't read the file's code (see
     /// [`Binary::instruction_set`]).
-    pub fn listing(&self, item: &Item, bytes: &[u8]) -> Option<Vec<Line>> {
+    pub(crate) fn listing(&self, item: &Item, bytes: &[u8]) -> Option<Vec<Line>> {
         // The marks, as offsets into `bytes`.
         let marked: Vec<Range<usize>> = self
             .data_in_code(item.address, item.size)

@@ -13,11 +13,11 @@ use super::{AddressRange, Item, ItemKind, Section, Source, code_address};
 pub(super) struct SymbolTables {
     /// One item per kind and address that has function or data symbols,
     /// sorted by kind, then by address.
-    pub items: Vec<Item>,
+    pub(super) items: Vec<Item>,
     /// The blocks of merged variables (see [`Binary::merged_variables`]).
     ///
     /// [`Binary::merged_variables`]: super::Binary::merged_variables
-    pub merged_variables: Vec<AddressRange>,
+    pub(super) merged_variables: Vec<AddressRange>,
 }
 
 /// A symbol that can become an item, before aliases are merged.

@@ -38,10 +38,10 @@ pub(super) enum PairedBy {
 pub(super) struct Pairing {
     /// For each item of the old build, by its index, its partner in the new
     /// build and the rule that paired them, or `None` when it is gone.
-    pub old_to_new: Vec<Option<(usize, PairedBy)>>,
+    pub(super) old_to_new: Vec<Option<(usize, PairedBy)>>,
     /// For each item of the new build, its partner in the old build, or
     /// `None` when it is new.
-    pub new_to_old: Vec<Option<usize>>,
+    pub(super) new_to_old: Vec<Option<usize>>,
 }
 
 /// Pairs the items of `old` with those of `new`, by the rules in order.

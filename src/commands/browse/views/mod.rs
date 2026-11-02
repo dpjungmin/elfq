@@ -205,7 +205,7 @@ fn has_ignoring_case(text: &str, lowercase: &str) -> bool {
 /// list draws only those rows, so that a function of 100,000 lines draws
 /// as fast as one of ten.
 pub(super) struct Cursor {
-    pub selected: usize,
+    pub(super) selected: usize,
     /// The first row on the screen.
     offset: usize,
     /// How many rows the screen held when last drawn.

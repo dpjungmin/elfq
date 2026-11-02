@@ -13,28 +13,28 @@ use crate::binary::{AddressRange, Binary, LoadedMemory, Section, memory_blocks, 
 pub(super) struct Block {
     /// From the start of the first section or load image in it, in either
     /// build, to the furthest end of any of them, gaps included.
-    pub range: AddressRange,
+    pub(super) range: AddressRange,
     /// The old build's sections and load images in the block, in address
     /// order.
-    pub old: Vec<Place>,
+    pub(super) old: Vec<Place>,
     /// The new build's.
-    pub new: Vec<Place>,
+    pub(super) new: Vec<Place>,
     /// Whether both builds put the same bytes at the same addresses in the
     /// block.
-    pub same_bytes: bool,
+    pub(super) same_bytes: bool,
 }
 
 /// Where a section, or its load image, is in a block.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Place {
     /// The section, as an index into its build's sections.
-    pub section: usize,
+    pub(super) section: usize,
     /// Whether this is the section's load image, where the file stores the
     /// section's bytes for the startup code to copy, rather than the
     /// section itself.
-    pub load_image: bool,
-    pub address: u64,
-    pub size: u64,
+    pub(super) load_image: bool,
+    pub(super) address: u64,
+    pub(super) size: u64,
 }
 
 /// A section or load image in a block, with where it is in each build: the
@@ -42,14 +42,14 @@ pub(super) struct Place {
 /// other, and so on.
 #[derive(Debug)]
 pub(super) struct SectionPair<'a> {
-    pub name: &'a str,
+    pub(super) name: &'a str,
     /// Whether these are the section's load images.
-    pub load_image: bool,
+    pub(super) load_image: bool,
     /// Where it is in the old build, or `None` when it isn't in the block
     /// there.
-    pub old: Option<Place>,
+    pub(super) old: Option<Place>,
     /// Where it is in the new build.
-    pub new: Option<Place>,
+    pub(super) new: Option<Place>,
 }
 
 /// The blocks of memory that the sections in memory and the load images of
@@ -201,12 +201,12 @@ impl Block {
 #[derive(Debug, Default, Clone, Copy)]
 pub(super) struct Parts {
     /// The bytes of the items in the block.
-    pub items: u64,
+    pub(super) items: u64,
     /// The bytes of the load images, and of the sections that hold no
     /// items in either build, but `.relro_padding`, which is padding.
-    pub sections: u64,
+    pub(super) sections: u64,
     /// The rest: the bytes between them.
-    pub padding: u64,
+    pub(super) padding: u64,
 }
 
 impl Block {
@@ -290,13 +290,13 @@ fn span(places: &[Place]) -> Option<u64> {
 /// builds, or that only one has.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct SectionDiffers<'a> {
-    pub name: &'a str,
+    pub(super) name: &'a str,
     /// Whether only its load address, the address of its load image,
     /// differs.
-    pub only_load_address: bool,
+    pub(super) only_load_address: bool,
     /// Whether it has a load image in either build, which startup code
     /// copies.
-    pub has_load_image: bool,
+    pub(super) has_load_image: bool,
 }
 
 /// The allocated sections whose address, size, load image or bytes differ

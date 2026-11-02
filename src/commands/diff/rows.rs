@@ -438,9 +438,9 @@ pub(super) enum MovedRow {
 /// item in each build, as an index into its items.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct MovedItem {
-    pub at: usize,
-    pub old: usize,
-    pub new: usize,
+    pub(super) at: usize,
+    pub(super) old: usize,
+    pub(super) new: usize,
 }
 
 impl MovedRow {

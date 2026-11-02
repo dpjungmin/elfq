@@ -174,14 +174,14 @@ impl<'a> App<'a> {
     ///
     /// That can take a while in a large file, so the event loop draws the
     /// screen, which says so, before [`App::work`] does it.
-    pub fn has_work(&self) -> bool {
+    pub(super) fn has_work(&self) -> bool {
         self.pending().is_some()
     }
 
     /// Works out what the screen has yet to.
     ///
     /// It works out each in the order that `App::pending` gives.
-    pub fn work(&mut self) {
+    pub(super) fn work(&mut self) {
         while let Some(work) = self.pending() {
             self.run(work);
             // Each piece of work leaves another, or none, so the loop ends.
@@ -210,7 +210,7 @@ impl<'a> App<'a> {
     }
 
     /// Does what `key` asks, and says whether the browser should stop.
-    pub fn key(&mut self, key: KeyEvent) -> Option<Stop> {
+    pub(super) fn key(&mut self, key: KeyEvent) -> Option<Stop> {
         // Every key acts on the page as worked out.
         self.work();
         if self.picker.is_some() {
@@ -268,7 +268,7 @@ impl<'a> App<'a> {
     /// Backspace and Esc there, and a key that quits or suspends. Every
     /// other key moves by what the screen shows, such as PageDown by a
     /// screenful, so it is handled once the screen is drawn.
-    pub fn can_wait_to_draw(&self, key: KeyEvent) -> bool {
+    pub(super) fn can_wait_to_draw(&self, key: KeyEvent) -> bool {
         if self.picker.is_some() || self.finding.is_some() {
             return matches!(
                 key.code,
@@ -430,7 +430,7 @@ impl<'a> App<'a> {
     /// the command that prints what the page shows, if one does, and the
     /// hints. The status line takes more than one line only to show in
     /// full a value that its row cuts, such as a long string.
-    pub fn draw(&mut self, frame: &mut Frame) {
+    pub(super) fn draw(&mut self, frame: &mut Frame) {
         let area = frame.area();
         if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
             // Wrapped, so that the size shows on the narrowest screen.

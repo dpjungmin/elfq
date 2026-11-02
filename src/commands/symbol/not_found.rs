@@ -17,12 +17,12 @@ use crate::graph::Node;
 /// Where the compiler inlined every copy of a function, as the DWARF says.
 pub(crate) struct InlinedEverywhere<'n> {
     /// The function's name, as the DWARF gives it.
-    pub name: &'n str,
+    name: &'n str,
     /// How many copies of it there are.
-    pub copies: usize,
+    copies: usize,
     /// The functions that hold them, as indices into the items, those that
     /// hold the most first, then by name.
-    pub into: Vec<usize>,
+    pub(in crate::commands) into: Vec<usize>,
 }
 
 /// The copies of functions that the compiler inlined, by function.

@@ -46,16 +46,16 @@ pub(super) enum Action {
 /// One row of the table of keys, and a line of the help page.
 pub(super) struct Binding {
     /// The keys, as the help page writes them.
-    pub label: &'static str,
+    pub(super) label: &'static str,
     /// What they do, as the help page says it.
-    pub what: &'static str,
+    pub(super) what: &'static str,
     /// What the hint line says about them, if anything, and how much that
     /// matters: 0 is always shown, and the highest goes first when the
     /// screen is too narrow. The tab keys' hint follows the numbers of the
     /// tabs that the page has: "1 3 tabs".
-    pub hint: Option<(&'static str, u8)>,
+    hint: Option<(&'static str, u8)>,
     /// Each key, with what it does.
-    pub keys: &'static [(KeyCode, KeyModifiers, Action)],
+    pub(super) keys: &'static [(KeyCode, KeyModifiers, Action)],
 }
 
 impl Binding {

@@ -14,9 +14,9 @@ use super::Section;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AddressRange {
     /// The first address in the range.
-    pub start: u64,
+    pub(crate) start: u64,
     /// The address just past the range.
-    pub end: u64,
+    pub(crate) end: u64,
 }
 
 impl AddressRange {
@@ -34,7 +34,7 @@ impl AddressRange {
 
     /// The range as `--range` takes it, with each address padded to
     /// `digits` hex digits so that ranges line up in a column.
-    pub fn text(&self, digits: usize) -> String {
+    pub(crate) fn text(&self, digits: usize) -> String {
         format!(
             "{:#0width$x}..{:#0width$x}",
             self.start,
@@ -77,7 +77,7 @@ impl FromStr for AddressRange {
 /// `+` in it: the range it means, if it puts `-` or `:` between two
 /// numbers, as `did you mean 0x0..0x40000?` for `0x0-0x40000`, or else the
 /// forms a range takes.
-pub fn range_hint(text: &str) -> String {
+pub(crate) fn range_hint(text: &str) -> String {
     match meant_range(text) {
         Some(range) => format!("did you mean {range}?"),
         None => "expected START..END or START+SIZE, such as 0x0+256K".to_string(),
@@ -106,7 +106,7 @@ fn meant_range(text: &str) -> Option<String> {
 /// The number that `text` writes in hexadecimal, after `0x` or `0X`, as
 /// in `0x20000000`. `None` when it doesn't start with either, and an error
 /// when the rest isn't a hexadecimal number.
-pub fn hex_number(text: &str) -> Option<Result<u64, ParseIntError>> {
+pub(crate) fn hex_number(text: &str) -> Option<Result<u64, ParseIntError>> {
     let digits = text
         .strip_prefix("0x")
         .or_else(|| text.strip_prefix("0X"))?;
@@ -151,16 +151,16 @@ const LARGEST_GAP: u64 = 64 * 1024;
 /// A run of sections and load images with no large gap between them, such
 /// as a microcontroller's flash or one of its RAMs.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MemoryBlock {
+pub(crate) struct MemoryBlock {
     /// From the start of the first section or load image in it to the
     /// furthest end of any of them, gaps included.
-    pub range: AddressRange,
+    pub(crate) range: AddressRange,
     /// The sections in it, by index into the binary's sections, in address
     /// order.
-    pub sections: Vec<usize>,
+    pub(crate) sections: Vec<usize>,
     /// The sections whose load images are in it (see
     /// [`Section::load_address`]), in the order of those addresses.
-    pub load_images: Vec<usize>,
+    pub(crate) load_images: Vec<usize>,
 }
 
 /// What a block holds: a section, at its address, or a section's load
@@ -176,7 +176,7 @@ struct BlockPart {
 
 /// The blocks of addresses that the program's sections occupy, and the
 /// load images of those whose bytes are stored elsewhere, in address order.
-pub fn memory_blocks(sections: &[Section]) -> Vec<MemoryBlock> {
+pub(crate) fn memory_blocks(sections: &[Section]) -> Vec<MemoryBlock> {
     let mut parts: Vec<BlockPart> = Vec::new();
     for (index, section) in sections.iter().enumerate() {
         if !section.allocated || section.size == 0 {

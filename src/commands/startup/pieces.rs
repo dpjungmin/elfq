@@ -19,11 +19,11 @@ use crate::arch::startup::{Loop, LoopStore, Store};
 pub(super) struct Home {
     /// How many calls deep from the reset handler it is (see
     /// [`Events::level`](super::events::Events::level)).
-    pub level: u32,
-    pub function: u64,
+    pub(super) level: u32,
+    pub(super) function: u64,
     /// The innermost iteration it is in (see
     /// [`Iterations`](super::events::Iterations)).
-    pub iteration: Option<WalkedIteration>,
+    pub(super) iteration: Option<WalkedIteration>,
 }
 
 /// Bytes that code copies or zeroes one after another: a loop's, or a

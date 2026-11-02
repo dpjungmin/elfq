@@ -24,33 +24,33 @@ use crate::render::{Align, Table, TreeRow, TreeShape};
 #[derive(Default)]
 pub(super) struct FlatAnswer {
     /// The first line, or what the answer says in place of its tables.
-    pub lead: Vec<String>,
-    pub memory: Option<Table>,
+    pub(super) lead: Vec<String>,
+    pub(super) memory: Option<Table>,
     /// The columns of the table of rows, the last of which names an item.
-    pub columns: Vec<(String, Align)>,
+    pub(super) columns: Vec<(String, Align)>,
     /// Empty when the answer has no table of rows.
-    pub rows: Vec<FlatRow>,
+    pub(super) rows: Vec<FlatRow>,
     /// The tree drawn with branches in place of the rows, as `reach --tree`
     /// draws it, under the same columns. Browse shows rows, never a tree.
-    pub tree: Option<TreeRow>,
-    pub notes: Vec<String>,
+    pub(super) tree: Option<TreeRow>,
+    pub(super) notes: Vec<String>,
 }
 
 /// A row of [`FlatAnswer`]'s table.
 pub(super) struct FlatRow {
     /// Every cell but the last.
-    pub cells: Vec<String>,
+    pub(super) cells: Vec<String>,
     /// The last cell: a name, which may be empty, then what the row says
     /// about it, such as " (may reach more)" or ", used by main".
-    pub name: String,
-    pub rest: String,
+    pub(super) name: String,
+    pub(super) rest: String,
     /// The item or import that the row is about, if any, which browse
     /// opens.
     #[cfg_attr(not(feature = "tui"), expect(dead_code))]
-    pub node: Option<Node>,
+    pub(super) node: Option<Node>,
     /// The address in it that browse selects when it opens it, if any:
     /// for a caller, the first place where it uses SYMBOL.
-    pub at: Option<u64>,
+    pub(super) at: Option<u64>,
 }
 
 impl FlatRow {

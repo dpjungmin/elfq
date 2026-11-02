@@ -39,12 +39,12 @@ pub(super) struct Group {
 /// The crossings between one item in the ranges and the one outside, said
 /// in the same words, with the same veneer.
 pub(crate) struct CrossingRow {
-    pub inside: Node,
+    pub(in crate::commands) inside: Node,
     /// How the first of them uses what it uses. Its words are those of all
     /// of them (see [`groups`]).
-    pub kind: ReferenceKind,
-    pub veneer: Option<usize>,
-    pub sites: Vec<u64>,
+    pub(in crate::commands) kind: ReferenceKind,
+    pub(in crate::commands) veneer: Option<usize>,
+    pub(super) sites: Vec<u64>,
 }
 
 /// The rows of `callees RANGE --json` for `crossings`, which leave the

@@ -70,13 +70,13 @@ impl Direction {
 /// What a range check asks.
 pub(super) struct RangeCheck<'a> {
     /// The ranges in place of SYMBOL, or the range that SYMBOL occupies.
-    pub ranges: &'a [AddressRange],
+    pub(super) ranges: &'a [AddressRange],
     /// SYMBOL, as the answer names it, when `ranges` is its range.
-    pub name: Option<String>,
+    pub(super) name: Option<String>,
     /// The ranges of `--from` or `--to`: when there are any, only the uses
     /// whose far end is in them count.
-    pub far_side: &'a [AddressRange],
-    pub direction: Direction,
+    pub(super) far_side: &'a [AddressRange],
+    pub(super) direction: Direction,
 }
 
 impl RangeCheck<'_> {

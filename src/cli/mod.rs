@@ -10,7 +10,8 @@
 
 mod help;
 
-pub use help::HOW_WORDS;
+#[cfg(feature = "tui")]
+pub(crate) use help::HOW_WORDS;
 
 use std::path::PathBuf;
 
@@ -36,23 +37,23 @@ use help::{
 )]
 pub struct Cli {
     /// The ELF file: an executable, shared library or firmware image
-    pub file: PathBuf,
+    pub(crate) file: PathBuf,
     /// What to ask about FILE. Without one, elfq prints an overview.
     #[command(subcommand)]
-    pub command: Option<Command>,
+    pub(crate) command: Option<Command>,
     /// Print the answer as JSON, for scripts
     #[arg(long, global = true)]
-    pub json: bool,
+    pub(crate) json: bool,
     /// Draw the overview, top, retained, why, reach SYMBOL and inlined
     /// SYMBOL as trees
     #[arg(long, global = true)]
-    pub tree: bool,
+    pub(crate) tree: bool,
     /// Count only the bytes in one range of memory, such as ITCM: START..END
     /// or START+SIZE, like 0x20000000+256K. When the file's sections and load
     /// images occupy several ranges, as in firmware, the overview lists them.
     /// For the overview, top and retained.
     #[arg(long, global = true, value_name = "RANGE", value_parser = one_range)]
-    pub range: Option<AddressRange>,
+    pub(crate) range: Option<AddressRange>,
 }
 
 /// Reads `--range`, which takes one range: given several, separated by
@@ -109,7 +110,7 @@ fn one_range_each(option: &str, text: &str) -> Result<AddressRange, String> {
 impl Cli {
     /// How to print the answer. `--json` and `--tree` don't go together,
     /// which `commands::run` checks.
-    pub fn format(&self) -> Format {
+    pub(crate) fn format(&self) -> Format {
         if self.json {
             Format::Json
         } else if self.tree {
@@ -122,7 +123,7 @@ impl Cli {
 
 /// How a command prints its answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Format {
+pub(crate) enum Format {
     /// Tables of one row per line, for people and for tools such as grep
     Text,
     /// The same, but with trees drawn with branches, with `--tree`
@@ -134,7 +135,7 @@ pub enum Format {
 // One variant per command. Each variant's `///` line is its line in
 // `elfq --help`.
 #[derive(Debug, Subcommand)]
-pub enum Command {
+pub(crate) enum Command {
     /// Show the items that keep the most bytes in the file
     #[command(after_help = format!("{TOP}\n\n{ROW_MARKS}"))]
     Top(TopArgs),
@@ -179,35 +180,35 @@ pub enum Command {
 }
 
 #[derive(Debug, Args)]
-pub struct TopArgs {
+pub(crate) struct TopArgs {
     /// Show every item, not only the 30 largest
     #[arg(long)]
-    pub all: bool,
+    pub(crate) all: bool,
 }
 
 #[derive(Debug, Args)]
-pub struct RetainedArgs {
+pub(crate) struct RetainedArgs {
     /// A function or data object: its name, the end of its name
     /// (process_frame for app::process_frame), or an address such as 0x1700
-    pub symbol: String,
+    pub(crate) symbol: String,
     /// Show every item, not only the 30 largest
     #[arg(long)]
-    pub all: bool,
+    pub(crate) all: bool,
 }
 
 #[derive(Debug, Args)]
-pub struct WhyArgs {
+pub(crate) struct WhyArgs {
     /// A function or data object: its name, the end of its name
     /// (process_frame for app::process_frame), or an address such as 0x1700
-    pub symbol: String,
+    pub(crate) symbol: String,
     /// Show the chains through every item that keeps SYMBOL, not only the
     /// 10 nearest
     #[arg(long)]
-    pub all: bool,
+    pub(crate) all: bool,
 }
 
 #[derive(Debug, Args)]
-pub struct UsesArgs {
+pub(crate) struct UsesArgs {
     /// A function or data object: its name, the end of its name
     /// (process_frame for app::process_frame), or an address such as 0x1700.
     /// Or one or more ranges of memory, START..END or START+SIZE, to list
@@ -215,95 +216,95 @@ pub struct UsesArgs {
     // Not required here: commands/arguments.rs says what is missing, and
     // with --range, what to type instead.
     #[arg(value_name = "SYMBOL|RANGE")]
-    pub symbols: Vec<String>,
+    pub(crate) symbols: Vec<String>,
     /// Show every item, not only the 30 largest
     #[arg(long)]
-    pub all: bool,
+    pub(crate) all: bool,
 }
 
 #[derive(Debug, Args)]
-pub struct CallersArgs {
+pub(crate) struct CallersArgs {
     #[command(flatten)]
-    pub uses: UsesArgs,
+    pub(crate) uses: UsesArgs,
     /// List only the callers in this range of memory, START..END or
     /// START+SIZE; give it again for more
     #[arg(long, value_name = "RANGE", value_parser = from_range)]
-    pub from: Vec<AddressRange>,
+    pub(crate) from: Vec<AddressRange>,
     // Hidden, so that commands/arguments.rs can say that --to goes with
     // callees, in place of clap's error.
     #[arg(long = "to", hide = true, value_name = "RANGE")]
-    pub misplaced_to: Vec<String>,
+    pub(crate) misplaced_to: Vec<String>,
 }
 
 #[derive(Debug, Args)]
-pub struct CalleesArgs {
+pub(crate) struct CalleesArgs {
     #[command(flatten)]
-    pub uses: UsesArgs,
+    pub(crate) uses: UsesArgs,
     /// List only the callees in this range of memory, START..END or
     /// START+SIZE; give it again for more
     #[arg(long, value_name = "RANGE", value_parser = to_range)]
-    pub to: Vec<AddressRange>,
+    pub(crate) to: Vec<AddressRange>,
     // As `CallersArgs::misplaced_to`.
     #[arg(long = "from", hide = true, value_name = "RANGE")]
-    pub misplaced_from: Vec<String>,
+    pub(crate) misplaced_from: Vec<String>,
 }
 
 #[derive(Debug, Args)]
-pub struct ReachArgs {
+pub(crate) struct ReachArgs {
     /// A function or data object: its name, the end of its name
     /// (process_frame for app::process_frame), or an address such as 0x1700.
     /// Without it, reach lists where the program starts, and what each
     /// start reaches
-    pub symbol: Option<String>,
+    pub(crate) symbol: Option<String>,
     /// List only what SYMBOL reaches in this range of memory, START..END or
     /// START+SIZE; give it again for more
     #[arg(long, value_name = "RANGE", value_parser = to_range)]
-    pub to: Vec<AddressRange>,
+    pub(crate) to: Vec<AddressRange>,
     /// Show every item, not only the 30 largest
     #[arg(long)]
-    pub all: bool,
+    pub(crate) all: bool,
     // As `CallersArgs::misplaced_to`.
     #[arg(long = "from", hide = true, value_name = "RANGE")]
-    pub misplaced_from: Vec<String>,
+    pub(crate) misplaced_from: Vec<String>,
 }
 
 #[derive(Debug, Args)]
-pub struct BrowseArgs {
+pub(crate) struct BrowseArgs {
     /// The function, data object or import to open first: its name, the
     /// end of its name, or an address in it
-    pub symbol: Option<String>,
+    pub(crate) symbol: Option<String>,
 }
 
 #[derive(Debug, Args)]
-pub struct DiffArgs {
+pub(crate) struct DiffArgs {
     /// The other build of the program, to compare with FILE
     #[arg(value_name = "NEW")]
-    pub new: PathBuf,
+    pub(crate) new: PathBuf,
     /// Show every item and section that changed, not only the largest
     #[arg(long)]
-    pub all: bool,
+    pub(crate) all: bool,
 }
 
 #[derive(Debug, Args)]
-pub struct StartupArgs {
+pub(crate) struct StartupArgs {
     /// Show every step, not only the first 30, and name every function in
     /// sentences
     #[arg(long)]
-    pub all: bool,
+    pub(crate) all: bool,
 }
 
 #[derive(Debug, Args)]
-pub struct InlinedArgs {
+pub(crate) struct InlinedArgs {
     /// Show the inlined code in one function instead: its name, the end of
     /// its name, or an address in it
-    pub symbol: Option<String>,
+    pub(crate) symbol: Option<String>,
     /// Show every function, not only the 30 largest
     #[arg(long)]
-    pub all: bool,
+    pub(crate) all: bool,
 }
 
 #[derive(Debug, Subcommand)]
-pub enum DebugCommand {
+pub(crate) enum DebugCommand {
     /// List the functions and data objects elfq found, and where it found each
     Items,
     /// List what the code run from reset does before main: calls, stores and loops

@@ -23,7 +23,7 @@ use super::thumb;
 
 /// What [`Code::walk`] reads of a program, which the caller works out from
 /// the file.
-pub trait Program {
+pub(crate) trait Program {
     /// The bytes of code that the file holds from `address` to the end of
     /// the section of code that holds it, as they are once startup code
     /// has copied the section into place, if it has a load image. `None`
@@ -44,35 +44,35 @@ pub trait Program {
 /// gives it. `arch` is below `binary`, so it has this small struct of its
 /// own rather than `binary::AddressRange`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FunctionBounds {
+pub(crate) struct FunctionBounds {
     /// The address of its first byte.
-    pub start: u64,
+    pub(crate) start: u64,
     /// The address just past its last byte.
-    pub end: u64,
+    pub(crate) end: u64,
 }
 
 impl FunctionBounds {
     /// Whether `address` is in the function.
-    pub fn contains(self, address: u64) -> bool {
+    pub(super) fn contains(self, address: u64) -> bool {
         (self.start..self.end).contains(&address)
     }
 }
 
 /// Where a walk starts, and what it knows of the program before it does.
 #[derive(Debug, Clone, Copy)]
-pub struct Start {
+pub(crate) struct Start {
     /// Where the processor starts running code: the reset handler.
-    pub address: u64,
+    pub(crate) address: u64,
     /// The stack pointer at reset, from the first word of the vector
     /// table. Stores between the lowest value the stack pointer gets and
     /// this one are to the stack. `None` without a vector table.
-    pub stack_pointer: Option<u32>,
+    pub(crate) stack_pointer: Option<u32>,
     /// Where `main` starts. The walk ends at a call to it, or when it gets
     /// there, as where a compiler inlined `main` into the reset handler.
-    pub main: Option<u64>,
+    pub(crate) main: Option<u64>,
     /// How many calls deep the walk follows, at most [`DEPTH`]: 0 walks
     /// only the code at `address`, and what it jumps to.
-    pub follow: u32,
+    pub(crate) follow: u32,
 }
 
 /// How many calls deep a walk follows at most.
@@ -80,7 +80,7 @@ pub(crate) const DEPTH: u32 = 3;
 
 /// What a walk found, in the order the code runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Walk {
+pub(crate) struct Walk {
     /// What the startup code does, in the order it runs, which says how
     /// the events nest:
     ///
@@ -97,16 +97,16 @@ pub struct Walk {
     ///   by one ([`Iteration::events`]).
     /// - A backtrack drops the events that the walk found after the branch
     ///   it goes back to, and comes in their place.
-    pub events: Vec<Event>,
+    pub(crate) events: Vec<Event>,
     /// How the walk ended, in the reset handler or what it called on its
     /// way to `main`.
-    pub end: End,
+    pub(crate) end: End,
 }
 
 /// One thing the startup code does, at a depth of calls from the reset
 /// handler (see [`Event::depth`]). [`Walk::events`] says how they nest.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Event {
+pub(crate) enum Event {
     /// A call, or a tail call.
     Call(Call),
     /// A store outside the stack.
@@ -144,7 +144,7 @@ impl Event {
     /// the function it jumps to does is at that function's depth. A
     /// backtrack is at 0, since the walk backtracks only in the reset
     /// handler's own code and in what that tail-calls.
-    pub fn depth(&self) -> u32 {
+    pub(crate) fn depth(&self) -> u32 {
         match self {
             Event::Call(call) => call.depth,
             Event::Store(store) => store.depth,
@@ -156,29 +156,29 @@ impl Event {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Call {
+pub(crate) struct Call {
     /// The call instruction.
-    pub site: u64,
-    pub depth: u32,
+    pub(crate) site: u64,
+    pub(crate) depth: u32,
     /// What it calls, when the walk can tell.
-    pub target: Option<u64>,
-    pub how: How,
+    pub(crate) target: Option<u64>,
+    pub(crate) how: How,
     /// The numbers in r0 to r3, which pass the first four arguments, when
     /// the walk can tell.
-    pub arguments: [Option<u32>; 4],
+    pub(crate) arguments: [Option<u32>; 4],
     /// Of r0 to r3, as bits, those that hold what an earlier call left
     /// there, which code hasn't written since: those that the code it ran
     /// wrote, and r0 when it read it, as a function such as `memset`
     /// returns its first argument there.
-    pub left: u8,
+    pub(crate) left: u8,
     /// Whether it runs only when condition flags that the walk can't tell
     /// are set: a call in an `it` block, or a branch to another function.
     /// The walk doesn't follow it.
-    pub conditional: bool,
+    pub(crate) conditional: bool,
     /// Whether the walk went through the code it calls, or found it outside
     /// the file: not for a call through a register it can't tell, a
     /// conditional one, or one [`DEPTH`] calls deep.
-    pub followed: bool,
+    pub(crate) followed: bool,
 }
 
 impl Call {
@@ -188,7 +188,7 @@ impl Call {
     /// of what it zeroed in r0. A number that code set before an earlier
     /// call that didn't write it counts, as code built with GCC's
     /// `-fipa-ra` keeps one there for the next call.
-    pub fn passes(&self) -> [Option<u32>; 4] {
+    pub(crate) fn passes(&self) -> [Option<u32>; 4] {
         let mut numbers = self.arguments;
         for (n, number) in numbers.iter_mut().enumerate() {
             if self.left & 1 << n != 0 {
@@ -201,7 +201,7 @@ impl Call {
 
 /// How code calls a function.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum How {
+pub(crate) enum How {
     /// A call to an address in the instruction: `bl`.
     Direct,
     /// A call to the address in a register: `blx` and the number of the
@@ -215,63 +215,63 @@ pub enum How {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Store {
+pub(crate) struct Store {
     /// The store instruction.
-    pub site: u64,
-    pub depth: u32,
+    pub(crate) site: u64,
+    pub(crate) depth: u32,
     /// Where it stores, when the walk can tell.
-    pub address: Option<u32>,
+    pub(crate) address: Option<u32>,
     /// The address in its base register, when the walk can tell: where
     /// it stores from on, when `address` is `None` because the walk
     /// doesn't know what it adds to the base, as with an offset in a
     /// register, or a store of several registers. One that stores below
     /// it, as `stmdb` does, stores that far off from it.
-    pub base: Option<u32>,
+    pub(crate) base: Option<u32>,
     /// How many bytes it stores, when one instruction stores a known
     /// number of them; 0 when it doesn't say, as for the floating-point
     /// `vstm`.
-    pub size: u32,
+    pub(crate) size: u32,
     /// The word it stores, when it stores one from a register and the walk
     /// can tell what that holds, or stores several that all hold it.
-    pub value: Option<u32>,
+    pub(crate) value: Option<u32>,
     /// Where the code loaded the first word it stores from, when it loaded
     /// it from an address the walk can tell and hasn't changed the
     /// register since: for a copy, where it copies from.
-    pub source: Option<Source>,
+    pub(crate) source: Option<Source>,
     /// Whether it stores only when condition flags that the walk can't
     /// tell are set, in an `it` block.
-    pub conditional: bool,
+    pub(crate) conditional: bool,
 }
 
 /// Where a word in a register came from: the load instruction, and the
 /// address it loaded the word from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Source {
-    pub site: u64,
-    pub address: u32,
+pub(crate) struct Source {
+    pub(crate) site: u64,
+    pub(crate) address: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Loop {
+pub(crate) struct Loop {
     /// Where each iteration starts.
-    pub head: u64,
+    pub(crate) head: u64,
     /// The branch back to `head`, or out of a loop body that the compiler
     /// put after the function's other code.
-    pub back: u64,
-    pub depth: u32,
+    pub(crate) back: u64,
+    pub(crate) depth: u32,
     /// The events that the walk found in the loop's code, which come just
     /// before this loop's own: those of each iteration in turn, when the
     /// walk went through each ([`Runs::EachIteration`]), and otherwise
     /// those of the one time it went through the code.
-    pub events: Range<usize>,
+    pub(crate) events: Range<usize>,
     /// How many times the loop runs, as far as the walk can tell.
-    pub runs: Runs,
+    pub(crate) runs: Runs,
 }
 
 /// How many times a loop runs, as far as the walk can tell, and what the
 /// walk knows of it then.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Runs {
+pub(crate) enum Runs {
     /// The walk can't tell. It goes on from the loop with what the loop's
     /// code writes unknown. `stopped` is where the walk of the loop's
     /// code stopped before it got to `back`, if it did: then the events
@@ -295,7 +295,7 @@ pub enum Runs {
 
 impl Loop {
     /// How many times the loop runs, when the walk can tell.
-    pub fn iterations(&self) -> Option<u32> {
+    pub(crate) fn iterations(&self) -> Option<u32> {
         match &self.runs {
             Runs::Uncounted { .. } => None,
             Runs::Counted { iterations, .. } => Some(*iterations),
@@ -305,7 +305,7 @@ impl Loop {
 
     /// What each store of the loop's own code does over all its
     /// iterations, when the walk can tell (see [`Runs::Counted`]).
-    pub fn stores(&self) -> Option<&[LoopStore]> {
+    pub(crate) fn stores(&self) -> Option<&[LoopStore]> {
         match &self.runs {
             Runs::Counted { stores, .. } => stores.as_deref(),
             _ => None,
@@ -315,7 +315,7 @@ impl Loop {
     /// The iterations that the walk went through one by one (see
     /// [`Runs::EachIteration`]); none for a loop whose code it went
     /// through once.
-    pub fn walked_iterations(&self) -> &[Iteration] {
+    pub(crate) fn walked_iterations(&self) -> &[Iteration] {
         match &self.runs {
             Runs::EachIteration(iterations) => iterations,
             _ => &[],
@@ -324,7 +324,7 @@ impl Loop {
 
     /// Where the walk of the loop's code stopped before it got to `back`,
     /// if it did (see [`Runs::Uncounted`]).
-    pub fn stopped(&self) -> Option<End> {
+    pub(crate) fn stopped(&self) -> Option<End> {
         match self.runs {
             Runs::Uncounted { stopped } => stopped,
             _ => None,
@@ -344,9 +344,9 @@ pub(crate) fn loop_head(events: &[Event], back: u64) -> Option<u64> {
 /// One iteration of a loop that the walk went through each time it runs
 /// (see [`Runs::EachIteration`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Iteration {
+pub(crate) struct Iteration {
     /// The events that the walk found in it.
-    pub events: Range<usize>,
+    pub(crate) events: Range<usize>,
     /// Where this iteration reads a row of a table from, as a loop over
     /// `__data_section_table` does: the lowest address in the file,
     /// outside the stack, that the code of the loop's function reads a
@@ -361,36 +361,36 @@ pub struct Iteration {
     /// brought from the iteration before points nowhere. The rows must
     /// also be as far apart each iteration, and each iteration read the
     /// same words of its row, but the last, which may read fewer.
-    pub row: Option<u32>,
+    pub(crate) row: Option<u32>,
 }
 
 /// A store in a loop's code, over all the iterations of the loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LoopStore {
+pub(crate) struct LoopStore {
     /// The store instruction.
-    pub site: u64,
+    pub(crate) site: u64,
     /// Where it stores in the first iteration.
-    pub address: u32,
+    pub(crate) address: u32,
     /// How far that moves each iteration.
-    pub step: i32,
+    pub(crate) step: i32,
     /// How many bytes it stores each iteration.
-    pub size: u32,
+    pub(crate) size: u32,
     /// How many times it stores: one fewer than the loop runs when it
     /// doesn't store in the last iteration, as when the loop leaves first.
-    pub times: u32,
+    pub(crate) times: u32,
     /// The word it stores, when it is the same each iteration.
-    pub value: Option<u32>,
+    pub(crate) value: Option<u32>,
     /// Where it loads the first word it stores from in the first
     /// iteration, and how far that moves each iteration, when the walk can
     /// tell.
-    pub source: Option<(u32, i32)>,
+    pub(crate) source: Option<(u32, i32)>,
     /// Whether it stores a word that the loop's code loaded.
-    pub loaded: bool,
+    pub(crate) loaded: bool,
 }
 
 /// Where a walk stops: the instruction it stopped at, and why.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum End {
+pub(crate) enum End {
     /// It reached `main`: a call to it, or its code.
     Main(u64),
     /// A branch to itself, where the processor waits for good.
@@ -425,7 +425,7 @@ pub enum End {
 
 /// What a branch that the walk can't follow goes through.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Through {
+pub(crate) enum Through {
     Register(u16),
     Memory,
     Table,
@@ -433,7 +433,7 @@ pub enum Through {
 
 impl End {
     /// The instruction where the walk stopped.
-    pub fn site(self) -> u64 {
+    pub(crate) fn site(self) -> u64 {
         match self {
             End::Main(site)
             | End::Spins(site)
@@ -452,7 +452,7 @@ impl End {
     /// follow: code it can't decode, or a branch it can't tell, or that
     /// leaves the code the file holds. Other ends are where the code
     /// doesn't go on, or a limit of the walk's.
-    pub fn is_dead(self) -> bool {
+    pub(super) fn is_dead(self) -> bool {
         matches!(
             self,
             End::Undecoded(_) | End::Branches { .. } | End::LeavesFile { .. }
@@ -462,7 +462,7 @@ impl End {
     /// Whether code goes on past where the walk ended that it didn't go
     /// through: where it can't follow the code, at its budget, or in a
     /// loop it can't make out.
-    pub fn stops_short(self) -> bool {
+    pub(crate) fn stops_short(self) -> bool {
         self.is_dead() || matches!(self, End::Budget(_) | End::Rejoins(_))
     }
 }
@@ -472,7 +472,7 @@ impl End {
 ///
 /// [`InstructionSet::startup_code`]: super::InstructionSet::startup_code
 #[derive(Clone, Copy)]
-pub struct Code<'p> {
+pub(crate) struct Code<'p> {
     program: &'p dyn Program,
     /// The order of the bytes in the words that the code loads.
     endianness: Endianness,
@@ -584,7 +584,7 @@ impl<'p> Code<'p> {
     /// [`WALK_EACH_COUNT_BUDGET`]: super::thumb::startup::WALK_EACH_COUNT_BUDGET
     /// [`WALK_EACH_TOTAL`]: super::thumb::startup::WALK_EACH_TOTAL
     /// [`WALK_EACH_COUNT_TOTAL`]: super::thumb::startup::WALK_EACH_COUNT_TOTAL
-    pub fn walk(&self, start: &Start) -> Walk {
+    pub(crate) fn walk(&self, start: &Start) -> Walk {
         thumb::startup::walk(self.endianness, self.program, start)
     }
 
@@ -593,14 +593,14 @@ impl<'p> Code<'p> {
     /// and leaves in r0 what `first` returns there, so that `second` gets
     /// it, as in `exit(main())`: `bl main; mov r3, r0; mov r0, r3; bl
     /// exit`. False when the calls are more than 16 bytes apart.
-    pub fn passes_result(&self, first: u64, second: u64) -> bool {
+    pub(crate) fn passes_result(&self, first: u64, second: u64) -> bool {
         thumb::startup::passes_result(self.program, first, second)
     }
 
     /// Whether a branch in the code from `start` up to the call at `call`
     /// goes to the instruction after the call: then the call doesn't
     /// return, and the compiler put other code after it, such as a loop's.
-    pub fn branches_past(&self, start: u64, call: u64) -> bool {
+    pub(crate) fn branches_past(&self, start: u64, call: u64) -> bool {
         thumb::startup::branches_past(self.program, start, call)
     }
 }

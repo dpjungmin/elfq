@@ -74,7 +74,7 @@ pub enum Stop {
 /// It stops when the user quits. The file's warnings go to stderr after
 /// that, once the screen is back, or before the error when browse refuses
 /// the file.
-pub fn run(path: &Path, symbol: Option<&str>) -> Result<()> {
+pub(super) fn run(path: &Path, symbol: Option<&str>) -> Result<()> {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         bail!(
             "browse needs a terminal; to print answers, run elfq {} or another command",

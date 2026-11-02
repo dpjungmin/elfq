@@ -30,15 +30,15 @@ pub(super) enum Kind {
 /// A number that a register or a word on the stack may hold.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct Value {
-    pub number: u32,
-    pub kind: Kind,
+    pub(super) number: u32,
+    pub(super) kind: Kind,
     /// The instruction that loaded or built this number as an address, as
     /// an index into the function's instructions. A number made from it,
     /// as by adding to it, keeps it.
-    pub source: Option<u32>,
+    pub(super) source: Option<u32>,
     /// Whether it is what a register held before a call that may have
     /// changed it; see [`Contents::after_call`].
-    pub stale: bool,
+    pub(super) stale: bool,
 }
 
 impl Value {
@@ -427,7 +427,7 @@ pub(super) struct State {
     /// function the code called. Code could then change the stack where
     /// elfq can't see it: through such a register, or in a function it
     /// calls.
-    pub escaped: bool,
+    pub(super) escaped: bool,
 }
 
 impl State {

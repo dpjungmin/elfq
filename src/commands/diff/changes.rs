@@ -137,20 +137,20 @@ impl Change {
 
 /// The items of both builds, paired, and what changed.
 pub(super) struct Items<'a> {
-    pub old: &'a Build,
-    pub new: &'a Build,
-    pub pairing: Pairing,
+    pub(super) old: &'a Build,
+    pub(super) new: &'a Build,
+    pub(super) pairing: Pairing,
     /// The block that holds each item of the old build, as an index into
     /// the blocks, or `None` when none does.
-    pub old_blocks: Vec<Option<usize>>,
+    pub(super) old_blocks: Vec<Option<usize>>,
     /// The same for the new build.
-    pub new_blocks: Vec<Option<usize>>,
+    pub(super) new_blocks: Vec<Option<usize>>,
     /// The items that changed, in the order of the old build's items, then
     /// the new items.
-    pub changes: Vec<Change>,
+    pub(super) changes: Vec<Change>,
     /// How many paired items are the same: the same size, in the same
     /// block, and not edited.
-    pub unchanged: usize,
+    pub(super) unchanged: usize,
 }
 
 /// Pairs the items of the builds and works out what changed.

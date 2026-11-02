@@ -32,17 +32,17 @@ const NOTE_LINES: usize = 3;
 /// One row of the box.
 pub(in crate::commands::browse) struct Found {
     /// The item or import.
-    pub node: Node,
+    pub(in crate::commands::browse) node: Node,
     /// The address typed, when the item holds it.
-    pub at: Option<u64>,
+    pub(in crate::commands::browse) at: Option<u64>,
     /// For the item that the text finds as SYMBOL, its name as the CLI's
     /// answer gives it: "Default_Handler (also named NMI_Handler)".
-    pub lead: Option<String>,
+    pub(in crate::commands::browse) lead: Option<String>,
 }
 
 pub(in crate::commands::browse) struct Picker {
     /// What the user has typed.
-    pub text: String,
+    pub(in crate::commands::browse) text: String,
     /// The items whose names have it.
     found: Vec<Found>,
     /// How many more items have it than the box lists.
