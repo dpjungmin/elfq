@@ -515,7 +515,7 @@ impl Binary {
 
     /// The section of code that holds `address` (see [`Section::is_code`]),
     /// as an index into [`Binary::sections`].
-    pub(crate) fn code_section_at(&self, address: u64) -> Option<usize> {
+    fn code_section_at(&self, address: u64) -> Option<usize> {
         self.sections
             .iter()
             .position(|section| section.is_code() && section.contains(address))
@@ -524,7 +524,7 @@ impl Binary {
     /// `value` as the address of Thumb code, where a pointer to Thumb code
     /// has bit 0 set: when `value` is odd and in a section of code once
     /// that bit is cleared, the address without it.
-    pub(crate) fn thumb_code_address(&self, value: u64) -> Option<u64> {
+    fn thumb_code_address(&self, value: u64) -> Option<u64> {
         if value & 1 == 0 {
             return None;
         }

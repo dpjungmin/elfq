@@ -461,7 +461,7 @@ pub(super) fn samples() -> Vec<std::path::PathBuf> {
 /// `text::shell_quote` writes: plain, or in single quotes, with `'\''`
 /// for a quote. The tests of each tab split the command under it.
 #[cfg(test)]
-pub(super) fn shell_words(line: &str) -> Vec<String> {
+fn shell_words(line: &str) -> Vec<String> {
     let mut words = Vec::new();
     let mut word: Option<String> = None;
     let mut chars = line.chars();

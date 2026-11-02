@@ -66,7 +66,7 @@ impl Value {
 
 /// What adding a number to some [`Values`] did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Inserted {
+enum Inserted {
     /// They didn't hold it, or held it only as stale, and now hold it.
     Changed,
     /// They held it already.

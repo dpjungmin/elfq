@@ -421,7 +421,7 @@ fn pairs_by_name(item: &Item, name: &str) -> bool {
 /// file's names, so the numbers move when a function is added before them.
 /// A C name has no dot, so it is one followed by a dot and a number, once
 /// the suffixes of a copy are left out.
-pub(super) fn numbered_name<'n>(item: &Item, name: &'n str) -> Option<&'n str> {
+fn numbered_name<'n>(item: &Item, name: &'n str) -> Option<&'n str> {
     if item.kind != ItemKind::Data {
         return None;
     }

@@ -14,7 +14,7 @@ use crate::render::{Align, Table};
 
 /// A row of `callees RANGE --json`.
 #[derive(Serialize)]
-pub(crate) struct CalleeJson<'a> {
+pub(in crate::commands) struct CalleeJson<'a> {
     /// The item or import outside the ranges.
     item: json::Item<'a>,
     /// The item in the ranges that uses it.
@@ -26,7 +26,7 @@ pub(crate) struct CalleeJson<'a> {
 }
 
 /// The ranges of `--to` or `--from` for JSON, or `None` when there are none.
-pub(crate) fn json_far_side(far_side: &[AddressRange]) -> Option<Vec<json::Range>> {
+pub(in crate::commands) fn json_far_side(far_side: &[AddressRange]) -> Option<Vec<json::Range>> {
     (!far_side.is_empty()).then(|| json_ranges(far_side))
 }
 
@@ -38,7 +38,7 @@ pub(super) struct Group {
 
 /// The crossings between one item in the ranges and the one outside, said
 /// in the same words, with the same veneer.
-pub(crate) struct CrossingRow {
+pub(in crate::commands) struct CrossingRow {
     pub(in crate::commands) inside: Node,
     /// How the first of them uses what it uses. Its words are those of all
     /// of them (see [`groups`]).
@@ -51,7 +51,10 @@ pub(crate) struct CrossingRow {
 /// ranges: for each item or import outside them, largest first, a row for
 /// each item in them that uses it in one way, through one veneer or none,
 /// with the item outside.
-pub(crate) fn callee_rows(binary: &Binary, crossings: &[Crossing]) -> Vec<(Node, CrossingRow)> {
+pub(in crate::commands) fn callee_rows(
+    binary: &Binary,
+    crossings: &[Crossing],
+) -> Vec<(Node, CrossingRow)> {
     let groups = groups(binary, crossings, Direction::Out, |crossing| {
         json::how_field(crossing.kind)
     });
@@ -60,7 +63,7 @@ pub(crate) fn callee_rows(binary: &Binary, crossings: &[Crossing]) -> Vec<(Node,
 
 /// The JSON of a row of `callees RANGE`, in which an item in the ranges
 /// uses `outside`.
-pub(crate) fn callee_json<'a>(
+pub(in crate::commands) fn callee_json<'a>(
     binary: &'a Binary,
     outside: Node,
     row: &CrossingRow,
@@ -162,7 +165,7 @@ pub(super) fn crossings_table(direction: Direction) -> Table {
 /// outside the ranges, how one item uses the other and where, then both
 /// names, as [`names_cell`] writes them. The names come last, so that a
 /// long one that wraps moves no column.
-pub(crate) fn crossings_columns(direction: Direction) -> [(&'static str, Align); 5] {
+pub(in crate::commands) fn crossings_columns(direction: Direction) -> [(&'static str, Align); 5] {
     let names = match direction {
         Direction::Out => "CALLEE",
         Direction::In => "CALLER",
@@ -205,7 +208,7 @@ pub(super) fn write_groups(
 /// item in the ranges uses `outside`, or `outside` uses one in them. Every
 /// line names both items, so that each stands alone, as when `grep` picks
 /// it out.
-pub(crate) fn row_cells(
+pub(in crate::commands) fn row_cells(
     binary: &Binary,
     outside: Node,
     row: &CrossingRow,
@@ -233,7 +236,7 @@ pub(super) fn how_column(binary: &Binary, crossing: &Crossing) -> &'static str {
 
 /// How a call or jump that elfq can't follow goes, for the HOW column, with
 /// "via veneer" after one through a veneer.
-pub(crate) fn unfollowed_how(unfollowed: &Unfollowed) -> &'static str {
+pub(in crate::commands) fn unfollowed_how(unfollowed: &Unfollowed) -> &'static str {
     match (unfollowed.veneer, unfollowed.unresolved.is_call) {
         (Some(_), true) => "call via veneer",
         (Some(_), false) => "jump via veneer",
@@ -243,7 +246,9 @@ pub(crate) fn unfollowed_how(unfollowed: &Unfollowed) -> &'static str {
 
 /// The calls and jumps that elfq can't follow, one per function, kind of
 /// call, target and veneer, with their sites.
-pub(crate) fn group_unfollowed(unfollowed: &[Unfollowed]) -> Vec<(Unfollowed, Vec<u64>)> {
+pub(in crate::commands) fn group_unfollowed(
+    unfollowed: &[Unfollowed],
+) -> Vec<(Unfollowed, Vec<u64>)> {
     let mut groups: Vec<(Unfollowed, Vec<u64>)> = Vec::new();
     // Where each group is in `groups`.
     let mut index: HashMap<(usize, bool, Option<u64>, Option<usize>), usize> = HashMap::new();
@@ -268,7 +273,11 @@ pub(crate) fn group_unfollowed(unfollowed: &[Unfollowed]) -> Vec<(Unfollowed, Ve
 /// into a phrase, every range and section with `all`. A load image in a
 /// range isn't named, since range checks look only where the program uses
 /// its code and data, and a load image is never used where it is stored.
-pub(crate) fn ranges_text(binary: &Binary, ranges: &[AddressRange], all: bool) -> String {
+pub(in crate::commands) fn ranges_text(
+    binary: &Binary,
+    ranges: &[AddressRange],
+    all: bool,
+) -> String {
     let texts: Vec<String> = ranges
         .iter()
         .map(|&range| text::range_sections_text(binary, range, all))

@@ -15,7 +15,7 @@ use crate::debuginfo::{self, InlinedCopy};
 use crate::graph::Node;
 
 /// Where the compiler inlined every copy of a function, as the DWARF says.
-pub(crate) struct InlinedEverywhere<'n> {
+pub(in crate::commands) struct InlinedEverywhere<'n> {
     /// The function's name, as the DWARF gives it.
     name: &'n str,
     /// How many copies of it there are.
@@ -55,7 +55,10 @@ impl<'a> Names<'a> {
     /// `None` without DWARF, when `query` ends the names of several inlined
     /// functions, or when the compiler kept part of the function out of
     /// line, as `checksum.part.0` for `checksum`.
-    pub(crate) fn inlined_everywhere(&self, query: &str) -> Option<InlinedEverywhere<'_>> {
+    pub(in crate::commands) fn inlined_everywhere(
+        &self,
+        query: &str,
+    ) -> Option<InlinedEverywhere<'_>> {
         if !self.binary.has_dwarf {
             return None;
         }
