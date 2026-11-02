@@ -321,11 +321,11 @@ of its tree) do. Those are names to fix, not meanings to copy.
 - **Integration tests** in `tests/it/` use the samples in `testdata/bin`.
   `cli.rs`, `json.rs`, `docs.rs` and those in `commands/` run the elfq
   program, the way a user would. Those in `library/` call the library, as
-  `Binary::load` and `Graph::build`. `damaged.rs` and `browse.rs` do
-  both, and so does one test in `commands/callers_and_callees.rs`. The
-  checks at the end of `commands/reach.rs` run commands in the test's
-  own process, with `run_in_process`, which is quicker for the hundreds
-  they run. The answers they expect are those in
+  `Binary::load` and `Graph::build`. `damaged.rs` and `commands/browse.rs`
+  do both, and so does one test in `commands/callers_and_callees.rs`. The
+  checks at the end of `commands/reach.rs` run commands in the test's own
+  process, with `run_in_process`, which is quicker for the hundreds they
+  run. The answers they expect are those in
   [testdata/README.md](testdata/README.md), which says, for example, what
   calls `log_msg` in each sample.
 
@@ -334,6 +334,7 @@ of its tree) do. Those are names to fix, not meanings to copy.
 | `support/` | No tests: in `mod.rs`, the samples' paths (`SAMPLE` and others), the lists that several modules check (`C_SAMPLES`, `FAR_SAMPLES`), `samples_for`, which lists the samples for one architecture, `run`, which runs the program and returns a `Run` to check, its shortcuts `stdout`, `stderr`, `crossing`, `elfq_json` and `text_rows`, `names`, which reads the names in a list of elfq's JSON, `run_in_process`, and `assert_output`; in `elf.rs`, `ElfBytes`, which changes a sample's bytes field by field and saves the file |
 | `cli.rs` | Each command's whole text output, errors, exit statuses and help |
 | `json.rs` | `--json` output |
+| `commands/browse.rs` | `browse`'s screens, driven with keys on ratatui's `TestBackend`, a screen in memory; its errors; and on Linux, the program in a terminal that `script` makes. The checks that need its private types are unit tests; see below |
 | `commands/callers_and_callees.rs` | `callers` and `callees`, which share their table and their ranges: their text and JSON for SYMBOL, for ranges of memory and with `--from` and `--to`, and the errors about those ranges |
 | `commands/debug.rs` | `debug items` and `debug walk`; the tests that `debug walk` lists the walk that `startup` reads are in `commands/startup.rs` |
 | `commands/diff.rs` | `diff` on pairs of builds: its text, its JSON, its exit status and the builds it refuses; and at the end, on builds made by changing a sample's bytes: a warning about the new build, bytes or blocks that alone differ, and a separate debug file and a file that puts nothing in memory, which it refuses |
@@ -342,7 +343,6 @@ of its tree) do. Those are names to fix, not meanings to copy.
 | `commands/reach.rs` | `reach`'s text and JSON, with and without SYMBOL; and, run in the test's own process, `reach` on every item of the Cortex-M samples, against `callees`, `retained` and its own `--tree`, and with `--to` against `reach` without it and `callees --to`, and on every function of each stripped one against its twin with symbols; and without SYMBOL, each start of every sample against `reach START` |
 | `commands/startup.rs` | `startup` on the samples whose reset code has a mistake and some without, the exit status of every Cortex-M sample, and the files it refuses; and that `debug walk` lists the walk that `startup` reads |
 | `commands/why.rs` | `why`: its chains as text and JSON, where they start, and what it says when nothing reaches SYMBOL |
-| `browse.rs` | `browse`'s screens, driven with keys on ratatui's `TestBackend`, a screen in memory; its errors; and on Linux, the program in a terminal that `script` makes. The checks that need its private types are unit tests; see below |
 | `library/items.rs` | Finding items: symbols, PLT stubs, unwind tables, functions in stripped firmware, unnamed data |
 | `library/graph.rs` | The reference graph: callers, callees, pointers in data, veneers |
 | `library/retained.rs` | Roots, and what is exclusive to what |
@@ -414,14 +414,14 @@ cargo test --lib arch::thumb
 such as `testdata/bin/c-x86_64.elf`, which is what elfq takes as FILE:
 `SAMPLE` and the other constants in `support/` hold that path, `samples()`
 lists every sample that way, and `load_sample` and `run_in_process` take
-it. Only `screen` and `burst`, in `browse.rs`, take the file's name, as the
-screen's first line shows it. The lists that several modules check are in
-`support/` too: `C_SAMPLES`, the C sample for each instruction set, and
-`FAR_SAMPLES`, the builds of `c/far.c` with symbols, whose calls between
-RAM, flash and ROM go through veneers. So is `samples_for`, which lists
-the samples for one architecture, from the machine in their ELF headers,
-beside `samples()` and `sample_path`. Any other constant or list that
-only one module uses stays in it.
+it. Only `screen` and `burst`, in `commands/browse.rs`, take the file's
+name, as the screen's first line shows it. The lists that several modules
+check are in `support/` too: `C_SAMPLES`, the C sample for each
+instruction set, and `FAR_SAMPLES`, the builds of `c/far.c` with symbols,
+whose calls between RAM, flash and ROM go through veneers. So is
+`samples_for`, which lists the samples for one architecture, from the
+machine in their ELF headers, beside `samples()` and `sample_path`. Any
+other constant or list that only one module uses stays in it.
 
 **Running elfq.** A test runs the program with `run(ARGS)`, from
 `support/`, and says what it expects of the `Run` it gets back:
@@ -612,8 +612,8 @@ the biggest view, and not the one to start from.
    it. The help page and the hint line are printed from that table, and
    `no_key_does_two_things` checks it. `app.rs` handles an action that
    opens a page, as `Action::Help` does.
-4. **Tests.** Pin its screens in `tests/it/browse.rs` at 80x24 and 100x30,
-   and drive it with keys there, as the other tests do.
+4. **Tests.** Pin its screens in `tests/it/commands/browse.rs` at 80x24
+   and 100x30, and drive it with keys there, as the other tests do.
 
 To see a page in a real terminal, run elfq in tmux and print the screen.
 Keys sent before elfq draws its first screen can be lost, so the script

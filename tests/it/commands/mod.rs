@@ -3,6 +3,8 @@
 //! They check what the elfq program prints for the command, its errors and
 //! its exit statuses.
 
+#[cfg(feature = "tui")]
+mod browse;
 mod callers_and_callees;
 mod debug;
 mod diff;

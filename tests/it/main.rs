@@ -6,8 +6,6 @@
 //! rather than running the program, and `support` holds what the modules
 //! share.
 
-#[cfg(feature = "tui")]
-mod browse;
 mod cli;
 mod commands;
 mod damaged;
