@@ -3,7 +3,8 @@
 //! The names inlined into process_frame and report are those in
 //! testdata/README.md, and the sizes of process_frame's copies in
 //! c-x86_64.elf are those that ddbug 0.6.1 printed (docs/survey.md). The
-//! tests of what `inlined` prints are in commands/inlined.rs.
+//! tests of what `inlined` prints are in commands/inlined.rs, and those of
+//! how elfq reads DWARF that doesn't add up in damaged.rs.
 
 use elfq::binary::Binary;
 use elfq::debuginfo::{InlinedCopy, inlined_copies};

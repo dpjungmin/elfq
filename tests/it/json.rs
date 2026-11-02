@@ -1,4 +1,8 @@
-//! `--json`: the same answers as the text, in a shape scripts can read.
+//! `--json` across the commands.
+//!
+//! The tests check the keys of every item, each row on a line of its own,
+//! and the other names of SYMBOL's item. Each command's own JSON is tested
+//! in its file in commands/.
 
 use serde_json::{Value, json};
 

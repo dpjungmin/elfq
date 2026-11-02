@@ -1,10 +1,17 @@
-//! Runs the elfq program the way a user would.
+//! What the commands share in their errors and help.
+//!
+//! The tests check the arguments and files that the commands refuse,
+//! errors on stderr with exit status 2 and what to try instead, the exit
+//! status when what reads the answer stops early, and help before or
+//! after a command.
 
 use std::process::Stdio;
 
-use crate::support::elf::ElfBytes;
+use object::elf;
+
+use crate::support::elf::{ElfBytes, SectionField};
 use crate::support::{
-    LIBRARY_SAMPLE, Run, SAMPLE, TCM_SAMPLE, assert_output, command, stderr, stdout,
+    LIBRARY_SAMPLE, Run, SAMPLE, TCM_SAMPLE, assert_output, command, run, stderr, stdout,
 };
 
 #[test]
@@ -357,6 +364,37 @@ fn errors_say_what_to_try() {
         &stderr(&["testdata/bin/c-deep.elf", "why", "printf"]),
         "error: no function or data object is named `printf`; the compiler inlined its one copy \
          into main, which `inlined main` lists; did you mean __printf_chk?\n",
+    );
+}
+
+#[test]
+fn a_function_inlined_everywhere_is_told_from_one_kept_in_part() {
+    // GCC can inline the start of a function and keep the rest out of line,
+    // as `append.part.0`. Then not every copy of `append` was inlined, and
+    // the error suggests the part. `process_frame` has as many letters.
+    let path = ElfBytes::sample(SAMPLE)
+        .rename_symbol("process_frame", "append.part.0")
+        .save("kept-in-part.elf");
+    assert_output(
+        &run(&[&path, "callers", "append"]).error(),
+        "error: no function or data object is named `append`; did you mean append.part.0?\n",
+    );
+}
+
+#[test]
+fn a_file_with_dwarf_but_no_symbol_table_says_so() {
+    // Without names, elfq can't tell a function that the compiler inlined
+    // everywhere from one it named by address.
+    // `.symtab` holds plain bytes, as far as its header says.
+    let path = ElfBytes::sample(SAMPLE)
+        .set_section(".symtab", SectionField::Type, elf::SHT_PROGBITS)
+        .save("no-symbol-table.elf");
+    let error = run(&[&path, "callers", "append"]).error();
+    assert!(
+        error.starts_with(
+            "error: no function or data object is named `append`; the file has no symbol table"
+        ),
+        "{error}"
     );
 }
 

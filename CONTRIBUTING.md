@@ -319,8 +319,10 @@ of its tree) do. Those are names to fix, not meanings to copy.
   algorithm on a small graph built by hand (`graph/dominators.rs`,
   `graph/paths.rs`).
 - **Integration tests** in `tests/it/` use the samples in `testdata/bin`.
-  `cli.rs`, `json.rs`, `docs.rs` and those in `commands/` run the elfq
-  program, the way a user would. Those in `library/` call the library, as
+  Most run the elfq program, the way a user would: each command's tests,
+  in `commands/`; the tests of what the commands share, in `json.rs`,
+  `tables.rs`, `names.rs` and `errors_and_help.rs`; and `docs.rs`, which
+  runs the examples in the docs. Those in `library/` call the library, as
   `Binary::load` and `Graph::build`. `damaged.rs` and `commands/browse.rs`
   do both, and so does one test in `commands/callers_and_callees.rs`. The
   checks at the end of `commands/reach.rs` run commands in the test's own
@@ -332,8 +334,6 @@ of its tree) do. Those are names to fix, not meanings to copy.
 | File in `tests/it/` | What it tests |
 |---|---|
 | `support/` | No tests: in `mod.rs`, the samples' paths (`SAMPLE` and others), the lists that several modules check (`C_SAMPLES`, `FAR_SAMPLES`), `samples_for`, which lists the samples for one architecture, `run`, which runs the program and returns a `Run` to check, its shortcuts `stdout`, `stderr`, `crossing`, `elfq_json` and `text_rows`, `names`, which reads the names in a list of elfq's JSON, `run_in_process`, and `assert_output`; in `elf.rs`, `ElfBytes`, which changes a sample's bytes field by field and saves the file |
-| `cli.rs` | The commands' errors, exit statuses and help |
-| `json.rs` | `--json` output |
 | `commands/browse.rs` | `browse`'s screens, driven with keys on ratatui's `TestBackend`, a screen in memory; its errors; and on Linux, the program in a terminal that `script` makes. The checks that need its private types are unit tests; see below |
 | `commands/callers_and_callees.rs` | `callers` and `callees`, which share their table and their ranges: their text and JSON for SYMBOL, for ranges of memory and with `--from` and `--to`, and the errors about those ranges |
 | `commands/debug.rs` | `debug items` and `debug walk`; the tests that `debug walk` lists the walk that `startup` reads are in `commands/startup.rs` |
@@ -343,8 +343,10 @@ of its tree) do. Those are names to fix, not meanings to copy.
 | `commands/reach.rs` | `reach`'s text and JSON, with and without SYMBOL; and, run in the test's own process, `reach` on every item of the Cortex-M samples, against `callees`, `retained` and its own `--tree`, and with `--to` against `reach` without it and `callees --to`, and on every function of each stripped one against its twin with symbols; and without SYMBOL, each start of every sample against `reach START` |
 | `commands/startup.rs` | `startup` on the samples whose reset code has a mistake and some without, the exit status of every Cortex-M sample, and the files it refuses; and that `debug walk` lists the walk that `startup` reads |
 | `commands/why.rs` | `why`: its chains as text and JSON, where they start, and what it says when nothing reaches SYMBOL |
+| `json.rs` | What the commands' JSON shares: the keys of every item, each row on a line of its own, and the other names of SYMBOL's item |
 | `tables.rs` | What the commands' tables share: the tree of `--tree`, at most nine levels deep, the lines that sum up the rest of a long list, and `--all` |
 | `names.rs` | The names that the commands print and take: what SYMBOL gave when it isn't the item's name, readable Rust and C++ names and their short forms, and the names of data that no symbol names |
+| `errors_and_help.rs` | What the commands share in their errors and help: the arguments and files they refuse, errors on stderr with exit status 2 and what to try instead, the exit status when what reads the answer stops early, and help |
 | `library/items.rs` | Finding items: symbols, PLT stubs, unwind tables, functions in stripped firmware, unnamed data |
 | `library/graph.rs` | The reference graph: callers, callees, pointers in data, veneers |
 | `library/retained.rs` | Roots, and what is exclusive to what |
@@ -353,6 +355,15 @@ of its tree) do. Those are names to fix, not meanings to copy.
 | `library/inlined.rs` | Inlined copies, from DWARF |
 | `damaged.rs` | Damaged and unusual files, made by changing a sample's bytes |
 | `docs.rs` | The `$ elfq` examples in README.md, docs/design.md and docs/examples.md, and that design.md names every JSON key |
+
+**Where a test goes.** A test of one command goes in that command's file
+in `commands/`, its text and its JSON together. A test that runs several
+commands to check what they share goes in `json.rs`, `tables.rs`,
+`names.rs` or `errors_and_help.rs`, and a test of a part of the library,
+called as the commands call it, goes in `library/`. A test whose point is
+that elfq reads a damaged file without hanging, crashing or misreading it
+goes in `damaged.rs`, whatever command it runs; a test of one command's
+wording on such a file goes in that command's file.
 
 The checks of `browse` that need its private types are unit tests in
 `src/commands/browse/`:
@@ -446,7 +457,7 @@ itself.
 gives no `Run`, only what elfq printed on stdout and the outcome that sets
 its exit status, and an error panics.
 
-**When output changes.** Most tests in `cli.rs` check a command's whole
+**When output changes.** Most tests in `commands/` check a command's whole
 output with `assert_output`. When you change what elfq prints on purpose,
 the test that fails shows the first line that differs, then the new output
 in full, after "The whole output:". Check it, then paste it over the
@@ -503,8 +514,9 @@ is a short one to copy.
    take `--tree`, `--range` or `--json`, or with those that refuse it. A
    command that takes `--range` gets `range` from its arm in `run`; name
    it in `RANGE_REFUSED`, the error that lists the commands that take
-   `--range`, in the tests in `tests/it/cli.rs` that check that error, and
-   in the `--range` help in `cli/mod.rs`, README.md and docs/design.md. A
+   `--range`, in the tests that check that error, which a search of
+   `tests/it/` for its text finds, and in the `--range` help in
+   `cli/mod.rs`, README.md and docs/design.md. A
    command that shows a tree goes likewise in `check_tree`'s error, its
    tests and the `--tree` help.
 4. **SYMBOL.** If the command reads code, call `check_code_is_readable`
@@ -542,9 +554,11 @@ is a short one to copy.
    `Chains` has. A value kept only until an error return and then moved
    on, as `retained::run` keeps its `Names`, is taken back out with
    `into_inner`.
-6. **Tests.** Pin the text output with `assert_output` in
-   `tests/it/cli.rs`, and test the JSON in `tests/it/json.rs`. Add the
-   command to the tests in `cli.rs` that go through commands one by one:
+6. **Tests.** Give the command a file of its own in `tests/it/commands/`,
+   named after it and listed in `commands/mod.rs`. Pin its text output
+   there with `assert_output`, and test its JSON there too. Add the
+   command to the tests in `tests/it/errors_and_help.rs` that go through
+   commands one by one:
    `arguments_that_dont_go_together_are_refused_before_the_file_is_read`,
    `a_file_whose_code_elfq_cant_read_says_so` if it reads code, and
    `commands_that_need_roots_refuse_a_shared_library` if it needs the roots.

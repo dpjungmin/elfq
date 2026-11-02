@@ -1,8 +1,12 @@
-//! Damaged and unusual files, made by changing the bytes of a sample:
-//! headers that don't add up, huge sections, and calls or debug info nested
-//! far deeper than compilers make them. elfq must still answer quickly,
-//! with what the file does hold. The tests run in a debug build, so
-//! arithmetic that overflows fails them too.
+//! Damaged and unusual files, made by changing the bytes of a sample.
+//!
+//! They have headers that don't add up, huge sections, and calls or debug
+//! info nested far deeper than compilers make them. elfq must still answer
+//! quickly, with what the file does hold. The tests run in a debug build,
+//! so arithmetic that overflows fails them too. A test here checks that
+//! elfq reads such a file without hanging, crashing or misreading it,
+//! whatever command it runs; a test of one command's wording on such a
+//! file is in that command's file in commands/.
 
 use std::sync::mpsc;
 use std::time::Duration;
@@ -591,35 +595,4 @@ fn the_functions_of_a_long_chain_are_found_quickly() {
     let (binary, _) = parse_quickly(chain_of_calls(100_000));
     let functions = binary.items.iter().filter(|item| item.size == 8).count();
     assert_eq!(functions, 99_999);
-}
-
-#[test]
-fn a_function_inlined_everywhere_is_told_from_one_kept_in_part() {
-    // GCC can inline the start of a function and keep the rest out of line,
-    // as `append.part.0`. Then not every copy of `append` was inlined, and
-    // the error suggests the part. `process_frame` has as many letters.
-    let path = ElfBytes::sample(SAMPLE)
-        .rename_symbol("process_frame", "append.part.0")
-        .save("kept-in-part.elf");
-    assert_output(
-        &run(&[&path, "callers", "append"]).error(),
-        "error: no function or data object is named `append`; did you mean append.part.0?\n",
-    );
-}
-
-#[test]
-fn a_file_with_dwarf_but_no_symbol_table_says_so() {
-    // Without names, elfq can't tell a function that the compiler inlined
-    // everywhere from one it named by address.
-    // `.symtab` holds plain bytes, as far as its header says.
-    let path = ElfBytes::sample(SAMPLE)
-        .set_section(".symtab", SectionField::Type, elf::SHT_PROGBITS)
-        .save("no-symbol-table.elf");
-    let error = run(&[&path, "callers", "append"]).error();
-    assert!(
-        error.starts_with(
-            "error: no function or data object is named `append`; the file has no symbol table"
-        ),
-        "{error}"
-    );
 }
