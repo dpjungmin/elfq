@@ -31,6 +31,7 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::ops::Range;
 
 use object::{Architecture, Endianness};
 
@@ -70,6 +71,13 @@ enum Used<'a> {
 struct Place {
     item: usize,
     offset: u64,
+}
+
+/// What [`InstructionSet::operands`] finds in the code of partners, in
+/// each build.
+struct PartnerOperands {
+    old: Operands,
+    new: Operands,
 }
 
 /// What may be text at an address, for [`same_text`]: the name of the
@@ -129,124 +137,123 @@ impl<'a> Edits<'a> {
             old_binary.thumb,
             new_binary.endianness,
         ));
-        let operands = instruction_sets.filter(|_| code).map(|(old_set, new_set)| {
-            (
-                old_set.operands(&old_loaded.bytes, old.address),
-                new_set.operands(&new_loaded.bytes, new.address),
-            )
-        });
         let (old_bytes, new_bytes) = (&old_loaded.bytes, &new_loaded.bytes);
+        let operands = instruction_sets.filter(|_| code).map(|(old_set, new_set)| {
+            let old_operands = old_set.operands(old_bytes, old.address);
+            let new_operands = new_set.operands(new_bytes, new.address);
+            PartnerOperands {
+                old: old_operands,
+                new: new_operands,
+            }
+        });
         self.bytes_edited(old, old_bytes, new, new_bytes, operands.as_ref())
-            || operands.is_some_and(|(old_operands, new_operands)| {
-                let offsets = self.distances_elsewhere(&old_operands, &new_operands);
+            || operands.is_some_and(|operands| {
+                let offsets = self.distances_elsewhere(&operands);
                 self.uses_edited(old_item, new_item, &offsets)
             })
     }
 
     /// Whether the partners' bytes, `old_bytes` of `old` and `new_bytes` of
-    /// `new`, differ other than in the distances in their code, `operands`,
-    /// and in the corresponding addresses that they hold.
+    /// `new`, differ other than in the distances and numbers in their code
+    /// that `operands` explains (see [`Edits::explained_by_operands`]), and
+    /// in the words that hold addresses that correspond.
     fn bytes_edited(
         &self,
         old: &Item,
         old_bytes: &[u8],
         new: &Item,
         new_bytes: &[u8],
-        operands: Option<&(Operands, Operands)>,
+        operands: Option<&PartnerOperands>,
     ) -> bool {
-        let (a, b) = (&self.old.binary, &self.new.binary);
         // The bits of each byte that hold a distance or an address that
         // corresponds.
-        let mut explained = vec![0u8; old_bytes.len()];
-        if let Some((x, y)) = operands {
-            for (bits, (x, y)) in explained
-                .iter_mut()
-                .zip(x.distance_bits.iter().zip(&y.distance_bits))
-            {
-                *bits = x & y;
-            }
-            let new_numbers: HashMap<_, u64> = y
-                .split
-                .iter()
-                .map(|number| (&number.bits, number.value))
-                .collect();
-            for number in &x.split {
-                if let Some(&value) = new_numbers.get(&number.bits)
-                    && value != number.value
-                    && self.correspond(number.value, value)
-                {
-                    for &(offset, bits) in &number.bits {
-                        explained[offset] |= bits;
-                    }
-                }
-            }
-        }
+        let mut explained = match operands {
+            Some(operands) => self.explained_by_operands(operands, old_bytes.len()),
+            None => vec![0; old_bytes.len()],
+        };
         // Data, and Thumb code, which keeps constants and tables of
         // addresses among its instructions, hold addresses in words. An
         // x86-64 jump table holds 32-bit distances from the table instead.
+        let old_binary = &self.old.binary;
         let code = old.kind == ItemKind::Function;
-        if !code || a.thumb {
-            let pointer = a.pointer_size as usize;
-            let entries = !code && a.architecture == Architecture::X86_64;
-            let step = if entries { 4 } else { pointer };
-            let mut offset = (step - (old.address % step as u64) as usize) % step;
-            while offset + step <= old_bytes.len() {
-                // A word where one starts and fits, or else an entry.
-                let starts = (old.address + offset as u64).is_multiple_of(pointer as u64);
-                let size = if starts && offset + pointer <= old_bytes.len() {
-                    pointer
-                } else {
-                    step
-                };
-                let range = offset..offset + size;
-                offset += size;
-                let (x, y) = (&old_bytes[range.clone()], &new_bytes[range.clone()]);
-                let unexplained = x
-                    .iter()
-                    .zip(y)
-                    .zip(&explained[range.clone()])
-                    .any(|((x, y), explained)| (x ^ y) & !explained != 0);
-                if !unexplained {
+        if !code || old_binary.thumb {
+            let pointer = old_binary.pointer_size as usize;
+            let entries = !code && old_binary.architecture == Architecture::X86_64;
+            for range in words(old.address, old_bytes.len(), pointer, entries) {
+                let (old_word, new_word) = (&old_bytes[range.clone()], &new_bytes[range.clone()]);
+                if !differs_unexplained(old_word, new_word, &explained[range.clone()]) {
                     continue;
                 }
-                let word_corresponds = size == pointer
-                    && self.correspond(word(x, a.endianness), word(y, b.endianness));
-                let entries_correspond = entries
-                    && x.chunks(4).zip(y.chunks(4)).all(|(x, y)| {
-                        x == y || self.entries_correspond(old.address, x, new.address, y)
-                    });
+                let is_pointer = range.len() == pointer;
+                let corresponds = (is_pointer && self.pointers_correspond(old_word, new_word))
+                    || (entries
+                        && self.entries_correspond(old.address, old_word, new.address, new_word));
                 // Words don't overlap, so one whose values don't
                 // correspond is an edit, whatever the others hold.
-                if !word_corresponds && !entries_correspond {
+                if !corresponds {
                     return true;
                 }
                 explained[range].fill(0xff);
             }
         }
-        old_bytes
-            .iter()
-            .zip(new_bytes)
-            .zip(&explained)
-            .any(|((x, y), explained)| (x ^ y) & !explained != 0)
+        differs_unexplained(old_bytes, new_bytes, &explained)
     }
 
-    /// Whether `old_entry` and `new_entry`, the 32-bit entries of a table at
-    /// `old_table` and `new_table` in each build, lead to places that
-    /// correspond, each entry being a distance from its table, as in an
-    /// x86-64 jump table.
+    /// The bits of each of the partners' `len` bytes that `operands` says
+    /// hold a distance in the code of both, or a number that two
+    /// instructions put together whose values in the two builds
+    /// correspond.
+    fn explained_by_operands(&self, operands: &PartnerOperands, len: usize) -> Vec<u8> {
+        let mut explained = vec![0u8; len];
+        let distance_bits = (operands.old.distance_bits.iter()).zip(&operands.new.distance_bits);
+        for (bits, (old_bits, new_bits)) in explained.iter_mut().zip(distance_bits) {
+            *bits = old_bits & new_bits;
+        }
+        let new_numbers: HashMap<_, u64> = (operands.new.split.iter())
+            .map(|number| (&number.bits, number.value))
+            .collect();
+        for old_number in &operands.old.split {
+            if let Some(&new_value) = new_numbers.get(&old_number.bits)
+                && new_value != old_number.value
+                && self.correspond(old_number.value, new_value)
+            {
+                for &(offset, bits) in &old_number.bits {
+                    explained[offset] |= bits;
+                }
+            }
+        }
+        explained
+    }
+
+    /// Whether `old_pointer` and `new_pointer`, the bytes of a pointer at
+    /// the same place in partners, hold addresses that correspond.
+    fn pointers_correspond(&self, old_pointer: &[u8], new_pointer: &[u8]) -> bool {
+        self.correspond(
+            word(old_pointer, self.old.binary.endianness),
+            word(new_pointer, self.new.binary.endianness),
+        )
+    }
+
+    /// Whether the 32-bit entries in `old_word` and `new_word`, at the same
+    /// place in tables at `old_table` and `new_table` in each build, lead
+    /// to places that correspond where they differ, each entry being a
+    /// distance from its table, as in an x86-64 jump table.
     fn entries_correspond(
         &self,
         old_table: u64,
-        old_entry: &[u8],
+        old_word: &[u8],
         new_table: u64,
-        new_entry: &[u8],
+        new_word: &[u8],
     ) -> bool {
         let endianness = self.old.binary.endianness;
         let target = |table: u64, entry| {
             let distance = word(entry, endianness) as u32 as i32;
             table.wrapping_add_signed(distance.into())
         };
-        self.correspond(target(old_table, old_entry), target(new_table, new_entry))
+        (old_word.chunks(4).zip(new_word.chunks(4))).all(|(old_entry, new_entry)| {
+            old_entry == new_entry
+                || self.correspond(target(old_table, old_entry), target(new_table, new_entry))
+        })
     }
 
     /// Whether two values that a pair of words or instructions hold are the
@@ -306,12 +313,13 @@ impl<'a> Edits<'a> {
     }
 
     /// The offsets of the instructions whose distances, in the partners'
-    /// code, `old_operands` and `new_operands`, don't lead to the same
-    /// place in partners, in order. Only case (a) of [`Edits::correspond`]
+    /// code, as `operands` gives them, don't lead to the same place in
+    /// partners, in order. Only case (a) of [`Edits::correspond`]
     /// counts here: a call to a veneer that only one build has, or a load
     /// from a global offset table, which no item holds, leads elsewhere,
     /// and what the code uses there tells whether it changed.
-    fn distances_elsewhere(&self, old_operands: &Operands, new_operands: &Operands) -> Vec<usize> {
+    fn distances_elsewhere(&self, operands: &PartnerOperands) -> Vec<usize> {
+        let (old_operands, new_operands) = (&operands.old, &operands.new);
         let old_targets: HashMap<usize, u64> = old_operands.targets.iter().copied().collect();
         let new_targets: HashMap<usize, u64> = new_operands.targets.iter().copied().collect();
         let same_place = |offset: &usize, old_target: &u64| {
@@ -390,6 +398,44 @@ impl<'a> Edits<'a> {
         uses.dedup();
         uses
     }
+}
+
+/// The byte ranges of the words in `len` bytes at `address` that may hold
+/// an address: a pointer of `pointer` bytes wherever one starts at a
+/// multiple of its size and fits, and with `entries`, as in x86-64 data, a
+/// 32-bit jump table entry, at a multiple of 4, wherever none does.
+fn words(
+    address: u64,
+    len: usize,
+    pointer: usize,
+    entries: bool,
+) -> impl Iterator<Item = Range<usize>> {
+    let step = if entries { 4 } else { pointer };
+    let mut offset = (step - (address % step as u64) as usize) % step;
+    std::iter::from_fn(move || {
+        if offset + step > len {
+            return None;
+        }
+        // A pointer where one starts and fits, or else an entry.
+        let starts = (address + offset as u64).is_multiple_of(pointer as u64);
+        let size = if starts && offset + pointer <= len {
+            pointer
+        } else {
+            step
+        };
+        let range = offset..offset + size;
+        offset += size;
+        Some(range)
+    })
+}
+
+/// Whether `old_bytes` and `new_bytes` differ in a bit that `explained`
+/// doesn't mark.
+fn differs_unexplained(old_bytes: &[u8], new_bytes: &[u8], explained: &[u8]) -> bool {
+    (old_bytes.iter())
+        .zip(new_bytes)
+        .zip(explained)
+        .any(|((old_byte, new_byte), explained)| (old_byte ^ new_byte) & !explained != 0)
 }
 
 /// The imports that `item` of `build` uses itself, by name, each with how,

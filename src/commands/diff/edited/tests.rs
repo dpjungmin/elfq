@@ -274,6 +274,20 @@ fn x86_jump_table_entries_are_distances_from_the_table() {
     assert!(edited(&old, &table(0x120, [0x10, 0x28, 0x30]), "table"));
 }
 
+#[test]
+fn words_are_pointers_where_they_fit_and_entries_elsewhere() {
+    let ranges = |address, len, pointer, entries| -> Vec<std::ops::Range<usize>> {
+        words(address, len, pointer, entries).collect()
+    };
+    // x86-64 data at 0x1004: an entry up to the first 8-byte boundary,
+    // then pointers, and an entry where no pointer fits.
+    assert_eq!(ranges(0x1004, 24, 8, true), [0..4, 4..12, 12..20, 20..24]);
+    // Thumb code at 0x1002: words from the first 4-byte boundary, and
+    // none in the 2 bytes left.
+    assert_eq!(ranges(0x1002, 12, 4, false), [2..6, 6..10]);
+    assert_eq!(ranges(0x1002, 5, 4, false), []);
+}
+
 /// Thumb's `bl` at `from` to `to`.
 fn bl(from: u64, to: u64) -> [u8; 4] {
     let offset = to.wrapping_sub(from + 4) as u32;
