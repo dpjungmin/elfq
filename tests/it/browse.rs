@@ -13,7 +13,7 @@ use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::damaged;
-use crate::support::{SAMPLE, assert_output, elfq, load_sample, sample_path};
+use crate::support::{SAMPLE, assert_output, load_sample, run, sample_path};
 
 /// A key as a test script writes it: a name such as `Enter`, `Tab`, `Esc`
 /// or `Ctrl-O`, or text, typed a character at a time.
@@ -1628,9 +1628,7 @@ fn browse_needs_a_terminal() {
              another command\n",
         ),
     ] {
-        let output = elfq(args);
-        assert_eq!(output.status.code(), Some(2));
-        assert_output(&String::from_utf8(output.stderr).unwrap(), error);
+        assert_output(&run(args).error(), error);
     }
 }
 
@@ -2242,13 +2240,13 @@ $ elfq testdata/bin/c-x86_64.elf reach process_frame
     // The row of a call to code outside every item opens the item that
     // makes the call.
     let sample = "far-gnu-m4-nodebug.elf";
-    let printed = elfq(&[
+    let printed = run(&[
         &format!("testdata/bin/{sample}"),
         "reach",
         "Reset_Handler",
         "--all",
-    ]);
-    let printed = String::from_utf8(printed.stdout).unwrap();
+    ])
+    .printed(0);
     let rows = printed
         .lines()
         .skip_while(|line| !line.starts_with("ADDRESS"));
@@ -2328,9 +2326,7 @@ fn tabs_that_an_item_cant_have_say_why_as_their_commands_do() {
         for (key, command) in [("2", "callees"), ("4", "reach")] {
             let page = screen(sample, Some(symbol), (100, 30), &[key]);
             let (_, status) = selected_and_status(&page);
-            let output = elfq(&[&path, command, symbol]);
-            assert!(!output.status.success());
-            let error = String::from_utf8(output.stderr).unwrap();
+            let error = run(&[&path, command, symbol]).error();
             assert_eq!(
                 format!("error: {status}\n"),
                 error,
@@ -2355,6 +2351,19 @@ fn command_under(screen: &str) -> String {
 #[test]
 #[cfg(unix)]
 fn the_command_under_the_callers_runs_in_a_shell() {
+    use crate::support::Run;
+
+    // `command`, a line under a page, run by the shell as when pasted.
+    let in_a_shell = |command: &str| {
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("elfq() {{ \"$ELFQ\" \"$@\"; }}; {}", &command[2..]))
+            .env("ELFQ", env!("CARGO_BIN_EXE_elfq"))
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .output()
+            .unwrap();
+        Run::new(&command[2..], output)
+    };
     // Names with spaces, brackets and quotes, which the command quotes.
     let pages = [
         ("cpp-x86_64.elf", "log(unsigned int)", "'log(unsigned int)'"),
@@ -2374,15 +2383,7 @@ fn the_command_under_the_callers_runs_in_a_shell() {
             format!("$ elfq testdata/bin/{sample} callers {quoted}")
         );
         // Run by the shell, as when pasted, it lists the page's rows.
-        let output = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(format!("elfq() {{ \"$ELFQ\" \"$@\"; }}; {}", &command[2..]))
-            .env("ELFQ", env!("CARGO_BIN_EXE_elfq"))
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .output()
-            .unwrap();
-        let printed = String::from_utf8(output.stdout).unwrap();
-        assert!(output.status.success(), "{command}: {printed}");
+        let printed = in_a_shell(&command).printed(0);
         let rows: Vec<&str> = page
             .lines()
             .skip_while(|line| !line.starts_with("  HOW "))
@@ -2401,21 +2402,11 @@ fn the_command_under_the_callers_runs_in_a_shell() {
         for (key, name) in [("2", "callees"), ("4", "reach")] {
             let page = screen(sample, Some(symbol), (100, 30), &[key]);
             let command = command_under(&page);
-            let (pasted, all) = match command.strip_suffix(" --all") {
-                Some(pasted) => (pasted, " --all"),
-                None => (command.as_str(), ""),
-            };
+            let pasted = command.strip_suffix(" --all").unwrap_or(&command);
             let quoted = format!("$ elfq testdata/bin/{sample} {name} {quoted}");
             assert_eq!(pasted, quoted);
-            let output = std::process::Command::new("sh")
-                .arg("-c")
-                .arg(format!("elfq() {{ \"$ELFQ\" \"$@\"; }}; {}", &command[2..]))
-                .env("ELFQ", env!("CARGO_BIN_EXE_elfq"))
-                .current_dir(env!("CARGO_MANIFEST_DIR"))
-                .output()
-                .unwrap();
-            assert!(output.status.success(), "{command}{all}");
-            assert!(!output.stdout.is_empty(), "{command}");
+            let printed = in_a_shell(&command).printed(0);
+            assert!(!printed.is_empty(), "{command}");
         }
     }
 }
