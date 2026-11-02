@@ -330,7 +330,7 @@ of its tree) do. Those are names to fix, not meanings to copy.
 
 | File in `tests/it/` | What it tests |
 |---|---|
-| `support/` | No tests: in `mod.rs`, the samples' paths (`SAMPLE` and others), the lists that several modules check (`C_SAMPLES`, `FAR_SAMPLES`), `samples_for`, which lists the samples for one architecture, `run`, which runs the program and returns a `Run` to check, `run_in_process`, and `assert_output`; in `elf.rs`, changing a sample's bytes and saving the file |
+| `support/` | No tests: in `mod.rs`, the samples' paths (`SAMPLE` and others), the lists that several modules check (`C_SAMPLES`, `FAR_SAMPLES`), `samples_for`, which lists the samples for one architecture, `run`, which runs the program and returns a `Run` to check, `run_in_process`, and `assert_output`; in `elf.rs`, `ElfBytes`, which changes a sample's bytes field by field and saves the file |
 | `cli.rs` | Each command's whole text output, errors, exit statuses and help |
 | `json.rs` | `--json` output |
 | `items.rs` | Finding items: symbols, PLT stubs, unwind tables, functions in stripped firmware, unnamed data |
@@ -446,13 +446,15 @@ numbers and names, as docs/examples.md does, so when an example's output
 changes, check that the text around it still matches the new output.
 
 **Damaged files.** `damaged.rs` makes its files from a sample's bytes, so
-that the hangs and crashes they once caused stay fixed. The functions that
-change the bytes are in `support/elf.rs`, for the other tests that need
-such a file too. A test saves its file with `save`, which returns the path
-to give `run`. Tests run in a
-debug build, so arithmetic that overflows fails them too. A test that uses
-`parse_quickly` fails if loading the file takes more than 10 seconds: add
-one when you make elfq quick to load a file that took far too long.
+that the hangs and crashes they once caused stay fixed. It and the other
+tests that need such a file change the bytes with `ElfBytes`, in
+`support/elf.rs`, which sets a field of the ELF header, a section header
+or a program header by its name, such as `HeaderField::EntryPoint` or
+`SectionField::Size`, to a number or to one of `object::elf`'s constants.
+Its `save` writes the file and returns the path to give `run`. Tests run
+in a debug build, so arithmetic that overflows fails them too. A test that
+uses `parse_quickly` fails if loading the file takes more than 10 seconds:
+add one when you make elfq quick to load a file that took far too long.
 
 ## Adding a command
 
@@ -650,8 +652,9 @@ page, which the capture prints.
    `tests/it/support/mod.rs`; `graph.rs` and `retained.rs` check its
    answers against testdata/README.md.
 6. **Tests that need code elfq can't read.**
-   `a_file_whose_code_elfq_cant_read_says_so` in `tests/it/cli.rs` marks a
-   file as AArch64; when that is the one you add, pick another machine.
+   `ElfBytes::mark_code_unreadable`, in `tests/it/support/elf.rs`, marks a
+   file as AArch64 for them. When AArch64 is the one you add, pick another
+   machine there, and change the tests' text that names AArch64.
 7. **Text for `browse`.** The arm in `InstructionSet::listing`, in
    `src/arch/listing.rs`, prints the code, one line per instruction,
    starting where `scan`'s references are.

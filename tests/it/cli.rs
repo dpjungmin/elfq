@@ -1,12 +1,12 @@
 //! Runs the elfq program the way a user would.
 
-use std::path::Path;
 use std::process::Stdio;
 
+use crate::support::elf::{ElfBytes, without_section_headers};
 use crate::support::{
     DEEP_SAMPLE, Exit, LIBRARY_SAMPLE, MOVED_SAMPLE, Run, SAMPLE, TCM_EDITED_SAMPLE,
     TCM_ENTRY_MAIN_SAMPLE, TCM_INLINED_SAMPLE, TCM_MOVED_SAMPLE, TCM_OCRAM_SAMPLE, TCM_SAMPLE,
-    TCM_SDRAM_SAMPLE, assert_output, command, elf, run, samples, stderr, stdout,
+    TCM_SDRAM_SAMPLE, assert_output, command, run, samples, stderr, stdout,
 };
 
 /// Splits a command line into its arguments as a shell would, for the
@@ -3896,10 +3896,9 @@ fn debug_walk_lists_what_the_code_run_from_reset_does() {
 #[test]
 fn a_file_whose_code_elfq_cant_read_says_so() {
     // The x86-64 sample, marked as AArch64 code, which elfq can't read yet.
-    let mut data = std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join(SAMPLE)).unwrap();
-    // e_machine, in the ELF header: EM_AARCH64.
-    data[18..20].copy_from_slice(&183u16.to_le_bytes());
-    let path = elf::save("aarch64.elf", &data);
+    let path = ElfBytes::sample(SAMPLE)
+        .mark_code_unreadable()
+        .save("aarch64.elf");
     let path = path.as_str();
 
     assert_output(
@@ -4614,12 +4613,8 @@ fn diff_needs_two_builds_of_one_program_with_section_headers() {
         "error: testdata/bin/c-cortex-m7.elf is 32-bit Arm and testdata/bin/c-x86_64.elf is \
          x86-64; diff compares two builds of one program\n",
     );
-    // The firmware, with no section headers: e_shoff, e_shnum and
-    // e_shstrndx are 0.
-    let mut data = std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join(TCM_SAMPLE)).unwrap();
-    data[0x20..0x24].fill(0);
-    data[0x30..0x34].fill(0);
-    let path = elf::save("c-cortex-m7-no-section-headers.elf", &data);
+    // The firmware, with no section headers.
+    let path = without_section_headers(TCM_SAMPLE).save("c-cortex-m7-no-section-headers.elf");
     let path = path.as_str();
     assert_output(
         &stderr(&[TCM_SAMPLE, "diff", path]),

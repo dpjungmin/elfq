@@ -2,16 +2,15 @@
 //! `main`, the problems it finds there, its exit status, and the files it
 //! refuses.
 
-use std::path::Path;
-
-use object::Architecture;
+use object::{Architecture, elf};
 use serde_json::{Value, json};
 
 use crate::support::elf::{
-    self, SIZE, isr_vector, load_image_header, set_section_field, set_word, word,
+    ElfBytes, HeaderField, SectionField, SegmentField, without_section_headers,
 };
 use crate::support::{
-    Exit, Run, SAMPLE, TCM_ENTRY_MAIN_SAMPLE, TCM_SAMPLE, assert_output, command, run, samples_for,
+    Exit, Run, SAMPLE, TCM_ENTRY_MAIN_SAMPLE, TCM_SAMPLE, assert_output, command, run, sample_path,
+    samples_for,
 };
 
 /// [`TCM_SAMPLE`] with memcpy linked into ITCM, which Reset_Handler calls
@@ -50,14 +49,6 @@ const NORETURN_SAMPLE: &str = "testdata/bin/c-cortex-m7-noreturn.elf";
 #[track_caller]
 fn startup(file: &str, options: &[&str]) -> Run {
     run(&[&[file, "startup"], options].concat())
-}
-
-/// Saves a copy of `sample`, changed by `change`, as `name` in a folder for
-/// the tests' files, and returns its path.
-fn changed(sample: &str, name: &str, change: &dyn Fn(&mut Vec<u8>)) -> String {
-    let mut data = std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join(sample)).unwrap();
-    change(&mut data);
-    elf::save(name, &data)
 }
 
 #[test]
@@ -481,10 +472,9 @@ fn debug_walk_starts_where_startup_does() {
     // A vector table whose reset handler is in no function, but in the two
     // bytes that pad the code before Reset_Handler, the entry point: the
     // walk starts at the entry point, as startup reads from there.
-    let padding = changed(TCM_SAMPLE, "c-cortex-m7-reset-in-padding.elf", &|data| {
-        let table = isr_vector(data);
-        set_word(data, table + 4, 0x3000_05f7);
-    });
+    let padding = ElfBytes::sample(TCM_SAMPLE)
+        .set_vector_entry(1, 0x3000_05f7)
+        .save("c-cortex-m7-reset-in-padding.elf");
     let walk = run(&[&padding, "debug", "walk"]).printed(0);
     assert_eq!(
         walk.lines().next().unwrap(),
@@ -493,16 +483,10 @@ fn debug_walk_starts_where_startup_does() {
     assert!(walk.ends_with("ends: reaches main\n"), "{walk}");
     // With the entry point in no function either, in RAM, it refuses the
     // file as startup does.
-    let neither = changed(
-        TCM_SAMPLE,
-        "c-cortex-m7-reset-and-entry-in-no-function.elf",
-        &|data| {
-            let table = isr_vector(data);
-            set_word(data, table + 4, 0x3000_05f7);
-            // e_entry.
-            set_word(data, 0x18, 0x2000_0001);
-        },
-    );
+    let neither = ElfBytes::sample(TCM_SAMPLE)
+        .set_vector_entry(1, 0x3000_05f7)
+        .set(HeaderField::EntryPoint, 0x2000_0001)
+        .save("c-cortex-m7-reset-and-entry-in-no-function.elf");
     let error = run(&[&neither, "debug", "walk"]).error();
     assert_output(&error, &startup(&neither, &[]).error());
     assert_output(
@@ -537,11 +521,12 @@ STEP  DOES  FROM        TO          SIZE  AT          WHAT
 fn a_copy_from_elsewhere_or_of_part_of_a_section_is_a_problem() {
     // The file says that it stores .data 4 bytes lower than where
     // Reset_Handler copies it from.
-    let elsewhere = changed(TCM_SAMPLE, "c-cortex-m7-elsewhere.elf", &|data| {
-        let at = load_image_header(data, 0x2000_0000) + 12;
-        let stored = word(data, at) - 4;
-        set_word(data, at, stored);
-    });
+    let mut data = ElfBytes::sample(TCM_SAMPLE);
+    let segment = data.load_image_segment(0x2000_0000);
+    let stored = data.segment_at(segment, SegmentField::LoadAddress) - 4;
+    let elsewhere = data
+        .set_segment_at(segment, SegmentField::LoadAddress, stored)
+        .save("c-cortex-m7-elsewhere.elf");
     let text = startup(&elsewhere, &[]).printed(1);
     assert!(
         text.starts_with(
@@ -557,13 +542,14 @@ fn a_copy_from_elsewhere_or_of_part_of_a_section_is_a_problem() {
     );
     // .data, its load image and .bss each 16 bytes larger than what
     // Reset_Handler sets up.
-    let partly = changed(TCM_SAMPLE, "c-cortex-m7-partly.elf", &|data| {
-        set_section_field(data, ".data", SIZE, 1056 + 16);
-        set_section_field(data, ".bss", SIZE, 48 + 16);
-        let at = load_image_header(data, 0x2000_0000);
-        set_word(data, at + 16, 1056 + 16);
-        set_word(data, at + 20, 1056 + 16);
-    });
+    let mut data = ElfBytes::sample(TCM_SAMPLE);
+    let segment = data.load_image_segment(0x2000_0000);
+    let partly = data
+        .set_section(".data", SectionField::Size, 1056 + 16)
+        .set_section(".bss", SectionField::Size, 48 + 16)
+        .set_segment_at(segment, SegmentField::FileSize, 1056 + 16)
+        .set_segment_at(segment, SegmentField::MemorySize, 1056 + 16)
+        .save("c-cortex-m7-partly.elf");
     let text = startup(&partly, &[]).printed(1);
     assert!(
         text.starts_with(
@@ -676,7 +662,7 @@ fn startup_reads_a_pipe_and_extended_section_numbers() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let data = std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join(TCM_SAMPLE)).unwrap();
+    let data = std::fs::read(sample_path(TCM_SAMPLE)).unwrap();
     let mut stdin = child.stdin.take().unwrap();
     let writer = std::thread::spawn(move || stdin.write_all(&data));
     let output = child.wait_with_output().unwrap();
@@ -685,12 +671,12 @@ fn startup_reads_a_pipe_and_extended_section_numbers() {
     assert_output(&printed, &expected);
     // e_shnum 0, with the number of sections in the first section header's
     // sh_size, as in a file with more sections than e_shnum holds.
-    let extended = changed(TCM_SAMPLE, "c-cortex-m7-extended.elf", &|data| {
-        let count = u16::from_le_bytes([data[0x30], data[0x31]]);
-        data[0x30..0x32].fill(0);
-        let first = word(data, 0x20) as usize;
-        set_word(data, first + 0x14, u32::from(count));
-    });
+    let mut data = ElfBytes::sample(TCM_SAMPLE);
+    let count = data.header(HeaderField::SectionHeaderCount);
+    let extended = data
+        .set(HeaderField::SectionHeaderCount, 0)
+        .set_section_at(0, SectionField::Size, count)
+        .save("c-cortex-m7-extended.elf");
     assert_output(&startup(&extended, &[]).printed(0), &expected);
 }
 
@@ -869,30 +855,23 @@ fn the_overview_suggests_startup_only_for_firmware_that_startup_reads() {
     assert!(try_startup(TCM_SAMPLE));
     // A first program header that names a dynamic loader, as an operating
     // system's programs have, which startup refuses on the header.
-    let loaded = changed(
-        TCM_SAMPLE,
-        "c-cortex-m7-overview-interpreter.elf",
-        &|data| {
-            let at = word(data, 0x1c) as usize;
-            set_word(data, at, 3);
-        },
-    );
+    let loaded = ElfBytes::sample(TCM_SAMPLE)
+        .set_segment_at(0, SegmentField::Type, elf::PT_INTERP)
+        .save("c-cortex-m7-overview-interpreter.elf");
     // A reset handler and entry point in no function.
-    let no_reset = changed(TCM_SAMPLE, "c-cortex-m7-overview-no-reset.elf", &|data| {
-        let table = isr_vector(data);
-        set_word(data, table + 4, 0x2000_0001);
-        set_word(data, 0x18, 0x2000_0001);
-    });
+    let no_reset = ElfBytes::sample(TCM_SAMPLE)
+        .set_vector_entry(1, 0x2000_0001)
+        .set(HeaderField::EntryPoint, 0x2000_0001)
+        .save("c-cortex-m7-overview-no-reset.elf");
     // No load image or section without contents: the sections that were
-    // are no longer allocated, as sh_flags lacks SHF_ALLOC (2) and keeps
-    // SHF_EXECINSTR (4) or SHF_WRITE (1), so startup has nothing to set up.
-    let no_ram = changed(TCM_SAMPLE, "c-cortex-m7-overview-no-ram.elf", &|data| {
-        const FLAGS: elf::Field = (0x08, 0x08);
-        set_section_field(data, ".itcm", FLAGS, 4);
-        for section in [".data", ".bss", ".ocram_bss"] {
-            set_section_field(data, section, FLAGS, 1);
-        }
-    });
+    // are no longer allocated, as sh_flags lacks SHF_ALLOC and keeps
+    // SHF_EXECINSTR or SHF_WRITE, so startup has nothing to set up.
+    let mut data = ElfBytes::sample(TCM_SAMPLE);
+    data.set_section(".itcm", SectionField::Flags, elf::SHF_EXECINSTR);
+    for section in [".data", ".bss", ".ocram_bss"] {
+        data.set_section(section, SectionField::Flags, elf::SHF_WRITE);
+    }
+    let no_ram = data.save("c-cortex-m7-overview-no-ram.elf");
     for path in [&loaded, &no_reset, &no_ram] {
         assert!(!try_startup(path), "{path}");
     }
@@ -956,25 +935,23 @@ fn startup_reads_only_cortex_m_firmware() {
     // Copies of the firmware with their headers changed: e_type, e_machine,
     // the first program header's p_type, and e_shoff, e_shnum and
     // e_shstrndx.
-    let object = changed(TCM_SAMPLE, "c-cortex-m7-object.elf", &|data| data[0x10] = 1);
-    let library = changed(TCM_SAMPLE, "c-cortex-m7-library.elf", &|data| {
-        data[0x10] = 3
-    });
-    let aarch64 = changed(TCM_SAMPLE, "c-cortex-m7-aarch64.elf", &|data| {
-        data[0x12] = 183
-    });
-    let loaded = changed(TCM_SAMPLE, "c-cortex-m7-interpreter.elf", &|data| {
-        let at = word(data, 0x1c) as usize;
-        set_word(data, at, 3);
-    });
-    let dynamic = changed(TCM_SAMPLE, "c-cortex-m7-dynamic.elf", &|data| {
-        let at = word(data, 0x1c) as usize;
-        set_word(data, at, 2);
-    });
-    let no_sections = changed(TCM_SAMPLE, "c-cortex-m7-no-section-headers.elf", &|data| {
-        data[0x20..0x24].fill(0);
-        data[0x30..0x34].fill(0);
-    });
+    let object = ElfBytes::sample(TCM_SAMPLE)
+        .set(HeaderField::Type, elf::ET_REL)
+        .save("c-cortex-m7-object.elf");
+    let library = ElfBytes::sample(TCM_SAMPLE)
+        .set(HeaderField::Type, elf::ET_DYN)
+        .save("c-cortex-m7-library.elf");
+    let aarch64 = ElfBytes::sample(TCM_SAMPLE)
+        .set(HeaderField::Machine, elf::EM_AARCH64)
+        .save("c-cortex-m7-aarch64.elf");
+    let loaded = ElfBytes::sample(TCM_SAMPLE)
+        .set_segment_at(0, SegmentField::Type, elf::PT_INTERP)
+        .save("c-cortex-m7-interpreter.elf");
+    let dynamic = ElfBytes::sample(TCM_SAMPLE)
+        .set_segment_at(0, SegmentField::Type, elf::PT_DYNAMIC)
+        .save("c-cortex-m7-dynamic.elf");
+    let no_sections =
+        without_section_headers(TCM_SAMPLE).save("c-cortex-m7-no-section-headers.elf");
     for (path, what) in [
         (&object, "an object file, not a linked program"),
         (&library, "a shared library"),
@@ -998,10 +975,10 @@ fn startup_reads_only_cortex_m_firmware() {
     );
     // With e_shnum 0, as in a file with too many sections for it, and
     // e_shoff too large to add to.
-    let huge = changed(SAMPLE, "c-x86_64-huge-shoff.elf", &|data| {
-        data[0x28..0x30].copy_from_slice(&u64::MAX.to_le_bytes());
-        data[0x3c..0x3e].fill(0);
-    });
+    let huge = ElfBytes::sample(SAMPLE)
+        .set(HeaderField::SectionHeaders, u64::MAX)
+        .set(HeaderField::SectionHeaderCount, 0)
+        .save("c-x86_64-huge-shoff.elf");
     assert_output(
         &startup(&huge, &[]).error(),
         &format!(

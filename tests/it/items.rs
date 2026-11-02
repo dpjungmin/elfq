@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 
 use elfq::binary::{Binary, Handler, Item, ItemKind, RelocationTarget, Source};
 
-use crate::support::{LIBRARY_SAMPLE, SAMPLE, load_sample, sample_path};
+use crate::support::elf::ElfBytes;
+use crate::support::{LIBRARY_SAMPLE, SAMPLE, load_sample};
 
 /// Where the crate's file `name` is, from wherever the test runs.
 ///
@@ -326,17 +327,9 @@ fn reserved_vector_table_entries_can_hold_other_words() {
     let words: Vec<u32> = (0..7)
         .map(|index| binary.pointer_at(table.address + index * 4).unwrap() as u32)
         .collect();
-    let mut data = std::fs::read(sample_path(sample)).unwrap();
-    let first_words: Vec<u8> = words[..2]
-        .iter()
-        .flat_map(|word| word.to_le_bytes())
-        .collect();
-    let offset = data
-        .windows(8)
-        .position(|bytes| bytes == first_words)
-        .unwrap();
     let checksum = words.iter().fold(0u32, |sum, word| sum.wrapping_sub(*word));
-    data[offset + 28..offset + 32].copy_from_slice(&checksum.to_le_bytes());
+    let mut data = ElfBytes::sample(sample);
+    data.set_vector_entry(7, checksum.into());
     assert_eq!(Binary::parse(&data).unwrap().vector_table, Some(table));
 }
 
