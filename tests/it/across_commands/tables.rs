@@ -132,7 +132,7 @@ fn no_line_sums_up_a_single_item() {
         if !sample.ends_with(".so") {
             runs.push(vec![sample, "top"]);
         }
-        // The ranges in the overview's Try list.
+        // The ranges in the overview's Try lines.
         for (_, range) in overview
             .lines()
             .filter_map(|line| line.split_once(" --range "))
@@ -140,7 +140,7 @@ fn no_line_sums_up_a_single_item() {
             runs.push(vec![sample, "--range", range]);
             runs.push(vec![sample, "top", "--range", range]);
         }
-        // What the item that the Try list asks about reaches.
+        // What the item that a Try line asks about reaches.
         for line in overview.lines() {
             if let Some((_, symbol)) = line
                 .split_once(" retained ")

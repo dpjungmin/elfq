@@ -129,7 +129,7 @@ pub(super) fn write(answer: &Answer, all: bool, out: &mut dyn Write) -> Result<(
     write_try(answer, try_why(compared, &heads), out)
 }
 
-/// The Try list: `why` with `query`, and `startup` when
+/// The Try lines: `why` with `query`, and `startup` when
 /// [`Answer::try_startup`] says to (see
 /// [`suggest_startup`](super::suggest_startup)).
 fn write_try(answer: &Answer, query: Option<String>, out: &mut dyn Write) -> Result<()> {

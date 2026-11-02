@@ -5,13 +5,15 @@
 //! each of its notes follows an empty line.
 //!
 //! A large tree shows only its largest rows, and the functions at the end
-//! of this file cut it down the same way for every command: the largest
-//! items, and the items between them and the top so that the tree holds
-//! together ([`largest`] and [`with_chains`]), a lone item that would be
-//! left out on its own ([`add_lone`]), and a row such as "70 more" that sums
-//! up the rest ([`with_descendants`]). They work on items numbered as each
-//! command numbers them, and take the tree's sizes, parents and children as
-//! closures.
+//! of this file cut it down: the largest items, and the items between them
+//! and the top so that the tree holds together ([`largest`] and
+//! [`with_chains`]), a lone item that would be left out on its own
+//! ([`add_lone`]), and a row such as "70 more" that sums up the rest
+//! ([`with_descendants`]). `reach --tree` uses all but [`largest`]: it
+//! picks its largest items with its own `Text::largest`, which breaks ties
+//! by name where [`largest`] breaks them by number. They work on items
+//! numbered as each command numbers them, and take the tree's sizes,
+//! parents and children as closures.
 //!
 //! [`FlatAnswer`]: super::flat_answer::FlatAnswer
 

@@ -16,20 +16,20 @@ cargo run -- testdata/bin/c-x86_64.elf
 cargo run -- testdata/bin/c-x86_64.elf callers log_msg
 ```
 
-Debug builds are optimized a little (`opt-level = 1` in Cargo.toml), so that
-`cargo run` on a large file and `cargo test` take seconds. A clean build
-takes about twice as long as it would unoptimized, but a build after a
-change takes about as long.
+Debug builds are optimized a little (`opt-level = 1` in Cargo.toml), so
+that `cargo run` on a large file and `cargo test` take seconds. A clean
+build takes about twice as long as it would unoptimized, but a build after
+a change takes about as long.
 
-`elfq FILE debug items` lists every function and data object elfq found and
-where it found it, and `elfq FILE debug walk` lists what the code that a
-Cortex-M processor runs from reset does before `main`, as elfq follows it:
-calls with their arguments, stores, loops and how it ends. It starts and
-ends where `startup` does, so it lists the walk that `startup` reads. They
-are hidden from `--help` because they are only for developing elfq.
+`elfq FILE debug items` lists every function and data object elfq found
+and where it found it, and `elfq FILE debug walk` lists what the code that
+a Cortex-M processor runs from reset does before `main`, as elfq follows
+it: calls with their arguments, stores, loops and how it ends. It starts
+and ends where `startup` does, so it lists the walk that `startup` reads.
+They are hidden from `--help` because they are only for developing elfq.
 
-The tests read the prebuilt sample binaries in `testdata/bin`, so you need no
-cross compilers. Before opening a pull request, run what CI runs:
+The tests read the prebuilt sample binaries in `testdata/bin`, so you need
+no cross compilers. Before opening a pull request, run what CI runs:
 
 ```sh
 cargo fmt --all --check
@@ -42,11 +42,12 @@ cargo +1.88 check --all-targets --locked --no-default-features
 ```
 
 The third line and the last check elfq without the `tui` feature, which
-`browse` needs. The last two lines check that elfq still compiles with Rust
-1.88, the oldest version it supports (`rust-version` in `Cargo.toml`);
-`rustup toolchain install 1.88` gets it. On Linux, CI also runs `browse` in
-a terminal that `script` makes, and checks that q quits it and that the
-terminal is as it was; `.github/workflows/ci.yml` has the command.
+`browse` needs. The last two lines check that elfq still compiles with
+Rust 1.88, the oldest version it supports (`rust-version` in
+`Cargo.toml`); `rustup toolchain install 1.88` gets it. On Linux, CI also
+runs `browse` in a terminal that `script` makes, and checks that q quits
+it and that the terminal is as it was; `.github/workflows/ci.yml` has the
+command.
 
 ## Where things live
 
@@ -55,7 +56,7 @@ terminal is as it was; `.github/workflows/ci.yml` has the command.
 | `src/main.rs` | The program: parses arguments, runs one command on a thread with a large stack, prints errors and sets the exit status. It also turns `elfq help COMMAND` into `--help`, and suggests the right order when the command comes before the file. |
 | `src/lib.rs` | Declares the modules below. elfq is a library plus that small program; the library exists for the program and its tests. |
 | `src/cli/` | Command-line arguments, with clap: in `mod.rs`, a `Command` variant for each command and the structs that hold their arguments, and in `help.rs`, the text of `--help`. |
-| `src/commands/` | One file per command, which looks up SYMBOL, asks `graph` or `debuginfo` and decides what the answer shows. `mod.rs` runs the command the arguments name. The rest are shared: `arguments.rs` checks which arguments go together, `checks.rs` holds the checks a command makes before it answers, such as `check_code_is_readable`, `symbol/` works out what a user means by SYMBOL (`lookup.rs` finds what a name means and names items for the user in return, and `not_found.rs` and `similar.rs` word the error when it finds several or none), `retained_tree.rs` builds the trees of retained sizes that the overview, `top` and `retained` show, `uses.rs` holds the table of `callers` and `callees` for SYMBOL, `range_check/` answers them for ranges of memory or with `--from` or `--to` (its `validate.rs` checks the ranges, `crossing.rs` holds the answers and `rows.rs` their rows, which `reach` and `diff` print too), `flat_answer.rs` holds the answers whose table has one row to a line and `tree_answer.rs` those whose table holds a tree, `text.rs` the wording that commands share and `json.rs` the JSON shapes. `kept.rs` has `Kept`, which leaves what a command keeps until it has answered for the system to take back when elfq ends (`end_after_answer`). |
+| `src/commands/` | One file per command, or a folder for the larger ones below, which looks up SYMBOL, asks `graph` or `debuginfo` and decides what the answer shows. `mod.rs` runs the command the arguments name. The rest are shared: `arguments.rs` checks which arguments go together, `checks.rs` holds the checks a command makes before it answers, such as `check_code_is_readable`, `symbol/` works out what a user means by SYMBOL (`lookup.rs` finds what a name means and names items for the user in return, and `not_found.rs` and `similar.rs` word the error when it finds several or none), `retained_tree.rs` builds the trees of retained sizes that the overview, `top` and `retained` show, `uses.rs` holds the table of `callers` and `callees` for SYMBOL, `range_check/` answers them for ranges of memory or with `--from` or `--to` (its `validate.rs` checks the ranges, `crossing.rs` holds the answers and `rows.rs` their rows, which `reach` and `diff` print too), `flat_answer.rs` holds the answers whose table has one row to a line and `tree_answer.rs` those whose table holds a tree, `text.rs` the wording that commands share and `json.rs` the JSON shapes. `kept.rs` has `Kept`, which leaves what a command keeps until it has answered for the system to take back when elfq ends (`end_after_answer`). |
 | `src/commands/browse/` | `elfq FILE browse`, with the `tui` feature: `mod.rs` takes over the terminal and runs the event loop, `session.rs` holds the loaded file and asks the commands' code for answers, `keys.rs` is the table of keys, `app.rs` the history of pages, the go-to box, find's prompt and the screen's layout, and `views/` the pages, the go-to box and the tabs of an item's page other than its tab 1, one file each (`item.rs` is an item's page, and `item/` holds its parts: the header, tab 1's lines, a function's code, a data object's contents and the notes on their lines), `printed.rs`, which draws a command's answer for the pages and tabs that show one, and `names.rs`, which shortens long C++ and Rust names to fit a column. |
 | `src/commands/reach/` | `elfq FILE reach [SYMBOL]`: `mod.rs` holds what the search from SYMBOL finds, with the words the code uses for its parts, and `Text`, which words it for people, `find.rs` the search, `rows.rs` writes the answer by block of memory, which browse shows too, `to.rs` the answer with `--to`, `tree.rs` the tree of `--tree` and `json.rs` the JSON, and `starts.rs` answers without SYMBOL, as browse's start page does. |
 | `src/commands/diff/` | `elfq FILE diff NEW`: `mod.rs` reads both files, builds the answer from their bytes alone or from their items too, and gives the exit status, `blocks.rs` works out the blocks of memory that both builds share and what changed in each, `pairing.rs` pairs the builds' items, `changes.rs` works out what changed, `edited.rs` which items of the same size are edited, `crossings.rs` the uses between blocks that are new or gone, `rows.rs` picks the rows of MOVED and CHANGE, and `text.rs` and `json.rs` write the answer. The unit tests of `pairing.rs` and `edited.rs` are in `pairing/tests.rs` and `edited/tests.rs`. |
@@ -86,48 +87,162 @@ arch/        machine code
 ```
 
 So `arch` knows nothing about items, `binary` nothing about the graph, and
-`render` nothing about ELF files: a tree's row carries a `graph::Node` only
-so that browse can open the item the row is about. No tool checks this; a
-`use crate::` line that reaches up the list is a sign that the code belongs
-lower down.
+`render` nothing about ELF files: a tree's row carries a `graph::Node`
+only so that browse can open the item the row is about. No tool checks
+this; a `use crate::` line that reaches up the list is a sign that the
+code belongs lower down.
 
-`commands/browse/` is a command too, at the top of `commands/`: it asks the
-other commands' code for its answers, as `callers::answer` for "used by
-N", so that a page says what the commands print, and nothing else uses it.
-It is a child of `commands`, so it reaches their `pub(super)` helpers
-without making them public. It, `arch/listing.rs` and `binary/listing.rs`
-build only with the `tui` feature.
+In `commands/`, a command calls only the shared modules beside it, which
+`commands/mod.rs` lists: `arguments.rs`, `checks.rs`, `symbol/`,
+`retained_tree.rs`, `uses.rs`, `range_check/`, `flat_answer.rs`,
+`tree_answer.rs`, `text.rs`, `json.rs` and `kept.rs`. Code that two
+commands need goes in one of those, or in a module lower down. Code
+outside a command calls it only to ask whether it would answer, for a
+Try line, which ends an answer with a command to run next, or for a
+suggestion in an error:
 
+- The overview and `diff` ask `startup::reads` whether to suggest
+  `startup`.
+- When `diff` answers from the builds' bytes alone, it asks
+  `startup::check_header` first, so that it parses the new build only
+  when its headers allow it.
+- The error for a function that the compiler inlined everywhere asks
+  `inlined::shows` whether the `inlined` command it suggests needs
+  `--all`.
+- `arguments.rs` runs `callers` and `callees` to find which form of them
+  answers in place of `--range`.
+
+Tests may run any command, as the unit tests of `checks.rs` run the
+overview and `top`.
+
+`commands/browse/` sits at the top of `commands/`, and nothing else uses
+it. It asks the six commands it shows for their answers, the overview,
+`reach`, `callers`, `callees`, `why` and `retained`, as `callers::answer`
+for "used by N", so that a page says what the commands print. It is a
+child of `commands`, so it reaches their `pub(super)` helpers without
+making them public. It, `arch/listing.rs` and `binary/listing.rs` build
+only with the `tui` feature.
+
+- **Each rule has one home.** When several places need the same rule,
+  one function holds it and the others ask it, as decode's
+  `Effect::sets_flags` says when an instruction sets the flags, for both
+  Thumb readers. Some rules are still written more than once (see
+  [below](#where-the-code-doesnt-follow-these-yet)).
 - **Analysis never prints.** `arch`, `binary`, `graph` and `debuginfo`
   return what they find. Problems found while loading a file go into
   `Binary::warnings`, which `commands::run` prints. Only the commands and
   `main.rs` write output.
-- **Commands decide what an answer shows.** A command looks up SYMBOL, asks
-  `graph` or `debuginfo` for the facts, and picks, groups, sorts and words
-  what to show. Scanning code, dominators, shortest paths and crossings
-  live in the modules below. A small query that only one command needs can
-  stay in its file, as `retained`'s list of what SYMBOL shares does; one
-  that another command could use belongs in `graph`.
+- **Commands decide what an answer shows.** A command looks up SYMBOL,
+  asks `graph` or `debuginfo` for the facts, and picks, groups, sorts and
+  words what to show. Scanning code, dominators, shortest paths and
+  crossings live in the modules below. A small query that only one
+  command needs can stay in its file, as `retained`'s list of what
+  SYMBOL shares does; one that another command could use belongs in
+  `graph`.
+- **Work out the facts, then word them.** The types that analysis and
+  searches return hold facts only. A command builds one answer from
+  them, then writes it as text or as JSON, as `top.rs`, `startup/` and
+  `diff/` do (see [Adding a command](#adding-a-command)), and browse
+  shows the command's answer rather than wording its own. The overview's
+  text and its JSON say different things, so each has a path of its own,
+  and its text is written as it is worked out. Some code doesn't do this
+  yet (see [below](#where-the-code-doesnt-follow-these-yet)).
 - **Library code returns errors; it doesn't panic or exit on bad input.**
   Add context where the error happens, with anyhow's `context`, as
   `Binary::load` adds "cannot load FILE". `main.rs` prints `error: ` and
-  the whole chain, and exits with status 2. `unwrap`, `expect` and `panic!`
-  are for tests; an assertion outside them, such as the one in
+  the whole chain, and exits with status 2. `unwrap`, `expect` and
+  `panic!` are for tests; an assertion outside them, such as the one in
   `Table::row`, catches only elfq's own mistakes. `unsafe` code is
   forbidden (`Cargo.toml`).
 - **A damaged file is read as far as it makes sense.** As elfq loads a
   file, it ignores an allocated section that would end past the last
   address, with a warning, and reads a symbol whose size would take it
   past the last address as if it had no size. One whose last byte is the
-  very last address is read one byte shorter. So the rest of the code can
-  add a size to an address without checking. Stored pointers are read only
-  where the file holds bytes, however large a section claims to be, and
-  sums of sizes stop at the largest number rather than overflow.
+  very last address is read one byte shorter. So the rest of the code
+  can add a size to an address without checking. Stored pointers are
+  read only where the file holds bytes, however large a section claims
+  to be, and sums of sizes stop at the largest number rather than
+  overflow.
+- **A file does one job.** A file that does several becomes a folder,
+  whose list of files is its map, as `commands/diff/` and
+  `arch/thumb/startup/` are. A long file can still do one job, as
+  `arch/thumb/decode.rs` does, and `commands/browse/views/names.rs`,
+  whose module doc numbers the steps by which it fits a name to a
+  column. Unit tests longer than about 300 lines move to a `tests.rs` of
+  their own (see [Tests](#tests)).
 - **A long function reads as named steps.** A function of more than
-  about 100 lines that isn't one decoding match is the usual sign that it
-  does several things. Some still wait to be split, such as
-  `Names::similar` in `commands/symbol/similar.rs` and `Function::report`
-  in `arch/thumb/values/mod.rs`.
+  about 100 lines that isn't one decoding match is the usual sign that
+  it does several things: give each a function of its own, with a doc
+  line. A function that would need clippy's `too_many_arguments` allowed
+  takes a struct instead; none does. Some long functions still wait to
+  be split (see [below](#where-the-code-doesnt-follow-these-yet)).
+- **Let the compiler hold the rules.** Where fields must agree, an enum
+  holds the cases that make sense, as diff's `Change` does, rather than
+  Options that are `None` together, bools with rules between them, or a
+  number such as 0 or `u32::MAX` that means something else. A match
+  where a new variant must decide names every variant, with no `_` arm
+  that returns a likely answer, as `InstructionSet`'s methods do. Some
+  code doesn't do this yet (see
+  [below](#where-the-code-doesnt-follow-these-yet)).
+- **Name what crosses a function boundary.** A tuple that a function
+  returns or a struct keeps gets a struct with named fields, as the
+  bytes of code and data that `graph::Reached` counts are a
+  `binary::CodeAndData`, and a bool argument gets an enum, so that a
+  call says what it means. A sort key used in one place may stay a
+  tuple. Much of the code doesn't do this yet (see
+  [below](#where-the-code-doesnt-follow-these-yet)).
+- **One word, one meaning.** A word means one thing across elfq: check a
+  new name against [Words](#words), and add the words you bring in.
+- **A test runs elfq through `support/`.** A test of the program runs
+  it with `run`, or with `command` when it needs more, such as a pipe
+  for its input; it changes a sample's bytes with `ElfBytes`, in
+  `support/elf.rs`; and a test of one command goes in
+  `tests/it/commands/<name>.rs`. See [Tests](#tests). Two tests don't
+  do this yet (see [below](#where-the-code-doesnt-follow-these-yet)).
+
+### Where the code doesn't follow these yet
+
+Later cleanups will take these on. Until then, they are no model for new
+code.
+
+- Each rule has one home:
+  - Which rows of an answer are the largest is written three times: by
+    size and then by name in `uses.rs` (`largest_rows`), for `callers`
+    and `callees`, and in `reach/rows.rs` (`Text::largest`), for
+    `reach`'s rows by block and its `--tree`; and by size and then by
+    number in `tree_answer::largest`, for the trees of retained sizes
+    and for `inlined`.
+- Work out the facts, then word them:
+  - The hidden `debug` commands write as they go.
+- A long function reads as named steps:
+  - Five functions wait for a later cleanup: `Function::execute` and
+    `Function::report` in `arch/thumb/values/mod.rs`, `Names::similar`
+    in `commands/symbol/similar.rs`, `Walker::execute` in
+    `arch/thumb/startup/execute.rs` and `Starts::answer` in
+    `commands/reach/starts.rs`.
+- Let the compiler hold the rules:
+  - The Thumb readers match `Flow` and `Operation` with `_` arms in
+    places, as `Function::step` in `arch/thumb/values/mod.rs` and
+    `Walker::flags` in `arch/thumb/startup/execute.rs` do.
+  - The startup walk gives a word that no register points to the
+    pointer `NOWHERE`, the highest address, so that it sorts last
+    (`arch/thumb/startup/each_iteration.rs`).
+- Name what crosses a function boundary:
+  - About sixty functions, most of them private, return tuples, as
+    `thumb::layout` returns (offset, size, piece) and `Binary::words`
+    (address, value) pairs.
+  - `Operands::targets` holds (offset, address) pairs, and the startup
+    walk keeps its ways out of a loop as pairs of addresses (`pending`).
+  - `all`, which `--all` sets, goes as a bool from the `run` of each
+    command that takes it to about sixty-five of the commands'
+    functions.
+  - About fifty other arguments are bools, as in `Block::parts` in
+    `diff/blocks.rs`, `Boundary::unfollowed_from` in
+    `graph/boundary.rs` and the startup walk's `Walker::execute`.
+- A test runs elfq through `support/`:
+  - In `tests/it/commands/browse.rs`,
+    `the_command_under_the_callers_runs_in_a_shell` starts elfq through
+    `sh`, and `in_a_terminal` through `timeout` and `script`.
 
 ## Words
 
@@ -704,21 +819,21 @@ page, which the capture prints.
 
 ## Sample binaries
 
-[testdata/README.md](testdata/README.md) lists what each sample contains and
-the answers tests should expect. If you change a sample's source, rebuild with
-`testdata/build.sh` and commit the new files with the source change. For a
-Cortex-M sample, also run `testdata/thumb-text.sh`, which writes objdump's
-text for its code to `testdata/tests/thumb`, where the tests of `browse`'s
-Thumb text read it, and commit that too. Then
-read docs/examples.md again: it says what the samples' source does, down to
+[testdata/README.md](testdata/README.md) lists what each sample contains
+and the answers tests should expect. If you change a sample's source,
+rebuild with `testdata/build.sh` and commit the new files with the source
+change. For a Cortex-M sample, also run `testdata/thumb-text.sh`, which
+writes objdump's text for its code to `testdata/tests/thumb`, where the
+tests of `browse`'s Thumb text read it, and commit that too. Then read
+docs/examples.md again: it says what the samples' source does, down to
 line numbers in testdata/rust/src/main.rs, and no test checks that.
 
 ## Checking that output didn't change
 
 A change that shouldn't change what elfq prints, such as a cleanup or a
 speed-up, needs more than the tests: run `scripts/same-output.sh` with a
-release build of `main` and one of your branch, on as many ELF files as you
-can find.
+release build of `main` and one of your branch, on as many ELF files as
+you can find.
 
 ```sh
 git worktree add ../elfq-main main
@@ -739,9 +854,10 @@ status 1 if one does. On the samples alone it runs about 6,200
 commands, in about 15 seconds on four processors.
 
 The samples are small and similar, so add other files too: programs from
-`/usr/bin`, a Rust build of elfq itself, and firmware, which `testdata/build.sh`
-and the SDKs of chip makers can build. A pull request that says its output
-didn't change should say what files it was checked on.
+`/usr/bin`, a Rust build of elfq itself, and firmware, which
+`testdata/build.sh` and the SDKs of chip makers can build. A pull request
+that says its output didn't change should say what files it was checked
+on.
 
 ## Checking performance
 
@@ -765,9 +881,9 @@ files):
 `scripts/same-output.sh --time OLD NEW FILE...` runs the overview, `top`,
 `inlined`, `reach`, `startup` and the SYMBOL commands on each file 9 times
 with each build, taking turns so that a busy moment slows both alike, and
-prints the median times side by side, in milliseconds. Compare the peak memory too (`/usr/bin/time -v` on Linux,
-`-l` on macOS), and the output, which should not change unless you mean
-it to.
+prints the median times side by side, in milliseconds. Compare the peak
+memory too (`/usr/bin/time -v` on Linux, `-l` on macOS), and the output,
+which should not change unless you mean it to.
 
 ## Pull requests
 

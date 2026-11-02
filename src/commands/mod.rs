@@ -1,12 +1,21 @@
 //! One module per command, and what they share. This file runs the command
 //! that the arguments name. The shared modules are libraries that commands
 //! call: `arguments.rs` checks which arguments go together, `checks.rs` the
-//! things a command needs before it answers, `kept.rs` leaves what a command
-//! builds for the system to free, `uses.rs` holds the table of `callers` and
-//! `callees`, `flat_answer.rs` the answers whose table has one row to a
-//! line, and `tree_answer.rs` those whose table holds a tree, and how a
-//! tree is cut down to its largest rows. How elfq words things is in
-//! `text.rs`, and the shapes of its JSON in `json.rs`.
+//! things a command needs before it answers, `symbol/` finds what SYMBOL
+//! names, `retained_tree.rs` builds the trees of retained sizes, `uses.rs`
+//! holds the table of `callers` and `callees`, `range_check/` answers them
+//! for ranges of memory or with `--from` or `--to`, `flat_answer.rs` holds
+//! the answers whose table has one row to a line, and `tree_answer.rs`
+//! those whose table holds a tree, and how a tree is cut down to its
+//! largest rows, and `kept.rs` leaves what a command builds for the system
+//! to free. How elfq words things is in `text.rs`, and the shapes of its
+//! JSON in `json.rs`.
+//!
+//! A command calls no other command, except to ask whether that one would
+//! answer, for a Try line, which ends an answer with a command to run next,
+//! or for a suggestion in an error. `browse/` asks the six commands it shows
+//! for their answers: the overview, `reach`, `callers`, `callees`, `why` and
+//! `retained`.
 
 mod arguments;
 #[cfg(feature = "tui")]
