@@ -12,5 +12,6 @@ mod damaged;
 mod docs;
 mod json;
 mod library;
+mod names;
 mod support;
 mod tables;

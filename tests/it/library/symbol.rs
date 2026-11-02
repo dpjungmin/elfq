@@ -1,4 +1,6 @@
 //! Finding what the user means by SYMBOL.
+//!
+//! The tests of the names that the commands print for it are in names.rs.
 
 use elfq::binary::{Binary, names};
 use elfq::commands::symbol;
