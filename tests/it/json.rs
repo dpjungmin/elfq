@@ -124,11 +124,3 @@ fn symbol_lists_its_other_names() {
     let callers = elfq_json(&[m4, "callers", "NMI_Handler"]);
     assert_eq!(callers["callers"][0]["item"].get("aliases"), None);
 }
-
-#[test]
-fn debug_commands_print_only_text() {
-    assert_eq!(
-        run(&[SAMPLE, "debug", "items", "--json"]).error(),
-        "error: the debug commands print only text\n"
-    );
-}

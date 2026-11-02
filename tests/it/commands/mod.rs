@@ -4,6 +4,7 @@
 //! its exit statuses.
 
 mod callers_and_callees;
+mod debug;
 mod diff;
 mod inlined;
 mod overview_top_and_retained;

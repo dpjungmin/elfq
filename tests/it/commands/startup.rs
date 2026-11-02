@@ -1,6 +1,9 @@
-//! `startup`: what the reset code of each Cortex-M sample does before
-//! `main`, the problems it finds there, its exit status, and the files it
-//! refuses.
+//! `startup`: what the reset code of each sample does before `main`.
+//!
+//! The tests check it on the Cortex-M samples: the problems it finds, its
+//! exit status, and the files it refuses, for which the overview doesn't
+//! suggest it. They also check that `debug walk` lists the walk that
+//! `startup` reads.
 
 use object::{Architecture, elf};
 use serde_json::{Value, json};

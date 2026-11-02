@@ -335,6 +335,7 @@ of its tree) do. Those are names to fix, not meanings to copy.
 | `cli.rs` | Each command's whole text output, errors, exit statuses and help |
 | `json.rs` | `--json` output |
 | `commands/callers_and_callees.rs` | `callers` and `callees`, which share their table and their ranges: their text and JSON for SYMBOL, for ranges of memory and with `--from` and `--to`, and the errors about those ranges |
+| `commands/debug.rs` | `debug items` and `debug walk`; the tests that `debug walk` lists the walk that `startup` reads are in `commands/startup.rs` |
 | `commands/diff.rs` | `diff` on pairs of builds: its text, its JSON, its exit status and the builds it refuses; and at the end, on builds made by changing a sample's bytes: a warning about the new build, bytes or blocks that alone differ, and a separate debug file and a file that puts nothing in memory, which it refuses |
 | `commands/inlined.rs` | `inlined`: its ranking and its tree, as text and JSON, and its error for a file without DWARF |
 | `commands/overview_top_and_retained.rs` | The overview, `top` and `retained`, which share the tree of retained sizes and `--range`: their text and JSON, for the whole file and for a range, and the errors about ranges |
