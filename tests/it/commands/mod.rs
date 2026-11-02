@@ -3,6 +3,7 @@
 //! They check what the elfq program prints for the command, its errors and
 //! its exit statuses.
 
+mod callers_and_callees;
 mod diff;
 mod reach;
 mod startup;
