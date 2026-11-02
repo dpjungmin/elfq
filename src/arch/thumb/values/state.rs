@@ -4,7 +4,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Deref;
 
-use crate::arch::thumb::{PC, SP};
+use crate::arch::thumb::decode::each;
+use crate::arch::thumb::{CALL_CLOBBERS, PC, SP};
 
 /// How many numbers elfq follows in one register or word on the stack.
 /// Past that, it stops following it until code writes it again.
@@ -63,6 +64,17 @@ impl Value {
     }
 }
 
+/// What adding a number to some [`Values`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Inserted {
+    /// They didn't hold it, or held it only as stale, and now hold it.
+    Changed,
+    /// They held it already.
+    Unchanged,
+    /// They didn't hold it, and have no room for it.
+    Full,
+}
+
 /// Up to [`LIMIT`] numbers, sorted. They are kept in place rather than on
 /// the heap, since copying states is much of what elfq does here.
 #[derive(Debug, Clone, Copy)]
@@ -79,10 +91,8 @@ impl Values {
     };
 
     /// Adds `value`. A number that is stale on one path and not on
-    /// another is one the code may use, so it is not stale. Returns whether
-    /// it is new or no longer stale, or `None` when it is new and there's
-    /// no room for it.
-    pub fn insert(&mut self, value: Value) -> Option<bool> {
+    /// another is one the code may use, so it is not stale.
+    pub fn insert(&mut self, value: Value) -> Inserted {
         let len = usize::from(self.len);
         // Values sort by these first, and no two share them, so this finds
         // the number whether or not it is stale.
@@ -90,15 +100,15 @@ impl Values {
         match self.binary_search_by(|item| key(item).cmp(&key(&value))) {
             Ok(at) if self.items[at].stale && !value.stale => {
                 self.items[at].stale = false;
-                Some(true)
+                Inserted::Changed
             }
-            Ok(_) => Some(false),
-            Err(_) if len == LIMIT => None,
+            Ok(_) => Inserted::Unchanged,
+            Err(_) if len == LIMIT => Inserted::Full,
             Err(at) => {
                 self.items.copy_within(at..len, at + 1);
                 self.items[at] = value;
                 self.len += 1;
-                Some(true)
+                Inserted::Changed
             }
         }
     }
@@ -113,6 +123,16 @@ impl Values {
             }
         }
         self.len = kept as u8;
+    }
+
+    /// These numbers, each stale if `stale` and not stale if not.
+    fn with_stale(&self, stale: bool) -> Values {
+        let mut values = Values::NONE;
+        for &value in self.iter() {
+            // As many as there were, at most.
+            values.insert(Value { stale, ..value });
+        }
+        values
     }
 }
 
@@ -134,168 +154,223 @@ impl Eq for Values {}
 
 /// What elfq knows a register, or a word on the stack, holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct Contents {
-    /// The numbers it may hold.
-    pub values: Values,
-    /// Whether it may also hold something elfq can't tell.
-    pub unknown: bool,
-    /// Whether it may hold more than [`LIMIT`] numbers. It then holds no
-    /// values, and gains none where paths join, until code writes it.
-    pub saturated: bool,
-    /// When `saturated`, whether some of the numbers elfq stopped following
-    /// were stale; see [`Value::stale`].
-    pub stale: bool,
+pub(super) enum Contents {
+    /// One of `values`, or, with `or_unknown`, something elfq can't tell.
+    Known { values: Values, or_unknown: bool },
+    /// It may hold more than [`LIMIT`] numbers. elfq stopped following
+    /// them: it holds something elfq can't tell, and gains no numbers where
+    /// paths join, until code writes it again. `stale` says whether some of
+    /// the numbers elfq stopped following were stale; see [`Value::stale`].
+    TooMany { stale: bool },
 }
 
 impl Contents {
-    /// Something elfq can't tell.
-    pub fn unknown() -> Contents {
-        Contents {
-            values: Values::NONE,
-            unknown: true,
-            saturated: false,
-            stale: false,
-        }
-    }
+    /// Something elfq can't tell, and nothing else: what a register holds
+    /// after an instruction that elfq doesn't follow writes it, and a word
+    /// on the stack unless the function stored a number there.
+    pub const UNKNOWN: Contents = Contents::Known {
+        values: Values::NONE,
+        or_unknown: true,
+    };
 
     /// `value`, and nothing else.
     pub fn holding(value: Value) -> Contents {
         let mut values = Values::NONE;
         values.insert(value);
-        Contents {
+        Contents::Known {
             values,
-            unknown: false,
-            saturated: false,
-            stale: false,
+            or_unknown: false,
         }
     }
 
-    /// More than [`LIMIT`] numbers.
-    fn saturated() -> Contents {
-        Contents {
-            values: Values::NONE,
-            unknown: true,
-            saturated: true,
-            stale: false,
+    /// The numbers these contents may hold, as far as elfq follows them.
+    pub fn values(&self) -> &[Value] {
+        match self {
+            Contents::Known { values, .. } => values,
+            Contents::TooMany { .. } => &[],
         }
+    }
+
+    /// Whether these contents may hold something elfq can't tell.
+    pub fn may_be_unknown(&self) -> bool {
+        matches!(
+            self,
+            Contents::Known {
+                or_unknown: true,
+                ..
+            } | Contents::TooMany { .. }
+        )
     }
 
     /// What a register that a call may change holds after it: something
     /// elfq can't tell, or what it held before, which is then stale. Code
     /// compiled with GCC's `-fipa-ra` counts on the second when it knows
     /// that the function it calls keeps r0 to r3 or ip. For r0, the first
-    /// is the result; see [`State::get`].
+    /// is the result; see [`State::read`].
     pub fn after_call(&self) -> Contents {
-        match (self.saturated, self.stale) {
-            (true, true) => *self,
-            (true, false) => Contents::unknown(),
-            (false, _) => {
-                let mut contents = Contents::unknown();
-                for &value in self.values.iter() {
-                    contents.values.insert(Value {
-                        stale: true,
-                        ..value
-                    });
-                }
-                contents
-            }
+        match self {
+            Contents::TooMany { stale: true } => *self,
+            Contents::TooMany { stale: false } => Contents::UNKNOWN,
+            Contents::Known { values, .. } => Contents::Known {
+                values: values.with_stale(true),
+                or_unknown: true,
+            },
         }
     }
 
     /// Whether some of the numbers these contents may hold, or that elfq
     /// stopped following, are stale.
     fn has_stale(&self) -> bool {
-        self.stale || self.values.iter().any(|value| value.stale)
+        match self {
+            Contents::Known { values, .. } => values.iter().any(|value| value.stale),
+            Contents::TooMany { stale } => *stale,
+        }
     }
 
     /// `f` of each number these contents may hold, where `f` returns
     /// `None` for one that makes something elfq can't tell.
     pub fn map(&self, f: impl Fn(Value) -> Option<Value>) -> Contents {
-        if self.saturated {
-            return Contents::unknown();
-        }
-        let mut contents = Contents {
-            values: Values::NONE,
-            unknown: self.unknown,
-            saturated: false,
-            stale: false,
+        let Contents::Known { values, or_unknown } = self else {
+            return Contents::UNKNOWN;
         };
-        for &value in self.values.iter() {
+        let mut mapped = Values::NONE;
+        let mut or_unknown = *or_unknown;
+        for &value in values.iter() {
             match f(value) {
                 // As many as there were, at most.
-                Some(value) => _ = contents.values.insert(value),
-                None => contents.unknown = true,
+                Some(value) => _ = mapped.insert(value),
+                None => or_unknown = true,
             }
         }
-        contents
+        Contents::Known {
+            values: mapped,
+            or_unknown,
+        }
     }
 
     /// The offset from the function's starting sp of the one address on
     /// the stack these contents hold, if they hold just that.
     pub fn stack_offset(&self) -> Option<i32> {
-        match (&*self.values, self.unknown) {
-            ([value], false) if value.kind == Kind::Stack => Some(value.number as i32),
+        match self {
+            Contents::Known {
+                values,
+                or_unknown: false,
+            } => match **values {
+                [value] if value.kind == Kind::Stack => Some(value.number as i32),
+                _ => None,
+            },
             _ => None,
         }
     }
 
+    /// The offset of the word on the stack `offset` bytes past the one
+    /// address on the stack these contents hold, when they hold just that
+    /// and a word starts there.
+    pub fn word_at(&self, offset: i32) -> Option<i32> {
+        let at = self.stack_offset()?.wrapping_add(offset);
+        (at % 4 == 0).then_some(at)
+    }
+
+    /// The sum of what `a` and `b` hold, as `add` computes it. Adding the
+    /// program counter to a number makes an address, which the
+    /// instruction `source` builds. `None` when the sum may be more than
+    /// [`LIMIT`] numbers.
+    pub fn sum(a: &Contents, b: &Contents, source: Option<u32>) -> Option<Contents> {
+        let mut values = Values::NONE;
+        let mut or_unknown = a.may_be_unknown() || b.may_be_unknown();
+        for x in a.values() {
+            for y in b.values() {
+                let number = x.number.wrapping_add(y.number);
+                let (kind, source) = match (x.kind, y.kind) {
+                    (Kind::Number, Kind::Number) => (Kind::Number, None),
+                    (Kind::ProgramCounter, Kind::Number) | (Kind::Number, Kind::ProgramCounter) => {
+                        (Kind::Number, source)
+                    }
+                    (Kind::Stack, Kind::Number) | (Kind::Number, Kind::Stack) => {
+                        (Kind::Stack, None)
+                    }
+                    _ => {
+                        or_unknown = true;
+                        continue;
+                    }
+                };
+                let value = Value {
+                    number,
+                    kind,
+                    source,
+                    stale: false,
+                };
+                if values.insert(value) == Inserted::Full {
+                    return None;
+                }
+            }
+        }
+        Some(Contents::Known { values, or_unknown })
+    }
+
     /// Whether these contents may be an address on the stack.
     pub fn may_be_stack(&self) -> bool {
-        self.values.iter().any(|value| value.kind == Kind::Stack)
+        self.values().iter().any(|value| value.kind == Kind::Stack)
     }
 
     /// Leaves the numbers that are 0 if `zero`, or those that aren't. What
     /// elfq can't tell is 0 where it is 0. Contents left with nothing can't
     /// be what they are where code tests them this way, so the code there
-    /// never runs.
+    /// never runs. elfq doesn't follow contents that may hold too many
+    /// numbers, so it leaves them.
     fn narrow(&mut self, zero: bool) {
-        if self.saturated {
+        let Contents::Known { values, or_unknown } = self else {
             return;
-        }
-        self.values.retain(|value| (value.number == 0) == zero);
-        if zero && self.unknown {
+        };
+        values.retain(|value| (value.number == 0) == zero);
+        if zero && *or_unknown {
             // There is room: it holds only 0s.
-            self.values.insert(Value::number(0));
-            self.unknown = false;
+            values.insert(Value::number(0));
+            *or_unknown = false;
         }
     }
 
     /// Adds what `other` may hold, where two paths through the code join.
     /// Returns whether these contents changed. Past [`LIMIT`] numbers they
-    /// are saturated, and each number they lose goes to `lost`.
+    /// hold too many, and each number they lose goes to `lost`.
     pub fn join(&mut self, other: &Contents, lost: &mut impl FnMut(&Value)) -> bool {
-        if self.saturated {
-            other.values.iter().for_each(&mut *lost);
-            let changed = other.has_stale() && !self.stale;
-            self.stale |= other.has_stale();
+        let Contents::Known { values, or_unknown } = self else {
+            // They gain nothing but whether some numbers were stale.
+            other.values().iter().for_each(&mut *lost);
+            let changed = other.has_stale() && !self.has_stale();
+            if changed {
+                *self = Contents::TooMany { stale: true };
+            }
             return changed;
-        }
-        if other.saturated {
-            self.values.iter().for_each(&mut *lost);
-            *self = Contents {
-                stale: self.has_stale() || other.stale,
-                ..Contents::saturated()
+        };
+        let Contents::Known {
+            values: other_values,
+            or_unknown: other_unknown,
+        } = other
+        else {
+            values.iter().for_each(&mut *lost);
+            *self = Contents::TooMany {
+                stale: self.has_stale() || other.has_stale(),
             };
             return true;
-        }
-        let before = *self;
+        };
+        let before = *values;
         let mut changed = false;
-        if other.unknown && !self.unknown {
-            self.unknown = true;
+        if *other_unknown && !*or_unknown {
+            *or_unknown = true;
             changed = true;
         }
-        for value in other.values.iter() {
-            match self.values.insert(*value) {
-                Some(new) => changed |= new,
-                None => {
+        for value in other_values.iter() {
+            match values.insert(*value) {
+                Inserted::Changed => changed = true,
+                Inserted::Unchanged => {}
+                Inserted::Full => {
                     before
-                        .values
                         .iter()
-                        .chain(other.values.iter())
+                        .chain(other_values.iter())
                         .for_each(&mut *lost);
-                    *self = Contents {
-                        stale: before.has_stale() || other.has_stale(),
-                        ..Contents::saturated()
+                    *self = Contents::TooMany {
+                        stale: before.iter().any(|value| value.stale) || other.has_stale(),
                     };
                     return true;
                 }
@@ -304,10 +379,34 @@ impl Contents {
         changed
     }
 
-    /// Whether these contents are just something elfq can't tell, as a
-    /// word on the stack is unless the function stored a number there.
-    fn is_unknown(&self) -> bool {
-        self.unknown && self.values.is_empty() && !self.saturated
+    /// These contents, as code that counts on a call having kept them
+    /// reads them: what was stale isn't.
+    fn kept(&self) -> Contents {
+        match self {
+            _ if !self.has_stale() => *self,
+            Contents::Known { values, or_unknown } => Contents::Known {
+                values: values.with_stale(false),
+                or_unknown: *or_unknown,
+            },
+            Contents::TooMany { .. } => Contents::TooMany { stale: false },
+        }
+    }
+
+    /// These contents as r0, as code reads it after a call: what the call
+    /// returns, which elfq can't tell, in place of the stale numbers.
+    fn result(&self) -> Contents {
+        match self {
+            _ if !self.has_stale() => *self,
+            Contents::Known { values, .. } => {
+                let mut values = *values;
+                values.retain(|value| !value.stale);
+                Contents::Known {
+                    values,
+                    or_unknown: true,
+                }
+            }
+            Contents::TooMany { .. } => Contents::UNKNOWN,
+        }
     }
 }
 
@@ -315,13 +414,14 @@ impl Contents {
 /// function's code.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct State {
-    /// r0 to pc. pc always holds something elfq can't tell: it reads pc
-    /// from the instruction's address instead.
-    pub registers: [Contents; 16],
+    /// r0 to pc, as the code left them; see [`State::held`] and
+    /// [`State::read`]. pc always holds something elfq can't tell: elfq
+    /// reads pc from the instruction's address instead.
+    registers: [Contents; 16],
     /// The words on the stack that the function stored numbers in, by
     /// their offset from where sp pointed when the function started. Any
     /// other word holds something elfq can't tell.
-    pub stack: BTreeMap<i32, Contents>,
+    stack: BTreeMap<i32, Contents>,
     /// Whether an address on the stack may be where elfq can't follow it,
     /// as in a register that holds something elfq can't tell, or with a
     /// function the code called. Code could then change the stack where
@@ -334,7 +434,7 @@ impl State {
     /// The state where the function starts: sp points at its stack, and
     /// everything else holds something elfq can't tell.
     pub fn entry() -> State {
-        let mut registers: [Contents; 16] = std::array::from_fn(|_| Contents::unknown());
+        let mut registers: [Contents; 16] = [Contents::UNKNOWN; 16];
         registers[usize::from(SP)] = Contents::holding(Value::stack(0));
         State {
             registers,
@@ -343,28 +443,21 @@ impl State {
         }
     }
 
-    /// What `register` holds for an instruction that reads it, where
-    /// reading pc gives `pc`. After a call, r0 holds what the function
-    /// returns, which elfq can't tell. Code reads r1 to r3 or ip after a
-    /// call only when it knows the call kept them, so what they held is no
-    /// longer stale.
-    pub fn get(&self, register: u16, pc: u32) -> Contents {
-        let mut contents = self.registers[usize::from(register)];
-        if register != RESULT || !contents.has_stale() {
-            return self.kept(register, pc);
-        }
-        if contents.saturated {
-            return Contents::unknown();
-        }
-        contents.values.retain(|value| !value.stale);
-        contents.unknown = true;
-        contents
+    /// What `register` holds as the code left it, with the stale numbers
+    /// it held before a call that may have changed it. An instruction
+    /// works on what [`State::read`] says. The checks of whether code may
+    /// let an address out of sight, or reach the stack through a register,
+    /// use this instead, since code may count on a call having kept a
+    /// register, r0 included.
+    pub fn held(&self, register: u16) -> &Contents {
+        &self.registers[usize::from(register)]
     }
 
-    /// What `register` holds, where reading pc gives `pc`, taking what it
-    /// held before a call to be there still.
-    fn kept(&self, register: u16, pc: u32) -> Contents {
-        let contents = self.registers[usize::from(register)];
+    /// What an instruction whose pc reads as `pc` sees in `register`. After
+    /// a call, r0 holds what the function returns, which elfq can't tell.
+    /// Code reads r1 to r3 or ip after a call only when it knows the call
+    /// kept them, so what they held is no longer stale.
+    pub fn read(&self, register: u16, pc: u32) -> Contents {
         if register == PC {
             return Contents::holding(Value {
                 number: pc,
@@ -373,30 +466,57 @@ impl State {
                 stale: false,
             });
         }
-        if !contents.has_stale() {
-            return contents;
-        }
-        let mut kept = Contents {
-            values: Values::NONE,
-            stale: false,
-            ..contents
-        };
-        for &value in contents.values.iter() {
-            // As many as there were, at most.
-            kept.values.insert(Value {
-                stale: false,
-                ..value
-            });
-        }
-        kept
+        self.read_other(register)
     }
 
-    /// Leaves in `register` the numbers that are 0 if `zero`, or those that
-    /// aren't, where code tests whether it is 0; see [`Contents::narrow`].
-    pub fn narrow(&mut self, register: u16, zero: bool) {
-        let mut contents = self.get(register, 0);
-        contents.narrow(zero);
+    /// What an instruction sees in `register`, which isn't pc; see
+    /// [`State::read`].
+    fn read_other(&self, register: u16) -> Contents {
+        let held = self.held(register);
+        match register {
+            RESULT => held.result(),
+            _ => held.kept(),
+        }
+    }
+
+    /// Sets what `register` holds. pc always holds something elfq can't
+    /// tell.
+    pub fn set(&mut self, register: u16, contents: Contents) {
+        debug_assert!(register != PC || contents == Contents::UNKNOWN);
         self.registers[usize::from(register)] = contents;
+    }
+
+    /// Leaves the registers as a call does: each that a call may change
+    /// holds what [`Contents::after_call`] says.
+    pub fn after_call(&mut self) {
+        for register in each(CALL_CLOBBERS) {
+            let contents = &mut self.registers[usize::from(register)];
+            *contents = contents.after_call();
+        }
+    }
+
+    /// Leaves in `register`, which a test of whether it is 0 reads, the
+    /// numbers that are 0 if `zero`, or those that aren't; see
+    /// [`Contents::narrow`].
+    pub fn narrow(&mut self, register: u16, zero: bool) {
+        let mut contents = self.read_other(register);
+        contents.narrow(zero);
+        self.set(register, contents);
+    }
+
+    /// Whether adding what registers `a` and `b` hold adds the program
+    /// counter: one of them is pc, or holds what an instruction read from
+    /// it.
+    pub fn adds_pc(&self, a: u16, b: u16) -> bool {
+        let pc = |register: u16| {
+            register == PC
+                || self
+                    .held(register)
+                    .values()
+                    .iter()
+                    .any(|value| value.kind == Kind::ProgramCounter)
+        };
+        pc(a) || pc(b)
     }
 
     /// Where sp points, as an offset from where it pointed when the
@@ -410,12 +530,26 @@ impl State {
         self.stack
             .get(&offset)
             .copied()
-            .unwrap_or_else(Contents::unknown)
+            .unwrap_or(Contents::UNKNOWN)
+    }
+
+    /// The words on the stack that the function stored numbers in, by
+    /// offset, from the lowest.
+    pub fn stack_words(&self) -> impl Iterator<Item = (i32, &Contents)> {
+        self.stack
+            .iter()
+            .map(|(&offset, contents)| (offset, contents))
+    }
+
+    /// Frees the words on the stack below `top`, as moving sp up to it
+    /// does: they hold nothing the function can count on.
+    pub fn free_below(&mut self, top: i32) {
+        self.stack.retain(|&offset, _| offset >= top);
     }
 
     /// Sets the word on the stack at `offset`.
     pub fn set_word(&mut self, offset: i32, contents: Contents) {
-        if contents.is_unknown() {
+        if contents == Contents::UNKNOWN {
             self.stack.remove(&offset);
         } else {
             self.stack.insert(offset, contents);
@@ -425,11 +559,7 @@ impl State {
     /// Forgets every word on the stack, giving each number it held to
     /// `lost`.
     pub fn forget_stack(&mut self, lost: &mut impl FnMut(&Value)) {
-        for value in self
-            .stack
-            .values()
-            .flat_map(|contents| contents.values.iter())
-        {
+        for value in self.stack.values().flat_map(|contents| contents.values()) {
             self.escaped |= value.kind == Kind::Stack;
             lost(value);
         }
@@ -468,5 +598,317 @@ impl State {
             changed = true;
         }
         changed
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The plain numbers in `numbers`.
+    fn values(numbers: impl IntoIterator<Item = u32>) -> Values {
+        let mut values = Values::NONE;
+        for number in numbers {
+            values.insert(Value::number(number));
+        }
+        values
+    }
+
+    /// `values`, and nothing else.
+    fn known(values: Values) -> Contents {
+        Contents::Known {
+            values,
+            or_unknown: false,
+        }
+    }
+
+    /// The plain numbers in `numbers`, and nothing else.
+    fn holding(numbers: impl IntoIterator<Item = u32>) -> Contents {
+        known(values(numbers))
+    }
+
+    /// The numbers `contents` may hold.
+    fn numbers(contents: &Contents) -> Vec<u32> {
+        contents.values().iter().map(|value| value.number).collect()
+    }
+
+    /// `number`, as a register held it before a call that may change it.
+    fn stale(number: u32) -> Value {
+        Value {
+            stale: true,
+            ..Value::number(number)
+        }
+    }
+
+    /// Joins `other` into `contents`, and returns whether `contents`
+    /// changed and the numbers it lost, sorted.
+    fn join(contents: &mut Contents, other: &Contents) -> (bool, Vec<u32>) {
+        let mut lost = Vec::new();
+        let changed = contents.join(other, &mut |value| lost.push(value.number));
+        lost.sort_unstable();
+        (changed, lost)
+    }
+
+    /// Contents that may hold more than [`LIMIT`] numbers, `stale` when
+    /// some of them were.
+    fn too_many(stale: bool) -> Contents {
+        Contents::TooMany { stale }
+    }
+
+    #[test]
+    fn values_hold_at_most_limit_numbers_sorted() {
+        let mut full = values((1..=LIMIT as u32).rev());
+        let held: Vec<u32> = full.iter().map(|value| value.number).collect();
+        assert_eq!(held, [1, 2, 3, 4, 5, 6, 7, 8]);
+        let before = full;
+        assert_eq!(full.insert(Value::number(9)), Inserted::Full);
+        assert_eq!(full, before);
+        // A number they hold is no news, even when full.
+        assert_eq!(full.insert(Value::number(3)), Inserted::Unchanged);
+        assert_eq!(full, before);
+    }
+
+    #[test]
+    fn a_number_stale_on_one_path_and_not_on_another_is_not_stale() {
+        let mut values = Values::NONE;
+        assert_eq!(values.insert(stale(5)), Inserted::Changed);
+        assert_eq!(values.insert(stale(5)), Inserted::Unchanged);
+        assert_eq!(values.insert(Value::number(5)), Inserted::Changed);
+        assert!(!values[0].stale);
+        // Once it isn't stale, a stale copy doesn't make it stale again.
+        assert_eq!(values.insert(stale(5)), Inserted::Unchanged);
+        assert!(!values[0].stale);
+        assert_eq!(values.len(), 1);
+    }
+
+    #[test]
+    fn joining_adds_the_numbers_and_what_elfq_cant_tell() {
+        let mut contents = holding([1, 2]);
+        assert_eq!(join(&mut contents, &holding([2, 3])), (true, vec![]));
+        assert_eq!(numbers(&contents), [1, 2, 3]);
+        assert!(!contents.may_be_unknown());
+        assert_eq!(join(&mut contents, &holding([1])), (false, vec![]));
+        assert_eq!(join(&mut contents, &Contents::UNKNOWN), (true, vec![]));
+        assert!(contents.may_be_unknown());
+        assert_eq!(join(&mut contents, &Contents::UNKNOWN), (false, vec![]));
+        assert_eq!(numbers(&contents), [1, 2, 3]);
+    }
+
+    #[test]
+    fn contents_that_may_hold_more_than_limit_numbers_hold_too_many() {
+        let mut contents = holding(1..=7);
+        // Both sides' numbers are lost.
+        assert_eq!(
+            join(&mut contents, &holding([8, 9])),
+            (true, (1..=9).collect())
+        );
+        assert_eq!(contents, too_many(false));
+        assert!(contents.may_be_unknown() && contents.values().is_empty());
+
+        // Too many with a stale number on either side: stale.
+        let mut contents = holding(1..=7);
+        let mut other = values([8]);
+        other.insert(stale(9));
+        assert!(join(&mut contents, &known(other)).0);
+        assert_eq!(contents, too_many(true));
+        let mut first = values(2..=7);
+        first.insert(stale(1));
+        let mut contents = known(first);
+        assert!(join(&mut contents, &holding([8, 9])).0);
+        assert_eq!(contents, too_many(true));
+    }
+
+    #[test]
+    fn joining_contents_that_hold_too_many_holds_too_many_and_carries_stale() {
+        let mut contents = holding([1, 2]);
+        assert_eq!(join(&mut contents, &too_many(false)), (true, vec![1, 2]));
+        assert_eq!(contents, too_many(false));
+
+        let mut contents = holding([1]);
+        assert_eq!(join(&mut contents, &too_many(true)), (true, vec![1]));
+        assert_eq!(contents, too_many(true));
+
+        let mut contents = Contents::holding(stale(1));
+        assert_eq!(join(&mut contents, &too_many(false)), (true, vec![1]));
+        assert_eq!(contents, too_many(true));
+    }
+
+    #[test]
+    fn contents_that_hold_too_many_gain_nothing_but_stale() {
+        let mut contents = too_many(false);
+        // The other side's numbers are lost, and nothing changes.
+        assert_eq!(join(&mut contents, &holding([1, 2])), (false, vec![1, 2]));
+        assert_eq!(join(&mut contents, &Contents::UNKNOWN), (false, vec![]));
+        assert_eq!(join(&mut contents, &too_many(false)), (false, vec![]));
+        assert_eq!(contents, too_many(false));
+        // A stale number, or stale ones it stopped following, make it stale.
+        assert_eq!(
+            join(&mut contents, &Contents::holding(stale(3))),
+            (true, vec![3])
+        );
+        assert_eq!(contents, too_many(true));
+        assert_eq!(
+            join(&mut contents, &Contents::holding(stale(3))),
+            (false, vec![3])
+        );
+        let mut contents = too_many(false);
+        assert_eq!(join(&mut contents, &too_many(true)), (true, vec![]));
+        assert_eq!(contents, too_many(true));
+    }
+
+    #[test]
+    fn after_a_call_a_register_holds_what_it_did_stale_or_what_elfq_cant_tell() {
+        let after = holding([1, 2]).after_call();
+        assert!(after.may_be_unknown());
+        assert_eq!(numbers(&after), [1, 2]);
+        assert!(after.values().iter().all(|value| value.stale));
+        assert!(matches!(after, Contents::Known { .. }));
+        // Contents that hold too many keep only that some were stale.
+        assert_eq!(too_many(true).after_call(), too_many(true));
+        assert_eq!(too_many(false).after_call(), Contents::UNKNOWN);
+    }
+
+    #[test]
+    fn r0_after_a_call_holds_the_result_and_other_registers_what_they_did() {
+        let mut state = State::entry();
+        state.set(0, holding([0x100]).after_call());
+        state.set(1, holding([0x200]).after_call());
+        // r0 is what the call returns: the stale numbers aren't there.
+        assert_eq!(state.read(RESULT, 0), Contents::UNKNOWN);
+        // r1 is read only when the call keeps it, so they are, and no
+        // longer stale.
+        let r1 = state.read(1, 0);
+        assert_eq!(numbers(&r1), [0x200]);
+        assert!(r1.may_be_unknown() && !r1.values()[0].stale);
+        // An r0 that holds too many, some stale, is the result too.
+        state.set(0, too_many(true));
+        assert_eq!(state.read(RESULT, 0), Contents::UNKNOWN);
+        state.set(2, too_many(true));
+        assert_eq!(state.read(2, 0), too_many(false));
+        // r0 without stale numbers holds what it held.
+        state.set(0, holding([7]));
+        assert_eq!(state.read(RESULT, 0), holding([7]));
+    }
+
+    #[test]
+    fn reading_pc_gives_the_instruction_s_pc() {
+        let pc = State::entry().read(PC, 0x1004);
+        assert_eq!(pc.values().len(), 1);
+        assert_eq!(pc.values()[0].number, 0x1004);
+        assert_eq!(pc.values()[0].kind, Kind::ProgramCounter);
+        assert!(!pc.may_be_unknown());
+    }
+
+    #[test]
+    fn a_test_for_zero_leaves_the_numbers_it_can_be() {
+        let mut state = State::entry();
+        state.set(3, Contents::UNKNOWN);
+        state.narrow(3, true);
+        assert_eq!(*state.held(3), holding([0]));
+
+        state.set(
+            3,
+            Contents::Known {
+                values: values([0, 4]),
+                or_unknown: true,
+            },
+        );
+        state.narrow(3, false);
+        assert_eq!(numbers(state.held(3)), [4]);
+        assert!(state.held(3).may_be_unknown());
+
+        // Nothing left: the code there never runs.
+        state.set(3, holding([4]));
+        state.narrow(3, true);
+        assert!(numbers(state.held(3)).is_empty() && !state.held(3).may_be_unknown());
+
+        // elfq doesn't follow contents that hold too many, so a test
+        // leaves them.
+        state.set(3, too_many(false));
+        state.narrow(3, true);
+        assert_eq!(*state.held(3), too_many(false));
+    }
+
+    #[test]
+    fn mapping_contents_keeps_what_elfq_cant_tell() {
+        let contents = holding([1, 2]).map(|value| {
+            (value.number == 1).then_some(Value {
+                number: 10,
+                ..value
+            })
+        });
+        assert_eq!(numbers(&contents), [10]);
+        assert!(contents.may_be_unknown());
+        // Contents that may hold something elfq can't tell still may.
+        let contents = Contents::Known {
+            values: values([1]),
+            or_unknown: true,
+        }
+        .map(Some);
+        assert_eq!(numbers(&contents), [1]);
+        assert!(contents.may_be_unknown());
+        assert_eq!(too_many(true).map(Some), Contents::UNKNOWN);
+    }
+
+    #[test]
+    fn a_word_on_the_stack_holds_what_elfq_cant_tell_until_code_stores_there() {
+        let mut state = State::entry();
+        assert_eq!(state.word(-4), Contents::UNKNOWN);
+        state.set_word(-4, holding([1]));
+        assert_eq!(state.word(-4), holding([1]));
+        state.set_word(-4, Contents::UNKNOWN);
+        assert!(state.stack_words().next().is_none());
+        // Contents that hold too many are kept, as they aren't just what
+        // elfq can't tell.
+        state.set_word(-8, too_many(false));
+        assert_eq!(state.word(-8), too_many(false));
+    }
+
+    #[test]
+    fn losing_an_address_on_the_stack_lets_it_escape() {
+        let mut state = State::entry();
+        state.set_word(-4, holding([1]));
+        let mut lost = Vec::new();
+        state.forget_stack(&mut |value| lost.push(value.number));
+        assert_eq!(lost, [1]);
+        assert!(state.stack_words().next().is_none() && !state.escaped);
+
+        state.set_word(-4, Contents::holding(Value::stack(-16)));
+        state.forget_stack(&mut |_| {});
+        assert!(state.escaped);
+
+        // A join that leaves a register holding one with too many escapes
+        // too.
+        let mut state = State::entry();
+        let mut other = State::entry();
+        state.set(4, Contents::holding(Value::stack(-8)));
+        other.set(4, holding(1..=8));
+        let mut lost = Vec::new();
+        assert!(state.join(&other, &mut |value| lost.push(*value)));
+        assert!(state.escaped);
+        assert_eq!(lost.len(), 9);
+        assert!(lost.contains(&Value::stack(-8)));
+    }
+
+    #[test]
+    fn joining_states_joins_each_register_and_word() {
+        let mut state = State::entry();
+        let mut other = State::entry();
+        state.set(1, holding([1]));
+        other.set(1, holding([2]));
+        other.set_word(-4, holding([3]));
+        assert!(state.join(&other, &mut |_| {}));
+        assert_eq!(numbers(state.held(1)), [1, 2]);
+        // A word that only one side stored holds something elfq can't
+        // tell as well.
+        let word = state.word(-4);
+        assert_eq!(numbers(&word), [3]);
+        assert!(word.may_be_unknown());
+        assert!(!state.join(&other, &mut |_| {}));
+        // A side whose stack escaped makes the join's escape.
+        other.escaped = true;
+        assert!(state.join(&other, &mut |_| {}));
+        assert!(state.escaped);
+        assert!(!state.join(&other, &mut |_| {}));
     }
 }

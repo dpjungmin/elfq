@@ -11,7 +11,6 @@
 
 use std::collections::HashMap;
 
-use crate::arch;
 use crate::binary::{Binary, ItemKind, Source};
 
 use super::{Graph, Node, ReferenceKind, Unresolved};
@@ -46,9 +45,9 @@ impl<'a> Veneers<'a> {
     }
 
     /// Where `item` jumps to, when it is a linker's veneer: its code is all
-    /// a veneer (see `arch::is_veneer`), and jumps to one function, or to
-    /// code outside every item. A PLT stub for one of the file's own
-    /// functions passes calls on to it.
+    /// a veneer (see `InstructionSet::is_veneer`), and jumps to one
+    /// function, or to code outside every item. A PLT stub for one of the
+    /// file's own functions passes calls on to it.
     pub fn target(&self, item: usize) -> Option<VeneerTarget> {
         if let Some(&function) = self.stubs.get(&item) {
             return Some(VeneerTarget::Node(Node::Item(function)));
@@ -63,7 +62,8 @@ impl<'a> Veneers<'a> {
             Source::SymbolTable | Source::DynamicSymbolTable
         )
         .then_some(function.name.as_str());
-        if !arch::is_veneer(self.binary.architecture, code, symbol) {
+        let instruction_set = self.binary.instruction_set()?;
+        if !instruction_set.is_veneer(code, symbol) {
             return None;
         }
         match (

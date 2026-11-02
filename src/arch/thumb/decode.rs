@@ -6,10 +6,14 @@
 //! from reset, with the numbers it passes to the functions it calls.
 //!
 //! The encodings are those of the Armv7-M and Armv8-M architecture reference
-//! manuals: sections A5.2 (16-bit) and A5.3 (32-bit) in Armv7-M. An
-//! instruction this module doesn't know decodes to `None`, and `values`
-//! then follows nothing in its function, since such an instruction could
-//! write any register or branch anywhere.
+//! manuals. Each function that decodes a group of instructions names the
+//! table it follows by its heading in the Armv7-M manual (ARM DDI 0403E.e),
+//! which a search of the manual finds: the 16-bit ones are in section
+//! A5.2, the 32-bit ones in A5.3 and the floating-point ones in chapter A6.
+//! What Armv8-M adds, such as `sg` and `clrm`, is in its manual (ARM
+//! DDI 0553). An instruction this module doesn't know decodes to `None`,
+//! and `values` then follows nothing in its function, since such an
+//! instruction could write any register or branch anywhere.
 //!
 //! The sweep (`sweep.rs`) decodes the branches, literal loads, `adr`,
 //! `movw` and `movt` again on its own, since it reads every function and
@@ -18,7 +22,8 @@
 //! `narrow_literal`, so a fix to one lands in both.
 
 use super::{
-    LR, PC, SP, align, branch, cbz_target, imm12, imm16, is_wide, literal, narrow_literal, relative,
+    LR, PC, SP, add_signed, align, branch, cbz_target, imm12, imm16, is_wide, literal,
+    narrow_literal,
 };
 use crate::arch::CodeReferenceKind;
 
@@ -40,52 +45,77 @@ pub(super) struct Effect {
     pub flow: Flow,
     /// When it changes the condition flags (see [`Effect::sets_flags`]).
     pub flags: SetsFlags,
-    /// For a load or store that adds an immediate to its base register, as
-    /// `ldr.w r3, [r5], #4`, `str.w r3, [r2, #4]!` and `ldmia r1!, {r3,
-    /// r4}` do, what it adds and when. Its `Load` or `Store` gives no
-    /// `offset`.
-    pub writeback: Option<Writeback>,
-    /// For a load or store whose address adds a register to its base
-    /// register, as `ldr r3, [r2, r1]` and `str.w r3, [r0, r1, lsl #2]`
-    /// do, that register. Its `Load` or `Store` gives no `offset`.
-    pub index: Option<Index>,
-    /// For a load or store of more than one word, `ldm`, `stm`, `ldrd` and
-    /// `strd`, the registers it loads or stores, and where. Its `Load` or
-    /// `Store` names no `register`.
-    pub words: Option<Words>,
 }
 
-/// What a load or store adds to its base register.
+/// Where a load or store reads or writes, from its base register.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct Writeback {
-    pub amount: i32,
-    /// Whether it adds it before it loads or stores, as `[base, #imm]!`
-    /// does, or after, as `[base], #imm` does.
-    pub before: bool,
+pub(super) enum Addressing {
+    /// The base plus an immediate: `[base, #imm]`. `ldm` and `stm` without
+    /// `!` start at the base, or for `ldmdb` and `stmdb`, end there.
+    /// Armv8.1-M's `vldr` and `vstr` of a system register keep their offset
+    /// when they write back, which elfq doesn't follow: their effect writes
+    /// the base.
+    Offset(i32),
+    /// The base plus `register` shifted left by `shift` bits: `[base,
+    /// register, lsl #shift]`.
+    Indexed { register: u16, shift: u32 },
+    /// The base plus an immediate, which the base then holds: `[base,
+    /// #imm]!`, and `ldmdb` and `stmdb` with `!`, which move the base down
+    /// to the first word.
+    Before(i32),
+    /// The base, which then gets the immediate added: `[base], #imm`, and
+    /// `ldmia` and `stmia` with `!`, which move the base past the last
+    /// word.
+    After(i32),
+    /// Somewhere elfq doesn't work out: `vldm`, `vstm` and `vldr` of a
+    /// double, the exclusive loads and stores and those with acquire and
+    /// release, and a load into pc, or a preload hint, that adds a register
+    /// to its base.
+    Unknown,
 }
 
-/// A register that a load or store adds to its base register, shifted
-/// left by `shift` bits.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct Index {
-    pub register: u16,
-    pub shift: u32,
+impl Addressing {
+    /// What it adds to the base register afterwards, when it changes it,
+    /// as `[base, #imm]!` and `[base], #imm` do.
+    pub fn writeback(self) -> Option<i32> {
+        match self {
+            Addressing::Before(amount) | Addressing::After(amount) => Some(amount),
+            Addressing::Offset(_) | Addressing::Indexed { .. } | Addressing::Unknown => None,
+        }
+    }
 }
 
-/// The registers of a load or store of more than one word, a word each.
+/// What a load or store moves between memory and the core registers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Words {
-    /// `ldm` and `stm`: the registers in the list, the lowest at the lowest
-    /// address. The words start at the base, or with `down`, as for
-    /// `ldmdb` and `stmdb`, end there.
-    List { registers: Registers, down: bool },
-    /// `ldrd` and `strd`: the word of `first` at `offset` from the base, as
-    /// the base is before any writeback, and then the word of `second`.
-    Pair {
-        first: u16,
-        second: u16,
-        offset: i32,
-    },
+pub(super) enum Transfer {
+    /// A byte or a halfword, whose number elfq doesn't follow: `ldrb`,
+    /// `strh` and the like.
+    Part,
+    /// A word, into or from the register.
+    Word(u16),
+    /// A word for each of the registers, the lowest at the lowest address:
+    /// `ldm` and `stm`.
+    Words(Registers),
+    /// The word of the first register and then the word of the second:
+    /// `ldrd` and `strd`.
+    Pair(u16, u16),
+    /// What elfq doesn't follow: floating-point registers, the word that a
+    /// load into pc jumps to, a preload hint, which loads nothing, and
+    /// what most exclusive loads and stores and those with acquire and
+    /// release move.
+    Other,
+}
+
+impl Transfer {
+    /// A word into or from `register` when `word`, and otherwise part of
+    /// one.
+    fn word_if(word: bool, register: u16) -> Transfer {
+        if word {
+            Transfer::Word(register)
+        } else {
+            Transfer::Part
+        }
+    }
 }
 
 /// What an instruction does with the numbers in the registers, as far as
@@ -160,24 +190,22 @@ pub(super) enum Operation {
         shift: u32,
         signed: bool,
     },
-    /// Loads from `base` + `offset`, or when `offset` is `None`, from where
-    /// the effect's `writeback`, `index` or `words` say, when elfq can
-    /// tell: `ldr`, `ldrb`, `ldrh`, `ldrd`, `ldm`, the floating-point loads
-    /// and others. A load of a word into a register names the `register`.
+    /// Loads what `into` says from where `addressing` says, from its base
+    /// register `base`: `ldr`, `ldrb`, `ldrh`, `ldrd`, `ldm`, the
+    /// floating-point loads and others.
     Load {
-        register: Option<u16>,
+        into: Transfer,
         base: u16,
-        offset: Option<i32>,
+        addressing: Addressing,
     },
-    /// Stores `size` bytes at `base` + `offset`, or when `offset` is
-    /// `None`, where the effect's `writeback`, `index` or `words` say, when
-    /// elfq can tell: `str`, `strb`, `strh`, `strd`, `stm`, the
-    /// floating-point stores and others. A store of a word from a register
-    /// names the `register`.
+    /// Stores `size` bytes of what `from` says where `addressing` says,
+    /// from its base register `base`: `str`, `strb`, `strh`, `strd`, `stm`,
+    /// the floating-point stores and others. `vstm`, whose size elfq
+    /// doesn't work out, has a `size` of 0.
     Store {
-        register: Option<u16>,
+        from: Transfer,
         base: u16,
-        offset: Option<i32>,
+        addressing: Addressing,
         size: u32,
     },
     /// Lowers sp by `size` and stores `registers` there, the lowest
@@ -317,9 +345,6 @@ impl Effect {
             operation: Operation::Nothing,
             flow: Flow::Next,
             flags: SetsFlags::Never,
-            writeback: None,
-            index: None,
-            words: None,
         }
     }
 
@@ -335,21 +360,6 @@ impl Effect {
 
     fn flags(mut self, flags: SetsFlags) -> Effect {
         self.flags = flags;
-        self
-    }
-
-    fn writeback(mut self, writeback: Option<Writeback>) -> Effect {
-        self.writeback = writeback;
-        self
-    }
-
-    fn index(mut self, index: Option<Index>) -> Effect {
-        self.index = index;
-        self
-    }
-
-    fn words(mut self, words: Words) -> Effect {
-        self.words = Some(words);
         self
     }
 }
@@ -389,7 +399,10 @@ pub(super) fn decode(address: u64, first: u16, second: u16) -> Option<Effect> {
     }
 }
 
-/// A 16-bit instruction.
+/// A 16-bit instruction, by the table in "16-bit Thumb instruction
+/// encoding" (A5.2). It decodes most of the tables under that one itself;
+/// "Data processing", "Special data instructions and branch and exchange"
+/// and "Miscellaneous 16-bit instructions" have a function each.
 fn narrow(address: u64, op: u16) -> Option<Effect> {
     let pc = address + 4;
     // The register fields most 16-bit instructions use.
@@ -413,33 +426,28 @@ fn narrow(address: u64, op: u16) -> Option<Effect> {
             }
         }
         // adds and subs, with a register or a 3-bit immediate.
-        0b00011 => {
-            let effect = Effect::new(bit(middle), bit(low));
-            match (op >> 9) & 3 {
-                0b00 => Effect::new(bit(middle) | bit(top), bit(low)).operation(Operation::Add {
-                    register: low,
-                    a: middle,
-                    b: top,
-                }),
-                0b01 => {
-                    Effect::new(bit(middle) | bit(top), bit(low)).operation(Operation::Subtract {
-                        register: low,
-                        a: middle,
-                        b: top,
-                    })
-                }
-                0b10 => effect.operation(Operation::AddConstant {
-                    register: low,
-                    source: middle,
-                    amount: u32::from(top),
-                }),
-                _ => effect.operation(Operation::AddConstant {
-                    register: low,
-                    source: middle,
-                    amount: u32::from(top).wrapping_neg(),
-                }),
-            }
-        }
+        0b00011 => match (op >> 9) & 3 {
+            0b00 => Effect::new(bit(middle) | bit(top), bit(low)).operation(Operation::Add {
+                register: low,
+                a: middle,
+                b: top,
+            }),
+            0b01 => Effect::new(bit(middle) | bit(top), bit(low)).operation(Operation::Subtract {
+                register: low,
+                a: middle,
+                b: top,
+            }),
+            0b10 => Effect::new(bit(middle), bit(low)).operation(Operation::AddConstant {
+                register: low,
+                source: middle,
+                amount: u32::from(top),
+            }),
+            _ => Effect::new(bit(middle), bit(low)).operation(Operation::AddConstant {
+                register: low,
+                source: middle,
+                amount: u32::from(top).wrapping_neg(),
+            }),
+        },
         // movs register, #imm8
         0b00100 => Effect::new(0, bit(high)).operation(Operation::Constant {
             register: high,
@@ -479,24 +487,23 @@ fn narrow(address: u64, op: u16) -> Option<Effect> {
         // ldrsb, ldr, ldrh, ldrb and ldrsh.
         0b01010 | 0b01011 => {
             let address = bit(middle) | bit(top);
-            let index = Some(Index {
+            let addressing = Addressing::Indexed {
                 register: top,
                 shift: 0,
-            });
-            let effect = match (op >> 9) & 7 {
+            };
+            match (op >> 9) & 7 {
                 kind @ 0..=2 => Effect::new(address | bit(low), 0).operation(Operation::Store {
-                    register: (kind == 0).then_some(low),
+                    from: Transfer::word_if(kind == 0, low),
                     base: middle,
-                    offset: None,
+                    addressing,
                     size: [4, 2, 1][usize::from(kind)],
                 }),
                 kind => Effect::new(address, bit(low)).operation(Operation::Load {
-                    register: (kind == 4).then_some(low),
+                    into: Transfer::word_if(kind == 4, low),
                     base: middle,
-                    offset: None,
+                    addressing,
                 }),
-            };
-            effect.index(index)
+            }
         }
         // Loads and stores with an immediate offset: str, ldr, strb, ldrb,
         // strh and ldrh. The immediate counts units of their size.
@@ -506,34 +513,35 @@ fn narrow(address: u64, op: u16) -> Option<Effect> {
                 0b0111 => 1,
                 _ => 2,
             };
-            let offset = i32::from((op >> 6) & 0x1f) * size;
+            let addressing = Addressing::Offset(i32::from((op >> 6) & 0x1f) * size);
+            let transfer = Transfer::word_if(size == 4, low);
             if (op >> 11) & 1 == 0 {
                 Effect::new(bit(middle) | bit(low), 0).operation(Operation::Store {
-                    register: (size == 4).then_some(low),
+                    from: transfer,
                     base: middle,
-                    offset: Some(offset),
+                    addressing,
                     size: size as u32,
                 })
             } else {
                 Effect::new(bit(middle), bit(low)).operation(Operation::Load {
-                    register: (size == 4).then_some(low),
+                    into: transfer,
                     base: middle,
-                    offset: Some(offset),
+                    addressing,
                 })
             }
         }
         // str register, [sp, #imm]
         0b10010 => Effect::new(bit(high) | bit(SP), 0).operation(Operation::Store {
-            register: Some(high),
+            from: Transfer::Word(high),
             base: SP,
-            offset: Some(i32::from(op & 0xff) * 4),
+            addressing: Addressing::Offset(i32::from(op & 0xff) * 4),
             size: 4,
         }),
         // ldr register, [sp, #imm]
         0b10011 => Effect::new(bit(SP), bit(high)).operation(Operation::Load {
-            register: Some(high),
+            into: Transfer::Word(high),
             base: SP,
-            offset: Some(i32::from(op & 0xff) * 4),
+            addressing: Addressing::Offset(i32::from(op & 0xff) * 4),
         }),
         // adr register, label
         0b10100 => Effect::new(0, bit(high)).operation(Operation::Address {
@@ -550,41 +558,26 @@ fn narrow(address: u64, op: u16) -> Option<Effect> {
         // stmia register!, {registers}
         0b11000 => {
             let size = u32::from(op & 0xff).count_ones() * 4;
-            Effect::new(bit(high) | op & 0xff, bit(high))
-                .operation(Operation::Store {
-                    register: None,
-                    base: high,
-                    offset: None,
-                    size,
-                })
-                .words(Words::List {
-                    registers: op & 0xff,
-                    down: false,
-                })
-                .writeback(Some(Writeback {
-                    amount: size as i32,
-                    before: false,
-                }))
+            Effect::new(bit(high) | op & 0xff, bit(high)).operation(Operation::Store {
+                from: Transfer::Words(op & 0xff),
+                base: high,
+                addressing: Addressing::After(size as i32),
+                size,
+            })
         }
         // ldmia register!, {registers}; the register is written back
         // unless it is in the list.
         0b11001 => {
             let size = u32::from(op & 0xff).count_ones() * 4;
-            let writeback = (op & bit(high) == 0).then_some(Writeback {
-                amount: size as i32,
-                before: false,
-            });
-            Effect::new(bit(high), op & 0xff | bit(high))
-                .operation(Operation::Load {
-                    register: None,
-                    base: high,
-                    offset: None,
-                })
-                .words(Words::List {
-                    registers: op & 0xff,
-                    down: false,
-                })
-                .writeback(writeback)
+            let addressing = match op & bit(high) {
+                0 => Addressing::After(size as i32),
+                _ => Addressing::Offset(0),
+            };
+            Effect::new(bit(high), op & 0xff | bit(high)).operation(Operation::Load {
+                into: Transfer::Words(op & 0xff),
+                base: high,
+                addressing,
+            })
         }
         0b11010 | 0b11011 => match (op >> 8) & 0xf {
             // udf
@@ -593,13 +586,13 @@ fn narrow(address: u64, op: u16) -> Option<Effect> {
             0b1111 => Effect::new(0, 0).flow(Flow::Call),
             // b<cond> label
             condition => Effect::new(0, 0).flow(Flow::Branch {
-                target: relative(pc, u32::from(op & 0xff) << 1, 9),
+                target: add_signed(pc, u32::from(op & 0xff) << 1, 9),
                 when: When::Flags(condition),
             }),
         },
         // b label
         0b11100 => Effect::new(0, 0).flow(Flow::Branch {
-            target: relative(pc, u32::from(op & 0x7ff) << 1, 12),
+            target: add_signed(pc, u32::from(op & 0x7ff) << 1, 12),
             when: When::Always,
         }),
         _ => return None,
@@ -613,8 +606,8 @@ fn narrow(address: u64, op: u16) -> Option<Effect> {
     Some(effect)
 }
 
-/// The 16-bit data-processing instructions, which work on the low
-/// registers: `ands`, `eors`, `lsls`, `lsrs`, `asrs`, `adcs`, `sbcs`,
+/// The 16-bit instructions in "Data processing" (A5.2), which work on the
+/// low registers: `ands`, `eors`, `lsls`, `lsrs`, `asrs`, `adcs`, `sbcs`,
 /// `rors`, `tst`, `rsbs`, `cmp`, `cmn`, `orrs`, `muls`, `bics` and `mvns`.
 fn data_processing(op: u16) -> Effect {
     let register = op & 7;
@@ -644,8 +637,9 @@ fn data_processing(op: u16) -> Effect {
     }
 }
 
-/// The 16-bit instructions that work on any register, and branch through
-/// one: `add`, `cmp`, `mov`, `bx` and `blx`.
+/// The 16-bit instructions in "Special data instructions and branch and
+/// exchange" (A5.2), which work on any register, and branch through one:
+/// `add`, `cmp`, `mov`, `bx` and `blx`.
 fn special(op: u16) -> Effect {
     let register = (op >> 4) & 8 | op & 7;
     let source = (op >> 3) & 0xf;
@@ -686,7 +680,8 @@ fn special(op: u16) -> Effect {
     }
 }
 
-/// The 16-bit instructions that start with 0b1011.
+/// The 16-bit instructions in "Miscellaneous 16-bit instructions" (A5.2),
+/// those that start with 0b1011.
 fn miscellaneous(address: u64, op: u16) -> Option<Effect> {
     let list = op & 0xff;
     let effect = match (op >> 8) & 0xf {
@@ -752,7 +747,9 @@ fn miscellaneous(address: u64, op: u16) -> Option<Effect> {
     Some(effect)
 }
 
-/// A 32-bit instruction, made of `first` and `second`.
+/// A 32-bit instruction, made of `first` and `second`, by the table in
+/// "32-bit Thumb instruction encoding" (A5.3). It decodes those in "Data
+/// processing (register)" and the two tables of multiplies itself.
 fn wide(address: u64, first: u16, second: u16) -> Option<Effect> {
     let pc = address + 4;
     let rn = first & 0xf;
@@ -816,8 +813,9 @@ fn reads(registers: &[u16]) -> Registers {
         .fold(0, |set, &register| set | bit(register))
 }
 
-/// `ldm`, `ldmdb`, `stm` and `stmdb` (`push.w` and `pop.w`), and
-/// Armv8.1-M's `clrm`.
+/// The instructions in "Load Multiple and Store Multiple" (A5.3): `ldm`,
+/// `ldmdb`, `stm` and `stmdb` (`push.w` and `pop.w`), and Armv8.1-M's
+/// `clrm`.
 fn load_store_multiple(first: u16, second: u16) -> Option<Effect> {
     // clrm {registers}, which zeroes them, and the flags with bit 15. It
     // takes the place of an `ldm` from pc, which Armv7-M doesn't allow.
@@ -836,21 +834,15 @@ fn load_store_multiple(first: u16, second: u16) -> Option<Effect> {
     };
     let size = second.count_ones() * 4;
     let stack = rn == SP && writeback != 0;
-    let words = Words::List {
-        registers: second,
-        down: !increments,
+    // The words start at the base, or end there. With `!`, the base moves
+    // up past them, or down to the first of them, unless it is one of
+    // them.
+    let addressing = match (writeback != 0 && second & bit(rn) == 0, increments) {
+        (true, true) => Addressing::After(size as i32),
+        (true, false) => Addressing::Before(-(size as i32)),
+        (false, true) => Addressing::Offset(0),
+        (false, false) => Addressing::Offset(-(size as i32)),
     };
-    // The base moves up past the words, or down to the first of them,
-    // unless it is one of them.
-    let amount = if increments {
-        size
-    } else {
-        size.wrapping_neg()
-    };
-    let moves = (writeback != 0 && second & bit(rn) == 0).then_some(Writeback {
-        amount: amount as i32,
-        before: !increments,
-    });
     if first & 0x10 == 0 {
         let effect = Effect::new(bit(rn) | second, writeback);
         // stmdb sp!, {registers} is push.w.
@@ -859,15 +851,12 @@ fn load_store_multiple(first: u16, second: u16) -> Option<Effect> {
                 registers: second,
                 size,
             }),
-            false => effect
-                .operation(Operation::Store {
-                    register: None,
-                    base: rn,
-                    offset: None,
-                    size,
-                })
-                .words(words)
-                .writeback(moves),
+            false => effect.operation(Operation::Store {
+                from: Transfer::Words(second),
+                base: rn,
+                addressing,
+                size,
+            }),
         });
     }
     let effect = Effect::new(bit(rn), (second & !bit(PC)) | writeback);
@@ -877,14 +866,11 @@ fn load_store_multiple(first: u16, second: u16) -> Option<Effect> {
             registers: second,
             size,
         }),
-        false => effect
-            .operation(Operation::Load {
-                register: None,
-                base: rn,
-                offset: None,
-            })
-            .words(words)
-            .writeback(moves),
+        false => effect.operation(Operation::Load {
+            into: Transfer::Words(second),
+            base: rn,
+            addressing,
+        }),
     };
     if second & bit(PC) == 0 {
         return Some(effect);
@@ -896,6 +882,7 @@ fn load_store_multiple(first: u16, second: u16) -> Option<Effect> {
     })
 }
 
+/// The instructions in "Load/store dual or exclusive, table branch" (A5.3):
 /// `ldrd`, `strd`, the exclusive loads and stores, `tbb` and `tbh`, and
 /// Armv8-M's `sg`, `tt` and loads and stores with acquire and release.
 fn load_store_dual(first: u16, second: u16) -> Option<Effect> {
@@ -908,24 +895,26 @@ fn load_store_dual(first: u16, second: u16) -> Option<Effect> {
     let rt2 = (second >> 8) & 0xf;
     let low = second & 0xf;
     let writeback = if first & 0x20 != 0 { bit(rn) } else { 0 };
-    let store = |offset, size| Operation::Store {
-        register: None,
+    // Where the exclusive loads and stores, and those with acquire and
+    // release, read or write isn't worked out.
+    let store = |size| Operation::Store {
+        from: Transfer::Other,
         base: rn,
-        offset,
+        addressing: Addressing::Unknown,
         size,
     };
-    let load = |register| Operation::Load {
-        register,
+    let load = |into| Operation::Load {
+        into,
         base: rn,
-        offset: None,
+        addressing: Addressing::Unknown,
     };
     let effect = match ((first >> 7) & 3, (first >> 4) & 3) {
         // tt, which has rt = pc.
         (0b00, 0b00) if rt == PC => Effect::new(bit(rn), bit(rt2)),
         // strex
-        (0b00, 0b00) => Effect::new(reads(&[rn, rt]), bit(rt2)).operation(store(None, 4)),
+        (0b00, 0b00) => Effect::new(reads(&[rn, rt]), bit(rt2)).operation(store(4)),
         // ldrex
-        (0b00, 0b01) => Effect::new(bit(rn), bit(rt)).operation(load(Some(rt))),
+        (0b00, 0b01) => Effect::new(bit(rn), bit(rt)).operation(load(Transfer::Word(rt))),
         // tbb and tbh
         (0b01, 0b01) if (second >> 4) & 0xf <= 1 => {
             Effect::new(reads(&[rn, low]), 0).flow(Flow::Table)
@@ -938,7 +927,7 @@ fn load_store_dual(first: u16, second: u16) -> Option<Effect> {
             } else {
                 0
             };
-            Effect::new(bit(rn), bit(rt) | pair).operation(load(None))
+            Effect::new(bit(rn), bit(rt) | pair).operation(load(Transfer::Other))
         }
         // strexb, strexh, stlb, stlh, stl, stlexb, stlexh and stlex. The
         // exclusive ones write their status to the low register.
@@ -953,33 +942,37 @@ fn load_store_dual(first: u16, second: u16) -> Option<Effect> {
                 0b01 => 2,
                 _ => 4,
             };
-            Effect::new(reads(&[rn, rt]), status).operation(store(None, size))
+            Effect::new(reads(&[rn, rt]), status).operation(store(size))
         }
         // strd and ldrd, which add the immediate to the base first, and
-        // keep the sum with writeback, or add it after.
+        // keep the sum with writeback, or add it after. A base that is one
+        // of the pair isn't written back.
         _ => {
             let before = first & 0x100 != 0;
             let imm = i32::from(second & 0xff) * 4;
             let amount = if first & 0x80 != 0 { imm } else { -imm };
-            let moves =
-                (writeback != 0 && rn != rt && rn != rt2).then_some(Writeback { amount, before });
-            let words = Words::Pair {
-                first: rt,
-                second: rt2,
-                offset: if before { amount } else { 0 },
+            let addressing = match (writeback != 0 && rn != rt && rn != rt2, before) {
+                (true, true) => Addressing::Before(amount),
+                (true, false) => Addressing::After(amount),
+                (false, true) => Addressing::Offset(amount),
+                (false, false) => Addressing::Offset(0),
             };
+            let pair = Transfer::Pair(rt, rt2);
             if first & 0x10 == 0 {
-                // strd, at an offset when it doesn't write back.
-                let offset = (before && writeback == 0).then_some(amount);
-                Effect::new(reads(&[rn, rt, rt2]), writeback)
-                    .operation(store(offset, 8))
-                    .words(words)
-                    .writeback(moves)
+                Effect::new(reads(&[rn, rt, rt2]), writeback).operation(Operation::Store {
+                    from: pair,
+                    base: rn,
+                    addressing,
+                    size: 8,
+                })
             } else {
-                Effect::new(reads(&[rn]), bit(rt) | bit(rt2) | writeback)
-                    .operation(load(None))
-                    .words(words)
-                    .writeback(moves)
+                Effect::new(reads(&[rn]), bit(rt) | bit(rt2) | writeback).operation(
+                    Operation::Load {
+                        into: pair,
+                        base: rn,
+                        addressing,
+                    },
+                )
             }
         }
     };
@@ -989,7 +982,7 @@ fn load_store_dual(first: u16, second: u16) -> Option<Effect> {
     Some(effect)
 }
 
-/// The data-processing instructions with a shifted register: `and.w`,
+/// The instructions in "Data processing (shifted register)" (A5.3): `and.w`,
 /// `bic.w`, `orr.w`, `mov.w`, `orn`, `mvn.w`, `eor.w`, `pkhbt`, `add.w`,
 /// `adc.w`, `sbc.w`, `sub.w`, `rsb` and the shifts by an immediate, and
 /// `tst.w`, `teq`, `cmn.w` and `cmp.w`, which only set the flags.
@@ -1067,10 +1060,10 @@ fn shifted_register(first: u16, second: u16) -> Option<Effect> {
     })
 }
 
-/// The data-processing instructions with a modified immediate, a byte
-/// that can be shifted or repeated: `and`, `bic`, `orr`, `mov.w`, `orn`,
-/// `mvn`, `eor`, `add.w`, `adc`, `sbc`, `sub.w` and `rsb`, and `tst`,
-/// `teq`, `cmn` and `cmp`, which only set the flags.
+/// The instructions in "Data processing (modified immediate)" (A5.3), whose
+/// immediate is a byte that can be shifted or repeated: `and`, `bic`, `orr`,
+/// `mov.w`, `orn`, `mvn`, `eor`, `add.w`, `adc`, `sbc`, `sub.w` and `rsb`,
+/// and `tst`, `teq`, `cmn` and `cmp`, which only set the flags.
 fn modified_immediate(first: u16, second: u16) -> Option<Effect> {
     let op = (first >> 5) & 0xf;
     let s = first & 0x10 != 0;
@@ -1136,7 +1129,8 @@ fn modified_immediate(first: u16, second: u16) -> Option<Effect> {
 }
 
 /// The value of a modified immediate: a byte, repeated in some bytes of
-/// the word or rotated into place (`ThumbExpandImm` in the manual).
+/// the word or rotated into place, as "Modified immediate constants in
+/// Thumb instructions" (A5.3) says (`ThumbExpandImm` in the manual).
 fn expand_immediate(imm12: u32) -> u32 {
     let byte = imm12 & 0xff;
     if imm12 >> 10 == 0 {
@@ -1151,9 +1145,9 @@ fn expand_immediate(imm12: u32) -> u32 {
     }
 }
 
-/// The data-processing instructions with a plain 12- or 16-bit immediate:
-/// `addw`, `adr.w`, `movw`, `subw`, `movt`, and the saturating and bit
-/// field instructions.
+/// The instructions in "Data processing (plain binary immediate)" (A5.3),
+/// with a 12- or 16-bit immediate: `addw`, `adr.w`, `movw`, `subw`, `movt`,
+/// and the saturating and bit field instructions.
 fn plain_immediate(pc: u64, first: u16, second: u16) -> Option<Effect> {
     let rn = first & 0xf;
     let rd = (second >> 8) & 0xf;
@@ -1202,8 +1196,9 @@ fn plain_immediate(pc: u64, first: u16, second: u16) -> Option<Effect> {
     })
 }
 
-/// Branches and the instructions in their encoding space: `bl`, `b.w`,
-/// `b<cond>.w`, `msr`, `mrs`, hints such as `nop.w`, barriers and `udf.w`.
+/// The instructions in "Branches and miscellaneous control" (A5.3): `bl`,
+/// `b.w`, `b<cond>.w`, `msr`, `mrs`, hints such as `nop.w`, barriers and
+/// `udf.w`.
 fn branch_or_control(pc: u64, first: u16, second: u16) -> Option<Effect> {
     let effect = Effect::new(0, 0);
     let target = |kind| match kind {
@@ -1244,7 +1239,8 @@ fn branch_or_control(pc: u64, first: u16, second: u16) -> Option<Effect> {
     }
 }
 
-/// `str.w`, `strb.w` and `strh.w`, with any addressing.
+/// The instructions in "Store single data item" (A5.3): `str.w`, `strb.w`
+/// and `strh.w`, with any addressing.
 fn store(first: u16, second: u16) -> Option<Effect> {
     let rn = first & 0xf;
     let rt = second >> 12;
@@ -1252,88 +1248,41 @@ fn store(first: u16, second: u16) -> Option<Effect> {
         return None;
     }
     let size = 1 << ((first >> 5) & 3);
-    let mut reads = bit(rn) | bit(rt);
     let addressing = addressing(first, second)?;
-    let (offset, writeback) = match addressing {
-        Addressing::Offset(offset) => (Some(offset), 0),
-        Addressing::Register(index) => {
-            reads |= bit(index.register);
-            (None, 0)
-        }
-        // str.w register, [sp, #-4]! pushes it.
-        Addressing::Before(-4) if rn == SP && size == 4 => {
-            return Some(Effect::new(reads, bit(SP)).operation(Operation::Push {
-                registers: bit(rt),
-                size: 4,
-            }));
-        }
-        Addressing::Before(_) | Addressing::After(_) => (None, bit(rn)),
+    let reads = bit(rn) | bit(rt) | added(addressing);
+    // str.w register, [sp, #-4]! pushes it.
+    if addressing == Addressing::Before(-4) && rn == SP && size == 4 {
+        return Some(Effect::new(reads, bit(SP)).operation(Operation::Push {
+            registers: bit(rt),
+            size: 4,
+        }));
+    }
+    let writeback = if addressing.writeback().is_some() {
+        bit(rn)
+    } else {
+        0
     };
-    let effect = Effect::new(reads, writeback).operation(Operation::Store {
-        register: (size == 4).then_some(rt),
+    Some(Effect::new(reads, writeback).operation(Operation::Store {
+        from: Transfer::word_if(size == 4, rt),
         base: rn,
-        offset,
+        addressing,
         size,
-    });
-    Some(
-        effect
-            .writeback(addressing.writeback())
-            .index(addressing.index()),
-    )
+    }))
 }
 
-/// How a 32-bit load or store of a byte, halfword or word gets its
-/// address from its base register.
-enum Addressing {
-    /// The base plus an immediate: `[base, #imm]`.
-    Offset(i32),
-    /// The base plus a register, which may be shifted: `[base, register,
-    /// lsl #imm]`.
-    Register(Index),
-    /// The base plus an immediate, which the base then holds: `[base,
-    /// #imm]!`.
-    Before(i32),
-    /// The base, which then gets the immediate added: `[base], #imm`.
-    After(i32),
-}
-
-impl Addressing {
-    /// What it adds to the base register, when it does.
-    fn writeback(&self) -> Option<Writeback> {
-        match *self {
-            Addressing::Before(amount) => Some(Writeback {
-                amount,
-                before: true,
-            }),
-            Addressing::After(amount) => Some(Writeback {
-                amount,
-                before: false,
-            }),
-            Addressing::Offset(_) | Addressing::Register(_) => None,
-        }
-    }
-
-    /// The register it adds to the base, when it adds one.
-    fn index(&self) -> Option<Index> {
-        match *self {
-            Addressing::Register(index) => Some(index),
-            _ => None,
-        }
-    }
-}
-
-/// The addressing of the load or store made of `first` and `second`,
-/// whose base isn't pc. `None` for an encoding that is undefined.
+/// The addressing of the 32-bit load or store of a byte, halfword or word
+/// made of `first` and `second`, whose base isn't pc. `None` for an
+/// encoding that is undefined.
 fn addressing(first: u16, second: u16) -> Option<Addressing> {
     // With a 12-bit immediate.
     if first & 0x80 != 0 {
         return Some(Addressing::Offset(i32::from(second & 0xfff)));
     }
     if second & 0x800 == 0 {
-        return (second & 0x7c0 == 0).then_some(Addressing::Register(Index {
+        return (second & 0x7c0 == 0).then_some(Addressing::Indexed {
             register: second & 0xf,
             shift: u32::from((second >> 4) & 3),
-        }));
+        });
     }
     // With an 8-bit immediate, P, U and W are bits 10 to 8.
     let imm8 = i32::from(second & 0xff);
@@ -1346,8 +1295,18 @@ fn addressing(first: u16, second: u16) -> Option<Addressing> {
     }
 }
 
-/// `ldr.w`, `ldrb.w`, `ldrh.w`, `ldrsb` and `ldrsh`, with any addressing,
-/// and the preload hints `pld` and `pli`.
+/// The register that `addressing` adds to the base, as a set: none unless
+/// it is `Indexed`.
+fn added(addressing: Addressing) -> Registers {
+    match addressing {
+        Addressing::Indexed { register, .. } => bit(register),
+        _ => 0,
+    }
+}
+
+/// The instructions in "Load word", "Load halfword, memory hints" and "Load
+/// byte, memory hints" (A5.3): `ldr.w`, `ldrb.w`, `ldrh.w`, `ldrsb` and
+/// `ldrsh`, with any addressing, and the preload hints `pld` and `pli`.
 fn load(pc: u64, first: u16, second: u16) -> Option<Effect> {
     let rn = first & 0xf;
     let rt = second >> 12;
@@ -1372,37 +1331,37 @@ fn load(pc: u64, first: u16, second: u16) -> Option<Effect> {
             (_, false) => effect,
         });
     }
-    let mut reads = bit(rn);
     let addressing = addressing(first, second)?;
-    let (offset, writeback) = match addressing {
-        Addressing::Offset(offset) => (Some(offset), 0),
-        Addressing::Register(index) => {
-            reads |= bit(index.register);
-            (None, 0)
-        }
-        // A word loaded with ldr.w register, [sp], #4 is popped.
-        Addressing::After(4) if rn == SP && word => {
-            let effect =
-                Effect::new(reads, (bit(rt) | bit(SP)) & !bit(PC)).operation(Operation::Pop {
-                    registers: bit(rt),
-                    size: 4,
-                });
-            return Some(match rt {
-                PC => effect.flow(Flow::Pop),
-                _ => effect,
-            });
-        }
-        Addressing::Before(_) | Addressing::After(_) => (None, bit(rn)),
-    };
-    let load = |register| Operation::Load {
-        register,
-        base: rn,
-        offset,
+    let reads = bit(rn) | added(addressing);
+    // A word loaded with ldr.w register, [sp], #4 is popped.
+    if addressing == Addressing::After(4) && rn == SP && word {
+        let effect = Effect::new(reads, (bit(rt) | bit(SP)) & !bit(PC)).operation(Operation::Pop {
+            registers: bit(rt),
+            size: 4,
+        });
+        return Some(match rt {
+            PC => effect.flow(Flow::Pop),
+            _ => effect,
+        });
+    }
+    let writeback = if addressing.writeback().is_some() {
+        bit(rn)
+    } else {
+        0
     };
     if rt == PC {
-        // A byte or halfword into pc is a preload hint.
-        let effect = Effect::new(reads, writeback).operation(load(None));
-        let effect = effect.writeback(addressing.writeback());
+        // A word loaded into pc is jumped to, and a byte or halfword is a
+        // preload hint. Where one that adds another register to the base
+        // reads, as a jump through a table does, isn't worked out.
+        let addressing = match addressing {
+            Addressing::Indexed { .. } => Addressing::Unknown,
+            _ => addressing,
+        };
+        let effect = Effect::new(reads, writeback).operation(Operation::Load {
+            into: Transfer::Other,
+            base: rn,
+            addressing,
+        });
         return Some(match word {
             true => effect.flow(Flow::JumpMemory),
             false => effect,
@@ -1411,20 +1370,21 @@ fn load(pc: u64, first: u16, second: u16) -> Option<Effect> {
     if writeback & bit(rt) != 0 {
         return None;
     }
-    let effect = Effect::new(reads, bit(rt) | writeback).operation(load(word.then_some(rt)));
     Some(
-        effect
-            .writeback(addressing.writeback())
-            .index(addressing.index()),
+        Effect::new(reads, bit(rt) | writeback).operation(Operation::Load {
+            into: Transfer::word_if(word, rt),
+            base: rn,
+            addressing,
+        }),
     )
 }
 
-/// The floating-point instructions, with Armv8.1-M's loads and stores of
-/// its system registers. Only those that move values to or from the core
+/// The instructions in "Coprocessor instructions" (A5.3): the floating-point
+/// ones, in sections A6.4 to A6.7, with Armv8.1-M's loads and stores of its
+/// system registers. Only those that move values to or from the core
 /// registers, and loads and stores that update their base register, touch
-/// the registers elfq follows. Those of other coprocessors, and
-/// Armv8.1-M's vector instructions, which share their encodings, aren't
-/// followed.
+/// the registers elfq follows. Those of other coprocessors, and Armv8.1-M's
+/// vector instructions, which share their encodings, aren't followed.
 fn coprocessor(first: u16, second: u16) -> Option<Effect> {
     // Coprocessor field 15, as some vector instructions have too, with P
     // or W set.
@@ -1463,15 +1423,15 @@ fn coprocessor(first: u16, second: u16) -> Option<Effect> {
             let effect = Effect::new(bit(rn), 0);
             Some(if loads {
                 effect.operation(Operation::Load {
-                    register: None,
+                    into: Transfer::Other,
                     base: rn,
-                    offset: Some(0),
+                    addressing: Addressing::Offset(0),
                 })
             } else {
                 effect.operation(Operation::Store {
-                    register: None,
+                    from: Transfer::Other,
                     base: rn,
-                    offset: Some(0),
+                    addressing: Addressing::Offset(0),
                     size: 0x88,
                 })
             })
@@ -1484,48 +1444,49 @@ fn coprocessor(first: u16, second: u16) -> Option<Effect> {
             let writes = if writeback && rn != PC { bit(rn) } else { 0 };
             let effect = Effect::new(reads(&[rn]), writes);
             let half = field == 0b1001;
-            let size = u32::from(second & 0xff) * if half { 2 } else { 4 };
+            // imm8 scaled to bytes: what vpush and vpop move, and what vldr
+            // and vstr add to the base.
+            let scaled = u32::from(second & 0xff) * if half { 2 } else { 4 };
+            let offset = if u { scaled as i32 } else { -(scaled as i32) };
             let stack = !half && rn == SP && writeback;
             Some(match (loads, p) {
                 // vpop and vpush
-                (true, false) if stack && u => {
-                    effect.operation(Operation::Pop { registers: 0, size })
-                }
-                (false, true) if stack && !u => {
-                    effect.operation(Operation::Push { registers: 0, size })
-                }
+                (true, false) if stack && u => effect.operation(Operation::Pop {
+                    registers: 0,
+                    size: scaled,
+                }),
+                (false, true) if stack && !u => effect.operation(Operation::Push {
+                    registers: 0,
+                    size: scaled,
+                }),
                 // vldr of a half or a single, from one word.
-                (true, true) if !w && field != 0b1011 => {
-                    let offset = size as i32;
-                    effect.operation(Operation::Load {
-                        register: None,
-                        base: rn,
-                        offset: Some(if u { offset } else { -offset }),
-                    })
-                }
-                (true, _) => effect.operation(Operation::Load {
-                    register: None,
+                (true, true) if !w && field != 0b1011 => effect.operation(Operation::Load {
+                    into: Transfer::Other,
                     base: rn,
-                    offset: None,
+                    addressing: Addressing::Offset(offset),
+                }),
+                // vldm and vldmdb, and vldr of a double.
+                (true, _) => effect.operation(Operation::Load {
+                    into: Transfer::Other,
+                    base: rn,
+                    addressing: Addressing::Unknown,
                 }),
                 // vstr, which stores a half, a single or a double.
-                (false, true) if !w => {
-                    let offset = size as i32;
-                    effect.operation(Operation::Store {
-                        register: None,
-                        base: rn,
-                        offset: Some(if u { offset } else { -offset }),
-                        size: match field {
-                            0b1001 => 2,
-                            0b1010 => 4,
-                            _ => 8,
-                        },
-                    })
-                }
-                (false, _) => effect.operation(Operation::Store {
-                    register: None,
+                (false, true) if !w => effect.operation(Operation::Store {
+                    from: Transfer::Other,
                     base: rn,
-                    offset: None,
+                    addressing: Addressing::Offset(offset),
+                    size: match field {
+                        0b1001 => 2,
+                        0b1010 => 4,
+                        _ => 8,
+                    },
+                }),
+                // vstm and vstmdb
+                (false, _) => effect.operation(Operation::Store {
+                    from: Transfer::Other,
+                    base: rn,
+                    addressing: Addressing::Unknown,
                     size: 0,
                 }),
             })
@@ -1554,9 +1515,11 @@ fn coprocessor(first: u16, second: u16) -> Option<Effect> {
     }
 }
 
-/// Armv8.1-M's vldr and vstr of a floating-point system register, such as
-/// the FPCXTNS that a function called from Non-secure code saves: one word
-/// at Rn plus or minus `imm7` * 4, or at Rn, which it then changes by that.
+/// Armv8.1-M's vldr and vstr of a floating-point system register, which
+/// the Armv8-M manual describes under "VLDR (System Register)" and "VSTR
+/// (System Register)", such as the FPCXTNS that a function called from
+/// Non-secure code saves: one word at Rn plus or minus `imm7` * 4, or at
+/// Rn, which it then changes by that.
 fn system_register(first: u16, second: u16) -> Option<Effect> {
     let rn = first & 0xf;
     let (p, u, w) = (first & 0x100 != 0, first & 0x80 != 0, first & 0x20 != 0);
@@ -1565,7 +1528,10 @@ fn system_register(first: u16, second: u16) -> Option<Effect> {
     }
     let amount = i32::from(second & 0x7f) * 4;
     let amount = if u { amount } else { -amount };
-    let offset = Some(if p { amount } else { 0 });
+    // Where it reads or writes. With writeback it changes the base too,
+    // which elfq doesn't follow: the base then holds something it can't
+    // tell.
+    let addressing = Addressing::Offset(if p { amount } else { 0 });
     let effect = Effect::new(bit(rn), if w { bit(rn) } else { 0 });
     Some(match (first & 0x10 != 0, rn == SP && w) {
         (true, true) if !p && u => effect.operation(Operation::Pop {
@@ -1577,14 +1543,14 @@ fn system_register(first: u16, second: u16) -> Option<Effect> {
             size: amount.unsigned_abs(),
         }),
         (true, _) => effect.operation(Operation::Load {
-            register: None,
+            into: Transfer::Other,
             base: rn,
-            offset,
+            addressing,
         }),
         (false, _) => effect.operation(Operation::Store {
-            register: None,
+            from: Transfer::Other,
             base: rn,
-            offset,
+            addressing,
             size: 4,
         }),
     })

@@ -1429,8 +1429,18 @@ fn loop_repeats(memory: &Memory, steps: &[Step], l: &Loop, ready: &HashSet<usize
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::arch::InstructionSet;
     use crate::arch::startup::{Iteration, Runs, Source};
     use crate::graph::Graph;
+
+    /// `binary`, read as Thumb, with `graph`.
+    fn firmware<'a>(binary: &'a Binary, graph: &'a Graph) -> Firmware<'a> {
+        let thumb = InstructionSet::Thumb {
+            endianness: binary.endianness,
+        };
+        let code = thumb.startup_code(binary).expect("Thumb code has a walk");
+        Firmware::new(binary, code, graph)
+    }
 
     /// Firmware with code in flash at 0x8000000, and in RAM at 0x20000000:
     /// two load images, stored in flash one after the other, and two
@@ -1739,7 +1749,7 @@ mod tests {
     /// As `steps`, for a walk that ended at `end`.
     fn steps_to(binary: &Binary, list: &[Event], end: End) -> Vec<String> {
         let graph = Graph::default();
-        let firmware = Firmware::new(binary, &graph);
+        let firmware = firmware(binary, &graph);
         let memory = Memory::new(binary);
         let events = Events::new(&firmware, list);
         let reset = Reset {
@@ -2111,7 +2121,7 @@ mod tests {
     fn only_a_tail_call_that_the_walk_went_into_opens_a_level() {
         let binary = binary();
         let graph = Graph::default();
-        let firmware = Firmware::new(&binary, &graph);
+        let firmware = firmware(&binary, &graph);
         // A branch to another function when a flag is set, as Clang makes
         // of `if (a) f(); else g();`, then a copy.
         let branch = |followed| {

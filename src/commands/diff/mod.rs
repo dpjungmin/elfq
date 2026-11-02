@@ -36,7 +36,6 @@ use super::symbol::Names;
 use super::text::architecture_name;
 use super::{Outcome, startup};
 use crate::STACK_SIZE;
-use crate::arch;
 use crate::binary::{Binary, FileKind, LoadedMemory, same_memory};
 use crate::cli::Format;
 use crate::graph::{DominatorTree, Graph};
@@ -201,7 +200,7 @@ impl Build {
         let binary =
             Binary::from_vec(data).with_context(|| format!("cannot load {}", path.display()))?;
         let graph = Graph::build(&binary);
-        let tree = (tree && arch::is_supported(binary.architecture, binary.thumb))
+        let tree = (tree && binary.instruction_set().is_some())
             .then(|| DominatorTree::build(&binary, &graph, None));
         Ok(Build {
             binary,

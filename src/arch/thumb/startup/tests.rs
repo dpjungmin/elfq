@@ -1924,6 +1924,85 @@ fn a_loop_that_copies_two_words_at_a_time_with_ldm_and_stm() {
 }
 
 #[test]
+fn where_loads_and_stores_of_each_addressing_read_and_write() {
+    // Each store shows where it goes, and where it got its words:
+    //   8000000: f04f 5000  mov.w  r0, #0x20000000
+    //   8000004: 490d       ldr    r1, [pc, #52]  ; 0x8000048
+    //   8000006: e951 2302  ldrd   r2, r3, [r1, #-8]
+    //   800000a: e9c0 2302  strd   r2, r3, [r0, #8]
+    //   800000e: e931 000c  ldmdb  r1!, {r2, r3}
+    //   8000012: 3040       adds   r0, #0x40
+    //   8000014: e920 000c  stmdb  r0!, {r2, r3}
+    //   8000018: c90c       ldmia  r1!, {r2, r3}
+    //   800001a: e900 000c  stmdb  r0, {r2, r3}
+    //   800001e: e9e0 2302  strd   r2, r3, [r0, #8]!
+    //   8000022: e8f1 2302  ldrd   r2, r3, [r1], #8
+    //   8000026: 5042       str    r2, [r0, r1]
+    //   8000028: e851 2f00  ldrex  r2, [r1]
+    //   800002c: 6042       str    r2, [r0, #4]
+    //   800002e: ec80 0a02  vstmia r0, {s0, s1}
+    //   8000032: ed20 2f81  vstr   FPSCR, [r0, #-4]!
+    //   8000036: 6083       str    r3, [r0, #8]
+    //   8000038: f000 f80a  bl     8000050 <main>
+    //   800003c: 08000048   .word
+    // table:
+    //   8000040: 11111111 22222222 33333333 44444444
+    // main:
+    //   8000050: e7fe       b.n    8000050
+    let code = [
+        0xf04f, 0x5000, 0x490d, 0xe951, 0x2302, 0xe9c0, 0x2302, 0xe931, 0x000c, 0x3040, 0xe920,
+        0x000c, 0xc90c, 0xe900, 0x000c, 0xe9e0, 0x2302, 0xe8f1, 0x2302, 0x5042, 0xe851, 0x2f00,
+        0x6042, 0xec80, 0x0a02, 0xed20, 0x2f81, 0x6083, 0xf000, 0xf80a, 0x0048, 0x0800, 0x1111,
+        0x1111, 0x2222, 0x2222, 0x3333, 0x3333, 0x4444, 0x4444, 0xe7fe, 0xbf00,
+    ];
+    let functions = [0x0800_0000, 0x0800_0050];
+    assert_eq!(
+        walk_lines(&code, &functions, Some(0x0800_0050)),
+        [
+            "0 0x800000a store ? at 0x20000008, 8 bytes, loaded from 0x8000040 at 0x8000006",
+            "0 0x8000014 store ? at 0x20000038, 8 bytes, loaded from 0x8000040 at 0x800000e",
+            "0 0x800001a store ? at 0x20000030, 8 bytes, loaded from 0x8000040 at 0x8000018",
+            "0 0x800001e store ? at 0x20000040, 8 bytes, loaded from 0x8000040 at 0x8000018",
+            "0 0x8000026 store 0x33333333 at 0x28000090, 4 bytes, loaded from 0x8000048 at 0x8000022",
+            "0 0x800002c store ? at 0x20000044, 4 bytes",
+            "0 0x800002e store ? at 0x20000040 on, 0 bytes",
+            "0 0x8000032 store ? at 0x2000003c, 4 bytes",
+            "0 0x8000036 store 0x44444444 at ?, 4 bytes, loaded from 0x800004c at 0x8000022",
+            "0 0x8000038 call 0x8000050 (? 0x8000050 ? 0x44444444)",
+            "end Main(8000038)",
+        ]
+    );
+}
+
+#[test]
+fn an_ldm_without_writeback_reads_at_its_base() {
+    //   8000000: f04f 5000  mov.w   r0, #0x20000000
+    //   8000004: 4903       ldr     r1, [pc, #12]  ; 0x8000014
+    //   8000006: e891 000c  ldmia.w r1, {r2, r3}
+    //   800000a: e9c0 2300  strd    r2, r3, [r0]
+    //   800000e: f000 f807  bl      8000020 <main>
+    //   8000012: bf00       nop
+    //   8000014: 08000018   .word
+    // table:
+    //   8000018: 11111111 22222222
+    // main:
+    //   8000020: e7fe       b.n     8000020
+    let code = [
+        0xf04f, 0x5000, 0x4903, 0xe891, 0x000c, 0xe9c0, 0x2300, 0xf000, 0xf807, 0xbf00, 0x0018,
+        0x0800, 0x1111, 0x1111, 0x2222, 0x2222, 0xe7fe, 0xbf00,
+    ];
+    let functions = [0x0800_0000, 0x0800_0020];
+    assert_eq!(
+        walk_lines(&code, &functions, Some(0x0800_0020)),
+        [
+            "0 0x800000a store ? at 0x20000000, 8 bytes, loaded from 0x8000018 at 0x8000006",
+            "0 0x800000e call 0x8000020 (0x20000000 0x8000018 0x11111111 0x22222222)",
+            "end Main(800000e)",
+        ]
+    );
+}
+
+#[test]
 fn a_loop_that_counts_down_to_zero() {
     // r3 counts the bytes left, from 16 down to 0, and the loop copies
     // the last word first:

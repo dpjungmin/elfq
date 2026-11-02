@@ -8,7 +8,7 @@ use std::rc::Rc;
 use object::Endian;
 
 use crate::arch::startup::{Event, Source, Store};
-use crate::arch::thumb::decode::{Effect, Operation, SetsFlags, Words, each};
+use crate::arch::thumb::decode::{Addressing, Effect, Operation, SetsFlags, Transfer, each};
 use crate::arch::thumb::{ARGUMENTS, PC, SP};
 
 use super::Walker;
@@ -55,13 +55,14 @@ impl Walker<'_> {
         let source = match effect.operation {
             Operation::Copy { source, .. } if source != PC => known.sources[usize::from(source)],
             Operation::Load {
-                register: Some(_), ..
+                into: Transfer::Word(_),
+                ..
             } => at.map(|address| Source { site, address }),
             _ => None,
         };
         // The words that `ldm` and `ldrd` load, with where from.
         let words: Vec<(u16, Option<u32>, Option<Source>)> = match effect.operation {
-            Operation::Load { .. } => (effect.words.into_iter().flat_map(word_registers))
+            Operation::Load { into, .. } => (word_registers(into).into_iter())
                 .enumerate()
                 .map(|(n, register)| {
                     let address = at.map(|at| at.wrapping_add(4 * n as u32));
@@ -73,11 +74,16 @@ impl Walker<'_> {
             _ => Vec::new(),
         };
         // The base register after a load or store that adds to it.
-        let moved = match (effect.operation, effect.writeback) {
-            (Operation::Load { base, .. } | Operation::Store { base, .. }, Some(writeback)) => {
-                let after = self.register(known, base, site);
-                Some((base, after.map(|n| n.wrapping_add_signed(writeback.amount))))
+        let moved = match effect.operation {
+            Operation::Load {
+                base, addressing, ..
             }
+            | Operation::Store {
+                base, addressing, ..
+            } => addressing.writeback().map(|amount| {
+                let after = self.register(known, base, site);
+                (base, after.map(|n| n.wrapping_add_signed(amount)))
+            }),
             _ => None,
         };
         let sp = known.registers[usize::from(SP)];
@@ -203,7 +209,7 @@ impl Walker<'_> {
                 signed,
             } => number(register, get(source).map(|n| shift_right(n, shift, signed))),
             Operation::Load {
-                register: Some(register),
+                into: Transfer::Word(register),
                 ..
             } => number(register, at.and_then(|at| self.load(known, at, false))),
             Operation::Nothing
@@ -311,7 +317,7 @@ impl Walker<'_> {
         conditional: bool,
     ) {
         let Operation::Store {
-            register,
+            from: transfer,
             base,
             size,
             ..
@@ -322,10 +328,9 @@ impl Walker<'_> {
         let from = self.register(known, base, site);
         // The registers whose words it stores, in order: none for part of
         // a word.
-        let registers: Vec<u16> = match (effect.words, register) {
-            (Some(words), _) => word_registers(words),
-            (None, Some(register)) => vec![register],
-            (None, None) => Vec::new(),
+        let registers: Vec<u16> = match transfer {
+            Transfer::Word(register) => vec![register],
+            _ => word_registers(transfer),
         };
         let words: Vec<Option<u32>> = (registers.iter())
             .map(|&register| self.register(known, register, site))
@@ -384,8 +389,12 @@ impl Walker<'_> {
     /// The address of the first word that a load or store at `site` that
     /// does what `effect` says reads or writes, when the walk can tell it.
     pub(super) fn access(&self, known: &Known, site: u64, effect: &Effect) -> Option<u32> {
-        let (Operation::Load { base, offset, .. } | Operation::Store { base, offset, .. }) =
-            effect.operation
+        let (Operation::Load {
+            base, addressing, ..
+        }
+        | Operation::Store {
+            base, addressing, ..
+        }) = effect.operation
         else {
             return None;
         };
@@ -395,21 +404,16 @@ impl Walker<'_> {
             PC => (site as u32).wrapping_add(4) & !3,
             _ => self.register(known, base, site)?,
         };
-        if let Some(index) = effect.index {
-            let added = self.register(known, index.register, site)?;
-            return Some(base.wrapping_add(added << index.shift));
-        }
-        let offset = match (effect.words, effect.writeback) {
-            (Some(Words::List { registers, down }), _) => match down {
-                true => -4 * registers.count_ones() as i32,
-                false => 0,
-            },
-            (Some(Words::Pair { offset, .. }), _) => offset,
+        let offset = match addressing {
             // `[base, #imm]!` adds before it loads or stores, `[base],
             // #imm` after.
-            (None, Some(writeback)) if writeback.before => writeback.amount,
-            (None, Some(_)) => 0,
-            (None, None) => offset?,
+            Addressing::Offset(offset) | Addressing::Before(offset) => offset,
+            Addressing::After(_) => 0,
+            Addressing::Indexed { register, shift } => {
+                let added = self.register(known, register, site)?;
+                return Some(base.wrapping_add(added << shift));
+            }
+            Addressing::Unknown => return None,
         };
         Some(base.wrapping_add_signed(offset))
     }
@@ -582,11 +586,13 @@ fn shift_right(number: u32, shift: u32, signed: bool) -> u32 {
     }
 }
 
-/// The registers whose words a load or store of more than one word loads
-/// or stores, in order.
-fn word_registers(words: Words) -> Vec<u16> {
-    match words {
-        Words::List { registers, .. } => each(registers).collect(),
-        Words::Pair { first, second, .. } => vec![first, second],
+/// The registers whose words a load or store of more than one word,
+/// `ldm`, `stm`, `ldrd` or `strd`, moves as `transfer` says, in order: none
+/// for any other.
+fn word_registers(transfer: Transfer) -> Vec<u16> {
+    match transfer {
+        Transfer::Words(registers) => each(registers).collect(),
+        Transfer::Pair(first, second) => vec![first, second],
+        Transfer::Part | Transfer::Word(_) | Transfer::Other => Vec::new(),
     }
 }

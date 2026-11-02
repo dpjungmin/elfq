@@ -33,13 +33,12 @@ use std::io::Write;
 use std::path::Path;
 
 use anyhow::{Result, bail};
-use object::Architecture;
 use object::elf::{EM_386, EM_AARCH64, EM_ARM, EM_X86_64, ET_DYN, ET_REL};
 
 use super::Outcome;
 use super::checks::check_code_is_readable;
 use super::kept::Kept;
-use crate::arch::startup::{DEPTH, End, Walk};
+use crate::arch::startup::{Code, DEPTH, End, Walk};
 use crate::binary::{Binary, ElfHeader, ItemKind};
 use crate::cli::Format;
 use crate::graph::{Graph, Node, VeneerTarget, Veneers};
@@ -97,14 +96,18 @@ pub(super) fn reads(path: &Path, binary: &Binary) -> bool {
 }
 
 /// Where the processor starts in the firmware at `path`, loaded as
-/// `binary`, or why startup refuses the file once it is loaded: its code
-/// can't be read, it isn't Arm code, or elfq finds no reset handler.
-fn reset_handler(path: &Path, binary: &Binary) -> Result<Reset> {
+/// `binary`, and its code as the walk reads it, or why startup refuses the
+/// file once it is loaded: its code can't be read, it isn't Arm code, or
+/// elfq finds no reset handler.
+fn reset_handler<'a>(path: &Path, binary: &'a Binary) -> Result<(Reset, Code<'a>)> {
     check_code_is_readable(binary)?;
-    if binary.architecture != Architecture::Arm {
+    let code = binary
+        .instruction_set()
+        .and_then(|set| set.startup_code(binary));
+    let Some(code) = code else {
         bail!("{} isn't Arm code; {READS}", path.display());
-    }
-    Reset::find(path, binary)
+    };
+    Ok((Reset::find(path, binary)?, code))
 }
 
 /// Answers `elfq FILE startup`: [`Outcome::Problems`] when it finds a
@@ -116,12 +119,12 @@ pub(super) fn run(
     format: Format,
     out: &mut dyn Write,
 ) -> Result<Outcome> {
-    let reset = reset_handler(path, binary)?;
+    let (reset, code) = reset_handler(path, binary)?;
     let graph = Kept::new(Graph::build(binary));
-    let firmware = Firmware::new(binary, &graph);
+    let firmware = Firmware::new(binary, code, &graph);
     let memory = Memory::new(binary);
     let main = start::find_main(&firmware, &memory, &reset);
-    let walk = reset.walk(binary, main.map(|main| main.address), DEPTH);
+    let walk = reset.walk(code, main.map(|main| main.address), DEPTH);
     let events = Events::new(&firmware, &walk.events);
     let steps = steps::build(&firmware, &memory, &events, &reset, main, walk.end);
     let judged = problems::judge(
@@ -176,18 +179,20 @@ impl Answer<'_> {
     }
 }
 
-/// The file, with what tells where its calls go: its graph, and its
-/// veneers.
+/// The file, with its code as the walk reads it, and what tells where its
+/// calls go: its graph, and its veneers.
 struct Firmware<'a> {
     binary: &'a Binary,
+    code: Code<'a>,
     graph: &'a Graph,
     veneers: Veneers<'a>,
 }
 
 impl<'a> Firmware<'a> {
-    fn new(binary: &'a Binary, graph: &'a Graph) -> Firmware<'a> {
+    fn new(binary: &'a Binary, code: Code<'a>, graph: &'a Graph) -> Firmware<'a> {
         Firmware {
             binary,
+            code,
             graph,
             veneers: Veneers::new(binary, graph),
         }

@@ -7,7 +7,7 @@ use crate::arch::thumb::decode::{Flow, Operation};
 
 use super::decode_at;
 
-/// See `arch::startup::passes_result`.
+/// See `arch::startup::Code::passes_result`.
 pub(in crate::arch) fn passes_result(program: &dyn Program, first: u64, second: u64) -> bool {
     if !(first < second && second - first <= 16) {
         return false;
@@ -41,7 +41,7 @@ pub(in crate::arch) fn passes_result(program: &dyn Program, first: u64, second: 
     address == second && result & 1 != 0
 }
 
-/// See `arch::startup::branches_past`.
+/// See `arch::startup::Code::branches_past`.
 pub(in crate::arch) fn branches_past(program: &dyn Program, start: u64, call: u64) -> bool {
     let Some(after) = decode_at(program, call).map(|call| call.next()) else {
         return false;

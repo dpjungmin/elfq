@@ -6,7 +6,6 @@
 use anyhow::{Result, bail};
 
 use super::text;
-use crate::arch;
 use crate::binary::{AddressRange, Binary, Item, Source, memory_blocks, total};
 use crate::graph::{Graph, Node};
 
@@ -18,7 +17,7 @@ pub(super) fn reference_graph(binary: &Binary) -> Result<Graph> {
 
 /// Explains why elfq can't build the reference graph yet, if it can't.
 pub(super) fn check_code_is_readable(binary: &Binary) -> Result<()> {
-    if !arch::is_supported(binary.architecture, binary.thumb) {
+    if binary.instruction_set().is_none() {
         bail!("{}", text::cannot_read_code(binary));
     }
     Ok(())

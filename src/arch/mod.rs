@@ -8,12 +8,16 @@
 //! through a register. The graph module then works out which item each
 //! address belongs to.
 //!
+//! What elfq reads of code goes through [`InstructionSet`], which has
+//! only the instruction sets elfq can read.
+//!
 //! In stripped Cortex-M firmware, elfq also has to work out where functions
 //! end, so the Thumb module also tells the padding between functions apart
 //! and how a stretch of code ends.
 //!
 //! `diff` needs to know which bits of a function's code say where something
-//! is, since those change whenever code or data moves (see [`operands`]).
+//! is, since those change whenever code or data moves (see
+//! [`InstructionSet::operands`]).
 //!
 //! `listing.rs` prints a function's code as text, for `elfq FILE browse`.
 //!
@@ -28,7 +32,7 @@ mod thumb;
 mod x86_64;
 
 #[cfg(feature = "tui")]
-pub use listing::{Line, Refers, listing};
+pub use listing::{Line, Refers};
 
 use object::{Architecture, Endianness};
 
@@ -62,7 +66,7 @@ pub enum CodeReferenceKind {
     /// register that the code put the target in. On any instruction set,
     /// `Binary::code_references` also gives one from the last instruction
     /// of an entry point that runs on into the next function (see
-    /// [`runs_on`]). The graph treats it as a `Jump`.
+    /// [`InstructionSet::runs_on`]). The graph treats it as a `Jump`.
     TailJump(u64),
     /// A call through the pointer stored at an address: `call [pointer]`.
     CallThrough(u64),
@@ -98,7 +102,7 @@ pub enum Ending {
 }
 
 /// The bits of one function's code that say where something is, as
-/// [`operands`] finds them.
+/// [`InstructionSet::operands`] finds them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Operands {
     /// For each byte of the code, the bits of it that hold the distance from
@@ -108,7 +112,7 @@ pub struct Operands {
     /// function or what it uses moves. A distance to a place inside the
     /// code, as a loop's jump, doesn't change when the function moves, and
     /// isn't here.
-    pub relative: Vec<u8>,
+    pub distance_bits: Vec<u8>,
     /// Where each of those distances leads, as (the offset of its
     /// instruction in the code, the address), in the order of the
     /// instructions.
@@ -128,153 +132,142 @@ pub struct SplitNumber {
     pub bits: Vec<(usize, u8)>,
 }
 
-/// Whether elfq can read a file's code yet: x86-64, or 32-bit Arm when the
-/// code is Thumb, which is what Cortex-M runs. Code in the older Arm (A32)
-/// instruction set isn't read.
-pub fn is_supported(architecture: Architecture, thumb: bool) -> bool {
-    match architecture {
-        Architecture::X86_64 => true,
-        Architecture::Arm => thumb,
-        _ => false,
+/// An instruction set that elfq can read: x86-64, or Thumb, the
+/// instruction set that Cortex-M runs. Code in the older Arm (A32)
+/// instruction set isn't read. What elfq reads of code goes through these
+/// methods, so code that elfq can't read never reaches a scanner, and a new
+/// instruction set needs an arm in each.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstructionSet {
+    X86_64,
+    /// With the file's byte order, for reading the constants in the code:
+    /// in big-endian Arm firmware (BE8), the instructions are still
+    /// little-endian.
+    Thumb {
+        endianness: Endianness,
+    },
+}
+
+impl InstructionSet {
+    /// The instruction set of a file's code, or `None` when elfq can't read
+    /// it yet. `thumb` says whether 32-bit Arm code is Thumb (see
+    /// `Binary::thumb`).
+    pub fn of(architecture: Architecture, thumb: bool, endianness: Endianness) -> Option<Self> {
+        match architecture {
+            Architecture::X86_64 => Some(Self::X86_64),
+            Architecture::Arm if thumb => Some(Self::Thumb { endianness }),
+            _ => None,
+        }
     }
-}
 
-/// The references in one function's code, which starts at `address`.
-/// `endianness` is the file's, for reading the constants in Thumb code.
-/// Returns nothing for instruction sets other than x86-64 and 32-bit Arm,
-/// and reads any 32-bit Arm code as Thumb, so check [`is_supported`] first.
-pub fn scan(
-    architecture: Architecture,
-    endianness: Endianness,
-    code: &[u8],
-    address: u64,
-) -> Vec<CodeReference> {
-    match architecture {
-        Architecture::X86_64 => x86_64::scan(code, address),
-        Architecture::Arm => thumb::scan(code, address, endianness),
-        _ => Vec::new(),
+    /// The references in one function's code, which starts at `address`.
+    pub fn scan(self, code: &[u8], address: u64) -> Vec<CodeReference> {
+        match self {
+            Self::X86_64 => x86_64::scan(code, address),
+            Self::Thumb { endianness } => thumb::scan(code, address, endianness),
+        }
     }
-}
 
-/// The references that each instruction in one function's code makes on
-/// its own: like [`scan`], but without following an address from the
-/// instruction that puts it in a register to one that branches through
-/// it, so such a branch is always through a pointer. Code split in two
-/// finds the same references this way as the code together, unless an
-/// instruction or the constants it loads are cut in two.
-pub fn scan_instructions(
-    architecture: Architecture,
-    endianness: Endianness,
-    code: &[u8],
-    address: u64,
-) -> Vec<CodeReference> {
-    match architecture {
-        Architecture::X86_64 => x86_64::scan(code, address),
-        Architecture::Arm => thumb::scan_instructions(code, address, endianness),
-        _ => Vec::new(),
+    /// The bits of one function's code, which starts at `address`, that say
+    /// where something is, and where each distance leads, for `diff` to tell
+    /// apart the bytes of two builds of a function that differ because
+    /// things moved from those that differ because the code changed: on
+    /// x86-64, the distance in a call or jump and in an operand relative to
+    /// the instruction pointer, as in `lea rdi, [rip + 0x2f3e]`; on Thumb,
+    /// the distance in `bl`, `b`, `b<cond>`, `cbz`, `cbnz`, `adr` and a load
+    /// from a literal pool, each in its 16- and 32-bit forms, and the
+    /// numbers that `movw` and `movt` put together. Thumb code is swept as
+    /// [`InstructionSet::scan`] sweeps it, so the constants and jump tables
+    /// it reads hold no distances.
+    pub fn operands(self, code: &[u8], address: u64) -> Operands {
+        match self {
+            Self::X86_64 => x86_64::operands(code, address),
+            Self::Thumb { endianness } => thumb::operands(code, address, endianness),
+        }
     }
-}
 
-/// The bits of one function's code, which starts at `address`, that say
-/// where something is, and where each distance leads, for `diff` to tell
-/// apart the bytes of two builds of a function that differ because things
-/// moved from those that differ because the code changed: on x86-64, the
-/// distance in a call or jump and in an operand relative to the instruction
-/// pointer, as in `lea rdi, [rip + 0x2f3e]`; on Thumb, the distance in
-/// `bl`, `b`, `b<cond>`, `cbz`, `cbnz`, `adr` and a load from a literal
-/// pool, each in its 16- and 32-bit forms, and the numbers that `movw` and
-/// `movt` put together. Thumb code is swept as [`scan`] sweeps it, so the
-/// constants and jump tables it reads hold no distances. Nothing for other
-/// instruction sets, so diff calls a function's code changed whenever its
-/// bytes differ.
-pub fn operands(
-    architecture: Architecture,
-    endianness: Endianness,
-    code: &[u8],
-    address: u64,
-) -> Operands {
-    match architecture {
-        Architecture::X86_64 => x86_64::operands(code, address),
-        Architecture::Arm => thumb::operands(code, address, endianness),
-        _ => Operands {
-            relative: vec![0; code.len()],
-            targets: Vec::new(),
-            split: Vec::new(),
-        },
+    /// Where the last instruction of the code that starts at `address` is,
+    /// when the processor can run on past the end of the code after it:
+    /// unless that instruction always jumps, returns or traps. A
+    /// conditional jump runs on when it isn't taken, and a call counts as
+    /// running on, since elfq can't tell whether what it calls returns.
+    /// `None` when the code stops before its end. Padding after the last
+    /// instruction doesn't count.
+    pub fn runs_on(self, code: &[u8], address: u64) -> Option<u64> {
+        match self {
+            Self::X86_64 => x86_64::runs_on(code, address),
+            Self::Thumb { endianness } => thumb::runs_on(code, address, endianness),
+        }
     }
-}
 
-/// How many bytes at the start of `code` a function's instructions and
-/// constants take, when `code` may run on past its end to the next
-/// function. Only Thumb tells the padding between functions apart; for
-/// other instruction sets, this is all of `code`.
-pub fn code_size(
-    architecture: Architecture,
-    endianness: Endianness,
-    code: &[u8],
-    address: u64,
-) -> u64 {
-    let size = match architecture {
-        Architecture::Arm => thumb::code_size(code, address, endianness),
-        _ => code.len(),
-    };
-    size as u64
-}
-
-/// Whether `code` is all of a veneer: a stub that a linker puts near a call
-/// whose target is too far away for the call instruction, and that only
-/// jumps on to the target. Only Thumb has them: those that GNU ld and LLD
-/// add for Cortex-M. `name` is the code's symbol, when it has one: code
-/// that a compiler may also make is a veneer only under a linker's name.
-pub fn is_veneer(architecture: Architecture, code: &[u8], name: Option<&str>) -> bool {
-    match architecture {
-        Architecture::Arm => thumb::is_veneer(code, name),
-        _ => false,
+    /// Whether `code` is all of a veneer: a stub that a linker puts near a
+    /// call whose target is too far away for the call instruction, and that
+    /// only jumps on to the target. Only Thumb has them: those that GNU ld
+    /// and LLD add for Cortex-M. `name` is the code's symbol, when it has
+    /// one: code that a compiler may also make is a veneer only under a
+    /// linker's name.
+    pub fn is_veneer(self, code: &[u8], name: Option<&str>) -> bool {
+        match self {
+            Self::X86_64 => false,
+            Self::Thumb { .. } => thumb::is_veneer(code, name),
+        }
     }
-}
 
-/// How many bytes of padding between functions `code` starts with. Only
-/// Thumb tells padding apart; for other instruction sets, this is 0.
-pub fn leading_padding(architecture: Architecture, code: &[u8]) -> u64 {
-    let size = match architecture {
-        Architecture::Arm => thumb::leading_padding(code),
-        _ => 0,
-    };
-    size as u64
-}
+    // The next four matter only for finding the functions in stripped
+    // firmware, which elfq does only for Thumb. The x86-64 arms of the last
+    // three answer as for code with no padding between functions that may
+    // always run on.
 
-/// How the code that starts at `address` ends. Only Thumb is read; for other
-/// instruction sets, the code may always run on.
-pub fn ending(
-    architecture: Architecture,
-    endianness: Endianness,
-    code: &[u8],
-    address: u64,
-) -> Ending {
-    match architecture {
-        Architecture::Arm => thumb::ending(code, address, endianness),
-        _ => Ending::RunsOn,
+    /// The references that each instruction in one function's code makes on
+    /// its own: like [`InstructionSet::scan`], but without following an
+    /// address from the instruction that puts it in a register to one that
+    /// branches through it, so such a branch is always through a pointer.
+    /// Code split in two finds the same references this way as the code
+    /// together, unless an instruction or the constants it loads are cut in
+    /// two. x86-64 follows no address through a register, so there this is
+    /// [`InstructionSet::scan`].
+    pub fn scan_instructions(self, code: &[u8], address: u64) -> Vec<CodeReference> {
+        match self {
+            Self::X86_64 => x86_64::scan(code, address),
+            Self::Thumb { endianness } => thumb::scan_instructions(code, address, endianness),
+        }
     }
-}
 
-/// Where the last instruction of the code that starts at `address` is, when
-/// the processor can run on past the end of the code after it: unless that
-/// instruction always jumps, returns or traps. A conditional jump runs on
-/// when it isn't taken, and a call counts as running on, since elfq can't
-/// tell whether what it calls returns. `None` when the code stops before
-/// its end. Padding after the last instruction doesn't count. Only x86-64
-/// and Thumb are read; for other instruction sets, this is `None`.
-pub fn runs_on(
-    architecture: Architecture,
-    endianness: Endianness,
-    code: &[u8],
-    address: u64,
-) -> Option<u64> {
-    match architecture {
-        Architecture::X86_64 => x86_64::runs_on(code, address),
-        Architecture::Arm => thumb::last_instruction(code, address, endianness)
-            .filter(|&(_, ending)| ending != Ending::Stops)
-            .map(|(offset, _)| address + offset as u64),
-        _ => None,
+    /// How many bytes at the start of `code` a function's instructions and
+    /// constants take, when `code` may run on past its end to the next
+    /// function: without the padding that aligns the next function.
+    pub fn code_size(self, code: &[u8], address: u64) -> u64 {
+        let size = match self {
+            Self::X86_64 => code.len(),
+            Self::Thumb { endianness } => thumb::code_size(code, address, endianness),
+        };
+        size as u64
+    }
+
+    /// How many bytes of padding between functions `code` starts with.
+    pub fn leading_padding(self, code: &[u8]) -> u64 {
+        let size = match self {
+            Self::X86_64 => 0,
+            Self::Thumb { .. } => thumb::leading_padding(code),
+        };
+        size as u64
+    }
+
+    /// How the code that starts at `address` ends.
+    pub fn ending(self, code: &[u8], address: u64) -> Ending {
+        match self {
+            Self::X86_64 => Ending::RunsOn,
+            Self::Thumb { endianness } => thumb::ending(code, address, endianness),
+        }
+    }
+
+    /// What the startup walk reads `program`'s code through, to follow it
+    /// as a Cortex-M processor runs it from reset: `None` for x86-64, which
+    /// has no such walk.
+    pub fn startup_code(self, program: &dyn startup::Program) -> Option<startup::Code<'_>> {
+        match self {
+            Self::X86_64 => None,
+            Self::Thumb { endianness } => Some(startup::Code::thumb(program, endianness)),
+        }
     }
 }

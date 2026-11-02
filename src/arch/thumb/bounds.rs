@@ -1,7 +1,9 @@
 //! Where a function's code ends, for finding the functions in stripped
 //! firmware (see `binary/unnamed_functions.rs`): how many bytes its code
 //! takes before the padding after it, whether its last instruction runs on
-//! into the next function, and how much padding comes before it.
+//! into the next function, and how much padding comes before it. Loading
+//! a file also asks whether an entry point's code runs on into the next
+//! function (`runs_on`), for `Binary::code_references`.
 
 use object::Endianness;
 
@@ -35,15 +37,20 @@ pub(in crate::arch) fn ending(code: &[u8], address: u64, endianness: Endianness)
     last_instruction(code, address, endianness).map_or(Ending::Stops, |(_, ending)| ending)
 }
 
+/// Where the last instruction of the code that starts at `address` is,
+/// when the processor can run on past the end of the code after it (see
+/// `InstructionSet::runs_on`).
+pub(in crate::arch) fn runs_on(code: &[u8], address: u64, endianness: Endianness) -> Option<u64> {
+    last_instruction(code, address, endianness)
+        .filter(|&(_, ending)| ending != Ending::Stops)
+        .map(|(offset, _)| address + offset as u64)
+}
+
 /// The last instruction of the code that starts at `address`, as an offset
 /// into `code`, and how the code ends after it (see [`ending`]). Padding
 /// after it doesn't count. `None` when the code ends with data, such as a
 /// literal pool, or is all padding: it stops before then.
-pub(in crate::arch) fn last_instruction(
-    code: &[u8],
-    address: u64,
-    endianness: Endianness,
-) -> Option<(usize, Ending)> {
+fn last_instruction(code: &[u8], address: u64, endianness: Endianness) -> Option<(usize, Ending)> {
     let mut scanner = Scanner::new(code, address, endianness);
     let mut last = None;
     // How many of the next instructions an `it` makes conditional.
@@ -61,7 +68,7 @@ pub(in crate::arch) fn last_instruction(
         let first = instruction.first;
         if !instruction.is_padding() {
             let ending = match conditional {
-                0 => exit(first, instruction.second),
+                0 => ending_after(first, instruction.second),
                 _ => Ending::RunsOn,
             };
             last = Some((instruction.offset, ending));
@@ -106,7 +113,7 @@ pub(in crate::arch) fn leading_padding(code: &[u8]) -> usize {
 
 /// Where the processor goes after the instruction made of `first` and, if
 /// it is 32 bits long, `second`.
-fn exit(first: u16, second: u16) -> Ending {
+fn ending_after(first: u16, second: u16) -> Ending {
     let stops = if !is_wide(first) {
         // blx register
         if first & 0xff80 == 0x4780 {

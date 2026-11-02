@@ -10,7 +10,7 @@ use anyhow::{Result, bail};
 
 use super::Firmware;
 use super::steps::{Events, Memory};
-use crate::arch::startup::{self, Call, DEPTH, End, Event, How, Start, Walk};
+use crate::arch::startup::{Call, Code, DEPTH, End, Event, How, Start, Walk};
 use crate::binary::{Binary, ItemKind};
 use crate::debuginfo;
 
@@ -75,14 +75,14 @@ impl Reset {
 
     /// Walks the code from the reset handler, `follow` calls deep, ending
     /// at `main`.
-    pub fn walk(&self, binary: &Binary, main: Option<u64>, follow: u32) -> Walk {
-        walk_from(binary, self.address, self.stack_pointer, main, follow)
+    pub fn walk(&self, code: Code, main: Option<u64>, follow: u32) -> Walk {
+        walk_from(code, self.address, self.stack_pointer, main, follow)
     }
 }
 
 /// Walks the code from `address`, with `stack_pointer` at reset.
 fn walk_from(
-    binary: &Binary,
+    code: Code,
     address: u64,
     stack_pointer: Option<u32>,
     main: Option<u64>,
@@ -94,8 +94,7 @@ fn walk_from(
         main,
         follow,
     };
-    startup::walk(binary.architecture, binary.endianness, binary, &start)
-        .expect("startup walks only Arm code")
+    code.walk(&start)
 }
 
 /// Where elfq takes startup to end.
@@ -192,8 +191,7 @@ pub(super) fn find_main(firmware: &Firmware, memory: &Memory, reset: &Reset) -> 
 /// before it, where the compiler put that loop's code after a call that
 /// doesn't return.
 fn guess(firmware: &Firmware, memory: &Memory, reset: &Reset) -> Option<Main> {
-    let binary = firmware.binary;
-    let walk = reset.walk(binary, None, 0);
+    let walk = reset.walk(firmware.code, None, 0);
     let calls: Vec<(usize, &Call, u64)> = (walk.events.iter().enumerate())
         .filter_map(|(k, event)| match event {
             Event::Call(call) => Some((k, call, firmware.resolve(call.target?).0)),
@@ -219,7 +217,7 @@ fn guess(firmware: &Firmware, memory: &Memory, reset: &Reset) -> Option<Main> {
     // such as a loop's body.
     if let Some(head) = back
         && head <= last_site
-        && !startup::branches_past(binary.architecture, binary, reset.address, last_site)
+        && !firmware.code.branches_past(reset.address, last_site)
     {
         return Some(Main {
             address: head,
@@ -243,9 +241,9 @@ fn guess(firmware: &Firmware, memory: &Memory, reset: &Reset) -> Option<Main> {
     // SystemInit; bl _mainCRTStartup` does, rather than exiting.
     if let End::RunsOff(_) = walk.end
         && let [.., (_, before_call, before), _] = calls[..]
-        && startup::passes_result(binary.architecture, binary, before_call.site, last_site)
+        && firmware.code.passes_result(before_call.site, last_site)
         && memory.match_call(&before_call.passes()).is_none()
-        && !sets_up(binary, memory, reset, last)
+        && !sets_up(firmware.code, memory, reset, last)
     {
         main = before;
     }
@@ -259,8 +257,8 @@ fn guess(firmware: &Firmware, memory: &Memory, reset: &Reset) -> Option<Main> {
 /// a section that startup code sets up in r0, and a length in r2, in its
 /// own code or code it jumps to, as picolibc's `_start` jumps to
 /// `_cstart`.
-fn sets_up(binary: &Binary, memory: &Memory, reset: &Reset, address: u64) -> bool {
-    let walk = walk_from(binary, address, reset.stack_pointer, None, 1);
+fn sets_up(code: Code, memory: &Memory, reset: &Reset, address: u64) -> bool {
+    let walk = walk_from(code, address, reset.stack_pointer, None, 1);
     walk.events.iter().any(|event| match event {
         Event::Call(call) if call.depth == 0 => {
             let [r0, _, r2, _] = call.passes();
@@ -275,8 +273,7 @@ fn sets_up(binary: &Binary, memory: &Memory, reset: &Reset, address: u64) -> boo
 /// is the last function it calls that sets up nothing, or the one before
 /// that when the last only takes its result, as `exit(main())` does.
 fn c_runtime(firmware: &Firmware, memory: &Memory, reset: &Reset, guess: u64) -> Option<u64> {
-    let binary = firmware.binary;
-    let walk = reset.walk(binary, None, DEPTH);
+    let walk = reset.walk(firmware.code, None, DEPTH);
     let events = Events::new(firmware, &walk.events);
     let call_to_guess = (0..events.list.len())
         .find(|&k| events.level(k) == 0 && events.target(k) == Some(guess))?;
@@ -319,7 +316,7 @@ fn c_runtime(firmware: &Firmware, memory: &Memory, reset: &Reset, guess: u64) ->
     let mut main = *calls.last()?;
     if let [.., before, last] = calls[..]
         && let (Some(first), Some(second)) = (events.call(before), events.call(last))
-        && startup::passes_result(binary.architecture, binary, first.site, second.site)
+        && firmware.code.passes_result(first.site, second.site)
     {
         main = before;
     }

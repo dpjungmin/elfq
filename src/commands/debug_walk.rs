@@ -15,14 +15,14 @@ use crate::render::{Align, Table};
 
 /// Answers `elfq FILE debug walk`.
 pub fn run(binary: &Binary, out: &mut dyn Write) -> Result<Outcome> {
-    let start = start(binary);
-    let walk = binary
-        .thumb
-        .then(|| startup::walk(binary.architecture, binary.endianness, binary, &start))
-        .flatten();
-    let Some(walk) = walk else {
+    let code = binary
+        .instruction_set()
+        .and_then(|set| set.startup_code(binary));
+    let Some(code) = code else {
         bail!("elfq walks only Thumb code, which Cortex-M processors run");
     };
+    let start = start(binary);
+    let walk = code.walk(&start);
     writeln!(
         out,
         "from {}, stack pointer {}, main {}",

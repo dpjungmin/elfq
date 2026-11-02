@@ -65,7 +65,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{Binary, Item, ItemKind, STARTUP_ARRAYS, Section, Source, code_section, unnamed_data};
-use crate::arch::{self, CodeReferenceKind, Ending};
+use crate::arch::{CodeReference, CodeReferenceKind, Ending, InstructionSet};
 
 /// What starts at an address in code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +74,14 @@ enum Start {
     /// Constants that code loads, as when a linker script puts `.rodata` in
     /// `.text`. They end the function before them.
     Constants,
+}
+
+/// How this module reads code: as Thumb, since only Thumb firmware has its
+/// functions found by following its code (see `Binary::from_vec`).
+fn thumb(binary: &Binary) -> InstructionSet {
+    InstructionSet::Thumb {
+        endianness: binary.endianness,
+    }
 }
 
 /// Adds the functions that following the code finds, and gives the ones
@@ -127,9 +135,7 @@ pub(super) fn add(binary: &Binary, items: &mut Vec<Item>) {
         // Without the padding that aligns the next function.
         let size = binary
             .bytes(start, end - start)
-            .map_or(end - start, |code| {
-                arch::code_size(binary.architecture, binary.endianness, code, start)
-            });
+            .map_or(end - start, |code| thumb(binary).code_size(code, start));
         if let Some(item) = items[..known]
             .iter_mut()
             .find(|item| item.kind == ItemKind::Function && item.address == start)
@@ -254,7 +260,7 @@ fn leads(binary: &Binary, start: u64, end: u64) -> Leads {
     let code = binary.bytes(start, end - start).unwrap_or_default();
     // How far the function's other jumps reach, so far.
     let mut reach = start;
-    for reference in arch::scan(binary.architecture, binary.endianness, code, start) {
+    for reference in thumb(binary).scan(code, start) {
         match reference.kind {
             CodeReferenceKind::Call(target) => leads.functions.push(target),
             CodeReferenceKind::Jump(target) if target < end => reach = reach.max(target),
@@ -384,28 +390,16 @@ fn splits_cleanly(
     // function that never returns runs on into the next function, as far
     // as elfq can tell, an address it left in a register would make the
     // next function's references differ when scanned with it.
-    let scan = |from: u64, to: u64| {
-        arch::scan_instructions(
-            binary.architecture,
-            binary.endianness,
-            bytes(from, to),
-            from,
-        )
-    };
+    let scan = |from: u64, to: u64| thumb(binary).scan_instructions(bytes(from, to), from);
     // 5.
     if before.is_some() {
-        match arch::ending(
-            binary.architecture,
-            binary.endianness,
-            bytes(start, address),
-            start,
-        ) {
+        match thumb(binary).ending(bytes(start, address), start) {
             Ending::RunsOn => return false,
             Ending::Call if kind == Start::Constants => return false,
             _ => {}
         }
     }
-    let jumps_into = |reference: &arch::CodeReference, from: u64, to: u64| match reference.kind {
+    let jumps_into = |reference: &CodeReference, from: u64, to: u64| match reference.kind {
         CodeReferenceKind::Jump(target) | CodeReferenceKind::TailJump(target) => {
             (from..to).contains(&target) && !starts.contains_key(&target)
         }
@@ -426,15 +420,9 @@ fn splits_cleanly(
                 .any(|reference| jumps_into(reference, address, end));
     }
     // Without the padding after the code, which can decode as a jump.
-    let end = start
-        + arch::code_size(
-            binary.architecture,
-            binary.endianness,
-            bytes(start, end),
-            start,
-        );
+    let end = start + thumb(binary).code_size(bytes(start, end), start);
     // 8.
-    if address >= end || arch::leading_padding(binary.architecture, bytes(address, end)) > 0 {
+    if address >= end || thumb(binary).leading_padding(bytes(address, end)) > 0 {
         return false;
     }
     // 9.

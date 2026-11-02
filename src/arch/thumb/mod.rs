@@ -31,11 +31,13 @@
 //! - `sweep.rs` has the [`Scanner`], which decodes one instruction at a
 //!   time and notes what it refers to, and the sweep that steps through a
 //!   function with it ([`Scanner::sweep`]).
-//! - `values/` follows the registers, and `decode.rs` says what each
-//!   instruction does with them, for `values` and `startup`.
-//! - `bounds.rs` finds where a function's code ends, for finding the
-//!   functions in stripped firmware: `code_size`, `ending`,
-//!   `last_instruction` and `leading_padding`.
+//! - `values/` follows the registers; its `mod.rs` says how, in four
+//!   steps, and maps its files. `decode.rs` says what each instruction
+//!   does with them, for `values` and `startup`.
+//! - `bounds.rs` finds where a function's code ends: `code_size`,
+//!   `ending` and `leading_padding`, for finding the functions in stripped
+//!   firmware, and `runs_on`, for an entry point that runs on into the next
+//!   function.
 //! - `veneers.rs` recognizes the veneers that linkers add (`is_veneer`).
 //! - `operands.rs` finds the bits that say where something is, for `diff`.
 //! - `layout.rs` cuts a function into instructions and data, for `browse`.
@@ -56,9 +58,9 @@ use object::Endianness;
 use super::CodeReference;
 use super::CodeReferenceKind;
 
-pub(super) use bounds::{code_size, ending, last_instruction, leading_padding};
+pub(super) use bounds::{code_size, ending, leading_padding, runs_on};
 #[cfg(feature = "tui")]
-pub(in crate::arch) use layout::{Piece, layout};
+pub(super) use layout::{Piece, layout};
 pub(super) use operands::operands;
 pub(super) use sweep::scan_instructions;
 pub(super) use veneers::is_veneer;
@@ -112,6 +114,12 @@ impl Instruction {
         if is_wide(self.first) { 4 } else { 2 }
     }
 
+    /// Where it ends, as an offset into the code: where the next
+    /// instruction starts, unless data is between them.
+    fn end(&self) -> usize {
+        self.offset + self.size()
+    }
+
     /// Whether it is padding that compilers and linkers put between
     /// functions: a `nop` (see [`Instruction::is_nop`]), zeros, or lld's
     /// `0xd4d4`.
@@ -144,7 +152,7 @@ fn branch(pc: u64, first: u16, second: u16) -> Option<CodeReferenceKind> {
         let i1 = !(j1 ^ s) & 1;
         let i2 = !(j2 ^ s) & 1;
         let offset = s << 24 | i1 << 23 | i2 << 22 | u32::from(first & 0x3ff) << 12 | imm11;
-        relative(pc, offset, 25)
+        add_signed(pc, offset, 25)
     };
     match second & 0x5000 {
         0x5000 => Some(CodeReferenceKind::Call(long())),
@@ -153,7 +161,7 @@ fn branch(pc: u64, first: u16, second: u16) -> Option<CodeReferenceKind> {
         // instructions, such as barriers.
         0x0000 if (first >> 6) & 0xf < 0xe => {
             let offset = s << 20 | j2 << 19 | j1 << 18 | u32::from(first & 0x3f) << 12 | imm11;
-            Some(CodeReferenceKind::Jump(relative(pc, offset, 21)))
+            Some(CodeReferenceKind::Jump(add_signed(pc, offset, 21)))
         }
         // blx to Arm code, which Cortex-M can't run.
         _ => None,
@@ -197,7 +205,7 @@ fn imm16(first: u16, second: u16) -> u32 {
 }
 
 /// `pc` plus `offset`, a signed number of `bits` bits.
-fn relative(pc: u64, offset: u32, bits: u32) -> u64 {
+fn add_signed(pc: u64, offset: u32, bits: u32) -> u64 {
     let shift = 32 - bits;
     let offset = ((offset << shift) as i32) >> shift;
     pc.wrapping_add_signed(i64::from(offset))

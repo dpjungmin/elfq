@@ -385,55 +385,46 @@ fn loads_and_stores() {
     assert_eq!(
         operation(&[0x01, 0x90]),
         Operation::Store {
-            register: Some(0),
+            from: Transfer::Word(0),
             base: SP,
-            offset: Some(4),
+            addressing: Addressing::Offset(4),
             size: 4
         }
     );
     assert_eq!(
         operation(&[0x01, 0x99]),
         Operation::Load {
-            register: Some(1),
+            into: Transfer::Word(1),
             base: SP,
-            offset: Some(4)
+            addressing: Addressing::Offset(4)
         }
     );
     // str.w r3, [r7, #-12] and strb r0, [r7, #3]
     assert_eq!(
         operation(&[0x47, 0xf8, 0x0c, 0x3c]),
         Operation::Store {
-            register: Some(3),
+            from: Transfer::Word(3),
             base: 7,
-            offset: Some(-12),
+            addressing: Addressing::Offset(-12),
             size: 4
         }
     );
     assert_eq!(
         operation(&[0xf8, 0x70]),
         Operation::Store {
-            register: None,
+            from: Transfer::Part,
             base: 7,
-            offset: Some(3),
+            addressing: Addressing::Offset(3),
             size: 1
         }
     );
-    // ldrb r3, [r7, #7] loads no word; ldr r0, [r1, r2] gives no
-    // offset, as it adds r2 (see `index` below).
+    // ldrb r3, [r7, #7] loads part of a word.
     assert_eq!(
         operation(&[0xfb, 0x79]),
         Operation::Load {
-            register: None,
+            into: Transfer::Part,
             base: 7,
-            offset: Some(7)
-        }
-    );
-    assert_eq!(
-        operation(&[0x88, 0x58]),
-        Operation::Load {
-            register: Some(0),
-            base: 1,
-            offset: None
+            addressing: Addressing::Offset(7)
         }
     );
     // ldr r3, [r3, #0] writes r3; str r4, [r3, #0] writes nothing.
@@ -441,39 +432,80 @@ fn loads_and_stores() {
     assert_eq!((load.reads, load.writes), (bit(3), bit(3)));
     let store = effect(0, &[0x1c, 0x60]);
     assert_eq!((store.reads, store.writes), (bit(3) | bit(4), 0));
-    // ldr.w r3, [r2, r3, lsl #2]
+    // ldr r0, [r1, r2], str r0, [r1, r2], ldr.w r3, [r2, r3, lsl #2] and
+    // str.w r0, [r1, r2, lsl #2] add a register to their base.
+    let indexed = |register, shift| Addressing::Indexed { register, shift };
+    assert_eq!(
+        operation(&[0x88, 0x58]),
+        Operation::Load {
+            into: Transfer::Word(0),
+            base: 1,
+            addressing: indexed(2, 0)
+        }
+    );
+    assert_eq!(
+        operation(&[0x88, 0x50]),
+        Operation::Store {
+            from: Transfer::Word(0),
+            base: 1,
+            addressing: indexed(2, 0),
+            size: 4
+        }
+    );
     let load = effect(0, &[0x52, 0xf8, 0x23, 0x30]);
     assert_eq!((load.reads, load.writes), (bit(2) | bit(3), bit(3)));
-    assert_eq!(load.writeback, None);
+    assert_eq!(
+        load.operation,
+        Operation::Load {
+            into: Transfer::Word(3),
+            base: 2,
+            addressing: indexed(3, 2)
+        }
+    );
+    let store = effect(0, &[0x41, 0xf8, 0x22, 0x00]);
+    assert!(matches!(
+        store.operation,
+        Operation::Store {
+            addressing: Addressing::Indexed {
+                register: 2,
+                shift: 2
+            },
+            ..
+        }
+    ));
+    // ldr.w pc, [r0, r1, lsl #2] jumps through a table that elfq doesn't
+    // work out where it reads.
+    let jump = effect(0, &[0x50, 0xf8, 0x21, 0xf0]);
+    assert_eq!((jump.reads, jump.flow), (bit(0) | bit(1), Flow::JumpMemory));
+    assert_eq!(
+        jump.operation,
+        Operation::Load {
+            into: Transfer::Other,
+            base: 0,
+            addressing: Addressing::Unknown
+        }
+    );
     // ldr.w r3, [r5], #4 loads from r5 and then adds 4 to it; strb.w
     // r1, [r0, #-1]! subtracts 1 first.
     let load = effect(0, &[0x55, 0xf8, 0x04, 0x3b]);
     assert_eq!((load.reads, load.writes), (bit(5), bit(3) | bit(5)));
     assert_eq!(
-        load.writeback,
-        Some(Writeback {
-            amount: 4,
-            before: false
-        })
+        load.operation,
+        Operation::Load {
+            into: Transfer::Word(3),
+            base: 5,
+            addressing: Addressing::After(4)
+        }
     );
     let store = effect(0, &[0x00, 0xf8, 0x01, 0x1d]);
     assert_eq!((store.reads, store.writes), (bit(0) | bit(1), bit(0)));
     assert_eq!(
-        store.writeback,
-        Some(Writeback {
-            amount: -1,
-            before: true
-        })
-    );
-    // stmia r0!, {r3, r4} stores two words from r0 on (see its words
-    // below).
-    assert_eq!(
-        operation(&[0x18, 0xc0]),
+        store.operation,
         Operation::Store {
-            register: None,
+            from: Transfer::Part,
             base: 0,
-            offset: None,
-            size: 8
+            addressing: Addressing::Before(-1),
+            size: 1
         }
     );
     // ldmia.w sp!, {r7, lr}
@@ -483,76 +515,106 @@ fn loads_and_stores() {
     // ldrd r0, r1, [sp], #8
     let pair = effect(0, &[0xfd, 0xe8, 0x02, 0x01]);
     assert_eq!(pair.writes, bit(0) | bit(1) | bit(SP));
-    // The register that str r0, [r1, r2], ldr r0, [r1, r2], ldr.w r3,
-    // [r2, r3, lsl #2] and str.w r0, [r1, r2, lsl #2] add to their
-    // base, that ldr r1, [sp, #4] adds none, and that str r0, [r1, r2]
-    // stores a word.
-    let index = |register, shift| Some(Index { register, shift });
-    let store = effect(0, &[0x88, 0x50]);
-    assert_eq!(store.index, index(2, 0));
-    assert!(matches!(
-        store.operation,
-        Operation::Store {
-            register: Some(0),
-            size: 4,
-            ..
-        }
-    ));
-    assert_eq!(effect(0, &[0x88, 0x58]).index, index(2, 0));
-    assert_eq!(effect(0, &[0x52, 0xf8, 0x23, 0x30]).index, index(3, 2));
-    assert_eq!(effect(0, &[0x41, 0xf8, 0x22, 0x00]).index, index(2, 2));
-    assert_eq!(effect(0, &[0x01, 0x99]).index, None);
-    // The words of ldm and stm: ldmia r1!, {r3, r4} and stmia r0!,
-    // {r3, r4} move their base past them, ldmia r1, {r1, r2} doesn't,
-    // since it loads r1, ldmdb.w r0!, {r2, r3} and stmdb.w r0!, {r2,
-    // r3} end at r0, which they move down first, and ldmia.w r4,
-    // {r0-r3} doesn't move r4.
-    let list = |first, down| {
-        Some(Words::List {
-            registers: bit(first) | bit(first + 1),
-            down,
-        })
+    // The words of ldm and stm: ldmia r1!, {r3, r4} and stmia r0!, {r3,
+    // r4} start at their base and move it past them, ldmia r1, {r1, r2}
+    // doesn't move r1, since it loads it, ldmdb.w r0!, {r2, r3} and
+    // stmdb.w r0!, {r2, r3} end at r0, which they move down first, and
+    // ldmia.w r4, {r0-r3} and ldmdb r0, {r2, r3} don't move their base.
+    let words = |first: u16, base, addressing| Operation::Load {
+        into: Transfer::Words(bit(first) | bit(first + 1)),
+        base,
+        addressing,
     };
-    let moves = |amount, before| Some(Writeback { amount, before });
-    let load = effect(0, &[0x18, 0xc9]);
+    assert_eq!(operation(&[0x18, 0xc9]), words(3, 1, Addressing::After(8)));
     assert_eq!(
-        (load.words, load.writeback),
-        (list(3, false), moves(8, false))
-    );
-    let store = effect(0, &[0x18, 0xc0]);
-    assert_eq!(
-        (store.words, store.writeback),
-        (list(3, false), moves(8, false))
+        operation(&[0x18, 0xc0]),
+        Operation::Store {
+            from: Transfer::Words(bit(3) | bit(4)),
+            base: 0,
+            addressing: Addressing::After(8),
+            size: 8
+        }
     );
     let load = effect(0, &[0x06, 0xc9]);
-    assert_eq!((load.words, load.writeback), (list(1, false), None));
-    let load = effect(0, &[0x30, 0xe9, 0x0c, 0x00]);
+    assert_eq!(load.operation, words(1, 1, Addressing::Offset(0)));
+    assert_eq!(load.writes, bit(1) | bit(2));
     assert_eq!(
-        (load.words, load.writeback),
-        (list(2, true), moves(-8, true))
+        operation(&[0x30, 0xe9, 0x0c, 0x00]),
+        words(2, 0, Addressing::Before(-8))
     );
-    let store = effect(0, &[0x20, 0xe9, 0x0c, 0x00]);
     assert_eq!(
-        (store.words, store.writeback),
-        (list(2, true), moves(-8, true))
+        operation(&[0x20, 0xe9, 0x0c, 0x00]),
+        Operation::Store {
+            from: Transfer::Words(bit(2) | bit(3)),
+            base: 0,
+            addressing: Addressing::Before(-8),
+            size: 8
+        }
     );
-    assert_eq!(effect(0, &[0x94, 0xe8, 0x0f, 0x00]).writeback, None);
-    // The words of ldrd and strd: ldrd r2, r3, [r1, #-8], strd r2, r3,
-    // [r0, #8]!, and ldrd r0, r1, [r4], #8, which adds 8 after.
-    let pair = |first, offset| {
-        Some(Words::Pair {
-            first,
-            second: first + 1,
-            offset,
-        })
-    };
-    let load = effect(0, &[0x51, 0xe9, 0x02, 0x23]);
-    assert_eq!((load.words, load.writeback), (pair(2, -8), None));
+    assert_eq!(
+        operation(&[0x94, 0xe8, 0x0f, 0x00]),
+        Operation::Load {
+            into: Transfer::Words(0xf),
+            base: 4,
+            addressing: Addressing::Offset(0)
+        }
+    );
+    let load = effect(0, &[0x10, 0xe9, 0x0c, 0x00]);
+    assert_eq!(load.operation, words(2, 0, Addressing::Offset(-8)));
+    assert_eq!(load.writes, bit(2) | bit(3));
+    // The words of ldrd and strd: ldrd r2, r3, [r1, #-8] and strd r2,
+    // r3, [r0, #8] at an offset, strd r2, r3, [r0, #8]!, which adds 8
+    // first, and ldrd r0, r1, [r4], #8, which adds 8 after.
+    let pair = |first: u16| Transfer::Pair(first, first + 1);
+    assert_eq!(
+        operation(&[0x51, 0xe9, 0x02, 0x23]),
+        Operation::Load {
+            into: pair(2),
+            base: 1,
+            addressing: Addressing::Offset(-8)
+        }
+    );
+    let store = effect(0, &[0xc0, 0xe9, 0x02, 0x23]);
+    assert_eq!(store.writes, 0);
+    assert_eq!(
+        store.operation,
+        Operation::Store {
+            from: pair(2),
+            base: 0,
+            addressing: Addressing::Offset(8),
+            size: 8
+        }
+    );
     let store = effect(0, &[0xe0, 0xe9, 0x02, 0x23]);
-    assert_eq!((store.words, store.writeback), (pair(2, 8), moves(8, true)));
+    assert_eq!(store.writes, bit(0));
+    assert_eq!(
+        store.operation,
+        Operation::Store {
+            from: pair(2),
+            base: 0,
+            addressing: Addressing::Before(8),
+            size: 8
+        }
+    );
     let load = effect(0, &[0xf4, 0xe8, 0x02, 0x01]);
-    assert_eq!((load.words, load.writeback), (pair(0, 0), moves(8, false)));
+    assert_eq!(
+        load.operation,
+        Operation::Load {
+            into: pair(0),
+            base: 4,
+            addressing: Addressing::After(8)
+        }
+    );
     assert_eq!(load.writes, bit(0) | bit(1) | bit(4));
+    // Where ldrex r0, [r1] and the like read or write isn't worked out.
+    assert_eq!(
+        operation(&[0x51, 0xe8, 0x00, 0x0f]),
+        Operation::Load {
+            into: Transfer::Word(0),
+            base: 1,
+            addressing: Addressing::Unknown
+        }
+    );
     // stl r2, [r3] and stlh r2, [r3] write nothing; strexb r1, r2,
     // [r3] and stlex r1, r2, [r3] write their status to r1.
     assert_eq!(effect(0, &[0xc3, 0xe8, 0xaf, 0x2f]).writes, 0);
@@ -888,20 +950,39 @@ fn floating_point_instructions_leave_the_core_registers() {
     assert_eq!(
         operation(&[0x8d, 0xed, 0x02, 0x09]),
         Operation::Store {
-            register: None,
+            from: Transfer::Other,
             base: SP,
-            offset: Some(4),
+            addressing: Addressing::Offset(4),
             size: 2
         }
     );
     // vldr s15, [r7, #4] and vldr.16 s15, [r7, #6] load from one word.
     let vldr = |offset| Operation::Load {
-        register: None,
+        into: Transfer::Other,
         base: 7,
-        offset: Some(offset),
+        addressing: Addressing::Offset(offset),
     };
     assert_eq!(operation(&[0xd7, 0xed, 0x01, 0x7a]), vldr(4));
     assert_eq!(operation(&[0xd7, 0xed, 0x03, 0x79]), vldr(6));
+    // Where vldmia r0, {s0-s3} and vstmia r0, {s0, s1} read and write
+    // isn't worked out, nor how much vstm stores.
+    assert_eq!(
+        operation(&[0x90, 0xec, 0x04, 0x0a]),
+        Operation::Load {
+            into: Transfer::Other,
+            base: 0,
+            addressing: Addressing::Unknown
+        }
+    );
+    assert_eq!(
+        operation(&[0x80, 0xec, 0x02, 0x0a]),
+        Operation::Store {
+            from: Transfer::Other,
+            base: 0,
+            addressing: Addressing::Unknown,
+            size: 0
+        }
+    );
     // vlstm sp and vlldm sp save the registers to the stack and load
     // them back, and leave sp as it is.
     let vlstm = effect(0, &[0x2d, 0xec, 0x00, 0x0a]);
@@ -909,9 +990,9 @@ fn floating_point_instructions_leave_the_core_registers() {
     assert_eq!(
         vlstm.operation,
         Operation::Store {
-            register: None,
+            from: Transfer::Other,
             base: SP,
-            offset: Some(0),
+            addressing: Addressing::Offset(0),
             size: 0x88
         }
     );
@@ -920,14 +1001,16 @@ fn floating_point_instructions_leave_the_core_registers() {
     assert_eq!(
         vlldm.operation,
         Operation::Load {
-            register: None,
+            into: Transfer::Other,
             base: SP,
-            offset: Some(0)
+            addressing: Addressing::Offset(0)
         }
     );
     // Armv8.1-M's system registers: vstr FPCXTNS, [sp, #-4]! and vldr
     // FPCXTNS, [sp], #4 push and pop a word, and vstr FPSCR, [r0]
-    // stores one.
+    // stores one. vstr FPSCR, [r0, #-4]! stores at r0 - 4 and vldr FPSCR,
+    // [r1], #8 loads from r1, and what they add to their base isn't
+    // followed.
     assert_eq!(
         operation(&[0x6d, 0xed, 0x81, 0xcf]),
         Operation::Push {
@@ -945,10 +1028,31 @@ fn floating_point_instructions_leave_the_core_registers() {
     assert_eq!(
         operation(&[0x80, 0xed, 0x80, 0x2f]),
         Operation::Store {
-            register: None,
+            from: Transfer::Other,
             base: 0,
-            offset: Some(0),
+            addressing: Addressing::Offset(0),
             size: 4
+        }
+    );
+    let store = effect(0, &[0x20, 0xed, 0x81, 0x2f]);
+    assert_eq!((store.reads, store.writes), (bit(0), bit(0)));
+    assert_eq!(
+        store.operation,
+        Operation::Store {
+            from: Transfer::Other,
+            base: 0,
+            addressing: Addressing::Offset(-4),
+            size: 4
+        }
+    );
+    let load = effect(0, &[0xb1, 0xec, 0x82, 0x2f]);
+    assert_eq!((load.reads, load.writes), (bit(1), bit(1)));
+    assert_eq!(
+        load.operation,
+        Operation::Load {
+            into: Transfer::Other,
+            base: 1,
+            addressing: Addressing::Offset(0)
         }
     );
 }
