@@ -22,15 +22,15 @@
 //!
 //! - This file: [`Tab`], and [`ItemPage`], which holds the header and the
 //!   tabs, and passes each action to the tab on the screen.
-//! - `header.rs`: the facts that the header gives, and what keeps the
-//!   item.
-//! - `listing.rs`: tab 1 on the screen: its lines, the cursor over them,
-//!   and how they are drawn and followed.
-//! - `code.rs`: the lines of a function's code.
-//! - `contents.rs`: the rows of a data object's contents, and the strings
-//!   that it holds.
-//! - `line_notes.rs`: the note and link of each line or row, from what the
-//!   graph knows about the item.
+//! - `header.rs`: `Header`, what the header says: the facts about the
+//!   item, and what keeps it.
+//! - `listing.rs`: `Listing`, what tab 1 lists, and `ListingTab`, which
+//!   draws it, moves over its lines and follows their links.
+//! - `code.rs`: `function_listing`, the lines of a function's code.
+//! - `contents.rs`: `data_listing`, the rows of a data object's contents,
+//!   and the strings that it holds.
+//! - `line_notes.rs`: `LineNotes`, the note and link of each line or row,
+//!   from what the graph knows about the item.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -38,13 +38,13 @@ use ratatui::style::Stylize;
 use ratatui::text::{Line, Span};
 
 use super::printed::Printed;
-use super::{Cursor, Go, draw_lines, fit_name, follow, imported, keep_lines, name_fitter, wrap};
+use super::{Cursor, Go, draw_lines, fit_name, follow, imported};
 use crate::commands::browse::{keys::Action, session::Session};
 use crate::commands::checks::readable_item;
 use crate::commands::{retained, text, why};
 use crate::graph::Node;
-use header::{Keeping, header, used_by_text};
-use listing::CodeTab;
+use header::Header;
+use listing::ListingTab;
 
 mod code;
 mod contents;
@@ -52,7 +52,7 @@ mod header;
 mod line_notes;
 mod listing;
 
-pub use listing::PageCode;
+pub use listing::Listing;
 
 /// The tabs of an item's page. Each is numbered as the key that shows it,
 /// and named after the command that prints the same answer, so that the
@@ -121,24 +121,15 @@ pub struct ItemPage {
     title: String,
     /// The title shortened, and the columns it was shortened to.
     short_title: Option<(usize, String)>,
-    /// The first line of the header, before it is wrapped: the item's
-    /// name, then what SYMBOL said about it and where it is, as in
-    /// "Default_Handler" and " (also named NMI_Handler)  function at …".
-    identity: (String, String),
-    /// The second line of the header: "used by 2 · uses 3".
-    facts: String,
-    /// What the header says about what keeps the item, once the session
-    /// has worked it out, where `retained` or `why` answers about the item.
-    keeping: Option<Keeping>,
-    /// The header's lines, and the columns and the most lines they were
-    /// made for.
-    header: Option<((usize, usize), Vec<Line<'static>>)>,
+    /// The lines above the tabs: where the item is, its facts, and what
+    /// keeps it.
+    header: Header,
     /// The tab on the screen. Each page in the history keeps its own, so
     /// that Back shows the tab that was left.
     tab: Tab,
     /// Tab 1, a function's code or a data object's contents, or for an
     /// import, which has neither here, why not, as pressing 1 says.
-    code: Result<CodeTab, String>,
+    listing: Result<ListingTab, String>,
     /// The item's index, for tabs 2 and 4, or why `callees` and `reach`
     /// can't read its code, in their words, which pressing 2 or 4 says: it
     /// is an import, or a function whose end elfq doesn't know.
@@ -164,52 +155,39 @@ pub struct ItemPage {
 
 impl ItemPage {
     /// The page of `node`, an item or an import, with the line that holds
-    /// `at` selected. The header names it as `lead`, which may say what
-    /// SYMBOL gave, as in "Default_Handler (also named NMI_Handler)". A
+    /// `at` selected. The header names it as `header_name`, which may say
+    /// what SYMBOL gave, as in "Default_Handler (also named NMI_Handler)". A
     /// function's page opens on its code, and a data object's on its
     /// contents, when they have rows; otherwise, as for an import, which
     /// has no code here, the page opens on its callers.
-    pub fn new(session: &Session, node: Node, at: Option<u64>, lead: &str) -> ItemPage {
+    pub fn new(session: &Session, node: Node, at: Option<u64>, header_name: &str) -> ItemPage {
         let answer = session.callers(node);
-        let used_by = answer.node_count();
-        let name = node.name(session.binary);
-        let (name, note) = match lead.strip_prefix(name) {
-            Some(note) => (name, note),
-            None => (lead, ""),
-        };
-        let (title, (place, facts), code) = match node {
+        let (title, listing) = match node {
             Node::Item(index) => {
-                let title = session.row_name(index);
-                let code = Ok(CodeTab::new(session, index, at));
-                (title, header(session, index, used_by), code)
+                let listing = ListingTab::new(session, index, at);
+                (session.row_name(index), Ok(listing))
             }
             Node::Import(_) => {
-                let header = (
-                    "imported from a shared library: its code isn't in this file".to_string(),
-                    used_by_text(used_by),
-                );
                 let title = node.name(session.binary).to_string();
-                (title, header, Err(imported(session, node)))
+                (title, Err(imported(session, node)))
             }
         };
         let retainable = retained::refusal(session.binary, node);
         let retainable = retainable.map_err(|error| error.to_string());
         let why_refused = why::refusal(session.binary, node).err();
         let why_refused = why_refused.map(|error| error.to_string());
-        let keeping = Keeping::new(session, node, retainable.is_ok(), why_refused.is_none());
+        let mut header = Header::new(session, node, header_name, answer.node_count());
+        header.add_keeping(session, retainable.is_ok(), why_refused.is_none());
         ItemPage {
             node,
             title,
             short_title: None,
-            identity: (name.to_string(), format!("{note}  {place}")),
-            facts,
-            keeping,
-            header: None,
-            tab: match &code {
-                Ok(code) if code.opens_page() => Tab::Code,
+            header,
+            tab: match &listing {
+                Ok(listing) if listing.opens_page() => Tab::Code,
                 _ => Tab::Callers,
             },
-            code,
+            listing,
             readable: readable_item(session.binary, node).map_err(|error| error.to_string()),
             retainable,
             why_refused,
@@ -227,7 +205,7 @@ impl ItemPage {
     /// are.
     pub fn on(mut self, session: &Session, tab: Tab) -> ItemPage {
         let shown = match tab {
-            Tab::Code => self.code.as_ref().is_ok_and(CodeTab::opens_page),
+            Tab::Code => self.listing.as_ref().is_ok_and(ListingTab::opens_page),
             _ => self.why_not(tab).is_none(),
         };
         if shown {
@@ -239,18 +217,15 @@ impl ItemPage {
     /// Adds what keeps the item to the header, once the session has
     /// worked it out, where `retained` or `why` answers about the item.
     pub fn add_keeping(&mut self, session: &Session) {
-        if self.keeping.is_none() {
-            let (retained, why) = (self.retainable.is_ok(), self.why_refused.is_none());
-            self.keeping = Keeping::new(session, self.node, retained, why);
-            self.header = None;
-        }
+        let (retained, why) = (self.retainable.is_ok(), self.why_refused.is_none());
+        self.header.add_keeping(session, retained, why);
     }
 
     /// Why the item doesn't have `tab`, in the words of the command that
     /// would print it, if it doesn't.
     fn why_not(&self, tab: Tab) -> Option<&str> {
         match tab {
-            Tab::Code => self.code.as_ref().err(),
+            Tab::Code => self.listing.as_ref().err(),
             Tab::Callees | Tab::Reach => self.readable.as_ref().err(),
             Tab::Callers => None,
             Tab::Why => self.why_refused.as_ref(),
@@ -357,7 +332,9 @@ impl ItemPage {
 
     pub fn draw(&mut self, frame: &mut Frame, area: Rect) {
         let width = usize::from(area.width);
-        let top = self.header_lines(width, usize::from(area.height).saturating_sub(3));
+        let top = self
+            .header
+            .lines(width, usize::from(area.height).saturating_sub(3));
         let [head, tabs, body] = Layout::vertical([
             Constraint::Length(top.len() as u16),
             Constraint::Length(1),
@@ -368,8 +345,8 @@ impl ItemPage {
 
         frame.render_widget(self.tab_line(width), tabs);
 
-        if let (Tab::Code, Ok(code)) = (self.tab, &mut self.code) {
-            code.draw(frame, body);
+        if let (Tab::Code, Ok(listing)) = (self.tab, &mut self.listing) {
+            listing.draw(frame, body);
         } else if let Some(printed) = self.printed_mut() {
             printed.draw(frame, body);
         }
@@ -382,7 +359,7 @@ impl ItemPage {
     /// them.
     fn tab_line(&self, width: usize) -> Line<'static> {
         let tabs = self.tabs();
-        let data = self.code.as_ref().is_ok_and(CodeTab::is_data);
+        let data = self.listing.as_ref().is_ok_and(ListingTab::is_data);
         let label = |tab: Tab| tab.label(data);
         let wide: usize = tabs.iter().map(|&tab| label(tab).chars().count() + 3).sum();
         let pad = if wide <= width { " " } else { "" };
@@ -398,61 +375,6 @@ impl ItemPage {
         Line::from(line)
     }
 
-    /// The header, wrapped to `width`, in at most `most` lines. It wraps,
-    /// so that nothing is cut, unless the screen is too short for it, with
-    /// the tab line and two lines of the tab under it. Then the line with
-    /// the chain from where the program starts goes first, since tab 5
-    /// shows the chain too; then the item's name is shortened as the title
-    /// line's is, but to no less than half a line, and what is still too
-    /// long is cut, ending in "…". The chain is one line, which leaves out
-    /// names at its start, so that its end shows. They are made once for
-    /// each size of screen.
-    fn header_lines(&mut self, width: usize, most: usize) -> Vec<Line<'static>> {
-        if let Some((size, lines)) = &self.header
-            && *size == (width, most)
-        {
-            return lines.clone();
-        }
-        let (name, rest) = &self.identity;
-        let identity = |name: &str| wrap(&format!("{name}{rest}"), width);
-        let mut facts = self.facts.clone();
-        let mut chain = None;
-        if let Some(keeping) = &self.keeping {
-            let more = keeping.facts(&facts, width);
-            facts += &more;
-            chain = keeping.chain_line(width);
-        }
-        let facts = wrap(&facts, width);
-        let mut first = identity(name);
-        if first.len() + facts.len() > most {
-            let lines = most.saturating_sub(facts.len()).max(1);
-            // The widest shortened name that leaves the line short enough,
-            // which is no wider than the lines, but no narrower than half
-            // a line, after which the rest of the line is cut instead.
-            let fit = name_fitter(name);
-            let length = name.chars().count();
-            let (mut fits, mut wider) = (0, length.min(lines * width));
-            while fits + 1 < wider {
-                let middle = (fits + wider) / 2;
-                if identity(&fit(middle)).len() <= lines {
-                    fits = middle;
-                } else {
-                    wider = middle;
-                }
-            }
-            let fits = fits.max(length.min(width / 2)).max(1);
-            first = keep_lines(identity(&fit(fits)), lines, width);
-        }
-        let facts = keep_lines(facts, most.saturating_sub(first.len()), width);
-        let chain = chain.filter(|_| first.len() + facts.len() < most);
-        let first = first.into_iter().map(|line| Line::raw(line).bold());
-        let below = facts.into_iter().chain(chain);
-        let below = below.map(|line| Line::raw(line).dim());
-        let lines: Vec<Line<'static>> = first.chain(below).collect();
-        self.header = Some(((width, most), lines.clone()));
-        lines
-    }
-
     pub fn handle(&mut self, session: &Session, action: Action) -> Option<Go> {
         if action == Action::Keeper {
             return Some(self.keeper(session));
@@ -466,8 +388,8 @@ impl ItemPage {
             self.show(session, tab);
             return None;
         }
-        if let (Tab::Code, Ok(code)) = (self.tab, &mut self.code) {
-            return code.handle(session, action);
+        if let (Tab::Code, Ok(listing)) = (self.tab, &mut self.listing) {
+            return listing.handle(session, action);
         }
         self.printed_mut()?.handle(session, action)
     }
@@ -504,8 +426,8 @@ impl ItemPage {
     /// Goes back to the line before the last jump inside the function, if
     /// there was one and the code is on the screen.
     pub fn back(&mut self) -> bool {
-        match (self.tab, &mut self.code) {
-            (Tab::Code, Ok(code)) => code.back(),
+        match (self.tab, &mut self.listing) {
+            (Tab::Code, Ok(listing)) => listing.back(),
             _ => false,
         }
     }
@@ -513,8 +435,8 @@ impl ItemPage {
     /// Where the selected line's link goes, in full: "→ strlen@plt
     /// function at 0x1080, 16 bytes, in .plt.sec".
     pub fn preview(&self, session: &Session) -> Option<String> {
-        match (self.tab, &self.code) {
-            (Tab::Code, Ok(code)) => code.preview(session),
+        match (self.tab, &self.listing) {
+            (Tab::Code, Ok(listing)) => listing.preview(session),
             _ => self.printed()?.preview(session),
         }
     }
@@ -522,16 +444,16 @@ impl ItemPage {
     /// The selected row's value, when its row cuts it to fit a screen
     /// `width` columns wide, as a long string in a data object's contents.
     pub fn value(&self, width: usize) -> Option<&str> {
-        match (self.tab, &self.code) {
-            (Tab::Code, Ok(code)) => code.value(width),
+        match (self.tab, &self.listing) {
+            (Tab::Code, Ok(listing)) => listing.value(width),
             _ => None,
         }
     }
 
     /// Whether some line or row links to another item.
     pub fn has_links(&self) -> bool {
-        match (self.tab, &self.code) {
-            (Tab::Code, Ok(code)) => code.has_links(),
+        match (self.tab, &self.listing) {
+            (Tab::Code, Ok(listing)) => listing.has_links(),
             _ => self.printed().is_some_and(Printed::has_links),
         }
     }
@@ -539,23 +461,23 @@ impl ItemPage {
     /// The cursor over the tab's lines or rows.
     pub fn cursor(&mut self) -> Option<&mut Cursor> {
         if self.tab == Tab::Code {
-            return self.code.as_mut().ok().map(|code| &mut code.cursor);
+            return self.listing.as_mut().ok().map(ListingTab::cursor);
         }
         self.printed_mut().map(Printed::cursor)
     }
 
     /// What find calls the tab's rows: "line" on a function's code.
     pub fn row_noun(&self) -> &'static str {
-        match (self.tab, &self.code) {
-            (Tab::Code, Ok(code)) if !code.is_data() => "line",
+        match (self.tab, &self.listing) {
+            (Tab::Code, Ok(listing)) if !listing.is_data() => "line",
             _ => "row",
         }
     }
 
     /// The tab's lines or rows that have `lowercase`, ignoring case.
     pub fn rows_with(&self, lowercase: &str) -> Vec<usize> {
-        match (self.tab, &self.code) {
-            (Tab::Code, Ok(code)) => code.rows_with(lowercase),
+        match (self.tab, &self.listing) {
+            (Tab::Code, Ok(listing)) => listing.rows_with(lowercase),
             _ => (self.printed()).map_or_else(Vec::new, |printed| printed.rows_with(lowercase)),
         }
     }
@@ -564,8 +486,8 @@ impl ItemPage {
     /// does: a function's code has none, and under a data object's
     /// contents is the objdump command that prints its bytes.
     pub fn command(&self) -> Option<&str> {
-        match (self.tab, &self.code) {
-            (Tab::Code, Ok(code)) => code.code.command.as_deref(),
+        match (self.tab, &self.listing) {
+            (Tab::Code, Ok(listing)) => listing.command(),
             _ => self.printed().map(Printed::command),
         }
     }

@@ -307,8 +307,9 @@ of its tree) do. Those are names to fix, not meanings to copy.
 The checks of `browse` that need its private types are unit tests in
 `src/commands/browse/`:
 
-- `views/item/code.rs`: every line's link and note, on every sample, and
-  what the status line says that Enter opens.
+- `views/item/code.rs`: every line's link and note, on every sample.
+- `views/item/listing.rs`: what the status line says that Enter opens,
+  on every line that links, in every function of every sample.
 - `views/item/header.rs`: the header of every item and import, against
   what `retained --json` and `why --json` say about it, with the item
   that keeps it named as the rows of `retained` name it.

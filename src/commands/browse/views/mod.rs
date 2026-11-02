@@ -33,7 +33,7 @@ use crate::graph::Node;
 use item::Tab;
 
 pub use help::Help;
-pub use item::{ItemPage, PageCode};
+pub use item::{ItemPage, Listing};
 pub use names::{FittedRows, fit_name, name_fitter};
 pub use picker::{Picker, first_line};
 pub use printed::Printed;

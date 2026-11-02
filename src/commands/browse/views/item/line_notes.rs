@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use object::Endian;
 
 use super::contents::string_at;
-use super::listing::{CodeLine, Link};
+use super::listing::{Link, ListingLine};
 use crate::arch::{self, CodeReferenceKind, Refers};
 use crate::binary::{ItemKind, RelocationTarget};
 use crate::commands::browse::session::Session;
@@ -16,7 +16,7 @@ use crate::graph::{Node, Reference, Unresolved, VeneerTarget, item_starting_at};
 
 /// What the graph knows about one function's code, or about the pointers
 /// stored in one data object, by site, to write the notes on its lines.
-pub(super) struct Notes<'s, 'a> {
+pub(super) struct LineNotes<'s, 'a> {
     pub(super) session: &'s Session<'a>,
     pub(super) index: usize,
     pub(super) references: HashMap<u64, Vec<&'s Reference>>,
@@ -26,8 +26,8 @@ pub(super) struct Notes<'s, 'a> {
     used: HashMap<u64, u64>,
 }
 
-impl<'s, 'a> Notes<'s, 'a> {
-    pub(super) fn new(session: &'s Session<'a>, index: usize) -> Notes<'s, 'a> {
+impl<'s, 'a> LineNotes<'s, 'a> {
+    pub(super) fn new(session: &'s Session<'a>, index: usize) -> LineNotes<'s, 'a> {
         let graph = &session.graph;
         let mut references: HashMap<u64, Vec<&Reference>> = HashMap::new();
         for reference in graph.references_from(index) {
@@ -58,7 +58,7 @@ impl<'s, 'a> Notes<'s, 'a> {
                 }
             }
         }
-        Notes {
+        LineNotes {
             session,
             index,
             references,
@@ -67,9 +67,9 @@ impl<'s, 'a> Notes<'s, 'a> {
         }
     }
 
-    /// The lines of `listing`, each with its note.
-    pub(super) fn lines(&self, listing: &[arch::Line]) -> Vec<CodeLine> {
-        let mut lines: Vec<CodeLine> = listing
+    /// The lines of `arch_lines`, each with its note.
+    pub(super) fn lines(&self, arch_lines: &[arch::Line]) -> Vec<ListingLine> {
+        let mut lines: Vec<ListingLine> = arch_lines
             .iter()
             .map(|printed| self.line(printed.address, Some(printed)))
             .collect();
@@ -77,7 +77,7 @@ impl<'s, 'a> Notes<'s, 'a> {
         // load does, as `ldr r3, [pc, #8]` uses systick_count, and its word
         // holds systick_count's address.
         let mut loaded = HashMap::new();
-        for (printed, line) in listing.iter().zip(&lines) {
+        for (printed, line) in arch_lines.iter().zip(&lines) {
             if let Some(Refers::Literal {
                 address: word,
                 size: 4,
@@ -87,7 +87,7 @@ impl<'s, 'a> Notes<'s, 'a> {
                 loaded.entry(word).or_insert(link);
             }
         }
-        for (printed, line) in listing.iter().zip(&mut lines) {
+        for (printed, line) in arch_lines.iter().zip(&mut lines) {
             if let Some(Refers::Word(value)) = printed.refers
                 && line.link.is_none()
             {
@@ -100,7 +100,7 @@ impl<'s, 'a> Notes<'s, 'a> {
     /// Gives a `.word` that holds `value` its link and note: `link`, where
     /// a load reads it, or else the item that starts at `value`, as a
     /// pointer stored in data names it.
-    fn word(&self, line: &mut CodeLine, value: u64, link: Option<Link>) {
+    fn word(&self, line: &mut ListingLine, value: u64, link: Option<Link>) {
         let binary = self.session.binary;
         let link = link.or_else(|| {
             let index = item_starting_at(binary, value)?;
@@ -124,11 +124,11 @@ impl<'s, 'a> Notes<'s, 'a> {
 
     /// The line at `address`, with its instruction `printed`, if elfq
     /// prints it.
-    pub(super) fn line(&self, address: u64, printed: Option<&arch::Line>) -> CodeLine {
+    pub(super) fn line(&self, address: u64, printed: Option<&arch::Line>) -> ListingLine {
         let binary = self.session.binary;
-        let mut line = CodeLine {
+        let mut line = ListingLine {
             address,
-            instruction: printed.map_or(String::new(), |printed| self.instruction(printed)),
+            text: printed.map_or(String::new(), |printed| self.instruction(printed)),
             note: String::new(),
             elsewhere: None,
             link: None,
@@ -144,7 +144,7 @@ impl<'s, 'a> Notes<'s, 'a> {
             // The name only when the instruction doesn't say it already.
             line.note = if via.is_some() {
                 format!("{how} → {name}{more}")
-            } else if !line.instruction.is_empty() && line.instruction.ends_with(&name) {
+            } else if !line.text.is_empty() && line.text.ends_with(&name) {
                 format!("{how}{more}")
             } else {
                 format!("{how} {name}{more}")
@@ -167,7 +167,7 @@ impl<'s, 'a> Notes<'s, 'a> {
     /// to a constant: `jump ↓`, `address ↑`, or `= 0x028f5c28` for the
     /// word or double that a load from a literal pool reads. It links to
     /// the line it refers to, if any.
-    fn inside(&self, line: &mut CodeLine, refers: Refers) -> String {
+    fn inside(&self, line: &mut ListingLine, refers: Refers) -> String {
         let binary = self.session.binary;
         let item = &binary.items[self.index];
         let (what, target) = match refers {

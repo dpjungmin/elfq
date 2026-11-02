@@ -3,9 +3,8 @@
 
 use object::Architecture;
 
-use super::contents;
-use super::line_notes::Notes;
-use super::listing::{CodeLine, PageCode, widest};
+use super::line_notes::LineNotes;
+use super::listing::{Listing, ListingLine};
 use crate::binary::{Binary, ItemKind};
 use crate::commands::browse::session::Session;
 use crate::commands::checks::readable_item;
@@ -14,10 +13,10 @@ use crate::graph::Node;
 /// What a function's page lists.
 enum Code {
     /// Every instruction, and the data among them.
-    Instructions(Vec<CodeLine>),
+    Instructions(Vec<ListingLine>),
     /// Only the lines that use another item, or that elfq can't follow,
     /// where elfq doesn't print the code, and why it doesn't.
-    Links(Vec<CodeLine>, String),
+    Links(Vec<ListingLine>, String),
 }
 
 /// Why elfq doesn't print the instructions of `binary`, or `None` when it
@@ -42,54 +41,28 @@ fn no_text(binary: &Binary) -> Option<String> {
     }
 }
 
-impl PageCode {
-    /// Item `index`'s code, or a data object's contents, as its page shows
-    /// them.
-    pub fn new(session: &Session, index: usize) -> PageCode {
-        if session.binary.items[index].kind == ItemKind::Data {
-            return contents::page_code(session, index);
+/// Function `index`'s code, as tab 1 of its page shows it.
+pub(super) fn function_listing(session: &Session, index: usize) -> Listing {
+    let kind = ItemKind::Function;
+    match code(session, index) {
+        Ok(Code::Instructions(lines)) => Listing::new(kind, Some("INSTRUCTION".to_string()), lines),
+        Ok(Code::Links(lines, why)) if lines.is_empty() => {
+            let row_name = session.row_name(index);
+            let why = format!("{why}. No line of {row_name} uses another item.");
+            Listing::new(kind, None, lines).saying_instead(why)
         }
-        let mut shown = PageCode {
-            kind: ItemKind::Function,
-            lines: Vec::new(),
-            column: None,
-            widest: (0, 0),
-            empty: None,
-            footnote: None,
-            command: None,
-        };
-        match code(session, index) {
-            Ok(Code::Instructions(lines)) => {
-                shown.lines = lines;
-                shown.column = Some("INSTRUCTION".to_string());
-            }
-            Ok(Code::Links(lines, why)) if lines.is_empty() => {
-                shown.empty = Some(format!(
-                    "{why}. No line of {} uses another item.",
-                    session.row_name(index)
-                ));
-            }
-            Ok(Code::Links(lines, why)) => {
-                shown.lines = lines;
-                shown.footnote = Some(format!("{why}: these are the lines that use another item."));
-            }
-            Err(why) => shown.empty = Some(why),
+        Ok(Code::Links(lines, why)) => {
+            let footnote = format!("{why}: these are the lines that use another item.");
+            Listing::new(kind, None, lines).with_footnote(footnote)
         }
-        shown.widest = widest(&shown.lines);
-        shown
+        Err(why) => Listing::new(kind, None, Vec::new()).saying_instead(why),
     }
 }
 
-/// The lines of item `index`'s code, or why there are none to show.
+/// The lines of function `index`'s code, or why there are none to show.
 fn code(session: &Session, index: usize) -> Result<Code, String> {
     let binary = session.binary;
     let item = &binary.items[index];
-    if item.kind == ItemKind::Data {
-        return Err(format!(
-            "{} is a data object: it has no code",
-            session.row_name(index)
-        ));
-    }
     // Such as "elfq doesn't know where _init ends, so it can't read its
     // code", as the commands say it.
     readable_item(binary, Node::Item(index)).map_err(|error| error.to_string())?;
@@ -99,10 +72,10 @@ fn code(session: &Session, index: usize) -> Result<Code, String> {
             item.name
         ));
     };
-    let notes = Notes::new(session, index);
+    let notes = LineNotes::new(session, index);
     let why = match no_text(binary) {
         None => match binary.listing(item, bytes) {
-            Some(listing) => return Ok(Code::Instructions(notes.lines(&listing))),
+            Some(lines) => return Ok(Code::Instructions(notes.lines(&lines))),
             None => "elfq doesn't print this code".to_string(),
         },
         Some(why) => why,
@@ -123,7 +96,7 @@ mod tests {
     use std::collections::HashMap;
 
     use super::super::super::samples;
-    use super::super::listing::{CodeTab, Link};
+    use super::super::listing::Link;
     use super::*;
 
     /// Calls `check` with the session of every sample and the code of each
@@ -133,14 +106,16 @@ mod tests {
             let binary = Binary::load(&path).unwrap();
             let session = Session::new(&path, &binary).unwrap();
             for index in 0..binary.items.len() {
-                if let Ok(code) = code(&session, index) {
+                if binary.items[index].kind == ItemKind::Function
+                    && let Ok(code) = code(&session, index)
+                {
                     check(&session, index, &code);
                 }
             }
         }
     }
 
-    fn lines(code: &Code) -> &[CodeLine] {
+    fn lines(code: &Code) -> &[ListingLine] {
         match code {
             Code::Instructions(lines) | Code::Links(lines, _) => lines,
         }
@@ -170,44 +145,11 @@ mod tests {
     }
 
     #[test]
-    fn the_status_line_names_what_enter_opens() {
-        // Lines that link to the function they are in, as a recursive
-        // call does, and to an import through its own PLT stub.
-        let (mut to_itself, mut to_own_import) = (0, 0);
-        every_function(|session, index, _| {
-            let binary = session.binary;
-            let mut tab = CodeTab::new(session, index, None);
-            for row in 0..tab.code.lines.len() {
-                let Some(Link::Node { node, via, .. }) = tab.code.lines[row].link else {
-                    continue;
-                };
-                tab.cursor.select(row);
-                let preview = tab.preview(session).unwrap();
-                let opened = session.page_node(node);
-                let name = match opened {
-                    _ if matches!(node, Node::Import(_)) && opened == Node::Item(index) => {
-                        to_own_import += 1;
-                        format!("{}  imported", node.name(binary))
-                    }
-                    Node::Item(index) => format!("{}  ", binary.items[index].name),
-                    Node::Import(_) => format!("{}  imported", node.name(binary)),
-                };
-                to_itself += usize::from(node == Node::Item(index) && via.is_none());
-                assert!(preview.starts_with(&format!("→ {name}")), "{preview}");
-            }
-        });
-        assert!(
-            to_itself > 50 && to_own_import > 30,
-            "{to_itself} {to_own_import}"
-        );
-    }
-
-    #[test]
     fn every_link_names_what_it_opens() {
         let (mut links, mut imports) = (0, 0);
         every_function(|session, _, code| {
             for line in lines(code) {
-                let shown = format!("{} {}", line.instruction, line.note);
+                let shown = format!("{} {}", line.text, line.note);
                 match line.link {
                     Some(Link::Node {
                         node: node @ Node::Item(index),

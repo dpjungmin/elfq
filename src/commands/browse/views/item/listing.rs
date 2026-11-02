@@ -1,6 +1,10 @@
-//! Tab 1 of an item's page, as the page draws it and moves over it: a
-//! function's code, or a data object's contents, one line each, with the
-//! notes and links that `line_notes.rs` writes.
+//! Tab 1 of an item's page: its listing, and the cursor over it.
+//!
+//! A [`Listing`] is what the tab lists: a function's code, which
+//! `code.rs` builds, or a data object's contents, which `contents.rs`
+//! builds, one line each, with the notes and links that `line_notes.rs`
+//! writes. A [`ListingTab`] draws a listing, moves over its lines and
+//! follows their links.
 
 use std::fmt::Write;
 use std::rc::Rc;
@@ -13,6 +17,8 @@ use ratatui::widgets::{Row, Table};
 
 use super::super::{Cursor, Go, cut, draw_lines, follow, has_ignoring_case, link_preview, wrap};
 use super::Tab;
+use super::code::function_listing;
+use super::contents::data_listing;
 use crate::binary::ItemKind;
 use crate::commands::browse::{keys::Action, session::Session};
 use crate::graph::Node;
@@ -38,13 +44,15 @@ pub(super) enum Link {
 }
 
 /// One line of a function's code, or one row of a data object's contents.
-pub(super) struct CodeLine {
+pub(super) struct ListingLine {
     pub(super) address: u64,
-    /// The instruction, with the name of the item it calls or jumps to in
-    /// place of its address: `call    strlen@plt`, or for a data object,
-    /// the value: a word, a vector table's entry and its word, or a string
-    /// (see `contents.rs`). Empty where elfq doesn't print the code.
-    pub(super) instruction: String,
+    /// What the line holds: an instruction or a value.
+    ///
+    /// An instruction names the item that it calls or jumps to in place of
+    /// its address: `call    strlen@plt`. A data object's value is a word,
+    /// a vector table's entry and its word, or a string (see
+    /// `contents.rs`). It is empty where elfq doesn't print the code.
+    pub(super) text: String,
     /// What the line does with another item, or where it jumps.
     pub(super) note: String,
     /// The section of the item that the link goes to, when that is in
@@ -54,50 +62,118 @@ pub(super) struct CodeLine {
     pub(super) link: Option<Link>,
 }
 
-/// Tab 1: a function's code, or a data object's contents.
-pub(super) struct CodeTab {
+/// Tab 1 on the screen: an item's listing, and the cursor over its lines.
+pub(super) struct ListingTab {
     /// The item, by its index.
     index: usize,
-    pub(super) code: Rc<PageCode>,
-    pub(super) cursor: Cursor,
+    listing: Rc<Listing>,
+    cursor: Cursor,
     /// The rows the cursor was on before each jump inside the function,
     /// for Back.
     jumps: Vec<usize>,
 }
 
-/// An item's code, or a data object's contents, as its page shows them.
+/// What tab 1 of an item's page lists: a function's code, or a data
+/// object's contents.
+///
 /// The session keeps it, so that every page opened on the item shares it,
-/// and it is worked out once.
-pub struct PageCode {
+/// and it is worked out once. [`Listing::new`] is the only way to make
+/// one, so that the widest cells always match the lines.
+pub struct Listing {
     /// Whether it is a function's code or a data object's contents.
-    pub(super) kind: ItemKind,
-    pub(super) lines: Vec<CodeLine>,
-    /// The header of the column after the addresses, when the lines show
-    /// their instructions, or a data object's values: "INSTRUCTION",
-    /// "VALUE", or for a vector table, "ENTRY" over the entries' names,
-    /// then "VALUE".
-    pub(super) column: Option<String>,
-    /// The widest address and instruction or value, worked out once, so
-    /// that a redraw reads only the rows on the screen.
-    pub(super) widest: (usize, usize),
-    /// Said in place of the code when there is none to show.
-    pub(super) empty: Option<String>,
-    /// Said under the code.
-    pub(super) footnote: Option<String>,
+    kind: ItemKind,
+    lines: Vec<ListingLine>,
+    /// The header of the column of the lines' text, if they have text.
+    ///
+    /// It is "INSTRUCTION", "VALUE", or for a vector table, "ENTRY" over
+    /// the entries' names, then "VALUE".
+    column: Option<String>,
+    /// The widest address, worked out once, so that a redraw reads only
+    /// the lines on the screen.
+    widest_address: usize,
+    /// The widest text, worked out once, as `widest_address` is.
+    widest_text: usize,
+    /// Said in place of the lines when there are none to show.
+    said_instead: Option<String>,
+    /// Said under the lines.
+    footnote: Option<String>,
     /// The command under the tab, if any: the objdump command that prints
     /// a data object's bytes.
-    pub(super) command: Option<String>,
+    command: Option<String>,
 }
 
-impl CodeTab {
-    /// The code of function `index`, or the contents of data object
-    /// `index`, with the line that holds `at` selected.
-    pub(super) fn new(session: &Session, index: usize, at: Option<u64>) -> CodeTab {
-        let code = session.page_code(index);
-        let mut tab = CodeTab {
+impl Listing {
+    /// Item `index`'s listing, as tab 1 of its page shows it.
+    pub fn of_item(session: &Session, index: usize) -> Listing {
+        match session.binary.items[index].kind {
+            ItemKind::Function => function_listing(session, index),
+            ItemKind::Data => data_listing(session, index),
+        }
+    }
+
+    /// The `lines` of an item of `kind`, whose text, if any, is under a
+    /// column headed `column`.
+    pub(super) fn new(kind: ItemKind, column: Option<String>, lines: Vec<ListingLine>) -> Listing {
+        let widest = |cell: fn(&ListingLine) -> usize| lines.iter().map(cell).max().unwrap_or(0);
+        Listing {
+            kind,
+            widest_address: widest(|line| format!("{:#x}", line.address).len()),
+            widest_text: widest(|line| line.text.chars().count()),
+            lines,
+            column,
+            said_instead: None,
+            footnote: None,
+            command: None,
+        }
+    }
+
+    /// The same, saying `why` in place of the lines, which it has none of.
+    pub(super) fn saying_instead(mut self, why: String) -> Listing {
+        self.said_instead = Some(why);
+        self
+    }
+
+    /// The same, with `footnote` under the lines.
+    pub(super) fn with_footnote(mut self, footnote: String) -> Listing {
+        self.footnote = Some(footnote);
+        self
+    }
+
+    /// The same, with `command` under the tab.
+    pub(super) fn with_command(mut self, command: String) -> Listing {
+        self.command = Some(command);
+        self
+    }
+}
+
+/// What the tests of `contents.rs` read of a listing.
+#[cfg(test)]
+impl Listing {
+    pub(super) fn lines(&self) -> &[ListingLine] {
+        &self.lines
+    }
+
+    pub(super) fn column(&self) -> Option<&str> {
+        self.column.as_deref()
+    }
+
+    pub(super) fn said_instead(&self) -> Option<&str> {
+        self.said_instead.as_deref()
+    }
+
+    pub(super) fn command(&self) -> Option<&str> {
+        self.command.as_deref()
+    }
+}
+
+impl ListingTab {
+    /// The listing of item `index`, with the line that holds `at` selected.
+    pub(super) fn new(session: &Session, index: usize, at: Option<u64>) -> ListingTab {
+        let listing = session.listing(index);
+        let mut tab = ListingTab {
             index,
-            cursor: Cursor::new(code.lines.len()),
-            code,
+            cursor: Cursor::new(listing.lines.len()),
+            listing,
             jumps: Vec::new(),
         };
         if let Some(at) = at {
@@ -108,30 +184,40 @@ impl CodeTab {
 
     /// Whether it shows a data object's contents.
     pub(super) fn is_data(&self) -> bool {
-        self.code.kind == ItemKind::Data
+        self.listing.kind == ItemKind::Data
+    }
+
+    /// The cursor over the lines.
+    pub(super) fn cursor(&mut self) -> &mut Cursor {
+        &mut self.cursor
+    }
+
+    /// The command under the tab, if any.
+    pub(super) fn command(&self) -> Option<&str> {
+        self.listing.command.as_deref()
     }
 
     /// Whether the page opens on it: a function's code always does, but a
     /// data object's contents only when they have rows.
     pub(super) fn opens_page(&self) -> bool {
-        !self.is_data() || !self.code.lines.is_empty()
+        !self.is_data() || !self.listing.lines.is_empty()
     }
 
     /// Selects the line that holds `address`.
     fn select_address(&mut self, address: u64) {
         let after = self
-            .code
+            .listing
             .lines
             .partition_point(|line| line.address <= address);
         self.cursor.select(after.saturating_sub(1));
     }
 
-    /// Draws the code, or why there is none, with the footnote under it.
+    /// Draws the lines, or why there are none, with the footnote under it.
     /// The footnote wraps, so that nothing is cut.
     pub(super) fn draw(&mut self, frame: &mut Frame, area: Rect) {
         let width = usize::from(area.width);
         let bottom: Vec<String> = self
-            .code
+            .listing
             .footnote
             .iter()
             .flat_map(|text| wrap(text, width))
@@ -140,7 +226,7 @@ impl CodeTab {
             Layout::vertical([Constraint::Fill(1), Constraint::Length(bottom.len() as u16)])
                 .areas(area);
         draw_lines(frame, foot, bottom.into_iter().map(Line::raw).collect());
-        if let Some(text) = &self.code.empty {
+        if let Some(text) = &self.listing.said_instead {
             draw_lines(
                 frame,
                 body,
@@ -148,38 +234,38 @@ impl CodeTab {
             );
             return;
         }
-        self.draw_code(frame, body);
+        self.draw_table(frame, body);
     }
 
-    /// The lines of code, as a table: ADDRESS, INSTRUCTION and the notes,
-    /// or for a data object, ADDRESS, VALUE and the notes.
-    fn draw_code(&mut self, frame: &mut Frame, area: Rect) {
+    /// The lines, as a table: ADDRESS, INSTRUCTION and the notes, or for a
+    /// data object, ADDRESS, VALUE and the notes.
+    fn draw_table(&mut self, frame: &mut Frame, area: Rect) {
         let width = usize::from(area.width);
         // The table's header takes a line.
         let (visible, mut state) = self
             .cursor
             .visible(usize::from(area.height).saturating_sub(1));
-        let (address_width, instruction_width) = self.columns(width);
+        let (address_width, text_width) = self.columns(width);
         // Before the notes: the selection's "> ", the columns, and the
         // spaces after each.
         let mut used = 2 + address_width + 2;
-        if self.code.column.is_some() {
-            used += instruction_width + 2;
+        if self.listing.column.is_some() {
+            used += text_width + 2;
         }
         let room = width.saturating_sub(used);
-        let rows = self.code.lines[visible].iter().map(|line| {
+        let rows = self.listing.lines[visible].iter().map(|line| {
             let mut cells = vec![Line::raw(format!("{:#x}", line.address))];
-            if self.code.column.is_some() {
-                cells.push(Line::raw(cut(&line.instruction, instruction_width)));
+            if self.listing.column.is_some() {
+                cells.push(Line::raw(cut(&line.text, text_width)));
             }
             cells.push(note_cell(line, room));
             Row::new(cells)
         });
         let mut header = vec!["ADDRESS"];
         let mut columns = vec![Constraint::Length(address_width as u16)];
-        if let Some(column) = &self.code.column {
+        if let Some(column) = &self.listing.column {
             header.push(column);
-            columns.push(Constraint::Length(instruction_width as u16));
+            columns.push(Constraint::Length(text_width as u16));
         }
         header.push("");
         columns.push(Constraint::Fill(1));
@@ -197,22 +283,21 @@ impl CodeTab {
     /// strings, which have no note after them (see `contents.rs`), so they
     /// keep no room for notes.
     fn columns(&self, width: usize) -> (usize, usize) {
-        let (widest_address, widest_instruction) = self.code.widest;
-        let address_width = widest_address.max("ADDRESS".len());
-        if self.code.column.is_none() {
+        let address_width = self.listing.widest_address.max("ADDRESS".len());
+        if self.listing.column.is_none() {
             return (address_width, 0);
         }
-        let ((most, fewest), notes) = match self.code.kind {
+        let ((most, fewest), notes) = match self.listing.kind {
             ItemKind::Function => (INSTRUCTION_WIDTH, NOTE_WIDTH),
             ItemKind::Data => ((usize::MAX, 0), 0),
         };
-        let mut instruction_width = widest_instruction.min(most);
+        let mut text_width = self.listing.widest_text.min(most);
         // The selection's "> ", the columns, and the spaces after each.
-        let wanted = 2 + address_width + 2 + instruction_width + 2 + notes;
+        let wanted = 2 + address_width + 2 + text_width + 2 + notes;
         if wanted > width {
-            instruction_width = instruction_width.saturating_sub(wanted - width).max(fewest);
+            text_width = text_width.saturating_sub(wanted - width).max(fewest);
         }
-        (address_width, instruction_width)
+        (address_width, text_width)
     }
 
     pub(super) fn handle(&mut self, session: &Session, action: Action) -> Option<Go> {
@@ -224,7 +309,7 @@ impl CodeTab {
             Action::NextLink | Action::PreviousLink => {
                 // Jumps inside the function don't count: Tab goes from one
                 // use of another item to the next.
-                let lines = &self.code.lines;
+                let lines = &self.listing.lines;
                 let next = self.cursor.next(action == Action::NextLink, |row| {
                     matches!(lines[row].link, Some(Link::Node { .. }))
                 });
@@ -233,7 +318,7 @@ impl CodeTab {
                 }
                 None
             }
-            Action::Open => match self.code.lines.get(selected)?.link? {
+            Action::Open => match self.listing.lines.get(selected)?.link? {
                 Link::Node { node, at, .. } => {
                     let this = Some(Node::Item(self.index));
                     Some(follow(session, node, Some(at), this, Tab::Code))
@@ -265,7 +350,7 @@ impl CodeTab {
     /// Where the selected line's link goes, in full: "→ strlen@plt
     /// function at 0x1080, 16 bytes, in .plt.sec".
     pub(super) fn preview(&self, session: &Session) -> Option<String> {
-        let link = self.code.lines.get(self.cursor.selected)?.link?;
+        let link = self.listing.lines.get(self.cursor.selected)?.link?;
         Some(match link {
             Link::Node { node, via, .. } => {
                 link_preview(session, node, Some(Node::Item(self.index)), via)
@@ -278,30 +363,30 @@ impl CodeTab {
     /// `width` columns wide, as it cuts a long string: the status line
     /// shows it in full.
     pub(super) fn value(&self, width: usize) -> Option<&str> {
-        let line = self.code.lines.get(self.cursor.selected)?;
+        let line = self.listing.lines.get(self.cursor.selected)?;
         let (_, room) = self.columns(width);
-        (self.is_data() && line.instruction.chars().count() > room).then_some(&line.instruction)
+        (self.is_data() && line.text.chars().count() > room).then_some(&line.text)
     }
 
     /// Whether some line links to another item.
     pub(super) fn has_links(&self) -> bool {
-        self.code
+        self.listing
             .lines
             .iter()
             .any(|line| matches!(line.link, Some(Link::Node { .. })))
     }
 
-    /// The lines that have `lowercase` in their address, instruction or
-    /// note, or the section that the note names, ignoring case.
+    /// The lines that have `lowercase` in their address, text or note, or
+    /// the section that the note names, ignoring case.
     pub(super) fn rows_with(&self, lowercase: &str) -> Vec<usize> {
         let has = |text: &str| has_ignoring_case(text, lowercase);
         let mut address = String::new();
-        (self.code.lines.iter().enumerate())
+        (self.listing.lines.iter().enumerate())
             .filter(|(_, line)| {
                 address.clear();
                 write!(address, "{:#x}", line.address).expect("writing to a string");
                 has(&address)
-                    || has(&line.instruction)
+                    || has(&line.text)
                     || has(&line.note)
                     || line.elsewhere.as_deref().is_some_and(has)
             })
@@ -314,7 +399,7 @@ impl CodeTab {
 /// another block of memory after it in yellow. When both don't fit, the
 /// note keeps at least [`NOTE_WIDTH`] columns before the section goes, and
 /// then the note alone is yellow.
-fn note_cell(line: &CodeLine, room: usize) -> Line<'static> {
+fn note_cell(line: &ListingLine, room: usize) -> Line<'static> {
     let yellow = Style::new().fg(Color::Yellow);
     let Some(section) = &line.elsewhere else {
         return Line::raw(cut(&line.note, room));
@@ -331,11 +416,47 @@ fn note_cell(line: &CodeLine, room: usize) -> Line<'static> {
     }
 }
 
-/// The widest address and instruction of `lines`.
-pub(super) fn widest(lines: &[CodeLine]) -> (usize, usize) {
-    let widest = |cell: fn(&CodeLine) -> usize| lines.iter().map(cell).max().unwrap_or(0);
-    (
-        widest(|line| format!("{:#x}", line.address).len()),
-        widest(|line| line.instruction.chars().count()),
-    )
+#[cfg(test)]
+mod tests {
+    use super::super::super::samples;
+    use super::*;
+    use crate::binary::Binary;
+
+    #[test]
+    fn the_status_line_names_what_enter_opens() {
+        // Lines that link to the function they are in, as a recursive
+        // call does, and to an import through its own PLT stub.
+        let (mut to_itself, mut to_own_import) = (0, 0);
+        for path in samples() {
+            let binary = Binary::load(&path).unwrap();
+            let session = &Session::new(&path, &binary).unwrap();
+            let functions = (0..binary.items.len())
+                .filter(|&index| binary.items[index].kind == ItemKind::Function);
+            for index in functions {
+                let mut tab = ListingTab::new(session, index, None);
+                for row in 0..tab.listing.lines.len() {
+                    let Some(Link::Node { node, via, .. }) = tab.listing.lines[row].link else {
+                        continue;
+                    };
+                    tab.cursor.select(row);
+                    let preview = tab.preview(session).unwrap();
+                    let opened = session.page_node(node);
+                    let name = match opened {
+                        _ if matches!(node, Node::Import(_)) && opened == Node::Item(index) => {
+                            to_own_import += 1;
+                            format!("{}  imported", node.name(&binary))
+                        }
+                        Node::Item(index) => format!("{}  ", binary.items[index].name),
+                        Node::Import(_) => format!("{}  imported", node.name(&binary)),
+                    };
+                    to_itself += usize::from(node == Node::Item(index) && via.is_none());
+                    assert!(preview.starts_with(&format!("→ {name}")), "{preview}");
+                }
+            }
+        }
+        assert!(
+            to_itself > 50 && to_own_import > 30,
+            "{to_itself} {to_own_import}"
+        );
+    }
 }

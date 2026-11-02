@@ -21,80 +21,70 @@
 //! to paste, unless its section takes no room in the file, as `.bss`
 //! doesn't.
 
-use super::line_notes::Notes;
-use super::listing::{CodeLine, PageCode, widest};
+use super::line_notes::LineNotes;
+use super::listing::{Listing, ListingLine};
 use crate::binary::{Binary, ItemKind, RelocationTarget, exception_name};
 use crate::commands::browse::session::Session;
 use crate::commands::text;
 use crate::graph::Reference;
 
 /// Data object `index`'s contents, as tab 1 of its page shows them.
-pub(super) fn page_code(session: &Session, index: usize) -> PageCode {
+pub(super) fn data_listing(session: &Session, index: usize) -> Listing {
     let binary = session.binary;
     let item = &binary.items[index];
     let section = &binary.sections[item.section];
     let name = session.row_name(index);
-    let mut code = PageCode {
-        kind: ItemKind::Data,
-        lines: Vec::new(),
-        column: Some("VALUE".to_string()),
-        widest: (0, 0),
-        empty: None,
-        footnote: None,
-        command: None,
-    };
+    let kind = ItemKind::Data;
     // Every row is read from the object's bytes, so it has none.
     if section.file_range.is_none() {
-        code.empty = Some(format!(
+        let why = format!(
             "{name} has no bytes in the file: {} takes no room in it.",
             section.name
-        ));
-        return code;
+        );
+        return Listing::new(kind, Some("VALUE".to_string()), Vec::new()).saying_instead(why);
     }
-    let notes = Notes::new(session, index);
+    let notes = LineNotes::new(session, index);
     let table = (binary.vector_table.as_ref())
         .filter(|table| (table.address..table.address + table.size).contains(&item.address));
-    if let Some(table) = table {
-        let (column, lines) = entries(&notes, table.address);
-        code.column = Some(column);
-        code.lines = lines;
-    } else {
-        code.lines = pointers(&notes);
-    }
-    if code.lines.is_empty() {
-        code.lines = (strings(session, index).into_iter())
+    let (column, mut lines) = match table {
+        Some(table) => entries(&notes, table.address),
+        None => ("VALUE".to_string(), pointers(&notes)),
+    };
+    if lines.is_empty() {
+        lines = (strings(session, index).into_iter())
             .map(|(address, text)| plain_line(address, format!(".asciz {text}")))
             .collect();
     }
-    if code.lines.is_empty() {
-        code.empty = Some(format!(
-            "{name} holds no pointers that elfq follows, and isn't made of strings that end in \
-             a 0 byte; the objdump command below prints its bytes."
-        ));
-    }
-    if (code.lines.iter()).any(|line| file_holds_other(binary, line.address)) {
-        code.footnote = Some(
-            "Where the dynamic loader writes a pointer, VALUE is what it writes; objdump prints \
-             what the file holds there, such as 0."
-                .to_string(),
-        );
-    }
-    code.command = Some(format!(
+    let no_rows = lines.is_empty();
+    let loader_writes = (lines.iter()).any(|line| file_holds_other(binary, line.address));
+    let mut listing = Listing::new(kind, Some(column), lines).with_command(format!(
         "$ objdump -s -j {} --start-address={:#x} --stop-address={:#x} {}",
         text::shell_quote(&section.name),
         item.address,
         item.address + item.size,
         text::quoted_path(&session.path),
     ));
-    code.widest = widest(&code.lines);
-    code
+    if no_rows {
+        listing = listing.saying_instead(format!(
+            "{name} holds no pointers that elfq follows, and isn't made of strings that end in \
+             a 0 byte; the objdump command below prints its bytes."
+        ));
+    }
+    if loader_writes {
+        listing = listing.with_footnote(
+            "Where the dynamic loader writes a pointer, VALUE is what it writes; objdump prints \
+             what the file holds there, such as 0."
+                .to_string(),
+        );
+    }
+    listing
 }
 
 /// The entries of the vector table that starts at `table` which the data
 /// object holds, each named by its exception, counted from the table's
 /// start, with the header of their column: "ENTRY", lined up over the
 /// names, then "VALUE".
-fn entries(notes: &Notes, table: u64) -> (String, Vec<CodeLine>) {
+fn entries(notes: &LineNotes, table: u64) -> (String, Vec<ListingLine>) {
     let binary = notes.session.binary;
     let item = &binary.items[notes.index];
     let words: Vec<(u64, u64)> = binary
@@ -125,7 +115,7 @@ fn entries(notes: &Notes, table: u64) -> (String, Vec<CodeLine>) {
 }
 
 /// The words in the data object that hold a pointer to an item, in order.
-fn pointers(notes: &Notes) -> Vec<CodeLine> {
+fn pointers(notes: &LineNotes) -> Vec<ListingLine> {
     let binary = notes.session.binary;
     (notes.session.graph.references_from(notes.index).iter())
         .map(|reference| pointer(notes, reference, value(binary, reference.site)))
@@ -137,13 +127,13 @@ fn pointers(notes: &Notes) -> Vec<CodeLine> {
 /// the note of a pointer among a function's code does. A pointer can
 /// point inside an item, as to an element of an array: `pointer
 /// frames+0x8`.
-fn pointer(notes: &Notes, reference: &Reference, value: String) -> CodeLine {
+fn pointer(notes: &LineNotes, reference: &Reference, value: String) -> ListingLine {
     let binary = notes.session.binary;
     let (name, via, link) = notes.target(reference);
     let how = text::how_via(binary, reference.to, reference.kind, via);
-    CodeLine {
+    ListingLine {
         address: reference.site,
-        instruction: value,
+        text: value,
         note: format!("{how} {name}"),
         elsewhere: notes.elsewhere(link),
         link: Some(link),
@@ -151,10 +141,10 @@ fn pointer(notes: &Notes, reference: &Reference, value: String) -> CodeLine {
 }
 
 /// A line that shows `value` at `address`, and links nowhere.
-fn plain_line(address: u64, value: String) -> CodeLine {
-    CodeLine {
+fn plain_line(address: u64, value: String) -> ListingLine {
+    ListingLine {
         address,
-        instruction: value,
+        text: value,
         note: String::new(),
         elsewhere: None,
         link: None,
@@ -273,12 +263,12 @@ mod tests {
                     continue;
                 }
                 let shown = format!("{}: {}", path.display(), item.name);
-                let contents = page_code(&session, index);
+                let contents = data_listing(&session, index);
                 // Each row that links names a pointer and what it points
                 // to, as `callees SYMBOL --json` names its sites and
                 // callees, run on the graph that the session has built.
                 let mut rows: Vec<(String, serde_json::Value)> = Vec::new();
-                for line in &contents.lines {
+                for line in contents.lines() {
                     if let Some(Link::Node { node, .. }) = line.link {
                         assert!(line.note.starts_with("pointer "), "{shown}: {}", line.note);
                         rows.push((json::address(line.address), item_json(node)));
@@ -303,7 +293,7 @@ mod tests {
                 // The command under them prints the object's bytes, from
                 // the file as typed, and only where the file has them.
                 let section = &binary.sections[item.section];
-                match &contents.command {
+                match contents.command() {
                     Some(command) => {
                         let words = shell_words(command.strip_prefix("$ ").unwrap());
                         let range = [item.address, item.address + item.size];
@@ -327,35 +317,27 @@ mod tests {
                 }
                 // Rows or a sentence, never a blank tab.
                 assert!(
-                    contents.lines.is_empty() != contents.empty.is_none(),
+                    contents.lines().is_empty() != contents.said_instead().is_none(),
                     "{shown}"
                 );
-                tables += usize::from(contents.column.as_deref() != Some("VALUE"));
+                tables += usize::from(contents.column() != Some("VALUE"));
                 // Strings, each in the object, after the one before, and
                 // each the text from its address to the next 0 byte, which
                 // comes after another 0 byte or the object's start.
-                let string = |line: &&CodeLine| line.instruction.starts_with(".asciz \"");
-                let at: Vec<u64> = (contents.lines.iter().filter(string))
+                let string = |line: &&ListingLine| line.text.starts_with(".asciz \"");
+                let at: Vec<u64> = (contents.lines().iter().filter(string))
                     .map(|line| line.address)
                     .collect();
                 assert!(at.is_sorted_by(|a, b| a < b), "{shown}");
                 assert!(at.iter().all(|&address| item.contains(address)), "{shown}");
                 let bytes = binary.bytes(item.address, item.size);
-                for line in contents.lines.iter().filter(string) {
+                for line in contents.lines().iter().filter(string) {
                     let start = (line.address - item.address) as usize;
                     let text = &bytes.unwrap()[start..];
                     let text = &text[..text.iter().position(|&byte| byte == 0).unwrap()];
                     let before = start.checked_sub(1).map(|before| bytes.unwrap()[before]);
-                    assert!(
-                        matches!(before, None | Some(0)),
-                        "{shown}: {}",
-                        line.instruction
-                    );
-                    assert_eq!(
-                        line.instruction,
-                        format!(".asciz {}", quoted(text)),
-                        "{shown}"
-                    );
+                    assert!(matches!(before, None | Some(0)), "{shown}: {}", line.text);
+                    assert_eq!(line.text, format!(".asciz {}", quoted(text)), "{shown}");
                 }
                 strings += usize::from(!at.is_empty());
                 string_tables += usize::from(at.len() > 1);

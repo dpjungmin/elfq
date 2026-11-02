@@ -4,7 +4,10 @@
 
 use std::collections::BTreeSet;
 
-use super::super::{cut_left, fit_name, whereabouts};
+use ratatui::style::Stylize;
+use ratatui::text::Line;
+
+use super::super::{cut_left, fit_name, keep_lines, name_fitter, whereabouts, wrap};
 use crate::binary::Source;
 use crate::commands::browse::session::Session;
 use crate::commands::{text, why};
@@ -14,10 +17,125 @@ use crate::graph::Node;
 /// keeps this one to, to keep its facts on one line.
 const KEEPER_WIDTH: usize = 16;
 
-/// The facts about item `index` that its header gives: where it is, and
-/// on the next line, what makes it a root, how many items use it,
-/// `used_by`, and how many it uses.
-pub(super) fn header(session: &Session, index: usize, used_by: usize) -> (String, String) {
+/// What the header of an item's page says, and its lines as last laid out.
+pub(super) struct Header {
+    /// The item or import.
+    node: Node,
+    /// The item's name, which the first line starts with.
+    name: String,
+    /// The rest of the first line: what SYMBOL said about the item, and
+    /// where it is, as in " (also named NMI_Handler)  function at …".
+    after_name: String,
+    /// The second line: "used by 2 · uses 3".
+    facts: String,
+    /// What the header says about what keeps the item, once the session
+    /// has worked it out, where `retained` or `why` answers about it.
+    keeping: Option<Keeping>,
+    /// The lines, and the columns and the most lines they were made for.
+    lines: Option<((usize, usize), Vec<Line<'static>>)>,
+}
+
+impl Header {
+    /// The header of `node`, an item or an import, which `used_by` items
+    /// use.
+    ///
+    /// It names the node as `header_name`, which may say what SYMBOL gave,
+    /// as in "Default_Handler (also named NMI_Handler)".
+    pub(super) fn new(session: &Session, node: Node, header_name: &str, used_by: usize) -> Header {
+        let name = node.name(session.binary);
+        let (name, note) = match header_name.strip_prefix(name) {
+            Some(note) => (name, note),
+            None => (header_name, ""),
+        };
+        let (place, facts) = match node {
+            Node::Item(index) => (
+                item_place(session, index),
+                item_facts(session, index, used_by),
+            ),
+            Node::Import(_) => (
+                "imported from a shared library: its code isn't in this file".to_string(),
+                used_by_text(used_by),
+            ),
+        };
+        Header {
+            node,
+            name: name.to_string(),
+            after_name: format!("{note}  {place}"),
+            facts,
+            keeping: None,
+            lines: None,
+        }
+    }
+
+    /// Adds what keeps the item, once the session has worked it out, where
+    /// `retained` or `why` answers about it, as `retained` and `why` say.
+    pub(super) fn add_keeping(&mut self, session: &Session, retained: bool, why: bool) {
+        if self.keeping.is_none() {
+            self.keeping = Keeping::new(session, self.node, retained, why);
+            self.lines = None;
+        }
+    }
+
+    /// The header, wrapped to `width`, in at most `most` lines. It wraps,
+    /// so that nothing is cut, unless the screen is too short for it, with
+    /// the tab line and two lines of the tab under it. Then the line with
+    /// the chain from where the program starts goes first, since tab 5
+    /// shows the chain too; then the item's name is shortened as the title
+    /// line's is, but to no less than half a line, and what is still too
+    /// long is cut, ending in "…". The chain is one line, which leaves out
+    /// names at its start, so that its end shows. They are made once for
+    /// each size of screen.
+    pub(super) fn lines(&mut self, width: usize, most: usize) -> Vec<Line<'static>> {
+        if let Some((size, lines)) = &self.lines
+            && *size == (width, most)
+        {
+            return lines.clone();
+        }
+        let (name, rest) = (&self.name, &self.after_name);
+        let identity = |name: &str| wrap(&format!("{name}{rest}"), width);
+        let mut facts = self.facts.clone();
+        let mut chain = None;
+        if let Some(keeping) = &self.keeping {
+            let more = keeping.facts(&facts, width);
+            facts += &more;
+            chain = keeping.chain_line(width);
+        }
+        let facts = wrap(&facts, width);
+        let mut first = identity(name);
+        if first.len() + facts.len() > most {
+            let lines = most.saturating_sub(facts.len()).max(1);
+            // The widest shortened name that leaves the line short enough,
+            // which is no wider than the lines, but no narrower than half
+            // a line, after which the rest of the line is cut instead.
+            let fit = name_fitter(name);
+            let length = name.chars().count();
+            let (mut fits, mut wider) = (0, length.min(lines * width));
+            while fits + 1 < wider {
+                let middle = (fits + wider) / 2;
+                if identity(&fit(middle)).len() <= lines {
+                    fits = middle;
+                } else {
+                    wider = middle;
+                }
+            }
+            let fits = fits.max(length.min(width / 2)).max(1);
+            first = keep_lines(identity(&fit(fits)), lines, width);
+        }
+        let facts = keep_lines(facts, most.saturating_sub(first.len()), width);
+        let chain = chain.filter(|_| first.len() + facts.len() < most);
+        let first = first.into_iter().map(|line| Line::raw(line).bold());
+        let below = facts.into_iter().chain(chain);
+        let below = below.map(|line| Line::raw(line).dim());
+        let lines: Vec<Line<'static>> = first.chain(below).collect();
+        self.lines = Some(((width, most), lines.clone()));
+        lines
+    }
+}
+
+/// Where item `index` is, as the header's first line says it: "function
+/// at 0x1080, 16 bytes, in .plt.sec", then its block of memory, when
+/// there are several, and where it is copied from, if it is.
+fn item_place(session: &Session, index: usize) -> String {
     let binary = session.binary;
     let item = &binary.items[index];
     let mut place = whereabouts(item, &binary.sections[item.section].name);
@@ -30,6 +148,14 @@ pub(super) fn header(session: &Session, index: usize, used_by: usize) -> (String
     if let Some(load) = binary.load_address(item) {
         place += &format!(", copied there from {load:#x}");
     }
+    place
+}
+
+/// The facts about item `index` that the header's second line gives: what
+/// makes it a root, how many items use it, `used_by`, and how many it uses.
+fn item_facts(session: &Session, index: usize, used_by: usize) -> String {
+    let binary = session.binary;
+    let item = &binary.items[index];
     let mut facts = Vec::new();
     if item.source == Source::Reached {
         facts.push("found by following the code".to_string());
@@ -55,11 +181,11 @@ pub(super) fn header(session: &Session, index: usize, used_by: usize) -> (String
             text::calls_and_jumps(unresolved)
         ));
     }
-    (place, facts.join(" · "))
+    facts.join(" · ")
 }
 
 /// "used by 5", or "used by nothing".
-pub(super) fn used_by_text(used_by: usize) -> String {
+fn used_by_text(used_by: usize) -> String {
     match used_by {
         0 => "used by nothing".to_string(),
         users => format!("used by {users}"),
@@ -68,7 +194,7 @@ pub(super) fn used_by_text(used_by: usize) -> String {
 
 /// What the header says about what keeps an item, as `retained` and `why`
 /// say it.
-pub(super) struct Keeping {
+struct Keeping {
     /// What removing the item would save, where `retained` answers about it
     /// and something reaches the item.
     retained: Option<u64>,
@@ -89,7 +215,7 @@ impl Keeping {
     /// What the header says about what keeps `node`, if the session has
     /// worked out what keeps each item and `retained` or `why` answers
     /// about it, as `retained` and `why` say.
-    pub(super) fn new(session: &Session, node: Node, retained: bool, why: bool) -> Option<Keeping> {
+    fn new(session: &Session, node: Node, retained: bool, why: bool) -> Option<Keeping> {
         let keepers = session.keepers()?;
         if !retained && !why {
             return None;
@@ -114,7 +240,7 @@ impl Keeping {
     /// of the item that keeps it is shortened to fit what is left of the
     /// line, so that the facts stay on one, or where less than
     /// [`KEEPER_WIDTH`] columns are left, to fit a line of its own.
-    pub(super) fn facts(&self, before: &str, width: usize) -> String {
+    fn facts(&self, before: &str, width: usize) -> String {
         if self.unreached {
             return " · nothing reaches it".to_string();
         }
@@ -139,7 +265,7 @@ impl Keeping {
     /// to fit half of the line, and where the chain is still too long, the
     /// names at its start are left out, so that its end shows: "from a
     /// root: … › process_frame › __crc32_veneer › crc32".
-    pub(super) fn chain_line(&self, width: usize) -> Option<String> {
+    fn chain_line(&self, width: usize) -> Option<String> {
         if self.chain.is_empty() {
             return None;
         }

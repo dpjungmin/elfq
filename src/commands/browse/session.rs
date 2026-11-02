@@ -15,7 +15,7 @@ use std::rc::{Rc, Weak};
 
 use anyhow::Result;
 
-use super::views::PageCode;
+use super::views::Listing;
 use crate::binary::{Binary, FileKind, ItemKind, MemoryBlock, memory_blocks};
 use crate::commands::callers;
 use crate::commands::checks::reference_graph;
@@ -46,11 +46,11 @@ pub struct Session<'a> {
     /// What rows call each item or import after "kept by" or "used by",
     /// worked out the first time a header names it.
     short_names: RefCell<HashMap<Node, String>>,
-    /// Each item's code as its page shows it, by the item's index, shared
-    /// by every page open on the item, so that opening it again, as from
-    /// go to, needn't work it out again. It is freed with the last of
-    /// those pages.
-    page_codes: RefCell<HashMap<usize, Weak<PageCode>>>,
+    /// Each item's listing, as tab 1 of its page shows it, by the item's
+    /// index, shared by every page open on the item, so that opening it
+    /// again, as from go to, needn't work it out again. It is freed with
+    /// the last of those pages.
+    listings: RefCell<HashMap<usize, Weak<Listing>>>,
     /// What keeps each item, once worked out (see
     /// [`Session::work_out_keepers`]).
     keepers: Option<Keepers>,
@@ -87,7 +87,7 @@ impl<'a> Session<'a> {
             blocks: memory_blocks(&binary.sections),
             row_names: RefCell::new(HashMap::new()),
             short_names: RefCell::new(HashMap::new()),
-            page_codes: RefCell::new(HashMap::new()),
+            listings: RefCell::new(HashMap::new()),
             keepers: None,
         })
     }
@@ -204,16 +204,16 @@ impl<'a> Session<'a> {
         name
     }
 
-    /// Item `index`'s code, as its page shows it.
-    pub(super) fn page_code(&self, index: usize) -> Rc<PageCode> {
-        if let Some(code) = self.page_codes.borrow().get(&index).and_then(Weak::upgrade) {
-            return code;
+    /// Item `index`'s listing, as tab 1 of its page shows it.
+    pub(super) fn listing(&self, index: usize) -> Rc<Listing> {
+        if let Some(listing) = self.listings.borrow().get(&index).and_then(Weak::upgrade) {
+            return listing;
         }
-        let code = Rc::new(PageCode::new(self, index));
-        self.page_codes
+        let listing = Rc::new(Listing::of_item(self, index));
+        self.listings
             .borrow_mut()
-            .insert(index, Rc::downgrade(&code));
-        code
+            .insert(index, Rc::downgrade(&listing));
+        listing
     }
 
     /// The file's name, without its folders, for the title line.
