@@ -422,7 +422,7 @@ differs, so run it again until it passes.
 docs/examples.md whose first line starts with `$ elfq ` is run by
 `docs.rs`, which checks that elfq prints the rest of the block and nothing
 on stderr. The command is split at spaces, with no shell quoting, and its
-exit status isn't checked. The text around an example often repeats its
+exit status may be 0 or 1. The text around an example often repeats its
 numbers and names, as docs/examples.md does, so when an example's output
 changes, check that the text around it still matches the new output.
 

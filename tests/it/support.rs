@@ -81,11 +81,6 @@ pub fn command() -> Command {
     command
 }
 
-/// Runs elfq with `args` and returns what it did.
-pub fn elfq(args: &[&str]) -> Output {
-    command().args(args).output().unwrap()
-}
-
 /// Runs elfq with `args` and returns the [`Run`], for the test to check.
 #[track_caller]
 pub fn run(args: &[&str]) -> Run {
