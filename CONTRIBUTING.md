@@ -339,6 +339,7 @@ of its tree) do. Those are names to fix, not meanings to copy.
 | `commands/overview_top_and_retained.rs` | The overview, `top` and `retained`, which share the tree of retained sizes and `--range`: their text and JSON, for the whole file and for a range, and the errors about ranges |
 | `commands/reach.rs` | `reach`'s text and JSON, with and without SYMBOL; and, run in the test's own process, `reach` on every item of the Cortex-M samples, against `callees`, `retained` and its own `--tree`, and with `--to` against `reach` without it and `callees --to`, and on every function of each stripped one against its twin with symbols; and without SYMBOL, each start of every sample against `reach START` |
 | `commands/startup.rs` | `startup` on the samples whose reset code has a mistake and some without, the exit status of every Cortex-M sample, and the files it refuses; and that `debug walk` lists the walk that `startup` reads |
+| `commands/why.rs` | `why`: its chains as text and JSON, where they start, and what it says when nothing reaches SYMBOL |
 | `browse.rs` | `browse`'s screens, driven with keys on ratatui's `TestBackend`, a screen in memory; its errors; and on Linux, the program in a terminal that `script` makes. The checks that need its private types are unit tests; see below |
 | `library/items.rs` | Finding items: symbols, PLT stubs, unwind tables, functions in stripped firmware, unnamed data |
 | `library/graph.rs` | The reference graph: callers, callees, pointers in data, veneers |

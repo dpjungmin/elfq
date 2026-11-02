@@ -1,5 +1,8 @@
-//! The shortest chains from the roots that `why` shows, checked against the
-//! samples' call graphs in testdata/README.md.
+//! The shortest chains from the roots that `why` shows.
+//!
+//! They are checked against the samples' call graphs in
+//! testdata/README.md. The tests of what `why` prints are in
+//! commands/why.rs.
 
 use elfq::binary::Binary;
 use elfq::graph::{Graph, ShortestPaths};
