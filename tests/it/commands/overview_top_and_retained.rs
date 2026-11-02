@@ -1131,7 +1131,7 @@ fn a_function_of_unknown_size_is_named_where_its_load_image_is() {
         .set_symbol_size("__memcpy_veneer", 0)
         .save("memcpy-veneer-unsized.elf");
     assert_output(
-        &run(&[&path, "top", "--range", "0x30000118+8"]).error(),
+        &stderr(&[&path, "top", "--range", "0x30000118+8"]),
         "error: elfq doesn't know where __memcpy_veneer ends, so it can't count the bytes in \
          0x30000118..0x30000120 (the load image of .itcm)\n",
     );

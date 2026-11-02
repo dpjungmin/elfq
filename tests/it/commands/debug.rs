@@ -4,7 +4,7 @@
 //! `debug walk` lists the walk that `startup` reads are in startup.rs,
 //! beside the samples they run on.
 
-use crate::support::{SAMPLE, TCM_SAMPLE, assert_output, run, stderr, stdout};
+use crate::support::{SAMPLE, TCM_SAMPLE, assert_output, stderr, stdout};
 
 #[test]
 fn debug_items_lists_each_item() {
@@ -58,7 +58,7 @@ fn debug_walk_lists_what_the_code_run_from_reset_does() {
 #[test]
 fn debug_commands_print_only_text() {
     assert_eq!(
-        run(&[SAMPLE, "debug", "items", "--json"]).error(),
+        stderr(&[SAMPLE, "debug", "items", "--json"]),
         "error: the debug commands print only text\n"
     );
 }

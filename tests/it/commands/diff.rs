@@ -890,7 +890,7 @@ fn diff_says_what_keeps_an_item_as_top_does() {
             continue;
         }
         for (side, path) in [("old", old), ("new", new)] {
-            let top = run(&[path, "top", "--all", "--json"]).json(0);
+            let top = elfq_json(&[path, "top", "--all"]);
             let rows = top["items"].as_array().unwrap();
             let by_address: BTreeMap<&str, &Value> = rows
                 .iter()

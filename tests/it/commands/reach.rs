@@ -1084,15 +1084,7 @@ fn reach_to_has_the_chains_to_what_is_in_its_ranges() {
     assert_eq!(reach["complete"], false);
 
     // It can't go to ITCM, whose functions no pointer goes to.
-    let itcm = run(&[
-        TCM_SAMPLE,
-        "reach",
-        "dispatch_event",
-        "--to",
-        "0x0+256K",
-        "--json",
-    ])
-    .json(0);
+    let itcm = elfq_json(&[TCM_SAMPLE, "reach", "dispatch_event", "--to", "0x0+256K"]);
     assert_eq!(itcm["items"].as_array().unwrap().len(), 1);
     assert_eq!(itcm["unresolved"], json!([]));
     assert_eq!(itcm["complete"], true);
@@ -1123,7 +1115,7 @@ fn reach_to_has_the_chains_to_what_is_in_its_ranges() {
 fn reach_without_symbol_has_each_start() {
     // Each start is a line, with its bytes in each block apart, and every
     // exception that it handles.
-    let text = run(&[TCM_SAMPLE, "reach", "--json"]).printed(0);
+    let text = stdout(&[TCM_SAMPLE, "reach", "--json"]);
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(lines.len(), 6, "{text}");
     assert_eq!(lines[0], r#"{"starts":["#);
@@ -1225,7 +1217,7 @@ ADDRESS     SIZE  HOW   ITEM
 elfq doesn't know where __memcpy_veneer ends, so it can't read its code.
 ",
     );
-    let reach = run(&[&path, "reach", "apply_filter", "--json"]).json(0);
+    let reach = elfq_json(&[&path, "reach", "apply_filter"]);
     assert_eq!(reach["unreadable"][0]["name"], "__memcpy_veneer");
     assert_eq!(reach["complete"], false);
     // With --to, what elfq can't read may reach the ranges, so the exit
@@ -1250,7 +1242,7 @@ elfq doesn't know where __memcpy_veneer ends, so it can't read its code.
 ",
         ),
     ] {
-        let stdout = run(&[&path, "reach", "apply_filter", "--to", to]).printed(1);
+        let stdout = crossing(&[&path, "reach", "apply_filter", "--to", to]);
         assert_output(&stdout, expected);
         let reach = run(&[&path, "reach", "apply_filter", "--to", to, "--json"]).json(1);
         assert_eq!(reach["unreadable"][0]["name"], "__memcpy_veneer");
@@ -1265,7 +1257,7 @@ fn reach_lists_an_item_in_no_block_after_the_blocks() {
         .set_section(".ocram_bss", SectionField::Size, 0)
         .save("reach-no-block.elf");
     assert_output(
-        &run(&[&path, "reach", "platform_write"]).printed(0),
+        &stdout(&[&path, "reach", "platform_write"]),
         "\
 platform_write and the 3 data objects it reaches take 96 bytes of code and 4104 bytes of data:
 
@@ -1281,10 +1273,10 @@ ADDRESS     SIZE  HOW   ITEM
 0x20240000  4096  uses  tx_buffer, used by platform_write
 ",
     );
-    let reach = run(&[&path, "reach", "platform_write", "--json"]).json(0);
+    let reach = elfq_json(&[&path, "reach", "platform_write"]);
     let tx_buffer = &reach["items"][2];
     assert_eq!(tx_buffer["name"], "tx_buffer");
-    assert_eq!(tx_buffer["block"], serde_json::Value::Null);
+    assert_eq!(tx_buffer["block"], Value::Null);
 }
 
 #[test]
@@ -1293,7 +1285,7 @@ fn reach_names_the_exceptions_that_the_architecture_has() {
     // file at `path`, a build of c-cortex-m7.elf, where it is in entries 2
     // to 6, 11, 12 and 14 of the vector table.
     let exceptions = |path: &str| {
-        let reach = run(&[path, "reach", "--json"]).json(0);
+        let reach = elfq_json(&[path, "reach"]);
         let starts = reach["starts"].as_array().unwrap();
         let handler = starts
             .iter()
@@ -1311,7 +1303,7 @@ fn reach_names_the_exceptions_that_the_architecture_has() {
     let path = data.save("reserved-entries.elf");
     assert_eq!(
         exceptions(&path),
-        serde_json::json!([
+        json!([
             "NMI",
             "HardFault",
             "MemManage",
@@ -1332,7 +1324,7 @@ fn reach_names_the_exceptions_that_the_architecture_has() {
     let path = for_arm_version(TCM_SAMPLE, Some(12)).save("armv6s-m.elf");
     assert_eq!(
         exceptions(&path),
-        serde_json::json!(["NMI", "HardFault", "SVCall", "PendSV"])
+        json!(["NMI", "HardFault", "SVCall", "PendSV"])
     );
 }
 

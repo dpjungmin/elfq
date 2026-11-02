@@ -28,7 +28,7 @@ fn callers_lists_the_largest_callers() {
     assert_eq!(all.lines().count(), 103, "{all}");
     // JSON has every caller either way.
     let json = stdout(&[sample, "callers", "_Unwind_Resume", "--json"]);
-    let json: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let json: Value = serde_json::from_str(&json).unwrap();
     assert_eq!(json["callers"].as_array().unwrap().len(), 100);
 }
 

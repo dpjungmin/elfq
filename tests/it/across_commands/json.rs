@@ -6,7 +6,7 @@
 
 use serde_json::{Value, json};
 
-use crate::support::{SAMPLE, elfq_json, run};
+use crate::support::{SAMPLE, elfq_json, stdout};
 
 #[test]
 fn items_have_the_same_keys_everywhere() {
@@ -76,7 +76,7 @@ fn items_have_the_same_keys_everywhere() {
 fn each_row_is_a_line() {
     // The first line holds the answer up to its first list, and each row of
     // a list has a line of its own, so that grep finds a row.
-    let text = run(&[SAMPLE, "callers", "log_msg", "--json"]).printed(0);
+    let text = stdout(&[SAMPLE, "callers", "log_msg", "--json"]);
     let lines: Vec<&str> = text.lines().collect();
     assert!(
         lines[0].starts_with(r#"{"symbol":{"name":"log_msg","#),
@@ -96,7 +96,7 @@ fn each_row_is_a_line() {
     assert_eq!(lines[6..], [r#"],"complete":true}"#]);
 
     // An empty list takes no line.
-    let text = run(&[SAMPLE, "retained", "debug_dump", "--json"]).printed(0);
+    let text = stdout(&[SAMPLE, "retained", "debug_dump", "--json"]);
     assert_eq!(text.lines().count(), 1, "{text}");
 }
 

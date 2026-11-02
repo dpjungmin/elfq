@@ -12,7 +12,7 @@ use object::elf;
 
 use crate::support::elf::{ElfBytes, SectionField};
 use crate::support::{
-    LIBRARY_SAMPLE, Run, SAMPLE, TCM_SAMPLE, assert_output, command, run, stderr, stdout,
+    LIBRARY_SAMPLE, Run, SAMPLE, TCM_SAMPLE, assert_output, command, stderr, stdout,
 };
 
 #[test]
@@ -377,7 +377,7 @@ fn a_function_inlined_everywhere_is_told_from_one_kept_in_part() {
         .rename_symbol("process_frame", "append.part.0")
         .save("kept-in-part.elf");
     assert_output(
-        &run(&[&path, "callers", "append"]).error(),
+        &stderr(&[&path, "callers", "append"]),
         "error: no function or data object is named `append`; did you mean append.part.0?\n",
     );
 }
@@ -390,7 +390,7 @@ fn a_file_with_dwarf_but_no_symbol_table_says_so() {
     let path = ElfBytes::sample(SAMPLE)
         .set_section(".symtab", SectionField::Type, elf::SHT_PROGBITS)
         .save("no-symbol-table.elf");
-    let error = run(&[&path, "callers", "append"]).error();
+    let error = stderr(&[&path, "callers", "append"]);
     assert!(
         error.starts_with(
             "error: no function or data object is named `append`; the file has no symbol table"

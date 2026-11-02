@@ -13,7 +13,7 @@ use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::support::elf::{ElfBytes, chain_of_calls, for_arm_version, past_the_end};
-use crate::support::{SAMPLE, TCM_SAMPLE, assert_output, load_sample, run};
+use crate::support::{SAMPLE, TCM_SAMPLE, assert_output, load_sample, stderr, stdout};
 
 /// A key as a test script writes it: a name such as `Enter`, `Tab`, `Esc`
 /// or `Ctrl-O`, or text, typed a character at a time.
@@ -1632,7 +1632,7 @@ fn browse_needs_a_terminal() {
              another command\n",
         ),
     ] {
-        assert_output(&run(args).error(), error);
+        assert_output(&stderr(args), error);
     }
 }
 
@@ -2244,13 +2244,12 @@ $ elfq testdata/bin/c-x86_64.elf reach process_frame
     // The row of a call to code outside every item opens the item that
     // makes the call.
     let sample = "far-gnu-m4-nodebug.elf";
-    let printed = run(&[
+    let printed = stdout(&[
         &format!("testdata/bin/{sample}"),
         "reach",
         "Reset_Handler",
         "--all",
-    ])
-    .printed(0);
+    ]);
     let rows = printed
         .lines()
         .skip_while(|line| !line.starts_with("ADDRESS"));
@@ -2330,7 +2329,7 @@ fn tabs_that_an_item_cant_have_say_why_as_their_commands_do() {
         for (key, command) in [("2", "callees"), ("4", "reach")] {
             let page = screen(sample, Some(symbol), (100, 30), &[key]);
             let (_, status) = selected_and_status(&page);
-            let error = run(&[&path, command, symbol]).error();
+            let error = stderr(&[&path, command, symbol]);
             assert_eq!(
                 format!("error: {status}\n"),
                 error,

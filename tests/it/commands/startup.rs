@@ -13,7 +13,7 @@ use crate::support::elf::{
 };
 use crate::support::{
     Exit, Run, SAMPLE, TCM_ENTRY_MAIN_SAMPLE, TCM_SAMPLE, assert_output, command, run, sample_path,
-    samples_for,
+    samples_for, stderr, stdout,
 };
 
 /// [`TCM_SAMPLE`] with memcpy linked into ITCM, which Reset_Handler calls
@@ -399,7 +399,7 @@ At 0x10000124 elfq takes the branch, since the other way ends in a branch throug
     );
     // The walk goes through the loop over the table each time, the empty
     // row's and the zero word's too.
-    let walk = run(&[PICO_SAMPLE, "debug", "walk"]).printed(0);
+    let walk = stdout(&[PICO_SAMPLE, "debug", "walk"]);
     assert!(
         walk.contains("loop back from 0x10000136 over the 7 rows above, runs 4 times, each time walked, reading rows at 0x10000160 +12n\n"),
         "{walk}"
@@ -412,7 +412,7 @@ fn the_walk_tells_how_often_each_loop_runs_and_what_it_stores() {
     // being the one that leaves, and what each store in it stores those
     // times after the first, which the row above shows.
     assert_output(
-        &run(&[LOOPS_SAMPLE, "debug", "walk"]).printed(0),
+        &stdout(&[LOOPS_SAMPLE, "debug", "walk"]),
         "\
 from Reset_Handler (0x30000008), stack pointer 0x20040000, main 0x30000060
 
@@ -436,7 +436,7 @@ fn debug_walk_lists_the_walk_that_startup_reads() {
     // gets to the same main, found the same way: from its symbol, debug
     // info, a guess or the reset handler's endless loop.
     for sample in samples_for(Architecture::Arm) {
-        let walk = run(&[&sample, "debug", "walk"]).printed(0);
+        let walk = stdout(&[&sample, "debug", "walk"]);
         let first = walk.lines().next().unwrap();
         let answer = startup(&sample, &["--json"]).json(Exit::ZeroOrOne);
         let entry = answer["entry"]["address"].as_str().unwrap();
@@ -461,7 +461,7 @@ fn debug_walk_lists_the_walk_that_startup_reads() {
         assert!(reaches_main, "{sample}: {walk}");
     }
     // As in a stripped file, which has no symbol main.
-    let walk = run(&["testdata/bin/c-cortex-m7-stripped.elf", "debug", "walk"]).printed(0);
+    let walk = stdout(&["testdata/bin/c-cortex-m7-stripped.elf", "debug", "walk"]);
     assert!(
         walk.starts_with(
             "from entry (0x300005f8), stack pointer 0x20040000, main 0x30000570 (guess)\n"
@@ -478,7 +478,7 @@ fn debug_walk_starts_where_startup_does() {
     let padding = ElfBytes::sample(TCM_SAMPLE)
         .set_vector_entry(1, 0x3000_05f7)
         .save("c-cortex-m7-reset-in-padding.elf");
-    let walk = run(&[&padding, "debug", "walk"]).printed(0);
+    let walk = stdout(&[&padding, "debug", "walk"]);
     assert_eq!(
         walk.lines().next().unwrap(),
         "from Reset_Handler (0x300005f8), stack pointer 0x20040000, main 0x30000570"
@@ -490,7 +490,7 @@ fn debug_walk_starts_where_startup_does() {
         .set_vector_entry(1, 0x3000_05f7)
         .set(HeaderField::EntryPoint, 0x2000_0001)
         .save("c-cortex-m7-reset-and-entry-in-no-function.elf");
-    let error = run(&[&neither, "debug", "walk"]).error();
+    let error = stderr(&[&neither, "debug", "walk"]);
     assert_output(&error, &startup(&neither, &[]).error());
     assert_output(
         &error,
@@ -852,7 +852,7 @@ fn keep_out_names_what_runs_before_each_copy_of_code() {
 #[test]
 fn the_overview_suggests_startup_only_for_firmware_that_startup_reads() {
     let try_startup = |path: &str| {
-        let overview = run(&[path]).printed(0);
+        let overview = stdout(&[path]);
         overview.contains(&format!("\n  elfq {path} startup\n"))
     };
     assert!(try_startup(TCM_SAMPLE));

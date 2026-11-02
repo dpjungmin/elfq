@@ -16,7 +16,7 @@ use elfq::graph::{Graph, ReferenceKind};
 use object::{LittleEndian, elf};
 
 use crate::support::elf::{ElfBytes, HeaderField, SectionField, chain_of_calls, past_the_end};
-use crate::support::{SAMPLE, assert_output, load_sample, run};
+use crate::support::{SAMPLE, assert_output, elfq_json, load_sample, run, stderr, stdout};
 
 /// `bytes` after their length in 4 bytes, as DWARF starts a unit or a
 /// list of ranges.
@@ -252,7 +252,7 @@ fn a_section_that_ends_at_the_last_address_is_kept() {
     let mut data = ElfBytes::sample(SAMPLE);
     data.set_section(".fini_array", SectionField::Address, u64::MAX - 7);
     // elfq doesn't warn about it.
-    run(&[&data.save("fini-array-at-the-top.elf"), "top", "--all"]).printed(0);
+    stdout(&[&data.save("fini-array-at-the-top.elf"), "top", "--all"]);
     let (binary, _) = parse(&data);
     let fini = binary.sections.iter().find(|s| s.name == ".fini_array");
     let fini = fini.unwrap();
@@ -266,8 +266,8 @@ fn a_section_that_isnt_allocated_keeps_its_addresses() {
     let path = ElfBytes::sample(SAMPLE)
         .set_section(".debug_info", SectionField::Address, u64::MAX - 15)
         .save("debug-info-address.elf");
-    let damaged = run(&[&path, "inlined"]).printed(0);
-    assert_output(&damaged, &run(&[SAMPLE, "inlined"]).printed(0));
+    let damaged = stdout(&[&path, "inlined"]);
+    assert_output(&damaged, &stdout(&[SAMPLE, "inlined"]));
 }
 
 #[test]
@@ -384,7 +384,7 @@ fn inlined_copies_that_add_up_past_the_largest_number_stop_there() {
         .replace_section(".debug_rnglists", &with_length(&ranges))
         .save("huge-inlined-copies.elf");
     assert_output(
-        &run(&[&path, "inlined"]).printed(0),
+        &stdout(&[&path, "inlined"]),
         "\
 Inlined copies of 1 function take 18446744073709551615 of the 2557 bytes of code:
 
@@ -393,7 +393,7 @@ Inlined copies of 1 function take 18446744073709551615 of the 2557 bytes of code
 ",
     );
     assert_output(
-        &run(&[&path, "inlined", "_init"]).printed(0),
+        &stdout(&[&path, "inlined", "_init"]),
         "\
 18446744073709551615 bytes of _init's code are inlined copies of 1 function:
 
@@ -428,7 +428,7 @@ fn an_inlined_copy_that_would_end_past_the_last_address_has_no_bytes() {
     // As in a release build, the range is dropped, and the copy is found at
     // its DW_AT_low_pc, without bytes.
     assert_output(
-        &run(&[&path, "inlined"]).printed(0),
+        &stdout(&[&path, "inlined"]),
         "\
 Inlined copies of 1 function take 0 of the 2557 bytes of code:
 
@@ -473,7 +473,7 @@ A copy of 0 bytes is one the compiler merged into the code around it.
             .replace_section(".debug_info", &with_length(&unit))
             .replace_section(".debug_abbrev", &abbrev)
             .save(name);
-        assert_output(&run(&[&path, "inlined"]).printed(0), expected);
+        assert_output(&stdout(&[&path, "inlined"]), expected);
     }
 }
 
@@ -496,7 +496,7 @@ fn dwarf_that_nests_deeply_is_read() {
         .replace_section(".debug_abbrev", &abbrev)
         .save("deep-dwarf.elf");
     assert_output(
-        &run(&[&path, "inlined"]).printed(0),
+        &stdout(&[&path, "inlined"]),
         "The debug info lists no inlined code.\n",
     );
 }
@@ -507,12 +507,12 @@ fn dwarf_that_cant_be_read_says_so() {
         .set_section(".debug_info", SectionField::Size, 0x10)
         .save("short-dwarf.elf");
     assert_output(
-        &run(&[&path, "inlined"]).error(),
+        &stderr(&[&path, "inlined"]),
         &format!("error: cannot read the DWARF debug info in {path}: unexpected end of input\n"),
     );
     // SYMBOL is looked up before the DWARF is read, which can take a while.
     assert_output(
-        &run(&[&path, "inlined", "mian"]).error(),
+        &stderr(&[&path, "inlined", "mian"]),
         "error: no function or data object is named `mian`; did you mean main?\n",
     );
 }
@@ -550,7 +550,7 @@ fn inlined_copies_that_nest_deeply_are_summed_up() {
         "{stdout}"
     );
     // JSON has every copy, as a row under the one before.
-    let tree = run(&[&path, "inlined", "main", "--json"]).json(0);
+    let tree = elfq_json(&[&path, "inlined", "main"]);
     let rows = tree["inlined"].as_array().unwrap();
     assert_eq!(rows.len(), depth);
     for (id, row) in rows.iter().enumerate().skip(1) {
@@ -569,14 +569,14 @@ fn a_long_chain_of_calls_is_read() {
     run(&[&path, "top", "--all"]).printed(0);
     // JSON has the whole chain, as rows that each hang under the one
     // before.
-    let top = run(&[&path, "top", "--json"]).json(0);
+    let top = elfq_json(&[&path, "top"]);
     let items = top["items"].as_array().unwrap();
     assert_eq!(items.len(), 10_000);
     for (id, item) in items.iter().enumerate().skip(1) {
         assert_eq!(item["parent"], id - 1);
     }
     // So does reach's, from the last function.
-    let reach = run(&[&path, "reach", "0x8113878", "--json"]).json(0);
+    let reach = elfq_json(&[&path, "reach", "0x8113878"]);
     let items = reach["items"].as_array().unwrap();
     assert_eq!(items.len(), 10_000);
     for (id, item) in items.iter().enumerate().skip(1) {
