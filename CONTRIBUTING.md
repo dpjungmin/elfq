@@ -405,7 +405,9 @@ status 2. Each checks the exit status, and that elfq printed nothing on
 the other stream, so that a warning the test doesn't expect fails it.
 `stdout(ARGS)` is `run(ARGS).printed(0)`, and `stderr(ARGS)` is
 `run(ARGS).error()`. Where the status may be 0 or 1, as for a command run
-on every sample, `Exit::ZeroOrOne` stands for either.
+on every sample, `Exit::ZeroOrOne` stands for either. A test that expects a
+warning with the answer calls `exited(STATUS)`, which checks the status
+alone, and then reads the `Run`'s `stdout` and `stderr` itself.
 
 **When output changes.** Most tests in `cli.rs` check a command's whole
 output with `assert_output`. When you change what elfq prints on purpose,
@@ -425,7 +427,8 @@ numbers and names, as docs/examples.md does, so when an example's output
 changes, check that the text around it still matches the new output.
 
 **Damaged files.** `damaged.rs` makes its files from a sample's bytes, so
-that the hangs and crashes they once caused stay fixed. Tests run in a
+that the hangs and crashes they once caused stay fixed. A test saves its
+file with `save`, which returns the path to give `run`. Tests run in a
 debug build, so arithmetic that overflows fails them too. A test that uses
 `parse_quickly` fails if loading the file takes more than 10 seconds: add
 one when you make elfq quick to load a file that took far too long.

@@ -98,9 +98,11 @@ pub fn run(args: &[&str]) -> Run {
 /// Tests read it with [`Run::printed`], [`Run::json`] or [`Run::error`],
 /// which check the exit status and that elfq printed nothing on the other
 /// stream, so that a warning or an answer that a test doesn't expect fails
-/// it. A `Run` that nothing reads checks nothing, so the compiler warns
-/// about one.
-#[must_use = "read it with printed, json or error, which check it"]
+/// it. A test that expects something on both, such as an answer with a
+/// warning, checks the status with [`Run::exited`] and reads both itself.
+/// A `Run` that nothing reads checks nothing, so the compiler warns about
+/// one.
+#[must_use = "read it with printed, json, error or exited, which check it"]
 pub struct Run {
     /// What ran, for the message of a check that fails.
     command: String,
@@ -208,6 +210,17 @@ impl Run {
             "exit status 2 and nothing on stdout",
         );
         self.stderr
+    }
+
+    /// The run, after checking only that elfq exited with `status`.
+    ///
+    /// It is for a test that checks both streams itself, as one that
+    /// expects a warning on stderr with the answer on stdout.
+    #[track_caller]
+    pub fn exited(self, status: impl Into<Exit>) -> Run {
+        let status = status.into();
+        self.check(status.allows(self.status), &format!("exit status {status}"));
+        self
     }
 
     /// Panics unless the expectation `holds`.

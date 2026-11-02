@@ -13,7 +13,7 @@ use elfq::binary::Binary;
 use elfq::graph::{Graph, ReferenceKind};
 use object::{Object, ObjectSection, ObjectSymbol, elf};
 
-use crate::support::{assert_output, elfq, load_sample, sample_path};
+use crate::support::{Run, SAMPLE, assert_output, load_sample, run, sample_path};
 
 /// Where a field is in a section header: in a 64-bit file, and in a
 /// 32-bit one.
@@ -159,24 +159,6 @@ pub fn save(name: &str, data: &[u8]) -> String {
     let path = folder.join(name);
     std::fs::rename(&partial, &path).unwrap();
     path.to_str().unwrap().to_string()
-}
-
-/// Runs elfq with `args` on `data`, saved as `name`, and returns the error
-/// it printed, with exit status 2.
-fn error(name: &str, data: &[u8], args: &[&str]) -> String {
-    let output = elfq(&[&[save(name, data).as_str()], args].concat());
-    assert_eq!(output.status.code(), Some(2), "{name}");
-    String::from_utf8(output.stderr).unwrap()
-}
-
-/// Runs elfq with `args` on `data`, saved as `name`, and returns what it
-/// printed to stdout and stderr. It must have answered, with exit status 0.
-fn run(name: &str, data: &[u8], args: &[&str]) -> (String, String) {
-    let output = elfq(&[&[save(name, data).as_str()], args].concat());
-    let text = |bytes: Vec<u8>| String::from_utf8(bytes).unwrap();
-    let (stdout, stderr) = (text(output.stdout), text(output.stderr));
-    assert!(output.status.success(), "{name}: {stderr}");
-    (stdout, stderr)
 }
 
 #[test]
@@ -363,11 +345,12 @@ fn an_entry_point_in_the_vector_table_is_no_function() {
         (item.name.as_str(), item.size),
         (".text@0x8000000", table.size)
     );
-    let (stdout, _) = run("entry-in-table.elf", &data, &["reach"]);
+    let path = save("entry-in-table.elf", &data);
+    let stdout = run(&[&path, "reach"]).printed(0);
     assert!(!stdout.contains("entry point"), "{stdout}");
     assert!(stdout.contains("Reset "), "{stdout}");
     // It is a root as the vector table, not as the entry point.
-    let (stdout, _) = run("entry-in-table.elf", &data, &["why", ".text@0x8000000"]);
+    let stdout = run(&[&path, "why", ".text@0x8000000"]).printed(0);
     assert_output(
         &stdout,
         ".text@0x8000000 holds the vector table, where the processor finds its handlers.\n",
@@ -378,9 +361,10 @@ fn an_entry_point_in_the_vector_table_is_no_function() {
 fn a_section_that_would_end_past_the_last_address_is_ignored() {
     let mut data = sample("c-x86_64.elf");
     set_section_field(&mut data, ".fini_array", SIZE, u64::MAX - 15);
-    let (_, stderr) = run("fini-array-size.elf", &data, &["top", "--all"]);
+    let path = save("fini-array-size.elf", &data);
+    let top = run(&[&path, "top", "--all"]).exited(0);
     assert_output(
-        &stderr,
+        &top.stderr,
         "warning: ignoring section .fini_array: it runs past the last address\n",
     );
 }
@@ -391,8 +375,8 @@ fn a_section_that_ends_at_the_last_address_is_kept() {
     // which a u64 can't hold: the section loses that byte instead.
     let mut data = sample("c-x86_64.elf");
     set_section_field(&mut data, ".fini_array", ADDRESS, u64::MAX - 7);
-    let (_, stderr) = run("fini-array-at-the-top.elf", &data, &["top", "--all"]);
-    assert_output(&stderr, "");
+    // elfq doesn't warn about it.
+    run(&[&save("fini-array-at-the-top.elf", &data), "top", "--all"]).printed(0);
     let (binary, _) = parse(&data);
     let fini = binary.sections.iter().find(|s| s.name == ".fini_array");
     let fini = fini.unwrap();
@@ -405,10 +389,8 @@ fn a_section_that_isnt_allocated_keeps_its_addresses() {
     // inlined copies its debug info lists are still found.
     let mut data = sample("c-x86_64.elf");
     set_section_field(&mut data, ".debug_info", ADDRESS, u64::MAX - 15);
-    let (stdout, stderr) = run("debug-info-address.elf", &data, &["inlined"]);
-    assert_output(&stderr, "");
-    let (expected, _) = run("c-x86_64.elf", &sample("c-x86_64.elf"), &["inlined"]);
-    assert_output(&stdout, &expected);
+    let damaged = run(&[&save("debug-info-address.elf", &data), "inlined"]).printed(0);
+    assert_output(&damaged, &run(&[SAMPLE, "inlined"]).printed(0));
 }
 
 /// The x86-64 sample, with the bytes of each of `sections` past the end
@@ -426,9 +408,9 @@ fn a_section_that_runs_past_the_end_of_the_file_keeps_its_addresses() {
     // Only where its bytes are is damaged, so the section is still there,
     // and the file holds none of its bytes.
     let data = past_the_end(&[".plt"]);
-    let (_, stderr) = run("plt-offset.elf", &data, &["top", "--all"]);
+    let top = run(&[&save("plt-offset.elf", &data), "top", "--all"]).exited(0);
     assert_output(
-        &stderr,
+        &top.stderr,
         "warning: section .plt runs past the end of the file\n",
     );
     let (binary, _) = parse(&data);
@@ -440,16 +422,14 @@ fn a_section_that_runs_past_the_end_of_the_file_keeps_its_addresses() {
 #[test]
 fn diff_names_the_file_that_a_warning_is_about() {
     let path = save("plt-offset-diff.elf", &past_the_end(&[".plt"]));
-    let old = sample_path("c-x86_64.elf");
-    let output = elfq(&[old.to_str().unwrap(), "diff", &path]);
-    assert_eq!(output.status.code(), Some(1));
+    let compared = diff("c-x86_64.elf", &path, &[]).exited(1);
     assert_output(
-        &String::from_utf8(output.stderr).unwrap(),
+        &compared.stderr,
         &format!("warning: {path}: section .plt runs past the end of the file\n"),
     );
     // The new build has no bytes for .plt, so the item that elfq makes of
     // it is gone, and the function that the unwind table finds there new.
-    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stdout = compared.stdout;
     assert!(
         stdout.contains(
             "\n   -64   64       0x1020   .plt (gone)\n   \
@@ -459,17 +439,14 @@ fn diff_names_the_file_that_a_warning_is_about() {
     );
 }
 
-/// Runs `elfq SAMPLE diff NEW`, with `data` saved as `name` for NEW, and
-/// returns its exit status, and what it printed and printed as an error.
-fn diff(sample: &str, name: &str, data: &[u8], options: &[&str]) -> (i32, String, String) {
+/// Runs `elfq SAMPLE diff NEW` with `options`.
+///
+/// SAMPLE is the sample named `sample`, and NEW the file at the path
+/// `new`.
+#[track_caller]
+fn diff(sample: &str, new: &str, options: &[&str]) -> Run {
     let old = sample_path(sample);
-    let output = elfq(&[&[old.to_str().unwrap(), "diff", &save(name, data)], options].concat());
-    let text = |bytes: Vec<u8>| String::from_utf8(bytes).unwrap();
-    (
-        output.status.code().unwrap(),
-        text(output.stdout),
-        text(output.stderr),
-    )
+    run(&[&[old.to_str().unwrap(), "diff", new], options].concat())
 }
 
 /// Where the bytes of `section` are in the file.
@@ -486,8 +463,8 @@ fn diff_names_a_section_whose_bytes_alone_differ() {
     let mut data = sample("c-x86_64.elf");
     let (offset, size) = file_range(&data, ".note.gnu.build-id");
     data[offset + size - 1] ^= 1;
-    let (status, text, _) = diff("c-x86_64.elf", "build-id.elf", &data, &[]);
-    assert_eq!(status, 1);
+    let path = save("build-id.elf", &data);
+    let text = diff("c-x86_64.elf", &path, &[]).printed(1);
     assert!(
         text.ends_with(
             ": no item changed size or block, but bytes differ.\n\
@@ -498,7 +475,7 @@ fn diff_names_a_section_whose_bytes_alone_differ() {
         ),
         "{text}"
     );
-    let (_, json, _) = diff("c-x86_64.elf", "build-id.elf", &data, &["--json"]);
+    let json = diff("c-x86_64.elf", &path, &["--json"]).printed(1);
     assert!(
         json.contains("\"sections_that_differ\":[\n\".note.gnu.build-id\"\n],"),
         "{json}"
@@ -508,8 +485,7 @@ fn diff_names_a_section_whose_bytes_alone_differ() {
     let mut data = sample("c-cortex-m7.elf");
     let (offset, _) = file_range(&data, ".ARM.exidx");
     data[offset] ^= 1;
-    let (status, text, _) = diff("c-cortex-m7.elf", "exidx-byte.elf", &data, &[]);
-    assert_eq!(status, 1);
+    let text = diff("c-cortex-m7.elf", &save("exidx-byte.elf", &data), &[]).printed(1);
     assert!(
         text.contains("\n0x30000000..0x30000edc  3804  3804       0  bytes differ\n"),
         "{text}"
@@ -526,8 +502,7 @@ fn diff_names_a_section_whose_bytes_alone_differ() {
     let mut data = sample("c-x86_64.so");
     let (offset, _) = file_range(&data, ".eh_frame_hdr");
     data[offset + 0x10] ^= 1;
-    let (status, text, _) = diff("c-x86_64.so", "eh-frame-hdr-byte.so", &data, &[]);
-    assert_eq!(status, 1);
+    let text = diff("c-x86_64.so", &save("eh-frame-hdr-byte.so", &data), &[]).printed(1);
     assert!(
         text.ends_with(
             ": no item changed size or block, but bytes differ.\n\
@@ -553,8 +528,7 @@ fn diff_says_where_a_gone_function_was_inlined_only_when_its_name_finds_nothing(
         .position(|name| name == b"systick_count\0")
         .unwrap();
     strtab[at..at + 13].copy_from_slice(b"decode_header");
-    let (status, text, _) = diff("c-cortex-m7.elf", "renamed.elf", &data, &[]);
-    assert_eq!(status, 1);
+    let text = diff("c-cortex-m7.elf", &save("renamed.elf", &data), &[]).printed(1);
     assert!(
         text.contains("  decode_header (gone), kept by process_frame\n"),
         "{text}"
@@ -567,8 +541,7 @@ fn diff_says_when_only_blocks_differ() {
     // block, and the old one ends sooner, but every item is where it was.
     let mut data = sample("c-cortex-m7.elf");
     set_section_field(&mut data, ".ARM.exidx", ADDRESS, 0x6000_0000);
-    let (status, text, _) = diff("c-cortex-m7.elf", "exidx-elsewhere.elf", &data, &[]);
-    assert_eq!(status, 1);
+    let text = diff("c-cortex-m7.elf", &save("exidx-elsewhere.elf", &data), &[]).printed(1);
     assert!(
         text.contains(": no item changed, but the blocks of memory differ.\n"),
         "{text}"
@@ -589,8 +562,8 @@ fn diff_counts_the_bytes_that_sections_overlap_on_once() {
     // too, at the same addresses.
     let mut data = sample("c-cortex-m7.elf");
     set_section_field(&mut data, ".rodata", SIZE, 0xf4 + 8);
-    let (status, text, _) = diff("c-cortex-m7.elf", "rodata-over-exidx.elf", &data, &[]);
-    assert_eq!(status, 0, "{text}");
+    let path = save("rodata-over-exidx.elf", &data);
+    let text = diff("c-cortex-m7.elf", &path, &[]).printed(0);
     assert!(text.ends_with(" hold the same bytes at the same addresses.\n"));
 }
 
@@ -625,10 +598,8 @@ fn diff_refuses_a_separate_debug_file() {
         }
     }
     let path = save("c-cortex-m7.debug", &data);
-    let (status, _, error) = diff("c-cortex-m7.elf", "c-cortex-m7.debug", &data, &[]);
-    assert_eq!(status, 2);
     assert_output(
-        &error,
+        &diff("c-cortex-m7.elf", &path, &[]).error(),
         &format!(
             "error: {path} stores none of its code, as a separate debug file doesn't; diff \
              needs the program itself\n"
@@ -643,10 +614,8 @@ fn diff_refuses_a_file_that_puts_nothing_in_memory() {
         write(&mut data, header + 8, 4, u64::from(flags & !ALLOCATED));
     }
     let path = save("c-cortex-m7-unallocated.elf", &data);
-    let (status, _, error) = diff("c-cortex-m7.elf", "c-cortex-m7-unallocated.elf", &data, &[]);
-    assert_eq!(status, 2);
     assert_output(
-        &error,
+        &diff("c-cortex-m7.elf", &path, &[]).error(),
         &format!("error: {path} puts nothing in memory, so diff has nothing to compare\n"),
     );
 }
@@ -688,10 +657,8 @@ fn a_function_of_unknown_size_is_named_where_its_load_image_is() {
     let mut data = sample("c-cortex-m7-nodebug.elf");
     set_symbol_size(&mut data, "__memcpy_veneer", 0);
     let path = save("memcpy-veneer-unsized.elf", &data);
-    let output = elfq(&[&path, "top", "--range", "0x30000118+8"]);
-    assert_eq!(output.status.code(), Some(2));
     assert_output(
-        &String::from_utf8(output.stderr).unwrap(),
+        &run(&[&path, "top", "--range", "0x30000118+8"]).error(),
         "error: elfq doesn't know where __memcpy_veneer ends, so it can't count the bytes in \
          0x30000118..0x30000120 (the load image of .itcm)\n",
     );
@@ -703,13 +670,9 @@ fn reach_names_what_it_reaches_but_cant_read() {
     // now, so memcpy isn't there.
     let mut data = sample("c-cortex-m7-nodebug.elf");
     set_symbol_size(&mut data, "__memcpy_veneer", 0);
-    let (stdout, _) = run(
-        "reach-unsized-veneer.elf",
-        &data,
-        &["reach", "apply_filter"],
-    );
+    let path = save("reach-unsized-veneer.elf", &data);
     assert_output(
-        &stdout,
+        &run(&[&path, "reach", "apply_filter"]).printed(0),
         "\
 apply_filter and the 3 items it reaches take 144 bytes of code and 32 bytes of data:
 
@@ -728,17 +691,11 @@ ADDRESS     SIZE  HOW   ITEM
 elfq doesn't know where __memcpy_veneer ends, so it can't read its code.
 ",
     );
-    let (json, _) = run(
-        "reach-unsized-veneer.elf",
-        &data,
-        &["reach", "apply_filter", "--json"],
-    );
-    let reach: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let reach = run(&[&path, "reach", "apply_filter", "--json"]).json(0);
     assert_eq!(reach["unreadable"][0]["name"], "__memcpy_veneer");
     assert_eq!(reach["complete"], false);
     // With --to, what elfq can't read may reach the ranges, so the exit
     // status is 1, even when nothing is listed.
-    let path = save("reach-unsized-veneer.elf", &data);
     for (to, expected) in [
         (
             "0x20240000+1M",
@@ -759,12 +716,9 @@ elfq doesn't know where __memcpy_veneer ends, so it can't read its code.
 ",
         ),
     ] {
-        let output = elfq(&[&path, "reach", "apply_filter", "--to", to]);
-        assert_eq!(output.status.code(), Some(1), "{output:?}");
-        assert_output(&String::from_utf8(output.stdout).unwrap(), expected);
-        let output = elfq(&[&path, "reach", "apply_filter", "--to", to, "--json"]);
-        assert_eq!(output.status.code(), Some(1), "{output:?}");
-        let reach: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let stdout = run(&[&path, "reach", "apply_filter", "--to", to]).printed(1);
+        assert_output(&stdout, expected);
+        let reach = run(&[&path, "reach", "apply_filter", "--to", to, "--json"]).json(1);
         assert_eq!(reach["unreadable"][0]["name"], "__memcpy_veneer");
         assert_eq!(reach["complete"], false);
     }
@@ -786,7 +740,7 @@ fn the_overview_suggests_reach_for_a_handler_that_runs_in_normal_operation() {
         for &entry in entries {
             write(&mut data, table as usize + entry * 4, 4, address | 1);
         }
-        run(&format!("{handler}-in-the-table.elf"), &data, &[]).0
+        run(&[&save(&format!("{handler}-in-the-table.elf"), &data)]).printed(0)
     };
     // main reaches more code than SysTick_Handler, but runs from these
     // entries only when something has gone wrong or while debugging: as
@@ -811,9 +765,9 @@ fn reach_lists_an_item_in_no_block_after_the_blocks() {
     // tx_buffer, in a section of size 0 now, so in no block of memory.
     let mut data = sample("c-cortex-m7-nodebug.elf");
     set_section_field(&mut data, ".ocram_bss", SIZE, 0);
-    let (stdout, _) = run("reach-no-block.elf", &data, &["reach", "platform_write"]);
+    let path = save("reach-no-block.elf", &data);
     assert_output(
-        &stdout,
+        &run(&[&path, "reach", "platform_write"]).printed(0),
         "\
 platform_write and the 3 data objects it reaches take 96 bytes of code and 4104 bytes of data:
 
@@ -829,12 +783,7 @@ ADDRESS     SIZE  HOW   ITEM
 0x20240000  4096  uses  tx_buffer, used by platform_write
 ",
     );
-    let (json, _) = run(
-        "reach-no-block.elf",
-        &data,
-        &["reach", "platform_write", "--json"],
-    );
-    let reach: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let reach = run(&[&path, "reach", "platform_write", "--json"]).json(0);
     let tx_buffer = &reach["items"][2];
     assert_eq!(tx_buffer["name"], "tx_buffer");
     assert_eq!(tx_buffer["block"], serde_json::Value::Null);
@@ -849,14 +798,15 @@ fn sizes_that_add_up_past_the_largest_number_stop_there() {
     for function in ["_init", "platform_write", "_fini"] {
         set_symbol_size(&mut data, function, 1 << 63);
     }
-    let (stdout, _) = run("huge-functions.elf", &data, &[]);
+    let path = save("huge-functions.elf", &data);
+    let stdout = run(&[&path]).printed(0);
     let total = stdout.lines().nth(1).unwrap();
     assert!(
         total.contains(&format!(", {} bytes of", u64::MAX)),
         "{total}"
     );
-    run("huge-functions.elf", &data, &["top", "--all"]);
-    run("huge-functions.elf", &data, &["inlined"]);
+    run(&[&path, "top", "--all"]).printed(0);
+    run(&[&path, "inlined"]).printed(0);
 }
 
 #[test]
@@ -905,9 +855,9 @@ fn inlined_copies_that_add_up_past_the_largest_number_stop_there() {
     replace_section(&mut data, ".debug_info", &with_length(&unit));
     replace_section(&mut data, ".debug_abbrev", &abbrev);
     replace_section(&mut data, ".debug_rnglists", &with_length(&ranges));
-    let (stdout, _) = run("huge-inlined-copies.elf", &data, &["inlined"]);
+    let path = save("huge-inlined-copies.elf", &data);
     assert_output(
-        &stdout,
+        &run(&[&path, "inlined"]).printed(0),
         "\
 Inlined copies of 1 function take 18446744073709551615 of the 2557 bytes of code:
 
@@ -915,9 +865,8 @@ Inlined copies of 1 function take 18446744073709551615 of the 2557 bytes of code
 18446744073709551615       2  (unnamed)
 ",
     );
-    let (stdout, _) = run("huge-inlined-copies.elf", &data, &["inlined", "_init"]);
     assert_output(
-        &stdout,
+        &run(&[&path, "inlined", "_init"]).printed(0),
         "\
 18446744073709551615 bytes of _init's code are inlined copies of 1 function:
 
@@ -950,9 +899,8 @@ fn an_inlined_copy_that_would_end_past_the_last_address_has_no_bytes() {
     replace_section(&mut data, ".debug_abbrev", &abbrev);
     // As in a release build, the range is dropped, and the copy is found at
     // its DW_AT_low_pc, without bytes.
-    let (stdout, _) = run("huge-high-pc.elf", &data, &["inlined"]);
     assert_output(
-        &stdout,
+        &run(&[&save("huge-high-pc.elf", &data), "inlined"]).printed(0),
         "\
 Inlined copies of 1 function take 0 of the 2557 bytes of code:
 
@@ -996,8 +944,7 @@ A copy of 0 bytes is one the compiler merged into the code around it.
         let mut data = sample("c-x86_64.elf");
         replace_section(&mut data, ".debug_info", &with_length(&unit));
         replace_section(&mut data, ".debug_abbrev", &abbrev);
-        let (stdout, _) = run(name, &data, &["inlined"]);
-        assert_output(&stdout, expected);
+        assert_output(&run(&[&save(name, &data), "inlined"]).printed(0), expected);
     }
 }
 
@@ -1018,8 +965,10 @@ fn dwarf_that_nests_deeply_is_read() {
     let mut data = sample("c-x86_64.elf");
     replace_section(&mut data, ".debug_info", &with_length(&unit));
     replace_section(&mut data, ".debug_abbrev", &abbrev);
-    let (stdout, _) = run("deep-dwarf.elf", &data, &["inlined"]);
-    assert_output(&stdout, "The debug info lists no inlined code.\n");
+    assert_output(
+        &run(&[&save("deep-dwarf.elf", &data), "inlined"]).printed(0),
+        "The debug info lists no inlined code.\n",
+    );
 }
 
 #[test]
@@ -1027,17 +976,13 @@ fn dwarf_that_cant_be_read_says_so() {
     let mut data = sample("c-x86_64.elf");
     set_section_field(&mut data, ".debug_info", SIZE, 0x10);
     let path = save("short-dwarf.elf", &data);
-    let output = elfq(&[&path, "inlined"]);
-    assert_eq!(output.status.code(), Some(2));
     assert_output(
-        &String::from_utf8(output.stderr).unwrap(),
+        &run(&[&path, "inlined"]).error(),
         &format!("error: cannot read the DWARF debug info in {path}: unexpected end of input\n"),
     );
     // SYMBOL is looked up before the DWARF is read, which can take a while.
-    let output = elfq(&[&path, "inlined", "mian"]);
-    assert_eq!(output.status.code(), Some(2));
     assert_output(
-        &String::from_utf8(output.stderr).unwrap(),
+        &run(&[&path, "inlined", "mian"]).error(),
         "error: no function or data object is named `mian`; did you mean main?\n",
     );
 }
@@ -1065,7 +1010,8 @@ fn inlined_copies_that_nest_deeply_are_summed_up() {
     let mut data = sample("c-x86_64.elf");
     replace_section(&mut data, ".debug_info", &with_length(&unit));
     replace_section(&mut data, ".debug_abbrev", &abbrev);
-    let (stdout, _) = run("deep-inlined-copies.elf", &data, &["inlined", "main"]);
+    let path = save("deep-inlined-copies.elf", &data);
+    let stdout = run(&[&path, "inlined", "main"]).printed(0);
     // The copies all have one name, so the rows name each by where it is,
     // in at most 16 names.
     let place = "(unnamed) in ".repeat(15);
@@ -1074,12 +1020,7 @@ fn inlined_copies_that_nest_deeply_are_summed_up() {
         "{stdout}"
     );
     // JSON has every copy, as a row under the one before.
-    let (json, _) = run(
-        "deep-inlined-copies.elf",
-        &data,
-        &["inlined", "main", "--json"],
-    );
-    let tree: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let tree = run(&[&path, "inlined", "main", "--json"]).json(0);
     let rows = tree["inlined"].as_array().unwrap();
     assert_eq!(rows.len(), depth);
     for (id, row) in rows.iter().enumerate().skip(1) {
@@ -1115,29 +1056,28 @@ fn a_long_chain_of_calls_is_read() {
     // The retained tree is as deep as the chain: deeper than the main
     // thread's stack holds in a debug build.
     let data = chain_of_calls(10_000);
-    let (stdout, _) = run("long-chain.elf", &data, &[]);
+    let path = save("long-chain.elf", &data);
+    let stdout = run(&[&path]).printed(0);
     let total = stdout.lines().nth(1).unwrap();
     assert_eq!(total, "10000 functions, 79994 bytes of code");
-    run("long-chain.elf", &data, &["top", "--all"]);
+    run(&[&path, "top", "--all"]).printed(0);
     // JSON has the whole chain, as rows that each hang under the one
     // before.
-    let (json, _) = run("long-chain.elf", &data, &["top", "--json"]);
-    let top: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let top = run(&[&path, "top", "--json"]).json(0);
     let items = top["items"].as_array().unwrap();
     assert_eq!(items.len(), 10_000);
     for (id, item) in items.iter().enumerate().skip(1) {
         assert_eq!(item["parent"], id - 1);
     }
     // So does reach's, from the last function.
-    let (json, _) = run("long-chain.elf", &data, &["reach", "0x8113878", "--json"]);
-    let reach: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let reach = run(&[&path, "reach", "0x8113878", "--json"]).json(0);
     let items = reach["items"].as_array().unwrap();
     assert_eq!(items.len(), 10_000);
     for (id, item) in items.iter().enumerate().skip(1) {
         assert_eq!(item["parent"], id - 1);
     }
-    run("long-chain.elf", &data, &["reach", "0x8113878", "--all"]);
-    run("long-chain.elf", &data, &["reach", "0x8113878", "--tree"]);
+    run(&[&path, "reach", "0x8113878", "--all"]).printed(0);
+    run(&[&path, "reach", "0x8113878", "--tree"]).printed(0);
 }
 
 #[test]
@@ -1171,7 +1111,7 @@ fn a_function_inlined_everywhere_is_told_from_one_kept_in_part() {
             .unwrap();
     data[at + 1..at + 14].copy_from_slice(b"append.part.0");
     assert_output(
-        &error("kept-in-part.elf", &data, &["callers", "append"]),
+        &run(&[&save("kept-in-part.elf", &data), "callers", "append"]).error(),
         "error: no function or data object is named `append`; did you mean append.part.0?\n",
     );
 }
@@ -1185,7 +1125,7 @@ fn a_file_with_dwarf_but_no_symbol_table_says_so() {
     // its name in either size of file: 1 is `SHT_PROGBITS`, plain bytes.
     let (header, _) = section_header(&data, ".symtab");
     write(&mut data, header + 4, 4, 1);
-    let error = error("no-symbol-table.elf", &data, &["callers", "append"]);
+    let error = run(&[&save("no-symbol-table.elf", &data), "callers", "append"]).error();
     assert!(
         error.starts_with(
             "error: no function or data object is named `append`; the file has no symbol table"
@@ -1196,12 +1136,11 @@ fn a_file_with_dwarf_but_no_symbol_table_says_so() {
 
 #[test]
 fn reach_names_the_exceptions_that_the_architecture_has() {
-    // Default_Handler's exceptions, as `reach --json` names them, in
-    // `data`, a build of c-cortex-m7.elf, where it is in entries 2 to 6, 11,
-    // 12 and 14 of the vector table.
-    let exceptions = |name: &str, data: &[u8]| {
-        let (json, _) = run(name, data, &["reach", "--json"]);
-        let reach: serde_json::Value = serde_json::from_str(&json).unwrap();
+    // Default_Handler's exceptions, as `reach --json` names them, in the
+    // file at `path`, a build of c-cortex-m7.elf, where it is in entries 2
+    // to 6, 11, 12 and 14 of the vector table.
+    let exceptions = |path: &str| {
+        let reach = run(&[path, "reach", "--json"]).json(0);
         let starts = reach["starts"].as_array().unwrap();
         let handler = starts
             .iter()
@@ -1222,9 +1161,9 @@ fn reach_names_the_exceptions_that_the_architecture_has() {
     for entry in [7, 8, 9, 10, 13] {
         write(&mut data, table as usize + entry * 4, 4, address | 1);
     }
-    let name = "reserved-entries.elf";
+    let path = save("reserved-entries.elf", &data);
     assert_eq!(
-        exceptions(name, &data),
+        exceptions(&path),
         serde_json::json!([
             "NMI",
             "HardFault",
@@ -1236,7 +1175,7 @@ fn reach_names_the_exceptions_that_the_architecture_has() {
             "PendSV"
         ])
     );
-    let (stdout, _) = run(name, &data, &["reach"]);
+    let stdout = run(&[&path, "reach"]).printed(0);
     assert!(
         stdout.contains("  NMI, HardFault and 6 more  Default_Handler\n"),
         "{stdout}"
@@ -1245,7 +1184,7 @@ fn reach_names_the_exceptions_that_the_architecture_has() {
     // or DebugMonitor: their entries are reserved.
     let data = for_arm_version("c-cortex-m7.elf", Some(12));
     assert_eq!(
-        exceptions("armv6s-m.elf", &data),
+        exceptions(&save("armv6s-m.elf", &data)),
         serde_json::json!(["NMI", "HardFault", "SVCall", "PendSV"])
     );
 }
