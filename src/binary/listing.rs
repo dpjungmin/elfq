@@ -1,6 +1,8 @@
-//! A function's code as `arch` prints it, with the data that the file
-//! marks among it, for `elfq FILE browse`. Its unit tests, in
-//! `listing/thumb_text.rs`, check the Thumb text against objdump's.
+//! A function's code as `arch` prints it, for `elfq FILE browse`.
+//!
+//! The data that the file marks among the code print as data. The unit
+//! tests, in `listing/thumb_text.rs`, check the Thumb text against
+//! objdump's.
 
 use std::ops::Range;
 
@@ -11,12 +13,12 @@ use crate::arch::Line;
 mod thumb_text;
 
 impl Binary {
-    /// The lines of `item`'s code, whose bytes are `bytes`, as `arch` prints
-    /// them.
+    /// The lines of `item`'s code, as `arch` prints them.
     ///
-    /// The data that the file's `$d` symbols mark there print as data (see
-    /// [`Binary::data_in_code`]). `None` when elfq can't read the file's
-    /// code (see [`Binary::instruction_set`]).
+    /// `bytes` are the code's bytes. The data that the file's `$d` symbols
+    /// mark there print as data (see [`Binary::data_in_code`]). It is `None`
+    /// when elfq can't read the file's code (see
+    /// [`Binary::instruction_set`]).
     pub fn listing(&self, item: &Item, bytes: &[u8]) -> Option<Vec<Line>> {
         // The marks, as offsets into `bytes`.
         let marked: Vec<Range<usize>> = self

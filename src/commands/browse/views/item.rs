@@ -1,7 +1,8 @@
-//! An item's page: a header of facts about it, then its tabs. Tab 1 is a
-//! function's code, one line per instruction. A line that calls, jumps to
-//! or uses another item ends with a note in the words of the CLI's HOW
-//! column, such as `call`, `tail call via PLT → log_msg` or `uses
+//! An item's page: a header of facts about it, then its tabs.
+//!
+//! Tab 1 is a function's code, one line per instruction. A line that calls,
+//! jumps to or uses another item ends with a note in the words of the CLI's
+//! HOW column, such as `call`, `tail call via PLT → log_msg` or `uses
 //! frames_ok`, and links to that item: Enter opens its page. A jump inside
 //! the function links to the line it goes to. For a data object, tab 1 is
 //! its contents, as far as elfq reads them, with the same notes and links
@@ -10,13 +11,13 @@
 //! as `callers SYMBOL` does (tab 3, `callers.rs`), and everything it calls
 //! or uses at any depth, as `reach SYMBOL` does (tab 4, `reach.rs`), the
 //! chains from where the program starts that keep it, as `why SYMBOL` does
-//! (tab 5, `why.rs`), and what removing it would save, as `retained
-//! SYMBOL` does (tab 6, `retained.rs`). Tabs 2, 4, 5 and 6 are worked out
-//! the first time they are shown, since what an item reaches can take a
-//! while to find in a large file. Once the session has worked out what
-//! keeps each item, the header says what `retained` and `why` say about
-//! the item: what removing it would save, the item that keeps it, which u
-//! opens, and the shortest chain to it from where the program starts.
+//! (tab 5, `why.rs`), and what removing it would save, as `retained SYMBOL`
+//! does (tab 6, `retained.rs`). Tabs 2, 4, 5 and 6 are worked out the first
+//! time they are shown, since what an item reaches can take a while to find
+//! in a large file. Once the session has worked out what keeps each item,
+//! the header says what `retained` and `why` say about the item: what
+//! removing it would save, the item that keeps it, which u opens, and the
+//! shortest chain to it from where the program starts.
 //!
 //! The parts, each in its own file:
 //!
@@ -54,9 +55,11 @@ mod listing;
 
 pub use listing::Listing;
 
-/// The tabs of an item's page. Each is numbered as the key that shows it,
-/// and named after the command that prints the same answer, so that the
-/// numbers stay the same as more tabs come.
+/// The tabs of an item's page.
+///
+/// Each is numbered as the key that shows it, and named after the command
+/// that prints the same answer, so that the numbers stay the same as more
+/// tabs come.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     /// 1: a function's code, or a data object's contents.
@@ -103,8 +106,9 @@ impl Tab {
             .find(|tab| tab.number_and_name().0 == number)
     }
 
-    /// Its name on the tab line: "1 code", or on a data object's page,
-    /// "1 contents".
+    /// Its name on the tab line, such as "1 code".
+    ///
+    /// On a data object's page, tab 1 is "1 contents".
     fn label(self, data: bool) -> String {
         let (number, name) = match (self, data) {
             (Tab::Code, true) => (1, "contents"),
@@ -121,25 +125,34 @@ pub struct ItemPage {
     title: String,
     /// The title shortened, and the columns it was shortened to.
     short_title: Option<(usize, String)>,
-    /// The lines above the tabs: where the item is, its facts, and what
-    /// keeps it.
+    /// The lines above the tabs.
+    ///
+    /// They say where the item is, its facts, and what keeps it.
     header: Header,
-    /// The tab on the screen. Each page in the history keeps its own, so
-    /// that Back shows the tab that was left.
+    /// The tab on the screen.
+    ///
+    /// Each page in the history keeps its own, so that Back shows the tab
+    /// that was left.
     tab: Tab,
-    /// Tab 1, a function's code or a data object's contents, or for an
-    /// import, which has neither here, why not, as pressing 1 says.
+    /// Tab 1: a function's code, or a data object's contents.
+    ///
+    /// An import has neither here, so for an import it is why not, as
+    /// pressing 1 says.
     listing: Result<ListingTab, String>,
-    /// The item's index, for tabs 2 and 4, or why `callees` and `reach`
-    /// can't read its code, in their words, which pressing 2 or 4 says: it
-    /// is an import, or a function whose end elfq doesn't know.
+    /// The item's index for tabs 2 and 4, or why they can't read its code.
+    ///
+    /// The why is in the words of `callees` and `reach`, as pressing 2 or 4
+    /// says it: it is an import, or a function whose end elfq doesn't know.
     readable: Result<usize, String>,
-    /// The item's index, for tab 6, or why `retained` can't answer about
-    /// it, in its words, which pressing 6 and u say: as for `readable`, or
-    /// the file is a shared library.
+    /// The item's index for tab 6, or why `retained` can't answer about it.
+    ///
+    /// The why is in the command's words, as pressing 6 and u say it: as
+    /// for `readable`, or the file is a shared library.
     retainable: Result<usize, String>,
-    /// Why `why` can't answer about the item, in its words, if it can't,
-    /// which pressing 5 says: the file is a shared library.
+    /// Why `why` can't answer about the item, if it can't.
+    ///
+    /// It is in the command's words, as pressing 5 says it: the file is a
+    /// shared library.
     why_refused: Option<String>,
     /// Tab 2, once it has been shown.
     callees: Option<Printed>,
@@ -154,12 +167,14 @@ pub struct ItemPage {
 }
 
 impl ItemPage {
-    /// The page of `node`, an item or an import, with the line that holds
-    /// `at` selected. The header names it as `header_name`, which may say
-    /// what SYMBOL gave, as in "Default_Handler (also named NMI_Handler)". A
-    /// function's page opens on its code, and a data object's on its
-    /// contents, when they have rows; otherwise, as for an import, which
-    /// has no code here, the page opens on its callers.
+    /// The page of `node`, with the line that holds `at` selected.
+    ///
+    /// `node` is an item or an import. The header names it as
+    /// `header_name`, which may say what SYMBOL gave, as in
+    /// "Default_Handler (also named NMI_Handler)" (see the names in
+    /// `session.rs`). A function's page opens on its code, and a data
+    /// object's on its contents, when they have rows. Otherwise, as for an
+    /// import, which has no code here, the page opens on its callers.
     pub fn new(session: &Session, node: Node, at: Option<u64>, header_name: &str) -> ItemPage {
         let answer = session.callers(node);
         let (title, listing) = match node {
@@ -199,10 +214,10 @@ impl ItemPage {
         }
     }
 
-    /// The page on `tab`, when it has that tab, as a link from that tab
-    /// opens it. But a data object whose contents have no rows stays on
-    /// its callers, as its page opens: its tab 1 only says where its bytes
-    /// are.
+    /// The page on `tab`, if it has it, as a link from that tab opens it.
+    ///
+    /// But a data object whose contents have no rows stays on its callers,
+    /// as its page opens: its tab 1 only says where its bytes are.
     pub fn on(mut self, session: &Session, tab: Tab) -> ItemPage {
         let shown = match tab {
             Tab::Code => self.listing.as_ref().is_ok_and(ListingTab::opens_page),
@@ -214,15 +229,17 @@ impl ItemPage {
         self
     }
 
-    /// Adds what keeps the item to the header, once the session has
-    /// worked it out, where `retained` or `why` answers about the item.
+    /// Adds what keeps the item to the header, once it is worked out.
+    ///
+    /// It adds it only where `retained` or `why` answers about the item.
     pub fn add_keeping(&mut self, session: &Session) {
         let (retained, why) = (self.retainable.is_ok(), self.why_refused.is_none());
         self.header.add_keeping(session, retained, why);
     }
 
-    /// Why the item doesn't have `tab`, in the words of the command that
-    /// would print it, if it doesn't.
+    /// Why the item doesn't have `tab`, if it doesn't.
+    ///
+    /// It is in the words of the command that would print the tab.
     fn why_not(&self, tab: Tab) -> Option<&str> {
         match tab {
             Tab::Code => self.listing.as_ref().err(),
@@ -234,9 +251,10 @@ impl ItemPage {
         .map(String::as_str)
     }
 
-    /// Puts `tab`, which the item has, on the screen, working out tab 2
-    /// the first time. Tabs 4, 5 and 6 can take seconds, so
-    /// [`ItemPage::work`] works them out, once the screen says so.
+    /// Puts `tab`, which the item has, on the screen.
+    ///
+    /// It works out tab 2 the first time. Tabs 4, 5 and 6 can take seconds,
+    /// so [`ItemPage::work`] works them out, once the screen says so.
     fn show(&mut self, session: &Session, tab: Tab) {
         if let (Tab::Callees, None, Ok(index)) = (tab, &self.callees, &self.readable) {
             let name = session.lead_name(self.node);
@@ -245,8 +263,10 @@ impl ItemPage {
         self.tab = tab;
     }
 
-    /// What the tab on the screen has yet to work out, which the status
-    /// line says while it does: "working out what main reaches…".
+    /// What the tab on the screen has yet to work out, if anything.
+    ///
+    /// The status line says it while it does: "working out what main
+    /// reaches…".
     pub fn waiting(&self) -> Option<String> {
         let title = &self.title;
         match self.tab {
@@ -263,8 +283,9 @@ impl ItemPage {
         }
     }
 
-    /// Works out what the tab on the screen has yet to. Tabs 5 and 6 wait
-    /// for the session to work out what keeps each item.
+    /// Works out what the tab on the screen has yet to.
+    ///
+    /// Tabs 5 and 6 wait for the session to work out what keeps each item.
     pub fn work(&mut self, session: &Session) {
         let name = session.lead_name(self.node);
         match (self.tab, &self.readable, &self.retainable) {
@@ -304,9 +325,10 @@ impl ItemPage {
         }
     }
 
-    /// Its name in the title line's trail, shortened to fit `room`
-    /// columns: once for each room, since the name of a C++ function can
-    /// take thousands of characters.
+    /// Its name in the title line's trail, shortened to fit `room` columns.
+    ///
+    /// It is shortened once for each room, since the name of a C++ function
+    /// can take thousands of characters.
     pub fn title(&mut self, room: usize) -> &str {
         if self
             .short_title
@@ -352,11 +374,12 @@ impl ItemPage {
         }
     }
 
-    /// The tabs it has, with the one on the screen in brackets, and as much
-    /// room around the others, so that the names stay where they are as
-    /// the brackets move: "[1 code]  2 callees   3 callers   4 reach". On a
-    /// screen too narrow for that, `width` columns wide, one space parts
-    /// them.
+    /// The tabs it has, with the one on the screen in brackets.
+    ///
+    /// The others have as much room around them, so that the names stay
+    /// where they are as the brackets move:
+    /// "[1 code]  2 callees   3 callers   4 reach". On a screen too narrow
+    /// for that, `width` columns wide, one space parts them.
     fn tab_line(&self, width: usize) -> Line<'static> {
         let tabs = self.tabs();
         let data = self.listing.as_ref().is_ok_and(ListingTab::is_data);
@@ -394,13 +417,14 @@ impl ItemPage {
         self.printed_mut()?.handle(session, action)
     }
 
-    /// Opens the page of the item that keeps this one, on the same tab, as
-    /// u asks: the closest item that every chain from where the program
+    /// Opens the page of the item that keeps this one, as u asks.
+    ///
+    /// That is the closest item that every chain from where the program
     /// starts to it goes through, which `retained`'s rows name after "kept
-    /// by". Where there is none, or `retained` refuses the item, it says
-    /// why, as the commands say it: for a root, as `why` says what it is,
-    /// even where `retained` refuses it, as it does a root whose end elfq
-    /// doesn't know.
+    /// by". Its page opens on the same tab. Where there is none, or
+    /// `retained` refuses the item, it says why, as the commands say it.
+    /// For a root, it says what `why` says the root is, even where
+    /// `retained` refuses it, as it does a root whose end elfq doesn't know.
     fn keeper(&self, session: &Session) -> Go {
         let binary = session.binary;
         let node = self.node;
@@ -423,8 +447,10 @@ impl ItemPage {
         }
     }
 
-    /// Goes back to the line before the last jump inside the function, if
-    /// there was one and the code is on the screen.
+    /// Goes back to the line before the last jump inside the function.
+    ///
+    /// It says whether it did: it does only if there was a jump and the
+    /// code is on the screen.
     pub fn back(&mut self) -> bool {
         match (self.tab, &mut self.listing) {
             (Tab::Code, Ok(listing)) => listing.back(),
@@ -432,8 +458,10 @@ impl ItemPage {
         }
     }
 
-    /// Where the selected line's link goes, in full: "→ strlen@plt
-    /// function at 0x1080, 16 bytes, in .plt.sec".
+    /// Where the selected line's link goes, in full.
+    ///
+    /// An example: "→ strlen@plt function at 0x1080, 16 bytes, in
+    /// .plt.sec".
     pub fn preview(&self, session: &Session) -> Option<String> {
         match (self.tab, &self.listing) {
             (Tab::Code, Ok(listing)) => listing.preview(session),
@@ -441,8 +469,10 @@ impl ItemPage {
         }
     }
 
-    /// The selected row's value, when its row cuts it to fit a screen
-    /// `width` columns wide, as a long string in a data object's contents.
+    /// The selected row's value, when its row cuts it.
+    ///
+    /// That happens to a long string in a data object's contents, on a
+    /// screen `width` columns wide.
     pub fn value(&self, width: usize) -> Option<&str> {
         match (self.tab, &self.listing) {
             (Tab::Code, Ok(listing)) => listing.value(width),
@@ -482,9 +512,10 @@ impl ItemPage {
         }
     }
 
-    /// The command that prints what the tab on the screen shows, if one
-    /// does: a function's code has none, and under a data object's
-    /// contents is the objdump command that prints its bytes.
+    /// The command that prints what the tab on the screen shows, if any.
+    ///
+    /// A function's code has none. Under a data object's contents is the
+    /// objdump command that prints its bytes.
     pub fn command(&self) -> Option<&str> {
         match (self.tab, &self.listing) {
             (Tab::Code, Ok(listing)) => listing.command(),

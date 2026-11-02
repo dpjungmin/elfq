@@ -89,8 +89,8 @@ pub struct Printed {
     notes: Vec<String>,
     /// The notes as the command words them without `--all`, if it needs
     /// it to print them all: they name fewer, and are shown when the notes
-    /// in full don't fit, or would take lines that rows need (see
-    /// [`Printed::lay_out`]).
+    /// in full don't fit, or would take lines that rows need (see rules 4
+    /// and 5 of [`Printed::lay_out`]).
     brief: Option<Vec<String>>,
     /// The notes naming only the first item of each list, shortened, if
     /// they name lists that can be long: they are shown when the notes
@@ -186,7 +186,8 @@ impl Printed {
 
     /// `answer`, an answer of `why` or `retained` as a tab shows it,
     /// printed by `command`, with every row and name, and its notes in
-    /// shorter forms for when they don't fit (see [`Printed::lay_out`]).
+    /// shorter forms for when they don't fit (see rule 4 of
+    /// [`Printed::lay_out`]).
     pub fn of_tab(answer: TabAnswer, command: String) -> Printed {
         let mut printed = Printed::of_tree(answer.answer, command);
         printed.brief = Some(answer.brief);
@@ -357,27 +358,30 @@ impl Printed {
         frame.render_stateful_widget(table, body, &mut state);
     }
 
-    /// The lines before the table and the notes under it, on a screen
-    /// `width` columns wide with `height` lines for all of it, laid out
-    /// once for each size. They wrap, so that nothing is cut, when the
-    /// screen has room for them and the table.
+    /// Lays out the lines around the table, once for each size of screen.
     ///
-    /// Otherwise the table keeps its header and a few rows, or a third of
-    /// the lines, and the notes take what the lines before the table and
-    /// under the notes leave of the rest, or at least a third of it, but a
-    /// line for the answer's own first line. Notes that don't fit in full
-    /// are shown as the command words them without `--all`, if it does, or
-    /// failing that, naming only the first item of each list, if they can:
-    /// the end of a note that names thousands of functions says what they
-    /// are. Where the table can't show every row, the notes take the first
-    /// of these forms that needs at most a third of the lines, if one
-    /// does, so that the rows keep the screen.
+    /// The screen is `width` columns wide, with `height` lines for the
+    /// lines before the table, the table, and the notes under it.
     ///
-    /// Then the answer's own lines before the table take what they need
-    /// of what is left, the other commands' lines under the notes next,
-    /// and the other command's lines before the answer's own, which come
-    /// first, what is left after that. What doesn't fit is cut, ending in
-    /// "…".
+    /// 1. The lines wrap, so that nothing is cut, when the screen has room
+    ///    for them and the table.
+    /// 2. Otherwise the table keeps its header and a few rows, or a third
+    ///    of the lines.
+    /// 3. The notes take what the lines before the table and under the
+    ///    notes leave of the rest, or at least a third of it, but leave a
+    ///    line for the answer's own first line.
+    /// 4. Notes that don't fit in full are shown as the command words them
+    ///    without `--all`, if it does, or failing that, naming only the
+    ///    first item of each list, if they can. The end of a note that
+    ///    names thousands of functions says what they are.
+    /// 5. Where the table can't show every row, the notes take the first
+    ///    of these forms that needs at most a third of the lines, if one
+    ///    does, so that the rows keep the screen.
+    /// 6. Then the answer's own lines before the table take what they need
+    ///    of what is left, the other commands' lines under the notes next,
+    ///    and the other command's lines before the answer's own, which
+    ///    come first, what is left after that.
+    /// 7. What doesn't fit is cut, ending in "…".
     fn lay_out(&mut self, width: usize, height: usize) {
         let size = (width, height);
         if self
@@ -385,15 +389,18 @@ impl Printed {
             .as_ref()
             .is_none_or(|laid_out| laid_out.size != size)
         {
+            // Rule 2.
             let table = match self.rows.len() {
                 0 => 0,
                 rows => (rows + 1).min((height / 3).max(3)),
             };
             let room = height.saturating_sub(table);
+            // Rule 1: every block of lines wraps.
             let own = blocks(&self.above, width);
             let own_lines: usize = own.iter().map(|(_, lines)| lines.len()).sum();
             let below = blocks(&self.below, width);
             let below_lines: usize = below.iter().map(|(_, lines)| lines.len()).sum();
+            // Rule 3.
             let most = (room.saturating_sub(own_lines + below_lines))
                 .max((room / 3).max(2))
                 .min(room.saturating_sub(own_lines.min(1)));
@@ -408,6 +415,7 @@ impl Printed {
                 let lines = (length <= most * (width + 1)).then(|| wrapped(notes))?;
                 (lines.len() <= most).then_some(lines)
             };
+            // Rule 4.
             let forms: Vec<&Vec<String>> = [Some(&self.notes), self.brief.as_ref()]
                 .into_iter()
                 .chain([self.briefest.as_ref()])
@@ -418,6 +426,8 @@ impl Printed {
                 let rows = self.rows.len();
                 rows == 0 || rows + 1 + own_lines + below_lines + lines <= height
             };
+            // Rule 5 first. Failing that, the first form that fits, as
+            // rule 4 says, or else the last form, cut as rule 7 says.
             let third = (height / 3).max(2);
             let notes = (forms.iter())
                 .find_map(|notes| {
@@ -428,6 +438,7 @@ impl Printed {
                     let shortest = forms.last().expect("the notes in full are a form");
                     keep_lines(wrapped(shortest), most, width)
                 });
+            // Rule 6, and rule 7 in each `keep_blocks`.
             let room = room.saturating_sub(notes.len());
             let own = keep_blocks(own, room, width);
             let room = room - own.len();

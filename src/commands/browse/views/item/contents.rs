@@ -1,6 +1,7 @@
-//! Tab 1 of a data object's page: what elfq reads in its bytes. It lists
-//! only rows that carry elfq's links, and strings, and no hex dump, which
-//! objdump prints:
+//! Tab 1 of a data object's page: what elfq reads in its bytes.
+//!
+//! It lists only rows that carry elfq's links, and strings, and no hex
+//! dump, which objdump prints:
 //!
 //! - A vector table lists every entry, named by its exception as Arm's
 //!   manuals name it for the file's architecture, with the word it holds,
@@ -80,9 +81,10 @@ pub(super) fn data_listing(session: &Session, index: usize) -> Listing {
     listing
 }
 
-/// The entries of the vector table that starts at `table` which the data
-/// object holds, each named by its exception, counted from the table's
-/// start, with the header of their column: "ENTRY", lined up over the
+/// The entries of the vector table at `table` that the data object holds.
+///
+/// Each is named by its exception, counted from the table's start. They
+/// come with the header of their column: "ENTRY", lined up over the
 /// names, then "VALUE".
 fn entries(notes: &LineNotes, table: u64) -> (String, Vec<ListingLine>) {
     let binary = notes.session.binary;
@@ -122,10 +124,11 @@ fn pointers(notes: &LineNotes) -> Vec<ListingLine> {
         .collect()
 }
 
-/// The line of `reference`, a pointer stored in the data object, which
-/// shows `value`: its note names what it points to, which it links to, as
-/// the note of a pointer among a function's code does. A pointer can
-/// point inside an item, as to an element of an array: `pointer
+/// The line of `reference`, a pointer stored in the data object.
+///
+/// It shows `value`. Its note names what it points to, which it links
+/// to, as the note of a pointer among a function's code does. A pointer
+/// can point inside an item, as to an element of an array: `pointer
 /// frames+0x8`.
 fn pointer(notes: &LineNotes, reference: &Reference, value: String) -> ListingLine {
     let binary = notes.session.binary;
@@ -151,9 +154,11 @@ fn plain_line(address: u64, value: String) -> ListingLine {
     }
 }
 
-/// The pointer-sized word at `address`, in hex with all its digits, as the
-/// program finds it (see [`Binary::stored_at`]). A pointer to an import has
-/// no address in this file, so it is "imported".
+/// The pointer-sized word at `address`, as the program finds it.
+///
+/// It is in hex with all its digits (see [`Binary::stored_at`]). A
+/// pointer to an import has no address in this file, so it is
+/// "imported".
 fn value(binary: &Binary, address: u64) -> String {
     let digits = 2 + 2 * binary.pointer_size as usize;
     match binary.stored_at(address) {
@@ -163,8 +168,10 @@ fn value(binary: &Binary, address: u64) -> String {
     }
 }
 
-/// Whether the file holds another word at `address` than the one the
-/// dynamic loader writes there, such as 0, which is what objdump prints.
+/// Whether the file holds another word at `address` than the program finds.
+///
+/// That happens where the dynamic loader writes the word. The file can
+/// hold 0 there, which is what objdump prints.
 fn file_holds_other(binary: &Binary, address: u64) -> bool {
     match binary.relocation_at(address) {
         Some(relocation) => {
@@ -174,9 +181,10 @@ fn file_holds_other(binary: &Binary, address: u64) -> bool {
     }
 }
 
-/// The bytes of data object `index`, when it holds strings and nothing
-/// else, as a string literal or a table of them does: printable text from
-/// its first byte on, each string ending in a 0 byte, and no pointer,
+/// The bytes of data object `index`, when it holds only strings.
+///
+/// A string literal or a table of them does: printable text from its
+/// first byte on, each string ending in a 0 byte. It holds no pointer,
 /// neither one that elfq finds nor one that the dynamic loader writes,
 /// whose bytes can look like text.
 fn only_strings<'a>(session: &Session<'a>, index: usize) -> Option<&'a [u8]> {
@@ -197,10 +205,11 @@ fn only_strings<'a>(session: &Session<'a>, index: usize) -> Option<&'a [u8]> {
     strings.then_some(bytes)
 }
 
-/// The strings that data object `index` holds, each at its address,
-/// quoted as Rust writes strings: `"tick\n"`, when it holds strings and
-/// nothing else (see `only_strings`). The 0 bytes that pad a string have
-/// none.
+/// The strings that data object `index` holds, each at its address.
+///
+/// They are quoted as Rust writes strings: `"tick\n"`. There are some
+/// only when the object holds strings and nothing else (see
+/// `only_strings`). The 0 bytes that pad a string have none.
 fn strings(session: &Session, index: usize) -> Vec<(u64, String)> {
     let Some(bytes) = only_strings(session, index) else {
         return Vec::new();
@@ -216,8 +225,9 @@ fn strings(session: &Session, index: usize) -> Vec<(u64, String)> {
     strings
 }
 
-/// The string at `at` in data object `index`, as the object's contents
-/// list it, for the note of a line that uses it or points to it: `uses
+/// The string at `at` in data object `index`, as its contents list it.
+///
+/// It is for the note of a line that uses it or points to it: `uses
 /// .rodata@0x30000de8 "tick\n"`.
 pub(super) fn string_at(session: &Session, index: usize, at: u64) -> Option<String> {
     let start = usize::try_from(at.checked_sub(session.binary.items[index].address)?).ok()?;
@@ -228,8 +238,9 @@ pub(super) fn string_at(session: &Session, index: usize, at: u64) -> Option<Stri
     (starts && !text.is_empty()).then(|| quoted(text))
 }
 
-/// Whether `byte` is printable text: a letter, digit, punctuation, a space,
-/// a tab or a new line.
+/// Whether `byte` is printable text.
+///
+/// That is a letter, digit, punctuation, a space, a tab or a new line.
 fn printable(byte: u8) -> bool {
     byte.is_ascii_graphic() || b" \t\n".contains(&byte)
 }

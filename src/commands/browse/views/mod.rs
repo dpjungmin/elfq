@@ -1,9 +1,12 @@
-//! The pages, one file each, the tabs of an item's page other than its
-//! code, the go-to box, and how long names are shortened to fit a column
-//! (`names.rs`). [`View`] lists the pages, so that `app.rs` can keep any
-//! of them in its history, and each `match` on it shows every page's part.
-//! A page or tab that shows a command's answer, a table whose rows open
-//! items, is a `Printed` (`printed.rs`).
+//! The browser's pages, and what they share.
+//!
+//! The pages and the tabs of an item's page other than tab 1 are one file
+//! each, as is the go-to box, and `names.rs` shortens long names to fit a
+//! column. `item.rs` is an item's page, with its parts in `item/` (see its
+//! map). [`View`] lists the pages, so that `app.rs` can keep any of them in
+//! its history, and each `match` on it shows every page's part. A page or
+//! tab that shows a command's answer, a table whose rows open items, is a
+//! `Printed` (`printed.rs`).
 
 mod callees;
 mod callers;

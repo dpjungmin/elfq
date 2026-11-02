@@ -23,8 +23,9 @@ use crate::binary::ItemKind;
 use crate::commands::browse::{keys::Action, session::Session};
 use crate::graph::Node;
 
-/// The most columns that the instructions take, and the fewest they give
-/// way to when the notes after them need room.
+/// The most columns that the instructions take, and the fewest.
+///
+/// They give way to the fewest when the notes after them need room.
 const INSTRUCTION_WIDTH: (usize, usize) = (48, 24);
 /// The fewest columns that a note is cut to before its section goes.
 const NOTE_WIDTH: usize = 16;
@@ -32,8 +33,10 @@ const NOTE_WIDTH: usize = 16;
 /// Where a line's link goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Link {
-    /// An item or import, the address in it that the line uses, and the
-    /// veneer or PLT stub that the code goes through to get there.
+    /// An item or import, and the address in it that the line uses.
+    ///
+    /// `via` is the veneer or PLT stub that the code goes through to get
+    /// there, if any.
     Node {
         node: Node,
         at: u64,
@@ -55,9 +58,10 @@ pub(super) struct ListingLine {
     pub(super) text: String,
     /// What the line does with another item, or where it jumps.
     pub(super) note: String,
-    /// The section of the item that the link goes to, when that is in
-    /// another block of memory than this function or data object, as in
-    /// firmware that calls from ITCM into flash. It is drawn in yellow.
+    /// The section of the item that the link goes to, if in another block.
+    ///
+    /// That is a block of memory other than this item's, as in firmware
+    /// that calls from ITCM into flash. It is drawn in yellow.
     pub(super) elsewhere: Option<String>,
     pub(super) link: Option<Link>,
 }
@@ -68,17 +72,18 @@ pub(super) struct ListingTab {
     index: usize,
     listing: Rc<Listing>,
     cursor: Cursor,
-    /// The rows the cursor was on before each jump inside the function,
-    /// for Back.
+    /// The rows the cursor was on before each jump inside the function.
+    ///
+    /// Back goes to the last of them.
     jumps: Vec<usize>,
 }
 
-/// What tab 1 of an item's page lists: a function's code, or a data
-/// object's contents.
+/// What tab 1 of an item's page lists.
 ///
-/// The session keeps it, so that every page opened on the item shares it,
-/// and it is worked out once. [`Listing::new`] is the only way to make
-/// one, so that the widest cells always match the lines.
+/// That is a function's code, or a data object's contents. The session
+/// keeps it, so that every page opened on the item shares it, and it is
+/// worked out once. [`Listing::new`] is the only way to make one, so
+/// that the widest cells always match the lines.
 pub struct Listing {
     /// Whether it is a function's code or a data object's contents.
     kind: ItemKind,
@@ -88,8 +93,9 @@ pub struct Listing {
     /// It is "INSTRUCTION", "VALUE", or for a vector table, "ENTRY" over
     /// the entries' names, then "VALUE".
     column: Option<String>,
-    /// The widest address, worked out once, so that a redraw reads only
-    /// the lines on the screen.
+    /// The widest address, worked out once.
+    ///
+    /// That way a redraw reads only the lines on the screen.
     widest_address: usize,
     /// The widest text, worked out once, as `widest_address` is.
     widest_text: usize,
@@ -97,8 +103,9 @@ pub struct Listing {
     said_instead: Option<String>,
     /// Said under the lines.
     footnote: Option<String>,
-    /// The command under the tab, if any: the objdump command that prints
-    /// a data object's bytes.
+    /// The command under the tab, if any.
+    ///
+    /// That is the objdump command that prints a data object's bytes.
     command: Option<String>,
 }
 
@@ -111,8 +118,9 @@ impl Listing {
         }
     }
 
-    /// The `lines` of an item of `kind`, whose text, if any, is under a
-    /// column headed `column`.
+    /// The `lines` of an item of `kind`, with their widest cells.
+    ///
+    /// Their text, if they have any, is under a column headed `column`.
     pub(super) fn new(kind: ItemKind, column: Option<String>, lines: Vec<ListingLine>) -> Listing {
         let widest = |cell: fn(&ListingLine) -> usize| lines.iter().map(cell).max().unwrap_or(0);
         Listing {
@@ -197,8 +205,10 @@ impl ListingTab {
         self.listing.command.as_deref()
     }
 
-    /// Whether the page opens on it: a function's code always does, but a
-    /// data object's contents only when they have rows.
+    /// Whether the page opens on it.
+    ///
+    /// A function's code always does, but a data object's contents only
+    /// when they have rows.
     pub(super) fn opens_page(&self) -> bool {
         !self.is_data() || !self.listing.lines.is_empty()
     }
@@ -213,6 +223,7 @@ impl ListingTab {
     }
 
     /// Draws the lines, or why there are none, with the footnote under it.
+    ///
     /// The footnote wraps, so that nothing is cut.
     pub(super) fn draw(&mut self, frame: &mut Frame, area: Rect) {
         let width = usize::from(area.width);
@@ -237,8 +248,10 @@ impl ListingTab {
         self.draw_table(frame, body);
     }
 
-    /// The lines, as a table: ADDRESS, INSTRUCTION and the notes, or for a
-    /// data object, ADDRESS, VALUE and the notes.
+    /// Draws the lines, as a table.
+    ///
+    /// Its columns are ADDRESS, INSTRUCTION and the notes, or for a data
+    /// object, ADDRESS, VALUE and the notes.
     fn draw_table(&mut self, frame: &mut Frame, area: Rect) {
         let width = usize::from(area.width);
         // The table's header takes a line.
@@ -277,11 +290,11 @@ impl ListingTab {
         frame.render_stateful_widget(table, area, &mut state);
     }
 
-    /// The columns that the addresses and the instructions or values take
-    /// on a screen `width` columns wide. The instructions give way to the
-    /// notes, down to a point. A data object's values are short, or
-    /// strings, which have no note after them (see `contents.rs`), so they
-    /// keep no room for notes.
+    /// The widths of the address and text columns, on a screen `width` wide.
+    ///
+    /// The instructions give way to the notes, down to a point. A data
+    /// object's values are short, or strings, which have no note after them
+    /// (see `contents.rs`), so they keep no room for notes.
     fn columns(&self, width: usize) -> (usize, usize) {
         let address_width = self.listing.widest_address.max("ADDRESS".len());
         if self.listing.column.is_none() {
@@ -335,8 +348,9 @@ impl ListingTab {
         }
     }
 
-    /// Goes back to the line before the last jump inside the function, if
-    /// there was one.
+    /// Goes back to the line before the last jump inside the function.
+    ///
+    /// It says whether it did: it does only if there was a jump.
     pub(super) fn back(&mut self) -> bool {
         match self.jumps.pop() {
             Some(row) => {
@@ -347,8 +361,10 @@ impl ListingTab {
         }
     }
 
-    /// Where the selected line's link goes, in full: "→ strlen@plt
-    /// function at 0x1080, 16 bytes, in .plt.sec".
+    /// Where the selected line's link goes, in full.
+    ///
+    /// An example: "→ strlen@plt function at 0x1080, 16 bytes, in
+    /// .plt.sec".
     pub(super) fn preview(&self, session: &Session) -> Option<String> {
         let link = self.listing.lines.get(self.cursor.selected)?.link?;
         Some(match link {
@@ -359,9 +375,10 @@ impl ListingTab {
         })
     }
 
-    /// The selected row's value, when its row cuts it to fit a screen
-    /// `width` columns wide, as it cuts a long string: the status line
-    /// shows it in full.
+    /// The selected row's value, when its row cuts it.
+    ///
+    /// That happens to a long string, on a screen `width` columns wide. The
+    /// status line shows it in full.
     pub(super) fn value(&self, width: usize) -> Option<&str> {
         let line = self.listing.lines.get(self.cursor.selected)?;
         let (_, room) = self.columns(width);
@@ -376,8 +393,10 @@ impl ListingTab {
             .any(|line| matches!(line.link, Some(Link::Node { .. })))
     }
 
-    /// The lines that have `lowercase` in their address, text or note, or
-    /// the section that the note names, ignoring case.
+    /// The lines that have `lowercase`, ignoring case.
+    ///
+    /// It looks in their address, text and note, and the section that the
+    /// note names.
     pub(super) fn rows_with(&self, lowercase: &str) -> Vec<usize> {
         let has = |text: &str| has_ignoring_case(text, lowercase);
         let mut address = String::new();
@@ -395,10 +414,11 @@ impl ListingTab {
     }
 }
 
-/// A line's note, cut to `room` columns, with the section of an item in
-/// another block of memory after it in yellow. When both don't fit, the
-/// note keeps at least [`NOTE_WIDTH`] columns before the section goes, and
-/// then the note alone is yellow.
+/// A line's note, cut to `room` columns.
+///
+/// The section of an item in another block of memory follows it in
+/// yellow. When both don't fit, the note keeps at least [`NOTE_WIDTH`]
+/// columns before the section goes, and then the note alone is yellow.
 fn note_cell(line: &ListingLine, room: usize) -> Line<'static> {
     let yellow = Style::new().fg(Color::Yellow);
     let Some(section) = &line.elsewhere else {

@@ -1,6 +1,8 @@
-//! The note at the end of each line of a function's code, or of each row
-//! of a data object's contents, and where the line links, from what the
-//! graph knows about the item, by site.
+//! The note at the end of each line of tab 1, and where the line links.
+//!
+//! A line is an instruction of a function's code, or a row of a data
+//! object's contents. Its note comes from what the graph knows about the
+//! item, by site.
 
 use std::collections::HashMap;
 
@@ -14,15 +16,18 @@ use crate::commands::browse::session::Session;
 use crate::commands::text;
 use crate::graph::{Node, Reference, Unresolved, VeneerTarget, item_starting_at};
 
-/// What the graph knows about one function's code, or about the pointers
-/// stored in one data object, by site, to write the notes on its lines.
+/// What the graph knows about one item, by site, to note on its lines.
+///
+/// The item is a function, whose code it covers, or a data object, whose
+/// stored pointers it covers.
 pub(super) struct LineNotes<'s, 'a> {
     pub(super) session: &'s Session<'a>,
     pub(super) index: usize,
     pub(super) references: HashMap<u64, Vec<&'s Reference>>,
     pub(super) unresolved: HashMap<u64, &'s Unresolved>,
-    /// The address that each instruction uses, or that each pointer
-    /// holds, which can be inside the item it uses: `uses frames+0x8`.
+    /// The address that each instruction uses, or that each pointer holds.
+    ///
+    /// It can be inside the item it uses: `uses frames+0x8`.
     used: HashMap<u64, u64>,
 }
 
@@ -97,9 +102,10 @@ impl<'s, 'a> LineNotes<'s, 'a> {
         lines
     }
 
-    /// Gives a `.word` that holds `value` its link and note: `link`, where
-    /// a load reads it, or else the item that starts at `value`, as a
-    /// pointer stored in data names it.
+    /// Gives a `.word` that holds `value` its link and note.
+    ///
+    /// The link is `link`, where a load reads the word, or else the item
+    /// that starts at `value`, as a pointer stored in data names it.
     fn word(&self, line: &mut ListingLine, value: u64, link: Option<Link>) {
         let binary = self.session.binary;
         let link = link.or_else(|| {
@@ -122,8 +128,9 @@ impl<'s, 'a> LineNotes<'s, 'a> {
         line.link = Some(link);
     }
 
-    /// The line at `address`, with its instruction `printed`, if elfq
-    /// prints it.
+    /// The line at `address`, with its note and link.
+    ///
+    /// Its text is the instruction `printed`, if elfq prints it.
     pub(super) fn line(&self, address: u64, printed: Option<&arch::Line>) -> ListingLine {
         let binary = self.session.binary;
         let mut line = ListingLine {
@@ -163,10 +170,11 @@ impl<'s, 'a> LineNotes<'s, 'a> {
         line
     }
 
-    /// The note of a line that refers to an address in this function, or
-    /// to a constant: `jump ↓`, `address ↑`, or `= 0x028f5c28` for the
-    /// word or double that a load from a literal pool reads. It links to
-    /// the line it refers to, if any.
+    /// The note of a line that refers to this function or to a constant.
+    ///
+    /// The note is `jump ↓` or `address ↑` for an address in this function,
+    /// or `= 0x028f5c28` for the word or double that a load from a literal
+    /// pool reads. It links to the line it refers to, if any.
     fn inside(&self, line: &mut ListingLine, refers: Refers) -> String {
         let binary = self.session.binary;
         let item = &binary.items[self.index];
@@ -193,9 +201,10 @@ impl<'s, 'a> LineNotes<'s, 'a> {
         format!("{what} {arrow}")
     }
 
-    /// The instruction's text, with the mnemonic in 7 columns, and the
-    /// name of the item that a call or jump goes to in place of its
-    /// address, unless it goes to another line of this function.
+    /// The instruction's text, with the mnemonic in 7 columns.
+    ///
+    /// A call or jump names the item it goes to in place of its address,
+    /// unless it goes to another line of this function.
     fn instruction(&self, printed: &arch::Line) -> String {
         let binary = self.session.binary;
         let mut operands = printed.operands.clone();
@@ -211,8 +220,10 @@ impl<'s, 'a> LineNotes<'s, 'a> {
             .to_string()
     }
 
-    /// The name of item `index`, as rows give it, with how far into it
-    /// `address` is when that isn't its start: `frames+0x8`.
+    /// The row name of item `index`, with how far into it `address` is.
+    ///
+    /// The offset is there only when `address` isn't the item's start:
+    /// `frames+0x8`.
     fn name_at(&self, index: usize, address: u64) -> String {
         let name = self.session.row_name(index);
         match address.saturating_sub(self.session.binary.items[index].address) {
@@ -221,9 +232,10 @@ impl<'s, 'a> LineNotes<'s, 'a> {
         }
     }
 
-    /// What `reference` uses, as its note names it, the veneer or PLT stub
-    /// it goes through, and the link to it. A call through a veneer links
-    /// to where the veneer goes.
+    /// What `reference` uses, as its note names it, and how to get there.
+    ///
+    /// That is the name, the veneer or PLT stub it goes through, and the
+    /// link to it. A call through a veneer links to where the veneer goes.
     pub(super) fn target(&self, reference: &Reference) -> (String, Option<usize>, Link) {
         let binary = self.session.binary;
         if let Node::Item(veneer) = reference.to
@@ -291,8 +303,9 @@ impl<'s, 'a> LineNotes<'s, 'a> {
         }
     }
 
-    /// The section of the item that `link` goes to, when that item is in
-    /// another block of memory than this function or data object.
+    /// The section of the item that `link` goes to, if in another block.
+    ///
+    /// That is a block of memory other than this item's.
     pub(super) fn elsewhere(&self, link: Link) -> Option<String> {
         let Link::Node {
             node: Node::Item(to),

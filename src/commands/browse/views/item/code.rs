@@ -1,5 +1,7 @@
-//! What tab 1 of a function's page lists: every instruction, or where
-//! elfq doesn't print the code, only the lines that use another item.
+//! What tab 1 of a function's page lists.
+//!
+//! That is every instruction, or where elfq doesn't print the code, only
+//! the lines that use another item.
 
 use object::Architecture;
 
@@ -14,13 +16,16 @@ use crate::graph::Node;
 enum Code {
     /// Every instruction, and the data among them.
     Instructions(Vec<ListingLine>),
-    /// Only the lines that use another item, or that elfq can't follow,
-    /// where elfq doesn't print the code, and why it doesn't.
+    /// Only the lines that use another item, or that elfq can't follow.
+    ///
+    /// These are what elfq lists where it doesn't print the code, with why
+    /// it doesn't.
     Links(Vec<ListingLine>, String),
 }
 
-/// Why elfq doesn't print the instructions of `binary`, or `None` when it
-/// does. elfq prints Thumb code only for the Cortex-M cores up to Armv7E-M:
+/// Why elfq doesn't print the instructions of `binary`, if it doesn't.
+///
+/// elfq prints Thumb code only for the Cortex-M cores up to Armv7E-M:
 /// the printer reads some instructions of later cores as others.
 fn no_text(binary: &Binary) -> Option<String> {
     if binary.architecture != Architecture::Arm {
@@ -99,8 +104,9 @@ mod tests {
     use super::super::listing::Link;
     use super::*;
 
-    /// Calls `check` with the session of every sample and the code of each
-    /// of its functions that has some.
+    /// Calls `check` on every function of every sample that has code.
+    ///
+    /// It gives `check` the sample's session, the function and its code.
     fn every_function(mut check: impl FnMut(&Session, usize, &Code)) {
         for path in samples() {
             let binary = Binary::load(&path).unwrap();

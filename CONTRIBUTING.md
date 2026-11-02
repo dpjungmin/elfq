@@ -187,6 +187,29 @@ this list, and add to it when you bring in a word.
   `TreeAnswer` the text of one whose table holds a tree, as `why` and
   `retained` write it. Browse shows both; `TabAnswer` is a `TreeAnswer`
   as a tab of browse shows it.
+- **listing**: an item's lines as tab 1 of its page in browse shows them
+  (`Listing`, in `views/item/listing.rs`). For a function, that is its
+  code, one line to an instruction, as `InstructionSet::listing` prints
+  it, with the data that the file marks among it printed as data
+  (`Binary::listing` finds those); for a data object, its contents, one
+  row to a value. **line note**: the note at the end of a line of
+  browse's listing: what the line does with another item, in the words
+  of the CLI's HOW column, as `call` or `uses frames+0x8`, or where a
+  jump inside the function goes (`LineNotes`, in
+  `views/item/line_notes.rs`). The notes under a command's table, the
+  note that SYMBOL adds to an item's name (`Symbol::note`) and startup's
+  notes (`problems::Note`) are other things.
+- **header**: in browse, the lines above the tabs of an item's page
+  (`Header`, in `views/item/header.rs`). The ELF header, which
+  `binary/header.rs` reads, and the header line of a table are other
+  things.
+- **row name**, **lead name**, **query**: three of the names that browse
+  gives an item, with its full name, its short name and its page's
+  header name. The module doc of `browse/session.rs` says where each
+  goes. An item's query, in browse, is what the command under a tab
+  gives as SYMBOL (`Names::query_for`). The queries on a type, as in
+  `binary/mod.rs`, and the text that the user types as SYMBOL, which
+  `commands/symbol/` calls a query, are other things.
 - **build**: in `diff`, one of the two files it compares, the old one or
   the new one (`Build`, which holds the file, its graph and its
   dominator tree). `old` and `new` name what is each build's; what a
@@ -462,20 +485,25 @@ is a short one to copy.
 
 ## Adding a view
 
-`browse`'s pages are views, in `src/commands/browse/views/`. An item's
-page, `item.rs`, is the one to copy; `help.rs` is a short one.
+`browse`'s pages are views, in `src/commands/browse/views/`. Copy
+`help.rs` for a page of its own, and `callees.rs` for a tab of an
+item's page. An item's page, `item.rs` with its parts in `item/`, is
+the biggest view, and not the one to start from.
 
 1. **The page, in `views/<name>.rs`.** A struct with a `draw` function
    that draws it in the area it is given, and a `handle` function that
    does what an `Action` asks. A page that lists rows keeps a `Cursor`,
-   which scrolls them and draws only those on the screen. Following a
-   link returns `Go::Open` with the page to open, and `Go::Say` puts a
-   line on the status line. Pages ask `Session` and the commands' code for
-   their answers, rather than working them out again. A column of names
-   shortens the names on the screen with a `FittedRows`, which keeps rows
-   that would read the same apart, and fits them again only when other
-   rows show or the column's width changes, since long C++ names take a
-   while; `preview` names the selected one in full.
+   which scrolls them and draws only those on the screen. A `handle` whose
+   actions can lead off the page returns an `Option<Go>`: following a link
+   returns `Go::Open` with the page to open, and `Go::Say` puts a line on
+   the status line. One whose actions only move within the page returns
+   nothing, as `Help::handle` does, and its arm in `View::handle` gives
+   `None`. Pages ask `Session` and the commands' code for their answers,
+   rather than working them out again. A column of names shortens the
+   names on the screen with a `FittedRows`, which keeps rows that would
+   read the same apart, and fits them again only when other rows show or
+   the column's width changes, since long C++ names take a while;
+   `preview` names the selected one in full.
 2. **Wiring, in `views/mod.rs`.** Add `mod <name>;`, a variant to `View`,
    and its arm in each of `View`'s functions; the compiler asks for them.
    `title` names the page in the title line's trail, `preview` says what
@@ -491,18 +519,18 @@ page, `item.rs`, is the one to copy; `help.rs` is a short one.
    the item it opens, and the notes; it draws them and answers the keys.
    A page that takes a while to work out says so first: `App::work` works
    it out after a draw that says what it is doing.
-   A tab of an item's page, such as `callers.rs`, is drawn and handles
-   actions in the same way, but `item.rs` holds it: add it to `Tab` and
-   `Tab::ALL`, with its number and the name of the command that prints
-   the same answer in `Tab::number_and_name`, and its arm in each of
-   `ItemPage`'s functions that match on `Tab`, `why_not` for the items
-   that can't have it, `show` for one worked out the first time it is
-   shown, as tab 2 is, or `waiting` and `work` for one that can take
+   A tab of an item's page, such as `callees.rs`, is drawn and handles
+   actions in the same way, but `ItemPage`, in `item.rs`, holds it: add it
+   to `Tab` and `Tab::ALL`, with its number and the name of the command
+   that prints the same answer in `Tab::number_and_name`, and its arm in
+   each of `ItemPage`'s functions that match on `Tab`, `why_not` for the
+   items that can't have it, `show` for one worked out the first time it
+   is shown, as tab 2 is, or `waiting` and `work` for one that can take
    seconds, as tabs 4 to 6 are, and `printed`; the compiler asks for
-   those, but not for `Tab::ALL`. Its key goes in the "1 2 3 4 5 6" row
-   of `BINDINGS`, with its help text (step 3). Its rows come from that
-   command's own code, as `callers::answer`, so that they can't drift
-   from what it prints.
+   those, but not for `Tab::ALL`. Its key goes in the "1 2 3 4 5 6" row of
+   `BINDINGS`, with its help text (step 3). Its rows come from that
+   command's own code, as `callees::answer`, so that they can't drift from
+   what it prints.
 3. **Keys.** A key goes in `BINDINGS` in `keys.rs`, with the new `Action`,
    what the help page says about it, and its hint, if the hint line names
    it. The help page and the hint line are printed from that table, and
