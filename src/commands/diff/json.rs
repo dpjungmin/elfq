@@ -1,7 +1,7 @@
 //! diff's answer as JSON: whether the builds load the same memory, the
 //! sections that differ, a row for each block of memory, with each section
 //! and load image in it and how the items, the sections without items and
-//! the padding make up its change, a row for each item that changed, and
+//! the padding make up its delta, a row for each item that changed, and
 //! one for each use between blocks that is new or gone. The keys that count
 //! items are `null`, and the items and uses empty, when diff compared none,
 //! as `items_compared` says.
@@ -15,8 +15,8 @@ use serde::ser::SerializeSeq;
 use serde::{Serialize, Serializer};
 
 use super::blocks::{Block, Place};
+use super::changes::{Change, Status};
 use super::pairing::PairedBy;
-use super::rows::{Change, Status};
 use super::{Answer, Build, Compared};
 use crate::binary::{Binary, total};
 use crate::commands::json::{self, address};
@@ -49,7 +49,7 @@ struct DiffJson<'c, 'a> {
     /// The blocks of memory that the sections and load images of both
     /// occupy, in address order.
     blocks: Vec<BlockJson<'a>>,
-    /// The items that changed, largest change first.
+    /// The items that changed, largest delta first.
     items: ItemsJson<'c, 'a>,
     /// The uses between blocks that are new, then those that are gone.
     crossings: Vec<CrossingJson<'a>>,
@@ -134,9 +134,9 @@ struct ItemJson<'a> {
 }
 
 /// An item in one build, for the keys of [`ItemJson`] that start with
-/// `old_` or `new_`.
+/// `old_` or `new_`: all `None` for the build that doesn't have it.
 #[derive(Default)]
-struct Side<'a> {
+struct InBuild<'a> {
     address: Option<String>,
     size: Option<u64>,
     section: Option<&'a str>,
@@ -161,8 +161,9 @@ struct KeptBy<'a> {
     address: String,
 }
 
+/// Writes diff's answer as JSON (see the module doc for what it holds).
 pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
-    let compared = answer.items.as_ref();
+    let compared = answer.compared.as_ref();
     let bytes = |build: &Build| total(build.binary.items.iter().map(|item| item.size));
     let holds_items: HashSet<&str> = compared.map_or_else(HashSet::new, |compared| {
         let items = &compared.items;
@@ -201,7 +202,7 @@ pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
                 .crossings
                 .iter()
                 .map(|crossing| CrossingJson {
-                    status: crossing.status.word(),
+                    status: Status::from(crossing.status).word(),
                     row: range_check::callee_json(
                         &crossing.build(&compared.items).binary,
                         Node::Item(crossing.callee),
@@ -221,34 +222,34 @@ fn block_json<'a>(
 ) -> BlockJson<'a> {
     let place_address = |place: Option<Place>| place.map(|place| address(place.address));
     let place_size = |place: Option<Place>| place.map(|place| place.size);
-    let parts = answer.items.as_ref().map(|compared| {
+    let parts = answer.compared.as_ref().map(|compared| {
         let items = &compared.items;
-        let old = block.parts(true, answer.old, &items.old.binary, holds_items);
-        let new = block.parts(false, answer.new, &items.new.binary, holds_items);
-        let change = |old: u64, new: u64| i128::from(new) - i128::from(old);
+        let old = block.parts(true, answer.old_memory, &items.old.binary, holds_items);
+        let new = block.parts(false, answer.new_memory, &items.new.binary, holds_items);
+        let delta = |old: u64, new: u64| i128::from(new) - i128::from(old);
         (
-            change(old.items, new.items),
-            change(old.sections, new.sections),
-            change(old.padding, new.padding),
+            delta(old.items, new.items),
+            delta(old.sections, new.sections),
+            delta(old.padding, new.padding),
         )
     });
     BlockJson {
         range: json::Range::new(block.range),
         old_size: block.old_size(),
         new_size: block.new_size(),
-        change: block.change(),
+        change: block.delta(),
         same_bytes: block.same_bytes,
         item_bytes: parts.map(|parts| parts.0),
         section_bytes: parts.map(|parts| parts.1),
         padding_bytes: parts.map(|parts| parts.2),
         sections: block
-            .sections(answer.old, answer.new)
+            .sections(answer.old_memory, answer.new_memory)
             .into_iter()
             .map(|section| SectionJson {
                 name: section.name,
                 load_image: section.load_image,
                 holds_items: answer
-                    .items
+                    .compared
                     .as_ref()
                     .map(|_| !section.load_image && holds_items.contains(section.name)),
                 old_address: place_address(section.old),
@@ -260,8 +261,8 @@ fn block_json<'a>(
     }
 }
 
-/// A row for each item that changed, largest change first, and of the
-/// same change, by name, each made as it is written, since a pair of large
+/// A row for each item that changed, largest delta first, and of the
+/// same delta, by name, each made as it is written, since a pair of large
 /// programs has hundreds of thousands.
 struct ItemsJson<'c, 'a> {
     compared: Option<&'c Compared<'a>>,
@@ -269,7 +270,7 @@ struct ItemsJson<'c, 'a> {
     /// The changes, in the order of the rows.
     order: Vec<usize>,
     /// Where the compiler inlined each gone function (see
-    /// [`Items::inlined_into`](super::rows::Items::inlined_into)).
+    /// [`Items::inlined_into`](super::changes::Items::inlined_into)).
     inlined_into: HashMap<usize, Vec<usize>>,
 }
 
@@ -281,15 +282,11 @@ impl<'c, 'a> ItemsJson<'c, 'a> {
             order.sort_by_cached_key(|&at| {
                 let change = &items.changes[at];
                 (
-                    Reverse(items.change(change).unsigned_abs()),
+                    Reverse(items.delta(change).unsigned_abs()),
                     items.item(change).name.as_str(),
                 )
             });
-            let gone = items
-                .changes
-                .iter()
-                .filter(|change| change.status == Status::Gone)
-                .filter_map(|change| change.old);
+            let gone = items.changes.iter().filter_map(Change::gone_index);
             (order, items.inlined_into(&compared.new_names, gone))
         });
         ItemsJson {
@@ -304,18 +301,15 @@ impl<'c, 'a> ItemsJson<'c, 'a> {
     fn row(&self, compared: &Compared<'a>, change: &Change) -> ItemJson<'a> {
         let items = &compared.items;
         let item = items.item(change);
-        let side = |build: &'a Build, index: Option<usize>, item_blocks: &[Option<usize>]| {
-            index.map_or_else(Side::default, |index| {
-                side(
-                    build,
-                    index,
-                    item_blocks[index].map(|block| &self.blocks[block]),
-                )
+        let in_build = |build: &'a Build, index: Option<usize>, item_blocks: &[Option<usize>]| {
+            index.map_or_else(InBuild::default, |index| {
+                let block = item_blocks[index].map(|block| &self.blocks[block]);
+                InBuild::new(build, index, block)
             })
         };
         let (old, new) = (
-            side(items.old, change.old, &items.old_blocks),
-            side(items.new, change.new, &items.new_blocks),
+            in_build(items.old, change.old_index(), &items.old_blocks),
+            in_build(items.new, change.new_index(), &items.new_blocks),
         );
         let estimated = |build: &Build, index: Option<usize>| {
             index.is_some_and(|index| build.binary.items[index].size_estimated)
@@ -325,9 +319,9 @@ impl<'c, 'a> ItemsJson<'c, 'a> {
             name: &item.name,
             was: items.was(change),
             kind: item.kind.to_string(),
-            status: change.status.word(),
-            paired_by: items.paired_by(change),
-            change: items.change(change),
+            status: change.status().word(),
+            paired_by: change.paired_by(),
+            change: items.delta(change),
             old_address: old.address,
             old_size: old.size,
             old_section: old.section,
@@ -340,9 +334,10 @@ impl<'c, 'a> ItemsJson<'c, 'a> {
             new_block: new.block,
             new_kept_by: new.kept_by,
             new_retained: new.retained,
-            size_estimated: estimated(items.old, change.old) || estimated(items.new, change.new),
+            size_estimated: estimated(items.old, change.old_index())
+                || estimated(items.new, change.new_index()),
             inlined_into: change
-                .old
+                .gone_index()
                 .and_then(|index| self.inlined_into.get(&index))
                 .map(|into| {
                     into.iter()
@@ -365,27 +360,30 @@ impl Serialize for ItemsJson<'_, '_> {
     }
 }
 
-/// The item at `index` in `build`, in `block`.
-fn side<'a>(build: &'a Build, index: usize, block: Option<&Block>) -> Side<'a> {
-    let binary = &build.binary;
-    let item = &binary.items[index];
-    let node = Node::Item(index);
-    let tree = build.tree.as_ref();
-    let kept_by = match tree.and_then(|tree| tree.parent(node)) {
-        Some(Node::Item(parent)) => Some(KeptBy {
-            name: &binary.items[parent].name,
-            address: address(binary.items[parent].address),
-        }),
-        _ => None,
-    };
-    Side {
-        address: Some(address(item.address)),
-        size: (item.size > 0).then_some(item.size),
-        section: Some(&binary.sections[item.section].name),
-        block: block.map(|block| address(block.range.start)),
-        kept_by,
-        retained: tree
-            .filter(|tree| tree.is_reachable(node))
-            .map(|tree| tree.retained(node)),
+impl<'a> InBuild<'a> {
+    /// The item at `index` in `build`, in `block`.
+    fn new(build: &'a Build, index: usize, block: Option<&Block>) -> InBuild<'a> {
+        let binary = &build.binary;
+        let item = &binary.items[index];
+        let node = Node::Item(index);
+        let tree = build.tree.as_ref();
+        let kept_by = match tree.and_then(|tree| tree.parent(node)) {
+            Some(Node::Item(parent)) => Some(KeptBy {
+                name: &binary.items[parent].name,
+                address: address(binary.items[parent].address),
+            }),
+            // An import uses nothing, so it keeps nothing.
+            Some(Node::Import(_)) | None => None,
+        };
+        InBuild {
+            address: Some(address(item.address)),
+            size: (item.size > 0).then_some(item.size),
+            section: Some(&binary.sections[item.section].name),
+            block: block.map(|block| address(block.range.start)),
+            kept_by,
+            retained: tree
+                .filter(|tree| tree.is_reachable(node))
+                .map(|tree| tree.retained(node)),
+        }
     }
 }

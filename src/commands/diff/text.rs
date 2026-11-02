@@ -8,15 +8,16 @@
 
 use std::cell::RefCell;
 use std::cmp::Reverse;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 
 use anyhow::Result;
 
-use super::blocks::{Block, SectionChange};
-use super::crossings::Crossing;
+use super::blocks::{Block, SectionPair};
+use super::changes::{Change, PartnerStatus, Status};
+use super::crossings::{Crossing, NewOrGone};
 use super::pairing::{self, is_made_name, same_but_numbers};
-use super::rows::{Change, ChangeRow, MovedRow, Status};
+use super::rows::{ChangeRow, MovedRow};
 use super::{Answer, Build, Compared};
 use crate::binary::{FileKind, Item, total};
 use crate::commands::json::address;
@@ -31,8 +32,11 @@ use crate::render::{Align, Table};
 
 /// How many sections a cell of SECTIONS, or the line on a block's size,
 /// names before "and 5 more", unless `--all` asks for every one.
-const CHANGES_NAMED: usize = 3;
+const RESIZED_NAMED: usize = 3;
 
+/// Writes diff's answer as text (see the module doc for its parts). With
+/// `all`, it shows every row and every name, where it otherwise shows the
+/// largest and counts the rest.
 pub(super) fn write(answer: &Answer, all: bool, out: &mut dyn Write) -> Result<()> {
     let (old_path, new_path) = (answer.old_path.display(), answer.new_path.display());
     if answer.same_memory {
@@ -43,8 +47,8 @@ pub(super) fn write(answer: &Answer, all: bool, out: &mut dyn Write) -> Result<(
         return Ok(());
     }
     writeln!(out, "From {old_path} to {new_path}: {}", lead(answer))?;
-    if answer.items.is_none() {
-        let path = match answer.old.has_symbols {
+    if answer.compared.is_none() {
+        let path = match answer.old_memory.has_symbols {
             true => &new_path,
             false => &old_path,
         };
@@ -64,7 +68,7 @@ pub(super) fn write(answer: &Answer, all: bool, out: &mut dyn Write) -> Result<(
         [] => false,
         _ => true,
     };
-    let Some(compared) = &answer.items else {
+    let Some(compared) = &answer.compared else {
         if table {
             writeln!(out)?;
             memory_table(answer, all).write(out)?;
@@ -85,17 +89,21 @@ pub(super) fn write(answer: &Answer, all: bool, out: &mut dyn Write) -> Result<(
     }
     let heads = items.heads();
     let moved = items.moved_rows(all);
-    let changes = items.change_rows(&heads, blocks.len(), all);
-    compared.old_names.will_name(moved.len() + changes.len());
-    compared.new_names.will_name(moved.len() + changes.len());
-    let rows = Rows::new(compared, &changes, all);
+    let change_rows = items.change_rows(&heads, all);
+    compared
+        .old_names
+        .will_name(moved.len() + change_rows.len());
+    compared
+        .new_names
+        .will_name(moved.len() + change_rows.len());
+    let rows = Rows::new(compared, &change_rows, all);
     if !moved.is_empty() {
         writeln!(out)?;
         rows.moved_table(&moved).write(out)?;
     }
-    if !changes.is_empty() {
+    if !change_rows.is_empty() {
         writeln!(out)?;
-        rows.change_table(answer, &changes).write(out)?;
+        rows.change_table(answer, &change_rows).write(out)?;
     }
     if blocks.len() > 1 {
         writeln!(out)?;
@@ -121,8 +129,9 @@ pub(super) fn write(answer: &Answer, all: bool, out: &mut dyn Write) -> Result<(
     write_try(answer, try_why(compared, &heads), out)
 }
 
-/// The Try list: `why` with `query`, and `startup` when a change may
-/// change what the new build's startup code must do.
+/// The Try list: `why` with `query`, and `startup` when
+/// [`Answer::try_startup`] says to (see
+/// [`suggest_startup`](super::suggest_startup)).
 fn write_try(answer: &Answer, query: Option<String>, out: &mut dyn Write) -> Result<()> {
     let commands: Vec<String> = [
         query.map(|query| format!("why {query}")),
@@ -153,7 +162,7 @@ fn write_crossings(compared: &Compared, out: &mut dyn Write) -> Result<()> {
         for crossing in calls {
             let binary = &crossing.build(&compared.items).binary;
             let callee = Node::Item(crossing.callee);
-            let mut cells = vec![crossing.status.word().to_string()];
+            let mut cells = vec![Status::from(crossing.status).word().to_string()];
             cells.extend(range_check::row_cells(
                 binary,
                 callee,
@@ -171,9 +180,9 @@ fn write_crossings(compared: &Compared, out: &mut dyn Write) -> Result<()> {
             .iter()
             .filter(|c| !c.is_call() && c.status == status)
             .count();
-        (count > 0).then(|| format!("{count} {}", status.word()))
+        (count > 0).then(|| format!("{count} {}", Status::from(status).word()))
     };
-    let uses: Vec<String> = [Status::New, Status::Gone]
+    let uses: Vec<String> = [NewOrGone::New, NewOrGone::Gone]
         .into_iter()
         .filter_map(uses)
         .collect();
@@ -196,7 +205,7 @@ fn write_crossings(compared: &Compared, out: &mut dyn Write) -> Result<()> {
 /// differ.
 fn lead(answer: &Answer) -> String {
     let blocks = &answer.blocks;
-    let Some(compared) = &answer.items else {
+    let Some(compared) = &answer.compared else {
         let differ = blocks.iter().filter(|block| !block.same_bytes).count();
         if blocks.len() > 1 && differ > 0 {
             return format!(
@@ -207,28 +216,14 @@ fn lead(answer: &Answer) -> String {
         // In one block, or only in .tbss, which is in none.
         return "the bytes differ.".to_string();
     };
-    let changes = &compared.items.changes;
-    let counts: Vec<String> = [
-        Status::Moved,
-        Status::New,
-        Status::Gone,
-        Status::Grew,
-        Status::Shrank,
-        Status::Edited,
-    ]
-    .into_iter()
-    .map(|status| {
-        (
-            changes
-                .iter()
-                .filter(|change| change.status == status)
-                .count(),
-            status,
-        )
-    })
-    .filter(|&(count, _)| count > 0)
-    .map(|(count, status)| format!("{count} {}", status.word()))
-    .collect();
+    // Each status that some item has, in the order of Status.
+    let mut counts: BTreeMap<Status, usize> = BTreeMap::new();
+    for change in &compared.items.changes {
+        *counts.entry(change.status()).or_insert(0) += 1;
+    }
+    let counts: Vec<String> = (counts.into_iter())
+        .map(|(status, count)| format!("{count} {}", status.word()))
+        .collect();
     if !counts.is_empty() {
         format!("{}.", counts.join(", "))
     } else if blocks
@@ -252,10 +247,7 @@ fn sections_line(answer: &Answer, all: bool) -> String {
     let names: Vec<String> = answer
         .sections_that_differ
         .iter()
-        .map(|differs| match differs.only_load_image {
-            true => format!("load image of {}", differs.name),
-            false => differs.name.to_string(),
-        })
+        .map(|differs| section_label(differs.name, differs.only_load_address))
         .collect();
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
     format!("Sections that differ: {}.", names_text(&names, all))
@@ -286,7 +278,7 @@ fn no_keepers(compared: &Compared) -> Option<String> {
 struct Rows<'c, 'a> {
     compared: &'c Compared<'a>,
     /// Where the compiler inlined the gone functions that CHANGE shows (see
-    /// [`Items::inlined_into`](super::rows::Items::inlined_into)).
+    /// [`Items::inlined_into`](super::changes::Items::inlined_into)).
     inlined_into: HashMap<usize, Vec<usize>>,
     old: RowNames<'c, 'a>,
     new: RowNames<'c, 'a>,
@@ -303,14 +295,12 @@ struct RowNames<'c, 'a> {
 }
 
 impl<'c, 'a> Rows<'c, 'a> {
-    /// The rows for `compared`, with the CHANGE table's `changes`.
-    fn new(compared: &'c Compared<'a>, changes: &[ChangeRow], all: bool) -> Rows<'c, 'a> {
+    /// The rows for `compared`, with the CHANGE table's `change_rows`.
+    fn new(compared: &'c Compared<'a>, change_rows: &[ChangeRow], all: bool) -> Rows<'c, 'a> {
         let items = &compared.items;
-        let gone = changes.iter().filter_map(|row| match row {
-            ChangeRow::Item { change, .. } if items.changes[*change].status == Status::Gone => {
-                items.changes[*change].old
-            }
-            _ => None,
+        let gone = change_rows.iter().filter_map(|row| match row {
+            ChangeRow::Item { at, .. } => items.changes[*at].gone_index(),
+            ChangeRow::Fold { .. } | ChangeRow::More { .. } => None,
         });
         let row_names = |build, names| RowNames {
             build,
@@ -339,25 +329,19 @@ impl<'c, 'a> Rows<'c, 'a> {
         ]);
         for row in rows {
             // The row's items in each build.
-            let (mut old_items, mut new_items): (Vec<&Item>, Vec<&Item>) = (Vec::new(), Vec::new());
-            for &at in row.changes() {
-                let change = &items.changes[at];
-                old_items.extend(change.old.map(|index| &items.old.binary.items[index]));
-                new_items.extend(change.new.map(|index| &items.new.binary.items[index]));
-            }
+            let moved = row.moved();
+            let old_items: Vec<&Item> = (moved.iter())
+                .map(|item| &items.old.binary.items[item.old])
+                .collect();
+            let new_items: Vec<&Item> = (moved.iter())
+                .map(|item| &items.new.binary.items[item.new])
+                .collect();
             let ([old_size, new_size], text) = match row {
-                MovedRow::Item(at) => {
-                    let size = |items: &[&Item]| {
-                        items
-                            .first()
-                            .map_or_else(String::new, |item| size_text(item))
-                    };
-                    (
-                        [size(&old_items), size(&new_items)],
-                        self.item_text(&items.changes[*at], 0),
-                    )
-                }
-                MovedRow::Sections { changes, sections } => {
+                MovedRow::Item(item) => (
+                    [size_text(old_items[0]), size_text(new_items[0])],
+                    self.item_text(&items.changes[item.at], 0),
+                ),
+                MovedRow::Sections { sections, .. } => {
                     let sum =
                         |items: &[&Item]| total(items.iter().map(|item| item.size)).to_string();
                     let sections: Vec<&str> = sections.iter().map(String::as_str).collect();
@@ -365,7 +349,7 @@ impl<'c, 'a> Rows<'c, 'a> {
                         [sum(&old_items), sum(&new_items)],
                         format!(
                             "all {} items of {}",
-                            changes.len(),
+                            moved.len(),
                             names_text(&sections, false)
                         ),
                     )
@@ -403,11 +387,7 @@ impl<'c, 'a> Rows<'c, 'a> {
         ]);
         for row in rows {
             let cells = match row {
-                ChangeRow::Item {
-                    change: at,
-                    kept,
-                    bytes,
-                } => {
+                ChangeRow::Item { at, kept, delta } => {
                     let change = &items.changes[*at];
                     let size = |build: &Build, index: Option<usize>| {
                         index
@@ -415,21 +395,26 @@ impl<'c, 'a> Rows<'c, 'a> {
                     };
                     // A new or gone item with what only it keeps counts
                     // their bytes too, so that NEW less OLD is CHANGE.
-                    let (old_size, new_size) = match (kept, change.status) {
-                        (0, _) => (size(items.old, change.old), size(items.new, change.new)),
-                        (_, Status::Gone) => ((-bytes).to_string(), String::new()),
-                        _ => (String::new(), bytes.to_string()),
+                    let (old_size, new_size) = match (kept, change) {
+                        (0, _) => (
+                            size(items.old, change.old_index()),
+                            size(items.new, change.new_index()),
+                        ),
+                        (_, Change::Gone { .. }) => ((-delta).to_string(), String::new()),
+                        (_, Change::New { .. } | Change::Partners { .. }) => {
+                            (String::new(), delta.to_string())
+                        }
                     };
                     [
-                        signed(*bytes),
+                        signed(*delta),
                         old_size,
                         new_size,
                         address(items.item(change).address),
                         self.item_text(change, *kept),
                     ]
                 }
-                ChangeRow::Fold { fold, change, .. } => [
-                    signed(*change),
+                ChangeRow::Fold { fold, delta, .. } => [
+                    signed(*delta),
                     String::new(),
                     String::new(),
                     String::new(),
@@ -437,21 +422,21 @@ impl<'c, 'a> Rows<'c, 'a> {
                 ],
                 ChangeRow::More {
                     count,
-                    change,
+                    delta,
                     block,
                 } => {
-                    let block = match block {
+                    let in_block = match block {
                         Some(block) if answer.blocks.len() > 1 => {
                             format!(" in {}", range_start(answer.blocks[*block].range))
                         }
                         _ => String::new(),
                     };
                     [
-                        signed(*change),
+                        signed(*delta),
                         String::new(),
                         String::new(),
                         String::new(),
-                        format!("{count} more{block}"),
+                        format!("{count} more{in_block}"),
                     ]
                 }
             };
@@ -470,58 +455,70 @@ impl<'c, 'a> Rows<'c, 'a> {
         let (old, new) = (&items.old.binary, &items.new.binary);
         let item = items.item(change);
         let mut marks = Vec::new();
-        if let (Some(was), Some(old_index), Some(new_index)) =
-            (items.was(change), change.old, change.new)
-        {
-            let (old_item, new_item) = (&old.items[old_index], &new.items[new_index]);
-            // A name that elfq made, or that differs only in a number that
-            // changes from build to build, says nothing of the item.
-            if !is_made_name(old_item, was)
-                && !is_made_name(new_item, &new_item.name)
-                && !same_but_numbers(old_item, new_item)
-            {
-                marks.push(format!("was {was}"));
+        let mut ending = match *change {
+            Change::Gone { old: index } => self.old.kept_by(index),
+            Change::New { new: index } | Change::Partners { new: index, .. } => {
+                self.new.kept_by(index)
             }
-        }
-        if let (Status::Moved, Some(old_index), Some(new_index)) =
-            (change.status, change.old, change.new)
-        {
-            let from = pairing::section_name(old, old_index);
-            let to = pairing::section_name(new, new_index);
-            if from != to {
-                marks.push(format!("{from} to {to}"));
-            }
-        }
-        if change.status == Status::Edited {
-            marks.push("edited".to_string());
-        }
-        let mut ending = match (change.status, change.old, change.new) {
-            (Status::Gone, Some(index), _) => self.old.kept_by(index),
-            (_, _, Some(index)) => self.new.kept_by(index),
-            _ => String::new(),
         };
-        if matches!(change.status, Status::New | Status::Gone) {
-            let mut mark = change.status.word().to_string();
-            match (kept, change.status) {
-                (0, _) => {}
-                (_, Status::New) => {
+        match *change {
+            Change::Partners {
+                old: old_index,
+                new: new_index,
+                status,
+                ..
+            } => {
+                let (old_item, new_item) = (&old.items[old_index], &new.items[new_index]);
+                // A name that elfq made, or that differs only in a number
+                // that changes from build to build, says nothing of the
+                // item.
+                if let Some(was) = items.was(change)
+                    && !is_made_name(old_item, was)
+                    && !is_made_name(new_item, &new_item.name)
+                    && !same_but_numbers(old_item, new_item)
+                {
+                    marks.push(format!("was {was}"));
+                }
+                match status {
+                    PartnerStatus::Moved => {
+                        let from = pairing::section_name(old, old_index);
+                        let to = pairing::section_name(new, new_index);
+                        if from != to {
+                            marks.push(format!("{from} to {to}"));
+                        }
+                    }
+                    PartnerStatus::Edited => marks.push("edited".to_string()),
+                    PartnerStatus::Grew | PartnerStatus::Shrank => {}
+                }
+            }
+            Change::New { .. } => {
+                let mut mark = Status::New.word().to_string();
+                if kept > 0 {
                     mark += &format!(", with {} it keeps", plural(kept, "new item", "new items"));
                 }
-                _ => mark += &format!(", with {} it kept", plural(kept, "gone item", "gone items")),
+                marks.push(mark);
             }
-            if let Some(into) = change.old.and_then(|index| self.inlined_into.get(&index)) {
-                let names: Vec<String> = into.iter().map(|&index| self.new.name(index)).collect();
-                let names: Vec<&str> = names.iter().map(String::as_str).collect();
-                mark += &format!(", inlined into {}", names_text(&names, self.all));
-                // "inlined into process_frame, kept by process_frame" would
-                // say it twice.
-                let named = &names[..shown_count(names.len(), named(self.all))];
-                let keeper = change.old.and_then(|index| self.old.keeper(index));
-                if keeper.is_some_and(|keeper| named.contains(&self.old.name(keeper).as_str())) {
-                    ending.clear();
+            Change::Gone { old: index } => {
+                let mut mark = Status::Gone.word().to_string();
+                if kept > 0 {
+                    mark += &format!(", with {} it kept", plural(kept, "gone item", "gone items"));
                 }
+                if let Some(into) = self.inlined_into.get(&index) {
+                    let names: Vec<String> =
+                        into.iter().map(|&index| self.new.name(index)).collect();
+                    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+                    mark += &format!(", inlined into {}", names_text(&names, self.all));
+                    // "inlined into process_frame, kept by process_frame"
+                    // would say it twice.
+                    let named = &names[..shown_count(names.len(), named(self.all))];
+                    let keeper = self.old.keeper(index);
+                    if keeper.is_some_and(|keeper| named.contains(&self.old.name(keeper).as_str()))
+                    {
+                        ending.clear();
+                    }
+                }
+                marks.push(mark);
             }
-            marks.push(mark);
         }
         let marks = match marks.is_empty() {
             true => String::new(),
@@ -569,25 +566,25 @@ impl RowNames<'_, '_> {
 
 /// The Try line's question: why the new build has the item that heads the
 /// subtree of new items with the most new bytes (see
-/// [`Items::heads`](super::rows::Items::heads)), as SYMBOL names it, as the
-/// overview's Try line picks an item for `why`: one that something keeps,
-/// rather than a place where the program starts, which `why` only names,
-/// and with a name of its own. Of subtrees of the same bytes, the one that
-/// the table lists first. Not for a shared library, which `why` doesn't
-/// answer for yet.
+/// [`Items::heads`](super::changes::Items::heads)), as SYMBOL names it, as
+/// the overview's Try line picks an item for `why`: one that something
+/// keeps, rather than a place where the program starts, which `why` only
+/// names, and with a name of its own. Of subtrees of the same bytes, the one
+/// that the table lists first. Not for a shared library, which `why`
+/// doesn't answer for yet.
 fn try_why(compared: &Compared, heads: &[usize]) -> Option<String> {
     let items = &compared.items;
     let new = items.new;
     let tree = new.tree.as_ref()?;
     let mut bytes = vec![0; items.changes.len()];
     for (at, change) in items.changes.iter().enumerate() {
-        if change.status == Status::New {
-            bytes[heads[at]] += items.change(change);
+        if let Change::New { .. } = change {
+            bytes[heads[at]] += items.delta(change);
         }
     }
     let mut best = None;
     for (at, change) in items.changes.iter().enumerate() {
-        let (Status::New, Some(index)) = (change.status, change.new) else {
+        let Change::New { new: index } = *change else {
             continue;
         };
         let (item, node) = (&new.binary.items[index], Node::Item(index));
@@ -610,18 +607,18 @@ fn try_why(compared: &Compared, heads: &[usize]) -> Option<String> {
 /// "The memory stays at 15728 bytes (.text +16, .eh_frame +8)." or "The
 /// memory went from 224 to 208 bytes (.itcm -16)."
 fn size_line(answer: &Answer, block: &Block, all: bool) -> String {
-    let changes = changes_text(&block.sections(answer.old, answer.new), all);
-    let changes = if changes.is_empty() {
+    let resized = resized_text(&block.sections(answer.old_memory, answer.new_memory), all);
+    let resized = if resized.is_empty() {
         String::new()
     } else {
-        format!(" ({changes})")
+        format!(" ({resized})")
     };
     let (old, new) = (block.old_size(), block.new_size());
     if old == new {
-        format!("The memory stays at {} bytes{changes}.", new.unwrap_or(0))
+        format!("The memory stays at {} bytes{resized}.", new.unwrap_or(0))
     } else {
         format!(
-            "The memory went from {} to {} bytes{changes}.",
+            "The memory went from {} to {} bytes{resized}.",
             old.unwrap_or(0),
             new.unwrap_or(0)
         )
@@ -650,7 +647,7 @@ fn memory_table(answer: &Answer, all: bool) -> Table {
             memory,
             size(block.old_size()),
             size(block.new_size()),
-            signed(block.change()),
+            signed(block.delta()),
             sections_cell(answer, block, all),
         ]);
     }
@@ -662,9 +659,9 @@ fn memory_table(answer: &Answer, all: bool) -> Table {
 /// one build has names what is in it, as the overview's table does.
 fn sections_cell(answer: &Answer, block: &Block, all: bool) -> String {
     let (memory, places) = match (block.old.is_empty(), block.new.is_empty()) {
-        (true, _) => (answer.new, &block.new),
-        (_, true) => (answer.old, &block.old),
-        _ => return changes_cell(answer, block, all),
+        (true, _) => (answer.new_memory, &block.new),
+        (_, true) => (answer.old_memory, &block.old),
+        _ => return resized_cell(answer, block, all),
     };
     let names = |load_image: bool| -> Vec<&str> {
         places
@@ -678,27 +675,30 @@ fn sections_cell(answer: &Answer, block: &Block, all: bool) -> String {
 
 /// The sections whose size changed in a block that both builds have, or
 /// "bytes differ", or nothing.
-fn changes_cell(answer: &Answer, block: &Block, all: bool) -> String {
-    let sections = block.sections(answer.old, answer.new);
-    match changes_text(&sections, all) {
-        changes if !changes.is_empty() => changes,
+fn resized_cell(answer: &Answer, block: &Block, all: bool) -> String {
+    let sections = block.sections(answer.old_memory, answer.new_memory);
+    match resized_text(&sections, all) {
+        resized if !resized.is_empty() => resized,
         _ if block.same_bytes => String::new(),
         _ => "bytes differ".to_string(),
     }
 }
 
-/// The sections whose size changed, each with the change, in address
+/// The sections whose size changed, each with its delta, in address
 /// order: those that changed the most, ".itcm -16, .rodata +16", and "and 5
 /// more" for the rest, unless `all`.
-fn changes_text(sections: &[SectionChange], all: bool) -> String {
+fn resized_text(sections: &[SectionPair], all: bool) -> String {
     let changed = sections
         .iter()
-        .filter(|section| section.change() != 0)
+        .filter(|section| section.delta() != 0)
         .count();
-    let shown = shown_changes(sections, all);
+    let shown = shown_resized(sections, all);
     let mut text = shown
         .iter()
-        .map(|section| format!("{} {}", section_name(section), signed(section.change())))
+        .map(|section| {
+            let label = section_label(section.name, section.load_image);
+            format!("{label} {}", signed(section.delta()))
+        })
         .collect::<Vec<_>>()
         .join(", ");
     if shown.len() < changed {
@@ -707,37 +707,34 @@ fn changes_text(sections: &[SectionChange], all: bool) -> String {
     text
 }
 
-/// The sections whose size changed that [`changes_text`] names, in address
+/// The sections whose size changed that [`resized_text`] names, in address
 /// order: those that changed the most, or with `all`, every one.
-fn shown_changes<'s, 'a>(
-    sections: &'s [SectionChange<'a>],
-    all: bool,
-) -> Vec<&'s SectionChange<'a>> {
-    let changed: Vec<&SectionChange> = sections
+fn shown_resized<'s, 'a>(sections: &'s [SectionPair<'a>], all: bool) -> Vec<&'s SectionPair<'a>> {
+    let changed: Vec<&SectionPair> = sections
         .iter()
-        .filter(|section| section.change() != 0)
+        .filter(|section| section.delta() != 0)
         .collect();
     let shown = shown_count(changed.len(), room(all));
     let mut largest: Vec<usize> = (0..changed.len()).collect();
-    largest.sort_by_key(|&index| Reverse(changed[index].change().unsigned_abs()));
+    largest.sort_by_key(|&index| Reverse(changed[index].delta().unsigned_abs()));
     largest.truncate(shown);
     largest.sort_unstable();
     largest.into_iter().map(|index| changed[index]).collect()
 }
 
-/// A section's name, or "load image of .data" for its load image.
-fn section_name(section: &SectionChange) -> String {
-    if section.load_image {
-        format!("load image of {}", section.name)
-    } else {
-        section.name.to_string()
+/// A section's name, as `.data`, or with `load_image`, its load image's,
+/// as "load image of .data".
+fn section_label(name: &str, load_image: bool) -> String {
+    match load_image {
+        true => format!("load image of {name}"),
+        false => name.to_string(),
     }
 }
 
-/// How many sections to name: [`CHANGES_NAMED`], or with `--all`, every
+/// How many sections to name: [`RESIZED_NAMED`], or with `--all`, every
 /// one.
 fn room(all: bool) -> usize {
-    if all { usize::MAX } else { CHANGES_NAMED }
+    if all { usize::MAX } else { RESIZED_NAMED }
 }
 
 #[cfg(test)]
@@ -759,12 +756,12 @@ mod tests {
         let answer = Answer {
             old_path: path,
             new_path: path,
-            old,
-            new,
+            old_memory: old,
+            new_memory: new,
             same_memory,
             blocks: shared_blocks(old, new, same_memory),
             sections_that_differ: sections_that_differ(old, new),
-            items: None,
+            compared: None,
             try_startup: false,
         };
         let mut out = Vec::new();

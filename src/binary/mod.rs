@@ -557,10 +557,19 @@ impl Binary {
     pub fn item_at(&self, address: u64) -> Option<usize> {
         let end = self.items.partition_point(|item| item.address <= address);
         let start = self.items.get(end.checked_sub(1)?)?.address;
-        (0..end)
-            .rev()
-            .take_while(|&index| self.items[index].address == start)
-            .find(|&index| self.items[index].contains(address))
+        // A plain loop: Graph::build and diff call item_at for each
+        // reference, and take_while and find compile to a function of their
+        // own, which the compiler doesn't always inline.
+        for index in (0..end).rev() {
+            let item = &self.items[index];
+            if item.address != start {
+                break;
+            }
+            if item.contains(address) {
+                return Some(index);
+            }
+        }
+        None
     }
 
     /// The relocation that stores a pointer at `address`, if any.

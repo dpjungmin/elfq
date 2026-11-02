@@ -646,16 +646,17 @@ JSON has no Try list.
 
 An item of the same size, in the same block, is edited when its bytes
 changed other than where they say where something is, or when its code
-now uses different items than before (`commands/diff/edited.rs`). Only
-partners whose bytes differ are compared, as the program starts with
-them: the file's bytes, with the addresses and imports that the loader
-writes at relocations, since LLD leaves 0 in the file there for a
-library or a program linked to run at any address. Partners whose bytes
-are the same are the same, unless their code reads another import from
-a global offset table entry. When something moves, the bytes that hold
-its address, or the distance to it, change in every item that uses it,
-though nothing else in them does. So where the partners' bytes differ, a
-byte is no edit when it is in one of these:
+uses different items in the new build than in the old
+(`commands/diff/edited.rs`). Only partners whose bytes differ are
+compared, as the program starts with them: the file's bytes, with the
+addresses and imports that the loader writes at relocations, since LLD
+leaves 0 in the file there for a library or a program linked to run at
+any address. Partners whose bytes are the same are the same, unless
+their code reads another import from a global offset table entry. When
+something moves, the bytes that hold its address, or the distance to it,
+change in every item that uses it, though nothing else in them does. So
+where the partners' bytes differ, a byte is no edit when it is in one of
+these:
 
 - The distance in an instruction to what it calls, jumps to, loads or
   takes the address of outside the function (`InstructionSet::operands`):
@@ -681,7 +682,7 @@ byte is no edit when it is in one of these:
 
 Any other number is compared as it is, such as one that an x86-64
 instruction compares with or adds. Then, where a distance in the code
-leads to places that aren't the same place in partners, as a call to a
+leads to places that aren't the same offset in partners, as a call to a
 veneer that only one build has, or a load from a global offset table
 entry, which no item holds, the code there must use the partners of the
 items it used, in the same ways, where a call through a veneer, or
