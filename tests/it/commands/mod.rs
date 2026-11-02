@@ -4,7 +4,7 @@
 //! its exit statuses. A file named after two or three commands holds those
 //! that share their table or their tree. What all the commands share, such
 //! as the shape of their JSON, their tables, names and errors, is tested
-//! in the modules beside this one.
+//! in across_commands.
 
 #[cfg(feature = "tui")]
 mod browse;

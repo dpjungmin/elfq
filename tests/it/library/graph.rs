@@ -1,4 +1,7 @@
 //! The reference graph, checked against the answers in testdata/README.md.
+//!
+//! The tests of what `callers` and `callees` print from it are in
+//! commands/callers_and_callees.rs.
 
 use elfq::binary::{Binary, ItemKind, Source};
 use elfq::graph::{Graph, Node, ReferenceKind};

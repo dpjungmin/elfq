@@ -320,14 +320,14 @@ of its tree) do. Those are names to fix, not meanings to copy.
   `graph/paths.rs`).
 - **Integration tests** in `tests/it/` use the samples in `testdata/bin`.
   Most run the elfq program, the way a user would: each command's tests,
-  in `commands/`; the tests of what the commands share, in `json.rs`,
-  `tables.rs`, `names.rs` and `errors_and_help.rs`; and `docs.rs`, which
-  runs the examples in the docs. Those in `library/` call the library, as
-  `Binary::load` and `Graph::build`. `damaged.rs` and `commands/browse.rs`
-  do both, and so does one test in `commands/callers_and_callees.rs`. The
-  checks at the end of `commands/reach.rs` run commands in the test's own
-  process, with `run_in_process`, which is quicker for the hundreds they
-  run. The answers they expect are those in
+  in `commands/`; the tests of what the commands share, in
+  `across_commands/`; and `docs.rs`, which runs the examples in the docs.
+  Those in `library/` call the library, as `Binary::load` and
+  `Graph::build`. `damaged.rs` and `commands/browse.rs` do both, and so
+  does one test in `commands/callers_and_callees.rs`. The checks at the
+  end of `commands/reach.rs` run commands in the test's own process, with
+  `run_in_process`, which is quicker for the hundreds they run. The
+  answers they expect are those in
   [testdata/README.md](testdata/README.md), which says, for example, what
   calls `log_msg` in each sample.
 
@@ -343,10 +343,10 @@ of its tree) do. Those are names to fix, not meanings to copy.
 | `commands/reach.rs` | `reach`'s text and JSON, with and without SYMBOL; and, run in the test's own process, `reach` on every item of the Cortex-M samples, against `callees`, `retained` and its own `--tree`, and with `--to` against `reach` without it and `callees --to`, and on every function of each stripped one against its twin with symbols; and without SYMBOL, each start of every sample against `reach START` |
 | `commands/startup.rs` | `startup` on the samples whose reset code has a mistake and some without, the exit status of every Cortex-M sample, and the files it refuses; and that `debug walk` lists the walk that `startup` reads |
 | `commands/why.rs` | `why`: its chains as text and JSON, where they start, and what it says when nothing reaches SYMBOL |
-| `json.rs` | What the commands' JSON shares: the keys of every item, each row on a line of its own, and the other names of SYMBOL's item |
-| `tables.rs` | What the commands' tables share: the tree of `--tree`, at most nine levels deep, the lines that sum up the rest of a long list, and `--all` |
-| `names.rs` | The names that the commands print and take: what SYMBOL gave when it isn't the item's name, readable Rust and C++ names and their short forms, and the names of data that no symbol names |
-| `errors_and_help.rs` | What the commands share in their errors and help: the arguments and files they refuse, errors on stderr with exit status 2 and what to try instead, the exit status when what reads the answer stops early, and help |
+| `across_commands/json.rs` | What the commands' JSON shares: the keys of every item, each row on a line of its own, and the other names of SYMBOL's item |
+| `across_commands/tables.rs` | What the commands' tables share: the tree of `--tree`, at most nine levels deep, the lines that sum up the rest of a long list, and `--all` |
+| `across_commands/names.rs` | The names that the commands print and take: what SYMBOL gave when it isn't the item's name, readable Rust and C++ names and their short forms, and the names of data that no symbol names |
+| `across_commands/errors_and_help.rs` | What the commands share in their errors and help: the arguments and files they refuse, errors on stderr with exit status 2 and what to try instead, the exit status when what reads the answer stops early, and help |
 | `library/items.rs` | Finding items: symbols, PLT stubs, unwind tables, functions in stripped firmware, unnamed data |
 | `library/graph.rs` | The reference graph: callers, callees, pointers in data, veneers |
 | `library/retained.rs` | Roots, and what is exclusive to what |
@@ -358,12 +358,13 @@ of its tree) do. Those are names to fix, not meanings to copy.
 
 **Where a test goes.** A test of one command goes in that command's file
 in `commands/`, its text and its JSON together. A test that runs several
-commands to check what they share goes in `json.rs`, `tables.rs`,
-`names.rs` or `errors_and_help.rs`, and a test of a part of the library,
-called as the commands call it, goes in `library/`. A test whose point is
-that elfq reads a damaged file without hanging, crashing or misreading it
-goes in `damaged.rs`, whatever command it runs; a test of one command's
-wording on such a file goes in that command's file.
+commands to check what they share goes in `across_commands/`, in
+`json.rs`, `tables.rs`, `names.rs` or `errors_and_help.rs`, and a test of
+a part of the library, called as the commands call it, goes in `library/`.
+A test whose point is that elfq reads a damaged file without hanging,
+crashing or misreading it goes in `damaged.rs`, whatever command it runs;
+a test of one command's wording on such a file goes in that command's
+file.
 
 The checks of `browse` that need its private types are unit tests in
 `src/commands/browse/`:
@@ -413,7 +414,11 @@ and `.so` file in `testdata/bin`, and `top` on each `.elf` file, so a
 new sample is tested as soon as it is committed:
 `every_command_the_overview_suggests_works`, in
 `commands/overview_top_and_retained.rs`, and
-`no_line_sums_up_a_single_item`, in `tables.rs`.
+`no_line_sums_up_a_single_item`, in `across_commands/tables.rs`. Each
+takes seconds. The test harness starts tests in the order of their paths,
+a few at a time, so a test that slow belongs where its path sorts early,
+as `across_commands::tables::no_line_sums_up_a_single_item` does: one
+that starts last keeps the whole run waiting for it.
 
 To run one test, one file, or the unit tests of one module:
 
@@ -422,6 +427,10 @@ cargo test --test it commands::overview_top_and_retained::top_shows_what_keeps_t
 cargo test --test it damaged::
 cargo test --lib arch::thumb
 ```
+
+A filter picks every test whose path holds it, so `commands::` picks the
+tests in `across_commands/` too; `cargo test --test it commands:: --
+--skip across_commands` runs only those in `commands/`.
 
 **Samples.** A test names a sample by its path from the crate's root,
 such as `testdata/bin/c-x86_64.elf`, which is what elfq takes as FILE:
@@ -557,8 +566,8 @@ is a short one to copy.
 6. **Tests.** Give the command a file of its own in `tests/it/commands/`,
    named after it and listed in `commands/mod.rs`. Pin its text output
    there with `assert_output`, and test its JSON there too. Add the
-   command to the tests in `tests/it/errors_and_help.rs` that go through
-   commands one by one:
+   command to the tests in `tests/it/across_commands/errors_and_help.rs`
+   that go through commands one by one:
    `arguments_that_dont_go_together_are_refused_before_the_file_is_read`,
    `a_file_whose_code_elfq_cant_read_says_so` if it reads code, and
    `commands_that_need_roots_refuse_a_shared_library` if it needs the roots.

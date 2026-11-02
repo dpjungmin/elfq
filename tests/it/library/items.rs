@@ -1,5 +1,7 @@
 //! Item discovery, checked against the sample binaries in testdata/bin.
-//! testdata/README.md describes what each sample contains.
+//!
+//! testdata/README.md describes what each sample contains. The tests of
+//! what `debug items` prints are in commands/debug.rs.
 
 use std::path::{Path, PathBuf};
 

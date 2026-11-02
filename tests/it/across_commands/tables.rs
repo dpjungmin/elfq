@@ -2,7 +2,8 @@
 //!
 //! The tests check the tree that `--tree` draws, at most nine levels deep,
 //! the lines and lists that name the first few items and sum up the rest,
-//! and `--all`, which shows every item instead.
+//! and `--all`, which shows every item instead. Each command's own table
+//! is tested in its file in commands/.
 
 use crate::support::{
     DEEP_SAMPLE, SAMPLE, TCM_SAMPLE, assert_output, crossing, samples, stderr, stdout,

@@ -2,7 +2,8 @@
 //!
 //! The tests check what SYMBOL gave when it isn't the item's name, Rust
 //! and C++ names made readable and found by their short forms, and the
-//! names of data that no symbol names.
+//! names of data that no symbol names. Finding what SYMBOL means, in the
+//! library, is tested in library/symbol.rs.
 
 use crate::support::{SAMPLE, TCM_SAMPLE, assert_output, stderr, stdout};
 

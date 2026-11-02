@@ -3,7 +3,8 @@
 //! The tests check the arguments and files that the commands refuse,
 //! errors on stderr with exit status 2 and what to try instead, the exit
 //! status when what reads the answer stops early, and help before or
-//! after a command.
+//! after a command. Each command's own errors are tested in its file in
+//! commands/.
 
 use std::process::Stdio;
 
