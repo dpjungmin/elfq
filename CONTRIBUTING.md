@@ -322,9 +322,10 @@ of its tree) do. Those are names to fix, not meanings to copy.
   `cli.rs`, `json.rs`, `docs.rs` and those in `commands/` run the elfq
   program, the way a user would. Those in `library/` call the library, as
   `Binary::load` and `Graph::build`. `damaged.rs` and `browse.rs` do
-  both, and so does one test in `json.rs`; `reach.rs` runs commands in
-  its own process, with `run_in_process`, which is quicker for the
-  hundreds it runs. The answers they expect are those in
+  both, and so does one test in `json.rs`. The checks at the end of
+  `commands/reach.rs` run commands in the test's own process, with
+  `run_in_process`, which is quicker for the hundreds they run. The
+  answers they expect are those in
   [testdata/README.md](testdata/README.md), which says, for example, what
   calls `log_msg` in each sample.
 
@@ -333,8 +334,8 @@ of its tree) do. Those are names to fix, not meanings to copy.
 | `support/` | No tests: in `mod.rs`, the samples' paths (`SAMPLE` and others), the lists that several modules check (`C_SAMPLES`, `FAR_SAMPLES`), `samples_for`, which lists the samples for one architecture, `run`, which runs the program and returns a `Run` to check, its shortcuts `stdout`, `stderr`, `crossing`, `elfq_json` and `text_rows`, `names`, which reads the names in a list of elfq's JSON, `run_in_process`, and `assert_output`; in `elf.rs`, `ElfBytes`, which changes a sample's bytes field by field and saves the file |
 | `cli.rs` | Each command's whole text output, errors, exit statuses and help |
 | `json.rs` | `--json` output |
-| `reach.rs` | `reach` on every item of the Cortex-M samples, against `callees`, `retained` and its own `--tree`, and with `--to` against `reach` without it and `callees --to`, and on every function of each stripped one against its twin with symbols; and without SYMBOL, each start of every sample against `reach START` |
 | `commands/diff.rs` | `diff` on pairs of builds: its text, its JSON, its exit status and the builds it refuses; and at the end, on builds made by changing a sample's bytes: a warning about the new build, bytes or blocks that alone differ, and a separate debug file and a file that puts nothing in memory, which it refuses |
+| `commands/reach.rs` | `reach`'s text and JSON, with and without SYMBOL; and, run in the test's own process, `reach` on every item of the Cortex-M samples, against `callees`, `retained` and its own `--tree`, and with `--to` against `reach` without it and `callees --to`, and on every function of each stripped one against its twin with symbols; and without SYMBOL, each start of every sample against `reach START` |
 | `commands/startup.rs` | `startup` on the samples whose reset code has a mistake and some without, the exit status of every Cortex-M sample, and the files it refuses; and that `debug walk` lists the walk that `startup` reads |
 | `browse.rs` | `browse`'s screens, driven with keys on ratatui's `TestBackend`, a screen in memory; its errors; and on Linux, the program in a terminal that `script` makes. The checks that need its private types are unit tests; see below |
 | `library/items.rs` | Finding items: symbols, PLT stubs, unwind tables, functions in stripped firmware, unnamed data |

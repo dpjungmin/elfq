@@ -11,10 +11,8 @@ use elfq::binary::Binary;
 use elfq::graph::{Graph, ReferenceKind};
 use object::{LittleEndian, elf};
 
-use crate::support::elf::{
-    ElfBytes, HeaderField, SectionField, chain_of_calls, for_arm_version, past_the_end,
-};
-use crate::support::{SAMPLE, TCM_SAMPLE, assert_output, load_sample, run};
+use crate::support::elf::{ElfBytes, HeaderField, SectionField, chain_of_calls, past_the_end};
+use crate::support::{SAMPLE, assert_output, load_sample, run};
 
 /// `bytes` after their length in 4 bytes, as DWARF starts a unit or a
 /// list of ranges.
@@ -329,66 +327,6 @@ fn a_function_of_unknown_size_is_named_where_its_load_image_is() {
 }
 
 #[test]
-fn reach_names_what_it_reaches_but_cant_read() {
-    // apply_filter calls memcpy through __memcpy_veneer, which has no size
-    // now, so memcpy isn't there.
-    let path = ElfBytes::sample("testdata/bin/c-cortex-m7-nodebug.elf")
-        .set_symbol_size("__memcpy_veneer", 0)
-        .save("reach-unsized-veneer.elf");
-    assert_output(
-        &run(&[&path, "reach", "apply_filter"]).printed(0),
-        "\
-apply_filter and the 3 items it reaches take 144 bytes of code and 32 bytes of data:
-
-MEMORY                  CODE  DATA  SECTIONS
-0x00000000..0x000000e0   144     0  .itcm
-0x20000000..0x20000450     0     0
-0x20240000..0x20241000     0     0
-0x30000000..0x30000edc     0    32  .rodata
-
-ADDRESS     SIZE  HOW   ITEM
-0x74          92        apply_filter
-0x40          52  call  filter_tap, used by apply_filter
-0xd8           ?  call  __memcpy_veneer, used by apply_filter
-0x30000eb4    32  uses  fir_coeffs, used by filter_tap
-
-elfq doesn't know where __memcpy_veneer ends, so it can't read its code.
-",
-    );
-    let reach = run(&[&path, "reach", "apply_filter", "--json"]).json(0);
-    assert_eq!(reach["unreadable"][0]["name"], "__memcpy_veneer");
-    assert_eq!(reach["complete"], false);
-    // With --to, what elfq can't read may reach the ranges, so the exit
-    // status is 1, even when nothing is listed.
-    for (to, expected) in [
-        (
-            "0x20240000+1M",
-            "\
-In the code elfq can read, apply_filter reaches nothing in 0x20240000..0x20340000 (.ocram_bss).
-elfq doesn't know where __memcpy_veneer ends, so it can't read its code.
-",
-        ),
-        (
-            "0x30000000+16M",
-            "\
-apply_filter reaches 1 data object in 0x30000000..0x31000000 (.isr_vector, .text, .rodata and .ARM.exidx), which takes 0 bytes of code and 32 bytes of data:
-
-ADDRESS     SIZE  HOW   AT    ITEM
-0x30000eb4    32  uses  0x56  fir_coeffs, used by filter_tap
-
-elfq doesn't know where __memcpy_veneer ends, so it can't read its code.
-",
-        ),
-    ] {
-        let stdout = run(&[&path, "reach", "apply_filter", "--to", to]).printed(1);
-        assert_output(&stdout, expected);
-        let reach = run(&[&path, "reach", "apply_filter", "--to", to, "--json"]).json(1);
-        assert_eq!(reach["unreadable"][0]["name"], "__memcpy_veneer");
-        assert_eq!(reach["complete"], false);
-    }
-}
-
-#[test]
 fn the_overview_suggests_reach_for_a_handler_that_runs_in_normal_operation() {
     // The overview of c-cortex-m4-nodebug.elf with `handler` in the given
     // entries of the vector table, counted from the stack pointer's.
@@ -416,35 +354,6 @@ fn the_overview_suggests_reach_for_a_handler_that_runs_in_normal_operation() {
     // Default_Handler, the SysTick handler now too, reaches nothing else.
     let stdout = overview("Default_Handler", &[15]);
     assert!(!stdout.contains(" reach "), "{stdout}");
-}
-
-#[test]
-fn reach_lists_an_item_in_no_block_after_the_blocks() {
-    // tx_buffer, in a section of size 0 now, so in no block of memory.
-    let path = ElfBytes::sample("testdata/bin/c-cortex-m7-nodebug.elf")
-        .set_section(".ocram_bss", SectionField::Size, 0)
-        .save("reach-no-block.elf");
-    assert_output(
-        &run(&[&path, "reach", "platform_write"]).printed(0),
-        "\
-platform_write and the 3 data objects it reaches take 96 bytes of code and 4104 bytes of data:
-
-MEMORY                  CODE  DATA  SECTIONS
-0x00000000..0x000000e0     0     0
-0x20000000..0x20000450     0     8  .bss
-0x30000000..0x30000edc    96     0  .text
-
-ADDRESS     SIZE  HOW   ITEM
-0x30000668    96        platform_write
-0x2000044c     4  uses  tx_head, used by platform_write
-0x20000448     4  uses  tx_tail, used by platform_write
-0x20240000  4096  uses  tx_buffer, used by platform_write
-",
-    );
-    let reach = run(&[&path, "reach", "platform_write", "--json"]).json(0);
-    let tx_buffer = &reach["items"][2];
-    assert_eq!(tx_buffer["name"], "tx_buffer");
-    assert_eq!(tx_buffer["block"], serde_json::Value::Null);
 }
 
 #[test]
@@ -756,54 +665,5 @@ fn a_file_with_dwarf_but_no_symbol_table_says_so() {
             "error: no function or data object is named `append`; the file has no symbol table"
         ),
         "{error}"
-    );
-}
-
-#[test]
-fn reach_names_the_exceptions_that_the_architecture_has() {
-    // Default_Handler's exceptions, as `reach --json` names them, in the
-    // file at `path`, a build of c-cortex-m7.elf, where it is in entries 2
-    // to 6, 11, 12 and 14 of the vector table.
-    let exceptions = |path: &str| {
-        let reach = run(&[path, "reach", "--json"]).json(0);
-        let starts = reach["starts"].as_array().unwrap();
-        let handler = starts
-            .iter()
-            .find(|start| start["name"] == "Default_Handler")
-            .unwrap();
-        handler["exceptions"].clone()
-    };
-    // In the reserved entries too, which the processor never takes, so
-    // they aren't named or counted.
-    let mut data = ElfBytes::sample(TCM_SAMPLE);
-    let address = data.symbol_address("Default_Handler");
-    for entry in [7, 8, 9, 10, 13] {
-        data.set_vector_entry(entry, address | 1);
-    }
-    let path = data.save("reserved-entries.elf");
-    assert_eq!(
-        exceptions(&path),
-        serde_json::json!([
-            "NMI",
-            "HardFault",
-            "MemManage",
-            "BusFault",
-            "UsageFault",
-            "SVCall",
-            "DebugMonitor",
-            "PendSV"
-        ])
-    );
-    let stdout = run(&[&path, "reach"]).printed(0);
-    assert!(
-        stdout.contains("  NMI, HardFault and 6 more  Default_Handler\n"),
-        "{stdout}"
-    );
-    // Armv6S-M, as on a Cortex-M0, has no MemManage, BusFault, UsageFault
-    // or DebugMonitor: their entries are reserved.
-    let path = for_arm_version(TCM_SAMPLE, Some(12)).save("armv6s-m.elf");
-    assert_eq!(
-        exceptions(&path),
-        serde_json::json!(["NMI", "HardFault", "SVCall", "PendSV"])
     );
 }

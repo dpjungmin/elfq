@@ -4,4 +4,5 @@
 //! its exit statuses.
 
 mod diff;
+mod reach;
 mod startup;
