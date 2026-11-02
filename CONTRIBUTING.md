@@ -332,7 +332,7 @@ of its tree) do. Those are names to fix, not meanings to copy.
 | File in `tests/it/` | What it tests |
 |---|---|
 | `support/` | No tests: in `mod.rs`, the samples' paths (`SAMPLE` and others), the lists that several modules check (`C_SAMPLES`, `FAR_SAMPLES`), `samples_for`, which lists the samples for one architecture, `run`, which runs the program and returns a `Run` to check, its shortcuts `stdout`, `stderr`, `crossing`, `elfq_json` and `text_rows`, `names`, which reads the names in a list of elfq's JSON, `run_in_process`, and `assert_output`; in `elf.rs`, `ElfBytes`, which changes a sample's bytes field by field and saves the file |
-| `cli.rs` | Each command's whole text output, errors, exit statuses and help |
+| `cli.rs` | The names that the commands print and take, and their errors, exit statuses and help |
 | `json.rs` | `--json` output |
 | `commands/browse.rs` | `browse`'s screens, driven with keys on ratatui's `TestBackend`, a screen in memory; its errors; and on Linux, the program in a terminal that `script` makes. The checks that need its private types are unit tests; see below |
 | `commands/callers_and_callees.rs` | `callers` and `callees`, which share their table and their ranges: their text and JSON for SYMBOL, for ranges of memory and with `--from` and `--to`, and the errors about those ranges |
@@ -343,6 +343,7 @@ of its tree) do. Those are names to fix, not meanings to copy.
 | `commands/reach.rs` | `reach`'s text and JSON, with and without SYMBOL; and, run in the test's own process, `reach` on every item of the Cortex-M samples, against `callees`, `retained` and its own `--tree`, and with `--to` against `reach` without it and `callees --to`, and on every function of each stripped one against its twin with symbols; and without SYMBOL, each start of every sample against `reach START` |
 | `commands/startup.rs` | `startup` on the samples whose reset code has a mistake and some without, the exit status of every Cortex-M sample, and the files it refuses; and that `debug walk` lists the walk that `startup` reads |
 | `commands/why.rs` | `why`: its chains as text and JSON, where they start, and what it says when nothing reaches SYMBOL |
+| `tables.rs` | What the commands' tables share: the tree of `--tree`, at most nine levels deep, the lines that sum up the rest of a long list, and `--all` |
 | `library/items.rs` | Finding items: symbols, PLT stubs, unwind tables, functions in stripped firmware, unnamed data |
 | `library/graph.rs` | The reference graph: callers, callees, pointers in data, veneers |
 | `library/retained.rs` | Roots, and what is exclusive to what |
@@ -400,7 +401,7 @@ and `.so` file in `testdata/bin`, and `top` on each `.elf` file, so a
 new sample is tested as soon as it is committed:
 `every_command_the_overview_suggests_works`, in
 `commands/overview_top_and_retained.rs`, and
-`no_line_sums_up_a_single_item`, in `cli.rs`.
+`no_line_sums_up_a_single_item`, in `tables.rs`.
 
 To run one test, one file, or the unit tests of one module:
 

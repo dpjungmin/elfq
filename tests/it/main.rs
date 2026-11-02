@@ -13,3 +13,4 @@ mod docs;
 mod json;
 mod library;
 mod support;
+mod tables;
