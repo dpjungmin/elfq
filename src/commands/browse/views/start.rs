@@ -1,18 +1,109 @@
-//! The start page, which browse opens when it is given no SYMBOL: what the
-//! file is and what elfq found in it, with the blocks of memory that its
-//! sections occupy, as the overview says them, then where the program
-//! starts and the bytes that each start reaches, as `elfq FILE reach`
-//! lists them, from the same code (`reach::starts`). It lists every start,
-//! and under them is that command, ready to paste, with `--all` when the
-//! command needs it to list them all. Enter opens the selected start's
-//! page. `printed.rs` draws it.
+//! The start page, which browse opens when it is given no SYMBOL.
+//!
+//! It shows what the file is and what elfq found in it, with the blocks
+//! of memory that its sections occupy, as the overview says them, then
+//! where the program starts and the bytes that each start reaches, as
+//! `elfq FILE reach` lists them, from the same code (`reach::starts`). It
+//! lists every start, and under them is that command, ready to paste,
+//! with `--all` when the command needs it to list them all. Enter opens
+//! the selected start's page. `printed.rs` draws it.
+//!
+//! In a large program, working out where it starts takes a while.
+//! Without SYMBOL, browse works it out before it takes the screen. When
+//! SYMBOL finds several items or none, the go-to box opens over it, and
+//! it is worked out the first time it is on the screen without the box,
+//! after a draw that says so (see `App::work`).
+
+use ratatui::Frame;
+use ratatui::layout::Rect;
 
 use super::printed::{Lines, Printed, table_lines};
-use crate::commands::browse::session::Session;
+use super::{Cursor, Go};
+use crate::commands::browse::{keys::Action, session::Session};
 use crate::commands::{overview, reach};
 
-/// The start page of the file that `session` browses.
-pub fn page(session: &Session) -> Printed {
+/// The page that lists where the program starts.
+pub struct StartPage {
+    /// What the page shows, or `None` until it is worked out.
+    printed: Option<Box<Printed>>,
+}
+
+impl StartPage {
+    /// The start page, before it is worked out.
+    pub fn new() -> StartPage {
+        StartPage { printed: None }
+    }
+
+    /// Whether it is worked out.
+    pub fn is_worked_out(&self) -> bool {
+        self.printed.is_some()
+    }
+
+    /// Works it out, if it isn't yet, for the file that `session` browses.
+    pub fn work_out(&mut self, session: &Session) {
+        if self.printed.is_none() {
+            self.printed = Some(Box::new(page(session)));
+        }
+    }
+
+    /// Draws what it shows, or nothing until that is worked out.
+    ///
+    /// Until then, the status line says what is being worked out.
+    pub fn draw(&mut self, frame: &mut Frame, area: Rect) {
+        if let Some(printed) = &mut self.printed {
+            printed.draw(frame, area);
+        }
+    }
+
+    /// Does what `action` asks.
+    ///
+    /// The tabs and u have nothing to show here, and say where they do.
+    pub fn handle(&mut self, session: &Session, action: Action) -> Option<Go> {
+        match action {
+            // A start's page has the tabs, which the start page hasn't.
+            Action::Tab(_) => Some(Go::Say(
+                match self.printed.as_ref()?.has_links() {
+                    true => "Enter opens the selected start's page, which has the tabs",
+                    false => "the tabs are on an item's page; g goes to one",
+                }
+                .to_string(),
+            )),
+            Action::Keeper => Some(Go::Say(
+                "u opens the item that keeps an item, from that item's page".to_string(),
+            )),
+            // The rest act on the rows, as on any printed page.
+            other => self.printed.as_mut()?.handle(session, other),
+        }
+    }
+
+    /// What the selected row opens, in full.
+    pub fn preview(&self, session: &Session) -> Option<String> {
+        self.printed.as_ref()?.preview(session)
+    }
+
+    /// Whether some row opens a start's page.
+    pub fn has_links(&self) -> bool {
+        (self.printed.as_ref()).is_some_and(|printed| printed.has_links())
+    }
+
+    /// The command under the page, `reach` without SYMBOL.
+    pub fn command(&self) -> Option<&str> {
+        self.printed.as_ref().map(|printed| printed.command())
+    }
+
+    /// The cursor over the rows, which find moves.
+    pub fn cursor(&mut self) -> Option<&mut Cursor> {
+        self.printed.as_mut().map(|printed| printed.cursor())
+    }
+
+    /// The rows that have `lowercase`, ignoring case.
+    pub fn rows_with(&self, lowercase: &str) -> Vec<usize> {
+        (self.printed.as_ref()).map_or_else(Vec::new, |printed| printed.rows_with(lowercase))
+    }
+}
+
+/// What the start page of the file that `session` browses shows.
+fn page(session: &Session) -> Printed {
     let binary = session.binary;
     let path = &session.path;
     let mut overview = vec![

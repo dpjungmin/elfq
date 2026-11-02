@@ -39,8 +39,7 @@ pub use help::Help;
 pub use item::{ItemPage, Listing};
 pub use names::{FittedRows, fit_name, name_fitter};
 pub use picker::{Picker, first_line};
-pub use printed::Printed;
-pub use start::page as start_page;
+pub use start::StartPage;
 
 /// Where an action takes the user.
 pub enum Go {
@@ -52,9 +51,8 @@ pub enum Go {
 
 /// One page of the browser.
 pub enum View {
-    /// Where the program starts, which opens when browse is given no
-    /// SYMBOL, once it is worked out (see `App::work`).
-    Start(Option<Box<Printed>>),
+    /// Where the program starts: the page browse opens without SYMBOL.
+    Start(StartPage),
     /// An item's page: a function's code, and what uses the item.
     Item(Box<ItemPage>),
     /// Every key, and the words that the notes use.
@@ -75,9 +73,7 @@ impl View {
 
     pub fn draw(&mut self, frame: &mut Frame, area: Rect) {
         match self {
-            View::Start(Some(start)) => start.draw(frame, area),
-            // Nothing yet, while the status line says what is worked out.
-            View::Start(None) => {}
+            View::Start(start) => start.draw(frame, area),
             View::Item(page) => page.draw(frame, area),
             View::Help(help) => help.draw(frame, area),
         }
@@ -85,18 +81,7 @@ impl View {
 
     pub fn handle(&mut self, session: &Session, action: Action) -> Option<Go> {
         match self {
-            // A start's page has the tabs, which the start page hasn't.
-            View::Start(Some(start)) if matches!(action, Action::Tab(_)) => Some(Go::Say(
-                match start.has_links() {
-                    true => "Enter opens the selected start's page, which has the tabs",
-                    false => "the tabs are on an item's page; g goes to one",
-                }
-                .to_string(),
-            )),
-            View::Start(_) if action == Action::Keeper => Some(Go::Say(
-                "u opens the item that keeps an item, from that item's page".to_string(),
-            )),
-            View::Start(start) => start.as_mut()?.handle(session, action),
+            View::Start(start) => start.handle(session, action),
             View::Item(page) => page.handle(session, action),
             View::Help(help) => {
                 help.handle(action);
@@ -117,7 +102,7 @@ impl View {
     /// A line about the selected row, such as what its link goes to.
     pub fn preview(&self, session: &Session) -> Option<String> {
         match self {
-            View::Start(start) => start.as_ref()?.preview(session),
+            View::Start(start) => start.preview(session),
             View::Item(page) => page.preview(session),
             View::Help(_) => None,
         }
@@ -135,7 +120,7 @@ impl View {
     /// Whether the page has lines that link, which Tab moves between.
     pub fn has_links(&self) -> bool {
         match self {
-            View::Start(start) => start.as_ref().is_some_and(|start| start.has_links()),
+            View::Start(start) => start.has_links(),
             View::Item(page) => page.has_links(),
             View::Help(_) => false,
         }
@@ -153,7 +138,7 @@ impl View {
     /// one does.
     pub fn command(&self) -> Option<&str> {
         match self {
-            View::Start(start) => start.as_ref().map(|start| start.command()),
+            View::Start(start) => start.command(),
             View::Item(page) => page.command(),
             View::Help(_) => None,
         }
@@ -164,7 +149,7 @@ impl View {
     /// nor does a table without rows.
     pub fn cursor(&mut self) -> Option<&mut Cursor> {
         match self {
-            View::Start(start) => Some(start.as_mut()?.cursor()),
+            View::Start(start) => start.cursor(),
             View::Item(page) => page.cursor(),
             View::Help(_) => None,
         }
@@ -185,9 +170,7 @@ impl View {
     /// shows them, but with names in full.
     pub fn rows_with(&self, lowercase: &str) -> Vec<usize> {
         match self {
-            View::Start(start) => {
-                (start.as_ref()).map_or_else(Vec::new, |start| start.rows_with(lowercase))
-            }
+            View::Start(start) => start.rows_with(lowercase),
             View::Item(page) => page.rows_with(lowercase),
             View::Help(_) => Vec::new(),
         }

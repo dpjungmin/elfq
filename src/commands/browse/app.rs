@@ -14,8 +14,8 @@ use super::Stop;
 use super::keys::{self, Action};
 use super::session::Session;
 use super::views::{
-    Go, Help, ItemPage, Picker, View, cut, cut_left, draw_lines, first_line, keep_lines,
-    start_page, wrap,
+    Go, Help, ItemPage, Picker, StartPage, View, cut, cut_left, draw_lines, first_line, keep_lines,
+    wrap,
 };
 use crate::binary::hex_number;
 
@@ -71,7 +71,7 @@ impl<'a> App<'a> {
                 more - 1
             ),
         });
-        let mut first = View::Start(None);
+        let mut first = View::Start(StartPage::new());
         let mut picker = None;
         if let Some(query) = symbol {
             match session.names.find(query) {
@@ -114,7 +114,7 @@ impl<'a> App<'a> {
             return None;
         }
         match self.history.last()? {
-            View::Start(None) => Some(format!(
+            View::Start(start) if !start.is_worked_out() => Some(format!(
                 "working out where {} starts…",
                 self.session.file_name()
             )),
@@ -154,9 +154,9 @@ impl<'a> App<'a> {
     /// isn't over it.
     fn work_out_start_page(&mut self) {
         if self.picker.is_none()
-            && let Some(View::Start(start @ None)) = self.history.last_mut()
+            && let Some(View::Start(start)) = self.history.last_mut()
         {
-            *start = Some(Box::new(start_page(&self.session)));
+            start.work_out(&self.session);
         }
     }
 
@@ -513,11 +513,15 @@ mod tests {
         let binary = Binary::load(&path).unwrap();
         let session = Session::new(&path, &binary).unwrap();
         let mut app = App::new(session, Some("no_such_symbol"));
-        assert!(matches!(app.history[..], [View::Start(None)]) && !app.has_work());
+        let worked_out = |app: &App| match &app.history[..] {
+            [View::Start(start)] => start.is_worked_out(),
+            _ => panic!("the start page isn't the only page"),
+        };
+        assert!(!worked_out(&app) && !app.has_work());
         app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(app.has_work());
         app.work();
-        assert!(matches!(app.history[..], [View::Start(Some(_))]) && !app.has_work());
+        assert!(worked_out(&app) && !app.has_work());
     }
 
     #[test]

@@ -519,12 +519,13 @@ the biggest view, and not the one to start from.
    `cursor`, `rows_with` and `row_noun` give find the page's rows and
    what to call them.
 
-   A page or tab that shows a command's answer, as the start page and
-   `callers.rs` do, is a `Printed` (`printed.rs`), made from the
-   command's own answer: the lines before its table, the rows, each with
-   the item it opens, and the notes; it draws them and answers the keys.
-   A page that takes a while to work out says so first: `App::work` works
-   it out after a draw that says what it is doing.
+   A page or tab that shows a command's answer, as `callers.rs` does, is
+   a `Printed` (`printed.rs`), made from the command's own answer: the
+   lines before its table, the rows, each with the item it opens, and
+   the notes; it draws them and answers the keys. The start page
+   (`StartPage`, in `start.rs`) holds one once it is worked out.
+   A page that takes a while to work out says so first: `App::work` calls
+   its `work_out` after a draw that says what it is doing.
    A tab of an item's page, such as `callees.rs`, is drawn and handles
    actions in the same way, but `ItemPage`, in `item.rs`, holds it in a
    `Pane` of its own: add it to `Tab` and `Tab::ALL`, with its number and
