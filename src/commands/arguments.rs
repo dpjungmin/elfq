@@ -256,10 +256,11 @@ fn check_reach(cli: &Cli, args: &ReachArgs) -> Result<()> {
 }
 
 /// Fails with the error for `--range` with `callers` or `callees` (see
-/// [`range_hint`]), suggesting only the commands that answer for `binary`:
-/// elfq runs them to find out, which costs time only on this mistake. When
-/// none does, and the command fails without `--range` too, that error comes
-/// first, since no form of the command answers until it is fixed.
+/// [`range_option_error`]), suggesting only the commands that answer for
+/// `binary`: elfq runs them to find out, which costs time only on this
+/// mistake. When none does, and the command fails without `--range` too,
+/// that error comes first, since no form of the command answers until it
+/// is fixed.
 fn refuse_range(cli: &Cli, binary: &Binary, uses: &UsesQuery, range: AddressRange) -> Result<()> {
     check_code_is_readable(binary)?;
     let symbols = &uses.args.symbols;
@@ -291,7 +292,7 @@ fn refuse_range(cli: &Cli, binary: &Binary, uses: &UsesQuery, range: AddressRang
         (true, false) => InPlaceOfRange::Added,
         (true, true) => InPlaceOfRange::Both,
     };
-    bail!("{}", range_hint(cli, uses, range, answers))
+    bail!("{}", range_option_error(cli, uses, range, answers))
 }
 
 /// The forms of `callers` or `callees` that answer in place of one with
@@ -312,7 +313,12 @@ enum InPlaceOfRange {
 /// answer: with ranges in place of SYMBOL, or none, the one that adds
 /// `range` to them, and the one that lists only the uses in `range`, with
 /// `--from` or `--to`. Keeps what `uses` has of those.
-fn range_hint(cli: &Cli, uses: &UsesQuery, range: AddressRange, answers: InPlaceOfRange) -> String {
+fn range_option_error(
+    cli: &Cli,
+    uses: &UsesQuery,
+    range: AddressRange,
+    answers: InPlaceOfRange,
+) -> String {
     let name = uses.direction.command();
     let option = uses.direction.option();
     let symbols = &uses.args.symbols;

@@ -181,9 +181,9 @@ Try:
 ```
 
 The last MEMORY row holds the load images of `.itcm` and `.data`: the copies
-in flash that the startup code copies into ITCM and DTCM. The Try list has a
-`--range` command for each row. `--range` counts only the bytes in one range
-of memory, such as ITCM's 256 KiB from 0x0:
+in flash that the startup code copies into ITCM and DTCM. The Try lines have
+a `--range` command for each row. `--range` counts only the bytes in one
+range of memory, such as ITCM's 256 KiB from 0x0:
 
 ```
 $ elfq testdata/bin/c-cortex-m7.elf top --range 0x0+256K
@@ -640,7 +640,7 @@ the new build, or for a gone item, in the old. Other sections' bytes
 changed too, as the vector table points to code that moved, but the rows
 say why. An item whose bytes changed only where they hold the address of
 something that moved, or the distance to it, as in `apply_filter`'s call
-to `filter_tap`, is the same. The exit status is 1. The Try list has
+to `filter_tap`, is the same. The exit status is 1. A Try line asks for
 `startup`, since ITCM's load image changed, which may change what the
 startup code must copy before the code it runs, as [the next
 question](#can-the-firmware-still-start-after-code-moves) shows.

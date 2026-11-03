@@ -40,6 +40,13 @@ tui = ["dep:ratatui", "dep:rustix", "dep:signal-hook", "dep:thumb-asm", "iced-x8
 
 [lints.rust]
 unsafe_code = "forbid"
+unreachable_pub = "warn"
+
+# A pub item's docs may link to a private item: the library serves only
+# main.rs and the tests, and CI documents private items, where those
+# links resolve.
+[lints.rustdoc]
+private_intra_doc_links = "allow"
 
 # Debug builds, which `cargo run` and the tests use, are optimized a little:
 # unoptimized, elfq takes five or six times as long on a large file, and the

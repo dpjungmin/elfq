@@ -88,27 +88,27 @@ impl Formatter for RowPerLine {
 /// An item or an import.
 #[derive(Serialize)]
 pub(super) struct Item<'a> {
-    pub name: &'a str,
+    name: &'a str,
     /// `function`, `data` or `import`.
-    pub kind: String,
+    kind: String,
     /// The section that holds it, such as `.text` or `.bss`, or `null` for
     /// an import.
-    pub section: Option<&'a str>,
+    section: Option<&'a str>,
     /// Where it starts, or `null` for an import, whose code is in another
     /// file.
-    pub address: Option<String>,
+    address: Option<String>,
     /// Its size in bytes, or `null` when elfq doesn't know it.
-    pub size: Option<u64>,
+    size: Option<u64>,
     /// Whether elfq estimated the size, as it does when the file doesn't
     /// record it: for data that elfq finds only because something refers to
     /// it, and for functions whose size no symbol, unwind table or PLT
     /// gives, such as those elfq finds by following the code in stripped
     /// firmware.
-    pub size_estimated: bool,
+    size_estimated: bool,
 }
 
 impl<'a> Item<'a> {
-    pub fn new(binary: &'a Binary, node: Node) -> Item<'a> {
+    pub(super) fn new(binary: &'a Binary, node: Node) -> Item<'a> {
         match node {
             Node::Item(index) => {
                 let item = &binary.items[index];
@@ -138,15 +138,15 @@ impl<'a> Item<'a> {
 #[derive(Serialize)]
 pub(super) struct Symbol<'a> {
     #[serde(flatten)]
-    pub item: Item<'a>,
+    item: Item<'a>,
     /// The item's other names: the symbol that `name` is demangled from,
     /// and other symbols at its address, such as weak aliases, each mangled
     /// one also demangled. Empty for an import.
-    pub aliases: Vec<&'a str>,
+    aliases: Vec<&'a str>,
 }
 
 impl<'a> Symbol<'a> {
-    pub fn new(binary: &'a Binary, node: Node) -> Symbol<'a> {
+    pub(super) fn new(binary: &'a Binary, node: Node) -> Symbol<'a> {
         let aliases = match node {
             Node::Item(index) => binary.items[index]
                 .aliases
@@ -196,11 +196,11 @@ impl Unresolved {
 #[derive(Serialize)]
 pub(super) struct Use<'a> {
     /// The item on the other end: the caller, or the callee.
-    pub item: Item<'a>,
+    item: Item<'a>,
     /// The [kind of reference](how_field).
-    pub how: &'static str,
+    how: &'static str,
     /// The addresses of the instructions or pointers.
-    pub sites: Vec<String>,
+    sites: Vec<String>,
 }
 
 pub(super) fn uses<'a>(binary: &'a Binary, rows: &[Row]) -> Vec<Use<'a>> {
@@ -245,12 +245,12 @@ pub(super) fn root_field(binary: &Binary, kind: RootKind) -> String {
 /// The addresses from `start` up to, but not including, `end`.
 #[derive(Serialize)]
 pub(super) struct Range {
-    pub start: String,
-    pub end: String,
+    start: String,
+    end: String,
 }
 
 impl Range {
-    pub fn new(range: AddressRange) -> Range {
+    pub(super) fn new(range: AddressRange) -> Range {
         Range {
             start: address(range.start),
             end: address(range.end),
@@ -263,19 +263,19 @@ impl Range {
 #[derive(Serialize)]
 pub(super) struct Block<'a> {
     #[serde(flatten)]
-    pub range: Range,
-    pub size: u64,
+    range: Range,
+    size: u64,
     /// The sections in it, in address order.
-    pub sections: Vec<&'a str>,
+    sections: Vec<&'a str>,
     /// The sections whose load images are in it, in the order of those
     /// addresses: the bytes that the file stores there for the program to
     /// copy to the section before it uses them, as firmware's startup code
     /// copies `.data` from flash to RAM.
-    pub load_images: Vec<&'a str>,
+    load_images: Vec<&'a str>,
 }
 
 impl<'a> Block<'a> {
-    pub fn new(binary: &'a Binary, block: &MemoryBlock) -> Block<'a> {
+    pub(super) fn new(binary: &'a Binary, block: &MemoryBlock) -> Block<'a> {
         Block {
             range: Range::new(block.range),
             size: block.range.end - block.range.start,

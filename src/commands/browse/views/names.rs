@@ -26,7 +26,7 @@ use super::cut;
 
 /// `name` made to fit `width` columns, by the steps that the module's
 /// documentation lists, only as many as it takes.
-pub fn fit_name(name: &str, width: usize) -> String {
+pub(super) fn fit_name(name: &str, width: usize) -> String {
     if name.chars().count() <= width {
         return name.to_string();
     }
@@ -41,7 +41,7 @@ pub fn fit_name(name: &str, width: usize) -> String {
 /// [`fit_name`] for `name` at one width after another, as when looking
 /// for the widest that leaves a header short enough: step 1, which
 /// doesn't depend on the width, is done once.
-pub fn name_fitter(name: &str) -> impl Fn(usize) -> String {
+pub(super) fn name_fitter(name: &str) -> impl Fn(usize) -> String {
     let length = name.chars().count();
     let shortened = pieces(name).map(|mut pieces| {
         shorten_inner_paths(&mut pieces);
@@ -77,7 +77,7 @@ fn fit_shortened(mut pieces: Vec<Piece>, width: usize) -> String {
 /// before, with only the names that it still reads the same as. A row that
 /// still reads as another then shows another part of its name, one that
 /// no other row shows: around another place where it differs, if it can.
-pub fn fit_names(names: &[&str], width: usize) -> Vec<String> {
+fn fit_names(names: &[&str], width: usize) -> Vec<String> {
     let mut fitted: Vec<String> = names.iter().map(|name| fit_name(name, width)).collect();
     // For each row, the names that it has read the same as.
     let mut twins: Vec<Vec<&str>> = vec![Vec::new(); names.len()];
@@ -159,7 +159,7 @@ pub fn fit_names(names: &[&str], width: usize) -> Vec<String> {
 /// moves the cursor among them doesn't fit them again: a few rows of C++
 /// names of thousands of characters take a while to fit.
 #[derive(Default)]
-pub struct FittedRows {
+pub(super) struct FittedRows {
     rows: Range<usize>,
     room: usize,
     names: Vec<String>,
@@ -168,7 +168,7 @@ pub struct FittedRows {
 impl FittedRows {
     /// The names of `rows` of a list fitted to `room` columns, from their
     /// full names, which `names` gives when they are needed.
-    pub fn names<'a>(
+    pub(super) fn names<'a>(
         &mut self,
         rows: Range<usize>,
         room: usize,

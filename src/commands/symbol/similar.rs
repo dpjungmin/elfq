@@ -42,7 +42,7 @@ pub(super) struct Suggestable {
 
 /// Text to look for in names. `str::contains` is quick for text of up to
 /// 32 bytes, so longer text is looked for by its first 32 bytes first.
-pub(crate) struct Needle<'t> {
+pub(in crate::commands) struct Needle<'t> {
     text: &'t str,
     start: &'t str,
 }
@@ -188,7 +188,7 @@ impl<'a> Names<'a> {
     /// Whether one of the names of `node`, an item or an import, in
     /// lowercase, has `text`, which is lowercase too.
     #[cfg(feature = "tui")]
-    pub(crate) fn name_has(&self, node: Node, text: &Needle) -> bool {
+    pub(in crate::commands) fn name_has(&self, node: Node, text: &Needle) -> bool {
         self.lowercase()
             .names(self.position(node))
             .any(|name| text.is_in(name))
@@ -340,7 +340,7 @@ impl Suggestable {
 }
 
 impl<'t> Needle<'t> {
-    pub(crate) fn new(text: &'t str) -> Needle<'t> {
+    pub(in crate::commands) fn new(text: &'t str) -> Needle<'t> {
         let mut end = text.len().min(32);
         while !text.is_char_boundary(end) {
             end -= 1;
@@ -352,7 +352,7 @@ impl<'t> Needle<'t> {
     }
 
     /// Whether `name` has the text.
-    pub(crate) fn is_in(&self, name: &str) -> bool {
+    fn is_in(&self, name: &str) -> bool {
         name.contains(self.start)
             && (self.start.len() == self.text.len() || name.contains(self.text))
     }

@@ -18,7 +18,7 @@ impl<'a> Items<'a> {
     /// the first item that isn't new or is in another block. Likewise for
     /// each gone item in the old build's tree. Without a tree, each item
     /// heads its own. Indexed by change.
-    pub fn heads(&self) -> Vec<usize> {
+    pub(super) fn heads(&self) -> Vec<usize> {
         // The change of each new item, and of each gone item.
         let mut new_changes = HashMap::new();
         let mut gone_changes = HashMap::new();
@@ -74,7 +74,7 @@ impl<'a> Items<'a> {
     /// for each item that moved, but one for all the items of whole
     /// sections that moved by one offset between the same two blocks,
     /// unless `all`.
-    pub fn moved_rows(&self, all: bool) -> Vec<MovedRow> {
+    pub(super) fn moved_rows(&self, all: bool) -> Vec<MovedRow> {
         let old = &self.old.binary;
         // The items that moved by each offset between each two blocks.
         let mut groups: Vec<Vec<MovedItem>> = Vec::new();
@@ -158,7 +158,7 @@ impl<'a> Items<'a> {
     /// rows folded into one, and the largest rows, as many as `top` shows,
     /// with every block that changed showing at least its largest, and a
     /// row for the rest of each block.
-    pub fn change_rows(&self, heads: &[usize], all: bool) -> Vec<ChangeRow> {
+    pub(super) fn change_rows(&self, heads: &[usize], all: bool) -> Vec<ChangeRow> {
         let rows = self.rows_by_head(heads, all);
         let rows = if all { rows } else { self.fold(rows) };
         let ranked = self.rank(rows, shown(all));
@@ -438,14 +438,14 @@ pub(super) enum MovedRow {
 /// item in each build, as an index into its items.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct MovedItem {
-    pub at: usize,
-    pub old: usize,
-    pub new: usize,
+    pub(super) at: usize,
+    pub(super) old: usize,
+    pub(super) new: usize,
 }
 
 impl MovedRow {
     /// The items that the row stands for.
-    pub fn moved(&self) -> &[MovedItem] {
+    pub(super) fn moved(&self) -> &[MovedItem] {
         match self {
             MovedRow::Item(item) => std::slice::from_ref(item),
             MovedRow::Sections { moved, .. } => moved,
@@ -477,7 +477,7 @@ pub(super) enum ChangeRow {
 impl ChangeRow {
     /// How many bytes the row's items grew by, less than 0 when they
     /// shrank.
-    pub fn delta(&self) -> i128 {
+    fn delta(&self) -> i128 {
         match self {
             ChangeRow::Item { delta, .. }
             | ChangeRow::Fold { delta, .. }
@@ -519,7 +519,7 @@ pub(super) enum Fold {
 impl Fold {
     /// What the row says: "49 data objects without a name changed size",
     /// or "blanks.1 (2 new items with this name)".
-    pub fn text(&self) -> String {
+    pub(super) fn text(&self) -> String {
         match self {
             Fold::Unnamed { count } => format!("{count} data objects without a name changed size"),
             Fold::Name { name, new, gone } => {

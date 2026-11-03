@@ -43,7 +43,7 @@ pub struct Symbol {
     /// gave something other than that name: another of its names, as in
     /// "also named snprintf", or an address inside it, as in "which holds
     /// 0x30000290".
-    pub note: Option<String>,
+    note: Option<String>,
 }
 
 impl Symbol {
@@ -59,7 +59,7 @@ impl Symbol {
 }
 
 /// What `callers` and `callees` ask about.
-pub enum Subject {
+pub(super) enum Subject {
     /// One item or import.
     Symbol(Symbol),
     /// Everything in some ranges of memory, together.
@@ -68,7 +68,7 @@ pub enum Subject {
 
 /// Works out what `queries` ask about: one SYMBOL (see [`find`]), or one or
 /// more ranges of memory.
-pub fn subject(binary: &Binary, queries: &[String]) -> Result<Subject> {
+pub(super) fn subject(binary: &Binary, queries: &[String]) -> Result<Subject> {
     if let [query] = queries
         && range(query).is_none()
     {
@@ -130,7 +130,7 @@ fn check_not_a_range(query: &str) -> Result<()> {
 
 /// Whether `query` is meant as a range of memory rather than a symbol: it
 /// starts with a digit, as no name does, and has `..` or `+` in it.
-pub fn is_range(query: &str) -> bool {
+pub(super) fn is_range(query: &str) -> bool {
     query.starts_with(|c: char| c.is_ascii_digit()) && (query.contains("..") || query.contains('+'))
 }
 

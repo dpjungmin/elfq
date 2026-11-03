@@ -38,7 +38,7 @@ pub(super) enum Status {
 }
 
 impl Status {
-    pub fn field(self) -> &'static str {
+    pub(super) fn field(self) -> &'static str {
         match self {
             Status::Copied => "copied",
             Status::PartlyCopied => "partly copied",
@@ -63,7 +63,7 @@ pub(super) enum RunsAt {
 
 impl RunsAt {
     /// The event of the call, when it is one.
-    pub fn event(self) -> Option<usize> {
+    pub(super) fn event(self) -> Option<usize> {
         match self {
             RunsAt::ResetHandler => None,
             RunsAt::Event(event) => Some(event),
@@ -112,7 +112,7 @@ pub(super) enum Problem {
 
 impl Problem {
     /// The JSON's `kind`.
-    pub fn field(&self) -> &'static str {
+    pub(super) fn field(&self) -> &'static str {
         match self {
             Problem::RunsBeforeCopy(_) => "runs before copy",
             Problem::NotCopied { .. } => "not copied",
@@ -127,7 +127,7 @@ impl Problem {
     /// Whether the problem is certain: not for code elfq can't follow,
     /// which may be a problem or not, nor for code that runs from a load
     /// image after unread steps that may copy it first.
-    pub fn certain(&self) -> bool {
+    pub(super) fn certain(&self) -> bool {
         match self {
             Problem::RunsBeforeCopy(run) => run.certain(),
             Problem::CantFollow { .. } => false,
@@ -140,7 +140,7 @@ impl Problem {
     }
 
     /// The steps it is about, as indexes into the steps.
-    pub fn steps(&self) -> &[usize] {
+    pub(super) fn steps(&self) -> &[usize] {
         match self {
             Problem::RunsBeforeCopy(run) => &run.steps,
             Problem::NotCopied { .. } | Problem::NotZeroed { .. } => &[],
@@ -152,7 +152,7 @@ impl Problem {
     }
 
     /// The sections it is about.
-    pub fn sections(&self) -> &[usize] {
+    pub(super) fn sections(&self) -> &[usize] {
         match self {
             Problem::RunsBeforeCopy(EarlyRun { section, .. })
             | Problem::NotCopied { section }
@@ -169,24 +169,24 @@ impl Problem {
 /// an early run, which [`EarlyRunFinder`] finds.
 pub(super) struct EarlyRun {
     /// The load image.
-    pub section: usize,
+    pub(super) section: usize,
     /// The step that copies it, as an index into the steps: none when no
     /// step does.
-    pub before: Option<usize>,
+    pub(super) before: Option<usize>,
     /// The steps of the reset handler whose code holds the calls that run
     /// code from it, as indexes into the steps.
-    pub steps: Vec<usize>,
+    pub(super) steps: Vec<usize>,
     /// The functions in it that run, in the order they were found.
-    pub functions: Vec<EarlyFunction>,
+    pub(super) functions: Vec<EarlyFunction>,
     /// Where the code calls on into it.
-    pub sites: Vec<u64>,
+    pub(super) sites: Vec<u64>,
     /// Where in the walk the code runs from it.
-    pub runs_at: Vec<RunsAt>,
+    pub(super) runs_at: Vec<RunsAt>,
     /// The first of those in the walk (see [`EarlyRun::first`]).
     first: RunsAt,
     /// The unread steps up to where the code first runs from it that may
     /// copy it first, as indexes into the steps.
-    pub unless: Vec<usize>,
+    pub(super) unless: Vec<usize>,
 }
 
 impl EarlyRun {
@@ -207,35 +207,35 @@ impl EarlyRun {
 
     /// Whether the code certainly runs before the copy: no unread step
     /// before it may copy the load image first.
-    pub fn certain(&self) -> bool {
+    fn certain(&self) -> bool {
         self.unless.is_empty()
     }
 
     /// Whether the function at `address` is one of those that run from the
     /// load image.
-    pub fn runs(&self, address: u64) -> bool {
+    pub(super) fn runs(&self, address: u64) -> bool {
         (self.functions.iter()).any(|early| early.function == address)
     }
 
     /// Whether the reset handler's own code runs from the load image.
-    pub fn reset_runs_from_image(&self) -> bool {
+    pub(super) fn reset_runs_from_image(&self) -> bool {
         self.runs_at.contains(&RunsAt::ResetHandler)
     }
 
     /// The first place in the walk where the code runs from the load
     /// image.
-    pub fn first(&self) -> RunsAt {
+    fn first(&self) -> RunsAt {
         self.first
     }
 }
 
 /// A function in a load image that runs before startup code copies it.
 pub(super) struct EarlyFunction {
-    pub function: u64,
+    pub(super) function: u64,
     /// The functions that the code goes through to get to `function`,
     /// from the one that the reset handler calls down to `function`
     /// itself; for the reset handler's own code, the reset handler.
-    pub chain: Vec<u64>,
+    pub(super) chain: Vec<u64>,
 }
 
 /// A note under the steps, as facts, which `text::note_text` words.
@@ -280,7 +280,7 @@ pub(super) enum Note {
 
 impl Note {
     /// The JSON's `kind`.
-    pub fn field(&self) -> &'static str {
+    pub(super) fn field(&self) -> &'static str {
         match self {
             Note::NoVectorTable => "no vector table",
             Note::ResetInNoFunction { .. } => "reset in no function",
@@ -294,7 +294,7 @@ impl Note {
     }
 
     /// The sections it is about.
-    pub fn sections(&self) -> &[usize] {
+    pub(super) fn sections(&self) -> &[usize] {
         match self {
             Note::NoVectorTable
             | Note::ResetInNoFunction { .. }
@@ -311,28 +311,28 @@ impl Note {
 /// with how many of its bytes, and where it copies them from.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Setup {
-    pub step: usize,
-    pub bytes: u64,
-    pub from: Option<u64>,
+    pub(super) step: usize,
+    bytes: u64,
+    from: Option<u64>,
 }
 
 /// The state of a section when `main` starts (see [`Judged::status`]).
 #[derive(Debug, Clone, Copy)]
 pub(super) struct SectionStatus {
-    pub status: Status,
+    pub(super) status: Status,
     /// The step that sets the section up, as an index into the steps.
-    pub step: Option<usize>,
+    pub(super) step: Option<usize>,
     /// How many of its bytes are set up: none when elfq can't tell.
-    pub bytes: Option<u64>,
+    pub(super) bytes: Option<u64>,
 }
 
 /// What sets up each section (see [`Setups::new`]).
 pub(super) struct Setups {
     /// The first step that sets up each section.
-    pub init: HashMap<usize, Setup>,
+    pub(super) init: HashMap<usize, Setup>,
     /// The steps of code elfq can't follow that may set up each section
     /// that no step does, as indexes into the steps: the unread steps.
-    pub unread: HashMap<usize, Vec<usize>>,
+    pub(super) unread: HashMap<usize, Vec<usize>>,
 }
 
 impl Setups {
@@ -479,30 +479,30 @@ impl Statuses {
 /// What startup's steps come to.
 pub(super) struct Judged {
     /// What sets up each section.
-    pub setups: Setups,
+    pub(super) setups: Setups,
     /// The state of each section that startup code sets up when `main`
     /// starts (see [`Judged::status`]).
     statuses: Statuses,
     /// Whether elfq followed all the code before `main`.
-    pub complete: bool,
-    pub problems: Vec<Problem>,
-    pub notes: Vec<Note>,
+    pub(super) complete: bool,
+    pub(super) problems: Vec<Problem>,
+    pub(super) notes: Vec<Note>,
     /// For each load image that holds code, the functions that must stay
     /// out of it (see [`EarlyRunFinder::keep_out`]).
-    pub keep_out: Vec<KeepOut>,
+    pub(super) keep_out: Vec<KeepOut>,
 }
 
 /// The functions that must stay out of a load image that holds code.
 pub(super) struct KeepOut {
-    pub section: usize,
+    pub(super) section: usize,
     /// The functions that must stay out of it, as item indexes.
-    pub items: Vec<usize>,
+    pub(super) items: Vec<usize>,
 }
 
 impl Judged {
     /// The state of `section`, one of the RAM sections, when `main` starts,
     /// with the step that sets it up and how many of its bytes.
-    pub fn status(&self, section: usize) -> SectionStatus {
+    pub(super) fn status(&self, section: usize) -> SectionStatus {
         self.statuses.status(section)
     }
 }

@@ -17,7 +17,7 @@ use super::{Graph, Node, ReferenceKind, Unresolved};
 
 /// Where a veneer jumps to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VeneerTarget {
+pub(crate) enum VeneerTarget {
     /// A function or import.
     Node(Node),
     /// Code outside every item, at this address, such as a routine in a
@@ -26,7 +26,7 @@ pub enum VeneerTarget {
 }
 
 /// The veneers in a file, and where each jumps to.
-pub struct Veneers<'a> {
+pub(crate) struct Veneers<'a> {
     binary: &'a Binary,
     graph: &'a Graph,
     /// The PLT stubs for the file's own functions, each with its function.
@@ -36,7 +36,7 @@ pub struct Veneers<'a> {
 impl<'a> Veneers<'a> {
     /// Finds the PLT stubs for `binary`'s own functions. `graph` is
     /// `binary`'s graph.
-    pub fn new(binary: &'a Binary, graph: &'a Graph) -> Veneers<'a> {
+    pub(crate) fn new(binary: &'a Binary, graph: &'a Graph) -> Veneers<'a> {
         Veneers {
             binary,
             graph,
@@ -48,7 +48,7 @@ impl<'a> Veneers<'a> {
     /// a veneer (see `InstructionSet::is_veneer`), and jumps to one
     /// function, or to code outside every item. A PLT stub for one of the
     /// file's own functions passes calls on to it.
-    pub fn target(&self, item: usize) -> Option<VeneerTarget> {
+    pub(crate) fn target(&self, item: usize) -> Option<VeneerTarget> {
         if let Some(&function) = self.stubs.get(&item) {
             return Some(VeneerTarget::Node(Node::Item(function)));
         }

@@ -30,20 +30,20 @@ pub(super) enum Kind {
 /// A number that a register or a word on the stack may hold.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct Value {
-    pub number: u32,
-    pub kind: Kind,
+    pub(super) number: u32,
+    pub(super) kind: Kind,
     /// The instruction that loaded or built this number as an address, as
     /// an index into the function's instructions. A number made from it,
     /// as by adding to it, keeps it.
-    pub source: Option<u32>,
+    pub(super) source: Option<u32>,
     /// Whether it is what a register held before a call that may have
     /// changed it; see [`Contents::after_call`].
-    pub stale: bool,
+    pub(super) stale: bool,
 }
 
 impl Value {
     /// A number that no instruction loaded or built as an address.
-    pub const fn number(number: u32) -> Value {
+    pub(super) const fn number(number: u32) -> Value {
         Value {
             number,
             kind: Kind::Number,
@@ -54,7 +54,7 @@ impl Value {
 
     /// The address `offset` bytes from where sp pointed when the function
     /// started.
-    pub fn stack(offset: i32) -> Value {
+    pub(super) fn stack(offset: i32) -> Value {
         Value {
             number: offset as u32,
             kind: Kind::Stack,
@@ -66,7 +66,7 @@ impl Value {
 
 /// What adding a number to some [`Values`] did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Inserted {
+enum Inserted {
     /// They didn't hold it, or held it only as stale, and now hold it.
     Changed,
     /// They held it already.
@@ -85,14 +85,14 @@ pub(super) struct Values {
 
 impl Values {
     /// No numbers.
-    pub const NONE: Values = Values {
+    const NONE: Values = Values {
         len: 0,
         items: [Value::number(0); LIMIT],
     };
 
     /// Adds `value`. A number that is stale on one path and not on
     /// another is one the code may use, so it is not stale.
-    pub fn insert(&mut self, value: Value) -> Inserted {
+    fn insert(&mut self, value: Value) -> Inserted {
         let len = usize::from(self.len);
         // Values sort by these first, and no two share them, so this finds
         // the number whether or not it is stale.
@@ -114,7 +114,7 @@ impl Values {
     }
 
     /// Keeps the numbers for which `keep` is true.
-    pub fn retain(&mut self, keep: impl Fn(&Value) -> bool) {
+    fn retain(&mut self, keep: impl Fn(&Value) -> bool) {
         let mut kept = 0;
         for index in 0..usize::from(self.len) {
             if keep(&self.items[index]) {
@@ -168,13 +168,13 @@ impl Contents {
     /// Something elfq can't tell, and nothing else: what a register holds
     /// after an instruction that elfq doesn't follow writes it, and a word
     /// on the stack unless the function stored a number there.
-    pub const UNKNOWN: Contents = Contents::Known {
+    pub(super) const UNKNOWN: Contents = Contents::Known {
         values: Values::NONE,
         or_unknown: true,
     };
 
     /// `value`, and nothing else.
-    pub fn holding(value: Value) -> Contents {
+    pub(super) fn holding(value: Value) -> Contents {
         let mut values = Values::NONE;
         values.insert(value);
         Contents::Known {
@@ -184,7 +184,7 @@ impl Contents {
     }
 
     /// The numbers these contents may hold, as far as elfq follows them.
-    pub fn values(&self) -> &[Value] {
+    pub(super) fn values(&self) -> &[Value] {
         match self {
             Contents::Known { values, .. } => values,
             Contents::TooMany { .. } => &[],
@@ -192,7 +192,7 @@ impl Contents {
     }
 
     /// Whether these contents may hold something elfq can't tell.
-    pub fn may_be_unknown(&self) -> bool {
+    pub(super) fn may_be_unknown(&self) -> bool {
         matches!(
             self,
             Contents::Known {
@@ -207,7 +207,7 @@ impl Contents {
     /// compiled with GCC's `-fipa-ra` counts on the second when it knows
     /// that the function it calls keeps r0 to r3 or ip. For r0, the first
     /// is the result; see [`State::read`].
-    pub fn after_call(&self) -> Contents {
+    fn after_call(&self) -> Contents {
         match self {
             Contents::TooMany { stale: true } => *self,
             Contents::TooMany { stale: false } => Contents::UNKNOWN,
@@ -229,7 +229,7 @@ impl Contents {
 
     /// `f` of each number these contents may hold, where `f` returns
     /// `None` for one that makes something elfq can't tell.
-    pub fn map(&self, f: impl Fn(Value) -> Option<Value>) -> Contents {
+    pub(super) fn map(&self, f: impl Fn(Value) -> Option<Value>) -> Contents {
         let Contents::Known { values, or_unknown } = self else {
             return Contents::UNKNOWN;
         };
@@ -250,7 +250,7 @@ impl Contents {
 
     /// The offset from the function's starting sp of the one address on
     /// the stack these contents hold, if they hold just that.
-    pub fn stack_offset(&self) -> Option<i32> {
+    pub(super) fn stack_offset(&self) -> Option<i32> {
         match self {
             Contents::Known {
                 values,
@@ -266,7 +266,7 @@ impl Contents {
     /// The offset of the word on the stack `offset` bytes past the one
     /// address on the stack these contents hold, when they hold just that
     /// and a word starts there.
-    pub fn word_at(&self, offset: i32) -> Option<i32> {
+    pub(super) fn word_at(&self, offset: i32) -> Option<i32> {
         let at = self.stack_offset()?.wrapping_add(offset);
         (at % 4 == 0).then_some(at)
     }
@@ -275,7 +275,7 @@ impl Contents {
     /// program counter to a number makes an address, which the
     /// instruction `source` builds. `None` when the sum may be more than
     /// [`LIMIT`] numbers.
-    pub fn sum(a: &Contents, b: &Contents, source: Option<u32>) -> Option<Contents> {
+    pub(super) fn sum(a: &Contents, b: &Contents, source: Option<u32>) -> Option<Contents> {
         let mut values = Values::NONE;
         let mut or_unknown = a.may_be_unknown() || b.may_be_unknown();
         for x in a.values() {
@@ -309,7 +309,7 @@ impl Contents {
     }
 
     /// Whether these contents may be an address on the stack.
-    pub fn may_be_stack(&self) -> bool {
+    pub(super) fn may_be_stack(&self) -> bool {
         self.values().iter().any(|value| value.kind == Kind::Stack)
     }
 
@@ -333,7 +333,7 @@ impl Contents {
     /// Adds what `other` may hold, where two paths through the code join.
     /// Returns whether these contents changed. Past [`LIMIT`] numbers they
     /// hold too many, and each number they lose goes to `lost`.
-    pub fn join(&mut self, other: &Contents, lost: &mut impl FnMut(&Value)) -> bool {
+    fn join(&mut self, other: &Contents, lost: &mut impl FnMut(&Value)) -> bool {
         let Contents::Known { values, or_unknown } = self else {
             // They gain nothing but whether some numbers were stale.
             other.values().iter().for_each(&mut *lost);
@@ -427,13 +427,13 @@ pub(super) struct State {
     /// function the code called. Code could then change the stack where
     /// elfq can't see it: through such a register, or in a function it
     /// calls.
-    pub escaped: bool,
+    pub(super) escaped: bool,
 }
 
 impl State {
     /// The state where the function starts: sp points at its stack, and
     /// everything else holds something elfq can't tell.
-    pub fn entry() -> State {
+    pub(super) fn entry() -> State {
         let mut registers: [Contents; 16] = [Contents::UNKNOWN; 16];
         registers[usize::from(SP)] = Contents::holding(Value::stack(0));
         State {
@@ -449,7 +449,7 @@ impl State {
     /// let an address out of sight, or reach the stack through a register,
     /// use this instead, since code may count on a call having kept a
     /// register, r0 included.
-    pub fn held(&self, register: u16) -> &Contents {
+    pub(super) fn held(&self, register: u16) -> &Contents {
         &self.registers[usize::from(register)]
     }
 
@@ -457,7 +457,7 @@ impl State {
     /// a call, r0 holds what the function returns, which elfq can't tell.
     /// Code reads r1 to r3 or ip after a call only when it knows the call
     /// kept them, so what they held is no longer stale.
-    pub fn read(&self, register: u16, pc: u32) -> Contents {
+    pub(super) fn read(&self, register: u16, pc: u32) -> Contents {
         if register == PC {
             return Contents::holding(Value {
                 number: pc,
@@ -481,14 +481,14 @@ impl State {
 
     /// Sets what `register` holds. pc always holds something elfq can't
     /// tell.
-    pub fn set(&mut self, register: u16, contents: Contents) {
+    pub(super) fn set(&mut self, register: u16, contents: Contents) {
         debug_assert!(register != PC || contents == Contents::UNKNOWN);
         self.registers[usize::from(register)] = contents;
     }
 
     /// Leaves the registers as a call does: each that a call may change
     /// holds what [`Contents::after_call`] says.
-    pub fn after_call(&mut self) {
+    pub(super) fn after_call(&mut self) {
         for register in each(CALL_CLOBBERS) {
             let contents = &mut self.registers[usize::from(register)];
             *contents = contents.after_call();
@@ -498,7 +498,7 @@ impl State {
     /// Leaves in `register`, which a test of whether it is 0 reads, the
     /// numbers that are 0 if `zero`, or those that aren't; see
     /// [`Contents::narrow`].
-    pub fn narrow(&mut self, register: u16, zero: bool) {
+    pub(super) fn narrow(&mut self, register: u16, zero: bool) {
         let mut contents = self.read_other(register);
         contents.narrow(zero);
         self.set(register, contents);
@@ -507,7 +507,7 @@ impl State {
     /// Whether adding what registers `a` and `b` hold adds the program
     /// counter: one of them is pc, or holds what an instruction read from
     /// it.
-    pub fn adds_pc(&self, a: u16, b: u16) -> bool {
+    pub(super) fn adds_pc(&self, a: u16, b: u16) -> bool {
         let pc = |register: u16| {
             register == PC
                 || self
@@ -521,12 +521,12 @@ impl State {
 
     /// Where sp points, as an offset from where it pointed when the
     /// function started, if elfq can tell.
-    pub fn sp(&self) -> Option<i32> {
+    pub(super) fn sp(&self) -> Option<i32> {
         self.registers[usize::from(SP)].stack_offset()
     }
 
     /// What the word on the stack at `offset` holds.
-    pub fn word(&self, offset: i32) -> Contents {
+    pub(super) fn word(&self, offset: i32) -> Contents {
         self.stack
             .get(&offset)
             .copied()
@@ -535,7 +535,7 @@ impl State {
 
     /// The words on the stack that the function stored numbers in, by
     /// offset, from the lowest.
-    pub fn stack_words(&self) -> impl Iterator<Item = (i32, &Contents)> {
+    pub(super) fn stack_words(&self) -> impl Iterator<Item = (i32, &Contents)> {
         self.stack
             .iter()
             .map(|(&offset, contents)| (offset, contents))
@@ -543,12 +543,12 @@ impl State {
 
     /// Frees the words on the stack below `top`, as moving sp up to it
     /// does: they hold nothing the function can count on.
-    pub fn free_below(&mut self, top: i32) {
+    pub(super) fn free_below(&mut self, top: i32) {
         self.stack.retain(|&offset, _| offset >= top);
     }
 
     /// Sets the word on the stack at `offset`.
-    pub fn set_word(&mut self, offset: i32, contents: Contents) {
+    pub(super) fn set_word(&mut self, offset: i32, contents: Contents) {
         if contents == Contents::UNKNOWN {
             self.stack.remove(&offset);
         } else {
@@ -558,7 +558,7 @@ impl State {
 
     /// Forgets every word on the stack, giving each number it held to
     /// `lost`.
-    pub fn forget_stack(&mut self, lost: &mut impl FnMut(&Value)) {
+    pub(super) fn forget_stack(&mut self, lost: &mut impl FnMut(&Value)) {
         for value in self.stack.values().flat_map(|contents| contents.values()) {
             self.escaped |= value.kind == Kind::Stack;
             lost(value);
@@ -568,7 +568,7 @@ impl State {
 
     /// Adds what `other` may hold, where two paths through the code join.
     /// Returns whether this state changed.
-    pub fn join(&mut self, other: &State, lost: &mut impl FnMut(&Value)) -> bool {
+    pub(super) fn join(&mut self, other: &State, lost: &mut impl FnMut(&Value)) -> bool {
         let mut changed = false;
         let mut escaped = other.escaped;
         let mut lose = |value: &Value| {

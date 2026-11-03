@@ -20,10 +20,10 @@ use super::{Frame, Run, WALK_EACH_BUDGET, WALK_EACH_COUNT_BUDGET, Walker};
 /// address, then by pointer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct RowWord {
-    pub(super) address: u32,
+    address: u32,
     /// Where the register that the iteration loads it through points, when
     /// that is lower than `address`, else `address`; or [`NOWHERE`].
-    pub(super) pointer: u32,
+    pointer: u32,
 }
 
 /// [`RowWord::pointer`] for a word that a register held at the head of the

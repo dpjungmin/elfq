@@ -20,13 +20,13 @@
 //! - [`binary`]: reads an ELF file and finds its functions and data objects.
 //! - `arch`: finds the addresses that machine code calls or uses.
 
-pub(crate) mod arch;
+mod arch;
 pub mod binary;
 pub mod cli;
 pub mod commands;
 pub mod debuginfo;
 pub mod graph;
-pub(crate) mod render;
+mod render;
 
 /// The stack for the thread that runs elfq, and for the one on which `diff`
 /// loads its second file. Trees are built, drawn and listed for JSON

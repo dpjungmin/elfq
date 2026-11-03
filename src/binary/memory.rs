@@ -21,34 +21,34 @@ use super::{AddressRange, FileKind, Section};
 
 /// A file's sections, and the bytes they put in memory.
 #[derive(Debug)]
-pub struct LoadedMemory<'data> {
+pub(crate) struct LoadedMemory<'data> {
     /// The instruction set, such as x86-64 or 32-bit Arm.
-    pub architecture: Architecture,
+    pub(crate) architecture: Architecture,
     /// What the file is, as [`Binary::kind`](super::Binary::kind) says.
-    pub kind: FileKind,
+    pub(crate) kind: FileKind,
     /// The file's sections, indexed by section number, as
     /// [`Binary::sections`](super::Binary::sections) holds them. Empty when
     /// the file has no section headers.
-    pub sections: Vec<Section>,
+    pub(crate) sections: Vec<Section>,
     /// Problems with the headers that did not stop reading them, as
     /// [`Binary::warnings`](super::Binary::warnings) has them.
-    pub warnings: Vec<String>,
+    pub(crate) warnings: Vec<String>,
     /// Whether the file stores the bytes of the code it loads. A separate
     /// debug file, as `objcopy --only-keep-debug` makes, doesn't: it keeps
     /// the headers of the sections that hold code, but none of their bytes,
     /// so what it puts in memory says nothing of the program. True for a
     /// file with no code.
-    pub stores_code: bool,
+    pub(crate) stores_code: bool,
     /// Whether the file has a symbol table (`.symtab`), as
     /// [`Binary::has_symbols`](super::Binary::has_symbols) says.
-    pub has_symbols: bool,
+    pub(crate) has_symbols: bool,
     /// The whole file.
     data: &'data [u8],
 }
 
 /// The bytes that a section, or its load image, puts in memory.
 #[derive(Debug, Clone, Copy)]
-pub enum Bytes<'data> {
+pub(crate) enum Bytes<'data> {
     /// The bytes that the file stores, as far as it goes.
     Stored(&'data [u8]),
     /// So many zero bytes, for a section such as `.bss`, which the file
@@ -77,7 +77,7 @@ struct Run<'data> {
 impl<'data> LoadedMemory<'data> {
     /// Reads the headers of the ELF file in `data`, which must hold a linked
     /// program or library.
-    pub fn read(data: &'data [u8]) -> Result<LoadedMemory<'data>> {
+    pub(crate) fn read(data: &'data [u8]) -> Result<LoadedMemory<'data>> {
         let (file, kind) = parse_program(data)?;
         let mut warnings = Vec::new();
         let sections = read_sections(&file, data.len() as u64, &mut warnings);
@@ -107,7 +107,7 @@ impl<'data> LoadedMemory<'data> {
     /// The indexes of the sections that are in memory at their addresses
     /// and hold bytes there: all the allocated ones but `.tbss`, and those of
     /// no size.
-    pub fn sections_in_memory(&self) -> impl Iterator<Item = usize> + '_ {
+    pub(crate) fn sections_in_memory(&self) -> impl Iterator<Item = usize> + '_ {
         (0..self.sections.len()).filter(|&index| {
             let section = &self.sections[index];
             section.in_memory() && section.size > 0
@@ -116,7 +116,7 @@ impl<'data> LoadedMemory<'data> {
 
     /// The bytes that the section at `index` puts in memory: those the
     /// file stores for it, as far as the file goes, or zeros.
-    pub fn bytes(&self, index: usize) -> Bytes<'data> {
+    pub(crate) fn bytes(&self, index: usize) -> Bytes<'data> {
         let section = &self.sections[index];
         let Some((offset, _)) = section.file_range else {
             return Bytes::Zeros(section.size);
@@ -183,14 +183,18 @@ impl<'data> LoadedMemory<'data> {
 /// Whether `old` and `new` put the same bytes at the same addresses, and
 /// have the same `.tbss`. How the bytes are split into sections doesn't
 /// count, only which byte is at which address.
-pub fn same_memory(old: &LoadedMemory, new: &LoadedMemory) -> bool {
+pub(crate) fn same_memory(old: &LoadedMemory, new: &LoadedMemory) -> bool {
     same_runs(&runs(&old.pieces()), &runs(&new.pieces()))
         && old.thread_local() == new.thread_local()
 }
 
 /// For each of `ranges`, whether `old` and `new` put the same bytes at the
 /// same addresses, from the sections and load images that start in it.
-pub fn same_bytes_in(old: &LoadedMemory, new: &LoadedMemory, ranges: &[AddressRange]) -> Vec<bool> {
+pub(crate) fn same_bytes_in(
+    old: &LoadedMemory,
+    new: &LoadedMemory,
+    ranges: &[AddressRange],
+) -> Vec<bool> {
     // Each file's pieces are sorted once, and each range's found by address.
     let (old, new) = (old.pieces(), new.pieces());
     ranges
@@ -300,7 +304,7 @@ fn same_start(old: &[Bytes], new: &[Bytes]) -> bool {
 
 impl<'data> Bytes<'data> {
     /// How many bytes there are.
-    pub fn len(self) -> u64 {
+    fn len(self) -> u64 {
         match self {
             Bytes::Stored(bytes) => bytes.len() as u64,
             Bytes::Zeros(count) | Bytes::Missing(count) => count,
@@ -308,12 +312,12 @@ impl<'data> Bytes<'data> {
     }
 
     /// Whether there are none.
-    pub fn is_empty(self) -> bool {
+    fn is_empty(self) -> bool {
         self.len() == 0
     }
 
     /// Whether both hold the same bytes.
-    pub fn same_as(self, other: Bytes) -> bool {
+    pub(crate) fn same_as(self, other: Bytes) -> bool {
         self.compare(other) == Ordering::Equal
     }
 

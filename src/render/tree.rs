@@ -18,7 +18,7 @@ use crate::graph::Node;
 
 /// How a table shows a tree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TreeShape {
+pub(crate) enum TreeShape {
     /// One row per line, each row followed by the rows under it, with no
     /// part moved below as a drawn tree moves them. A row under another
     /// ends with `words` and that row's [`short_name`](TreeRow::short_name),
@@ -37,44 +37,44 @@ pub enum TreeShape {
 /// The deepest level a row is drawn at. The rows at the top of a tree, or
 /// of a part continued below, are on level 0, so no name starts more than
 /// 27 columns into the last column.
-pub const DEEPEST: usize = 9;
+const DEEPEST: usize = 9;
 
 /// A row of a tree, and the rows under it.
-pub struct TreeRow {
+pub(crate) struct TreeRow {
     /// The cells of every column but the last.
-    pub cells: Vec<String>,
+    pub(crate) cells: Vec<String>,
     /// What the last column shows after the tree's branches.
-    pub name: String,
+    pub(crate) name: String,
     /// Words after the name, such as "(through a pointer)".
-    pub mark: Option<String>,
+    pub(crate) mark: Option<String>,
     /// What the rows under it call it, when the tree is shown as rows: a
     /// name often shorter than `name`, such as `process_frame` for
     /// `app::process_frame`.
-    pub short_name: String,
+    pub(crate) short_name: String,
     /// The rows under it, in the order they are drawn.
-    pub children: Vec<TreeRow>,
+    pub(crate) children: Vec<TreeRow>,
     /// The item or import that the row is about, if any, which browse
     /// opens. It is all that `render` knows of the graph.
     #[cfg_attr(not(feature = "tui"), expect(dead_code))]
-    pub node: Option<Node>,
+    pub(crate) node: Option<Node>,
 }
 
 /// A row of a tree shown as rows, one per line (see [`flat_rows`]).
-pub struct FlatTreeRow<'t> {
-    pub row: &'t TreeRow,
+pub(crate) struct FlatTreeRow<'t> {
+    pub(crate) row: &'t TreeRow,
     /// What the last column says after the row's name: its mark, and which
     /// row it hangs under, as in " (through a pointer), kept by main".
-    pub rest: String,
+    pub(crate) rest: String,
     /// Where in `rest` the short name of the row it hangs under starts,
     /// if it says one, which browse shortens to fit.
     #[cfg_attr(not(feature = "tui"), expect(dead_code))]
-    pub under: Option<usize>,
+    pub(crate) under: Option<usize>,
 }
 
 /// The rows of the tree that starts with the rows in `top`, one per line,
 /// as `shape` shows them, which mustn't be [`TreeShape::Drawn`]: each row
 /// followed by the rows under it.
-pub fn flat_rows(top: &[TreeRow], shape: TreeShape) -> Vec<FlatTreeRow<'_>> {
+pub(crate) fn flat_rows(top: &[TreeRow], shape: TreeShape) -> Vec<FlatTreeRow<'_>> {
     let (words, every) = match shape {
         TreeShape::Rows { words } => (words, true),
         TreeShape::Chains { words } => (words, false),
@@ -116,7 +116,11 @@ fn add_flat_rows<'t>(
 impl TreeRow {
     /// A row with no mark, which the rows under it call by its name, about
     /// no item.
-    pub fn new(cells: Vec<String>, name: impl Into<String>, children: Vec<TreeRow>) -> TreeRow {
+    pub(crate) fn new(
+        cells: Vec<String>,
+        name: impl Into<String>,
+        children: Vec<TreeRow>,
+    ) -> TreeRow {
         let name = name.into();
         TreeRow {
             cells,
@@ -139,7 +143,7 @@ impl TreeRow {
 impl Table {
     /// Adds the rows of a tree that starts with the rows in `top`, in the
     /// shape asked for.
-    pub fn tree(&mut self, top: &[TreeRow], shape: TreeShape) {
+    pub(crate) fn tree(&mut self, top: &[TreeRow], shape: TreeShape) {
         if shape == TreeShape::Drawn {
             self.drawn(top);
             return;

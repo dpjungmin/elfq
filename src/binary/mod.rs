@@ -77,7 +77,7 @@ mod header;
 #[cfg(feature = "tui")]
 mod listing;
 mod load;
-pub mod made_names;
+pub(crate) mod made_names;
 mod memory;
 pub mod names;
 mod plt;
@@ -90,11 +90,13 @@ mod unnamed_data;
 mod unnamed_functions;
 mod vector_table;
 
-pub use attributes::ArmArchitecture;
-pub use header::ElfHeader;
-pub use memory::{Bytes, LoadedMemory, same_bytes_in, same_memory};
-pub use range::{AddressRange, MemoryBlock, hex_number, memory_blocks, range_hint};
-pub use vector_table::{Handler, VectorTable, exception_name, is_reserved};
+use attributes::ArmArchitecture;
+pub(crate) use header::ElfHeader;
+pub(crate) use memory::{LoadedMemory, same_bytes_in, same_memory};
+pub use range::AddressRange;
+pub(crate) use range::{MemoryBlock, hex_number, memory_blocks, range_hint};
+pub use vector_table::{Handler, VectorTable};
+pub(crate) use vector_table::{exception_name, is_reserved};
 
 use std::collections::HashMap;
 use std::fmt;
@@ -117,13 +119,13 @@ pub(crate) const STARTUP_ARRAYS: [&str; 5] = [
 #[derive(Debug)]
 pub struct Binary {
     /// The instruction set, such as x86-64 or 32-bit Arm.
-    pub architecture: Architecture,
+    pub(crate) architecture: Architecture,
     /// The size of a pointer in bytes: 4 or 8.
-    pub pointer_size: u64,
+    pub(crate) pointer_size: u64,
     /// What kind of program the file holds. Only in an `Executable`, linked
     /// to run at one address, does elfq read pointers from the words in
     /// data; the others list them in their dynamic relocations.
-    pub kind: FileKind,
+    pub(crate) kind: FileKind,
     /// The address where execution starts.
     pub entry: u64,
     /// For 32-bit Arm, whether the code is Thumb, the instruction set that
@@ -134,11 +136,11 @@ pub struct Binary {
     /// The order of the bytes in the numbers the file holds. In big-endian
     /// Arm firmware (BE8), only data is big-endian: instructions are still
     /// little-endian.
-    pub endianness: Endianness,
+    pub(crate) endianness: Endianness,
     /// Whether the file has a symbol table (`.symtab`). Stripping removes it.
-    pub has_symbols: bool,
+    pub(crate) has_symbols: bool,
     /// Whether the file has DWARF debug info (`.debug_info`).
-    pub has_dwarf: bool,
+    pub(crate) has_dwarf: bool,
     /// The file's sections, indexed by section number as `readelf -S` shows
     /// them. Entry 0 is the ELF null section.
     pub sections: Vec<Section>,
@@ -149,28 +151,30 @@ pub struct Binary {
     pub imports: Vec<String>,
     /// Pointers that the dynamic loader writes into memory at startup,
     /// sorted by address.
-    pub relocations: Vec<Relocation>,
+    pub(crate) relocations: Vec<Relocation>,
     /// Addresses that the unwinder uses while it handles a panic or an
     /// exception, as the unwind table names them (see `eh_frame.rs`): the
     /// personality routines it calls, and where pointers to them are stored
     /// when the table points there instead.
-    pub used_by_unwinder: Vec<u64>,
+    pub(crate) used_by_unwinder: Vec<u64>,
     /// Blocks of variables that the compiler placed side by side, such as
     /// LLVM's `.L_MergedGlobals`. Code takes the block's address and
     /// reaches each variable at an offset from it, so taking that address
     /// can mean using any of them.
-    pub merged_variables: Vec<AddressRange>,
+    pub(crate) merged_variables: Vec<AddressRange>,
     /// The Cortex-M vector table, in Thumb files that have one.
     pub vector_table: Option<VectorTable>,
     /// For 32-bit Arm, the version of the architecture that the code is
     /// built for, as the build attributes in `.ARM.attributes` say.
-    pub arm_architecture: Option<ArmArchitecture>,
+    pub(crate) arm_architecture: Option<ArmArchitecture>,
     /// The stretches of code that the file's `$d` symbols mark as data,
     /// such as literal pools, sorted. Only 32-bit Arm files have them,
-    /// unless they are stripped (see [`Binary::data_in_code`]).
+    /// unless they are stripped (see `Binary::data_in_code`, built only with
+    /// the tui feature).
+    #[cfg_attr(not(feature = "tui"), expect(dead_code))]
     data_in_code: Vec<AddressRange>,
     /// Problems that did not stop loading but may make answers incomplete.
-    pub warnings: Vec<String>,
+    pub(crate) warnings: Vec<String>,
     /// The references in each function's code, by its address and size;
     /// see [`Binary::code_references`]. Not by item index, since unnamed
     /// data is added, and the items sorted again, after the scan. The key
@@ -183,7 +187,7 @@ pub struct Binary {
 
 /// What kind of program the file holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FileKind {
+pub(crate) enum FileKind {
     /// An executable that runs at a fixed address, such as firmware.
     Executable,
     /// An executable that can run at any address, as most Linux programs do.
@@ -201,17 +205,17 @@ pub struct Section {
     pub size: u64,
     /// What the section holds, as the `object` crate tells from its type and
     /// flags, such as `Text` for code or `UninitializedData` for `.bss`.
-    pub kind: SectionKind,
+    pub(crate) kind: SectionKind,
     /// Whether the section is loaded into memory when the program runs.
     /// Only allocated sections hold items.
     pub allocated: bool,
     /// Where the section's bytes are in the file, as (offset, size). `None`
     /// for sections such as `.bss` that take no space in the file.
-    pub file_range: Option<(u64, u64)>,
+    pub(crate) file_range: Option<(u64, u64)>,
     /// The size of each entry, for a section that holds a table of them,
     /// such as `.plt.got`, as the section's header gives it; 0 when it
     /// gives none.
-    pub entry_size: u64,
+    pub(crate) entry_size: u64,
     /// Where the file puts the section's bytes in memory, when that isn't
     /// where the program uses them: the address of its load image, which
     /// the program copies to `address` before it uses it. Firmware stores
@@ -219,7 +223,7 @@ pub struct Section {
     /// flash this way, and its startup code copies them. `None` for most
     /// sections, whose bytes are stored where the program uses them, and
     /// for sections such as `.bss` that take no space in the file.
-    pub load_address: Option<u64>,
+    pub(crate) load_address: Option<u64>,
 }
 
 /// A function or data object.
@@ -298,7 +302,7 @@ pub enum Source {
 impl Source {
     /// Whether the source lists the file's functions, as the symbol tables
     /// and the unwind table do.
-    pub fn lists_functions(self) -> bool {
+    pub(crate) fn lists_functions(self) -> bool {
         matches!(
             self,
             Source::SymbolTable | Source::DynamicSymbolTable | Source::EhFrame
@@ -311,7 +315,7 @@ impl Source {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Relocation {
     /// Where the pointer is stored.
-    pub address: u64,
+    pub(crate) address: u64,
     /// What it points at.
     pub target: RelocationTarget,
 }
@@ -328,7 +332,7 @@ pub enum RelocationTarget {
 impl Binary {
     /// The whole file, for reading parts of it that elfq doesn't keep, such
     /// as DWARF debug info.
-    pub fn file_data(&self) -> &[u8] {
+    pub(crate) fn file_data(&self) -> &[u8] {
         &self.data
     }
 
@@ -337,7 +341,7 @@ impl Binary {
     /// when the code runs on into it (see `end_where_functions_start`):
     /// none when elfq can't read the code. Scanning code is much of what
     /// elfq does, so it scans each function once, as it loads the file.
-    pub fn code_references(&self, function: &Item) -> &[CodeReference] {
+    pub(crate) fn code_references(&self, function: &Item) -> &[CodeReference] {
         self.code_references
             .get(&(function.address, function.size))
             .map_or(&[], Vec::as_slice)
@@ -347,7 +351,8 @@ impl Binary {
     /// symbols mark as data among code, in order. Arm's ELF ABI has
     /// assemblers mark data, such as a literal pool, with `$d`, and code
     /// again with `$t` or `$a`. Stripped files have none.
-    pub fn data_in_code(&self, address: u64, size: u64) -> impl Iterator<Item = AddressRange> + '_ {
+    #[cfg(feature = "tui")]
+    fn data_in_code(&self, address: u64, size: u64) -> impl Iterator<Item = AddressRange> + '_ {
         let end = address.saturating_add(size);
         let first = self
             .data_in_code
@@ -371,7 +376,7 @@ impl Binary {
 
     /// The bytes of `item`, as [`Binary::bytes`] reads them, but from the
     /// section that holds it, without looking for it among all of them.
-    pub fn item_bytes(&self, item: &Item) -> Option<&[u8]> {
+    pub(crate) fn item_bytes(&self, item: &Item) -> Option<&[u8]> {
         let section = &self.sections[item.section];
         if !(section.in_memory() && section.contains(item.address)) {
             return self.bytes(item.address, item.size);
@@ -414,7 +419,11 @@ impl Binary {
 
     /// The words that [`Binary::words`] reads, but only at addresses that
     /// are multiples of their size, where compilers put pointers in data.
-    pub fn aligned_words(&self, start: u64, end: u64) -> impl Iterator<Item = (u64, u64)> + '_ {
+    pub(crate) fn aligned_words(
+        &self,
+        start: u64,
+        end: u64,
+    ) -> impl Iterator<Item = (u64, u64)> + '_ {
         let first = start.checked_next_multiple_of(self.pointer_size);
         self.words(first.unwrap_or(end), end)
     }
@@ -459,18 +468,18 @@ impl Binary {
 
     /// The instruction set that elfq reads the file's code in, or `None`
     /// when it can't read it yet (see `InstructionSet::of`).
-    pub fn instruction_set(&self) -> Option<InstructionSet> {
+    pub(crate) fn instruction_set(&self) -> Option<InstructionSet> {
         InstructionSet::of(self.architecture, self.thumb, self.endianness)
     }
 
     /// Where the reset handler starts, which the vector table names, when
     /// the file has one: the code a Cortex-M processor runs from reset.
-    pub fn reset_handler(&self) -> Option<u64> {
+    pub(crate) fn reset_handler(&self) -> Option<u64> {
         (self.vector_table.as_ref()).and_then(|table| table.reset_handler())
     }
 
     /// The allocated sections that have bytes in `range`.
-    pub fn sections_in(&self, range: AddressRange) -> Vec<&Section> {
+    pub(crate) fn sections_in(&self, range: AddressRange) -> Vec<&Section> {
         self.sections
             .iter()
             .filter(|section| section.allocated && range.overlap(section.address, section.size) > 0)
@@ -478,7 +487,7 @@ impl Binary {
     }
 
     /// The sections whose load images have bytes in `range`.
-    pub fn load_images_in(&self, range: AddressRange) -> Vec<&Section> {
+    pub(crate) fn load_images_in(&self, range: AddressRange) -> Vec<&Section> {
         self.sections
             .iter()
             .filter(|section| {
@@ -492,13 +501,13 @@ impl Binary {
     /// Whether the entry point is in the vector table, as in firmware linked
     /// with no entry point, which is where `.text` starts, when `.text`
     /// begins with the table. It is data then, not code.
-    pub fn entry_in_vector_table(&self) -> bool {
+    pub(crate) fn entry_in_vector_table(&self) -> bool {
         (self.vector_table.as_ref()).is_some_and(|table| table.contains(self.entry))
     }
 
     /// The section that holds `address` when the program runs, as an index
     /// into [`Binary::sections`].
-    pub fn section_at(&self, address: u64) -> Option<usize> {
+    pub(crate) fn section_at(&self, address: u64) -> Option<usize> {
         self.sections
             .iter()
             .position(|section| section.in_memory() && section.contains(address))
@@ -506,7 +515,7 @@ impl Binary {
 
     /// The section of code that holds `address` (see [`Section::is_code`]),
     /// as an index into [`Binary::sections`].
-    pub(crate) fn code_section_at(&self, address: u64) -> Option<usize> {
+    fn code_section_at(&self, address: u64) -> Option<usize> {
         self.sections
             .iter()
             .position(|section| section.is_code() && section.contains(address))
@@ -515,7 +524,7 @@ impl Binary {
     /// `value` as the address of Thumb code, where a pointer to Thumb code
     /// has bit 0 set: when `value` is odd and in a section of code once
     /// that bit is cleared, the address without it.
-    pub(crate) fn thumb_code_address(&self, value: u64) -> Option<u64> {
+    fn thumb_code_address(&self, value: u64) -> Option<u64> {
         if value & 1 == 0 {
             return None;
         }
@@ -526,7 +535,7 @@ impl Binary {
     /// Where the load image of `item` starts, when its section has one
     /// (see [`Section::load_address`]): where the file stores its bytes for
     /// the program to copy to where it uses them.
-    pub fn load_address(&self, item: &Item) -> Option<u64> {
+    pub(crate) fn load_address(&self, item: &Item) -> Option<u64> {
         let section = &self.sections[item.section];
         let offset = item.address.checked_sub(section.address)?;
         section.load_address?.checked_add(offset)
@@ -535,7 +544,7 @@ impl Binary {
     /// The bytes of `item` that sizes count: all of them, or with a range,
     /// those in it. A range counts the item's load image too, where the
     /// file stores it, so a range that holds both copies counts both.
-    pub fn bytes_in(&self, item: &Item, range: Option<AddressRange>) -> u64 {
+    pub(crate) fn bytes_in(&self, item: &Item, range: Option<AddressRange>) -> u64 {
         match range {
             Some(range) => range
                 .overlap(item.address, item.size)
@@ -546,7 +555,7 @@ impl Binary {
 
     /// How many bytes of `item`'s load image `range` holds: 0 when it has
     /// none.
-    pub fn load_image_bytes_in(&self, item: &Item, range: AddressRange) -> u64 {
+    pub(crate) fn load_image_bytes_in(&self, item: &Item, range: AddressRange) -> u64 {
         self.load_address(item)
             .map_or(0, |address| range.overlap(address, item.size))
     }
@@ -583,7 +592,7 @@ impl Binary {
     ///
     /// That is what the dynamic loader writes there, if it writes
     /// something, or else what the file holds (see [`Binary::pointer_at`]).
-    pub fn stored_at(&self, address: u64) -> Option<RelocationTarget> {
+    pub(crate) fn stored_at(&self, address: u64) -> Option<RelocationTarget> {
         match self.relocation_at(address) {
             Some(relocation) => Some(relocation.target),
             None => self.pointer_at(address).map(RelocationTarget::Address),
@@ -601,7 +610,7 @@ impl Binary {
 
     /// The relocations that store pointers in the `size` bytes at
     /// `address`, in address order.
-    pub fn relocations_in(&self, address: u64, size: u64) -> &[Relocation] {
+    pub(crate) fn relocations_in(&self, address: u64, size: u64) -> &[Relocation] {
         let start = self.relocations.partition_point(|r| r.address < address);
         let end = address.saturating_add(size);
         let count = self.relocations[start..].partition_point(|r| r.address < end);
@@ -631,13 +640,13 @@ struct WordsRun<'a> {
 
 impl Item {
     /// Whether `address` is the item's first byte or falls inside it.
-    pub fn contains(&self, address: u64) -> bool {
+    pub(crate) fn contains(&self, address: u64) -> bool {
         address == self.address || (address > self.address && address - self.address < self.size)
     }
 
     /// The addresses the item occupies, where an item of unknown size
     /// counts as its first byte.
-    pub fn range(&self) -> AddressRange {
+    pub(crate) fn range(&self) -> AddressRange {
         AddressRange {
             start: self.address,
             end: self.address.saturating_add(self.size.max(1)),
@@ -661,29 +670,29 @@ impl Item {
 
     /// Whether the item is a function whose end elfq doesn't know, so that
     /// it can't read its code.
-    pub fn end_unknown(&self) -> bool {
+    pub(crate) fn end_unknown(&self) -> bool {
         self.kind == ItemKind::Function && self.size == 0
     }
 
     /// Whether the item is a function whose code is in this file and can be
     /// read: not a PLT stub, whose code is a library's, nor a function whose
     /// end elfq doesn't know.
-    pub fn is_own_function(&self) -> bool {
+    pub(crate) fn is_own_function(&self) -> bool {
         self.kind == ItemKind::Function && self.source != Source::Plt && self.size > 0
     }
 }
 
 /// The bytes of functions and the bytes of data objects, counted apart.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct CodeAndData {
-    pub code: u64,
-    pub data: u64,
+pub(crate) struct CodeAndData {
+    pub(crate) code: u64,
+    pub(crate) data: u64,
 }
 
 impl CodeAndData {
     /// Counts `item`'s bytes, as code or as data. Sums stop at the largest
     /// `u64` rather than overflow.
-    pub fn add(&mut self, item: &Item) {
+    pub(crate) fn add(&mut self, item: &Item) {
         let bytes = match item.kind {
             ItemKind::Function => &mut self.code,
             ItemKind::Data => &mut self.data,
@@ -692,14 +701,14 @@ impl CodeAndData {
     }
 
     /// The bytes of code and data together.
-    pub fn total(self) -> u64 {
+    pub(crate) fn total(self) -> u64 {
         self.code.saturating_add(self.data)
     }
 }
 
 impl Section {
     /// Whether `address` falls inside the section.
-    pub fn contains(&self, address: u64) -> bool {
+    pub(crate) fn contains(&self, address: u64) -> bool {
         address >= self.address && address - self.address < self.size
     }
 
@@ -715,7 +724,7 @@ impl Section {
     /// [`LoadedMemory::stores_code`] asks the header's executable flag
     /// instead, on purpose: in a file of debug info alone, `.text` takes
     /// no space in the file, so its kind isn't `Text`.
-    pub fn is_code(&self) -> bool {
+    pub(crate) fn is_code(&self) -> bool {
         self.allocated && self.kind == SectionKind::Text
     }
 
@@ -724,7 +733,7 @@ impl Section {
     /// code, though in Thumb files the constants in code get items too
     /// (see `unnamed_data::items`), and not the global offset table: elfq
     /// follows the pointers stored there to what they point at instead.
-    pub fn holds_data(&self) -> bool {
+    fn holds_data(&self) -> bool {
         self.allocated
             && matches!(
                 self.kind,
@@ -739,7 +748,7 @@ impl Section {
     /// Whether the section is one of the arrays of functions that the C
     /// runtime calls at startup and exit, such as `.init_array` (see
     /// `STARTUP_ARRAYS`), and allocated.
-    pub fn is_startup_array(&self) -> bool {
+    pub(crate) fn is_startup_array(&self) -> bool {
         self.allocated && STARTUP_ARRAYS.contains(&self.name.as_str())
     }
 }
@@ -791,7 +800,7 @@ fn code_address(architecture: Architecture, address: u64) -> u64 {
 /// The sum of `sizes`, which stops at the largest `u64` rather than
 /// overflow: in a damaged file, items or inlined copies can overlap, and
 /// their sizes add up to more than a `u64` holds.
-pub fn total(sizes: impl Iterator<Item = u64>) -> u64 {
+pub(crate) fn total(sizes: impl Iterator<Item = u64>) -> u64 {
     sizes.fold(0, u64::saturating_add)
 }
 

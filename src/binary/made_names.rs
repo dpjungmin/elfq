@@ -26,7 +26,7 @@ pub(super) fn data_name_at(section: &Section, address: u64) -> String {
 /// Whether `name` has the shape of `data_name_at`'s names, which say where
 /// their data is: an `@` in it, as in `.rodata@0x2004`. A symbol whose name
 /// has an `@` counts too.
-pub fn says_data_address(name: &str) -> bool {
+pub(crate) fn says_data_address(name: &str) -> bool {
     name.contains('@')
 }
 
@@ -37,7 +37,7 @@ pub(super) const ENTRY_NAME: &str = "entry";
 /// functions and data do: it has the shape of a data name
 /// ([`says_data_address`]), or starts with `fn_0x`. A symbol whose name
 /// has an `@` counts too.
-pub fn says_address(name: &str) -> bool {
+pub(crate) fn says_address(name: &str) -> bool {
     says_data_address(name) || name.starts_with("fn_0x")
 }
 
@@ -48,7 +48,7 @@ impl Item {
     /// as the vector table is when it is only part of its section. An item
     /// named after its whole section, such as `.init_array`, is named
     /// after what it is.
-    pub fn has_made_name(&self) -> bool {
+    pub(crate) fn has_made_name(&self) -> bool {
         match self.source {
             Source::EhFrame | Source::EntryPoint | Source::Reached | Source::Reference => true,
             Source::Section => self.name.contains("@0x"),

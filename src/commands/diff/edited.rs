@@ -98,7 +98,7 @@ struct Loaded<'a> {
 }
 
 impl<'a> Edits<'a> {
-    pub fn new(old: &'a Build, new: &'a Build, pairing: &'a Pairing) -> Edits<'a> {
+    pub(super) fn new(old: &'a Build, new: &'a Build, pairing: &'a Pairing) -> Edits<'a> {
         Edits {
             old,
             new,
@@ -112,7 +112,7 @@ impl<'a> Edits<'a> {
     /// of the same size, are edited: their bytes differ other than where
     /// they say where something is, or their code uses different items in
     /// the new build than in the old.
-    pub fn edited(&self, old_item: usize, new_item: usize) -> bool {
+    pub(super) fn edited(&self, old_item: usize, new_item: usize) -> bool {
         let (old_binary, new_binary) = (&self.old.binary, &self.new.binary);
         let (old, new) = (&old_binary.items[old_item], &new_binary.items[new_item]);
         let (Some(old_loaded), Some(new_loaded)) =

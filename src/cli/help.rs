@@ -50,7 +50,7 @@ stdout.";
 
 /// The words of the HOW column, each with what it means, which `--help`
 /// prints as a table, and browse's help page lists too.
-pub const HOW_WORDS: [(&str, &str); 5] = [
+pub(crate) const HOW_WORDS: [(&str, &str); 5] = [
     (
         "call",
         "a direct call, or a call through a register that the code loaded with \

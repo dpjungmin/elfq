@@ -21,7 +21,7 @@ use crate::support::{SAMPLE, sample_path};
 
 /// A sample's bytes, to change and save for elfq to read. The samples are
 /// little-endian, and each field is read and written so.
-pub struct ElfBytes {
+pub(crate) struct ElfBytes {
     bytes: Vec<u8>,
     /// Whether it is a 64-bit file, whose fields are placed differently.
     is_64: bool,
@@ -29,7 +29,7 @@ pub struct ElfBytes {
 
 /// A field of the ELF header.
 #[derive(Clone, Copy)]
-pub enum HeaderField {
+pub(crate) enum HeaderField {
     /// `e_type`: what kind of file it is, as `elf::ET_EXEC`.
     Type,
     /// `e_machine`: the processor that its code is for, as `elf::EM_ARM`.
@@ -54,7 +54,7 @@ pub enum HeaderField {
 
 /// A field of a section header.
 #[derive(Clone, Copy)]
-pub enum SectionField {
+pub(crate) enum SectionField {
     /// `sh_type`: what the section holds, as `elf::SHT_PROGBITS`.
     Type,
     /// `sh_flags`, such as `elf::SHF_ALLOC` for a section the program loads.
@@ -69,7 +69,7 @@ pub enum SectionField {
 
 /// A field of a program header, which describes a segment.
 #[derive(Clone, Copy)]
-pub enum SegmentField {
+pub(crate) enum SegmentField {
     /// `p_type`: what the segment is, as `elf::PT_LOAD`.
     Type,
     /// `p_vaddr`: where the program uses the segment.
@@ -89,7 +89,7 @@ pub enum SegmentField {
 /// What a field can be set to: a number, or a constant.
 ///
 /// The constants are `object::elf`'s, such as `elf::EM_ARM`.
-pub trait FieldValue {
+pub(crate) trait FieldValue {
     fn number(self) -> u64;
 }
 
@@ -195,7 +195,7 @@ impl Deref for ElfBytes {
 
 impl ElfBytes {
     /// The sample at `path`, as bytes to change.
-    pub fn sample(path: &str) -> Self {
+    pub(crate) fn sample(path: &str) -> Self {
         let bytes = std::fs::read(sample_path(path)).unwrap();
         let file = object::File::parse(&*bytes).unwrap_or_else(|err| panic!("{path}: {err}"));
         assert!(file.is_little_endian(), "{path}");
@@ -209,7 +209,7 @@ impl ElfBytes {
     /// parallel, and some save the same file, so it is written under a
     /// name of its own first and then renamed: elfq never reads a file
     /// that another test is still writing.
-    pub fn save(&self, name: &str) -> String {
+    pub(crate) fn save(&self, name: &str) -> String {
         static SAVED: AtomicUsize = AtomicUsize::new(0);
         let folder = Path::new(env!("CARGO_TARGET_TMPDIR"));
         let partial = folder.join(format!(
@@ -224,17 +224,17 @@ impl ElfBytes {
     }
 
     /// `field` in the ELF header.
-    pub fn header(&self, field: HeaderField) -> u64 {
+    pub(crate) fn header(&self, field: HeaderField) -> u64 {
         self.read(0, field.place())
     }
 
     /// Sets `field` in the ELF header to `value`.
-    pub fn set(&mut self, field: HeaderField, value: impl FieldValue) -> &mut Self {
+    pub(crate) fn set(&mut self, field: HeaderField, value: impl FieldValue) -> &mut Self {
         self.write(0, field.place(), value.number())
     }
 
     /// Sets `field` in the header of the section `section` to `value`.
-    pub fn set_section(
+    pub(crate) fn set_section(
         &mut self,
         section: &str,
         field: SectionField,
@@ -245,14 +245,14 @@ impl ElfBytes {
     }
 
     /// `field` in the header of the section at `index`, counting from 0.
-    pub fn section_at(&self, index: usize, field: SectionField) -> u64 {
+    pub(crate) fn section_at(&self, index: usize, field: SectionField) -> u64 {
         self.read(self.section_header(index), field.place())
     }
 
     /// Sets `field` in the header of the section at `index` to `value`.
     ///
     /// The index counts from 0.
-    pub fn set_section_at(
+    pub(crate) fn set_section_at(
         &mut self,
         index: usize,
         field: SectionField,
@@ -263,7 +263,7 @@ impl ElfBytes {
     }
 
     /// The bytes of the section named `section`, to change in place.
-    pub fn section_bytes_mut(&mut self, section: &str) -> &mut [u8] {
+    pub(crate) fn section_bytes_mut(&mut self, section: &str) -> &mut [u8] {
         let index = self.section_index(section);
         let offset = self.section_at(index, SectionField::Offset) as usize;
         let size = self.section_at(index, SectionField::Size) as usize;
@@ -271,7 +271,7 @@ impl ElfBytes {
     }
 
     /// Points the section named `section` at `bytes`, put at the file's end.
-    pub fn replace_section(&mut self, section: &str, bytes: &[u8]) -> &mut Self {
+    pub(crate) fn replace_section(&mut self, section: &str, bytes: &[u8]) -> &mut Self {
         let offset = self.bytes.len() as u64;
         self.bytes.extend_from_slice(bytes);
         self.set_section(section, SectionField::Offset, offset)
@@ -279,13 +279,13 @@ impl ElfBytes {
     }
 
     /// The address that the symbol table gives `symbol`.
-    pub fn symbol_address(&self, symbol: &str) -> u64 {
+    pub(crate) fn symbol_address(&self, symbol: &str) -> u64 {
         let file = object::File::parse(&*self.bytes).unwrap();
         file.symbol_by_name(symbol).unwrap().address()
     }
 
     /// Sets the size that `.symtab` gives `symbol` to `size`.
-    pub fn set_symbol_size(&mut self, symbol: &str, size: u64) -> &mut Self {
+    pub(crate) fn set_symbol_size(&mut self, symbol: &str, size: u64) -> &mut Self {
         let file = object::File::parse(&*self.bytes).unwrap();
         let index = file.symbol_by_name(symbol).unwrap().index().0;
         let table = self.section_at(self.section_index(".symtab"), SectionField::Offset) as usize;
@@ -301,7 +301,7 @@ impl ElfBytes {
     /// Gives the symbol named `old` the name `new`, which is as long.
     ///
     /// It changes the name in `.strtab`, where it is.
-    pub fn rename_symbol(&mut self, old: &str, new: &str) -> &mut Self {
+    pub(crate) fn rename_symbol(&mut self, old: &str, new: &str) -> &mut Self {
         assert_eq!(old.len(), new.len(), "{old} and {new}");
         let strtab = self.section_bytes_mut(".strtab");
         let name = [b"\0", old.as_bytes(), b"\0"].concat();
@@ -316,7 +316,7 @@ impl ElfBytes {
     /// The relocations that the section `section` lists, to change in place.
     ///
     /// The file is 64-bit, and they are relocations with addends.
-    pub fn relocations_mut(&mut self, section: &str) -> &mut [Rela64<LittleEndian>] {
+    pub(crate) fn relocations_mut(&mut self, section: &str) -> &mut [Rela64<LittleEndian>] {
         assert!(self.is_64);
         object::pod::slice_from_all_bytes_mut(self.section_bytes_mut(section)).unwrap()
     }
@@ -325,7 +325,7 @@ impl ElfBytes {
     ///
     /// The vector table is the section `.isr_vector`. Its entries are
     /// numbered from the stack pointer's, as exceptions are.
-    pub fn set_vector_entry(&mut self, entry: usize, value: u64) -> &mut Self {
+    pub(crate) fn set_vector_entry(&mut self, entry: usize, value: u64) -> &mut Self {
         assert!(!self.is_64, "Cortex-M firmware is 32-bit");
         let table = self.section_at(self.section_index(".isr_vector"), SectionField::Offset);
         self.write_number(table as usize + entry * 4, 4, value);
@@ -333,14 +333,14 @@ impl ElfBytes {
     }
 
     /// `field` in the program header at `index`, counting from 0.
-    pub fn segment_at(&self, index: usize, field: SegmentField) -> u64 {
+    pub(crate) fn segment_at(&self, index: usize, field: SegmentField) -> u64 {
         self.read(self.program_header(index), field.place())
     }
 
     /// Sets `field` in the program header at `index` to `value`.
     ///
     /// The index counts from 0.
-    pub fn set_segment_at(
+    pub(crate) fn set_segment_at(
         &mut self,
         index: usize,
         field: SegmentField,
@@ -355,7 +355,7 @@ impl ElfBytes {
     /// It is the segment that the program uses at `address` and that the
     /// file stores elsewhere, as a load image: the one whose load address
     /// isn't `address`.
-    pub fn load_image_segment(&self, address: u64) -> usize {
+    pub(crate) fn load_image_segment(&self, address: u64) -> usize {
         (0..self.header(HeaderField::ProgramHeaderCount) as usize)
             .find(|&index| {
                 self.segment_at(index, SegmentField::Address) == address
@@ -367,7 +367,7 @@ impl ElfBytes {
     /// Marks the file as AArch64 code, which elfq can't read yet. When elfq
     /// learns to read it, this must name another machine, and the tests
     /// that name AArch64 must change with it.
-    pub fn mark_code_unreadable(&mut self) -> &mut Self {
+    pub(crate) fn mark_code_unreadable(&mut self) -> &mut Self {
         self.set(HeaderField::Machine, elf::EM_AARCH64)
     }
 
@@ -424,7 +424,7 @@ impl ElfBytes {
 /// The attributes say only that its code is for that version of the Arm
 /// architecture (Tag_CPU_arch), on a Cortex-M core; or, when `version` is
 /// `None`, `.ARM.attributes` is empty, which says nothing.
-pub fn for_arm_version(path: &str, version: Option<u8>) -> ElfBytes {
+pub(crate) fn for_arm_version(path: &str, version: Option<u8>) -> ElfBytes {
     let mut section = Vec::new();
     if let Some(version) = version {
         // Version `A`, then the `aeabi` vendor's attributes, then those of
@@ -443,7 +443,7 @@ pub fn for_arm_version(path: &str, version: Option<u8>) -> ElfBytes {
 
 /// The x86-64 sample, with the bytes of each of `sections` past the end
 /// of the file.
-pub fn past_the_end(sections: &[&str]) -> ElfBytes {
+pub(crate) fn past_the_end(sections: &[&str]) -> ElfBytes {
     let mut data = ElfBytes::sample(SAMPLE);
     for section in sections {
         data.set_section(section, SectionField::Offset, u64::MAX - 15);
@@ -454,7 +454,7 @@ pub fn past_the_end(sections: &[&str]) -> ElfBytes {
 /// The sample at `path` without section headers.
 ///
 /// Its `e_shoff`, `e_shnum` and `e_shstrndx` are 0.
-pub fn without_section_headers(path: &str) -> ElfBytes {
+pub(crate) fn without_section_headers(path: &str) -> ElfBytes {
     let mut data = ElfBytes::sample(path);
     data.set(HeaderField::SectionHeaders, 0)
         .set(HeaderField::SectionHeaderCount, 0)
@@ -466,7 +466,7 @@ pub fn without_section_headers(path: &str) -> ElfBytes {
 /// `.text`, that each call the one before. It starts at the last. The first
 /// function takes 2 bytes and the others 8, since elfq leaves out the
 /// padding after the first.
-pub fn chain_of_calls(count: usize) -> ElfBytes {
+pub(crate) fn chain_of_calls(count: usize) -> ElfBytes {
     // bx lr, then three nops as padding.
     let mut code: Vec<u16> = vec![0x4770, 0xbf00, 0xbf00, 0xbf00];
     for _ in 1..count {

@@ -32,7 +32,7 @@ struct Callers<'a> {
 /// callers in them, and then SYMBOL is asked about as the range it
 /// occupies. For SYMBOL alone, the text lists the 30 largest callers, or
 /// with `all`, every one; for ranges, see [`range_check::run`].
-pub fn run(
+pub(super) fn run(
     binary: &Binary,
     symbols: &[String],
     from: &[AddressRange],

@@ -262,7 +262,7 @@ impl<'a> Leaving<'a> {
 /// answer is `limited` to some ranges, as with `--to`, a call to a known
 /// address in them, as to a chip's ROM, is a whole answer, as `callers
 /// --from` counts it: only a call through a pointer leaves it open.
-pub(crate) fn complete<'u>(
+pub(in crate::commands) fn complete<'u>(
     cant_follow: impl IntoIterator<Item = &'u Unresolved>,
     unreadable: &[usize],
     limited: bool,

@@ -56,7 +56,7 @@ struct RetainedJson<'a> {
 }
 
 /// Answers `elfq FILE retained SYMBOL`: what removing SYMBOL would save.
-pub fn run(
+pub(super) fn run(
     binary: &Binary,
     symbol: &str,
     range: Option<AddressRange>,
@@ -368,14 +368,14 @@ impl<'t, 'g, 'a> Parts<'t, 'g, 'a> {
 /// leads to.
 #[derive(Clone, Copy)]
 pub(super) struct SymbolInTree<'t, 'g, 'a> {
-    pub retained: &'t RetainedTree<'g, 'a>,
+    pub(super) retained: &'t RetainedTree<'g, 'a>,
     /// SYMBOL's item, as an index into [`Binary::items`].
-    pub index: usize,
+    pub(super) index: usize,
     /// The item's name as the answer's first line gives it (see
     /// [`Symbol::lead_name`]).
     ///
     /// [`Symbol::lead_name`]: super::symbol::Symbol::lead_name
-    pub lead_name: &'t str,
+    pub(super) lead_name: &'t str,
 }
 
 impl SymbolInTree<'_, '_, '_> {

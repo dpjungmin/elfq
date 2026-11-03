@@ -22,10 +22,10 @@ use super::{Binary, RelocationTarget};
 #[derive(Default)]
 pub(super) struct UnwindTable {
     /// Every function the table describes.
-    pub functions: Vec<UnwindFunction>,
+    pub(super) functions: Vec<UnwindFunction>,
     /// The personality routines: their addresses, or for an indirect
     /// pointer, the address where their address is stored.
-    pub personalities: Vec<Pointer>,
+    pub(super) personalities: Vec<Pointer>,
 }
 
 /// A function as the unwind table describes it: where it starts and how
@@ -34,8 +34,8 @@ pub(super) struct UnwindTable {
 /// `load.rs` checks before it makes an item of it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct UnwindFunction {
-    pub start: u64,
-    pub length: u64,
+    pub(super) start: u64,
+    pub(super) length: u64,
 }
 
 /// Reads the unwind table, which is empty when the file has no `.eh_frame`.

@@ -126,7 +126,7 @@ pub(super) struct Compare {
     pub(super) numbers: [Option<u32>; 2],
 }
 
-pub(super) type Memory = Rc<BTreeMap<u32, Option<u32>>>;
+type Memory = Rc<BTreeMap<u32, Option<u32>>>;
 
 /// The condition flags, each when the walk can tell.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

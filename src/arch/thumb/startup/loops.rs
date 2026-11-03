@@ -59,13 +59,7 @@ impl Walker<'_> {
     /// Walks a loop's code once, from `head` to the branch at `back`, with
     /// what the walk knows now, and goes on with what it knows after.
     /// Returns where the walk of the code stopped before `back`, if it did.
-    pub(super) fn loop_body(
-        &mut self,
-        run: &mut Run,
-        frame: Frame,
-        head: u64,
-        back: u64,
-    ) -> Option<End> {
+    fn loop_body(&mut self, run: &mut Run, frame: Frame, head: u64, back: u64) -> Option<End> {
         if frame.nesting >= NESTING {
             return Some(End::Budget(head));
         }

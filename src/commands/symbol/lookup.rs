@@ -25,7 +25,7 @@ use crate::graph::Node;
 ///   alias, which no row shows, and failing a shorter form, the whole name.
 /// - [`Names::row_name`]: what a row says after "used by": keeps a PLT
 ///   stub's `@plt`, and failing a shorter form, the address.
-pub(crate) struct Names<'a> {
+pub(in crate::commands) struct Names<'a> {
     pub(super) binary: &'a Binary,
     /// Names of items and imports, and aliases of items.
     full: OnceCell<HashMap<&'a str, Vec<Node>>>,
@@ -75,7 +75,7 @@ struct Words<'a> {
 }
 
 impl<'a> Names<'a> {
-    pub(crate) fn new(binary: &'a Binary) -> Names<'a> {
+    pub(in crate::commands) fn new(binary: &'a Binary) -> Names<'a> {
         Names {
             binary,
             full: OnceCell::new(),
@@ -93,7 +93,7 @@ impl<'a> Names<'a> {
     /// starts, the vector table's reset handler or the entry point, since
     /// every reader knows where those fit; otherwise the largest function.
     /// The overview's Try lines and `reach` without SYMBOL start here.
-    pub(crate) fn starting_point(&self) -> Option<usize> {
+    pub(in crate::commands) fn starting_point(&self) -> Option<usize> {
         let binary = self.binary;
         // `main` as SYMBOL would find it, so also `app::main` in Rust.
         let main = match self.nodes("main") {
@@ -116,7 +116,7 @@ impl<'a> Names<'a> {
 
     /// Finds the item or import that `query` names. When it could mean
     /// several, or none, the error lists names to try instead.
-    pub(crate) fn find(&self, query: &str) -> Result<Symbol> {
+    pub(in crate::commands) fn find(&self, query: &str) -> Result<Symbol> {
         if let Some(address) = hex_number(query) {
             let address =
                 address.with_context(|| format!("`{query}` is not a hexadecimal address"))?;
@@ -159,7 +159,7 @@ impl<'a> Names<'a> {
     /// out why `query` finds several or none, which can take seconds in a
     /// large file.
     #[cfg(feature = "tui")]
-    pub(crate) fn find_one(&self, query: &str) -> Option<Symbol> {
+    pub(in crate::commands) fn find_one(&self, query: &str) -> Option<Symbol> {
         // An address finds its item without looking up a name.
         if hex_number(query).is_some() {
             return self.find(query).ok();
@@ -200,7 +200,7 @@ impl<'a> Names<'a> {
 
     /// What `query` finds: the items and imports with that name, or if
     /// there are none, the items with that short name.
-    pub(crate) fn nodes(&self, query: &str) -> &[Node] {
+    pub(in crate::commands) fn nodes(&self, query: &str) -> &[Node] {
         if let Some(nodes) = self.full().get(query) {
             return nodes;
         }
@@ -313,7 +313,7 @@ impl<'a> Names<'a> {
     /// thousands. When that is many of the file's items, every short name
     /// is worked out at once, the first time one is needed after this,
     /// which is quicker than key by key.
-    pub(crate) fn will_name(&self, count: usize) {
+    pub(in crate::commands) fn will_name(&self, count: usize) {
         if count > self.binary.items.len() / 4 {
             self.many.set(true);
         }
@@ -406,7 +406,7 @@ impl<'a> Names<'a> {
     /// The shortest thing to type that finds only `node`: a short name, a
     /// name other than a mangled symbol, or failing those, an item's
     /// address.
-    pub(crate) fn query_for(&self, node: Node) -> String {
+    pub(in crate::commands) fn query_for(&self, node: Node) -> String {
         self.shortest_name(node, self.names_of(node), |_| true)
             .unwrap_or_else(|| match node {
                 Node::Item(index) => format!("{:#x}", self.binary.items[index].address),
@@ -419,7 +419,7 @@ impl<'a> Names<'a> {
     /// name the row it hangs under, such as `crc32` in "crc_table, kept by
     /// crc32". Unlike [`Names::query_for`], it never picks an alias, which
     /// no row shows.
-    pub(crate) fn short_name(&self, node: Node) -> String {
+    pub(in crate::commands) fn short_name(&self, node: Node) -> String {
         let name = node.name(self.binary);
         self.shortest_name(node, vec![name], |_| true)
             .unwrap_or_else(|| name.to_string())
@@ -429,7 +429,7 @@ impl<'a> Names<'a> {
     /// works as SYMBOL: the shortest form of its name that finds only the
     /// item, as [`Names::short_name`] picks it but keeping a PLT stub's
     /// `@plt`, or else its address, as when two functions share a name.
-    pub(crate) fn row_name(&self, index: usize) -> String {
+    pub(in crate::commands) fn row_name(&self, index: usize) -> String {
         let node = Node::Item(index);
         let name = node.name(self.binary);
         // Without `@plt`, a stub's name means what the stub passes calls

@@ -2882,9 +2882,15 @@ fn notes_say_where_in_an_item_a_line_uses_and_what_elfq_cant_follow() {
 }
 
 /// Runs elfq with `args` in a terminal of 100x30 that `script` makes, and
-/// once it has drawn its hint line, types `keys`, if any. Returns its exit
-/// status, 3 if it left the terminal's settings changed, and everything it
-/// wrote, or `None` without `script`.
+/// once it has drawn its hint line, types `keys`, if any.
+///
+/// `timeout` stops it after 60 seconds. Returns its exit status, 3 if it
+/// left the terminal's settings changed, and everything it wrote; the
+/// status is 124 if `timeout` stopped it, and 127 if there is no `script`.
+/// With `keys`, it panics instead if the output ends before the hint line,
+/// as it does when there is no `script`, or when `timeout` stops elfq
+/// before it draws one. Returns `None` only when there is no `timeout` to
+/// start, and panics when starting it fails in another way.
 #[cfg(target_os = "linux")]
 fn in_a_terminal(args: &[&str], keys: &str) -> Option<(Option<i32>, String)> {
     use std::io::{Read, Write};
@@ -2934,7 +2940,7 @@ fn the_files_warnings_are_printed_when_browse_quits_or_refuses_it() {
     let warning = "warning: section .plt runs past the end of the file";
     let path = past_the_end(&[".plt"]).save("plt-offset.elf");
     let Some((status, output)) = in_a_terminal(&[&path, "browse", "log_msg"], "q") else {
-        eprintln!("no `script` to run elfq in a terminal");
+        eprintln!("no `timeout` to run elfq in a terminal with");
         return;
     };
     assert_eq!(status, Some(0), "{output:?}");
@@ -2959,7 +2965,7 @@ fn the_files_warnings_are_printed_when_browse_quits_or_refuses_it() {
 fn the_start_page_is_drawn_in_a_terminal() {
     let Some((status, output)) = in_a_terminal(&["testdata/bin/c-cortex-m7.elf", "browse"], "q")
     else {
-        eprintln!("no `script` to run elfq in a terminal");
+        eprintln!("no `timeout` to run elfq in a terminal with");
         return;
     };
     assert_eq!(status, Some(0), "{output:?}");

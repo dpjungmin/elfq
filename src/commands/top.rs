@@ -50,7 +50,7 @@ struct Unreachable<'a> {
 }
 
 /// Answers `elfq FILE top`: the largest items, or every item with `all`.
-pub fn run(
+pub(super) fn run(
     binary: &Binary,
     range: Option<AddressRange>,
     all: bool,

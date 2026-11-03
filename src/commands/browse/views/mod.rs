@@ -35,14 +35,14 @@ use crate::commands::text;
 use crate::graph::Node;
 use item::Tab;
 
-pub use help::Help;
-pub use item::{ItemPage, Listing, SlowTab};
-pub use names::{FittedRows, fit_name, name_fitter};
-pub use picker::{Picker, first_line};
-pub use start::StartPage;
+pub(super) use help::Help;
+pub(super) use item::{ItemPage, Listing, SlowTab};
+use names::{FittedRows, fit_name, name_fitter};
+pub(super) use picker::{Picker, first_line};
+pub(super) use start::StartPage;
 
 /// Where an action takes the user.
-pub enum Go {
+pub(super) enum Go {
     /// Opens a page after this one.
     Open(View),
     /// Something to say on the status line.
@@ -50,7 +50,7 @@ pub enum Go {
 }
 
 /// One page of the browser.
-pub enum View {
+pub(super) enum View {
     /// Where the program starts: the page browse opens without SYMBOL.
     Start(StartPage),
     /// An item's page: a function's code, and what uses the item.
@@ -63,7 +63,7 @@ impl View {
     /// Its name in the title line's trail, shortened to fit `room`
     /// columns: none for the start page, since the trail starts with the
     /// file's name.
-    pub fn title(&mut self, room: usize) -> &str {
+    pub(super) fn title(&mut self, room: usize) -> &str {
         match self {
             View::Start(_) => "",
             View::Item(page) => page.title(room),
@@ -71,7 +71,7 @@ impl View {
         }
     }
 
-    pub fn draw(&mut self, frame: &mut Frame, area: Rect) {
+    pub(super) fn draw(&mut self, frame: &mut Frame, area: Rect) {
         match self {
             View::Start(start) => start.draw(frame, area),
             View::Item(page) => page.draw(frame, area),
@@ -83,7 +83,7 @@ impl View {
     ///
     /// That is what the start page shows, or tab 4, 5 or 6 of an item's
     /// page, the first time it is shown (see `App::pending`).
-    pub fn work_out(&mut self, session: &Session) {
+    pub(super) fn work_out(&mut self, session: &Session) {
         match self {
             View::Start(start) => start.work_out(session),
             View::Item(page) => page.work_out(session),
@@ -91,7 +91,7 @@ impl View {
         }
     }
 
-    pub fn handle(&mut self, session: &Session, action: Action) -> Option<Go> {
+    pub(super) fn handle(&mut self, session: &Session, action: Action) -> Option<Go> {
         match self {
             View::Start(start) => start.handle(session, action),
             View::Item(page) => page.handle(session, action),
@@ -104,7 +104,7 @@ impl View {
 
     /// Goes back within the page, as from a jump inside a function, when
     /// there is somewhere to go back to.
-    pub fn back(&mut self) -> bool {
+    pub(super) fn back(&mut self) -> bool {
         match self {
             View::Item(page) => page.back(),
             View::Start(_) | View::Help(_) => false,
@@ -112,7 +112,7 @@ impl View {
     }
 
     /// A line about the selected row, such as what its link goes to.
-    pub fn preview(&self, session: &Session) -> Option<String> {
+    pub(super) fn preview(&self, session: &Session) -> Option<String> {
         match self {
             View::Start(start) => start.preview(session),
             View::Item(page) => page.preview(session),
@@ -122,7 +122,7 @@ impl View {
 
     /// The selected row's value, when its row cuts it to fit a screen
     /// `width` columns wide, as a long string in a data object's contents.
-    pub fn value(&self, width: usize) -> Option<&str> {
+    pub(super) fn value(&self, width: usize) -> Option<&str> {
         match self {
             View::Item(page) => page.value(width),
             View::Start(_) | View::Help(_) => None,
@@ -130,7 +130,7 @@ impl View {
     }
 
     /// Whether the page has lines that link, which Tab moves between.
-    pub fn has_links(&self) -> bool {
+    pub(super) fn has_links(&self) -> bool {
         match self {
             View::Start(start) => start.has_links(),
             View::Item(page) => page.has_links(),
@@ -139,7 +139,7 @@ impl View {
     }
 
     /// The numbers of the page's tabs, whose keys show them.
-    pub fn tabs(&self) -> Vec<u8> {
+    pub(super) fn tabs(&self) -> Vec<u8> {
         match self {
             View::Item(page) => page.tab_numbers(),
             View::Start(_) | View::Help(_) => Vec::new(),
@@ -148,7 +148,7 @@ impl View {
 
     /// The command that prints what the page shows, ready to paste, if
     /// one does.
-    pub fn command(&self) -> Option<&str> {
+    pub(super) fn command(&self) -> Option<&str> {
         match self {
             View::Start(start) => start.command(),
             View::Item(page) => page.command(),
@@ -159,7 +159,7 @@ impl View {
     /// The cursor over the page's rows, which find moves: the lines of a
     /// function's code, or the rows of a table. The help has none, and
     /// nor does a table without rows.
-    pub fn cursor(&mut self) -> Option<&mut Cursor> {
+    pub(super) fn cursor(&mut self) -> Option<&mut Cursor> {
         match self {
             View::Start(start) => start.cursor(),
             View::Item(page) => page.cursor(),
@@ -170,7 +170,7 @@ impl View {
 
     /// What find calls the page's rows: "line" on a function's code, and
     /// "row" in a table.
-    pub fn row_noun(&self) -> &'static str {
+    pub(super) fn row_noun(&self) -> &'static str {
         match self {
             View::Item(page) => page.row_noun(),
             View::Start(_) | View::Help(_) => "row",
@@ -180,7 +180,7 @@ impl View {
     /// The rows that have `lowercase`, text in lower case, ignoring case,
     /// in order. A row's columns are looked in one at a time, as the page
     /// shows them, but with names in full.
-    pub fn rows_with(&self, lowercase: &str) -> Vec<usize> {
+    pub(super) fn rows_with(&self, lowercase: &str) -> Vec<usize> {
         match self {
             View::Start(start) => start.rows_with(lowercase),
             View::Item(page) => page.rows_with(lowercase),
@@ -192,7 +192,7 @@ impl View {
 /// Whether `text` has `lowercase`, text in lower case, ignoring case. Text
 /// in ASCII, as most is, is compared where it is, without making a copy in
 /// lower case, since find looks through every line of a function.
-pub fn has_ignoring_case(text: &str, lowercase: &str) -> bool {
+fn has_ignoring_case(text: &str, lowercase: &str) -> bool {
     if text.is_ascii() && lowercase.is_ascii() {
         let (text, wanted) = (text.as_bytes(), lowercase.as_bytes());
         return wanted.is_empty()
@@ -204,8 +204,8 @@ pub fn has_ignoring_case(text: &str, lowercase: &str) -> bool {
 /// Which row of a list is selected, and which rows are on the screen. A
 /// list draws only those rows, so that a function of 100,000 lines draws
 /// as fast as one of ten.
-pub struct Cursor {
-    pub selected: usize,
+pub(super) struct Cursor {
+    pub(super) selected: usize,
     /// The first row on the screen.
     offset: usize,
     /// How many rows the screen held when last drawn.
@@ -216,7 +216,7 @@ pub struct Cursor {
 }
 
 impl Cursor {
-    pub fn new(len: usize) -> Cursor {
+    fn new(len: usize) -> Cursor {
         Cursor {
             selected: 0,
             offset: 0,
@@ -227,13 +227,13 @@ impl Cursor {
     }
 
     /// Whether there are no rows to move over.
-    pub fn is_empty(&self) -> bool {
+    fn is_empty(&self) -> bool {
         self.len == 0
     }
 
     /// Selects `row`. When it is off the screen, it comes to a third of
     /// the way down, so that what leads to it shows too.
-    pub fn select(&mut self, row: usize) {
+    pub(super) fn select(&mut self, row: usize) {
         self.selected = row.min(self.len.saturating_sub(1));
         if !(self.offset..self.offset + self.page).contains(&self.selected) {
             self.offset = self.selected.saturating_sub(self.page / 3);
@@ -243,7 +243,7 @@ impl Cursor {
     /// Moves as `action` says, and says whether it was a move. A page up
     /// or down moves the rows on the screen by a page too, as in less, so
     /// that the selected row keeps its place on the screen.
-    pub fn handle(&mut self, action: Action) -> bool {
+    fn handle(&mut self, action: Action) -> bool {
         let last = self.len.saturating_sub(1);
         let at = self.selected;
         self.selected = match action {
@@ -266,7 +266,7 @@ impl Cursor {
 
     /// The rows that fit in `height` lines, scrolled so that the selected
     /// one shows, and the table's state for drawing them.
-    pub fn visible(&mut self, height: usize) -> (Range<usize>, TableState) {
+    fn visible(&mut self, height: usize) -> (Range<usize>, TableState) {
         self.page = height.max(1);
         // A row selected before the first draw, as when a page opens at an
         // address, comes a third of the way down too, now that the height
@@ -290,7 +290,7 @@ impl Cursor {
 
     /// The first row after the selected one, or before it, for which
     /// `wanted` holds, going round the end.
-    pub fn next(&self, forward: bool, wanted: impl Fn(usize) -> bool) -> Option<usize> {
+    fn next(&self, forward: bool, wanted: impl Fn(usize) -> bool) -> Option<usize> {
         let n = self.len;
         (1..=n)
             .map(|step| {
@@ -310,7 +310,7 @@ impl Cursor {
 /// holds `at` selected when that is `node`'s own page, on `tab` when the
 /// page has that tab. But on the page of an import's PLT stub, a link to
 /// the import has nowhere else to go, and says that its code isn't here.
-pub fn follow(session: &Session, node: Node, at: Option<u64>, this: Option<Node>, tab: Tab) -> Go {
+fn follow(session: &Session, node: Node, at: Option<u64>, this: Option<Node>, tab: Tab) -> Go {
     let opened = session.page_node(node);
     if is_own_import(node, opened, this) {
         return Go::Say(imported(session, node));
@@ -323,7 +323,7 @@ pub fn follow(session: &Session, node: Node, at: Option<u64>, this: Option<Node>
 /// What following a link to `node` opens, from the page of `this`, in
 /// full: "→ app_tick  function at 0x300002e4, 60 bytes, in .text", then
 /// the veneer that the code goes through to get there, if any.
-pub fn link_preview(
+fn link_preview(
     session: &Session,
     node: Node,
     this: Option<Node>,
@@ -356,13 +356,13 @@ fn is_own_import(node: Node, opened: Node, this: Option<Node>) -> bool {
 
 /// Says that `node`, an import, has no code here, as the commands say
 /// it: its code is in a shared library.
-pub fn imported(session: &Session, node: Node) -> String {
+fn imported(session: &Session, node: Node) -> String {
     let error = item_in_file(session.binary, node).expect_err("an import has no item");
     error.to_string()
 }
 
 /// What and where an item is: "function at 0x1080, 16 bytes, in .plt.sec".
-pub fn whereabouts(item: &Item, section: &str) -> String {
+fn whereabouts(item: &Item, section: &str) -> String {
     let kind = text::kind_name(item.kind);
     let size = match (item.size, item.size_estimated) {
         (0, _) => "size unknown".to_string(),
@@ -373,7 +373,7 @@ pub fn whereabouts(item: &Item, section: &str) -> String {
 }
 
 /// Draws `lines` one under the other in `area`, as many as fit.
-pub fn draw_lines(frame: &mut Frame, area: Rect, lines: Vec<Line>) {
+pub(super) fn draw_lines(frame: &mut Frame, area: Rect, lines: Vec<Line>) {
     for (row, line) in (area.y..area.bottom()).zip(lines) {
         frame.render_widget(
             line,
@@ -387,7 +387,7 @@ pub fn draw_lines(frame: &mut Frame, area: Rect, lines: Vec<Line>) {
 }
 
 /// `text` cut to `width` characters, ending in "…" when cut.
-pub fn cut(text: &str, width: usize) -> String {
+pub(super) fn cut(text: &str, width: usize) -> String {
     if text.chars().count() <= width {
         return text.to_string();
     }
@@ -398,7 +398,7 @@ pub fn cut(text: &str, width: usize) -> String {
 
 /// At most `most` of `lines`, a text wrapped to `width`: when some are
 /// left out, the last line kept ends in "…".
-pub fn keep_lines(mut lines: Vec<String>, most: usize, width: usize) -> Vec<String> {
+pub(super) fn keep_lines(mut lines: Vec<String>, most: usize, width: usize) -> Vec<String> {
     if lines.len() > most {
         let rest = lines.split_off(most.saturating_sub(1)).join(" ");
         if most > 0 {
@@ -409,7 +409,7 @@ pub fn keep_lines(mut lines: Vec<String>, most: usize, width: usize) -> Vec<Stri
 }
 
 /// `text` cut to `width` characters from the left, starting with "…".
-pub fn cut_left(text: &str, width: usize) -> String {
+pub(super) fn cut_left(text: &str, width: usize) -> String {
     let count = text.chars().count();
     if count <= width {
         return text.to_string();
@@ -420,7 +420,7 @@ pub fn cut_left(text: &str, width: usize) -> String {
 
 /// `text` broken into lines of at most `width` characters, at spaces
 /// where it can be.
-pub fn wrap(text: &str, width: usize) -> Vec<String> {
+pub(super) fn wrap(text: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
     let mut lines = Vec::new();
     let mut line = String::new();
@@ -461,7 +461,7 @@ pub(super) fn samples() -> Vec<std::path::PathBuf> {
 /// `text::shell_quote` writes: plain, or in single quotes, with `'\''`
 /// for a quote. The tests of each tab split the command under it.
 #[cfg(test)]
-pub(super) fn shell_words(line: &str) -> Vec<String> {
+fn shell_words(line: &str) -> Vec<String> {
     let mut words = Vec::new();
     let mut word: Option<String> = None;
     let mut chars = line.chars();

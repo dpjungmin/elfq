@@ -33,7 +33,7 @@ struct Callees<'a> {
 /// callees in them, and then SYMBOL is asked about as the range it
 /// occupies. For SYMBOL alone, the text lists the 30 largest callees, or
 /// with `all`, every one; for ranges, see [`range_check::run`].
-pub fn run(
+pub(super) fn run(
     binary: &Binary,
     symbols: &[String],
     to: &[AddressRange],

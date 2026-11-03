@@ -17,7 +17,7 @@ use crate::graph::Node;
 /// Why `node` is in the file, as `why SYMBOL` says it, which names it
 /// `name` (see [`Session::lead_name`]), from `keepers`, what the session
 /// has worked out keeps each item.
-pub fn tab(session: &Session, keepers: &Keepers, node: Node, name: &str) -> Printed {
+pub(super) fn tab(session: &Session, keepers: &Keepers, node: Node, name: &str) -> Printed {
     let (binary, graph, names) = (session.binary, &session.graph, &session.names);
     let answer = why::answers(binary, graph, names, &keepers.tree, node, name, &note_name);
     let command = session.command("why", Some(node), answer.needs_all);

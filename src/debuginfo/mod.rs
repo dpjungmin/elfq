@@ -26,7 +26,7 @@ pub struct InlinedCopy {
     pub into: usize,
     /// Where the code of the copy starts running: the entry that DWARF
     /// gives, or the start of the first of its ranges.
-    pub entry: u64,
+    pub(crate) entry: u64,
     /// The bytes of code the copy takes, including the copies inlined into
     /// it.
     pub size: u64,

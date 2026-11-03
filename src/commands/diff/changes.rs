@@ -36,7 +36,7 @@ pub(super) enum Status {
 impl Status {
     /// The word for the status, which the first line counts, and rows and
     /// the JSON say.
-    pub fn word(self) -> &'static str {
+    pub(super) fn word(self) -> &'static str {
         match self {
             Status::Moved => "moved",
             Status::New => "new",
@@ -93,7 +93,7 @@ pub(super) enum Change {
 
 impl Change {
     /// What happened to the item.
-    pub fn status(&self) -> Status {
+    pub(super) fn status(&self) -> Status {
         match *self {
             Change::Partners { status, .. } => status.into(),
             Change::New { .. } => Status::New,
@@ -103,7 +103,7 @@ impl Change {
 
     /// The item in the old build, unless it is new: for the JSON's keys
     /// and the cells that say each build's.
-    pub fn old_index(&self) -> Option<usize> {
+    pub(super) fn old_index(&self) -> Option<usize> {
         match *self {
             Change::Partners { old, .. } | Change::Gone { old } => Some(old),
             Change::New { .. } => None,
@@ -111,7 +111,7 @@ impl Change {
     }
 
     /// The item in the new build, unless it is gone.
-    pub fn new_index(&self) -> Option<usize> {
+    pub(super) fn new_index(&self) -> Option<usize> {
         match *self {
             Change::Partners { new, .. } | Change::New { new } => Some(new),
             Change::Gone { .. } => None,
@@ -119,7 +119,7 @@ impl Change {
     }
 
     /// The item in the old build, when it is gone.
-    pub fn gone_index(&self) -> Option<usize> {
+    pub(super) fn gone_index(&self) -> Option<usize> {
         match *self {
             Change::Gone { old } => Some(old),
             Change::Partners { .. } | Change::New { .. } => None,
@@ -127,7 +127,7 @@ impl Change {
     }
 
     /// The rule that paired the item's partners, when both builds have it.
-    pub fn paired_by(&self) -> Option<PairedBy> {
+    pub(super) fn paired_by(&self) -> Option<PairedBy> {
         match *self {
             Change::Partners { paired_by, .. } => Some(paired_by),
             Change::New { .. } | Change::Gone { .. } => None,
@@ -137,20 +137,20 @@ impl Change {
 
 /// The items of both builds, paired, and what changed.
 pub(super) struct Items<'a> {
-    pub old: &'a Build,
-    pub new: &'a Build,
-    pub pairing: Pairing,
+    pub(super) old: &'a Build,
+    pub(super) new: &'a Build,
+    pub(super) pairing: Pairing,
     /// The block that holds each item of the old build, as an index into
     /// the blocks, or `None` when none does.
-    pub old_blocks: Vec<Option<usize>>,
+    pub(super) old_blocks: Vec<Option<usize>>,
     /// The same for the new build.
-    pub new_blocks: Vec<Option<usize>>,
+    pub(super) new_blocks: Vec<Option<usize>>,
     /// The items that changed, in the order of the old build's items, then
     /// the new items.
-    pub changes: Vec<Change>,
+    pub(super) changes: Vec<Change>,
     /// How many paired items are the same: the same size, in the same
     /// block, and not edited.
-    pub unchanged: usize,
+    pub(super) unchanged: usize,
 }
 
 /// Pairs the items of the builds and works out what changed.
@@ -222,7 +222,7 @@ impl<'a> Items<'a> {
     /// new build, as `elfq NEW why NAME` would say. The functions it inlined
     /// each into are indices into the new build's items. The DWARF is read
     /// only when such a name finds nothing.
-    pub fn inlined_into(
+    pub(super) fn inlined_into(
         &self,
         new_names: &Names,
         gone: impl IntoIterator<Item = usize>,
@@ -251,7 +251,7 @@ impl<'a> Items<'a> {
 
     /// The item that a change is about: the new build's, or for a gone
     /// item, the old build's.
-    pub fn item(&self, change: &Change) -> &'a Item {
+    pub(super) fn item(&self, change: &Change) -> &'a Item {
         match *change {
             Change::Partners { new, .. } | Change::New { new } => &self.new.binary.items[new],
             Change::Gone { old } => &self.old.binary.items[old],
@@ -260,7 +260,7 @@ impl<'a> Items<'a> {
 
     /// How many bytes the item grew by: less than 0 when it shrank, all its
     /// bytes when it is new, and less all its bytes when it is gone.
-    pub fn delta(&self, change: &Change) -> i128 {
+    pub(super) fn delta(&self, change: &Change) -> i128 {
         let old_size = |old: usize| i128::from(self.old.binary.items[old].size);
         let new_size = |new: usize| i128::from(self.new.binary.items[new].size);
         match *change {
@@ -272,7 +272,7 @@ impl<'a> Items<'a> {
 
     /// The block that a change counts in, in the CHANGE table: the new
     /// build's, or for a gone item, the old build's.
-    pub fn block(&self, change: &Change) -> Option<usize> {
+    pub(super) fn block(&self, change: &Change) -> Option<usize> {
         match *change {
             Change::Partners { new, .. } | Change::New { new } => self.new_blocks[new],
             Change::Gone { old } => self.old_blocks[old],
@@ -283,7 +283,7 @@ impl<'a> Items<'a> {
     /// otherwise, and the two share no name, as a weak alias and the
     /// function it names do, or two functions that identical code folding
     /// made one of.
-    pub fn was(&self, change: &Change) -> Option<&'a str> {
+    pub(super) fn was(&self, change: &Change) -> Option<&'a str> {
         let Change::Partners {
             old: old_index,
             new: new_index,

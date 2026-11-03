@@ -9,7 +9,7 @@ use super::Stop;
 /// What the user asked for. Every page gets the same actions, so a key
 /// means the same everywhere.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Action {
+pub(super) enum Action {
     Up,
     Down,
     PageUp,
@@ -44,18 +44,18 @@ pub enum Action {
 }
 
 /// One row of the table of keys, and a line of the help page.
-pub struct Binding {
+pub(super) struct Binding {
     /// The keys, as the help page writes them.
-    pub label: &'static str,
+    pub(super) label: &'static str,
     /// What they do, as the help page says it.
-    pub what: &'static str,
+    pub(super) what: &'static str,
     /// What the hint line says about them, if anything, and how much that
     /// matters: 0 is always shown, and the highest goes first when the
     /// screen is too narrow. The tab keys' hint follows the numbers of the
     /// tabs that the page has: "1 3 tabs".
-    pub hint: Option<(&'static str, u8)>,
+    hint: Option<(&'static str, u8)>,
     /// Each key, with what it does.
-    pub keys: &'static [(KeyCode, KeyModifiers, Action)],
+    pub(super) keys: &'static [(KeyCode, KeyModifiers, Action)],
 }
 
 impl Binding {
@@ -69,7 +69,7 @@ const NONE: KeyModifiers = KeyModifiers::NONE;
 const CONTROL: KeyModifiers = KeyModifiers::CONTROL;
 
 /// Every key the browser takes, in the order the hint line names them.
-pub const BINDINGS: &[Binding] = &[
+pub(super) const BINDINGS: &[Binding] = &[
     Binding {
         label: "↑ ↓  k j",
         what: "move",
@@ -202,7 +202,7 @@ pub const BINDINGS: &[Binding] = &[
 
 /// The bindings that work here: Ctrl-Z only on Unix, where a shell can
 /// stop a program and continue it.
-pub fn bindings() -> impl Iterator<Item = &'static Binding> {
+pub(super) fn bindings() -> impl Iterator<Item = &'static Binding> {
     BINDINGS
         .iter()
         .filter(|binding| cfg!(unix) || !binding.does(Action::Suspend))
@@ -210,7 +210,7 @@ pub fn bindings() -> impl Iterator<Item = &'static Binding> {
 
 /// The action for `key`, if it has one. Shift doesn't count, since it is
 /// how some keys are typed, such as `?` and Shift-Tab.
-pub fn action(key: KeyEvent) -> Option<Action> {
+pub(super) fn action(key: KeyEvent) -> Option<Action> {
     let modifiers = key.modifiers - KeyModifiers::SHIFT;
     bindings()
         .flat_map(|binding| binding.keys)
@@ -223,7 +223,7 @@ pub fn action(key: KeyEvent) -> Option<Action> {
 /// lines that link, for Tab, `tabs` gives the numbers of its tabs, whose
 /// keys are named when there are two or more, and `rows` says whether it
 /// has rows, for find.
-pub fn hints(width: usize, links: bool, tabs: &[u8], rows: bool) -> String {
+pub(super) fn hints(width: usize, links: bool, tabs: &[u8], rows: bool) -> String {
     let numbers: Vec<String> = tabs.iter().map(u8::to_string).collect();
     let hints: Vec<(String, u8)> = bindings()
         .filter(|binding| links || !binding.does(Action::NextLink))
@@ -255,7 +255,7 @@ pub fn hints(width: usize, links: bool, tabs: &[u8], rows: bool) -> String {
 
 /// How `key` stops the browser while text is typed, as into the go-to
 /// box: only Ctrl-C and Ctrl-Z do, since other keys type.
-pub fn while_typing(key: KeyEvent) -> Option<Stop> {
+pub(super) fn while_typing(key: KeyEvent) -> Option<Stop> {
     if !key.modifiers.contains(CONTROL) {
         return None;
     }
@@ -268,7 +268,7 @@ pub fn while_typing(key: KeyEvent) -> Option<Stop> {
 
 /// The character that `key` types into a box, if it types one: other Ctrl
 /// and Alt keys type nothing.
-pub fn typed_char(key: KeyEvent) -> Option<char> {
+pub(super) fn typed_char(key: KeyEvent) -> Option<char> {
     match key.code {
         KeyCode::Char(c) if !key.modifiers.intersects(CONTROL | KeyModifiers::ALT) => Some(c),
         _ => None,

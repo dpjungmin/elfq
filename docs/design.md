@@ -634,15 +634,15 @@ and then doesn't say that process_frame kept it too. elfq can't yet tell
 what keeps items in a shared library, so when either build is one, a
 line above the tables says so and rows don't, and the same when elfq
 can't read the code. A line counts the items that are the same: of the
-same size, in the same block, and not edited. The Try list asks `why` of
+same size, in the same block, and not edited. A Try line asks `why` of
 the new item that heads the subtree of new items with the most new
 bytes, when something keeps it, rather than it being a place where the
-program starts, and it has a name of its own. It asks for `startup` of
-the new build when `startup` reads it, and a section with a load image
-in either build differs, or an item moved to another block: either may
-change what the startup code must copy before the code it runs, as when
-`memcpy` moves into ITCM. diff doesn't run the check itself, and its
-JSON has no Try list.
+program starts, and it has a name of its own. Another asks for `startup`
+of the new build when `startup` reads it, and a section with a load
+image in either build differs, or an item moved to another block: either
+may change what the startup code must copy before the code it runs, as
+when `memcpy` moves into ITCM. diff doesn't run the check itself, and
+its JSON has no Try lines.
 
 An item of the same size, in the same block, is edited when its bytes
 changed other than where they say where something is, or when its code

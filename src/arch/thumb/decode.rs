@@ -34,17 +34,17 @@ pub(super) type Registers = u16;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Effect {
     /// The registers it reads.
-    pub reads: Registers,
+    pub(super) reads: Registers,
     /// The registers it writes. Unless `operation` says what number goes
     /// into one, it holds something elfq can't follow.
-    pub writes: Registers,
+    pub(super) writes: Registers,
     /// What it does with the numbers in the registers, when elfq can follow
     /// it.
-    pub operation: Operation,
+    pub(super) operation: Operation,
     /// Where the processor goes after it.
-    pub flow: Flow,
+    pub(super) flow: Flow,
     /// When it changes the condition flags (see [`Effect::sets_flags`]).
-    pub flags: SetsFlags,
+    pub(super) flags: SetsFlags,
 }
 
 /// Where a load or store reads or writes, from its base register.
@@ -77,7 +77,7 @@ pub(super) enum Addressing {
 impl Addressing {
     /// What it adds to the base register afterwards, when it changes it,
     /// as `[base, #imm]!` and `[base], #imm` do.
-    pub fn writeback(self) -> Option<i32> {
+    pub(super) fn writeback(self) -> Option<i32> {
         match self {
             Addressing::Before(amount) | Addressing::After(amount) => Some(amount),
             Addressing::Offset(_) | Addressing::Indexed { .. } | Addressing::Unknown => None,
@@ -319,7 +319,7 @@ impl LowBit {
     /// Cortex-M cores only run Thumb code, so `bx` and `blx` fault there,
     /// as for the address 0 of a weak function that the program doesn't
     /// have.
-    pub fn target(self, number: u32) -> Option<u32> {
+    pub(super) fn target(self, number: u32) -> Option<u32> {
         match self {
             LowBit::Thumb if number & 1 == 0 => None,
             _ => Some(number & !1),
@@ -330,7 +330,7 @@ impl LowBit {
 impl Effect {
     /// Whether it changes the condition flags, inside an `it` block or
     /// outside one.
-    pub fn sets_flags(&self, in_it_block: bool) -> bool {
+    pub(super) fn sets_flags(&self, in_it_block: bool) -> bool {
         match self.flags {
             SetsFlags::Never => false,
             SetsFlags::Always => true,

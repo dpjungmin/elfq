@@ -18,7 +18,7 @@ use crate::graph::Node;
 
 /// What the item at `index` reaches, as `reach SYMBOL` lists it, which
 /// names it `name` (see [`Session::lead_name`]).
-pub fn tab(session: &Session, index: usize, name: &str) -> Printed {
+pub(super) fn tab(session: &Session, index: usize, name: &str) -> Printed {
     let (binary, graph, names) = (session.binary, &session.graph, &session.names);
     let tab = reach::tab(binary, graph, names, index, name);
     let node = Node::Item(index);

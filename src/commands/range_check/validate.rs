@@ -194,7 +194,7 @@ fn asked_about(check: &RangeCheck) -> String {
 /// as for a mistyped range, unless it holds an item, or code outside every
 /// item that the file calls or jumps to, at one of `code_outside`, as in a
 /// chip's ROM.
-pub(crate) fn check_to_range(
+pub(in crate::commands) fn check_to_range(
     binary: &Binary,
     range: AddressRange,
     code_outside: &[u64],

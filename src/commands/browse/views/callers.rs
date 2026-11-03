@@ -16,7 +16,7 @@ use crate::graph::Node;
 /// The callers of `node`, from `answer`, the answer that `callers SYMBOL
 /// --all` gives for it (see [`Session::callers`]): HOW, AT and CALLER,
 /// each row opening the caller at the first place where it uses `node`.
-pub fn tab(session: &Session, node: Node, mut answer: FlatAnswer) -> Printed {
+pub(super) fn tab(session: &Session, node: Node, mut answer: FlatAnswer) -> Printed {
     // `callers SYMBOL` lists the rows of the 30 largest callers, unless
     // with --all, and a last row counts the rest.
     let cut = uses::table_needs_all(answer.node_count());

@@ -21,9 +21,9 @@ pub(super) struct DynamicRelocations {
     /// The names of the imports that they name (see [`Binary::imports`]).
     ///
     /// [`Binary::imports`]: super::Binary::imports
-    pub imports: Vec<String>,
+    pub(super) imports: Vec<String>,
     /// The relocations, sorted by address.
-    pub relocations: Vec<Relocation>,
+    pub(super) relocations: Vec<Relocation>,
 }
 
 /// Reads the dynamic relocations.

@@ -21,15 +21,15 @@ pub fn end_after_answer() {
 /// large file. A run of a command whose answer is thrown away, as
 /// `arguments::refuse_range` runs `callers` to see whether it answers, goes
 /// in [`freeing`], so that what it keeps is freed for the runs after it.
-pub(crate) struct Kept<T>(Option<T>);
+pub(super) struct Kept<T>(Option<T>);
 
 impl<T> Kept<T> {
-    pub(crate) fn new(value: T) -> Kept<T> {
+    pub(super) fn new(value: T) -> Kept<T> {
         Kept(Some(value))
     }
 
     /// The value, which is then freed as any other.
-    pub(crate) fn into_inner(mut self) -> T {
+    pub(super) fn into_inner(mut self) -> T {
         self.0.take().expect("only dropping takes a kept value")
     }
 }

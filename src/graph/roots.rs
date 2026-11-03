@@ -114,7 +114,7 @@ fn items_in_section(binary: &Binary, section: usize) -> Vec<Node> {
 
 /// What the startup or exit array `section`, an index into
 /// [`Binary::sections`], points to, in the array's order.
-pub fn listed_in(binary: &Binary, section: usize) -> Vec<Node> {
+pub(crate) fn listed_in(binary: &Binary, section: usize) -> Vec<Node> {
     let section = &binary.sections[section];
     // From the array's first byte, aligned or not, as the program reads it.
     let slots = binary.words(section.address, section.address + section.size);

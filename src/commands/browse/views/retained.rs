@@ -21,7 +21,7 @@ use crate::render::{Align, Table};
 /// What removing the item at `index` would save, as `retained SYMBOL`
 /// says it, which names it `name` (see [`Session::lead_name`]), from
 /// `keepers`, what the session has worked out keeps each item.
-pub fn tab(session: &Session, keepers: &Keepers, index: usize, name: &str) -> Printed {
+pub(super) fn tab(session: &Session, keepers: &Keepers, index: usize, name: &str) -> Printed {
     let retained = session.retained_tree(keepers);
     let symbol = SymbolInTree {
         retained: &retained,

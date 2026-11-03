@@ -78,7 +78,7 @@ struct Answer<'a> {
     /// The builds' items, paired, when the memory differs and both builds
     /// have a symbol table.
     compared: Option<Compared<'a>>,
-    /// Whether the Try list suggests `elfq NEW startup` (see
+    /// Whether the Try lines suggest `elfq NEW startup` (see
     /// [`suggest_startup`]).
     try_startup: bool,
 }
@@ -116,7 +116,7 @@ struct Request<'a> {
 /// same memory, and [`Outcome::Differs`] when they don't. It reads both
 /// files, warns about them and refuses those it can't compare, and loads
 /// both builds when it compares their items too.
-pub fn run(
+pub(super) fn run(
     old_path: &Path,
     new_path: &Path,
     all: bool,
@@ -266,11 +266,11 @@ fn answer_items(
     write(&answer, request.all, request.format, out)
 }
 
-/// Whether the Try list suggests `elfq NEW startup`: when a section with a
+/// Whether the Try lines suggest `elfq NEW startup`: when a section with a
 /// load image in either build differs, or one of `changes` moved an item
 /// to another block, either of which may change what the new build's
 /// startup code must copy before it runs what, and `reads` says that
-/// startup reads the new build. The JSON has no Try list, and `reads`,
+/// startup reads the new build. The JSON has no Try lines, and `reads`,
 /// which may load the new build, runs only when the rest holds.
 fn suggest_startup(
     format: Format,

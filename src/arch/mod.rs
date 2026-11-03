@@ -27,22 +27,22 @@
 
 #[cfg(feature = "tui")]
 mod listing;
-pub mod startup;
+pub(crate) mod startup;
 mod thumb;
 mod x86_64;
 
 #[cfg(feature = "tui")]
-pub use listing::{Line, Refers};
+pub(crate) use listing::{Line, Refers};
 
 use object::{Architecture, Endianness};
 
 /// One use of an address by one instruction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CodeReference {
+pub(crate) struct CodeReference {
     /// The instruction's address.
-    pub site: u64,
+    pub(crate) site: u64,
     /// What the instruction does with the address.
-    pub kind: CodeReferenceKind,
+    pub(crate) kind: CodeReferenceKind,
 }
 
 /// What one instruction does with an address. `Graph::build` turns most into
@@ -51,7 +51,7 @@ pub struct CodeReference {
 /// its function's middle, and an address where no item is, unless the
 /// loader stores a pointer there, as in a global offset table entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CodeReferenceKind {
+pub(crate) enum CodeReferenceKind {
     /// A direct call: `call target`, or on Thumb, a call through a
     /// register that the code put `target` in, as a long call does.
     Call(u64),
@@ -89,7 +89,7 @@ pub enum CodeReferenceKind {
 /// How a stretch of code ends, which tells whether another function can
 /// start right after it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Ending {
+pub(crate) enum Ending {
     /// The processor can run on past the end: the code ends inside an
     /// instruction or an `it` block, or with an instruction that runs on
     /// into the next.
@@ -104,7 +104,7 @@ pub enum Ending {
 /// The bits of one function's code that say where something is, as
 /// [`InstructionSet::operands`] finds them.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Operands {
+pub(crate) struct Operands {
     /// For each byte of the code, the bits of it that hold the distance from
     /// an instruction to an address outside the code: the target of a call
     /// or jump, or the address of a constant that a load reads or of
@@ -112,24 +112,24 @@ pub struct Operands {
     /// function or what it uses moves. A distance to a place inside the
     /// code, as a loop's jump, doesn't change when the function moves, and
     /// isn't here.
-    pub distance_bits: Vec<u8>,
+    pub(crate) distance_bits: Vec<u8>,
     /// Where each of those distances leads, as (the offset of its
     /// instruction in the code, the address), in the order of the
     /// instructions.
-    pub targets: Vec<(usize, u64)>,
+    pub(crate) targets: Vec<(usize, u64)>,
     /// The numbers that two instructions put together, as an address mostly.
-    pub split: Vec<SplitNumber>,
+    pub(crate) split: Vec<SplitNumber>,
 }
 
 /// A 32-bit number that a pair of instructions puts together in a
 /// register, as Thumb's `movw` and `movt` do, the first with the low 16
 /// bits and the second with the high 16.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SplitNumber {
-    pub value: u64,
+pub(crate) struct SplitNumber {
+    pub(crate) value: u64,
     /// The bits of the code that hold it, as (offset into the code, bits of
     /// the byte there).
-    pub bits: Vec<(usize, u8)>,
+    pub(crate) bits: Vec<(usize, u8)>,
 }
 
 /// An instruction set that elfq can read: x86-64, or Thumb, the
@@ -138,7 +138,7 @@ pub struct SplitNumber {
 /// methods, so code that elfq can't read never reaches a scanner, and a new
 /// instruction set needs an arm in each.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InstructionSet {
+pub(crate) enum InstructionSet {
     X86_64,
     /// With the file's byte order, for reading the constants in the code:
     /// in big-endian Arm firmware (BE8), the instructions are still
@@ -152,7 +152,11 @@ impl InstructionSet {
     /// The instruction set of a file's code, or `None` when elfq can't read
     /// it yet. `thumb` says whether 32-bit Arm code is Thumb (see
     /// `Binary::thumb`).
-    pub fn of(architecture: Architecture, thumb: bool, endianness: Endianness) -> Option<Self> {
+    pub(crate) fn of(
+        architecture: Architecture,
+        thumb: bool,
+        endianness: Endianness,
+    ) -> Option<Self> {
         match architecture {
             Architecture::X86_64 => Some(Self::X86_64),
             Architecture::Arm if thumb => Some(Self::Thumb { endianness }),
@@ -161,7 +165,7 @@ impl InstructionSet {
     }
 
     /// The references in one function's code, which starts at `address`.
-    pub fn scan(self, code: &[u8], address: u64) -> Vec<CodeReference> {
+    pub(crate) fn scan(self, code: &[u8], address: u64) -> Vec<CodeReference> {
         match self {
             Self::X86_64 => x86_64::scan(code, address),
             Self::Thumb { endianness } => thumb::scan(code, address, endianness),
@@ -179,7 +183,7 @@ impl InstructionSet {
     /// numbers that `movw` and `movt` put together. Thumb code is swept as
     /// [`InstructionSet::scan`] sweeps it, so the constants and jump tables
     /// it reads hold no distances.
-    pub fn operands(self, code: &[u8], address: u64) -> Operands {
+    pub(crate) fn operands(self, code: &[u8], address: u64) -> Operands {
         match self {
             Self::X86_64 => x86_64::operands(code, address),
             Self::Thumb { endianness } => thumb::operands(code, address, endianness),
@@ -193,7 +197,7 @@ impl InstructionSet {
     /// running on, since elfq can't tell whether what it calls returns.
     /// `None` when the code stops before its end. Padding after the last
     /// instruction doesn't count.
-    pub fn runs_on(self, code: &[u8], address: u64) -> Option<u64> {
+    pub(crate) fn runs_on(self, code: &[u8], address: u64) -> Option<u64> {
         match self {
             Self::X86_64 => x86_64::runs_on(code, address),
             Self::Thumb { endianness } => thumb::runs_on(code, address, endianness),
@@ -206,7 +210,7 @@ impl InstructionSet {
     /// and LLD add for Cortex-M. `name` is the code's symbol, when it has
     /// one: code that a compiler may also make is a veneer only under a
     /// linker's name.
-    pub fn is_veneer(self, code: &[u8], name: Option<&str>) -> bool {
+    pub(crate) fn is_veneer(self, code: &[u8], name: Option<&str>) -> bool {
         match self {
             Self::X86_64 => false,
             Self::Thumb { .. } => thumb::is_veneer(code, name),
@@ -226,7 +230,7 @@ impl InstructionSet {
     /// together, unless an instruction or the constants it loads are cut in
     /// two. x86-64 follows no address through a register, so there this is
     /// [`InstructionSet::scan`].
-    pub fn scan_instructions(self, code: &[u8], address: u64) -> Vec<CodeReference> {
+    pub(crate) fn scan_instructions(self, code: &[u8], address: u64) -> Vec<CodeReference> {
         match self {
             Self::X86_64 => x86_64::scan(code, address),
             Self::Thumb { endianness } => thumb::scan_instructions(code, address, endianness),
@@ -236,7 +240,7 @@ impl InstructionSet {
     /// How many bytes at the start of `code` a function's instructions and
     /// constants take, when `code` may run on past its end to the next
     /// function: without the padding that aligns the next function.
-    pub fn code_size(self, code: &[u8], address: u64) -> u64 {
+    pub(crate) fn code_size(self, code: &[u8], address: u64) -> u64 {
         let size = match self {
             Self::X86_64 => code.len(),
             Self::Thumb { endianness } => thumb::code_size(code, address, endianness),
@@ -245,7 +249,7 @@ impl InstructionSet {
     }
 
     /// How many bytes of padding between functions `code` starts with.
-    pub fn leading_padding(self, code: &[u8]) -> u64 {
+    pub(crate) fn leading_padding(self, code: &[u8]) -> u64 {
         let size = match self {
             Self::X86_64 => 0,
             Self::Thumb { .. } => thumb::leading_padding(code),
@@ -254,7 +258,7 @@ impl InstructionSet {
     }
 
     /// How the code that starts at `address` ends.
-    pub fn ending(self, code: &[u8], address: u64) -> Ending {
+    pub(crate) fn ending(self, code: &[u8], address: u64) -> Ending {
         match self {
             Self::X86_64 => Ending::RunsOn,
             Self::Thumb { endianness } => thumb::ending(code, address, endianness),
@@ -264,7 +268,7 @@ impl InstructionSet {
     /// What the startup walk reads `program`'s code through, to follow it
     /// as a Cortex-M processor runs it from reset: `None` for x86-64, which
     /// has no such walk.
-    pub fn startup_code(self, program: &dyn startup::Program) -> Option<startup::Code<'_>> {
+    pub(crate) fn startup_code(self, program: &dyn startup::Program) -> Option<startup::Code<'_>> {
         match self {
             Self::X86_64 => None,
             Self::Thumb { endianness } => Some(startup::Code::thumb(program, endianness)),
