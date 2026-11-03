@@ -142,10 +142,6 @@ impl<'s> Search<'s> {
         let link = parent.zip(self.paths.via(node)).map(|(parent, via)| Link {
             parent,
             via,
-            sites: (self.graph.references_from(via.from).iter())
-                .filter(|r| r.to == node && r.kind == via.kind)
-                .map(|r| r.site)
-                .collect(),
             used: self.used(node, via),
         });
         let block = match node {
