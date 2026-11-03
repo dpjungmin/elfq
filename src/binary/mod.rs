@@ -66,10 +66,10 @@
 //!   `arch` prints it, with the data that `$d` symbols mark among it, for
 //!   `browse` (`Binary::listing`).
 //!
-//! The unit tests of `names.rs` and `vector_table.rs` are in
-//! `names/tests.rs` and `vector_table/tests.rs`, and those of `listing.rs`,
-//! which check the Thumb text against objdump's, in
-//! `listing/thumb_text.rs`.
+//! The unit tests of `names.rs`, `vector_table.rs` and
+//! `unnamed_functions.rs` are in `names/tests.rs`, `vector_table/tests.rs`
+//! and `unnamed_functions/tests.rs`, and those of `listing.rs`, which check
+//! the Thumb text against objdump's, in `listing/thumb_text.rs`.
 
 mod attributes;
 mod eh_frame;
