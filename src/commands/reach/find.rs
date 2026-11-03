@@ -1,7 +1,7 @@
 //! The search from SYMBOL: [`Reach::find`], in named steps, and what it
 //! uses to list a call through a veneer as the call to the veneer.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use super::{CantFollow, Link, Reach, Step, StepId, Use};
 use crate::binary::{AddressRange, Binary, ItemKind, MemoryBlock, memory_blocks};
@@ -93,46 +93,32 @@ impl<'s> Search<'s> {
     /// SYMBOL first, then depth first, each item's children in the order
     /// that it first uses them.
     fn steps(&self, symbol: Node) -> Vec<Step> {
-        let children_of_item = self.children_in_use_order();
         let mut steps: Vec<Step> = Vec::new();
         // The steps to add, each with its parent's step, last first.
         let mut next = vec![(symbol, None)];
         while let Some((node, parent)) = next.pop() {
             let id = steps.len();
             steps.push(self.step(node, parent));
-            if let Node::Item(index) = node
-                && let Some(nodes) = children_of_item.get(&index)
-            {
-                next.extend(nodes.iter().rev().map(|&child| (child, Some(id))));
+            if let Node::Item(index) = node {
+                let children = self.children(index);
+                next.extend(children.into_iter().rev().map(|child| (child, Some(id))));
             }
         }
         steps
     }
 
-    /// The nodes under each item in the tree, by the item's index in
-    /// [`Binary::items`]: those whose chain from SYMBOL ends with a
-    /// reference from it, in the order that it first uses them. The tree's
-    /// own children are by step (see `Tree::children` in `tree.rs`).
-    fn children_in_use_order(&self) -> HashMap<usize, Vec<Node>> {
-        let binary = self.binary;
-        let nodes = (0..binary.items.len())
-            .map(Node::Item)
-            .chain((0..binary.imports.len()).map(Node::Import))
-            .filter(|&node| self.paths.is_reached(node));
-        let mut children_of_item: HashMap<usize, Vec<Node>> = HashMap::new();
-        for node in nodes {
-            if let Some(via) = self.paths.via(node) {
-                children_of_item.entry(via.from).or_default().push(node);
-            }
-        }
-        for (&item, nodes) in &mut children_of_item {
-            let mut first_use: HashMap<Node, usize> = HashMap::new();
-            for (position, reference) in self.graph.references_from(item).iter().enumerate() {
-                first_use.entry(reference.to).or_insert(position);
-            }
-            nodes.sort_by_key(|node| first_use[node]);
-        }
-        children_of_item
+    /// The nodes under the item at `index` in the tree: those whose chain
+    /// from SYMBOL ends with a reference from it, in the order that it
+    /// first uses them. The tree's own children are by step (see
+    /// `Tree::children` in `tree.rs`).
+    fn children(&self, index: usize) -> Vec<Node> {
+        // An item can use a node many times: the node goes at the first.
+        let mut placed: HashSet<Node> = HashSet::new();
+        (self.graph.references_from(index).iter())
+            .map(|reference| reference.to)
+            .filter(|&to| self.paths.via(to).is_some_and(|via| via.from == index))
+            .filter(|&to| placed.insert(to))
+            .collect()
     }
 
     /// The step of `node` under the step `parent`, which is `None` only
@@ -293,4 +279,72 @@ fn keep_those_that_may_go_to(
         .callable_through_pointer(graph)
         .is_empty();
     cant_follow.retain(|cant| cant.found.may_go_to(to, callable_through_pointer));
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+
+    /// The steps from every item that elfq can read in four samples, as
+    /// SYMBOL, keep the rules that leave them one order: SYMBOL's step
+    /// first, and one step for each node it reaches; each other step under
+    /// the step of the item whose reference ends its chain; depth first;
+    /// and the steps under each step in the order that its item first uses
+    /// them, whichever reference ends their chains.
+    #[test]
+    fn steps_go_depth_first_each_under_its_item_in_the_order_it_uses_them() {
+        let samples = [
+            "c-x86_64.elf",
+            "c-cortex-m7.elf",
+            "far-gnu-m4-nodebug.elf",
+            "rust-cortex-m4.elf",
+        ];
+        for sample in samples {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("testdata/bin")
+                .join(sample);
+            let binary = Binary::load(&path).unwrap();
+            let graph = Graph::build(&binary);
+            let nodes: Vec<Node> = (0..binary.items.len())
+                .map(Node::Item)
+                .chain((0..binary.imports.len()).map(Node::Import))
+                .collect();
+            for index in (0..binary.items.len()).filter(|&i| !binary.items[i].end_unknown()) {
+                let context = format!("{sample} reach {}", binary.items[index].name);
+                let steps = Reach::find(&binary, &graph, index, &[]).steps;
+                let paths = ShortestPaths::from(&binary, &graph, Node::Item(index));
+                let reached: HashSet<Node> = (nodes.iter().copied())
+                    .filter(|&node| paths.is_reached(node))
+                    .collect();
+                let stepped: HashSet<Node> = steps.iter().map(|step| step.node).collect();
+                assert_eq!(steps[0].node, Node::Item(index), "{context}");
+                assert_eq!(steps.len(), reached.len(), "{context}: a node twice");
+                assert_eq!(stepped, reached, "{context}");
+
+                // The steps whose subtrees the next step can still be in,
+                // SYMBOL's first.
+                let mut open: Vec<StepId> = vec![0];
+                // Where each step's item first uses the last step under it.
+                let mut last_child: Vec<Option<usize>> = vec![None; steps.len()];
+                for (id, step) in steps.iter().enumerate().skip(1) {
+                    let parent = step.parent().unwrap();
+                    let via = paths.via(step.node).unwrap();
+                    assert_eq!(steps[parent].node, Node::Item(via.from), "{context}");
+                    while open.last() != Some(&parent) {
+                        assert!(
+                            open.pop().is_some(),
+                            "{context}: step {id} isn't depth first"
+                        );
+                    }
+                    open.push(id);
+                    let first_use = (graph.references_from(via.from).iter())
+                        .position(|reference| reference.to == step.node);
+                    assert!(last_child[parent] < first_use, "{context}: step {id}");
+                    last_child[parent] = first_use;
+                }
+            }
+        }
+    }
 }
