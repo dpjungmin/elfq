@@ -8,7 +8,9 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 
 use anyhow::{Context, Result};
-use gimli::{AttributeValue, DebuggingInformationEntry, EndianSlice, RunTimeEndian, Unit};
+use gimli::{
+    AttributeValue, DebugInfoOffset, DebuggingInformationEntry, EndianSlice, RunTimeEndian, Unit,
+};
 use object::{Object, ObjectSection};
 
 use crate::binary::{self, Binary};
@@ -57,6 +59,9 @@ pub fn inlined_copies(binary: &Binary) -> Result<Vec<InlinedCopy>> {
         }
     })?;
     let dwarf = sections.borrow(|section| EndianSlice::new(section, endian));
+    // Each unit's header is read where the one before ends, so the units
+    // are in the order `.debug_info` holds them, as `unit_that_can_hold`
+    // needs.
     let mut units = Vec::new();
     let mut headers = dwarf.units();
     while let Some(header) = headers.next()? {
@@ -86,6 +91,7 @@ pub fn inlined_copies(binary: &Binary) -> Result<Vec<InlinedCopy>> {
 struct Walk<'a, 'd> {
     binary: &'a Binary,
     dwarf: &'a gimli::Dwarf<Reader<'d>>,
+    /// Every unit, in the order `.debug_info` holds them.
     units: &'a [Unit<Reader<'d>>],
     copies: Vec<InlinedCopy>,
     /// The names found for the entries that copies take their names from,
@@ -283,12 +289,14 @@ impl<'a, 'd> Walk<'a, 'd> {
         match value {
             AttributeValue::UnitRef(offset) => Ok(Some((unit, unit.entry(offset)?))),
             AttributeValue::DebugInfoRef(offset) => {
-                for other in self.units {
-                    if let Some(offset) = offset.to_unit_offset(&other.header) {
-                        return Ok(Some((other, other.entry(offset)?)));
-                    }
+                let Some(other) = unit_that_can_hold(self.units, offset) else {
+                    return Ok(None);
+                };
+                match offset.to_unit_offset(&other.header) {
+                    Some(offset) => Ok(Some((other, other.entry(offset)?))),
+                    // In the unit's header, or past its end.
+                    None => Ok(None),
                 }
-                Ok(None)
             }
             _ => Ok(None),
         }
@@ -297,5 +305,90 @@ impl<'a, 'd> Walk<'a, 'd> {
     fn string(&self, unit: &Unit<Reader<'d>>, value: AttributeValue<Reader<'d>>) -> Result<String> {
         let text = self.dwarf.attr_string(unit, value)?;
         Ok(text.to_string_lossy().into_owned())
+    }
+}
+
+/// The only unit among `units` whose entries can hold `offset`, a place in
+/// `.debug_info`: the last one that starts at or before it. `None` when
+/// every unit starts after it.
+///
+/// `units` are in the order `.debug_info` holds them, and each starts where
+/// the one before ends, so their entries don't overlap. A binary search
+/// finds that unit: asking each unit in turn took about a tenth of the
+/// time of `inlined` and `diff` on large builds, which have hundreds or
+/// thousands of units.
+fn unit_that_can_hold<'u, 'd>(
+    units: &'u [Unit<Reader<'d>>],
+    offset: DebugInfoOffset,
+) -> Option<&'u Unit<Reader<'d>>> {
+    let first_after = units.partition_point(|unit| unit.header.offset().0 <= offset.0);
+    Some(&units[first_after.checked_sub(1)?])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A unit of DWARF 4 whose root entry, of abbreviation 1, is followed
+    /// by `padding` null entries. Its header takes 11 bytes: its length in
+    /// 4, the version in 2, the abbreviations' offset, 0, in 4, and the
+    /// size of an address, 8, in 1.
+    fn unit(padding: usize) -> Vec<u8> {
+        let mut rest = vec![4, 0, 0, 0, 0, 0, 8, 1];
+        rest.resize(rest.len() + padding, 0);
+        [(rest.len() as u32).to_le_bytes().to_vec(), rest].concat()
+    }
+
+    /// Where `offset` is, as (where its unit starts, where it is in the
+    /// unit), as `Walk::entry_at` finds it, asking only the unit that
+    /// `unit_that_can_hold` finds, after checking that asking each unit in
+    /// turn finds the same.
+    fn holding(units: &[Unit<Reader<'_>>], offset: usize) -> Option<(usize, usize)> {
+        let offset = DebugInfoOffset(offset);
+        let place = |unit: &Unit<Reader<'_>>| {
+            let at = offset.to_unit_offset(&unit.header)?;
+            Some((unit.header.offset().0, at.0))
+        };
+        let found = unit_that_can_hold(units, offset).and_then(place);
+        assert_eq!(found, units.iter().find_map(place), "at {}", offset.0);
+        found
+    }
+
+    #[test]
+    fn the_unit_holding_an_offset_is_the_last_that_starts_before_it() {
+        // Units of 12, 14 and 13 bytes, at 0, 12 and 26, ending at 39.
+        // Abbreviation 1 is a compile unit without children or attributes.
+        let info = [unit(0), unit(2), unit(1)].concat();
+        let abbreviations = [1, 0x11, 0, 0, 0, 0];
+        let dwarf = gimli::Dwarf {
+            debug_info: EndianSlice::new(&info, RunTimeEndian::Little).into(),
+            debug_abbrev: EndianSlice::new(&abbreviations, RunTimeEndian::Little).into(),
+            ..Default::default()
+        };
+        let mut units = Vec::new();
+        let mut headers = dwarf.units();
+        while let Some(header) = headers.next().unwrap() {
+            units.push(dwarf.unit(header).unwrap());
+        }
+
+        // The first and last bytes of the second unit's entries, after its
+        // header.
+        assert_eq!(holding(&units, 23), Some((12, 11)));
+        assert_eq!(holding(&units, 25), Some((12, 13)));
+        // Its header, from its start; its end, where the third unit starts;
+        // the end of the last unit; and past it.
+        for offset in [12, 22, 26, 39, 40, 1000] {
+            assert_eq!(holding(&units, offset), None, "at {offset}");
+        }
+        // Before the first unit, when the units start after 0.
+        assert_eq!(holding(&units[1..], 0), None);
+        assert_eq!(holding(&units[1..], 11), None);
+        assert_eq!(holding(&[], 0), None);
+        // Every offset from 0 to past the end, with and without the first
+        // unit.
+        for offset in 0..45 {
+            holding(&units, offset);
+            holding(&units[1..], offset);
+        }
     }
 }
