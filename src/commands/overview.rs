@@ -405,24 +405,96 @@ fn handler_reaching_most_code(binary: &Binary, graph: &Graph) -> Option<usize> {
 /// whose code is a library's. A call through the stub for one of the file's
 /// own functions counts as a call to the function.
 fn most_used(binary: &Binary, graph: &Graph) -> Option<usize> {
-    let stubs = binary.own_function_stubs();
-    let mut callers: Vec<(usize, usize)> = graph
-        .references
-        .iter()
-        .filter(|reference| !stubs.contains_key(&reference.from))
-        .filter_map(|reference| match reference.to {
-            Node::Item(to) => Some((*stubs.get(&to).unwrap_or(&to), reference.from)),
-            Node::Import(_) => None,
-        })
-        .filter(|&(to, _)| binary.items[to].is_own_function())
-        .collect();
-    callers.sort_unstable();
-    callers.dedup();
-    let mut best: Option<(usize, usize)> = None;
-    for chunk in callers.chunk_by(|a, b| a.0 == b.0) {
-        if best.is_none_or(|(_, count)| chunk.len() > count) {
-            best = Some((chunk[0].0, chunk.len()));
+    let items = binary.items.len();
+    // For each PLT stub of one of the file's own functions, the function.
+    let mut function_of_stub = vec![None; items];
+    for (stub, function) in binary.own_function_stubs() {
+        function_of_stub[stub] = Some(function);
+    }
+    let mut callers = vec![0; items];
+    let mut last_caller = vec![None; items];
+    // The references are sorted by the item that makes them, so all of a
+    // caller's uses of a function come before the next caller's: a caller
+    // is counted the first time it uses the function, when it isn't yet
+    // the function's last caller.
+    for reference in &graph.references {
+        let Node::Item(to) = reference.to else {
+            continue;
+        };
+        if function_of_stub[reference.from].is_some() {
+            continue;
+        }
+        let to = function_of_stub[to].unwrap_or(to);
+        if binary.items[to].is_own_function() && last_caller[to] != Some(reference.from) {
+            last_caller[to] = Some(reference.from);
+            callers[to] += 1;
         }
     }
-    best.map(|(index, _)| index)
+    // Of the functions with the most callers, the first.
+    let mut best: Option<(usize, usize)> = None;
+    for (function, &count) in callers.iter().enumerate() {
+        if count > 0 && best.is_none_or(|(_, most)| count > most) {
+            best = Some((function, count));
+        }
+    }
+    best.map(|(function, _)| function)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::binary::{Item, Source};
+    use crate::graph::{Reference, ReferenceKind};
+
+    /// `most_used` in a file of four functions, items 0 to 3, and a
+    /// variable, item 4, whose graph has `uses`, as (from, to) pairs of
+    /// items, in the graph's order: by the item that makes them.
+    fn most_used_with(uses: &[(usize, usize)]) -> Option<usize> {
+        let item = |index: usize, kind| Item {
+            name: format!("item{index}"),
+            aliases: Vec::new(),
+            kind,
+            address: 0x1000 + 0x10 * index as u64,
+            size: 0x10,
+            size_estimated: false,
+            section: 0,
+            source: Source::SymbolTable,
+        };
+        let mut items: Vec<Item> = (0..4)
+            .map(|index| item(index, ItemKind::Function))
+            .collect();
+        items.push(item(4, ItemKind::Data));
+        let binary = Binary::for_tests(Vec::new(), items, Vec::new());
+        let references = (uses.iter().enumerate())
+            .map(|(site, &(from, to))| Reference {
+                from,
+                to: Node::Item(to),
+                kind: ReferenceKind::Call,
+                site: site as u64,
+            })
+            .collect();
+        let graph = Graph {
+            references,
+            ..Graph::default()
+        };
+        most_used(&binary, &graph)
+    }
+
+    #[test]
+    fn the_most_used_function_has_the_most_callers() {
+        // Item 3 uses item 0 three times, but items 0 and 2 both use item 1.
+        let uses = [(0, 1), (2, 1), (3, 0), (3, 0), (3, 0)];
+        assert_eq!(most_used_with(&uses), Some(1));
+        // Items 0 and 1 have two callers each, and item 0 comes first, though
+        // item 1 has its second caller first.
+        let uses = [(0, 1), (2, 0), (2, 1), (2, 0), (3, 0)];
+        assert_eq!(most_used_with(&uses), Some(0));
+        // A function with more callers than one before it wins.
+        let uses = [(0, 2), (1, 0), (1, 2), (3, 2)];
+        assert_eq!(most_used_with(&uses), Some(2));
+        // Uses of a variable don't count.
+        let uses = [(0, 4), (1, 4), (2, 4), (3, 0)];
+        assert_eq!(most_used_with(&uses), Some(0));
+        assert_eq!(most_used_with(&[(0, 4), (1, 4)]), None);
+    }
 }
