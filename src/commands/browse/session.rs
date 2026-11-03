@@ -19,7 +19,7 @@
 //!   uses vfiprintf.", which shows only when nothing does (see
 //!   [`Session::callers`]). So does what u says where no one item keeps the
 //!   item, as in "Removing any single item wouldn't remove vfiprintf."
-//! - Its row name, from [`Session::row_name`], as in `frames` or
+//! - Its row name, from [`Names::row_name`], as in `frames` or
 //!   `0x30000de8`: in the notes on tab 1's lines, as in `uses
 //!   frames+0x8`, in what tab 1 says when it has no lines, and in an
 //!   item's title. `reach` names an item so after "used by". It is the
@@ -79,11 +79,6 @@ pub struct Session<'a> {
     ///
     /// They are as the overview lists them.
     pub(super) blocks: Vec<MemoryBlock>,
-    /// The row name of each item, by its index, worked out once.
-    ///
-    /// A page names an item on every line that uses it, so the name is
-    /// kept the first time.
-    row_names: RefCell<HashMap<usize, String>>,
     /// The short name of each item or import, once a header names it.
     short_names: RefCell<HashMap<Node, String>>,
     /// Each item's listing, as tab 1 of its page shows it, by its index.
@@ -132,7 +127,6 @@ impl<'a> Session<'a> {
             names: Names::new(binary),
             veneers,
             blocks: memory_blocks(&binary.sections),
-            row_names: RefCell::new(HashMap::new()),
             short_names: RefCell::new(HashMap::new()),
             listings: RefCell::new(HashMap::new()),
             keepers: None,
@@ -233,19 +227,6 @@ impl<'a> Session<'a> {
             .position(|block| block.range.contains(address))
     }
 
-    /// The row name of item `index` (see the names in the module doc).
-    ///
-    /// It is the shortest name that finds only the item as SYMBOL, or
-    /// failing that, its address: `frames` in the note `uses frames+0x8`.
-    pub(super) fn row_name(&self, index: usize) -> String {
-        if let Some(name) = self.row_names.borrow().get(&index) {
-            return name.clone();
-        }
-        let name = self.names.row_name(index);
-        self.row_names.borrow_mut().insert(index, name.clone());
-        name
-    }
-
     /// The name of `node`'s page in the title line's trail.
     ///
     /// It is an item's row name, and an import's full name (see the names
@@ -253,7 +234,7 @@ impl<'a> Session<'a> {
     /// it is worked out, as in "working out what main reaches…".
     pub(super) fn title(&self, node: Node) -> String {
         match node {
-            Node::Item(index) => self.row_name(index),
+            Node::Item(index) => self.names.row_name(index),
             Node::Import(_) => node.name(self.binary).to_string(),
         }
     }
@@ -263,7 +244,7 @@ impl<'a> Session<'a> {
     /// The rows of `retained` and `why` call `node` so after "kept by" or
     /// "used by", to name the row they hang under: `crc32` in "crc_table,
     /// kept by crc32". It is the shortest form of its name that finds only
-    /// it, or failing that, its whole name, where [`Session::row_name`]
+    /// it, or failing that, its whole name, where [`Names::row_name`]
     /// gives an address.
     pub(super) fn short_name(&self, node: Node) -> String {
         if let Some(name) = self.short_names.borrow().get(&node) {

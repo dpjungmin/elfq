@@ -34,7 +34,7 @@ pub(super) fn data_listing(session: &Session, index: usize) -> Listing {
     let binary = session.binary;
     let item = &binary.items[index];
     let section = &binary.sections[item.section];
-    let name = session.row_name(index);
+    let name = session.names.row_name(index);
     let kind = ItemKind::Data;
     // Every row is read from the object's bytes, so it has none.
     if section.file_range.is_none() {

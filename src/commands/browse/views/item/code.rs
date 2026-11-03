@@ -52,7 +52,7 @@ pub(super) fn function_listing(session: &Session, index: usize) -> Listing {
     match code(session, index) {
         Ok(Code::Instructions(lines)) => Listing::new(kind, Some("INSTRUCTION".to_string()), lines),
         Ok(Code::Links(lines, why)) if lines.is_empty() => {
-            let row_name = session.row_name(index);
+            let row_name = session.names.row_name(index);
             let why = format!("{why}. No line of {row_name} uses another item.");
             Listing::new(kind, None, lines).saying_instead(why)
         }
@@ -164,7 +164,7 @@ mod tests {
                         // The name the line shows finds the item as SYMBOL,
                         // but for a veneer to code outside every item,
                         // which the line names by its address.
-                        let name = session.row_name(index);
+                        let name = session.names.row_name(index);
                         assert!(
                             shown.contains(&name) || shown.ends_with(", outside any function"),
                             "{shown:?} doesn't name {name}"

@@ -1,7 +1,7 @@
 //! [`Names`]: what each name in the file finds, worked out once, and how
 //! to name an item for the user in return.
 
-use std::cell::{Cell, OnceCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context, Result, bail};
@@ -52,6 +52,12 @@ pub(in crate::commands) struct Names<'a> {
     /// The short names that [`Names::similar`] compares a query with, made
     /// the first time a query finds nothing.
     pub(super) suggestable: OnceCell<Suggestable>,
+    /// The row name of each item, by its index, kept the first time
+    /// [`Names::row_name`] works it out: `reach` names an item after "used
+    /// by" on the row of each item that it uses, and browse on each line
+    /// that uses it. Short names are kept by those that ask for them again:
+    /// browse's `Session::short_name` and diff's `RowNames`.
+    row_names: RefCell<HashMap<usize, String>>,
 }
 
 /// The items filed under a key, and their short names with it.
@@ -64,6 +70,10 @@ struct Filed<'a> {
     /// The words of the items' names (see [`names::words`]), and the items
     /// that have each, as indices into `items`, for [`Names::finds_only`].
     words: OnceCell<Words<'a>>,
+    /// How many queries with the key [`Names::finds_only`] has answered
+    /// from `words`, word by word: after a few, it works out `nodes` once
+    /// and answers from those instead.
+    word_by_word: Cell<u32>,
 }
 
 /// The words of some items' names, and the items that have each.
@@ -86,6 +96,7 @@ impl<'a> Names<'a> {
             inlined: OnceCell::new(),
             lowercase: OnceCell::new(),
             suggestable: OnceCell::new(),
+            row_names: RefCell::new(HashMap::new()),
         }
     }
 
@@ -230,9 +241,24 @@ impl<'a> Names<'a> {
     /// When many items are filed under its key, it works out the short
     /// names of only those whose names have every word of `query`, until
     /// it finds one that isn't `node`. That is quicker than working out all
-    /// of theirs, as for `fmt`, which thousands of Rust functions end with.
+    /// of theirs, as for `fmt`, which thousands of Rust functions end with,
+    /// unless the key is asked about again and again: after a few queries
+    /// with one key, it works out all of theirs once, as `nodes` does, and
+    /// answers from those.
     pub(super) fn finds_only(&self, query: &str, node: Node) -> bool {
         const MANY: usize = 100;
+        // Word by word is quicker when an answer asks about a key a few
+        // times, but one that names many items, as `why --all` does in a
+        // large Rust program, can ask about one key for each of them, and
+        // each query checks the names with its words again. So after this
+        // many queries with one key, its short names are worked out once.
+        // It counts queries, not items named. Naming an item asks its short
+        // names, shortest first, until one finds only it: `new`, then
+        // `App::new`. For a method of a generic type, as anyhow's
+        // `<ContextError<C, E> as core::fmt::Debug>::fmt`, more than eight
+        // of those have the key `fmt`. So an answer that names many items
+        // with a key works out its short names within the first few.
+        const MOST_WORD_BY_WORD: u32 = 8;
         if self.full().contains_key(query) || self.many.get() {
             return self.nodes(query) == [node];
         }
@@ -240,9 +266,14 @@ impl<'a> Names<'a> {
         let Some(filed) = key.and_then(|key| self.filed().get(key)) else {
             return false;
         };
-        if filed.items.len() <= MANY || filed.nodes.get().is_some() {
+        let word_by_word = filed.word_by_word.get();
+        if filed.items.len() <= MANY
+            || filed.nodes.get().is_some()
+            || word_by_word == MOST_WORD_BY_WORD
+        {
             return self.nodes(query) == [node];
         }
+        filed.word_by_word.set(word_by_word + 1);
         let by_word = filed.words.get_or_init(|| {
             let mut by_word = Words {
                 with: HashMap::new(),
@@ -319,6 +350,13 @@ impl<'a> Names<'a> {
         }
     }
 
+    /// Whether [`Names::will_name`] was told that many items are to be
+    /// named, for the tests of the answers that tell it.
+    #[cfg(test)]
+    pub(in crate::commands) fn names_many(&self) -> bool {
+        self.many.get()
+    }
+
     /// The names of items and imports, and aliases of items, and what each
     /// one finds.
     fn full(&self) -> &HashMap<&'a str, Vec<Node>> {
@@ -375,6 +413,7 @@ impl<'a> Names<'a> {
                             items: Vec::new(),
                             nodes: OnceCell::new(),
                             words: OnceCell::new(),
+                            word_by_word: Cell::new(0),
                         })
                         .items;
                     if items.last() != Some(&index) {
@@ -429,14 +468,21 @@ impl<'a> Names<'a> {
     /// works as SYMBOL: the shortest form of its name that finds only the
     /// item, as [`Names::short_name`] picks it but keeping a PLT stub's
     /// `@plt`, or else its address, as when two functions share a name.
+    /// It is worked out once for each item.
     pub(in crate::commands) fn row_name(&self, index: usize) -> String {
+        if let Some(row_name) = self.row_names.borrow().get(&index) {
+            return row_name.clone();
+        }
         let node = Node::Item(index);
         let name = node.name(self.binary);
         // Without `@plt`, a stub's name means what the stub passes calls
         // to, which reads as another item: `strlen, used by strlen`.
         let stub = name.ends_with("@plt");
-        self.shortest_name(node, vec![name], |query| !stub || query.ends_with("@plt"))
-            .unwrap_or_else(|| format!("{:#x}", self.binary.items[index].address))
+        let row_name = self
+            .shortest_name(node, vec![name], |query| !stub || query.ends_with("@plt"))
+            .unwrap_or_else(|| format!("{:#x}", self.binary.items[index].address));
+        self.row_names.borrow_mut().insert(index, row_name.clone());
+        row_name
     }
 
     /// The shortest of `whole_names` and their short names that finds only
@@ -507,5 +553,190 @@ pub(super) fn add_index(indices: &mut Vec<usize>, index: usize) {
 fn add(nodes: &mut Vec<Node>, node: Node) {
     if nodes.last() != Some(&node) {
         nodes.push(node);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use object::SectionKind;
+
+    use super::*;
+    use crate::binary::{Item, Section, Source};
+
+    /// The sample `name` in testdata/bin.
+    fn sample(name: &str) -> Binary {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("testdata/bin")
+            .join(name);
+        Binary::load(&path).unwrap()
+    }
+
+    /// The index of the item named `name`.
+    fn index(binary: &Binary, name: &str) -> usize {
+        binary
+            .items
+            .iter()
+            .position(|item| item.name == name)
+            .unwrap()
+    }
+
+    #[test]
+    fn a_row_name_is_worked_out_once() {
+        let binary = sample("c-x86_64.elf");
+        let names = Names::new(&binary);
+        let stub = index(&binary, "strlen@plt");
+        assert_eq!(names.row_name(stub), "strlen@plt");
+        assert_eq!(names.row_names.borrow()[&stub], "strlen@plt");
+        // Asked again, it gives the name it kept, without working it out.
+        names
+            .row_names
+            .borrow_mut()
+            .insert(stub, "kept".to_string());
+        assert_eq!(names.row_name(stub), "kept");
+    }
+
+    #[test]
+    fn telling_names_that_many_items_are_to_be_named_changes_no_name() {
+        for file in [
+            "c-x86_64.elf",
+            "c-x86_64.so",
+            "cpp-x86_64.so",
+            "rust-x86_64-nodebug.elf",
+        ] {
+            let binary = sample(file);
+            // One works out the short names filed under each key that it is
+            // asked about, and the other every short name at once.
+            let key_by_key = Names::new(&binary);
+            let at_once = Names::new(&binary);
+            at_once.will_name(usize::MAX);
+            let items = (0..binary.items.len()).map(Node::Item);
+            let imports = (0..binary.imports.len()).map(Node::Import);
+            for node in items.chain(imports) {
+                let query_for = key_by_key.query_for(node);
+                assert_eq!(at_once.query_for(node), query_for, "{file}: {node:?}");
+                let short_name = key_by_key.short_name(node);
+                assert_eq!(at_once.short_name(node), short_name, "{file}: {node:?}");
+                if let Node::Item(index) = node {
+                    let row_name = key_by_key.row_name(index);
+                    assert_eq!(at_once.row_name(index), row_name, "{file}: {node:?}");
+                }
+            }
+            // Each worked them out its own way.
+            assert!(key_by_key.all_short.get().is_none() && at_once.filed.get().is_none());
+        }
+    }
+
+    /// An executable with 135 functions filed under the key `fmt`, more
+    /// than the 100 above which [`Names::finds_only`] goes word by word:
+    /// mostly the `Debug` and `Display` methods of Rust types, with a few
+    /// that have generic arguments, two that share a name, and a PLT stub
+    /// for one of them. It has one import.
+    fn fmt_methods() -> Binary {
+        let mut names: Vec<String> = (0..120)
+            .map(|number| format!("<app::Frame{number} as core::fmt::Debug>::fmt"))
+            .collect();
+        for number in 0..4 {
+            names.push(format!("<app::Frame{number} as core::fmt::Display>::fmt"));
+            // Short names may leave out generic arguments.
+            names.push(format!(
+                "<Vec<app::Frame{number}> as core::fmt::Debug>::fmt"
+            ));
+            // And leaving out these joins two words.
+            names.push(format!("app::Frame<u{number}>Ref::fmt"));
+        }
+        // Two functions with one name.
+        names.extend(["app::log::fmt".to_string(), "app::log::fmt".to_string()]);
+        // A stub that jumps to `<app::Frame10 as core::fmt::Debug>::fmt`.
+        names.push("<app::Frame10 as core::fmt::Debug>::fmt@plt".to_string());
+        let items: Vec<Item> = (names.into_iter().enumerate())
+            .map(|(index, name)| Item {
+                source: if name.ends_with("@plt") {
+                    Source::Plt
+                } else {
+                    Source::SymbolTable
+                },
+                name,
+                aliases: Vec::new(),
+                kind: ItemKind::Function,
+                address: 0x1000 + 0x10 * index as u64,
+                size: 0x10,
+                size_estimated: false,
+                section: 1,
+            })
+            .collect();
+        let section = |name: &str, address, size, kind| Section {
+            name: name.to_string(),
+            address,
+            size,
+            kind,
+            allocated: address != 0,
+            file_range: None,
+            entry_size: 0,
+            load_address: None,
+        };
+        let text_size = 0x10 * items.len() as u64;
+        let sections = vec![
+            section("", 0, 0, SectionKind::Unknown),
+            section(".text", 0x1000, text_size, SectionKind::Text),
+        ];
+        let mut binary = Binary::for_tests(sections, items, Vec::new());
+        binary.imports.push("write".to_string());
+        binary
+    }
+
+    #[test]
+    fn finds_only_answers_alike_word_by_word_and_from_a_keys_short_names() {
+        let binary = fmt_methods();
+        // Names finds the function that a stub jumps to from the stub's
+        // bytes, which `fmt_methods` doesn't make, so each Names here is
+        // told which item is the stub.
+        let stub = index(&binary, "<app::Frame10 as core::fmt::Debug>::fmt@plt");
+        let new_names = || {
+            let names = Names::new(&binary);
+            names.own_function_stubs.set(HashSet::from([stub])).unwrap();
+            names
+        };
+        // Each short name with the key `fmt` that isn't a whole name, asked
+        // of the item that has it, of another and of the import.
+        let names = new_names();
+        let mut questions: Vec<(String, Node)> = Vec::new();
+        for (index, item) in binary.items.iter().enumerate() {
+            for query in names::short_names(&item.name) {
+                if names::short_name_key(&query) == Some("fmt")
+                    && !names.full().contains_key(&*query)
+                {
+                    let next = Node::Item((index + 1) % binary.items.len());
+                    for node in [Node::Item(index), next, Node::Import(0)] {
+                        questions.push((query.clone(), node));
+                    }
+                }
+            }
+        }
+        // Asked of a Names that has been asked nothing, each goes word by
+        // word.
+        let word_by_word: Vec<bool> = (questions.iter())
+            .map(|(query, node)| {
+                let names = new_names();
+                let finds_only = names.finds_only(query, *node);
+                let filed = &names.filed()["fmt"];
+                assert!(filed.words.get().is_some() && filed.nodes.get().is_none());
+                finds_only
+            })
+            .collect();
+        // Asked of one Names, all but the first few are answered from every
+        // short name with the key, worked out once.
+        let from_short_names: Vec<bool> = (questions.iter())
+            .map(|(query, node)| names.finds_only(query, *node))
+            .collect();
+        assert!(names.filed()["fmt"].nodes.get().is_some());
+        assert_eq!(from_short_names, word_by_word);
+        let nodes: Vec<bool> = (questions.iter())
+            .map(|(query, node)| names.nodes(query) == [*node])
+            .collect();
+        assert_eq!(word_by_word, nodes);
+        // Some get yes, and the others no.
+        assert!(word_by_word.contains(&true) && word_by_word.contains(&false));
     }
 }
