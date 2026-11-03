@@ -12,7 +12,7 @@ use super::lookup::add_index;
 use crate::binary::names;
 use crate::commands::checks::found_functions;
 use crate::commands::text;
-use crate::debuginfo::{self, InlinedCopy};
+use crate::debuginfo::{self, CopiesToName, InlinedCopy};
 use crate::graph::Node;
 
 /// Where the compiler inlined every copy of a function, as the DWARF says.
@@ -126,7 +126,7 @@ impl<'a> Names<'a> {
     /// lists them, read once.
     fn inlined(&self) -> Option<&Inlined> {
         let inlined = self.inlined.get_or_init(|| {
-            let copies = debuginfo::inlined_copies(self.binary).ok()?;
+            let copies = debuginfo::inlined_copies(self.binary, CopiesToName::All).ok()?;
             // A function is often inlined in many places: each is filed
             // once.
             let mut functions: Vec<(Arc<str>, Vec<usize>)> = Vec::new();

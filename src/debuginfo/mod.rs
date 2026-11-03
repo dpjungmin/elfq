@@ -5,12 +5,13 @@
 //! works without DWARF.
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use gimli::{
     AttributeValue, DebugInfoOffset, DebuggingInformationEntry, EndianSlice, RunTimeEndian, Unit,
+    UnitOffset,
 };
 use object::{Object, ObjectSection};
 
@@ -23,6 +24,8 @@ type Reader<'a> = EndianSlice<'a, RunTimeEndian>;
 pub struct InlinedCopy {
     /// The name of the function that was inlined, demangled as item names
     /// are. Its copies share it, since a function can have thousands.
+    /// Empty when [`inlined_copies`] wasn't asked to name the copy (see
+    /// [`CopiesToName`]).
     pub name: Arc<str>,
     /// The function whose code holds the copy, as an index into
     /// [`Binary::items`].
@@ -41,10 +44,37 @@ pub struct InlinedCopy {
     pub parent: Option<usize>,
 }
 
+/// Which inlined copies [`inlined_copies`] names. Working out the names
+/// takes about half of its time, demangling them above all, and `inlined
+/// SYMBOL` reads only the names of the copies in SYMBOL's function.
+///
+/// The names of the other copies are still read, though not worked out, so
+/// that in damaged debug info, a name that can't be read fails
+/// [`inlined_copies`] whichever copies it names.
+#[derive(Debug, Clone, Copy)]
+pub enum CopiesToName {
+    /// Every copy.
+    All,
+    /// Only the copies in the function at this index into
+    /// [`Binary::items`]. The others' names are empty.
+    OnlyInto(usize),
+}
+
+impl CopiesToName {
+    /// Whether they include the copies in the function at `into`, an index
+    /// into [`Binary::items`].
+    fn include_copies_in(self, into: usize) -> bool {
+        match self {
+            CopiesToName::All => true,
+            CopiesToName::OnlyInto(function) => function == into,
+        }
+    }
+}
+
 /// Every inlined copy in the file, in the order DWARF lists them, which puts
-/// each copy before the copies inlined into it. Empty when the file has no
-/// DWARF.
-pub fn inlined_copies(binary: &Binary) -> Result<Vec<InlinedCopy>> {
+/// each copy before the copies inlined into it, named as `copies_to_name`
+/// says. Empty when the file has no DWARF.
+pub fn inlined_copies(binary: &Binary, copies_to_name: CopiesToName) -> Result<Vec<InlinedCopy>> {
     let file = object::File::parse(binary.file_data())?;
     let endian = if file.is_little_endian() {
         RunTimeEndian::Little
@@ -73,8 +103,10 @@ pub fn inlined_copies(binary: &Binary) -> Result<Vec<InlinedCopy>> {
         binary,
         dwarf: &dwarf,
         units: &units,
+        copies_to_name,
         copies: Vec::new(),
         names: HashMap::new(),
+        checked: HashSet::new(),
     };
     for unit in &units {
         walk.unit(unit)?;
@@ -94,11 +126,17 @@ struct Walk<'a, 'd> {
     dwarf: &'a gimli::Dwarf<Reader<'d>>,
     /// Every unit, in the order `.debug_info` holds them.
     units: &'a [Unit<Reader<'d>>],
+    copies_to_name: CopiesToName,
     copies: Vec<InlinedCopy>,
     /// The names found for the entries that copies take their names from,
     /// by where those entries are in `.debug_info`: thousands of copies of
     /// one function share an entry, and its name.
     names: HashMap<usize, Option<Arc<str>>>,
+    /// The entries, by where they are in `.debug_info` as `names` keys
+    /// them, whose names [`Walk::check_name`] has checked for copies that
+    /// aren't named, so that each is checked once. A check that fails ends
+    /// the walk.
+    checked: HashSet<usize>,
 }
 
 impl<'a, 'd> Walk<'a, 'd> {
@@ -181,6 +219,32 @@ impl<'a, 'd> Walk<'a, 'd> {
             Some(address) => self.dwarf.attr_address(unit, address)?,
             None => None,
         };
+        let name = match self.copies_to_name.include_copies_in(into) {
+            true => self.copy_name(unit, entry)?,
+            false => {
+                self.check_name(unit, entry)?;
+                // The empty name. `Arc`'s default needn't allocate one for
+                // each copy, as `Arc::from("")` does.
+                Arc::default()
+            }
+        };
+        Ok(Some(InlinedCopy {
+            name,
+            into,
+            entry: entry_pc.unwrap_or(start),
+            size,
+            own: size,
+            parent,
+        }))
+    }
+
+    /// The name of the function that an inlined-subroutine entry is a copy
+    /// of, worked out once for all the copies that take it from one entry.
+    fn copy_name(
+        &mut self,
+        unit: &'a Unit<Reader<'d>>,
+        entry: &DebuggingInformationEntry<Reader<'d>>,
+    ) -> Result<Arc<str>> {
         let name = match self.origin(unit, entry) {
             Some(origin) => match self.names.get(&origin) {
                 Some(name) => name.clone(),
@@ -192,58 +256,96 @@ impl<'a, 'd> Walk<'a, 'd> {
             },
             None => self.name(unit, entry)?.map(Arc::from),
         };
-        let name = name.unwrap_or_else(|| Arc::from("(unnamed)"));
-        Ok(Some(InlinedCopy {
-            name,
-            into,
-            entry: entry_pc.unwrap_or(start),
-            size,
-            own: size,
-            parent,
-        }))
+        Ok(name.unwrap_or_else(|| Arc::from("(unnamed)")))
+    }
+
+    /// Fails where [`Walk::copy_name`] would, for a copy that isn't named,
+    /// but works out the name only when one of its strings can't be read.
+    /// Like the name, the check is made once for all the copies that take
+    /// their name from one entry.
+    fn check_name(
+        &mut self,
+        unit: &'a Unit<Reader<'d>>,
+        entry: &DebuggingInformationEntry<Reader<'d>>,
+    ) -> Result<()> {
+        if let Some(origin) = self.origin(unit, entry)
+            && !self.checked.insert(origin)
+        {
+            return Ok(());
+        }
+        let Some(named) = self.named_entry(unit, entry)? else {
+            return Ok(());
+        };
+        let readable = name_attributes(&named.entry)
+            .into_iter()
+            .flatten()
+            .all(|value| self.dwarf.attr_string(named.unit, value).is_ok());
+        if !readable {
+            // `name` reads DW_AT_name only when the linkage name doesn't
+            // demangle, so only `name` can say whether a string that can't
+            // be read fails it.
+            self.name(unit, entry)?;
+        }
+        Ok(())
     }
 
     /// The name of the function an entry describes, following the links
-    /// from an inlined copy to the function's own entry.
+    /// from an inlined copy to the function's own entry. It reads no
+    /// strings but those of [`name_attributes`], which
+    /// [`Walk::check_name`] checks.
     fn name(
         &self,
         unit: &'a Unit<Reader<'d>>,
         entry: &DebuggingInformationEntry<Reader<'d>>,
     ) -> Result<Option<String>> {
-        let mut unit = unit;
-        let mut entry = entry.clone();
+        let Some(EntryInUnit { unit, entry }) = self.named_entry(unit, entry)? else {
+            return Ok(None);
+        };
+        let [linkage_name, name] = name_attributes(&entry);
+        let linkage_name = match linkage_name {
+            Some(value) => Some(self.string(unit, value)?),
+            None => None,
+        };
+        // Rust and C++ linkage names demangle to their whole path;
+        // DW_AT_name has only the last part.
+        if let Some(demangled) = linkage_name.as_deref().and_then(binary::names::demangle) {
+            return Ok(Some(demangled));
+        }
+        if let Some(value) = name {
+            return Ok(Some(self.string(unit, value)?));
+        }
+        Ok(linkage_name)
+    }
+
+    /// The entry that has the name of the function an entry describes: the
+    /// entry itself, or the one its links to the function's own entry lead
+    /// to. `None` when the links end before a name.
+    fn named_entry(
+        &self,
+        unit: &'a Unit<Reader<'d>>,
+        entry: &DebuggingInformationEntry<Reader<'d>>,
+    ) -> Result<Option<EntryInUnit<'a, 'd>>> {
+        let mut at = EntryInUnit {
+            unit,
+            entry: entry.clone(),
+        };
         // The links rarely go more than two deep; the limit stops cycles in
         // malformed files.
         for _ in 0..8 {
-            let linkage_name = entry
-                .attr_value(gimli::DW_AT_linkage_name)
-                .or_else(|| entry.attr_value(gimli::DW_AT_MIPS_linkage_name));
-            let linkage_name = match linkage_name {
-                Some(value) => Some(self.string(unit, value)?),
-                None => None,
-            };
-            // Rust and C++ linkage names demangle to their whole path;
-            // DW_AT_name has only the last part.
-            if let Some(demangled) = linkage_name.as_deref().and_then(binary::names::demangle) {
-                return Ok(Some(demangled));
+            if has_name(&at.entry) {
+                return Ok(Some(at));
             }
-            if let Some(value) = entry.attr_value(gimli::DW_AT_name) {
-                return Ok(Some(self.string(unit, value)?));
-            }
-            if linkage_name.is_some() {
-                return Ok(linkage_name);
-            }
-            let next = entry
+            let link = at
+                .entry
                 .attr_value(gimli::DW_AT_abstract_origin)
-                .or_else(|| entry.attr_value(gimli::DW_AT_specification));
-            let Some(next) = next else {
+                .or_else(|| at.entry.attr_value(gimli::DW_AT_specification));
+            let Some(link) = link else {
                 return Ok(None);
             };
-            let Some((next_unit, next_entry)) = self.entry_at(unit, next)? else {
+            let Some(next) = self.entry_at(at.unit, link)? else {
                 return Ok(None);
             };
-            unit = next_unit;
-            entry = next_entry;
+            at = next;
         }
         Ok(None)
     }
@@ -256,12 +358,7 @@ impl<'a, 'd> Walk<'a, 'd> {
         unit: &Unit<Reader<'d>>,
         entry: &DebuggingInformationEntry<Reader<'d>>,
     ) -> Option<usize> {
-        let names = [
-            gimli::DW_AT_linkage_name,
-            gimli::DW_AT_MIPS_linkage_name,
-            gimli::DW_AT_name,
-        ];
-        if names.iter().any(|&name| entry.attr_value(name).is_some()) {
+        if has_name(entry) {
             return None;
         }
         match entry.attr_value(gimli::DW_AT_abstract_origin)? {
@@ -281,20 +378,20 @@ impl<'a, 'd> Walk<'a, 'd> {
         }
     }
 
-    /// The entry that a reference attribute points to, and its unit.
+    /// The entry that a reference attribute in `unit` points to.
     fn entry_at(
         &self,
         unit: &'a Unit<Reader<'d>>,
         value: AttributeValue<Reader<'d>>,
-    ) -> Result<Option<(&'a Unit<Reader<'d>>, DebuggingInformationEntry<Reader<'d>>)>> {
+    ) -> Result<Option<EntryInUnit<'a, 'd>>> {
         match value {
-            AttributeValue::UnitRef(offset) => Ok(Some((unit, unit.entry(offset)?))),
+            AttributeValue::UnitRef(offset) => Ok(Some(EntryInUnit::read(unit, offset)?)),
             AttributeValue::DebugInfoRef(offset) => {
                 let Some(other) = unit_that_can_hold(self.units, offset) else {
                     return Ok(None);
                 };
                 match offset.to_unit_offset(&other.header) {
-                    Some(offset) => Ok(Some((other, other.entry(offset)?))),
+                    Some(offset) => Ok(Some(EntryInUnit::read(other, offset)?)),
                     // In the unit's header, or past its end.
                     None => Ok(None),
                 }
@@ -307,6 +404,40 @@ impl<'a, 'd> Walk<'a, 'd> {
         let text = self.dwarf.attr_string(unit, value)?;
         Ok(text.to_string_lossy().into_owned())
     }
+}
+
+/// An entry of `.debug_info`, with the unit that holds it, which reading
+/// the entry's attributes needs.
+struct EntryInUnit<'a, 'd> {
+    unit: &'a Unit<Reader<'d>>,
+    entry: DebuggingInformationEntry<Reader<'d>>,
+}
+
+impl<'a, 'd> EntryInUnit<'a, 'd> {
+    /// The entry at `offset` in `unit`.
+    fn read(unit: &'a Unit<Reader<'d>>, offset: UnitOffset) -> Result<Self> {
+        let entry = unit.entry(offset)?;
+        Ok(EntryInUnit { unit, entry })
+    }
+}
+
+/// Whether an entry gives a function's name itself, rather than through a
+/// link to another entry.
+fn has_name(entry: &DebuggingInformationEntry<Reader<'_>>) -> bool {
+    name_attributes(entry).iter().any(Option::is_some)
+}
+
+/// The attributes of an entry that give its function's name: its linkage
+/// name, the mangled name, and its DW_AT_name. [`Walk::name`] reads the
+/// name from their strings alone, and [`Walk::check_name`] checks that
+/// those can be read.
+fn name_attributes<'d>(
+    entry: &DebuggingInformationEntry<Reader<'d>>,
+) -> [Option<AttributeValue<Reader<'d>>>; 2] {
+    let linkage_name = entry
+        .attr_value(gimli::DW_AT_linkage_name)
+        .or_else(|| entry.attr_value(gimli::DW_AT_MIPS_linkage_name));
+    [linkage_name, entry.attr_value(gimli::DW_AT_name)]
 }
 
 /// The only unit among `units` whose entries can hold `offset`, a place in
