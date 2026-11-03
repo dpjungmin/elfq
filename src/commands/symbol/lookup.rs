@@ -326,6 +326,13 @@ impl<'a> Names<'a> {
         }
     }
 
+    /// Whether [`Names::will_name`] was told that many items are to be
+    /// named, for the tests of the answers that tell it.
+    #[cfg(test)]
+    pub(in crate::commands) fn names_many(&self) -> bool {
+        self.many.get()
+    }
+
     /// The names of items and imports, and aliases of items, and what each
     /// one finds.
     fn full(&self) -> &HashMap<&'a str, Vec<Node>> {
@@ -560,5 +567,36 @@ mod tests {
             .borrow_mut()
             .insert(stub, "kept".to_string());
         assert_eq!(names.row_name(stub), "kept");
+    }
+
+    #[test]
+    fn telling_names_that_many_items_are_to_be_named_changes_no_name() {
+        for file in [
+            "c-x86_64.elf",
+            "c-x86_64.so",
+            "cpp-x86_64.so",
+            "rust-x86_64-nodebug.elf",
+        ] {
+            let binary = sample(file);
+            // One works out the short names filed under each key that it is
+            // asked about, and the other every short name at once.
+            let key_by_key = Names::new(&binary);
+            let at_once = Names::new(&binary);
+            at_once.will_name(usize::MAX);
+            let items = (0..binary.items.len()).map(Node::Item);
+            let imports = (0..binary.imports.len()).map(Node::Import);
+            for node in items.chain(imports) {
+                let query_for = key_by_key.query_for(node);
+                assert_eq!(at_once.query_for(node), query_for, "{file}: {node:?}");
+                let short_name = key_by_key.short_name(node);
+                assert_eq!(at_once.short_name(node), short_name, "{file}: {node:?}");
+                if let Node::Item(index) = node {
+                    let row_name = key_by_key.row_name(index);
+                    assert_eq!(at_once.row_name(index), row_name, "{file}: {node:?}");
+                }
+            }
+            // Each worked them out its own way.
+            assert!(key_by_key.all_short.get().is_none() && at_once.filed.get().is_none());
+        }
     }
 }

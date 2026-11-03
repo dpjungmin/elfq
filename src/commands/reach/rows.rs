@@ -118,8 +118,14 @@ impl Text<'_, '_> {
     /// 0x20000000..0x20000450" sums up the rest of a block's.
     fn rows(&self, outside: &[Unfollowed]) -> Vec<FlatRow> {
         let reach = self.reach;
-        let mut rows = vec![self.symbol_row()];
         let reached = &reach.steps[1..];
+        let unfollowed = range_check::group_unfollowed(outside);
+        if self.all {
+            // Each row but SYMBOL's names the item that uses what it lists,
+            // and with every row, those can be most of the file's items.
+            self.names.will_name(reached.len() + unfollowed.len());
+        }
+        let mut rows = vec![self.symbol_row()];
         let largest = self.largest(reached);
         let steps = self.in_row_order(reached.iter().collect());
         let imports = steps.partition_point(|step| matches!(step.node, Node::Item(_)));
@@ -127,8 +133,8 @@ impl Text<'_, '_> {
         for steps in items.chunk_by(|a, b| self.group(a) == self.group(b)) {
             self.add_group(steps, &largest, &mut rows);
         }
-        for (unfollowed, _) in range_check::group_unfollowed(outside) {
-            rows.push(self.unfollowed_row(&unfollowed));
+        for (group, _) in unfollowed {
+            rows.push(self.unfollowed_row(&group));
         }
         if !imports.is_empty() {
             self.add_group(imports, &largest, &mut rows);
@@ -358,7 +364,13 @@ pub(super) fn more_size(binary: &Binary, nodes: impl IntoIterator<Item = Node>) 
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
+    use super::super::Reach;
     use super::*;
+    use crate::cli::Format;
+    use crate::commands::symbol::Names;
+    use crate::graph::Graph;
 
     #[test]
     fn what_reaches_nothing_says_how_it_uses_itself() {
@@ -389,5 +401,28 @@ mod tests {
             lines(None, true, &[]),
             ["f is the PLT header, which jumps only to the dynamic loader."]
         );
+    }
+
+    #[test]
+    fn every_row_tells_names_how_many_items_it_names() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/bin/c-x86_64.elf");
+        let binary = Binary::load(&path).unwrap();
+        let graph = Graph::build(&binary);
+        // Whether wording reach's answer for `symbol`, with every row when
+        // `all` is set, tells Names that many items are to be named.
+        let names_many = |symbol: &str, all: bool| {
+            let names = Names::new(&binary);
+            let Node::Item(index) = names.find(symbol).unwrap().node else {
+                panic!("{symbol} is an import");
+            };
+            let reach = Reach::find(&binary, &graph, index, &[]);
+            reach.text(&names, symbol, all, Format::Text).answer();
+            names.names_many()
+        };
+        // main reaches 50 of the file's 68 items and 3 imports.
+        assert!(names_many("main", true));
+        assert!(!names_many("main", false));
+        // crc32 reaches only crc_table.
+        assert!(!names_many("crc32", true));
     }
 }
