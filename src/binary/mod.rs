@@ -180,7 +180,7 @@ pub struct Binary {
     /// data is added, and the items sorted again, after the scan. The key
     /// stays a pair: it is only ever made from a function and looked up,
     /// never taken apart.
-    code_references: HashMap<(u64, u64), Vec<CodeReference>>,
+    code_references: HashMap<(u64, u64), Box<[CodeReference]>>,
     /// The whole file.
     data: Vec<u8>,
 }
@@ -339,12 +339,14 @@ impl Binary {
     /// The references that the code of `function` makes, as
     /// `InstructionSet::scan` finds them, and a jump to the next function
     /// when the code runs on into it (see `end_where_functions_start`):
-    /// none when elfq can't read the code. Scanning code is much of what
-    /// elfq does, so it scans each function once, as it loads the file.
+    /// none when elfq can't read the code. The jumps that land inside the
+    /// function, as most do, are left out: they use no other item, and on
+    /// a large file they are millions. Scanning code is much of what elfq
+    /// does, so it scans each function once, as it loads the file.
     pub(crate) fn code_references(&self, function: &Item) -> &[CodeReference] {
         self.code_references
             .get(&(function.address, function.size))
-            .map_or(&[], Vec::as_slice)
+            .map_or(&[], Box::as_ref)
     }
 
     /// The stretches of the `size` bytes at `address` that the file's `$d`

@@ -264,11 +264,9 @@ impl Graph {
                 Some(to) => self.add(from, Node::Item(to), ReferenceKind::Call, site),
                 None => self.unresolved.push(unresolved(true, Some(target))),
             },
+            // A jump that leaves the function: the code references leave
+            // out those that stay inside it, as loops and branches do.
             CodeReferenceKind::Jump(target) | CodeReferenceKind::TailJump(target) => {
-                // Most jumps stay inside the function: loops and branches.
-                if function.contains(target) {
-                    return;
-                }
                 match binary.item_at(target) {
                     Some(to) => self.add(from, Node::Item(to), ReferenceKind::TailCall, site),
                     None => self.unresolved.push(unresolved(false, Some(target))),

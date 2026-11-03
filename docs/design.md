@@ -1255,8 +1255,9 @@ that do this.
    doesn't follow leads to, such as the cases of a switch that jumps
    through a table of addresses, keeps what reading each instruction on
    its own finds; when that code joins code elfq follows, the whole
-   function does. elfq scans each function once, as it loads the file
-   (`Binary::code_references`).
+   function does. elfq scans each function once, as it loads the file,
+   and keeps what the scan finds but the jumps that stay inside the
+   function, as loops do (`Binary::code_references`).
    Startup code is a special case: it copies or clears whole sections such
    as `.data` and `.bss`, loading where each starts and ends through
    symbols that the linker script defines, such as `_sdata` and `_edata`.
