@@ -1,7 +1,7 @@
 //! [`Names`]: what each name in the file finds, worked out once, and how
 //! to name an item for the user in return.
 
-use std::cell::{Cell, OnceCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context, Result, bail};
@@ -52,6 +52,12 @@ pub(in crate::commands) struct Names<'a> {
     /// The short names that [`Names::similar`] compares a query with, made
     /// the first time a query finds nothing.
     pub(super) suggestable: OnceCell<Suggestable>,
+    /// The row name of each item, by its index, kept the first time
+    /// [`Names::row_name`] works it out: `reach` names an item after "used
+    /// by" on the row of each item that it uses, and browse on each line
+    /// that uses it. Short names are kept by those that ask for them again:
+    /// browse's `Session::short_name` and diff's `RowNames`.
+    row_names: RefCell<HashMap<usize, String>>,
 }
 
 /// The items filed under a key, and their short names with it.
@@ -86,6 +92,7 @@ impl<'a> Names<'a> {
             inlined: OnceCell::new(),
             lowercase: OnceCell::new(),
             suggestable: OnceCell::new(),
+            row_names: RefCell::new(HashMap::new()),
         }
     }
 
@@ -429,14 +436,21 @@ impl<'a> Names<'a> {
     /// works as SYMBOL: the shortest form of its name that finds only the
     /// item, as [`Names::short_name`] picks it but keeping a PLT stub's
     /// `@plt`, or else its address, as when two functions share a name.
+    /// It is worked out once for each item.
     pub(in crate::commands) fn row_name(&self, index: usize) -> String {
+        if let Some(row_name) = self.row_names.borrow().get(&index) {
+            return row_name.clone();
+        }
         let node = Node::Item(index);
         let name = node.name(self.binary);
         // Without `@plt`, a stub's name means what the stub passes calls
         // to, which reads as another item: `strlen, used by strlen`.
         let stub = name.ends_with("@plt");
-        self.shortest_name(node, vec![name], |query| !stub || query.ends_with("@plt"))
-            .unwrap_or_else(|| format!("{:#x}", self.binary.items[index].address))
+        let row_name = self
+            .shortest_name(node, vec![name], |query| !stub || query.ends_with("@plt"))
+            .unwrap_or_else(|| format!("{:#x}", self.binary.items[index].address));
+        self.row_names.borrow_mut().insert(index, row_name.clone());
+        row_name
     }
 
     /// The shortest of `whole_names` and their short names that finds only
@@ -507,5 +521,44 @@ pub(super) fn add_index(indices: &mut Vec<usize>, index: usize) {
 fn add(nodes: &mut Vec<Node>, node: Node) {
     if nodes.last() != Some(&node) {
         nodes.push(node);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+
+    /// The sample `name` in testdata/bin.
+    fn sample(name: &str) -> Binary {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("testdata/bin")
+            .join(name);
+        Binary::load(&path).unwrap()
+    }
+
+    /// The index of the item named `name`.
+    fn index(binary: &Binary, name: &str) -> usize {
+        binary
+            .items
+            .iter()
+            .position(|item| item.name == name)
+            .unwrap()
+    }
+
+    #[test]
+    fn a_row_name_is_worked_out_once() {
+        let binary = sample("c-x86_64.elf");
+        let names = Names::new(&binary);
+        let stub = index(&binary, "strlen@plt");
+        assert_eq!(names.row_name(stub), "strlen@plt");
+        assert_eq!(names.row_names.borrow()[&stub], "strlen@plt");
+        // Asked again, it gives the name it kept, without working it out.
+        names
+            .row_names
+            .borrow_mut()
+            .insert(stub, "kept".to_string());
+        assert_eq!(names.row_name(stub), "kept");
     }
 }

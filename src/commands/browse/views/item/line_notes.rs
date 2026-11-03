@@ -225,7 +225,7 @@ impl<'s, 'a> LineNotes<'s, 'a> {
     /// The offset is there only when `address` isn't the item's start:
     /// `frames+0x8`.
     fn name_at(&self, index: usize, address: u64) -> String {
-        let name = self.session.row_name(index);
+        let name = self.session.names.row_name(index);
         match address.saturating_sub(self.session.binary.items[index].address) {
             0 => name,
             offset => format!("{name}+{offset:#x}"),
@@ -298,7 +298,7 @@ impl<'s, 'a> LineNotes<'s, 'a> {
     /// The name that rows give `node`.
     fn name(&self, node: Node) -> String {
         match node {
-            Node::Item(index) => self.session.row_name(index),
+            Node::Item(index) => self.session.names.row_name(index),
             Node::Import(_) => node.name(self.session.binary).to_string(),
         }
     }
