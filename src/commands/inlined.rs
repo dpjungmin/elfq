@@ -608,7 +608,7 @@ mod tests {
 
     fn copy(name: &str, size: u64, parent: Option<usize>) -> InlinedCopy {
         InlinedCopy {
-            name: name.to_string(),
+            name: name.into(),
             into: 0,
             entry: 0,
             size,

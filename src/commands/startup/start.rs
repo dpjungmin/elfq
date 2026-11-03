@@ -156,7 +156,7 @@ pub(super) fn find_main(firmware: &Firmware, ram: &RamSections, reset: &Reset) -
     }
     if binary.has_dwarf
         && let Ok(copies) = debuginfo::inlined_copies(binary)
-        && let Some(copy) = copies.iter().find(|copy| copy.name == "main")
+        && let Some(copy) = copies.iter().find(|copy| &*copy.name == "main")
     {
         return Some(Main {
             address: copy.entry & !1,

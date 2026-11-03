@@ -32,7 +32,7 @@ fn inlined_into(binary: &Binary, copies: &[InlinedCopy], into: &str) -> Vec<(Str
     copies
         .iter()
         .filter(|copy| copy.into == into && copy.parent.is_none())
-        .map(|copy| (copy.name.clone(), copy.size))
+        .map(|copy| (copy.name.to_string(), copy.size))
         .collect()
 }
 
@@ -79,7 +79,7 @@ fn copies_inside_copies_count_once() {
         .enumerate()
         .find(|(_, copy)| copy.into == memcpy && copy.parent.is_none())
         .unwrap();
-    assert_eq!(outer.name, "compiler_builtins::mem::impls::copy_forward");
+    assert_eq!(&*outer.name, "compiler_builtins::mem::impls::copy_forward");
     let inner: Vec<&InlinedCopy> = copies
         .iter()
         .filter(|copy| copy.parent == Some(index))

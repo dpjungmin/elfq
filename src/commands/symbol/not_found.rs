@@ -5,6 +5,7 @@
 use std::cell::OnceCell;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
 
 use super::Names;
 use super::lookup::add_index;
@@ -28,10 +29,11 @@ pub(in crate::commands) struct InlinedEverywhere<'n> {
 /// The copies of functions that the compiler inlined, by function.
 pub(super) struct Inlined {
     copies: Vec<InlinedCopy>,
-    /// Each function's name, with its copies, as indices into `copies`.
-    functions: Vec<(String, Vec<usize>)>,
+    /// Each function's name, which its copies share, with its copies, as
+    /// indices into `copies`.
+    functions: Vec<(Arc<str>, Vec<usize>)>,
     /// The function with each name, as an index into `functions`.
-    by_name: HashMap<String, usize>,
+    by_name: HashMap<Arc<str>, usize>,
     /// The functions that each key files (see [`names::short_name_key`]).
     filed: HashMap<String, FiledFunctions>,
     /// The names of the functions that the compiler kept part of out of
@@ -64,7 +66,7 @@ impl<'a> Names<'a> {
         }
         let inlined = self.inlined()?;
         let (name, copies) = &inlined.functions[inlined.only_function(query)?];
-        if inlined.kept_out_of_line.contains(name) {
+        if inlined.kept_out_of_line.contains(name.as_ref()) {
             return None;
         }
         // The functions that hold the copies, those with the most first.
@@ -127,8 +129,8 @@ impl<'a> Names<'a> {
             let copies = debuginfo::inlined_copies(self.binary).ok()?;
             // A function is often inlined in many places: each is filed
             // once.
-            let mut functions: Vec<(String, Vec<usize>)> = Vec::new();
-            let mut by_name: HashMap<String, usize> = HashMap::new();
+            let mut functions: Vec<(Arc<str>, Vec<usize>)> = Vec::new();
+            let mut by_name: HashMap<Arc<str>, usize> = HashMap::new();
             for (index, copy) in copies.iter().enumerate() {
                 let function = *by_name.entry(copy.name.clone()).or_insert_with(|| {
                     functions.push((copy.name.clone(), Vec::new()));

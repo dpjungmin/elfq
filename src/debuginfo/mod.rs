@@ -6,6 +6,7 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use gimli::{
@@ -21,8 +22,8 @@ type Reader<'a> = EndianSlice<'a, RunTimeEndian>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InlinedCopy {
     /// The name of the function that was inlined, demangled as item names
-    /// are.
-    pub name: String,
+    /// are. Its copies share it, since a function can have thousands.
+    pub name: Arc<str>,
     /// The function whose code holds the copy, as an index into
     /// [`Binary::items`].
     pub into: usize,
@@ -96,8 +97,8 @@ struct Walk<'a, 'd> {
     copies: Vec<InlinedCopy>,
     /// The names found for the entries that copies take their names from,
     /// by where those entries are in `.debug_info`: thousands of copies of
-    /// one function share an entry.
-    names: HashMap<usize, Option<String>>,
+    /// one function share an entry, and its name.
+    names: HashMap<usize, Option<Arc<str>>>,
 }
 
 impl<'a, 'd> Walk<'a, 'd> {
@@ -184,14 +185,14 @@ impl<'a, 'd> Walk<'a, 'd> {
             Some(origin) => match self.names.get(&origin) {
                 Some(name) => name.clone(),
                 None => {
-                    let name = self.name(unit, entry)?;
+                    let name = self.name(unit, entry)?.map(Arc::from);
                     self.names.insert(origin, name.clone());
                     name
                 }
             },
-            None => self.name(unit, entry)?,
+            None => self.name(unit, entry)?.map(Arc::from),
         };
-        let name = name.unwrap_or_else(|| "(unnamed)".to_string());
+        let name = name.unwrap_or_else(|| Arc::from("(unnamed)"));
         Ok(Some(InlinedCopy {
             name,
             into,
