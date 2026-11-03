@@ -1,13 +1,16 @@
-//! Roots, dominators and what is exclusive to what, checked against the
-//! answers in testdata/README.md.
+//! Roots, dominators and what is exclusive to what.
+//!
+//! They are checked against the answers in testdata/README.md. The tests
+//! of what the overview, `top` and `retained` print from them are in
+//! commands/overview_top_and_retained.rs.
 
 use elfq::binary::{Binary, ItemKind, Source};
 use elfq::graph::{DominatorTree, Graph, Node, RootKind};
 
-use crate::support::{load_sample, node};
+use crate::support::{C_SAMPLES, SAMPLE, load_sample, node};
 
-fn load(name: &str) -> (Binary, Graph, DominatorTree) {
-    let binary = load_sample(name);
+fn load(path: &str) -> (Binary, Graph, DominatorTree) {
+    let binary = load_sample(path);
     let graph = Graph::build(&binary);
     let tree = DominatorTree::build(&binary, &graph, None);
     (binary, graph, tree)
@@ -47,11 +50,18 @@ fn parent(binary: &Binary, tree: &DominatorTree, name: &str) -> Option<String> {
         .map(|parent| parent.name(binary).to_string())
 }
 
-const C_SAMPLES: [&str; 3] = ["c-x86_64.elf", "c-x86_64-nodebug.elf", "c-cortex-m4.elf"];
+/// [`C_SAMPLES`], and the x86-64 one without DWARF.
+///
+/// What keeps what mustn't depend on DWARF.
+fn c_samples_and_nodebug() -> impl Iterator<Item = &'static str> {
+    C_SAMPLES
+        .into_iter()
+        .chain(["testdata/bin/c-x86_64-nodebug.elf"])
+}
 
 #[test]
 fn process_frame_keeps_its_helpers_tables_and_messages() {
-    for sample in C_SAMPLES {
+    for sample in c_samples_and_nodebug() {
         let (binary, _, tree) = load(sample);
         assert_eq!(
             exclusive(&binary, &tree, "process_frame"),
@@ -84,7 +94,7 @@ fn process_frame_keeps_its_helpers_tables_and_messages() {
 
 #[test]
 fn each_item_hangs_under_what_alone_leads_to_it() {
-    for sample in C_SAMPLES {
+    for sample in c_samples_and_nodebug() {
         let (binary, _, tree) = load(sample);
         let parent = |name| parent(&binary, &tree, name);
         assert_eq!(parent("crc_table").as_deref(), Some("crc32"), "{sample}");
@@ -101,7 +111,7 @@ fn each_item_hangs_under_what_alone_leads_to_it() {
 
 #[test]
 fn dead_code_is_unreachable() {
-    let (binary, _, tree) = load("c-x86_64.elf");
+    let (binary, _, tree) = load(SAMPLE);
     assert!(!tree.is_reachable(node(&binary, "debug_dump")));
     // Its message string, which nothing else uses.
     let mut unreachable: Vec<String> = (0..binary.items.len())
@@ -115,7 +125,7 @@ fn dead_code_is_unreachable() {
 
 #[test]
 fn firmware_starts_from_its_vector_table() {
-    let (binary, graph, tree) = load("c-cortex-m4.elf");
+    let (binary, graph, tree) = load("testdata/bin/c-cortex-m4.elf");
     let roots: Vec<(&str, RootKind)> = graph
         .roots
         .iter()
@@ -140,9 +150,9 @@ fn firmware_starts_from_its_vector_table() {
 #[test]
 fn everything_in_the_samples_is_reachable_but_dead_code() {
     for sample in [
-        "c-cortex-m4.elf",
-        "rust-cortex-m4.elf",
-        "rust-x86_64-nodebug.elf",
+        "testdata/bin/c-cortex-m4.elf",
+        "testdata/bin/rust-cortex-m4.elf",
+        "testdata/bin/rust-x86_64-nodebug.elf",
     ] {
         let (binary, _, tree) = load(sample);
         let unreachable: Vec<&str> = (0..binary.items.len())
@@ -155,7 +165,7 @@ fn everything_in_the_samples_is_reachable_but_dead_code() {
 
 #[test]
 fn the_unwinder_and_the_dynamic_loader_are_starting_points() {
-    let (binary, graph, _) = load("rust-x86_64-nodebug.elf");
+    let (binary, graph, _) = load("testdata/bin/rust-x86_64-nodebug.elf");
     let roots: Vec<(&str, String)> = graph
         .roots
         .iter()
@@ -188,7 +198,7 @@ fn the_unwinder_and_the_dynamic_loader_are_starting_points() {
 fn merged_variables_are_all_used_through_the_block_address() {
     // LLVM merged these four statics into one block, which code reaches
     // through the address of the first.
-    let (binary, _, tree) = load("rust-cortex-m4.elf");
+    let (binary, _, tree) = load("testdata/bin/rust-cortex-m4.elf");
     for name in ["FRAMES_BAD", "SAMPLE_COUNT", "PEAK", "FRAMES_OK"] {
         assert!(tree.is_reachable(node(&binary, name)), "{name}");
     }
@@ -198,7 +208,10 @@ fn merged_variables_are_all_used_through_the_block_address() {
 fn trait_implementations_belong_to_the_code_that_makes_the_trait_objects() {
     // `app_main` takes the vtables' addresses; each implementation hangs
     // under its vtable, which hangs under `app_main`.
-    for sample in ["rust-x86_64-nodebug.elf", "rust-cortex-m4.elf"] {
+    for sample in [
+        "testdata/bin/rust-x86_64-nodebug.elf",
+        "testdata/bin/rust-cortex-m4.elf",
+    ] {
         let (binary, _, tree) = load(sample);
         for implementation in ["Gain::run", "DcBlock::run"] {
             let vtable = tree.parent(node(&binary, implementation)).unwrap();
@@ -238,8 +251,8 @@ fn stripping_keeps_the_exclusive_functions() {
         "c-cortex-m7",
         "rust-cortex-m4",
     ] {
-        let (named, _, named_tree) = load(&format!("{sample}-nodebug.elf"));
-        let (stripped, _, stripped_tree) = load(&format!("{sample}-stripped.elf"));
+        let (named, _, named_tree) = load(&format!("testdata/bin/{sample}-nodebug.elf"));
+        let (stripped, _, stripped_tree) = load(&format!("testdata/bin/{sample}-stripped.elf"));
         let Node::Item(process_frame) = node(&named, "process_frame") else {
             unreachable!()
         };
@@ -256,7 +269,7 @@ fn stripping_keeps_the_exclusive_functions() {
 
 #[test]
 fn cpp_virtual_functions_and_constructors_have_their_starting_points() {
-    let (binary, graph, tree) = load("cpp-x86_64.elf");
+    let (binary, graph, tree) = load("testdata/bin/cpp-x86_64.elf");
     // `main` makes the objects, so it takes the vtables' addresses; each
     // override hangs under its class's vtable, as in Rust.
     for class in ["Gain", "DcBlock"] {

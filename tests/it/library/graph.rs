@@ -1,14 +1,20 @@
 //! The reference graph, checked against the answers in testdata/README.md.
+//!
+//! The tests of what `callers` and `callees` print from it are in
+//! commands/callers_and_callees.rs.
 
 use elfq::binary::{Binary, ItemKind, Source};
 use elfq::graph::{Graph, Node, ReferenceKind};
 
-use crate::support::{load_sample, node};
+use crate::support::{
+    C_SAMPLES, FAR_SAMPLES, LIBRARY_SAMPLE, SAMPLE, TCM_ENTRY_MAIN_SAMPLE, TCM_SAMPLE, load_sample,
+    node,
+};
 
 use ReferenceKind::*;
 
-fn load(name: &str) -> (Binary, Graph) {
-    let binary = load_sample(name);
+fn load(path: &str) -> (Binary, Graph) {
+    let binary = load_sample(path);
     let graph = Graph::build(&binary);
     (binary, graph)
 }
@@ -56,9 +62,6 @@ fn pairs(expected: &[(&str, ReferenceKind)]) -> Vec<(String, ReferenceKind)> {
     expected.iter().map(|&(n, k)| (n.to_string(), k)).collect()
 }
 
-/// The C sample, built for x86-64 Linux and for Cortex-M.
-const C_SAMPLES: [&str; 2] = ["c-x86_64.elf", "c-cortex-m4.elf"];
-
 #[test]
 fn a_shared_helper_has_every_caller() {
     for sample in C_SAMPLES {
@@ -70,7 +73,7 @@ fn a_shared_helper_has_every_caller() {
             ("report", Call),
         ];
         // The Cortex-M linker removes debug_dump, which nothing calls.
-        if sample == "c-x86_64.elf" {
+        if sample == SAMPLE {
             expected.push(("debug_dump", Call));
             expected.sort();
         }
@@ -84,7 +87,7 @@ fn a_shared_helper_has_every_caller() {
 
 #[test]
 fn a_function_uses_its_helpers_and_variables() {
-    let (binary, graph) = load("c-x86_64.elf");
+    let (binary, graph) = load(SAMPLE);
     assert_eq!(
         callees(&binary, &graph, "process_frame"),
         pairs(&[
@@ -109,7 +112,7 @@ fn a_function_uses_its_helpers_and_variables() {
 
     // Arm code loads a variable's address before using it, so variables
     // have their address taken rather than being accessed.
-    let (binary, graph) = load("c-cortex-m4.elf");
+    let (binary, graph) = load("testdata/bin/c-cortex-m4.elf");
     assert_eq!(
         callees(&binary, &graph, "process_frame"),
         pairs(&[
@@ -212,7 +215,7 @@ fn pointers_stored_in_data_are_references() {
             "{sample}"
         );
     }
-    let (binary, graph) = load("c-x86_64.elf");
+    let (binary, graph) = load(SAMPLE);
     assert_eq!(
         callers(&binary, &graph, "frame_dummy"),
         pairs(&[(".init_array", Pointer)])
@@ -221,7 +224,7 @@ fn pointers_stored_in_data_are_references() {
 
 #[test]
 fn interrupt_handlers_are_reached_through_the_vector_table() {
-    let (binary, graph) = load("c-cortex-m4.elf");
+    let (binary, graph) = load("testdata/bin/c-cortex-m4.elf");
     for handler in ["Reset_Handler", "SysTick_Handler", "Default_Handler"] {
         assert_eq!(
             callers(&binary, &graph, handler),
@@ -248,7 +251,7 @@ fn interrupt_handlers_are_reached_through_the_vector_table() {
 fn startup_code_copies_whole_sections_without_using_their_first_items() {
     // Reset_Handler loads where .data and .bss start and end, to copy and
     // clear them. The first variable in each starts at the same address.
-    let (binary, graph) = load("c-cortex-m4.elf");
+    let (binary, graph) = load("testdata/bin/c-cortex-m4.elf");
     assert_eq!(
         callees(&binary, &graph, "Reset_Handler"),
         pairs(&[("main", Call), ("memcpy", Call), ("memset", Call)])
@@ -258,21 +261,21 @@ fn startup_code_copies_whole_sections_without_using_their_first_items() {
     assert!(report.contains(&("stats".to_string(), Address)));
     assert!(report.contains(&("config_sum".to_string(), Address)));
 
-    let (binary, graph) = load("rust-cortex-m4.elf");
+    let (binary, graph) = load("testdata/bin/rust-cortex-m4.elf");
     assert_eq!(
         callees(&binary, &graph, "Reset"),
         pairs(&[("elfq_sample::app_main", Call)])
     );
 
     // The same for .itcm, whose first function is SysTick_Handler.
-    let (binary, graph) = load("c-cortex-m7.elf");
+    let (binary, graph) = load(TCM_SAMPLE);
     assert_eq!(
         callees(&binary, &graph, "Reset_Handler"),
         pairs(&[("main", Call), ("memcpy", Call), ("memset", Call)])
     );
 
     // And for the reset handler when the entry point is main.
-    let (binary, graph) = load("c-cortex-m7-entry-main.elf");
+    let (binary, graph) = load(TCM_ENTRY_MAIN_SAMPLE);
     assert_eq!(
         callees(&binary, &graph, "Reset_Handler"),
         pairs(&[("main", Call), ("memcpy", Call), ("memset", Call)])
@@ -283,7 +286,7 @@ fn startup_code_copies_whole_sections_without_using_their_first_items() {
 fn calls_between_flash_and_itcm_go_through_veneers() {
     // ITCM at 0 is too far from flash at 0x30000000 for one branch
     // instruction, so the linker adds a stub that jumps to the target.
-    let (binary, graph) = load("c-cortex-m7.elf");
+    let (binary, graph) = load(TCM_SAMPLE);
     assert_eq!(
         callers(&binary, &graph, "__crc32_veneer"),
         pairs(&[("process_frame", Call)])
@@ -302,19 +305,6 @@ fn calls_between_flash_and_itcm_go_through_veneers() {
         pairs(&[("app_tick", TailCall)])
     );
 }
-
-/// c/far.c, built with the veneers that GNU ld and LLD add for Cortex-M,
-/// all but two of LLD's (see `testdata/README.md`).
-const FAR_SAMPLES: [&str; 8] = [
-    "far-gnu-m4-nodebug.elf",
-    "far-gnu-m4-pure-nodebug.elf",
-    "far-gnu-m4-pic-nodebug.elf",
-    "far-gnu-m0-nodebug.elf",
-    "far-lld-m4-nodebug.elf",
-    "far-lld-m4-pic-nodebug.elf",
-    "far-lld-m0-nodebug.elf",
-    "far-lld-m0-pure-nodebug.elf",
-];
 
 #[test]
 fn each_veneer_jumps_to_its_target() {
@@ -380,7 +370,7 @@ fn a_long_call_through_a_register_is_a_call() {
 
 #[test]
 fn imports_are_reached_through_stubs_and_the_global_offset_table() {
-    let (binary, graph) = load("c-x86_64.elf");
+    let (binary, graph) = load(SAMPLE);
     // Through the PLT: `platform_write` ends with a jump to `write@plt`.
     assert_eq!(
         callees(&binary, &graph, "platform_write"),
@@ -396,7 +386,7 @@ fn imports_are_reached_through_stubs_and_the_global_offset_table() {
 
 #[test]
 fn a_shared_library_reaches_its_own_functions_through_stubs() {
-    let (binary, graph) = load("c-x86_64.so");
+    let (binary, graph) = load(LIBRARY_SAMPLE);
     let process_frame = callees(&binary, &graph, "process_frame");
     for stub in ["dispatch_event@plt", "log_msg@plt"] {
         assert!(process_frame.contains(&(stub.to_string(), Call)), "{stub}");
@@ -442,8 +432,8 @@ fn stripping_keeps_the_calls_between_functions() {
         "c-cortex-m7",
         "rust-cortex-m4",
     ] {
-        let (named, named_graph) = load(&format!("{sample}-nodebug.elf"));
-        let (stripped, stripped_graph) = load(&format!("{sample}-stripped.elf"));
+        let (named, named_graph) = load(&format!("testdata/bin/{sample}-nodebug.elf"));
+        let (stripped, stripped_graph) = load(&format!("testdata/bin/{sample}-stripped.elf"));
         let functions: Vec<u64> = stripped
             .items
             .iter()
@@ -484,10 +474,10 @@ fn stripped_firmware_keeps_the_pointers_in_its_vector_table() {
         "c-cortex-m7",
         "rust-cortex-m4",
     ] {
-        let named = handlers(&format!("{sample}-nodebug.elf"));
+        let named = handlers(&format!("testdata/bin/{sample}-nodebug.elf"));
         assert!(named.len() >= 3, "{sample}");
         assert_eq!(
-            handlers(&format!("{sample}-stripped.elf")),
+            handlers(&format!("testdata/bin/{sample}-stripped.elf")),
             named,
             "{sample}"
         );
@@ -498,8 +488,8 @@ fn stripped_firmware_keeps_the_pointers_in_its_vector_table() {
 fn stripped_files_still_show_which_variables_code_uses() {
     // Without symbols, variables are unnamed data, found where code uses
     // them. Names differ, so compare by address.
-    let (named, named_graph) = load("c-x86_64-nodebug.elf");
-    let (stripped, stripped_graph) = load("c-x86_64-stripped.elf");
+    let (named, named_graph) = load("testdata/bin/c-x86_64-nodebug.elf");
+    let (stripped, stripped_graph) = load("testdata/bin/c-x86_64-stripped.elf");
     let users = |binary: &Binary, graph: &Graph, variable: usize| {
         let mut users: Vec<(u64, ReferenceKind)> = graph
             .references_to(Node::Item(variable))
@@ -526,7 +516,10 @@ fn stripped_files_still_show_which_variables_code_uses() {
 
 #[test]
 fn calls_through_trait_objects_are_indirect() {
-    for sample in ["rust-x86_64-nodebug.elf", "rust-cortex-m4.elf"] {
+    for sample in [
+        "testdata/bin/rust-x86_64-nodebug.elf",
+        "testdata/bin/rust-cortex-m4.elf",
+    ] {
         let (binary, graph) = load(sample);
         let Node::Item(process_frame) = node(&binary, "process_frame") else {
             panic!("process_frame is an import");
@@ -542,7 +535,10 @@ fn calls_through_trait_objects_are_indirect() {
     // Each implementation is reached from its vtable, which `app_main`
     // uses. On x86-64 the vtables have no symbols, so they are unnamed data
     // such as `.data.rel.ro@0x52da8`; on Cortex-M they have local symbols.
-    for sample in ["rust-x86_64-nodebug.elf", "rust-cortex-m4.elf"] {
+    for sample in [
+        "testdata/bin/rust-x86_64-nodebug.elf",
+        "testdata/bin/rust-cortex-m4.elf",
+    ] {
         let (binary, graph) = load(sample);
         for implementation in ["Gain::run", "DcBlock::run"] {
             let [(vtable, Pointer)] = &callers(&binary, &graph, implementation)[..] else {
@@ -559,7 +555,7 @@ fn calls_through_trait_objects_are_indirect() {
 
 #[test]
 fn an_entry_point_runs_on_into_the_next_as_a_tail_call() {
-    let (binary, graph) = load("c-softfloat-nodebug.elf");
+    let (binary, graph) = load("testdata/bin/c-softfloat-nodebug.elf");
     // __aeabi_dsub flips a sign and runs on into __adddf3, from its only
     // instruction; the others jump to or into the entry after them.
     let Node::Item(subtract) = node(&binary, "__aeabi_dsub") else {
@@ -599,7 +595,7 @@ fn an_entry_point_runs_on_into_the_next_as_a_tail_call() {
 
 #[test]
 fn strtod_jumps_through_a_table_that_elfq_cant_follow() {
-    let (binary, graph) = load("c-strtod-nodebug.elf");
+    let (binary, graph) = load("testdata/bin/c-strtod-nodebug.elf");
     assert_eq!(
         callers(&binary, &graph, "strtod"),
         pairs(&[("Reset_Handler", Call)])

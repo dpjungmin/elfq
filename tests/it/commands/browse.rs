@@ -12,8 +12,8 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use crate::damaged;
-use crate::support::{SAMPLE, assert_output, elfq, load_sample, sample_path};
+use crate::support::elf::{ElfBytes, chain_of_calls, for_arm_version, past_the_end};
+use crate::support::{SAMPLE, TCM_SAMPLE, assert_output, load_sample, stderr, stdout};
 
 /// A key as a test script writes it: a name such as `Enter`, `Tab`, `Esc`
 /// or `Ctrl-O`, or text, typed a character at a time.
@@ -80,10 +80,14 @@ fn browse(
     (screen, stop)
 }
 
-/// The screen of the browser on `sample`, as [`browse`] gives it.
+/// The screen of the browser on the sample named `sample` in testdata/bin.
+///
+/// It is as [`browse`] gives it. It takes the file's name alone, where
+/// other helpers take its path, since that is how the screen's first line
+/// names it.
 fn screen(sample: &str, symbol: Option<&str>, size: (u16, u16), script: &[&str]) -> String {
     let path = format!("testdata/bin/{sample}");
-    browse(&path, &load_sample(sample), symbol, size, script).0
+    browse(&path, &load_sample(&path), symbol, size, script).0
 }
 
 /// The selected line of `screen`, and its status line, the one before
@@ -737,7 +741,7 @@ from a root: _start › main › app_tick › log_msg
         cancelled.starts_with("c-x86_64.elf › main\n"),
         "{cancelled}"
     );
-    let binary = load_sample("c-x86_64.elf");
+    let binary = load_sample(SAMPLE);
     let stop = |script: &[&str]| browse(SAMPLE, &binary, None, (80, 24), script).1;
     assert_eq!(stop(&["g", "Ctrl-C"]), Stop::Quit);
     #[cfg(unix)]
@@ -1244,7 +1248,7 @@ fn a_load_from_a_literal_pool_notes_what_it_reads() {
 fn thumb_code_of_other_cores_lists_only_the_lines_that_use_another_item() {
     // The sample as if it were built for a Cortex-M33, whose instructions
     // elfq doesn't print.
-    let data = damaged::for_arm_version("c-cortex-m7.elf", Some(17));
+    let data = for_arm_version(TCM_SAMPLE, Some(17));
     let binary = Binary::parse(&data).unwrap();
     let page = |symbol| browse("c-cortex-m7.elf", &binary, Some(symbol), (80, 24), &[]).0;
     assert_output(
@@ -1307,7 +1311,7 @@ file is for Armv8-M Mainline. No line of Default_Handler uses another item.
 ",
     );
     // A file that doesn't say which core it is for.
-    let data = damaged::for_arm_version("c-cortex-m7.elf", None);
+    let data = for_arm_version(TCM_SAMPLE, None);
     let binary = Binary::parse(&data).unwrap();
     assert_output(
         &browse(
@@ -1520,7 +1524,7 @@ from a root: _start › main
 
 #[test]
 fn q_ctrl_c_and_ctrl_z_stop_the_event_loop() {
-    let binary = load_sample("c-x86_64.elf");
+    let binary = load_sample(SAMPLE);
     let stop = |script: &[&str]| browse(SAMPLE, &binary, None, (80, 24), script).1;
     assert_eq!(stop(&["q"]), Stop::Quit);
     assert_eq!(stop(&["Ctrl-C"]), Stop::Quit);
@@ -1532,7 +1536,7 @@ fn q_ctrl_c_and_ctrl_z_stop_the_event_loop() {
 
 #[test]
 fn the_files_first_warning_is_on_the_first_page() {
-    let data = damaged::past_the_end(&[".plt"]);
+    let data = past_the_end(&[".plt"]);
     let binary = Binary::parse(&data).unwrap();
     let (screen, _) = browse("plt-offset.elf", &binary, Some("main"), (80, 24), &[]);
     assert_eq!(
@@ -1543,7 +1547,7 @@ fn the_files_first_warning_is_on_the_first_page() {
     let (screen, _) = browse("plt-offset.elf", &binary, Some("main"), (80, 24), &["j"]);
     assert_eq!(selected_and_status(&screen).1, "");
     // The others are counted.
-    let data = damaged::past_the_end(&[".plt", ".plt.sec"]);
+    let data = past_the_end(&[".plt", ".plt.sec"]);
     let binary = Binary::parse(&data).unwrap();
     let (screen, _) = browse("plt-offset.elf", &binary, Some("main"), (100, 30), &[]);
     assert_eq!(
@@ -1557,7 +1561,7 @@ fn a_long_chain_of_calls_can_be_followed() {
     // 10,000 functions that each call the one before, from the entry
     // point, which the start page lists. The browser runs on the test's
     // own thread, with its small stack.
-    let data = damaged::chain_of_calls(10_000);
+    let data = chain_of_calls(10_000);
     let binary = Binary::parse(&data).unwrap();
     let (screen, _) = browse(
         "long-chain.elf",
@@ -1601,8 +1605,8 @@ from a root: entry › fn_0x8113870 › fn_0x8113868 › fn_0x8113860
 fn code_that_elfq_cant_read_is_refused() {
     // The x86-64 sample, marked as AArch64 code, as in the test of the
     // commands' message.
-    let mut data = std::fs::read(sample_path("c-x86_64.elf")).unwrap();
-    data[18..20].copy_from_slice(&183u16.to_le_bytes());
+    let mut data = ElfBytes::sample(SAMPLE);
+    data.mark_code_unreadable();
     let binary = Binary::parse(&data).unwrap();
     let error = Session::new(Path::new("aarch64.elf"), &binary)
         .err()
@@ -1628,9 +1632,7 @@ fn browse_needs_a_terminal() {
              another command\n",
         ),
     ] {
-        let output = elfq(args);
-        assert_eq!(output.status.code(), Some(2));
-        assert_output(&String::from_utf8(output.stderr).unwrap(), error);
+        assert_output(&stderr(args), error);
     }
 }
 
@@ -2242,13 +2244,12 @@ $ elfq testdata/bin/c-x86_64.elf reach process_frame
     // The row of a call to code outside every item opens the item that
     // makes the call.
     let sample = "far-gnu-m4-nodebug.elf";
-    let printed = elfq(&[
+    let printed = stdout(&[
         &format!("testdata/bin/{sample}"),
         "reach",
         "Reset_Handler",
         "--all",
     ]);
-    let printed = String::from_utf8(printed.stdout).unwrap();
     let rows = printed
         .lines()
         .skip_while(|line| !line.starts_with("ADDRESS"));
@@ -2328,9 +2329,7 @@ fn tabs_that_an_item_cant_have_say_why_as_their_commands_do() {
         for (key, command) in [("2", "callees"), ("4", "reach")] {
             let page = screen(sample, Some(symbol), (100, 30), &[key]);
             let (_, status) = selected_and_status(&page);
-            let output = elfq(&[&path, command, symbol]);
-            assert!(!output.status.success());
-            let error = String::from_utf8(output.stderr).unwrap();
+            let error = stderr(&[&path, command, symbol]);
             assert_eq!(
                 format!("error: {status}\n"),
                 error,
@@ -2355,6 +2354,19 @@ fn command_under(screen: &str) -> String {
 #[test]
 #[cfg(unix)]
 fn the_command_under_the_callers_runs_in_a_shell() {
+    use crate::support::Run;
+
+    // `command`, a line under a page, run by the shell as when pasted.
+    let in_a_shell = |command: &str| {
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("elfq() {{ \"$ELFQ\" \"$@\"; }}; {}", &command[2..]))
+            .env("ELFQ", env!("CARGO_BIN_EXE_elfq"))
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .output()
+            .unwrap();
+        Run::new(&command[2..], output)
+    };
     // Names with spaces, brackets and quotes, which the command quotes.
     let pages = [
         ("cpp-x86_64.elf", "log(unsigned int)", "'log(unsigned int)'"),
@@ -2374,15 +2386,7 @@ fn the_command_under_the_callers_runs_in_a_shell() {
             format!("$ elfq testdata/bin/{sample} callers {quoted}")
         );
         // Run by the shell, as when pasted, it lists the page's rows.
-        let output = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(format!("elfq() {{ \"$ELFQ\" \"$@\"; }}; {}", &command[2..]))
-            .env("ELFQ", env!("CARGO_BIN_EXE_elfq"))
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .output()
-            .unwrap();
-        let printed = String::from_utf8(output.stdout).unwrap();
-        assert!(output.status.success(), "{command}: {printed}");
+        let printed = in_a_shell(&command).printed(0);
         let rows: Vec<&str> = page
             .lines()
             .skip_while(|line| !line.starts_with("  HOW "))
@@ -2401,21 +2405,11 @@ fn the_command_under_the_callers_runs_in_a_shell() {
         for (key, name) in [("2", "callees"), ("4", "reach")] {
             let page = screen(sample, Some(symbol), (100, 30), &[key]);
             let command = command_under(&page);
-            let (pasted, all) = match command.strip_suffix(" --all") {
-                Some(pasted) => (pasted, " --all"),
-                None => (command.as_str(), ""),
-            };
+            let pasted = command.strip_suffix(" --all").unwrap_or(&command);
             let quoted = format!("$ elfq testdata/bin/{sample} {name} {quoted}");
             assert_eq!(pasted, quoted);
-            let output = std::process::Command::new("sh")
-                .arg("-c")
-                .arg(format!("elfq() {{ \"$ELFQ\" \"$@\"; }}; {}", &command[2..]))
-                .env("ELFQ", env!("CARGO_BIN_EXE_elfq"))
-                .current_dir(env!("CARGO_MANIFEST_DIR"))
-                .output()
-                .unwrap();
-            assert!(output.status.success(), "{command}{all}");
-            assert!(!output.stdout.is_empty(), "{command}");
+            let printed = in_a_shell(&command).printed(0);
+            assert!(!printed.is_empty(), "{command}");
         }
     }
 }
@@ -2693,7 +2687,7 @@ fn find_has_no_rows_on_the_help_and_ctrl_c_and_ctrl_z_work_while_typing() {
     let (_, status) = selected_and_status(&page);
     assert_eq!(status, "this page has no rows to find in", "{page}");
     assert!(!page.contains("/ find"), "{page}");
-    let binary = load_sample("c-x86_64.elf");
+    let binary = load_sample(SAMPLE);
     let stop = |script: &[&str]| browse(SAMPLE, &binary, None, (80, 24), script).1;
     // q types into the prompt.
     let page = screen("c-x86_64.elf", None, (80, 24), &["/", "q"]);
@@ -2747,7 +2741,7 @@ fn the_keys_move_as_the_help_says() {
 #[test]
 fn only_key_presses_count() {
     // Windows also reports each key's release.
-    let binary = load_sample("c-x86_64.elf");
+    let binary = load_sample(SAMPLE);
     let session = Session::new(Path::new(SAMPLE), &binary).unwrap();
     let mut app = App::new(session, Some("log_msg"));
     let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
@@ -2769,13 +2763,14 @@ fn only_key_presses_count() {
     assert!(row.starts_with("> 0x1610 "), "{row}");
 }
 
-/// The browser on `sample`, as [`browse`] gives it, but with each key
-/// waiting before the browser takes it, as when the user pastes them or
-/// types faster than the screen keeps up: the screen, and how many times
-/// it was drawn.
+/// The browser on the sample named `sample`, with each key waiting.
+///
+/// It takes the name as [`screen`] does, but each key waits before the
+/// browser takes it, as when the user pastes them or types faster than the
+/// screen keeps up. It gives the screen, and how many times it was drawn.
 fn burst(sample: &str, (width, height): (u16, u16), script: &[&str]) -> (String, usize) {
-    let binary = load_sample(sample);
     let path = format!("testdata/bin/{sample}");
+    let binary = load_sample(&path);
     let session = Session::new(Path::new(&path), &binary).unwrap();
     let mut app = App::new(session, None);
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -2937,7 +2932,7 @@ fn in_a_terminal(args: &[&str], keys: &str) -> Option<(Option<i32>, String)> {
 #[cfg(target_os = "linux")]
 fn the_files_warnings_are_printed_when_browse_quits_or_refuses_it() {
     let warning = "warning: section .plt runs past the end of the file";
-    let path = damaged::save("plt-offset.elf", &damaged::past_the_end(&[".plt"]));
+    let path = past_the_end(&[".plt"]).save("plt-offset.elf");
     let Some((status, output)) = in_a_terminal(&[&path, "browse", "log_msg"], "q") else {
         eprintln!("no `script` to run elfq in a terminal");
         return;
@@ -2948,9 +2943,9 @@ fn the_files_warnings_are_printed_when_browse_quits_or_refuses_it() {
     assert!(output[back..].contains(warning), "{output:?}");
     // And before the error, as the other commands print it, when elfq
     // can't read the file's code.
-    let mut data = damaged::past_the_end(&[".plt"]);
-    data[18..20].copy_from_slice(&183u16.to_le_bytes());
-    let path = damaged::save("plt-offset-aarch64.elf", &data);
+    let path = past_the_end(&[".plt"])
+        .mark_code_unreadable()
+        .save("plt-offset-aarch64.elf");
     let (status, output) = in_a_terminal(&[&path, "browse"], "").unwrap();
     assert_eq!(status, Some(2), "{output:?}");
     assert_eq!(

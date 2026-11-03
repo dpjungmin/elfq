@@ -1,19 +1,16 @@
-//! The integration tests, built as one test program so that they link
-//! against elfq once. Each module tests one part of elfq on the sample
-//! binaries in testdata/bin, except `support`, which holds what they share.
+//! The integration tests, built as one test program.
+//!
+//! That way they link against elfq once. They test elfq on the sample
+//! binaries in testdata/bin. `commands` holds each command's tests, in a
+//! file named after it, and `across_commands` the tests of what the
+//! commands share; `damaged` tests elfq, both by running it and by calling
+//! the library, on files made by changing a sample's bytes; `docs` runs
+//! the examples in the docs; `library` calls the library rather than
+//! running the program; and `support` holds what the modules share.
 
-#[cfg(feature = "tui")]
-mod browse;
-mod cli;
+mod across_commands;
+mod commands;
 mod damaged;
 mod docs;
-mod graph;
-mod inlined;
-mod items;
-mod json;
-mod reach;
-mod retained;
-mod startup;
+mod library;
 mod support;
-mod symbol;
-mod why;

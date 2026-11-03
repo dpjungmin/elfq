@@ -1,16 +1,19 @@
-//! The inlined copies that DWARF lists in the samples. The names inlined
-//! into process_frame and report are those in testdata/README.md, and the
-//! sizes of process_frame's copies in c-x86_64.elf are those that ddbug
-//! 0.6.1 printed (docs/survey.md).
+//! The inlined copies that DWARF lists in the samples.
+//!
+//! The names inlined into process_frame and report are those in
+//! testdata/README.md, and the sizes of process_frame's copies in
+//! c-x86_64.elf are those that ddbug 0.6.1 printed (docs/survey.md). The
+//! tests of what `inlined` prints are in commands/inlined.rs, and those of
+//! how elfq reads DWARF that doesn't add up in damaged.rs.
 
 use elfq::binary::Binary;
 use elfq::debuginfo::{InlinedCopy, inlined_copies};
 use elfq::graph::Node;
 
-use crate::support::{load_sample, node};
+use crate::support::{SAMPLE, load_sample, node};
 
-fn load(name: &str) -> (Binary, Vec<InlinedCopy>) {
-    let binary = load_sample(name);
+fn load(path: &str) -> (Binary, Vec<InlinedCopy>) {
+    let binary = load_sample(path);
     let copies = inlined_copies(&binary).unwrap();
     (binary, copies)
 }
@@ -35,7 +38,7 @@ fn inlined_into(binary: &Binary, copies: &[InlinedCopy], into: &str) -> Vec<(Str
 
 #[test]
 fn process_frame_holds_three_inlined_functions() {
-    let (binary, copies) = load("c-x86_64.elf");
+    let (binary, copies) = load(SAMPLE);
     // load_le32 has no bytes of its own: the compiler merged it into the
     // code around it.
     assert_eq!(
@@ -46,7 +49,7 @@ fn process_frame_holds_three_inlined_functions() {
             ("update_stats".to_string(), 164)
         ]
     );
-    let (binary, copies) = load("c-cortex-m4.elf");
+    let (binary, copies) = load("testdata/bin/c-cortex-m4.elf");
     let names: Vec<String> = inlined_into(&binary, &copies, "process_frame")
         .into_iter()
         .map(|(name, _)| name)
@@ -56,7 +59,7 @@ fn process_frame_holds_three_inlined_functions() {
 
 #[test]
 fn append_is_inlined_six_times_into_report() {
-    let (binary, copies) = load("c-x86_64.elf");
+    let (binary, copies) = load(SAMPLE);
     let copies = inlined_into(&binary, &copies, "report");
     assert_eq!(copies.len(), 6);
     assert!(
@@ -69,7 +72,7 @@ fn append_is_inlined_six_times_into_report() {
 fn copies_inside_copies_count_once() {
     // memcpy's code is a copy of copy_forward, which holds copies of its
     // helpers in turn.
-    let (binary, copies) = load("rust-cortex-m4.elf");
+    let (binary, copies) = load("testdata/bin/rust-cortex-m4.elf");
     let memcpy = item(&binary, "compiler_builtins::mem::memcpy");
     let (index, outer) = copies
         .iter()
@@ -100,6 +103,6 @@ fn copies_inside_copies_count_once() {
 
 #[test]
 fn a_file_without_dwarf_has_no_copies() {
-    let (_, copies) = load("c-x86_64-nodebug.elf");
+    let (_, copies) = load("testdata/bin/c-x86_64-nodebug.elf");
     assert!(copies.is_empty());
 }

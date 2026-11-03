@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::Value;
 
 use crate::support::{
-    SAMPLE, TCM_INLINED_SAMPLE, TCM_MOVED_SAMPLE, TCM_SAMPLE, assert_output, elfq,
+    Exit, SAMPLE, TCM_INLINED_SAMPLE, TCM_MOVED_SAMPLE, TCM_SAMPLE, assert_output, run,
 };
 
 /// The docs that can hold examples, relative to the crate's root.
@@ -30,9 +30,7 @@ fn the_examples_in_the_docs_show_what_elfq_prints() {
             // Shown with the output of a test that fails.
             println!("{doc}: $ elfq {command}");
             let args: Vec<&str> = command.split_whitespace().collect();
-            let output = elfq(&args);
-            assert!(output.stderr.is_empty(), "{output:?}");
-            assert_output(&String::from_utf8(output.stdout).unwrap(), expected);
+            assert_output(&run(&args).printed(Exit::ZeroOrOne), expected);
             examples += 1;
         }
     }
@@ -93,17 +91,12 @@ fn design_md_names_every_json_key() {
     // Whether each list had an entry in any answer.
     let mut lists = BTreeMap::new();
     for args in JSON_ANSWERS {
-        let output = elfq(&[args, &["--json"]].concat());
         // Range checks exit with 1 when something crosses the ranges,
         // diff when the memory differs, and startup when it finds a
         // problem.
-        assert!(matches!(output.status.code(), Some(0 | 1)), "{output:?}");
+        let answer = run(&[args, &["--json"]].concat()).json(Exit::ZeroOrOne);
         let mut keys = BTreeSet::new();
-        add_keys(
-            &serde_json::from_slice(&output.stdout).unwrap(),
-            &mut keys,
-            &mut lists,
-        );
+        add_keys(&answer, &mut keys, &mut lists);
         for key in keys {
             assert!(
                 section.contains(&format!("`{key}`")),

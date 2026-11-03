@@ -294,6 +294,13 @@ this list, and add to it when you bring in a word.
   section's status, `can't follow` for the problem and `can't tell` for
   the note, the code keeps those words (`Status::Unknown`,
   `Problem::CantFollow`, `Note::CantTell`).
+- **run**: in the tests, one run of the elfq program, with its exit
+  status and what it printed on stdout and stderr (`Run`, in
+  `tests/it/support/mod.rs`), which `run` gives; its `printed` is what
+  elfq printed on stdout alone. `run_in_process` runs a command inside
+  the test instead, and gives no `Run`. An early run, in `startup`, is
+  unrelated, and so are the private `Run`s of the startup walk and of
+  `binary/memory.rs`.
 
 Some code still uses one of these words for something else, as the Thumb
 walk's `Step` (what an instruction leads to) and `reach`'s `Step` (a row
@@ -312,30 +319,52 @@ of its tree) do. Those are names to fix, not meanings to copy.
   algorithm on a small graph built by hand (`graph/dominators.rs`,
   `graph/paths.rs`).
 - **Integration tests** in `tests/it/` use the samples in `testdata/bin`.
-  `cli.rs`, `json.rs` and `docs.rs` run the elfq program, the way a user
-  would. The others call the library, as `Binary::load` and
-  `Graph::build`. `damaged.rs` and `browse.rs` do both, and so does one
-  test in `json.rs`; `reach.rs` runs commands in its own process, through
-  `commands::run`, which is quicker for the hundreds it runs. The answers they expect are
-  those in [testdata/README.md](testdata/README.md), which says, for
-  example, what calls `log_msg` in each sample.
+  Most run the elfq program, the way a user would: each command's tests,
+  in `commands/`; the tests of what the commands share, in
+  `across_commands/`; and `docs.rs`, which runs the examples in the docs.
+  Those in `library/` call the library, as `Binary::load` and
+  `Graph::build`. `damaged.rs` and `commands/browse.rs` do both, and so
+  does one test in `commands/callers_and_callees.rs`. The checks at the
+  end of `commands/reach.rs` run commands in the test's own process, with
+  `run_in_process`, which is quicker for the hundreds they run. The
+  answers they expect are those in
+  [testdata/README.md](testdata/README.md), which says, for example, what
+  calls `log_msg` in each sample.
 
 | File in `tests/it/` | What it tests |
 |---|---|
-| `support.rs` | No tests: the samples' paths (`SAMPLE` and others), `elfq`, which runs the program, and `assert_output` |
-| `cli.rs` | Each command's whole text output, errors, exit statuses and help |
-| `json.rs` | `--json` output |
-| `items.rs` | Finding items: symbols, PLT stubs, unwind tables, functions in stripped firmware, unnamed data |
-| `graph.rs` | The reference graph: callers, callees, pointers in data, veneers |
-| `retained.rs` | Roots, and what is exclusive to what |
-| `why.rs` | The shortest chains |
-| `reach.rs` | `reach` on every item of the Cortex-M samples, against `callees`, `retained` and its own `--tree`, and with `--to` against `reach` without it and `callees --to`, and on every function of each stripped one against its twin with symbols; and without SYMBOL, each start of every sample against `reach START` |
-| `startup.rs` | `startup` on the samples whose reset code has a mistake and some without, the exit status of every Cortex-M sample, and the files it refuses; and that `debug walk` lists the walk that `startup` reads |
-| `symbol.rs` | Looking up SYMBOL |
-| `inlined.rs` | Inlined copies, from DWARF |
+| `support/` | No tests: in `mod.rs`, the samples' paths (`SAMPLE` and others), the lists that several modules check (`C_SAMPLES`, `FAR_SAMPLES`), `samples_for`, which lists the samples for one architecture, `run`, which runs the program and returns a `Run` to check, its shortcuts `stdout`, `stderr`, `crossing`, `elfq_json` and `text_rows`, `names`, which reads the names in a list of elfq's JSON, `run_in_process`, and `assert_output`; in `elf.rs`, `ElfBytes`, which changes a sample's bytes field by field and saves the file |
+| `commands/browse.rs` | `browse`'s screens, driven with keys on ratatui's `TestBackend`, a screen in memory; its errors; and on Linux, the program in a terminal that `script` makes. The checks that need its private types are unit tests; see below |
+| `commands/callers_and_callees.rs` | `callers` and `callees`, which share their table and their ranges: their text and JSON for SYMBOL, for ranges of memory and with `--from` and `--to`, and the errors about those ranges |
+| `commands/debug.rs` | `debug items` and `debug walk`; the tests that `debug walk` lists the walk that `startup` reads are in `commands/startup.rs` |
+| `commands/diff.rs` | `diff` on pairs of builds: its text, its JSON, its exit status and the builds it refuses; and at the end, on builds made by changing a sample's bytes: a warning about the new build, bytes or blocks that alone differ, and a separate debug file and a file that puts nothing in memory, which it refuses |
+| `commands/inlined.rs` | `inlined`: its ranking and its tree, as text and JSON, and its error for a file without DWARF |
+| `commands/overview_top_and_retained.rs` | The overview, `top` and `retained`, which share the tree of retained sizes and `--range`: their text and JSON, for the whole file and for a range, and the errors about ranges |
+| `commands/reach.rs` | `reach`'s text and JSON, with and without SYMBOL; and, run in the test's own process, `reach` on every item of the Cortex-M samples, against `callees`, `retained` and its own `--tree`, and with `--to` against `reach` without it and `callees --to`, and on every function of each stripped one against its twin with symbols; and without SYMBOL, each start of every sample against `reach START` |
+| `commands/startup.rs` | `startup` on the samples whose reset code has a mistake and some without, the exit status of every Cortex-M sample, and the files it refuses; and that `debug walk` lists the walk that `startup` reads |
+| `commands/why.rs` | `why`: its chains as text and JSON, where they start, and what it says when nothing reaches SYMBOL |
+| `across_commands/json.rs` | What the commands' JSON shares: the keys of every item, each row on a line of its own, and the other names of SYMBOL's item |
+| `across_commands/tables.rs` | What the commands' tables share: the tree of `--tree`, at most nine levels deep, the lines that sum up the rest of a long list, and `--all` |
+| `across_commands/names.rs` | The names that the commands print and take: what SYMBOL gave when it isn't the item's name, readable Rust and C++ names and their short forms, and the names of data that no symbol names |
+| `across_commands/errors_and_help.rs` | What the commands share in their errors and help: the arguments and files they refuse, errors on stderr with exit status 2 and what to try instead, the exit status when what reads the answer stops early, and help |
+| `library/items.rs` | Finding items: symbols, PLT stubs, unwind tables, functions in stripped firmware, unnamed data |
+| `library/graph.rs` | The reference graph: callers, callees, pointers in data, veneers |
+| `library/retained.rs` | Roots, and what is exclusive to what |
+| `library/why.rs` | The shortest chains |
+| `library/symbol.rs` | Looking up SYMBOL |
+| `library/inlined.rs` | Inlined copies, from DWARF |
 | `damaged.rs` | Damaged and unusual files, made by changing a sample's bytes |
-| `browse.rs` | `browse`'s screens, driven with keys on ratatui's `TestBackend`, a screen in memory; its errors; and on Linux, the program in a terminal that `script` makes. The checks that need its private types are unit tests; see below |
 | `docs.rs` | The `$ elfq` examples in README.md, docs/design.md and docs/examples.md, and that design.md names every JSON key |
+
+**Where a test goes.** A test of one command goes in that command's file
+in `commands/`, its text and its JSON together. A test that runs several
+commands to check what they share goes in `across_commands/`, in
+`json.rs`, `tables.rs`, `names.rs` or `errors_and_help.rs`, and a test of
+a part of the library, called as the commands call it, goes in `library/`.
+A test whose point is that elfq reads a damaged file without hanging,
+crashing or misreading it goes in `damaged.rs`, whatever command it runs;
+a test of one command's wording on such a file goes in that command's
+file.
 
 The checks of `browse` that need its private types are unit tests in
 `src/commands/browse/`:
@@ -380,19 +409,64 @@ that gives it, `binary/listing.rs`, in `binary/listing/thumb_text.rs`:
 against objdump's text for each Cortex-M sample, in `testdata/tests/thumb`,
 and in each stripped sample, against the `$d` symbols of its twin.
 
-Two tests in `cli.rs` run the overview and every command it suggests on
-each `.elf` and `.so` file in `testdata/bin`, and `top` on each `.elf`
-file, so a new sample is tested as soon as it is committed.
+Two tests run the overview and every command it suggests on each `.elf`
+and `.so` file in `testdata/bin`, and `top` on each `.elf` file, so a
+new sample is tested as soon as it is committed:
+`every_command_the_overview_suggests_works`, in
+`commands/overview_top_and_retained.rs`, and
+`no_line_sums_up_a_single_item`, in `across_commands/tables.rs`. Each
+takes seconds. The test harness starts tests in the order of their paths,
+a few at a time, so a test that slow belongs where its path sorts early,
+as `across_commands::tables::no_line_sums_up_a_single_item` does: one
+that starts last keeps the whole run waiting for it.
 
 To run one test, one file, or the unit tests of one module:
 
 ```sh
-cargo test --test it cli::top_shows_what_keeps_the_most_bytes
+cargo test --test it commands::overview_top_and_retained::top_shows_what_keeps_the_most_bytes
 cargo test --test it damaged::
 cargo test --lib arch::thumb
 ```
 
-**When output changes.** Most tests in `cli.rs` check a command's whole
+A filter picks every test whose path holds it, so `commands::` picks the
+tests in `across_commands/` too; `cargo test --test it commands:: --
+--skip across_commands` runs only those in `commands/`.
+
+**Samples.** A test names a sample by its path from the crate's root,
+such as `testdata/bin/c-x86_64.elf`, which is what elfq takes as FILE:
+`SAMPLE` and the other constants in `support/` hold that path, `samples()`
+lists every sample that way, and `load_sample` and `run_in_process` take
+it. Only `screen` and `burst`, in `commands/browse.rs`, take the file's
+name, as the screen's first line shows it. The lists that several modules
+check are in `support/` too: `C_SAMPLES`, the C sample for each
+instruction set, and `FAR_SAMPLES`, the builds of `c/far.c` with symbols,
+whose calls between RAM, flash and ROM go through veneers. So is
+`samples_for`, which lists the samples for one architecture, from the
+machine in their ELF headers, beside `samples()` and `sample_path`. Any
+other constant or list that only one module uses stays in it.
+
+**Running elfq.** A test runs the program with `run(ARGS)`, from
+`support/`, and says what it expects of the `Run` it gets back:
+`printed(STATUS)` gives what elfq printed on stdout, `json(STATUS)` gives
+that parsed as JSON, and `error()` gives the error, which comes with exit
+status 2. Each checks the exit status, and that elfq printed nothing on
+the other stream, so that a warning the test doesn't expect fails it.
+The shortcuts in `support/` each run elfq and read the `Run` one way:
+`stdout(ARGS)` is `run(ARGS).printed(0)`, `stderr(ARGS)` is
+`run(ARGS).error()`, `crossing(ARGS)` is `run(ARGS).printed(1)`, for an
+answer that finds uses crossing the edge of its ranges, `elfq_json(ARGS)`
+is `run(ARGS --json).json(0)`, and `text_rows(ARGS)` is the names in the
+rows of `run(ARGS --all).printed(0)`. `names(LIST)` gives the names of the
+items in a list of elfq's JSON. Where the status may be 0 or 1, as for a
+command run on every sample, `Exit::ZeroOrOne` stands for either. A test
+that expects a warning with the answer calls `exited(STATUS)`, which
+checks the status alone, and then reads the `Run`'s `stdout` and `stderr`
+itself.
+`run_in_process(SAMPLE, ARGS)` runs a command inside the test instead: it
+gives no `Run`, only what elfq printed on stdout and the outcome that sets
+its exit status, and an error panics.
+
+**When output changes.** Most tests in `commands/` check a command's whole
 output with `assert_output`. When you change what elfq prints on purpose,
 the test that fails shows the first line that differs, then the new output
 in full, after "The whole output:". Check it, then paste it over the
@@ -405,15 +479,20 @@ differs, so run it again until it passes.
 docs/examples.md whose first line starts with `$ elfq ` is run by
 `docs.rs`, which checks that elfq prints the rest of the block and nothing
 on stderr. The command is split at spaces, with no shell quoting, and its
-exit status isn't checked. The text around an example often repeats its
+exit status may be 0 or 1. The text around an example often repeats its
 numbers and names, as docs/examples.md does, so when an example's output
 changes, check that the text around it still matches the new output.
 
 **Damaged files.** `damaged.rs` makes its files from a sample's bytes, so
-that the hangs and crashes they once caused stay fixed. Tests run in a
-debug build, so arithmetic that overflows fails them too. A test that uses
-`parse_quickly` fails if loading the file takes more than 10 seconds: add
-one when you make elfq quick to load a file that took far too long.
+that the hangs and crashes they once caused stay fixed. It and the other
+tests that need such a file change the bytes with `ElfBytes`, in
+`support/elf.rs`, which sets a field of the ELF header, a section header
+or a program header by its name, such as `HeaderField::EntryPoint` or
+`SectionField::Size`, to a number or to one of `object::elf`'s constants.
+Its `save` writes the file and returns the path to give `run`. Tests run
+in a debug build, so arithmetic that overflows fails them too. A test that
+uses `parse_quickly` fails if loading the file takes more than 10 seconds:
+add one when you make elfq quick to load a file that took far too long.
 
 ## Adding a command
 
@@ -444,8 +523,9 @@ is a short one to copy.
    take `--tree`, `--range` or `--json`, or with those that refuse it. A
    command that takes `--range` gets `range` from its arm in `run`; name
    it in `RANGE_REFUSED`, the error that lists the commands that take
-   `--range`, in the tests in `tests/it/cli.rs` that check that error, and
-   in the `--range` help in `cli/mod.rs`, README.md and docs/design.md. A
+   `--range`, in the tests that check that error, which a search of
+   `tests/it/` for its text finds, and in the `--range` help in
+   `cli/mod.rs`, README.md and docs/design.md. A
    command that shows a tree goes likewise in `check_tree`'s error, its
    tests and the `--tree` help.
 4. **SYMBOL.** If the command reads code, call `check_code_is_readable`
@@ -483,9 +563,11 @@ is a short one to copy.
    `Chains` has. A value kept only until an error return and then moved
    on, as `retained::run` keeps its `Names`, is taken back out with
    `into_inner`.
-6. **Tests.** Pin the text output with `assert_output` in
-   `tests/it/cli.rs`, and test the JSON in `tests/it/json.rs`. Add the
-   command to the tests in `cli.rs` that go through commands one by one:
+6. **Tests.** Give the command a file of its own in `tests/it/commands/`,
+   named after it and listed in `commands/mod.rs`. Pin its text output
+   there with `assert_output`, and test its JSON there too. Add the
+   command to the tests in `tests/it/across_commands/errors_and_help.rs`
+   that go through commands one by one:
    `arguments_that_dont_go_together_are_refused_before_the_file_is_read`,
    `a_file_whose_code_elfq_cant_read_says_so` if it reads code, and
    `commands_that_need_roots_refuse_a_shared_library` if it needs the roots.
@@ -555,8 +637,8 @@ the biggest view, and not the one to start from.
    it. The help page and the hint line are printed from that table, and
    `no_key_does_two_things` checks it. `app.rs` handles an action that
    opens a page, as `Action::Help` does.
-4. **Tests.** Pin its screens in `tests/it/browse.rs` at 80x24 and 100x30,
-   and drive it with keys there, as the other tests do.
+4. **Tests.** Pin its screens in `tests/it/commands/browse.rs` at 80x24
+   and 100x30, and drive it with keys there, as the other tests do.
 
 To see a page in a real terminal, run elfq in tmux and print the screen.
 Keys sent before elfq draws its first screen can be lost, so the script
@@ -608,11 +690,12 @@ page, which the capture prints.
 5. **Samples.** Build the C sample for it in `testdata/build.sh`, with
    `variants` for the copies without DWARF and without symbols, and say
    what it holds in testdata/README.md. Add it to `C_SAMPLES` in
-   `tests/it/graph.rs` and `tests/it/retained.rs`, which check its answers
-   against testdata/README.md.
+   `tests/it/support/mod.rs`; `library/graph.rs` and
+   `library/retained.rs` check its answers against testdata/README.md.
 6. **Tests that need code elfq can't read.**
-   `a_file_whose_code_elfq_cant_read_says_so` in `tests/it/cli.rs` marks a
-   file as AArch64; when that is the one you add, pick another machine.
+   `ElfBytes::mark_code_unreadable`, in `tests/it/support/elf.rs`, marks a
+   file as AArch64 for them. When AArch64 is the one you add, pick another
+   machine there, and change the tests' text that names AArch64.
 7. **Text for `browse`.** The arm in `InstructionSet::listing`, in
    `src/arch/listing.rs`, prints the code, one line per instruction,
    starting where `scan`'s references are.

@@ -1,13 +1,16 @@
-//! The shortest chains from the roots that `why` shows, checked against the
-//! samples' call graphs in testdata/README.md.
+//! The shortest chains from the roots that `why` shows.
+//!
+//! They are checked against the samples' call graphs in
+//! testdata/README.md. The tests of what `why` prints are in
+//! commands/why.rs.
 
 use elfq::binary::Binary;
 use elfq::graph::{Graph, ShortestPaths};
 
-use crate::support::{load_sample, node};
+use crate::support::{SAMPLE, load_sample, node};
 
-fn load(name: &str) -> (Binary, Graph) {
-    let binary = load_sample(name);
+fn load(path: &str) -> (Binary, Graph) {
+    let binary = load_sample(path);
     let graph = Graph::build(&binary);
     (binary, graph)
 }
@@ -28,9 +31,9 @@ fn chain(binary: &Binary, graph: &Graph, avoid: &str, to: &str) -> Option<Vec<St
 #[test]
 fn crc_table_is_kept_by_the_chain_through_process_frame() {
     for (sample, entry) in [
-        ("c-x86_64.elf", "_start"),
-        ("c-x86_64-nodebug.elf", "_start"),
-        ("c-cortex-m4.elf", "Reset_Handler"),
+        (SAMPLE, "_start"),
+        ("testdata/bin/c-x86_64-nodebug.elf", "_start"),
+        ("testdata/bin/c-cortex-m4.elf", "Reset_Handler"),
     ] {
         let (binary, graph) = load(sample);
         assert_eq!(
@@ -44,7 +47,7 @@ fn crc_table_is_kept_by_the_chain_through_process_frame() {
 #[test]
 fn a_chain_from_the_roots_ends_at_the_item_itself() {
     // Where `why crc_table` ends its chain at crc32, which keeps it.
-    let (binary, graph) = load("c-cortex-m4.elf");
+    let (binary, graph) = load("testdata/bin/c-cortex-m4.elf");
     let paths = ShortestPaths::from_roots(&binary, &graph);
     let path = paths.path_to(node(&binary, "crc_table")).unwrap();
     let names: Vec<&str> = path
@@ -57,7 +60,7 @@ fn a_chain_from_the_roots_ends_at_the_item_itself() {
 
 #[test]
 fn an_interrupt_is_the_shortest_way_to_app_tick_on_cortex_m() {
-    let (binary, graph) = load("c-cortex-m4.elf");
+    let (binary, graph) = load("testdata/bin/c-cortex-m4.elf");
     assert_eq!(
         chain(&binary, &graph, "log_msg", "app_tick").unwrap(),
         ["SysTick_Handler", "app_tick"]
@@ -68,7 +71,7 @@ fn an_interrupt_is_the_shortest_way_to_app_tick_on_cortex_m() {
 fn a_function_called_back_does_not_keep_its_caller() {
     // `parse_list` is there only because `parse_value` calls it, so it
     // doesn't keep `parse_value` in the file, though it calls it back.
-    let (binary, graph) = load("c-x86_64.elf");
+    let (binary, graph) = load(SAMPLE);
     assert_eq!(chain(&binary, &graph, "parse_value", "parse_list"), None);
     assert_eq!(
         chain(&binary, &graph, "parse_value", "main").unwrap(),
@@ -80,7 +83,7 @@ fn a_function_called_back_does_not_keep_its_caller() {
 fn chains_prefer_calls_to_taking_addresses() {
     // `main` takes the address of `on_button`, which tail-calls `log_msg`,
     // and calls `process_frame`, which calls it: as short, but all calls.
-    let (binary, graph) = load("c-x86_64.elf");
+    let (binary, graph) = load(SAMPLE);
     assert_eq!(
         chain(&binary, &graph, "strlen", "log_msg").unwrap(),
         ["_start", "main", "process_frame", "log_msg"]
@@ -89,7 +92,7 @@ fn chains_prefer_calls_to_taking_addresses() {
 
 #[test]
 fn trait_implementations_are_reached_through_their_vtables() {
-    let (binary, graph) = load("rust-cortex-m4.elf");
+    let (binary, graph) = load("testdata/bin/rust-cortex-m4.elf");
     let paths = ShortestPaths::avoiding(&binary, &graph, node(&binary, "process_frame"));
     let path = paths.path_to(node(&binary, "Gain::run")).unwrap();
     let names: Vec<&str> = path

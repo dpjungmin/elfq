@@ -1,15 +1,19 @@
-//! `startup`: what the reset code of each Cortex-M sample does before
-//! `main`, the problems it finds there, its exit status, and the files it
-//! refuses.
+//! `startup`: what the reset code of each sample does before `main`.
+//!
+//! The tests check it on the Cortex-M samples: the problems it finds, its
+//! exit status, and the files it refuses, for which the overview doesn't
+//! suggest it. They also check that `debug walk` lists the walk that
+//! `startup` reads.
 
-use std::path::Path;
-
-use object::{Object, ObjectSection};
+use object::{Architecture, elf};
 use serde_json::{Value, json};
 
-use crate::damaged::{self, SIZE, set_section_field};
+use crate::support::elf::{
+    ElfBytes, HeaderField, SectionField, SegmentField, without_section_headers,
+};
 use crate::support::{
-    SAMPLE, TCM_ENTRY_MAIN_SAMPLE, TCM_SAMPLE, assert_output, command, elfq, samples,
+    Exit, Run, SAMPLE, TCM_ENTRY_MAIN_SAMPLE, TCM_SAMPLE, assert_output, command, run, sample_path,
+    samples_for, stderr, stdout,
 };
 
 /// [`TCM_SAMPLE`] with memcpy linked into ITCM, which Reset_Handler calls
@@ -44,75 +48,15 @@ const ROM_SAMPLE: &str = "testdata/bin/c-cortex-m7-rom.elf";
 /// doesn't return, as Zephyr's does.
 const NORETURN_SAMPLE: &str = "testdata/bin/c-cortex-m7-noreturn.elf";
 
-/// Runs `elfq FILE startup` with `options`, expecting nothing on stderr,
-/// and returns its exit status and what it printed.
-fn startup(file: &str, options: &[&str]) -> (i32, String) {
-    let output = elfq(&[&[file, "startup"], options].concat());
-    assert!(output.stderr.is_empty(), "{output:?}");
-    let status = output.status.code().unwrap();
-    (status, String::from_utf8(output.stdout).unwrap())
-}
-
-/// Runs `elfq FILE startup` with `options`, expecting it to fail, and
-/// returns what it printed on stderr.
-fn refusal(file: &str, options: &[&str]) -> String {
-    let output = elfq(&[&[file, "startup"], options].concat());
-    assert_eq!(output.status.code(), Some(2), "{output:?}");
-    assert!(output.stdout.is_empty(), "{output:?}");
-    String::from_utf8(output.stderr).unwrap()
-}
-
-/// The answer to `elfq FILE startup --json`, and its exit status.
-fn answer(file: &str) -> (i32, Value) {
-    let (status, text) = startup(file, &["--json"]);
-    (status, serde_json::from_str(&text).unwrap())
-}
-
-/// Saves a copy of `sample`, changed by `change`, as `name` in a folder for
-/// the tests' files, and returns its path.
-fn changed(sample: &str, name: &str, change: &dyn Fn(&mut Vec<u8>)) -> String {
-    let mut data = std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join(sample)).unwrap();
-    change(&mut data);
-    damaged::save(name, &data)
-}
-
-/// The 4 bytes at `at`. The samples are little-endian.
-fn word(data: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes(data[at..at + 4].try_into().unwrap())
-}
-
-fn set_word(data: &mut [u8], at: usize, value: u32) {
-    data[at..at + 4].copy_from_slice(&value.to_le_bytes());
-}
-
-/// Where the vector table, the section `.isr_vector`, is in the file
-/// `data`.
-fn isr_vector(data: &[u8]) -> usize {
-    let file = object::File::parse(data).unwrap();
-    let (table, _) = (file.section_by_name(".isr_vector").unwrap())
-        .file_range()
-        .unwrap();
-    table as usize
-}
-
-/// Where the program header of the load image for `address` is in the
-/// 32-bit file `data`: of the segment there whose load address isn't its
-/// address.
-fn load_image_header(data: &[u8], address: u32) -> usize {
-    let half = |at: usize| usize::from(u16::from_le_bytes([data[at], data[at + 1]]));
-    // e_phoff, e_phentsize and e_phnum; and in a program header, p_vaddr
-    // and p_paddr.
-    let (headers, size, count) = (word(data, 0x1c) as usize, half(0x2a), half(0x2c));
-    (0..count)
-        .map(|n| headers + n * size)
-        .find(|&at| word(data, at + 8) == address && word(data, at + 12) != address)
-        .unwrap()
+/// Runs `elfq FILE startup` with `options`.
+#[track_caller]
+fn startup(file: &str, options: &[&str]) -> Run {
+    run(&[&[file, "startup"], options].concat())
 }
 
 #[test]
 fn firmware_that_sets_up_its_memory_before_main_has_no_problems() {
-    let (status, text) = startup(TCM_SAMPLE, &[]);
-    assert_eq!(status, 0);
+    let text = startup(TCM_SAMPLE, &[]).printed(0);
     assert_output(
         &text,
         "\
@@ -129,8 +73,7 @@ Not zeroed, which may be intended: .ocram_bss (tx_buffer).
     );
     // Without symbols, main is the last function that the reset handler
     // calls.
-    let (status, text) = startup("testdata/bin/c-cortex-m7-stripped.elf", &[]);
-    assert_eq!(status, 0);
+    let text = startup("testdata/bin/c-cortex-m7-stripped.elf", &[]).printed(0);
     assert_output(
         &text,
         "\
@@ -151,8 +94,7 @@ Not zeroed, which may be intended: .ocram_bss.
 fn a_copy_by_code_that_nothing_has_copied_yet() {
     // Reset_Handler calls memcpy, in ITCM, to copy ITCM's code: the
     // processor runs whatever ITCM holds at reset.
-    let (status, text) = startup(TRAP_SAMPLE, &[]);
-    assert_eq!(status, 1);
+    let text = startup(TRAP_SAMPLE, &[]).printed(1);
     assert_output(
         &text,
         "\
@@ -170,8 +112,7 @@ Steps 1 to 4 may never run, so .data and .bss may not be set up.
 Not zeroed, which may be intended: .ocram_bss (tx_buffer).
 ",
     );
-    let (status, text) = startup("testdata/bin/c-cortex-m7-trap-stripped.elf", &[]);
-    assert_eq!(status, 1);
+    let text = startup("testdata/bin/c-cortex-m7-trap-stripped.elf", &[]).printed(1);
     assert_output(
         &text,
         "\
@@ -193,8 +134,7 @@ Not zeroed, which may be intended: .ocram_bss.
 
 #[test]
 fn a_call_before_the_copy_that_leads_to_code_that_nothing_has_copied_yet() {
-    let (status, text) = startup(SYSINIT_SAMPLE, &[]);
-    assert_eq!(status, 1);
+    let text = startup(SYSINIT_SAMPLE, &[]).printed(1);
     assert_output(
         &text,
         "\
@@ -215,15 +155,14 @@ Try:
   elfq testdata/bin/c-cortex-m7-sysinit.elf reach SystemInit --to 0x0+16
 ",
     );
-    let (_, answer) = answer(SYSINIT_SAMPLE);
+    let answer = startup(SYSINIT_SAMPLE, &["--json"]).json(1);
     assert_eq!(answer["problems"][0]["chain"], json!(["SystemInit"]));
     assert_eq!(answer["problems"][0]["before_step"], 2);
     // Reset_Handler sets r0 for the copy of .itcm before it calls
     // SystemInit, which keeps it, as GCC knows; and main, which never
     // returns, is the last call, though memset leaves its first argument
     // in r0 for it.
-    let (status, text) = startup("testdata/bin/c-cortex-m7-sysinit-stripped.elf", &[]);
-    assert_eq!(status, 1);
+    let text = startup("testdata/bin/c-cortex-m7-sysinit-stripped.elf", &[]).printed(1);
     assert_output(
         &text,
         "\
@@ -248,8 +187,7 @@ Try:
 
 #[test]
 fn a_reset_handler_in_memory_that_nothing_has_copied_yet() {
-    let (status, text) = startup(RESET_ITCM_SAMPLE, &[]);
-    assert_eq!(status, 1);
+    let text = startup(RESET_ITCM_SAMPLE, &[]).printed(1);
     assert_output(
         &text,
         "\
@@ -274,8 +212,7 @@ fn code_in_ram_that_nothing_copies() {
     // far.c's reset handler calls code in .ram, through veneers, and
     // nothing copies .ram; two of those functions call into a ROM outside
     // the file, which elfq can't follow.
-    let (status, text) = startup("testdata/bin/far-gnu-m4-nodebug.elf", &[]);
-    assert_eq!(status, 1);
+    let text = startup("testdata/bin/far-gnu-m4-nodebug.elf", &[]).printed(1);
     assert_output(
         &text,
         "\
@@ -301,8 +238,7 @@ Steps 2 to 9 may never run, so .bss may not be set up.
 
 #[test]
 fn a_reset_handler_that_copies_and_zeroes_nothing() {
-    let (status, text) = startup("testdata/bin/c-vfp.elf", &[]);
-    assert_eq!(status, 1);
+    let text = startup("testdata/bin/c-vfp.elf", &[]).printed(1);
     assert_output(
         &text,
         "\
@@ -316,8 +252,7 @@ STEP  DOES  FROM  TO  SIZE  AT         WHAT
 ",
     );
     // This one is the program: it ends in a loop that it runs for good.
-    let (status, text) = startup("testdata/bin/c-softfloat-nodebug.elf", &[]);
-    assert_eq!(status, 1);
+    let text = startup("testdata/bin/c-softfloat-nodebug.elf", &[]).printed(1);
     assert_output(
         &text,
         "\
@@ -332,8 +267,7 @@ STEP  DOES  FROM  TO  SIZE  AT         WHAT
 fn code_that_elfq_cant_follow_may_be_a_problem() {
     // The boot ROM's function, which elfq can't read, may copy .data. The
     // one after it takes what memset would to zero .bss, so it zeroes it.
-    let (status, text) = startup(ROM_SAMPLE, &[]);
-    assert_eq!(status, 1);
+    let text = startup(ROM_SAMPLE, &[]).printed(1);
     assert_output(
         &text,
         "\
@@ -349,8 +283,7 @@ STEP  DOES    FROM        TO          SIZE  AT          WHAT
 ",
     );
     // That problem may not be one. The first function may zero .bss too.
-    let (status, answer) = answer(ROM_SAMPLE);
-    assert_eq!(status, 1);
+    let answer = startup(ROM_SAMPLE, &["--json"]).json(1);
     assert_eq!(answer["problems_certain"], 0);
     assert_eq!(answer["complete"], false);
     assert_eq!(answer["problems"][0]["kind"], "can't follow");
@@ -364,8 +297,7 @@ STEP  DOES    FROM        TO          SIZE  AT          WHAT
 fn loops_that_copy_and_zero_are_steps() {
     // Loops of conditional instructions in assembly, the second going on
     // from where the first left its source, and one that counts down.
-    let (status, text) = startup(LOOPS_SAMPLE, &[]);
-    assert_eq!(status, 0);
+    let text = startup(LOOPS_SAMPLE, &[]).printed(0);
     assert_output(
         &text,
         "\
@@ -380,8 +312,7 @@ STEP  DOES  FROM        TO          SIZE  AT          WHAT
     );
     // Loops in C without optimization, whose pointers are on the stack, the
     // zeroing going on from where the copy left its destination.
-    let (status, text) = startup(LOOPS_O0_SAMPLE, &[]);
-    assert_eq!(status, 0);
+    let text = startup(LOOPS_O0_SAMPLE, &[]).printed(0);
     assert_output(
         &text,
         "\
@@ -394,7 +325,7 @@ STEP  DOES  FROM        TO          SIZE  AT          WHAT
    4  call                                0x300000be  main
 ",
     );
-    let (_, answer) = answer(LOOPS_SAMPLE);
+    let answer = startup(LOOPS_SAMPLE, &["--json"]).json(0);
     assert_eq!(answer["complete"], true);
     assert_eq!(answer["steps"][0]["how"], "loop");
     assert_eq!(answer["steps"][0]["function"]["name"], "Reset_Handler");
@@ -404,8 +335,7 @@ STEP  DOES  FROM        TO          SIZE  AT          WHAT
 fn tables_of_sections_are_read_row_by_row() {
     // A loop over each table, as CMSIS's startup code in C goes, with a
     // loop inside for each row.
-    let (status, text) = startup(TABLES_SAMPLE, &[]);
-    assert_eq!(status, 0);
+    let text = startup(TABLES_SAMPLE, &[]).printed(0);
     assert_output(
         &text,
         "\
@@ -420,8 +350,7 @@ STEP  DOES  FROM        TO          SIZE  AT          WHAT
     );
     // A function for each kind of row, which MCUXpresso IDE's startup code
     // calls with the row: the step is the call's.
-    let (status, text) = startup(SECTIONS_SAMPLE, &[]);
-    assert_eq!(status, 0);
+    let text = startup(SECTIONS_SAMPLE, &[]).printed(0);
     assert_output(
         &text,
         "\
@@ -435,7 +364,7 @@ STEP  DOES  FROM        TO          SIZE  AT          WHAT
    5  call                                0x300000d8  main
 ",
     );
-    let (_, answer) = answer(SECTIONS_SAMPLE);
+    let answer = startup(SECTIONS_SAMPLE, &["--json"]).json(0);
     assert_eq!(answer["steps"][0]["how"], "call");
     assert_eq!(answer["steps"][0]["function"]["name"], "data_init");
     assert_eq!(answer["steps"][0]["table"], "0x30000014");
@@ -444,8 +373,7 @@ STEP  DOES  FROM        TO          SIZE  AT          WHAT
     // loop copies that is code of the reset handler's own; the one after
     // core 1 goes back to the boot ROM. The row of .scratch_y copies no
     // bytes, and its call to the loop is no step.
-    let (status, text) = startup(PICO_SAMPLE, &[]);
-    assert_eq!(status, 0);
+    let text = startup(PICO_SAMPLE, &[]).printed(0);
     assert_output(
         &text,
         "\
@@ -464,17 +392,14 @@ At 0x10000124 elfq takes the branch, since the other way ends in a branch throug
     );
     // Without symbols, a function finder takes the loop's test, which the
     // call goes to, for a function of its own.
-    let (status, text) = startup("testdata/bin/c-cortex-m0-pico-stripped.elf", &[]);
-    assert_eq!(status, 0);
+    let text = startup("testdata/bin/c-cortex-m0-pico-stripped.elf", &[]).printed(0);
     assert!(
         text.contains("  1  copy  0x100001e8  0x20000000    20  0x10000132  .data, by fn_0x10000156, from table 0x10000160\n"),
         "{text}"
     );
     // The walk goes through the loop over the table each time, the empty
     // row's and the zero word's too.
-    let output = elfq(&[PICO_SAMPLE, "debug", "walk"]);
-    assert!(output.status.success(), "{output:?}");
-    let walk = String::from_utf8(output.stdout).unwrap();
+    let walk = stdout(&[PICO_SAMPLE, "debug", "walk"]);
     assert!(
         walk.contains("loop back from 0x10000136 over the 7 rows above, runs 4 times, each time walked, reading rows at 0x10000160 +12n\n"),
         "{walk}"
@@ -486,10 +411,8 @@ fn the_walk_tells_how_often_each_loop_runs_and_what_it_stores() {
     // Each loop's row says how many times its head runs, the last time
     // being the one that leaves, and what each store in it stores those
     // times after the first, which the row above shows.
-    let output = elfq(&[LOOPS_SAMPLE, "debug", "walk"]);
-    assert!(output.status.success(), "{output:?}");
     assert_output(
-        &String::from_utf8(output.stdout).unwrap(),
+        &stdout(&[LOOPS_SAMPLE, "debug", "walk"]),
         "\
 from Reset_Handler (0x30000008), stack pointer 0x20040000, main 0x30000060
 
@@ -512,16 +435,10 @@ fn debug_walk_lists_the_walk_that_startup_reads() {
     // processor starts, and when startup's walk gets to main, this one
     // gets to the same main, found the same way: from its symbol, debug
     // info, a guess or the reset handler's endless loop.
-    for sample in samples() {
-        let name = sample.trim_start_matches("testdata/bin/");
-        if name.contains("x86_64") || name == "c-deep.elf" || name == "c-plt.so" {
-            continue;
-        }
-        let output = elfq(&[&sample, "debug", "walk"]);
-        assert!(output.status.success(), "{output:?}");
-        let walk = String::from_utf8(output.stdout).unwrap();
+    for sample in samples_for(Architecture::Arm) {
+        let walk = stdout(&[&sample, "debug", "walk"]);
         let first = walk.lines().next().unwrap();
-        let (_, answer) = answer(&sample);
+        let answer = startup(&sample, &["--json"]).json(Exit::ZeroOrOne);
         let entry = answer["entry"]["address"].as_str().unwrap();
         assert!(
             first.contains(&format!("({entry}), stack pointer ")),
@@ -544,9 +461,7 @@ fn debug_walk_lists_the_walk_that_startup_reads() {
         assert!(reaches_main, "{sample}: {walk}");
     }
     // As in a stripped file, which has no symbol main.
-    let output = elfq(&["testdata/bin/c-cortex-m7-stripped.elf", "debug", "walk"]);
-    assert!(output.status.success(), "{output:?}");
-    let walk = String::from_utf8(output.stdout).unwrap();
+    let walk = stdout(&["testdata/bin/c-cortex-m7-stripped.elf", "debug", "walk"]);
     assert!(
         walk.starts_with(
             "from entry (0x300005f8), stack pointer 0x20040000, main 0x30000570 (guess)\n"
@@ -560,13 +475,10 @@ fn debug_walk_starts_where_startup_does() {
     // A vector table whose reset handler is in no function, but in the two
     // bytes that pad the code before Reset_Handler, the entry point: the
     // walk starts at the entry point, as startup reads from there.
-    let padding = changed(TCM_SAMPLE, "c-cortex-m7-reset-in-padding.elf", &|data| {
-        let table = isr_vector(data);
-        set_word(data, table + 4, 0x3000_05f7);
-    });
-    let output = elfq(&[&padding, "debug", "walk"]);
-    assert!(output.status.success(), "{output:?}");
-    let walk = String::from_utf8(output.stdout).unwrap();
+    let padding = ElfBytes::sample(TCM_SAMPLE)
+        .set_vector_entry(1, 0x3000_05f7)
+        .save("c-cortex-m7-reset-in-padding.elf");
+    let walk = stdout(&[&padding, "debug", "walk"]);
     assert_eq!(
         walk.lines().next().unwrap(),
         "from Reset_Handler (0x300005f8), stack pointer 0x20040000, main 0x30000570"
@@ -574,21 +486,12 @@ fn debug_walk_starts_where_startup_does() {
     assert!(walk.ends_with("ends: reaches main\n"), "{walk}");
     // With the entry point in no function either, in RAM, it refuses the
     // file as startup does.
-    let neither = changed(
-        TCM_SAMPLE,
-        "c-cortex-m7-reset-and-entry-in-no-function.elf",
-        &|data| {
-            let table = isr_vector(data);
-            set_word(data, table + 4, 0x3000_05f7);
-            // e_entry.
-            set_word(data, 0x18, 0x2000_0001);
-        },
-    );
-    let output = elfq(&[&neither, "debug", "walk"]);
-    assert_eq!(output.status.code(), Some(2), "{output:?}");
-    assert!(output.stdout.is_empty(), "{output:?}");
-    let error = String::from_utf8(output.stderr).unwrap();
-    assert_output(&error, &refusal(&neither, &[]));
+    let neither = ElfBytes::sample(TCM_SAMPLE)
+        .set_vector_entry(1, 0x3000_05f7)
+        .set(HeaderField::EntryPoint, 0x2000_0001)
+        .save("c-cortex-m7-reset-and-entry-in-no-function.elf");
+    let error = stderr(&[&neither, "debug", "walk"]);
+    assert_output(&error, &startup(&neither, &[]).error());
     assert_output(
         &error,
         &format!(
@@ -602,8 +505,7 @@ fn debug_walk_starts_where_startup_does() {
 fn setup_in_a_call_that_doesnt_return_is_what_that_call_does() {
     // prep copies and zeroes, then starts the program's threads, which
     // call main through a pointer.
-    let (status, text) = startup(NORETURN_SAMPLE, &[]);
-    assert_eq!(status, 0);
+    let text = startup(NORETURN_SAMPLE, &[]).printed(0);
     assert_output(
         &text,
         "\
@@ -622,13 +524,13 @@ STEP  DOES  FROM        TO          SIZE  AT          WHAT
 fn a_copy_from_elsewhere_or_of_part_of_a_section_is_a_problem() {
     // The file says that it stores .data 4 bytes lower than where
     // Reset_Handler copies it from.
-    let elsewhere = changed(TCM_SAMPLE, "c-cortex-m7-elsewhere.elf", &|data| {
-        let at = load_image_header(data, 0x2000_0000) + 12;
-        let stored = word(data, at) - 4;
-        set_word(data, at, stored);
-    });
-    let (status, text) = startup(&elsewhere, &[]);
-    assert_eq!(status, 1);
+    let mut data = ElfBytes::sample(TCM_SAMPLE);
+    let segment = data.load_image_segment(0x2000_0000);
+    let stored = data.segment_at(segment, SegmentField::LoadAddress) - 4;
+    let elsewhere = data
+        .set_segment_at(segment, SegmentField::LoadAddress, stored)
+        .save("c-cortex-m7-elsewhere.elf");
+    let text = startup(&elsewhere, &[]).printed(1);
     assert!(
         text.starts_with(
             "1 problem in what Reset_Handler does before it calls main:\n\n  Step 2 copies .data \
@@ -636,22 +538,22 @@ fn a_copy_from_elsewhere_or_of_part_of_a_section_is_a_problem() {
         ),
         "{text}"
     );
-    let problem = &answer(&elsewhere).1["problems"][0];
+    let problem = &startup(&elsewhere, &["--json"]).json(1)["problems"][0];
     assert_eq!(
         (&problem["kind"], &problem["from"]),
         (&json!("copied from elsewhere"), &json!("0x300009c0"))
     );
     // .data, its load image and .bss each 16 bytes larger than what
     // Reset_Handler sets up.
-    let partly = changed(TCM_SAMPLE, "c-cortex-m7-partly.elf", &|data| {
-        set_section_field(data, ".data", SIZE, 1056 + 16);
-        set_section_field(data, ".bss", SIZE, 48 + 16);
-        let at = load_image_header(data, 0x2000_0000);
-        set_word(data, at + 16, 1056 + 16);
-        set_word(data, at + 20, 1056 + 16);
-    });
-    let (status, text) = startup(&partly, &[]);
-    assert_eq!(status, 1);
+    let mut data = ElfBytes::sample(TCM_SAMPLE);
+    let segment = data.load_image_segment(0x2000_0000);
+    let partly = data
+        .set_section(".data", SectionField::Size, 1056 + 16)
+        .set_section(".bss", SectionField::Size, 48 + 16)
+        .set_segment_at(segment, SegmentField::FileSize, 1056 + 16)
+        .set_segment_at(segment, SegmentField::MemorySize, 1056 + 16)
+        .save("c-cortex-m7-partly.elf");
+    let text = startup(&partly, &[]).printed(1);
     assert!(
         text.starts_with(
             "2 problems in what Reset_Handler does before it calls main:\n\n  Step 2 copies 1056 \
@@ -659,7 +561,7 @@ fn a_copy_from_elsewhere_or_of_part_of_a_section_is_a_problem() {
         ),
         "{text}"
     );
-    let (_, partly) = answer(&partly);
+    let partly = startup(&partly, &["--json"]).json(1);
     let statuses: Vec<_> = partly["sections"]
         .as_array()
         .unwrap()
@@ -684,10 +586,9 @@ fn a_copy_from_elsewhere_or_of_part_of_a_section_is_a_problem() {
 
 #[test]
 fn the_table_shows_the_first_30_steps_and_all_shows_every_step() {
-    let (status, text) = startup(STEPS_SAMPLE, &[]);
     // The hook may zero .ocram_bss, which needn't be zeroed: a note, not a
-    // problem.
-    assert_eq!(status, 0);
+    // problem, so the exit status is 0.
+    let text = startup(STEPS_SAMPLE, &[]).printed(0);
     let rows: String = (4..=29)
         .map(|step| {
             format!(
@@ -713,8 +614,7 @@ elfq can't follow step 36 (a call through r3), which may zero .ocram_bss.
 "
         ),
     );
-    let (status, text) = startup(STEPS_SAMPLE, &["--all"]);
-    assert_eq!(status, 0);
+    let text = startup(STEPS_SAMPLE, &["--all"]).printed(0);
     // The lead, a blank line, the header, a row for each of the 37 steps, a
     // blank line and the note.
     let lines: Vec<&str> = text.lines().collect();
@@ -724,8 +624,7 @@ elfq can't follow step 36 (a call through r3), which may zero .ocram_bss.
         "  36  unread                                0x30000262  a call through r3 in Reset_Handler"
     );
     // The JSON gives every step, without --all.
-    let (status, answer) = answer(STEPS_SAMPLE);
-    assert_eq!(status, 0);
+    let answer = startup(STEPS_SAMPLE, &["--json"]).json(0);
     assert_eq!(answer["steps"].as_array().unwrap().len(), 37);
     let hook = &answer["steps"][35];
     assert_eq!(
@@ -757,7 +656,7 @@ fn startup_reads_a_pipe_and_extended_section_numbers() {
     use std::io::Write;
     use std::process::Stdio;
 
-    let (_, expected) = startup(TCM_SAMPLE, &[]);
+    let expected = startup(TCM_SAMPLE, &[]).printed(0);
     // A pipe, which can be read only once.
     let mut child = command()
         .args(["/dev/stdin", "startup"])
@@ -766,28 +665,27 @@ fn startup_reads_a_pipe_and_extended_section_numbers() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let data = std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join(TCM_SAMPLE)).unwrap();
+    let data = std::fs::read(sample_path(TCM_SAMPLE)).unwrap();
     let mut stdin = child.stdin.take().unwrap();
     let writer = std::thread::spawn(move || stdin.write_all(&data));
     let output = child.wait_with_output().unwrap();
     writer.join().unwrap().unwrap();
-    assert_eq!(output.status.code(), Some(0), "{output:?}");
-    assert_output(&String::from_utf8(output.stdout).unwrap(), &expected);
+    let printed = Run::new("elfq /dev/stdin startup", output).printed(0);
+    assert_output(&printed, &expected);
     // e_shnum 0, with the number of sections in the first section header's
     // sh_size, as in a file with more sections than e_shnum holds.
-    let extended = changed(TCM_SAMPLE, "c-cortex-m7-extended.elf", &|data| {
-        let count = u16::from_le_bytes([data[0x30], data[0x31]]);
-        data[0x30..0x32].fill(0);
-        let first = word(data, 0x20) as usize;
-        set_word(data, first + 0x14, u32::from(count));
-    });
-    assert_output(&startup(&extended, &[]).1, &expected);
+    let mut data = ElfBytes::sample(TCM_SAMPLE);
+    let count = data.header(HeaderField::SectionHeaderCount);
+    let extended = data
+        .set(HeaderField::SectionHeaderCount, 0)
+        .set_section_at(0, SectionField::Size, count)
+        .save("c-cortex-m7-extended.elf");
+    assert_output(&startup(&extended, &[]).printed(0), &expected);
 }
 
 #[test]
 fn a_vector_table_whose_reset_handler_isnt_the_entry_point() {
-    let (status, text) = startup(TCM_ENTRY_MAIN_SAMPLE, &[]);
-    assert_eq!(status, 0);
+    let text = startup(TCM_ENTRY_MAIN_SAMPLE, &[]).printed(0);
     assert!(
         text.ends_with(
             "\n\nThe vector table at 0x30000000 gives Reset_Handler for reset, not the entry point \
@@ -799,8 +697,7 @@ fn a_vector_table_whose_reset_handler_isnt_the_entry_point() {
 
 #[test]
 fn the_json_gives_the_steps_the_sections_and_the_problems() {
-    let (status, answer) = answer(TRAP_SAMPLE);
-    assert_eq!(status, 1);
+    let answer = startup(TRAP_SAMPLE, &["--json"]).json(1);
     let memcpy = json!({
         "name": "memcpy",
         "kind": "function",
@@ -887,7 +784,7 @@ fn the_json_gives_the_steps_the_sections_and_the_problems() {
         json!([{"section": ".itcm", "items": [answer["entry"], memcpy]}])
     );
     // One row per line.
-    let (_, text) = startup(TRAP_SAMPLE, &["--json"]);
+    let text = startup(TRAP_SAMPLE, &["--json"]).printed(1);
     assert!(
         text.contains("\"steps\":[\n{\"step\":1,") && text.contains("},\n{\"step\":2,"),
         "{text}"
@@ -904,7 +801,7 @@ fn keep_out_names_what_runs_before_each_copy_of_code() {
     // SystemInit calls clock_setup, in ITCM, before the copy, and memcpy
     // does the copy: each would run from ITCM too early. .data holds no
     // code.
-    let (_, sysinit) = answer(SYSINIT_SAMPLE);
+    let sysinit = startup(SYSINIT_SAMPLE, &["--json"]).json(1);
     let rows = sysinit["keep_out"].as_array().unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["section"], ".itcm");
@@ -914,16 +811,16 @@ fn keep_out_names_what_runs_before_each_copy_of_code() {
     );
     // prep holds the copy, as it calls memcpy, then memset and
     // start_threads after it, so only prep and memcpy run before.
-    let (_, noreturn) = answer(NORETURN_SAMPLE);
+    let noreturn = startup(NORETURN_SAMPLE, &["--json"]).json(0);
     assert_eq!(
         names(&noreturn["keep_out"][0]),
         ["Reset_Handler", "prep", "memcpy"]
     );
     // data_init does the copy itself, with its own loop.
-    let (_, sections) = answer(SECTIONS_SAMPLE);
+    let sections = startup(SECTIONS_SAMPLE, &["--json"]).json(0);
     assert_eq!(names(&sections["keep_out"][0]), ["ResetISR", "data_init"]);
     // Nothing copies .ram, so nothing that runs before main may be in it.
-    let (_, far) = answer("testdata/bin/far-gnu-m4-nodebug.elf");
+    let far = startup("testdata/bin/far-gnu-m4-nodebug.elf", &["--json"]).json(1);
     let row = &far["keep_out"][0];
     assert_eq!(row["section"], ".ram");
     assert_eq!(names(row).first().unwrap(), "Reset_Handler");
@@ -931,12 +828,8 @@ fn keep_out_names_what_runs_before_each_copy_of_code() {
     // In every sample, the reset handler comes first, and the functions
     // that a row lists in its own section are those that a problem says
     // run from it before its copy.
-    for sample in samples() {
-        let name = sample.trim_start_matches("testdata/bin/");
-        if name.contains("x86_64") || name == "c-deep.elf" || name == "c-plt.so" {
-            continue;
-        }
-        let (_, answer) = answer(&sample);
+    for sample in samples_for(Architecture::Arm) {
+        let answer = startup(&sample, &["--json"]).json(Exit::ZeroOrOne);
         for row in answer["keep_out"].as_array().unwrap() {
             let section = &row["section"];
             let items = row["items"].as_array().unwrap();
@@ -959,38 +852,29 @@ fn keep_out_names_what_runs_before_each_copy_of_code() {
 #[test]
 fn the_overview_suggests_startup_only_for_firmware_that_startup_reads() {
     let try_startup = |path: &str| {
-        let output = elfq(&[path]);
-        assert!(output.status.success(), "{output:?}");
-        let overview = String::from_utf8(output.stdout).unwrap();
+        let overview = stdout(&[path]);
         overview.contains(&format!("\n  elfq {path} startup\n"))
     };
     assert!(try_startup(TCM_SAMPLE));
     // A first program header that names a dynamic loader, as an operating
     // system's programs have, which startup refuses on the header.
-    let loaded = changed(
-        TCM_SAMPLE,
-        "c-cortex-m7-overview-interpreter.elf",
-        &|data| {
-            let at = word(data, 0x1c) as usize;
-            set_word(data, at, 3);
-        },
-    );
+    let loaded = ElfBytes::sample(TCM_SAMPLE)
+        .set_segment_at(0, SegmentField::Type, elf::PT_INTERP)
+        .save("c-cortex-m7-overview-interpreter.elf");
     // A reset handler and entry point in no function.
-    let no_reset = changed(TCM_SAMPLE, "c-cortex-m7-overview-no-reset.elf", &|data| {
-        let table = isr_vector(data);
-        set_word(data, table + 4, 0x2000_0001);
-        set_word(data, 0x18, 0x2000_0001);
-    });
+    let no_reset = ElfBytes::sample(TCM_SAMPLE)
+        .set_vector_entry(1, 0x2000_0001)
+        .set(HeaderField::EntryPoint, 0x2000_0001)
+        .save("c-cortex-m7-overview-no-reset.elf");
     // No load image or section without contents: the sections that were
-    // are no longer allocated, as sh_flags lacks SHF_ALLOC (2) and keeps
-    // SHF_EXECINSTR (4) or SHF_WRITE (1), so startup has nothing to set up.
-    let no_ram = changed(TCM_SAMPLE, "c-cortex-m7-overview-no-ram.elf", &|data| {
-        const FLAGS: damaged::Field = (0x08, 0x08);
-        set_section_field(data, ".itcm", FLAGS, 4);
-        for section in [".data", ".bss", ".ocram_bss"] {
-            set_section_field(data, section, FLAGS, 1);
-        }
-    });
+    // are no longer allocated, as sh_flags lacks SHF_ALLOC and keeps
+    // SHF_EXECINSTR or SHF_WRITE, so startup has nothing to set up.
+    let mut data = ElfBytes::sample(TCM_SAMPLE);
+    data.set_section(".itcm", SectionField::Flags, elf::SHF_EXECINSTR);
+    for section in [".data", ".bss", ".ocram_bss"] {
+        data.set_section(section, SectionField::Flags, elf::SHF_WRITE);
+    }
+    let no_ram = data.save("c-cortex-m7-overview-no-ram.elf");
     for path in [&loaded, &no_reset, &no_ram] {
         assert!(!try_startup(path), "{path}");
     }
@@ -999,31 +883,25 @@ fn the_overview_suggests_startup_only_for_firmware_that_startup_reads() {
 #[test]
 fn every_arm_sample_gets_an_answer_and_the_exit_status_it_means() {
     let problems = [
-        "c-cortex-m7-reset-itcm",
-        "c-cortex-m7-rom",
-        "c-cortex-m7-sysinit",
-        "c-cortex-m7-trap",
-        "c-softfloat",
-        "c-strtod",
-        "c-vfp",
-        "far-",
+        "testdata/bin/c-cortex-m7-reset-itcm",
+        "testdata/bin/c-cortex-m7-rom",
+        "testdata/bin/c-cortex-m7-sysinit",
+        "testdata/bin/c-cortex-m7-trap",
+        "testdata/bin/c-softfloat",
+        "testdata/bin/c-strtod",
+        "testdata/bin/c-vfp",
+        "testdata/bin/far-",
     ];
-    for sample in samples() {
-        let name = sample.trim_start_matches("testdata/bin/");
-        if name.contains("x86_64") || name == "c-deep.elf" || name == "c-plt.so" {
-            continue;
-        }
-        let expected = if problems.iter().any(|prefix| name.starts_with(prefix)) {
+    for sample in samples_for(Architecture::Arm) {
+        let expected = if problems.iter().any(|prefix| sample.starts_with(prefix)) {
             1
         } else {
             0
         };
-        let (status, text) = startup(&sample, &[]);
-        assert_eq!(status, expected, "{sample}: {text}");
+        let text = startup(&sample, &[]).printed(expected);
         // The JSON gives the same exit status, and as many problems as
         // the text names.
-        let (status, answer) = answer(&sample);
-        assert_eq!(status, expected, "{sample}");
+        let answer = startup(&sample, &["--json"]).json(expected);
         let problems = answer["problems"].as_array().unwrap().len();
         let lead = text.lines().next().unwrap();
         match problems {
@@ -1037,46 +915,46 @@ fn every_arm_sample_gets_an_answer_and_the_exit_status_it_means() {
         // --all lifts caps that these samples don't reach, but for
         // STEPS_SAMPLE's.
         if !text.contains("--all lists them") {
-            assert_eq!(startup(&sample, &["--all"]), (status, text), "{sample}");
+            assert_eq!(
+                startup(&sample, &["--all"]).printed(expected),
+                text,
+                "{sample}"
+            );
         }
     }
 }
 
 #[test]
 fn startup_reads_only_cortex_m_firmware() {
-    for sample in samples() {
-        if sample.contains("x86_64") || sample.ends_with("c-deep.elf") || sample.ends_with(".so") {
-            assert_output(
-                &refusal(&sample, &[]),
-                &format!(
-                    "error: {sample} is x86-64 code; startup reads the reset code of Cortex-M \
-                     firmware\n"
-                ),
-            );
-        }
+    for sample in samples_for(Architecture::X86_64) {
+        assert_output(
+            &startup(&sample, &[]).error(),
+            &format!(
+                "error: {sample} is x86-64 code; startup reads the reset code of Cortex-M \
+                 firmware\n"
+            ),
+        );
     }
     // Copies of the firmware with their headers changed: e_type, e_machine,
     // the first program header's p_type, and e_shoff, e_shnum and
     // e_shstrndx.
-    let object = changed(TCM_SAMPLE, "c-cortex-m7-object.elf", &|data| data[0x10] = 1);
-    let library = changed(TCM_SAMPLE, "c-cortex-m7-library.elf", &|data| {
-        data[0x10] = 3
-    });
-    let aarch64 = changed(TCM_SAMPLE, "c-cortex-m7-aarch64.elf", &|data| {
-        data[0x12] = 183
-    });
-    let loaded = changed(TCM_SAMPLE, "c-cortex-m7-interpreter.elf", &|data| {
-        let at = word(data, 0x1c) as usize;
-        set_word(data, at, 3);
-    });
-    let dynamic = changed(TCM_SAMPLE, "c-cortex-m7-dynamic.elf", &|data| {
-        let at = word(data, 0x1c) as usize;
-        set_word(data, at, 2);
-    });
-    let no_sections = changed(TCM_SAMPLE, "c-cortex-m7-no-section-headers.elf", &|data| {
-        data[0x20..0x24].fill(0);
-        data[0x30..0x34].fill(0);
-    });
+    let object = ElfBytes::sample(TCM_SAMPLE)
+        .set(HeaderField::Type, elf::ET_REL)
+        .save("c-cortex-m7-object.elf");
+    let library = ElfBytes::sample(TCM_SAMPLE)
+        .set(HeaderField::Type, elf::ET_DYN)
+        .save("c-cortex-m7-library.elf");
+    let aarch64 = ElfBytes::sample(TCM_SAMPLE)
+        .set(HeaderField::Machine, elf::EM_AARCH64)
+        .save("c-cortex-m7-aarch64.elf");
+    let loaded = ElfBytes::sample(TCM_SAMPLE)
+        .set_segment_at(0, SegmentField::Type, elf::PT_INTERP)
+        .save("c-cortex-m7-interpreter.elf");
+    let dynamic = ElfBytes::sample(TCM_SAMPLE)
+        .set_segment_at(0, SegmentField::Type, elf::PT_DYNAMIC)
+        .save("c-cortex-m7-dynamic.elf");
+    let no_sections =
+        without_section_headers(TCM_SAMPLE).save("c-cortex-m7-no-section-headers.elf");
     for (path, what) in [
         (&object, "an object file, not a linked program"),
         (&library, "a shared library"),
@@ -1085,14 +963,14 @@ fn startup_reads_only_cortex_m_firmware() {
         (&dynamic, "a program that an operating system loads"),
     ] {
         assert_output(
-            &refusal(path, &[]),
+            &startup(path, &[]).error(),
             &format!(
                 "error: {path} is {what}; startup reads the reset code of Cortex-M firmware\n"
             ),
         );
     }
     assert_output(
-        &refusal(&no_sections, &["--json"]),
+        &startup(&no_sections, &["--json"]).error(),
         &format!(
             "error: {no_sections} has no section headers, so startup can't tell what to copy and \
              zero\n"
@@ -1100,22 +978,22 @@ fn startup_reads_only_cortex_m_firmware() {
     );
     // With e_shnum 0, as in a file with too many sections for it, and
     // e_shoff too large to add to.
-    let huge = changed(SAMPLE, "c-x86_64-huge-shoff.elf", &|data| {
-        data[0x28..0x30].copy_from_slice(&u64::MAX.to_le_bytes());
-        data[0x3c..0x3e].fill(0);
-    });
+    let huge = ElfBytes::sample(SAMPLE)
+        .set(HeaderField::SectionHeaders, u64::MAX)
+        .set(HeaderField::SectionHeaderCount, 0)
+        .save("c-x86_64-huge-shoff.elf");
     assert_output(
-        &refusal(&huge, &[]),
+        &startup(&huge, &[]).error(),
         &format!(
             "error: {huge} is x86-64 code; startup reads the reset code of Cortex-M firmware\n"
         ),
     );
     assert_output(
-        &refusal("Cargo.toml", &[]),
+        &startup("Cargo.toml", &[]).error(),
         "error: cannot load Cargo.toml: not an ELF file\n",
     );
     assert_output(
-        &refusal("missing.elf", &[]),
+        &startup("missing.elf", &[]).error(),
         "error: cannot read missing.elf: No such file or directory (os error 2)\n",
     );
 }
@@ -1123,15 +1001,15 @@ fn startup_reads_only_cortex_m_firmware() {
 #[test]
 fn startup_takes_no_tree_or_range() {
     assert_output(
-        &refusal(TCM_SAMPLE, &["--tree"]),
+        &startup(TCM_SAMPLE, &["--tree"]).error(),
         "error: only the overview, top, retained, why, reach SYMBOL and inlined SYMBOL take --tree\n",
     );
     assert_output(
-        &refusal(TCM_SAMPLE, &["--json", "--tree"]),
+        &startup(TCM_SAMPLE, &["--json", "--tree"]).error(),
         "error: --tree draws trees in the text, so it doesn't go with --json\n",
     );
     assert_output(
-        &refusal(TCM_SAMPLE, &["--range", "0+4"]),
+        &startup(TCM_SAMPLE, &["--range", "0+4"]).error(),
         "error: only the overview, top and retained take --range\n",
     );
 }
