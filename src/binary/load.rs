@@ -163,6 +163,12 @@ fn is_thumb(file: &object::File, architecture: Option<ArmArchitecture>) -> bool 
 /// Adds each of `new` unless an item of its kind already starts at its
 /// address: symbols always win.
 fn add_new_items(items: &mut Vec<Item>, new: Vec<Item>) {
+    // Firmware has no PLT stubs, and many files have no startup arrays:
+    // with nothing to add, there is no need to know where every item
+    // starts.
+    if new.is_empty() {
+        return;
+    }
     let known: HashSet<(ItemKind, u64)> =
         items.iter().map(|item| (item.kind, item.address)).collect();
     items.extend(
