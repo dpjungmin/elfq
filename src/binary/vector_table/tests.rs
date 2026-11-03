@@ -41,7 +41,7 @@ fn firmware(entry: u64, sections: &[(&str, u64, SectionKind, Vec<u32>)]) -> Bina
         merged_variables: Vec::new(),
         vector_table: None,
         arm_architecture: None,
-        data_in_code: Vec::new(),
+        data_in_code: std::sync::OnceLock::new(),
         warnings: Vec::new(),
         code_references: std::collections::HashMap::new(),
         data,

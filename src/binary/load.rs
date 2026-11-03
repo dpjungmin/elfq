@@ -9,6 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::OnceLock;
 
 use anyhow::{Context, Result};
 use object::{Architecture, Endianness, Object, ObjectSymbol, SymbolKind};
@@ -99,8 +100,7 @@ impl Binary {
 
 /// The [`Binary`] of the file in `data` with everything but its items: its
 /// sections, imports and relocations, and in Arm files the core the code
-/// is for and the stretches that `$d` symbols mark as data, and in Thumb
-/// files the vector table.
+/// is for, and in Thumb files the vector table.
 fn read_all_but_items(data: Vec<u8>) -> Result<Binary> {
     let (file, kind) = parse_program(&data)?;
     let architecture = file.architecture();
@@ -112,11 +112,6 @@ fn read_all_but_items(data: Vec<u8>) -> Result<Binary> {
     let mut warnings = Vec::new();
     let sections = read_sections(&file, data.len() as u64, &mut warnings);
     let dynamic = relocations::read(&file, architecture);
-    let data_in_code = if architecture == Architecture::Arm {
-        symbols::data_in_code(&file, &sections)
-    } else {
-        Vec::new()
-    };
     let mut binary = Binary {
         architecture,
         pointer_size: if file.is_64() { 8 } else { 4 },
@@ -141,7 +136,7 @@ fn read_all_but_items(data: Vec<u8>) -> Result<Binary> {
         merged_variables: Vec::new(),
         vector_table: None,
         arm_architecture,
-        data_in_code,
+        data_in_code: OnceLock::new(),
         warnings,
         code_references: HashMap::new(),
         data,

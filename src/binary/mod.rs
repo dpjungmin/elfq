@@ -100,6 +100,7 @@ pub(crate) use vector_table::{exception_name, is_reserved};
 
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::OnceLock;
 
 use object::{Architecture, Endianness, SectionKind};
 
@@ -168,11 +169,12 @@ pub struct Binary {
     /// built for, as the build attributes in `.ARM.attributes` say.
     pub(crate) arm_architecture: Option<ArmArchitecture>,
     /// The stretches of code that the file's `$d` symbols mark as data,
-    /// such as literal pools, sorted. Only 32-bit Arm files have them,
-    /// unless they are stripped (see `Binary::data_in_code`, built only with
-    /// the tui feature).
+    /// such as literal pools, sorted, worked out the first time browse
+    /// lists a function's code. Only 32-bit Arm files have them, unless
+    /// they are stripped (see `Binary::data_in_code`, built only with the
+    /// tui feature).
     #[cfg_attr(not(feature = "tui"), expect(dead_code))]
-    data_in_code: Vec<AddressRange>,
+    data_in_code: OnceLock<Vec<AddressRange>>,
     /// Problems that did not stop loading but may make answers incomplete.
     pub(crate) warnings: Vec<String>,
     /// The references in each function's code, by its address and size;
@@ -353,13 +355,24 @@ impl Binary {
     /// symbols mark as data among code, in order. Arm's ELF ABI has
     /// assemblers mark data, such as a literal pool, with `$d`, and code
     /// again with `$t` or `$a`. Stripped files have none.
+    ///
+    /// They are read from the symbols the first time this is asked, rather
+    /// than as the file loads, since a file can have tens of thousands of
+    /// `$d`, `$t` and `$a` symbols, and only browse's listing of a
+    /// function's code asks.
     #[cfg(feature = "tui")]
     fn data_in_code(&self, address: u64, size: u64) -> impl Iterator<Item = AddressRange> + '_ {
+        let stretches = self.data_in_code.get_or_init(|| {
+            // The file parsed when it loaded, so this reads only the
+            // headers again, and fails only for a Binary that a test makes
+            // without a file.
+            object::File::parse(self.data.as_slice())
+                .map(|file| symbols::data_in_code(&file, &self.sections))
+                .unwrap_or_default()
+        });
         let end = address.saturating_add(size);
-        let first = self
-            .data_in_code
-            .partition_point(|stretch| stretch.end <= address);
-        self.data_in_code[first..]
+        let first = stretches.partition_point(|stretch| stretch.end <= address);
+        stretches[first..]
             .iter()
             .take_while(move |stretch| stretch.start < end)
             .map(move |stretch| AddressRange {
@@ -840,7 +853,7 @@ impl Binary {
             merged_variables: Vec::new(),
             vector_table: None,
             arm_architecture: None,
-            data_in_code: Vec::new(),
+            data_in_code: OnceLock::new(),
             warnings: Vec::new(),
             code_references: HashMap::new(),
             data,
