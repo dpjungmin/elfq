@@ -76,7 +76,7 @@
 //!   after a return, a jump or a call starts one too, as a CRC polynomial
 //!   or a table entry can where code starts at address 0.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use super::{AddressRange, Binary, Item, ItemKind, Section, Source, made_names};
 use crate::arch::{CodeReference, CodeReferenceKind, Ending, InstructionSet};
@@ -206,6 +206,9 @@ fn follow<'a>(seeds: &KnownStarts<'a>, stored: &BTreeSet<u64>) -> Followed<'a> {
     // sooner. Only a new function, and the one just before it, can end
     // somewhere new, so only they are looked at again.
     let mut scanned = BTreeSet::new();
+    // What function_can_start has read of the code, for the next address
+    // it checks (see `CodeReads`).
+    let mut code_reads = CodeReads::default();
     let mut to_scan: Vec<u64> = (starts.ranges(Start::Function))
         .map(|function| function.start)
         .collect();
@@ -235,7 +238,8 @@ fn follow<'a>(seeds: &KnownStarts<'a>, stored: &BTreeSet<u64>) -> Followed<'a> {
                 .copied()
                 .chain(tables)
                 .filter(|&address| {
-                    !starts.at.contains_key(&address) && starts.function_can_start(address)
+                    !starts.at.contains_key(&address)
+                        && starts.function_can_start(address, &mut code_reads)
                 })
                 .collect()
         } else {
@@ -352,6 +356,29 @@ enum Before {
     Nothing { code_start: u64 },
 }
 
+/// What [`KnownStarts::function_can_start`] has read of the code from one
+/// start up to the next, kept for the next address it checks there: in
+/// large firmware, it checks several addresses between the same two starts,
+/// and would otherwise read that code again for each, about four and a
+/// half times over in all.
+///
+/// What is kept never goes stale. It depends only on the file's bytes
+/// between the two starts, which don't change while the file loads, and a
+/// new start between them makes a new pair of starts rather than changing
+/// what the old pair holds.
+#[derive(Default)]
+struct CodeReads(HashMap<AddressRange, CodeRead>);
+
+/// The code from a start up to the next start, as
+/// [`KnownStarts::function_can_start`] reads it.
+struct CodeRead {
+    /// Where the code ends, without the padding after it, which can decode
+    /// as a jump.
+    end: u64,
+    /// The references in the code up to `end` (see [`KnownStarts::scan`]).
+    references: Vec<CodeReference>,
+}
+
 impl KnownStarts<'_> {
     /// From each start of `kind`, a function or constants, to where what
     /// starts there ends.
@@ -396,8 +423,9 @@ impl KnownStarts<'_> {
     /// Whether a function can start at `address`, where nothing starts
     /// yet, without cutting the code before it in two: the rules for a
     /// function in the module doc, whose numbers the comments below
-    /// follow.
-    fn function_can_start(&self, address: u64) -> bool {
+    /// follow. What it reads of the code before the next start, it keeps
+    /// in `code_reads` for the next address.
+    fn function_can_start(&self, address: u64, code_reads: &mut CodeReads) -> bool {
         // 1.
         let Some(cut) = self.cut(address) else {
             return false;
@@ -413,21 +441,20 @@ impl KnownStarts<'_> {
             // 3 isn't checked: the section's code may begin with data.
             Before::Nothing { code_start } => code_start,
         };
-        // Without the padding after the code, which can decode as a jump.
-        let end = start + thumb(self.binary).code_size(self.bytes(start, cut.end), start);
+        let code = self.read_code(start, cut.end, code_reads);
+        let end = code.end;
         // 4.
         if address >= end || thumb(self.binary).leading_padding(self.bytes(address, end)) > 0 {
             return false;
         }
         // 5.
-        let whole = self.scan(start, end);
         let mut halves = self.scan(start, address);
         halves.extend(self.scan(address, end));
-        if whole != halves {
+        if code.references != halves {
             return false;
         }
         // 6.
-        !whole.iter().any(|reference| {
+        !code.references.iter().any(|reference| {
             if reference.site < address {
                 // A `b.w` from before may be a tail call to a function
                 // there, but other jumps to it stay inside one function.
@@ -469,6 +496,19 @@ impl KnownStarts<'_> {
         !alone
             .iter()
             .any(|reference| self.jumps_into(reference, address, cut.end))
+    }
+
+    /// The code from `start` up to `next`, from `code_reads` when it holds
+    /// it, and otherwise read and kept there.
+    fn read_code<'r>(&self, start: u64, next: u64, code_reads: &'r mut CodeReads) -> &'r CodeRead {
+        let range = AddressRange { start, end: next };
+        code_reads.0.entry(range).or_insert_with(|| {
+            let end = start + thumb(self.binary).code_size(self.bytes(start, next), start);
+            CodeRead {
+                end,
+                references: self.scan(start, end),
+            }
+        })
     }
 
     /// How the code from `start` up to `address` ends.

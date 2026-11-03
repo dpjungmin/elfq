@@ -298,3 +298,43 @@ fn constants_at_a_case_of_a_jump_table_end_nothing() {
         [(0x1000, 36), (0x1024, 4), (0x1028, 8)]
     );
 }
+
+#[test]
+fn kept_code_reads_give_the_answers_that_new_ones_do() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("testdata/bin/c-cortex-m7-stripped.elf");
+    let binary = Binary::load(&path).unwrap();
+    let handlers = &binary.vector_table.as_ref().unwrap().handlers;
+    let seeds = KnownStarts {
+        binary: &binary,
+        at: (handlers.iter())
+            .map(|handler| (handler.address, Start::Function))
+            .collect(),
+    };
+    let text = &binary.sections[binary.code_section_at(binary.entry).unwrap()];
+    let up: Vec<u64> = (text.address..text.address + text.size)
+        .step_by(2)
+        .collect();
+    let down: Vec<u64> = up.iter().rev().copied().collect();
+    let mut kept = CodeReads::default();
+    // Each address where a function can start starts one, so what starts
+    // around the next addresses changes: going down, the start after
+    // them, and going up, the start before.
+    for order in [down, up] {
+        let mut starts = seeds.clone();
+        let mut found = 0;
+        for address in order {
+            if starts.at.contains_key(&address) {
+                continue;
+            }
+            let can_start = starts.function_can_start(address, &mut kept);
+            let read_anew = starts.function_can_start(address, &mut CodeReads::default());
+            assert_eq!(can_start, read_anew, "at {address:#x}");
+            if can_start {
+                starts.at.insert(address, Start::Function);
+                found += 1;
+            }
+        }
+        assert!(found > 1);
+    }
+}
