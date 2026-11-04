@@ -175,6 +175,13 @@ impl<'g, 'a> RetainedTree<'g, 'a> {
         }
     }
 
+    /// Whether some of the item's own bytes are in the range, as every
+    /// item's are when there is none. `retained` lets only such items
+    /// compete for rows, and names only such items among what it shares.
+    pub(super) fn has_bytes_in_range(&self, index: usize) -> bool {
+        self.range.is_none() || self.own(index) > 0
+    }
+
     /// Whether to show an item: with a range, only items that keep some of
     /// its bytes are worth a row.
     fn counts(&self, index: usize) -> bool {
