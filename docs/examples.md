@@ -136,6 +136,43 @@ The last line warns that two of these functions also call through pointers,
 which elfq can't follow, so what those calls reach may be counted under
 other items.
 
+Neither panic keeps `fmt` alone, since the other still uses it, so
+`retained` of one says little: 95 bytes for `panic_bounds_check`, and 290
+for `slice_index_fail`. Given both, it says what goes when neither is
+left:
+
+```
+$ elfq testdata/bin/rust-cortex-m4.elf retained panic_bounds_check slice_index_fail
+Removing core::panicking::panic_bounds_check and core::slice::index::slice_index_fail would save 2813 bytes:
+
+RETAINED   OWN  ITEM
+    2374   234  <u32 as core::fmt::Display>::fmt (through a pointer), kept by panic_bounds_check and slice_index_fail together
+    1940   614  <core::fmt::Formatter>::pad_integral, kept by fmt
+    1258  1258  core::str::count::do_count_chars, kept by pad_integral
+      68    68  <core::fmt::Formatter>::pad_integral::write_prefix, kept by pad_integral
+     200   200  .Lanon.93bf5a77af7a20bca9fbd99cda9bbf33.187, kept by fmt
+     290   138  core::slice::index::slice_index_fail
+      57   ~57  .rodata@0x8001cbd, kept by slice_index_fail
+      55   ~55  .rodata@0x8001c86, kept by slice_index_fail
+      40   ~40  .rodata@0x8001c27, kept by slice_index_fail
+      95    40  core::panicking::panic_bounds_check
+      55   ~55  .rodata@0x8001c4f, kept by panic_bounds_check
+      54    28  core::panicking::panic_fmt, kept by panic_bounds_check and slice_index_fail together
+      26    20  __rustc::rust_begin_unwind, kept by panic_fmt
+       6     6  .Lanon.fa9d52dc935eda41c59786f1cdc41c25.1, kept by rust_begin_unwind
+
+2428 of these bytes go only when both go.
+
+Shared with other code, so not counted: elfq_sample::log_msg.
+
+<core::fmt::Formatter>::pad_integral and <core::fmt::Formatter>::pad_integral::write_prefix also call and jump through pointers, so what they reach may count elsewhere.
+```
+
+`fmt`'s row ends "kept by panic_bounds_check and slice_index_fail
+together": it goes only when both go. So the two panics cost 2813 bytes,
+though a run for each says 95 and 290; the note under the table counts
+the 2428 that go only together.
+
 ## Does the code in fast memory use slow memory?
 
 The Cortex-M7 sample is laid out as on an NXP i.MX RT1176: ITCM for code at
@@ -919,3 +956,14 @@ every key. With `jq`, this prints the five names, one per line:
 ```sh
 elfq testdata/bin/c-x86_64.elf callers log_msg --json | jq -r '.callers[].item.name'
 ```
+
+`retained` takes an address as SYMBOL, and several SYMBOLs at once, so
+`top`'s JSON can pick a set of items for it, such as every item of
+`core::fmt`, and ask what removing them all would save:
+
+```sh
+elfq testdata/bin/rust-cortex-m4.elf top --json | jq -r '(.items + .unreachable)[] | select(.name | contains("core::fmt::")) | .address' | xargs elfq testdata/bin/rust-cortex-m4.elf retained
+```
+
+With several SYMBOLs, `retained` writes text only for now, and refuses
+`--json`.
