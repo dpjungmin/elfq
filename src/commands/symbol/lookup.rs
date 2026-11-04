@@ -361,7 +361,13 @@ impl<'a> Names<'a> {
     /// one finds.
     fn full(&self) -> &HashMap<&'a str, Vec<Node>> {
         self.full.get_or_init(|| {
-            let mut full: HashMap<&str, Vec<Node>> = HashMap::new();
+            // Sized for every name at once, since growing hashes the names
+            // in it again.
+            let names: usize = (self.binary.items.iter())
+                .map(|item| item.names().count())
+                .sum();
+            let mut full: HashMap<&str, Vec<Node>> =
+                HashMap::with_capacity(names + self.binary.imports.len());
             for (index, item) in self.binary.items.iter().enumerate() {
                 for name in item.names() {
                     add(full.entry(name).or_default(), Node::Item(index));

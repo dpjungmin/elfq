@@ -11,7 +11,7 @@ use std::str::FromStr;
 use super::Section;
 
 /// The addresses from `start` up to, but not including, `end`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AddressRange {
     /// The first address in the range.
     pub(crate) start: u64,

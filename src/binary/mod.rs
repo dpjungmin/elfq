@@ -66,10 +66,10 @@
 //!   `arch` prints it, with the data that `$d` symbols mark among it, for
 //!   `browse` (`Binary::listing`).
 //!
-//! The unit tests of `names.rs` and `vector_table.rs` are in
-//! `names/tests.rs` and `vector_table/tests.rs`, and those of `listing.rs`,
-//! which check the Thumb text against objdump's, in
-//! `listing/thumb_text.rs`.
+//! The unit tests of `names.rs`, `vector_table.rs` and
+//! `unnamed_functions.rs` are in `names/tests.rs`, `vector_table/tests.rs`
+//! and `unnamed_functions/tests.rs`, and those of `listing.rs`, which check
+//! the Thumb text against objdump's, in `listing/thumb_text.rs`.
 
 mod attributes;
 mod eh_frame;
@@ -100,6 +100,7 @@ pub(crate) use vector_table::{exception_name, is_reserved};
 
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::OnceLock;
 
 use object::{Architecture, Endianness, SectionKind};
 
@@ -168,11 +169,12 @@ pub struct Binary {
     /// built for, as the build attributes in `.ARM.attributes` say.
     pub(crate) arm_architecture: Option<ArmArchitecture>,
     /// The stretches of code that the file's `$d` symbols mark as data,
-    /// such as literal pools, sorted. Only 32-bit Arm files have them,
-    /// unless they are stripped (see `Binary::data_in_code`, built only with
-    /// the tui feature).
+    /// such as literal pools, sorted, worked out the first time browse
+    /// lists a function's code. Only 32-bit Arm files have them, unless
+    /// they are stripped (see `Binary::data_in_code`, built only with the
+    /// tui feature).
     #[cfg_attr(not(feature = "tui"), expect(dead_code))]
-    data_in_code: Vec<AddressRange>,
+    data_in_code: OnceLock<Vec<AddressRange>>,
     /// Problems that did not stop loading but may make answers incomplete.
     pub(crate) warnings: Vec<String>,
     /// The references in each function's code, by its address and size;
@@ -180,7 +182,7 @@ pub struct Binary {
     /// data is added, and the items sorted again, after the scan. The key
     /// stays a pair: it is only ever made from a function and looked up,
     /// never taken apart.
-    code_references: HashMap<(u64, u64), Vec<CodeReference>>,
+    code_references: HashMap<(u64, u64), Box<[CodeReference]>>,
     /// The whole file.
     data: Vec<u8>,
 }
@@ -339,25 +341,38 @@ impl Binary {
     /// The references that the code of `function` makes, as
     /// `InstructionSet::scan` finds them, and a jump to the next function
     /// when the code runs on into it (see `end_where_functions_start`):
-    /// none when elfq can't read the code. Scanning code is much of what
-    /// elfq does, so it scans each function once, as it loads the file.
+    /// none when elfq can't read the code. The jumps that land inside the
+    /// function, as most do, are left out: they use no other item, and on
+    /// a large file they are millions. Scanning code is much of what elfq
+    /// does, so it scans each function once, as it loads the file.
     pub(crate) fn code_references(&self, function: &Item) -> &[CodeReference] {
         self.code_references
             .get(&(function.address, function.size))
-            .map_or(&[], Vec::as_slice)
+            .map_or(&[], Box::as_ref)
     }
 
     /// The stretches of the `size` bytes at `address` that the file's `$d`
     /// symbols mark as data among code, in order. Arm's ELF ABI has
     /// assemblers mark data, such as a literal pool, with `$d`, and code
     /// again with `$t` or `$a`. Stripped files have none.
+    ///
+    /// They are read from the symbols the first time this is asked, rather
+    /// than as the file loads, since a file can have tens of thousands of
+    /// `$d`, `$t` and `$a` symbols, and only browse's listing of a
+    /// function's code asks.
     #[cfg(feature = "tui")]
     fn data_in_code(&self, address: u64, size: u64) -> impl Iterator<Item = AddressRange> + '_ {
+        let stretches = self.data_in_code.get_or_init(|| {
+            // The file parsed when it loaded, so this reads only the
+            // headers again, and fails only for a Binary that a test makes
+            // without a file.
+            object::File::parse(self.data.as_slice())
+                .map(|file| symbols::data_in_code(&file, &self.sections))
+                .unwrap_or_default()
+        });
         let end = address.saturating_add(size);
-        let first = self
-            .data_in_code
-            .partition_point(|stretch| stretch.end <= address);
-        self.data_in_code[first..]
+        let first = stretches.partition_point(|stretch| stretch.end <= address);
+        stretches[first..]
             .iter()
             .take_while(move |stretch| stretch.start < end)
             .map(move |stretch| AddressRange {
@@ -838,7 +853,7 @@ impl Binary {
             merged_variables: Vec::new(),
             vector_table: None,
             arm_architecture: None,
-            data_in_code: Vec::new(),
+            data_in_code: OnceLock::new(),
             warnings: Vec::new(),
             code_references: HashMap::new(),
             data,

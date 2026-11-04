@@ -47,6 +47,7 @@ pub use roots::{Root, RootKind};
 pub(crate) use veneers::{VeneerTarget, Veneers};
 
 use std::collections::HashSet;
+use std::ops::Range;
 
 use crate::arch::{CodeReference, CodeReferenceKind};
 use crate::binary::{AddressRange, Binary, FileKind, ItemKind, Relocation, RelocationTarget};
@@ -264,11 +265,9 @@ impl Graph {
                 Some(to) => self.add(from, Node::Item(to), ReferenceKind::Call, site),
                 None => self.unresolved.push(unresolved(true, Some(target))),
             },
+            // A jump that leaves the function: the code references leave
+            // out those that stay inside it, as loops and branches do.
             CodeReferenceKind::Jump(target) | CodeReferenceKind::TailJump(target) => {
-                // Most jumps stay inside the function: loops and branches.
-                if function.contains(target) {
-                    return;
-                }
                 match binary.item_at(target) {
                     Some(to) => self.add(from, Node::Item(to), ReferenceKind::TailCall, site),
                     None => self.unresolved.push(unresolved(false, Some(target))),
@@ -447,9 +446,11 @@ pub(crate) fn item_starting_at(binary: &Binary, address: u64) -> Option<usize> {
     })
 }
 
-/// The items that code using `address` uses: the item there, or every
-/// variable in a block of merged variables that starts there.
-fn items_used_at(binary: &Binary, address: u64) -> Vec<usize> {
+/// The items that code using `address` uses, as indices into
+/// [`Binary::items`]: the item there, or every variable in a block of
+/// merged variables that starts there. The items are sorted by address, so
+/// those in a block come one after another.
+fn items_used_at(binary: &Binary, address: u64) -> Range<usize> {
     let block = binary
         .merged_variables
         .iter()
@@ -457,11 +458,13 @@ fn items_used_at(binary: &Binary, address: u64) -> Vec<usize> {
     match block {
         Some(block) => {
             let first = (binary.items).partition_point(|item| item.address < block.start);
-            (first..binary.items.len())
-                .take_while(|&index| binary.items[index].address < block.end)
-                .collect()
+            let first_after = (binary.items).partition_point(|item| item.address < block.end);
+            first..first_after
         }
-        None => binary.item_at(address).into_iter().collect(),
+        None => match binary.item_at(address) {
+            Some(index) => index..index + 1,
+            None => 0..0,
+        },
     }
 }
 

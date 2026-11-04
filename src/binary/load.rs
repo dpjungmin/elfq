@@ -9,6 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::OnceLock;
 
 use anyhow::{Context, Result};
 use object::{Architecture, Endianness, Object, ObjectSymbol, SymbolKind};
@@ -99,8 +100,7 @@ impl Binary {
 
 /// The [`Binary`] of the file in `data` with everything but its items: its
 /// sections, imports and relocations, and in Arm files the core the code
-/// is for and the stretches that `$d` symbols mark as data, and in Thumb
-/// files the vector table.
+/// is for, and in Thumb files the vector table.
 fn read_all_but_items(data: Vec<u8>) -> Result<Binary> {
     let (file, kind) = parse_program(&data)?;
     let architecture = file.architecture();
@@ -112,11 +112,6 @@ fn read_all_but_items(data: Vec<u8>) -> Result<Binary> {
     let mut warnings = Vec::new();
     let sections = read_sections(&file, data.len() as u64, &mut warnings);
     let dynamic = relocations::read(&file, architecture);
-    let data_in_code = if architecture == Architecture::Arm {
-        symbols::data_in_code(&file, &sections)
-    } else {
-        Vec::new()
-    };
     let mut binary = Binary {
         architecture,
         pointer_size: if file.is_64() { 8 } else { 4 },
@@ -141,7 +136,7 @@ fn read_all_but_items(data: Vec<u8>) -> Result<Binary> {
         merged_variables: Vec::new(),
         vector_table: None,
         arm_architecture,
-        data_in_code,
+        data_in_code: OnceLock::new(),
         warnings,
         code_references: HashMap::new(),
         data,
@@ -168,6 +163,12 @@ fn is_thumb(file: &object::File, architecture: Option<ArmArchitecture>) -> bool 
 /// Adds each of `new` unless an item of its kind already starts at its
 /// address: symbols always win.
 fn add_new_items(items: &mut Vec<Item>, new: Vec<Item>) {
+    // Firmware has no PLT stubs, and many files have no startup arrays:
+    // with nothing to add, there is no need to know where every item
+    // starts.
+    if new.is_empty() {
+        return;
+    }
     let known: HashSet<(ItemKind, u64)> =
         items.iter().map(|item| (item.kind, item.address)).collect();
     items.extend(
@@ -340,14 +341,14 @@ fn estimate_missing_sizes(items: &mut [Item], sections: &[Section]) {
 }
 
 /// The references in the code of each function in `binary.items`, by the
-/// function's address and size; see [`Binary::code_references`]. Each of
-/// `run_on`, the functions that `end_where_functions_start` ended, also
-/// jumps to the function after it if its code runs on into it, as a tail
-/// call does.
+/// function's address and size, less the jumps that stay inside it; see
+/// [`Binary::code_references`]. Each of `run_on`, the functions that
+/// `end_where_functions_start` ended, also jumps to the function after it
+/// if its code runs on into it, as a tail call does.
 fn scan_functions(
     binary: &Binary,
     run_on: &HashSet<(u64, u64)>,
-) -> HashMap<(u64, u64), Vec<CodeReference>> {
+) -> HashMap<(u64, u64), Box<[CodeReference]>> {
     let Some(instruction_set) = binary.instruction_set() else {
         return HashMap::new();
     };
@@ -363,9 +364,21 @@ fn scan_functions(
             if run_on.contains(&key) {
                 references.extend(run_on_jump(instruction_set, function, code, &references));
             }
-            Some((key, references))
+            references.retain(|reference| !stays_inside(function, reference));
+            // Kept as long as the file is, so without room to spare.
+            Some((key, references.into_boxed_slice()))
         })
         .collect()
+}
+
+/// Whether `reference` is a jump that lands inside `function`, as most
+/// jumps do: loops and branches. Such a jump uses no other item.
+fn stays_inside(function: &Item, reference: &CodeReference) -> bool {
+    matches!(
+        reference.kind,
+        CodeReferenceKind::Jump(target) | CodeReferenceKind::TailJump(target)
+            if function.contains(target)
+    )
 }
 
 /// The jump from the last instruction of `function`, whose `code` makes
@@ -538,8 +551,8 @@ mod tests {
             site: 0x1000,
             kind: CodeReferenceKind::TailJump(0x1002),
         };
-        assert_eq!(references[&(0x1000, 2)], [run_on]);
-        assert_eq!(references[&(0x1002, 4)], []);
+        assert_eq!(references[&(0x1000, 2)][..], [run_on]);
+        assert_eq!(references[&(0x1002, 4)][..], []);
 
         // test esi, esi; jne 0x1004, a conditional jump to the next
         // entry, is one reference to it, not two; and ret runs on nowhere.
@@ -556,8 +569,24 @@ mod tests {
             site: 0x1002,
             kind: CodeReferenceKind::Jump(0x1004),
         };
-        assert_eq!(references[&(0x1000, 4)], [jump]);
-        assert_eq!(references[&(0x1004, 4)], []);
+        assert_eq!(references[&(0x1000, 4)][..], [jump]);
+        assert_eq!(references[&(0x1004, 4)][..], []);
+    }
+
+    #[test]
+    fn jumps_that_stay_inside_a_function_are_left_out() {
+        // je 0x1004, inside `loops`; jmp 0x1008, to `next`, where `loops`
+        // ends; jmp 0x1000, to the start of `loops`, which counts as
+        // inside; ret; nop. Then `next`: ret.
+        let code = vec![0x74, 0x02, 0xeb, 0x04, 0xeb, 0xfa, 0xc3, 0x90, 0xc3];
+        let items = vec![function("loops", 0x1000, 8), function("next", 0x1008, 1)];
+        let binary = x86_64_binary(code, items);
+        let references = scan_functions(&binary, &HashSet::new());
+        let leaves = CodeReference {
+            site: 0x1002,
+            kind: CodeReferenceKind::Jump(0x1008),
+        };
+        assert_eq!(references[&(0x1000, 8)][..], [leaves]);
     }
 
     #[test]

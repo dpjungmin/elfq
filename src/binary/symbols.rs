@@ -234,6 +234,7 @@ fn drop_containers(candidates: &mut Vec<Candidate>) -> Vec<AddressRange> {
 /// A mapping symbol: `$d`, which marks where data among code starts, or
 /// `$t` or `$a`, which mark where code starts again. Ordered by section,
 /// then address, then with `$t` and `$a` before `$d`.
+#[cfg(feature = "tui")]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct MappingSymbol {
     /// Its section, as an index into the sections.
@@ -248,6 +249,7 @@ struct MappingSymbol {
 /// a `$t` symbol, Arm code with `$a`, and data among code, such as a
 /// literal pool, with `$d`; each stretch runs to the next such symbol in
 /// its section, or to the section's end. Stripping removes them.
+#[cfg(feature = "tui")]
 pub(super) fn data_in_code(file: &object::File, sections: &[Section]) -> Vec<AddressRange> {
     if file.architecture() != object::Architecture::Arm {
         return Vec::new();
