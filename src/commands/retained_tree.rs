@@ -5,7 +5,7 @@
 //! only the bytes in the range, items that keep none of them are left out,
 //! and items whose load images are in it are marked.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 
 use serde::Serialize;
@@ -224,17 +224,25 @@ impl<'g, 'a> RetainedTree<'g, 'a> {
             .filter(|&index| tree.is_reachable(Node::Item(index)))
             .collect();
         let shown = self.largest(tree.top(), &reachable, count);
-        self.table(&shown, tree.top(), format)
+        self.table(&shown, tree.top(), &HashMap::new(), format)
     }
 
     /// The table of the trees under `tops`, with rows for the `shown`
-    /// items, in the shape that `format` asks for.
-    pub(super) fn table(&self, shown: &HashSet<usize>, tops: &[Node], format: Format) -> TreeTable {
+    /// items, in the shape that `format` asks for. The row of each top in
+    /// `kept_together_words` ends with its words, as in "kept by
+    /// process_frame and report together".
+    pub(super) fn table(
+        &self,
+        shown: &HashSet<usize>,
+        tops: &[Node],
+        kept_together_words: &HashMap<usize, String>,
+        format: Format,
+    ) -> TreeTable {
         self.names.will_name(shown.len());
         let shape = shape(format);
         TreeTable {
             columns: COLUMNS.into(),
-            rows: self.rows(shown, tops, shape),
+            rows: self.rows(shown, tops, kept_together_words, shape),
             shape,
         }
     }
@@ -262,13 +270,20 @@ impl<'g, 'a> RetainedTree<'g, 'a> {
 
     /// The rows of the shown items in `nodes`, each with the rows of its
     /// shown children under it, and one row that sums up those not shown
-    /// and what they keep, for a table that shows them in `shape`.
-    fn rows(&self, shown: &HashSet<usize>, nodes: &[Node], shape: TreeShape) -> Vec<TreeRow> {
+    /// and what they keep, for a table that shows them in `shape`. The row
+    /// of each item in `kept_together_words` ends with its words.
+    fn rows(
+        &self,
+        shown: &HashSet<usize>,
+        nodes: &[Node],
+        kept_together_words: &HashMap<usize, String>,
+        shape: TreeShape,
+    ) -> Vec<TreeRow> {
         let (visible, hidden): (Vec<usize>, Vec<usize>) =
             self.counted(nodes).partition(|index| shown.contains(index));
         let mut rows: Vec<TreeRow> = visible
             .iter()
-            .map(|&index| self.tree_row(shown, index, shape))
+            .map(|&index| self.tree_row(shown, index, kept_together_words, shape))
             .collect();
         rows.extend(self.more(&hidden));
         rows
@@ -276,10 +291,18 @@ impl<'g, 'a> RetainedTree<'g, 'a> {
 
     /// The row of the item at `index`, with the rows of its shown children
     /// under it, for a table that shows them in `shape`. As rows, those
-    /// call it by its short name.
-    fn tree_row(&self, shown: &HashSet<usize>, index: usize, shape: TreeShape) -> TreeRow {
+    /// call it by its short name. If the item is in `kept_together_words`,
+    /// its row ends with its words.
+    fn tree_row(
+        &self,
+        shown: &HashSet<usize>,
+        index: usize,
+        kept_together_words: &HashMap<usize, String>,
+        shape: TreeShape,
+    ) -> TreeRow {
         let cells = vec![self.retained(index).to_string(), self.own_text(index)];
-        let children = self.rows(shown, self.tree.children(Node::Item(index)), shape);
+        let children = self.tree.children(Node::Item(index));
+        let children = self.rows(shown, children, kept_together_words, shape);
         let name = &self.binary.items[index].name;
         let short_name = match tree_answer::is_named_below(&children, shape) {
             true => self.names.short_name(Node::Item(index)),
@@ -289,6 +312,7 @@ impl<'g, 'a> RetainedTree<'g, 'a> {
             cells,
             name: name.clone(),
             mark: self.mark(index),
+            kept_together_words: kept_together_words.get(&index).cloned(),
             short_name,
             children,
             node: Some(Node::Item(index)),

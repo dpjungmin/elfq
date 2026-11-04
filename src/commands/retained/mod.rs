@@ -15,7 +15,7 @@
 
 mod parts;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 
 use anyhow::{Result, bail};
@@ -268,7 +268,7 @@ impl<'t, 'g, 'a> Alone<'t, 'g, 'a> {
         );
         TreeAnswer {
             lead: vec![lead],
-            table: Some(retained.table(shown, removal.tops(), format)),
+            table: Some(retained.table(shown, removal.tops(), &HashMap::new(), format)),
             notes,
         }
     }

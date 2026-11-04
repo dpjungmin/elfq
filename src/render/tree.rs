@@ -47,6 +47,11 @@ pub(crate) struct TreeRow {
     pub(crate) name: String,
     /// Words after the name, such as "(through a pointer)".
     pub(crate) mark: Option<String>,
+    /// Words after the mark that say which items keep the row together, for
+    /// a row at the top of a tree that no one of them keeps alone, as in
+    /// "kept by process_frame and report together". Every shape shows them
+    /// as they are.
+    pub(crate) kept_together_words: Option<String>,
     /// What the rows under it call it, when the tree is shown as rows: a
     /// name often shorter than `name`, such as `process_frame` for
     /// `app::process_frame`.
@@ -63,7 +68,8 @@ pub(crate) struct TreeRow {
 pub(crate) struct FlatTreeRow<'t> {
     pub(crate) row: &'t TreeRow,
     /// What the last column says after the row's name: its mark, and which
-    /// row it hangs under, as in " (through a pointer), kept by main".
+    /// row it hangs under, as in " (through a pointer), kept by main", or
+    /// which rows keep it together.
     pub(crate) rest: String,
     /// Where in `rest` the short name of the row it hangs under starts,
     /// if it says one, which browse shortens to fit.
@@ -108,6 +114,9 @@ fn add_flat_rows<'t>(
             under = Some(rest.len());
             rest += &parent.short_name;
         }
+        if let Some(words) = &row.kept_together_words {
+            rest += &format!(", {words}");
+        }
         flat.push(FlatTreeRow { row, rest, under });
         add_flat_rows(&row.children, Some(row), words, every, flat);
     }
@@ -127,16 +136,23 @@ impl TreeRow {
             short_name: name.clone(),
             name,
             mark: None,
+            kept_together_words: None,
             children,
             node: None,
         }
     }
 
+    /// What a drawn tree shows after the branches: the name, then the mark
+    /// and the words on what keeps the row together, if it has them.
     fn label(&self) -> String {
-        match &self.mark {
-            Some(mark) => format!("{} {mark}", self.name),
-            None => self.name.clone(),
+        let mut label = self.name.clone();
+        if let Some(mark) = &self.mark {
+            label += &format!(" {mark}");
         }
+        if let Some(words) = &self.kept_together_words {
+            label += &format!(", {words}");
+        }
+        label
     }
 }
 
@@ -308,6 +324,22 @@ mod tests {
    app::init
 "
         );
+    }
+
+    #[test]
+    fn rows_kept_together_say_so_in_every_shape() {
+        let row = TreeRow {
+            mark: Some("(through a pointer)".to_string()),
+            kept_together_words: Some("kept by main and init together".to_string()),
+            ..TreeRow::new(vec![String::new()], "app::log", Vec::new())
+        };
+        let rows = [row];
+        let kept = "   app::log (through a pointer), kept by main and init together\n";
+        assert_eq!(
+            text(&rows, TreeShape::Rows { words: "kept by" }),
+            format!("N  ITEM\n{kept}")
+        );
+        assert_eq!(text(&rows, TreeShape::Drawn), format!("N  ITEM\n{kept}"));
     }
 
     #[test]
