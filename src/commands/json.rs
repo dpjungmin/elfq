@@ -1,19 +1,21 @@
 //! The shapes of the JSON that commands write for `--json`.
 //!
 //! A command builds one value from these and its own shapes, and writes it
-//! with [`write()`], one row of the answer per line. Every key is always
-//! there, `null` when it has no value, so that scripts can count on the
-//! shape. Addresses are hex strings, as elfq prints them and SYMBOL takes
-//! them; sizes are numbers.
+//! with [`write()`], one row of the answer per line. A list whose rows
+//! would take much memory held all at once, such as the chains of `why`,
+//! is a [`Rows`], whose rows are made as they are written. Every key is
+//! always there, `null` when it has no value, so that scripts can count on
+//! the shape. Addresses are hex strings, as elfq prints them and SYMBOL
+//! takes them; sizes are numbers.
 
+use std::cell::RefCell;
 use std::io::{self, Write};
 
 use anyhow::Result;
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 use serde_json::ser::Formatter;
 
-use super::text;
-use super::uses::Row;
+use super::{text, uses};
 use crate::binary::{AddressRange, Binary, MemoryBlock};
 use crate::graph::{self, Node, ReferenceKind, RootKind};
 
@@ -29,9 +31,40 @@ pub(super) fn write(value: &impl Serialize, out: &mut dyn Write) -> Result<()> {
     Ok(())
 }
 
+/// A list of an answer's rows that are made one at a time, as [`write()`]
+/// writes them, so that the command never holds them all: for a list whose
+/// rows would take much memory held all at once, as the chains of `why`
+/// would, one for each item that keeps SYMBOL, each with every item from
+/// where the program starts to SYMBOL. A list whose rows take little next
+/// to the rest of the command stays a `Vec`, which reads more plainly, even
+/// when it grows with the program, as `top`'s items do. A `Rows` is written
+/// as a list of the rows that the iterator it is made from gives. A row is
+/// made after the lines before it are written, so making one mustn't fail:
+/// every error comes before the answer's first line. Writing the list uses
+/// its rows up, so it can be written only once.
+pub(super) struct Rows<'r, T> {
+    /// The rows still to make. `Serialize` borrows what it writes only to
+    /// read it, so the cell lets writing the list take the rows.
+    rows: RefCell<Box<dyn Iterator<Item = T> + 'r>>,
+}
+
+impl<'r, T> Rows<'r, T> {
+    pub(super) fn new(rows: impl Iterator<Item = T> + 'r) -> Rows<'r, T> {
+        Rows {
+            rows: RefCell::new(Box::new(rows)),
+        }
+    }
+}
+
+impl<T: Serialize> Serialize for Rows<'_, T> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(&mut *self.rows.borrow_mut())
+    }
+}
+
 /// How many objects and lists hold a row: the answer's object, and the list
 /// of rows in it.
-const ROWS: usize = 2;
+const ROW_DEPTH: usize = 2;
 
 /// Lays out JSON for [`write()`].
 #[derive(Default)]
@@ -55,7 +88,7 @@ impl Formatter for RowPerLine {
 
     fn begin_array<W: ?Sized + Write>(&mut self, writer: &mut W) -> io::Result<()> {
         self.depth += 1;
-        if self.depth == ROWS {
+        if self.depth == ROW_DEPTH {
             self.has_rows = false;
         }
         writer.write_all(b"[")
@@ -69,7 +102,7 @@ impl Formatter for RowPerLine {
         if !first {
             writer.write_all(b",")?;
         }
-        if self.depth == ROWS {
+        if self.depth == ROW_DEPTH {
             self.has_rows = true;
             writer.write_all(b"\n")?;
         }
@@ -77,7 +110,7 @@ impl Formatter for RowPerLine {
     }
 
     fn end_array<W: ?Sized + Write>(&mut self, writer: &mut W) -> io::Result<()> {
-        if self.depth == ROWS && self.has_rows {
+        if self.depth == ROW_DEPTH && self.has_rows {
             writer.write_all(b"\n")?;
         }
         self.depth -= 1;
@@ -203,7 +236,7 @@ pub(super) struct Use<'a> {
     sites: Vec<String>,
 }
 
-pub(super) fn uses<'a>(binary: &'a Binary, rows: &[Row]) -> Vec<Use<'a>> {
+pub(super) fn uses<'a>(binary: &'a Binary, rows: &[uses::Row]) -> Vec<Use<'a>> {
     rows.iter()
         .map(|row| Use {
             item: Item::new(binary, row.node),
@@ -317,6 +350,60 @@ mod tests {
         last: Value,
     }
 
+    /// The answer above, with its lists of rows made as they are written.
+    #[derive(Serialize)]
+    struct MadeAsWritten {
+        name: &'static str,
+        rows: Rows<'static, Value>,
+        empty: Rows<'static, Value>,
+        more: Rows<'static, Value>,
+        last: Value,
+    }
+
+    /// What [`write()`] writes for `value`.
+    fn written(value: &impl Serialize) -> String {
+        let mut out = Vec::new();
+        write(value, &mut out).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn rows_made_as_they_are_written_are_written_as_held_ones() {
+        // The same bytes, whether the answer holds its rows or makes them as
+        // they are written: none, one or several rows, rows that are lists,
+        // as the chains of `why` are, or that hold lists and brackets in a
+        // string, lists of rows one after another, and rows whose number
+        // isn't known until they are made, as a filter gives them.
+        let rows = [
+            Vec::new(),
+            vec![serde_json::json!({"sites": ["0x1"]})],
+            vec![
+                serde_json::json!([{"item": "a [b],\n{c}", "how": ""}, {"item": "d"}]),
+                serde_json::json!([]),
+                serde_json::json!(3),
+            ],
+        ];
+        for rows in rows {
+            for more in [Vec::new(), rows.clone()] {
+                let held = Answer {
+                    name: "n",
+                    rows: rows.clone(),
+                    empty: Vec::new(),
+                    more: more.clone(),
+                    last: serde_json::json!({"list": [4]}),
+                };
+                let made = MadeAsWritten {
+                    name: "n",
+                    rows: Rows::new(rows.clone().into_iter()),
+                    empty: Rows::new(Vec::new().into_iter()),
+                    more: Rows::new(more.into_iter().filter(|_| true)),
+                    last: serde_json::json!({"list": [4]}),
+                };
+                assert_eq!(written(&made), written(&held), "{rows:?}");
+            }
+        }
+    }
+
     #[test]
     fn each_row_of_a_list_in_the_answer_is_a_line() {
         // Each row of a list in the answer is a line. Lists further in, in a
@@ -333,10 +420,8 @@ mod tests {
             more: vec![serde_json::json!(3)],
             last: serde_json::json!({"list": [4]}),
         };
-        let mut out = Vec::new();
-        write(&answer, &mut out).unwrap();
         assert_eq!(
-            String::from_utf8(out).unwrap(),
+            written(&answer),
             r#"{"name":"a [b],\n{c}","rows":[
 {"sites":["0x1","0x2"]},
 [1,[2]]

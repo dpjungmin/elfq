@@ -69,6 +69,7 @@ fn a_reader_that_stops_early_keeps_the_exit_status() {
         (&["reach", "main", "--to", "0x1000+0x40000"], 1),
         (&["reach", "main", "--to", "0x1000+0x40000", "--json"], 1),
         (&["top", "--all"], 0),
+        (&["why", "__rust_dealloc", "--json"], 0),
     ] {
         let sample = "testdata/bin/rust-x86_64-nodebug.elf";
         let mut child = command()
