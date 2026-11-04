@@ -5,6 +5,12 @@
 //! its row names that item, unless `--tree` draws the tree. Large trees
 //! show only their largest items, unless `--all` asks for every one. With
 //! `--range`, only the bytes in the range count.
+//!
+//! What removing SYMBOL loses is what `graph::Removal` finds: the branches
+//! of the tree under the removal's tops. For a SYMBOL that something
+//! reaches, the only top is SYMBOL itself, so what is lost is SYMBOL and
+//! everything it keeps. [`Parts`] works out the bytes saved, the table and
+//! the notes from the removal.
 
 use std::collections::HashSet;
 use std::io::Write;
@@ -14,16 +20,16 @@ use serde::Serialize;
 
 use super::checks::{check_code_is_readable, readable_item};
 use super::kept::Kept;
-use super::retained_tree::{self, KeptItem, RetainedTree};
+use super::retained_tree::{KeptItem, RetainedTree};
 use super::symbol::Names;
 use super::text::Naming;
 #[cfg(feature = "tui")]
 use super::tree_answer::TabAnswer;
-use super::tree_answer::{TreeAnswer, TreeTable};
+use super::tree_answer::TreeAnswer;
 use super::{Outcome, json, text};
 use crate::binary::{AddressRange, Binary, FileKind};
 use crate::cli::Format;
-use crate::graph::{Graph, Node, Unresolved};
+use crate::graph::{Graph, Node, Removal, Unresolved};
 
 #[derive(Serialize)]
 struct RetainedJson<'a> {
@@ -143,48 +149,35 @@ pub(super) fn write_json(symbol: &SymbolInTree, out: &mut dyn Write) -> Result<(
     let retained = symbol.retained;
     let binary = retained.binary;
     let node = symbol.node();
-    let reachable = symbol.is_reachable();
     let parts = Parts::new(*symbol);
-    // Nothing is there only because of an item that nothing reaches, so
-    // nothing it uses is shared with what it keeps.
-    let shares = match reachable {
-        true => parts.shared,
-        false => Vec::new(),
-    };
     let answer = RetainedJson {
         symbol: json::Symbol::new(binary, node),
-        reachable,
+        reachable: symbol.is_reachable(),
         range: retained.range.map(json::Range::new),
         own: retained.own(symbol.index),
         load_image: retained.load_image(symbol.index),
-        retained: retained.tree.retained(node),
+        retained: parts.removal.retained(),
         items: retained.to_json(retained.tree.children(node)),
-        shares: shares
-            .into_iter()
-            .map(|node| json::Item::new(binary, node))
+        shares: (parts.shared.iter())
+            .map(|&node| json::Item::new(binary, node))
             .collect(),
         indirect_calls: parts.indirect.len(),
     };
     json::write(&answer, out)
 }
 
-/// What SYMBOL and `exclusive`, the nodes that only it leads to, use that
-/// other code uses too, and so isn't counted, sorted by name. With a range,
-/// only items with bytes in it.
-fn shared(symbol: &SymbolInTree, exclusive: &[Node]) -> Vec<Node> {
-    let binary = symbol.retained.binary;
-    let mut kept: HashSet<Node> = exclusive.iter().copied().collect();
-    kept.insert(symbol.node());
-    let mut shared: Vec<Node> = symbol
-        .retained
-        .graph
-        .references
-        .iter()
-        .filter(|r| kept.contains(&Node::Item(r.from)) && !kept.contains(&r.to))
+/// What the nodes that `removal` loses use that other code uses too, and
+/// so isn't counted, sorted by name. With a range, only items with bytes in
+/// it. Nothing is lost when nothing reaches the removed items, and so
+/// nothing is shared either.
+fn shared(retained: &RetainedTree, removal: &Removal) -> Vec<Node> {
+    let binary = retained.binary;
+    let mut shared: Vec<Node> = (retained.graph.references.iter())
+        .filter(|r| removal.is_lost(Node::Item(r.from)) && !removal.is_lost(r.to))
         .map(|r| r.to)
-        .filter(|&node| match (symbol.retained.range, node) {
+        .filter(|&node| match (retained.range, node) {
             (None, _) => true,
-            (Some(_), Node::Item(index)) => symbol.retained.own(index) > 0,
+            (Some(_), Node::Item(index)) => retained.own(index) > 0,
             (Some(_), Node::Import(_)) => false,
         })
         .collect();
@@ -193,66 +186,77 @@ fn shared(symbol: &SymbolInTree, exclusive: &[Node]) -> Vec<Node> {
     shared
 }
 
-/// What every form of SYMBOL's answer shares, worked out once: the items
-/// that only SYMBOL leads to, and what its notes name.
+/// What every form of the answer about SYMBOL shares, worked out once:
+/// what removing it loses, and what the notes name. The bytes saved, the
+/// notes and the table of the trees under the removal's tops depend on
+/// SYMBOL only through the removal. Which items compete for rows, and the
+/// lead line, are worked out for one SYMBOL only (see [`Parts::shown`]).
 struct Parts<'t, 'g, 'a> {
     symbol: SymbolInTree<'t, 'g, 'a>,
-    /// The items exclusive to SYMBOL that sizes count: all of them, or with
-    /// a range, those with bytes of their own in it. In no particular
-    /// order.
-    items: Vec<usize>,
-    /// What SYMBOL and the items it keeps use that other code uses too
-    /// (see [`shared`]).
+    /// What removing SYMBOL loses: the branches of the tree under the
+    /// removal's tops. For a SYMBOL that something reaches, the only top
+    /// is SYMBOL itself, so what is lost is SYMBOL and everything it keeps.
+    /// For one that nothing reaches, nothing is lost.
+    removal: Removal,
+    /// The lost items under the tops that sizes count: all of them, or with
+    /// a range, those with bytes of their own in it. For SYMBOL, the items
+    /// that it keeps. In no particular order.
+    under_tops: Vec<usize>,
+    /// What the lost items use that other code uses too (see [`shared`]).
     shared: Vec<Node>,
-    /// The calls and jumps through pointers set at run time in SYMBOL and
-    /// the items exclusive to it.
+    /// The calls and jumps through pointers set at run time in the items
+    /// that go: the lost ones, and the removed ones that nothing reaches.
     indirect: Vec<Unresolved>,
 }
 
 impl<'t, 'g, 'a> Parts<'t, 'g, 'a> {
-    /// The parts of the answer about `symbol`, from the nodes that only it
-    /// leads to, which every part starts from.
+    /// The parts of the answer about `symbol`, from what removing it loses,
+    /// which every part starts from.
     fn new(symbol: SymbolInTree<'t, 'g, 'a>) -> Parts<'t, 'g, 'a> {
         let retained = symbol.retained;
-        let exclusive = retained.tree.exclusive(symbol.node());
+        let (graph, tree) = (retained.graph, &retained.tree);
+        let removal = Removal::find(retained.binary, graph, tree, &[symbol.node()]);
         // Imports are left out: their code isn't in the file.
-        let items: Vec<usize> = (exclusive.iter())
-            .filter_map(|&node| match node {
-                Node::Item(index) => Some(index),
-                Node::Import(_) => None,
-            })
-            .collect();
-        let graph = retained.graph;
-        let indirect = std::iter::once(symbol.index)
-            .chain(items.iter().copied())
+        let item_index = |node: Node| match node {
+            Node::Item(index) => Some(index),
+            Node::Import(_) => None,
+        };
+        // A removed item that nothing reaches isn't lost, but it goes too.
+        let indirect = (removal.lost().chain(removal.unreachable()))
+            .filter_map(item_index)
             .flat_map(|item| graph.unresolved_in(item))
             .filter(|unresolved| unresolved.is_indirect())
             .copied()
             .collect();
+        let under_tops = (removal.tops().iter())
+            .flat_map(|&top| tree.exclusive(top))
+            .filter_map(item_index)
+            .filter(|&index| retained.range.is_none() || retained.own(index) > 0)
+            .collect();
         Parts {
             symbol,
-            shared: shared(&symbol, &exclusive),
+            shared: shared(retained, &removal),
             indirect,
-            items: (items.into_iter())
-                .filter(|&index| retained.range.is_none() || retained.own(index) > 0)
-                .collect(),
+            under_tops,
+            removal,
         }
     }
 
-    /// The items that the tree shows: the largest 30 and the items that
-    /// keep them, or with `all`, every one. Only items with bytes of their
-    /// own compete for rows; an item that keeps bytes in a range but has
-    /// none there shows only between others and SYMBOL, unlike in `top`.
+    /// The items that the tree shows: the largest 30 of the lost items
+    /// under the tops and the items that keep them, or with `all`, every
+    /// one. Only items with bytes of their own compete for rows; an item
+    /// that keeps bytes in a range but has none there shows only between
+    /// others and SYMBOL, unlike in `top`. The tops don't compete for
+    /// rows: a top shows only as the item that keeps rows that show. So
+    /// SYMBOL, the only top, shows whenever the tree has rows.
     fn shown(&self, all: bool) -> HashSet<usize> {
-        let symbol = &self.symbol;
-        let shown = text::shown(all);
-        symbol
-            .retained
-            .largest(&[symbol.node()], &self.items, shown)
+        let retained = self.symbol.retained;
+        retained.largest(self.removal.tops(), &self.under_tops, text::shown(all))
     }
 
-    /// The answer with the rows of the `shown` items, in the shape that
-    /// `format` asks for, and with `all`, every name in the notes.
+    /// The answer about removing SYMBOL, with the rows of the `shown`
+    /// items, in the shape that `format` asks for, and with `all`, every
+    /// name in the notes.
     fn answer(&self, shown: &HashSet<usize>, all: bool, format: Format) -> TreeAnswer {
         let symbol = &self.symbol;
         let name = symbol.lead_name;
@@ -263,7 +267,7 @@ impl<'t, 'g, 'a> Parts<'t, 'g, 'a> {
         let own_bytes = text::bytes_text(own);
         let range = (retained.range).map(|range| text::range_text(binary, range, all));
         let notes = self.notes(&Naming::of(all));
-        if self.items.is_empty() {
+        if self.under_tops.is_empty() {
             // How many of them are in its load image, if any are.
             let load_image = match retained.load_image(index) {
                 0 => String::new(),
@@ -291,24 +295,18 @@ impl<'t, 'g, 'a> Parts<'t, 'g, 'a> {
             .unwrap_or_default();
         let lead = format!(
             "Removing {name} would save {}{in_range}:",
-            text::bytes_text(retained.retained(index))
+            text::bytes_text(self.removal.retained())
         );
-        retained.names().will_name(shown.len());
-        let shape = retained_tree::shape(format);
         TreeAnswer {
             lead: vec![lead],
-            table: Some(TreeTable {
-                columns: retained_tree::COLUMNS.into(),
-                rows: vec![retained.tree_row(shown, index, shape)],
-                shape,
-            }),
+            table: Some(retained.table(shown, self.removal.tops(), format)),
             notes,
         }
     }
 
     /// The notes under the tree, naming the items they list as `naming`
-    /// says: what SYMBOL shares with other code, and the calls that elfq
-    /// can't follow.
+    /// says: what the lost items share with other code, and the calls that
+    /// elfq can't follow.
     fn notes(&self, naming: &Naming) -> Vec<String> {
         [self.shared_note(naming), self.indirect_note(naming)]
             .into_iter()
@@ -316,9 +314,9 @@ impl<'t, 'g, 'a> Parts<'t, 'g, 'a> {
             .collect()
     }
 
-    /// Names what SYMBOL and the items it keeps use that other code uses
-    /// too, and so isn't counted, in order of name, as `naming` names them.
-    /// `None` when there is nothing.
+    /// Names what the lost items use that other code uses too, and so
+    /// isn't counted, in order of name, as `naming` names them. `None` when
+    /// there is nothing.
     fn shared_note(&self, naming: &Naming) -> Option<String> {
         let binary = self.symbol.retained.binary;
         let mut shared: Vec<&str> = (self.shared.iter()).map(|node| node.name(binary)).collect();
@@ -332,20 +330,20 @@ impl<'t, 'g, 'a> Parts<'t, 'g, 'a> {
         ))
     }
 
-    /// Says that what SYMBOL's code calls through pointers may count for
-    /// other items, if it calls anything that way, naming the functions
-    /// that do, as `naming` names them: SYMBOL first, then those that only
-    /// it leads to.
+    /// Says that what the code of the items that go calls through pointers
+    /// may count for other items, if any of it calls anything that way,
+    /// naming the functions that do, as `naming` names them: the removed
+    /// ones first, then the others.
     fn indirect_note(&self, naming: &Naming) -> Option<String> {
         let indirect = &self.indirect;
         if indirect.is_empty() {
             return None;
         }
-        let symbol = &self.symbol;
+        let removal = &self.removal;
         let mut callers: Vec<usize> = indirect.iter().map(|u| u.from).collect();
-        callers.sort_by_key(|&index| (index != symbol.index, index));
+        callers.sort_by_key(|&index| (!removal.is_removed(Node::Item(index)), index));
         callers.dedup();
-        let binary = symbol.retained.binary;
+        let binary = self.symbol.retained.binary;
         let names: Vec<&str> = callers
             .iter()
             .map(|&index| Node::Item(index).name(binary))

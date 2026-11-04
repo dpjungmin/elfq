@@ -319,15 +319,14 @@ impl Keeping {
 mod tests {
     use std::collections::HashSet;
 
-    use super::super::super::printed::table_lines;
     use super::super::super::samples;
     use super::*;
     use crate::binary::Binary;
+    use crate::cli::Format;
     use crate::commands::json;
     use crate::commands::retained;
     use crate::commands::retained_tree::RetainedTree;
     use crate::graph::DominatorTree;
-    use crate::render::{Align, Table, TreeShape};
 
     #[test]
     fn the_header_says_what_retained_and_why_say() {
@@ -401,15 +400,13 @@ mod tests {
                     // As `retained`'s own rows name it after "kept by": the
                     // row of this item, which comes right after K's in the
                     // text of the tree under K, after the columns' names.
-                    let shape = TreeShape::Rows { words: "kept by" };
                     let with_rows = HashSet::from([parent, index]);
-                    let mut table = Table::new(&[
-                        ("RETAINED", Align::Right),
-                        ("OWN", Align::Right),
-                        ("ITEM", Align::Left),
-                    ]);
-                    table.tree(&[retained_tree.tree_row(&with_rows, parent, shape)], shape);
-                    let row = &table_lines(&table)[2];
+                    let table =
+                        retained_tree.table(&with_rows, &[Node::Item(parent)], Format::Text);
+                    let mut out = Vec::new();
+                    table.write(&mut out).unwrap();
+                    let out = String::from_utf8(out).unwrap();
+                    let row = out.lines().nth(2).unwrap();
                     let kept_by = format!(", kept by {}", keeping.kept_by.as_ref().unwrap());
                     assert!(
                         row.contains(binary.items[index].name.as_str()),
