@@ -518,6 +518,171 @@ fn dwarf_that_cant_be_read_says_so() {
 }
 
 #[test]
+fn a_name_that_cant_be_read_fails_inlined_symbol_as_it_fails_inlined() {
+    // `inlined SYMBOL` works out the names of SYMBOL's copies only, but
+    // reads the others' too, so that it fails wherever `inlined` does.
+    // Abbreviation 1 is an inlined copy without children, at the address
+    // its DW_AT_low_pc gives, with its DW_AT_name in `.debug_info`; 2 a
+    // compile unit with children and no attributes; and 3 an inlined copy
+    // like 1, with a DW_AT_linkage_name in `.debug_info` and its DW_AT_name
+    // at an offset in `.debug_str`.
+    let abbrev = [
+        1, 0x1d, 0, 0x11, 0x01, 0x03, 0x08, 0, 0, //
+        2, 0x11, 1, 0, 0, //
+        3, 0x1d, 0, 0x11, 0x01, 0x6e, 0x08, 0x03, 0x0e, 0, 0, //
+        0,
+    ];
+    let items = load_sample(SAMPLE).items;
+    let address = |name: &str| items.iter().find(|item| item.name == name).unwrap().address;
+    // DWARF 4, abbreviations at offset 0, 8-byte addresses. Then the
+    // compile unit, a copy of helper in main, a copy in report with the
+    // linkage name and a DW_AT_name past the end of `.debug_str`, and the
+    // end of the unit's children.
+    let unit = |linkage_name: &str| {
+        let mut unit = vec![4, 0, 0, 0, 0, 0, 8, 2, 1];
+        unit.extend(address("main").to_le_bytes());
+        unit.extend(b"helper\0");
+        unit.push(3);
+        unit.extend(address("report").to_le_bytes());
+        unit.extend(linkage_name.as_bytes());
+        unit.push(0);
+        unit.extend(0xffff_fff0u32.to_le_bytes());
+        unit.push(0);
+        unit
+    };
+
+    // A linkage name that doesn't demangle, so elfq reads DW_AT_name.
+    let path = ElfBytes::sample(SAMPLE)
+        .replace_section(".debug_info", &with_length(&unit("report_part")))
+        .replace_section(".debug_abbrev", &abbrev)
+        .save("unreadable-inlined-name.elf");
+    let error =
+        format!("error: cannot read the DWARF debug info in {path}: unexpected end of input\n");
+    assert_output(&stderr(&[&path, "inlined"]), &error);
+    assert_output(&stderr(&[&path, "inlined", "main"]), &error);
+
+    // A linkage name that demangles is the name, so DW_AT_name isn't read.
+    let path = ElfBytes::sample(SAMPLE)
+        .replace_section(".debug_info", &with_length(&unit("_ZN6helper4partEv")))
+        .replace_section(".debug_abbrev", &abbrev)
+        .save("unread-inlined-name.elf");
+    assert_output(
+        &stdout(&[&path, "inlined"]),
+        "\
+Inlined copies of 2 functions take 0 of the 2557 bytes of code:
+
+BYTES  COPIES  FUNCTION
+    0       1  helper
+    0       1  helper::part()
+
+A copy of 0 bytes is one the compiler merged into the code around it.
+",
+    );
+    assert_output(
+        &stdout(&[&path, "inlined", "main"]),
+        "\
+Of main's 195 bytes, 0 are inlined copies of 1 function:
+
+BYTES  COPIES  FUNCTION
+    0       1  helper
+
+A copy of 0 bytes is one the compiler merged into the code around it.
+",
+    );
+}
+
+#[test]
+fn a_name_that_cant_be_read_through_a_link_fails_inlined_symbol_as_it_fails_inlined() {
+    // Most copies have no name of their own: their DW_AT_abstract_origin
+    // links to their function's entry, which has it, and `inlined SYMBOL`
+    // follows the links of the copies in other functions too. Abbreviation
+    // 1 is a compile unit with children and no attributes; 2 a function
+    // without children, with its DW_AT_name at an offset in `.debug_str`;
+    // and 3 and 4 inlined copies without children, at the address their
+    // DW_AT_low_pc gives, that link to their function's entry by where it
+    // is in their unit (DW_FORM_ref4) or in `.debug_info`
+    // (DW_FORM_ref_addr).
+    let abbrev = [
+        1, 0x11, 1, 0, 0, //
+        2, 0x2e, 0, 0x03, 0x0e, 0, 0, //
+        3, 0x1d, 0, 0x11, 0x01, 0x31, 0x13, 0, 0, //
+        4, 0x1d, 0, 0x11, 0x01, 0x31, 0x10, 0, 0, //
+        0,
+    ];
+    let items = load_sample(SAMPLE).items;
+    let address = |name: &str| items.iter().find(|item| item.name == name).unwrap().address;
+    // DWARF 4, abbreviations at offset 0, 8-byte addresses. Then the
+    // compile unit; at 12, after the unit's header and the compile unit's
+    // abbreviation, the function, with its name at `name` in `.debug_str`,
+    // which holds only "helper"; each copy, as the function it is in, its
+    // abbreviation and its link; and the end of the unit's children.
+    let save = |file: &str, name: u32, copies: &[(&str, u8, u32)]| {
+        let mut unit = vec![4, 0, 0, 0, 0, 0, 8, 1, 2];
+        unit.extend(name.to_le_bytes());
+        for &(into, abbreviation, link) in copies {
+            unit.push(abbreviation);
+            unit.extend(address(into).to_le_bytes());
+            unit.extend(link.to_le_bytes());
+        }
+        unit.push(0);
+        ElfBytes::sample(SAMPLE)
+            .replace_section(".debug_info", &with_length(&unit))
+            .replace_section(".debug_abbrev", &abbrev)
+            .replace_section(".debug_str", b"helper\0")
+            .save(file)
+    };
+
+    let fails_as_inlined_does = |path: &str, error: &str| {
+        let error = format!("error: cannot read the DWARF debug info in {path}: {error}\n");
+        assert_output(&stderr(&[path, "inlined"]), &error);
+        assert_output(&stderr(&[path, "inlined", "main"]), &error);
+    };
+
+    // The copy in report links to a name past the end of `.debug_str`, by
+    // where the function's entry is in the unit, and then in `.debug_info`,
+    // which here are the same. No copy in main links there, so only the
+    // check of report's copy can fail `inlined main`.
+    let past_end = 0xffff_fff0;
+    let path = save("linked-name-ref4.elf", past_end, &[("report", 3, 12)]);
+    fails_as_inlined_does(&path, "unexpected end of input");
+    let path = save("linked-name-ref-addr.elf", past_end, &[("report", 4, 12)]);
+    fails_as_inlined_does(&path, "unexpected end of input");
+    // The link of the copy in report is past the unit's end.
+    let path = save("link-past-the-unit.elf", 0, &[("report", 3, 0x100)]);
+    fails_as_inlined_does(&path, "invalid offset: 0x100");
+
+    // Checking the name for the copy in report doesn't stand in for working
+    // it out for the copy in main, which links to the same entry after it.
+    let path = save(
+        "shared-linked-name.elf",
+        0,
+        &[("report", 3, 12), ("main", 4, 12)],
+    );
+    assert_output(
+        &stdout(&[&path, "inlined"]),
+        "\
+Inlined copies of 1 function take 0 of the 2557 bytes of code:
+
+BYTES  COPIES  FUNCTION
+    0       2  helper
+
+A copy of 0 bytes is one the compiler merged into the code around it.
+",
+    );
+    assert_output(
+        &stdout(&[&path, "inlined", "main"]),
+        "\
+Of main's 195 bytes, 0 are inlined copies of 1 function:
+
+BYTES  COPIES  FUNCTION
+    0       1  helper
+
+A copy of 0 bytes is one the compiler merged into the code around it.
+",
+    );
+}
+
+#[test]
 fn inlined_copies_that_nest_deeply_are_summed_up() {
     // Copies inlined into main, each into the one before, 100,000 deep:
     // all but the first few are summed up in one row.

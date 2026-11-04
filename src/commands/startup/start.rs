@@ -13,7 +13,7 @@ use super::ram_sections::RamSections;
 use super::{Firmware, function_holding};
 use crate::arch::startup::{Call, Code, DEPTH, End, Event, How, Start, Walk, loop_head};
 use crate::binary::{Binary, ItemKind};
-use crate::debuginfo;
+use crate::debuginfo::{self, CopiesToName};
 
 /// Where the processor starts running code.
 pub(super) struct Reset {
@@ -155,8 +155,8 @@ pub(super) fn find_main(firmware: &Firmware, ram: &RamSections, reset: &Reset) -
         });
     }
     if binary.has_dwarf
-        && let Ok(copies) = debuginfo::inlined_copies(binary)
-        && let Some(copy) = copies.iter().find(|copy| copy.name == "main")
+        && let Ok(copies) = debuginfo::inlined_copies(binary, CopiesToName::All)
+        && let Some(copy) = copies.iter().find(|copy| &*copy.name == "main")
     {
         return Some(Main {
             address: copy.entry & !1,

@@ -21,7 +21,7 @@ use super::tree_answer::{self, TreeAnswer, TreeTable};
 use super::{Outcome, json, text};
 use crate::binary::{Binary, ItemKind, names, total};
 use crate::cli::Format;
-use crate::debuginfo::{self, InlinedCopy};
+use crate::debuginfo::{self, CopiesToName, InlinedCopy};
 use crate::graph::Node;
 use crate::render::{Align, TreeRow, TreeShape};
 
@@ -48,8 +48,13 @@ pub(super) fn run(
         Some(symbol) => Some(find_function(binary, symbol)?),
         None => None,
     };
+    // The tree of SYMBOL's function reads the names of its own copies only.
+    let copies_to_name = match function {
+        Some((index, _)) => CopiesToName::OnlyInto(index),
+        None => CopiesToName::All,
+    };
     let copies = Kept::new(
-        debuginfo::inlined_copies(binary)
+        debuginfo::inlined_copies(binary, copies_to_name)
             .with_context(|| format!("cannot read the DWARF debug info in {}", path.display()))?,
     );
     match function {
@@ -608,7 +613,7 @@ mod tests {
 
     fn copy(name: &str, size: u64, parent: Option<usize>) -> InlinedCopy {
         InlinedCopy {
-            name: name.to_string(),
+            name: name.into(),
             into: 0,
             entry: 0,
             size,

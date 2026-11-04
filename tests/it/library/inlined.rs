@@ -6,15 +6,17 @@
 //! tests of what `inlined` prints are in commands/inlined.rs, and those of
 //! how elfq reads DWARF that doesn't add up in damaged.rs.
 
+use std::collections::BTreeSet;
+
 use elfq::binary::Binary;
-use elfq::debuginfo::{InlinedCopy, inlined_copies};
+use elfq::debuginfo::{CopiesToName, InlinedCopy, inlined_copies};
 use elfq::graph::Node;
 
-use crate::support::{SAMPLE, load_sample, node};
+use crate::support::{SAMPLE, load_sample, node, samples};
 
 fn load(path: &str) -> (Binary, Vec<InlinedCopy>) {
     let binary = load_sample(path);
-    let copies = inlined_copies(&binary).unwrap();
+    let copies = inlined_copies(&binary, CopiesToName::All).unwrap();
     (binary, copies)
 }
 
@@ -32,7 +34,7 @@ fn inlined_into(binary: &Binary, copies: &[InlinedCopy], into: &str) -> Vec<(Str
     copies
         .iter()
         .filter(|copy| copy.into == into && copy.parent.is_none())
-        .map(|copy| (copy.name.clone(), copy.size))
+        .map(|copy| (copy.name.to_string(), copy.size))
         .collect()
 }
 
@@ -79,7 +81,7 @@ fn copies_inside_copies_count_once() {
         .enumerate()
         .find(|(_, copy)| copy.into == memcpy && copy.parent.is_none())
         .unwrap();
-    assert_eq!(outer.name, "compiler_builtins::mem::impls::copy_forward");
+    assert_eq!(&*outer.name, "compiler_builtins::mem::impls::copy_forward");
     let inner: Vec<&InlinedCopy> = copies
         .iter()
         .filter(|copy| copy.parent == Some(index))
@@ -99,6 +101,29 @@ fn copies_inside_copies_count_once() {
         .map(|copy| copy.own)
         .sum();
     assert_eq!(own, outer.size);
+}
+
+#[test]
+fn naming_the_copies_in_one_function_names_them_as_naming_all_does() {
+    // Each function that holds copies, in every sample, as `inlined
+    // SYMBOL` asks for them.
+    for path in samples() {
+        let (binary, all) = load(&path);
+        let functions: BTreeSet<usize> = all.iter().map(|copy| copy.into).collect();
+        for function in functions {
+            let copies = inlined_copies(&binary, CopiesToName::OnlyInto(function)).unwrap();
+            assert_eq!(copies.len(), all.len(), "{path}");
+            for (copy, named) in copies.iter().zip(&all) {
+                // A copy in another function is the same but for its name,
+                // which is empty.
+                let mut expected = named.clone();
+                if copy.into != function {
+                    expected.name = "".into();
+                }
+                assert_eq!(*copy, expected, "{path}");
+            }
+        }
+    }
 }
 
 #[test]
