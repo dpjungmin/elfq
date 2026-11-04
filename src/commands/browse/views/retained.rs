@@ -123,7 +123,10 @@ mod tests {
                 let Some(Command::Retained(args)) = cli.command else {
                     panic!("{line} is not retained");
                 };
-                let symbol = session.names.find(&args.symbol).unwrap();
+                let [query] = &args.symbols[..] else {
+                    panic!("{line} names several SYMBOLs");
+                };
+                let symbol = session.names.find(query).unwrap();
                 assert_eq!(symbol.node, node, "{line}");
                 // What it prints, as `retained` runs it, but on the graph
                 // that the session has built, with --all and without.

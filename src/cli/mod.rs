@@ -20,7 +20,8 @@ use clap::{Args, Parser, Subcommand};
 use crate::binary::AddressRange;
 use help::{
     AT, BROWSE, CALLEES, CALLEES_RANGES, CALLERS, CALLERS_RANGES, DIFF, EXAMPLES, HOW_NOTES,
-    INLINED, REACH, RETAINED, RETAINED_REACH, ROW_MARKS, STARTUP, TOP, WHY, how_table,
+    INLINED, REACH, RETAINED, RETAINED_REACH, RETAINED_SET, ROW_MARKS, STARTUP, TOP, WHY,
+    how_table,
 };
 
 // The whole command line. No `///` comment here: clap would show one of more
@@ -139,8 +140,8 @@ pub(crate) enum Command {
     /// Show the items that keep the most bytes in the file
     #[command(after_help = format!("{TOP}\n\n{ROW_MARKS}"))]
     Top(TopArgs),
-    /// Show what removing SYMBOL would save
-    #[command(after_help = format!("{RETAINED}\n\n{ROW_MARKS}\n\n{RETAINED_REACH}"))]
+    /// Show what removing SYMBOL, or several at once, would save
+    #[command(after_help = format!("{RETAINED}\n\n{RETAINED_SET}\n\n{ROW_MARKS}\n\n{RETAINED_REACH}"))]
     Retained(RetainedArgs),
     /// Show the chains of calls and references that keep SYMBOL in the file
     #[command(after_help = format!("{WHY}\n\n{}\n\n{HOW_NOTES}", how_table()))]
@@ -189,8 +190,10 @@ pub(crate) struct TopArgs {
 #[derive(Debug, Args)]
 pub(crate) struct RetainedArgs {
     /// A function or data object: its name, the end of its name
-    /// (process_frame for app::process_frame), or an address such as 0x1700
-    pub(crate) symbol: String,
+    /// (process_frame for app::process_frame), or an address such as 0x1700.
+    /// Give several to ask what removing them all at once would save
+    #[arg(required = true, value_name = "SYMBOL")]
+    pub(crate) symbols: Vec<String>,
     /// Show every item, not only the 30 largest
     #[arg(long)]
     pub(crate) all: bool,

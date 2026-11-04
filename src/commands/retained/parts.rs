@@ -2,8 +2,8 @@
 //! items loses, whichever items they are: the lost items under the
 //! removal's tops, which the table shows, what the lost items share with
 //! other code, and the calls through pointers in the items that go, with
-//! the notes that name those two. The answer about SYMBOL, in `mod.rs`,
-//! adds its lead line and picks its rows.
+//! the notes that name those two. The answers in `mod.rs` and
+//! `several.rs` add their lead lines and pick their rows.
 
 use crate::commands::retained_tree::RetainedTree;
 use crate::commands::text::{self, Naming};

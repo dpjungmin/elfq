@@ -1,4 +1,5 @@
-//! `elfq FILE retained SYMBOL`: what SYMBOL keeps in the file.
+//! `elfq FILE retained SYMBOL...`: what SYMBOL keeps in the file, or what
+//! several SYMBOLs keep when they go at once.
 //!
 //! The answer is the part of the dominator tree under SYMBOL: each item
 //! hangs under the closest item that every path to it passes through, and
@@ -11,9 +12,12 @@
 //! reaches, the only top is SYMBOL itself, so what is lost is SYMBOL and
 //! everything it keeps. [`Parts`] works out from the removal the bytes
 //! saved, the items under the tops and the notes; the answer adds its lead
-//! line and picks its rows.
+//! line and picks its rows. This file finds the SYMBOLs and answers about
+//! one, and `several.rs` about several, from the same parts and with the
+//! same words for the lead line.
 
 mod parts;
+mod several;
 
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
@@ -65,10 +69,13 @@ struct RetainedJson<'a> {
     indirect_calls: usize,
 }
 
-/// Answers `elfq FILE retained SYMBOL`: what removing SYMBOL would save.
+/// Answers `elfq FILE retained SYMBOL...`: what removing the SYMBOLs in
+/// `queries` at once would save. A SYMBOL given twice, or by a name and by
+/// an address, counts once, and when only one is left, the answer is the
+/// one about it alone.
 pub(super) fn run(
     binary: &Binary,
-    symbol: &str,
+    queries: &[String],
     range: Option<AddressRange>,
     all: bool,
     format: Format,
@@ -76,10 +83,7 @@ pub(super) fn run(
 ) -> Result<Outcome> {
     check_code_is_readable(binary)?;
     let names = Kept::new(Names::new(binary));
-    let symbol = names.find(symbol)?;
-    let node = symbol.node;
-    let index = refusal(binary, node)?;
-    let lead_name = symbol.lead_name(binary);
+    let found = find_symbols(binary, &names, queries)?;
     let graph = Kept::new(Graph::build(binary));
     let retained = Kept::new(RetainedTree::naming(
         binary,
@@ -87,28 +91,106 @@ pub(super) fn run(
         range,
         names.into_inner(),
     ));
-    let symbol = SymbolInTree {
-        retained: &retained,
-        index,
-        lead_name: &lead_name,
-    };
-    match format {
-        Format::Json => write_json(&symbol, out)?,
-        Format::Text | Format::Tree => answer(&symbol, all, format).write(out)?,
+    match &found[..] {
+        [one] => {
+            let symbol = SymbolInTree {
+                retained: &retained,
+                index: one.index,
+                lead_name: &one.lead_name,
+            };
+            match format {
+                Format::Json => write_json(&symbol, out)?,
+                Format::Text | Format::Tree => answer(&symbol, all, format).write(out)?,
+            }
+        }
+        // `arguments.rs` refuses --json with several SYMBOLs.
+        _ => several::tree_answer(&retained, &found, all, format).write(out)?,
     }
     Ok(Outcome::Answered)
 }
 
-/// Why `retained` can't answer about `node`, if it can't: it is an import,
-/// or a function whose end elfq doesn't know, or the file is a shared
-/// library. Otherwise, the index of `node`'s item.
+/// A SYMBOL that `retained` was given, and found.
+struct Found {
+    /// Its item, as an index into [`Binary::items`].
+    index: usize,
+    /// The item's name as the answer gives it (see [`Symbol::lead_name`]).
+    ///
+    /// [`Symbol::lead_name`]: super::symbol::Symbol::lead_name
+    lead_name: String,
+}
+
+/// Finds what each of `queries` names, by `names`, and refuses an import,
+/// a function whose end elfq doesn't know and a shared library, as with
+/// one SYMBOL: the first argument that elfq can't answer about stops it,
+/// with its error. Each item comes once, in the order given.
+fn find_symbols(binary: &Binary, names: &Names, queries: &[String]) -> Result<Vec<Found>> {
+    let mut found = Vec::new();
+    let mut seen = HashSet::new();
+    for query in queries {
+        let symbol = names.find(query)?;
+        let index = readable_item(binary, symbol.node)?;
+        if seen.insert(index) {
+            let lead_name = symbol.lead_name(binary);
+            found.push(Found { index, lead_name });
+        }
+    }
+    let items: Vec<&str> = (found.iter())
+        .map(|found| binary.items[found.index].name.as_str())
+        .collect();
+    refuse_shared_library(binary, &items)?;
+    Ok(found)
+}
+
+/// Why `retained` can't answer about `node`, for browse's tab 6, if it
+/// can't: it is an import, or a function whose end elfq doesn't know, or
+/// the file is a shared library. Otherwise, the index of `node`'s item.
+#[cfg(feature = "tui")]
 pub(super) fn refusal(binary: &Binary, node: Node) -> Result<usize> {
     let index = readable_item(binary, node)?;
-    if binary.kind == FileKind::SharedLibrary {
-        let name = node.name(binary);
-        bail!("elfq can't yet tell what only {name} leads to in a shared library");
-    }
+    refuse_shared_library(binary, &[node.name(binary)])?;
     Ok(index)
+}
+
+/// Refuses a shared library, whose exported functions elfq doesn't yet
+/// count as places where the program starts, so that it can't tell what
+/// only the items called `names` lead to.
+fn refuse_shared_library(binary: &Binary, names: &[&str]) -> Result<()> {
+    if binary.kind == FileKind::SharedLibrary {
+        let lead = match names {
+            [_] => "leads",
+            _ => "lead",
+        };
+        let what = subject(names);
+        bail!("elfq can't yet tell what only {what} {lead} to in a shared library");
+    }
+    Ok(())
+}
+
+/// How the answer names the SYMBOLs called `names`: "a", "a and b", or
+/// from three on, "these 6 items", so that its first line stays short
+/// however many there are.
+fn subject(names: &[&str]) -> String {
+    match names {
+        [one] => one.to_string(),
+        [first, second] => format!("{first} and {second}"),
+        _ => format!("these {} items", names.len()),
+    }
+}
+
+/// What removing the SYMBOLs called `subject` would save, as the answer's
+/// first line says it before the colon that leads to a table or the
+/// period that ends it: `saved` bytes, or with a `range`, those in it, as
+/// in "Removing crc32 would save 1083 bytes", or "Removing crc32 would
+/// save none of the bytes in RANGE" when it saves none of them.
+fn would_save(subject: &str, saved: u64, range: Option<&str>) -> String {
+    let bytes = text::bytes_text(saved);
+    match range {
+        Some(range) if saved == 0 => {
+            format!("Removing {subject} would save none of the bytes in {range}")
+        }
+        Some(range) => format!("Removing {subject} would save {bytes} in {range}"),
+        None => format!("Removing {subject} would save {bytes}"),
+    }
 }
 
 /// What `retained SYMBOL` writes as text: what removing SYMBOL would save,
@@ -244,9 +326,7 @@ impl<'t, 'g, 'a> Alone<'t, 'g, 'a> {
                 bytes => format!(", {bytes} of them in its load image"),
             };
             let lead = match &range {
-                Some(range) if own == 0 => {
-                    format!("Removing {name} would save none of the bytes in {range}.")
-                }
+                Some(_) if own == 0 => format!("{}.", would_save(name, own, range.as_deref())),
                 Some(range) => {
                     format!(
                         "Removing {name} would save only its own {own_bytes} in {range}{load_image}."
@@ -259,17 +339,29 @@ impl<'t, 'g, 'a> Alone<'t, 'g, 'a> {
                 ..TreeAnswer::sentences(vec![lead])
             };
         }
-        let in_range = range
-            .map(|range| format!(" in {range}"))
-            .unwrap_or_default();
-        let lead = format!(
-            "Removing {name} would save {}{in_range}:",
-            text::bytes_text(removal.retained())
-        );
+        let saves = would_save(name, removal.retained(), range.as_deref());
         TreeAnswer {
-            lead: vec![lead],
+            lead: vec![format!("{saves}:")],
             table: Some(retained.table(shown, removal.tops(), &HashMap::new(), format)),
             notes,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::subject;
+
+    #[test]
+    fn the_lead_names_one_or_two_symbols_and_counts_more() {
+        assert_eq!(subject(&["crc32"]), "crc32");
+        assert_eq!(
+            subject(&["process_frame", "report"]),
+            "process_frame and report"
+        );
+        assert_eq!(
+            subject(&["crc32", "apply_filter", "filter_tap"]),
+            "these 3 items"
+        );
     }
 }

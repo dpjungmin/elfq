@@ -800,6 +800,395 @@ fn dead_code_keeps_nothing() {
 }
 
 #[test]
+fn retained_of_several_counts_what_goes_when_they_all_go() {
+    // The rows that the two keep together, and the notes.
+    let together = "      32    32  stats, kept by process_frame and report together
+      16    16  __stack_chk_fail@plt, kept by process_frame and report together
+       4     4  frames_bad, kept by process_frame and report together
+       4     4  frames_ok, kept by process_frame and report together
+
+56 of these bytes go only when both go.
+
+Shared with other code, so not counted: config_sum, dispatch_event, log_msg.
+";
+    assert_output(
+        &stdout(&[SAMPLE, "retained", "process_frame", "report"]),
+        &format!(
+            "\
+Removing process_frame and report would save 2829 bytes:
+
+RETAINED   OWN  ITEM
+    2068   532  process_frame
+    1083    59  crc32, kept by process_frame
+    1024  1024  crc_table, kept by crc32
+     378   271  apply_filter, kept by process_frame
+     107    75  filter_tap, kept by apply_filter
+      32    32  fir_coeffs, kept by filter_tap
+      54    54  decode_header, kept by process_frame
+      12   ~12  .rodata@0x2012, kept by process_frame
+       9    ~9  .rodata@0x201e, kept by process_frame
+     705   370  report
+     162   162  format_u32, kept by report
+      80    16  root, kept by report
+      48    16  inner, kept by root
+      16    16  leaf_c, kept by inner
+      16    16  leaf_b, kept by inner
+      16    16  leaf_a, kept by root
+      46    46  count_nodes, kept by report
+      10   ~10  .rodata@0x2031, kept by report
+      10   ~10  .rodata@0x203b, kept by report
+       9    ~9  .rodata@0x2045, kept by report
+       8    ~8  .rodata@0x204e, kept by report
+       6    ~6  .rodata@0x202b, kept by report
+       4    ~4  .rodata@0x2027, kept by report
+{together}"
+        ),
+    );
+    // The tree draws each SYMBOL's own branch, and names the keepers of a
+    // row that none of them keeps alone in the same words.
+    let tree = stdout(&[SAMPLE, "retained", "process_frame", "report", "--tree"]);
+    assert!(
+        tree.contains("    2068   532  process_frame\n    1083    59  ├─ crc32\n"),
+        "{tree}"
+    );
+    assert!(
+        tree.contains("       4    ~4  └─ .rodata@0x2027\n"),
+        "{tree}"
+    );
+    assert!(tree.ends_with(together), "{tree}");
+}
+
+#[test]
+fn the_note_counts_the_bytes_that_go_only_together() {
+    // Of the 4 that the first line counts, debug_dump and _IO_stdin_used,
+    // which nothing reaches, keep nothing together.
+    let output = stdout(&[
+        SAMPLE,
+        "retained",
+        "process_frame",
+        "debug_dump",
+        "_IO_stdin_used",
+        "report",
+    ]);
+    assert!(
+        output.starts_with("Removing these 4 items would save 2862 bytes:\n"),
+        "{output}"
+    );
+    assert!(
+        output.contains("\n56 of these bytes go only when two or more of the 4 go.\n"),
+        "{output}"
+    );
+    let output = stdout(&[
+        SAMPLE,
+        "retained",
+        "register_tm_clones",
+        "__do_global_dtors_aux",
+    ]);
+    assert!(
+        output.contains(
+            "  completed.0, kept by register_tm_clones and __do_global_dtors_aux together\n\n\
+             1 of these bytes goes only when both go.\n"
+        ),
+        "{output}"
+    );
+}
+
+#[test]
+fn a_symbol_that_nothing_reaches_counts_its_own_bytes() {
+    let output = stdout(&[SAMPLE, "retained", "debug_dump", "process_frame"]);
+    assert!(
+        output.starts_with("Removing debug_dump and process_frame would save 2097 bytes:\n"),
+        "{output}"
+    );
+    assert!(
+        output.contains(
+            "\nNothing reaches debug_dump: the program never uses it, or elfq can't see how. \
+             The total counts its own 29 bytes.\n"
+        ),
+        "{output}"
+    );
+    // counts, which nothing reaches, has the only bytes in the range, so
+    // there are no rows to show.
+    assert_output(
+        &stdout(&[
+            "testdata/bin/c-cortex-m0-pico.elf",
+            "retained",
+            "_reset_handler",
+            "counts",
+            "--range",
+            "0x20000000..0x20000034",
+        ]),
+        "\
+Removing _reset_handler and counts would save 32 bytes in 0x20000000..0x20000034 (.data and .bss).
+
+Nothing reaches counts: the program never uses it, or elfq can't see how. The total counts its own 32 bytes.
+
+_reset_handler also calls through pointers, so what they reach may count elsewhere.
+",
+    );
+    let unreachable = [SAMPLE, "retained", "debug_dump", "_IO_stdin_used"];
+    assert_output(
+        &stdout(&unreachable),
+        "Nothing reaches debug_dump and _IO_stdin_used: the program never uses them, or elfq \
+         can't see how. Removing them would save their own 33 bytes.\n",
+    );
+    assert_output(
+        &stdout(&[&unreachable[..], &["--range", "0x1000+0x1000"]].concat()),
+        "Nothing reaches debug_dump and _IO_stdin_used: the program never uses them, or elfq \
+         can't see how. Removing them would save their own 29 bytes in 0x00001000..0x00002000 \
+         (.init, .plt, .plt.got, .plt.sec, .text and .fini).\n",
+    );
+    assert_output(
+        &stdout(&[&unreachable[..], &["--range", "0x0+0x10"]].concat()),
+        "Nothing reaches debug_dump and _IO_stdin_used: the program never uses them, or elfq \
+         can't see how. Removing them would save none of the bytes in 0x00000000..0x00000010.\n",
+    );
+}
+
+#[test]
+fn a_range_that_the_symbols_keep_nothing_in_saves_none() {
+    assert_output(
+        &stdout(&[
+            SAMPLE,
+            "retained",
+            "debug_dump",
+            "process_frame",
+            "--range",
+            "0x4000+0x100",
+        ]),
+        "\
+Removing debug_dump and process_frame would save none of the bytes in 0x00004000..0x00004100 (.data and .bss).
+
+Nothing reaches debug_dump: the program never uses it, or elfq can't see how.
+
+Shared with other code, so not counted: frames_bad, frames_ok, stats.
+",
+    );
+}
+
+#[test]
+fn one_symbol_that_keeps_the_others_saves_the_same_alone() {
+    let output = stdout(&[SAMPLE, "retained", "process_frame", "crc32"]);
+    assert!(
+        output.contains("\nprocess_frame keeps crc32, so removing it alone saves the same.\n"),
+        "{output}"
+    );
+    let output = stdout(&[
+        "testdata/bin/cpp-x86_64.elf",
+        "retained",
+        "vtable for app::Gain",
+        "app::Gain::run",
+        "typeinfo for app::Gain",
+        "typeinfo name for app::Gain",
+    ]);
+    assert!(
+        output.contains(
+            "\nvtable for app::Gain keeps the other 3, so removing it alone saves the same.\n"
+        ),
+        "{output}"
+    );
+}
+
+#[test]
+fn a_symbol_that_another_keeps_adds_nothing() {
+    // Code that moves to ITCM, with the veneers that reach it.
+    let itcm = [
+        TCM_SAMPLE,
+        "retained",
+        "crc32",
+        "apply_filter",
+        "filter_tap",
+        "__memcpy_veneer",
+        "SysTick_Handler",
+        "__app_tick_veneer",
+    ];
+    assert_output(
+        &stdout(&itcm),
+        "\
+Removing these 6 items would save 1284 bytes:
+
+RETAINED   OWN  ITEM
+    1072    48  crc32
+    1024  1024  crc_table, kept by crc32
+     184    92  apply_filter
+      84    52  filter_tap, kept by apply_filter
+      32    32  fir_coeffs, kept by filter_tap
+       8     8  __memcpy_veneer, kept by apply_filter
+      28    16  SysTick_Handler
+       8     8  __app_tick_veneer, kept by SysTick_Handler
+       4     4  systick_count, kept by SysTick_Handler
+
+filter_tap, __memcpy_veneer and __app_tick_veneer add nothing: other items named here keep them.
+
+Shared with other code, so not counted: app_tick, memcpy.
+",
+    );
+    // With a range, only the bytes in it count.
+    assert_output(
+        &stdout(&[&itcm[..], &["--range", "0x20000000..0x20000450"]].concat()),
+        "\
+Removing these 6 items would save 1028 bytes in 0x20000000..0x20000450 (.data and .bss):
+
+RETAINED   OWN  ITEM
+    1024     0  crc32
+    1024  1024  crc_table, kept by crc32
+       4     0  SysTick_Handler
+       4     4  systick_count, kept by SysTick_Handler
+
+filter_tap, __memcpy_veneer and __app_tick_veneer add nothing: other items named here keep them.
+",
+    );
+    // When nothing reaches some SYMBOLs, removing the one that keeps the
+    // others alone doesn't save their own bytes, so the note names the
+    // ones it keeps.
+    for (args, note) in [
+        (
+            &[SAMPLE, "process_frame", "crc32", "debug_dump"][..],
+            "crc32 adds nothing: other items named here keep it.",
+        ),
+        (
+            &[SAMPLE, "on_data", "data_events", "_IO_stdin_used"],
+            "data_events adds nothing: other items named here keep it.",
+        ),
+        (
+            &[
+                "testdata/bin/c-softfloat-nodebug.elf",
+                "Reset_Handler",
+                "__aeabi_drsub",
+                "__aeabi_dsub",
+                "__aeabi_ui2d",
+                "__aeabi_i2d",
+                "__aeabi_f2d",
+                "__aeabi_l2d",
+            ],
+            "__aeabi_dsub and __aeabi_l2d add nothing: other items named here keep them.",
+        ),
+    ] {
+        let output = stdout(&[&args[..1], &["retained"], &args[1..]].concat());
+        assert!(
+            output.contains(&format!("\n\n{note}\n\nNothing reaches ")),
+            "{output}"
+        );
+    }
+}
+
+#[test]
+fn a_set_of_one_symbol_is_retained_of_that_symbol() {
+    // 0x1280 is where crc32 starts, so it names crc32 a second time.
+    for args in [
+        &["crc32", "crc32"][..],
+        &["crc32", "0x1280"],
+        &["crc32", "crc32", "--tree"],
+    ] {
+        let alone = [&[SAMPLE, "retained", "crc32"][..], &args[2..]].concat();
+        assert_output(
+            &stdout(&[&[SAMPLE, "retained"][..], args].concat()),
+            &stdout(&alone),
+        );
+    }
+}
+
+#[test]
+fn rows_kept_together_name_their_keepers() {
+    // errno is kept by all nine of the functions that set it.
+    let sample = "testdata/bin/c-strtod.elf";
+    let args = [
+        sample,
+        "retained",
+        "_sbrk_r",
+        "_isatty_r",
+        "_kill_r",
+        "_close_r",
+        "_read_r",
+        "_fstat_r",
+        "_lseek_r",
+        "_write_r",
+        "_getpid_r",
+    ];
+    let output = stdout(&args);
+    assert!(
+        output.contains(
+            "  errno, kept by _sbrk_r, _isatty_r, _kill_r and 6 more together\n\n\
+             4 of these bytes go only when two or more of the 9 go.\n"
+        ),
+        "{output}"
+    );
+    let all = stdout(&[&args[..], &["--all"]].concat());
+    assert!(
+        all.contains(
+            "  errno, kept by _sbrk_r, _isatty_r, _kill_r, _close_r, _read_r, _fstat_r, \
+             _lseek_r, _write_r and _getpid_r together\n"
+        ),
+        "{all}"
+    );
+    // Four keepers are named, rather than three and "1 more".
+    let output = stdout(&[
+        "testdata/bin/c-cortex-m4.elf",
+        "retained",
+        "process_frame",
+        "report",
+        "app_tick",
+        "on_button",
+    ]);
+    assert!(
+        output.contains(
+            "  log_msg, kept by process_frame, report, app_tick and on_button together\n"
+        ),
+        "{output}"
+    );
+}
+
+#[test]
+fn the_largest_rows_of_several_include_symbols() {
+    // _impure_data and _impure_ptr are smaller than the 30 largest rows,
+    // so they are summed up with each other at the end.
+    let args = [
+        "testdata/bin/c-strtod.elf",
+        "retained",
+        "_strtod_l",
+        "_impure_data",
+        "_impure_ptr",
+    ];
+    let output = stdout(&args);
+    assert!(
+        output.contains(
+            "  __sf, kept by _strtod_l and _impure_ptr together\n      80        2 more\n\n\
+             _impure_data adds nothing: other items named here keep it.\n"
+        ),
+        "{output}"
+    );
+    let all = stdout(&[&args[..], &["--all"]].concat());
+    assert!(
+        all.contains("\n      76    76  _impure_data\n       4     4  _impure_ptr\n"),
+        "{all}"
+    );
+}
+
+#[test]
+fn retained_stops_at_the_first_symbol_it_cant_find() {
+    assert_output(
+        &stderr(&[SAMPLE, "retained", "crc32", "frob", "nosuch"]),
+        "error: no function or data object is named `frob`\n",
+    );
+}
+
+#[test]
+fn retained_refuses_a_shared_library_and_asks_for_a_symbol() {
+    assert_output(
+        &stderr(&[LIBRARY_SAMPLE, "retained", "process_frame", "report"]),
+        "error: elfq can't yet tell what only process_frame and report lead to in a shared \
+         library\n",
+    );
+    let error = stderr(&[SAMPLE, "retained"]);
+    assert!(
+        error.starts_with(
+            "error: the following required arguments were not provided:\n  <SYMBOL>...\n"
+        ),
+        "{error}"
+    );
+}
+
+#[test]
 fn the_overview_says_what_the_file_is() {
     let mut overview = elfq_json(&[SAMPLE]);
     // One block, from .interp to .bss.

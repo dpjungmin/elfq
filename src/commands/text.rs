@@ -167,6 +167,17 @@ pub(super) fn names_text(names: &[&str], all: bool) -> String {
     phrase(names, named(all))
 }
 
+/// How many SYMBOLs the row of an item that several of them keep together
+/// names before "and 5 more", unless `--all` asks for every one.
+const KEEPERS: usize = 3;
+
+/// The SYMBOLs that keep an item together, as its row names them: "a and
+/// b", "a, b and c", or for more than four, "a, b, c and 5 more" unless
+/// `all`.
+pub(super) fn keepers_text(names: &[&str], all: bool) -> String {
+    phrase(names, if all { usize::MAX } else { KEEPERS })
+}
+
 /// How the notes of `why` and `retained` name the items they list: as the
 /// commands do, [`NAMED`] of them, or with `--all`, every one; or as
 /// browse does on a screen with little room for a note, only the first,
@@ -391,7 +402,21 @@ pub(super) fn unnamed_items(binary: &Binary) -> Option<(&Item, Option<&Item>)> {
 /// Says that nothing reaches the item called `name` from where the program
 /// starts.
 pub(super) fn nothing_reaches(name: &str) -> String {
-    format!("Nothing reaches {name}: the program never uses it, or elfq can't see how.")
+    nothing_reaches_any(&[name], &Naming::of(false))
+}
+
+/// Says that nothing reaches any of the items called `names`, one or
+/// several, from where the program starts, naming them as `naming` names
+/// them.
+pub(super) fn nothing_reaches_any(names: &[&str], naming: &Naming) -> String {
+    let them = match names {
+        [_] => "it",
+        _ => "them",
+    };
+    format!(
+        "Nothing reaches {}: the program never uses {them}, or elfq can't see how.",
+        naming.phrase(names)
+    )
 }
 
 /// Why `root`, called `name`, is one, as a sentence.
@@ -745,6 +770,9 @@ mod tests {
             addresses_text(&[1, 2, 3, 4, 5], true),
             "0x1, 0x2, 0x3, 0x4 and 0x5"
         );
+        assert_eq!(keepers_text(&names[..4], false), "f1, f2, f3 and f4");
+        assert_eq!(keepers_text(&names[..5], false), "f1, f2, f3 and 2 more");
+        assert_eq!(keepers_text(&names[..5], true), "f1, f2, f3, f4 and f5");
     }
 
     #[test]

@@ -101,7 +101,7 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<Outcome> {
         None => overview::run(&cli.file, &binary, range, format, out),
         Some(Command::Top(args)) => top::run(&binary, range, args.all, format, out),
         Some(Command::Retained(args)) => {
-            retained::run(&binary, &args.symbol, range, args.all, format, out)
+            retained::run(&binary, &args.symbols, range, args.all, format, out)
         }
         Some(Command::Why(args)) => why::run(&binary, &args.symbol, args.all, format, out),
         Some(Command::Inlined(args)) => inlined::run(
