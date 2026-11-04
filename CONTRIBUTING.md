@@ -409,8 +409,10 @@ helper type, doesn't take a word of the list; where code still does, as
   one point, of the registers, the flags and the words that code stored,
   is `Known`, in `arch/thumb/startup/walk_state.rs`. A section's state
   when `main` starts, in `startup`, is its status (`problems::Status`).
-- **row**: a line of a table that elfq prints; a loop over a table of
-  sections also reads one row of that table each time it runs.
+- **row**: a line of a table that elfq prints, or of its JSON, where each
+  element of a list in the answer's object is a row (`json::write`,
+  `json::Rows`); a loop over a table of sections also reads one row of
+  that table each time it runs.
 - **shape**: how a table shows a tree: as rows that name the row they
   hang under, or drawn with `--tree` (`TreeShape`). A command's
   **format** is text, tree or JSON (`Format`).
@@ -761,7 +763,14 @@ is a short one to copy.
    own list there, as a flat list rather than a tree. A tree's rows go
    in the text's order, each with an `id` counting from 0 and the
    `parent` id of the row it hangs under, or `null`, as
-   `RetainedTree::to_json` makes them.
+   `RetainedTree::to_json` makes them. A list whose rows would take much
+   memory held all at once, as the chains of `why`, the items and calls
+   of `reach` and the items of `diff` would, is a `json::Rows`, made
+   from an iterator that makes each row as `json::write` writes it, so
+   that the command never holds them all. Making a row then mustn't
+   fail, since every error comes before the first line. Other lists stay
+   `Vec`s, which read more plainly, even those that grow with the
+   program, as `top`'s items do.
 8. **Large values.** Keep what the command builds that is large, such as
    the graph, `Names` or a `RetainedTree`, in a `Kept`, from `kept.rs`
    (`let graph = Kept::new(Graph::build(binary));`), so that elfq ends

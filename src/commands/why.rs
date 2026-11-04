@@ -10,6 +10,7 @@
 
 use std::collections::BTreeMap;
 use std::io::Write;
+use std::iter;
 
 use anyhow::{Result, bail};
 use serde::Serialize;
@@ -42,8 +43,10 @@ struct WhyJson<'a> {
     /// keep it, and `chains` is empty.
     root: Option<String>,
     /// The shortest chain from where the program starts, through each item
-    /// that keeps SYMBOL, to SYMBOL. The shortest chains come first.
-    chains: Vec<Vec<Step<'a>>>,
+    /// that keeps SYMBOL, to SYMBOL. The shortest chains come first. Each is
+    /// made as it is written, since a large program can have tens of
+    /// thousands.
+    chains: json::Rows<'a, Vec<Step<'a>>>,
     /// The items that use SYMBOL but that nothing reaches.
     unreachable_users: Vec<json::Item<'a>>,
     /// The items that use SYMBOL but that only SYMBOL leads to, as when it
@@ -104,7 +107,7 @@ pub(super) fn why<'a>(
                 symbol: json::Symbol::new(binary, node),
                 reachable: true,
                 root: Some(json::root_field(binary, root.kind)),
-                chains: Vec::new(),
+                chains: json::Rows::new(iter::empty()),
                 unreachable_users: Vec::new(),
                 users_it_keeps: Vec::new(),
                 on_every_chain: None,
@@ -172,19 +175,15 @@ pub(super) fn write_json(
         symbol: json::Symbol::new(binary, node),
         reachable: !users.keeping.is_empty(),
         root: None,
-        chains: users
-            .keeping
-            .iter()
-            .map(|&user| {
-                chain(binary, graph, &users.paths, Node::Item(user), node)
-                    .into_iter()
-                    .map(|(node, how)| Step {
-                        item: item(node),
-                        how,
-                    })
-                    .collect()
-            })
-            .collect(),
+        chains: json::Rows::new(users.keeping.iter().map(|&user| {
+            chain(binary, graph, &users.paths, Node::Item(user), node)
+                .into_iter()
+                .map(|(node, how)| Step {
+                    item: item(node),
+                    how,
+                })
+                .collect()
+        })),
         unreachable_users: users
             .unreachable
             .iter()

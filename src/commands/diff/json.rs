@@ -11,8 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::Write;
 
 use anyhow::Result;
-use serde::ser::SerializeSeq;
-use serde::{Serialize, Serializer};
+use serde::Serialize;
 
 use super::blocks::{Block, Place};
 use super::changes::{Change, Status};
@@ -49,8 +48,10 @@ struct DiffJson<'c, 'a> {
     /// The blocks of memory that the sections and load images of both
     /// occupy, in address order.
     blocks: Vec<BlockJson<'a>>,
-    /// The items that changed, largest delta first.
-    items: ItemsJson<'c, 'a>,
+    /// The items that changed, largest delta first, and of the same delta,
+    /// by name. Each is made as it is written, since a pair of large
+    /// programs has hundreds of thousands.
+    items: json::Rows<'c, ItemJson<'a>>,
     /// The uses between blocks that are new, then those that are gone.
     crossings: Vec<CrossingJson<'a>>,
 }
@@ -178,6 +179,12 @@ pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
             })
             .collect()
     });
+    let blocks = answer
+        .blocks
+        .iter()
+        .map(|block| block_json(answer, block, &holds_items))
+        .collect();
+    let changed = compared.map(|compared| ChangedItems::new(compared, &answer.blocks));
     let diff = DiffJson {
         old: answer.old_path.display().to_string(),
         new: answer.new_path.display().to_string(),
@@ -191,12 +198,8 @@ pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
             .iter()
             .map(|differs| differs.name)
             .collect(),
-        blocks: answer
-            .blocks
-            .iter()
-            .map(|block| block_json(answer, block, &holds_items))
-            .collect(),
-        items: ItemsJson::new(compared, &answer.blocks),
+        blocks,
+        items: json::Rows::new(changed.iter().flat_map(ChangedItems::rows)),
         crossings: compared.map_or_else(Vec::new, |compared| {
             compared
                 .crossings
@@ -261,11 +264,10 @@ fn block_json<'a>(
     }
 }
 
-/// A row for each item that changed, largest delta first, and of the
-/// same delta, by name, each made as it is written, since a pair of large
-/// programs has hundreds of thousands.
-struct ItemsJson<'c, 'a> {
-    compared: Option<&'c Compared<'a>>,
+/// The items that changed, which the JSON's `items` lists, and what their
+/// rows need.
+struct ChangedItems<'c, 'a> {
+    compared: &'c Compared<'a>,
     blocks: &'c [Block],
     /// The changes, in the order of the rows.
     order: Vec<usize>,
@@ -274,32 +276,35 @@ struct ItemsJson<'c, 'a> {
     inlined_into: HashMap<usize, Vec<usize>>,
 }
 
-impl<'c, 'a> ItemsJson<'c, 'a> {
-    fn new(compared: Option<&'c Compared<'a>>, blocks: &'c [Block]) -> ItemsJson<'c, 'a> {
-        let (order, inlined_into) = compared.map_or_else(Default::default, |compared| {
-            let items = &compared.items;
-            let mut order: Vec<usize> = (0..items.changes.len()).collect();
-            order.sort_by_cached_key(|&at| {
-                let change = &items.changes[at];
-                (
-                    Reverse(items.delta(change).unsigned_abs()),
-                    items.item(change).name.as_str(),
-                )
-            });
-            let gone = items.changes.iter().filter_map(Change::gone_index);
-            (order, items.inlined_into(&compared.new_names, gone))
+impl<'c, 'a> ChangedItems<'c, 'a> {
+    fn new(compared: &'c Compared<'a>, blocks: &'c [Block]) -> ChangedItems<'c, 'a> {
+        let items = &compared.items;
+        let mut order: Vec<usize> = (0..items.changes.len()).collect();
+        order.sort_by_cached_key(|&at| {
+            let change = &items.changes[at];
+            (
+                Reverse(items.delta(change).unsigned_abs()),
+                items.item(change).name.as_str(),
+            )
         });
-        ItemsJson {
+        let gone = items.changes.iter().filter_map(Change::gone_index);
+        ChangedItems {
             compared,
             blocks,
             order,
-            inlined_into,
+            inlined_into: items.inlined_into(&compared.new_names, gone),
         }
     }
 
+    /// The rows, in their order, each made as it is asked for.
+    fn rows(&self) -> impl Iterator<Item = ItemJson<'a>> {
+        let changes = &self.compared.items.changes;
+        self.order.iter().map(|&at| self.row(&changes[at]))
+    }
+
     /// The row for a change.
-    fn row(&self, compared: &Compared<'a>, change: &Change) -> ItemJson<'a> {
-        let items = &compared.items;
+    fn row(&self, change: &Change) -> ItemJson<'a> {
+        let items = &self.compared.items;
         let item = items.item(change);
         let in_build = |build: &'a Build, index: Option<usize>, item_blocks: &[Option<usize>]| {
             index.map_or_else(InBuild::default, |index| {
@@ -345,18 +350,6 @@ impl<'c, 'a> ItemsJson<'c, 'a> {
                         .collect()
                 }),
         }
-    }
-}
-
-impl Serialize for ItemsJson<'_, '_> {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut rows = serializer.serialize_seq(Some(self.order.len()))?;
-        if let Some(compared) = self.compared {
-            for &at in &self.order {
-                rows.serialize_element(&self.row(compared, &compared.items.changes[at]))?;
-            }
-        }
-        rows.end()
     }
 }
 

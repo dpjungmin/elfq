@@ -26,11 +26,13 @@ struct ReachJson<'a> {
     /// SYMBOL, then what it reaches, as the rows of a tree: each item comes
     /// after the item that uses it on its chain from SYMBOL, its `parent`.
     /// With `--to`, only the items that the tree draws (see
-    /// [`Reach::in_answer`]).
-    items: Vec<ItemJson<'a>>,
+    /// [`Reach::in_answer`]). A large program has hundreds of thousands, so
+    /// each is made as it is written.
+    items: json::Rows<'a, ItemJson<'a>>,
     /// The calls and jumps in what SYMBOL reaches that elfq can't follow,
-    /// or with `--to`, those that may go to its ranges.
-    unresolved: Vec<UnresolvedJson<'a>>,
+    /// or with `--to`, those that may go to its ranges. A large program
+    /// has tens of thousands, so each is made as it is written.
+    unresolved: json::Rows<'a, UnresolvedJson<'a>>,
     /// The functions that SYMBOL reaches whose code elfq can't read, since
     /// it doesn't know where they end.
     unreadable: Vec<json::Item<'a>>,
@@ -104,39 +106,31 @@ impl Reach<'_, '_> {
             })
             .collect();
         let ids = self.json_ids();
-        let items = self
-            .steps
-            .iter()
-            .zip(&ids)
-            .filter_map(|(step, &id)| {
-                Some(ItemJson {
-                    id: id?,
-                    item: item(step.node),
-                    block: step
-                        .block
-                        .map(|block| json::address(self.blocks[block].range.start)),
-                    how: (step.link.as_ref()).map(|link| json::how_field(link.via.kind)),
-                    sites: json::addresses(&self.via_sites(step)),
-                    through_pointer: step.through_pointer,
-                    in_to: (!self.to.is_empty()).then(|| self.in_to(step)),
-                    parent: (step.parent())
-                        .map(|parent| ids[parent].expect("a row's parent has one")),
-                })
+        let items = self.steps.iter().zip(&ids).filter_map(|(step, &id)| {
+            Some(ItemJson {
+                id: id?,
+                item: item(step.node),
+                block: step
+                    .block
+                    .map(|block| json::address(self.blocks[block].range.start)),
+                how: (step.link.as_ref()).map(|link| json::how_field(link.via.kind)),
+                sites: json::addresses(&self.via_sites(step)),
+                through_pointer: step.through_pointer,
+                in_to: (!self.to.is_empty()).then(|| self.in_to(step)),
+                parent: (step.parent()).map(|parent| ids[parent].expect("a row's parent has one")),
             })
-            .collect();
+        });
         let answer = ReachJson {
             symbol: json::Symbol::new(binary, Node::Item(self.symbol)),
             to: range_check::json_far_side(&self.to),
             code_bytes: bytes.code,
             data_bytes: bytes.data,
             blocks,
-            items,
-            unresolved: (self.cant_follow.iter())
-                .map(|cant| UnresolvedJson {
-                    caller: item(Node::Item(cant.found.from)),
-                    call: json::Unresolved::new(&cant.found),
-                })
-                .collect(),
+            items: json::Rows::new(items),
+            unresolved: json::Rows::new(self.cant_follow.iter().map(|cant| UnresolvedJson {
+                caller: item(Node::Item(cant.found.from)),
+                call: json::Unresolved::new(&cant.found),
+            })),
             unreadable: json::items(binary, &self.unreadable),
             complete: range_check::complete(
                 self.cant_follow.iter().map(|cant| &cant.found),
