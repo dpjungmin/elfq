@@ -322,8 +322,6 @@ struct Link {
     parent: StepId,
     /// The reference on the chain that reaches it, from its parent.
     via: Reference,
-    /// Where its parent uses it as `via` does.
-    sites: Vec<u64>,
     /// How the text lists the use that reaches it.
     used: Use,
 }

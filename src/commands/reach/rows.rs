@@ -165,10 +165,13 @@ impl Text<'_, '_> {
         }
     }
 
-    /// `steps` in the order of their rows: by group, each largest first.
+    /// `steps` in the order of their rows: by group, each largest first,
+    /// then by name, then by node. No two steps are of one node, so no two
+    /// share a key, and the key alone gives the order.
     pub(super) fn in_row_order<'s>(&self, mut steps: Vec<&'s Step>) -> Vec<&'s Step> {
         let binary = self.reach.binary;
-        steps.sort_by_key(|step| {
+        // Each key is worked out once, rather than at each comparison.
+        steps.sort_by_cached_key(|step| {
             let node = step.node;
             (
                 matches!(node, Node::Import(_)),
@@ -269,12 +272,22 @@ impl Text<'_, '_> {
     }
 
     /// The items and imports in `reached` that get rows: the 30 largest,
-    /// or every one.
+    /// or every one. Where the 30th place falls among several of one size,
+    /// those first by name, then by node, are kept.
     pub(super) fn largest(&self, reached: &[Step]) -> HashSet<Node> {
         let binary = self.reach.binary;
         let mut nodes: Vec<Node> = reached.iter().map(|step| step.node).collect();
-        nodes.sort_by_key(|&node| (Reverse(node.size(binary)), node.name(binary), node));
-        nodes.into_iter().take(text::shown(self.all)).collect()
+        let shown = text::shown(self.all);
+        if shown < nodes.len() {
+            // No two steps are of one node, so no two share a key, and the
+            // nodes that come before `shown` are those that a sort would
+            // put there, in some order.
+            nodes.select_nth_unstable_by_key(shown, |&node| {
+                (Reverse(node.size(binary)), node.name(binary), node)
+            });
+            nodes.truncate(shown);
+        }
+        nodes.into_iter().collect()
     }
 
     /// The note on the calls and jumps through pointers in `pointers`, all
@@ -424,5 +437,58 @@ mod tests {
         assert!(!names_many("main", false));
         // crc32 reaches only crc_table.
         assert!(!names_many("crc32", true));
+    }
+
+    #[test]
+    fn items_as_large_as_each_other_with_one_name_go_by_index() {
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/bin/rust-x86_64-nodebug.elf");
+        let binary = Binary::load(&path).unwrap();
+        let graph = Graph::build(&binary);
+        let names = Names::new(&binary);
+        // Two functions in .text, of 19 bytes each, which main reaches.
+        let fmt: Vec<usize> = (0..binary.items.len())
+            .filter(|&index| binary.items[index].name == "<&str as core::fmt::Display>::fmt")
+            .collect();
+        let [first, second] = fmt[..] else {
+            panic!("{fmt:?}");
+        };
+        assert_eq!(binary.items[first].size, 19);
+        assert_eq!(binary.items[second].size, 19);
+        let Node::Item(main) = names.find("main").unwrap().node else {
+            panic!("main is an import");
+        };
+        let reach = Reach::find(&binary, &graph, main, &[]);
+        let text = reach.text(&names, "main", false, Format::Text);
+
+        // Their rows come one after the other, by index.
+        let rows: Vec<Node> = (text.in_row_order(reach.steps[1..].iter().collect()))
+            .into_iter()
+            .map(|step| step.node)
+            .collect();
+        let row = |index| rows.iter().position(|&node| node == Node::Item(index));
+        let first_row = row(first).expect("main reaches it");
+        assert_eq!(row(second), Some(first_row + 1));
+
+        // When only one of them is among the largest, it is the first by
+        // index, wherever the two are among the steps.
+        let step = |index| Step {
+            node: Node::Item(index),
+            link: None,
+            block: None,
+            through_pointer: false,
+        };
+        let larger: Vec<usize> = (0..binary.items.len())
+            .filter(|&index| binary.items[index].size > 19)
+            .take(text::shown(false) - 1)
+            .collect();
+        for tied in [[first, second], [second, first]] {
+            for steps in [[&tied[..], &larger].concat(), [&larger, &tied[..]].concat()] {
+                let steps: Vec<Step> = steps.into_iter().map(step).collect();
+                let largest = text.largest(&steps);
+                assert!(largest.contains(&Node::Item(first)), "{tied:?}");
+                assert!(!largest.contains(&Node::Item(second)), "{tied:?}");
+            }
+        }
     }
 }

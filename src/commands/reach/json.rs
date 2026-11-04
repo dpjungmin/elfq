@@ -5,7 +5,7 @@ use std::io::Write;
 use anyhow::Result;
 use serde::Serialize;
 
-use super::Reach;
+use super::{Reach, Step};
 use crate::commands::{json, range_check};
 use crate::graph::Node;
 
@@ -116,7 +116,7 @@ impl Reach<'_, '_> {
                         .block
                         .map(|block| json::address(self.blocks[block].range.start)),
                     how: (step.link.as_ref()).map(|link| json::how_field(link.via.kind)),
-                    sites: json::addresses(step.link.as_ref().map_or(&[], |link| &link.sites)),
+                    sites: json::addresses(&self.via_sites(step)),
                     through_pointer: step.through_pointer,
                     in_to: (!self.to.is_empty()).then(|| self.in_to(step)),
                     parent: (step.parent())
@@ -145,6 +145,20 @@ impl Reach<'_, '_> {
             ),
         };
         json::write(&answer, out)
+    }
+
+    /// Where the parent of `step` uses it as its link's `via` does, for its
+    /// `sites`: none for SYMBOL, which has no parent. Only the JSON lists
+    /// them, so the search doesn't keep them.
+    fn via_sites(&self, step: &Step) -> Vec<u64> {
+        let Some(link) = &step.link else {
+            return Vec::new();
+        };
+        let via = link.via;
+        (self.graph.references_from(via.from).iter())
+            .filter(|reference| reference.to == step.node && reference.kind == via.kind)
+            .map(|reference| reference.site)
+            .collect()
     }
 
     /// The `id` of each step's row in the JSON, for the steps the answer

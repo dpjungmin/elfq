@@ -162,16 +162,18 @@ pub(in crate::commands) fn starts<'a>(
         RootKind::InSection(section) => (3, 0, section, 0),
         _ => (4, 0, 0, 0),
     });
-    // A main that is a root too is listed as one.
-    let main = match names.nodes("main") {
-        [Node::Item(index)]
-            if binary.kind != FileKind::SharedLibrary
-                && is_start(*index)
-                && graph.root(Node::Item(*index)).is_none() =>
-        {
-            Some((*index, None))
+    // A main that is a root too is listed as one. A shared library's
+    // isn't looked up: in one that has no main, looking it up would first
+    // file every item under its short names' keys.
+    let main = if binary.kind == FileKind::SharedLibrary {
+        None
+    } else {
+        match names.nodes("main") {
+            [Node::Item(index)] if is_start(*index) && graph.root(Node::Item(*index)).is_none() => {
+                Some((*index, None))
+            }
+            _ => None,
         }
-        _ => None,
     };
     let starts = main
         .into_iter()

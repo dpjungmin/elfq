@@ -964,6 +964,15 @@ fn reach_has_the_whole_tree() {
         reach["items"][11]["sites"],
         json!(["0x30000674", "0x30000696"])
     );
+    // Only the sites of the use on the chain: cleanup_stdio also tail-calls
+    // _fflush_r, at 0x800336c.
+    let cleanup = elfq_json(&["testdata/bin/c-strtod.elf", "reach", "cleanup_stdio"]);
+    let fflush = &cleanup["items"][2];
+    assert_eq!(
+        (&fflush["name"], &fflush["how"], &fflush["parent"]),
+        (&json!("_fflush_r"), &json!("call"), &json!(0))
+    );
+    assert_eq!(fflush["sites"], json!(["0x800334c", "0x800335a"]));
     assert_eq!(
         reach["blocks"][3],
         json!({

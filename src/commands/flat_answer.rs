@@ -94,10 +94,14 @@ pub(super) struct FlatTab {
 #[cfg(feature = "tui")]
 impl FlatTab {
     /// The tab of `answer`, which `brief` is as the command writes it
-    /// without `--all`.
+    /// without `--all`. The command needs `--all` to print all of `answer`
+    /// when `brief` doesn't have as many rows, or else when the two read
+    /// differently, as when its notes name fewer items. The rows are
+    /// counted first, since writing both answers out takes a while when
+    /// they are long.
     pub(super) fn new(answer: FlatAnswer, brief: FlatAnswer) -> FlatTab {
         FlatTab {
-            needs_all: brief.written() != answer.written(),
+            needs_all: brief.rows.len() != answer.rows.len() || brief.written() != answer.written(),
             brief: brief.notes,
             answer,
         }
