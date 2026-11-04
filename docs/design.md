@@ -343,8 +343,8 @@ bytes go only when several go, and which SYMBOLs nothing reaches, whose
 own bytes the total counts, then what is shared and what calls through
 pointers, as for one SYMBOL.
 A SYMBOL given twice counts once, so a set of one prints what `retained`
-of one prints; `--json` refuses several SYMBOLs for now, even one given
-twice. For example:
+of one prints. `--json` gives one SYMBOL and several in the same shape.
+For example:
 
 ```
 $ elfq testdata/bin/c-x86_64.elf retained process_frame report
@@ -1015,10 +1015,11 @@ An item looks like this, spread over lines here:
 | `size` | its size in bytes, or `null` for an import, or when elfq doesn't know it |
 | `size_estimated` | whether elfq estimated the size, which the text marks `~` |
 
-SYMBOL's item, `symbol` in most answers and `function` in
-`inlined SYMBOL`'s, also has `aliases`: its other names, such as the
-mangled symbol of a demangled name, or weak aliases at its address. A
-range has a `start` and an `end`, which isn't in it.
+SYMBOL's item, `symbol` in most answers, each of `symbols` in
+`retained`'s and `function` in `inlined SYMBOL`'s, also has `aliases`:
+its other names, such as the mangled symbol of a demangled name, or weak
+aliases at its address. A range has a `start` and an `end`, which isn't
+in it.
 
 Each answer has these keys, in this order.
 
@@ -1048,20 +1049,28 @@ found in it, and leaves its table of the largest items to `top --json`:
 | `items` | the rows of the tree, below, for the items that something reaches |
 | `unreachable` | the items that nothing reaches, largest first, each with `own` and `load_image` too |
 
-**`retained SYMBOL`**, for one SYMBOL; with several, even one given
-twice, elfq refuses `--json` for now:
+**`retained SYMBOL...`**, in one shape for one SYMBOL or several:
 
 | Key | Value |
 |---|---|
-| `symbol` | SYMBOL's item |
-| `reachable` | whether anything reaches SYMBOL from the roots; when nothing does, `items` and `shares` are empty |
+| `symbols` | each SYMBOL's item, in the order given, each once, with the keys below |
 | `range` | the range that `--range` picked, or `null` |
-| `own` | SYMBOL's own bytes, or with `--range`, those in the range |
-| `load_image` | how many of `own` are its load image's |
-| `retained` | `own` and the `own` of each row of `items`: what removing SYMBOL would save |
-| `items` | the rows of the tree, below, for the items that only SYMBOL leads to |
-| `shares` | what SYMBOL and those items use that other code uses too, and so isn't counted, sorted by name; with `--range`, only items with bytes in it |
-| `indirect_calls` | how many calls and jumps in SYMBOL and those items go through pointers set at run time |
+| `own` | the SYMBOLs' own bytes, or with `--range`, those in the range |
+| `load_image` | how many of `own` are their load images' |
+| `retained` | what removing the SYMBOLs all at once would save: the `retained` of each row of `items` whose `parent` is `null`, and the `own` of each SYMBOL that nothing reaches |
+| `kept_together` | how many of `retained` go only when two or more SYMBOLs go: removing any one of them alone saves none of these bytes; 0 for one SYMBOL |
+| `items` | the rows of the tree, below, for every item that goes, the SYMBOLs' own rows among them; a SYMBOL that nothing reaches has none, and with `--range`, neither has an item that keeps none of the range's bytes |
+| `shares` | what the items that go use that other code uses too, and so isn't counted, sorted by name; with `--range`, only items with bytes in it |
+| `indirect_calls` | how many calls and jumps in the items that go are through pointers set at run time |
+
+Each of `symbols` also has:
+
+| Key | Value |
+|---|---|
+| `reachable` | whether anything reaches it from the roots; when nothing does, nothing is there only because of it |
+| `own` | its own bytes, or with `--range`, those in the range |
+| `row` | the `id` of its row in `items`, or `null` when it has none: nothing reaches it, or with `--range`, it keeps none of the range's bytes |
+| `kept_by_others` | whether the other SYMBOLs keep it, alone or together, so that it adds nothing to `retained` |
 
 The `items` of `top` and `retained` are the rows of their trees, in the
 order of the text's rows, each an item with these keys too:
@@ -1073,14 +1082,32 @@ order of the text's rows, each an item with these keys too:
 | `load_image` | how many of `own` are its load image's, for a row marked "(load image)" or "(with its load image)" |
 | `retained` | its retained size |
 | `through_pointer` | whether the row is marked "(through a pointer)" |
-| `parent` | the `id` of the row it hangs under, or `null` for a row at the top of the tree: in `top`, a root or what several roots reach; in `retained`, what SYMBOL keeps itself |
+| `parent` | the `id` of the row it hangs under, or `null` for a row at the top of the tree: in `top`, a root or what several roots reach; in `retained`, an item that no item that goes keeps, which is a SYMBOL or an item that several SYMBOLs keep only together |
+
+`retained`'s rows also have `kept_together_by`. A row at the top that
+isn't a SYMBOL's own goes only because several SYMBOLs keep it together,
+and there it gives the addresses of the SYMBOLs it needs, in the order
+given, such as `["0x1700","0x1920"]`, each of which works as SYMBOL.
+Removing just those removes the row, and removing all of them but one
+keeps it. Every other row has `null`, a SYMBOL's own too, even at the top
+when the other SYMBOLs keep that SYMBOL only together, as they keep
+`stats` in `retained process_frame report stats`: its entry in `symbols`
+says so with `kept_by_others`.
 
 So a script that adds up `retained` takes only the rows whose `parent` is
-`null`. The first rows of `retained process_frame`, shown above:
+`null`, and in `retained`, the `own` of each SYMBOL that nothing reaches.
+The first rows of `retained process_frame`, shown above:
 
 ```json
-{"id":0,"name":"crc32","kind":"function","section":".text","address":"0x1280","size":59,"size_estimated":false,"own":59,"load_image":0,"retained":1083,"through_pointer":false,"parent":null},
-{"id":1,"name":"crc_table","kind":"data","section":".rodata","address":"0x2120","size":1024,"size_estimated":false,"own":1024,"load_image":0,"retained":1024,"through_pointer":false,"parent":0},
+{"id":0,"name":"process_frame","kind":"function","section":".text","address":"0x1700","size":532,"size_estimated":false,"own":532,"load_image":0,"retained":2068,"through_pointer":false,"parent":null,"kept_together_by":null},
+{"id":1,"name":"crc32","kind":"function","section":".text","address":"0x1280","size":59,"size_estimated":false,"own":59,"load_image":0,"retained":1083,"through_pointer":false,"parent":0,"kept_together_by":null},
+```
+
+and in `retained process_frame report`, the row of `stats`, which the two
+keep together:
+
+```json
+{"id":23,"name":"stats","kind":"data","section":".data","address":"0x4020","size":32,"size_estimated":false,"own":32,"load_image":0,"retained":32,"through_pointer":false,"parent":null,"kept_together_by":["0x1700","0x1920"]},
 ```
 
 **`why SYMBOL`**:
@@ -1447,7 +1474,8 @@ in order. Its output is the first example under [Commands](#commands).
    the row they hang under or, with `--tree`, drawn as a tree
    (`Table::tree`), and writes the table (`Table::write`), then the notes.
    With `--json`, `retained::write_json` lists every row of the tree
-   instead (`RetainedTree::to_json`), and writes them through `json::write`.
+   instead (`RetainedTree::to_json_with`), with the SYMBOLs that each row
+   kept together needs, and writes them through `json::write`.
 8. **Exit.** `run`, in main.rs, flushes the output and turns the answer into
    the exit status: 0 for an answer, 1 when `callers` or `callees` with
    ranges, `--from` or `--to` finds something that crosses, or may,
@@ -1599,9 +1627,8 @@ in those libraries, and the first whose text names nothing takes about
 half a second, as it works out what to suggest.
 
 `retained` takes several SYMBOLs and says what removing them at once
-would save, as text; its JSON for several SYMBOLs comes next, then every
-argument that fails listed at once, and ranges as arguments, which stand
-for the items in them.
+would save, as text and as JSON; every argument that fails listed at once
+comes next, then ranges as arguments, which stand for the items in them.
 
 Ideas for later, not yet planned: output that scripts and AI agents can
 read more easily, the functions that shared libraries export as roots,

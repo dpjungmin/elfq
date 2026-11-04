@@ -965,5 +965,13 @@ elfq testdata/bin/c-x86_64.elf callers log_msg --json | jq -r '.callers[].item.n
 elfq testdata/bin/rust-cortex-m4.elf top --json | jq -r '(.items + .unreachable)[] | select(.name | contains("core::fmt::")) | .address' | xargs elfq testdata/bin/rust-cortex-m4.elf retained
 ```
 
-With several SYMBOLs, `retained` writes text only for now, and refuses
-`--json`.
+`retained`'s JSON has the same shape for one SYMBOL and for several:
+`symbols` lists each SYMBOL, with `row`, the `id` of its own row in
+`items`; `kept_together` counts the bytes that go only when several go;
+and a row that the text marks "kept by A and B together" names those
+SYMBOLs in `kept_together_by`, by their addresses. This prints the rows
+that process_frame and report keep only together, `stats` first:
+
+```sh
+elfq testdata/bin/c-x86_64.elf retained process_frame report --json | jq -r '.items[] | select(.kept_together_by) | .name'
+```

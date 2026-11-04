@@ -118,13 +118,9 @@ fn check_range(cli: &Cli) -> Result<()> {
     }
 }
 
-/// Refuses `--json` for the commands that print only text, and for
-/// `retained` with several SYMBOLs, whose JSON isn't written yet.
+/// Refuses `--json` for the commands that print only text.
 fn check_json(cli: &Cli) -> Result<()> {
     match &cli.command {
-        Some(Command::Retained(args)) if args.symbols.len() > 1 => {
-            bail!("elfq can't yet write --json for several SYMBOLs; give one")
-        }
         None
         | Some(
             Command::Top(_)

@@ -368,13 +368,8 @@ mod tests {
                 // R is what `retained SYMBOL --json` says removing it would
                 // save, where it answers.
                 if let Some(index) = retained_index {
-                    let symbol = retained::SymbolInTree {
-                        retained: &retained_tree,
-                        index,
-                        lead_name: "",
-                    };
-                    let answer = json(&|out| retained::write_json(&symbol, out));
-                    let reachable = answer["reachable"].as_bool().unwrap();
+                    let answer = json(&|out| retained::write_json(&retained_tree, &[index], out));
+                    let reachable = answer["symbols"][0]["reachable"].as_bool().unwrap();
                     assert_eq!(keeping.unreached, !reachable, "{shown}");
                     let saved = reachable.then(|| answer["retained"].as_u64().unwrap());
                     assert_eq!(keeping.retained, saved, "{shown}");

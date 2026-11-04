@@ -4,8 +4,9 @@
 //! other code, and the calls through pointers in the items that go, with
 //! the notes that name those two; and for several items, the items that
 //! each row kept together needs, and the bytes that go only when several
-//! go. The answers in `mod.rs` and `several.rs` add their lead lines and
-//! pick their rows.
+//! go. The text in `mod.rs` and `several.rs` adds its lead line and picks
+//! its rows, and `json.rs` writes every row, so the text and the JSON take
+//! these facts from one place.
 
 use std::collections::HashMap;
 

@@ -14,60 +14,33 @@
 //! saved, the items under the tops and the notes; the answer adds its lead
 //! line and picks its rows. This file finds the SYMBOLs and answers about
 //! one, and `several.rs` about several, from the same parts and with the
-//! same words for the lead line.
+//! same words for the lead line. `json.rs` gives the answer as JSON, in one
+//! shape for one SYMBOL or several.
 
+mod json;
 mod parts;
 mod several;
+
+pub(super) use json::write_json;
 
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 
 use anyhow::{Result, bail};
-use serde::Serialize;
 
 use super::checks::{check_code_is_readable, readable_item};
 use super::kept::Kept;
-use super::retained_tree::{KeptItem, RetainedTree};
+use super::retained_tree::RetainedTree;
 use super::symbol::Names;
 use super::text::Naming;
 #[cfg(feature = "tui")]
 use super::tree_answer::TabAnswer;
 use super::tree_answer::TreeAnswer;
-use super::{Outcome, json, text};
+use super::{Outcome, text};
 use crate::binary::{AddressRange, Binary, FileKind};
 use crate::cli::Format;
 use crate::graph::{Graph, Node};
 use parts::Parts;
-
-#[derive(Serialize)]
-struct RetainedJson<'a> {
-    symbol: json::Symbol<'a>,
-    /// Whether anything reaches SYMBOL from where the program starts. When
-    /// nothing does, nothing is there only because of it.
-    reachable: bool,
-    /// The range of memory that sizes count, or `null` for all of it.
-    range: Option<json::Range>,
-    /// SYMBOL's own bytes, or with a range, those in it, its load image's
-    /// too.
-    own: u64,
-    /// How many of `own` are in SYMBOL's load image: 0 without a range.
-    load_image: u64,
-    /// SYMBOL's own bytes and those of everything it keeps: the bytes that
-    /// would go away if it did. With a range, only those in it.
-    retained: u64,
-    /// The items that only SYMBOL leads to, as the rows of the tree in the
-    /// text's order. Those with no `parent` are those that SYMBOL keeps
-    /// itself. `retained` is `own` and their `own` together.
-    items: Vec<KeptItem<'a>>,
-    /// What SYMBOL and the items it keeps use that other code uses too, and
-    /// so isn't counted, sorted by name. With a range, only items with bytes
-    /// in it.
-    shares: Vec<json::Item<'a>>,
-    /// How many calls and jumps in SYMBOL and the items it keeps go through
-    /// pointers set at run time, which elfq can't follow. A function called
-    /// that way counts for the code or data that holds its address.
-    indirect_calls: usize,
-}
 
 /// Answers `elfq FILE retained SYMBOL...`: what removing the SYMBOLs in
 /// `queries` at once would save. A SYMBOL given twice, or by a name and by
@@ -91,20 +64,22 @@ pub(super) fn run(
         range,
         names.into_inner(),
     ));
-    match &found[..] {
-        [one] => {
+    match (format, &found[..]) {
+        (Format::Json, _) => {
+            let indexes: Vec<usize> = found.iter().map(|found| found.index).collect();
+            write_json(&retained, &indexes, out)?;
+        }
+        (Format::Text | Format::Tree, [one]) => {
             let symbol = SymbolInTree {
                 retained: &retained,
                 index: one.index,
                 lead_name: &one.lead_name,
             };
-            match format {
-                Format::Json => write_json(&symbol, out)?,
-                Format::Text | Format::Tree => answer(&symbol, all, format).write(out)?,
-            }
+            answer(&symbol, all, format).write(out)?;
         }
-        // `arguments.rs` refuses --json with several SYMBOLs.
-        _ => several::tree_answer(&retained, &found, all, format).write(out)?,
+        (Format::Text | Format::Tree, _) => {
+            several::tree_answer(&retained, &found, all, format).write(out)?;
+        }
     }
     Ok(Outcome::Answered)
 }
@@ -228,28 +203,6 @@ pub(super) fn answers(symbol: &SymbolInTree, shorten: &dyn Fn(&str) -> String) -
         needs_all,
         answer,
     }
-}
-
-/// Writes what `retained SYMBOL --json` writes about the symbol.
-pub(super) fn write_json(symbol: &SymbolInTree, out: &mut dyn Write) -> Result<()> {
-    let retained = symbol.retained;
-    let binary = retained.binary;
-    let node = symbol.node();
-    let parts = Parts::new(retained, &[symbol.index]);
-    let answer = RetainedJson {
-        symbol: json::Symbol::new(binary, node),
-        reachable: symbol.is_reachable(),
-        range: retained.range.map(json::Range::new),
-        own: retained.own(symbol.index),
-        load_image: retained.load_image(symbol.index),
-        retained: parts.removal.retained(),
-        items: retained.to_json(retained.tree.children(node)),
-        shares: (parts.shared.iter())
-            .map(|&node| json::Item::new(binary, node))
-            .collect(),
-        indirect_calls: parts.indirect.len(),
-    };
-    json::write(&answer, out)
 }
 
 /// SYMBOL's item, in the tree of retained sizes that says what only it

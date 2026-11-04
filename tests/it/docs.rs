@@ -44,10 +44,11 @@ fn the_examples_in_the_docs_show_what_elfq_prints() {
 /// Answers that between them have every key that elfq's JSON has. A key
 /// shows only in an object that is there, so for each key that holds a
 /// list, one of them has an entry in it, which the test checks.
-const JSON_ANSWERS: [&[&str]; 25] = [
+const JSON_ANSWERS: [&[&str]; 26] = [
     &[TCM_SAMPLE],
     &[SAMPLE, "top"],
     &[SAMPLE, "retained", "process_frame"],
+    &[SAMPLE, "retained", "process_frame", "report"],
     &[SAMPLE, "why", "log_msg"],
     &[SAMPLE, "why", "parse_value"],
     &[SAMPLE, "inlined"],
