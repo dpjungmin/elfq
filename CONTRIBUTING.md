@@ -764,12 +764,13 @@ is a short one to copy.
    in the text's order, each with an `id` counting from 0 and the
    `parent` id of the row it hangs under, or `null`, as
    `RetainedTree::to_json` makes them. A list whose rows would take much
-   memory held all at once, as the chains of `why` and the items of
-   `diff` would, is a `json::Rows`, made from an iterator that makes each
-   row as `json::write` writes it, so that the command never holds them
-   all. Making a row then mustn't fail, since every error comes before
-   the first line. Other lists stay `Vec`s, which read more plainly, even
-   those that grow with the program, as `top`'s items do.
+   memory held all at once, as the chains of `why`, the items and calls
+   of `reach` and the items of `diff` would, is a `json::Rows`, made
+   from an iterator that makes each row as `json::write` writes it, so
+   that the command never holds them all. Making a row then mustn't
+   fail, since every error comes before the first line. Other lists stay
+   `Vec`s, which read more plainly, even those that grow with the
+   program, as `top`'s items do.
 8. **Large values.** Keep what the command builds that is large, such as
    the graph, `Names` or a `RetainedTree`, in a `Kept`, from `kept.rs`
    (`let graph = Kept::new(Graph::build(binary));`), so that elfq ends
