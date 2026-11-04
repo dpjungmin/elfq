@@ -19,12 +19,11 @@ use std::collections::{HashMap, HashSet};
 
 use super::parts::Parts;
 use super::{Found, subject, would_save};
-use crate::binary::total;
 use crate::cli::Format;
 use crate::commands::retained_tree::RetainedTree;
 use crate::commands::text::{self, Naming};
 use crate::commands::tree_answer::TreeAnswer;
-use crate::graph::{KeptTogether, Node};
+use crate::graph::Node;
 
 /// What `retained SYMBOL...` writes as text for `found`, several SYMBOLs,
 /// in the tree `retained`: what removing them all at once would save, and
@@ -36,9 +35,7 @@ pub(super) fn tree_answer(
     all: bool,
     format: Format,
 ) -> TreeAnswer {
-    let removed: Vec<Node> = (found.iter())
-        .map(|found| Node::Item(found.index))
-        .collect();
+    let removed: Vec<usize> = found.iter().map(|found| found.index).collect();
     let several = Several {
         retained,
         found,
@@ -112,25 +109,12 @@ impl Several<'_, '_, '_, '_> {
         format!("{nothing_reaches} {saves}.")
     }
 
-    /// The SYMBOLs that something reaches, in the order given.
-    fn reachable(&self) -> impl Iterator<Item = &Found> {
-        let tree = &self.retained.tree;
-        (self.found.iter()).filter(|found| tree.is_reachable(Node::Item(found.index)))
-    }
-
     /// The SYMBOLs that nothing reaches, in the order given.
     fn unreachable(&self) -> Vec<&Found> {
         let tree = &self.retained.tree;
         (self.found.iter())
             .filter(|found| !tree.is_reachable(Node::Item(found.index)))
             .collect()
-    }
-
-    /// The own bytes of the SYMBOLs that nothing reaches, which the total
-    /// counts, since removing them saves those too.
-    fn unreachable_own(&self) -> u64 {
-        let retained = self.retained;
-        total((self.unreachable().iter()).map(|found| retained.own(found.index)))
     }
 
     /// The items that the table shows: the 30 largest of all that goes, or
@@ -155,31 +139,23 @@ impl Several<'_, '_, '_, '_> {
 
     /// The words that end the row of each top in `shown` that several
     /// SYMBOLs keep together, as in "kept by process_frame and report
-    /// together". They name the SYMBOLs it needs, in the order given and as
-    /// rows name the items they hang under: up to 3, or 4 when that is
-    /// all, and then how many more, or with `all`, every one.
+    /// together". They name the SYMBOLs it needs, in the order given (see
+    /// [`Parts::keepers`]) and as rows name the items they hang under: up
+    /// to 3, or 4 when that is all, and then how many more, or with `all`,
+    /// every one.
     fn kept_together_words(&self, shown: &HashSet<usize>, all: bool) -> HashMap<usize, String> {
-        let item_index = |kept: &KeptTogether| match kept.top {
-            Node::Item(index) if shown.contains(&index) => Some(index),
-            _ => None,
-        };
-        let rows: Vec<(usize, &KeptTogether)> = (self.parts.removal.kept_together().iter())
-            .filter_map(|kept| Some((item_index(kept)?, kept)))
-            .collect();
+        let mut keepers = self.parts.keepers();
+        keepers.retain(|index, _| shown.contains(index));
         // Each SYMBOL may keep many rows together; its name is worked out
         // once.
         let names = self.retained.names();
-        let mut short_names: HashMap<Node, String> = HashMap::new();
-        for &keeper in rows.iter().flat_map(|(_, kept)| &kept.keepers) {
-            (short_names.entry(keeper)).or_insert_with(|| names.short_name(keeper));
+        let mut short_names: HashMap<usize, String> = HashMap::new();
+        for &keeper in keepers.values().flatten() {
+            (short_names.entry(keeper)).or_insert_with(|| names.short_name(Node::Item(keeper)));
         }
-        let given: HashMap<Node, usize> = (self.found.iter().enumerate())
-            .map(|(given, found)| (Node::Item(found.index), given))
-            .collect();
-        rows.into_iter()
-            .map(|(index, kept)| {
-                let mut keepers = kept.keepers.clone();
-                keepers.sort_by_key(|keeper| given[keeper]);
+        keepers
+            .into_iter()
+            .map(|(index, keepers)| {
                 let keepers: Vec<&str> = (keepers.iter())
                     .map(|keeper| short_names[keeper].as_str())
                     .collect();
@@ -240,8 +216,7 @@ impl Several<'_, '_, '_, '_> {
     fn add_nothing_note(&self, naming: &Naming) -> Option<String> {
         let removal = &self.parts.removal;
         let names = names(
-            self.reachable()
-                .filter(|found| !removal.matters(Node::Item(found.index))),
+            (self.found.iter()).filter(|found| removal.is_kept_by_others(Node::Item(found.index))),
         );
         let (add, them) = match names.len() {
             0 => return None,
@@ -257,7 +232,7 @@ impl Several<'_, '_, '_, '_> {
     /// Says how many of the bytes saved go only when several SYMBOLs go,
     /// as in "56 of these bytes go only when both go.", if any do.
     fn together_note(&self) -> Option<String> {
-        let together = self.together();
+        let together = self.parts.bytes_kept_together();
         let go = match together {
             0 => return None,
             1 => "goes",
@@ -272,39 +247,6 @@ impl Several<'_, '_, '_, '_> {
         Some(format!("{together} of these bytes {go} only when {when}."))
     }
 
-    /// How many of the bytes saved no one SYMBOL saves alone. That is the
-    /// total, less the own bytes of the SYMBOLs that nothing reaches, less
-    /// the retained size of each SYMBOL that no other SYMBOL keeps, which
-    /// is what removing it alone saves. Those retained sizes don't overlap,
-    /// and a SYMBOL that another keeps saves nothing alone that the other
-    /// doesn't save already.
-    fn together(&self) -> u64 {
-        let tree = &self.retained.tree;
-        let removal = &self.parts.removal;
-        // Whether another SYMBOL is above `node` in the tree, and so keeps
-        // it. Every item between the two would be lost too, so the walk up
-        // stops at the first item that isn't.
-        let kept_by_another = |node: Node| {
-            let mut above = tree.parent(node);
-            while let Some(node) = above.filter(|&node| removal.is_lost(node)) {
-                if removal.is_removed(node) {
-                    return true;
-                }
-                above = tree.parent(node);
-            }
-            false
-        };
-        let alone = total(
-            self.reachable()
-                .map(|found| Node::Item(found.index))
-                .filter(|&node| !kept_by_another(node))
-                .map(|node| tree.retained(node)),
-        );
-        (removal.retained())
-            .saturating_sub(self.unreachable_own())
-            .saturating_sub(alone)
-    }
-
     /// Names the SYMBOLs that nothing reaches, as `naming` names them, and
     /// says that the total counts their own bytes, if they have any. `None`
     /// when something reaches each SYMBOL.
@@ -316,7 +258,7 @@ impl Several<'_, '_, '_, '_> {
             _ => "their",
         };
         let nothing_reaches = text::nothing_reaches_any(&names, naming);
-        Some(match self.unreachable_own() {
+        Some(match self.parts.unreachable_own() {
             0 => nothing_reaches,
             own => format!(
                 "{nothing_reaches} The total counts {its} own {}.",

@@ -61,7 +61,7 @@ command.
 | `src/commands/reach/` | `elfq FILE reach [SYMBOL]`: `mod.rs` holds what the search from SYMBOL finds, with the words the code uses for its parts, and `Text`, which words it for people, `find.rs` the search, `rows.rs` writes the answer by block of memory, which browse shows too, `to.rs` the answer with `--to`, `tree.rs` the tree of `--tree` and `json.rs` the JSON, and `starts.rs` answers without SYMBOL, as browse's start page does. |
 | `src/commands/diff/` | `elfq FILE diff NEW`: `mod.rs` reads both files, builds the answer from their bytes alone or from their items too, and gives the exit status, `blocks.rs` works out the blocks of memory that both builds share and what changed in each, `pairing.rs` pairs the builds' items, `changes.rs` works out what changed, `edited.rs` which items of the same size are edited, `crossings.rs` the uses between blocks that are new or gone, `rows.rs` picks the rows of MOVED and CHANGE, and `text.rs` and `json.rs` write the answer. The unit tests of `pairing.rs` and `edited.rs` are in `pairing/tests.rs` and `edited/tests.rs`. |
 | `src/commands/startup/` | `elfq FILE startup`: `mod.rs` refuses files that aren't Cortex-M firmware from their headers, and runs the rest, `start.rs` finds the reset handler and `main`, `ram_sections.rs` lists the load images and sections without contents that startup code sets up, and matches what a call or a loop copies or zeroes to them, `events.rs` says what the steps read of each of the walk's events, `steps.rs` reads the walk's calls and loops as the steps that copy and zero sections, with `pieces.rs`, which joins the bytes that loops and stores copy or zero into steps, and `unread.rs`, which works out what code that elfq can't follow may set up, `problems.rs` works out the state of each section when `main` starts, the problems and the notes, and `text.rs` and `json.rs` write the answer. `debug.rs` lists the events of the walk that the steps read, for `elfq FILE debug walk`. The unit tests build their walks with `fixtures.rs`; those of `problems.rs` and `steps.rs` are in `problems/tests.rs` and `steps/tests.rs`. |
-| `src/commands/retained/` | `elfq FILE retained SYMBOL...`: `mod.rs` finds the SYMBOLs and answers about one, as browse's tab 6 shows it too, `several.rs` answers about several at once, with the rows that several keep together and the notes about the SYMBOLs and the bytes they save only together, and `parts.rs` works out what both answers take from what removing the SYMBOLs loses: the items under the removal's tops, what they share with other code and the calls through pointers among them, with the notes that name those. |
+| `src/commands/retained/` | `elfq FILE retained SYMBOL...`: `mod.rs` finds the SYMBOLs and answers about one, as browse's tab 6 shows it too, `several.rs` answers about several at once, with the rows that several keep together and the notes about the SYMBOLs and the bytes they save only together, and `parts.rs` works out what both answers take from what removing the SYMBOLs loses: the items under the removal's tops, what they share with other code and the calls through pointers among them, with the notes that name those, the bytes that go only when several go, and the SYMBOLs that each row kept together needs. |
 | `src/arch/` | Finding the addresses that machine code calls or uses, one module per instruction set (x86-64 and Thumb). The rest of elfq reads code through `InstructionSet`, in `mod.rs`, which a file whose code elfq can't read doesn't have. Thumb's has three parts: `thumb/sweep.rs` reads each instruction on its own, `thumb/decode.rs` says what an instruction does with the registers and the stack, and `thumb/values/` follows the addresses that code puts in registers to where a branch through one goes, as for long calls and veneers; `thumb/mod.rs` begins with a map of its files. `listing.rs` prints a function's code as text, for `browse`: x86-64 with iced-x86's formatter, and Thumb with thumb-asm, in the lines that `thumb::layout` cuts the code into with the same sweep as `scan`. `operands` finds the bits of a function's code that say where something is, such as the distance in a call, for `diff` to tell code that changed from code that only moved. `startup.rs` and `thumb/startup/` follow the code that a Cortex-M processor runs from reset, with the numbers in its registers and memory, for `startup`; `thumb/startup/mod.rs` begins with a map of its files, and design.md's [Startup, end to end](docs/design.md#startup-end-to-end) shows how the four `startup` modules hand off to each other. |
 | `src/binary/` | Reading an ELF file: its functions and data objects ("items") and where they were found, their names, imports, stored pointers and memory blocks, and in Arm files the core the code is for (`attributes.rs`) and the data that `$d` symbols mark among code. `mod.rs` holds the types and the queries on them, and begins with the steps of loading a file and a map of the files; `load.rs` takes those steps, and `sections.rs` parses the file, refusing one that isn't a linked program or library, and reads the section headers, for `load.rs` and `memory.rs`. `memory.rs` reads only the headers and the bytes that the sections put in memory, which `diff` compares, and `header.rs` only the ELF header and program headers, for `startup` to refuse a file for another processor before loading it. Unnamed data, such as string literals, is found from what code and pointers refer to. Each function's code is scanned once, as the file loads (`Binary::code_references`). `names.rs` makes mangled names readable and works out the short names that people type for long ones; its module doc says how a short name is found quickly. `made_names.rs` makes the names of items that no symbol names, such as `fn_0x8000040`, and tells them apart. `startup.rs` gives the startup walk (`arch::startup::Program`) the file's code, the words that memory holds at reset, as in flash or a load image, and where its functions are, and `listing.rs`, with the `tui` feature, gives browse a function's code as `arch` prints it, with the data that `$d` symbols mark among it. The unit tests of `names.rs`, `vector_table.rs` and `unnamed_functions.rs` are in `names/tests.rs`, `vector_table/tests.rs` and `unnamed_functions/tests.rs`, and those of `listing.rs`, which check the Thumb text against objdump's, in `listing/thumb_text.rs`. |
 | `src/graph/` | The reference graph that connects items, the roots where the program starts, the dominator tree that says what is exclusive to what, the shortest paths that `why` and `reach` show, the bytes that a function reaches (`reached.rs`), what removing several items at once would remove (`removal.rs`), the items in ranges of memory (`items_in_ranges.rs`) and the references that cross the ranges' boundary, narrowed with `--from` or `--to` (`boundary.rs`), and where a linker's veneers jump to. |
@@ -331,21 +331,24 @@ helper type, doesn't take a word of the list; where code still does, as
   frees the other; the closest such item is what the other is kept by.
   `Kept`, in `kept.rs`, is unrelated: it leaves a value for the system to
   free when elfq ends.
-- **lost**, **top**, **matters**, **kept together**: what removing several
-  nodes at once does (`graph::Removal`). A node is lost when something
-  reaches it and a search from the roots that never enters a removed node
-  doesn't, so what each removed node keeps is lost with it. The tops are
-  the lost nodes whose parent in the tree isn't lost, much as the tree's
-  top (`DominatorTree::top`), which the `top` command lists, holds the
-  nodes with no parent at all. A removed node matters when the search
-  stopped at it: it is a root, or a node that the search reaches uses it.
-  One that something reaches and that doesn't matter adds nothing, since
-  every chain from a root to it passes another removed node. A top that
-  isn't removed is kept together by its keepers (`graph::KeptTogether`):
-  the removed nodes that matter and lead to it through lost nodes that
-  don't matter. Removing just them loses it, and removing all of them but
-  one keeps it. `lost` in `arch/thumb/values`, where a value goes when
-  elfq stops following it, is unrelated.
+- **lost**, **top**, **matters**, **kept by others**, **kept together**:
+  what removing several nodes at once does (`graph::Removal`). A node is
+  lost when something reaches it and a search from the roots that never
+  enters a removed node doesn't, so what each removed node keeps is lost
+  with it. The tops are the lost nodes whose parent in the tree isn't
+  lost, much as the tree's top (`DominatorTree::top`), which the `top`
+  command lists, holds the nodes with no parent at all. A removed node
+  matters when the search stopped at it: it is a root, or a node that the
+  search reaches uses it. One that something reaches and that doesn't
+  matter is kept by others (`Removal::is_kept_by_others`): every chain
+  from a root to it passes another removed node, so the others keep it,
+  alone or together, and it adds nothing. Unlike kept by, which names the
+  one item that keeps another, kept by others may take several of them at
+  once. A top that isn't removed is kept together by its keepers
+  (`graph::KeptTogether`): the removed nodes that matter and lead to it
+  through lost nodes that don't matter. Removing just them loses it, and
+  removing all of them but one keeps it. `lost` in `arch/thumb/values`,
+  where a value goes when elfq stops following it, is unrelated.
 - **answer**: what a command has worked out, before it is written as text
   or JSON. `FlatAnswer` is the text of an answer whose table has one row
   to a line, as `callers`, `callees` and `reach` write it, and

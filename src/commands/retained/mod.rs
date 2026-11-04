@@ -235,7 +235,7 @@ pub(super) fn write_json(symbol: &SymbolInTree, out: &mut dyn Write) -> Result<(
     let retained = symbol.retained;
     let binary = retained.binary;
     let node = symbol.node();
-    let parts = Parts::new(retained, &[node]);
+    let parts = Parts::new(retained, &[symbol.index]);
     let answer = RetainedJson {
         symbol: json::Symbol::new(binary, node),
         reachable: symbol.is_reachable(),
@@ -288,7 +288,7 @@ struct Alone<'t, 'g, 'a> {
 impl<'t, 'g, 'a> Alone<'t, 'g, 'a> {
     /// Works out what removing `symbol` alone loses.
     fn new(symbol: SymbolInTree<'t, 'g, 'a>) -> Alone<'t, 'g, 'a> {
-        let parts = Parts::new(symbol.retained, &[symbol.node()]);
+        let parts = Parts::new(symbol.retained, &[symbol.index]);
         Alone { symbol, parts }
     }
 

@@ -170,6 +170,13 @@ impl Removal {
         self.fate(node) == Fate::Matters
     }
 
+    /// Whether `node` is a removed node that the other removed nodes keep,
+    /// alone or together: something reaches it, but it doesn't matter, so
+    /// it adds nothing.
+    pub(crate) fn is_kept_by_others(&self, node: Node) -> bool {
+        self.fate(node) == Fate::KeptByOthers
+    }
+
     /// The lost nodes, in the order of `graph::index`: the items, then the
     /// imports.
     pub fn lost(&self) -> impl Iterator<Item = Node> + '_ {
@@ -437,9 +444,10 @@ mod tests {
         let removal = example.remove(&[Item(1), Item(2)]);
         assert_eq!(lost(&removal), [Item(1), Item(2)]);
         assert_eq!(removal.tops(), [Item(1)]);
-        assert!(removal.matters(Item(1)));
+        assert!(removal.matters(Item(1)) && !removal.is_kept_by_others(Item(1)));
         // Only 1 leads to 2.
         assert!(removal.is_removed(Item(2)) && !removal.matters(Item(2)));
+        assert!(removal.is_kept_by_others(Item(2)));
         assert_eq!(removal.kept_together(), []);
         assert_eq!(removal.retained(), 110);
     }
@@ -465,6 +473,8 @@ mod tests {
         assert_eq!(removal.tops(), []);
         assert_eq!(removal.unreachable().collect::<Vec<_>>(), [Item(2)]);
         assert!(removal.is_removed(Item(2)) && !removal.matters(Item(2)));
+        // Nothing keeps it, so it isn't kept by the others either.
+        assert!(!removal.is_kept_by_others(Item(2)));
         assert_eq!(removal.retained(), 100);
         let removal = example.remove(&[Item(2), Item(1)]);
         assert_eq!(lost(&removal), [Item(1)]);
@@ -617,7 +627,7 @@ mod tests {
         let example = Example::calls(&[1, 10, 20, 100], &[(0, 1), (0, 2), (1, 3), (2, 3)]);
         let removal = example.remove(&[Item(1), Item(2), Item(3)]);
         assert_eq!(removal.tops(), [Item(3), Item(2), Item(1)]);
-        assert!(!removal.matters(Item(3)));
+        assert!(!removal.matters(Item(3)) && removal.is_kept_by_others(Item(3)));
         // A top that is removed has no keepers to name.
         assert_eq!(removal.kept_together(), []);
         let without = example.remove(&[Item(1), Item(2)]);
