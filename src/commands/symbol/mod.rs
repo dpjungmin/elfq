@@ -28,6 +28,8 @@ mod similar;
 
 pub(super) use lookup::Names;
 #[cfg(feature = "tui")]
+pub(super) use not_found::USE_ONE;
+#[cfg(feature = "tui")]
 pub(super) use similar::Needle;
 
 use anyhow::{Result, anyhow, bail};
