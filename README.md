@@ -150,8 +150,10 @@ and `elfq --help` lists the commands.
   miss. In `--json`, `kept_together` counts those bytes, such a row's
   `kept_together_by` gives the addresses of the SYMBOLs it needs, and
   `symbols` lists the SYMBOLs, one or several, each with `row`, the `id`
-  of its own row. SYMBOL can be an address, so `top --json` can pick
-  every item of a module:
+  of its own row. `left_out` lists the functions whose end elfq doesn't
+  know, such as `_init`, which it leaves out. One error lists every
+  SYMBOL that fails. elfq doesn't take patterns yet, but SYMBOL can be an
+  address, so `top --json` can pick every item of a module:
   `elfq FILE.elf top --json | jq -r '(.items + .unreachable)[] | select(.name | contains("core::fmt::")) | .address' | xargs elfq FILE.elf retained`.
 - `elfq FILE.elf callees 0x0+256K` lists what the code and data in that
   range use outside it, and `callers 0x0+256K` what uses them from

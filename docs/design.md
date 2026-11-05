@@ -339,12 +339,10 @@ one keeps it. Up to 3 are named, or 4 when that is all, then how many
 more; `--all` names every one. The notes say that one SYMBOL keeps all
 the others, so removing it alone saves the same, or else which SYMBOLs
 add nothing, since the others keep them. Then they say how many of the
-bytes go only when several go, and which SYMBOLs nothing reaches, whose
-own bytes the total counts, then what is shared and what calls through
-pointers, as for one SYMBOL.
-A SYMBOL given twice counts once, so a set of one prints what `retained`
-of one prints. `--json` gives one SYMBOL and several in the same shape.
-For example:
+bytes go only when several go, which SYMBOLs nothing reaches, whose own
+bytes the total counts, and which functions it left out, then what is
+shared and what calls through pointers, as for one SYMBOL. `--json`
+gives one SYMBOL and several in the same shape. For example:
 
 ```
 $ elfq testdata/bin/c-x86_64.elf retained process_frame report
@@ -383,6 +381,30 @@ RETAINED   OWN  ITEM
 
 Shared with other code, so not counted: config_sum, dispatch_event, log_msg.
 ```
+
+A SYMBOL given twice, or by its name and its address, counts once, so a
+set of one prints what `retained` of one prints. A function whose end
+elfq doesn't know, such as glibc's `_init`, is left out when other
+SYMBOLs remain, with the note "Not counted, since elfq doesn't know
+where it ends: _init.", which comes first for one SYMBOL. When every
+SYMBOL is such a function, the error names them all.
+
+When SYMBOLs can't be used, `retained` lists them all at once, so that a
+long list can be fixed in one go, and elfq exits with 2. When only one
+fails, or all that fail get the same error, the error is the one that
+SYMBOL gets alone. Otherwise a line counts every SYMBOL that fails, as
+in "elfq can't use 8 of the 9 SYMBOLs:", and under it each error is
+indented once: a name given twice, or an address typed two ways such as
+0x1 and 0x01, is listed once, so there may be fewer lines than the count.
+The list stops at 10 errors and says how many more, as other lists do
+(11 fit, since "and 1 more" would take a line too), and with `--all` it
+lists every one. Two hints are `retained`'s own, since it takes several
+SYMBOLs: a name that could mean several items says to use one or more
+of them, and a name with `*` in it that finds nothing says that elfq
+doesn't take patterns yet, unless elfq can say why no item has the name,
+or suggest one. `top --json` gives each item's address, which works as
+SYMBOL. A range in place of SYMBOL is an error until `retained` takes
+ranges; in the list, that error names the range.
 
 With `--tree`, every tree, in every command, is drawn at most 9 levels
 below its top row, so names never start more than 27 columns into the tree
@@ -1436,15 +1458,16 @@ in order. Its output is the first example under [Commands](#commands).
    addresses of data that no symbol names.
 4. **SYMBOL.** `retained::run` checks that elfq can read the file's code
    (`check_code_is_readable`), then `retained::find_symbols` turns each
-   SYMBOL, here `process_frame`, into an item with `Names::find`: by
+   SYMBOL, here `process_frame`, into an item with `Names::look_up`: by
    address, by full name, or by the end of a name. Working out the ends
    of every name takes a while in a large file, so `Names` files each
    item under the last part of the paths that its names' ends can have
    (`names::short_name_keys`), and works out the ends of only the items
-   filed under `process_frame`. `find_symbols` refuses an import, and a
-   function whose end elfq doesn't know (`readable_item`), then a shared
-   library, before `run` builds the graph; the first SYMBOL that fails
-   stops it. A SYMBOL given twice counts once.
+   filed under `process_frame`. `find_symbols` lists in one error every
+   SYMBOL that fails, an import among them (`item_in_file`), and leaves
+   out a function whose end elfq doesn't know (`Item::end_unknown`),
+   unless nothing else is left, then refuses a shared library, before
+   `run` builds the graph. A SYMBOL given twice counts once.
 5. **The graph.** `retained::run` has `graph::Graph::build` turn what
    `InstructionSet::scan` found in each function's code into references, or
    into unresolved calls. `Graph::build` then adds the pointers stored in
@@ -1628,8 +1651,9 @@ in those libraries, and the first whose text names nothing takes about
 half a second, as it works out what to suggest.
 
 `retained` takes several SYMBOLs and says what removing them at once
-would save, as text and as JSON; every argument that fails listed at once
-comes next, then ranges as arguments, which stand for the items in them.
+would save, as text and as JSON, and lists in one error every argument
+that fails; ranges as arguments, which stand for the items in them, come
+next.
 
 Ideas for later, not yet planned: output that scripts and AI agents can
 read more easily, the functions that shared libraries export as roots,
