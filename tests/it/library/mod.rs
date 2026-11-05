@@ -7,6 +7,7 @@
 mod graph;
 mod inlined;
 mod items;
+mod removal;
 mod retained;
 mod symbol;
 mod why;

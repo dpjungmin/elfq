@@ -10,10 +10,12 @@
 //! The tree is computed with the algorithm of Cooper, Harvey and Kennedy,
 //! from `petgraph`.
 
+use std::cmp::Ordering;
+
 use petgraph::algo::dominators::simple_fast;
 use petgraph::graph::{DiGraph, NodeIndex};
 
-use super::{Graph, Node, index};
+use super::{Graph, Node, index, node_at};
 use crate::binary::{AddressRange, Binary};
 
 /// The dominator tree of a binary's graph.
@@ -50,12 +52,18 @@ impl DominatorTree {
             .collect();
         // Imports have no bytes in the file.
         sizes.resize(binary.items.len() + binary.imports.len(), 0);
+        DominatorTree::from_graph(binary.items.len(), &sizes, graph)
+    }
+
+    /// Builds the tree of `graph`, whose `sizes.len()` nodes are `items`
+    /// items and then the imports, each of the size that `sizes` gives.
+    pub(super) fn from_graph(items: usize, sizes: &[u64], graph: &Graph) -> DominatorTree {
         let roots: Vec<Node> = graph.roots.iter().map(|root| root.node).collect();
         let edges = graph
             .references
             .iter()
             .map(|reference| (Node::Item(reference.from), reference.to));
-        DominatorTree::from_edges(binary.items.len(), &sizes, &roots, edges)
+        DominatorTree::from_edges(items, sizes, &roots, edges)
     }
 
     /// Builds the tree for a graph of `sizes.len()` nodes, of which the
@@ -83,14 +91,7 @@ impl DominatorTree {
         }
         let dominators = simple_fast(&petgraph, top);
 
-        let node = |vertex: NodeIndex| {
-            let i = vertex.index() - 1;
-            if i < items {
-                Node::Item(i)
-            } else {
-                Node::Import(i - items)
-            }
-        };
+        let node = |vertex: NodeIndex| node_at(items, vertex.index() - 1);
         let mut tree = DominatorTree {
             parent: vec![None; count],
             children: vec![Vec::new(); count],
@@ -147,6 +148,12 @@ impl DominatorTree {
         &self.top
     }
 
+    /// Sorts `nodes` as the tree sorts the nodes under each node and under
+    /// its top: largest retained size first.
+    pub(super) fn sort_largest_first(&self, nodes: &mut [Node]) {
+        nodes.sort_by(largest_first(&self.retained, self.items));
+    }
+
     /// Everything exclusive to `node`: all the nodes below it in the tree.
     pub fn exclusive(&self, node: Node) -> Vec<Node> {
         let mut exclusive = Vec::new();
@@ -181,21 +188,26 @@ impl DominatorTree {
             let i = self.index(node);
             self.retained[i] = own.saturating_add(below);
         }
-        let retained = &self.retained;
-        let items = self.items;
-        let by_size = |a: &Node, b: &Node| {
-            retained[index(items, *b)]
-                .cmp(&retained[index(items, *a)])
-                .then(a.cmp(b))
-        };
+        let by_size = largest_first(&self.retained, self.items);
         for children in &mut self.children {
-            children.sort_by(by_size);
+            children.sort_by(&by_size);
         }
-        self.top.sort_by(by_size);
+        self.top.sort_by(&by_size);
     }
 
     fn index(&self, node: Node) -> usize {
         index(self.items, node)
+    }
+}
+
+/// The order of the nodes under each node of the tree, and under its top,
+/// given each node's `retained` size, indexed by `graph::index`: largest
+/// first, and nodes of the same size in the order of that index.
+fn largest_first(retained: &[u64], items: usize) -> impl Fn(&Node, &Node) -> Ordering + '_ {
+    move |a, b| {
+        retained[index(items, *b)]
+            .cmp(&retained[index(items, *a)])
+            .then(a.cmp(b))
     }
 }
 
