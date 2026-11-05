@@ -21,7 +21,7 @@
 //! that elfq doesn't take patterns yet, unless elfq can say why no item has
 //! the name, or which it may mean.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::{Result, bail};
 
@@ -33,8 +33,8 @@ use crate::commands::symbol::{self, Argument, Lookup, Names};
 use crate::commands::text::{self, Naming};
 use crate::graph::Node;
 
-/// What `retained` answers about: the SYMBOLs that it found, and the
-/// functions that it leaves out.
+/// What `retained` answers about: the SYMBOLs that it found, the functions
+/// that it leaves out, and whether ranges were given in place of SYMBOL.
 pub(super) struct Symbols {
     /// The SYMBOLs' items, and those of the ranges given in place of
     /// SYMBOL, each once, in the order given, and a range's in address
@@ -45,6 +45,8 @@ pub(super) struct Symbols {
     /// given. elfq can't read their code, so the answer doesn't count them,
     /// and says so (see [`left_out_note`]).
     pub(super) left_out: Vec<usize>,
+    /// Whether SYMBOLs were given, ranges in their place, or both.
+    pub(super) given: Given,
 }
 
 /// An item that `retained` was given: the one that a SYMBOL found, or one
@@ -57,17 +59,22 @@ pub(super) struct Found {
     ///
     /// [`Symbol::lead_name`]: crate::commands::symbol::Symbol::lead_name
     pub(super) lead_name: String,
+    /// Whether a SYMBOL found it, and not only a range. The note on the
+    /// items that add nothing names only those, since the user didn't name
+    /// a range's items.
+    pub(super) named: bool,
 }
 
 /// What `retained` was given: SYMBOLs, ranges in place of SYMBOL, or both,
 /// as far as its words depend on it.
-enum Given {
+pub(super) enum Given {
     /// Only SYMBOLs.
     Symbols,
     /// SYMBOLs and ranges.
     SymbolsAndRanges,
-    /// Only ranges.
-    Ranges,
+    /// Only ranges, which stand for the items in them, each once, in the
+    /// order given.
+    Ranges(Vec<AddressRange>),
 }
 
 impl Given {
@@ -79,7 +86,19 @@ impl Given {
             .filter(|argument| matches!(argument, Ok(Argument::Symbol(_))))
             .count();
         match symbols {
-            0 => Given::Ranges,
+            0 => {
+                let mut ranges = Vec::new();
+                for argument in arguments {
+                    // A range given twice is named once, as its items count
+                    // once.
+                    if let Ok(Argument::Range(range)) = argument
+                        && !ranges.contains(range)
+                    {
+                        ranges.push(*range);
+                    }
+                }
+                Given::Ranges(ranges)
+            }
             symbols if symbols == arguments.len() => Given::Symbols,
             _ => Given::SymbolsAndRanges,
         }
@@ -109,6 +128,9 @@ pub(super) fn find_symbols(
     let mut left_out = Vec::new();
     let mut unusable: Vec<Unusable> = Vec::new();
     let mut seen = HashSet::new();
+    // Where each item is in `found`, so that a SYMBOL that names an item
+    // that a range found first can say that it is named.
+    let mut found_at: HashMap<usize, usize> = HashMap::new();
     for (query, argument) in queries.iter().zip(arguments) {
         let finds = match argument {
             Ok(Argument::Symbol(query)) => {
@@ -125,13 +147,20 @@ pub(super) fn find_symbols(
             }
         };
         for one in finds {
-            // An item that two arguments find counts once.
+            // An item that two arguments find counts once, where the first
+            // found it.
             if !seen.insert(one.index) {
+                if one.named
+                    && let Some(&at) = found_at.get(&one.index)
+                {
+                    found[at].named = true;
+                }
                 continue;
             }
             if binary.items[one.index].end_unknown() {
                 left_out.push(one.index);
             } else {
+                found_at.insert(one.index, found.len());
                 found.push(one);
             }
         }
@@ -150,8 +179,12 @@ pub(super) fn find_symbols(
     let items: Vec<&str> = (found.iter())
         .map(|found| binary.items[found.index].name.as_str())
         .collect();
-    refuse_shared_library(binary, &items)?;
-    Ok(Symbols { found, left_out })
+    refuse_shared_library(binary, &items, &given, all)?;
+    Ok(Symbols {
+        found,
+        left_out,
+        given,
+    })
 }
 
 /// The item that `query`, SYMBOL, finds, with the name that the answer
@@ -164,7 +197,11 @@ fn find_symbol<'n>(binary: &Binary, names: &'n Names, query: &str) -> Result<Fou
     };
     let index = item_in_file(binary, symbol.node)?;
     let lead_name = symbol.lead_name(binary);
-    Ok(Found { index, lead_name })
+    Ok(Found {
+        index,
+        lead_name,
+        named: true,
+    })
 }
 
 /// The items with a byte in `range`, in address order, each with its name,
@@ -177,6 +214,7 @@ fn items_in(binary: &Binary, range: AddressRange) -> Result<Vec<Found>> {
         .map(|(index, item)| Found {
             index,
             lead_name: item.name.clone(),
+            named: false,
         })
         .collect())
 }
@@ -247,7 +285,7 @@ fn unusable_error(
     let arguments = match given {
         Given::Symbols => "SYMBOLs",
         // A range in place of SYMBOL isn't one.
-        Given::SymbolsAndRanges | Given::Ranges => "arguments",
+        Given::SymbolsAndRanges | Given::Ranges(_) => "arguments",
     };
     let mut message = format!(
         "elfq can't use {} of the {count} {arguments}:",

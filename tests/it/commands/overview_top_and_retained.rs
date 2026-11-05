@@ -1332,10 +1332,21 @@ const ITCM_FUNCTIONS: [&str; 6] = [
 
 #[test]
 fn a_range_stands_for_every_item_in_it() {
-    // The answer about the six functions by name, in address order.
+    // The rows of the six functions by name, under a first line that names
+    // the range, and without the note on the three that add nothing, since
+    // no SYMBOL was named.
     let named = |extra: &[&str]| {
         let args = [&[TCM_SAMPLE, "retained"], &ITCM_FUNCTIONS[..], extra].concat();
         stdout(&args)
+            .replace(
+                "Removing these 6 items",
+                "Removing the 6 items in 0x00000000..0x000000e0 (.itcm)",
+            )
+            .replace(
+                "\n\nfilter_tap, __app_tick_veneer and __memcpy_veneer add nothing: other items \
+                 named here keep them.",
+                "",
+            )
     };
     for extra in [&[][..], &["--tree"], &["--range", "0x20000000..0x20000450"]] {
         for range in ["0x0..0xe0", "0x0+224"] {
@@ -1343,31 +1354,126 @@ fn a_range_stands_for_every_item_in_it() {
             assert_output(&stdout(&args), &named(extra));
         }
     }
-    assert!(named(&[]).starts_with("Removing these 6 items would save 1284 bytes:\n"));
+    assert!(named(&[]).starts_with(
+        "Removing the 6 items in 0x00000000..0x000000e0 (.itcm) would save 1284 bytes:\n"
+    ));
     // In JSON, the items are SYMBOLs, as if given so.
     assert_eq!(
         elfq_json(&[TCM_SAMPLE, "retained", "0x0..0xe0"]),
         elfq_json(&[&[TCM_SAMPLE, "retained"], &ITCM_FUNCTIONS[..]].concat())
     );
-    // A range that holds one item answers about it alone.
+    // A range that holds one item answers about it alone, under its name,
+    // with the range as a note.
     assert_output(
         &stdout(&[TCM_SAMPLE, "retained", "0x0+16"]),
-        &stdout(&[TCM_SAMPLE, "retained", "SysTick_Handler"]),
+        &stdout(&[TCM_SAMPLE, "retained", "SysTick_Handler"]).replacen(
+            "Removing SysTick_Handler",
+            "Removing SysTick_Handler (the one item in 0x00000000..0x00000010)",
+            1,
+        ),
+    );
+    assert_output(
+        &stdout(&[TCM_SAMPLE, "retained", "0x300009c0..0x30000de8"]),
+        "Removing .rodata@0x30000de0 (the one item in 0x300009c0..0x30000de8) would save only \
+         its own 8 bytes.\n",
+    );
+    // The sections are named by where they run, as callers names them: in
+    // flash, they are the code and data stored there.
+    assert!(
+        stdout(&[TCM_SAMPLE, "retained", "0x30000000..0x30000edc"]).starts_with(
+            "Removing the 44 items in 0x30000000..0x30000edc (.isr_vector, .text, .rodata and \
+             .ARM.exidx) would save 7807 bytes:\n"
+        )
+    );
+    // Up to 10, then how many more, or with --all, every one.
+    let sections = ".interp, .note.gnu.property, .note.gnu.build-id, .note.ABI-tag, .gnu.hash, \
+                    .dynsym, .dynstr, .gnu.version, .gnu.version_r, .rela.dyn";
+    let lead = |sections: &str| {
+        format!(
+            "Removing the 66 items in 0x00000000..0x00005000 ({sections}) would save 4021 bytes:\n"
+        )
+    };
+    assert!(
+        stdout(&[SAMPLE, "retained", "0x0..0x5000"])
+            .starts_with(&lead(&format!("{sections} and 17 more")))
+    );
+    assert!(
+        stdout(&[SAMPLE, "retained", "0x0..0x5000", "--all"]).starts_with(&lead(&format!(
+            "{sections}, .rela.plt, .init, .plt, .plt.got, .plt.sec, .text, .fini, .rodata, \
+             .eh_frame_hdr, .eh_frame, .init_array, .fini_array, .data.rel.ro, .dynamic, .got, \
+             .data and .bss"
+        )))
     );
 }
 
 #[test]
 fn ranges_mix_with_symbols_and_each_other() {
     // An item that two arguments find counts once: crc32, at 0x10..0x40,
-    // is in both ranges.
+    // is in both ranges. With a SYMBOL among them, the first line counts
+    // the items; with only ranges, it names every range.
     let mixed = stdout(&[TCM_SAMPLE, "retained", "0x0..0x40", "crc32", "0x20..0x80"]);
     assert!(
-        mixed.starts_with("Removing these 4 items would save 1284 bytes:\n")
-            && mixed.contains("\n\nfilter_tap adds nothing: other items named here keep it.\n"),
+        mixed.starts_with("Removing these 4 items would save 1284 bytes:\n"),
         "{mixed}"
     );
-    let ranges = stdout(&[TCM_SAMPLE, "retained", "0x0..0x40", "0x20..0x80"]);
-    assert_output(&ranges, &mixed);
+    assert_output(
+        &stdout(&[TCM_SAMPLE, "retained", "0x0..0x40", "0x20..0x80"]),
+        &mixed.replacen(
+            "Removing these 4 items",
+            "Removing the 4 items in 0x00000000..0x00000040 (.itcm) and 0x00000020..0x00000080 \
+             (.itcm)",
+            1,
+        ),
+    );
+    // A range given twice is named once.
+    assert_output(
+        &stdout(&[TCM_SAMPLE, "retained", "0x0..0xe0", "0x0..0xe0"]),
+        &stdout(&[TCM_SAMPLE, "retained", "0x0..0xe0"]),
+    );
+    // The note on what adds nothing names only the items that a SYMBOL
+    // names, the first or a later argument, and not filter_tap when only a
+    // range holds it.
+    let add_nothing = |args: &[&str]| -> Vec<String> {
+        let answer = stdout(&[&[TCM_SAMPLE, "retained"], args].concat());
+        (answer.lines())
+            .filter(|line| line.contains(" nothing: other items named here keep "))
+            .map(str::to_string)
+            .collect()
+    };
+    for (args, name) in [
+        (&["crc_table", "0x0..0xe0"][..], "crc_table"),
+        (&["0x0..0xe0", "filter_tap"], "filter_tap"),
+        (&["crc32", "0x30000000..0x30000edc"], "crc32"),
+    ] {
+        assert_eq!(
+            add_nothing(args),
+            [format!(
+                "{name} adds nothing: other items named here keep it."
+            )]
+        );
+    }
+    assert_eq!(
+        add_nothing(&["0x0..0x40", "crc32", "0x20..0x80"]),
+        Vec::<String>::new()
+    );
+    // Nor does the note that one item keeps the rest come with only ranges.
+    let keeps = "\n\nSysTick_Handler keeps __app_tick_veneer, so removing it alone saves the same.";
+    let named = stdout(&[
+        TCM_SAMPLE,
+        "retained",
+        "SysTick_Handler",
+        "__app_tick_veneer",
+    ]);
+    assert!(named.contains(keeps), "{named}");
+    assert_output(
+        &stdout(&[TCM_SAMPLE, "retained", "0x0+16", "0xd0+8"]),
+        &named.replace(keeps, "").replacen(
+            "Removing SysTick_Handler and __app_tick_veneer",
+            "Removing the 2 items in 0x00000000..0x00000010 (.itcm) and 0x000000d0..0x000000d8 \
+             (.itcm)",
+            1,
+        ),
+    );
     let answer = elfq_json(&[TCM_SAMPLE, "retained", "0x0..0x40", "crc32", "0x20..0x80"]);
     assert_eq!(
         names(&answer["symbols"]),
@@ -1430,8 +1536,10 @@ fn a_range_holds_items_that_retained_can_use() {
     );
     let more = stdout(&[SAMPLE, "retained", "0x1000..0x1100"]);
     assert!(
-        more.starts_with("Removing these 6 items would save 3677 bytes:\n")
-            && more.contains("\n\nNot counted, since elfq doesn't know where it ends: _init.\n"),
+        more.starts_with(
+            "Removing the 6 items in 0x00001000..0x00001100 (.init, .plt, .plt.got, .plt.sec and \
+             .text) would save 3677 bytes:\n"
+        ) && more.contains("\n\nNot counted, since elfq doesn't know where it ends: _init.\n"),
         "{more}"
     );
     assert_eq!(
@@ -1574,6 +1682,28 @@ fn retained_refuses_a_shared_library_and_asks_for_a_symbol() {
         &stderr(&[LIBRARY_SAMPLE, "retained", "process_frame", "report"]),
         "error: elfq can't yet tell what only process_frame and report lead to in a shared \
          library\n",
+    );
+    // Ranges given alone are named as the answer would name them.
+    assert_output(
+        &stderr(&[LIBRARY_SAMPLE, "retained", "0x1000..0x2000"]),
+        "error: elfq can't yet tell what only the 36 items in 0x00001000..0x00002000 (.init, \
+         .plt, .plt.got, .plt.sec, .text and .fini) lead to in a shared library\n",
+    );
+    assert_output(
+        &stderr(&[
+            LIBRARY_SAMPLE,
+            "retained",
+            "0x1000..0x1100",
+            "0x1200..0x1300",
+        ]),
+        "error: elfq can't yet tell what only the 8 items in 0x00001000..0x00001100 (.init, \
+         .plt, .plt.got and .plt.sec) and 0x00001200..0x00001300 (.text) lead to in a shared \
+         library\n",
+    );
+    assert_output(
+        &stderr(&[LIBRARY_SAMPLE, "retained", "0x1020+4"]),
+        "error: elfq can't yet tell what only .plt (the one item in 0x00001020..0x00001024) \
+         leads to in a shared library\n",
     );
     // After saying which SYMBOLs it can't use.
     assert_output(

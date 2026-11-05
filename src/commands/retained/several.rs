@@ -10,7 +10,10 @@
 //! process_frame and report together": removing just those loses it, and
 //! removing all of them but one keeps it.
 //!
-//! The notes say which SYMBOLs add nothing, since the others keep them, how
+//! The notes say which SYMBOLs add nothing, since the others keep them,
+//! and which one keeps all the rest. Both name only items that a SYMBOL
+//! named, since an item that only a range found is one the user didn't
+//! name, so neither shows when only ranges were given. Other notes say how
 //! many bytes go only when several SYMBOLs go, which SYMBOLs nothing
 //! reaches, whose own bytes the total counts, and which functions it left
 //! out, since elfq doesn't know where they end. Then come the notes that
@@ -19,30 +22,30 @@
 use std::collections::{HashMap, HashSet};
 
 use super::parts::Parts;
-use super::{Found, left_out_note, subject, would_save};
+use super::{Found, Given, Symbols, left_out_note, subject, would_save};
 use crate::cli::Format;
 use crate::commands::retained_tree::RetainedTree;
 use crate::commands::text::{self, Naming};
 use crate::commands::tree_answer::TreeAnswer;
 use crate::graph::Node;
 
-/// What `retained SYMBOL...` writes as text for `found`, several SYMBOLs,
-/// in the tree `retained`: what removing them all at once would save, and
-/// the trees of what goes, the largest 30 items or with `all`, every one,
-/// in the shape that `format` asks for, then the notes, which name the
-/// functions `left_out` too.
+/// What `retained SYMBOL...` writes as text for `symbols`, several, in the
+/// tree `retained`: what removing them all at once would save, and the
+/// trees of what goes, the largest 30 items or with `all`, every one, in
+/// the shape that `format` asks for, then the notes, which name the
+/// functions it left out too.
 pub(super) fn tree_answer(
     retained: &RetainedTree,
-    found: &[Found],
-    left_out: &[usize],
+    symbols: &Symbols,
     all: bool,
     format: Format,
 ) -> TreeAnswer {
-    let removed: Vec<usize> = found.iter().map(|found| found.index).collect();
+    let removed: Vec<usize> = (symbols.found.iter()).map(|found| found.index).collect();
     let several = Several {
         retained,
-        found,
-        left_out,
+        found: &symbols.found,
+        left_out: &symbols.left_out,
+        given: &symbols.given,
         parts: Parts::new(retained, &removed),
     };
     several.tree_answer(all, format)
@@ -59,13 +62,17 @@ fn names<'f>(found: impl IntoIterator<Item = &'f Found>) -> Vec<&'f str> {
 /// Several SYMBOLs, and what removing them at once loses.
 struct Several<'f, 't, 'g, 'a> {
     retained: &'t RetainedTree<'g, 'a>,
-    /// The SYMBOLs, each once, in the order given.
+    /// The items given, by SYMBOL or in a range, each once, in the order
+    /// given (see [`Symbols::found`]).
     found: &'f [Found],
-    /// The functions given whose end elfq doesn't know, which the answer
-    /// leaves out, as indexes into [`Binary::items`].
+    /// The functions given, by SYMBOL or in a range, whose end elfq
+    /// doesn't know, which the answer leaves out, as indexes into
+    /// [`Binary::items`].
     ///
     /// [`Binary::items`]: crate::binary::Binary::items
     left_out: &'f [usize],
+    /// Whether SYMBOLs were given, ranges in their place, or both.
+    given: &'f Given,
     parts: Parts<'t, 'g, 'a>,
 }
 
@@ -89,7 +96,7 @@ impl Several<'_, '_, '_, '_> {
                 ..TreeAnswer::sentences(vec![sentence])
             };
         }
-        let subject = subject(&names(self.found));
+        let subject = subject(retained.binary, &names(self.found), self.given, all);
         let saves = would_save(&subject, removal.retained(), range.as_deref());
         let notes = self.notes(&naming);
         let shown = self.shown(all);
@@ -181,12 +188,19 @@ impl Several<'_, '_, '_, '_> {
     }
 
     /// The notes under the tree, naming the items they list as `naming`
-    /// says: which SYMBOLs add nothing, the bytes that go only when several
-    /// go, the SYMBOLs that nothing reaches, the functions left out, and
-    /// then the notes of every answer about removing items (see
-    /// [`Parts::notes`]).
+    /// says: which SYMBOLs add nothing, unless only ranges were given, the
+    /// bytes that go only when several go, the SYMBOLs that nothing
+    /// reaches, the functions left out, and then the notes of every answer
+    /// about removing items (see [`Parts::notes`]).
     fn notes(&self, naming: &Naming) -> Vec<String> {
-        let adds_nothing = (self.keeps_the_rest_note()).or_else(|| self.add_nothing_note(naming));
+        let adds_nothing = match self.given {
+            Given::Symbols | Given::SymbolsAndRanges => {
+                (self.keeps_the_rest_note()).or_else(|| self.add_nothing_note(naming))
+            }
+            // The user named none of the items, so which of them the others
+            // keep is no news.
+            Given::Ranges(_) => None,
+        };
         [
             adds_nothing,
             self.together_note(),
@@ -229,11 +243,14 @@ impl Several<'_, '_, '_, '_> {
     /// Names the SYMBOLs that the others keep, alone or together, so that
     /// the answer is the same without them, as `naming` names them, as in
     /// "filter_tap and __memcpy_veneer add nothing: other items named here
-    /// keep them." `None` when there are none.
+    /// keep them." It names no item that only a range found: the user
+    /// didn't name it, so that it adds nothing is no news. `None` when
+    /// there are none.
     fn add_nothing_note(&self, naming: &Naming) -> Option<String> {
         let removal = &self.parts.removal;
         let names = names(
-            (self.found.iter()).filter(|found| removal.is_kept_by_others(Node::Item(found.index))),
+            (self.found.iter())
+                .filter(|found| found.named && removal.is_kept_by_others(Node::Item(found.index))),
         );
         let (add, them) = match names.len() {
             0 => return None,
