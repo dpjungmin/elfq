@@ -219,10 +219,6 @@ fn arguments_that_dont_go_together_are_refused_before_the_file_is_read() {
             &["missing.elf", "reach", "0x0..zz"],
             "error: reach takes one SYMBOL, not ranges\n",
         ),
-        (
-            &["missing.elf", "retained", "crc32", "report", "--json"],
-            "error: elfq can't yet write --json for several SYMBOLs; give one\n",
-        ),
     ] {
         assert_output(&stderr(args), error);
     }

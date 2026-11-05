@@ -15,20 +15,24 @@ fn items_have_the_same_keys_everywhere() {
     assert_eq!(
         elfq_json(&[SAMPLE, "retained", "debug_dump"]),
         json!({
-            "symbol": {
+            "symbols": [{
                 "name": "debug_dump",
                 "kind": "function",
                 "section": ".text",
                 "address": "0x1aa0",
                 "size": 29,
                 "size_estimated": false,
-                "aliases": []
-            },
-            "reachable": false,
+                "aliases": [],
+                "reachable": false,
+                "own": 29,
+                "row": null,
+                "kept_by_others": false
+            }],
             "range": null,
             "own": 29,
             "load_image": 0,
             "retained": 29,
+            "kept_together": 0,
             "items": [],
             "shares": [],
             "indirect_calls": 0
@@ -97,7 +101,9 @@ fn each_row_is_a_line() {
 
     // An empty list takes no line.
     let text = stdout(&[SAMPLE, "retained", "debug_dump", "--json"]);
-    assert_eq!(text.lines().count(), 1, "{text}");
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 3, "{text}");
+    assert!(lines[2].contains(r#""items":[],"shares":[],"#), "{text}");
 }
 
 #[test]
@@ -115,8 +121,13 @@ fn symbol_lists_its_other_names() {
     ];
     for command in ["callers", "callees", "retained", "why"] {
         let answer = elfq_json(&[m4, command, "NMI_Handler"]);
-        assert_eq!(answer["symbol"]["name"], "Default_Handler", "{command}");
-        assert_eq!(answer["symbol"]["aliases"], json!(handlers), "{command}");
+        // `retained` lists its SYMBOLs, since it takes several.
+        let symbol = match command {
+            "retained" => &answer["symbols"][0],
+            _ => &answer["symbol"],
+        };
+        assert_eq!(symbol["name"], "Default_Handler", "{command}");
+        assert_eq!(symbol["aliases"], json!(handlers), "{command}");
     }
     // A mangled symbol is the other name of its readable one.
     let inlined = elfq_json(&["testdata/bin/cpp-x86_64.elf", "inlined", "Gain::run"]);

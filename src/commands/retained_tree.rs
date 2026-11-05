@@ -44,7 +44,9 @@ pub(super) struct KeptItem<'a> {
     through_pointer: bool,
     /// The id of the row of the item that keeps it, or `null` for an item
     /// at the top of the list: in `top`, at the top of the whole tree, and
-    /// in `retained`, one that SYMBOL keeps itself.
+    /// in `retained`, at the top of what goes: an item that no item that
+    /// goes keeps, which is a SYMBOL or an item that several SYMBOLs keep
+    /// only together.
     parent: Option<usize>,
 }
 
@@ -354,17 +356,37 @@ impl<'g, 'a> RetainedTree<'g, 'a> {
     /// it keeps. Imports are left out, since their code isn't in the file,
     /// and so are items that keep none of the range's bytes.
     pub(super) fn to_json(&self, nodes: &[Node]) -> Vec<KeptItem<'a>> {
+        self.to_json_with(nodes, |_, kept| kept)
+    }
+
+    /// The rows that [`to_json`] gives, each as `make_row` makes it from
+    /// the index of its item in [`Binary::items`] and the row itself, for
+    /// an answer that says more about some rows.
+    ///
+    /// [`to_json`]: RetainedTree::to_json
+    pub(super) fn to_json_with<R>(
+        &self,
+        nodes: &[Node],
+        make_row: impl Fn(usize, KeptItem<'a>) -> R,
+    ) -> Vec<R> {
         let mut rows = Vec::new();
-        self.add_json(nodes, None, &mut rows);
+        self.add_json(nodes, None, &make_row, &mut rows);
         rows
     }
 
     /// Adds the rows of the items in `nodes`, which the row `parent` keeps,
-    /// each followed by the rows of what it keeps in turn.
-    fn add_json(&self, nodes: &[Node], parent: Option<usize>, rows: &mut Vec<KeptItem<'a>>) {
+    /// each as `make_row` makes it and followed by the rows of what it
+    /// keeps in turn.
+    fn add_json<R>(
+        &self,
+        nodes: &[Node],
+        parent: Option<usize>,
+        make_row: &impl Fn(usize, KeptItem<'a>) -> R,
+        rows: &mut Vec<R>,
+    ) {
         for index in self.counted(nodes) {
             let id = rows.len();
-            rows.push(KeptItem {
+            let kept = KeptItem {
                 id,
                 item: json::Item::new(self.binary, Node::Item(index)),
                 own: self.own(index),
@@ -372,8 +394,10 @@ impl<'g, 'a> RetainedTree<'g, 'a> {
                 retained: self.retained(index),
                 through_pointer: self.through_pointer(index),
                 parent,
-            });
-            self.add_json(self.tree.children(Node::Item(index)), Some(id), rows);
+            };
+            rows.push(make_row(index, kept));
+            let children = self.tree.children(Node::Item(index));
+            self.add_json(children, Some(id), make_row, rows);
         }
     }
 

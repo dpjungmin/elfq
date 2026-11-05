@@ -147,8 +147,11 @@ and `elfq --help` lists the commands.
 - `elfq FILE.elf retained A B C` says what removing all of them at once
   would save, with the rows that only several of them keep, as in "stats,
   kept by A and B together", which their retained sizes added up would
-  miss. With several SYMBOLs it writes only text for now. SYMBOL can be an
-  address, so `top --json` can pick every item of a module:
+  miss. In `--json`, `kept_together` counts those bytes, such a row's
+  `kept_together_by` gives the addresses of the SYMBOLs it needs, and
+  `symbols` lists the SYMBOLs, one or several, each with `row`, the `id`
+  of its own row. SYMBOL can be an address, so `top --json` can pick
+  every item of a module:
   `elfq FILE.elf top --json | jq -r '(.items + .unreachable)[] | select(.name | contains("core::fmt::")) | .address' | xargs elfq FILE.elf retained`.
 - `elfq FILE.elf callees 0x0+256K` lists what the code and data in that
   range use outside it, and `callers 0x0+256K` what uses them from

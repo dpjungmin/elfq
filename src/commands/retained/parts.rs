@@ -2,19 +2,31 @@
 //! items loses, whichever items they are: the lost items under the
 //! removal's tops, which the table shows, what the lost items share with
 //! other code, and the calls through pointers in the items that go, with
-//! the notes that name those two. The answers in `mod.rs` and
-//! `several.rs` add their lead lines and pick their rows.
+//! the notes that name those two; and for several items, the items that
+//! each row kept together needs, and the bytes that go only when several
+//! go. The text in `mod.rs` and `several.rs` adds its lead line and picks
+//! its rows, and `json.rs` writes every row, so the text and the JSON take
+//! these facts from one place.
 
+use std::collections::HashMap;
+
+use crate::binary::total;
 use crate::commands::retained_tree::RetainedTree;
 use crate::commands::text::{self, Naming};
 use crate::graph::{Node, Removal, Unresolved};
 
 /// What every form of the answer about removing some items shares, worked
-/// out once from what removing them loses: the bytes saved, the notes, and
-/// the trees under the removal's tops, which the table shows.
+/// out once from what removing them loses: the bytes saved and how many of
+/// them go only together, the items that each row kept together needs, the
+/// notes, and the trees under the removal's tops, which the table shows.
 pub(super) struct Parts<'t, 'g, 'a> {
     /// The tree of retained sizes that the answer is about.
     retained: &'t RetainedTree<'g, 'a>,
+    /// The removed items, as indexes into [`Binary::items`], in the order
+    /// given.
+    ///
+    /// [`Binary::items`]: crate::binary::Binary::items
+    removed: Vec<usize>,
     /// What removing the items loses: the branches of the tree under the
     /// removal's tops. For one SYMBOL that something reaches, the only top
     /// is SYMBOL itself, so what is lost is SYMBOL and everything it keeps.
@@ -32,17 +44,15 @@ pub(super) struct Parts<'t, 'g, 'a> {
 }
 
 impl<'t, 'g, 'a> Parts<'t, 'g, 'a> {
-    /// The parts of the answer about removing the items in `removed` from
-    /// the tree `retained`, from what removing them loses, which every part
-    /// starts from.
-    pub(super) fn new(retained: &'t RetainedTree<'g, 'a>, removed: &[Node]) -> Parts<'t, 'g, 'a> {
+    /// The parts of the answer about removing the items at `removed`, as
+    /// indexes into [`Binary::items`], from the tree `retained`, from what
+    /// removing them loses, which every part starts from.
+    ///
+    /// [`Binary::items`]: crate::binary::Binary::items
+    pub(super) fn new(retained: &'t RetainedTree<'g, 'a>, removed: &[usize]) -> Parts<'t, 'g, 'a> {
         let (graph, tree) = (retained.graph, &retained.tree);
-        let removal = Removal::find(retained.binary, graph, tree, removed);
-        // Imports are left out: their code isn't in the file.
-        let item_index = |node: Node| match node {
-            Node::Item(index) => Some(index),
-            Node::Import(_) => None,
-        };
+        let nodes: Vec<Node> = removed.iter().map(|&index| Node::Item(index)).collect();
+        let removal = Removal::find(retained.binary, graph, tree, &nodes);
         // A removed item that nothing reaches isn't lost, but it goes too.
         let indirect = (removal.lost().chain(removal.unreachable()))
             .filter_map(item_index)
@@ -57,11 +67,83 @@ impl<'t, 'g, 'a> Parts<'t, 'g, 'a> {
             .collect();
         Parts {
             retained,
+            removed: removed.to_vec(),
             shared: shared(retained, &removal),
             indirect,
             under_tops,
             removal,
         }
+    }
+
+    /// The own bytes of the removed items that nothing reaches, which the
+    /// bytes saved count, since removing them saves those too.
+    pub(super) fn unreachable_own(&self) -> u64 {
+        let retained = self.retained;
+        total(
+            (self.removal.unreachable())
+                .filter_map(item_index)
+                .map(|index| retained.own(index)),
+        )
+    }
+
+    /// How many of the bytes saved no one removed item saves alone. That is
+    /// all of them, less the own bytes of the removed items that nothing
+    /// reaches, less the retained size of each removed item that no other
+    /// removed item keeps, which is what removing it alone saves. Those
+    /// retained sizes don't overlap, and a removed item that another keeps
+    /// saves nothing alone that the other doesn't save already. For one
+    /// item, none.
+    pub(super) fn bytes_kept_together(&self) -> u64 {
+        let tree = &self.retained.tree;
+        let removal = &self.removal;
+        // Whether another removed item is above `node` in the tree, and so
+        // keeps it. Every item between the two would be lost too, so the
+        // walk up stops at the first item that isn't.
+        let kept_by_another = |node: Node| {
+            let mut above = tree.parent(node);
+            while let Some(node) = above.filter(|&node| removal.is_lost(node)) {
+                if removal.is_removed(node) {
+                    return true;
+                }
+                above = tree.parent(node);
+            }
+            false
+        };
+        let alone = total(
+            (self.removed.iter())
+                .map(|&index| Node::Item(index))
+                .filter(|&node| tree.is_reachable(node) && !kept_by_another(node))
+                .map(|node| tree.retained(node)),
+        );
+        (removal.retained())
+            .saturating_sub(self.unreachable_own())
+            .saturating_sub(alone)
+    }
+
+    /// The keepers of each top that isn't a removed item, which several
+    /// removed items keep together and no one of them alone, by the top's
+    /// index: the removed items that it needs (see [`KeptTogether`]), in
+    /// the order given, as the answer names them. Removing just those loses
+    /// the top, and removing all of them but one keeps it. A removed item
+    /// at the top has none, even when the others keep it only together:
+    /// the answer says instead that it adds nothing. An import kept
+    /// together has no bytes in the file, and so no row to name them on.
+    ///
+    /// [`KeptTogether`]: crate::graph::KeptTogether
+    pub(super) fn keepers(&self) -> HashMap<usize, Vec<usize>> {
+        let given: HashMap<usize, usize> = (self.removed.iter().enumerate())
+            .map(|(given, &index)| (index, given))
+            .collect();
+        (self.removal.kept_together().iter())
+            .filter_map(|kept| {
+                let top = item_index(kept.top)?;
+                let mut keepers: Vec<usize> = (kept.keepers.iter().copied())
+                    .filter_map(item_index)
+                    .collect();
+                keepers.sort_by_key(|keeper| given[keeper]);
+                Some((top, keepers))
+            })
+            .collect()
     }
 
     /// The notes under the tree, naming the items they list as `naming`
@@ -119,6 +201,17 @@ impl<'t, 'g, 'a> Parts<'t, 'g, 'a> {
             "{} also {verb} through {through}, so what {reach} may count elsewhere.",
             naming.phrase(&names)
         ))
+    }
+}
+
+/// The item that `node` is, as an index into [`Binary::items`], or `None`
+/// for an import, whose code isn't in the file.
+///
+/// [`Binary::items`]: crate::binary::Binary::items
+fn item_index(node: Node) -> Option<usize> {
+    match node {
+        Node::Item(index) => Some(index),
+        Node::Import(_) => None,
     }
 }
 

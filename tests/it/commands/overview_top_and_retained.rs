@@ -1306,13 +1306,16 @@ fn a_range_limits_the_counts_to_it() {
         json!({"start": "0x20000000", "end": "0x20000450"})
     );
     assert_eq!(retained["retained"], 1024);
-    assert_eq!(names(&retained["items"]), ["crc_table"]);
+    // crc32 has none of its own bytes in the range, but keeps some there.
+    assert_eq!(names(&retained["items"]), ["crc32", "crc_table"]);
+    assert_eq!(retained["items"][0]["own"], 0);
 
     let retained = elfq_json(&[TCM_SAMPLE, "retained", "process_frame", "--range", "0+224"]);
     assert_eq!(retained["retained"], 200);
     assert_eq!(
         names(&retained["items"]),
         [
+            "process_frame",
             "__apply_filter_veneer",
             "apply_filter",
             "filter_tap",
@@ -1360,9 +1363,9 @@ fn rows_say_which_bytes_are_a_load_image() {
     );
     // A range that holds both copies counts both.
     let retained = elfq_json(&[TCM_SAMPLE, "retained", "crc32", "--range", "0..0x40000000"]);
-    assert_eq!(retained["items"][0]["name"], "crc_table");
-    assert_eq!(retained["items"][0]["own"], 2048);
-    assert_eq!(retained["items"][0]["load_image"], 1024);
+    assert_eq!(retained["items"][1]["name"], "crc_table");
+    assert_eq!(retained["items"][1]["own"], 2048);
+    assert_eq!(retained["items"][1]["load_image"], 1024);
     // SYMBOL's own bytes too.
     let retained = elfq_json(&[
         TCM_SAMPLE,
@@ -1434,21 +1437,29 @@ fn top_has_every_item_in_the_file() {
 #[test]
 fn retained_has_what_symbol_keeps_as_rows() {
     let retained = elfq_json(&[SAMPLE, "retained", "process_frame"]);
-    assert_eq!(retained["reachable"], true);
+    let symbol = &retained["symbols"][0];
+    assert_eq!(symbol["name"], "process_frame");
+    assert_eq!(symbol["reachable"], true);
+    assert_eq!(symbol["kept_by_others"], false);
     assert_eq!(retained["retained"], 2068);
-    // process_frame's own bytes, and those of every row.
-    assert_eq!(own_bytes(&retained["items"]), 2068 - 532);
-    let crc32 = &retained["items"][0];
-    assert_eq!(crc32["id"], 0);
+    assert_eq!(retained["kept_together"], 0);
+    // SYMBOL has the first row, and every row counts its own bytes once.
+    assert_eq!(symbol["row"], 0);
+    assert_eq!(retained["items"][0]["name"], "process_frame");
+    assert_eq!(retained["items"][0]["parent"], Value::Null);
+    assert_eq!(own_bytes(&retained["items"]), 2068);
+    let crc32 = &retained["items"][1];
+    assert_eq!(crc32["id"], 1);
     assert_eq!(crc32["name"], "crc32");
     assert_eq!(crc32["own"], 59);
     assert_eq!(crc32["retained"], 1083);
     assert_eq!(crc32["through_pointer"], false);
-    // process_frame keeps crc32 itself, and crc32 keeps crc_table.
-    assert_eq!(crc32["parent"], Value::Null);
-    let crc_table = &retained["items"][1];
+    assert_eq!(crc32["kept_together_by"], Value::Null);
+    // process_frame keeps crc32, and crc32 keeps crc_table.
+    assert_eq!(crc32["parent"], 0);
+    let crc_table = &retained["items"][2];
     assert_eq!(crc_table["name"], "crc_table");
-    assert_eq!(crc_table["parent"], 0);
+    assert_eq!(crc_table["parent"], 1);
     assert_eq!(
         names(&retained["shares"]),
         [
@@ -1460,15 +1471,16 @@ fn retained_has_what_symbol_keeps_as_rows() {
             "stats"
         ]
     );
-    // The rows hold every item that only process_frame leads to, in the
-    // order of the text's rows, which start with process_frame's own.
+    // The rows hold process_frame and every item that only it leads to, as
+    // the text's rows do, and in their order.
     assert_eq!(
         names(&retained["items"]),
-        text_rows(&[SAMPLE, "retained", "process_frame"])[1..]
+        text_rows(&[SAMPLE, "retained", "process_frame"])
     );
     assert_eq!(
         names(&retained["items"]),
         [
+            "process_frame",
             "crc32",
             "crc_table",
             "apply_filter",
@@ -1480,7 +1492,7 @@ fn retained_has_what_symbol_keeps_as_rows() {
         ]
     );
     // A string literal without a symbol has an estimated size.
-    let literal = &retained["items"][6];
+    let literal = &retained["items"][7];
     assert_eq!(literal["name"], ".rodata@0x2012");
     assert_eq!(literal["size_estimated"], true);
     assert_eq!(retained["indirect_calls"], 0);
@@ -1492,14 +1504,15 @@ fn retained_has_what_symbol_keeps_as_rows() {
 
     // Nothing is there only because of something that nothing reaches.
     let unreachable = elfq_json(&[SAMPLE, "retained", "debug_dump"]);
-    assert_eq!(unreachable["reachable"], false);
+    assert_eq!(unreachable["symbols"][0]["reachable"], false);
+    assert_eq!(unreachable["symbols"][0]["row"], Value::Null);
     assert_eq!(unreachable["retained"], 29);
     assert_eq!(unreachable["items"], json!([]));
     assert_eq!(unreachable["shares"], json!([]));
     // A SYMBOL that nothing reaches still counts its own calls through
     // pointers: three in newlib's __sfvwrite_r here.
     let unreachable = elfq_json(&["testdata/bin/c-strtod.elf", "retained", "__sfvwrite_r"]);
-    assert_eq!(unreachable["reachable"], false);
+    assert_eq!(unreachable["symbols"][0]["reachable"], false);
     assert_eq!(unreachable["retained"], 768);
     assert_eq!(unreachable["shares"], json!([]));
     assert_eq!(unreachable["indirect_calls"], 3);
@@ -1511,11 +1524,204 @@ fn deep_trees_are_whole() {
     // of it, each row under the one before.
     let answer = elfq_json(&[DEEP_SAMPLE, "retained", "chain1"]);
     let items = answer["items"].as_array().unwrap();
-    let expected: Vec<String> = (2..=20).map(|n| format!("chain{n}")).collect();
+    let expected: Vec<String> = (1..=20).map(|n| format!("chain{n}")).collect();
     assert_eq!(names(&answer["items"]), expected);
     assert_eq!(items[0]["parent"], Value::Null);
     for (id, item) in items.iter().enumerate().skip(1) {
         assert_eq!(item["parent"], id - 1);
+    }
+}
+
+#[test]
+fn retained_of_several_has_the_rows_of_the_text_as_json() {
+    let args = [SAMPLE, "retained", "process_frame", "report"];
+    let answer = elfq_json(&args);
+    assert_eq!(answer["own"], 532 + 370);
+    assert_eq!(answer["retained"], 2829);
+    assert_eq!(answer["kept_together"], 56);
+    assert_adds_up(&answer);
+    // Each SYMBOL, in the order given, has its row at the top.
+    assert_eq!(names(&answer["symbols"]), ["process_frame", "report"]);
+    assert_eq!(rows_of(&answer), [Some(0), Some(9)]);
+    for symbol in answer["symbols"].as_array().unwrap() {
+        assert_eq!(symbol["kept_by_others"], false);
+        let row = &answer["items"][symbol["row"].as_u64().unwrap() as usize];
+        assert_eq!(row["parent"], Value::Null);
+    }
+    // The rows are the text's, and those that the two keep only together
+    // name them by their addresses, in the order given.
+    assert_eq!(names(&answer["items"]), text_rows(&args));
+    let items = answer["items"].as_array().unwrap();
+    let together: Vec<&Value> = (items.iter())
+        .filter(|row| !row["kept_together_by"].is_null())
+        .collect();
+    assert_eq!(
+        names(&json!(together)),
+        ["stats", "__stack_chk_fail@plt", "frames_bad", "frames_ok"]
+    );
+    for row in together {
+        assert_eq!(row["kept_together_by"], json!(["0x1700", "0x1920"]));
+        assert_eq!(row["parent"], Value::Null);
+    }
+    // errno names all nine of the functions that set it.
+    let errno_setters = [
+        "_sbrk_r",
+        "_isatty_r",
+        "_kill_r",
+        "_close_r",
+        "_read_r",
+        "_fstat_r",
+        "_lseek_r",
+        "_write_r",
+        "_getpid_r",
+    ];
+    let args = [
+        &["testdata/bin/c-strtod.elf", "retained"][..],
+        &errno_setters,
+    ]
+    .concat();
+    let answer = elfq_json(&args);
+    assert_adds_up(&answer);
+    assert_eq!(answer["kept_together"], 4);
+    let errno = row_named(&answer, "errno");
+    let addresses: Vec<&Value> = (answer["symbols"].as_array().unwrap().iter())
+        .map(|symbol| &symbol["address"])
+        .collect();
+    assert_eq!(errno["kept_together_by"], json!(addresses));
+}
+
+#[test]
+fn retained_says_of_each_symbol_what_it_adds() {
+    // Nothing reaches debug_dump, so it has no row, and its own bytes count.
+    let answer = elfq_json(&[SAMPLE, "retained", "debug_dump", "process_frame"]);
+    assert_eq!(answer["retained"], 2097);
+    assert_eq!(answer["kept_together"], 0);
+    assert_adds_up(&answer);
+    let debug_dump = &answer["symbols"][0];
+    assert_eq!(debug_dump["reachable"], false);
+    assert_eq!(debug_dump["own"], 29);
+    assert_eq!(debug_dump["row"], Value::Null);
+    assert_eq!(debug_dump["kept_by_others"], false);
+    assert_eq!(rows_of(&answer), [None, Some(0)]);
+    // process_frame keeps crc32, so crc32 adds nothing, and its row hangs
+    // under process_frame's.
+    let answer = elfq_json(&[SAMPLE, "retained", "process_frame", "crc32"]);
+    assert_eq!(answer["retained"], 2068);
+    assert_eq!(answer["kept_together"], 0);
+    assert_adds_up(&answer);
+    let crc32 = &answer["symbols"][1];
+    assert_eq!(crc32["kept_by_others"], true);
+    assert_eq!(
+        answer["items"][crc32["row"].as_u64().unwrap() as usize]["parent"],
+        0
+    );
+    // process_frame and report keep stats only together, so stats adds
+    // nothing. Its row is at the top, but as a SYMBOL's own it names no
+    // keepers, where frames_ok's, which they keep together too, does.
+    // Removing stats alone saves its 32 bytes, so those don't go only
+    // when several go.
+    let args = [SAMPLE, "retained", "process_frame", "report", "stats"];
+    let answer = elfq_json(&args);
+    assert_eq!(answer["retained"], 2829);
+    assert_eq!(answer["kept_together"], 56 - 32);
+    assert_adds_up(&answer);
+    assert_eq!(names(&answer["items"]), text_rows(&args));
+    let stats = &answer["symbols"][2];
+    assert_eq!(stats["kept_by_others"], true);
+    let row = &answer["items"][stats["row"].as_u64().unwrap() as usize];
+    assert_eq!(row["parent"], Value::Null);
+    assert_eq!(row["kept_together_by"], Value::Null);
+    let frames_ok = row_named(&answer, "frames_ok");
+    assert_eq!(frames_ok["kept_together_by"], json!(["0x1700", "0x1920"]));
+    // The two panic paths keep fmt only together, and fmt keeps
+    // pad_integral, so pad_integral adds nothing, and its row hangs under
+    // fmt's, which names the two.
+    let args = [
+        "testdata/bin/rust-cortex-m4.elf",
+        "retained",
+        "panic_bounds_check",
+        "slice_index_fail",
+        "pad_integral",
+    ];
+    let answer = elfq_json(&args);
+    assert_eq!(answer["retained"], 2813);
+    assert_adds_up(&answer);
+    assert_eq!(names(&answer["items"]), text_rows(&args));
+    let pad_integral = &answer["symbols"][2];
+    assert_eq!(pad_integral["kept_by_others"], true);
+    let row = &answer["items"][pad_integral["row"].as_u64().unwrap() as usize];
+    assert_eq!(row["kept_together_by"], Value::Null);
+    let fmt = &answer["items"][row["parent"].as_u64().unwrap() as usize];
+    assert_eq!(fmt["name"], "<u32 as core::fmt::Display>::fmt");
+    assert_eq!(fmt["through_pointer"], true);
+    assert_eq!(fmt["parent"], Value::Null);
+    let panic_paths = [
+        &answer["symbols"][0]["address"],
+        &answer["symbols"][1]["address"],
+    ];
+    assert_eq!(fmt["kept_together_by"], json!(panic_paths));
+    // What goes uses log_msg, which other code uses too, and calls through
+    // pointers.
+    assert_eq!(names(&answer["shares"]), ["elfq_sample::log_msg"]);
+    assert_eq!(answer["indirect_calls"], 8);
+    // apply_filter keeps none of the range's bytes, so it has no row.
+    let answer = elfq_json(&[
+        TCM_SAMPLE,
+        "retained",
+        "crc32",
+        "apply_filter",
+        "--range",
+        "0x20000000..0x20000450",
+    ]);
+    assert_eq!(answer["retained"], 1024);
+    assert_adds_up(&answer);
+    assert_eq!(answer["symbols"][1]["reachable"], true);
+    assert_eq!(answer["symbols"][1]["own"], 0);
+    assert_eq!(rows_of(&answer), [Some(0), None]);
+    // A SYMBOL given twice is one, and one SYMBOL keeps nothing together.
+    // 0x1280 is where crc32 starts.
+    let answer = elfq_json(&[SAMPLE, "retained", "crc32", "0x1280"]);
+    assert_eq!(answer, elfq_json(&[SAMPLE, "retained", "crc32"]));
+    assert_eq!(names(&answer["symbols"]), ["crc32"]);
+    assert_eq!(names(&answer["items"]), ["crc32", "crc_table"]);
+    assert_eq!(rows_of(&answer), [Some(0)]);
+    assert_eq!(answer["kept_together"], 0);
+}
+
+/// The row of the item named `name` in `retained`'s JSON.
+#[track_caller]
+fn row_named<'a>(answer: &'a Value, name: &str) -> &'a Value {
+    (answer["items"].as_array().unwrap().iter())
+        .find(|row| row["name"] == name)
+        .unwrap()
+}
+
+/// The `row` of each SYMBOL in `retained`'s JSON, in the order given.
+fn rows_of(answer: &Value) -> Vec<Option<u64>> {
+    (answer["symbols"].as_array().unwrap().iter())
+        .map(|symbol| symbol["row"].as_u64())
+        .collect()
+}
+
+/// Checks that what `retained`'s JSON says goes adds up: the rows at the
+/// top of its tree and the own bytes of the SYMBOLs that nothing reaches
+/// make `retained`, and the `row` of each SYMBOL is its own.
+fn assert_adds_up(answer: &Value) {
+    let items = answer["items"].as_array().unwrap();
+    let tops: u64 = (items.iter())
+        .filter(|row| row["parent"].is_null())
+        .map(|row| row["retained"].as_u64().unwrap())
+        .sum();
+    let symbols = answer["symbols"].as_array().unwrap();
+    let unreached: u64 = (symbols.iter())
+        .filter(|symbol| symbol["reachable"] == false)
+        .map(|symbol| symbol["own"].as_u64().unwrap())
+        .sum();
+    assert_eq!(answer["retained"], tops + unreached, "{answer}");
+    for symbol in symbols {
+        if let Some(row) = symbol["row"].as_u64() {
+            assert_eq!(items[row as usize]["address"], symbol["address"]);
+        }
     }
 }
 
