@@ -139,7 +139,7 @@ path to it goes through. The table shows the 30 largest items, or every
 item with --all; rows such as \"6 more, kept by crc32\" sum up the rest, and
 --tree draws the rows as a tree.";
 
-/// What `retained` says for several SYMBOLs.
+/// What `retained` says for several SYMBOLs, or for ranges.
 pub(super) const RETAINED_SET: &str = "\
 With several SYMBOLs, the answer is what removing them all at once would
 save. That can be more than their retained sizes added up, since items
@@ -147,7 +147,8 @@ that only they use go too, or less, since one can keep another. A row
 such as \"stats, kept by process_frame and report together\" goes when all
 of those go, and not when any one of them goes alone. A name that could
 mean several items is an error, as with one SYMBOL: give each one you
-mean, or its address.";
+mean, or its address. A RANGE argument picks what goes; --range picks
+which bytes count.";
 
 /// How `reach SYMBOL` differs, which `retained` ends with.
 pub(super) const RETAINED_REACH: &str = "\

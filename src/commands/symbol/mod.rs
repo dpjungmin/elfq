@@ -14,8 +14,8 @@
 //! When SYMBOL gives another of an item's names, or an address inside it,
 //! the answer's first line says so (see [`Symbol::lead_name`]).
 //!
-//! For `callers` and `callees`, SYMBOL can also be one or more ranges of
-//! memory instead (see [`subject`]).
+//! For `callers`, `callees` and `retained`, an argument can also be a range
+//! of memory in place of SYMBOL (see [`argument`]).
 //!
 //! This file tells ranges from SYMBOL. `lookup.rs` holds `Names`, which
 //! finds what SYMBOL names and names items for the user in return,
@@ -73,22 +73,43 @@ pub(super) enum Subject {
 /// more ranges of memory.
 pub(super) fn subject(binary: &Binary, queries: &[String]) -> Result<Subject> {
     if let [query] = queries
-        && range(query).is_none()
+        && let Argument::Symbol(query) = argument(query)?
     {
-        check_not_a_range(query)?;
         return Ok(Subject::Symbol(find(binary, query)?));
     }
     let ranges = queries
         .iter()
-        .map(|query| match range(query) {
-            Some(range) => range,
-            None => {
-                check_not_a_range(query)?;
+        .map(|query| match argument(query)? {
+            Argument::Range(range) => Ok(range),
+            Argument::Symbol(query) => {
                 bail!("`{query}` isn't a range; give one SYMBOL, or ranges such as 0x0+256K")
             }
         })
         .collect::<Result<_>>()?;
     Ok(Subject::Ranges(ranges))
+}
+
+/// What an argument given in place of SYMBOL is.
+pub(super) enum Argument<'q> {
+    /// SYMBOL, as typed, for [`Names`] to look up.
+    Symbol(&'q str),
+    /// A range of memory.
+    Range(AddressRange),
+}
+
+/// Reads `query`, given in place of SYMBOL, as `callers`, `callees` and
+/// `retained` read it: as a range when it is meant as one (see
+/// [`is_range`]), or else as SYMBOL. Fails only for a range: one that it
+/// can't read, or one typed with `-` or `:` between its ends, which can't
+/// be SYMBOL either.
+pub(super) fn argument(query: &str) -> Result<Argument<'_>> {
+    match range(query) {
+        Some(range) => Ok(Argument::Range(range?)),
+        None => {
+            check_not_a_range(query)?;
+            Ok(Argument::Symbol(query))
+        }
+    }
 }
 
 /// The range that `query` gives, if it gives one (see [`is_range`]):

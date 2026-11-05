@@ -111,10 +111,11 @@ its size shows as `?`, and elfq can't read its code.
 
 **Range and memory block.** A range is the addresses from START up to END,
 written `START..END` or `START+SIZE`. With `--range`, the overview, `top`
-and `retained` count only the bytes inside one range, `callers` and
-`callees` take ranges in place of SYMBOL and after `--from` and `--to`, and
-`reach` takes them after `--to`. A memory block is a run of sections and load images less than 64 KiB apart,
-which stands for one memory, such as flash or a RAM; the overview lists the
+and `retained` count only the bytes inside one range. `callers`, `callees`
+and `retained` take ranges in place of SYMBOL, `callers` and `callees` take
+them after `--from` and `--to` too, and `reach` after `--to`. A memory
+block is a run of sections and load images less than 64 KiB apart, which
+stands for one memory, such as flash or a RAM; the overview lists the
 blocks when there are several, and `reach` adds up what SYMBOL reaches in
 each. (`binary::AddressRange`, `binary::MemoryBlock`)
 
@@ -201,6 +202,7 @@ except `inlined`, which reads DWARF instead of machine code.
 | `elfq FILE reach SYMBOL --to RANGE` | What does SYMBOL reach in one range of memory, such as flash, and which code uses each item there? |
 | `elfq FILE callees RANGE...` | What do the code and data in these ranges of memory use outside them, such as code in ITCM that calls a function in flash? `callers RANGE...` asks the reverse. |
 | `elfq FILE callers RANGE... --from RANGE` | What in one range of memory uses these ranges, such as code in ITCM that uses data in DTCM? `callees RANGE... --to RANGE` asks what these ranges use in that one, and either takes SYMBOL in place of the ranges. |
+| `elfq FILE retained RANGE...` | What would removing everything in these ranges of memory, such as ITCM, save? The ranges mix with SYMBOLs, and `--range` still picks which bytes count. |
 | `elfq FILE inlined [SYMBOL]` | Which inlined functions cost the most bytes across the binary, or inside SYMBOL? Needs DWARF. |
 | `elfq FILE browse [SYMBOL]` | What does SYMBOL's code do, line by line, where does each call and use lead, and what calls it? Opens in the terminal, follows the links that the other commands' answers name, and shows the answers of `callees`, `callers`, `reach`, `why` and `retained SYMBOL` in tabs, each with the command that prints it, and the retained bytes in each block of memory; a page's header says what `retained` and `why` say about the item, and `u` opens the item that keeps it; `/` finds text in a page's rows. A data object's page lists its contents as far as elfq reads them: a vector table's entries, named by exception, the pointers it holds, as `callees` lists them, with what the dynamic loader writes in a shared library, or the strings of an object that holds only strings, with the `objdump -s` command that prints its bytes. Without SYMBOL, it opens on where the program starts, as `reach` lists it, each start a link to its page. |
 | `elfq FILE diff NEW` | Do two builds of one program load the same bytes at the same addresses? If not, in which blocks of memory do the bytes differ, which sections changed size there, which functions and data objects moved to another block, are new or gone, changed size, or kept their size but changed, each with what keeps it, and which calls between blocks are new or gone? |
@@ -393,18 +395,51 @@ When SYMBOLs can't be used, `retained` lists them all at once, so that a
 long list can be fixed in one go, and elfq exits with 2. When only one
 fails, or all that fail get the same error, the error is the one that
 SYMBOL gets alone. Otherwise a line counts every SYMBOL that fails, as
-in "elfq can't use 8 of the 9 SYMBOLs:", and under it each error is
+in "elfq can't use 8 of the 9 SYMBOLs:", and calls them arguments when a
+range is among those given, as in "elfq can't use 3 of the 4
+arguments:", since a range isn't a SYMBOL. Under it each error is
 indented once: a name given twice, or an address typed two ways such as
-0x1 and 0x01, is listed once, so there may be fewer lines than the count.
-The list stops at 10 errors and says how many more, as other lists do
-(11 fit, since "and 1 more" would take a line too), and with `--all` it
-lists every one. Two hints are `retained`'s own, since it takes several
-SYMBOLs: a name that could mean several items says to use one or more
-of them, and a name with `*` in it that finds nothing says that elfq
-doesn't take patterns yet, unless elfq can say why no item has the name,
-or suggest one. `top --json` gives each item's address, which works as
-SYMBOL. A range in place of SYMBOL is an error until `retained` takes
-ranges; in the list, that error names the range.
+0x1 and 0x01, is listed once, so there may be fewer lines than the
+count. The list stops at 10 errors and says how many more, as other
+lists do (11 fit, since "and 1 more" would take a line too), and with
+`--all` it lists every one. Two hints are `retained`'s own, since it
+takes several SYMBOLs: a name that could mean several items says to use
+one or more of them, and a name with `*` in it that finds nothing says
+that elfq doesn't take patterns yet, unless elfq can say why no item has
+the name, or suggest one. `top --json` gives each item's address, which
+works as SYMBOL.
+
+A range in place of SYMBOL, written as `--range` takes it, stands for
+every item with a byte in it, found as `callers` finds the items of a
+range: an item whose size elfq doesn't know counts as its first byte, and
+an item in ITCM counts where it runs, not where its load image is stored.
+The items of a range come in address order, ranges mix with SYMBOLs and
+with each other, and an item that two arguments find counts once, so
+`retained 0x0+256K` says what removing everything in ITCM would save.
+With only ranges, the user named no item, so the first line names the
+ranges, each once, with the sections in each by where they run, as
+`callers` names them: "Removing the 6 items in 0x00000000..0x00040000
+(.itcm) would save 1284 bytes:". It names up to 10 ranges, and 10
+sections in each, before "and 5 more", and with `--all` every one. When
+the ranges hold one item, the answer is that item's, under its name with
+the ranges as a note: "Removing SysTick_Handler (the one item in
+0x00000000..0x00000010) would save 28 bytes:". With a SYMBOL among the
+arguments, the first line names or counts the items, as for SYMBOLs, and
+so does the line that says nothing reaches them, whatever the arguments.
+The note on what adds nothing names only items that a SYMBOL names, and
+with only ranges, no note says that one item keeps the rest, since the
+user named none of them. A range that holds no item gets the error that
+`callers` gives it, as in "the file has nothing in
+0x00000000..0x00000010, only in 0x00000318..0x00004088", or for a range
+that holds only a load image, where the program uses what is stored
+there; a range typed with `-` or `:` between its ends gets `callers`'
+hint, as in "`0x0-0x10` isn't a range: did you mean 0x0..0x10?"; and a
+function in a range whose end elfq doesn't know is left out, as when it
+is named.
+
+A RANGE argument picks what goes; `--range` picks which bytes count, and
+the two combine: with `--range 0x20000000+256K`, `retained 0x0+256K`
+counts the 1028 bytes in DTCM that removing ITCM's code would save.
 
 With `--tree`, every tree, in every command, is drawn at most 9 levels
 below its top row, so names never start more than 27 columns into the tree
@@ -1071,12 +1106,12 @@ found in it, and leaves its table of the largest items to `top --json`:
 | `items` | the rows of the tree, below, for the items that something reaches |
 | `unreachable` | the items that nothing reaches, largest first, each with `own` and `load_image` too |
 
-**`retained SYMBOL...`**, in one shape for one SYMBOL or several:
+**`retained SYMBOL...`**, in one shape for one SYMBOL or several, and for ranges:
 
 | Key | Value |
 |---|---|
-| `symbols` | each SYMBOL's item, in the order given, each once, with the keys below |
-| `left_out` | the items of the functions given whose end elfq doesn't know, in the order given, each once: elfq can't read their code, so nothing else here counts them; `[]` when there are none |
+| `symbols` | each SYMBOL's item, and for a range in place of SYMBOL, every item with a byte in it, in address order; in the order given, each once, with the keys below |
+| `left_out` | the items of the functions given, or in a range given, whose end elfq doesn't know, in the order given, each once: elfq can't read their code, so nothing else here counts them; `[]` when there are none |
 | `range` | the range that `--range` picked, or `null` |
 | `own` | the SYMBOLs' own bytes, or with `--range`, those in the range |
 | `load_image` | how many of `own` are their load images' |
@@ -1467,7 +1502,10 @@ in order. Its output is the first example under [Commands](#commands).
    SYMBOL that fails, an import among them (`item_in_file`), and leaves
    out a function whose end elfq doesn't know (`Item::end_unknown`),
    unless nothing else is left, then refuses a shared library, before
-   `run` builds the graph. A SYMBOL given twice counts once.
+   `run` builds the graph. A SYMBOL given twice counts once. An argument
+   that `symbol::argument` reads as a range, as it does for `callers`,
+   stands for the items with a byte in it (`Item::is_in`), once
+   `check_holds_items` has checked that it holds one.
 5. **The graph.** `retained::run` has `graph::Graph::build` turn what
    `InstructionSet::scan` found in each function's code into references, or
    into unresolved calls. `Graph::build` then adds the pointers stored in
@@ -1650,10 +1688,16 @@ key typed into go to then takes under 0.1 s. The first takes up to 0.2 s
 in those libraries, and the first whose text names nothing takes about
 half a second, as it works out what to suggest.
 
-`retained` takes several SYMBOLs and says what removing them at once
-would save, as text and as JSON, and lists in one error every argument
-that fails; ranges as arguments, which stand for the items in them, come
-next.
+`retained` takes several SYMBOLs, and ranges of memory that stand for
+the items in them, and says what removing them at once would save, as
+text and as JSON, and lists in one error every argument that fails. Next
+for it, not yet planned: `*` patterns, such as `core::fmt::*`; the bytes
+that go in each block of memory, in one run, as browse's retained tab
+shows them; names from stdin or a file, once a list outgrows the command
+line; source files and crates; sets in shared libraries, once the
+functions they export count as places where the program starts; `why`
+for a set, and picking several items in browse; and the veneers and PLT
+stubs that lead only into the set, which no answer counts yet.
 
 Ideas for later, not yet planned: output that scripts and AI agents can
 read more easily, the functions that shared libraries export as roots,

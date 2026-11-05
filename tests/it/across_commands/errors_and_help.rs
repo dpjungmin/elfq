@@ -283,7 +283,9 @@ fn errors_go_to_stderr_with_exit_code_2() {
 fn errors_say_what_to_try() {
     // A range typed with `-` or `:` between its ends.
     let dash = "error: `0x0-0x40000` isn't a range: did you mean 0x0..0x40000?\n";
-    assert_output(&stderr(&[TCM_SAMPLE, "callees", "0x0-0x40000"]), dash);
+    for command in ["callees", "retained"] {
+        assert_output(&stderr(&[TCM_SAMPLE, command, "0x0-0x40000"]), dash);
+    }
     assert_output(
         &stderr(&[TCM_SAMPLE, "callers", "0x0..0x100", "0x0-0x40000"]),
         dash,
@@ -316,11 +318,13 @@ fn errors_say_what_to_try() {
         ),
         "{error}"
     );
-    assert_output(
-        &stderr(&[TCM_SAMPLE, "callers", "0x0..0x100,0x200..0x300"]),
-        "error: `0x0..0x100,0x200..0x300` isn't a range; give each range as its own argument: \
-         0x0..0x100 0x200..0x300\n",
-    );
+    for command in ["callers", "retained"] {
+        assert_output(
+            &stderr(&[TCM_SAMPLE, command, "0x0..0x100,0x200..0x300"]),
+            "error: `0x0..0x100,0x200..0x300` isn't a range; give each range as its own \
+             argument: 0x0..0x100 0x200..0x300\n",
+        );
+    }
     assert_output(
         &stderr(&[TCM_SAMPLE, "callers", "0x0..0x100,", "0x200..0x300"]),
         "error: `0x0..0x100,` isn't a range; leave out the comma\n",

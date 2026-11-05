@@ -12,12 +12,12 @@
 //! reaches, the only top is SYMBOL itself, so what is lost is SYMBOL and
 //! everything it keeps. [`Parts`] works out from the removal the bytes
 //! saved, the items under the tops and the notes; the answer adds its lead
-//! line and picks its rows. `symbols.rs` finds the SYMBOLs, leaves out the
-//! functions whose end elfq doesn't know, and says why it can't use those
-//! it can't. This file answers about one, and `several.rs` about several,
-//! from the same parts and with the same words for the lead line.
-//! `json.rs` gives the answer as JSON, in one shape for one SYMBOL or
-//! several.
+//! line and picks its rows. `symbols.rs` finds the SYMBOLs, and the items
+//! of a range given in place of SYMBOL, leaves out the functions whose end
+//! elfq doesn't know, and says why it can't use those it can't. This file
+//! answers about one, and `several.rs` about several, from the same parts
+//! and with the same words for the lead line. `json.rs` gives the answer
+//! as JSON, in one shape for one SYMBOL or several.
 
 mod json;
 mod parts;
@@ -35,6 +35,7 @@ use super::checks::check_code_is_readable;
 #[cfg(feature = "tui")]
 use super::checks::readable_item;
 use super::kept::Kept;
+use super::range_check::ranges_text;
 use super::retained_tree::RetainedTree;
 use super::symbol::Names;
 use super::text::Naming;
@@ -46,13 +47,13 @@ use crate::binary::{AddressRange, Binary, FileKind};
 use crate::cli::Format;
 use crate::graph::{Graph, Node};
 use parts::Parts;
-use symbols::{Found, Symbols, find_symbols, left_out_note};
+use symbols::{Found, Given, Symbols, find_symbols, left_out_note};
 
 /// Answers `elfq FILE retained SYMBOL...`: what removing the SYMBOLs in
-/// `queries` at once would save. A SYMBOL given twice, or by a name and by
-/// an address, counts once, a function whose end elfq doesn't know is left
-/// out, with a note, and when only one is left, the answer is the one
-/// about it alone.
+/// `queries` at once would save, where a range stands for the items in it.
+/// An item given twice, or by a name and by an address, counts once, a
+/// function whose end elfq doesn't know is left out, with a note, and when
+/// only one is left, the answer is the one about it alone.
 pub(super) fn run(
     binary: &Binary,
     queries: &[String],
@@ -63,7 +64,7 @@ pub(super) fn run(
 ) -> Result<Outcome> {
     check_code_is_readable(binary)?;
     let names = Kept::new(Names::new(binary));
-    let Symbols { found, left_out } = find_symbols(binary, &names, queries, all)?;
+    let symbols = find_symbols(binary, &names, queries, all)?;
     let graph = Kept::new(Graph::build(binary));
     let retained = Kept::new(RetainedTree::naming(
         binary,
@@ -71,19 +72,21 @@ pub(super) fn run(
         range,
         names.into_inner(),
     ));
-    match (format, &found[..]) {
-        (Format::Json, _) => {
+    match (format, &symbols.found[..]) {
+        (Format::Json, found) => {
             let indexes: Vec<usize> = found.iter().map(|found| found.index).collect();
-            write_json(&retained, &indexes, &left_out, out)?;
+            write_json(&retained, &indexes, &symbols.left_out, out)?;
         }
         (Format::Text | Format::Tree, [one]) => {
+            // The one item of ranges given alone is named with them.
+            let lead_name = subject(binary, &[&one.lead_name], &symbols.given, all);
             let symbol = SymbolInTree {
                 retained: &retained,
                 index: one.index,
-                lead_name: &one.lead_name,
+                lead_name: &lead_name,
             };
             let mut answer = answer(&symbol, all, format);
-            if let Some(note) = left_out_note(binary, &left_out, &Naming::of(all)) {
+            if let Some(note) = left_out_note(binary, &symbols.left_out, &Naming::of(all)) {
                 // Before the notes that every answer about removing items
                 // has.
                 answer.notes.insert(0, note);
@@ -91,7 +94,7 @@ pub(super) fn run(
             answer.write(out)?;
         }
         (Format::Text | Format::Tree, _) => {
-            several::tree_answer(&retained, &found, &left_out, all, format).write(out)?;
+            several::tree_answer(&retained, &symbols, all, format).write(out)?;
         }
     }
     Ok(Outcome::Answered)
@@ -103,33 +106,54 @@ pub(super) fn run(
 #[cfg(feature = "tui")]
 pub(super) fn refusal(binary: &Binary, node: Node) -> Result<usize> {
     let index = readable_item(binary, node)?;
-    refuse_shared_library(binary, &[node.name(binary)])?;
+    refuse_shared_library(binary, &[node.name(binary)], &Given::Symbols, false)?;
     Ok(index)
 }
 
 /// Refuses a shared library, whose exported functions elfq doesn't yet
 /// count as places where the program starts, so that it can't tell what
-/// only the items called `names` lead to.
-fn refuse_shared_library(binary: &Binary, names: &[&str]) -> Result<()> {
+/// only the items called `names` lead to. It names them as the answer's
+/// first line would, by what was `given` (see [`subject`]).
+fn refuse_shared_library(binary: &Binary, names: &[&str], given: &Given, all: bool) -> Result<()> {
     if binary.kind == FileKind::SharedLibrary {
         let lead = match names {
             [_] => "leads",
             _ => "lead",
         };
-        let what = subject(names);
+        let what = subject(binary, names, given, all);
         bail!("elfq can't yet tell what only {what} {lead} to in a shared library");
     }
     Ok(())
 }
 
-/// How the answer names the SYMBOLs called `names`: "a", "a and b", or
-/// from three on, "these 6 items", so that its first line stays short
-/// however many there are.
-fn subject(names: &[&str]) -> String {
-    match names {
-        [one] => one.to_string(),
-        [first, second] => format!("{first} and {second}"),
-        _ => format!("these {} items", names.len()),
+/// How the answer's first line names the items called `names`, which were
+/// `given`: "a", "a and b", or from three on, "these 6 items", so that it
+/// stays short however many there are. When only ranges were given, the
+/// user named no item, so it names the ranges, each with the sections in
+/// it by where they run, every one with `all`, as `callers` names ranges:
+/// "the 6 items in 0x00000000..0x000000e0 (.itcm)". The one item of
+/// ranges keeps its name, with the ranges as a note, as an address given
+/// as SYMBOL does in "crc32 (which holds 0x14)": "SysTick_Handler (the one
+/// item in 0x00000000..0x00000010)".
+fn subject(binary: &Binary, names: &[&str], given: &Given, all: bool) -> String {
+    match (given, names) {
+        (Given::Ranges(ranges), [one]) => {
+            let ranges: Vec<String> = ranges
+                .iter()
+                .map(|&range| text::range_argument(range))
+                .collect();
+            let ranges: Vec<&str> = ranges.iter().map(String::as_str).collect();
+            format!("{one} (the one item in {})", text::names_text(&ranges, all))
+        }
+        (Given::Ranges(ranges), _) => {
+            let ranges = ranges_text(binary, ranges, all);
+            format!("the {} items in {ranges}", names.len())
+        }
+        (Given::Symbols | Given::SymbolsAndRanges, [one]) => one.to_string(),
+        (Given::Symbols | Given::SymbolsAndRanges, [first, second]) => {
+            format!("{first} and {second}")
+        }
+        (Given::Symbols | Given::SymbolsAndRanges, _) => format!("these {} items", names.len()),
     }
 }
 
@@ -284,18 +308,44 @@ impl<'t, 'g, 'a> Alone<'t, 'g, 'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::subject;
+    use std::path::Path;
+
+    use super::{Given, subject};
+    use crate::binary::{AddressRange, Binary};
 
     #[test]
-    fn the_lead_names_one_or_two_symbols_and_counts_more() {
-        assert_eq!(subject(&["crc32"]), "crc32");
+    fn the_lead_names_few_symbols_counts_more_and_names_ranges() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/bin/c-cortex-m7.elf");
+        let binary = Binary::load(&path).unwrap();
+        let lead = |names: &[&str], given: &Given| subject(&binary, names, given, false);
+        assert_eq!(lead(&["crc32"], &Given::Symbols), "crc32");
         assert_eq!(
-            subject(&["process_frame", "report"]),
+            lead(&["process_frame", "report"], &Given::Symbols),
             "process_frame and report"
         );
         assert_eq!(
-            subject(&["crc32", "apply_filter", "filter_tap"]),
+            lead(
+                &["crc32", "apply_filter", "filter_tap"],
+                &Given::SymbolsAndRanges
+            ),
             "these 3 items"
+        );
+        // With only ranges, the ranges, with the sections in them; for one
+        // item, its name, with the ranges as a note.
+        let range = |start, end| AddressRange { start, end };
+        assert_eq!(
+            lead(
+                &["SysTick_Handler", "__app_tick_veneer"],
+                &Given::Ranges(vec![range(0x0, 0x10), range(0xd0, 0xd8)])
+            ),
+            "the 2 items in 0x00000000..0x00000010 (.itcm) and 0x000000d0..0x000000d8 (.itcm)"
+        );
+        assert_eq!(
+            lead(
+                &["SysTick_Handler"],
+                &Given::Ranges(vec![range(0x0, 0x10), range(0x8, 0x10)])
+            ),
+            "SysTick_Handler (the one item in 0x00000000..0x00000010 and 0x00000008..0x00000010)"
         );
     }
 }

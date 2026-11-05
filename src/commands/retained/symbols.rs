@@ -1,92 +1,173 @@
-//! The SYMBOLs that `retained` is given: what each finds, the functions it
-//! leaves out, and the error that lists every SYMBOL it can't use.
+//! The SYMBOLs that `retained` is given, and the ranges given in their
+//! place: what each finds, the functions it leaves out, and the error that
+//! lists every argument it can't use.
 //!
-//! Each SYMBOL is found as in every other command (see `commands::symbol`),
-//! and an item that two of them find counts once. A function whose end
-//! elfq doesn't know, such as glibc's `_init`, is left out: elfq can't read
-//! its code, so it can't tell what the function keeps, but it can still
-//! answer about the others, and says which it left out. When that leaves
-//! none, the error names every one.
+//! Each SYMBOL is found as in every other command (see `commands::symbol`).
+//! A range in place of SYMBOL stands for every item with a byte in it, in
+//! address order, as `callers` reads a range, and an empty one gets the
+//! error that `callers` gives it. An item that two arguments find counts
+//! once. A function whose end elfq doesn't know, such as glibc's `_init`,
+//! is left out: elfq can't read its code, so it can't tell what the
+//! function keeps, but it can still answer about the others, and says which
+//! it left out. When that leaves none, the error names every one.
 //!
-//! Every SYMBOL that `retained` can't use is listed at once, so that a long
-//! list of them can be fixed in one go: one with the error it gets alone,
-//! several each with that error, under a line that counts them. The errors
+//! Every argument that `retained` can't use is listed at once, so that a
+//! long list of them can be fixed in one go: one with the error it gets
+//! alone, several each with that error, under a line that counts them, and
+//! calls them SYMBOLs, or arguments once a range is among them. The errors
 //! are those of every command, with two hints of `retained`'s own, since it
 //! takes several SYMBOLs: a name that could mean several items says to use
 //! one or more of them, and a name with `*` in it that finds nothing says
 //! that elfq doesn't take patterns yet, unless elfq can say why no item has
-//! the name, or which it may mean. A range gets an error of its own, until
-//! `retained` takes ranges.
+//! the name, or which it may mean.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::{Result, bail};
 
 use super::refuse_shared_library;
-use crate::binary::Binary;
+use crate::binary::{AddressRange, Binary};
 use crate::commands::checks::{ends_unknown, item_in_file};
-use crate::commands::symbol::{self, Lookup, Names};
+use crate::commands::range_check::check_holds_items;
+use crate::commands::symbol::{self, Argument, Lookup, Names};
 use crate::commands::text::{self, Naming};
 use crate::graph::Node;
 
-/// What `retained` answers about: the SYMBOLs that it found, and the
-/// functions that it leaves out.
+/// What `retained` answers about: the SYMBOLs that it found, the functions
+/// that it leaves out, and whether ranges were given in place of SYMBOL.
 pub(super) struct Symbols {
-    /// The SYMBOLs' items, each once, in the order given.
+    /// The SYMBOLs' items, and those of the ranges given in place of
+    /// SYMBOL, each once, in the order given, and a range's in address
+    /// order.
     pub(super) found: Vec<Found>,
-    /// The functions given whose end elfq doesn't know, as indexes into
-    /// [`Binary::items`], each once, in the order given. elfq can't read
-    /// their code, so the answer doesn't count them, and says so (see
-    /// [`left_out_note`]).
+    /// The functions given, or in a range given, whose end elfq doesn't
+    /// know, as indexes into [`Binary::items`], each once, in the order
+    /// given. elfq can't read their code, so the answer doesn't count them,
+    /// and says so (see [`left_out_note`]).
     pub(super) left_out: Vec<usize>,
+    /// Whether SYMBOLs were given, ranges in their place, or both.
+    pub(super) given: Given,
 }
 
-/// A SYMBOL that `retained` was given, and found.
+/// An item that `retained` was given: the one that a SYMBOL found, or one
+/// in a range given in place of SYMBOL.
 pub(super) struct Found {
-    /// Its item, as an index into [`Binary::items`].
+    /// The item, as an index into [`Binary::items`].
     pub(super) index: usize,
-    /// The item's name as the answer gives it (see [`Symbol::lead_name`]).
+    /// The item's name as the answer gives it (see [`Symbol::lead_name`]),
+    /// or for an item in a range, its name.
     ///
     /// [`Symbol::lead_name`]: crate::commands::symbol::Symbol::lead_name
     pub(super) lead_name: String,
+    /// Whether a SYMBOL found it, and not only a range. The note on the
+    /// items that add nothing names only those, since the user didn't name
+    /// a range's items.
+    pub(super) named: bool,
 }
 
-/// Finds what each of `queries` names, by `names`, each item once, in the
-/// order given, and leaves out each function whose end elfq doesn't know.
-/// Fails with an error that lists every SYMBOL that it can't use, such as
-/// an import, the first 10 of them unless `all` (see [`unusable_error`]);
-/// when it leaves out every SYMBOL, with an error that names them; and
-/// after those checks, for a shared library.
+/// What `retained` was given: SYMBOLs, ranges in place of SYMBOL, or both,
+/// as far as its words depend on it.
+pub(super) enum Given {
+    /// Only SYMBOLs.
+    Symbols,
+    /// SYMBOLs and ranges.
+    SymbolsAndRanges,
+    /// Only ranges, which stand for the items in them, each once, in the
+    /// order given.
+    Ranges(Vec<AddressRange>),
+}
+
+impl Given {
+    /// What `arguments` are, each as [`symbol::argument`] read it. It
+    /// fails only for an argument meant as a range, so one that it can't
+    /// read counts as a range here.
+    fn of(arguments: &[Result<Argument>]) -> Given {
+        let symbols = (arguments.iter())
+            .filter(|argument| matches!(argument, Ok(Argument::Symbol(_))))
+            .count();
+        match symbols {
+            0 => {
+                let mut ranges = Vec::new();
+                for argument in arguments {
+                    // A range given twice is named once, as its items count
+                    // once.
+                    if let Ok(Argument::Range(range)) = argument
+                        && !ranges.contains(range)
+                    {
+                        ranges.push(*range);
+                    }
+                }
+                Given::Ranges(ranges)
+            }
+            symbols if symbols == arguments.len() => Given::Symbols,
+            _ => Given::SymbolsAndRanges,
+        }
+    }
+}
+
+/// Finds what each of `queries` names, by `names`, or for a range, the
+/// items in it, each item once, in the order given, and leaves out each
+/// function whose end elfq doesn't know. Fails with an error that lists
+/// every argument that it can't use, such as an import or a range that
+/// holds no item, the first 10 of them unless `all` (see
+/// [`unusable_error`]); when it leaves out every item, with an error that
+/// names them; and after those checks, for a shared library.
 pub(super) fn find_symbols(
     binary: &Binary,
     names: &Names,
     queries: &[String],
     all: bool,
 ) -> Result<Symbols> {
+    // Each argument is read once, for what it finds and for what the error
+    // that lists those it can't use calls them.
+    let arguments: Vec<Result<Argument>> = (queries.iter())
+        .map(|query| symbol::argument(query))
+        .collect();
+    let given = Given::of(&arguments);
     let mut found: Vec<Found> = Vec::new();
     let mut left_out = Vec::new();
     let mut unusable: Vec<Unusable> = Vec::new();
     let mut seen = HashSet::new();
-    for query in queries {
-        let symbol = match find_symbol(binary, names, query) {
-            Ok(symbol) => symbol,
+    // Where each item is in `found`, so that a SYMBOL that names an item
+    // that a range found first can say that it is named.
+    let mut found_at: HashMap<usize, usize> = HashMap::new();
+    for (query, argument) in queries.iter().zip(arguments) {
+        let finds = match argument {
+            Ok(Argument::Symbol(query)) => {
+                find_symbol(binary, names, query).map(|found| vec![found])
+            }
+            Ok(Argument::Range(range)) => items_in(binary, range).map_err(Reason::from),
+            Err(error) => Err(Reason::from(error)),
+        };
+        let finds = match finds {
+            Ok(finds) => finds,
             Err(reason) => {
                 unusable.push(Unusable { query, reason });
                 continue;
             }
         };
-        // An item that two SYMBOLs find counts once.
-        if !seen.insert(symbol.index) {
-            continue;
-        }
-        if binary.items[symbol.index].end_unknown() {
-            left_out.push(symbol.index);
-        } else {
-            found.push(symbol);
+        for one in finds {
+            // An item that two arguments find counts once, where the first
+            // found it.
+            if !seen.insert(one.index) {
+                if one.named
+                    && let Some(&at) = found_at.get(&one.index)
+                {
+                    found[at].named = true;
+                }
+                continue;
+            }
+            if binary.items[one.index].end_unknown() {
+                left_out.push(one.index);
+            } else {
+                found_at.insert(one.index, found.len());
+                found.push(one);
+            }
         }
     }
     if !unusable.is_empty() {
-        bail!("{}", unusable_error(&unusable, queries.len(), all, names));
+        let error = unusable_error(&unusable, queries.len(), &given, all, names);
+        bail!("{error}");
     }
     if found.is_empty() && !left_out.is_empty() {
         // Nothing else is left to answer about.
@@ -98,53 +179,75 @@ pub(super) fn find_symbols(
     let items: Vec<&str> = (found.iter())
         .map(|found| binary.items[found.index].name.as_str())
         .collect();
-    refuse_shared_library(binary, &items)?;
-    Ok(Symbols { found, left_out })
+    refuse_shared_library(binary, &items, &given, all)?;
+    Ok(Symbols {
+        found,
+        left_out,
+        given,
+    })
 }
 
-/// The item that `query` finds, with the name that the answer gives it, or
-/// why `retained` can't use it.
+/// The item that `query`, SYMBOL, finds, with the name that the answer
+/// gives it, or why `retained` can't use it.
 fn find_symbol<'n>(binary: &Binary, names: &'n Names, query: &str) -> Result<Found, Reason<'n>> {
-    if symbol::is_range(query) {
-        return Err(Reason::Range);
-    }
-    let symbol = match names.look_up(query) {
-        Ok(Lookup::One(symbol)) => symbol,
-        Ok(Lookup::NoName) => return Err(Reason::NoName),
-        Ok(Lookup::Several(nodes)) => return Err(Reason::Several(nodes)),
-        Err(error) => return Err(Reason::Error(format!("{error:#}"))),
+    let symbol = match names.look_up(query)? {
+        Lookup::One(symbol) => symbol,
+        Lookup::NoName => return Err(Reason::NoName),
+        Lookup::Several(nodes) => return Err(Reason::Several(nodes)),
     };
-    let index = match item_in_file(binary, symbol.node) {
-        Ok(index) => index,
-        Err(error) => return Err(Reason::Error(format!("{error:#}"))),
-    };
+    let index = item_in_file(binary, symbol.node)?;
     let lead_name = symbol.lead_name(binary);
-    Ok(Found { index, lead_name })
+    Ok(Found {
+        index,
+        lead_name,
+        named: true,
+    })
 }
 
-/// A SYMBOL that `retained` can't use.
+/// The items with a byte in `range`, in address order, each with its name,
+/// as `callers` reads a range. Fails for a range that holds no item, with
+/// the error that `callers` gives it (see [`check_holds_items`]).
+fn items_in(binary: &Binary, range: AddressRange) -> Result<Vec<Found>> {
+    check_holds_items(binary, range)?;
+    Ok((binary.items.iter().enumerate())
+        .filter(|(_, item)| item.is_in(&[range]))
+        .map(|(index, item)| Found {
+            index,
+            lead_name: item.name.clone(),
+            named: false,
+        })
+        .collect())
+}
+
+/// A SYMBOL, or a range in its place, that `retained` can't use.
 struct Unusable<'q, 'n> {
-    /// The SYMBOL, as typed.
+    /// The SYMBOL or range, as typed.
     query: &'q str,
     reason: Reason<'n>,
 }
 
-/// Why `retained` can't use a SYMBOL.
+/// Why `retained` can't use a SYMBOL, or a range in its place.
 enum Reason<'n> {
-    /// It is a range of memory, which `retained` can't take yet.
-    Range,
     /// No item or import has the name.
     NoName,
     /// Several items or imports have the name.
     Several(&'n [Node]),
     /// The error that every command gives it, as elfq prints it: an
-    /// address that no item holds, or that isn't one, or an import, whose
-    /// code isn't in the file.
+    /// address that no item holds, or that isn't one, an import, whose
+    /// code isn't in the file, or a range that holds no item, or that isn't
+    /// one.
     Error(String),
 }
 
-/// How many of the SYMBOLs that it can't use `retained`'s error lists before
-/// "and 5 more", unless `--all` asks for every one.
+impl From<anyhow::Error> for Reason<'_> {
+    /// The error that every command gives, as elfq prints it.
+    fn from(error: anyhow::Error) -> Self {
+        Reason::Error(format!("{error:#}"))
+    }
+}
+
+/// How many of the arguments that it can't use `retained`'s error lists
+/// before "and 5 more", unless `--all` asks for every one.
 const LISTED: usize = 10;
 
 /// What `retained`'s error for SYMBOL that finds several things says to do,
@@ -156,13 +259,20 @@ const USE_ONE_OR_MORE: &str = "use one or more on the left instead";
 const NO_PATTERNS: &str =
     "elfq doesn't take patterns yet: give each name, or each address from top --json";
 
-/// The error for `unusable`, the SYMBOLs of the `given` that `retained`
-/// can't use, in the order given. A SYMBOL whose error says what another's
-/// does, such as a name given twice, is listed once. When that leaves one,
-/// it is the error that SYMBOL gets alone; otherwise, a line that counts
-/// every SYMBOL it can't use, then the errors of the first [`LISTED`], or
-/// of every one if `all`, each indented under it, then how many more.
-fn unusable_error(unusable: &[Unusable], given: usize, all: bool, names: &Names) -> String {
+/// The error for `unusable`, the arguments that `retained` can't use of the
+/// `count` that it was `given`, in the order given. One whose error says
+/// what another's does, such as a name given twice, is listed once. When
+/// that leaves one, it is the error that it gets alone; otherwise, a line
+/// that counts every argument that it can't use, then the errors of the
+/// first [`LISTED`], or of every one if `all`, each indented under it, then
+/// how many more.
+fn unusable_error(
+    unusable: &[Unusable],
+    count: usize,
+    given: &Given,
+    all: bool,
+    names: &Names,
+) -> String {
     let mut said = HashSet::new();
     let distinct: Vec<&Unusable> = (unusable.iter())
         .filter(|&one| said.insert(one.says()))
@@ -172,9 +282,17 @@ fn unusable_error(unusable: &[Unusable], given: usize, all: bool, names: &Names)
     }
     let room = if all { usize::MAX } else { LISTED };
     let listed = text::shown_count(distinct.len(), room);
-    let mut message = format!("elfq can't use {} of the {given} SYMBOLs:", unusable.len());
+    let arguments = match given {
+        Given::Symbols => "SYMBOLs",
+        // A range in place of SYMBOL isn't one.
+        Given::SymbolsAndRanges | Given::Ranges(_) => "arguments",
+    };
+    let mut message = format!(
+        "elfq can't use {} of the {count} {arguments}:",
+        unusable.len()
+    );
     for one in &distinct[..listed] {
-        for line in one.in_list(names).lines() {
+        for line in one.error(names).lines() {
             message += &format!("\n  {line}");
         }
     }
@@ -185,32 +303,21 @@ fn unusable_error(unusable: &[Unusable], given: usize, all: bool, names: &Names)
 }
 
 impl Unusable<'_, '_> {
-    /// The error for this SYMBOL alone: every command's, with `retained`'s
-    /// hints.
+    /// The error for this argument alone: every command's, with
+    /// `retained`'s hints.
     fn error(&self, names: &Names) -> String {
         let query = self.query;
         match &self.reason {
-            Reason::Range => range_refused(None),
             Reason::NoName => names.nothing_named(query, is_pattern(query).then_some(NO_PATTERNS)),
             Reason::Several(nodes) => names.choices(query, nodes, USE_ONE_OR_MORE),
             Reason::Error(error) => error.clone(),
         }
     }
 
-    /// The error for this SYMBOL as the error that lists several gives it:
-    /// the error it gets alone, but for a range, which it names, since a
-    /// range's error alone doesn't.
-    fn in_list(&self, names: &Names) -> String {
-        match self.reason {
-            Reason::Range => range_refused(Some(self.query)),
-            _ => self.error(names),
-        }
-    }
-
-    /// What two SYMBOLs' errors are compared by, to list each error once:
-    /// the error that every command gives the SYMBOL, which is the same for
-    /// an address typed two ways, such as 0x1 and 0x01; or else the SYMBOL
-    /// as typed, which the errors that `retained` words name.
+    /// What two arguments' errors are compared by, to list each error once:
+    /// the error that every command gives the argument, which is the same
+    /// for an address typed two ways, such as 0x1 and 0x01; or else the
+    /// SYMBOL as typed, which the errors that `retained` words name.
     fn says(&self) -> Says<'_> {
         match &self.reason {
             Reason::Error(error) => Says::Error(error),
@@ -223,20 +330,10 @@ impl Unusable<'_, '_> {
 /// [`Unusable::says`]).
 #[derive(PartialEq, Eq, Hash)]
 enum Says<'u> {
-    /// The error that every command gives the SYMBOL.
+    /// The error that every command gives the argument.
     Error(&'u str),
     /// The SYMBOL as typed.
     Query(&'u str),
-}
-
-/// Refuses a range in place of SYMBOL, which `retained` can't take yet,
-/// naming `range` when it is given, as the error that lists several does.
-fn range_refused(range: Option<&str>) -> String {
-    let range = match range {
-        Some(range) => format!("the range `{range}`"),
-        None => "a range".to_string(),
-    };
-    format!("retained can't yet take {range} in place of SYMBOL; give each item's name or address")
 }
 
 /// Whether `query` may be meant as a pattern, such as `core::fmt::*`,

@@ -19,11 +19,12 @@ use crate::graph::Node;
 
 #[derive(Serialize)]
 struct RetainedJson<'a> {
-    /// The SYMBOLs' items, each once, in the order given.
+    /// The SYMBOLs' items, each once, in the order given, and for a range
+    /// given in place of SYMBOL, the items in it, in address order.
     symbols: Vec<SymbolJson<'a>>,
-    /// The functions given whose end elfq doesn't know, each once, in the
-    /// order given: elfq can't read their code, so nothing here counts
-    /// them, and `symbols` doesn't list them.
+    /// The functions given, or in a range given, whose end elfq doesn't
+    /// know, each once, in the order given: elfq can't read their code, so
+    /// nothing here counts them, and `symbols` doesn't list them.
     left_out: Vec<json::Symbol<'a>>,
     /// The range of memory that sizes count, or `null` for all of it.
     range: Option<json::Range>,
