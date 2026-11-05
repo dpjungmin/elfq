@@ -248,6 +248,33 @@ far away for the call instruction, as between flash and ITCM. Here each is
 in the same memory as the code that calls it, so the two that
 `process_frame` calls are in flash and own none of these bytes.
 
+`retained` takes a range in place of a name too, and then says what
+removing every item with a byte in it would save, here all of ITCM:
+
+```
+$ elfq testdata/bin/c-cortex-m7.elf retained 0x0+256K
+Removing the 6 items in 0x00000000..0x00040000 (.itcm) would save 1284 bytes:
+
+RETAINED   OWN  ITEM
+    1072    48  crc32
+    1024  1024  crc_table, kept by crc32
+     184    92  apply_filter
+      84    52  filter_tap, kept by apply_filter
+      32    32  fir_coeffs, kept by filter_tap
+       8     8  __memcpy_veneer, kept by apply_filter
+      28    16  SysTick_Handler
+       8     8  __app_tick_veneer, kept by SysTick_Handler
+       4     4  systick_count, kept by SysTick_Handler
+
+Shared with other code, so not counted: app_tick, memcpy.
+```
+
+The 1284 bytes are ITCM's 224, the 1028 of `crc_table` and
+`systick_count` in DTCM, which only code in ITCM uses, and the 32 of
+`fir_coeffs` in flash. The range picks what goes, and `--range` which
+bytes count: with `--range 0x20000000+256K`, the same command counts only
+the 1028 bytes in DTCM.
+
 With ranges in place of a name, `callees` lists only what the code and data
 in them use outside them. Given both ITCM and DTCM:
 

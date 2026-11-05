@@ -20,6 +20,7 @@ elfq app.elf top --tree                 # the same, drawn as a tree
 elfq app.elf top --range 0x0+256K       # the same, counting only the first 256 KiB
 elfq app.elf retained process_frame     # what removing process_frame would save
 elfq app.elf retained crc32 report      # what removing both at once would save
+elfq app.elf retained 0x0+256K          # what removing everything in the first 256 KiB would save
 elfq app.elf why crc_table              # what keeps crc_table in the file
 elfq app.elf inlined                    # which inlined functions take the most bytes
 elfq app.elf inlined main               # the inlined code in main
@@ -45,7 +46,9 @@ the keys. Until 1.0 the JSON can change, and each release says how. The
 overview, `top` and `retained` can count only the bytes in one range of
 memory, such as a microcontroller's ITCM, with `--range START..END` or
 `--range START+SIZE`; for firmware, the overview lists the ranges its
-sections and their load images occupy.
+sections and their load images occupy. `retained` takes ranges in place
+of a symbol too, each standing for every item with a byte in it, so
+`retained 0x0+256K` says what removing all that is in ITCM would save.
 
 `callers` and `callees` take ranges in place of a symbol, and then list
 only what crosses their edge, such as code in ITCM that calls a function in
@@ -152,7 +155,10 @@ and `elfq --help` lists the commands.
   `symbols` lists the SYMBOLs, one or several, each with `row`, the `id`
   of its own row. `left_out` lists the functions whose end elfq doesn't
   know, such as `_init`, which it leaves out. One error lists every
-  SYMBOL that fails. elfq doesn't take patterns yet, but SYMBOL can be an
+  argument that fails. A range in place of SYMBOL stands for every item
+  with a byte in it, so `elfq FILE.elf retained 0x0+256K` says what
+  removing everything in ITCM would save; `--range` still picks which
+  bytes count. elfq doesn't take patterns yet, but SYMBOL can be an
   address, so `top --json` can pick every item of a module:
   `elfq FILE.elf top --json | jq -r '(.items + .unreachable)[] | select(.name | contains("core::fmt::")) | .address' | xargs elfq FILE.elf retained`.
 - `elfq FILE.elf callees 0x0+256K` lists what the code and data in that
