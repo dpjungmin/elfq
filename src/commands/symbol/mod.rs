@@ -21,18 +21,22 @@
 //! finds what SYMBOL names and names items for the user in return,
 //! `not_found.rs` the error for SYMBOL that finds several items or none,
 //! in the words of every command, which `retained` adds to, and
-//! `similar.rs` the names that error suggests. Unit tests build a file of
-//! functions with `fixtures.rs`.
+//! `similar.rs` the names that error suggests. `pattern.rs` holds
+//! [`Pattern`], such as `uart_*`, and the items that one matches
+//! ([`Names::matching`]), which only `debug matches` lists. Unit tests
+//! build a file of functions with `fixtures.rs`.
 
 #[cfg(test)]
 mod fixtures;
 mod lookup;
 mod not_found;
+mod pattern;
 mod similar;
 
 pub(super) use lookup::{Lookup, Names};
 #[cfg(feature = "tui")]
 pub(super) use not_found::USE_ONE;
+pub(super) use pattern::{Match, MatchedBy, Pattern};
 #[cfg(feature = "tui")]
 pub(super) use similar::Needle;
 

@@ -1,8 +1,8 @@
-//! `debug items` and `debug walk`, the hidden commands.
+//! `debug items`, `debug walk` and `debug matches`, the hidden commands.
 //!
-//! They list what elfq found, and print only text. The tests that
-//! `debug walk` lists the walk that `startup` reads are in startup.rs,
-//! beside the samples they run on.
+//! They list what elfq found: the first two as text, and `debug matches`
+//! as JSON. The tests that `debug walk` lists the walk that `startup`
+//! reads are in startup.rs, beside the samples they run on.
 
 use crate::support::{SAMPLE, TCM_SAMPLE, assert_output, stderr, stdout};
 
@@ -56,9 +56,38 @@ fn debug_walk_lists_what_the_code_run_from_reset_does() {
 }
 
 #[test]
-fn debug_commands_print_only_text() {
-    assert_eq!(
-        stderr(&[SAMPLE, "debug", "items", "--json"]),
-        "error: the debug commands print only text\n"
+fn debug_items_and_walk_refuse_json() {
+    for command in ["items", "walk"] {
+        assert_eq!(
+            stderr(&[SAMPLE, "debug", command, "--json"]),
+            "error: the debug commands print only text\n"
+        );
+    }
+}
+
+#[test]
+fn debug_matches_lists_what_each_pattern_matches_as_json() {
+    // A line for each match: the patterns in the order given, then each
+    // one's items in address order. So write@plt comes last, though its
+    // address is the lowest, since `write*` comes second.
+    assert_output(
+        &stdout(&[SAMPLE, "debug", "matches", "on_*", "write*"]),
+        concat!(
+            r#"{"pattern":"on_*","name":"on_timer","kind":"function","section":".text","address":"0x1260","size":11,"size_estimated":false,"matched_by":"name","matched_as":"on_timer"}"#,
+            "\n",
+            r#"{"pattern":"on_*","name":"on_data","kind":"function","section":".text","address":"0x1270","size":11,"size_estimated":false,"matched_by":"name","matched_as":"on_data"}"#,
+            "\n",
+            r#"{"pattern":"on_*","name":"on_button","kind":"function","section":".text","address":"0x1650","size":19,"size_estimated":false,"matched_by":"name","matched_as":"on_button"}"#,
+            "\n",
+            r#"{"pattern":"write*","name":"write@plt","kind":"function","section":".plt.sec","address":"0x1070","size":16,"size_estimated":false,"matched_by":"name","matched_as":"write@plt"}"#,
+            "\n",
+        ),
+    );
+    // A pattern that matches nothing has no line.
+    assert_output(&stdout(&[SAMPLE, "debug", "matches", "On_*"]), "");
+    // Each argument must be a pattern, checked before any line.
+    assert_output(
+        &stderr(&[SAMPLE, "debug", "matches", "on_*", "process_frame"]),
+        "error: `process_frame` isn't a pattern: it has no * that stands for any text\n",
     );
 }

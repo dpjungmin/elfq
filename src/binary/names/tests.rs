@@ -306,3 +306,157 @@ fn the_words_of_a_short_name_are_words_of_the_name() {
     ));
     assert!(!ends_with_short_name("app::Gain::run", "ain::run"));
 }
+
+/// The texts of `name` that a pattern can match, in order, each once.
+fn pattern_texts(name: &str) -> Vec<(String, TextKind)> {
+    let mut texts = Vec::new();
+    for_each_pattern_text(name, |text, kind| texts.push((text.to_string(), kind)));
+    texts.sort_by(|a, b| a.0.cmp(&b.0));
+    texts.dedup();
+    texts
+}
+
+/// `texts`, each with its kind, as [`pattern_texts`] gives them.
+fn texts_of_kinds(texts: &[(&str, TextKind)]) -> Vec<(String, TextKind)> {
+    (texts.iter())
+        .map(|&(text, kind)| (text.to_string(), kind))
+        .collect()
+}
+
+use TextKind::{End, Path};
+
+#[test]
+fn the_texts_of_a_name_are_its_paths_and_their_ends() {
+    assert_eq!(
+        pattern_texts("app::uart::putc"),
+        texts_of_kinds(&[
+            ("app::uart::putc", Path),
+            ("putc", End),
+            ("uart::putc", End)
+        ])
+    );
+    assert_eq!(
+        pattern_texts("on_button"),
+        texts_of_kinds(&[("on_button", Path)])
+    );
+    assert_eq!(
+        pattern_texts("write@plt"),
+        texts_of_kinds(&[("write", Path), ("write@plt", Path)])
+    );
+    assert_eq!(
+        pattern_texts("app::log(unsigned int)"),
+        texts_of_kinds(&[
+            ("app::log", Path),
+            ("app::log(unsigned int)", Path),
+            ("log", End),
+            ("log(unsigned int)", End),
+        ])
+    );
+}
+
+#[test]
+fn a_method_has_the_texts_of_its_owner_only() {
+    assert_eq!(
+        pattern_texts("<app::Gain as app::Stage>::run"),
+        texts_of_kinds(&[
+            ("<app::Gain as app::Stage>::run", Path),
+            ("Gain::run", End),
+            ("app::Gain::run", Path),
+            ("run", End),
+        ])
+    );
+}
+
+#[test]
+fn a_methods_owner_is_its_type_or_else_its_trait() {
+    for (name, owner) in [
+        ("<app::Gain as app::Stage>::run", "app::Gain"),
+        ("<app::Gain>::run", "app::Gain"),
+        ("<&app::Gain as app::Stage>::run", "app::Gain"),
+        ("<&mut app::Gain as app::Stage>::run", "app::Gain"),
+        ("<*const app::Gain as app::Stage>::run", "app::Gain"),
+        ("<*mut app::Gain as app::Stage>::run", "app::Gain"),
+        ("<&dyn app::Stage as core::fmt::Debug>::fmt", "app::Stage"),
+        ("<dyn core::any::Any>::type_id", "core::any::Any"),
+        (
+            "<alloc::vec::Vec<u8> as core::ops::drop::Drop>::drop",
+            "alloc::vec::Vec<u8>",
+        ),
+        // Types with no path of their own.
+        ("<u32 as core::fmt::Display>::fmt", "core::fmt::Display"),
+        ("<&str as core::fmt::Display>::fmt", "core::fmt::Display"),
+        ("<[u8] as core::fmt::Debug>::fmt", "core::fmt::Debug"),
+        (
+            "<(app::A, app::B) as core::fmt::Debug>::fmt",
+            "core::fmt::Debug",
+        ),
+        (
+            "<fn() -> u8 as core::ops::FnOnce<()>>::call_once",
+            "core::ops::FnOnce<()>",
+        ),
+        // With no trait, the type is all there is.
+        ("<[u8]>::len", "[u8]"),
+    ] {
+        assert_eq!(ImplMethod::of(name).unwrap().owner(), owner, "{name}");
+    }
+}
+
+#[test]
+fn class_data_has_the_texts_of_a_member_of_its_class() {
+    assert_eq!(
+        pattern_texts("vtable for app::Gain"),
+        texts_of_kinds(&[
+            ("Gain::", End),
+            ("app::Gain::", Path),
+            ("vtable for Gain", End),
+            ("vtable for app::Gain", Path),
+        ])
+    );
+    // A thunk has the texts of the function it jumps to.
+    assert_eq!(
+        pattern_texts("virtual thunk to app::Sensor::name()"),
+        texts_of_kinds(&[
+            ("Sensor::name", End),
+            ("Sensor::name()", End),
+            ("app::Sensor::name", Path),
+            ("app::Sensor::name()", Path),
+            ("name", End),
+            ("name()", End),
+            ("virtual thunk to Sensor::name", End),
+            ("virtual thunk to Sensor::name()", End),
+            ("virtual thunk to app::Sensor::name", Path),
+            ("virtual thunk to app::Sensor::name()", Path),
+            ("virtual thunk to name", End),
+            ("virtual thunk to name()", End),
+        ])
+    );
+}
+
+#[test]
+fn a_copy_of_a_function_has_the_functions_texts() {
+    assert_eq!(
+        pattern_texts("crc32.part.0"),
+        texts_of_kinds(&[("crc32", Path), ("crc32.part.0", Path)])
+    );
+    assert_eq!(
+        pattern_texts("app::crc32.isra.0"),
+        texts_of_kinds(&[
+            ("app::crc32", Path),
+            ("app::crc32.isra.0", Path),
+            ("crc32", End),
+            ("crc32.isra.0", End),
+        ])
+    );
+}
+
+#[test]
+fn a_word_starts_or_ends_a_word_at_any_place() {
+    // The second place where `77` is in `h20777` ends a word.
+    assert!(ends_a_word("h20777", "77"));
+    assert!(!starts_a_word("h20777", "77"));
+    assert!(starts_a_word("a::77x", "77"));
+    assert!(!ends_a_word("7777x", "77"));
+    assert!(starts_a_word("aab aa", "aa"));
+    assert!(ends_a_word("x(grüße)", "grüße"));
+    assert!(!starts_a_word("x_grüße", "grüße"));
+}
