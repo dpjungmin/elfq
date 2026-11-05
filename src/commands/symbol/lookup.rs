@@ -62,7 +62,7 @@ pub(in crate::commands) struct Names<'a> {
 
 /// What a query finds, before an error words why it finds no one item or
 /// import (see [`Names::look_up`]).
-enum Lookup<'n> {
+pub(in crate::commands) enum Lookup<'n> {
     /// The one item or import that it finds.
     One(Symbol),
     /// No item or import has the name.
@@ -142,17 +142,18 @@ impl<'a> Names<'a> {
     pub(in crate::commands) fn find(&self, query: &str) -> Result<Symbol> {
         match self.look_up(query)? {
             Lookup::One(symbol) => Ok(symbol),
-            Lookup::NoName => bail!("{}", self.nothing_named(query)),
+            Lookup::NoName => bail!("{}", self.nothing_named(query, None)),
             Lookup::Several(nodes) => bail!("{}", self.choices(query, nodes, USE_ONE)),
         }
     }
 
     /// What `query` finds, as [`Names::find`] finds it, before an error
-    /// words why it finds no one item or import. An address that no item
+    /// words why it finds no one item or import, so that a command can
+    /// word that its own way, as `retained` does. An address that no item
     /// holds, or that isn't one, is an error already. Unlike `find`, it
     /// doesn't work out why a name finds several or none, which can take
     /// seconds in a large file.
-    fn look_up(&self, query: &str) -> Result<Lookup<'_>> {
+    pub(in crate::commands) fn look_up(&self, query: &str) -> Result<Lookup<'_>> {
         if let Some(address) = hex_number(query) {
             let address =
                 address.with_context(|| format!("`{query}` is not a hexadecimal address"))?;

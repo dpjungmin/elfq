@@ -12,14 +12,16 @@
 //! reaches, the only top is SYMBOL itself, so what is lost is SYMBOL and
 //! everything it keeps. [`Parts`] works out from the removal the bytes
 //! saved, the items under the tops and the notes; the answer adds its lead
-//! line and picks its rows. This file finds the SYMBOLs and answers about
-//! one, and `several.rs` about several, from the same parts and with the
-//! same words for the lead line. `json.rs` gives the answer as JSON, in one
-//! shape for one SYMBOL or several.
+//! line and picks its rows. `symbols.rs` finds the SYMBOLs, and says why
+//! it can't use those it can't. This file answers about one, and
+//! `several.rs` about several, from the same parts and with the same words
+//! for the lead line. `json.rs` gives the answer as JSON, in one shape for
+//! one SYMBOL or several.
 
 mod json;
 mod parts;
 mod several;
+mod symbols;
 
 pub(super) use json::write_json;
 
@@ -28,7 +30,9 @@ use std::io::Write;
 
 use anyhow::{Result, bail};
 
-use super::checks::{check_code_is_readable, readable_item};
+use super::checks::check_code_is_readable;
+#[cfg(feature = "tui")]
+use super::checks::readable_item;
 use super::kept::Kept;
 use super::retained_tree::RetainedTree;
 use super::symbol::Names;
@@ -41,6 +45,7 @@ use crate::binary::{AddressRange, Binary, FileKind};
 use crate::cli::Format;
 use crate::graph::{Graph, Node};
 use parts::Parts;
+use symbols::{Found, find_symbols};
 
 /// Answers `elfq FILE retained SYMBOL...`: what removing the SYMBOLs in
 /// `queries` at once would save. A SYMBOL given twice, or by a name and by
@@ -56,7 +61,7 @@ pub(super) fn run(
 ) -> Result<Outcome> {
     check_code_is_readable(binary)?;
     let names = Kept::new(Names::new(binary));
-    let found = find_symbols(binary, &names, queries)?;
+    let found = find_symbols(binary, &names, queries, all)?;
     let graph = Kept::new(Graph::build(binary));
     let retained = Kept::new(RetainedTree::naming(
         binary,
@@ -82,38 +87,6 @@ pub(super) fn run(
         }
     }
     Ok(Outcome::Answered)
-}
-
-/// A SYMBOL that `retained` was given, and found.
-struct Found {
-    /// Its item, as an index into [`Binary::items`].
-    index: usize,
-    /// The item's name as the answer gives it (see [`Symbol::lead_name`]).
-    ///
-    /// [`Symbol::lead_name`]: super::symbol::Symbol::lead_name
-    lead_name: String,
-}
-
-/// Finds what each of `queries` names, by `names`, and refuses an import,
-/// a function whose end elfq doesn't know and a shared library, as with
-/// one SYMBOL: the first argument that elfq can't answer about stops it,
-/// with its error. Each item comes once, in the order given.
-fn find_symbols(binary: &Binary, names: &Names, queries: &[String]) -> Result<Vec<Found>> {
-    let mut found = Vec::new();
-    let mut seen = HashSet::new();
-    for query in queries {
-        let symbol = names.find(query)?;
-        let index = readable_item(binary, symbol.node)?;
-        if seen.insert(index) {
-            let lead_name = symbol.lead_name(binary);
-            found.push(Found { index, lead_name });
-        }
-    }
-    let items: Vec<&str> = (found.iter())
-        .map(|found| binary.items[found.index].name.as_str())
-        .collect();
-    refuse_shared_library(binary, &items)?;
-    Ok(found)
 }
 
 /// Why `retained` can't answer about `node`, for browse's tab 6, if it
