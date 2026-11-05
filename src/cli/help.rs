@@ -11,6 +11,7 @@ Examples:
   elfq app.elf top --tree                 The same, drawn as a tree
   elfq app.elf top --range 0x0+256K       The same, counting only the first 256 KiB
   elfq app.elf retained process_frame     What removing process_frame would save
+  elfq app.elf retained crc32 report      What removing both at once would save
   elfq app.elf why crc_table              What keeps crc_table in the file
   elfq app.elf inlined                    Which inlined functions take the most bytes
   elfq app.elf inlined main               The inlined code in main
@@ -28,8 +29,8 @@ The overview's table is the start of the one top shows; elfq help top
 explains it.
 
 Tables have one row per line: short cells such as sizes, HOW and AT come
-first, and the name last. A name after \"kept by\" or \"used by\" works as
-SYMBOL, and a why row without \"used by\" is used by the row above, or
+first, and the name last. Each name after \"kept by\" or \"used by\" works
+as SYMBOL, and a why row without \"used by\" is used by the row above, or
 starts a chain. The tables of top, retained, callers, callees and reach
 show the 30 largest items, inlined the 30 largest functions, why the
 chains through the 10 nearest users, diff the 30 largest changes and the
@@ -137,6 +138,16 @@ row such as \"crc_table, kept by crc32\" names the closest item that every
 path to it goes through. The table shows the 30 largest items, or every
 item with --all; rows such as \"6 more, kept by crc32\" sum up the rest, and
 --tree draws the rows as a tree.";
+
+/// What `retained` says for several SYMBOLs.
+pub(super) const RETAINED_SET: &str = "\
+With several SYMBOLs, the answer is what removing them all at once would
+save. That can be more than their retained sizes added up, since items
+that only they use go too, or less, since one can keep another. A row
+such as \"stats, kept by process_frame and report together\" goes when all
+of those go, and not when any one of them goes alone. A name that could
+mean several items is an error, as with one SYMBOL: give each one you
+mean, or its address.";
 
 /// How `reach SYMBOL` differs, which `retained` ends with.
 pub(super) const RETAINED_REACH: &str = "\

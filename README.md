@@ -19,6 +19,7 @@ elfq app.elf top                        # what keeps the most bytes in app.elf
 elfq app.elf top --tree                 # the same, drawn as a tree
 elfq app.elf top --range 0x0+256K       # the same, counting only the first 256 KiB
 elfq app.elf retained process_frame     # what removing process_frame would save
+elfq app.elf retained crc32 report      # what removing both at once would save
 elfq app.elf why crc_table              # what keeps crc_table in the file
 elfq app.elf inlined                    # which inlined functions take the most bytes
 elfq app.elf inlined main               # the inlined code in main
@@ -138,11 +139,17 @@ and `elfq --help` lists the commands.
   `callers`, `callees` and `reach` show the 30 largest items, `inlined` the
   30 largest functions, and `why` the chains through the 10 nearest users;
   `--all` shows every row, and `--json` has every row.
-- Each table row is one line, with the name last. A name after "kept by"
-  or "used by" works as SYMBOL; rows with ranges, `--to` or `--from` give
-  whole names, which several items can share, so use an address from AT.
-  A `why` row without "used by" is used by the row above, or starts a
+- Each table row is one line, with the name last. Each name after "kept
+  by" or "used by" works as SYMBOL; rows with ranges, `--to` or `--from`
+  give whole names, which several items can share, so use an address from
+  AT. A `why` row without "used by" is used by the row above, or starts a
   chain. Read `why`'s chains with `--json`.
+- `elfq FILE.elf retained A B C` says what removing all of them at once
+  would save, with the rows that only several of them keep, as in "stats,
+  kept by A and B together", which their retained sizes added up would
+  miss. With several SYMBOLs it writes only text for now. SYMBOL can be an
+  address, so `top --json` can pick every item of a module:
+  `elfq FILE.elf top --json | jq -r '(.items + .unreachable)[] | select(.name | contains("core::fmt::")) | .address' | xargs elfq FILE.elf retained`.
 - `elfq FILE.elf callees 0x0+256K` lists what the code and data in that
   range use outside it, and `callers 0x0+256K` what uses them from
   outside; both exit 1 if anything does or might. `callees --to RANGE`

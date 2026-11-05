@@ -74,6 +74,13 @@ roots, with whatever several roots reach, hang from the top. An item's
 plus the own sizes of everything below it in the tree: the bytes that would
 go away if it did. (`graph::DominatorTree`)
 
+Removing several items at once saves their own bytes and those of every
+item that the roots reach only through them: every chain from the roots
+to it passes one of them. That can be more than their retained sizes
+added up, since an item that only they lead to, but none of them alone,
+goes too: it is **kept together** by them. It can also be less, since one
+of them can keep another. (`graph::Removal`)
+
 Every kind of reference counts. elfq can't tell which call through a
 pointer reaches a function, so a function that only pointers lead to counts
 for the code or data that holds its address, which is the same rule that
@@ -184,7 +191,7 @@ except `inlined`, which reads DWARF instead of machine code.
 | Command | Answers |
 |---|---|
 | `elfq FILE` | What is this file, what did elfq find in it, which items keep the most bytes, and what can I ask next? |
-| `elfq FILE retained SYMBOL` | What does SYMBOL keep alive, and how many bytes is that? |
+| `elfq FILE retained SYMBOL...` | What does SYMBOL keep alive, and how many bytes is that? With several SYMBOLs, what would removing them all at once save? |
 | `elfq FILE why SYMBOL` | Which chains of calls and references from the roots keep SYMBOL in the binary? |
 | `elfq FILE top` | Which items keep the most bytes? |
 | `elfq FILE callers SYMBOL` | What calls or uses SYMBOL directly, and how (call, tail call, uses, address taken, pointer)? |
@@ -321,6 +328,61 @@ items, and its RETAINED column adds up their bytes. A row never stands for
 a single item, since the item's own row takes no more room, and lists of
 names and addresses never end in "and 1 more" either. `--all` shows every
 item instead.
+
+With several SYMBOLs, `retained` says what removing them all at once
+would save. Its rows are the 30 largest items of all that goes, the
+SYMBOLs among them, so a SYMBOL that keeps little may be summed up in a
+row such as `2 more`. A row that the SYMBOLs keep only together names
+the ones it needs, as in `stats, kept by process_frame and report
+together`: removing just those removes it, and removing all of them but
+one keeps it. Up to 3 are named, or 4 when that is all, then how many
+more; `--all` names every one. The notes say that one SYMBOL keeps all
+the others, so removing it alone saves the same, or else which SYMBOLs
+add nothing, since the others keep them. Then they say how many of the
+bytes go only when several go, and which SYMBOLs nothing reaches, whose
+own bytes the total counts, then what is shared and what calls through
+pointers, as for one SYMBOL.
+A SYMBOL given twice counts once, so a set of one prints what `retained`
+of one prints; `--json` refuses several SYMBOLs for now, even one given
+twice. For example:
+
+```
+$ elfq testdata/bin/c-x86_64.elf retained process_frame report
+Removing process_frame and report would save 2829 bytes:
+
+RETAINED   OWN  ITEM
+    2068   532  process_frame
+    1083    59  crc32, kept by process_frame
+    1024  1024  crc_table, kept by crc32
+     378   271  apply_filter, kept by process_frame
+     107    75  filter_tap, kept by apply_filter
+      32    32  fir_coeffs, kept by filter_tap
+      54    54  decode_header, kept by process_frame
+      12   ~12  .rodata@0x2012, kept by process_frame
+       9    ~9  .rodata@0x201e, kept by process_frame
+     705   370  report
+     162   162  format_u32, kept by report
+      80    16  root, kept by report
+      48    16  inner, kept by root
+      16    16  leaf_c, kept by inner
+      16    16  leaf_b, kept by inner
+      16    16  leaf_a, kept by root
+      46    46  count_nodes, kept by report
+      10   ~10  .rodata@0x2031, kept by report
+      10   ~10  .rodata@0x203b, kept by report
+       9    ~9  .rodata@0x2045, kept by report
+       8    ~8  .rodata@0x204e, kept by report
+       6    ~6  .rodata@0x202b, kept by report
+       4    ~4  .rodata@0x2027, kept by report
+      32    32  stats, kept by process_frame and report together
+      16    16  __stack_chk_fail@plt, kept by process_frame and report together
+       4     4  frames_bad, kept by process_frame and report together
+       4     4  frames_ok, kept by process_frame and report together
+
+56 of these bytes go only when both go.
+
+Shared with other code, so not counted: config_sum, dispatch_event, log_msg.
+```
 
 With `--tree`, every tree, in every command, is drawn at most 9 levels
 below its top row, so names never start more than 27 columns into the tree
@@ -986,7 +1048,8 @@ found in it, and leaves its table of the largest items to `top --json`:
 | `items` | the rows of the tree, below, for the items that something reaches |
 | `unreachable` | the items that nothing reaches, largest first, each with `own` and `load_image` too |
 
-**`retained SYMBOL`**:
+**`retained SYMBOL`**, for one SYMBOL; with several, even one given
+twice, elfq refuses `--json` for now:
 
 | Key | Value |
 |---|---|
@@ -1344,15 +1407,16 @@ in order. Its output is the first example under [Commands](#commands).
    (`scan_functions`), and last `unnamed_data::items` finds there the
    addresses of data that no symbol names.
 4. **SYMBOL.** `retained::run` checks that elfq can read the file's code
-   (`check_code_is_readable`) and turns `process_frame` into an item with
-   `Names::find`: by address, by full name, or by the end of a name.
-   Working out the ends of every name takes a while in a large file, so
-   `Names` files each item under the last part of the paths that its
-   names' ends can have (`names::short_name_keys`), and works out the
-   ends of only the items filed under `process_frame`.
-   `retained::refusal` refuses an import, and a function whose end elfq
-   doesn't know (`readable_item`), then a shared library, before `run`
-   builds the graph.
+   (`check_code_is_readable`), then `retained::find_symbols` turns each
+   SYMBOL, here `process_frame`, into an item with `Names::find`: by
+   address, by full name, or by the end of a name. Working out the ends
+   of every name takes a while in a large file, so `Names` files each
+   item under the last part of the paths that its names' ends can have
+   (`names::short_name_keys`), and works out the ends of only the items
+   filed under `process_frame`. `find_symbols` refuses an import, and a
+   function whose end elfq doesn't know (`readable_item`), then a shared
+   library, before `run` builds the graph; the first SYMBOL that fails
+   stops it. A SYMBOL given twice counts once.
 5. **The graph.** `retained::run` has `graph::Graph::build` turn what
    `InstructionSet::scan` found in each function's code into references, or
    into unresolved calls. `Graph::build` then adds the pointers stored in
@@ -1403,7 +1467,7 @@ that run in it:
 
 ```
 main.rs      1 main, run                                  8 exit status
-commands/    2 commands::run   4 retained::run, Names::find
+commands/    2 commands::run   4 retained::run, find_symbols, Names::find
              7 retained::answer, RetainedTree::largest, table
 cli/         1 Cli, Command
 render/      7 Table::tree, Table::write
@@ -1534,11 +1598,15 @@ key typed into go to then takes under 0.1 s. The first takes up to 0.2 s
 in those libraries, and the first whose text names nothing takes about
 half a second, as it works out what to suggest.
 
+`retained` takes several SYMBOLs and says what removing them at once
+would save, as text; its JSON for several SYMBOLs comes next, then every
+argument that fails listed at once, and ranges as arguments, which stand
+for the items in them.
+
 Ideas for later, not yet planned: output that scripts and AI agents can
-read more easily, the retained size of a set of items, the functions
-that shared libraries export as roots, `--root SYMBOL`, worst-case stack
-depth (the call graph plus each function's stack frame), and a query
-language.
+read more easily, the functions that shared libraries export as roots,
+`--root SYMBOL`, worst-case stack depth (the call graph plus each
+function's stack frame), and a query language.
 
 ## Non-goals
 

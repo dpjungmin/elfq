@@ -317,7 +317,7 @@ impl Keeping {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
 
     use super::super::super::samples;
     use super::*;
@@ -401,8 +401,9 @@ mod tests {
                     // row of this item, which comes right after K's in the
                     // text of the tree under K, after the columns' names.
                     let with_rows = HashSet::from([parent, index]);
+                    let tops = [Node::Item(parent)];
                     let table =
-                        retained_tree.table(&with_rows, &[Node::Item(parent)], Format::Text);
+                        retained_tree.table(&with_rows, &tops, &HashMap::new(), Format::Text);
                     let mut out = Vec::new();
                     table.write(&mut out).unwrap();
                     let out = String::from_utf8(out).unwrap();
