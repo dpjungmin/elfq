@@ -21,8 +21,11 @@
 //! finds what SYMBOL names and names items for the user in return,
 //! `not_found.rs` the error for SYMBOL that finds several items or none,
 //! in the words of every command, which `retained` adds to, and
-//! `similar.rs` the names that error suggests.
+//! `similar.rs` the names that error suggests. Unit tests build a file of
+//! functions with `fixtures.rs`.
 
+#[cfg(test)]
+mod fixtures;
 mod lookup;
 mod not_found;
 mod similar;

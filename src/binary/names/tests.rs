@@ -34,6 +34,18 @@ fn rust_symbols_are_demangled_without_hashes() {
 }
 
 #[test]
+fn a_symbol_that_demangles_is_mangled() {
+    assert!(is_mangled("_ZN4core3fmt5write17h0123456789abcdefE"));
+    assert!(is_mangled("_RNvCsjtrlrMDykj5_11elfq_sample13process_frame"));
+    // A PLT stub's alias for one of the file's own functions.
+    assert!(is_mangled("_ZN3app3logEj@plt"));
+    // Names that only start as mangled symbols do.
+    assert!(!is_mangled("_Reset_Handler"));
+    assert!(!is_mangled("_ZERO_BSS"));
+    assert!(!is_mangled("log_msg@plt"));
+}
+
+#[test]
 fn cpp_symbols_are_demangled_without_return_types() {
     let demangled = |symbol| demangle(symbol).unwrap();
     assert_eq!(demangled("_ZN3foo3barEv"), "foo::bar()");
@@ -280,10 +292,7 @@ fn the_words_of_a_short_name_are_words_of_the_name() {
             // type or trait too, can be found without working them all
             // out.
             assert!(
-                !name.ends_with(short_name.as_str())
-                    || CPP_SPECIAL_PREFIXES
-                        .iter()
-                        .any(|prefix| name.starts_with(prefix)),
+                !name.ends_with(short_name.as_str()) || special_prefix(name).is_some(),
                 "{short_name:?} of {name:?}"
             );
         }
