@@ -1015,11 +1015,11 @@ An item looks like this, spread over lines here:
 | `size` | its size in bytes, or `null` for an import, or when elfq doesn't know it |
 | `size_estimated` | whether elfq estimated the size, which the text marks `~` |
 
-SYMBOL's item, `symbol` in most answers, each of `symbols` in
-`retained`'s and `function` in `inlined SYMBOL`'s, also has `aliases`:
-its other names, such as the mangled symbol of a demangled name, or weak
-aliases at its address. A range has a `start` and an `end`, which isn't
-in it.
+SYMBOL's item, `symbol` in most answers, each of `symbols` and
+`left_out` in `retained`'s and `function` in `inlined SYMBOL`'s, also
+has `aliases`: its other names, such as the mangled symbol of a
+demangled name, or weak aliases at its address. A range has a `start`
+and an `end`, which isn't in it.
 
 Each answer has these keys, in this order.
 
@@ -1054,6 +1054,7 @@ found in it, and leaves its table of the largest items to `top --json`:
 | Key | Value |
 |---|---|
 | `symbols` | each SYMBOL's item, in the order given, each once, with the keys below |
+| `left_out` | the items of the functions given whose end elfq doesn't know, in the order given, each once: elfq can't read their code, so nothing else here counts them; `[]` when there are none |
 | `range` | the range that `--range` picked, or `null` |
 | `own` | the SYMBOLs' own bytes, or with `--range`, those in the range |
 | `load_image` | how many of `own` are their load images' |

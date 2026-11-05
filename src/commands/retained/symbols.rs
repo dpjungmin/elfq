@@ -1,17 +1,22 @@
-//! The SYMBOLs that `retained` is given: what each finds, and the error
-//! that lists every SYMBOL it can't use.
+//! The SYMBOLs that `retained` is given: what each finds, the functions it
+//! leaves out, and the error that lists every SYMBOL it can't use.
 //!
 //! Each SYMBOL is found as in every other command (see `commands::symbol`),
-//! and an item that two of them find counts once. Every SYMBOL that
-//! `retained` can't use is listed at once, so that a long list of them can
-//! be fixed in one go: one with the error it gets alone, several each with
-//! that error, under a line that counts them. The errors are those of every
-//! command, with two hints of `retained`'s own, since it takes several
-//! SYMBOLs: a name that could mean several items says to use one or more of
-//! them, and a name with `*` in it that finds nothing says that elfq
-//! doesn't take patterns yet, unless elfq can say why no item has the name,
-//! or which it may mean. A range gets an error of its own, until `retained`
-//! takes ranges.
+//! and an item that two of them find counts once. A function whose end
+//! elfq doesn't know, such as glibc's `_init`, is left out: elfq can't read
+//! its code, so it can't tell what the function keeps, but it can still
+//! answer about the others, and says which it left out. When that leaves
+//! none, the error names every one.
+//!
+//! Every SYMBOL that `retained` can't use is listed at once, so that a long
+//! list of them can be fixed in one go: one with the error it gets alone,
+//! several each with that error, under a line that counts them. The errors
+//! are those of every command, with two hints of `retained`'s own, since it
+//! takes several SYMBOLs: a name that could mean several items says to use
+//! one or more of them, and a name with `*` in it that finds nothing says
+//! that elfq doesn't take patterns yet, unless elfq can say why no item has
+//! the name, or which it may mean. A range gets an error of its own, until
+//! `retained` takes ranges.
 
 use std::collections::HashSet;
 
@@ -19,10 +24,22 @@ use anyhow::{Result, bail};
 
 use super::refuse_shared_library;
 use crate::binary::Binary;
-use crate::commands::checks::readable_item;
+use crate::commands::checks::{ends_unknown, item_in_file};
 use crate::commands::symbol::{self, Lookup, Names};
-use crate::commands::text;
+use crate::commands::text::{self, Naming};
 use crate::graph::Node;
+
+/// What `retained` answers about: the SYMBOLs that it found, and the
+/// functions that it leaves out.
+pub(super) struct Symbols {
+    /// The SYMBOLs' items, each once, in the order given.
+    pub(super) found: Vec<Found>,
+    /// The functions given whose end elfq doesn't know, as indexes into
+    /// [`Binary::items`], each once, in the order given. elfq can't read
+    /// their code, so the answer doesn't count them, and says so (see
+    /// [`left_out_note`]).
+    pub(super) left_out: Vec<usize>,
+}
 
 /// A SYMBOL that `retained` was given, and found.
 pub(super) struct Found {
@@ -35,17 +52,19 @@ pub(super) struct Found {
 }
 
 /// Finds what each of `queries` names, by `names`, each item once, in the
-/// order given. Fails with an error that lists every SYMBOL that it can't
-/// use, such as an import or a function whose end elfq doesn't know, the
-/// first 10 of them unless `all` (see [`unusable_error`]); and after that
-/// check, for a shared library.
+/// order given, and leaves out each function whose end elfq doesn't know.
+/// Fails with an error that lists every SYMBOL that it can't use, such as
+/// an import, the first 10 of them unless `all` (see [`unusable_error`]);
+/// when it leaves out every SYMBOL, with an error that names them; and
+/// after those checks, for a shared library.
 pub(super) fn find_symbols(
     binary: &Binary,
     names: &Names,
     queries: &[String],
     all: bool,
-) -> Result<Vec<Found>> {
+) -> Result<Symbols> {
     let mut found: Vec<Found> = Vec::new();
+    let mut left_out = Vec::new();
     let mut unusable: Vec<Unusable> = Vec::new();
     let mut seen = HashSet::new();
     for query in queries {
@@ -57,18 +76,30 @@ pub(super) fn find_symbols(
             }
         };
         // An item that two SYMBOLs find counts once.
-        if seen.insert(symbol.index) {
+        if !seen.insert(symbol.index) {
+            continue;
+        }
+        if binary.items[symbol.index].end_unknown() {
+            left_out.push(symbol.index);
+        } else {
             found.push(symbol);
         }
     }
     if !unusable.is_empty() {
         bail!("{}", unusable_error(&unusable, queries.len(), all, names));
     }
+    if found.is_empty() && !left_out.is_empty() {
+        // Nothing else is left to answer about.
+        let left_out: Vec<&str> = (left_out.iter())
+            .map(|&index| binary.items[index].name.as_str())
+            .collect();
+        bail!("{}", ends_unknown(&left_out));
+    }
     let items: Vec<&str> = (found.iter())
         .map(|found| binary.items[found.index].name.as_str())
         .collect();
     refuse_shared_library(binary, &items)?;
-    Ok(found)
+    Ok(Symbols { found, left_out })
 }
 
 /// The item that `query` finds, with the name that the answer gives it, or
@@ -83,7 +114,7 @@ fn find_symbol<'n>(binary: &Binary, names: &'n Names, query: &str) -> Result<Fou
         Ok(Lookup::Several(nodes)) => return Err(Reason::Several(nodes)),
         Err(error) => return Err(Reason::Error(format!("{error:#}"))),
     };
-    let index = match readable_item(binary, symbol.node) {
+    let index = match item_in_file(binary, symbol.node) {
         Ok(index) => index,
         Err(error) => return Err(Reason::Error(format!("{error:#}"))),
     };
@@ -107,8 +138,8 @@ enum Reason<'n> {
     /// Several items or imports have the name.
     Several(&'n [Node]),
     /// The error that every command gives it, as elfq prints it: an
-    /// address that no item holds, or that isn't one, an import, whose
-    /// code isn't in the file, or a function whose end elfq doesn't know.
+    /// address that no item holds, or that isn't one, or an import, whose
+    /// code isn't in the file.
     Error(String),
 }
 
@@ -215,4 +246,27 @@ fn range_refused(range: Option<&str>) -> String {
 /// [`Names::nothing_named`]).
 fn is_pattern(query: &str) -> bool {
     query.contains('*')
+}
+
+/// Says that the answer doesn't count the functions at `left_out`, since
+/// elfq doesn't know where they end, naming them as `naming` says, as in
+/// "Not counted, since elfq doesn't know where it ends: _init." `None`
+/// when it leaves out none.
+pub(super) fn left_out_note(
+    binary: &Binary,
+    left_out: &[usize],
+    naming: &Naming,
+) -> Option<String> {
+    let names: Vec<&str> = (left_out.iter())
+        .map(|&index| binary.items[index].name.as_str())
+        .collect();
+    let end = match names[..] {
+        [] => return None,
+        [_] => "it ends",
+        _ => "they end",
+    };
+    Some(format!(
+        "Not counted, since elfq doesn't know where {end}: {}.",
+        naming.phrase(&names)
+    ))
 }

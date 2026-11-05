@@ -1338,6 +1338,106 @@ error: elfq can't use 2 of the 3 SYMBOLs:
 }
 
 #[test]
+fn retained_leaves_out_a_function_whose_end_elfq_doesnt_know() {
+    // elfq can't read the code of glibc's _init, which has no size, so it
+    // answers about the others and says which it left out, before the
+    // notes that every answer about removing items has.
+    assert_output(
+        &stdout(&[SAMPLE, "retained", "crc32", "_init"]),
+        "\
+Removing crc32 would save 1083 bytes:
+
+RETAINED   OWN  ITEM
+    1083    59  crc32
+    1024  1024  crc_table, kept by crc32
+
+Not counted, since elfq doesn't know where it ends: _init.
+",
+    );
+    assert_output(
+        &stdout(&[SAMPLE, "retained", "report", "_init"]),
+        "\
+Removing report would save 705 bytes:
+
+RETAINED  OWN  ITEM
+     705  370  report
+     162  162  format_u32, kept by report
+      80   16  root, kept by report
+      48   16  inner, kept by root
+      16   16  leaf_c, kept by inner
+      16   16  leaf_b, kept by inner
+      16   16  leaf_a, kept by root
+      46   46  count_nodes, kept by report
+      10  ~10  .rodata@0x2031, kept by report
+      10  ~10  .rodata@0x203b, kept by report
+       9   ~9  .rodata@0x2045, kept by report
+       8   ~8  .rodata@0x204e, kept by report
+       6   ~6  .rodata@0x202b, kept by report
+       4   ~4  .rodata@0x2027, kept by report
+
+Not counted, since elfq doesn't know where it ends: _init.
+
+Shared with other code, so not counted: __stack_chk_fail@plt, config_sum, frames_bad, frames_ok, log_msg, stats.
+",
+    );
+    // With several SYMBOLs, after the notes that only an answer about
+    // several has. A function given twice, or by its name and its address,
+    // is left out once.
+    let several = stdout(&[
+        SAMPLE,
+        "retained",
+        "process_frame",
+        "report",
+        "_init",
+        "0x1ad4",
+        "_fini",
+        "0x1000",
+    ]);
+    assert!(
+        several.ends_with(
+            "\n\n56 of these bytes go only when both go.\n\n\
+             Not counted, since elfq doesn't know where they end: _init and _fini.\n\n\
+             Shared with other code, so not counted: config_sum, dispatch_event, log_msg.\n"
+        ),
+        "{several}"
+    );
+    assert_output(
+        &stdout(&[SAMPLE, "retained", "debug_dump", "_IO_stdin_used", "_init", "_fini"]),
+        "\
+Nothing reaches debug_dump and _IO_stdin_used: the program never uses them, or elfq can't see how. Removing them would save their own 33 bytes.
+
+Not counted, since elfq doesn't know where they end: _init and _fini.
+",
+    );
+    let answer = elfq_json(&[SAMPLE, "retained", "crc32", "_init", "0x1000"]);
+    assert_eq!(
+        answer["left_out"],
+        json!([{
+            "name": "_init",
+            "kind": "function",
+            "section": ".init",
+            "address": "0x1000",
+            "size": null,
+            "size_estimated": false,
+            "aliases": []
+        }])
+    );
+    assert_eq!(answer["symbols"].as_array().unwrap().len(), 1);
+    assert_eq!(answer["retained"], 1083);
+    // With nothing else to answer about, the error names every one.
+    for args in [&["_init"][..], &["_init", "0x1000"]] {
+        assert_output(
+            &stderr(&[&[SAMPLE, "retained"], args].concat()),
+            "error: elfq doesn't know where _init ends, so it can't read its code\n",
+        );
+    }
+    assert_output(
+        &stderr(&[SAMPLE, "retained", "_init", "_fini", "0x1000"]),
+        "error: elfq doesn't know where _init and _fini end, so it can't read their code\n",
+    );
+}
+
+#[test]
 fn retained_refuses_a_shared_library_and_asks_for_a_symbol() {
     assert_output(
         &stderr(&[LIBRARY_SAMPLE, "retained", "process_frame", "report"]),

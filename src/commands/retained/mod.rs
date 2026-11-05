@@ -12,11 +12,12 @@
 //! reaches, the only top is SYMBOL itself, so what is lost is SYMBOL and
 //! everything it keeps. [`Parts`] works out from the removal the bytes
 //! saved, the items under the tops and the notes; the answer adds its lead
-//! line and picks its rows. `symbols.rs` finds the SYMBOLs, and says why
-//! it can't use those it can't. This file answers about one, and
-//! `several.rs` about several, from the same parts and with the same words
-//! for the lead line. `json.rs` gives the answer as JSON, in one shape for
-//! one SYMBOL or several.
+//! line and picks its rows. `symbols.rs` finds the SYMBOLs, leaves out the
+//! functions whose end elfq doesn't know, and says why it can't use those
+//! it can't. This file answers about one, and `several.rs` about several,
+//! from the same parts and with the same words for the lead line.
+//! `json.rs` gives the answer as JSON, in one shape for one SYMBOL or
+//! several.
 
 mod json;
 mod parts;
@@ -45,12 +46,13 @@ use crate::binary::{AddressRange, Binary, FileKind};
 use crate::cli::Format;
 use crate::graph::{Graph, Node};
 use parts::Parts;
-use symbols::{Found, find_symbols};
+use symbols::{Found, Symbols, find_symbols, left_out_note};
 
 /// Answers `elfq FILE retained SYMBOL...`: what removing the SYMBOLs in
 /// `queries` at once would save. A SYMBOL given twice, or by a name and by
-/// an address, counts once, and when only one is left, the answer is the
-/// one about it alone.
+/// an address, counts once, a function whose end elfq doesn't know is left
+/// out, with a note, and when only one is left, the answer is the one
+/// about it alone.
 pub(super) fn run(
     binary: &Binary,
     queries: &[String],
@@ -61,7 +63,7 @@ pub(super) fn run(
 ) -> Result<Outcome> {
     check_code_is_readable(binary)?;
     let names = Kept::new(Names::new(binary));
-    let found = find_symbols(binary, &names, queries, all)?;
+    let Symbols { found, left_out } = find_symbols(binary, &names, queries, all)?;
     let graph = Kept::new(Graph::build(binary));
     let retained = Kept::new(RetainedTree::naming(
         binary,
@@ -72,7 +74,7 @@ pub(super) fn run(
     match (format, &found[..]) {
         (Format::Json, _) => {
             let indexes: Vec<usize> = found.iter().map(|found| found.index).collect();
-            write_json(&retained, &indexes, out)?;
+            write_json(&retained, &indexes, &left_out, out)?;
         }
         (Format::Text | Format::Tree, [one]) => {
             let symbol = SymbolInTree {
@@ -80,10 +82,16 @@ pub(super) fn run(
                 index: one.index,
                 lead_name: &one.lead_name,
             };
-            answer(&symbol, all, format).write(out)?;
+            let mut answer = answer(&symbol, all, format);
+            if let Some(note) = left_out_note(binary, &left_out, &Naming::of(all)) {
+                // Before the notes that every answer about removing items
+                // has.
+                answer.notes.insert(0, note);
+            }
+            answer.write(out)?;
         }
         (Format::Text | Format::Tree, _) => {
-            several::tree_answer(&retained, &found, all, format).write(out)?;
+            several::tree_answer(&retained, &found, &left_out, all, format).write(out)?;
         }
     }
     Ok(Outcome::Answered)

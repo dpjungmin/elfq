@@ -28,6 +28,7 @@ fn items_have_the_same_keys_everywhere() {
                 "row": null,
                 "kept_by_others": false
             }],
+            "left_out": [],
             "range": null,
             "own": 29,
             "load_image": 0,
