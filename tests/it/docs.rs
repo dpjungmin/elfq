@@ -48,7 +48,7 @@ const JSON_ANSWERS: [&[&str]; 26] = [
     &[TCM_SAMPLE],
     &[SAMPLE, "top"],
     &[SAMPLE, "retained", "process_frame"],
-    &[SAMPLE, "retained", "process_frame", "report"],
+    &[SAMPLE, "retained", "process_frame", "report", "_init"],
     &[SAMPLE, "why", "log_msg"],
     &[SAMPLE, "why", "parse_value"],
     &[SAMPLE, "inlined"],

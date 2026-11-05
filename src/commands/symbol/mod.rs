@@ -20,13 +20,16 @@
 //! This file tells ranges from SYMBOL. `lookup.rs` holds `Names`, which
 //! finds what SYMBOL names and names items for the user in return,
 //! `not_found.rs` the error for SYMBOL that finds several items or none,
-//! and `similar.rs` the names that error suggests.
+//! in the words of every command, which `retained` adds to, and
+//! `similar.rs` the names that error suggests.
 
 mod lookup;
 mod not_found;
 mod similar;
 
-pub(super) use lookup::Names;
+pub(super) use lookup::{Lookup, Names};
+#[cfg(feature = "tui")]
+pub(super) use not_found::USE_ONE;
 #[cfg(feature = "tui")]
 pub(super) use similar::Needle;
 

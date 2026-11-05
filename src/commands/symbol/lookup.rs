@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use anyhow::{Context, Result, bail};
 
 use super::Symbol;
-use super::not_found::Inlined;
+use super::not_found::{Inlined, USE_ONE};
 use super::similar::{Lowercase, Suggestable};
 use crate::binary::{Binary, ItemKind, hex_number, names};
 use crate::graph::Node;
@@ -58,6 +58,18 @@ pub(in crate::commands) struct Names<'a> {
     /// that uses it. Short names are kept by those that ask for them again:
     /// browse's `Session::short_name` and diff's `RowNames`.
     row_names: RefCell<HashMap<usize, String>>,
+}
+
+/// What a query finds, before an error words why it finds no one item or
+/// import (see [`Names::look_up`]).
+pub(in crate::commands) enum Lookup<'n> {
+    /// The one item or import that it finds.
+    One(Symbol),
+    /// No item or import has the name.
+    NoName,
+    /// Several items or imports have it, in the order that the error lists
+    /// them.
+    Several(&'n [Node]),
 }
 
 /// The items filed under a key, and their short names with it.
@@ -128,6 +140,20 @@ impl<'a> Names<'a> {
     /// Finds the item or import that `query` names. When it could mean
     /// several, or none, the error lists names to try instead.
     pub(in crate::commands) fn find(&self, query: &str) -> Result<Symbol> {
+        match self.look_up(query)? {
+            Lookup::One(symbol) => Ok(symbol),
+            Lookup::NoName => bail!("{}", self.nothing_named(query, None)),
+            Lookup::Several(nodes) => bail!("{}", self.choices(query, nodes, USE_ONE)),
+        }
+    }
+
+    /// What `query` finds, as [`Names::find`] finds it, before an error
+    /// words why it finds no one item or import, so that a command can
+    /// word that its own way, as `retained` does. An address that no item
+    /// holds, or that isn't one, is an error already. Unlike `find`, it
+    /// doesn't work out why a name finds several or none, which can take
+    /// seconds in a large file.
+    pub(in crate::commands) fn look_up(&self, query: &str) -> Result<Lookup<'_>> {
         if let Some(address) = hex_number(query) {
             let address =
                 address.with_context(|| format!("`{query}` is not a hexadecimal address"))?;
@@ -142,41 +168,25 @@ impl<'a> Names<'a> {
                 self.binary.thumb && item.kind == ItemKind::Function && address == item.address | 1;
             let note = (address != item.address && !thumb_start)
                 .then(|| format!("which holds {address:#x}"));
-            return Ok(Symbol {
+            return Ok(Lookup::One(Symbol {
                 node: Node::Item(index),
                 note,
-            });
+            }));
         }
-
-        match self.nodes(query) {
-            &[node] => Ok(self.found(node, query)),
-            [] => {
-                let mut message = format!("no function or data object is named `{query}`");
-                if let Some(reason) = self.unnamed().or_else(|| self.inlined_reason(query)) {
-                    message += &format!("; {reason}");
-                }
-                let similar = self.similar(query);
-                if !similar.is_empty() {
-                    message += &format!("; did you mean {}?", similar.join(", "));
-                }
-                bail!("{message}");
-            }
-            nodes => bail!("{}", self.choices(query, nodes)),
-        }
+        Ok(match self.nodes(query) {
+            &[node] => Lookup::One(self.found(node, query)),
+            [] => Lookup::NoName,
+            nodes => Lookup::Several(nodes),
+        })
     }
 
     /// What `query` finds when it finds one item or import, as
-    /// [`Names::find`] finds it, or `None`. Unlike `find`, it doesn't work
-    /// out why `query` finds several or none, which can take seconds in a
-    /// large file.
+    /// [`Names::find`] finds it, or `None`, without working out why it
+    /// finds several or none (see [`Names::look_up`]).
     #[cfg(feature = "tui")]
     pub(in crate::commands) fn find_one(&self, query: &str) -> Option<Symbol> {
-        // An address finds its item without looking up a name.
-        if hex_number(query).is_some() {
-            return self.find(query).ok();
-        }
-        match self.nodes(query) {
-            &[node] => Some(self.found(node, query)),
+        match self.look_up(query) {
+            Ok(Lookup::One(symbol)) => Some(symbol),
             _ => None,
         }
     }

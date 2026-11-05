@@ -11,14 +11,15 @@
 //! removing all of them but one keeps it.
 //!
 //! The notes say which SYMBOLs add nothing, since the others keep them, how
-//! many bytes go only when several SYMBOLs go, and which SYMBOLs nothing
-//! reaches, whose own bytes the total counts. Then come the notes that the
-//! answer about one SYMBOL has too.
+//! many bytes go only when several SYMBOLs go, which SYMBOLs nothing
+//! reaches, whose own bytes the total counts, and which functions it left
+//! out, since elfq doesn't know where they end. Then come the notes that
+//! the answer about one SYMBOL has too.
 
 use std::collections::{HashMap, HashSet};
 
 use super::parts::Parts;
-use super::{Found, subject, would_save};
+use super::{Found, left_out_note, subject, would_save};
 use crate::cli::Format;
 use crate::commands::retained_tree::RetainedTree;
 use crate::commands::text::{self, Naming};
@@ -28,10 +29,12 @@ use crate::graph::Node;
 /// What `retained SYMBOL...` writes as text for `found`, several SYMBOLs,
 /// in the tree `retained`: what removing them all at once would save, and
 /// the trees of what goes, the largest 30 items or with `all`, every one,
-/// in the shape that `format` asks for, then the notes.
+/// in the shape that `format` asks for, then the notes, which name the
+/// functions `left_out` too.
 pub(super) fn tree_answer(
     retained: &RetainedTree,
     found: &[Found],
+    left_out: &[usize],
     all: bool,
     format: Format,
 ) -> TreeAnswer {
@@ -39,6 +42,7 @@ pub(super) fn tree_answer(
     let several = Several {
         retained,
         found,
+        left_out,
         parts: Parts::new(retained, &removed),
     };
     several.tree_answer(all, format)
@@ -57,14 +61,20 @@ struct Several<'f, 't, 'g, 'a> {
     retained: &'t RetainedTree<'g, 'a>,
     /// The SYMBOLs, each once, in the order given.
     found: &'f [Found],
+    /// The functions given whose end elfq doesn't know, which the answer
+    /// leaves out, as indexes into [`Binary::items`].
+    ///
+    /// [`Binary::items`]: crate::binary::Binary::items
+    left_out: &'f [usize],
     parts: Parts<'t, 'g, 'a>,
 }
 
 impl Several<'_, '_, '_, '_> {
     /// The answer, with `all`, every row and every name in the notes, in
     /// the shape that `format` asks for. When nothing reaches any SYMBOL,
-    /// it says so, and what their own bytes are, and has no notes. When no
-    /// row would show, it has no table.
+    /// it says so, and what their own bytes are, and has no notes but the
+    /// one on the functions left out. When no row would show, it has no
+    /// table.
     fn tree_answer(&self, all: bool, format: Format) -> TreeAnswer {
         let retained = self.retained;
         let naming = Naming::of(all);
@@ -72,7 +82,12 @@ impl Several<'_, '_, '_, '_> {
         let removal = &self.parts.removal;
         if removal.tops().is_empty() {
             let sentence = self.unreachable_answer(range.as_deref(), &naming);
-            return TreeAnswer::sentences(vec![sentence]);
+            return TreeAnswer {
+                notes: left_out_note(retained.binary, self.left_out, &naming)
+                    .into_iter()
+                    .collect(),
+                ..TreeAnswer::sentences(vec![sentence])
+            };
         }
         let subject = subject(&names(self.found));
         let saves = would_save(&subject, removal.retained(), range.as_deref());
@@ -167,14 +182,16 @@ impl Several<'_, '_, '_, '_> {
 
     /// The notes under the tree, naming the items they list as `naming`
     /// says: which SYMBOLs add nothing, the bytes that go only when several
-    /// go, the SYMBOLs that nothing reaches, and then the notes of every
-    /// answer about removing items (see [`Parts::notes`]).
+    /// go, the SYMBOLs that nothing reaches, the functions left out, and
+    /// then the notes of every answer about removing items (see
+    /// [`Parts::notes`]).
     fn notes(&self, naming: &Naming) -> Vec<String> {
         let adds_nothing = (self.keeps_the_rest_note()).or_else(|| self.add_nothing_note(naming));
         [
             adds_nothing,
             self.together_note(),
             self.unreachable_note(naming),
+            left_out_note(self.retained.binary, self.left_out, naming),
         ]
         .into_iter()
         .flatten()

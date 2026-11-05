@@ -21,6 +21,10 @@ use crate::graph::Node;
 struct RetainedJson<'a> {
     /// The SYMBOLs' items, each once, in the order given.
     symbols: Vec<SymbolJson<'a>>,
+    /// The functions given whose end elfq doesn't know, each once, in the
+    /// order given: elfq can't read their code, so nothing here counts
+    /// them, and `symbols` doesn't list them.
+    left_out: Vec<json::Symbol<'a>>,
     /// The range of memory that sizes count, or `null` for all of it.
     range: Option<json::Range>,
     /// The SYMBOLs' own bytes, or with a range, those in it, their load
@@ -97,12 +101,14 @@ struct RowJson<'a> {
 
 /// Writes what `retained SYMBOL... --json` writes about removing the items
 /// at `symbols`, as indexes into [`Binary::items`], each once and in the
-/// order given, all at once from the tree `retained`.
+/// order given, all at once from the tree `retained`, and the functions it
+/// leaves out, at `left_out`.
 ///
 /// [`Binary::items`]: crate::binary::Binary::items
 pub(in crate::commands) fn write_json(
     retained: &RetainedTree,
     symbols: &[usize],
+    left_out: &[usize],
     out: &mut dyn Write,
 ) -> Result<()> {
     let binary = retained.binary;
@@ -131,6 +137,9 @@ pub(in crate::commands) fn write_json(
                 row: ids.get(&index).copied(),
                 kept_by_others: removal.is_kept_by_others(Node::Item(index)),
             })
+            .collect(),
+        left_out: (left_out.iter())
+            .map(|&index| json::Symbol::new(binary, Node::Item(index)))
             .collect(),
         range: retained.range.map(json::Range::new),
         own: total(symbols.iter().map(|&index| retained.own(index))),

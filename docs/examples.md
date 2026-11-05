@@ -965,6 +965,23 @@ elfq testdata/bin/c-x86_64.elf callers log_msg --json | jq -r '.callers[].item.n
 elfq testdata/bin/rust-cortex-m4.elf top --json | jq -r '(.items + .unreachable)[] | select(.name | contains("core::fmt::")) | .address' | xargs elfq testdata/bin/rust-cortex-m4.elf retained
 ```
 
+A SYMBOL that `retained` can't use stops it, with one error that lists
+every such SYMBOL, so a long list can be fixed in one go. A function
+whose end elfq doesn't know, such as glibc's `_init`, which every list of
+a glibc program's functions has, is left out instead, with a note, and
+`left_out` in the JSON names it:
+
+```
+$ elfq testdata/bin/c-x86_64.elf retained crc32 _init
+Removing crc32 would save 1083 bytes:
+
+RETAINED   OWN  ITEM
+    1083    59  crc32
+    1024  1024  crc_table, kept by crc32
+
+Not counted, since elfq doesn't know where it ends: _init.
+```
+
 `retained`'s JSON has the same shape for one SYMBOL and for several:
 `symbols` lists each SYMBOL, with `row`, the `id` of its own row in
 `items`; `kept_together` counts the bytes that go only when several go;

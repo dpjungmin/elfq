@@ -20,7 +20,7 @@ use ratatui::widgets::{HighlightSpacing, Row, Table};
 use super::{Cursor, FittedRows, cut, wrap};
 use crate::binary::{Binary, ItemKind, hex_number};
 use crate::commands::browse::{keys::Action, session::Session};
-use crate::commands::symbol::Needle;
+use crate::commands::symbol::{Needle, USE_ONE};
 use crate::commands::text;
 use crate::graph::Node;
 
@@ -359,13 +359,12 @@ impl Found {
 
 /// The first line of an error that SYMBOL gets, such as "`log` could mean 2
 /// functions", without what it says about the list of names that the CLI
-/// prints after it.
+/// prints after it ([`USE_ONE`]).
 pub(in crate::commands::browse) fn first_line(error: &anyhow::Error) -> String {
     let error = error.to_string();
     let line = error.lines().next().unwrap_or_default();
     let line = line.trim_end_matches(':');
-    line.trim_end_matches("; use one on the left instead")
-        .to_string()
+    line.trim_end_matches(&format!("; {USE_ONE}")).to_string()
 }
 
 /// `text` wrapped to `width`, in at most [`NOTE_LINES`] lines, the last

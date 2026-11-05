@@ -41,12 +41,24 @@ pub(super) fn readable_item(binary: &Binary, node: Node) -> Result<usize> {
     let index = item_in_file(binary, node)?;
     let item = &binary.items[index];
     if item.end_unknown() {
-        bail!(
-            "elfq doesn't know where {} ends, so it can't read its code",
-            item.name
-        );
+        bail!("{}", ends_unknown(&[&item.name]));
     }
     Ok(index)
+}
+
+/// Says that elfq can't read the code of the functions called `names`,
+/// since it doesn't know where they end: "elfq doesn't know where _init
+/// ends, so it can't read its code", or for several, "where _init and _fini
+/// end, so it can't read their code".
+pub(super) fn ends_unknown(names: &[&str]) -> String {
+    match names {
+        [one] => format!("elfq doesn't know where {one} ends, so it can't read its code"),
+        // An error names every one, however many there are.
+        _ => format!(
+            "elfq doesn't know where {} end, so it can't read their code",
+            text::names_text(names, true)
+        ),
+    }
 }
 
 /// Explains why there are no bytes to count in the file, or with a range,

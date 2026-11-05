@@ -1165,10 +1165,275 @@ fn the_largest_rows_of_several_include_symbols() {
 }
 
 #[test]
-fn retained_stops_at_the_first_symbol_it_cant_find() {
+fn retained_lists_every_symbol_it_cant_use() {
+    // In the order given, each with the error it gets alone: an address
+    // that no item holds, one that isn't an address, an import, a name
+    // that no item has, with the name it may mean, and one with `*` in it,
+    // which gets a hint of retained's own. A SYMBOL whose error says what
+    // another's says, as for an address typed two ways or a name given
+    // twice, is listed once, but the first line counts every one.
     assert_output(
-        &stderr(&[SAMPLE, "retained", "crc32", "frob", "nosuch"]),
-        "error: no function or data object is named `frob`\n",
+        &stderr(&[
+            SAMPLE,
+            "retained",
+            "crc32",
+            "0x1",
+            "0x01",
+            "0xZZ",
+            "__libc_start_main",
+            "proces_frame",
+            "crc*",
+            "frob",
+            "frob",
+        ]),
+        "\
+error: elfq can't use 8 of the 9 SYMBOLs:
+  no function or data object contains address 0x1
+  `0xZZ` is not a hexadecimal address: invalid digit found in string
+  __libc_start_main is imported from a shared library, so its code isn't in this file
+  no function or data object is named `proces_frame`; did you mean process_frame?
+  no function or data object is named `crc*`; elfq doesn't take patterns yet: give each name, or each address from top --json
+  no function or data object is named `frob`
+",
+    );
+    assert_output(
+        &stderr(&[SAMPLE, "retained", "frob", "frob", "nosuch"]),
+        "\
+error: elfq can't use 3 of the 3 SYMBOLs:
+  no function or data object is named `frob`
+  no function or data object is named `nosuch`
+",
+    );
+    // One that fails among good ones gets the error it gets alone, and so
+    // does one given twice.
+    assert_output(
+        &stderr(&[SAMPLE, "retained", "crc32", "proces_frame", "report"]),
+        "error: no function or data object is named `proces_frame`; did you mean process_frame?\n",
+    );
+    assert_output(
+        &stderr(&[SAMPLE, "retained", "crc32", "0x1", "0x01"]),
+        "error: no function or data object contains address 0x1\n",
+    );
+    // The list stops at 10 lines; 11 fit, as "and 1 more" would take a line too.
+    let names: Vec<String> = (1..=12).map(|n| format!("frob{n}")).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    let error = stderr(&[&[SAMPLE, "retained", "crc32"], &names[..]].concat());
+    assert!(
+        error.starts_with("error: elfq can't use 12 of the 13 SYMBOLs:\n")
+            && error.ends_with("named `frob10`\n  and 2 more\n")
+            && error.lines().count() == 12,
+        "{error}"
+    );
+    let error = stderr(&[&[SAMPLE, "retained"], &names[..11]].concat());
+    assert!(
+        error.ends_with("named `frob11`\n") && error.lines().count() == 12,
+        "{error}"
+    );
+    // `--all` lists every one.
+    let error = stderr(&[&[SAMPLE, "retained", "crc32", "--all"], &names[..]].concat());
+    assert!(
+        error.ends_with("named `frob12`\n") && error.lines().count() == 13,
+        "{error}"
+    );
+}
+
+#[test]
+fn retained_says_to_use_one_or_more_of_what_a_name_could_mean() {
+    const CPP: &str = "testdata/bin/cpp-x86_64.elf";
+    // Unlike other commands, which take one SYMBOL.
+    assert_output(
+        &stderr(&[CPP, "retained", "log"]),
+        "\
+error: `log` could mean 2 functions; use one or more on the left instead:
+  'log(char const*)'   app::log(char const*)
+  'log(unsigned int)'  app::log(unsigned int)
+",
+    );
+    // In a list of errors, the same error, indented, with the full name
+    // next to each address and how many more it doesn't list.
+    assert_output(
+        &stderr(&[CPP, "retained", "log", "log(unsigned int)", "frob"]),
+        "\
+error: elfq can't use 2 of the 3 SYMBOLs:
+  `log` could mean 2 functions; use one or more on the left instead:
+    'log(char const*)'   app::log(char const*)
+    'log(unsigned int)'  app::log(unsigned int)
+  no function or data object is named `frob`
+",
+    );
+    let error = stderr(&[
+        "testdata/bin/rust-x86_64-nodebug.elf",
+        "retained",
+        "fmt",
+        "nosuch",
+    ]);
+    assert!(
+        error.starts_with(
+            "error: elfq can't use 2 of the 2 SYMBOLs:\n  `fmt` could mean 53 functions; use one \
+             or more on the left instead:\n"
+        ) && error.contains("\n    0x3eeb0                   <&str as core::fmt::Display>::fmt\n")
+            && error
+                .ends_with("\n    and 43 more\n  no function or data object is named `nosuch`\n"),
+        "{error}"
+    );
+    assert_output(
+        &stderr(&[CPP, "why", "log"]),
+        "\
+error: `log` could mean 2 functions; use one on the left instead:
+  'log(char const*)'   app::log(char const*)
+  'log(unsigned int)'  app::log(unsigned int)
+",
+    );
+}
+
+#[test]
+fn retained_says_that_elfq_doesnt_take_patterns_yet() {
+    const CPP: &str = "testdata/bin/cpp-x86_64.elf";
+    assert_output(
+        &stderr(&[CPP, "retained", "app::*"]),
+        "error: no function or data object is named `app::*`; elfq doesn't take patterns yet: \
+         give each name, or each address from top --json\n",
+    );
+    // Other commands, which take one SYMBOL, keep their error.
+    assert_output(
+        &stderr(&[CPP, "why", "app::*"]),
+        "error: no function or data object is named `app::*`\n",
+    );
+    // When elfq can say more, as for a mistyped C++ name with a pointer in
+    // it, or in a file without a symbol table, that comes in place of the
+    // hint.
+    assert_output(
+        &stderr(&[CPP, "retained", "log(char const *)"]),
+        "error: no function or data object is named `log(char const *)`; did you mean \
+         'log(char const*)'?\n",
+    );
+    assert_output(
+        &stderr(&["testdata/bin/c-x86_64-stripped.elf", "retained", "crc*"]),
+        "error: no function or data object is named `crc*`; the file has no symbol table, so \
+         elfq names its functions and data by address, like fn_0x10a0 and .rodata@0x2004\n",
+    );
+    // Only `*` makes a pattern.
+    assert_output(
+        &stderr(&[SAMPLE, "retained", "crc?2"]),
+        "error: no function or data object is named `crc?2`; did you mean crc32?\n",
+    );
+}
+
+#[test]
+fn retained_cant_take_a_range_yet() {
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "retained", "0x0..0xe0"]),
+        "error: retained can't yet take a range in place of SYMBOL; give each item's name or \
+         address\n",
+    );
+    // In a list of errors, each line names its range.
+    assert_output(
+        &stderr(&[SAMPLE, "retained", "crc32", "0x0..0x10", "0x0+16"]),
+        "\
+error: elfq can't use 2 of the 3 SYMBOLs:
+  retained can't yet take the range `0x0..0x10` in place of SYMBOL; give each item's name or address
+  retained can't yet take the range `0x0+16` in place of SYMBOL; give each item's name or address
+",
+    );
+}
+
+#[test]
+fn retained_leaves_out_a_function_whose_end_elfq_doesnt_know() {
+    // elfq can't read the code of glibc's _init, which has no size, so it
+    // answers about the others and says which it left out, before the
+    // notes that every answer about removing items has.
+    assert_output(
+        &stdout(&[SAMPLE, "retained", "crc32", "_init"]),
+        "\
+Removing crc32 would save 1083 bytes:
+
+RETAINED   OWN  ITEM
+    1083    59  crc32
+    1024  1024  crc_table, kept by crc32
+
+Not counted, since elfq doesn't know where it ends: _init.
+",
+    );
+    assert_output(
+        &stdout(&[SAMPLE, "retained", "report", "_init"]),
+        "\
+Removing report would save 705 bytes:
+
+RETAINED  OWN  ITEM
+     705  370  report
+     162  162  format_u32, kept by report
+      80   16  root, kept by report
+      48   16  inner, kept by root
+      16   16  leaf_c, kept by inner
+      16   16  leaf_b, kept by inner
+      16   16  leaf_a, kept by root
+      46   46  count_nodes, kept by report
+      10  ~10  .rodata@0x2031, kept by report
+      10  ~10  .rodata@0x203b, kept by report
+       9   ~9  .rodata@0x2045, kept by report
+       8   ~8  .rodata@0x204e, kept by report
+       6   ~6  .rodata@0x202b, kept by report
+       4   ~4  .rodata@0x2027, kept by report
+
+Not counted, since elfq doesn't know where it ends: _init.
+
+Shared with other code, so not counted: __stack_chk_fail@plt, config_sum, frames_bad, frames_ok, log_msg, stats.
+",
+    );
+    // With several SYMBOLs, after the notes that only an answer about
+    // several has. A function given twice, or by its name and its address,
+    // is left out once.
+    let several = stdout(&[
+        SAMPLE,
+        "retained",
+        "process_frame",
+        "report",
+        "_init",
+        "0x1ad4",
+        "_fini",
+        "0x1000",
+    ]);
+    assert!(
+        several.ends_with(
+            "\n\n56 of these bytes go only when both go.\n\n\
+             Not counted, since elfq doesn't know where they end: _init and _fini.\n\n\
+             Shared with other code, so not counted: config_sum, dispatch_event, log_msg.\n"
+        ),
+        "{several}"
+    );
+    assert_output(
+        &stdout(&[SAMPLE, "retained", "debug_dump", "_IO_stdin_used", "_init", "_fini"]),
+        "\
+Nothing reaches debug_dump and _IO_stdin_used: the program never uses them, or elfq can't see how. Removing them would save their own 33 bytes.
+
+Not counted, since elfq doesn't know where they end: _init and _fini.
+",
+    );
+    let answer = elfq_json(&[SAMPLE, "retained", "crc32", "_init", "0x1000"]);
+    assert_eq!(
+        answer["left_out"],
+        json!([{
+            "name": "_init",
+            "kind": "function",
+            "section": ".init",
+            "address": "0x1000",
+            "size": null,
+            "size_estimated": false,
+            "aliases": []
+        }])
+    );
+    assert_eq!(answer["symbols"].as_array().unwrap().len(), 1);
+    assert_eq!(answer["retained"], 1083);
+    // With nothing else to answer about, the error names every one.
+    for args in [&["_init"][..], &["_init", "0x1000"]] {
+        assert_output(
+            &stderr(&[&[SAMPLE, "retained"], args].concat()),
+            "error: elfq doesn't know where _init ends, so it can't read its code\n",
+        );
+    }
+    assert_output(
+        &stderr(&[SAMPLE, "retained", "_init", "_fini", "0x1000"]),
+        "error: elfq doesn't know where _init and _fini end, so it can't read their code\n",
     );
 }
 
@@ -1178,6 +1443,11 @@ fn retained_refuses_a_shared_library_and_asks_for_a_symbol() {
         &stderr(&[LIBRARY_SAMPLE, "retained", "process_frame", "report"]),
         "error: elfq can't yet tell what only process_frame and report lead to in a shared \
          library\n",
+    );
+    // After saying which SYMBOLs it can't use.
+    assert_output(
+        &stderr(&[LIBRARY_SAMPLE, "retained", "frob", "process_frame"]),
+        "error: no function or data object is named `frob`\n",
     );
     let error = stderr(&[SAMPLE, "retained"]);
     assert!(

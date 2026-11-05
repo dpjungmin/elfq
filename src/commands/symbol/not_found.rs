@@ -189,11 +189,41 @@ impl<'a> Names<'a> {
         ))
     }
 
-    /// The message for a query that finds several things: what to type for
-    /// each, next to its full name. An item whose shortest name is longer
-    /// than 40 characters gets its address instead, so that the names on the
-    /// right line up close by.
-    pub(super) fn choices(&self, query: &str, nodes: &[Node]) -> String {
+    /// The error for `query` when it finds nothing: no item or import has
+    /// the name, then why, when elfq can tell (see [`Names::unnamed`] and
+    /// [`Names::inlined_reason`]), and the names that it may mean; or when
+    /// elfq can tell neither, `hint`, if there is one, as `retained` gives
+    /// for a pattern.
+    pub(in crate::commands) fn nothing_named(&self, query: &str, hint: Option<&str>) -> String {
+        let mut message = format!("no function or data object is named `{query}`");
+        let reason = self.unnamed().or_else(|| self.inlined_reason(query));
+        if let Some(reason) = &reason {
+            message += &format!("; {reason}");
+        }
+        let similar = self.similar(query);
+        if !similar.is_empty() {
+            message += &format!("; did you mean {}?", similar.join(", "));
+        }
+        // A hint says less than a reason or a name to try, so it comes
+        // only without them.
+        if let (None, [], Some(hint)) = (&reason, &similar[..], hint) {
+            message += &format!("; {hint}");
+        }
+        message
+    }
+
+    /// The error for `query` when it finds `nodes`, several things: that it
+    /// could mean each, then `instruction`, what to do instead, such as
+    /// [`USE_ONE`], and what to type for each, next to its full name, one
+    /// to a line. An item whose shortest name is longer than 40 characters
+    /// gets its address instead, so that the names on the right line up
+    /// close by.
+    pub(in crate::commands) fn choices(
+        &self,
+        query: &str,
+        nodes: &[Node],
+        instruction: &str,
+    ) -> String {
         const SHOWN: usize = 10;
         const LONGEST: usize = 40;
         let shown = text::shown_count(nodes.len(), SHOWN);
@@ -215,7 +245,7 @@ impl<'a> Names<'a> {
             .max()
             .unwrap_or(0);
         let mut message = format!(
-            "`{query}` could mean {}; use one on the left instead:",
+            "`{query}` could mean {}; {instruction}:",
             text::count_text(self.binary, nodes)
         );
         for (query, name) in rows {
@@ -231,6 +261,12 @@ impl<'a> Names<'a> {
         message
     }
 }
+
+/// What the error for SYMBOL that finds several things says to do, in
+/// every command but `retained`, which takes several SYMBOLs. Browse's
+/// go-to box takes it off the error's first line, since it lists the things
+/// in its rows.
+pub(in crate::commands) const USE_ONE: &str = "use one on the left instead";
 
 impl Inlined {
     /// The function that `query` names, as its name or a short name, when
