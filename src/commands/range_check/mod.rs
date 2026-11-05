@@ -19,7 +19,7 @@ pub(super) use rows::{
     CalleeJson, CrossingRow, callee_json, callee_rows, crossings_columns, group_unfollowed,
     json_far_side, ranges_text, row_cells, unfollowed_how,
 };
-pub(super) use validate::check_to_range;
+pub(super) use validate::{check_holds_items, check_to_range};
 
 use std::io::Write;
 

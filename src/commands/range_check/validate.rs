@@ -38,8 +38,9 @@ fn has_address(addresses: &[u64], range: AddressRange) -> bool {
 }
 
 /// Explains that no item is in `range`, as for a mistyped range, unless
-/// one is.
-fn check_holds_items(binary: &Binary, range: AddressRange) -> Result<()> {
+/// one is. `retained` refuses an empty range in place of SYMBOL with it
+/// too.
+pub(in crate::commands) fn check_holds_items(binary: &Binary, range: AddressRange) -> Result<()> {
     if binary.items.iter().any(|item| item.is_in(&[range])) {
         return Ok(());
     }

@@ -12,12 +12,12 @@
 //! reaches, the only top is SYMBOL itself, so what is lost is SYMBOL and
 //! everything it keeps. [`Parts`] works out from the removal the bytes
 //! saved, the items under the tops and the notes; the answer adds its lead
-//! line and picks its rows. `symbols.rs` finds the SYMBOLs, leaves out the
-//! functions whose end elfq doesn't know, and says why it can't use those
-//! it can't. This file answers about one, and `several.rs` about several,
-//! from the same parts and with the same words for the lead line.
-//! `json.rs` gives the answer as JSON, in one shape for one SYMBOL or
-//! several.
+//! line and picks its rows. `symbols.rs` finds the SYMBOLs, and the items
+//! of a range given in place of SYMBOL, leaves out the functions whose end
+//! elfq doesn't know, and says why it can't use those it can't. This file
+//! answers about one, and `several.rs` about several, from the same parts
+//! and with the same words for the lead line. `json.rs` gives the answer
+//! as JSON, in one shape for one SYMBOL or several.
 
 mod json;
 mod parts;
@@ -49,10 +49,10 @@ use parts::Parts;
 use symbols::{Found, Symbols, find_symbols, left_out_note};
 
 /// Answers `elfq FILE retained SYMBOL...`: what removing the SYMBOLs in
-/// `queries` at once would save. A SYMBOL given twice, or by a name and by
-/// an address, counts once, a function whose end elfq doesn't know is left
-/// out, with a note, and when only one is left, the answer is the one
-/// about it alone.
+/// `queries` at once would save, where a range stands for the items in it.
+/// An item given twice, or by a name and by an address, counts once, a
+/// function whose end elfq doesn't know is left out, with a note, and when
+/// only one is left, the answer is the one about it alone.
 pub(super) fn run(
     binary: &Binary,
     queries: &[String],

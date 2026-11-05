@@ -191,8 +191,10 @@ pub(crate) struct TopArgs {
 pub(crate) struct RetainedArgs {
     /// A function or data object: its name, the end of its name
     /// (process_frame for app::process_frame), or an address such as 0x1700.
-    /// Give several to ask what removing them all at once would save
-    #[arg(required = true, value_name = "SYMBOL")]
+    /// Or a range of memory, START..END or START+SIZE, for every item with a
+    /// byte in it. Give several to ask what removing them all at once would
+    /// save
+    #[arg(required = true, value_name = "SYMBOL|RANGE")]
     pub(crate) symbols: Vec<String>,
     /// Show every item, not only the 30 largest
     #[arg(long)]

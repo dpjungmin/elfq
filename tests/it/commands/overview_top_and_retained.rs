@@ -1319,21 +1319,152 @@ fn retained_says_that_elfq_doesnt_take_patterns_yet() {
     );
 }
 
+/// The functions in the Cortex-M7 sample's ITCM, 0x0..0xe0, by name, in
+/// address order.
+const ITCM_FUNCTIONS: [&str; 6] = [
+    "SysTick_Handler",
+    "crc32",
+    "filter_tap",
+    "apply_filter",
+    "__app_tick_veneer",
+    "__memcpy_veneer",
+];
+
 #[test]
-fn retained_cant_take_a_range_yet() {
-    assert_output(
-        &stderr(&[TCM_SAMPLE, "retained", "0x0..0xe0"]),
-        "error: retained can't yet take a range in place of SYMBOL; give each item's name or \
-         address\n",
+fn a_range_stands_for_every_item_in_it() {
+    // The answer about the six functions by name, in address order.
+    let named = |extra: &[&str]| {
+        let args = [&[TCM_SAMPLE, "retained"], &ITCM_FUNCTIONS[..], extra].concat();
+        stdout(&args)
+    };
+    for extra in [&[][..], &["--tree"], &["--range", "0x20000000..0x20000450"]] {
+        for range in ["0x0..0xe0", "0x0+224"] {
+            let args = [&[TCM_SAMPLE, "retained", range], extra].concat();
+            assert_output(&stdout(&args), &named(extra));
+        }
+    }
+    assert!(named(&[]).starts_with("Removing these 6 items would save 1284 bytes:\n"));
+    // In JSON, the items are SYMBOLs, as if given so.
+    assert_eq!(
+        elfq_json(&[TCM_SAMPLE, "retained", "0x0..0xe0"]),
+        elfq_json(&[&[TCM_SAMPLE, "retained"], &ITCM_FUNCTIONS[..]].concat())
     );
-    // In a list of errors, each line names its range.
+    // A range that holds one item answers about it alone.
     assert_output(
-        &stderr(&[SAMPLE, "retained", "crc32", "0x0..0x10", "0x0+16"]),
-        "\
-error: elfq can't use 2 of the 3 SYMBOLs:
-  retained can't yet take the range `0x0..0x10` in place of SYMBOL; give each item's name or address
-  retained can't yet take the range `0x0+16` in place of SYMBOL; give each item's name or address
-",
+        &stdout(&[TCM_SAMPLE, "retained", "0x0+16"]),
+        &stdout(&[TCM_SAMPLE, "retained", "SysTick_Handler"]),
+    );
+}
+
+#[test]
+fn ranges_mix_with_symbols_and_each_other() {
+    // An item that two arguments find counts once: crc32, at 0x10..0x40,
+    // is in both ranges.
+    let mixed = stdout(&[TCM_SAMPLE, "retained", "0x0..0x40", "crc32", "0x20..0x80"]);
+    assert!(
+        mixed.starts_with("Removing these 4 items would save 1284 bytes:\n")
+            && mixed.contains("\n\nfilter_tap adds nothing: other items named here keep it.\n"),
+        "{mixed}"
+    );
+    let ranges = stdout(&[TCM_SAMPLE, "retained", "0x0..0x40", "0x20..0x80"]);
+    assert_output(&ranges, &mixed);
+    let answer = elfq_json(&[TCM_SAMPLE, "retained", "0x0..0x40", "crc32", "0x20..0x80"]);
+    assert_eq!(
+        names(&answer["symbols"]),
+        ["SysTick_Handler", "crc32", "filter_tap", "apply_filter"]
+    );
+}
+
+#[test]
+fn a_range_holds_items_that_retained_can_use() {
+    // An empty range gets the error that callers gives it, alone and in a
+    // list, which then counts arguments, not SYMBOLs.
+    let empty = "the file has nothing in 0x00000000..0x00000010, only in 0x00000318..0x00004088";
+    for command in ["retained", "callers"] {
+        assert_output(
+            &stderr(&[SAMPLE, command, "0x0..0x10"]),
+            &format!("error: {empty}\n"),
+        );
+    }
+    assert_output(
+        &stderr(&[
+            SAMPLE,
+            "retained",
+            "crc32",
+            "0x0..0x10",
+            "0x10..0x0",
+            "frob",
+        ]),
+        &format!(
+            "error: elfq can't use 3 of the 4 arguments:\n  {empty}\n  `0x10..0x0` isn't a \
+             range: the range must end after it starts\n  no function or data object is named \
+             `frob`\n"
+        ),
+    );
+    // A range typed with `-` gets callers' hint, alone and in the list,
+    // which counts it as an argument too.
+    let dash = "`0x0-0x10` isn't a range: did you mean 0x0..0x10?";
+    assert_output(
+        &stderr(&[SAMPLE, "retained", "0x0-0x10", "crc32"]),
+        &format!("error: {dash}\n"),
+    );
+    assert_output(
+        &stderr(&[SAMPLE, "retained", "0x0-0x10", "frob"]),
+        &format!(
+            "error: elfq can't use 2 of the 2 arguments:\n  {dash}\n  no function or data object \
+             is named `frob`\n"
+        ),
+    );
+    // A range that holds only a load image gets callers' error, which says
+    // where the program uses what is stored there.
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "retained", "0x300009c0..0x30000de0"]),
+        "error: elfq found no functions or data in 0x300009c0..0x30000de0 (the load image of \
+         .data); the program uses .data at 0x20000000..0x20000420\n",
+    );
+    // A range that holds only _init gets _init's error; with more in it,
+    // _init is left out.
+    assert_output(
+        &stderr(&[SAMPLE, "retained", "0x1000..0x1010"]),
+        "error: elfq doesn't know where _init ends, so it can't read its code\n",
+    );
+    let more = stdout(&[SAMPLE, "retained", "0x1000..0x1100"]);
+    assert!(
+        more.starts_with("Removing these 6 items would save 3677 bytes:\n")
+            && more.contains("\n\nNot counted, since elfq doesn't know where it ends: _init.\n"),
+        "{more}"
+    );
+    assert_eq!(
+        names(&elfq_json(&[SAMPLE, "retained", "0x1000..0x1100"])["left_out"]),
+        ["_init"]
+    );
+}
+
+#[test]
+fn a_large_range_is_the_items_in_it() {
+    // retained of 64 KiB of a Rust program's code answers as retained of
+    // the addresses, from top, of every item with a byte in it.
+    const RUST: &str = "testdata/bin/rust-x86_64-nodebug.elf";
+    let (start, end) = (0x20000, 0x30000);
+    let top = elfq_json(&[RUST, "top"]);
+    let mut items: Vec<(u64, String)> = (top["items"].as_array().unwrap().iter())
+        .chain(top["unreachable"].as_array().unwrap())
+        .map(|item| {
+            let address = item["address"].as_str().unwrap();
+            let address = u64::from_str_radix(&address[2..], 16).unwrap();
+            let size = item["size"].as_u64().unwrap_or(0).max(1);
+            (address, size, item["address"].as_str().unwrap().to_string())
+        })
+        .filter(|&(address, size, _)| address < end && address + size > start)
+        .map(|(address, _, text)| (address, text))
+        .collect();
+    items.sort();
+    items.dedup();
+    assert!(items.len() > 100, "{}", items.len());
+    let addresses: Vec<&str> = items.iter().map(|(_, text)| text.as_str()).collect();
+    assert_eq!(
+        elfq_json(&[RUST, "retained", "0x20000+64K"]),
+        elfq_json(&[&[RUST, "retained"], &addresses[..]].concat())
     );
 }
 
@@ -1452,7 +1583,7 @@ fn retained_refuses_a_shared_library_and_asks_for_a_symbol() {
     let error = stderr(&[SAMPLE, "retained"]);
     assert!(
         error.starts_with(
-            "error: the following required arguments were not provided:\n  <SYMBOL>...\n"
+            "error: the following required arguments were not provided:\n  <SYMBOL|RANGE>...\n"
         ),
         "{error}"
     );
