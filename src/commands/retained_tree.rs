@@ -217,31 +217,37 @@ impl<'g, 'a> RetainedTree<'g, 'a> {
             .filter(|&index| tree.is_reachable(Node::Item(index)))
             .collect();
         let shown = self.largest(tree.top(), &reachable, count);
+        self.table(&shown, tree.top(), format)
+    }
+
+    /// The table of the trees under `tops`, with rows for the `shown`
+    /// items, in the shape that `format` asks for.
+    pub(super) fn table(&self, shown: &HashSet<usize>, tops: &[Node], format: Format) -> TreeTable {
         self.names.will_name(shown.len());
         let shape = shape(format);
         TreeTable {
             columns: COLUMNS.into(),
-            rows: self.rows(&shown, tree.top(), shape),
+            rows: self.rows(shown, tops, shape),
             shape,
         }
     }
 
-    /// The items to show of a large tree drawn from `roots`: the `count`
+    /// The items to show of a large tree drawn from `tops`: the `count`
     /// largest of `items` that get rows, every item between each of them
-    /// and the roots, and a lone item that would be left out on its own
+    /// and the tops, and a lone item that would be left out on its own
     /// (see [`tree_answer::add_lone`]).
-    pub(super) fn largest(&self, roots: &[Node], items: &[usize], count: usize) -> HashSet<usize> {
-        let is_root: HashSet<Node> = roots.iter().copied().collect();
+    pub(super) fn largest(&self, tops: &[Node], items: &[usize], count: usize) -> HashSet<usize> {
+        let is_top: HashSet<Node> = tops.iter().copied().collect();
         let candidates = items.iter().copied().filter(|&index| self.counts(index));
         let largest = tree_answer::largest(candidates, |index| self.retained(index), count);
         let mut shown = tree_answer::with_chains(largest, |index| {
             let node = Node::Item(index);
             match self.tree.parent(node) {
-                Some(Node::Item(parent)) if !is_root.contains(&node) => Some(parent),
+                Some(Node::Item(parent)) if !is_top.contains(&node) => Some(parent),
                 _ => None,
             }
         });
-        tree_answer::add_lone(&mut shown, self.counted(roots), |index| {
+        tree_answer::add_lone(&mut shown, self.counted(tops), |index| {
             self.counted_children(index)
         });
         shown
@@ -264,12 +270,7 @@ impl<'g, 'a> RetainedTree<'g, 'a> {
     /// The row of the item at `index`, with the rows of its shown children
     /// under it, for a table that shows them in `shape`. As rows, those
     /// call it by its short name.
-    pub(super) fn tree_row(
-        &self,
-        shown: &HashSet<usize>,
-        index: usize,
-        shape: TreeShape,
-    ) -> TreeRow {
+    fn tree_row(&self, shown: &HashSet<usize>, index: usize, shape: TreeShape) -> TreeRow {
         let cells = vec![self.retained(index).to_string(), self.own_text(index)];
         let children = self.rows(shown, self.tree.children(Node::Item(index)), shape);
         let name = &self.binary.items[index].name;
@@ -345,7 +346,7 @@ impl<'g, 'a> RetainedTree<'g, 'a> {
         }
     }
 
-    pub(super) fn retained(&self, index: usize) -> u64 {
+    fn retained(&self, index: usize) -> u64 {
         self.tree.retained(Node::Item(index))
     }
 }
@@ -365,7 +366,7 @@ fn called(graph: &Graph) -> HashSet<usize> {
 }
 
 /// The columns of the trees of the overview, `top` and `retained`.
-pub(super) const COLUMNS: [(&str, Align); 3] = [
+const COLUMNS: [(&str, Align); 3] = [
     ("RETAINED", Align::Right),
     ("OWN", Align::Right),
     ("ITEM", Align::Left),
@@ -374,7 +375,7 @@ pub(super) const COLUMNS: [(&str, Align); 3] = [
 /// How the overview, `top` and `retained` show their trees: drawn with
 /// `--tree`, or else as rows that each name the item that keeps them, as
 /// in "crc_table, kept by crc32".
-pub(super) fn shape(format: Format) -> TreeShape {
+fn shape(format: Format) -> TreeShape {
     match format {
         Format::Tree => TreeShape::Drawn,
         _ => TreeShape::Rows { words: "kept by" },

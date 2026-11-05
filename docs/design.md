@@ -1296,15 +1296,17 @@ that do this.
    `binary/vector_table.rs` describes. Not yet: the functions that shared
    libraries export, and `--root SYMBOL`.
 6. **Analyze**: compute the dominator tree once from a virtual node that
-   points at every root. `retained` and `top` read it. `why` searches from
-   the roots for the shortest chain to each item that uses SYMBOL, going
-   around SYMBOL itself. Of equally short chains it takes the one with the
-   most calls, and then the one that the breadth-first search found first,
-   so the answer is always the same. `reach` searches from SYMBOL the same
-   way, for the shortest chain to every item. Without SYMBOL, it only adds
-   up the bytes that each start reaches, in one search from each, with no
-   chains (`graph::Reached`), which the overview also uses to pick the
-   handler that reaches the most code.
+   points at every root. `retained` and `top` read it, and `retained`
+   searches from the roots once more, going around SYMBOL, for the branches
+   of the tree that removing it loses (`graph::Removal`). `why` searches
+   from the roots for the shortest chain to each item that uses SYMBOL,
+   going around SYMBOL itself. Of equally short chains it takes the one
+   with the most calls, and then the one that the breadth-first search
+   found first, so the answer is always the same. `reach` searches from
+   SYMBOL the same way, for the shortest chain to every item. Without
+   SYMBOL, it only adds up the bytes that each start reaches, in one search
+   from each, with no chains (`graph::Reached`), which the overview also
+   uses to pick the handler that reaches the most code.
    `callers` and `callees` read edges. `callers` counts a call to the stub
    for one of the file's own functions, such as `log_msg@plt` in a shared
    library, as a call to the function, and says so.
@@ -1364,12 +1366,16 @@ in order. Its output is the first example under [Commands](#commands).
    retained sizes from the bottom of the tree up.
    `RetainedTree` also notes which functions something calls directly, for
    the "(through a pointer)" mark.
-7. **The answer.** `retained::answer` words the lead line, then
-   `RetainedTree::largest` picks the 30 largest items under
-   `process_frame`, and the items between them and it, with the
-   functions in `tree_answer.rs` that cut every tree down the same way,
-   and `RetainedTree::tree_row` makes a `render::TreeRow` of each, with the
-   short name that the rows under it call it by (`Names::short_name`).
+7. **The answer.** `retained::answer` has `graph::Removal` search from the
+   roots once more, never entering `process_frame`, for what removing it
+   loses: the branches of the tree under the removal's tops. The only top
+   is `process_frame` itself, so what is lost is `process_frame` and
+   everything it keeps, and the bytes saved are its retained size. It
+   words the lead line, then `RetainedTree::largest` picks the 30 largest
+   items under `process_frame`, and the items between them and it, with
+   the functions in `tree_answer.rs` that cut every tree down the same
+   way, and `RetainedTree::table` makes a `render::TreeRow` of each, with
+   the short name that the rows under it call it by (`Names::short_name`).
    `shared_note` names what `process_frame` uses that other code uses too,
    and `indirect_note` notes any calls through pointers in `process_frame`
    or the items it keeps. `TreeAnswer::write` writes the lead line, then
@@ -1398,11 +1404,12 @@ that run in it:
 ```
 main.rs      1 main, run                                  8 exit status
 commands/    2 commands::run   4 retained::run, Names::find
-             7 retained::answer, RetainedTree::largest, tree_row
+             7 retained::answer, RetainedTree::largest, table
 cli/         1 Cli, Command
 render/      7 Table::tree, Table::write
 debuginfo/   (for inlined, an inlined SYMBOL, and startup's inlined main)
 graph/       5 Graph::build, roots::find   6 DominatorTree::build
+             7 Removal::find
 binary/      3 Binary::load, scan_functions, unnamed_data::items
 arch/        3 InstructionSet::scan
 ```

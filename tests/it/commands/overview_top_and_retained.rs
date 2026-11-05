@@ -1107,6 +1107,13 @@ fn retained_has_what_symbol_keeps_as_rows() {
     assert_eq!(unreachable["retained"], 29);
     assert_eq!(unreachable["items"], json!([]));
     assert_eq!(unreachable["shares"], json!([]));
+    // A SYMBOL that nothing reaches still counts its own calls through
+    // pointers: three in newlib's __sfvwrite_r here.
+    let unreachable = elfq_json(&["testdata/bin/c-strtod.elf", "retained", "__sfvwrite_r"]);
+    assert_eq!(unreachable["reachable"], false);
+    assert_eq!(unreachable["retained"], 768);
+    assert_eq!(unreachable["shares"], json!([]));
+    assert_eq!(unreachable["indirect_calls"], 3);
 }
 
 #[test]
