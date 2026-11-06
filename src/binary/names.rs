@@ -45,6 +45,27 @@
 //! nothing suggests. [`without_copy_suffixes`] gives a function and the
 //! copies that compilers make of it, such as `dev_read.constprop.0`, one
 //! name, for `diff`.
+//!
+//! # Texts for patterns
+//!
+//! A pattern, such as `uart_*` or `core::fmt::*`, matches a name when it
+//! matches all of one of the name's *texts*, which
+//! [`for_each_pattern_text`] visits: the name itself, the paths that mean
+//! the same and their ends, as for short names, with three differences. A
+//! method in an impl block has the path of its owner only (see
+//! [`ImplMethod::owner`]), not of both its type and its trait. A C++
+//! special name, such as `vtable for app::Gain`, also has the texts of the
+//! class or function it is for. And a copy of a function, such as
+//! `crc32.part.0`, also has the texts of the function. Each text is a
+//! whole path or an end of a longer one ([`TextKind`]), and a pattern
+//! that starts with `::` leaves out the ends. `commands::symbol::pattern`
+//! says why each of these rules is as it is.
+//!
+//! Each word of a text is a word of the name, as for short names (see
+//! [`for_each_pattern_text`]), so a quick check of the pattern's words
+//! against the name, with [`may_have_words`], [`starts_a_word`] and
+//! [`ends_a_word`], rules out most names before their texts are worked
+//! out. `commands::symbol`'s `QuickCheck` makes it.
 
 /// The readable name of a mangled Rust or C++ symbol, or `None` when
 /// `symbol` isn't one. Rust names leave out the hashes that tell builds of a
@@ -54,6 +75,13 @@ pub(crate) fn demangle(symbol: &str) -> Option<String> {
         return Some(format!("{name:#}"));
     }
     demangle_cpp(symbol)
+}
+
+/// Whether `name` is a mangled Rust or C++ symbol, which elfq shows by its
+/// readable name (see [`demangle`]): an item's alias can be one, with
+/// `@plt` after it for a PLT stub's.
+pub(crate) fn is_mangled(name: &str) -> bool {
+    demangle(name.strip_suffix("@plt").unwrap_or(name)).is_some()
 }
 
 /// The readable name of a C++ symbol, mangled as GCC and Clang do on every
@@ -161,43 +189,118 @@ fn for_each_short_name_ending(
 ) {
     // `vtable for app::Gain` is also `vtable for Gain`, which has the key
     // that `Gain` has.
-    if let Some(prefix) = CPP_SPECIAL_PREFIXES
-        .iter()
-        .find(|prefix| name.starts_with(*prefix))
-    {
+    if let Some(prefix) = special_prefix(name) {
         for_each_short_name_ending(&name[prefix.len()..], key, &mut |short_name, _| {
             visit(&[prefix, short_name].concat(), None);
         });
         return;
     }
-    for_each_path(name, key, |path, parts, in_name| {
-        let last = parts[parts.len() - 1];
-        // A short name's key is the last part of the path it ends, or
-        // when that part is the whole short name, the part without
-        // special prefixes.
-        if key.is_some_and(|key| last != key && without_special_prefixes(last) != key) {
-            return;
-        }
-        // Every end of the path from a part where a short name can start.
-        // Each is the path from where its first part starts.
-        let mut at = 0;
-        for start in 0..parts.len() {
-            let from = at;
-            at += parts[start].len() + "::".len();
-            if !can_start_short_name(start, parts[start]) {
-                continue;
+    for_each_path(
+        name,
+        key,
+        ImplPaths::TypeAndTrait,
+        |path, parts, in_name| {
+            let last = parts[parts.len() - 1];
+            // A short name's key is the last part of the path it ends, or
+            // when that part is the whole short name, the part without
+            // special prefixes.
+            if key.is_some_and(|key| last != key && without_special_prefixes(last) != key) {
+                return;
             }
-            if let Some(key) = key {
-                let its_key = match start + 1 == parts.len() {
-                    true => without_special_prefixes(last),
-                    false => last,
-                };
-                if its_key != key {
-                    continue;
+            for_each_end(path, parts, |end, start| {
+                if let Some(key) = key {
+                    let its_key = match start + 1 == parts.len() {
+                        true => without_special_prefixes(last),
+                        false => last,
+                    };
+                    if its_key != key {
+                        return;
+                    }
                 }
-            }
-            visit(&path[from..], in_name.then_some(from));
+                visit(end, in_name.then_some(path.len() - end.len()));
+            });
+        },
+    );
+}
+
+/// Calls `visit` with each end of `path`, split into its `parts`, that a
+/// short name can be, and the index of the part where it starts: `path`
+/// itself, from part 0, and each end from a later part where a short name
+/// can start (see [`can_start_short_name`]).
+fn for_each_end<'p>(path: &'p str, parts: &[&str], mut visit: impl FnMut(&'p str, usize)) {
+    // Where the part starts in `path`.
+    let mut at = 0;
+    for (index, part) in parts.iter().enumerate() {
+        if can_start_short_name(index, part) {
+            visit(&path[at..], index);
         }
+        at += part.len() + "::".len();
+    }
+}
+
+/// Calls `visit` with each text of `name` that a pattern can match all of,
+/// and whether it is a whole path or an end of a longer one (see
+/// [Texts for patterns](self#texts-for-patterns)): `name` itself, its
+/// paths, as for short names but with a method in an impl block through
+/// its owner only, and their ends. A name with a special C++ prefix also
+/// has the texts of the rest, each with the prefix kept, and for class
+/// data with `::` after it, as `app::Gain::` for `vtable for app::Gain`,
+/// or else as it is, as `app::Sensor::name()` for `non-virtual thunk to
+/// app::Sensor::name()`. A copy of a function, such as `crc32.part.0`,
+/// also has the texts of the function. Some texts come more than once.
+///
+/// Every text joins pieces of `name`, each cut from it at places outside
+/// its words, and adds nothing but `::`. So each word of a text is a word
+/// of `name`, as for short names (see [`words`]), unless taking out
+/// generic arguments joins two, which [`may_join_words`] tells. The quick
+/// check that rules out names for a pattern, `commands::symbol`'s
+/// `QuickCheck`, relies on this, so a new kind of text must keep it.
+pub(crate) fn for_each_pattern_text(name: &str, mut visit: impl FnMut(&str, TextKind)) {
+    for_each_text(name, &mut visit);
+    let function = without_copy_suffixes(name);
+    if function != name {
+        for_each_text(function, &mut visit);
+    }
+}
+
+/// Whether a text of a name, which [`for_each_pattern_text`] visits, is a
+/// whole path or an end of a longer one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TextKind {
+    /// A whole path, from its first part, as opposed to an end: the name
+    /// itself, or a path that means the same, as `app::Gain::run` for
+    /// `app::Gain::run(short*) const` and for `<app::Gain as
+    /// app::Stage>::run`.
+    Path,
+    /// The end of a longer path, from a later part: `Gain::run` or `run`.
+    End,
+}
+
+/// [`for_each_pattern_text`] for `name` alone, not for the function that
+/// it may be a copy of.
+fn for_each_text(name: &str, visit: &mut dyn FnMut(&str, TextKind)) {
+    visit(name, TextKind::Path);
+    if let Some(prefix) = special_prefix(name) {
+        let rest = &name[prefix.len()..];
+        let class_data = is_class_data(prefix);
+        for_each_text(rest, &mut |text, kind| {
+            visit(&[prefix, text].concat(), kind);
+            if class_data {
+                visit(&[text, "::"].concat(), kind);
+            } else {
+                visit(text, kind);
+            }
+        });
+        return;
+    }
+    for_each_path(name, None, ImplPaths::Owner, |path, parts, _| {
+        for_each_end(path, parts, |end, start| {
+            let kind = match start {
+                0 => TextKind::Path,
+                _ => TextKind::End,
+            };
+            visit(end, kind);
+        });
     });
 }
 
@@ -208,11 +311,7 @@ fn for_each_short_name_ending(
 /// when it says no, `name` may still have it.
 pub fn ends_with_short_name(name: &str, short_name: &str) -> bool {
     // A special name's short names keep its prefix.
-    if CPP_SPECIAL_PREFIXES
-        .iter()
-        .any(|prefix| name.starts_with(prefix))
-        || !can_be_shorter(name)
-    {
+    if special_prefix(name).is_some() || !can_be_shorter(name) {
         return false;
     }
     // `name` and the paths of a method through its type and trait are
@@ -238,7 +337,10 @@ pub fn ends_with_short_name(name: &str, short_name: &str) -> bool {
         }
         false
     };
-    ends_with(name) || impl_method_paths(name).iter().any(|path| ends_with(path))
+    ends_with(name)
+        || impl_method_paths(name, ImplPaths::TypeAndTrait)
+            .iter()
+            .any(|path| ends_with(path))
 }
 
 /// Whether a short name can start at `part`, part `index` of a path: at
@@ -267,12 +369,57 @@ pub fn words(text: &str) -> impl Iterator<Item = &str> {
     })
 }
 
+/// Whether `name` can have a short name, or a text that a pattern matches
+/// (see [`for_each_pattern_text`]), that holds each of `words`, which are
+/// runs of word characters (see [`words`]). Each word of a short name or a
+/// text is a word of the name, unless taking out generic arguments joins
+/// two, so when this says no, `name` has none.
+pub(crate) fn may_have_words<W: AsRef<str>>(name: &str, words: &[W]) -> bool {
+    may_join_words(name) || words.iter().all(|word| name.contains(word.as_ref()))
+}
+
 /// Whether taking out generic arguments from `name` may join two of its
 /// words into one: when a `>` comes right before a letter, digit or `_`.
 pub fn may_join_words(name: &str) -> bool {
     name.split('>')
         .skip(1)
         .any(|after| after.bytes().next().is_some_and(in_word))
+}
+
+/// Whether `word`, a run of word characters (see [`words`]), starts a word
+/// of `text`: some place where `word` is in `text` is at its start or right
+/// after a character that isn't part of a word.
+pub(crate) fn starts_a_word(text: &str, word: &str) -> bool {
+    any_place(text, word, |at| {
+        at == 0 || !in_word(text.as_bytes()[at - 1])
+    })
+}
+
+/// Whether `word`, a run of word characters, ends a word of `text`: some
+/// place where `word` is in `text` is at its end or right before a
+/// character that isn't part of a word.
+pub(crate) fn ends_a_word(text: &str, word: &str) -> bool {
+    any_place(text, word, |at| {
+        text.as_bytes()
+            .get(at + word.len())
+            .is_none_or(|&after| !in_word(after))
+    })
+}
+
+/// Whether `holds` holds for any place where `word` is in `text`, as a
+/// byte offset. The places can overlap: `77` is in `h20777` at 3, which
+/// doesn't end a word, and at 4, which does.
+fn any_place(text: &str, word: &str, holds: impl Fn(usize) -> bool) -> bool {
+    let mut from = 0;
+    while let Some(found) = text[from..].find(word) {
+        let at = from + found;
+        if holds(at) {
+            return true;
+        }
+        // The next place can start at the next character.
+        from = at + text[at..].chars().next().map_or(1, char::len_utf8);
+    }
+    false
 }
 
 /// Whether `byte` is part of a word (see [`words`]).
@@ -328,7 +475,9 @@ pub fn short_name_keys(name: &str) -> Vec<String> {
     {
         add(last);
     }
-    for_each_path(end, None, |_, parts, _| add(parts[parts.len() - 1]));
+    for_each_path(end, None, ImplPaths::TypeAndTrait, |_, parts, _| {
+        add(parts[parts.len() - 1]);
+    });
     keys.sort();
     keys.dedup();
     keys
@@ -376,11 +525,16 @@ fn path_end(name: &str) -> &str {
 
 /// Calls `visit` with each path that `name`'s short names are ends of,
 /// split into its parts: `name`'s own path, and the shorter paths that
-/// mean the same, each with and without generic arguments. With each, it
-/// says whether the path is the start of `name`, so that its ends are
-/// parts of `name`. With `ending`, it leaves out paths that don't end with
-/// it.
-fn for_each_path(name: &str, ending: Option<&str>, mut visit: impl FnMut(&str, &[&str], bool)) {
+/// mean the same, each with and without generic arguments. A method in an
+/// impl block has the paths that `impl_paths` says. With each, it says
+/// whether the path is the start of `name`, so that its ends are parts of
+/// `name`. With `ending`, it leaves out paths that don't end with it.
+fn for_each_path(
+    name: &str,
+    ending: Option<&str>,
+    impl_paths: ImplPaths,
+    mut visit: impl FnMut(&str, &[&str], bool),
+) {
     if !can_be_shorter(name) {
         return;
     }
@@ -402,7 +556,7 @@ fn for_each_path(name: &str, ending: Option<&str>, mut visit: impl FnMut(&str, &
         .flatten()
         .map(|path| (path, in_name))
         .chain(
-            impl_method_paths(path)
+            impl_method_paths(path, impl_paths)
                 .into_iter()
                 .map(|path| (path, false)),
         )
@@ -454,23 +608,47 @@ pub(crate) fn can_be_shorter(name: &str) -> bool {
 
 /// `name` without the special C++ prefixes that it starts with.
 fn without_special_prefixes(mut name: &str) -> &str {
-    while let Some(prefix) = CPP_SPECIAL_PREFIXES
-        .iter()
-        .find(|prefix| name.starts_with(*prefix))
-    {
+    while let Some(prefix) = special_prefix(name) {
         name = &name[prefix.len()..];
     }
     name
 }
 
-/// The special names that C++ compilers give to the data and code they make
-/// for a class or a function. Short names keep the prefix.
-const CPP_SPECIAL_PREFIXES: &[&str] = &[
+/// The special C++ prefix that `name` starts with, such as `vtable for `,
+/// if it starts with one: one of [`CLASS_DATA_PREFIXES`] or
+/// [`OTHER_SPECIAL_PREFIXES`]. These are the special names that C++
+/// compilers give to the data and code they make for a class or a
+/// function, and short names keep the prefix.
+fn special_prefix(name: &str) -> Option<&'static str> {
+    CLASS_DATA_PREFIXES
+        .iter()
+        .chain(&OTHER_SPECIAL_PREFIXES)
+        .find(|prefix| name.starts_with(*prefix))
+        .copied()
+}
+
+/// Whether `prefix`, a special C++ prefix, names data that the compiler
+/// makes for a class, which patterns see as a member of the class.
+fn is_class_data(prefix: &str) -> bool {
+    CLASS_DATA_PREFIXES.contains(&prefix)
+}
+
+/// The special C++ prefixes of the data that a compiler makes for a class:
+/// its table of virtual functions, its table of those tables, and its type
+/// information.
+const CLASS_DATA_PREFIXES: [&str; 5] = [
     "vtable for ",
     "VTT for ",
     "typeinfo for ",
     "typeinfo name for ",
     "typeinfo fn for ",
+];
+
+/// The other special C++ prefixes, of what a compiler makes for a function
+/// or a variable: the guard of a static variable, the functions that set up
+/// a thread-local one, and thunks, which adjust `this` and jump to a
+/// virtual function.
+const OTHER_SPECIAL_PREFIXES: [&str; 6] = [
     "guard variable for ",
     "TLS init function for ",
     "TLS wrapper function for ",
@@ -568,34 +746,96 @@ fn without_parameters(path: &str) -> Option<String> {
     None
 }
 
+/// Which paths a method in an impl block has besides its own, which
+/// starts with `<Type as Trait>` or `<Type>`.
+#[derive(Clone, Copy)]
+enum ImplPaths {
+    /// Its paths through its type and through its trait, as short names
+    /// have them: `app::Gain::run` and `app::Stage::run` for
+    /// `<app::Gain as app::Stage>::run`.
+    TypeAndTrait,
+    /// Its path through its owner only (see [`ImplMethod::owner`]), as
+    /// patterns see it.
+    Owner,
+}
+
 /// For a method in an impl block, written `<Type as Trait>::method` or
-/// `<Type>::method`, the paths `Type::method` and `Trait::method`.
-fn impl_method_paths(path: &str) -> Vec<String> {
-    if !path.starts_with('<') {
+/// `<Type>::method`, the paths that `which` says: `Type::method` and
+/// `Trait::method`, or the path through its owner alone.
+fn impl_method_paths(path: &str, which: ImplPaths) -> Vec<String> {
+    let Some(method) = ImplMethod::of(path) else {
         return Vec::new();
+    };
+    let path_through = |owner: &str| [owner, method.rest].concat();
+    match which {
+        ImplPaths::TypeAndTrait => std::iter::once(method.type_name)
+            .chain(method.trait_name)
+            .map(path_through)
+            .collect(),
+        ImplPaths::Owner => vec![path_through(method.owner())],
     }
-    let Some(parts) = split_path(path) else {
-        return Vec::new();
-    };
-    let Some(inner) = parts[0]
-        .strip_prefix('<')
-        .and_then(|rest| rest.strip_suffix('>'))
-    else {
-        return Vec::new();
-    };
-    if parts.len() < 2 {
-        return Vec::new();
+}
+
+/// A method in an impl block, as Rust names it: `<Type as Trait>::method`,
+/// or `<Type>::method` for one in an impl block of the type alone. Each
+/// part is a slice of the path, as written.
+struct ImplMethod<'p> {
+    /// The type, as `app::Gain` in `<app::Gain as app::Stage>::run`.
+    type_name: &'p str,
+    /// The trait, as `app::Stage`, or `None` for `<Type>::method`.
+    trait_name: Option<&'p str>,
+    /// The rest of the path, after the `<...>`: `::run`.
+    rest: &'p str,
+}
+
+impl<'p> ImplMethod<'p> {
+    /// `path` as a method in an impl block, if it is one.
+    fn of(path: &'p str) -> Option<ImplMethod<'p>> {
+        if !path.starts_with('<') {
+            return None;
+        }
+        let parts = split_path(path)?;
+        let inner = parts[0].strip_prefix('<')?.strip_suffix('>')?;
+        if parts.len() < 2 {
+            return None;
+        }
+        let rest = &path[parts[0].len()..];
+        let (type_name, trait_name) = match top_level_matches(inner, " as ")?.as_slice() {
+            [] => (inner, None),
+            &[at] => (&inner[..at], Some(&inner[at + " as ".len()..])),
+            _ => return None,
+        };
+        Some(ImplMethod {
+            type_name,
+            trait_name,
+            rest,
+        })
     }
-    let method = &path[parts[0].len()..];
-    let owners = match top_level_matches(inner, " as ").as_deref() {
-        Some([]) => vec![inner],
-        Some(&[at]) => vec![&inner[..at], &inner[at + " as ".len()..]],
-        _ => return Vec::new(),
-    };
-    owners
-        .into_iter()
-        .map(|owner| [owner, method].concat())
-        .collect()
+
+    /// The one type or trait that the method belongs to, for patterns:
+    /// its type, without `&`, `&mut`, `*const`, `*mut` or `dyn` before it,
+    /// or its trait when the type has no path of its own, as `u32`, `str`,
+    /// `[u8]` and `(u8, u16)` have none. So `<&mut bigfw::Uart as
+    /// core::fmt::Write>::write_str` belongs to `bigfw::Uart`, and `<u32 as
+    /// core::fmt::Display>::fmt` to `core::fmt::Display`.
+    ///
+    /// One path, not both, so that `core::fmt::*` doesn't take every
+    /// type's `Debug` impl in the program; and the trait's for a type
+    /// without a path, so that it still takes how numbers are formatted.
+    fn owner(&self) -> &'p str {
+        let mut type_name = self.type_name;
+        while let Some(rest) = ["&mut ", "&", "*const ", "*mut ", "dyn "]
+            .iter()
+            .find_map(|before| type_name.strip_prefix(before))
+        {
+            type_name = rest;
+        }
+        let has_path = top_level_matches(type_name, "::").is_some_and(|at| !at.is_empty());
+        match self.trait_name {
+            Some(trait_name) if !has_path => trait_name,
+            _ => type_name,
+        }
+    }
 }
 
 /// Splits `path` at each `::` outside brackets: `<a::B as c::D>::f` has two

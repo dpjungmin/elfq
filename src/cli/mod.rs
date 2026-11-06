@@ -314,6 +314,18 @@ pub(crate) enum DebugCommand {
     Items,
     /// List what the code run from reset does before main: calls, stores and loops
     Walk,
+    /// List the items that each pattern matches, with how, as JSON
+    // Hidden from `debug --help` too, unlike the two above, so that adding
+    // it changed no help text.
+    #[command(hide = true)]
+    Matches(MatchesArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct MatchesArgs {
+    /// A pattern such as 'uart_*', where * stands for any text
+    #[arg(required = true, value_name = "PATTERN")]
+    pub(crate) patterns: Vec<String>,
 }
 
 /// The names of the commands, for reading `elfq help COMMAND` and for

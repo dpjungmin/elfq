@@ -19,7 +19,7 @@ use super::range_check::Direction;
 use super::text::CommandLine;
 use super::{Outcome, callees, callers, symbol, text};
 use crate::binary::{AddressRange, Binary};
-use crate::cli::{Cli, Command, Format, ReachArgs, UsesArgs};
+use crate::cli::{Cli, Command, DebugCommand, Format, ReachArgs, UsesArgs};
 
 /// The error for `--range` with a command that doesn't take it.
 const RANGE_REFUSED: &str = "only the overview, top and retained take --range";
@@ -134,7 +134,13 @@ fn check_json(cli: &Cli) -> Result<()> {
             | Command::Startup(_),
         ) => Ok(()),
         Some(Command::Browse(_)) => bail!("{BROWSE_REFUSED}"),
-        Some(Command::Debug(_)) => bail!("the debug commands print only text"),
+        // It prints JSON lines, with `--json` or without.
+        Some(Command::Debug(DebugCommand::Matches(_))) => Ok(()),
+        // The message is older than `debug matches`, and stays as it was so
+        // that the output of these two doesn't change.
+        Some(Command::Debug(DebugCommand::Items | DebugCommand::Walk)) => {
+            bail!("the debug commands print only text")
+        }
     }
 }
 

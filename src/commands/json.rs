@@ -15,6 +15,7 @@ use anyhow::Result;
 use serde::{Serialize, Serializer};
 use serde_json::ser::Formatter;
 
+use super::symbol::{self, MatchedBy, Pattern};
 use super::{text, uses};
 use crate::binary::{AddressRange, Binary, MemoryBlock};
 use crate::graph::{self, Node, ReferenceKind, RootKind};
@@ -191,6 +192,37 @@ impl<'a> Symbol<'a> {
         Symbol {
             item: Item::new(binary, node),
             aliases,
+        }
+    }
+}
+
+/// An item that a pattern matches, and how, as `debug matches` lists it.
+#[derive(Serialize)]
+pub(super) struct Match<'a> {
+    /// The pattern as typed.
+    pattern: &'a str,
+    /// The item, with the keys of every item row.
+    #[serde(flatten)]
+    item: Item<'a>,
+    /// `name`, `end` or `alias`: how the pattern matched (see
+    /// [`MatchedBy`]).
+    matched_by: MatchedBy,
+    /// The text of the item's names that the pattern matched (see
+    /// [`symbol::Match`]).
+    matched_as: &'a str,
+}
+
+impl<'a> Match<'a> {
+    pub(super) fn new(
+        binary: &'a Binary,
+        pattern: &'a Pattern,
+        found: &'a symbol::Match,
+    ) -> Match<'a> {
+        Match {
+            pattern: pattern.typed(),
+            item: Item::new(binary, Node::Item(found.item)),
+            matched_by: found.matched_by,
+            matched_as: &found.matched_as,
         }
     }
 }

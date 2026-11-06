@@ -325,9 +325,7 @@ impl<'a> Names<'a> {
         // [`Names::short_names_of`] gives them.
         let has = |index: usize| {
             let item_names = || self.binary.items[index].names();
-            let may_have = |name: &str| {
-                names::may_join_words(name) || query_words.iter().all(|word| name.contains(word))
-            };
+            let may_have = |name: &str| names::may_have_words(name, &query_words);
             if self.own_function_stubs().contains(&index) && !query.ends_with("@plt")
                 || !item_names().any(may_have)
             {
@@ -514,7 +512,7 @@ impl<'a> Names<'a> {
         // mangled names as aliases, with `@plt` added.
         let mut queries: Vec<String> = whole_names
             .into_iter()
-            .filter(|name| names::demangle(name.strip_suffix("@plt").unwrap_or(name)).is_none())
+            .filter(|name| !names::is_mangled(name))
             .flat_map(|name| {
                 names::short_names(name)
                     .into_iter()
@@ -576,10 +574,8 @@ fn add(nodes: &mut Vec<Node>, node: Node) {
 mod tests {
     use std::path::Path;
 
-    use object::SectionKind;
-
     use super::*;
-    use crate::binary::{Item, Section, Source};
+    use crate::commands::symbol::fixtures;
 
     /// The sample `name` in testdata/bin.
     fn sample(name: &str) -> Binary {
@@ -666,38 +662,7 @@ mod tests {
         names.extend(["app::log::fmt".to_string(), "app::log::fmt".to_string()]);
         // A stub that jumps to `<app::Frame10 as core::fmt::Debug>::fmt`.
         names.push("<app::Frame10 as core::fmt::Debug>::fmt@plt".to_string());
-        let items: Vec<Item> = (names.into_iter().enumerate())
-            .map(|(index, name)| Item {
-                source: if name.ends_with("@plt") {
-                    Source::Plt
-                } else {
-                    Source::SymbolTable
-                },
-                name,
-                aliases: Vec::new(),
-                kind: ItemKind::Function,
-                address: 0x1000 + 0x10 * index as u64,
-                size: 0x10,
-                size_estimated: false,
-                section: 1,
-            })
-            .collect();
-        let section = |name: &str, address, size, kind| Section {
-            name: name.to_string(),
-            address,
-            size,
-            kind,
-            allocated: address != 0,
-            file_range: None,
-            entry_size: 0,
-            load_address: None,
-        };
-        let text_size = 0x10 * items.len() as u64;
-        let sections = vec![
-            section("", 0, 0, SectionKind::Unknown),
-            section(".text", 0x1000, text_size, SectionKind::Text),
-        ];
-        let mut binary = Binary::for_tests(sections, items, Vec::new());
+        let mut binary = fixtures::functions(&names);
         binary.imports.push("write".to_string());
         binary
     }
