@@ -1,9 +1,9 @@
 //! `retained`'s answer as JSON, in one shape for one SYMBOL or several:
-//! the SYMBOLs, what removing them all at once would save, how many of
-//! those bytes go only when several go, and the rows of the trees of what
-//! goes. The rows are the text's, every one of them, the SYMBOLs' own rows
-//! among them, and a row that several SYMBOLs keep only together names
-//! them.
+//! the SYMBOLs, how the patterns given matched, if any were, what removing
+//! them all at once would save, how many of those bytes go only when
+//! several go, and the rows of the trees of what goes. The rows are the
+//! text's, every one of them, the SYMBOLs' own rows among them, and a row
+//! that several SYMBOLs keep only together names them.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -15,13 +15,22 @@ use super::parts::Parts;
 use crate::binary::total;
 use crate::commands::json;
 use crate::commands::retained_tree::{KeptItem, RetainedTree};
+use crate::commands::symbol::PatternMatches;
 use crate::graph::Node;
 
 #[derive(Serialize)]
 struct RetainedJson<'a> {
-    /// The SYMBOLs' items, each once, in the order given, and for a range
-    /// given in place of SYMBOL, the items in it, in address order.
+    /// The SYMBOLs' items, each once, in the order given, and for a
+    /// pattern or range given in place of SYMBOL, the items it matched or
+    /// that are in it, in address order.
     symbols: Vec<SymbolJson<'a>>,
+    /// Only when a pattern was given in place of SYMBOL: each item that
+    /// each pattern matched, in the order the patterns were given, and each
+    /// pattern's in address order, with how it matched. An item that two
+    /// patterns matched has a row for each. Each of these items is in
+    /// `symbols`, or when elfq doesn't know where it ends, in `left_out`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    matches: Option<Vec<json::Match<'a>>>,
     /// The functions given, or in a range given, whose end elfq doesn't
     /// know, each once, in the order given: elfq can't read their code, so
     /// nothing here counts them, and `symbols` doesn't list them.
@@ -102,14 +111,16 @@ struct RowJson<'a> {
 
 /// Writes what `retained SYMBOL... --json` writes about removing the items
 /// at `symbols`, as indexes into [`Binary::items`], each once and in the
-/// order given, all at once from the tree `retained`, and the functions it
-/// leaves out, at `left_out`.
+/// order given, all at once from the tree `retained`, the functions it
+/// leaves out, at `left_out`, and when patterns were given in place of
+/// SYMBOL, `patterns`, with the items they matched.
 ///
 /// [`Binary::items`]: crate::binary::Binary::items
 pub(in crate::commands) fn write_json(
     retained: &RetainedTree,
     symbols: &[usize],
     left_out: &[usize],
+    patterns: Option<&[PatternMatches]>,
     out: &mut dyn Write,
 ) -> Result<()> {
     let binary = retained.binary;
@@ -139,6 +150,14 @@ pub(in crate::commands) fn write_json(
                 kept_by_others: removal.is_kept_by_others(Node::Item(index)),
             })
             .collect(),
+        matches: patterns.map(|patterns| {
+            (patterns.iter())
+                .flat_map(|matched| {
+                    (matched.matches.iter())
+                        .map(|found| json::Match::new(binary, &matched.pattern, found))
+                })
+                .collect()
+        }),
         left_out: (left_out.iter())
             .map(|&index| json::Symbol::new(binary, Node::Item(index)))
             .collect(),

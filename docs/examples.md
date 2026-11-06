@@ -173,6 +173,31 @@ together": it goes only when both go. So the two panics cost 2813 bytes,
 though a run for each says 95 and 290; the note under the table counts
 the 2428 that go only together.
 
+A pattern asks what a whole module costs. `*` stands for any text, so
+`'core::fmt::*'` picks every item whose name, or a path that means the
+same, starts with `core::fmt::`, as `<u32 as core::fmt::Display>::fmt`
+counts as `core::fmt::Display::fmt`. The quotes keep the shell from
+reading the `*` as one of its own:
+
+```
+$ elfq testdata/bin/rust-cortex-m4.elf retained 'core::fmt::*'
+Removing the 3 items named core::fmt::* would save 2374 bytes:
+
+RETAINED   OWN  ITEM
+    2374   234  <u32 as core::fmt::Display>::fmt (through a pointer)
+    1940   614  <core::fmt::Formatter>::pad_integral, kept by fmt
+    1258  1258  core::str::count::do_count_chars, kept by pad_integral
+      68    68  <core::fmt::Formatter>::pad_integral::write_prefix, kept by pad_integral
+     200   200  .Lanon.93bf5a77af7a20bca9fbd99cda9bbf33.187, kept by fmt
+
+<u32 as core::fmt::Display>::fmt keeps the other 2, so removing it alone saves the same.
+
+<core::fmt::Formatter>::pad_integral and <core::fmt::Formatter>::pad_integral::write_prefix also call and jump through pointers, so what they reach may count elsewhere.
+```
+
+All of `core::fmt` in this firmware is `fmt` and what only it keeps: the
+2374 bytes that `retained fmt` gave.
+
 ## Does the code in fast memory use slow memory?
 
 The Cortex-M7 sample is laid out as on an NXP i.MX RT1176: ITCM for code at
@@ -984,12 +1009,16 @@ every key. With `jq`, this prints the five names, one per line:
 elfq testdata/bin/c-x86_64.elf callers log_msg --json | jq -r '.callers[].item.name'
 ```
 
-`retained` takes an address as SYMBOL, and several SYMBOLs at once, so
-`top`'s JSON can pick a set of items for it, such as every item of
-`core::fmt`, and ask what removing them all would save:
+With a pattern in place of SYMBOL, `retained`'s JSON has `matches`, which
+says how the pattern matched each item: by its `name`, only by the `end`
+of a longer path, or only through another of its names, an `alias`. The
+matches that aren't by name are the ones to check. In the Rust sample for
+x86-64, `'alloc::*'` matches five items of std's own `alloc` module by
+their ends, such as `std::alloc::rust_oom`, which `'::alloc::*'` leaves
+out; this prints their names:
 
 ```sh
-elfq testdata/bin/rust-cortex-m4.elf top --json | jq -r '(.items + .unreachable)[] | select(.name | contains("core::fmt::")) | .address' | xargs elfq testdata/bin/rust-cortex-m4.elf retained
+elfq testdata/bin/rust-x86_64-nodebug.elf retained 'alloc::*' --json | jq -r '.matches[] | select(.matched_by != "name") | .name'
 ```
 
 A SYMBOL that `retained` can't use stops it, with one error that lists

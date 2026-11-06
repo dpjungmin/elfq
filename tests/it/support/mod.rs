@@ -365,6 +365,37 @@ pub(crate) fn text_rows(args: &[&str]) -> Vec<String> {
         .collect()
 }
 
+/// Splits a command line into its arguments as a shell would, for the
+/// quotes that elfq puts around a name such as `'log(char const*)'`, and
+/// that a pattern such as `'uart_*'` needs: at runs of whitespace outside
+/// quotes, with what `'...'` or `"..."` holds kept as it is, and a `\`
+/// outside them keeping the character after it. It knows nothing else of
+/// the shell, such as variables, globs, or a `\` inside `"..."`, which the
+/// command lines that the tests split don't have.
+pub(crate) fn shell_words(line: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    // The word so far, once a character or a quote starts one, so that
+    // `''` is an empty word but whitespace between words is none.
+    let mut word: Option<String> = None;
+    let mut quote: Option<char> = None;
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        match quote {
+            Some(open) if c == open => quote = None,
+            Some(_) => word.get_or_insert_default().push(c),
+            None if c == '\'' || c == '"' => {
+                quote = Some(c);
+                word.get_or_insert_default();
+            }
+            None if c == '\\' => word.get_or_insert_default().extend(chars.next()),
+            None if c.is_whitespace() => words.extend(word.take()),
+            None => word.get_or_insert_default().push(c),
+        }
+    }
+    words.extend(word);
+    words
+}
+
 /// Runs `elfq SAMPLE ARGS` in this process, for the sample at `sample`.
 ///
 /// It returns what elfq printed on stdout, with the outcome that sets its

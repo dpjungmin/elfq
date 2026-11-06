@@ -167,15 +167,22 @@ pub(super) fn names_text(names: &[&str], all: bool) -> String {
     phrase(names, named(all))
 }
 
-/// How many SYMBOLs the row of an item that several of them keep together
-/// names before "and 5 more", unless `--all` asks for every one.
-const KEEPERS: usize = 3;
+/// How many names a short list names before "and 5 more", unless `--all`
+/// asks for every one: the SYMBOLs that the row of an item that several of
+/// them keep together needs, and in `retained`'s note on what patterns
+/// matched only through other names, an item's names that matched.
+const FEW: usize = 3;
+
+/// How many names a short list names: [`FEW`], or with `--all`, every one.
+fn few(all: bool) -> usize {
+    if all { usize::MAX } else { FEW }
+}
 
 /// The SYMBOLs that keep an item together, as its row names them: "a and
 /// b", "a, b and c", or for more than four, "a, b, c and 5 more" unless
 /// `all`.
 pub(super) fn keepers_text(names: &[&str], all: bool) -> String {
-    phrase(names, if all { usize::MAX } else { KEEPERS })
+    phrase(names, few(all))
 }
 
 /// How the notes of `why` and `retained` name the items they list: as the
@@ -185,6 +192,8 @@ pub(super) fn keepers_text(names: &[&str], all: bool) -> String {
 pub(super) struct Naming<'f> {
     /// How many names it names before "and 5 more".
     named: usize,
+    /// How many it names in a short list inside a note (see [`Naming::few`]).
+    few: usize,
     /// What it writes for each name, when not the name in full.
     shorten: Option<&'f dyn Fn(&str) -> String>,
 }
@@ -194,6 +203,7 @@ impl<'f> Naming<'f> {
     pub(super) fn of(all: bool) -> Naming<'static> {
         Naming {
             named: named(all),
+            few: few(all),
             shorten: None,
         }
     }
@@ -203,7 +213,19 @@ impl<'f> Naming<'f> {
     pub(super) fn first(shorten: &'f dyn Fn(&str) -> String) -> Naming<'f> {
         Naming {
             named: 1,
+            few: 1,
             shorten: Some(shorten),
+        }
+    }
+
+    /// The same naming for a short list inside a note, such as the names of
+    /// one of the items it lists: [`FEW`] names before "and 5 more", or
+    /// every one when it names every one, as with `--all`.
+    pub(super) fn few(&self) -> Naming<'f> {
+        Naming {
+            named: self.few,
+            few: self.few,
+            shorten: self.shorten,
         }
     }
 

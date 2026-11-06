@@ -553,3 +553,30 @@ fn the_quick_check_rules_out_names_without_the_patterns_words() {
     // A name whose words may join passes.
     assert!(may_match("*FrameRef*", "app::Frame<u8>Ref::fmt"));
 }
+
+#[test]
+fn with_case_ignored_a_pattern_is_written_as_the_file_writes_it() {
+    let binary = fixtures::functions(&["uart_putc", "UART_Init", "drv::Uart::read"]);
+    let names = Names::new(&binary);
+    let in_files_case = |typed| names.in_files_case(&Pattern::parse(typed).expect("a pattern"));
+    assert_eq!(in_files_case("UART_P*").as_deref(), Some("uart_p*"));
+    // As the first item that it matches writes it, in address order.
+    assert_eq!(in_files_case("Uart_*").as_deref(), Some("uart_*"));
+    // Each piece as the text that it matched writes it, after a leading
+    // `::`.
+    assert_eq!(in_files_case("::*_i*T").as_deref(), Some("::*_I*t"));
+    // And as an end of a path writes it.
+    assert_eq!(in_files_case("UART::R*").as_deref(), Some("Uart::r*"));
+    // `None` when it matches no item with case ignored either.
+    assert_eq!(in_files_case("spi_*"), None);
+}
+
+#[test]
+fn a_pattern_matches_a_name_by_its_texts() {
+    let pattern = |typed| Pattern::parse(typed).expect("a pattern");
+    assert!(pattern("__libc_start*").matches_name("__libc_start_main"));
+    assert!(pattern("fmt::*").matches_name("core::fmt::write"));
+    assert!(!pattern("::fmt::*").matches_name("core::fmt::write"));
+    // Case counts.
+    assert!(!pattern("__LIBC_*").matches_name("__libc_start_main"));
+}

@@ -15,28 +15,37 @@
 //! the answer's first line says so (see [`Symbol::lead_name`]).
 //!
 //! For `callers`, `callees` and `retained`, an argument can also be a range
-//! of memory in place of SYMBOL (see [`argument`]).
+//! of memory in place of SYMBOL (see [`argument`]). For `retained`, it can
+//! also be a pattern, such as `uart_*`, for every item it matches: SYMBOL
+//! with a `*` that stands for any text in it, when no item or import has
+//! it as its name, so that a full name with a `*` in it, as `<*const T as
+//! core::fmt::Debug>::fmt`, still finds its item (see
+//! [`Names::look_up_or_match`]).
 //!
 //! This file tells ranges from SYMBOL. `lookup.rs` holds `Names`, which
 //! finds what SYMBOL names and names items for the user in return,
 //! `not_found.rs` the error for SYMBOL that finds several items or none,
 //! in the words of every command, which `retained` adds to, and
 //! `similar.rs` the names that error suggests. `pattern.rs` holds
-//! [`Pattern`], such as `uart_*`, and the items that one matches
-//! ([`Names::matching`]), which only `debug matches` lists. Unit tests
-//! build a file of functions with `fixtures.rs`.
+//! [`Pattern`], such as `uart_*`, when SYMBOL is one, and the items that
+//! one matches ([`Names::matching`]), which `retained` takes in place of
+//! SYMBOL and `debug matches` lists, and `matched.rs` how an answer words
+//! what patterns matched. Unit tests build a file of functions with
+//! `fixtures.rs`.
 
 #[cfg(test)]
 mod fixtures;
 mod lookup;
+mod matched;
 mod not_found;
 mod pattern;
 mod similar;
 
 pub(super) use lookup::{Lookup, Names};
+pub(super) use matched::{PatternMatches, named_by_patterns, pattern_notes};
 #[cfg(feature = "tui")]
 pub(super) use not_found::USE_ONE;
-pub(super) use pattern::{Match, MatchedBy, Pattern};
+pub(super) use pattern::{LookupOrMatch, Match, MatchedBy, Pattern};
 #[cfg(feature = "tui")]
 pub(super) use similar::Needle;
 

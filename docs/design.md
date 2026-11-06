@@ -203,6 +203,7 @@ except `inlined`, which reads DWARF instead of machine code.
 | `elfq FILE callees RANGE...` | What do the code and data in these ranges of memory use outside them, such as code in ITCM that calls a function in flash? `callers RANGE...` asks the reverse. |
 | `elfq FILE callers RANGE... --from RANGE` | What in one range of memory uses these ranges, such as code in ITCM that uses data in DTCM? `callees RANGE... --to RANGE` asks what these ranges use in that one, and either takes SYMBOL in place of the ranges. |
 | `elfq FILE retained RANGE...` | What would removing everything in these ranges of memory, such as ITCM, save? The ranges mix with SYMBOLs, and `--range` still picks which bytes count. |
+| `elfq FILE retained PATTERN...` | What would removing every item that a pattern such as `'uart_*'` or `'core::fmt::*'` matches save? Patterns mix with SYMBOLs and ranges. |
 | `elfq FILE inlined [SYMBOL]` | Which inlined functions cost the most bytes across the binary, or inside SYMBOL? Needs DWARF. |
 | `elfq FILE browse [SYMBOL]` | What does SYMBOL's code do, line by line, where does each call and use lead, and what calls it? Opens in the terminal, follows the links that the other commands' answers name, and shows the answers of `callees`, `callers`, `reach`, `why` and `retained SYMBOL` in tabs, each with the command that prints it, and the retained bytes in each block of memory; a page's header says what `retained` and `why` say about the item, and `u` opens the item that keeps it; `/` finds text in a page's rows. A data object's page lists its contents as far as elfq reads them: a vector table's entries, named by exception, the pointers it holds, as `callees` lists them, with what the dynamic loader writes in a shared library, or the strings of an object that holds only strings, with the `objdump -s` command that prints its bytes. Without SYMBOL, it opens on where the program starts, as `reach` lists it, each start a link to its page. |
 | `elfq FILE diff NEW` | Do two builds of one program load the same bytes at the same addresses? If not, in which blocks of memory do the bytes differ, which sections changed size there, which functions and data objects moved to another block, are new or gone, changed size, or kept their size but changed, each with what keeps it, and which calls between blocks are new or gone? |
@@ -402,12 +403,10 @@ indented once: a name given twice, or an address typed two ways such as
 0x1 and 0x01, is listed once, so there may be fewer lines than the
 count. The list stops at 10 errors and says how many more, as other
 lists do (11 fit, since "and 1 more" would take a line too), and with
-`--all` it lists every one. Two hints are `retained`'s own, since it
-takes several SYMBOLs: a name that could mean several items says to use
-one or more of them, and a name with `*` in it that finds nothing says
-that elfq doesn't take patterns yet, unless elfq can say why no item has
-the name, or suggest one. `top --json` gives each item's address, which
-works as SYMBOL.
+`--all` it lists every one. One hint is `retained`'s own, since it takes
+several SYMBOLs: a name that could mean several items says to use one or
+more of them. `top --json` gives each item's address, which works as
+SYMBOL.
 
 A range in place of SYMBOL, written as `--range` takes it, stands for
 every item with a byte in it, found as `callers` finds the items of a
@@ -440,6 +439,80 @@ is named.
 A RANGE argument picks what goes; `--range` picks which bytes count, and
 the two combine: with `--range 0x20000000+256K`, `retained 0x0+256K`
 counts the 1028 bytes in DTCM that removing ITCM's code would save.
+
+A pattern in place of SYMBOL, such as `'uart_*'`, picks items by name, as
+a range picks them by address: it stands for every item it matches. `*`
+stands for any text, `::` included, but right after a type inside a C++
+name's parentheses it is a pointer, as in `log(char const*)`. An argument
+is a pattern only when it has a `*` that stands for any text and finds
+nothing as a name, so a name with `*` in it, such as `<*mut
+core::ffi::c_void as core::fmt::Debug>::fmt`, still finds its item. A
+pattern must match all of one of the texts of an item's name: the name
+itself, a path that means the same, as `app::Gain::run` for
+`app::Gain::run(short*, unsigned long)` and `core::fmt::Formatter::pad`
+for `<core::fmt::Formatter>::pad`, or the end of one after a `::`, as
+`'Gain::*'` matches `app::Gain::run(short*, unsigned long)` by
+`Gain::run(short*, unsigned long)`. A method in an impl block counts under
+its type, or under its trait when its type has no path, as `<u32 as
+core::fmt::Display>::fmt` counts as `core::fmt::Display::fmt`, so
+`'core::fmt::*'` leaves out
+`<std::panicking::panic_handler::FormatStringPayload as
+core::fmt::Display>::fmt`, which counts under its type, and `'*as
+core::fmt::*'` takes every impl of a `core::fmt` trait; class data such as
+a vtable counts as a member of its class, so `'Gain::*'` takes the vtable
+for `app::Gain` too; and a copy of a function, such as `crc32.part.0`, has
+the function's texts too. A pattern that starts with `::` matches only
+whole paths, from their first part, as `'::gimli::*'` does. Last, a
+pattern matches an item through another of its names, as `'CAN1_*'`
+matches `Default_Handler`, whose aliases include `CAN1_RX0_IRQHandler`,
+but never through a mangled symbol, which elfq never prints. Case counts,
+since C keeps `curl_*` and `Curl_*` apart. A pattern needs quotes, since
+shells expand `*`: zsh and fish refuse one that matches no file, and bash
+puts the names of any files it matches in its place.
+
+The items that a pattern matches come in address order, patterns mix with
+SYMBOLs, ranges and each other, and an item that two arguments find counts
+once. The first line names the patterns together, where the first of them
+was given, with how many items they match, and the SYMBOLs and ranges
+given with them, each where it was given: "Removing the 3 items named on_*
+would save 61 bytes:", or "Removing the 4 items named leaf_* or *_a and
+leaf_b". It counts the items instead, as "these 12 items", or names the
+one, for more than three patterns, or more than three parts to name. When
+the patterns match one item, they name it, with every pattern that matched
+it: "Removing on_button (the one item named on_b*) would save 31 bytes:".
+An item that two parts pick is named by each, as in "on_button (the one
+item named on_b*) and on_button", and when the arguments find one item,
+the answer is that item's. An item whose end elfq doesn't know is left
+out, as when it is named, but the first line counts it among the items
+that the patterns match, since the patterns took it: in
+`testdata/bin/c-x86_64.elf`, "the 8 items named _*" are _init, _fini and
+the 6 that the answer counts the bytes of.
+
+Two notes come first, since they are the matches to check. One, for each
+pattern that matched some items by their names and others only by the
+end of a longer path, says where those are, those under the most first,
+and that a leading `::` leaves them out: "5 of the 85 match only by the
+end of a longer path, under std; '::alloc::*' leaves them out." The
+other names the items that the patterns matched only through other
+names, each with the names that matched, up to 3, or 4 when that is all,
+or with `--all` every one: "__aeabi_f2d matches only through another of
+its names, __extendsfdf2.", or for several, "These match only through
+other names: __adddf3 (as __aeabi_dadd) and __aeabi_f2d (as
+__extendsfdf2)." With several patterns, the first note names its
+pattern, as in "alloc::* matches 5 of its 85".
+
+A pattern that matches nothing is an error, as a name that finds nothing
+is, with what it may mean: first a pattern like it that matches items,
+with how many, tried in this order: without the quotes that a script left
+on, as in "did you mean on_* (3 functions), without the quotes?"; in the
+file's case, as the first item that matches with case ignored writes it,
+"'on_*' (3 functions)" for `ON_*`; without a leading `::`; and with `*` in
+front, as "'*n_b*' (1 function)" for `n_b*`. Else it names up to five
+imports that it matches: a pattern doesn't pick them, since their code
+isn't in the file, and `retained` refuses their names too, but `why` and
+`callers` take them as SYMBOL. Else it names names like it, as for a name,
+which helps when a C++ name typed with a space before a pointer's `*` made
+it a pattern.
 
 With `--tree`, every tree, in every command, is drawn at most 9 levels
 below its top row, so names never start more than 27 columns into the tree
@@ -1043,8 +1116,9 @@ command but `browse`, which is for reading in a terminal and refuses
 its links, and `objdump --start-address` the instructions. The JSON has
 every item, site and chain, where the text shows only the largest items, the
 first sites and the nearest chains; every key is always there, `null` when
-it has no value; addresses are hex strings, as elfq prints them and SYMBOL
-takes them, and sizes are numbers. Each row of a list in the answer, such as
+it has no value, but for `retained`'s `matches`, there only for a pattern;
+addresses are hex strings, as elfq prints them and SYMBOL takes them, and
+sizes are numbers. Each row of a list in the answer, such as
 an item of `top` or a chain of `why`, is a line of its own, so that `grep`
 and `head` work on the JSON as on the text. Until 1.0 the JSON can change,
 and each release says how. An error is never JSON: it goes to stderr, with
@@ -1110,7 +1184,8 @@ found in it, and leaves its table of the largest items to `top --json`:
 
 | Key | Value |
 |---|---|
-| `symbols` | each SYMBOL's item, and for a range in place of SYMBOL, every item with a byte in it, in address order; in the order given, each once, with the keys below |
+| `symbols` | each SYMBOL's item, and for a range or a pattern in place of SYMBOL, every item with a byte in it or that it matches, in address order; in the order given, each once, with the keys below |
+| `matches` | there only when a pattern was given in place of SYMBOL, so that other answers keep their shape: each item that each pattern matched, in the order the patterns were given and each pattern's in address order, as an item with `pattern`, the pattern as typed, `matched_by`, how it matched, and `matched_as`, the text it matched, below; an item that two patterns matched has a row for each, a pattern given twice has its rows once, and an item in `left_out` has its rows too |
 | `left_out` | the items of the functions given, or in a range given, whose end elfq doesn't know, in the order given, each once: elfq can't read their code, so nothing else here counts them; `[]` when there are none |
 | `range` | the range that `--range` picked, or `null` |
 | `own` | the SYMBOLs' own bytes, or with `--range`, those in the range |
@@ -1120,6 +1195,13 @@ found in it, and leaves its table of the largest items to `top --json`:
 | `items` | the rows of the tree, below, for every item that goes, the SYMBOLs' own rows among them; a SYMBOL that nothing reaches has none, and with `--range`, neither has an item that keeps none of the range's bytes |
 | `shares` | what the items that go use that other code uses too, and so isn't counted, sorted by name; with `--range`, only items with bytes in it |
 | `indirect_calls` | how many calls and jumps in the items that go are through pointers set at run time |
+
+How a pattern matched an item, in `matched_by`, is the first of these that
+applies: `name`, by the item's name or a path that means the same; `end`,
+only by the end of a longer path, as `Gain::*` matches `app::Gain::run`;
+`alias`, only by another of the item's names. `matched_as` is the longest
+text of that kind that the pattern matched, and of those as long, the one
+that sorts first.
 
 Each of `symbols` also has:
 
@@ -1505,7 +1587,11 @@ in order. Its output is the first example under [Commands](#commands).
    `run` builds the graph. A SYMBOL given twice counts once. An argument
    that `symbol::argument` reads as a range, as it does for `callers`,
    stands for the items with a byte in it (`Item::is_in`), once
-   `check_holds_items` has checked that it holds one.
+   `check_holds_items` has checked that it holds one. An argument that
+   finds nothing as a name but has a `*` that stands for any text
+   (`Names::look_up_or_match`) stands for the items it matches
+   (`Names::matching`), which `symbol::named_by_patterns` names in the
+   first line and `symbol::pattern_notes` notes.
 5. **The graph.** `retained::run` has `graph::Graph::build` turn what
    `InstructionSet::scan` found in each function's code into references, or
    into unresolved calls. `Graph::build` then adds the pointers stored in
@@ -1688,16 +1774,18 @@ key typed into go to then takes under 0.1 s. The first takes up to 0.2 s
 in those libraries, and the first whose text names nothing takes about
 half a second, as it works out what to suggest.
 
-`retained` takes several SYMBOLs, and ranges of memory that stand for
-the items in them, and says what removing them at once would save, as
-text and as JSON, and lists in one error every argument that fails. Next
-for it, not yet planned: `*` patterns, such as `core::fmt::*`; the bytes
-that go in each block of memory, in one run, as browse's retained tab
-shows them; names from stdin or a file, once a list outgrows the command
-line; source files and crates; sets in shared libraries, once the
-functions they export count as places where the program starts; `why`
-for a set, and picking several items in browse; and the veneers and PLT
-stubs that lead only into the set, which no answer counts yet.
+`retained` takes several SYMBOLs, ranges of memory that stand for the
+items in them, and patterns such as `'core::fmt::*'` that stand for the
+items they match, and says what removing them at once would save, as
+text and as JSON, and lists in one error every argument that fails.
+Patterns in the other commands come next. Next for `retained`, not yet
+planned: the bytes that go in each block of memory, in one run, as
+browse's retained tab shows them; names from stdin or a file, once a list
+outgrows the command line; source files and crates; sets in shared
+libraries, once the functions they export count as places where the
+program starts; `why` for a set, and picking several items in browse; and
+the veneers and PLT stubs that lead only into the set, which no answer
+counts yet.
 
 Ideas for later, not yet planned: output that scripts and AI agents can
 read more easily, the functions that shared libraries export as roots,

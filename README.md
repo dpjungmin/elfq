@@ -21,6 +21,7 @@ elfq app.elf top --range 0x0+256K       # the same, counting only the first 256 
 elfq app.elf retained process_frame     # what removing process_frame would save
 elfq app.elf retained crc32 report      # what removing both at once would save
 elfq app.elf retained 0x0+256K          # what removing everything in the first 256 KiB would save
+elfq app.elf retained 'uart_*'          # what removing every item named uart_* would save
 elfq app.elf why crc_table              # what keeps crc_table in the file
 elfq app.elf inlined                    # which inlined functions take the most bytes
 elfq app.elf inlined main               # the inlined code in main
@@ -49,6 +50,10 @@ memory, such as a microcontroller's ITCM, with `--range START..END` or
 sections and their load images occupy. `retained` takes ranges in place
 of a symbol too, each standing for every item with a byte in it, so
 `retained 0x0+256K` says what removing all that is in ITCM would save.
+It also takes a pattern such as `'uart_*'` or `'core::fmt::*'`, where `*`
+stands for any text, for every item it matches. Quote a pattern: zsh and
+fish refuse a `*` that matches no file, and bash puts the names of any
+files it matches in its place.
 
 `callers` and `callees` take ranges in place of a symbol, and then list
 only what crosses their edge, such as code in ITCM that calls a function in
@@ -158,9 +163,12 @@ and `elfq --help` lists the commands.
   argument that fails. A range in place of SYMBOL stands for every item
   with a byte in it, so `elfq FILE.elf retained 0x0+256K` says what
   removing everything in ITCM would save; `--range` still picks which
-  bytes count. elfq doesn't take patterns yet, but SYMBOL can be an
-  address, so `top --json` can pick every item of a module:
-  `elfq FILE.elf top --json | jq -r '(.items + .unreachable)[] | select(.name | contains("core::fmt::")) | .address' | xargs elfq FILE.elf retained`.
+  bytes count. A quoted pattern in place of SYMBOL, such as
+  `'core::fmt::*'`, where `*` stands for any text, stands for every item
+  it matches, by its name, the end of a longer path or another of its
+  names; the notes say how many matched only by the end of a longer path,
+  and where, and which matched only through another name, and in
+  `--json`, `matches` says how each one matched.
 - `elfq FILE.elf callees 0x0+256K` lists what the code and data in that
   range use outside it, and `callers 0x0+256K` what uses them from
   outside; both exit 1 if anything does or might. `callees --to RANGE`
