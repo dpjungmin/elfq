@@ -369,8 +369,9 @@ mod tests {
                 // save, where it answers.
                 if let Some(index) = retained_index {
                     let left_out = [];
-                    let answer =
-                        json(&|out| retained::write_json(&retained_tree, &[index], &left_out, out));
+                    let answer = json(&|out| {
+                        retained::write_json(&retained_tree, &[index], &left_out, None, out)
+                    });
                     let reachable = answer["symbols"][0]["reachable"].as_bool().unwrap();
                     assert_eq!(keeping.unreached, !reachable, "{shown}");
                     let saved = reachable.then(|| answer["retained"].as_u64().unwrap());

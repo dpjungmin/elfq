@@ -6,8 +6,9 @@
 //! of one of the texts of the item's names, which
 //! [`names::for_each_pattern_text`] makes, and [`Names::matching`] gives
 //! the items that a pattern matches, each with how it matched and the text
-//! it matched as ([`Match`]). `elfq FILE debug matches PATTERN...` lists
-//! the matches.
+//! it matched as ([`Match`]). [`Names::look_up_or_match`] says when SYMBOL
+//! is a pattern, for `retained`, which takes one in its place, and `elfq
+//! FILE debug matches PATTERN...` lists the matches.
 //!
 //! # The rules, and why
 //!
@@ -52,7 +53,9 @@
 
 use serde::Serialize;
 
-use super::Names;
+use anyhow::Result;
+
+use super::{Lookup, Names, PatternMatches};
 use crate::binary::Item;
 use crate::binary::names::{self, TextKind};
 
@@ -122,6 +125,40 @@ impl Names<'_> {
             .filter_map(|(index, item)| pattern.match_item(index, item))
             .collect()
     }
+
+    /// What `query`, SYMBOL, finds in a command that takes a pattern in its
+    /// place: what [`Names::look_up`] finds, or when that is nothing and
+    /// `query` has a `*` that stands for any text (see [`Pattern::parse`]),
+    /// the items that it matches as a pattern. So a full name with a `*` in
+    /// it, as `<*const T as core::fmt::Debug>::fmt`, still finds its item,
+    /// and no SYMBOL that finds something changes what it finds.
+    pub(in crate::commands) fn look_up_or_match(&self, query: &str) -> Result<LookupOrMatch<'_>> {
+        let lookup = self.look_up(query)?;
+        let pattern = match lookup {
+            Lookup::NoName => Pattern::parse(query),
+            Lookup::One(_) | Lookup::Several(_) => None,
+        };
+        let Some(pattern) = pattern else {
+            return Ok(LookupOrMatch::Name(lookup));
+        };
+        let matches = self.matching(&pattern);
+        Ok(match matches.is_empty() {
+            true => LookupOrMatch::NoMatch(pattern),
+            false => LookupOrMatch::Pattern(PatternMatches { pattern, matches }),
+        })
+    }
+}
+
+/// What SYMBOL finds in a command that takes a pattern in its place (see
+/// [`Names::look_up_or_match`]).
+pub(in crate::commands) enum LookupOrMatch<'n> {
+    /// What it finds as a name: one item or import, several, or for a SYMBOL
+    /// that isn't a pattern, nothing.
+    Name(Lookup<'n>),
+    /// A pattern, with the items that it matches, one or more.
+    Pattern(PatternMatches),
+    /// A pattern that matches no item.
+    NoMatch(Pattern),
 }
 
 impl Pattern {
@@ -166,6 +203,16 @@ impl Pattern {
         &self.typed
     }
 
+    /// The other names of `item` that the pattern matches, as an item's
+    /// aliases list them, leaving out mangled symbols, which elfq never
+    /// prints: for an item that it matches only through them, the names
+    /// that it matched.
+    pub(super) fn matched_aliases<'i>(&self, item: &'i Item) -> Vec<&'i str> {
+        (self.matched_aliases_with_texts(item))
+            .map(|matched| matched.alias)
+            .collect()
+    }
+
     /// How the pattern matches the item at `index`, if it does: by a path
     /// of its name, else by an end of one, else by a text of another of its
     /// names that isn't a mangled symbol.
@@ -185,20 +232,29 @@ impl Pattern {
             return found(MatchedBy::End, text);
         }
         let mut longest = Longest::default();
-        for alias in &item.aliases {
-            let texts = self.longest_texts(alias);
-            let matched = [texts.path.text, texts.end.text];
-            // elfq never prints a mangled symbol, so a match by one would
-            // surprise. Telling one means demangling it, which takes longer
-            // than matching, so it comes last.
-            if matched.iter().all(Option::is_none) || names::is_mangled(alias) {
-                continue;
-            }
-            for text in matched.iter().flatten() {
+        for MatchedAlias { texts, .. } in self.matched_aliases_with_texts(item) {
+            for text in [texts.path.text, texts.end.text].iter().flatten() {
                 longest.offer(text);
             }
         }
         found(MatchedBy::Alias, longest.text?)
+    }
+
+    /// Each of `item`'s aliases that the pattern matches and that isn't a
+    /// mangled symbol, with the longest texts of it that the pattern
+    /// matches.
+    fn matched_aliases_with_texts<'i>(
+        &self,
+        item: &'i Item,
+    ) -> impl Iterator<Item = MatchedAlias<'i>> {
+        item.aliases.iter().filter_map(|alias| {
+            let texts = self.longest_texts(alias);
+            // elfq never prints a mangled symbol, so a match by one would
+            // surprise. Telling one means demangling it, which takes longer
+            // than matching, so it comes last.
+            let matched = texts.any() && !names::is_mangled(alias);
+            matched.then_some(MatchedAlias { alias, texts })
+        })
     }
 
     /// The longest texts of `name` that the pattern matches, of each kind.
@@ -219,8 +275,8 @@ impl Pattern {
             }
             match kind {
                 TextKind::Path => longest.path.offer(text),
-                TextKind::End if self.from_root => {}
-                TextKind::End => longest.end.offer(text),
+                TextKind::End { .. } if self.from_root => {}
+                TextKind::End { .. } => longest.end.offer(text),
             }
         });
         longest
@@ -306,6 +362,13 @@ impl QuickCheck {
     }
 }
 
+/// Another of an item's names that a pattern matches, with the longest
+/// texts of it that it matches.
+struct MatchedAlias<'i> {
+    alias: &'i str,
+    texts: LongestTexts,
+}
+
 /// The longest texts of a name that a pattern matches, of each kind.
 #[derive(Default)]
 struct LongestTexts {
@@ -313,6 +376,13 @@ struct LongestTexts {
     path: Longest,
     /// The longest text of the kind [`TextKind::End`].
     end: Longest,
+}
+
+impl LongestTexts {
+    /// Whether the pattern matched any text of the name.
+    fn any(&self) -> bool {
+        self.path.text.is_some() || self.end.text.is_some()
+    }
 }
 
 /// The longest of the texts offered, and of those as long, the one that

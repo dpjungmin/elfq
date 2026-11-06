@@ -1168,10 +1168,10 @@ fn the_largest_rows_of_several_include_symbols() {
 fn retained_lists_every_symbol_it_cant_use() {
     // In the order given, each with the error it gets alone: an address
     // that no item holds, one that isn't an address, an import, a name
-    // that no item has, with the name it may mean, and one with `*` in it,
-    // which gets a hint of retained's own. A SYMBOL whose error says what
-    // another's says, as for an address typed two ways or a name given
-    // twice, is listed once, but the first line counts every one.
+    // that no item has, with the name it may mean, and a pattern that
+    // matches no item. A SYMBOL whose error says what another's says, as
+    // for an address typed two ways or a name given twice, is listed once,
+    // but the first line counts every one.
     assert_output(
         &stderr(&[
             SAMPLE,
@@ -1182,7 +1182,7 @@ fn retained_lists_every_symbol_it_cant_use() {
             "0xZZ",
             "__libc_start_main",
             "proces_frame",
-            "crc*",
+            "nosuch_*",
             "frob",
             "frob",
         ]),
@@ -1192,7 +1192,7 @@ error: elfq can't use 8 of the 9 SYMBOLs:
   `0xZZ` is not a hexadecimal address: invalid digit found in string
   __libc_start_main is imported from a shared library, so its code isn't in this file
   no function or data object is named `proces_frame`; did you mean process_frame?
-  no function or data object is named `crc*`; elfq doesn't take patterns yet: give each name, or each address from top --json
+  no function or data object is named `nosuch_*`
   no function or data object is named `frob`
 ",
     );
@@ -1287,30 +1287,307 @@ error: `log` could mean 2 functions; use one on the left instead:
 }
 
 #[test]
-fn retained_says_that_elfq_doesnt_take_patterns_yet() {
-    const CPP: &str = "testdata/bin/cpp-x86_64.elf";
+fn a_pattern_stands_for_every_item_it_matches() {
+    // The rows of the three, under a first line that names the pattern,
+    // and without a note on what adds nothing, since no SYMBOL was named.
     assert_output(
-        &stderr(&[CPP, "retained", "app::*"]),
-        "error: no function or data object is named `app::*`; elfq doesn't take patterns yet: \
-         give each name, or each address from top --json\n",
+        &stdout(&[SAMPLE, "retained", "on_*"]),
+        "\
+Removing the 3 items named on_* would save 61 bytes:
+
+RETAINED  OWN  ITEM
+      31   19  on_button (through a pointer)
+       8   ~8  .rodata@0x2004, kept by on_button
+       4    4  button_presses, kept by on_button
+      15   11  on_timer (through a pointer)
+       4    4  timer_ticks, kept by on_timer
+      15   11  on_data (through a pointer)
+       4    4  data_events, kept by on_data
+
+Shared with other code, so not counted: log_msg.
+",
     );
-    // Other commands, which take one SYMBOL, keep their error.
+    // One that matches one item answers as for that item, with its name
+    // first.
+    assert_output(
+        &stdout(&[SAMPLE, "retained", "on_b*"]),
+        "\
+Removing on_button (the one item named on_b*) would save 31 bytes:
+
+RETAINED  OWN  ITEM
+      31   19  on_button (through a pointer)
+       8   ~8  .rodata@0x2004, kept by on_button
+       4    4  button_presses, kept by on_button
+
+Shared with other code, so not counted: log_msg.
+",
+    );
+    // A leading `::` matches only from the start of a name, and so leaves
+    // out the 5 items that `alloc::*` matches only by the end of a longer
+    // path, under std.
+    const RUST: &str = "testdata/bin/rust-x86_64-nodebug.elf";
+    let rooted = stdout(&[RUST, "retained", "::alloc::*"]);
+    assert!(
+        rooted.starts_with("Removing the 80 items named ::alloc::* would save 19225 bytes:\n"),
+        "{rooted}"
+    );
+    assert!(!rooted.contains("only by the end"), "{rooted}");
+    // The first line counts every item that a pattern matches, even one
+    // whose end elfq doesn't know, which the answer leaves out as it does
+    // when given by name: glibc's _init and _fini.
+    let answer = stdout(&[SAMPLE, "retained", "_*"]);
+    assert!(
+        answer.starts_with("Removing the 8 items named _* would save 3823 bytes:\n")
+            && answer.contains(
+                "\n\nNot counted, since elfq doesn't know where they end: _init and _fini.\n"
+            ),
+        "{answer}"
+    );
+    assert_output(
+        &stderr(&[SAMPLE, "retained", "_ini*"]),
+        "error: elfq doesn't know where _init ends, so it can't read its code\n",
+    );
+    assert!(stdout(&[SAMPLE, "retained", "_ini*", "main"]).starts_with(
+        "Removing _init (the one item named _ini*) and main would save 3597 bytes:\n"
+    ));
+    // So does the count of more parts than the first line names: the 8
+    // items named _*, main, report and crc32.
+    for args in [
+        ["_*", "ma*", "pro*", "rep*"],
+        ["_*", "main", "report", "crc32"],
+    ] {
+        let answer = stdout(&[&[SAMPLE, "retained"][..], &args].concat());
+        assert!(
+            answer.starts_with("Removing these 11 items would save 3823 bytes:\n"),
+            "{args:?}: {answer}"
+        );
+    }
+    // A shared library is refused, with the items named as the answer
+    // would name them.
+    assert_output(
+        &stderr(&[LIBRARY_SAMPLE, "retained", "process_*", "rep*"]),
+        "error: elfq can't yet tell what only the 4 items named process_* or rep* lead to in a \
+         shared library\n",
+    );
+}
+
+#[test]
+fn patterns_mix_with_symbols_ranges_and_each_other() {
+    // The first line names each part in the order given.
+    let answer = stdout(&[TCM_SAMPLE, "retained", "leaf_*", "count_nodes", "0x0..0xe0"]);
+    assert!(
+        answer.starts_with(
+            "Removing the 3 items named leaf_*, count_nodes and the 6 items in \
+             0x00000000..0x000000e0 (.itcm) would save 1342 bytes:\n"
+        ),
+        "{answer}"
+    );
+    // An item that two patterns match, or a pattern and a name, counts
+    // once; the patterns are named together.
+    assert_output(
+        &stdout(&[TCM_SAMPLE, "retained", "leaf_*", "*_a", "leaf_b"]),
+        "\
+Removing the 4 items named leaf_* or *_a and leaf_b would save 49 bytes:
+
+RETAINED  OWN  ITEM
+      25   25  frame_a
+       8    8  leaf_c
+       8    8  leaf_b
+       8    8  leaf_a
+",
+    );
+    // A pattern given twice is named once.
+    assert_output(
+        &stdout(&[TCM_SAMPLE, "retained", "leaf_*", "leaf_*"]),
+        &stdout(&[TCM_SAMPLE, "retained", "leaf_*"]),
+    );
+    // The one item that patterns match is named, with every pattern that
+    // matched it, and apart from the same item given by name.
+    assert!(
+        stdout(&[SAMPLE, "retained", "on_b*", "on_bu*", "on_but*", "on_butt*"]).starts_with(
+            "Removing on_button (the one item named on_b*, on_bu*, on_but* or on_butt*) would \
+             save 31 bytes:\n"
+        )
+    );
+    assert!(
+        stdout(&[SAMPLE, "retained", "on_b*", "on_button"]).starts_with(
+            "Removing on_button (the one item named on_b*) and on_button would save 31 bytes:\n"
+        )
+    );
+    // A pattern that matches nothing is an error, as a name that finds
+    // nothing is, among the others or alone.
+    assert_output(
+        &stderr(&[SAMPLE, "retained", "on_*", "nosuch_*"]),
+        "error: no function or data object is named `nosuch_*`\n",
+    );
+}
+
+#[test]
+fn retained_notes_the_matches_to_check() {
+    // Items that a pattern matched only by the end of a longer path, when
+    // it matched others by their names, as for a crate's name that is
+    // also a module's in std.
+    let answer = stdout(&[
+        "testdata/bin/rust-x86_64-nodebug.elf",
+        "retained",
+        "alloc::*",
+    ]);
+    assert!(
+        answer.starts_with("Removing the 85 items named alloc::* would save 19225 bytes:\n")
+            && answer.contains(
+                "\n\n5 of the 85 match only by the end of a longer path, under std; \
+                 '::alloc::*' leaves them out.\n\n"
+            ),
+        "{answer}"
+    );
+    // Items that matched only through another of their names, as a soft
+    // float routine and its EABI name.
+    const SOFTFLOAT: &str = "testdata/bin/c-softfloat-nodebug.elf";
+    assert_output(
+        &stdout(&[SOFTFLOAT, "retained", "*df2"]),
+        "\
+Removing the 4 items named *df2 would save 204 bytes:
+
+RETAINED  OWN  ITEM
+     122  122  __cmpdf2
+
+__aeabi_f2d matches only through another of its names, __extendsfdf2.
+
+Nothing reaches __aeabi_f2d, __gedf2 and __ledf2: the program never uses them, or elfq can't see how. The total counts their own 82 bytes.
+",
+    );
+    let answer = stdout(&[SOFTFLOAT, "retained", "*df2", "__aeabi_d*"]);
+    assert!(
+        answer.contains(
+            "\n\nThese match only through other names: __adddf3 (as __aeabi_dadd) and \
+             __aeabi_f2d (as __extendsfdf2).\n\n"
+        ),
+        "{answer}"
+    );
+    // The notes come when nothing reaches the items too.
+    assert_output(
+        &stdout(&[SOFTFLOAT, "retained", "__extendsf*", "__gedf*"]),
+        "\
+Nothing reaches __aeabi_f2d and __gedf2: the program never uses them, or elfq can't see how. Removing them would save their own 74 bytes.
+
+__aeabi_f2d matches only through another of its names, __extendsfdf2.
+",
+    );
+}
+
+#[test]
+fn a_name_with_a_star_in_it_is_a_name_first() {
+    // A Rust name with a pointer type in it finds its item, as it does in
+    // every command, though `*` would make it a pattern.
+    assert!(
+        stdout(&[
+            "testdata/bin/rust-x86_64-nodebug.elf",
+            "retained",
+            "<*mut core::ffi::c_void as core::fmt::Debug>::fmt",
+        ])
+        .starts_with(
+            "Removing <*mut core::ffi::c_void as core::fmt::Debug>::fmt would save 165 bytes:\n"
+        )
+    );
+    // So does a C++ name's end, with a pointer in its parameters.
+    assert!(
+        stdout(&[
+            "testdata/bin/cpp-x86_64.elf",
+            "retained",
+            "log(char const*)"
+        ])
+        .starts_with("Removing app::log(char const*) would save 80 bytes:\n")
+    );
+}
+
+#[test]
+fn retained_json_lists_how_each_pattern_matched() {
+    // Each pattern's matches, in the order the patterns were given, with
+    // how each matched; an item that two patterns matched has a row for
+    // each, but is once in `symbols`.
+    let answer = elfq_json(&[TCM_SAMPLE, "retained", "leaf_*", "*_a"]);
+    assert_eq!(
+        names(&answer["symbols"]),
+        ["leaf_c", "leaf_b", "leaf_a", "frame_a"]
+    );
+    let matches: Vec<(&str, &str, &str, &str)> = (answer["matches"].as_array().unwrap().iter())
+        .map(|found| {
+            (
+                found["pattern"].as_str().unwrap(),
+                found["name"].as_str().unwrap(),
+                found["matched_by"].as_str().unwrap(),
+                found["matched_as"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        matches,
+        [
+            ("leaf_*", "leaf_c", "name", "leaf_c"),
+            ("leaf_*", "leaf_b", "name", "leaf_b"),
+            ("leaf_*", "leaf_a", "name", "leaf_a"),
+            ("*_a", "frame_a", "name", "frame_a"),
+            ("*_a", "leaf_a", "name", "leaf_a"),
+        ]
+    );
+    let answer = elfq_json(&["testdata/bin/c-softfloat-nodebug.elf", "retained", "*df2"]);
+    assert_eq!(
+        answer["matches"][0],
+        json!({
+            "pattern": "*df2",
+            "name": "__aeabi_f2d",
+            "kind": "function",
+            "section": ".text",
+            "address": "0x8000344",
+            "size": 66,
+            "size_estimated": false,
+            "matched_by": "alias",
+            "matched_as": "__extendsfdf2"
+        })
+    );
+    // Without a pattern, there is no `matches`.
+    for args in [&["leaf_a"][..], &["leaf_a", "0x0..0xe0"]] {
+        let answer = elfq_json(&[&[TCM_SAMPLE, "retained"], args].concat());
+        assert_eq!(answer.get("matches"), None, "{answer}");
+    }
+    // An item whose end elfq doesn't know is in `left_out`, not in
+    // `symbols`, but `matches` has its row.
+    let answer = elfq_json(&[SAMPLE, "retained", "_*"]);
+    assert_eq!(names(&answer["left_out"]), ["_init", "_fini"]);
+    let mut matched: Vec<&str> = (answer["matches"].as_array().unwrap().iter())
+        .map(|found| found["name"].as_str().unwrap())
+        .collect();
+    let mut given = [names(&answer["symbols"]), names(&answer["left_out"])].concat();
+    matched.sort();
+    given.sort();
+    assert_eq!(matched, given);
+}
+
+#[test]
+fn a_pattern_that_matches_nothing_gets_the_error_of_a_name() {
+    assert_output(
+        &stderr(&[SAMPLE, "retained", "nosuch_*"]),
+        "error: no function or data object is named `nosuch_*`\n",
+    );
+    // Other commands, which take no patterns yet, keep their error.
+    const CPP: &str = "testdata/bin/cpp-x86_64.elf";
     assert_output(
         &stderr(&[CPP, "why", "app::*"]),
         "error: no function or data object is named `app::*`\n",
     );
-    // When elfq can say more, as for a mistyped C++ name with a pointer in
-    // it, or in a file without a symbol table, that comes in place of the
-    // hint.
-    assert_output(
-        &stderr(&[CPP, "retained", "log(char const *)"]),
-        "error: no function or data object is named `log(char const *)`; did you mean \
-         'log(char const*)'?\n",
-    );
+    // When elfq can say more, as in a file without a symbol table, it
+    // does.
     assert_output(
         &stderr(&["testdata/bin/c-x86_64-stripped.elf", "retained", "crc*"]),
         "error: no function or data object is named `crc*`; the file has no symbol table, so \
          elfq names its functions and data by address, like fn_0x10a0 and .rodata@0x2004\n",
+    );
+    // A mistyped C++ name with a space before a pointer's `*` is a
+    // pattern, which matches nothing, but gets the names like it.
+    assert_output(
+        &stderr(&[CPP, "retained", "log(char const *)"]),
+        "error: no function or data object is named `log(char const *)`; did you mean \
+         'log(char const*)'?\n",
     );
     // Only `*` makes a pattern.
     assert_output(
@@ -1713,7 +1990,7 @@ fn retained_refuses_a_shared_library_and_asks_for_a_symbol() {
     let error = stderr(&[SAMPLE, "retained"]);
     assert!(
         error.starts_with(
-            "error: the following required arguments were not provided:\n  <SYMBOL|RANGE>...\n"
+            "error: the following required arguments were not provided:\n  <SYMBOL|PATTERN|RANGE>...\n"
         ),
         "{error}"
     );

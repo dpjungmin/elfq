@@ -191,23 +191,15 @@ impl<'a> Names<'a> {
 
     /// The error for `query` when it finds nothing: no item or import has
     /// the name, then why, when elfq can tell (see [`Names::unnamed`] and
-    /// [`Names::inlined_reason`]), and the names that it may mean; or when
-    /// elfq can tell neither, `hint`, if there is one, as `retained` gives
-    /// for a pattern.
-    pub(in crate::commands) fn nothing_named(&self, query: &str, hint: Option<&str>) -> String {
+    /// [`Names::inlined_reason`]), and the names that it may mean.
+    pub(in crate::commands) fn nothing_named(&self, query: &str) -> String {
         let mut message = format!("no function or data object is named `{query}`");
-        let reason = self.unnamed().or_else(|| self.inlined_reason(query));
-        if let Some(reason) = &reason {
+        if let Some(reason) = self.unnamed().or_else(|| self.inlined_reason(query)) {
             message += &format!("; {reason}");
         }
         let similar = self.similar(query);
         if !similar.is_empty() {
             message += &format!("; did you mean {}?", similar.join(", "));
-        }
-        // A hint says less than a reason or a name to try, so it comes
-        // only without them.
-        if let (None, [], Some(hint)) = (&reason, &similar[..], hint) {
-            message += &format!("; {hint}");
         }
         message
     }

@@ -142,7 +142,7 @@ impl<'a> Names<'a> {
     pub(in crate::commands) fn find(&self, query: &str) -> Result<Symbol> {
         match self.look_up(query)? {
             Lookup::One(symbol) => Ok(symbol),
-            Lookup::NoName => bail!("{}", self.nothing_named(query, None)),
+            Lookup::NoName => bail!("{}", self.nothing_named(query)),
             Lookup::Several(nodes) => bail!("{}", self.choices(query, nodes, USE_ONE)),
         }
     }

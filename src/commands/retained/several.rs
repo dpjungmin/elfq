@@ -11,13 +11,16 @@
 //! removing all of them but one keeps it.
 //!
 //! The notes say which SYMBOLs add nothing, since the others keep them,
-//! and which one keeps all the rest. Both name only items that a SYMBOL
-//! named, since an item that only a range found is one the user didn't
-//! name, so neither shows when only ranges were given. Other notes say how
-//! many bytes go only when several SYMBOLs go, which SYMBOLs nothing
-//! reaches, whose own bytes the total counts, and which functions it left
-//! out, since elfq doesn't know where they end. Then come the notes that
-//! the answer about one SYMBOL has too.
+//! and which one keeps all the rest. The first names only items that a
+//! SYMBOL named, since an item that only a pattern or range found is one
+//! the user didn't name one by one. The second may name an item that a
+//! pattern found, since the user picked it by name, but neither shows when
+//! only ranges were given. Other notes say how many bytes go only when
+//! several SYMBOLs go, which SYMBOLs nothing reaches, whose own bytes the
+//! total counts, and which functions it left out, since elfq doesn't know
+//! where they end. Then come the notes that the answer about one SYMBOL
+//! has too. `run` puts the notes on how the patterns matched before them
+//! all.
 
 use std::collections::{HashMap, HashSet};
 
@@ -62,16 +65,17 @@ fn names<'f>(found: impl IntoIterator<Item = &'f Found>) -> Vec<&'f str> {
 /// Several SYMBOLs, and what removing them at once loses.
 struct Several<'f, 't, 'g, 'a> {
     retained: &'t RetainedTree<'g, 'a>,
-    /// The items given, by SYMBOL or in a range, each once, in the order
-    /// given (see [`Symbols::found`]).
+    /// The items given, by SYMBOL, pattern or range, each once, in the
+    /// order given (see [`Symbols::found`]).
     found: &'f [Found],
-    /// The functions given, by SYMBOL or in a range, whose end elfq
+    /// The functions given, by SYMBOL, pattern or range, whose end elfq
     /// doesn't know, which the answer leaves out, as indexes into
     /// [`Binary::items`].
     ///
     /// [`Binary::items`]: crate::binary::Binary::items
     left_out: &'f [usize],
-    /// Whether SYMBOLs were given, ranges in their place, or both.
+    /// What was given: SYMBOLs, patterns or ranges in their place, or a
+    /// mix (see [`Given`]).
     given: &'f Given,
     parts: Parts<'t, 'g, 'a>,
 }
@@ -79,9 +83,9 @@ struct Several<'f, 't, 'g, 'a> {
 impl Several<'_, '_, '_, '_> {
     /// The answer, with `all`, every row and every name in the notes, in
     /// the shape that `format` asks for. When nothing reaches any SYMBOL,
-    /// it says so, and what their own bytes are, and has no notes but the
-    /// one on the functions left out. When no row would show, it has no
-    /// table.
+    /// it says so, and what their own bytes are, and has no notes of its
+    /// own but the one on the functions left out. When no row would show,
+    /// it has no table.
     fn tree_answer(&self, all: bool, format: Format) -> TreeAnswer {
         let retained = self.retained;
         let naming = Naming::of(all);
@@ -96,7 +100,7 @@ impl Several<'_, '_, '_, '_> {
                 ..TreeAnswer::sentences(vec![sentence])
             };
         }
-        let subject = subject(retained.binary, &names(self.found), self.given, all);
+        let subject = subject(retained.binary, self.found, self.given, all);
         let saves = would_save(&subject, removal.retained(), range.as_deref());
         let notes = self.notes(&naming);
         let shown = self.shown(all);
@@ -194,7 +198,7 @@ impl Several<'_, '_, '_, '_> {
     /// about removing items (see [`Parts::notes`]).
     fn notes(&self, naming: &Naming) -> Vec<String> {
         let adds_nothing = match self.given {
-            Given::Symbols | Given::SymbolsAndRanges => {
+            Given::Symbols | Given::SymbolsAndRanges | Given::Patterns { .. } => {
                 (self.keeps_the_rest_note()).or_else(|| self.add_nothing_note(naming))
             }
             // The user named none of the items, so which of them the others
@@ -243,9 +247,9 @@ impl Several<'_, '_, '_, '_> {
     /// Names the SYMBOLs that the others keep, alone or together, so that
     /// the answer is the same without them, as `naming` names them, as in
     /// "filter_tap and __memcpy_veneer add nothing: other items named here
-    /// keep them." It names no item that only a range found: the user
-    /// didn't name it, so that it adds nothing is no news. `None` when
-    /// there are none.
+    /// keep them." It names no item that only a pattern or range found:
+    /// the user didn't name it, so that it adds nothing is no news. `None`
+    /// when there are none.
     fn add_nothing_note(&self, naming: &Naming) -> Option<String> {
         let removal = &self.parts.removal;
         let names = names(

@@ -196,7 +196,8 @@ impl<'a> Symbol<'a> {
     }
 }
 
-/// An item that a pattern matches, and how, as `debug matches` lists it.
+/// An item that a pattern matches, and how, as `retained --json` lists it
+/// under `matches`, and `debug matches` lists it.
 #[derive(Serialize)]
 pub(super) struct Match<'a> {
     /// The pattern as typed.

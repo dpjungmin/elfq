@@ -12,6 +12,7 @@ Examples:
   elfq app.elf top --range 0x0+256K       The same, counting only the first 256 KiB
   elfq app.elf retained process_frame     What removing process_frame would save
   elfq app.elf retained crc32 report      What removing both at once would save
+  elfq app.elf retained 'uart_*'          What removing every item named uart_* would save
   elfq app.elf why crc_table              What keeps crc_table in the file
   elfq app.elf inlined                    Which inlined functions take the most bytes
   elfq app.elf inlined main               The inlined code in main
@@ -27,6 +28,10 @@ Examples:
 
 The overview's table is the start of the one top shows; elfq help top
 explains it.
+
+In retained, SYMBOL can be a pattern such as 'uart_*', where * stands for
+any text, for every item it matches. Quote it, so that the shell passes it
+as typed.
 
 Tables have one row per line: short cells such as sizes, HOW and AT come
 first, and the name last. Each name after \"kept by\" or \"used by\" works
@@ -149,6 +154,15 @@ of those go, and not when any one of them goes alone. A name that could
 mean several items is an error, as with one SYMBOL: give each one you
 mean, or its address. A RANGE argument picks what goes; --range picks
 which bytes count.";
+
+/// What a pattern in place of SYMBOL takes, which `retained` says.
+/// docs/design.md has the rest of the rules.
+pub(super) const PATTERNS: &str = "\
+A pattern picks items by name, as a RANGE picks them by address: * stands
+for any text, :: included. It must match all of a name, or of its end after
+a ::, so 'Uart::*' takes drv::Uart::read, and the vtable for drv::Uart. One
+that starts with :: matches from the start only, as in '::gimli::*'. Case
+counts. Quote a pattern, so that the shell passes it as typed.";
 
 /// How `reach SYMBOL` differs, which `retained` ends with.
 pub(super) const RETAINED_REACH: &str = "\
