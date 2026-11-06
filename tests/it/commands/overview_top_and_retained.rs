@@ -11,27 +11,8 @@ use serde_json::{Value, json};
 use crate::support::elf::ElfBytes;
 use crate::support::{
     DEEP_SAMPLE, Exit, LIBRARY_SAMPLE, SAMPLE, TCM_SAMPLE, assert_output, elfq_json, names, run,
-    samples, stderr, stdout, text_rows,
+    samples, shell_words, stderr, stdout, text_rows,
 };
-
-/// Splits a command line into its arguments as a shell would, for the
-/// quotes that elfq puts around a name such as `'log(char const*)'`.
-fn shell_words(line: &str) -> Vec<String> {
-    let mut words = Vec::new();
-    let mut word = String::new();
-    let mut quoted = false;
-    let mut chars = line.chars();
-    while let Some(c) = chars.next() {
-        match c {
-            '\'' => quoted = !quoted,
-            '\\' if !quoted => word.extend(chars.next()),
-            ' ' if !quoted => words.push(std::mem::take(&mut word)),
-            _ => word.push(c),
-        }
-    }
-    words.push(word);
-    words
-}
 
 #[test]
 fn a_file_alone_gets_an_overview() {
