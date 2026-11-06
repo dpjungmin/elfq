@@ -1596,6 +1596,59 @@ fn a_pattern_that_matches_nothing_gets_the_error_of_a_name() {
     );
 }
 
+#[test]
+fn a_pattern_that_matches_nothing_gets_one_that_matches() {
+    // Each error names what to type, with how many it matches.
+    let error = |file: &str, pattern: &str| stderr(&[file, "retained", pattern]);
+    let named = |pattern: &str, may_mean: &str| {
+        format!(
+            "error: no function or data object is named `{pattern}`; did you mean {may_mean}?\n"
+        )
+    };
+    // In the file's case, as only case keeps it from matching.
+    assert_output(
+        &error(SAMPLE, "ON_*"),
+        &named("ON_*", "'on_*' (3 functions)"),
+    );
+    assert_output(
+        &error(SAMPLE, "Process_Frame*"),
+        &named("Process_Frame*", "'process_frame*' (1 function)"),
+    );
+    // Without the quotes that a script left on.
+    assert_output(
+        &error(SAMPLE, "'on_*'"),
+        &named("'on_*'", "on_* (3 functions), without the quotes"),
+    );
+    // Without a leading `::`, which leaves out the ends of longer paths.
+    const CPP: &str = "testdata/bin/cpp-x86_64.elf";
+    assert_output(
+        &error(CPP, "::Gain::*"),
+        &named("::Gain::*", "'Gain::*' (4 items)"),
+    );
+    // With `*` in front.
+    assert_output(
+        &error(SAMPLE, "n_b*"),
+        &named("n_b*", "'*n_b*' (1 function)"),
+    );
+    // Else, the imports it matches, which a pattern doesn't pick, since
+    // their code isn't in the file, though why and callers take their
+    // names as SYMBOL.
+    assert_output(
+        &error(SAMPLE, "_ITM_*"),
+        &named(
+            "_ITM_*",
+            "_ITM_deregisterTMCloneTable, _ITM_registerTMCloneTable",
+        ),
+    );
+    // Else, the names like it, as for a name that finds nothing, which
+    // a_pattern_that_matches_nothing_gets_the_error_of_a_name shows; here
+    // there are none.
+    assert_output(
+        &error(SAMPLE, "::n_b*"),
+        "error: no function or data object is named `::n_b*`\n",
+    );
+}
+
 /// The functions in the Cortex-M7 sample's ITCM, 0x0..0xe0, by name, in
 /// address order.
 const ITCM_FUNCTIONS: [&str; 6] = [

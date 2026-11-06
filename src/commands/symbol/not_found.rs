@@ -1,14 +1,16 @@
 //! The error for SYMBOL that finds several items or none: what to type
 //! for each of several, or why none has the name, as when the file has no
-//! symbol table or the compiler inlined every copy of the function.
+//! symbol table or the compiler inlined every copy of the function. For a
+//! pattern that matches no item, the error offers a pattern like it that
+//! matches some, as when only case keeps it from matching.
 
 use std::cell::OnceCell;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
-use super::Names;
 use super::lookup::add_index;
+use super::{Names, Pattern};
 use crate::binary::names;
 use crate::commands::checks::found_functions;
 use crate::commands::text;
@@ -193,15 +195,94 @@ impl<'a> Names<'a> {
     /// the name, then why, when elfq can tell (see [`Names::unnamed`] and
     /// [`Names::inlined_reason`]), and the names that it may mean.
     pub(in crate::commands) fn nothing_named(&self, query: &str) -> String {
+        self.not_found(query, &self.similar(query))
+    }
+
+    /// The error for `pattern` when it matches no item: as for a name that
+    /// finds nothing, but what it may mean is first a pattern like it that
+    /// matches items (see [`Names::pattern_fix`]); or else the imports that
+    /// it matches, which a pattern doesn't take, since their code isn't in
+    /// the file, though `why` and `callers` take their names as SYMBOL; or
+    /// else names like it, as for a C++ name typed with a space before a
+    /// pointer's `*`, which makes it a pattern.
+    pub(in crate::commands) fn nothing_matches(&self, pattern: &Pattern) -> String {
+        let typed = pattern.typed();
+        let may_mean = match self.pattern_fix(pattern) {
+            Some(fix) => vec![fix],
+            None => {
+                let imports = self.imports_matching(pattern);
+                match imports[..] {
+                    [] => self.similar(typed),
+                    _ => imports,
+                }
+            }
+        };
+        self.not_found(typed, &may_mean)
+    }
+
+    /// The error for `query` when nothing has the name or matches it: that
+    /// no item or import has the name, then why, when elfq can tell, and
+    /// what to type instead, `may_mean`, if there is any.
+    fn not_found(&self, query: &str, may_mean: &[String]) -> String {
         let mut message = format!("no function or data object is named `{query}`");
         if let Some(reason) = self.unnamed().or_else(|| self.inlined_reason(query)) {
             message += &format!("; {reason}");
         }
-        let similar = self.similar(query);
-        if !similar.is_empty() {
-            message += &format!("; did you mean {}?", similar.join(", "));
+        if !may_mean.is_empty() {
+            message += &format!("; did you mean {}?", may_mean.join(", "));
         }
         message
+    }
+
+    /// A pattern like `pattern`, which matches no item, that matches some,
+    /// as the error offers it, with how many it matches. The first that
+    /// matches of: the pattern without quotes around it, which the shell
+    /// takes off but a script may leave on, as "on_* (3 functions), without
+    /// the quotes"; in the file's case (see [`Names::in_files_case`]), as
+    /// "'uart_*' (7 items)"; without a leading `::`; and with `*` in front,
+    /// unless it starts with `*` or `::`. `None` when none of these matches.
+    fn pattern_fix(&self, pattern: &Pattern) -> Option<String> {
+        let typed = pattern.typed();
+        let unquoted = ['\'', '"']
+            .into_iter()
+            .find_map(|quote| typed.strip_prefix(quote)?.strip_suffix(quote));
+        if let Some(unquoted) = unquoted
+            && let Some(count) = self.matched_count(unquoted)
+        {
+            return Some(format!("{unquoted} ({count}), without the quotes"));
+        }
+        let with_star = !typed.starts_with('*') && !typed.starts_with("::");
+        let fixes = [
+            self.in_files_case(pattern),
+            typed.strip_prefix("::").map(str::to_string),
+            with_star.then(|| format!("*{typed}")),
+        ];
+        fixes.into_iter().flatten().find_map(|fix| {
+            let count = self.matched_count(&fix)?;
+            Some(format!("{} ({count})", text::shell_quote(&fix)))
+        })
+    }
+
+    /// How many items `typed`, as a pattern, matches, as the error counts
+    /// them: "7 items" or "3 functions". `None` when it isn't a pattern, or
+    /// matches none.
+    fn matched_count(&self, typed: &str) -> Option<String> {
+        let pattern = Pattern::parse(typed)?;
+        let nodes: Vec<Node> = (self.matching(&pattern).iter())
+            .map(|found| Node::Item(found.item))
+            .collect();
+        (!nodes.is_empty()).then(|| text::count_text(self.binary, &nodes))
+    }
+
+    /// The imports whose names `pattern` matches, the first five of them,
+    /// as the error names them.
+    fn imports_matching(&self, pattern: &Pattern) -> Vec<String> {
+        const NAMED: usize = 5;
+        (self.binary.imports.iter())
+            .filter(|import| pattern.matches_name(import))
+            .take(NAMED)
+            .map(|import| text::shell_quote(import))
+            .collect()
     }
 
     /// The error for `query` when it finds `nodes`, several things: that it

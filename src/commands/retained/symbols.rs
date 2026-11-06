@@ -20,7 +20,8 @@
 //! are those of every command, with a hint of `retained`'s own, since it
 //! takes several SYMBOLs: a name that could mean several items says to use
 //! one or more of them. A pattern that matches nothing gets the error for
-//! a name that finds nothing.
+//! a name that finds nothing, with a pattern like it that matches some,
+//! if there is one.
 
 use std::collections::{HashMap, HashSet};
 
@@ -447,7 +448,7 @@ impl Unusable<'_, '_> {
         let query = self.query;
         match &self.reason {
             Reason::NoName => names.nothing_named(query),
-            Reason::NoMatch(pattern) => names.nothing_named(pattern.typed()),
+            Reason::NoMatch(pattern) => names.nothing_matches(pattern),
             Reason::Several(nodes) => names.choices(query, nodes, USE_ONE_OR_MORE),
             Reason::Error(error) => error.clone(),
         }
