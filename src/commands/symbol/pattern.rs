@@ -7,8 +7,10 @@
 //! [`names::for_each_pattern_text`] makes, and [`Names::matching`] gives
 //! the items that a pattern matches, each with how it matched and the text
 //! it matched as ([`Match`]). [`Names::look_up_or_match`] says when SYMBOL
-//! is a pattern, for `retained`, which takes one in its place, and `elfq
-//! FILE debug matches PATTERN...` lists the matches.
+//! is a pattern: `retained`, `callers` and `callees` take every item that
+//! it matches, the other commands the one item that it matches (see
+//! [`Names::find`]), and `elfq FILE debug matches PATTERN...` lists the
+//! matches.
 //!
 //! # The rules, and why
 //!
@@ -143,12 +145,12 @@ impl Names<'_> {
             .collect()
     }
 
-    /// What `query`, SYMBOL, finds in a command that takes a pattern in its
-    /// place: what [`Names::look_up`] finds, or when that is nothing and
-    /// `query` has a `*` that stands for any text (see [`Pattern::parse`]),
-    /// the items that it matches as a pattern. So a full name with a `*` in
-    /// it, as `<*const T as core::fmt::Debug>::fmt`, still finds its item,
-    /// and no SYMBOL that finds something changes what it finds.
+    /// What `query`, SYMBOL, finds, in any command: what [`Names::look_up`]
+    /// finds, or when that is nothing and `query` has a `*` that stands for
+    /// any text (see [`Pattern::parse`]), the items that it matches as a
+    /// pattern. So a full name with a `*` in it, as `<*const T as
+    /// core::fmt::Debug>::fmt`, still finds its item, and no SYMBOL that
+    /// finds something changes what it finds.
     pub(in crate::commands) fn look_up_or_match(&self, query: &str) -> Result<LookupOrMatch<'_>> {
         let lookup = self.look_up(query)?;
         let pattern = match lookup {
@@ -166,7 +168,7 @@ impl Names<'_> {
     }
 }
 
-/// What SYMBOL finds in a command that takes a pattern in its place (see
+/// What SYMBOL finds, as a name or as a pattern (see
 /// [`Names::look_up_or_match`]).
 pub(in crate::commands) enum LookupOrMatch<'n> {
     /// What it finds as a name: one item or import, several, or for a SYMBOL

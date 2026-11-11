@@ -6,9 +6,9 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context, Result, bail};
 
-use super::Symbol;
 use super::not_found::{Inlined, USE_ONE};
 use super::similar::{Lowercase, Suggestable};
+use super::{LookupOrMatch, Symbol};
 use crate::binary::{Binary, ItemKind, hex_number, names};
 use crate::graph::Node;
 
@@ -137,16 +137,25 @@ impl<'a> Names<'a> {
             .or(largest)
     }
 
-    /// Finds the item or import that `query` names. When it could mean
-    /// several, or none, the error lists names to try instead.
+    /// Finds the item or import that `query` names, or when it finds nothing
+    /// as a name, the one item that it matches as a pattern, such as `on_b*`
+    /// (see [`Names::look_up_or_match`]), as the commands that take one
+    /// item, such as `why`, read SYMBOL. When it could mean several, or
+    /// none, the error lists what to type instead.
     pub(in crate::commands) fn find(&self, query: &str) -> Result<Symbol> {
-        let lookup = self.look_up(query)?;
-        self.one_or_error(query, lookup)
+        match self.look_up_or_match(query)? {
+            LookupOrMatch::Name(lookup) => self.one_or_error(query, lookup),
+            LookupOrMatch::Pattern(matched) => match matched.only_item() {
+                Some(symbol) => Ok(symbol),
+                None => bail!("{}", self.matches_several(&matched)),
+            },
+            LookupOrMatch::NoMatch(pattern) => bail!("{}", self.nothing_matches(&pattern)),
+        }
     }
 
     /// The one item or import that `query` finds, from `lookup`, what it
-    /// finds (see [`Names::look_up`]), or the error that [`Names::find`]
-    /// gives when it finds several or none.
+    /// finds as a name (see [`Names::look_up`]), or the error that
+    /// [`Names::find`] gives when a name finds several or none.
     pub(in crate::commands) fn one_or_error(&self, query: &str, lookup: Lookup) -> Result<Symbol> {
         match lookup {
             Lookup::One(symbol) => Ok(symbol),
@@ -155,12 +164,13 @@ impl<'a> Names<'a> {
         }
     }
 
-    /// What `query` finds, as [`Names::find`] finds it, before an error
-    /// words why it finds no one item or import, so that a command can
-    /// word that its own way, as `retained` does. An address that no item
-    /// holds, or that isn't one, is an error already. Unlike `find`, it
-    /// doesn't work out why a name finds several or none, which can take
-    /// seconds in a large file.
+    /// What `query` finds as a name or an address, without reading it as a
+    /// pattern (see [`Names::look_up_or_match`]), and before an error words
+    /// why it finds no one item or import, so that a command can word that
+    /// its own way, as `retained` does. An address that no item holds, or
+    /// that isn't one, is an error already. Unlike `find`, it doesn't work
+    /// out why a name finds several or none, which can take seconds in a
+    /// large file.
     pub(in crate::commands) fn look_up(&self, query: &str) -> Result<Lookup<'_>> {
         if let Some(address) = hex_number(query) {
             let address =
@@ -604,6 +614,40 @@ mod tests {
             .borrow_mut()
             .insert(stub, "kept".to_string());
         assert_eq!(names.row_name(stub), "kept");
+    }
+
+    #[test]
+    fn find_takes_the_one_item_that_a_pattern_matches() {
+        let binary =
+            fixtures::functions(&["on_button", "on_timer", "on_data", "operator*", "main"]);
+        let names = Names::new(&binary);
+        let find = |query: &str| match names.find(query) {
+            Ok(symbol) => Ok((symbol.node, symbol.lead_name(&binary))),
+            Err(error) => Err(error.to_string()),
+        };
+        let found = |index: usize, lead: &str| Ok((Node::Item(index), lead.to_string()));
+        // The first line says that the pattern found the item.
+        assert_eq!(
+            find("on_b*"),
+            found(0, "on_button (the one item named on_b*)")
+        );
+        // Several are an error that lists them, in address order.
+        assert_eq!(
+            find("on_*").unwrap_err(),
+            "`on_*` matches 3 functions; use one on the left instead:\n  on_button\n  on_timer\n  \
+             on_data"
+        );
+        // None gets the error for a name, with a pattern like it that
+        // matches.
+        assert_eq!(
+            find("On_*").unwrap_err(),
+            "no function or data object is named `On_*`; did you mean 'on_*' (3 functions)?"
+        );
+        // A name comes first, even with a `*` in it, and a name or an
+        // address finds what it found before.
+        assert_eq!(find("operator*"), found(3, "operator*"));
+        assert_eq!(find("on_data"), found(2, "on_data"));
+        assert_eq!(find("0x1004"), found(0, "on_button (which holds 0x1004)"));
     }
 
     #[test]

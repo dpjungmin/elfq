@@ -1,8 +1,9 @@
 //! `reach`: what SYMBOL runs and uses, by block of memory.
 //!
 //! The tests check it as rows, as a tree and with `--to`, as text and as
-//! JSON, also in files made by changing a sample's bytes, and where the
-//! program starts when there is no SYMBOL.
+//! JSON, for a pattern that matches one item, also in files made by
+//! changing a sample's bytes, and where the program starts when there is
+//! no SYMBOL.
 //!
 //! The checks after those run it in this process, on every item of the
 //! Cortex-M samples against `retained`, `callees` and the tree that
@@ -666,6 +667,51 @@ ADDRESS  SIZE  HOW  AT  ITEM
         &stderr(&[TCM_SAMPLE, "reach", "main", "--to", "0x40000000+4K"]),
         "error: --to 0x40000000..0x40001000 holds no functions or data, and no code in the file \
          calls or jumps there\n",
+    );
+}
+
+#[test]
+fn reach_takes_a_pattern_that_matches_one_item() {
+    // With --to too, the answer is the item's, and its first line says
+    // what the pattern found; across_commands/names.rs checks the answer
+    // without --to against the name's.
+    let dtcm = ["--to", "0x20000000+64K"];
+    let reach = |symbol: &str, json: &[&str]| {
+        crossing(&[&[TCM_SAMPLE, "reach", symbol][..], &dtcm, json].concat())
+    };
+    assert_output(
+        &reach("on_b*", &[]),
+        "\
+on_button (the one item named on_b*) reaches 3 data objects in 0x20000000..0x20010000 (.data and .bss), which take 0 bytes of code and 12 bytes of data:
+
+ADDRESS     SIZE  HOW   AT          ITEM
+0x20000430     4  uses  0x300002a4  button_presses, used by on_button
+0x2000044c     4  uses  0x3000066a  tx_head, used by platform_write
+0x20000448     4  uses  0x3000068e  tx_tail, used by platform_write
+",
+    );
+    assert_output(
+        &reach("on_b*", &["--json"]),
+        &reach("on_button", &["--json"]),
+    );
+    // Several are an error that lists them.
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "reach", "on_*"]),
+        "\
+error: `on_*` matches 3 functions; use one on the left instead:
+  on_timer
+  on_data
+  on_button
+",
+    );
+    // --to takes only ranges.
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "reach", "on_button", "--to", "on_*"]),
+        "\
+error: invalid value 'on_*' for '--to <RANGE>': expected START..END or START+SIZE, such as 0x0+256K
+
+For more information, try '--help'.
+",
     );
 }
 

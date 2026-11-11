@@ -471,11 +471,28 @@ fn the_help_says_which_commands_take_patterns() {
             "{help}"
         );
     }
+    // The other commands that take SYMBOL take a pattern that matches one
+    // item, and browse lists several in its go-to box.
+    for command in ["why", "reach", "inlined"] {
+        let help = stdout(&[SAMPLE, command, "--help"]);
+        let line = " or an address such as 0x1700. Or a pattern such as 'on_b*', where * stands \
+                    for any text, that matches one item";
+        let line = match command {
+            "inlined" => line.replace(" such as 0x1700", " in it"),
+            _ => line.to_string(),
+        };
+        assert!(help.contains(&line), "{line}\nisn't in:\n{help}");
+    }
+    let help = stdout(&[SAMPLE, "browse", "--help"]);
+    let line = " or an address in it. Or a pattern such as 'on_*', where * stands for any text: one \
+                that matches several lists them in the go-to box\n";
+    assert!(help.contains(line), "{line}\nisn't in:\n{help}");
     let help = stdout(&["--help"]);
-    assert!(
-        help.contains("\nIn retained, callers and callees, SYMBOL can be a pattern such as\n"),
-        "{help}"
-    );
+    let paragraph = "\n\nSYMBOL can be a pattern such as 'uart_*', where * stands for any text:\n\
+                     retained, callers and callees take every item it matches, and the other\n\
+                     commands one item it matches. Quote it, so that the shell passes it as\n\
+                     typed.\n\n";
+    assert!(help.contains(paragraph), "{paragraph}\nisn't in:\n{help}");
 }
 
 #[test]

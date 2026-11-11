@@ -2,7 +2,9 @@
 //! for each of several, or why none has the name, as when the file has no
 //! symbol table or the compiler inlined every copy of the function. For a
 //! pattern that matches no item, the error offers a pattern like it that
-//! matches some, as when only case keeps it from matching.
+//! matches some, as when only case keeps it from matching, and for one that
+//! matches several in a command that takes one item, such as `why`, it
+//! lists them as it lists what a name could mean.
 
 use std::cell::OnceCell;
 use std::cmp::Reverse;
@@ -10,7 +12,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use super::lookup::add_index;
-use super::{Names, Pattern};
+use super::{Names, Pattern, PatternMatches};
 use crate::binary::names;
 use crate::commands::checks::found_functions;
 use crate::commands::text;
@@ -294,10 +296,34 @@ impl<'a> Names<'a> {
         nodes: &[Node],
         instruction: &str,
     ) -> String {
-        let mut message = format!(
+        let first_line = format!(
             "`{query}` could mean {}; {instruction}:",
             text::count_text(self.binary, nodes)
         );
+        self.with_choice_lines(first_line, nodes)
+    }
+
+    /// The error for `matched`, a pattern that matches several items, in a
+    /// command that takes one item, such as `why`: how many it matches, and
+    /// what to type for each, in address order, as the error for a name
+    /// that could mean several lists them (see [`Names::choices`]).
+    pub(super) fn matches_several(&self, matched: &PatternMatches) -> String {
+        let nodes: Vec<Node> = (matched.matches.iter())
+            .map(|found| Node::Item(found.item))
+            .collect();
+        let first_line = format!(
+            "`{}` matches {}; {USE_ONE}:",
+            matched.pattern.typed(),
+            text::count_text(self.binary, &nodes)
+        );
+        self.with_choice_lines(first_line, &nodes)
+    }
+
+    /// An error that lists `nodes`: `first_line`, then the lines that say
+    /// what to type for each (see [`Names::choice_lines`]), indented under
+    /// it.
+    fn with_choice_lines(&self, first_line: String, nodes: &[Node]) -> String {
+        let mut message = first_line;
         for line in self.choice_lines(nodes) {
             message += &format!("\n  {line}");
         }
@@ -344,9 +370,10 @@ impl<'a> Names<'a> {
 }
 
 /// What the error for SYMBOL that finds several things says to do, in
-/// every command but `retained`, which takes several SYMBOLs. Browse's
-/// go-to box takes it off the error's first line, since it lists the things
-/// in its rows.
+/// every command but `retained`, which takes several SYMBOLs, and the error
+/// for a pattern that matches several items in a command that takes one.
+/// Browse's go-to box takes it off the error's first line, since it lists
+/// the things in its rows.
 pub(in crate::commands) const USE_ONE: &str = "use one on the left instead";
 
 impl Inlined {
@@ -377,5 +404,39 @@ impl Inlined {
             [function] => Some(function),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::symbol::fixtures;
+
+    #[test]
+    fn a_pattern_that_matches_several_items_lists_them_in_address_order() {
+        let error = |functions: &[String], typed: &str| {
+            let binary = fixtures::functions(functions);
+            let names = Names::new(&binary);
+            let pattern = Pattern::parse(typed).unwrap();
+            let matches = names.matching(&pattern);
+            names.matches_several(&PatternMatches { pattern, matches })
+        };
+        let functions = ["on_timer", "on_data", "main", "on_button"].map(String::from);
+        assert_eq!(
+            error(&functions, "on_*"),
+            "`on_*` matches 3 functions; use one on the left instead:\n  on_timer\n  on_data\n  \
+             on_button"
+        );
+        // As for a name that could mean several, the first ten, then how
+        // many more.
+        let functions: Vec<String> = (1..=12).map(|number| format!("irq{number}")).collect();
+        let error = error(&functions, "irq*");
+        let lines: Vec<&str> = error.lines().collect();
+        assert_eq!(
+            lines[0],
+            "`irq*` matches 12 functions; use one on the left instead:"
+        );
+        assert_eq!(lines[1..3], ["  irq1", "  irq2"]);
+        assert_eq!(lines[10..], ["  irq10", "  and 2 more"]);
     }
 }

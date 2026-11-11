@@ -3,7 +3,9 @@
 //! holds a typed address, then what the text finds as SYMBOL (a name, or
 //! the end of one), then every other item or import with a name that has
 //! the text, ignoring case, largest first. An import that has a PLT stub
-//! is listed as the stub, whose page is the import's.
+//! is listed as the stub, whose page is the import's. A pattern, such as
+//! `on_*`, lists the items that it matches instead, largest first, as the
+//! commands read SYMBOL; one that matches none is read as part of a name.
 //!
 //! [`Listed`] works out the rows for the text typed, and when there are
 //! none, why, in the CLI's words; [`Picker`] keeps them while the text
@@ -15,6 +17,7 @@
 use std::cmp::Reverse;
 use std::collections::HashSet;
 
+use anyhow::anyhow;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Style, Stylize};
@@ -24,7 +27,7 @@ use ratatui::widgets::{HighlightSpacing, Row, Table};
 use super::{Cursor, FittedRows, cut, wrap};
 use crate::binary::{Binary, ItemKind, hex_number};
 use crate::commands::browse::{keys::Action, session::Session};
-use crate::commands::symbol::{Lookup, Needle, USE_ONE};
+use crate::commands::symbol::{Lookup, LookupOrMatch, Needle, PatternMatches, Symbol, USE_ONE};
 use crate::commands::text;
 use crate::graph::Node;
 
@@ -40,7 +43,9 @@ pub(in crate::commands::browse) struct Found {
     /// The address typed, when the item holds it.
     pub(in crate::commands::browse) at: Option<u64>,
     /// For the item that the text finds as SYMBOL, its name as the CLI's
-    /// answer gives it: "Default_Handler (also named NMI_Handler)".
+    /// answer gives it: "Default_Handler (also named NMI_Handler)", or for
+    /// a pattern that matches only it, "on_button (the one item named
+    /// on_b*)".
     pub(in crate::commands::browse) lead: Option<String>,
 }
 
@@ -67,7 +72,8 @@ pub(in crate::commands::browse) struct Picker {
 struct Listed {
     /// The rows, at most [`MOST`] of them.
     rows: Vec<Found>,
-    /// How many more items and imports have the text than the box lists.
+    /// How many more items and imports the text finds than the box lists:
+    /// those whose names have it, or that it matches as a pattern.
     more: usize,
     /// Why no item has the text, in the CLI's words, when the box lists no
     /// row and the note over the rows doesn't say so already.
@@ -315,14 +321,22 @@ impl Picker {
 impl Listed {
     /// The rows for `text`, which isn't empty, and when there are none,
     /// why, unless `explained` says that the note over them says so. The
-    /// text is looked up once, as SYMBOL, for the rows that it finds that
-    /// way and for the error.
+    /// text is looked up once, as SYMBOL, as a name or as a pattern, for
+    /// the rows that it finds that way and for the error.
     fn typed(session: &Session, text: &str, explained: Explained) -> Listed {
         let names = &session.names;
-        match names.look_up(text) {
-            Ok(lookup) => {
+        match names.look_up_or_match(text) {
+            Ok(LookupOrMatch::Name(lookup)) => {
                 let listed = Listed::named(session, text, &lookup);
                 listed.or_error(explained, || names.one_or_error(text, lookup).err())
+            }
+            Ok(LookupOrMatch::Pattern(matched)) => Listed::matched(session, &matched),
+            // A pattern that matches no item can still be part of a name, as
+            // `Reading*` is of `app::sort_readings(app::Reading*, unsigned
+            // long)`, so that typing a `*` takes away no row.
+            Ok(LookupOrMatch::NoMatch(pattern)) => {
+                let listed = Listed::named(session, text, &Lookup::NoName);
+                listed.or_error(explained, || Some(anyhow!(names.nothing_matches(&pattern))))
             }
             // An address that no item holds, or that isn't one, finds no
             // item as SYMBOL, but names can still have the text.
@@ -342,12 +356,11 @@ impl Listed {
     fn named(session: &Session, text: &str, lookup: &Lookup) -> Listed {
         let binary = session.binary;
         let first: Vec<Found> = match lookup {
-            Lookup::One(symbol) => vec![Found {
-                node: symbol.node,
+            Lookup::One(symbol) => {
                 // The item holds the address typed, if one was.
-                at: hex_number(text).and_then(Result::ok),
-                lead: Some(symbol.lead_name(binary)),
-            }],
+                let at = hex_number(text).and_then(Result::ok);
+                vec![Found::symbol(binary, symbol, at)]
+            }
             Lookup::Several(nodes) => nodes.iter().map(|&node| Found::plain(node)).collect(),
             Lookup::NoName => Vec::new(),
         };
@@ -363,6 +376,28 @@ impl Listed {
             .filter(|&node| session.page_node(node) == node)
             .collect();
         keep_largest(binary, first, others)
+    }
+
+    /// The rows for `matched`, a pattern that matches items: those items,
+    /// largest first, as many as the box has room for. The one item that a
+    /// pattern matches alone is what it finds as SYMBOL, and its row names
+    /// it as the CLI's answer does, as in "on_button (the one item named
+    /// on_b*)", which the header of the page that Enter opens says too.
+    fn matched(session: &Session, matched: &PatternMatches) -> Listed {
+        let binary = session.binary;
+        match matched.only_item() {
+            Some(symbol) => Listed {
+                rows: vec![Found::symbol(binary, &symbol, None)],
+                more: 0,
+                nothing: None,
+            },
+            None => {
+                let items = (matched.matches.iter())
+                    .map(|found| Node::Item(found.item))
+                    .collect();
+                keep_largest(binary, Vec::new(), items)
+            }
+        }
     }
 
     /// These rows, and when there are none, why, in the first line of the
@@ -412,6 +447,17 @@ fn keep_largest(binary: &Binary, first: Vec<Found>, mut others: Vec<Node>) -> Li
 }
 
 impl Found {
+    /// The row of `symbol`, what the text typed finds as SYMBOL, which names
+    /// its item or import as the CLI's answer does, with `at`, the address
+    /// typed, when one was.
+    fn symbol(binary: &Binary, symbol: &Symbol, at: Option<u64>) -> Found {
+        Found {
+            node: symbol.node,
+            at,
+            lead: Some(symbol.lead_name(binary)),
+        }
+    }
+
     /// The row of `node`, with no address typed and nothing after its
     /// name.
     fn plain(node: Node) -> Found {
@@ -458,6 +504,7 @@ mod tests {
     use super::super::samples;
     use super::*;
     use crate::binary::Binary;
+    use crate::commands::symbol::Pattern;
 
     #[test]
     fn a_box_opened_with_the_error_for_symbol_doesnt_work_it_out_again() {
@@ -479,6 +526,68 @@ mod tests {
         opened.type_char(None);
         opened.catch_up(&session);
         assert_eq!(opened.listed.nothing, None);
+    }
+
+    #[test]
+    fn a_pattern_lists_the_largest_of_the_items_that_it_matches() {
+        for path in samples() {
+            let binary = Binary::load(&path).unwrap();
+            let session = Session::new(&path, &binary).unwrap();
+            let file = path.display();
+            for text in ["*", "_*", "*_*", "main*", "*.*"] {
+                let pattern = Pattern::parse(text).unwrap();
+                let matched: Vec<Node> = (session.names.matching(&pattern).iter())
+                    .map(|found| Node::Item(found.item))
+                    .collect();
+                if matched.is_empty() {
+                    // Then the text is read as part of a name.
+                    continue;
+                }
+                let listed = Picker::new(&session, text).listed;
+                // At most as many rows as the box lists, and how many more.
+                assert!(listed.rows.len() <= MOST, "{file}, {text}");
+                assert_eq!(
+                    listed.rows.len() + listed.more,
+                    matched.len(),
+                    "{file}, {text}"
+                );
+                // Each is a match, largest first, and no match left out is
+                // larger than the smallest listed.
+                let sizes: Vec<u64> = (listed.rows.iter())
+                    .map(|found| found.node.size(&binary))
+                    .collect();
+                assert!(sizes.is_sorted_by(|a, b| a >= b), "{file}, {text}");
+                let rows: HashSet<Node> = listed.rows.iter().map(|found| found.node).collect();
+                assert!(
+                    rows.iter().all(|node| matched.contains(node)),
+                    "{file}, {text}"
+                );
+                let smallest = sizes.last().copied().unwrap_or(0);
+                let left_out = matched.iter().filter(|node| !rows.contains(node));
+                assert!(
+                    left_out
+                        .map(|node| node.size(&binary))
+                        .all(|size| size <= smallest),
+                    "{file}, {text}"
+                );
+                // The one item that it matches alone is named as SYMBOL's
+                // answer names it.
+                let leads: Vec<Option<&str>> = (listed.rows.iter())
+                    .map(|found| found.lead.as_deref())
+                    .collect();
+                let one_item = match matched[..] {
+                    [only] => Some(format!(
+                        "{} (the one item named {text})",
+                        only.name(&binary)
+                    )),
+                    _ => None,
+                };
+                match one_item {
+                    Some(lead) => assert_eq!(leads, [Some(lead.as_str())], "{file}"),
+                    None => assert!(leads.iter().all(Option::is_none), "{file}, {text}"),
+                }
+            }
+        }
     }
 
     #[test]

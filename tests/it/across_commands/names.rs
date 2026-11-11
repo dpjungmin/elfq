@@ -1,9 +1,10 @@
 //! The names that the commands print and take.
 //!
-//! The tests check what SYMBOL gave when it isn't the item's name, Rust
-//! and C++ names made readable and found by their short forms, and the
-//! names of data that no symbol names. Finding what SYMBOL means, in the
-//! library, is tested in library/symbol.rs.
+//! The tests check what SYMBOL gave when it isn't the item's name, as a
+//! pattern that matches one item, Rust and C++ names made readable and
+//! found by their short forms, and the names of data that no symbol names.
+//! Finding what SYMBOL means, in the library, is tested in
+//! library/symbol.rs.
 
 use crate::support::{SAMPLE, TCM_SAMPLE, assert_output, crossing, stderr, stdout};
 
@@ -53,6 +54,58 @@ fn the_first_line_says_what_symbol_gave_when_it_isnt_the_name() {
         first_line(&[TCM_SAMPLE, "callers", "0x14", "report"]),
         "crc32 (which holds 0x14) and report are used by 2 functions outside them:"
     );
+}
+
+#[test]
+fn a_pattern_that_matches_one_item_answers_as_its_name() {
+    // why, reach and inlined give the item's answer, whose first line says
+    // what the pattern found, and its JSON byte for byte.
+    let m4 = "testdata/bin/c-cortex-m4.elf";
+    for (sample, command, pattern, name, first_line) in [
+        (
+            TCM_SAMPLE,
+            "why",
+            "on_b*",
+            "on_button",
+            "on_button (the one item named on_b*) is used by main, through this chain:",
+        ),
+        (
+            TCM_SAMPLE,
+            "reach",
+            "on_b*",
+            "on_button",
+            "on_button (the one item named on_b*) and the 8 items it reaches take 362 bytes of \
+             code and 4116 bytes of data:",
+        ),
+        (
+            SAMPLE,
+            "inlined",
+            "process_f*",
+            "process_frame",
+            "Of the 532 bytes of process_frame (the one item named process_f*), 238 are inlined \
+             copies of 3 functions:",
+        ),
+        // Unlike retained, they add no note on an item that the pattern
+        // matched only through another of its names.
+        (
+            m4,
+            "why",
+            "HardF*",
+            "Default_Handler",
+            "Default_Handler (the one item named HardF*) is in the vector table: the processor \
+             runs it on an interrupt or exception.",
+        ),
+    ] {
+        let by_pattern = stdout(&[sample, command, pattern]);
+        let by_name = stdout(&[sample, command, name]);
+        let (first, rest) = by_pattern.split_once('\n').unwrap();
+        assert_eq!(first, first_line);
+        assert_output(rest, by_name.split_once('\n').unwrap().1);
+        assert_output(
+            &stdout(&[sample, command, pattern, "--json"]),
+            &stdout(&[sample, command, name, "--json"]),
+        );
+    }
 }
 
 #[test]

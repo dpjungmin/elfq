@@ -1,11 +1,12 @@
 //! `why`: the chains from the roots that keep SYMBOL.
 //!
-//! The tests check them as text and as JSON, where they start, and what
-//! `why` says when nothing reaches SYMBOL.
+//! The tests check them as text and as JSON, where they start, what
+//! `why` says when nothing reaches SYMBOL, and for a pattern, the one
+//! item it matches and the errors for several or none.
 
 use serde_json::{Value, json};
 
-use crate::support::{SAMPLE, assert_output, elfq_json, names, stdout};
+use crate::support::{SAMPLE, TCM_SAMPLE, assert_output, elfq_json, names, stderr, stdout};
 
 #[test]
 fn why_shows_the_chains_that_keep_an_item() {
@@ -162,6 +163,66 @@ fn why_says_when_nothing_reaches_an_item() {
         &stdout(&[SAMPLE, "why", ".rodata@0x2056"]),
         "Nothing reaches .rodata@0x2056: the program never uses it, or elfq can't see how.\n\
          debug_dump uses it, but nothing reaches debug_dump either.\n",
+    );
+}
+
+#[test]
+fn why_takes_a_pattern_that_matches_one_item() {
+    // The answer is the item's, and its first line says what the pattern
+    // found; across_commands/names.rs checks the rest against the name's.
+    assert_output(
+        &stdout(&[TCM_SAMPLE, "why", "on_b*"]),
+        "\
+on_button (the one item named on_b*) is used by main, through this chain:
+
+HOW            ITEM
+entry point    Reset_Handler
+call           main
+address taken  on_button
+
+Removing main would remove on_button too.
+",
+    );
+    // Several are an error that lists them in address order, as the error
+    // for a name that could mean several lists what it could mean.
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "why", "on_*"]),
+        "\
+error: `on_*` matches 3 functions; use one on the left instead:
+  on_timer
+  on_data
+  on_button
+",
+    );
+    // None gets the error that retained gives, with a pattern like it that
+    // matches, which the error then lists.
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "why", "On_*"]),
+        "error: no function or data object is named `On_*`; did you mean 'on_*' (3 functions)?\n",
+    );
+    const CPP: &str = "testdata/bin/cpp-x86_64.elf";
+    assert_output(
+        &stderr(&[CPP, "why", "Reading*"]),
+        "error: no function or data object is named `Reading*`; did you mean '*Reading*' (2 \
+         functions)?\n",
+    );
+    assert_output(
+        &stderr(&[CPP, "why", "*Reading*"]),
+        "\
+error: `*Reading*` matches 2 functions; use one on the left instead:
+  'operator<'    app::operator<(app::Reading const&, app::Reading const&)
+  sort_readings  app::sort_readings(app::Reading*, unsigned long)
+",
+    );
+    // A name comes first, even with a `*` in it.
+    let why = stdout(&[
+        "testdata/bin/rust-x86_64-nodebug.elf",
+        "why",
+        "<*mut core::ffi::c_void as core::fmt::Debug>::fmt",
+    ]);
+    assert!(
+        why.starts_with("<*mut core::ffi::c_void as core::fmt::Debug>::fmt is used by "),
+        "{why}"
     );
 }
 

@@ -205,7 +205,9 @@ pub(crate) struct RetainedArgs {
 #[derive(Debug, Args)]
 pub(crate) struct WhyArgs {
     /// A function or data object: its name, the end of its name
-    /// (process_frame for app::process_frame), or an address such as 0x1700
+    /// (process_frame for app::process_frame), or an address such as 0x1700.
+    /// Or a pattern such as 'on_b*', where * stands for any text, that
+    /// matches one item
     pub(crate) symbol: String,
     /// Show the chains through every item that keeps SYMBOL, not only the
     /// 10 nearest
@@ -260,8 +262,9 @@ pub(crate) struct CalleesArgs {
 pub(crate) struct ReachArgs {
     /// A function or data object: its name, the end of its name
     /// (process_frame for app::process_frame), or an address such as 0x1700.
-    /// Without it, reach lists where the program starts, and what each
-    /// start reaches
+    /// Or a pattern such as 'on_b*', where * stands for any text, that
+    /// matches one item. Without it, reach lists where the program starts,
+    /// and what each start reaches
     pub(crate) symbol: Option<String>,
     /// List only what SYMBOL reaches in this range of memory, START..END or
     /// START+SIZE; give it again for more
@@ -278,7 +281,9 @@ pub(crate) struct ReachArgs {
 #[derive(Debug, Args)]
 pub(crate) struct BrowseArgs {
     /// The function, data object or import to open first: its name, the
-    /// end of its name, or an address in it
+    /// end of its name, or an address in it. Or a pattern such as 'on_*',
+    /// where * stands for any text: one that matches several lists them in
+    /// the go-to box
     pub(crate) symbol: Option<String>,
 }
 
@@ -303,7 +308,8 @@ pub(crate) struct StartupArgs {
 #[derive(Debug, Args)]
 pub(crate) struct InlinedArgs {
     /// Show the inlined code in one function instead: its name, the end of
-    /// its name, or an address in it
+    /// its name, or an address in it. Or a pattern such as 'on_b*', where
+    /// * stands for any text, that matches one item
     pub(crate) symbol: Option<String>,
     /// Show every function, not only the 30 largest
     #[arg(long)]

@@ -1,7 +1,8 @@
 //! `inlined`: the functions that the compiler copied into others.
 //!
 //! DWARF lists them. The tests check them ranked and as a tree, as text
-//! and as JSON, and the error for a file without DWARF.
+//! and as JSON, for a pattern that matches one function, and the errors
+//! for a file without DWARF and for a pattern that matches several items.
 
 use serde_json::{Value, json};
 
@@ -98,6 +99,40 @@ BYTES  COPIES  FUNCTION
 "
         ),
         "{tree}"
+    );
+}
+
+#[test]
+fn inlined_takes_a_pattern_that_matches_one_function() {
+    // The tree of the function that it matches, whose first line says what
+    // the pattern found; across_commands/names.rs checks the rest against
+    // the name's.
+    assert_output(
+        &stdout(&[SAMPLE, "inlined", "process_f*"]),
+        "\
+Of the 532 bytes of process_frame (the one item named process_f*), 238 are inlined copies of 3 functions:
+
+BYTES  COPIES  FUNCTION
+  164       1  update_stats
+   74       1  unpack_samples
+    0       1  load_le32
+
+A copy of 0 bytes is one the compiler merged into the code around it.
+",
+    );
+    // A data object that it matches alone gets the error of its name.
+    assert_output(
+        &stderr(&[SAMPLE, "inlined", "frames_o*"]),
+        "error: frames_ok is a data object, not a function, so nothing is inlined into it\n",
+    );
+    // Several are an error that lists them.
+    assert_output(
+        &stderr(&[SAMPLE, "inlined", "frames*"]),
+        "\
+error: `frames*` matches 2 data objects; use one on the left instead:
+  frames_bad
+  frames_ok
+",
     );
 }
 
