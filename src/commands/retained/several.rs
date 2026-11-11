@@ -25,9 +25,10 @@
 use std::collections::{HashMap, HashSet};
 
 use super::parts::Parts;
-use super::{Found, Given, Symbols, left_out_note, subject, would_save};
+use super::{Symbols, left_out_note, would_save};
 use crate::cli::Format;
 use crate::commands::retained_tree::RetainedTree;
+use crate::commands::symbol::{Found, Set};
 use crate::commands::text::{self, Naming};
 use crate::commands::tree_answer::TreeAnswer;
 use crate::graph::Node;
@@ -43,12 +44,12 @@ pub(super) fn tree_answer(
     all: bool,
     format: Format,
 ) -> TreeAnswer {
-    let removed: Vec<usize> = (symbols.found.iter()).map(|found| found.index).collect();
+    let set = &symbols.set;
+    let removed: Vec<usize> = (set.items().iter()).map(|found| found.index).collect();
     let several = Several {
         retained,
-        found: &symbols.found,
+        set,
         left_out: &symbols.left_out,
-        given: &symbols.given,
         parts: Parts::new(retained, &removed),
     };
     several.tree_answer(all, format)
@@ -66,17 +67,15 @@ fn names<'f>(found: impl IntoIterator<Item = &'f Found>) -> Vec<&'f str> {
 struct Several<'f, 't, 'g, 'a> {
     retained: &'t RetainedTree<'g, 'a>,
     /// The items given, by SYMBOL, pattern or range, each once, in the
-    /// order given (see [`Symbols::found`]).
-    found: &'f [Found],
+    /// order given, and how the first line names them (see
+    /// [`Symbols::set`]).
+    set: &'f Set,
     /// The functions given, by SYMBOL, pattern or range, whose end elfq
     /// doesn't know, which the answer leaves out, as indexes into
     /// [`Binary::items`].
     ///
     /// [`Binary::items`]: crate::binary::Binary::items
     left_out: &'f [usize],
-    /// What was given: SYMBOLs, patterns or ranges in their place, or a
-    /// mix (see [`Given`]).
-    given: &'f Given,
     parts: Parts<'t, 'g, 'a>,
 }
 
@@ -100,7 +99,7 @@ impl Several<'_, '_, '_, '_> {
                 ..TreeAnswer::sentences(vec![sentence])
             };
         }
-        let subject = subject(retained.binary, self.found, self.given, all);
+        let subject = self.set.lead_name(retained.binary, all);
         let saves = would_save(&subject, removal.retained(), range.as_deref());
         let notes = self.notes(&naming);
         let shown = self.shown(all);
@@ -131,14 +130,14 @@ impl Several<'_, '_, '_, '_> {
             Some(range) => format!("Removing them would save their own {bytes} in {range}"),
             None => format!("Removing them would save their own {bytes}"),
         };
-        let nothing_reaches = text::nothing_reaches_any(&names(self.found), naming);
+        let nothing_reaches = text::nothing_reaches_any(&names(self.set.items()), naming);
         format!("{nothing_reaches} {saves}.")
     }
 
     /// The SYMBOLs that nothing reaches, in the order given.
     fn unreachable(&self) -> Vec<&Found> {
         let tree = &self.retained.tree;
-        (self.found.iter())
+        (self.set.items().iter())
             .filter(|found| !tree.is_reachable(Node::Item(found.index)))
             .collect()
     }
@@ -197,13 +196,11 @@ impl Several<'_, '_, '_, '_> {
     /// reaches, the functions left out, and then the notes of every answer
     /// about removing items (see [`Parts::notes`]).
     fn notes(&self, naming: &Naming) -> Vec<String> {
-        let adds_nothing = match self.given {
-            Given::Symbols | Given::SymbolsAndRanges | Given::Patterns { .. } => {
-                (self.keeps_the_rest_note()).or_else(|| self.add_nothing_note(naming))
-            }
+        let adds_nothing = match self.set.ranges_alone() {
             // The user named none of the items, so which of them the others
             // keep is no news.
-            Given::Ranges(_) => None,
+            Some(_) => None,
+            None => (self.keeps_the_rest_note()).or_else(|| self.add_nothing_note(naming)),
         };
         [
             adds_nothing,
@@ -230,8 +227,8 @@ impl Several<'_, '_, '_, '_> {
         if !self.unreachable().is_empty() {
             return None;
         }
-        let keeper = (self.found.iter()).find(|found| Node::Item(found.index) == top)?;
-        let others: Vec<&Found> = (self.found.iter())
+        let keeper = (self.set.items().iter()).find(|found| Node::Item(found.index) == top)?;
+        let others: Vec<&Found> = (self.set.items().iter())
             .filter(|found| Node::Item(found.index) != top)
             .collect();
         let others = match &others[..] {
@@ -253,7 +250,7 @@ impl Several<'_, '_, '_, '_> {
     fn add_nothing_note(&self, naming: &Naming) -> Option<String> {
         let removal = &self.parts.removal;
         let names = names(
-            (self.found.iter())
+            (self.set.items().iter())
                 .filter(|found| found.named && removal.is_kept_by_others(Node::Item(found.index))),
         );
         let (add, them) = match names.len() {
@@ -278,7 +275,7 @@ impl Several<'_, '_, '_, '_> {
         };
         // Of all the SYMBOLs, as the first line counts them: those that
         // nothing reaches keep nothing, so they never make these go.
-        let when = match self.found.len() {
+        let when = match self.set.items().len() {
             2 => "both go".to_string(),
             symbols => format!("two or more of the {symbols} go"),
         };

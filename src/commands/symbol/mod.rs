@@ -20,18 +20,27 @@
 //! with a `*` that stands for any text in it, when no item or import has
 //! it as its name, so that a full name with a `*` in it, as `<*const T as
 //! core::fmt::Debug>::fmt`, still finds its item (see
-//! [`Names::look_up_or_match`]).
+//! [`Names::look_up_or_match`]). `retained` puts what its arguments pick
+//! together in a [`Set`], each item once.
 //!
-//! This file tells ranges from SYMBOL. `lookup.rs` holds `Names`, which
-//! finds what SYMBOL names and names items for the user in return,
-//! `not_found.rs` the error for SYMBOL that finds several items or none,
-//! in the words of every command, which `retained` adds to, and
-//! `similar.rs` the names that error suggests. `pattern.rs` holds
-//! [`Pattern`], such as `uart_*`, when SYMBOL is one, and the items that
-//! one matches ([`Names::matching`]), which `retained` takes in place of
-//! SYMBOL and `debug matches` lists, and `matched.rs` how an answer words
-//! what patterns matched. Unit tests build a file of functions with
-//! `fixtures.rs`.
+//! The files:
+//!
+//! - `mod.rs`, this file, tells ranges from SYMBOL.
+//! - `lookup.rs` holds [`Names`], which finds what SYMBOL names and names
+//!   items for the user in return.
+//! - `not_found.rs` words the error for SYMBOL that finds several items or
+//!   none, in the words of every command, which `retained` adds to, and
+//!   `similar.rs` finds the names that error suggests.
+//! - `pattern.rs` holds [`Pattern`], such as `uart_*`, when SYMBOL is one,
+//!   and finds the items that one matches ([`Names::matching`]), which
+//!   `retained` takes in place of SYMBOL and `debug matches` lists. Its
+//!   unit tests are in `pattern/tests.rs`.
+//! - `matched.rs` words what patterns matched, for an answer's first line
+//!   and its notes.
+//! - `set.rs` holds [`Set`], the items that several SYMBOLs, patterns and
+//!   ranges pick together, each once, and words how an answer's first line
+//!   names them, part by part.
+//! - `fixtures.rs` builds the file of functions that unit tests read.
 
 #[cfg(test)]
 mod fixtures;
@@ -39,13 +48,15 @@ mod lookup;
 mod matched;
 mod not_found;
 mod pattern;
+mod set;
 mod similar;
 
 pub(super) use lookup::{Lookup, Names};
-pub(super) use matched::{PatternMatches, named_by_patterns, pattern_notes};
+pub(super) use matched::{PatternMatches, pattern_notes};
 #[cfg(feature = "tui")]
 pub(super) use not_found::USE_ONE;
 pub(super) use pattern::{LookupOrMatch, Match, MatchedBy, Pattern};
+pub(super) use set::{Found, Pick, Set};
 #[cfg(feature = "tui")]
 pub(super) use similar::Needle;
 

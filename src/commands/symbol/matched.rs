@@ -2,8 +2,9 @@
 //! about those items words it: the part of its first line that names
 //! them, as "the 3 items named on_*", and the notes on the items that a
 //! pattern matched only by the end of a longer path, or only through
-//! another of their names, since those are the matches to check.
-//! `retained` says these.
+//! another of their names, since those are the matches to check. A set
+//! names its patterns so in its first line (see `set.rs`), and `retained`
+//! puts the notes before its others.
 
 use std::cmp::Reverse;
 use std::collections::HashSet;
@@ -36,10 +37,7 @@ fn matched_items(patterns: &[PatternMatches]) -> Vec<usize> {
 /// with each pattern that matched it, "on_button (the one item named
 /// on_b*)". `None` for more than three patterns that matched several
 /// items, which are too many to name there.
-pub(in crate::commands) fn named_by_patterns(
-    binary: &Binary,
-    patterns: &[PatternMatches],
-) -> Option<String> {
+pub(super) fn named_by_patterns(binary: &Binary, patterns: &[PatternMatches]) -> Option<String> {
     let typed: Vec<&str> = (patterns.iter())
         .map(|matched| matched.pattern.typed())
         .collect();

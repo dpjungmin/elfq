@@ -17,7 +17,7 @@ mod validate;
 pub(super) use crossing::complete;
 pub(super) use rows::{
     CalleeJson, CrossingRow, callee_json, callee_rows, crossings_columns, group_unfollowed,
-    json_far_side, ranges_text, row_cells, unfollowed_how,
+    json_far_side, row_cells, unfollowed_how,
 };
 pub(super) use validate::{check_holds_items, check_to_range};
 
@@ -25,7 +25,7 @@ use std::io::Write;
 
 use anyhow::Result;
 
-use super::Outcome;
+use super::{Outcome, text};
 use crate::binary::{AddressRange, Binary};
 use crate::cli::Format;
 use crate::graph::Graph;
@@ -85,7 +85,7 @@ impl RangeCheck<'_> {
     fn subject(&self, binary: &Binary, all: bool) -> String {
         match &self.name {
             Some(name) => name.clone(),
-            None => ranges_text(binary, self.ranges, all),
+            None => text::ranges_text(binary, self.ranges, all),
         }
     }
 

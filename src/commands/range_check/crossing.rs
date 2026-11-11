@@ -12,7 +12,7 @@ use serde::Serialize;
 
 use super::rows::{
     CalleeJson, callee_json, callee_rows, crossings_table, each_row, group_unfollowed, groups,
-    how_column, json_far_side, json_ranges, names_cell, outside_nodes, ranges_text, unfollowed_how,
+    how_column, json_far_side, json_ranges, names_cell, outside_nodes, unfollowed_how,
     write_groups,
 };
 use super::{Direction, RangeCheck};
@@ -94,7 +94,7 @@ fn far_side_text(binary: &Binary, far_side: &[AddressRange], it: &str, all: bool
     if far_side.is_empty() {
         format!("outside {it}")
     } else {
-        format!("in {}", ranges_text(binary, far_side, all))
+        format!("in {}", text::ranges_text(binary, far_side, all))
     }
 }
 
@@ -213,7 +213,7 @@ impl<'a> Leaving<'a> {
                 format!(
                     "{subject} {} {unknown} that elfq can't follow, which {go} to {}:",
                     verb("makes", "make"),
-                    ranges_text(binary, check.far_side, self.all)
+                    text::ranges_text(binary, check.far_side, self.all)
                 )
             }
             (false, false) => format!(

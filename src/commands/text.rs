@@ -583,12 +583,26 @@ pub(super) fn range_text(binary: &Binary, range: AddressRange, all: bool) -> Str
 /// A range as `--range` takes it, with the sections that have bytes in
 /// it, every one with `all`: [`range_text`] without the load images, for
 /// range checks, which look only where the program uses its code and data.
-pub(super) fn range_sections_text(binary: &Binary, range: AddressRange, all: bool) -> String {
+fn range_sections_text(binary: &Binary, range: AddressRange, all: bool) -> String {
     let sections = section_names(binary.sections_in(range));
     match sections[..] {
         [] => range_argument(range),
         _ => format!("{} ({})", range_argument(range), names_text(&sections, all)),
     }
+}
+
+/// The ranges as `--range` takes them, with the sections in each, joined
+/// into a phrase, every range and section with `all`, as range checks and
+/// the first line of an answer about a set name them. A load image in a
+/// range isn't named, since range checks look only where the program uses
+/// its code and data, and a load image is never used where it is stored.
+pub(super) fn ranges_text(binary: &Binary, ranges: &[AddressRange], all: bool) -> String {
+    let texts: Vec<String> = ranges
+        .iter()
+        .map(|&range| range_sections_text(binary, range, all))
+        .collect();
+    let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
+    names_text(&texts, all)
 }
 
 /// A range as `--range` takes it, its addresses padded to 8 hex digits so

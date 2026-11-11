@@ -1590,8 +1590,9 @@ in order. Its output is the first example under [Commands](#commands).
    `check_holds_items` has checked that it holds one. An argument that
    finds nothing as a name but has a `*` that stands for any text
    (`Names::look_up_or_match`) stands for the items it matches
-   (`Names::matching`), which `symbol::named_by_patterns` names in the
-   first line and `symbol::pattern_notes` notes.
+   (`Names::matching`), which `symbol::pattern_notes` notes. What the
+   arguments pick goes in a `symbol::Set`, which counts each item once
+   and names them in the first line (`Set::lead_name`).
 5. **The graph.** `retained::run` has `graph::Graph::build` turn what
    `InstructionSet::scan` found in each function's code into references, or
    into unresolved calls. `Graph::build` then adds the pointers stored in
