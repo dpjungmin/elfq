@@ -567,6 +567,22 @@ error that it gives for the import alone, "...so its code isn't in this
 file". Without an argument, the error says what they take: "callers
 needs a SYMBOL, or patterns or ranges, such as 'uart_*' or 0x0+256K".
 
+A name that could mean several items gets an error that lists them in
+every command, and in `retained`, `callers` and `callees`, which take a
+set, the error's first line ends with the pattern that takes them all,
+when the name with a `*` after it matches just those items:
+`retained checksum` in `testdata/bin/rust-cortex-m4.elf` says
+"`checksum` could mean 3 functions; use one or more on the left instead,
+or 'checksum*' for all 3:". When that pattern matches more, as `'run*'`
+takes std's `run_with_cstr_allocating` besides the three functions named
+`run` in `testdata/bin/rust-x86_64-nodebug.elf`, or fewer, as when an
+import is among them, which a pattern never takes, the error stays as it
+was. A name with a pointer's `*` in it gets the pattern too, as
+`'run(short*, unsigned long)*'` for the two functions of that name in
+`testdata/bin/cpp-x86_64.elf`, since it matches just those. `why`,
+`reach`, `inlined` and `browse` take one item, so their error never
+offers it.
+
 `why`, `reach`, `inlined` and `browse` answer for one item, so they take
 a pattern that matches one item, for that item. `why`, `reach` and
 `inlined` answer for it as for its name, but in the first line, where

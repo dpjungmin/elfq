@@ -18,7 +18,10 @@
 //! long list of them can be fixed in one go: one with the error it gets
 //! alone, several each with that error, under a line that counts them, and
 //! calls them SYMBOLs, or arguments once a range is among them. The errors
-//! are those of every command, with a hint of `retained`'s own, since it
+//! are those of every command that takes a set, as `callers` and `callees`
+//! do, where the error for a name that could mean several items ends its
+//! first line with the pattern for all of them, when it takes just those
+//! (see `Names::choices`). One hint is `retained`'s own, since it
 //! takes several SYMBOLs: a name that could mean several items says to use
 //! one or more of them. A name that finds nothing offers first the pattern
 //! for what is in a module of that name whenever it matches an item, since

@@ -1221,11 +1221,13 @@ error: elfq can't use 3 of the 3 SYMBOLs:
 #[test]
 fn retained_says_to_use_one_or_more_of_what_a_name_could_mean() {
     const CPP: &str = "testdata/bin/cpp-x86_64.elf";
-    // Unlike other commands, which take one SYMBOL.
+    // It says to use one or more, unlike other commands, which take one
+    // SYMBOL, and like `callers` and `callees`, which take a set too, it
+    // offers the pattern that takes both.
     assert_output(
         &stderr(&[CPP, "retained", "log"]),
         "\
-error: `log` could mean 2 functions; use one or more on the left instead:
+error: `log` could mean 2 functions; use one or more on the left instead, or 'log*' for all 2:
   'log(char const*)'   app::log(char const*)
   'log(unsigned int)'  app::log(unsigned int)
 ",
@@ -1236,12 +1238,13 @@ error: `log` could mean 2 functions; use one or more on the left instead:
         &stderr(&[CPP, "retained", "log", "log(unsigned int)", "frob"]),
         "\
 error: elfq can't use 2 of the 3 SYMBOLs:
-  `log` could mean 2 functions; use one or more on the left instead:
+  `log` could mean 2 functions; use one or more on the left instead, or 'log*' for all 2:
     'log(char const*)'   app::log(char const*)
     'log(unsigned int)'  app::log(unsigned int)
   no function or data object is named `frob`
 ",
     );
+    // 'fmt*' takes more than the 53, so it isn't offered.
     let error = stderr(&[
         "testdata/bin/rust-x86_64-nodebug.elf",
         "retained",
@@ -1257,6 +1260,7 @@ error: elfq can't use 2 of the 3 SYMBOLs:
                 .ends_with("\n    and 43 more\n  no function or data object is named `nosuch`\n"),
         "{error}"
     );
+    // `why` takes one item, so it offers no pattern.
     assert_output(
         &stderr(&[CPP, "why", "log"]),
         "\

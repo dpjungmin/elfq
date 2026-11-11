@@ -1,5 +1,7 @@
-//! The error for SYMBOL that finds several items or none: what to type
-//! for each of several, or why none has the name, as when the file has no
+//! The error for SYMBOL that finds several items or none: what to type for
+//! each of several, and in a command that takes a set, such as `retained`,
+//! the pattern that takes them all, when it takes just those (see
+//! [`Names::choices`]); or why none has the name, as when the file has no
 //! symbol table or the compiler inlined every copy of the function. For a
 //! name that finds nothing, such as a module, type or class typed without
 //! `*`, the error offers first the pattern for what is in it, as
@@ -16,7 +18,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use super::lookup::add_index;
-use super::{Names, Pattern, PatternMatches};
+use super::{LookupOrMatch, Names, Pattern, PatternMatches};
 use crate::binary::names;
 use crate::commands::checks::found_functions;
 use crate::commands::text;
@@ -337,15 +339,12 @@ impl<'a> Names<'a> {
             .collect()
     }
 
-    /// The error for `query` when it finds `nodes`, several things: that it
-    /// could mean each, then `instruction`, what to do instead, such as
+    /// The error for `query` when it finds `nodes`, several things, as the
+    /// commands that take one item, such as `why`, give it: that it could
+    /// mean each, then `instruction`, what to do instead, such as
     /// [`USE_ONE`], and what to type for each (see [`Names::choice_lines`]).
-    pub(in crate::commands) fn choices(
-        &self,
-        query: &str,
-        nodes: &[Node],
-        instruction: &str,
-    ) -> String {
+    /// The commands that take a set give it through [`Names::choices`].
+    pub(super) fn could_mean(&self, query: &str, nodes: &[Node], instruction: &str) -> String {
         let first_line = format!(
             "`{query}` could mean {}; {instruction}:",
             text::count_text(self.binary, nodes)
@@ -353,10 +352,51 @@ impl<'a> Names<'a> {
         self.with_choice_lines(first_line, nodes)
     }
 
+    /// The error for `query` when it finds `nodes`, several things, in a
+    /// command that takes a set, as `retained`, `callers` and `callees` do:
+    /// the error of [`Names::could_mean`], where `instruction` ends with
+    /// the pattern that takes them all, when there is one (see
+    /// [`Names::pattern_for_all`]): "use one or more on the left instead,
+    /// or 'checksum*' for all 3".
+    pub(in crate::commands) fn choices(
+        &self,
+        query: &str,
+        nodes: &[Node],
+        instruction: &str,
+    ) -> String {
+        let instruction = match self.pattern_for_all(query, nodes) {
+            Some(pattern) => format!("{instruction}, or {pattern} for all {}", nodes.len()),
+            None => instruction.to_string(),
+        };
+        self.could_mean(query, nodes, &instruction)
+    }
+
+    /// The pattern that takes all of `nodes`, the things that `query` could
+    /// mean, and nothing else, quoted for the shell: `query` with a `*`
+    /// after it, as 'checksum*' for `checksum`, when typing that as SYMBOL
+    /// would take just those items. `None` when it would take more, as
+    /// 'run*' takes `run_with_cstr_allocating` besides the functions named
+    /// `run`, or fewer, as when an import is among `nodes`, since a pattern
+    /// takes only items, or when it isn't read as a pattern, as when an
+    /// item has that name.
+    fn pattern_for_all(&self, query: &str, nodes: &[Node]) -> Option<String> {
+        let typed = format!("{query}*");
+        let Ok(LookupOrMatch::Pattern(matched)) = self.look_up_or_match(&typed) else {
+            return None;
+        };
+        let mut taken: Vec<Node> = (matched.matches.iter())
+            .map(|found| Node::Item(found.item))
+            .collect();
+        let mut listed = nodes.to_vec();
+        taken.sort_unstable();
+        listed.sort_unstable();
+        (taken == listed).then(|| text::shell_quote(&typed))
+    }
+
     /// The error for `matched`, a pattern that matches several items, in a
     /// command that takes one item, such as `why`: how many it matches, and
     /// what to type for each, in address order, as the error for a name
-    /// that could mean several lists them (see [`Names::choices`]).
+    /// that could mean several lists them (see [`Names::could_mean`]).
     pub(super) fn matches_several(&self, matched: &PatternMatches) -> String {
         let nodes: Vec<Node> = (matched.matches.iter())
             .map(|found| Node::Item(found.item))
@@ -533,5 +573,51 @@ mod tests {
         );
         assert_eq!(lines[1..3], ["  irq1", "  irq2"]);
         assert_eq!(lines[10..], ["  irq10", "  and 2 more"]);
+    }
+
+    #[test]
+    fn a_set_command_offers_the_pattern_for_all_that_a_name_could_mean() {
+        let mut binary = fixtures::functions(&[
+            "app::checksum::<u8>",
+            "app::checksum::<u16>",
+            "app::send(char*)",
+            "drv::send(char*)",
+            "app::run",
+            "drv::run",
+            "drv::run_all",
+            "log",
+            "main",
+        ]);
+        binary.imports.push("log".to_string());
+        let names = Names::new(&binary);
+        let first_line = |error: String| error.lines().next().unwrap().to_string();
+        let in_set = |query: &str| first_line(names.choices(query, names.nodes(query), USE_ONE));
+        // The name with a `*` after it takes just what it could mean, even
+        // with a pointer's `*` in it.
+        assert_eq!(
+            in_set("checksum"),
+            "`checksum` could mean 2 functions; use one on the left instead, or 'checksum*' for \
+             all 2:"
+        );
+        assert_eq!(
+            in_set("send(char*)"),
+            "`send(char*)` could mean 2 functions; use one on the left instead, or \
+             'send(char*)*' for all 2:"
+        );
+        // Not when it takes more, as 'run*' takes `drv::run_all`, or fewer,
+        // as when an import is among them, which a pattern never takes.
+        assert_eq!(
+            in_set("run"),
+            "`run` could mean 2 functions; use one on the left instead:"
+        );
+        assert_eq!(
+            in_set("log"),
+            "`log` could mean 2 items; use one on the left instead:"
+        );
+        // A command that takes one item never offers it.
+        assert_eq!(
+            first_line(names.could_mean("checksum", names.nodes("checksum"), USE_ONE)),
+            "`checksum` could mean 2 functions; use one on the left instead:"
+        );
     }
 }

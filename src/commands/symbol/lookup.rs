@@ -167,7 +167,7 @@ impl<'a> Names<'a> {
         match lookup {
             Lookup::One(symbol) => Ok(symbol),
             Lookup::NoName => bail!("{}", self.nothing_named(query, takes)),
-            Lookup::Several(nodes) => bail!("{}", self.choices(query, nodes, USE_ONE)),
+            Lookup::Several(nodes) => bail!("{}", self.could_mean(query, nodes, USE_ONE)),
         }
     }
 

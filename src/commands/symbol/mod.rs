@@ -125,9 +125,12 @@ pub(super) type ItemInSet = fn(&Binary, Node) -> Result<usize>;
 /// of memory alone, or else the [`Set`] of the items they pick. Stops at
 /// the first that it can't read, such as a range it can't parse or a name
 /// or pattern that finds nothing, with its error; whether each range holds
-/// something is checked after, by `range_check`. A set holds only items,
-/// so `item_in_set` gives the item of a SYMBOL among others, or the
-/// command's error for an import.
+/// something is checked after, by `range_check`. `callers` and `callees`
+/// take a set, so a name that could mean several items gets an error that
+/// ends with the pattern that takes them all, when there is one (see
+/// [`Names::choices`]), which the error from [`Names::find`] leaves out. A
+/// set holds only items, so `item_in_set` gives the item of a SYMBOL among
+/// others, or the command's error for an import.
 pub(super) fn subject(
     binary: &Binary,
     queries: &[String],
@@ -139,6 +142,11 @@ pub(super) fn subject(
         let pick = match argument(query)? {
             Argument::Range(range) => Pick::Range(range),
             Argument::Symbol(query) => match names.look_up_or_match(query)? {
+                // `callers` and `callees` take a set, so the error for a name
+                // that could mean several offers the pattern for all of them.
+                LookupOrMatch::Name(Lookup::Several(nodes)) => {
+                    bail!("{}", names.choices(query, nodes, not_found::USE_ONE))
+                }
                 LookupOrMatch::Name(lookup) => {
                     let symbol = names.one_or_error(query, lookup, Takes::Set)?;
                     if let [_] = queries {

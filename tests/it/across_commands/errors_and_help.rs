@@ -375,6 +375,64 @@ fn errors_say_what_to_try() {
 }
 
 #[test]
+fn a_name_that_could_mean_several_gets_the_pattern_for_all_where_a_set_is_taken() {
+    let rust = "testdata/bin/rust-cortex-m4.elf";
+    let checksums = "
+  'checksum::<u8>'   elfq_sample::checksum::<u8>
+  'checksum::<u32>'  elfq_sample::checksum::<u32>
+  'checksum::<u16>'  elfq_sample::checksum::<u16>
+";
+    // retained, callers and callees take every item that a pattern
+    // matches, so the first line ends with the one that takes the three.
+    for (command, instruction) in [
+        ("retained", "use one or more on the left instead"),
+        ("callers", "use one on the left instead"),
+        ("callees", "use one on the left instead"),
+    ] {
+        assert_output(
+            &stderr(&[rust, command, "checksum"]),
+            &format!(
+                "error: `checksum` could mean 3 functions; {instruction}, or 'checksum*' for all \
+                 3:{checksums}"
+            ),
+        );
+    }
+    // why, reach and inlined take one item, so they never offer it.
+    for command in ["why", "reach", "inlined"] {
+        assert_output(
+            &stderr(&[rust, command, "checksum"]),
+            &format!(
+                "error: `checksum` could mean 3 functions; use one on the left instead:{checksums}"
+            ),
+        );
+    }
+    // A name with a pointer's `*` in it gets the pattern too.
+    assert_output(
+        &stderr(&[
+            "testdata/bin/cpp-x86_64.elf",
+            "callees",
+            "run(short*, unsigned long)",
+        ]),
+        "\
+error: `run(short*, unsigned long)` could mean 2 functions; use one on the left instead, or 'run(short*, unsigned long)*' for all 2:
+  Gain::run     app::Gain::run(short*, unsigned long)
+  DcBlock::run  app::DcBlock::run(short*, unsigned long)
+",
+    );
+    // When it takes more, the error is as it was: 'run*' takes std's
+    // run_with_cstr_allocating too.
+    assert_output(
+        &stderr(&["testdata/bin/rust-x86_64-nodebug.elf", "retained", "run"]),
+        "\
+error: `run` could mean 3 functions; use one or more on the left instead:
+  Gain::run     <elfq_sample::Gain as elfq_sample::Stage>::run
+  DcBlock::run  <elfq_sample::DcBlock as elfq_sample::Stage>::run
+  enable::run   std::sys::thread_local::guard::key::enable::run
+",
+    );
+}
+
+#[test]
 fn a_function_inlined_everywhere_is_told_from_one_kept_in_part() {
     // GCC can inline the start of a function and keep the rest out of line,
     // as `append.part.0`. Then not every copy of `append` was inlined, and
