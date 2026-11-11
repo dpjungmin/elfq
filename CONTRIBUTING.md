@@ -60,7 +60,7 @@ command.
 | `src/main.rs` | The program: parses arguments, runs one command on a thread with a large stack, prints errors and sets the exit status. It also turns `elfq help COMMAND` into `--help`, and suggests the right order when the command comes before the file. |
 | `src/lib.rs` | Declares the modules below. elfq is a library plus that small program; the library exists for the program and its tests. |
 | `src/cli/` | Command-line arguments, with clap: in `mod.rs`, a `Command` variant for each command and the structs that hold their arguments, and in `help.rs`, the text of `--help`. |
-| `src/commands/` | One file per command, or a folder for the larger ones below, which looks up SYMBOL, asks `graph` or `debuginfo` and decides what the answer shows. `mod.rs` runs the command the arguments name. The rest are shared: `arguments.rs` checks which arguments go together, `checks.rs` holds the checks a command makes before it answers, such as `check_code_is_readable`, `symbol/` works out what a user means by SYMBOL (`lookup.rs` finds what a name means and names items for the user in return, `not_found.rs` and `similar.rs` word the error when it finds several or none, or a pattern matches none, in words that `retained` adds its hint to, `pattern.rs` finds the items that a pattern such as `'uart_*'` matches, with its unit tests in `pattern/tests.rs`, `matched.rs` words what patterns matched, for an answer's first line and its notes, and `set.rs` puts what several SYMBOLs, patterns and ranges pick together in a `Set`, each item once, and words how an answer's first line names it, part by part; unit tests build a file of functions with `fixtures.rs`), `retained_tree.rs` builds the trees of retained sizes that the overview, `top` and `retained` show, `uses.rs` holds the table of `callers` and `callees` for SYMBOL, `range_check/` answers them for ranges of memory or with `--from` or `--to` (its `mod.rs` says what a check asks about, an `Inside`, and works out the items inside once, for the rest, `validate.rs` checks the ranges, and `retained`'s too, `crossing.rs` holds the answers and `rows.rs` their rows, which `reach` and `diff` print too), `flat_answer.rs` holds the answers whose table has one row to a line and `tree_answer.rs` those whose table holds a tree, `text.rs` the wording that commands share and `json.rs` the JSON shapes. `kept.rs` has `Kept`, which leaves what a command keeps until it has answered for the system to take back when elfq ends (`end_after_answer`). |
+| `src/commands/` | One file per command, or a folder for the larger ones below, which looks up SYMBOL, asks `graph` or `debuginfo` and decides what the answer shows. `mod.rs` runs the command the arguments name. The rest are shared: `arguments.rs` checks which arguments go together, `checks.rs` holds the checks a command makes before it answers, such as `check_code_is_readable`, `symbol/` works out what a user means by SYMBOL (`mod.rs` tells ranges from SYMBOL and reads what `callers` and `callees` ask about into a `Subject`, `lookup.rs` finds what a name means and names items for the user in return, `not_found.rs` and `similar.rs` word the error when it finds several or none, or a pattern matches none, in words that `retained` adds its hint to, `pattern.rs` finds the items that a pattern such as `'uart_*'` matches, with its unit tests in `pattern/tests.rs`, `matched.rs` words what patterns matched, for an answer's first line and its notes, and `set.rs` puts what several SYMBOLs, patterns and ranges pick together in a `Set`, each item once, and words how an answer's first line names it, part by part; unit tests build a file of functions with `fixtures.rs`), `retained_tree.rs` builds the trees of retained sizes that the overview, `top` and `retained` show, `uses.rs` holds the table of `callers` and `callees` for one SYMBOL, `range_check/` answers them for ranges of memory, for a set, or with `--from` or `--to` (its `mod.rs` says what a check asks about, an `Inside`, which holds the ranges, one SYMBOL or a set, and works out the items inside once, for the rest, `validate.rs` checks the ranges, and `retained`'s too, `crossing.rs` holds the answers and `rows.rs` their rows, which `reach` and `diff` print too), `flat_answer.rs` holds the answers whose table has one row to a line and `tree_answer.rs` those whose table holds a tree, `text.rs` the wording that commands share and `json.rs` the JSON shapes. `kept.rs` has `Kept`, which leaves what a command keeps until it has answered for the system to take back when elfq ends (`end_after_answer`). |
 | `src/commands/browse/` | `elfq FILE browse`, with the `tui` feature: `mod.rs` takes over the terminal and runs the event loop, `session.rs` holds the loaded file and asks the commands' code for answers, `keys.rs` is the table of keys, `app.rs` the history of pages, the go-to box, find's prompt and the screen's layout, and `views/` the pages, the go-to box and the tabs of an item's page other than its tab 1, one file each (`item.rs` is an item's page, and `item/` holds its parts: the header, tab 1's lines, a function's code, a data object's contents and the notes on their lines), `printed.rs`, which draws a command's answer for the pages and tabs that show one, and `names.rs`, which shortens long C++ and Rust names to fit a column. |
 | `src/commands/reach/` | `elfq FILE reach [SYMBOL]`: `mod.rs` holds what the search from SYMBOL finds, with the words the code uses for its parts, and `Text`, which words it for people, `find.rs` the search, `rows.rs` writes the answer by block of memory, which browse shows too, `to.rs` the answer with `--to`, `tree.rs` the tree of `--tree` and `json.rs` the JSON, and `starts.rs` answers without SYMBOL, as browse's start page does. |
 | `src/commands/diff/` | `elfq FILE diff NEW`: `mod.rs` reads both files, builds the answer from their bytes alone or from their items too, and gives the exit status, `blocks.rs` works out the blocks of memory that both builds share and what changed in each, `pairing.rs` pairs the builds' items, `changes.rs` works out what changed, `edited.rs` which items of the same size are edited, `crossings.rs` the uses between blocks that are new or gone, `rows.rs` picks the rows of MOVED and CHANGE, and `text.rs` and `json.rs` write the answer. The unit tests of `pairing.rs` and `edited.rs` are in `pairing/tests.rs` and `edited/tests.rs`. |
@@ -310,13 +310,14 @@ helper type, doesn't take a word of the list; where code still does, as
   entry point or a handler that the vector table lists (`graph::Root`).
 - **use**: a reference from one node to another, such as a call, a jump
   or a stored pointer: what `callers` and `callees` list.
-- **inside**: in `callers` and `callees` of ranges, or with `--from` or
-  `--to`, the side of the boundary that the answer is about: the ranges
-  given in place of SYMBOL, or SYMBOL's item (`range_check::Inside`),
-  whose items are an `ItemsInRanges`. A row's `inside` (`CrossingRow`) is
-  its item there. The ranges of `--from` and `--to` are on the far side
-  (`far_side`). The `inside` key of `startup`'s JSON, the function that a
-  step is in, is another thing.
+- **inside**: in `callers` and `callees` of ranges or a set, or with
+  `--from` or `--to`, the side of the boundary that the answer is about:
+  the ranges given in place of SYMBOL, SYMBOL's item, or a set's items,
+  wherever they are (`range_check::Inside`), whose items are an
+  `ItemsInRanges`. A row's `inside` (`CrossingRow`) is its item there.
+  The ranges of `--from` and `--to` are on the far side (`far_side`).
+  The `inside` key of `startup`'s JSON, the function that a step is in,
+  is another thing.
 - **handler**: code that an entry of the Cortex-M vector table names,
   which the processor runs for that entry's **exception**. An exception
   is numbered by its entry, counting the stack pointer's as 0.
@@ -342,10 +343,11 @@ helper type, doesn't take a word of the list; where code still does, as
   as `Gain::run` and `run` are ends of `app::Gain::run`. A text that a
   pattern matches is a whole path or the end of a longer one
   (`names::TextKind`), under the parts before it, as `Gain::run` is under
-  `app`, and `retained --json` and `debug matches` say `end` in
-  `matched_by` for an item that a pattern matches only by the end of a
-  longer path. The startup walk's `End`, and where a function ends, which
-  elfq may not know (`Item::end_unknown`), are other things.
+  `app`, and the `matches` of `retained`, `callers` and `callees` with
+  `--json`, and `debug matches`, say `end` in `matched_by` for an item
+  that a pattern matches only by the end of a longer path. The startup
+  walk's `End`, and where a function ends, which elfq may not know
+  (`Item::end_unknown`), are other things.
 - **made name**: a name made from where an item is, or from a counter or
   a hash, so that it says nothing of which function or data the item
   is: elfq's names for items that no symbol names, such as
@@ -390,17 +392,23 @@ helper type, doesn't take a word of the list; where code still does, as
   the rows that a table leaves out without `--all`, have their everyday
   sense.
 - **lead**: an answer's first line, which names what the answer is about,
-  as `Symbol::lead_name` names an item there, and `Set::lead_name` a set.
-  When patterns are among what `retained` was given, its lead names each
-  part of what was given in turn, a `Named`: a SYMBOL, the ranges or the
-  patterns. `Parts`, in `retained/parts.rs`, is unrelated: it holds what
-  removing the SYMBOLs loses.
+  as `Symbol::lead_name` names an item there, and `Set::lead_name` a set,
+  as a `LeadName`, which takes a capital where elfq's own words start a
+  sentence, but never in a name (`LeadName::at_start`). When patterns are
+  among what `retained`, `callers` or `callees` was given, or a range that
+  holds only code, which `callers` takes, its lead names each part of what
+  was given in turn, a `Named`: a SYMBOL, the ranges or the patterns.
+  `Parts`, in `retained/parts.rs`, is unrelated: it holds what removing
+  the SYMBOLs loses.
 - **set**: the items that several SYMBOLs, patterns and ranges given in
-  place of SYMBOL pick together, each once, as `retained` takes them
-  (`symbol::Set`). What one of them picks is a `Pick`, and an item of the
-  set a `Found`. An instruction set (`arch::InstructionSet`), Rust's
-  `HashSet`, and set as a verb, as in "sets the flags" or "sets up a
-  section", are other things.
+  place of SYMBOL pick together, each once, as `retained`, `callers` and
+  `callees` take them (`symbol::Set`). What one of them picks is a
+  `Pick`, and an item of the set a `Found`. `callers` and `callees` take
+  any arguments but one SYMBOL alone, or ranges alone, as a set, and
+  answer for it as for ranges (`Subject::Set`, `Inside::Set`). An
+  instruction set (`arch::InstructionSet`), Rust's `HashSet`, and set as
+  a verb, as in "sets the flags" or "sets up a section", are other
+  things.
 - **answer**: what a command has worked out, before it is written as text
   or JSON. `FlatAnswer` is the text of an answer whose table has one row
   to a line, as `callers`, `callees` and `reach` write it, and
@@ -571,7 +579,7 @@ worked out. Those are names to fix, not meanings to copy.
 |---|---|
 | `support/` | No tests: in `mod.rs`, the samples' paths (`SAMPLE` and others), the lists that several modules check (`C_SAMPLES`, `FAR_SAMPLES`), `samples()`, which lists every sample, and `samples_for`, which lists those for one architecture, `sample_path` and `load_sample`, `node`, which finds SYMBOL in a loaded sample, `command`, the program set to run in the crate's root, `run`, which runs it and returns a `Run` to check, with `Exit`, its shortcuts `stdout`, `stderr`, `crossing`, `elfq_json` and `text_rows`, `names`, which reads the names in a list of elfq's JSON, `shell_words`, which splits a command line as a shell does, `run_in_process`, and `assert_output`; in `elf.rs`, `ElfBytes`, which changes a sample's bytes field by field and saves the file, and the changed files that several modules use, such as `without_section_headers` |
 | `commands/browse.rs` | `browse`'s screens, driven with keys on ratatui's `TestBackend`, a screen in memory; its errors; and on Linux, the program in a terminal that `script` makes. The checks that need its private types are unit tests; see below |
-| `commands/callers_and_callees.rs` | `callers` and `callees`, which share their table and their ranges: their text and JSON for SYMBOL, for ranges of memory and with `--from` and `--to`, and the errors about those ranges |
+| `commands/callers_and_callees.rs` | `callers` and `callees`, which share their table and their ranges: their text and JSON for SYMBOL, for ranges of memory, for patterns and several SYMBOLs, and with `--from` and `--to`, and the errors about those ranges and sets |
 | `commands/debug.rs` | `debug items`, `debug walk` and `debug matches`; the tests that `debug walk` lists the walk that `startup` reads are in `commands/startup.rs` |
 | `commands/diff.rs` | `diff` on pairs of builds: its text, its JSON, its exit status and the builds it refuses; and at the end, on builds made by changing a sample's bytes: a warning about the new build, bytes or blocks that alone differ, and a separate debug file and a file that puts nothing in memory, which it refuses |
 | `commands/inlined.rs` | `inlined`: its ranking and its tree, as text and JSON, and its error for a file without DWARF |
@@ -808,10 +816,12 @@ is a short one to copy.
    counts each item once and names them in the first line.
    One whose answer needs no `Names` calls
    `symbol::find`, which frees its `Names` before the answer, as
-   `inlined` does. `callers` and `callees`, which take ranges of memory
-   in place of SYMBOL too, call `symbol::subject`, whose `Subject` holds
-   a `Symbol` or the ranges; `retained`, which takes ranges too, reads
-   each argument with `symbol::argument`, as `subject` does. A
+   `inlined` does. `callers` and `callees`, which take ranges of memory,
+   patterns and several SYMBOLs in place of SYMBOL too, call
+   `symbol::subject`, whose `Subject` holds one `Symbol`, the ranges, or
+   a `Set`, and which stops at the first argument it can't read;
+   `retained`, which takes ranges too, reads each argument with
+   `symbol::argument`, as `subject` does. A
    `Symbol`'s `node` may be an import.
    `item_in_file` or `readable_item`, in `checks.rs`, gives its item, or
    an error that says why there is none, and the command's own checks

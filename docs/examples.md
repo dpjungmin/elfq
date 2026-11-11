@@ -363,7 +363,21 @@ ADDRESS  SIZE  HOW              AT                      CALLEE
 ```
 
 `process_frame`, in flash, calls two functions in ITCM, both through
-veneers.
+veneers. Patterns and several names pick items too, wherever they are.
+The event handlers `on_timer`, `on_data` and `on_button` are in flash;
+this asks what they use in DTCM:
+
+```
+$ elfq testdata/bin/c-cortex-m7.elf callees 'on_*' --to 0x20000000+256K
+The 3 items named on_* use 3 data objects in 0x20000000..0x20040000 (.data and .bss):
+
+ADDRESS     SIZE  HOW   AT          CALLEE
+0x20000430     4  uses  0x300002a4  button_presses, used by on_button
+0x2000042c     4  uses  0x30000150  data_events, used by on_data
+0x20000434     4  uses  0x30000140  timer_ticks, used by on_timer
+```
+
+Each handler adds to a count of its own, in DTCM.
 
 ## Where does the firmware start, and where does each start run?
 
@@ -631,6 +645,29 @@ app::(anonymous namespace)::crc32(unsigned char const*, unsigned long) is used b
 HOW   AT      CALLER
 call  0x1608  app::process_frame(app::Frame const&, app::Stage&)
 ```
+
+A pattern asks about a family of items at once. `'on_*'`, quoted so that
+the shell passes it as typed, picks the three event handlers, and
+`callers` lists what uses them from outside them, as it does for a range
+of memory:
+
+```
+$ elfq testdata/bin/c-x86_64.elf callers 'on_*'
+The 3 items named on_* are used by 1 function outside them:
+
+ADDRESS  SIZE  HOW            AT      CALLER
+0x10a0    195  address taken  0x10a8  main, uses on_timer
+0x10a0    195  address taken  0x10b6  main, uses on_button
+0x10a0    195  address taken  0x10c7  main, uses on_data
+
+Calls through a pointer to on_timer, on_data and on_button aren't listed, since elfq can't see them.
+```
+
+Each row names the caller, then the handler it uses, and every crossing
+has a row. Several names, as in `callers on_timer on_data`, answer the
+same way. So does a pattern that matches one item, so that the answer
+keeps its shape when a build adds or drops a match, and elfq exits with
+status 1, as here, when something uses the items or might.
 
 ## What would removing a function save?
 
@@ -1020,6 +1057,11 @@ out; this prints their names:
 ```sh
 elfq testdata/bin/rust-x86_64-nodebug.elf retained 'alloc::*' --json | jq -r '.matches[] | select(.matched_by != "name") | .name'
 ```
+
+`callers` and `callees` given a pattern have `matches` too, and given
+several SYMBOLs, or SYMBOLs with patterns or ranges, `symbols`, which
+lists the SYMBOLs' items; both come after `ranges`, which then lists only
+the ranges given.
 
 A SYMBOL that `retained` can't use stops it, with one error that lists
 every such SYMBOL, so a long list can be fixed in one go. A function

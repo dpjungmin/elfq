@@ -132,6 +132,8 @@ or `--to`, and for `reach --to`, an item is inside when any of its bytes is
 in one of the ranges, where an item whose size elfq doesn't know counts as
 its first byte, and a reference **crosses** the boundary when one end is
 inside and the other isn't. The help calls the boundary the ranges' edge.
+For a set of SYMBOLs and patterns, the items they pick are inside too,
+wherever they are.
 (`graph::ItemsInRanges`, `graph::Boundary`, `graph::Crossing`)
 
 **Thumb.** The instruction set of Cortex-M processors, with 16- and 32-bit
@@ -201,7 +203,8 @@ except `inlined`, which reads DWARF instead of machine code.
 | `elfq FILE reach` | Where does the program start, and how many bytes of code and data does each start reach in each block of memory? |
 | `elfq FILE reach SYMBOL --to RANGE` | What does SYMBOL reach in one range of memory, such as flash, and which code uses each item there? |
 | `elfq FILE callees RANGE...` | What do the code and data in these ranges of memory use outside them, such as code in ITCM that calls a function in flash? `callers RANGE...` asks the reverse. |
-| `elfq FILE callers RANGE... --from RANGE` | What in one range of memory uses these ranges, such as code in ITCM that uses data in DTCM? `callees RANGE... --to RANGE` asks what these ranges use in that one, and either takes SYMBOL in place of the ranges. |
+| `elfq FILE callers RANGE... --from RANGE` | What in one range of memory uses these ranges, such as code in ITCM that uses data in DTCM? `callees RANGE... --to RANGE` asks what these ranges use in that one, and either takes SYMBOL, patterns or several SYMBOLs in place of the ranges. |
+| `elfq FILE callers PATTERN...` | What uses every item that a pattern such as `'uart_*'` matches, from outside them? `callees PATTERN...` asks what they use outside them. Patterns mix with several SYMBOLs and ranges. |
 | `elfq FILE retained RANGE...` | What would removing everything in these ranges of memory, such as ITCM, save? The ranges mix with SYMBOLs, and `--range` still picks which bytes count. |
 | `elfq FILE retained PATTERN...` | What would removing every item that a pattern such as `'uart_*'` or `'core::fmt::*'` matches save? Patterns mix with SYMBOLs and ranges. |
 | `elfq FILE inlined [SYMBOL]` | Which inlined functions cost the most bytes across the binary, or inside SYMBOL? Needs DWARF. |
@@ -293,10 +296,11 @@ draws such answers as trees instead. AT shows where an item is used: every
 site when there are one or two, else the first and how many more. `callers
 SYMBOL` and `callees SYMBOL` list the 30 items with the largest own sizes,
 callers in order of name and callees in the order SYMBOL first uses them,
-and a last row such as `70 more` counts the rest; with ranges, `--from` or
-`--to`, they list every crossing. `reach` lists the 30 largest items, and
-a row such as `9 more data objects in 0x20000000..0x20000450` sums up the
-rest of a block's; with `--to`, it lists every item in its ranges. Without
+and a last row such as `70 more` counts the rest; with patterns, ranges,
+several SYMBOLs, `--from` or `--to`, they list every crossing. `reach`
+lists the 30 largest items, and a row such as
+`9 more data objects in 0x20000000..0x20000450` sums up the rest of a
+block's; with `--to`, it lists every item in its ranges. Without
 SYMBOL, it lists 30 starts, and a row such as `650 more` counts the rest
 of a kind. `--all` lifts every such cut in an answer but those of AT and
 of `reach`'s WHY, cells before the name that stay short: it shows every
@@ -509,10 +513,57 @@ file's case, as the first item that matches with case ignored writes it,
 "'on_*' (3 functions)" for `ON_*`; without a leading `::`; and with `*` in
 front, as "'*n_b*' (1 function)" for `n_b*`. Else it names up to five
 imports that it matches: a pattern doesn't pick them, since their code
-isn't in the file, and `retained` refuses their names too, but `why` and
-`callers` take them as SYMBOL. Else it names names like it, as for a name,
-which helps when a C++ name typed with a space before a pointer's `*` made
-it a pattern.
+isn't in the file, and `retained` refuses their names too, but `why`, and
+`callers` given one SYMBOL, take them. Else it names names like it, as
+for a name, which helps when a C++ name typed with a space before a
+pointer's `*` made it a pattern.
+
+`callers` and `callees` take patterns too, and several SYMBOLs, alone or
+mixed with ranges. Any arguments but one SYMBOL alone, or ranges alone,
+are a set: the items that they pick together, each once, as `retained`
+takes them. They answer for a set as for ranges: an item that a SYMBOL
+or a pattern picks is inside wherever it is, with the items in the ranges
+given, the answer lists every reference that crosses the edge of the set,
+and the exit status is 1 when anything crosses, or might. So
+`callers 'on_*'` lists what uses the three event handlers from outside
+them. One SYMBOL alone keeps its own answer, but a pattern is a set even
+when it matches one item, so that the answer's shape and exit status
+don't change when a build adds or drops a match. In
+`testdata/bin/c-cortex-m7.elf`, `callers 'crc3*'` says "crc32 (the one
+item named crc3*) is used by 1 function outside it:", lists
+`process_frame`, which calls `crc32` through a veneer, and exits with 1;
+`callers crc32` lists the veneer, `__crc32_veneer`, which tail-calls it,
+and exits with 0.
+
+The first line names the set as `retained`'s does, part by part, and
+starts with a capital only where elfq's own words start it, never in a
+name: "The 3 items named leaf_* and the 6 items in
+0x00000000..0x00040000 (.itcm) are used by 4 items outside them:",
+"on_timer and on_data use 2 data objects outside them:", or for more
+than three parts, "These 4 items are used by 1 function outside them:".
+A range that holds no item, only code, as in a chip's ROM, is named by
+its addresses, as in "ram_calls_rom and 0x1fff0000..0x20000000 are used
+by 3 functions outside them:". The notes on how the patterns matched
+come first, then the notes that ranges get, such as the one on calls
+through a pointer.
+
+`--from` and `--to` take a set too. An item that a SYMBOL or pattern
+picks stays inside even when it is in their ranges, as one SYMBOL's item
+does, so `callers memset crc32 --from 0x30000000+16M` lists what in flash
+uses the two from outside them, though `memset` is in flash too. Each
+range of `--from` or `--to` must still hold an item outside the set, and
+a range among the set's arguments still may not share an item with them.
+
+`callers` and `callees` stop at the first name, pattern or range that
+they can't read, with its error, and only then check that each range
+holds something, where `retained` lists every one. An import can't be in
+a set, since the set needs each item's range. `callers` says
+"__libc_start_main is imported from a shared library, so it has no range
+in this file to put with the others; give it alone", as it answers for an
+import alone; `callees` can't answer for one either, so it gives the
+error that it gives for the import alone, "...so its code isn't in this
+file". Without an argument, the error says what they take: "callers
+needs a SYMBOL, or patterns or ranges, such as 'uart_*' or 0x0+256K".
 
 With `--tree`, every tree, in every command, is drawn at most 9 levels
 below its top row, so names never start more than 27 columns into the tree
@@ -1116,13 +1167,14 @@ command but `browse`, which is for reading in a terminal and refuses
 its links, and `objdump --start-address` the instructions. The JSON has
 every item, site and chain, where the text shows only the largest items, the
 first sites and the nearest chains; every key is always there, `null` when
-it has no value, but for `retained`'s `matches`, there only for a pattern;
-addresses are hex strings, as elfq prints them and SYMBOL takes them, and
-sizes are numbers. Each row of a list in the answer, such as
-an item of `top` or a chain of `why`, is a line of its own, so that `grep`
-and `head` work on the JSON as on the text. Until 1.0 the JSON can change,
-and each release says how. An error is never JSON: it goes to stderr, with
-exit status 2 and nothing on stdout.
+it has no value, but for `matches`, there only for a pattern, and the
+`symbols` of `callers` and `callees`, there only for SYMBOLs among other
+arguments; addresses are hex strings, as elfq prints them and SYMBOL
+takes them, and sizes are numbers. Each row of a list in the answer, such
+as an item of `top` or a chain of `why`, is a line of its own, so that
+`grep` and `head` work on the JSON as on the text. Until 1.0 the JSON
+can change, and each release says how. An error is never JSON: it goes
+to stderr, with exit status 2 and nothing on stdout.
 
 An item looks like this, spread over lines here:
 
@@ -1296,12 +1348,15 @@ several.
 | `unresolved` | for `callees` only, the calls and jumps that elfq can't follow, each with its `site`, `how`, which is `call` or `jump`, and `target`, where it goes when the code says so but no item is there, else `null` |
 | `complete` | whether the list is complete, as far as elfq can tell, as [below](#calls-elfq-cant-follow) |
 
-**`callees RANGE...`** and **`callers RANGE...`**, and with `--to` or
-`--from`, **`callees SYMBOL`** and **`callers SYMBOL`**:
+**`callees RANGE...`** and **`callers RANGE...`**, the same for patterns
+and several SYMBOLs, and with `--to` or `--from`, **`callees SYMBOL`** and
+**`callers SYMBOL`**:
 
 | Key | Value |
 |---|---|
-| `ranges` | the ranges, or the range that SYMBOL occupies: its first byte when elfq doesn't know its size |
+| `ranges` | the ranges, or the range that SYMBOL occupies: its first byte when elfq doesn't know its size; for a set, only the ranges given among its arguments, which may be none |
+| `symbols` | there only for SYMBOLs among other arguments: each one's item, in the order given, each once, with `aliases` |
+| `matches` | there only when a pattern was given: each item that each pattern matched, as in `retained`'s, above |
 | `to` | for `callees` only, the ranges of `--to`, or `null` without it |
 | `from` | for `callers` only, the ranges of `--from`, or `null` without it |
 | `callees` | for `callees`, the references that cross, a row for each pair of items and way of use, in the text's order, the largest item outside first: the `item` or import outside; the `caller` in the ranges that uses it; `how`, as in `callees SYMBOL`; `veneer`, the linker's veneer or PLT stub that a call goes through, or `null`; and the `sites`. With `--to`, only those into its ranges, where a call through a veneer in them that goes on elsewhere uses the veneer, as its `item` |
@@ -1378,9 +1433,9 @@ would name such code.
 In JSON, `callers`, `callees` and `reach` have `complete`, and `retained`
 has `indirect_calls`. Without `--to`, `reach`'s is `false` when
 `unresolved` or `unreadable` isn't empty, and without SYMBOL, each
-start's is `reach START`'s. For ranges, and with `--from` or `--to`,
-`complete` is `false` when `callees` or `reach` lists a call it can't
-follow, other than, with `--to`, one to a known address in its
+start's is `reach START`'s. For ranges and sets, and with `--from` or
+`--to`, `complete` is `false` when `callees` or `reach` lists a call it
+can't follow, other than, with `--to`, one to a known address in its
 ranges, or a function whose end it doesn't know, or when `callers` notes
 calls through a pointer to a function in the ranges, whose address is
 taken or stored other than in the vector table, which only the processor
@@ -1627,11 +1682,11 @@ in order. Its output is the first example under [Commands](#commands).
    kept together needs, and writes them through `json::write`.
 8. **Exit.** `run`, in main.rs, flushes the output and turns the answer into
    the exit status: 0 for an answer, 1 when `callers` or `callees` with
-   ranges, `--from` or `--to` finds something that crosses, or may,
-   `reach --to` finds something in its ranges, or may, `diff` finds
-   that the builds load different memory, or `startup` finds a problem
-   in what the reset code does, or may, and 2 for an error,
-   which it prints after `error:`. What the command keeps until it has
+   patterns, ranges, several SYMBOLs, `--from` or `--to` finds something
+   that crosses, or may, `reach --to` finds something in its ranges, or
+   may, `diff` finds that the builds load different memory, or `startup`
+   finds a problem in what the reset code does, or may, and 2 for an
+   error, which it prints after `error:`. What the command keeps until it has
    answered, such as the loaded file, its graph and `Names`, isn't freed:
    the commands keep it in a `Kept`, which leaves it for the system to
    take back when elfq ends, at once, since freeing it a piece at a time
@@ -1779,7 +1834,9 @@ half a second, as it works out what to suggest.
 items in them, and patterns such as `'core::fmt::*'` that stand for the
 items they match, and says what removing them at once would save, as
 text and as JSON, and lists in one error every argument that fails.
-Patterns in the other commands come next. Next for `retained`, not yet
+`callers` and `callees` take the same patterns and several SYMBOLs, and
+answer for the items they pick as for ranges. Patterns in `why`, `reach`,
+`inlined` and `browse` come next. Next for `retained`, not yet
 planned: the bytes that go in each block of memory, in one run, as
 browse's retained tab shows them; names from stdin or a file, once a list
 outgrows the command line; source files and crates; sets in shared
