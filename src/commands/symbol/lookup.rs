@@ -147,7 +147,7 @@ impl<'a> Names<'a> {
     /// The one item or import that `query` finds, from `lookup`, what it
     /// finds (see [`Names::look_up`]), or the error that [`Names::find`]
     /// gives when it finds several or none.
-    pub(super) fn one_or_error(&self, query: &str, lookup: Lookup) -> Result<Symbol> {
+    pub(in crate::commands) fn one_or_error(&self, query: &str, lookup: Lookup) -> Result<Symbol> {
         match lookup {
             Lookup::One(symbol) => Ok(symbol),
             Lookup::NoName => bail!("{}", self.nothing_named(query)),
@@ -186,17 +186,6 @@ impl<'a> Names<'a> {
             [] => Lookup::NoName,
             nodes => Lookup::Several(nodes),
         })
-    }
-
-    /// What `query` finds when it finds one item or import, as
-    /// [`Names::find`] finds it, or `None`, without working out why it
-    /// finds several or none (see [`Names::look_up`]).
-    #[cfg(feature = "tui")]
-    pub(in crate::commands) fn find_one(&self, query: &str) -> Option<Symbol> {
-        match self.look_up(query) {
-            Ok(Lookup::One(symbol)) => Some(symbol),
-            _ => None,
-        }
     }
 
     /// The answer for `query` when it finds only `node`.

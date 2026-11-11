@@ -287,16 +287,29 @@ impl<'a> Names<'a> {
 
     /// The error for `query` when it finds `nodes`, several things: that it
     /// could mean each, then `instruction`, what to do instead, such as
-    /// [`USE_ONE`], and what to type for each, next to its full name, one
-    /// to a line. An item whose shortest name is longer than 40 characters
-    /// gets its address instead, so that the names on the right line up
-    /// close by.
+    /// [`USE_ONE`], and what to type for each (see [`Names::choice_lines`]).
     pub(in crate::commands) fn choices(
         &self,
         query: &str,
         nodes: &[Node],
         instruction: &str,
     ) -> String {
+        let mut message = format!(
+            "`{query}` could mean {}; {instruction}:",
+            text::count_text(self.binary, nodes)
+        );
+        for line in self.choice_lines(nodes) {
+            message += &format!("\n  {line}");
+        }
+        message
+    }
+
+    /// The lines of an error that list `nodes`, things that SYMBOL could
+    /// mean: what to type for each, next to its full name, one to a line,
+    /// for the first ten, then how many more there are. An item whose
+    /// shortest name is longer than 40 characters gets its address
+    /// instead, so that the names on the right line up close by.
+    fn choice_lines(&self, nodes: &[Node]) -> Vec<String> {
         const SHOWN: usize = 10;
         const LONGEST: usize = 40;
         let shown = text::shown_count(nodes.len(), SHOWN);
@@ -317,21 +330,16 @@ impl<'a> Names<'a> {
             .map(|(query, _)| query.chars().count())
             .max()
             .unwrap_or(0);
-        let mut message = format!(
-            "`{query}` could mean {}; {instruction}:",
-            text::count_text(self.binary, nodes)
-        );
-        for (query, name) in rows {
-            if query == name {
-                message += &format!("\n  {query}");
-            } else {
-                message += &format!("\n  {query:width$}  {name}");
-            }
-        }
+        let mut lines: Vec<String> = (rows.into_iter())
+            .map(|(query, name)| match query == name {
+                true => query,
+                false => format!("{query:width$}  {name}"),
+            })
+            .collect();
         if shown < nodes.len() {
-            message += &format!("\n  and {} more", nodes.len() - shown);
+            lines.push(format!("and {} more", nodes.len() - shown));
         }
-        message
+        lines
     }
 }
 

@@ -641,7 +641,9 @@ The checks of `browse` that need its private types are unit tests in
 - `views/printed.rs`: how a command's answer gives way on a small screen,
   which form of its notes it shows, and how the name after "kept by" is
   shortened.
-- `views/picker.rs`: that no two rows of the go-to box read the same.
+- `views/picker.rs`: that no two rows of the go-to box read the same,
+  and that a box opened with the error for SYMBOL over its rows doesn't
+  work out that error again.
 - `views/names.rs`: each step of shortening a name.
 - `app.rs`: that tabs 2 to 6 keep their table's header and selected row
   on a small screen, that tabs 4, 5 and 6 are worked out once the screen
