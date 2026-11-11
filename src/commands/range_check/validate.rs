@@ -80,11 +80,15 @@ fn check_far_side(
     code_outside: &[u64],
 ) -> Result<()> {
     let inside = &check.inside;
-    let it = inside.it();
+    let it = inside.it(binary);
     let lists = match check.direction {
         Direction::Out => format!(
             "callees lists only what {} outside {it}",
-            if inside.one() { "it uses" } else { "they use" }
+            if inside.one(binary) {
+                "it uses"
+            } else {
+                "they use"
+            }
         ),
         Direction::In => format!("callers lists only what uses {it} from outside"),
     };
@@ -105,15 +109,15 @@ fn check_far_side(
                 "{} {} holds nothing outside {}, and {lists}",
                 check.direction.option(),
                 text::range_argument(range),
-                asked_about(inside)
+                asked_about(binary, inside)
             );
         }
     }
     Ok(())
 }
 
-/// What the ranges that a range check asks about hold: an item, or code
-/// outside every item that the file calls or jumps to, as in a chip's ROM.
+/// What is inside a range check's boundary: an item, or code outside every
+/// item that the file calls or jumps to, as in a chip's ROM.
 #[derive(Clone, Copy)]
 enum Held<'a> {
     Item(&'a Item),
@@ -133,58 +137,59 @@ impl Held<'_> {
 /// holds something outside the ranges of `--from` or `--to`, nothing is in
 /// both, since each end of a use would then be on either side.
 /// `code_outside` is where the file calls or jumps to code outside every
-/// item.
+/// item. Only what the ranges asked about hold can be in both: an item
+/// that a set's SYMBOL or pattern picked outside them is inside wherever
+/// it lies, as one SYMBOL's item is.
 fn check_nothing_shared(
     binary: &Binary,
     check: &RangeCheck,
     items: &ItemsInRanges,
     code_outside: &[u64],
 ) -> Result<()> {
-    // What is inside, with the range of the option that holds it too, if
-    // any.
+    // What is inside: what the ranges asked about hold, and the other items
+    // of a set.
     let held_items = (items.indices()).map(|index| Held::Item(&binary.items[index]));
     let held_code = code_outside
         .iter()
         .filter(|&&address| items.contains_address(address))
         .map(|&address| Held::Code(address));
+    let first_holding = |ranges: &[AddressRange], held: Held| {
+        ranges.iter().copied().find(|&range| held.is_in(range))
+    };
+    // The first thing in both, with the range of the option and the range
+    // asked about that hold it.
     let mut shared = None;
     let mut outside = false;
     for held in held_items.chain(held_code) {
-        match check
-            .far_side
-            .iter()
-            .copied()
-            .find(|&range| held.is_in(range))
-        {
-            Some(range) => {
-                shared.get_or_insert((held, range));
+        let far_range = first_holding(check.far_side, held);
+        match (far_range, first_holding(check.inside.ranges(), held)) {
+            (Some(far_range), Some(range)) => {
+                shared.get_or_insert((held, far_range, range));
             }
-            None => outside = true,
+            // A set's item, picked outside the ranges asked about.
+            (Some(_), None) => {}
+            (None, _) => outside = true,
         }
     }
-    if outside && let Some((held, far_range)) = shared {
+    if outside && let Some((held, far_range, range)) = shared {
         let what = match held {
             Held::Item(item) => item.name.clone(),
             Held::Code(address) => format!("the code at {address:#x}"),
         };
-        let range = (check.inside.ranges().iter())
-            .find(|&&range| held.is_in(range))
-            .map_or_else(
-                || asked_about(&check.inside),
-                |&range| text::range_argument(range),
-            );
         bail!(
-            "{} {} and {range} both hold {what}; give ranges that don't share it",
+            "{} {} and {} both hold {what}; give ranges that don't share it",
             check.direction.option(),
-            text::range_argument(far_range)
+            text::range_argument(far_range),
+            text::range_argument(range)
         );
     }
     Ok(())
 }
 
 /// What a range check asks about, `inside`, as its errors name it: SYMBOL,
-/// or the ranges as arguments.
-fn asked_about(inside: &Inside) -> String {
+/// the ranges as arguments, or a set as its first line names it, with
+/// every range and section.
+fn asked_about(binary: &Binary, inside: &Inside) -> String {
     match inside {
         Inside::Ranges(ranges) => {
             let texts: Vec<String> = ranges
@@ -195,6 +200,7 @@ fn asked_about(inside: &Inside) -> String {
             text::names_text(&texts, true)
         }
         Inside::Symbol { lead_name, .. } => lead_name.clone(),
+        Inside::Set(set) => set.lead_name(binary, true).to_string(),
     }
 }
 

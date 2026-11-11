@@ -1,5 +1,6 @@
 //! `elfq FILE callers SYMBOL`: what calls or uses SYMBOL. For ranges of
-//! memory in place of SYMBOL, or SYMBOL with `--from`, see `range_check/`.
+//! memory in place of SYMBOL, patterns, several SYMBOLs, or SYMBOL with
+//! `--from`, see `range_check/`.
 
 use std::io::Write;
 
@@ -27,11 +28,12 @@ struct Callers<'a> {
     complete: bool,
 }
 
-/// Answers `elfq FILE callers SYMBOL`, or with ranges in place of SYMBOL,
-/// `callers RANGE...`. `from`, the ranges of `--from`, limits either to the
-/// callers in them, and then SYMBOL is asked about as the range it
-/// occupies. For SYMBOL alone, the text lists the 30 largest callers, or
-/// with `all`, every one; for ranges, see [`range_check::run`].
+/// Answers `elfq FILE callers SYMBOL`, or with ranges, patterns or several
+/// SYMBOLs, `callers SYMBOL|PATTERN|RANGE...` (see [`symbol::subject`]).
+/// `from`, the ranges of `--from`, limits either to the callers in them,
+/// and then SYMBOL is asked about as the range it occupies. For SYMBOL
+/// alone, the text lists the 30 largest callers, or with `all`, every one;
+/// for the rest, see [`range_check::run`].
 pub(super) fn run(
     binary: &Binary,
     symbols: &[String],
@@ -41,7 +43,7 @@ pub(super) fn run(
     out: &mut dyn Write,
 ) -> Result<Outcome> {
     check_code_is_readable(binary)?;
-    let inside = match symbol::subject(binary, symbols)? {
+    let inside = match symbol::subject(binary, symbols, item_in_set)? {
         Subject::Symbol(symbol) if from.is_empty() => {
             let graph = Kept::new(Graph::build(binary));
             callers(binary, &graph, &symbol, all, format, out)?;
@@ -61,6 +63,7 @@ pub(super) fn run(
             }
         }
         Subject::Ranges(ranges) => Inside::Ranges(ranges),
+        Subject::Set(set) => Inside::Set(set),
     };
     let check = RangeCheck {
         inside,
@@ -69,6 +72,20 @@ pub(super) fn run(
     };
     let graph = Kept::new(Graph::build(binary));
     range_check::run(binary, &graph, &check, all, format, out)
+}
+
+/// The item of a SYMBOL given with others, which callers puts in a set, or
+/// an error for an import: callers answers for one alone, but it has no
+/// range in the file to put with the others.
+pub(super) fn item_in_set(binary: &Binary, node: Node) -> Result<usize> {
+    match node {
+        Node::Item(index) => Ok(index),
+        Node::Import(_) => bail!(
+            "{} is imported from a shared library, so it has no range in this file to put with \
+             the others; give it alone",
+            node.name(binary)
+        ),
+    }
 }
 
 /// Writes what calls or uses SYMBOL, using `graph`, the file's reference

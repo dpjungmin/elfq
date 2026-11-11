@@ -15,7 +15,7 @@ use anyhow::Result;
 use serde::{Serialize, Serializer};
 use serde_json::ser::Formatter;
 
-use super::symbol::{self, MatchedBy, Pattern};
+use super::symbol::{self, MatchedBy, Pattern, PatternMatches};
 use super::{text, uses};
 use crate::binary::{AddressRange, Binary, MemoryBlock};
 use crate::graph::{self, Node, ReferenceKind, RootKind};
@@ -226,6 +226,18 @@ impl<'a> Match<'a> {
             matched_as: &found.matched_as,
         }
     }
+}
+
+/// Each item that each of `patterns` matched, with how, in the order the
+/// patterns were given, and each pattern's in address order, as
+/// `retained`, `callers` and `callees` list them under `matches`. An item
+/// that two patterns matched has a row for each.
+pub(super) fn matches<'a>(binary: &'a Binary, patterns: &'a [PatternMatches]) -> Vec<Match<'a>> {
+    (patterns.iter())
+        .flat_map(|matched| {
+            (matched.matches.iter()).map(|found| Match::new(binary, &matched.pattern, found))
+        })
+        .collect()
 }
 
 /// The items at `indexes` in [`Binary::items`].

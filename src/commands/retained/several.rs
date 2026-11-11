@@ -99,7 +99,7 @@ impl Several<'_, '_, '_, '_> {
                 ..TreeAnswer::sentences(vec![sentence])
             };
         }
-        let subject = self.set.lead_name(retained.binary, all);
+        let subject = self.set.lead_name(retained.binary, all).to_string();
         let saves = would_save(&subject, removal.retained(), range.as_deref());
         let notes = self.notes(&naming);
         let shown = self.shown(all);

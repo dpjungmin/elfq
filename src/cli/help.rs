@@ -29,9 +29,9 @@ Examples:
 The overview's table is the start of the one top shows; elfq help top
 explains it.
 
-In retained, SYMBOL can be a pattern such as 'uart_*', where * stands for
-any text, for every item it matches. Quote it, so that the shell passes it
-as typed.
+In retained, callers and callees, SYMBOL can be a pattern such as
+'uart_*', where * stands for any text, for every item it matches. Quote it,
+so that the shell passes it as typed.
 
 Tables have one row per line: short cells such as sizes, HOW and AT come
 first, and the name last. Each name after \"kept by\" or \"used by\" works
@@ -42,17 +42,17 @@ chains through the 10 nearest users, diff the 30 largest changes and the
 3 sections that changed most in each block, and startup the first 30
 steps; --all shows every row and
 section, and makes sentences name everything they would cut short. With
-ranges, --from or --to, callers, callees and reach show every row. --json
-has every item, site and chain, one row per line, but the overview's JSON
-leaves its table to top's. Scripts that read why's chains should use
---json.
+patterns, ranges, several SYMBOLs, --from or --to, callers and callees show
+every row, and so does reach with --to. --json has every item, site and
+chain, one row per line, but the overview's JSON leaves its table to top's.
+Scripts that read why's chains should use --json.
 
-Exit status: 0 for an answer, 1 when callers or callees with ranges, --from
-or --to finds something that crosses, or might, reach --to finds something
-in its ranges, or might, diff finds that NEW's memory differs from
-FILE's, or startup finds a problem in what the reset code does before
-main, or might, and 2 for an error, which goes to stderr with nothing on
-stdout.";
+Exit status: 0 for an answer, 1 when callers or callees with patterns,
+ranges, several SYMBOLs, --from or --to finds something that crosses, or
+might, reach --to finds something in its ranges, or might, diff finds that
+NEW's memory differs from FILE's, or startup finds a problem in what the
+reset code does before main, or might, and 2 for an error, which goes to
+stderr with nothing on stdout.";
 
 /// The words of the HOW column, each with what it means, which `--help`
 /// prints as a table, and browse's help page lists too.
@@ -155,8 +155,8 @@ mean several items is an error, as with one SYMBOL: give each one you
 mean, or its address. A RANGE argument picks what goes; --range picks
 which bytes count.";
 
-/// What a pattern in place of SYMBOL takes, which `retained` says.
-/// docs/design.md has the rest of the rules.
+/// What a pattern in place of SYMBOL takes, which `retained`, `callers` and
+/// `callees` say. docs/design.md has the rest of the rules.
 pub(super) const PATTERNS: &str = "\
 A pattern picks items by name, as a RANGE picks them by address: * stands
 for any text, :: included. It must match all of a name, or of its end after
@@ -205,6 +205,8 @@ and a last row such as \"70 more\" counts the rest; --all lists every one.";
 pub(super) const CALLERS_RANGES: &str = "\
 With ranges of memory in place of SYMBOL, such as 0x0+256K for an ITCM,
 elfq lists only the code and data outside them that use what is in them.
+Patterns, such as 'uart_*', and several SYMBOLs answer the same way, for
+the items they pick, even when a pattern matches one item.
 Each row names the item outside first, as in \"process_frame, uses crc32\",
 and ADDRESS and SIZE are that item's. Every crossing has a row, and --all
 makes the sentences name everything they would cut short. Calls and jumps
@@ -230,9 +232,9 @@ function whose end elfq doesn't know, which a line then names. When the
 --from ranges hold a veneer or PLT stub but not the code that calls it, the
 veneer or stub is listed as the caller, at its jump.
 
-Exit status, with ranges or --from: 1 if the answer lists a caller, or
-notes calls through a pointer or code that elfq can't read; 0 if not; and 2
-for an error.";
+Exit status, with patterns, ranges, several SYMBOLs or --from: 1 if the
+answer lists a caller, or notes calls through a pointer or code that elfq
+can't read; 0 if not; and 2 for an error.";
 
 pub(super) const CALLEES: &str = "\
 The table lists the 30 largest callees by their own size, in the order
@@ -243,7 +245,9 @@ SYMBOL first uses them, and a last row such as \"70 more\" counts the rest;
 // change both.
 pub(super) const CALLEES_RANGES: &str = "\
 With ranges of memory in place of SYMBOL, such as 0x0+256K for an ITCM,
-elfq lists only what the code and data in them use outside them. Each row
+elfq lists only what the code and data in them use outside them.
+Patterns, such as 'uart_*', and several SYMBOLs answer the same way, for
+the items they pick, even when a pattern matches one item. Each row
 names the item outside first, as in \"memcpy, used by apply_filter\", and
 ADDRESS and SIZE are that item's. Every crossing has a row, and --all makes
 the sentences name everything they would cut short. Calls and jumps that
@@ -268,8 +272,9 @@ When the --to ranges hold a veneer or PLT stub but not its target, the call
 is listed as a call to the veneer or stub, as in \"__crc32_veneer, used by
 process_frame\".
 
-Exit status, with ranges or --to: 1 if the answer lists a callee, or code
-that elfq can't follow or read; 0 if not; and 2 for an error.";
+Exit status, with patterns, ranges, several SYMBOLs or --to: 1 if the
+answer lists a callee, or code that elfq can't follow or read; 0 if not;
+and 2 for an error.";
 
 pub(super) const REACH: &str = "\
 SYMBOL reaches what it calls or uses, what those call or use, and so on:

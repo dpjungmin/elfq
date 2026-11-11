@@ -1,6 +1,8 @@
 //! The two answers of a range check: [`Leaving`], what the items in the
 //! ranges use outside them, for `callees`, and [`Entering`], what uses them
-//! from outside, for `callers`. Both find the crossings of a `Boundary`
+//! from outside, for `callers`. The items may be a set's, wherever they lie
+//! (see [`Inside`](super::Inside)), and then the notes on how its patterns
+//! matched come before the others. Both find the crossings of a `Boundary`
 //! that [`run`](super::run) drew around the items inside. They mirror each
 //! other, so each is kept beside the other: a change to one usually needs
 //! the same change to the other.
@@ -16,7 +18,7 @@ use super::rows::{
     how_column, json_far_side, json_ranges, names_cell, outside_nodes, unfollowed_how,
     write_groups,
 };
-use super::{Direction, RangeCheck};
+use super::{Direction, PickedJson, RangeCheck};
 use crate::binary::{AddressRange, Binary};
 use crate::cli::Format;
 use crate::commands::{json, text};
@@ -24,7 +26,11 @@ use crate::graph::{Boundary, Crossing, Graph, ItemsInRanges, Node, Unfollowed, U
 
 #[derive(Serialize)]
 struct LeavingJson<'a> {
+    /// The ranges given in place of SYMBOL, or the one SYMBOL occupies.
     ranges: Vec<json::Range>,
+    /// For a set, its SYMBOLs and its patterns' matches.
+    #[serde(flatten)]
+    picked: PickedJson<'a>,
     /// The ranges of `--to`, or `null`.
     to: Option<Vec<json::Range>>,
     callees: Vec<CalleeJson<'a>>,
@@ -54,7 +60,11 @@ struct UnresolvedJson<'a> {
 
 #[derive(Serialize)]
 struct EnteringJson<'a> {
+    /// The ranges given in place of SYMBOL, or the one SYMBOL occupies.
     ranges: Vec<json::Range>,
+    /// For a set, its SYMBOLs and its patterns' matches.
+    #[serde(flatten)]
+    picked: PickedJson<'a>,
     /// The ranges of `--from`, or `null`.
     from: Option<Vec<json::Range>>,
     callers: Vec<CallerJson<'a>>,
@@ -99,8 +109,8 @@ fn far_side_text(binary: &Binary, far_side: &[AddressRange], it: &str, all: bool
     }
 }
 
-/// What the items in the ranges use outside them: `callees RANGE...`, or
-/// `callees SYMBOL --to RANGE`.
+/// What the items inside use outside them: `callees RANGE...`, `callees
+/// SYMBOL --to RANGE`, or a set, as `callees 'on_*'`.
 pub(super) struct Leaving<'a> {
     binary: &'a Binary,
     check: &'a RangeCheck<'a>,
@@ -166,6 +176,7 @@ impl<'a> Leaving<'a> {
         let binary = self.binary;
         let leaving = LeavingJson {
             ranges: json_ranges(self.check.inside.ranges()),
+            picked: self.check.inside.picked_json(binary),
             to: json_far_side(self.check.far_side),
             callees: callee_rows(binary, &self.crossings)
                 .iter()
@@ -182,7 +193,9 @@ impl<'a> Leaving<'a> {
         let binary = self.binary;
         let check = self.check;
         let subject = check.inside.lead_name(binary, self.all);
-        let verb = |one: &str, many: &str| if check.inside.one() { one } else { many }.to_string();
+        let subject_at_start = subject.at_start();
+        let verb =
+            |one: &str, many: &str| if check.inside.one(binary) { one } else { many }.to_string();
         let groups = groups(binary, &self.crossings, Direction::Out, |crossing| {
             how_column(binary, crossing)
         });
@@ -192,18 +205,24 @@ impl<'a> Leaving<'a> {
                 .iter()
                 .map(|unfollowed| &unfollowed.unresolved),
         );
-        let far_side = far_side_text(binary, check.far_side, check.inside.it(), self.all);
+        let far_side = far_side_text(binary, check.far_side, check.inside.it(binary), self.all);
         let lead = match (groups.is_empty(), self.unfollowed.is_empty()) {
             (true, true) if self.unreadable.is_empty() => {
-                format!("{subject} {} nothing {far_side}.", verb("uses", "use"))
+                format!(
+                    "{subject_at_start} {} nothing {far_side}.",
+                    verb("uses", "use")
+                )
             }
             (true, true) => format!(
                 "In the code elfq can read, {subject} {} nothing {far_side}.",
                 verb("uses", "use")
             ),
-            (false, true) => format!("{subject} {} {used} {far_side}:", verb("uses", "use")),
+            (false, true) => format!(
+                "{subject_at_start} {} {used} {far_side}:",
+                verb("uses", "use")
+            ),
             (true, false) if check.far_side.is_empty() => format!(
-                "{subject} {} {unknown} that elfq can't follow:",
+                "{subject_at_start} {} {unknown} that elfq can't follow:",
                 verb("makes", "make")
             ),
             (true, false) => {
@@ -211,13 +230,13 @@ impl<'a> Leaving<'a> {
                     self.unfollowed.iter().map(|u| &u.unresolved).collect();
                 let go = text::where_they_go(&cant_follow);
                 format!(
-                    "{subject} {} {unknown} that elfq can't follow, which {go} to {}:",
+                    "{subject_at_start} {} {unknown} that elfq can't follow, which {go} to {}:",
                     verb("makes", "make"),
                     text::ranges_text(binary, check.far_side, self.all)
                 )
             }
             (false, false) => format!(
-                "{subject} {} {used} {far_side}; elfq can't follow {unknown}:",
+                "{subject_at_start} {} {used} {far_side}; elfq can't follow {unknown}:",
                 verb("uses", "use")
             ),
         };
@@ -242,17 +261,16 @@ impl<'a> Leaving<'a> {
             write_groups(binary, &groups, Direction::Out, &mut table);
             table.write(out)?;
         }
+        let mut notes = check.inside.pattern_notes(binary, self.all);
         if !self.unreadable.is_empty() {
-            if listed {
-                writeln!(out)?;
-            }
-            writeln!(
-                out,
-                "{}",
-                text::unreadable_text(binary, &self.unreadable, self.all)
-            )?;
+            notes.push(text::unreadable_text(binary, &self.unreadable, self.all));
         }
-        Ok(())
+        let under = if listed {
+            NotesUnder::Table
+        } else {
+            NotesUnder::FirstLine
+        };
+        write_notes(&notes, under, out)
     }
 }
 
@@ -271,8 +289,8 @@ pub(in crate::commands) fn complete<'u>(
         && (cant_follow.into_iter()).all(|unresolved| limited && unresolved.target.is_some())
 }
 
-/// What uses the items in the ranges from outside them: `callers
-/// RANGE...`, or `callers SYMBOL --from RANGE`.
+/// What uses the items inside from outside them: `callers RANGE...`,
+/// `callers SYMBOL --from RANGE`, or a set, as `callers 'on_*'`.
 pub(super) struct Entering<'a> {
     binary: &'a Binary,
     check: &'a RangeCheck<'a>,
@@ -304,13 +322,13 @@ impl<'a> Entering<'a> {
         all: bool,
     ) -> Entering<'a> {
         let from = ItemsInRanges::new(binary, check.far_side);
-        let in_ranges = |index: usize| boundary.items().contains_item(index);
+        let inside = |index: usize| boundary.items().contains_item(index);
         // Code in the `--from` ranges that elfq can't read may use the
         // ranges in any way.
         let unreadable: Vec<usize> = from
             .unreadable()
             .into_iter()
-            .filter(|&index| !in_ranges(index))
+            .filter(|&index| !inside(index))
             .collect();
         // Code anywhere may call through a pointer passed to it, but with
         // `--from`, only code in its ranges counts.
@@ -318,7 +336,7 @@ impl<'a> Entering<'a> {
             graph.unresolved.iter().any(|unresolved| {
                 unresolved.is_indirect()
                     && from.contains_item(unresolved.from)
-                    && !in_ranges(unresolved.from)
+                    && !inside(unresolved.from)
             })
         };
         let through_pointer =
@@ -370,6 +388,7 @@ impl<'a> Entering<'a> {
         });
         let entering = EnteringJson {
             ranges: json_ranges(self.check.inside.ranges()),
+            picked: self.check.inside.picked_json(binary),
             from: json_far_side(self.check.far_side),
             callers: each_row(groups)
                 .map(|(outside, row)| CallerJson {
@@ -392,7 +411,7 @@ impl<'a> Entering<'a> {
         let binary = self.binary;
         let check = self.check;
         let subject = check.inside.lead_name(binary, self.all);
-        let it = check.inside.it();
+        let it = check.inside.it(binary);
         let groups = groups(binary, &self.crossings, Direction::In, |crossing| {
             how_column(binary, crossing)
         });
@@ -419,10 +438,15 @@ impl<'a> Entering<'a> {
                     callers.push(caller);
                 }
             }
+            let verb = if check.inside.one(binary) {
+                "is"
+            } else {
+                "are"
+            };
             writeln!(
                 out,
-                "{subject} {} used by {} {far_side}:",
-                if check.inside.one() { "is" } else { "are" },
+                "{} {verb} used by {} {far_side}:",
+                subject.at_start(),
                 text::count_text(binary, &callers),
             )?;
             writeln!(out)?;
@@ -450,33 +474,53 @@ impl<'a> Entering<'a> {
             write_groups(binary, &groups, Direction::In, &mut table);
             table.write(out)?;
         }
+        let mut notes = check.inside.pattern_notes(binary, self.all);
         if !self.through_pointer.is_empty() {
             let names: Vec<&str> = self
                 .through_pointer
                 .iter()
                 .map(|&index| binary.items[index].name.as_str())
                 .collect();
-            if listed {
-                writeln!(out)?;
-            }
-            writeln!(
-                out,
+            notes.push(format!(
                 "Calls through a pointer to {} aren't listed, since elfq can't see them.",
                 text::names_text(&names, self.all)
-            )?;
+            ));
         }
         if !self.unreadable.is_empty() {
-            if listed && self.through_pointer.is_empty() {
-                writeln!(out)?;
-            }
-            writeln!(
-                out,
-                "{}",
-                text::unreadable_text(binary, &self.unreadable, self.all)
-            )?;
+            notes.push(text::unreadable_text(binary, &self.unreadable, self.all));
         }
-        Ok(())
+        let under = if listed {
+            NotesUnder::Table
+        } else {
+            NotesUnder::FirstLine
+        };
+        write_notes(&notes, under, out)
     }
+}
+
+/// What an answer's notes come under.
+#[derive(Clone, Copy)]
+enum NotesUnder {
+    /// The table of its rows, after an empty line.
+    Table,
+    /// Its first line, right under it, when it listed no row.
+    FirstLine,
+}
+
+/// Writes `notes`, the lines under an answer: the notes on how a set's
+/// patterns matched first, then what the rows can't list. They come
+/// together `under` the answer's table, after an empty line, or right
+/// under its first line when it listed no row.
+fn write_notes(notes: &[String], under: NotesUnder, out: &mut dyn Write) -> Result<()> {
+    // An empty line sets the notes apart from the table above them.
+    match under {
+        NotesUnder::Table if !notes.is_empty() => writeln!(out)?,
+        NotesUnder::Table | NotesUnder::FirstLine => {}
+    }
+    for note in notes {
+        writeln!(out, "{note}")?;
+    }
+    Ok(())
 }
 
 /// The calls and jumps that elfq can't follow, for JSON.

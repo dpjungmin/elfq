@@ -13,7 +13,7 @@ use std::io::Write;
 
 use anyhow::{Result, bail};
 
-use super::checks::check_code_is_readable;
+use super::checks::{check_code_is_readable, item_in_file};
 use super::kept::freeing;
 use super::range_check::Direction;
 use super::text::CommandLine;
@@ -145,8 +145,8 @@ fn check_json(cli: &Cli) -> Result<()> {
 }
 
 /// The `run` of `callers` and `callees`, which takes the file, SYMBOL or
-/// ranges, the ranges of `--from` or `--to`, whether to list all, the format
-/// and the output.
+/// what is given in its place, the ranges of `--from` or `--to`, whether to
+/// list all, the format and the output.
 type UsesRun =
     fn(&Binary, &[String], &[AddressRange], bool, Format, &mut dyn Write) -> Result<Outcome>;
 
@@ -157,6 +157,8 @@ struct UsesQuery<'a> {
     direction: Direction,
     /// The command's `run`.
     run: UsesRun,
+    /// How the command takes a SYMBOL among others.
+    item_in_set: symbol::ItemInSet,
     args: &'a UsesArgs,
     /// The ranges of `--from` or `--to`.
     far_side: &'a [AddressRange],
@@ -172,6 +174,7 @@ impl UsesQuery<'_> {
             Command::Callers(args) => Some(UsesQuery {
                 direction: Direction::In,
                 run: callers::run,
+                item_in_set: callers::item_in_set,
                 args: &args.uses,
                 far_side: &args.from,
                 misplaced: !args.misplaced_to.is_empty(),
@@ -179,6 +182,7 @@ impl UsesQuery<'_> {
             Command::Callees(args) => Some(UsesQuery {
                 direction: Direction::Out,
                 run: callees::run,
+                item_in_set: item_in_file,
                 args: &args.uses,
                 far_side: &args.to,
                 misplaced: !args.misplaced_from.is_empty(),
@@ -189,7 +193,7 @@ impl UsesQuery<'_> {
 }
 
 /// Refuses what `callers` or `callees` doesn't take: the other command's
-/// option, no SYMBOL, and with `--range`, ranges mixed with a SYMBOL.
+/// option, and no SYMBOL.
 fn check_uses(cli: &Cli, uses: &UsesQuery) -> Result<()> {
     let name = uses.direction.command();
     if uses.misplaced {
@@ -201,19 +205,13 @@ fn check_uses(cli: &Cli, uses: &UsesQuery) -> Result<()> {
             uses.direction.option()
         )
     }
-    let symbols = &uses.args.symbols;
     if cli.range.is_some() {
-        if symbols.len() > 1
-            && let Some(query) = symbols.iter().find(|query| !symbol::is_range(query))
-        {
-            bail!("`{query}` isn't a range; give one SYMBOL, or ranges such as 0x0+256K")
-        }
         // Which command can take its place depends on what the file holds:
         // see `refuse_range`.
         return Ok(());
     }
-    if symbols.is_empty() {
-        bail!("{name} needs a SYMBOL, or ranges such as 0x0+256K")
+    if uses.args.symbols.is_empty() {
+        bail!("{name} needs a SYMBOL, or patterns or ranges, such as 'uart_*' or 0x0+256K")
     }
     Ok(())
 }
@@ -273,7 +271,7 @@ fn refuse_range(cli: &Cli, binary: &Binary, uses: &UsesQuery, range: AddressRang
     let ranges = symbols.iter().all(|query| symbol::is_range(query));
     if !ranges {
         // A mistyped name is the first thing to fix.
-        freeing(|| symbol::subject(binary, symbols))?;
+        freeing(|| symbol::subject(binary, symbols, uses.item_in_set))?;
     }
     let answer = |symbols: &[String], far_side: &[AddressRange]| {
         let sink = &mut std::io::sink();

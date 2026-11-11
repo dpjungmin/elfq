@@ -1,6 +1,6 @@
 //! A set: the items that several SYMBOLs, patterns and ranges given in
-//! place of SYMBOL pick together, as `retained` takes them, and how an
-//! answer's first line names them.
+//! place of SYMBOL pick together, as `retained`, `callers` and `callees`
+//! take them, and how an answer's first line names them.
 //!
 //! Each argument picks items ([`Pick`]): a SYMBOL its item, a pattern every
 //! item it matches, and a range every item with a byte in it, both in
@@ -16,10 +16,18 @@
 //!   there are;
 //! - ranges alone: by the ranges, as `callers` names them, "the 6 items in
 //!   0x00000000..0x000000e0 (.itcm)", since the user named no item;
-//! - a pattern among them: each part of what was given in turn, a
-//!   [`Named`], up to three, as "the 3 items named on_* and process_frame".
+//! - a pattern among them, or a range that holds only code, as in a chip's
+//!   ROM, which no item names: each part of what was given in turn, a
+//!   [`Named`], up to three, as "the 3 items named on_* and process_frame"
+//!   or "ram_calls_rom and 0x1fff0000..0x20000000".
+//!
+//! Those words are a [`LeadName`], which says whether they start with a
+//! name or with elfq's own words, which take a capital letter when the
+//! sentence starts with them, as in `callers`' "The 3 items named on_* are
+//! used by".
 
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 
 use super::PatternMatches;
 use super::matched::named_by_patterns;
@@ -79,7 +87,8 @@ enum Named {
     /// that the answer gives it.
     Symbol { index: usize, lead_name: String },
     /// The ranges given in place of SYMBOL, each once, in the order given,
-    /// which the first line names together, by the items in them.
+    /// which the first line names together, by the items in them, or by
+    /// their addresses when they hold only code.
     Ranges(Vec<AddressRange>),
     /// The patterns given in place of SYMBOL, which the first line names
     /// together, by the items they matched.
@@ -210,41 +219,82 @@ impl Set {
         }
     }
 
+    /// The ranges given, each once, in the order given, among whatever else
+    /// was given; none when no range was.
+    pub(in crate::commands) fn ranges(&self) -> &[AddressRange] {
+        (self.parts.iter())
+            .find_map(|part| match part {
+                Named::Ranges(ranges) => Some(&ranges[..]),
+                Named::Symbol { .. } | Named::Patterns => None,
+            })
+            .unwrap_or_default()
+    }
+
+    /// The items that the SYMBOLs given name, as indexes into
+    /// [`Binary::items`], each once, in the order given; none when no
+    /// SYMBOL was given.
+    pub(in crate::commands) fn symbols(&self) -> Vec<usize> {
+        (self.parts.iter())
+            .filter_map(|part| match part {
+                Named::Symbol { index, .. } => Some(*index),
+                Named::Ranges(_) | Named::Patterns => None,
+            })
+            .collect()
+    }
+
+    /// Whether the set holds the item at `index`, an index into
+    /// [`Binary::items`].
+    fn holds(&self, index: usize) -> bool {
+        self.items.iter().any(|found| found.index == index)
+    }
+
+    /// Whether a range given holds no item at all, only code outside every
+    /// item that the file calls or jumps to, as in a chip's ROM. `callers`
+    /// takes such a range; `retained` refuses it, so a range of its set
+    /// always holds an item.
+    pub(in crate::commands) fn has_range_of_code_only(&self, binary: &Binary) -> bool {
+        let holds_an_item =
+            |range: AddressRange| (binary.items.iter()).any(|item| item.is_in(&[range]));
+        self.ranges().iter().any(|&range| !holds_an_item(range))
+    }
+
     /// How the answer's first line names the set's items, by what picked
     /// them: by the ranges when only ranges were given (see [`in_ranges`]);
-    /// part by part when a pattern was (see [`Set::by_parts`]); and
-    /// otherwise by their names, "a" or "a and b", or from three on, by how
-    /// many, "these 6 items", so that it stays short however many there
-    /// are. With `all`, it names every range and section.
-    pub(in crate::commands) fn lead_name(&self, binary: &Binary, all: bool) -> String {
+    /// part by part when a pattern was given, or a range that holds only
+    /// code, which no item names (see [`Set::by_parts`]); and otherwise by
+    /// their names, "a" or "a and b", or from three on, by how many, "these
+    /// 6 items", so that it stays short however many there are. With
+    /// `all`, it names every range and section.
+    pub(in crate::commands) fn lead_name(&self, binary: &Binary, all: bool) -> LeadName {
         let names: Vec<&str> = (self.items.iter())
             .map(|found| found.lead_name.as_str())
             .collect();
         if let Some(ranges) = self.ranges_alone() {
             return in_ranges(binary, ranges, &names, all);
         }
-        if !self.patterns.is_empty() {
+        if !self.patterns.is_empty() || self.has_range_of_code_only(binary) {
             return self.by_parts(binary, all);
         }
         match &names[..] {
-            [one] => one.to_string(),
-            [first, second] => format!("{first} and {second}"),
-            _ => format!("these {} items", names.len()),
+            [one] => LeadName::name(one.to_string()),
+            [first, second] => LeadName::name(format!("{first} and {second}")),
+            _ => LeadName::count(format!("these {} items", names.len())),
         }
     }
 
     /// How the first line names the set's items when a pattern is among
-    /// what was given: each part, in the order given, as "a", "a and b" or
-    /// "a, b and c", with a SYMBOL by its name, the ranges as [`in_ranges`]
-    /// names them, and the patterns as [`named_by_patterns`] does, by every
-    /// item they matched, as in "the 3 items named on_* and process_frame".
-    /// An item that two parts pick is named by each, as in "on_button (the
-    /// one item named on_b*) and on_button". A SYMBOL or ranges whose items
-    /// are no longer in the set, since `retained` left them out, aren't
-    /// named. With more than three parts, or patterns, it counts the items,
-    /// "these 6 items", a pattern's by what it matched, or names the one.
-    fn by_parts(&self, binary: &Binary, all: bool) -> String {
-        let in_set = |index: usize| self.items.iter().any(|found| found.index == index);
+    /// what was given, or a range that holds only code: each part, in the
+    /// order given, as "a", "a and b" or "a, b and c", with a SYMBOL by its
+    /// name, the ranges as [`in_ranges`] names them, or by their addresses
+    /// when they hold only code, as in a chip's ROM, and the patterns as
+    /// [`named_by_patterns`] does, by every item they matched, as in "the 3
+    /// items named on_* and process_frame". An item that two parts pick is
+    /// named by each, as in "on_button (the one item named on_b*) and
+    /// on_button". A SYMBOL or ranges whose items are no longer in the set,
+    /// since `retained` left them out, aren't named. With more than three
+    /// parts, or patterns, it counts the items, "these 6 items", a
+    /// pattern's by what it matched, or names the one.
+    fn by_parts(&self, binary: &Binary, all: bool) -> LeadName {
         // The items that the parts name: those in the set, and every item
         // that the patterns matched, which they count even when `retained`
         // leaves it out.
@@ -255,39 +305,117 @@ impl Set {
             )
             .collect();
         let these = match &self.items[..] {
-            [one] if named_items.len() == 1 => one.lead_name.clone(),
-            _ => format!("these {} items", named_items.len()),
+            [one] if named_items.len() == 1 => LeadName::name(one.lead_name.clone()),
+            _ => LeadName::count(format!("these {} items", named_items.len())),
         };
-        let mut words: Vec<String> = Vec::new();
+        let mut part_names: Vec<LeadName> = Vec::new();
         for part in &self.parts {
             let words_for_part = match part {
-                Named::Symbol { index, .. } if !in_set(*index) => continue,
-                Named::Symbol { lead_name, .. } => lead_name.clone(),
+                Named::Symbol { index, .. } if !self.holds(*index) => continue,
+                Named::Symbol { lead_name, .. } => LeadName::name(lead_name.clone()),
                 Named::Ranges(ranges) => {
                     let names: Vec<&str> = (self.items.iter())
                         .map(|found| &binary.items[found.index])
                         .filter(|item| item.is_in(ranges))
                         .map(|item| item.name.as_str())
                         .collect();
-                    if names.is_empty() {
+                    if !names.is_empty() {
+                        in_ranges(binary, ranges, &names, all)
+                    } else if (binary.items.iter()).any(|item| item.is_in(ranges)) {
+                        // `retained` left out every item in them.
                         continue;
+                    } else {
+                        // Code only, as in a chip's ROM, which `callers`
+                        // takes: no item names it, so its addresses do, as
+                        // for ranges alone.
+                        LeadName::name(text::ranges_text(binary, ranges, all))
                     }
-                    in_ranges(binary, ranges, &names, all)
                 }
                 Named::Patterns => match named_by_patterns(binary, &self.patterns) {
                     Some(named) => named,
                     None => return these,
                 },
             };
-            words.push(words_for_part);
+            part_names.push(words_for_part);
         }
-        match words.len() {
-            1..=3 => {
-                let words: Vec<&str> = words.iter().map(String::as_str).collect();
-                text::names_text(&words, true)
+        match &part_names[..] {
+            [first, ..] if part_names.len() <= 3 => {
+                let words: Vec<&str> = (part_names.iter())
+                    .map(|part| part.words.as_str())
+                    .collect();
+                LeadName {
+                    words: text::names_text(&words, true),
+                    opening: first.opening,
+                }
             }
             _ => these,
         }
+    }
+}
+
+/// How an answer's first line names what it is about, as [`Set::lead_name`]
+/// words a set: words that start with a name, as in "crc32 and report", or
+/// with elfq's own words, which count the items, as in "the 3 items named
+/// on_*". Written as it is, it reads in the middle of a sentence;
+/// [`LeadName::at_start`] gives it at the start of one.
+pub(in crate::commands) struct LeadName {
+    /// The words, as in the middle of a sentence.
+    words: String,
+    opening: Opening,
+}
+
+/// What the words of a [`LeadName`] start with.
+#[derive(Clone, Copy)]
+enum Opening {
+    /// A name or a range, as "crc32" or "0x00000000..0x00040000 (.itcm)",
+    /// which keeps its case at the start of a sentence.
+    Name,
+    /// elfq's own words, which count the items, as "the 3 items named on_*"
+    /// or "these 6 items", and take a capital letter there.
+    Count,
+}
+
+impl LeadName {
+    /// Words that start with a name or a range, such as SYMBOL's name as
+    /// [`Symbol::lead_name`] gives it.
+    ///
+    /// [`Symbol::lead_name`]: super::Symbol::lead_name
+    pub(in crate::commands) fn name(words: String) -> LeadName {
+        LeadName {
+            words,
+            opening: Opening::Name,
+        }
+    }
+
+    /// elfq's own words, which count the items, as "the 3 items named
+    /// on_*".
+    pub(super) fn count(words: String) -> LeadName {
+        LeadName {
+            words,
+            opening: Opening::Count,
+        }
+    }
+
+    /// The words at the start of a sentence, where elfq's own take a
+    /// capital letter: "The 3 items named on_*", but "crc32 and report".
+    pub(in crate::commands) fn at_start(&self) -> String {
+        match self.opening {
+            Opening::Name => self.words.clone(),
+            Opening::Count => {
+                let mut letters = self.words.chars();
+                (letters.next().into_iter())
+                    .flat_map(char::to_uppercase)
+                    .chain(letters)
+                    .collect()
+            }
+        }
+    }
+}
+
+impl fmt::Display for LeadName {
+    /// The words, as in the middle of a sentence.
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(&self.words)
     }
 }
 
@@ -310,7 +438,7 @@ fn items_in(binary: &Binary, range: AddressRange) -> Vec<Found> {
 /// with the ranges as a note, as an address given as SYMBOL does in "crc32
 /// (which holds 0x14)": "SysTick_Handler (the one item in
 /// 0x00000000..0x00000010)".
-fn in_ranges(binary: &Binary, ranges: &[AddressRange], names: &[&str], all: bool) -> String {
+fn in_ranges(binary: &Binary, ranges: &[AddressRange], names: &[&str], all: bool) -> LeadName {
     match names {
         [one] => {
             let ranges: Vec<String> = ranges
@@ -318,11 +446,14 @@ fn in_ranges(binary: &Binary, ranges: &[AddressRange], names: &[&str], all: bool
                 .map(|&range| text::range_argument(range))
                 .collect();
             let ranges: Vec<&str> = ranges.iter().map(String::as_str).collect();
-            format!("{one} (the one item in {})", text::names_text(&ranges, all))
+            LeadName::name(format!(
+                "{one} (the one item in {})",
+                text::names_text(&ranges, all)
+            ))
         }
         _ => {
             let ranges = text::ranges_text(binary, ranges, all);
-            format!("the {} items in {ranges}", names.len())
+            LeadName::count(format!("the {} items in {ranges}", names.len()))
         }
     }
 }
@@ -332,7 +463,7 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::commands::symbol::{Names, Pattern};
+    use crate::commands::symbol::{Names, Pattern, fixtures};
 
     /// The Cortex-M7 sample, with code in ITCM at 0x0 and flash at
     /// 0x30000000.
@@ -374,7 +505,11 @@ mod tests {
     #[test]
     fn the_lead_names_few_symbols_counts_more_and_names_ranges() {
         let binary = sample();
-        let lead = |picks: Vec<Pick>| Set::new(&binary, picks).lead_name(&binary, false);
+        let lead = |picks: Vec<Pick>| {
+            Set::new(&binary, picks)
+                .lead_name(&binary, false)
+                .to_string()
+        };
         assert_eq!(lead(vec![symbol(&binary, "crc32")]), "crc32");
         assert_eq!(
             lead(vec![
@@ -407,7 +542,11 @@ mod tests {
     #[test]
     fn with_a_pattern_the_lead_names_each_part_in_the_order_given() {
         let binary = sample();
-        let lead = |picks: Vec<Pick>| Set::new(&binary, picks).lead_name(&binary, false);
+        let lead = |picks: Vec<Pick>| {
+            Set::new(&binary, picks)
+                .lead_name(&binary, false)
+                .to_string()
+        };
         assert_eq!(
             lead(vec![pattern(&binary, "on_*"), symbol(&binary, "crc32")]),
             "the 3 items named on_* and crc32"
@@ -474,5 +613,87 @@ mod tests {
                 }][..]
             )
         );
+    }
+
+    #[test]
+    fn a_set_gives_its_ranges_and_symbols_each_once_in_the_order_given() {
+        let binary = sample();
+        let index = |name: &str| (binary.items.iter()).position(|item| item.name == name);
+        let set = Set::new(
+            &binary,
+            vec![
+                range(0xd0, 0xd8),
+                symbol(&binary, "crc32"),
+                pattern(&binary, "on_*"),
+                range(0x0, 0x10),
+                symbol(&binary, "report"),
+                range(0xd0, 0xd8),
+                symbol(&binary, "crc32"),
+            ],
+        );
+        assert_eq!(
+            set.ranges(),
+            [
+                AddressRange {
+                    start: 0xd0,
+                    end: 0xd8
+                },
+                AddressRange {
+                    start: 0x0,
+                    end: 0x10
+                }
+            ]
+        );
+        assert_eq!(
+            set.symbols(),
+            [index("crc32").unwrap(), index("report").unwrap()]
+        );
+        // A pattern alone gives neither.
+        let set = Set::new(&binary, vec![pattern(&binary, "on_*")]);
+        assert!(set.ranges().is_empty());
+        assert!(set.symbols().is_empty());
+    }
+
+    #[test]
+    fn a_lead_takes_a_capital_letter_only_where_elfq_words_start_it() {
+        let binary = sample();
+        let at_start = |picks: Vec<Pick>| {
+            Set::new(&binary, picks)
+                .lead_name(&binary, false)
+                .at_start()
+        };
+        assert_eq!(
+            at_start(vec![pattern(&binary, "on_*"), symbol(&binary, "crc32")]),
+            "The 3 items named on_* and crc32"
+        );
+        assert_eq!(
+            at_start(vec![range(0x0, 0x10), range(0xd0, 0xd8)]),
+            "The 2 items in 0x00000000..0x00000010 (.itcm) and 0x000000d0..0x000000d8 (.itcm)"
+        );
+        assert_eq!(
+            at_start(vec![
+                symbol(&binary, "crc32"),
+                symbol(&binary, "report"),
+                symbol(&binary, "main")
+            ]),
+            "These 3 items"
+        );
+        assert_eq!(
+            at_start(vec![symbol(&binary, "crc32"), pattern(&binary, "on_*")]),
+            "crc32 and the 3 items named on_*"
+        );
+        assert_eq!(
+            at_start(vec![pattern(&binary, "crc3*")]),
+            "crc32 (the one item named crc3*)"
+        );
+        // A name keeps its case, even one that reads as elfq's own words.
+        let binary = fixtures::functions(&["these", "the"]);
+        let lead = Set::new(
+            &binary,
+            vec![symbol(&binary, "these"), symbol(&binary, "the")],
+        )
+        .lead_name(&binary, false);
+        assert_eq!(lead.at_start(), "these and the");
+        assert_eq!(lead.to_string(), "these and the");
     }
 }

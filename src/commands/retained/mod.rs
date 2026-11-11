@@ -88,7 +88,7 @@ pub(super) fn run(
         (Format::Text | Format::Tree, [one]) => {
             // The one item of patterns or ranges given alone is named with
             // them.
-            let lead_name = set.lead_name(binary, all);
+            let lead_name = set.lead_name(binary, all).to_string();
             let symbol = SymbolInTree {
                 retained: &retained,
                 index: one.index,

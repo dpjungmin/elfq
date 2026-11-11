@@ -3,20 +3,23 @@
 //! read, and which ones code may call through a pointer.
 //!
 //! An item is in the ranges when any of its bytes are, and an import never
-//! is. [`Boundary`](super::Boundary) builds on this to find the uses that
-//! cross the ranges' edge; a command that only asks about the items needs
-//! nothing more.
+//! is. The items of a set that `callers` and `callees` take, which SYMBOLs
+//! and patterns pick wherever they lie, are in them too
+//! ([`ItemsInRanges::with_items`]). [`Boundary`](super::Boundary) builds on
+//! this to find the uses that cross the ranges' edge; a command that only
+//! asks about the items needs nothing more.
 
 use crate::binary::{AddressRange, Binary, ItemKind};
 
 use super::{Graph, Node, ReferenceKind, RootKind};
 
-/// The items in some ranges of memory.
+/// The items in some ranges of memory, and any others picked one by one.
 pub(crate) struct ItemsInRanges<'a> {
     binary: &'a Binary,
-    /// The ranges as given: an item with any byte in one of them is inside.
+    /// The ranges as given: an item with any byte in one of them is inside,
+    /// and so is any address in them.
     ranges: &'a [AddressRange],
-    /// For each item, whether it is in the ranges.
+    /// For each item, whether it is inside.
     inside: Vec<bool>,
 }
 
@@ -32,13 +35,31 @@ impl<'a> ItemsInRanges<'a> {
         }
     }
 
-    /// Whether the item at `index`, an index into [`Binary::items`], is in
-    /// the ranges.
+    /// Works out which items are inside: those at `picked`, indices into
+    /// [`Binary::items`], wherever they lie, as a set's SYMBOLs and patterns
+    /// pick them, and those in `ranges`, as [`ItemsInRanges::new`] finds
+    /// them. An address is inside only when it is in `ranges`: the
+    /// addresses that the boundary asks about are those of code outside
+    /// every item, as in a chip's ROM, which no picked item holds.
+    pub(crate) fn with_items(
+        binary: &'a Binary,
+        picked: impl IntoIterator<Item = usize>,
+        ranges: &'a [AddressRange],
+    ) -> ItemsInRanges<'a> {
+        let mut items = ItemsInRanges::new(binary, ranges);
+        for index in picked {
+            items.inside[index] = true;
+        }
+        items
+    }
+
+    /// Whether the item at `index`, an index into [`Binary::items`], is
+    /// inside: in the ranges, or picked one by one.
     pub(crate) fn contains_item(&self, index: usize) -> bool {
         self.inside[index]
     }
 
-    /// Whether `node` is an item in the ranges. An import never is.
+    /// Whether `node` is an item inside. An import never is.
     pub(super) fn contains(&self, node: Node) -> bool {
         match node {
             Node::Item(index) => self.inside[index],
@@ -51,24 +72,24 @@ impl<'a> ItemsInRanges<'a> {
         self.ranges.iter().any(|range| range.contains(address))
     }
 
-    /// The items in the ranges, as indices into [`Binary::items`], in
-    /// their order there.
+    /// The items inside, as indices into [`Binary::items`], in their order
+    /// there.
     pub(crate) fn indices(&self) -> impl Iterator<Item = usize> {
         (0..self.inside.len()).filter(|&index| self.inside[index])
     }
 
-    /// The functions in the ranges whose code elfq can't read, since it
-    /// doesn't know where they end.
+    /// The functions inside whose code elfq can't read, since it doesn't
+    /// know where they end.
     pub(crate) fn unreadable(&self) -> Vec<usize> {
         self.functions()
             .filter(|&index| self.binary.items[index].size == 0)
             .collect()
     }
 
-    /// The functions in the ranges whose address is taken or stored, so
-    /// that code outside them may call them through a pointer, which elfq
-    /// can't see. A pointer in the vector table doesn't count: only the
-    /// processor calls through it. `graph` is the file's graph.
+    /// The functions inside whose address is taken or stored, so that code
+    /// outside them may call them through a pointer, which elfq can't see.
+    /// A pointer in the vector table doesn't count: only the processor
+    /// calls through it. `graph` is the file's graph.
     pub(crate) fn callable_through_pointer(&self, graph: &Graph) -> Vec<usize> {
         let vector_tables: Vec<Node> = graph
             .roots
@@ -90,7 +111,7 @@ impl<'a> ItemsInRanges<'a> {
         self.functions().filter(|&index| taken[index]).collect()
     }
 
-    /// The functions in the ranges, as indices into [`Binary::items`].
+    /// The functions inside, as indices into [`Binary::items`].
     fn functions(&self) -> impl Iterator<Item = usize> {
         self.indices()
             .filter(|&index| self.binary.items[index].kind == ItemKind::Function)
@@ -153,5 +174,22 @@ mod tests {
         graph.references.sort_by_key(|r| (r.from, r.site));
         let items = ItemsInRanges::new(&binary, &ranges);
         assert_eq!(items.callable_through_pointer(&graph), [handler]);
+    }
+
+    #[test]
+    fn items_picked_one_by_one_are_inside_wherever_they_lie() {
+        let (binary, _) = sample();
+        // SysTick_Handler is the item in 0x0..0x10; main is in flash.
+        let ranges = ["0x0+0x10".parse().unwrap()];
+        let main = index(&binary, "main");
+        let items = ItemsInRanges::with_items(&binary, [main], &ranges);
+        let mut inside: Vec<usize> = items.indices().collect();
+        inside.sort();
+        let mut expected = [index(&binary, "SysTick_Handler"), main];
+        expected.sort();
+        assert_eq!(inside, expected);
+        // But only the ranges hold addresses.
+        assert!(items.contains_address(0x8));
+        assert!(!items.contains_address(binary.items[main].address));
     }
 }

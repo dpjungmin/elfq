@@ -3,10 +3,11 @@
 //! calls a function in flash. With `--to` or `--from`, only what is in
 //! other ranges on the far side. `callees SYMBOL --to RANGE` and `callers
 //! SYMBOL --from RANGE` come here too, and ask about the range that SYMBOL
-//! occupies.
+//! occupies, and so do patterns, several SYMBOLs, and SYMBOLs with ranges,
+//! which ask about the items they pick, wherever those lie.
 //!
-//! What a check asks about is [`Inside`] the boundary: the ranges, or one
-//! SYMBOL. [`run`] answers in three steps:
+//! What a check asks about is [`Inside`] the boundary: the ranges, one
+//! SYMBOL, or a set. [`run`] answers in three steps:
 //!
 //! 1. It works out the items inside once, an [`ItemsInRanges`], which the
 //!    next two steps share.
@@ -34,11 +35,14 @@ pub(super) use validate::{check_holds_items, check_to_range};
 use std::io::Write;
 
 use anyhow::Result;
+use serde::Serialize;
 
-use super::{Outcome, text};
+use super::symbol::{self, LeadName, Set};
+use super::text::{self, Naming};
+use super::{Outcome, json};
 use crate::binary::{AddressRange, Binary};
 use crate::cli::Format;
-use crate::graph::{Boundary, Graph, ItemsInRanges};
+use crate::graph::{Boundary, Graph, ItemsInRanges, Node};
 use crossing::{Entering, Leaving};
 
 /// Which way the references cross the boundary: out of the ranges for
@@ -79,7 +83,7 @@ impl Direction {
 
 /// What a range check asks.
 pub(super) struct RangeCheck<'a> {
-    /// What it asks about: the ranges in place of SYMBOL, or SYMBOL.
+    /// What it asks about: the ranges in place of SYMBOL, SYMBOL, or a set.
     pub(super) inside: Inside,
     /// The ranges of `--from` or `--to`: when there are any, only the uses
     /// whose far end is in them count.
@@ -102,16 +106,22 @@ pub(super) enum Inside {
         range: AddressRange,
         lead_name: String,
     },
+    /// What patterns, several SYMBOLs, or SYMBOLs with ranges pick
+    /// together: their items, wherever they lie, which the answer names as
+    /// [`Set::lead_name`] does.
+    Set(Set),
 }
 
 impl Inside {
     /// The ranges asked about: those given, or the one that SYMBOL's item
     /// occupies, as the answer's JSON lists them. Code in them that is
-    /// outside every item, as in a chip's ROM, is inside too.
+    /// outside every item, as in a chip's ROM, is inside too. A set has
+    /// only the ranges given among its arguments, if any.
     fn ranges(&self) -> &[AddressRange] {
         match self {
             Inside::Ranges(ranges) => ranges,
             Inside::Symbol { range, .. } => std::slice::from_ref(range),
+            Inside::Set(set) => set.ranges(),
         }
     }
 
@@ -122,30 +132,93 @@ impl Inside {
             // Every item with a byte in the ranges: for SYMBOL, its item,
             // and any other that shares its bytes.
             Inside::Ranges(_) | Inside::Symbol { .. } => ItemsInRanges::new(binary, self.ranges()),
+            // Each item picked, wherever it lies, and so every item in the
+            // ranges given.
+            Inside::Set(set) => {
+                let picked = set.items().iter().map(|found| found.index);
+                ItemsInRanges::with_items(binary, picked, set.ranges())
+            }
         }
     }
 
-    /// How the answer's sentences name what is asked about: SYMBOL, or the
-    /// ranges with the sections in them, every one with `all`.
-    fn lead_name(&self, binary: &Binary, all: bool) -> String {
+    /// How the answer's sentences name what is asked about: SYMBOL, the
+    /// ranges with the sections in them, or a set as its first line names
+    /// it, every one with `all`.
+    fn lead_name(&self, binary: &Binary, all: bool) -> LeadName {
         match self {
-            Inside::Ranges(ranges) => text::ranges_text(binary, ranges, all),
-            Inside::Symbol { lead_name, .. } => lead_name.clone(),
+            Inside::Ranges(ranges) => LeadName::name(text::ranges_text(binary, ranges, all)),
+            Inside::Symbol { lead_name, .. } => LeadName::name(lead_name.clone()),
+            Inside::Set(set) => set.lead_name(binary, all),
         }
     }
 
-    /// Whether the sentences call what is asked about "it", and not "them".
-    fn one(&self) -> bool {
+    /// Whether the sentences call what is asked about "it", and not "them",
+    /// in `binary`: one range, one SYMBOL, or a set of one item, unless a
+    /// range of code only, which the first line names beside the item, is
+    /// among the set's arguments (see [`Set::has_range_of_code_only`]).
+    fn one(&self, binary: &Binary) -> bool {
         match self {
             Inside::Ranges(ranges) => ranges.len() == 1,
             Inside::Symbol { .. } => true,
+            Inside::Set(set) => set.items().len() == 1 && !set.has_range_of_code_only(binary),
         }
     }
 
-    /// What the sentences call what is asked about after naming it.
-    fn it(&self) -> &'static str {
-        if self.one() { "it" } else { "them" }
+    /// What the sentences call what is asked about after naming it, in
+    /// `binary`: "it" or "them" (see [`Inside::one`]).
+    fn it(&self, binary: &Binary) -> &'static str {
+        if self.one(binary) { "it" } else { "them" }
     }
+
+    /// The notes on how the patterns of a set matched, which come before
+    /// the answer's others (see [`symbol::pattern_notes`]), naming every
+    /// name with `all`; none without patterns.
+    fn pattern_notes(&self, binary: &Binary, all: bool) -> Vec<String> {
+        match self {
+            Inside::Set(set) => match set.patterns() {
+                Some(patterns) => symbol::pattern_notes(binary, patterns, &Naming::of(all)),
+                None => Vec::new(),
+            },
+            Inside::Ranges(_) | Inside::Symbol { .. } => Vec::new(),
+        }
+    }
+
+    /// What a set picked, as the answer's JSON lists it after the ranges:
+    /// its SYMBOLs and its patterns' matches. Neither for ranges, or one
+    /// SYMBOL.
+    fn picked_json<'a>(&'a self, binary: &'a Binary) -> PickedJson<'a> {
+        let Inside::Set(set) = self else {
+            return PickedJson {
+                symbols: None,
+                matches: None,
+            };
+        };
+        let symbols = set.symbols();
+        PickedJson {
+            symbols: (!symbols.is_empty()).then(|| {
+                (symbols.iter())
+                    .map(|&index| json::Symbol::new(binary, Node::Item(index)))
+                    .collect()
+            }),
+            matches: set
+                .patterns()
+                .map(|patterns| json::matches(binary, patterns)),
+        }
+    }
+}
+
+/// What a set given in place of SYMBOL picked, as the JSON of `callers` and
+/// `callees` lists it after `ranges`, which has only the ranges given.
+#[derive(Serialize)]
+struct PickedJson<'a> {
+    /// Only when SYMBOLs were given: the items they name, each once, in the
+    /// order given.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    symbols: Option<Vec<json::Symbol<'a>>>,
+    /// Only when patterns were given: each item that each pattern matched,
+    /// with how, as `retained` lists them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    matches: Option<Vec<json::Match<'a>>>,
 }
 
 /// Lists what crosses the boundary of what `check` asks about, every

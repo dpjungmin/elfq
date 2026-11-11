@@ -118,7 +118,7 @@ fn arguments_that_dont_go_together_are_refused_before_the_file_is_read() {
         ),
         (
             &["missing.elf", "callers"],
-            "error: callers needs a SYMBOL, or ranges such as 0x0+256K\n",
+            "error: callers needs a SYMBOL, or patterns or ranges, such as 'uart_*' or 0x0+256K\n",
         ),
         (
             &["missing.elf", "callers", "log_msg", "--to", "0x0+1K"],
@@ -446,6 +446,36 @@ fn help_before_a_command_is_that_commands_help() {
             &stdout(&[SAMPLE, &command, "--help"]),
         );
     }
+}
+
+#[test]
+fn the_help_says_which_commands_take_patterns() {
+    for (command, other_side) in [("callers", "--from"), ("callees", "--to")] {
+        let help = stdout(&[SAMPLE, command, "--help"]);
+        for line in [
+            format!(
+                "Usage: elfq <FILE> {command} [OPTIONS] <SYMBOL>\n       \
+                 elfq <FILE> {command} [OPTIONS] <SYMBOL|PATTERN|RANGE>...\n"
+            ),
+            "Patterns, such as 'uart_*', and several SYMBOLs answer the same way, for\n"
+                .to_string(),
+            format!(
+                "Exit status, with patterns, ranges, several SYMBOLs or {other_side}: 1 if the\n"
+            ),
+        ] {
+            assert!(help.contains(&line), "{line}\nisn't in:\n{help}");
+        }
+        // What a pattern takes ends the page.
+        assert!(
+            help.ends_with("Quote a pattern, so that the shell passes it as typed.\n"),
+            "{help}"
+        );
+    }
+    let help = stdout(&["--help"]);
+    assert!(
+        help.contains("\nIn retained, callers and callees, SYMBOL can be a pattern such as\n"),
+        "{help}"
+    );
 }
 
 #[test]
