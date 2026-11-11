@@ -149,10 +149,21 @@ impl<'a> Boundary<'a> {
         graph: &'a Graph,
         ranges: &'a [AddressRange],
     ) -> Boundary<'a> {
+        Boundary::around(binary, graph, ItemsInRanges::new(binary, ranges))
+    }
+
+    /// The boundary around `items`, in `binary`, whose graph is `graph`:
+    /// for a caller that has worked out the items already, as a range check
+    /// does for its checks.
+    pub(crate) fn around(
+        binary: &'a Binary,
+        graph: &'a Graph,
+        items: ItemsInRanges<'a>,
+    ) -> Boundary<'a> {
         Boundary {
             binary,
             graph,
-            items: ItemsInRanges::new(binary, ranges),
+            items,
             veneers: Veneers::new(binary, graph),
             calls_to: OnceCell::new(),
         }

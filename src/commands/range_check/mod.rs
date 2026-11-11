@@ -5,10 +5,20 @@
 //! SYMBOL --from RANGE` come here too, and ask about the range that SYMBOL
 //! occupies.
 //!
-//! `graph::Boundary` works out what crosses, and how `--from` and `--to`
-//! narrow it. Here, `validate.rs` checks the ranges, `crossing.rs` holds
-//! the two answers, what leaves the ranges and what enters them, and
-//! `rows.rs` the rows of their tables, which `reach` and `diff` print too.
+//! What a check asks about is [`Inside`] the boundary: the ranges, or one
+//! SYMBOL. [`run`] answers in three steps:
+//!
+//! 1. It works out the items inside once, an [`ItemsInRanges`], which the
+//!    next two steps share.
+//! 2. `validate.rs` checks the ranges asked about, and those of `--from` or
+//!    `--to`, against those items.
+//! 3. A [`Boundary`] drawn around them works out what crosses it, and how
+//!    `--from` and `--to` narrow that, and `crossing.rs` holds the two
+//!    answers: what leaves the inside, for `callees`, and what enters it,
+//!    for `callers`.
+//!
+//! `rows.rs` holds the rows of their tables, which `reach` and `diff` print
+//! too.
 
 mod crossing;
 mod rows;
@@ -28,7 +38,7 @@ use anyhow::Result;
 use super::{Outcome, text};
 use crate::binary::{AddressRange, Binary};
 use crate::cli::Format;
-use crate::graph::Graph;
+use crate::graph::{Boundary, Graph, ItemsInRanges};
 use crossing::{Entering, Leaving};
 
 /// Which way the references cross the boundary: out of the ranges for
@@ -69,40 +79,78 @@ impl Direction {
 
 /// What a range check asks.
 pub(super) struct RangeCheck<'a> {
-    /// The ranges in place of SYMBOL, or the range that SYMBOL occupies.
-    pub(super) ranges: &'a [AddressRange],
-    /// SYMBOL, as the answer names it, when `ranges` is its range.
-    pub(super) name: Option<String>,
+    /// What it asks about: the ranges in place of SYMBOL, or SYMBOL.
+    pub(super) inside: Inside,
     /// The ranges of `--from` or `--to`: when there are any, only the uses
     /// whose far end is in them count.
     pub(super) far_side: &'a [AddressRange],
     pub(super) direction: Direction,
 }
 
-impl RangeCheck<'_> {
-    /// What the sentences call the ranges: SYMBOL, or the ranges with the
-    /// sections in them.
-    fn subject(&self, binary: &Binary, all: bool) -> String {
-        match &self.name {
-            Some(name) => name.clone(),
-            None => text::ranges_text(binary, self.ranges, all),
+/// What a range check asks about: the inside of the boundary, whose
+/// crossings the answer lists.
+pub(super) enum Inside {
+    /// Ranges of memory given in place of SYMBOL, which the answer names by
+    /// their addresses.
+    Ranges(Vec<AddressRange>),
+    /// One SYMBOL, given with `--from` or `--to`: the range that its item
+    /// occupies, and its name as the answer's first line gives it (see
+    /// [`Symbol::lead_name`]).
+    ///
+    /// [`Symbol::lead_name`]: super::symbol::Symbol::lead_name
+    Symbol {
+        range: AddressRange,
+        lead_name: String,
+    },
+}
+
+impl Inside {
+    /// The ranges asked about: those given, or the one that SYMBOL's item
+    /// occupies, as the answer's JSON lists them. Code in them that is
+    /// outside every item, as in a chip's ROM, is inside too.
+    fn ranges(&self) -> &[AddressRange] {
+        match self {
+            Inside::Ranges(ranges) => ranges,
+            Inside::Symbol { range, .. } => std::slice::from_ref(range),
         }
     }
 
-    /// Whether the sentences call the ranges "it", and not "them".
-    fn one(&self) -> bool {
-        self.name.is_some() || self.ranges.len() == 1
+    /// The items inside, which [`run`] works out once, for the checks and
+    /// the boundary.
+    fn items<'a>(&'a self, binary: &'a Binary) -> ItemsInRanges<'a> {
+        match self {
+            // Every item with a byte in the ranges: for SYMBOL, its item,
+            // and any other that shares its bytes.
+            Inside::Ranges(_) | Inside::Symbol { .. } => ItemsInRanges::new(binary, self.ranges()),
+        }
     }
 
-    /// What the sentences call the ranges after naming them.
+    /// How the answer's sentences name what is asked about: SYMBOL, or the
+    /// ranges with the sections in them, every one with `all`.
+    fn lead_name(&self, binary: &Binary, all: bool) -> String {
+        match self {
+            Inside::Ranges(ranges) => text::ranges_text(binary, ranges, all),
+            Inside::Symbol { lead_name, .. } => lead_name.clone(),
+        }
+    }
+
+    /// Whether the sentences call what is asked about "it", and not "them".
+    fn one(&self) -> bool {
+        match self {
+            Inside::Ranges(ranges) => ranges.len() == 1,
+            Inside::Symbol { .. } => true,
+        }
+    }
+
+    /// What the sentences call what is asked about after naming it.
     fn it(&self) -> &'static str {
         if self.one() { "it" } else { "them" }
     }
 }
 
-/// Lists what crosses the boundary of the ranges that `check` asks about,
-/// every crossing, and with `all`, every name in its sentences. The answer
-/// is [`Outcome::Crossed`] when it lists something, or says that something
+/// Lists what crosses the boundary of what `check` asks about, every
+/// crossing, and with `all`, every name in its sentences. The answer is
+/// [`Outcome::Crossed`] when it lists something, or says that something
 /// may cross.
 pub(super) fn run(
     binary: &Binary,
@@ -112,15 +160,18 @@ pub(super) fn run(
     format: Format,
     out: &mut dyn Write,
 ) -> Result<Outcome> {
-    validate::check(binary, graph, check)?;
+    // The items inside, worked out once for the checks and the boundary.
+    let items = check.inside.items(binary);
+    validate::check(binary, graph, check, &items)?;
+    let boundary = Boundary::around(binary, graph, items);
     let crosses = match check.direction {
         Direction::Out => {
-            let answer = Leaving::find(binary, graph, check, all);
+            let answer = Leaving::find(binary, check, &boundary, all);
             answer.write(format, out)?;
             answer.crosses()
         }
         Direction::In => {
-            let answer = Entering::find(binary, graph, check, all);
+            let answer = Entering::find(binary, graph, check, &boundary, all);
             answer.write(format, out)?;
             answer.crosses()
         }
@@ -168,8 +219,7 @@ mod tests {
         let ranges: Vec<AddressRange> = ranges.iter().map(|r| r.parse().unwrap()).collect();
         let far_side: Vec<AddressRange> = far_side.iter().map(|r| r.parse().unwrap()).collect();
         let check = RangeCheck {
-            ranges: &ranges,
-            name: None,
+            inside: Inside::Ranges(ranges),
             far_side: &far_side,
             direction,
         };

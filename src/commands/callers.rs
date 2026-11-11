@@ -9,7 +9,7 @@ use serde::Serialize;
 use super::checks::check_code_is_readable;
 use super::flat_answer::FlatAnswer;
 use super::kept::Kept;
-use super::range_check::{self, Direction, RangeCheck};
+use super::range_check::{self, Direction, Inside, RangeCheck};
 use super::symbol::{self, Subject, Symbol};
 use super::uses::{self, End, Row};
 use super::{Outcome, json, text};
@@ -41,7 +41,7 @@ pub(super) fn run(
     out: &mut dyn Write,
 ) -> Result<Outcome> {
     check_code_is_readable(binary)?;
-    let (ranges, name) = match symbol::subject(binary, symbols)? {
+    let inside = match symbol::subject(binary, symbols)? {
         Subject::Symbol(symbol) if from.is_empty() => {
             let graph = Kept::new(Graph::build(binary));
             callers(binary, &graph, &symbol, all, format, out)?;
@@ -55,14 +55,15 @@ pub(super) fn run(
                     symbol.node.name(binary)
                 );
             };
-            let range = binary.items[index].range();
-            (vec![range], Some(symbol.lead_name(binary)))
+            Inside::Symbol {
+                range: binary.items[index].range(),
+                lead_name: symbol.lead_name(binary),
+            }
         }
-        Subject::Ranges(ranges) => (ranges, None),
+        Subject::Ranges(ranges) => Inside::Ranges(ranges),
     };
     let check = RangeCheck {
-        ranges: &ranges,
-        name,
+        inside,
         far_side: from,
         direction: Direction::In,
     };

@@ -1,8 +1,9 @@
 //! The two answers of a range check: [`Leaving`], what the items in the
 //! ranges use outside them, for `callees`, and [`Entering`], what uses them
-//! from outside, for `callers`. They mirror each other, so each is kept
-//! beside the other: a change to one usually needs the same change to the
-//! other.
+//! from outside, for `callers`. Both find the crossings of a `Boundary`
+//! that [`run`](super::run) drew around the items inside. They mirror each
+//! other, so each is kept beside the other: a change to one usually needs
+//! the same change to the other.
 
 use std::collections::HashSet;
 use std::io::Write;
@@ -116,15 +117,14 @@ pub(super) struct Leaving<'a> {
 }
 
 impl<'a> Leaving<'a> {
-    /// What the items in the ranges that `check` asks about use outside
-    /// them, in `binary`, whose graph is `graph`; `all` is for `--all`.
+    /// What the items inside `boundary`, which `check` asks about, use
+    /// outside it, in `binary`; `all` is for `--all`.
     pub(super) fn find(
         binary: &'a Binary,
-        graph: &Graph,
         check: &'a RangeCheck<'a>,
+        boundary: &Boundary,
         all: bool,
     ) -> Leaving<'a> {
-        let boundary = Boundary::new(binary, graph, check.ranges);
         let crossings = boundary.leaving_to(check.far_side);
         Leaving {
             binary,
@@ -165,7 +165,7 @@ impl<'a> Leaving<'a> {
     fn write_json(&self, out: &mut dyn Write) -> Result<()> {
         let binary = self.binary;
         let leaving = LeavingJson {
-            ranges: json_ranges(self.check.ranges),
+            ranges: json_ranges(self.check.inside.ranges()),
             to: json_far_side(self.check.far_side),
             callees: callee_rows(binary, &self.crossings)
                 .iter()
@@ -181,8 +181,8 @@ impl<'a> Leaving<'a> {
     fn write_text(&self, out: &mut dyn Write) -> Result<()> {
         let binary = self.binary;
         let check = self.check;
-        let subject = check.subject(binary, self.all);
-        let verb = |one: &str, many: &str| if check.one() { one } else { many }.to_string();
+        let subject = check.inside.lead_name(binary, self.all);
+        let verb = |one: &str, many: &str| if check.inside.one() { one } else { many }.to_string();
         let groups = groups(binary, &self.crossings, Direction::Out, |crossing| {
             how_column(binary, crossing)
         });
@@ -192,7 +192,7 @@ impl<'a> Leaving<'a> {
                 .iter()
                 .map(|unfollowed| &unfollowed.unresolved),
         );
-        let far_side = far_side_text(binary, check.far_side, check.it(), self.all);
+        let far_side = far_side_text(binary, check.far_side, check.inside.it(), self.all);
         let lead = match (groups.is_empty(), self.unfollowed.is_empty()) {
             (true, true) if self.unreadable.is_empty() => {
                 format!("{subject} {} nothing {far_side}.", verb("uses", "use"))
@@ -293,16 +293,16 @@ pub(super) struct Entering<'a> {
 }
 
 impl<'a> Entering<'a> {
-    /// What uses the items in the ranges that `check` asks about from
-    /// outside them, in `binary`, whose graph is `graph`; `all` is for
+    /// What uses the items inside `boundary`, which `check` asks about,
+    /// from outside it, in `binary`, whose graph is `graph`; `all` is for
     /// `--all`.
     pub(super) fn find(
         binary: &'a Binary,
         graph: &Graph,
         check: &'a RangeCheck<'a>,
+        boundary: &Boundary,
         all: bool,
     ) -> Entering<'a> {
-        let boundary = Boundary::new(binary, graph, check.ranges);
         let from = ItemsInRanges::new(binary, check.far_side);
         let in_ranges = |index: usize| boundary.items().contains_item(index);
         // Code in the `--from` ranges that elfq can't read may use the
@@ -369,7 +369,7 @@ impl<'a> Entering<'a> {
             json::how_field(crossing.kind)
         });
         let entering = EnteringJson {
-            ranges: json_ranges(self.check.ranges),
+            ranges: json_ranges(self.check.inside.ranges()),
             from: json_far_side(self.check.far_side),
             callers: each_row(groups)
                 .map(|(outside, row)| CallerJson {
@@ -391,8 +391,8 @@ impl<'a> Entering<'a> {
     fn write_text(&self, out: &mut dyn Write) -> Result<()> {
         let binary = self.binary;
         let check = self.check;
-        let subject = check.subject(binary, self.all);
-        let it = check.it();
+        let subject = check.inside.lead_name(binary, self.all);
+        let it = check.inside.it();
         let groups = groups(binary, &self.crossings, Direction::In, |crossing| {
             how_column(binary, crossing)
         });
@@ -422,7 +422,7 @@ impl<'a> Entering<'a> {
             writeln!(
                 out,
                 "{subject} {} used by {} {far_side}:",
-                if check.one() { "is" } else { "are" },
+                if check.inside.one() { "is" } else { "are" },
                 text::count_text(binary, &callers),
             )?;
             writeln!(out)?;

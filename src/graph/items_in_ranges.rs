@@ -47,8 +47,14 @@ impl<'a> ItemsInRanges<'a> {
     }
 
     /// Whether `address` is in the ranges.
-    pub(super) fn contains_address(&self, address: u64) -> bool {
+    pub(crate) fn contains_address(&self, address: u64) -> bool {
         self.ranges.iter().any(|range| range.contains(address))
+    }
+
+    /// The items in the ranges, as indices into [`Binary::items`], in
+    /// their order there.
+    pub(crate) fn indices(&self) -> impl Iterator<Item = usize> {
+        (0..self.inside.len()).filter(|&index| self.inside[index])
     }
 
     /// The functions in the ranges whose code elfq can't read, since it
@@ -86,9 +92,8 @@ impl<'a> ItemsInRanges<'a> {
 
     /// The functions in the ranges, as indices into [`Binary::items`].
     fn functions(&self) -> impl Iterator<Item = usize> {
-        (0..self.binary.items.len()).filter(|&index| {
-            self.inside[index] && self.binary.items[index].kind == ItemKind::Function
-        })
+        self.indices()
+            .filter(|&index| self.binary.items[index].kind == ItemKind::Function)
     }
 }
 
