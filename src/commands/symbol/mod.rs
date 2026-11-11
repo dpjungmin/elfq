@@ -38,7 +38,10 @@
 //! - `not_found.rs` words the error for SYMBOL that finds several items or
 //!   none, in the words of every command, which `retained` adds to, and
 //!   for a pattern that matches none, or several in a command that takes
-//!   one item; `similar.rs` finds the names that the error suggests.
+//!   one item. For a name that finds nothing, it offers first the pattern
+//!   for what is in a module of that name, as a command that takes one
+//!   item or a set can take it ([`Takes`]). `similar.rs` finds the names
+//!   that the error suggests.
 //! - `pattern.rs` holds [`Pattern`], such as `uart_*`, when SYMBOL is one,
 //!   and finds the items that one matches ([`Names::matching`]), which
 //!   every command that takes SYMBOL takes in its place, and `debug
@@ -62,6 +65,7 @@ mod similar;
 
 pub(super) use lookup::{Lookup, Names};
 pub(super) use matched::{PatternMatches, pattern_notes};
+pub(super) use not_found::Takes;
 #[cfg(feature = "tui")]
 pub(super) use not_found::USE_ONE;
 pub(super) use pattern::{LookupOrMatch, Match, MatchedBy, Pattern};
@@ -136,7 +140,7 @@ pub(super) fn subject(
             Argument::Range(range) => Pick::Range(range),
             Argument::Symbol(query) => match names.look_up_or_match(query)? {
                 LookupOrMatch::Name(lookup) => {
-                    let symbol = names.one_or_error(query, lookup)?;
+                    let symbol = names.one_or_error(query, lookup, Takes::Set)?;
                     if let [_] = queries {
                         return Ok(Subject::Symbol(symbol));
                     }

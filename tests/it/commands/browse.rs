@@ -660,6 +660,51 @@ go to: log▏
 }
 
 #[test]
+fn a_module_that_holds_one_item_is_offered_as_a_pattern() {
+    // browse takes one item, so the CLI's message offers the pattern for
+    // what is in `app::Config` only because it matches one.
+    assert_output(
+        &screen("cpp-x86_64.elf", Some("app::Config"), (80, 24), &[]),
+        "\
+cpp-x86_64.elf › go to
+no function or data object is named `app::Config`; did you mean 'app::Config::*'
+(1 function), app::config, app::Config::load_defaults?
+  ADDRESS  SIZE  KIND      SECTION  ITEM
+> 0x1720     22  function  .text    app::Config::load_defaults()
+  0x4020      4  data      .bss     app::config
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+go to: app::Config▏
+↑↓ move  enter open  esc cancel
+",
+    );
+    // `app::Gain::*` matches 4 items, so `app::Gain` gets names like it
+    // alone.
+    let gain = screen("cpp-x86_64.elf", Some("app::Gain"), (80, 24), &[]);
+    assert_eq!(
+        gain.lines().skip(1).take(2).collect::<Vec<&str>>(),
+        [
+            "no function or data object is named `app::Gain`; did you mean 'vtable for",
+            "app::Gain', 'typeinfo for app::Gain', 'typeinfo name for app::Gain',"
+        ]
+    );
+}
+
+#[test]
 fn a_pattern_opens_the_item_it_matches_or_go_to_with_several() {
     // The one item that it matches opens, and the header says what the
     // pattern found.

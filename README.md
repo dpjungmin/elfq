@@ -58,7 +58,12 @@ item it matches. `why`, `reach`, `inlined` and `browse` take one that
 matches one item, for that item: `why 'process_f*'` answers as
 `why process_frame` does, with the pattern in its first line. One that
 matches several is an error that lists them, and `browse` lists them in
-its go-to box, to pick one. Quote a pattern: zsh and fish refuse a `*`
+its go-to box, to pick one. A module, type or class typed without
+`*`, such as `app::Gain`, finds nothing, and the error offers the
+pattern for what is in it first, with how many items it matches, as
+in "did you mean 'app::Gain::*' (4 items), ...?", where the command
+can take them: in `why`, `reach`, `inlined` and `browse`, only when
+it matches one item. Quote a pattern: zsh and fish refuse a `*`
 that matches no file, and bash puts the names of any files it matches in
 its place.
 

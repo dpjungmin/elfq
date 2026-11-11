@@ -406,6 +406,73 @@ fn a_file_with_dwarf_but_no_symbol_table_says_so() {
 }
 
 #[test]
+fn a_module_typed_without_a_star_gets_its_pattern_where_the_command_takes_it() {
+    let sample = "testdata/bin/cpp-x86_64.elf";
+    let named = |name: &str, may_mean: &str| {
+        format!("error: no function or data object is named `{name}`; did you mean {may_mean}?\n")
+    };
+    let like_gain = "'vtable for app::Gain', 'typeinfo for app::Gain', 'typeinfo name for \
+                     app::Gain', app::Gain::run";
+    let config = "'app::Config::*' (1 function), app::config, app::Config::load_defaults";
+    // retained, callers and callees take every item that a pattern
+    // matches, so they offer it whenever it matches any, first.
+    for command in ["retained", "callers", "callees"] {
+        assert_output(
+            &stderr(&[sample, command, "app::Gain"]),
+            &named(
+                "app::Gain",
+                &format!("'app::Gain::*' (4 items), {like_gain}"),
+            ),
+        );
+        assert_output(
+            &stderr(&[sample, command, "app::Config"]),
+            &named("app::Config", config),
+        );
+    }
+    // why, reach and inlined take one item, so they offer it only when it
+    // matches one, the item it would find.
+    for command in ["why", "reach", "inlined"] {
+        assert_output(
+            &stderr(&[sample, command, "app::Gain"]),
+            &named("app::Gain", like_gain),
+        );
+        assert_output(
+            &stderr(&[sample, command, "app::Config"]),
+            &named("app::Config", config),
+        );
+    }
+    // A `::` at the end is left out, and a name of only colons gets no
+    // pattern, since `::*` would match every item.
+    assert_output(
+        &stderr(&[sample, "retained", "vtable for app::"]),
+        &named(
+            "vtable for app::",
+            "'vtable for app::*' (2 data objects), 'vtable for app::Gain', 'vtable for \
+             app::DcBlock'",
+        ),
+    );
+    assert_output(
+        &stderr(&[sample, "callers", "::"]),
+        &named(
+            "::",
+            "app::config, app::handlers, app::frames_ok, app::frames_bad, app::timer_ticks",
+        ),
+    );
+    // Any other name gets one, as a Rust impl block does.
+    assert_output(
+        &stderr(&[
+            "testdata/bin/rust-x86_64-nodebug.elf",
+            "reach",
+            "<u32 as core::fmt::Display>",
+        ]),
+        &named(
+            "<u32 as core::fmt::Display>",
+            "'<u32 as core::fmt::Display>::*' (1 function), '<u32 as core::fmt::Display>::fmt'",
+        ),
+    );
+}
+
+#[test]
 fn a_command_typed_before_the_file_gets_a_hint() {
     assert_output(
         &stderr(&["callers", SAMPLE, "log_msg"]),

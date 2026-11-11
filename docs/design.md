@@ -602,6 +602,20 @@ that typing a `*` takes away no row that a name had: `Reading*` lists
 `testdata/bin/cpp-x86_64.elf`. The pattern's error shows only when no
 name has the text either.
 
+A name that no item has, as a module, type or class typed without `*`,
+gets first among what it may mean the pattern for what is in it, with how
+many items that matches: `retained app::Gain` in
+`testdata/bin/cpp-x86_64.elf` says "did you mean 'app::Gain::*' (4
+items), 'vtable for app::Gain', ...?". `retained`, `callers` and
+`callees` offer it whenever it matches an item, since they take every
+item it matches. `why`, `reach`, `inlined` and `browse` take one item,
+so they offer it only when it matches one, the item it would find:
+`why app::Config` offers "'app::Config::*' (1 function)", and
+`why app::Gain` only the names like it. A `::` at the end of the name is
+left out, and a name of only colons gets no pattern, since `::*` would
+match every item. Any other name gets one, as `vtable for app` gets
+"'vtable for app::*' (2 data objects)".
+
 With `--tree`, every tree, in every command, is drawn at most 9 levels
 below its top row, so names never start more than 27 columns into the tree
 and long names don't push it off the screen. Where a tree goes deeper, the
@@ -1865,16 +1879,20 @@ a second, and of librustc_driver (158 MB) and libLLVM (199 MB) in 3 to 4
 seconds, most of it reading the file: decoding its code and demangling
 its names. `browse` shows its first screen in about the same time. Each
 key typed into go to then takes under 0.1 s, while the text isn't a
-pattern. The first takes up to 0.2 s in those libraries, and the first
-whose text names nothing takes about half a second, as it works out what
-to suggest. While the text is a pattern, each key has the box match
-every name again: in librustc_driver (271,936 items), the key that
-completes `on_*` takes 0.05 s, and `core::fmt::*` 0.09 s, as they match
-few items, but a broad pattern, such as `o*` or `*e`, takes 0.15 to
-0.35 s, and one that matches nothing about 0.2 s, as its error tries the
-patterns like it. Those are over the 0.1 s that the box aims for. Keys
-typed while it works wait and are taken together, so the box catches up
-in one go.
+pattern and some name has it. The first takes up to 0.2 s in those
+libraries, and the first whose text names nothing takes about half a
+second, as it works out what to suggest. Each later key whose text names
+nothing takes 0.08 to 0.12 s in librustc_driver, around the 0.1 s that
+the box aims for. Half of that is the pattern for what is in a module of
+that name, which its error offers: working it out matches every name
+against the pattern, and without it the key takes 0.04 to 0.06 s. While
+the text is a pattern, each key has the box match every name again: in
+librustc_driver (271,936 items), the key that completes `on_*` takes
+0.05 s, and `core::fmt::*` 0.09 s, as they match few items, but a broad
+pattern, such as `o*` or `*e`, takes 0.15 to 0.35 s, and one that
+matches nothing about 0.2 s, as its error tries the patterns like it.
+Those are over that 0.1 s. Keys typed while it works wait and are taken
+together, so the box catches up in one go.
 
 `retained` takes several SYMBOLs, ranges of memory that stand for the
 items in them, and patterns such as `'core::fmt::*'` that stand for the

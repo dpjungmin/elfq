@@ -20,9 +20,11 @@
 //! calls them SYMBOLs, or arguments once a range is among them. The errors
 //! are those of every command, with a hint of `retained`'s own, since it
 //! takes several SYMBOLs: a name that could mean several items says to use
-//! one or more of them. A pattern that matches nothing gets the error for
-//! a name that finds nothing, with a pattern like it that matches some,
-//! if there is one.
+//! one or more of them. A name that finds nothing offers first the pattern
+//! for what is in a module of that name whenever it matches an item, since
+//! `retained` takes every item it matches (`Takes::Set`). A pattern that
+//! matches nothing gets the error for a name that finds nothing, with a
+//! pattern like it that matches some, if there is one.
 
 use std::collections::HashSet;
 
@@ -32,7 +34,9 @@ use super::refuse_shared_library;
 use crate::binary::Binary;
 use crate::commands::checks::{ends_unknown, item_in_file};
 use crate::commands::range_check::check_holds_items;
-use crate::commands::symbol::{self, Argument, Lookup, LookupOrMatch, Names, Pattern, Pick, Set};
+use crate::commands::symbol::{
+    self, Argument, Lookup, LookupOrMatch, Names, Pattern, Pick, Set, Takes,
+};
 use crate::commands::text::{self, Naming};
 use crate::graph::Node;
 
@@ -215,7 +219,7 @@ impl Unusable<'_, '_> {
     fn error(&self, names: &Names) -> String {
         let query = self.query;
         match &self.reason {
-            Reason::NoName => names.nothing_named(query),
+            Reason::NoName => names.nothing_named(query, Takes::Set),
             Reason::NoMatch(pattern) => names.nothing_matches(pattern),
             Reason::Several(nodes) => names.choices(query, nodes, USE_ONE_OR_MORE),
             Reason::Error(error) => error.clone(),

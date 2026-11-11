@@ -239,16 +239,17 @@ fn typos_get_suggestions() {
         "no function or data object is named `log_mgs`; did you mean log_msg?"
     );
 
-    // Suggestions are what to type, not the full name.
+    // Suggestions are what to type, not the full name, after the pattern
+    // for what is in a type of that name, which matches one item here.
     let binary = load_sample("testdata/bin/rust-x86_64-nodebug.elf");
     assert_eq!(
         error(&binary, "proces_frame"),
         "no function or data object is named `proces_frame`; did you mean process_frame?"
     );
-    assert!(
-        error(&binary, "Gain")
-            .starts_with("no function or data object is named `Gain`; did you mean Gain::run, ")
-    );
+    assert!(error(&binary, "Gain").starts_with(
+        "no function or data object is named `Gain`; did you mean 'Gain::*' (1 function), \
+         Gain::run, "
+    ));
 
     // Of an item's names, a typo away beats containing what was typed.
     let binary = load_sample("testdata/bin/c-cortex-m4.elf");

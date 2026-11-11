@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context, Result, bail};
 
-use super::not_found::{Inlined, USE_ONE};
+use super::not_found::{Inlined, Takes, USE_ONE};
 use super::similar::{Lowercase, Suggestable};
 use super::{LookupOrMatch, Symbol};
 use crate::binary::{Binary, ItemKind, hex_number, names};
@@ -144,7 +144,7 @@ impl<'a> Names<'a> {
     /// none, the error lists what to type instead.
     pub(in crate::commands) fn find(&self, query: &str) -> Result<Symbol> {
         match self.look_up_or_match(query)? {
-            LookupOrMatch::Name(lookup) => self.one_or_error(query, lookup),
+            LookupOrMatch::Name(lookup) => self.one_or_error(query, lookup, Takes::One),
             LookupOrMatch::Pattern(matched) => match matched.only_item() {
                 Some(symbol) => Ok(symbol),
                 None => bail!("{}", self.matches_several(&matched)),
@@ -155,11 +155,18 @@ impl<'a> Names<'a> {
 
     /// The one item or import that `query` finds, from `lookup`, what it
     /// finds as a name (see [`Names::look_up`]), or the error that
-    /// [`Names::find`] gives when a name finds several or none.
-    pub(in crate::commands) fn one_or_error(&self, query: &str, lookup: Lookup) -> Result<Symbol> {
+    /// [`Names::find`] gives when a name finds several, or the error for
+    /// one that finds nothing in a command that `takes` one item, as `find`
+    /// does, or a set (see [`Names::nothing_named`]).
+    pub(in crate::commands) fn one_or_error(
+        &self,
+        query: &str,
+        lookup: Lookup,
+        takes: Takes,
+    ) -> Result<Symbol> {
         match lookup {
             Lookup::One(symbol) => Ok(symbol),
-            Lookup::NoName => bail!("{}", self.nothing_named(query)),
+            Lookup::NoName => bail!("{}", self.nothing_named(query, takes)),
             Lookup::Several(nodes) => bail!("{}", self.choices(query, nodes, USE_ONE)),
         }
     }

@@ -145,6 +145,17 @@ impl Names<'_> {
             .collect()
     }
 
+    /// The items that `typed`, read as a pattern, matches, in address
+    /// order, as [`Names::matching`] finds them, but each only when it is
+    /// asked for, so that a caller that needs only the first few walks the
+    /// items no further. It yields nothing when `typed` isn't a pattern.
+    pub(super) fn items_matched(&self, typed: &str) -> impl Iterator<Item = usize> {
+        let pattern = Pattern::parse(typed);
+        (self.binary.items.iter().enumerate())
+            .filter_map(move |(index, item)| pattern.as_ref()?.match_item(index, item))
+            .map(|found| found.item)
+    }
+
     /// What `query`, SYMBOL, finds, in any command: what [`Names::look_up`]
     /// finds, or when that is nothing and `query` has a `*` that stands for
     /// any text (see [`Pattern::parse`]), the items that it matches as a
