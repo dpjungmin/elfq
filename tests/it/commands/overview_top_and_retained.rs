@@ -10,8 +10,8 @@ use serde_json::{Value, json};
 
 use crate::support::elf::ElfBytes;
 use crate::support::{
-    DEEP_SAMPLE, Exit, LIBRARY_SAMPLE, SAMPLE, TCM_SAMPLE, assert_output, elfq_json, names, run,
-    samples, shell_words, stderr, stdout, text_rows,
+    DEEP_SAMPLE, Exit, LIBRARY_SAMPLE, SAMPLE, TCM_SAMPLE, TempFolder, assert_output, elfq_json,
+    names, run, samples, shell_words, stderr, stdout, text_rows,
 };
 
 #[test]
@@ -238,6 +238,52 @@ The program never uses them, or elfq can't see how.
              can't see how.\n"
         ),
         "{cpp}"
+    );
+}
+
+#[test]
+fn top_given_a_pattern_names_the_command_that_takes_it() {
+    let refused = |argument: &str, lines: &str| {
+        format!(
+            "error: unexpected argument '{argument}' found\n{lines}\nUsage: elfq <FILE> top \
+             [OPTIONS]\n\nFor more information, try '--help'.\n"
+        )
+    };
+    let takes = |pattern: &str| {
+        format!(
+            "top takes no SYMBOL; retained '{pattern}' lists those items, with what each keeps.\n"
+        )
+    };
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "top", "core::fmt::*"]),
+        &refused("core::fmt::*", &takes("core::fmt::*")),
+    );
+    // It names the first pattern after top, wherever clap's error stops.
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "top", "x", "on_*"]),
+        &refused("x", &takes("on_*")),
+    );
+    // A name, or one whose only `*` is a pointer's, gets clap's error alone.
+    for argument in ["main", "f(char*)"] {
+        assert_output(
+            &stderr(&[TCM_SAMPLE, "top", argument]),
+            &refused(argument, ""),
+        );
+    }
+    // Unquoted, `on_*` reaches elfq as the files that it matches here, and
+    // the line names the pattern that their names start with.
+    let here = TempFolder::new("top-files", &["on_button.c", "on_timer.c"], &[]);
+    assert_output(
+        &(here.run(TCM_SAMPLE, &["top", "on_button.c", "on_timer.c"])).error(),
+        &refused(
+            "on_button.c",
+            &format!(
+                "{}on_button.c and on_timer.c are files here: the shell may have put them in \
+                 place of a pattern. Put a pattern in single quotes, as in 'on_*', so that the \
+                 shell passes it as typed.\n",
+                takes("on_*")
+            ),
+        ),
     );
 }
 

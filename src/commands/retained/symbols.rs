@@ -31,7 +31,7 @@
 
 use std::collections::HashSet;
 
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 
 use super::refuse_shared_library;
 use crate::binary::Binary;
@@ -63,9 +63,11 @@ pub(super) struct Symbols {
 /// in the order given, and leaves out each function whose end elfq doesn't
 /// know. Fails with an error that lists every argument that it can't use,
 /// such as an import, a pattern that matches nothing or a range that holds
-/// no item, the first 10 of them unless `all` (see [`unusable_error`]);
-/// when it leaves out every item, with an error that names them; and after
-/// those checks, for a shared library.
+/// no item, the first 10 of them unless `all` (see [`unusable_error`]),
+/// with the line that says which of the arguments it can't use are files
+/// here under it, as the shell may have put them in place of a pattern
+/// (see [`symbol::with_shell_hint`]); when it leaves out every item, with
+/// an error that names them; and after those checks, for a shared library.
 pub(super) fn find_symbols(
     binary: &Binary,
     names: &Names,
@@ -95,7 +97,10 @@ pub(super) fn find_symbols(
     }
     if !unusable.is_empty() {
         let error = unusable_error(&unusable, queries.len(), arguments_word, all, names);
-        bail!("{error}");
+        // Only an argument that it can't use may be what the shell put in
+        // place of a pattern: one that finds its item was typed as meant.
+        let unusable: Vec<&str> = unusable.iter().map(|argument| argument.query).collect();
+        return Err(symbol::with_shell_hint(anyhow!(error), &unusable));
     }
     let mut set = Set::new(binary, picks);
     let left_out = set.leave_out_unknown_ends(binary);

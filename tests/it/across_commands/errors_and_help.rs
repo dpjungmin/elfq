@@ -1,10 +1,11 @@
 //! What the commands share in their errors and help.
 //!
 //! The tests check the arguments and files that the commands refuse,
-//! errors on stderr with exit status 2 and what to try instead, the exit
-//! status when what reads the answer stops early, and help before or
-//! after a command. Each command's own errors are tested in its file in
-//! commands/.
+//! errors on stderr with exit status 2 and what to try instead, the line
+//! that says that the arguments are files here, which the shell may have
+//! put in place of a pattern, the exit status when what reads the answer
+//! stops early, and help before or after a command. Each command's own
+//! errors are tested in its file in commands/.
 
 use std::process::Stdio;
 
@@ -12,7 +13,7 @@ use object::elf;
 
 use crate::support::elf::{ElfBytes, SectionField};
 use crate::support::{
-    LIBRARY_SAMPLE, Run, SAMPLE, TCM_SAMPLE, assert_output, command, stderr, stdout,
+    LIBRARY_SAMPLE, Run, SAMPLE, TCM_SAMPLE, TempFolder, assert_output, command, stderr, stdout,
 };
 
 #[test]
@@ -541,6 +542,346 @@ fn a_command_typed_before_the_file_gets_a_hint() {
     assert_output(
         &stderr(&["diff", "a.elf", "b.elf"]),
         "error: the file comes before the command, as in: elfq a.elf diff b.elf\n",
+    );
+}
+
+/// The line under an error for `uart_driver.c` and `uart_hal.c`, which the
+/// shell puts in place of `uart_*` where they are files.
+const UART_FILES_HERE: &str = "uart_driver.c and uart_hal.c are files here: the shell may have \
+                               put them in place of a pattern. Put a pattern in single quotes, as \
+                               in 'uart_*', so that the shell passes it as typed.";
+
+/// The line under an error for `name`, alone a file here.
+fn a_file_here(name: &str) -> String {
+    format!(
+        "{name} is a file here: the shell may have put it in place of a pattern. Put a pattern \
+         in single quotes, so that the shell passes it as typed."
+    )
+}
+
+/// The error for `name`, which names no item in the samples.
+fn not_named(name: &str) -> String {
+    format!("no function or data object is named `{name}`")
+}
+
+#[test]
+fn files_that_the_shell_put_in_place_of_a_pattern_are_pointed_out() {
+    let uart = ["uart_driver.c", "uart_hal.c"];
+    let here = TempFolder::new("shell-put-files", &uart, &[]);
+    let error = |args: &[&str]| here.run(TCM_SAMPLE, &[args, &uart].concat()).error();
+    // why, reach, inlined and browse take one SYMBOL at most, so clap
+    // refuses the second name before the file is read, and the line goes
+    // under the first line of clap's error.
+    for (command, symbol) in [
+        ("why", "<SYMBOL>"),
+        ("reach", "[SYMBOL]"),
+        ("inlined", "[SYMBOL]"),
+        ("browse", "[SYMBOL]"),
+    ] {
+        assert_output(
+            &error(&[command]),
+            &format!(
+                "error: unexpected argument 'uart_hal.c' found\n{UART_FILES_HERE}\n\nUsage: elfq \
+                 <FILE> {command} [OPTIONS] {symbol}\n\nFor more information, try '--help'.\n"
+            ),
+        );
+    }
+    // retained lists every argument that it can't use, then the line.
+    assert_output(
+        &error(&["retained"]),
+        &format!(
+            "error: elfq can't use 2 of the 2 SYMBOLs:\n  {}\n  {}\n{UART_FILES_HERE}\n",
+            not_named("uart_driver.c"),
+            not_named("uart_hal.c")
+        ),
+    );
+    // callers and callees stop at the first.
+    for command in ["callers", "callees"] {
+        assert_output(
+            &error(&[command]),
+            &format!("error: {}\n{UART_FILES_HERE}\n", not_named("uart_driver.c")),
+        );
+    }
+    // The tests run in the crate's root, where these aren't files.
+    for command in ["why", "retained", "callers"] {
+        let elsewhere = stderr(&[&[TCM_SAMPLE, command], &uart[..]].concat());
+        assert!(!elsewhere.contains("files here"), "{elsewhere}");
+    }
+}
+
+#[test]
+fn the_line_shows_a_pattern_where_the_files_names_start_alike() {
+    let here = TempFolder::new(
+        "names-alike",
+        &[
+            "uart_hal.c",
+            "main.c",
+            "on_button.c",
+            "über_a.c",
+            "über_b.c",
+        ],
+        &[],
+    );
+    let error = |args: &[&str]| here.run(TCM_SAMPLE, args).error();
+    // One file's name says nothing of where the `*` was.
+    assert_output(
+        &error(&["why", "uart_hal.c"]),
+        &format!(
+            "error: {}\n{}\n",
+            not_named("uart_hal.c"),
+            a_file_here("uart_hal.c")
+        ),
+    );
+    // The line follows the names like it, which come first.
+    assert_output(
+        &error(&["retained", "on_button.c"]),
+        &format!(
+            "error: {}; did you mean on_button?\n{}\n",
+            not_named("on_button.c"),
+            a_file_here("on_button.c")
+        ),
+    );
+    // Names that start with nothing in common get no example either.
+    let unalike = error(&["retained", "main.c", "on_button.c"]);
+    assert!(
+        unalike.ends_with(
+            "\nmain.c and on_button.c are files here: the shell may have put them in place of a \
+             pattern. Put a pattern in single quotes, so that the shell passes it as typed.\n"
+        ),
+        "{unalike}"
+    );
+    // A name outside ASCII is quoted, as for the shell, and the pattern
+    // ends after a whole character.
+    let quoted = error(&["retained", "über_a.c", "über_b.c"]);
+    assert!(
+        quoted.ends_with(
+            "\n'über_a.c' and 'über_b.c' are files here: the shell may have put them in place of \
+             a pattern. Put a pattern in single quotes, as in 'über_*', so that the shell passes \
+             it as typed.\n"
+        ),
+        "{quoted}"
+    );
+}
+
+#[test]
+fn the_line_names_ten_files_then_how_many_more_even_with_all() {
+    // In the order that the shell puts them in.
+    let mut irqs: Vec<String> = (1..=12).map(|number| format!("irq{number}.c")).collect();
+    irqs.sort();
+    let irqs: Vec<&str> = irqs.iter().map(String::as_str).collect();
+    let here = TempFolder::new("ten-files", &irqs, &[]);
+    let line = "\nirq1.c, irq10.c, irq11.c, irq12.c, irq2.c, irq3.c, irq4.c, irq5.c, irq6.c, \
+                irq7.c and 2 more are files here: the shell may have put them in place of a \
+                pattern. Put a pattern in single quotes, as in 'irq*', so that the shell passes \
+                it as typed.\n";
+    let listed = here
+        .run(TCM_SAMPLE, &[&["retained"], &irqs[..]].concat())
+        .error();
+    assert!(
+        listed.ends_with(&format!("\n  and 2 more{line}")),
+        "{listed}"
+    );
+    // --all lists every argument that retained can't use, but what matters
+    // in the line is that they are files.
+    let every = (here.run(TCM_SAMPLE, &[&["retained", "--all"], &irqs[..]].concat())).error();
+    assert!(
+        every.ends_with(&format!("\n  {}{line}", not_named("irq9.c"))),
+        "{every}"
+    );
+}
+
+#[test]
+fn only_files_in_this_folder_count() {
+    let here = TempFolder::new(
+        "only-files-here",
+        &["uart_hal.c", "drivers/uart_hal.c"],
+        &["build", "drivers"],
+    );
+    let error = |args: &[&str]| here.run(TCM_SAMPLE, args).error();
+    // A folder's name is more often typed as is, and a path isn't what a
+    // `*` alone puts in place of a pattern.
+    assert_output(
+        &error(&["retained", "build"]),
+        &format!("error: {}\n", not_named("build")),
+    );
+    assert_output(
+        &error(&["retained", "drivers/uart_hal.c", "./uart_hal.c"]),
+        &format!(
+            "error: elfq can't use 2 of the 2 SYMBOLs:\n  {}\n  {}\n",
+            not_named("drivers/uart_hal.c"),
+            not_named("./uart_hal.c")
+        ),
+    );
+    // Where clap refuses a folder, as the shell may put one in place of a
+    // pattern, the line names the files, and only when there are some.
+    let usage = "\nUsage: elfq <FILE> why [OPTIONS] <SYMBOL>\n\nFor more information, try \
+                 '--help'.\n";
+    assert_output(
+        &error(&["why", "uart_hal.c", "build"]),
+        &format!(
+            "error: unexpected argument 'build' found\n{}\n{usage}",
+            a_file_here("uart_hal.c")
+        ),
+    );
+    assert_output(
+        &error(&["why", "x", "build"]),
+        &format!("error: unexpected argument 'build' found\n{usage}"),
+    );
+    assert_output(
+        &error(&["why", "main", "drivers/uart_hal.c"]),
+        &format!("error: unexpected argument 'drivers/uart_hal.c' found\n{usage}"),
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlink_to_a_file_counts_as_a_file() {
+    use std::os::unix::fs::symlink;
+    let here = TempFolder::new("symlinks", &["uart_hal.c"], &["build"]);
+    symlink("uart_hal.c", here.path().join("link.c")).unwrap();
+    symlink("build", here.path().join("linked_build")).unwrap();
+    symlink("nowhere.c", here.path().join("gone.c")).unwrap();
+    assert_output(
+        &(here.run(
+            TCM_SAMPLE,
+            &["retained", "link.c", "linked_build", "gone.c"],
+        ))
+        .error(),
+        &format!(
+            "error: elfq can't use 3 of the 3 SYMBOLs:\n  {}\n  {}\n  {}\n{}\n",
+            not_named("link.c"),
+            not_named("linked_build"),
+            not_named("gone.c"),
+            a_file_here("link.c")
+        ),
+    );
+}
+
+#[test]
+fn the_line_follows_any_error_for_the_first_argument_that_callers_cant_use() {
+    let here = TempFolder::new(
+        "first-error",
+        &["log", "log.c", "__libc_start_main", "main.c"],
+        &[],
+    );
+    // The shell puts every file in place of one pattern, so when the first
+    // argument that callers can't use is a file here, the line follows its
+    // error, whatever it is: here, the error for a name that could mean
+    // several items, whose first line this test leaves to the tests of that
+    // error.
+    let several = (here.run("testdata/bin/cpp-x86_64.elf", &["callers", "log", "log.c"])).error();
+    assert!(
+        several.starts_with("error: `log` could mean 2 functions; use one on the left instead"),
+        "{several}"
+    );
+    assert!(
+        several.ends_with(
+            "\n  'log(char const*)'   app::log(char const*)\n  'log(unsigned int)'  \
+             app::log(unsigned int)\nlog and log.c are files here: the shell may have put them \
+             in place of a pattern. Put a pattern in single quotes, as in 'log*', so that the \
+             shell passes it as typed.\n"
+        ),
+        "{several}"
+    );
+    // Or the error for an import, whose code isn't in the file.
+    assert_output(
+        &(here.run(SAMPLE, &["callees", "__libc_start_main", "main.c"])).error(),
+        "error: __libc_start_main is imported from a shared library, so its code isn't in this \
+         file\n__libc_start_main and main.c are files here: the shell may have put them in place \
+         of a pattern. Put a pattern in single quotes, so that the shell passes it as typed.\n",
+    );
+    // why takes one item, so the line follows only an error for a name that
+    // finds nothing: `log` is a file here, but names two items.
+    let several = here
+        .run("testdata/bin/cpp-x86_64.elf", &["why", "log"])
+        .error();
+    assert!(!several.contains("file here"), "{several}");
+}
+
+#[test]
+fn a_file_here_that_finds_its_item_gets_no_line() {
+    // `main` is a file here, but it names an item, so it was typed as
+    // meant, and the error is for `zzq_none` alone, as in the crate's
+    // root, where `main` isn't a file.
+    let here = TempFolder::new("found-files", &["main"], &[]);
+    for args in [
+        &["callers", "main", "zzq_none"][..],
+        &["callers", "zzq_none", "main"],
+        &["retained", "main", "zzq_none"],
+        &["retained", "zzq_none", "main"],
+    ] {
+        let error = here.run(TCM_SAMPLE, args).error();
+        assert!(!error.contains("file here"), "{error}");
+        assert_output(&error, &stderr(&[&[TCM_SAMPLE], args].concat()));
+    }
+}
+
+#[test]
+fn clap_s_error_names_files_whose_names_items_have_too() {
+    // The file isn't read before clap's error, so `main` counts, which
+    // names an item.
+    let here = TempFolder::new("clap-names-files", &["main", "main.c"], &[]);
+    let error = here.run(TCM_SAMPLE, &["why", "main", "main.c"]).error();
+    assert!(
+        error.starts_with(
+            "error: unexpected argument 'main.c' found\nmain and main.c are files here: the shell \
+             may have put them in place of a pattern. Put a pattern in single quotes, as in \
+             'main*', so that the shell passes it as typed.\n\nUsage:"
+        ),
+        "{error}"
+    );
+}
+
+#[test]
+fn an_unexpected_option_gets_no_line() {
+    let here = TempFolder::new("unexpected-option", &["uart_hal.c"], &[]);
+    // As in the crate's root, where uart_hal.c isn't a file.
+    for args in [
+        &["why", "uart_hal.c", "--jsn"][..],
+        &["top", "--jsn", "uart_hal.c"],
+        &["top", "--jsn", "uart_*"],
+    ] {
+        assert_output(
+            &here.run(TCM_SAMPLE, args).error(),
+            &stderr(&[&[TCM_SAMPLE], args].concat()),
+        );
+    }
+}
+
+#[test]
+fn an_argument_before_the_command_gets_no_line() {
+    // clap refuses it in the file's place, and its error is the top
+    // level's, even when a file here or a pattern comes after the command.
+    let top_level = "\n\nUsage: elfq [OPTIONS] <FILE> [COMMAND]\n\nFor more information, try \
+                     '--help'.\n";
+    let here = TempFolder::new("before-the-command", &["on_button.c", "on_timer.c"], &[]);
+    assert_output(
+        &(here.run(TCM_SAMPLE, &["on_button.c", "why", "on_timer.c"])).error(),
+        &format!("error: unexpected argument 'on_button.c' found{top_level}"),
+    );
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "x.elf", "top", "core::fmt::*"]),
+        &format!("error: unexpected argument 'x.elf' found{top_level}"),
+    );
+}
+
+#[test]
+fn the_lines_under_clap_s_error_keep_its_colours() {
+    // CLICOLOR_FORCE colours clap's errors where stderr isn't a terminal.
+    let output = command()
+        .args([TCM_SAMPLE, "top", "core::fmt::*"])
+        .env_remove("NO_COLOR")
+        .env("CLICOLOR_FORCE", "1")
+        .output()
+        .unwrap();
+    let error = Run::new("elfq top 'core::fmt::*' in colour", output).error();
+    assert!(
+        error.starts_with(
+            "\x1b[1m\x1b[31merror:\x1b[0m unexpected argument '\x1b[33mcore::fmt::*\x1b[0m' \
+             found\ntop takes no SYMBOL; retained 'core::fmt::*' lists those items, with what \
+             each keeps.\n\n\x1b[1m\x1b[4mUsage:\x1b[0m"
+        ),
+        "{error:?}"
     );
 }
 

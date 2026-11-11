@@ -133,6 +133,64 @@ pub(crate) fn run(args: &[&str]) -> Run {
     Run::new(&format!("elfq {}", args.join(" ")), output)
 }
 
+/// A folder of the test's own, under the system's folder for temporary
+/// files, for elfq to run in: as for the line that says which arguments
+/// are files here, which needs a folder that holds just the files the test
+/// names. It is removed when the test ends, whether it passes or not.
+pub(crate) struct TempFolder {
+    path: PathBuf,
+}
+
+impl TempFolder {
+    /// A new folder that holds an empty file named after each of `files`
+    /// and a folder named after each of `folders`, where a file may go, as
+    /// `drivers/uart_hal.c`. Its name has `test`, the test's name, and the
+    /// id of the test's process, so that no two tests share one, even when
+    /// two runs of the tests overlap.
+    #[track_caller]
+    pub(crate) fn new(test: &str, files: &[&str], folders: &[&str]) -> TempFolder {
+        let path = std::env::temp_dir().join(format!("elfq-{}-{test}", std::process::id()));
+        // One left by a run that ended before removing it would hold other
+        // files.
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir(&path).unwrap();
+        // Folders first, so that a file may go in one.
+        for folder in folders {
+            std::fs::create_dir(path.join(folder)).unwrap();
+        }
+        for file in files {
+            std::fs::write(path.join(file), "").unwrap();
+        }
+        TempFolder { path }
+    }
+
+    /// Where the folder is, for a test that puts more in it, such as a
+    /// symlink.
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Runs elfq in this folder on the sample at `sample`, given as
+    /// [`SAMPLE`] is, with `args` after it, as [`run`] runs it in the
+    /// crate's root.
+    #[track_caller]
+    pub(crate) fn run(&self, sample: &str, args: &[&str]) -> Run {
+        let output = command()
+            .current_dir(&self.path)
+            .arg(sample_path(sample))
+            .args(args)
+            .output()
+            .unwrap();
+        Run::new(&format!("elfq {sample} {}", args.join(" ")), output)
+    }
+}
+
+impl Drop for TempFolder {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
 /// One run of elfq: its exit status and what it printed.
 ///
 /// Tests read it with [`Run::printed`], [`Run::json`] or [`Run::error`],

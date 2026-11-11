@@ -760,6 +760,27 @@ go to: on_*▏
 }
 
 #[test]
+fn go_to_leaves_out_the_line_that_says_that_symbol_is_a_file_here() {
+    // The tests run in the crate's root, where Cargo.toml is a file. The
+    // box shows only the first line of the CLI's error, and the shell has
+    // no part in what is typed there.
+    let page = screen("c-x86_64.elf", Some("Cargo.toml"), (80, 24), &[]);
+    assert_eq!(
+        page.lines().skip(1).take(2).collect::<Vec<&str>>(),
+        [
+            "no function or data object is named `Cargo.toml`",
+            "  ADDRESS  SIZE  KIND  SECTION  ITEM"
+        ]
+    );
+    assert_output(
+        &stderr(&[SAMPLE, "why", "Cargo.toml"]),
+        "error: no function or data object is named `Cargo.toml`\nCargo.toml is a file here: the \
+         shell may have put it in place of a pattern. Put a pattern in single quotes, so that the \
+         shell passes it as typed.\n",
+    );
+}
+
+#[test]
 fn go_to_lists_the_items_that_a_pattern_matches() {
     // Only the three that it matches, largest first; typed without the
     // `*`, `on_` also lists button_presses and Default_Handler (also

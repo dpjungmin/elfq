@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail};
 
 use super::not_found::{Inlined, Takes, USE_ONE};
 use super::similar::{Lowercase, Suggestable};
-use super::{LookupOrMatch, Symbol};
+use super::{LookupOrMatch, Symbol, shell_hint};
 use crate::binary::{Binary, ItemKind, hex_number, names};
 use crate::graph::Node;
 
@@ -141,8 +141,24 @@ impl<'a> Names<'a> {
     /// as a name, the one item that it matches as a pattern, such as `on_b*`
     /// (see [`Names::look_up_or_match`]), as the commands that take one
     /// item, such as `why`, read SYMBOL. When it could mean several, or
-    /// none, the error lists what to type instead.
+    /// none, the error lists what to type instead. When it finds nothing,
+    /// as a name or as a pattern, and is a file here, which the shell may
+    /// have put in place of a pattern, a line under the error says so (see
+    /// [`shell_hint::with_shell_hint`]).
     pub(in crate::commands) fn find(&self, query: &str) -> Result<Symbol> {
+        self.find_without_shell_hint(query).map_err(|error| {
+            // Whether `query` is a file here is asked first, since asking
+            // whether a pattern finds nothing matches it again.
+            match shell_hint::is_file_here(query) && self.finds_nothing(query) {
+                true => shell_hint::with_shell_hint(error, &[query]),
+                false => error,
+            }
+        })
+    }
+
+    /// What [`Names::find`] finds, or its error, before the line that says
+    /// that `query` is a file here goes under the error.
+    fn find_without_shell_hint(&self, query: &str) -> Result<Symbol> {
         match self.look_up_or_match(query)? {
             LookupOrMatch::Name(lookup) => self.one_or_error(query, lookup, Takes::One),
             LookupOrMatch::Pattern(matched) => match matched.only_item() {
@@ -203,6 +219,16 @@ impl<'a> Names<'a> {
             [] => Lookup::NoName,
             nodes => Lookup::Several(nodes),
         })
+    }
+
+    /// Whether `query` finds nothing, as a name or as a pattern: whether
+    /// [`Names::find`] gives it the error for a name that finds nothing or
+    /// for a pattern that matches nothing.
+    fn finds_nothing(&self, query: &str) -> bool {
+        matches!(
+            self.look_up_or_match(query),
+            Ok(LookupOrMatch::Name(Lookup::NoName) | LookupOrMatch::NoMatch(_))
+        )
     }
 
     /// The answer for `query` when it finds only `node`.

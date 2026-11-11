@@ -7,9 +7,11 @@ use std::io::{self, BufWriter, ErrorKind, Write};
 use std::process::ExitCode;
 
 use clap::Parser;
+use clap::builder::StyledStr;
+use clap::error::{ContextKind, ContextValue, ErrorFormatter};
 use elfq::STACK_SIZE;
 use elfq::cli::{self, Cli};
-use elfq::commands::Outcome;
+use elfq::commands::{Outcome, unexpected_argument_hints};
 
 fn main() -> ExitCode {
     // Under a limit on address space, as `ulimit -v` sets, the stack's
@@ -59,7 +61,7 @@ fn run() -> ExitCode {
                 report(&hint);
                 return ExitCode::from(2);
             }
-            err.exit();
+            exit_with_clap_error(err);
         }
     };
     let mut out = BufWriter::new(Stdout::default());
@@ -136,15 +138,20 @@ fn args() -> Vec<OsString> {
     args
 }
 
+/// The arguments after the program's name, as text. Lossy, since an
+/// argument may not be UTF-8 (`std::env::args()` would panic on one), and
+/// the hints only show the arguments or look for files with their names.
+fn args_as_text() -> Vec<String> {
+    std::env::args_os()
+        .skip(1)
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect()
+}
+
 /// A hint for people used to tools like `git`, who type the command before
 /// the file: `elfq callers app.elf log_msg`.
 fn file_first_hint() -> Option<String> {
-    // Lossy, since an argument may not be UTF-8 (`std::env::args()` would
-    // panic on one), and the hint only shows the arguments.
-    let args: Vec<String> = std::env::args_os()
-        .skip(1)
-        .map(|arg| arg.to_string_lossy().into_owned())
-        .collect();
+    let args = args_as_text();
     let command = args.first()?;
     if !cli::command_names().contains(command) {
         return None;
@@ -162,4 +169,68 @@ fn file_first_hint() -> Option<String> {
         "error: the file comes before the command, as in: {}",
         example.trim_end()
     ))
+}
+
+/// Prints clap's error `err` and exits, as `err.exit()` does, with the
+/// lines that elfq adds under its first line, when it has some (see
+/// [`with_hints`]).
+fn exit_with_clap_error(mut err: clap::Error) -> ! {
+    let Some(text) = with_hints(&err) else {
+        err.exit();
+    };
+    err.insert(ContextKind::Custom, ContextValue::StyledStr(text));
+    err.apply::<Rendered>().exit()
+}
+
+/// The text of clap's error `err`, with the lines that elfq adds under its
+/// first line for an argument after the command that `why`, `reach`,
+/// `inlined`, `browse` or `top` doesn't take, in clap's "unexpected
+/// argument" error alone (see [`unexpected_argument_hints`]): "error:
+/// unexpected argument 'uart_hal.c' found", then "uart_driver.c and
+/// uart_hal.c are files here: ...". The text keeps clap's colours, which
+/// clap takes out where it wouldn't colour its own errors. `None` when elfq
+/// adds nothing.
+fn with_hints(err: &clap::Error) -> Option<StyledStr> {
+    if err.kind() != clap::error::ErrorKind::UnknownArgument {
+        return None;
+    }
+    let Some(ContextValue::String(unexpected)) = err.get(ContextKind::InvalidArg) else {
+        return None;
+    };
+    // The command comes after the file: `file_first_hint` has answered
+    // when it comes first.
+    let args = args_as_text();
+    let command_names = cli::command_names();
+    let command = args.iter().position(|arg| command_names.contains(arg))?;
+    // clap refused an argument before the command, such as a second file,
+    // and its error is the top level's.
+    if args[..command].contains(unexpected) {
+        return None;
+    }
+    let lines = unexpected_argument_hints(&args[command], &args[command + 1..], unexpected);
+    if lines.is_empty() {
+        return None;
+    }
+    let text = err.render().ansi().to_string();
+    let (first_line, rest) = text.split_once('\n')?;
+    Some(StyledStr::from(format!(
+        "{first_line}\n{}\n{rest}",
+        lines.join("\n")
+    )))
+}
+
+/// Formats a clap error whose text [`with_hints`] has already worked out,
+/// which it holds as its [`ContextKind::Custom`], so that clap prints that
+/// text as it prints its own errors: to standard error, in colour only
+/// where it would colour its own.
+struct Rendered;
+
+impl ErrorFormatter for Rendered {
+    fn format_error(error: &clap::error::Error<Rendered>) -> StyledStr {
+        match error.get(ContextKind::Custom) {
+            Some(ContextValue::StyledStr(text)) => text.clone(),
+            // `exit_with_clap_error` always gives it one.
+            _ => StyledStr::new(),
+        }
+    }
 }
