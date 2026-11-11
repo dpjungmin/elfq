@@ -222,18 +222,20 @@ parameters, as `c++filt` shows them, but can be typed without:
 `log(unsigned int)` picks one of two overloads of `app::log`, and `vtable
 for Gain` finds `vtable for app::Gain`. A name that matches exactly wins
 over one that only ends the same way. When SYMBOL is another of an item's
-names, such as the weak alias `NMI_Handler` of `Default_Handler`, or an
-address past its start, the answer's first line says so: `Default_Handler
-(also named NMI_Handler)`, or `process_frame (which holds 0x1705)`. When a
-name could mean several items, the error lists the shortest name that picks
-each one, or its address when that name is longer than 40 characters, and a
-misspelled name gets suggestions from every name an item has. A name that no
-item has says why, when elfq can tell, before any suggestions: the file has
-no symbol table, and elfq names its items by address, or the compiler
-inlined every copy of the function, which `inlined` lists in the functions
-that hold them. Typing the command first, as in `elfq callers app.elf
-log_msg`, gets a hint that the file comes first, and `elfq help top` prints
-the same help as `elfq app.elf top --help`.
+names, such as the weak alias `NMI_Handler` of `Default_Handler`, an
+address past its start, or a pattern that matches only it, below, the
+answer's first line says so: `Default_Handler (also named NMI_Handler)`,
+`process_frame (which holds 0x1705)`, or `on_button (the one item named
+on_b*)`. When a name could mean several items, the error lists the
+shortest name that picks each one, or its address when that name is
+longer than 40 characters, and a misspelled name gets suggestions from
+every name an item has. A name that no item has says why, when elfq can
+tell, before any suggestions: the file has no symbol table, and elfq
+names its items by address, or the compiler inlined every copy of the
+function, which `inlined` lists in the functions that hold them. Typing
+the command first, as in `elfq callers app.elf log_msg`, gets a hint
+that the file comes first, and `elfq help top` prints the same help as
+`elfq app.elf top --help`.
 
 `callers` and `callees` also take one or more ranges of memory in place of
 SYMBOL, written as `--range` takes them: `0x0+256K`, or `0x0..0x40000`.
@@ -564,6 +566,41 @@ import alone; `callees` can't answer for one either, so it gives the
 error that it gives for the import alone, "...so its code isn't in this
 file". Without an argument, the error says what they take: "callers
 needs a SYMBOL, or patterns or ranges, such as 'uart_*' or 0x0+256K".
+
+`why`, `reach`, `inlined` and `browse` answer for one item, so they take
+a pattern that matches one item, for that item. `why`, `reach` and
+`inlined` answer for it as for its name, but in the first line, where
+the name has the pattern as a note, as in `retained`: "on_button (the
+one item named on_b*) is used by main, through this chain:" for
+`why 'on_b*'` in `testdata/bin/c-cortex-m7.elf`, and "Of the 532 bytes
+of process_frame (the one item named process_f*), 238 are inlined copies
+of 3 functions:" for `inlined 'process_f*'` in
+`testdata/bin/c-x86_64.elf`. No note says how the pattern matched, and
+the JSON is the name's, byte for byte, with no `matches`. A pattern that
+matches several items is an error there, which lists them in address
+order, as the error for a name that could mean several does: "`on_*`
+matches 3 functions; use one on the left instead:". One that matches
+none gets the error that `retained` gives it, with a pattern like it
+that matches, as in "did you mean 'on_*' (3 functions)?" for `On_*`. In
+all four, a name still comes first, so a name with a `*` in it finds its
+item as before, and `reach --to` takes only ranges, as `--range`,
+`--from` and the `--to` of `callees` do.
+
+`browse` opens the page of the one item that a pattern matches, with the
+same note in its header. For a pattern that matches several, it opens
+the go-to box with the pattern typed and the items listed, largest
+first, under "`on_*` matches 3 functions"; for one that matches none, it
+opens the box under the pattern's error, as for a name that names
+nothing. The box reads what is typed the same way, at each key: text
+that finds nothing as a name but has a `*` that stands for any text
+lists only the items that it matches, largest first, and the one item
+that it matches alone has the note on its row and in the header of the
+page that Enter opens. Text that matches nothing as a pattern lists the
+items and imports whose names have it as typed, as other text does, so
+that typing a `*` takes away no row that a name had: `Reading*` lists
+`app::sort_readings(app::Reading*, unsigned long)` in
+`testdata/bin/cpp-x86_64.elf`. The pattern's error shows only when no
+name has the text either.
 
 With `--tree`, every tree, in every command, is drawn at most 9 levels
 below its top row, so names never start more than 27 columns into the tree
@@ -1167,14 +1204,15 @@ command but `browse`, which is for reading in a terminal and refuses
 its links, and `objdump --start-address` the instructions. The JSON has
 every item, site and chain, where the text shows only the largest items, the
 first sites and the nearest chains; every key is always there, `null` when
-it has no value, but for `matches`, there only for a pattern, and the
-`symbols` of `callers` and `callees`, there only for SYMBOLs among other
-arguments; addresses are hex strings, as elfq prints them and SYMBOL
-takes them, and sizes are numbers. Each row of a list in the answer, such
-as an item of `top` or a chain of `why`, is a line of its own, so that
-`grep` and `head` work on the JSON as on the text. Until 1.0 the JSON
-can change, and each release says how. An error is never JSON: it goes
-to stderr, with exit status 2 and nothing on stdout.
+it has no value, but for `matches`, there only for a pattern given to
+`retained`, `callers` or `callees`, and the `symbols` of `callers` and
+`callees`, there only for SYMBOLs among other arguments; addresses are
+hex strings, as elfq prints them and SYMBOL takes them, and sizes are
+numbers. Each row of a list in the answer, such as an item of `top` or a
+chain of `why`, is a line of its own, so that `grep` and `head` work on
+the JSON as on the text. Until 1.0 the JSON can change, and each release
+says how. An error is never JSON: it goes to stderr, with exit status 2
+and nothing on stdout.
 
 An item looks like this, spread over lines here:
 
@@ -1826,18 +1864,27 @@ own debug build (90 MB) in under half a second, of cargo (43 MB) in under
 a second, and of librustc_driver (158 MB) and libLLVM (199 MB) in 3 to 4
 seconds, most of it reading the file: decoding its code and demangling
 its names. `browse` shows its first screen in about the same time. Each
-key typed into go to then takes under 0.1 s. The first takes up to 0.2 s
-in those libraries, and the first whose text names nothing takes about
-half a second, as it works out what to suggest.
+key typed into go to then takes under 0.1 s, while the text isn't a
+pattern. The first takes up to 0.2 s in those libraries, and the first
+whose text names nothing takes about half a second, as it works out what
+to suggest. While the text is a pattern, each key has the box match
+every name again: in librustc_driver (271,936 items), the key that
+completes `on_*` takes 0.05 s, and `core::fmt::*` 0.09 s, as they match
+few items, but a broad pattern, such as `o*` or `*e`, takes 0.15 to
+0.35 s, and one that matches nothing about 0.2 s, as its error tries the
+patterns like it. Those are over the 0.1 s that the box aims for. Keys
+typed while it works wait and are taken together, so the box catches up
+in one go.
 
 `retained` takes several SYMBOLs, ranges of memory that stand for the
 items in them, and patterns such as `'core::fmt::*'` that stand for the
 items they match, and says what removing them at once would save, as
 text and as JSON, and lists in one error every argument that fails.
 `callers` and `callees` take the same patterns and several SYMBOLs, and
-answer for the items they pick as for ranges. Patterns in `why`, `reach`,
-`inlined` and `browse` come next. Next for `retained`, not yet
-planned: the bytes that go in each block of memory, in one run, as
+answer for the items they pick as for ranges. `why`, `reach`, `inlined`
+and `browse` take a pattern that matches one item, and the go-to box of
+`browse` lists the items that a pattern matches. Next for `retained`,
+not yet planned: the bytes that go in each block of memory, in one run, as
 browse's retained tab shows them; names from stdin or a file, once a list
 outgrows the command line; source files and crates; sets in shared
 libraries, once the functions they export count as places where the
