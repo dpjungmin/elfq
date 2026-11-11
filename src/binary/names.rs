@@ -57,9 +57,10 @@
 //! special name, such as `vtable for app::Gain`, also has the texts of the
 //! class or function it is for. And a copy of a function, such as
 //! `crc32.part.0`, also has the texts of the function. Each text is a
-//! whole path or an end of a longer one ([`TextKind`]), and a pattern
-//! that starts with `::` leaves out the ends. `commands::symbol::pattern`
-//! says why each of these rules is as it is.
+//! whole path or an end of a longer one ([`TextKind`]), with the path
+//! that the end is under, which an answer names; a pattern that starts
+//! with `::` leaves out the ends. `commands::symbol::pattern` says why
+//! each of these rules is as it is.
 //!
 //! Each word of a text is a word of the name, as for short names (see
 //! [`for_each_pattern_text`]), so a quick check of the pattern's words
@@ -255,7 +256,7 @@ fn for_each_end<'p>(path: &'p str, parts: &[&str], mut visit: impl FnMut(&'p str
 /// generic arguments joins two, which [`may_join_words`] tells. The quick
 /// check that rules out names for a pattern, `commands::symbol`'s
 /// `QuickCheck`, relies on this, so a new kind of text must keep it.
-pub(crate) fn for_each_pattern_text(name: &str, mut visit: impl FnMut(&str, TextKind)) {
+pub(crate) fn for_each_pattern_text(name: &str, mut visit: impl FnMut(&str, TextKind<'_>)) {
     for_each_text(name, &mut visit);
     let function = without_copy_suffixes(name);
     if function != name {
@@ -266,19 +267,23 @@ pub(crate) fn for_each_pattern_text(name: &str, mut visit: impl FnMut(&str, Text
 /// Whether a text of a name, which [`for_each_pattern_text`] visits, is a
 /// whole path or an end of a longer one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum TextKind {
+pub(crate) enum TextKind<'p> {
     /// A whole path, from its first part, as opposed to an end: the name
     /// itself, or a path that means the same, as `app::Gain::run` for
     /// `app::Gain::run(short*) const` and for `<app::Gain as
     /// app::Stage>::run`.
     Path,
     /// The end of a longer path, from a later part: `Gain::run` or `run`.
-    End,
+    End {
+        /// The parts of the path before the end, without the `::` after
+        /// them: `app` for `Gain::run`, and `app::Gain` for `run`.
+        under: &'p str,
+    },
 }
 
 /// [`for_each_pattern_text`] for `name` alone, not for the function that
 /// it may be a copy of.
-fn for_each_text(name: &str, visit: &mut dyn FnMut(&str, TextKind)) {
+fn for_each_text(name: &str, visit: &mut dyn FnMut(&str, TextKind<'_>)) {
     visit(name, TextKind::Path);
     if let Some(prefix) = special_prefix(name) {
         let rest = &name[prefix.len()..];
@@ -297,7 +302,9 @@ fn for_each_text(name: &str, visit: &mut dyn FnMut(&str, TextKind)) {
         for_each_end(path, parts, |end, start| {
             let kind = match start {
                 0 => TextKind::Path,
-                _ => TextKind::End,
+                _ => TextKind::End {
+                    under: &path[..path.len() - end.len() - "::".len()],
+                },
             };
             visit(end, kind);
         });

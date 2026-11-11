@@ -20,7 +20,7 @@ use clap::{Args, Parser, Subcommand};
 use crate::binary::AddressRange;
 use help::{
     AT, BROWSE, CALLEES, CALLEES_RANGES, CALLERS, CALLERS_RANGES, DIFF, EXAMPLES, HOW_NOTES,
-    INLINED, REACH, RETAINED, RETAINED_REACH, RETAINED_SET, ROW_MARKS, STARTUP, TOP, WHY,
+    INLINED, PATTERNS, REACH, RETAINED, RETAINED_REACH, RETAINED_SET, ROW_MARKS, STARTUP, TOP, WHY,
     how_table,
 };
 
@@ -141,7 +141,7 @@ pub(crate) enum Command {
     #[command(after_help = format!("{TOP}\n\n{ROW_MARKS}"))]
     Top(TopArgs),
     /// Show what removing SYMBOL, or several at once, would save
-    #[command(after_help = format!("{RETAINED}\n\n{RETAINED_SET}\n\n{ROW_MARKS}\n\n{RETAINED_REACH}"))]
+    #[command(after_help = format!("{RETAINED}\n\n{RETAINED_SET}\n\n{PATTERNS}\n\n{ROW_MARKS}\n\n{RETAINED_REACH}"))]
     Retained(RetainedArgs),
     /// Show the chains of calls and references that keep SYMBOL in the file
     #[command(after_help = format!("{WHY}\n\n{}\n\n{HOW_NOTES}", how_table()))]
@@ -191,10 +191,11 @@ pub(crate) struct TopArgs {
 pub(crate) struct RetainedArgs {
     /// A function or data object: its name, the end of its name
     /// (process_frame for app::process_frame), or an address such as 0x1700.
-    /// Or a range of memory, START..END or START+SIZE, for every item with a
-    /// byte in it. Give several to ask what removing them all at once would
-    /// save
-    #[arg(required = true, value_name = "SYMBOL|RANGE")]
+    /// Or a pattern such as 'uart_*', where * stands for any text, for every
+    /// item it matches. Or a range of memory, START..END or START+SIZE, for
+    /// every item with a byte in it. Give several to ask what removing them
+    /// all at once would save
+    #[arg(required = true, value_name = "SYMBOL|PATTERN|RANGE")]
     pub(crate) symbols: Vec<String>,
     /// Show every item, not only the 30 largest
     #[arg(long)]

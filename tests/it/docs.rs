@@ -1,7 +1,8 @@
 //! The docs, checked against elfq: each code block whose first line is
-//! `$ elfq ...` must show what elfq prints for it, design.md's JSON section
-//! must name every key that elfq's JSON has, and every path and module path
-//! that CONTRIBUTING.md and design.md cite must be there.
+//! `$ elfq ...` must show what elfq prints for it, given its arguments as a
+//! shell passes them, without their quotes; design.md's JSON section must
+//! name every key that elfq's JSON has; and every path and module path that
+//! CONTRIBUTING.md and design.md cite must be there.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -9,7 +10,7 @@ use std::path::Path;
 use serde_json::Value;
 
 use crate::support::{
-    Exit, SAMPLE, TCM_INLINED_SAMPLE, TCM_MOVED_SAMPLE, TCM_SAMPLE, assert_output, run,
+    Exit, SAMPLE, TCM_INLINED_SAMPLE, TCM_MOVED_SAMPLE, TCM_SAMPLE, assert_output, run, shell_words,
 };
 
 /// The docs that can hold examples, relative to the crate's root.
@@ -31,7 +32,8 @@ fn the_examples_in_the_docs_show_what_elfq_prints() {
             let (command, expected) = example.split_once('\n').unwrap();
             // Shown with the output of a test that fails.
             println!("{doc}: $ elfq {command}");
-            let args: Vec<&str> = command.split_whitespace().collect();
+            let args = shell_words(command);
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
             assert_output(&run(&args).printed(Exit::ZeroOrOne), expected);
             examples += 1;
         }
@@ -41,14 +43,23 @@ fn the_examples_in_the_docs_show_what_elfq_prints() {
     assert!(examples >= 10, "found {examples} examples");
 }
 
+#[test]
+fn a_command_line_splits_as_a_shell_splits_it() {
+    assert_eq!(
+        shell_words("  retained 'uart_*'\t\"log(char const*)\" a\\ b '' "),
+        ["retained", "uart_*", "log(char const*)", "a b", ""]
+    );
+}
+
 /// Answers that between them have every key that elfq's JSON has. A key
 /// shows only in an object that is there, so for each key that holds a
 /// list, one of them has an entry in it, which the test checks.
-const JSON_ANSWERS: [&[&str]; 26] = [
+const JSON_ANSWERS: [&[&str]; 27] = [
     &[TCM_SAMPLE],
     &[SAMPLE, "top"],
     &[SAMPLE, "retained", "process_frame"],
     &[SAMPLE, "retained", "process_frame", "report", "_init"],
+    &[TCM_SAMPLE, "retained", "on_*"],
     &[SAMPLE, "why", "log_msg"],
     &[SAMPLE, "why", "parse_value"],
     &[SAMPLE, "inlined"],

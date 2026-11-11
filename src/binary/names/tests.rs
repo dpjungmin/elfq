@@ -307,23 +307,51 @@ fn the_words_of_a_short_name_are_words_of_the_name() {
     assert!(!ends_with_short_name("app::Gain::run", "ain::run"));
 }
 
+/// Whether a text is a whole path or an end, as [`TextKind`] says,
+/// without the path that an end is under.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    Path,
+    End,
+}
+
+use Kind::{End, Path};
+
 /// The texts of `name` that a pattern can match, in order, each once.
-fn pattern_texts(name: &str) -> Vec<(String, TextKind)> {
+fn pattern_texts(name: &str) -> Vec<(String, Kind)> {
     let mut texts = Vec::new();
-    for_each_pattern_text(name, |text, kind| texts.push((text.to_string(), kind)));
+    for_each_pattern_text(name, |text, kind| {
+        let kind = match kind {
+            TextKind::Path => Path,
+            TextKind::End { .. } => End,
+        };
+        texts.push((text.to_string(), kind));
+    });
     texts.sort_by(|a, b| a.0.cmp(&b.0));
     texts.dedup();
     texts
 }
 
 /// `texts`, each with its kind, as [`pattern_texts`] gives them.
-fn texts_of_kinds(texts: &[(&str, TextKind)]) -> Vec<(String, TextKind)> {
+fn texts_of_kinds(texts: &[(&str, Kind)]) -> Vec<(String, Kind)> {
     (texts.iter())
         .map(|&(text, kind)| (text.to_string(), kind))
         .collect()
 }
 
-use TextKind::{End, Path};
+/// The ends of longer paths among the texts of `name`, each with the path
+/// it is under, in order, each once.
+fn ends_and_unders(name: &str) -> Vec<(String, String)> {
+    let mut ends = Vec::new();
+    for_each_pattern_text(name, |text, kind| {
+        if let TextKind::End { under } = kind {
+            ends.push((text.to_string(), under.to_string()));
+        }
+    });
+    ends.sort();
+    ends.dedup();
+    ends
+}
 
 #[test]
 fn the_texts_of_a_name_are_its_paths_and_their_ends() {
@@ -351,6 +379,34 @@ fn the_texts_of_a_name_are_its_paths_and_their_ends() {
             ("log", End),
             ("log(unsigned int)", End),
         ])
+    );
+}
+
+#[test]
+fn an_end_is_under_the_parts_of_its_path_before_it() {
+    let pairs = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+        (pairs.iter())
+            .map(|&(end, under)| (end.to_string(), under.to_string()))
+            .collect()
+    };
+    assert_eq!(
+        ends_and_unders("app::uart::putc"),
+        pairs(&[("putc", "app::uart"), ("uart::putc", "app")])
+    );
+    // A method in an impl block ends the block's path, and its owner's,
+    // and class data ends the class's.
+    assert_eq!(
+        ends_and_unders("<std::io::Stdout as core::fmt::Write>::write_str"),
+        pairs(&[
+            ("Stdout::write_str", "std::io"),
+            ("io::Stdout::write_str", "std"),
+            ("write_str", "<std::io::Stdout as core::fmt::Write>"),
+            ("write_str", "std::io::Stdout"),
+        ])
+    );
+    assert_eq!(
+        ends_and_unders("vtable for drv::Uart"),
+        pairs(&[("Uart::", "drv"), ("vtable for Uart", "drv")])
     );
 }
 

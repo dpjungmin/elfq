@@ -6,8 +6,9 @@
 //! of one of the texts of the item's names, which
 //! [`names::for_each_pattern_text`] makes, and [`Names::matching`] gives
 //! the items that a pattern matches, each with how it matched and the text
-//! it matched as ([`Match`]). `elfq FILE debug matches PATTERN...` lists
-//! the matches.
+//! it matched as ([`Match`]). [`Names::look_up_or_match`] says when SYMBOL
+//! is a pattern, for `retained`, which takes one in its place, and `elfq
+//! FILE debug matches PATTERN...` lists the matches.
 //!
 //! # The rules, and why
 //!
@@ -50,9 +51,13 @@
 //! pattern's words rules them out before their texts are worked out (see
 //! [`QuickCheck`]).
 
+use std::borrow::Cow;
+
 use serde::Serialize;
 
-use super::Names;
+use anyhow::Result;
+
+use super::{Lookup, Names, PatternMatches};
 use crate::binary::Item;
 use crate::binary::names::{self, TextKind};
 
@@ -75,6 +80,21 @@ pub(in crate::commands) struct Pattern {
     suffix: String,
     /// What a name needs for one of its texts to match.
     quick_check: QuickCheck,
+    /// Whether case counts, as it does in a pattern the user gives, or is
+    /// ignored, as when the error for one that matches nothing looks for
+    /// what it may mean. With case ignored, the pieces above are in
+    /// lowercase.
+    case: Case,
+}
+
+/// Whether a pattern tells letters in uppercase from those in lowercase.
+#[derive(Clone, Copy)]
+enum Case {
+    /// Case counts, as C keeps `curl_*` and `Curl_*` apart.
+    Counts,
+    /// Case is ignored, for the error's suggestions only: `UART_*` matches
+    /// `uart_putc`.
+    Ignored,
 }
 
 /// How a pattern matched an item: the first of these that applies.
@@ -122,16 +142,58 @@ impl Names<'_> {
             .filter_map(|(index, item)| pattern.match_item(index, item))
             .collect()
     }
+
+    /// What `query`, SYMBOL, finds in a command that takes a pattern in its
+    /// place: what [`Names::look_up`] finds, or when that is nothing and
+    /// `query` has a `*` that stands for any text (see [`Pattern::parse`]),
+    /// the items that it matches as a pattern. So a full name with a `*` in
+    /// it, as `<*const T as core::fmt::Debug>::fmt`, still finds its item,
+    /// and no SYMBOL that finds something changes what it finds.
+    pub(in crate::commands) fn look_up_or_match(&self, query: &str) -> Result<LookupOrMatch<'_>> {
+        let lookup = self.look_up(query)?;
+        let pattern = match lookup {
+            Lookup::NoName => Pattern::parse(query),
+            Lookup::One(_) | Lookup::Several(_) => None,
+        };
+        let Some(pattern) = pattern else {
+            return Ok(LookupOrMatch::Name(lookup));
+        };
+        let matches = self.matching(&pattern);
+        Ok(match matches.is_empty() {
+            true => LookupOrMatch::NoMatch(pattern),
+            false => LookupOrMatch::Pattern(PatternMatches { pattern, matches }),
+        })
+    }
+}
+
+/// What SYMBOL finds in a command that takes a pattern in its place (see
+/// [`Names::look_up_or_match`]).
+pub(in crate::commands) enum LookupOrMatch<'n> {
+    /// What it finds as a name: one item or import, several, or for a SYMBOL
+    /// that isn't a pattern, nothing.
+    Name(Lookup<'n>),
+    /// A pattern, with the items that it matches, one or more.
+    Pattern(PatternMatches),
+    /// A pattern that matches no item.
+    NoMatch(Pattern),
 }
 
 impl Pattern {
     /// `typed` as a pattern, or `None` when it has no `*` that stands for
     /// any text, so that it is a name.
     pub(in crate::commands) fn parse(typed: &str) -> Option<Pattern> {
+        Pattern::parse_with(typed, Case::Counts)
+    }
+
+    /// `typed` as a pattern, with case as `case` says.
+    fn parse_with(typed: &str, case: Case) -> Option<Pattern> {
         let (from_root, body) = match typed.strip_prefix("::") {
             Some(body) => (true, body),
             None => (false, typed),
         };
+        // Taking ASCII letters to lowercase changes no byte offset, nor
+        // which `*` is a pointer.
+        let body = &case.of(body);
         let wildcards = wildcards(body);
         let (&first, &last) = (wildcards.first()?, wildcards.last()?);
         let prefix = &body[..first];
@@ -158,12 +220,30 @@ impl Pattern {
             middle,
             suffix: suffix.to_string(),
             quick_check,
+            case,
         })
     }
 
     /// The pattern as the user typed it.
     pub(in crate::commands) fn typed(&self) -> &str {
         &self.typed
+    }
+
+    /// Whether the pattern matches all of one of the texts of `name`, a
+    /// name of an item or an import: the name itself, a path that means the
+    /// same, or unless the pattern starts with `::`, an end of one.
+    pub(super) fn matches_name(&self, name: &str) -> bool {
+        self.longest_texts(name).any()
+    }
+
+    /// The other names of `item` that the pattern matches, as an item's
+    /// aliases list them, leaving out mangled symbols, which elfq never
+    /// prints: for an item that it matches only through them, the names
+    /// that it matched.
+    pub(super) fn matched_aliases<'i>(&self, item: &'i Item) -> Vec<&'i str> {
+        (self.matched_aliases_with_texts(item))
+            .map(|matched| matched.alias)
+            .collect()
     }
 
     /// How the pattern matches the item at `index`, if it does: by a path
@@ -185,26 +265,35 @@ impl Pattern {
             return found(MatchedBy::End, text);
         }
         let mut longest = Longest::default();
-        for alias in &item.aliases {
-            let texts = self.longest_texts(alias);
-            let matched = [texts.path.text, texts.end.text];
-            // elfq never prints a mangled symbol, so a match by one would
-            // surprise. Telling one means demangling it, which takes longer
-            // than matching, so it comes last.
-            if matched.iter().all(Option::is_none) || names::is_mangled(alias) {
-                continue;
-            }
-            for text in matched.iter().flatten() {
+        for MatchedAlias { texts, .. } in self.matched_aliases_with_texts(item) {
+            for text in [texts.path.text, texts.end.text].iter().flatten() {
                 longest.offer(text);
             }
         }
         found(MatchedBy::Alias, longest.text?)
     }
 
+    /// Each of `item`'s aliases that the pattern matches and that isn't a
+    /// mangled symbol, with the longest texts of it that the pattern
+    /// matches.
+    fn matched_aliases_with_texts<'i>(
+        &self,
+        item: &'i Item,
+    ) -> impl Iterator<Item = MatchedAlias<'i>> {
+        item.aliases.iter().filter_map(|alias| {
+            let texts = self.longest_texts(alias);
+            // elfq never prints a mangled symbol, so a match by one would
+            // surprise. Telling one means demangling it, which takes longer
+            // than matching, so it comes last.
+            let matched = texts.any() && !names::is_mangled(alias);
+            matched.then_some(MatchedAlias { alias, texts })
+        })
+    }
+
     /// The longest texts of `name` that the pattern matches, of each kind.
     fn longest_texts(&self, name: &str) -> LongestTexts {
         let mut longest = LongestTexts::default();
-        if !self.quick_check.may_match(name) {
+        if !self.quick_check.may_match(&self.case.of(name)) {
             return longest;
         }
         // Every other text of a name is shorter than the name, so when the
@@ -219,28 +308,89 @@ impl Pattern {
             }
             match kind {
                 TextKind::Path => longest.path.offer(text),
-                TextKind::End if self.from_root => {}
-                TextKind::End => longest.end.offer(text),
+                TextKind::End { .. } if self.from_root => {}
+                TextKind::End { .. } => longest.end.offer(text),
             }
         });
         longest
     }
 
-    /// Whether the pattern matches all of `text`: it starts with the
-    /// prefix, ends with the suffix, and has each piece of the middle in
-    /// order between them. Taking each piece at the first place it is
-    /// leaves the most room for the rest.
+    /// Whether the pattern matches all of `text`.
     fn matches(&self, text: &str) -> bool {
-        let Some(mut rest) = text.strip_prefix(self.prefix.as_str()) else {
+        self.middle_at(&self.case.of(text), |_| {})
+    }
+
+    /// Whether the pattern matches all of `text`, with case as it is in
+    /// `text`: it starts with the prefix, ends with the suffix, and has
+    /// each piece of the middle in order between them. Taking each piece at
+    /// the first place it is leaves the most room for the rest. Calls
+    /// `piece_at` with where each piece of the middle is, as a byte offset.
+    fn middle_at(&self, text: &str, mut piece_at: impl FnMut(usize)) -> bool {
+        let Some(after_prefix) = text.strip_prefix(self.prefix.as_str()) else {
             return false;
         };
+        let mut rest = after_prefix;
         for piece in &self.middle {
             let Some(at) = rest.find(piece.as_str()) else {
                 return false;
             };
+            piece_at(text.len() - rest.len() + at);
             rest = &rest[at + piece.len()..];
         }
         rest.ends_with(self.suffix.as_str())
+    }
+
+    /// The same pattern with case ignored, so that `UART_*` matches
+    /// `uart_putc`.
+    fn ignoring_case(&self) -> Option<Pattern> {
+        Pattern::parse_with(&self.typed, Case::Ignored)
+    }
+
+    /// The pattern written as `text`, a text that it matches, writes each
+    /// of its pieces: for a pattern that ignores case, `uart_*` for
+    /// `UART_*` and `uart_putc`. `None` for a text that it doesn't match.
+    fn written_as(&self, text: &str) -> Option<String> {
+        let mut starts = Vec::new();
+        if !self.middle_at(&self.case.of(text), |at| starts.push(at)) {
+            return None;
+        }
+        let mut written = String::new();
+        if self.from_root {
+            written.push_str("::");
+        }
+        written.push_str(&text[..self.prefix.len()]);
+        for (piece, start) in self.middle.iter().zip(starts) {
+            written.push('*');
+            written.push_str(&text[start..start + piece.len()]);
+        }
+        written.push('*');
+        written.push_str(&text[text.len() - self.suffix.len()..]);
+        Some(written)
+    }
+}
+
+impl Case {
+    /// `text` as a pattern with this case compares it: as it is, or with
+    /// ASCII letters in lowercase.
+    fn of(self, text: &str) -> Cow<'_, str> {
+        match self {
+            Case::Counts => Cow::Borrowed(text),
+            Case::Ignored => Cow::Owned(text.to_ascii_lowercase()),
+        }
+    }
+}
+
+impl Names<'_> {
+    /// `pattern`, which matches no item, as the file writes it, when only
+    /// case keeps it from matching: with each piece between its `*`s as
+    /// the text that it matches of the first item it matches with case
+    /// ignored writes it, as `uart_*` for `UART_*`. `None` when it matches
+    /// no item with case ignored either.
+    pub(super) fn in_files_case(&self, pattern: &Pattern) -> Option<String> {
+        let ignoring_case = pattern.ignoring_case()?;
+        let first = (self.binary.items.iter().enumerate())
+            .find_map(|(index, item)| ignoring_case.match_item(index, item))?;
+        ignoring_case.written_as(&first.matched_as)
     }
 }
 
@@ -306,6 +456,13 @@ impl QuickCheck {
     }
 }
 
+/// Another of an item's names that a pattern matches, with the longest
+/// texts of it that it matches.
+struct MatchedAlias<'i> {
+    alias: &'i str,
+    texts: LongestTexts,
+}
+
 /// The longest texts of a name that a pattern matches, of each kind.
 #[derive(Default)]
 struct LongestTexts {
@@ -313,6 +470,13 @@ struct LongestTexts {
     path: Longest,
     /// The longest text of the kind [`TextKind::End`].
     end: Longest,
+}
+
+impl LongestTexts {
+    /// Whether the pattern matched any text of the name.
+    fn any(&self) -> bool {
+        self.path.text.is_some() || self.end.text.is_some()
+    }
 }
 
 /// The longest of the texts offered, and of those as long, the one that
