@@ -1,15 +1,16 @@
 //! `elfq FILE callees SYMBOL`: what SYMBOL calls or uses. For ranges of
-//! memory in place of SYMBOL, or SYMBOL with `--to`, see `range_check/`.
+//! memory in place of SYMBOL, patterns, several SYMBOLs, or SYMBOL with
+//! `--to`, see `range_check/`.
 
 use std::io::Write;
 
 use anyhow::Result;
 use serde::Serialize;
 
-use super::checks::{check_code_is_readable, readable_item};
+use super::checks::{check_code_is_readable, item_in_file, readable_item};
 use super::flat_answer::FlatAnswer;
 use super::kept::Kept;
-use super::range_check::{self, Direction, RangeCheck};
+use super::range_check::{self, Direction, Inside, RangeCheck};
 use super::symbol::{self, Subject};
 use super::uses::{self, End};
 use super::{Outcome, json, text};
@@ -28,11 +29,13 @@ struct Callees<'a> {
     complete: bool,
 }
 
-/// Answers `elfq FILE callees SYMBOL`, or with ranges in place of SYMBOL,
-/// `callees RANGE...`. `to`, the ranges of `--to`, limits either to the
-/// callees in them, and then SYMBOL is asked about as the range it
-/// occupies. For SYMBOL alone, the text lists the 30 largest callees, or
-/// with `all`, every one; for ranges, see [`range_check::run`].
+/// Answers `elfq FILE callees SYMBOL`, or with ranges, patterns or several
+/// SYMBOLs, `callees SYMBOL|PATTERN|RANGE...` (see [`symbol::subject`]).
+/// `to`, the ranges of `--to`, limits either to the callees in them, and
+/// then SYMBOL is asked about as the range it occupies. For SYMBOL alone,
+/// the text lists the 30 largest callees, or with `all`, every one; for
+/// the rest, see [`range_check::run`]. An import among several SYMBOLs
+/// gets the error it gets alone, since its code isn't in the file.
 pub(super) fn run(
     binary: &Binary,
     symbols: &[String],
@@ -42,7 +45,7 @@ pub(super) fn run(
     out: &mut dyn Write,
 ) -> Result<Outcome> {
     check_code_is_readable(binary)?;
-    let (ranges, name) = match symbol::subject(binary, symbols)? {
+    let inside = match symbol::subject(binary, symbols, item_in_file)? {
         Subject::Symbol(symbol) => {
             let index = readable_item(binary, symbol.node)?;
             let lead_name = symbol.lead_name(binary);
@@ -51,13 +54,16 @@ pub(super) fn run(
                 callees(binary, &graph, index, &lead_name, all, format, out)?;
                 return Ok(Outcome::Answered);
             }
-            (vec![binary.items[index].range()], Some(lead_name))
+            Inside::Symbol {
+                range: binary.items[index].range(),
+                lead_name,
+            }
         }
-        Subject::Ranges(ranges) => (ranges, None),
+        Subject::Ranges(ranges) => Inside::Ranges(ranges),
+        Subject::Set(set) => Inside::Set(set),
     };
     let check = RangeCheck {
-        ranges: &ranges,
-        name,
+        inside,
         far_side: to,
         direction: Direction::Out,
     };

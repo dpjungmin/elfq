@@ -152,15 +152,15 @@ pub(crate) enum Command {
     /// List what calls or uses SYMBOL
     #[command(
         override_usage = "elfq <FILE> callers [OPTIONS] <SYMBOL>\n       \
-                          elfq <FILE> callers [OPTIONS] <RANGE>...",
-        after_help = format!("{}\n\n{HOW_NOTES}\n\n{AT}\n\n{CALLERS}\n\n{CALLERS_RANGES}", how_table())
+                          elfq <FILE> callers [OPTIONS] <SYMBOL|PATTERN|RANGE>...",
+        after_help = format!("{}\n\n{HOW_NOTES}\n\n{AT}\n\n{CALLERS}\n\n{CALLERS_RANGES}\n\n{PATTERNS}", how_table())
     )]
     Callers(CallersArgs),
     /// List what SYMBOL calls or uses
     #[command(
         override_usage = "elfq <FILE> callees [OPTIONS] <SYMBOL>\n       \
-                          elfq <FILE> callees [OPTIONS] <RANGE>...",
-        after_help = format!("{}\n\n{HOW_NOTES}\n\n{AT}\n\n{CALLEES}\n\n{CALLEES_RANGES}", how_table())
+                          elfq <FILE> callees [OPTIONS] <SYMBOL|PATTERN|RANGE>...",
+        after_help = format!("{}\n\n{HOW_NOTES}\n\n{AT}\n\n{CALLEES}\n\n{CALLEES_RANGES}\n\n{PATTERNS}", how_table())
     )]
     Callees(CalleesArgs),
     /// List everything SYMBOL calls or uses, at any depth, by memory block
@@ -217,11 +217,12 @@ pub(crate) struct WhyArgs {
 pub(crate) struct UsesArgs {
     /// A function or data object: its name, the end of its name
     /// (process_frame for app::process_frame), or an address such as 0x1700.
-    /// Or one or more ranges of memory, START..END or START+SIZE, to list
-    /// only what crosses their edge
+    /// Or several SYMBOLs, patterns such as 'uart_*', where * stands for any
+    /// text, or ranges of memory, START..END or START+SIZE, to list only
+    /// what crosses the edge of what they pick
     // Not required here: commands/arguments.rs says what is missing, and
     // with --range, what to type instead.
-    #[arg(value_name = "SYMBOL|RANGE")]
+    #[arg(value_name = "SYMBOL|PATTERN|RANGE")]
     pub(crate) symbols: Vec<String>,
     /// Show every item, not only the 30 largest
     #[arg(long)]

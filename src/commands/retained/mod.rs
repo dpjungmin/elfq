@@ -13,12 +13,13 @@
 //! everything it keeps. [`Parts`] works out from the removal the bytes
 //! saved, the items under the tops and the notes; the answer adds its lead
 //! line and picks its rows. `symbols.rs` finds the SYMBOLs, and the items
-//! of a pattern or range given in place of SYMBOL, leaves out the
-//! functions whose end elfq doesn't know, and says why it can't use those
-//! it can't. This file answers about one, and `several.rs` about several,
-//! from the same parts and with the same words for the lead line, and adds
-//! the notes on how the patterns matched to both. `json.rs` gives the
-//! answer as JSON, in one shape for one SYMBOL or several.
+//! of a pattern or range given in place of SYMBOL, and puts them together
+//! in a `symbol::Set`, whose words name them in the lead line; it leaves
+//! out the functions whose end elfq doesn't know, and says why it can't
+//! use those it can't. This file answers about one, and `several.rs` about
+//! several, from the same parts and with the same words for the lead line,
+//! and adds the notes on how the patterns matched to both. `json.rs` gives
+//! the answer as JSON, in one shape for one SYMBOL or several.
 
 mod json;
 mod parts;
@@ -36,9 +37,10 @@ use super::checks::check_code_is_readable;
 #[cfg(feature = "tui")]
 use super::checks::readable_item;
 use super::kept::Kept;
-use super::range_check::ranges_text;
 use super::retained_tree::RetainedTree;
-use super::symbol::{self, Names, PatternMatches};
+#[cfg(feature = "tui")]
+use super::symbol::Pick;
+use super::symbol::{self, Names, Set};
 use super::text::Naming;
 #[cfg(feature = "tui")]
 use super::tree_answer::TabAnswer;
@@ -48,7 +50,7 @@ use crate::binary::{AddressRange, Binary, FileKind};
 use crate::cli::Format;
 use crate::graph::{Graph, Node};
 use parts::Parts;
-use symbols::{Found, Given, LeadPart, Symbols, find_symbols, left_out_note};
+use symbols::{Symbols, find_symbols, left_out_note};
 
 /// Answers `elfq FILE retained SYMBOL...`: what removing the SYMBOLs in
 /// `queries` at once would save, where a pattern stands for the items it
@@ -76,17 +78,17 @@ pub(super) fn run(
         names.into_inner(),
     ));
     let naming = Naming::of(all);
-    let mut answer = match (format, &symbols.found[..]) {
+    let set = &symbols.set;
+    let mut answer = match (format, set.items()) {
         (Format::Json, found) => {
             let indexes: Vec<usize> = found.iter().map(|found| found.index).collect();
-            let patterns = symbols.given.patterns();
-            write_json(&retained, &indexes, &symbols.left_out, patterns, out)?;
+            write_json(&retained, &indexes, &symbols.left_out, set.patterns(), out)?;
             return Ok(Outcome::Answered);
         }
         (Format::Text | Format::Tree, [one]) => {
             // The one item of patterns or ranges given alone is named with
             // them.
-            let lead_name = subject(binary, &symbols.found, &symbols.given, all);
+            let lead_name = set.lead_name(binary, all).to_string();
             let symbol = SymbolInTree {
                 retained: &retained,
                 index: one.index,
@@ -102,7 +104,7 @@ pub(super) fn run(
         }
         (Format::Text | Format::Tree, _) => several::tree_answer(&retained, &symbols, all, format),
     };
-    if let Some(patterns) = symbols.given.patterns() {
+    if let Some(patterns) = set.patterns() {
         answer
             .notes
             .splice(0..0, symbol::pattern_notes(binary, patterns, &naming));
@@ -117,144 +119,26 @@ pub(super) fn run(
 #[cfg(feature = "tui")]
 pub(super) fn refusal(binary: &Binary, node: Node) -> Result<usize> {
     let index = readable_item(binary, node)?;
-    let found = Found {
-        index,
-        lead_name: node.name(binary).to_string(),
-        named: true,
-    };
-    refuse_shared_library(binary, &[found], &Given::Symbols, false)?;
+    let lead_name = node.name(binary).to_string();
+    let set = Set::new(binary, [Pick::Symbol { index, lead_name }]);
+    refuse_shared_library(binary, &set, false)?;
     Ok(index)
 }
 
 /// Refuses a shared library, whose exported functions elfq doesn't yet
 /// count as places where the program starts, so that it can't tell what
-/// only the items in `found` lead to. It names them as the answer's first
-/// line would, by what was `given` (see [`subject`]).
-fn refuse_shared_library(binary: &Binary, found: &[Found], given: &Given, all: bool) -> Result<()> {
+/// only the items of `set` lead to. It names them as the answer's first
+/// line would (see [`Set::lead_name`]).
+fn refuse_shared_library(binary: &Binary, set: &Set, all: bool) -> Result<()> {
     if binary.kind == FileKind::SharedLibrary {
-        let lead = match found {
+        let lead = match set.items() {
             [_] => "leads",
             _ => "lead",
         };
-        let what = subject(binary, found, given, all);
+        let what = set.lead_name(binary, all);
         bail!("elfq can't yet tell what only {what} {lead} to in a shared library");
     }
     Ok(())
-}
-
-/// How the answer's first line names the items in `found`, which were
-/// `given`: "a", "a and b", or from three on, "these 6 items", so that it
-/// stays short however many there are. When only ranges were given, the
-/// user named no item, so it names the ranges (see [`in_ranges`]). When a
-/// pattern was given, it names each part of what was given (see
-/// [`by_lead_parts`]).
-fn subject(binary: &Binary, found: &[Found], given: &Given, all: bool) -> String {
-    let names: Vec<&str> = (found.iter())
-        .map(|found| found.lead_name.as_str())
-        .collect();
-    match (given, &names[..]) {
-        (Given::Ranges(ranges), _) => in_ranges(binary, ranges, &names, all),
-        (
-            Given::Patterns {
-                matched,
-                lead_parts,
-            },
-            _,
-        ) => by_lead_parts(binary, found, matched, lead_parts, all),
-        (Given::Symbols | Given::SymbolsAndRanges, [one]) => one.to_string(),
-        (Given::Symbols | Given::SymbolsAndRanges, [first, second]) => {
-            format!("{first} and {second}")
-        }
-        (Given::Symbols | Given::SymbolsAndRanges, _) => format!("these {} items", names.len()),
-    }
-}
-
-/// How the first line names the items called `names` in `ranges`, as
-/// `callers` names ranges: by the ranges, each with the sections in it by
-/// where they run, every one with `all`, as in "the 6 items in
-/// 0x00000000..0x000000e0 (.itcm)". The one item of ranges keeps its name,
-/// with the ranges as a note, as an address given as SYMBOL does in "crc32
-/// (which holds 0x14)": "SysTick_Handler (the one item in
-/// 0x00000000..0x00000010)".
-fn in_ranges(binary: &Binary, ranges: &[AddressRange], names: &[&str], all: bool) -> String {
-    match names {
-        [one] => {
-            let ranges: Vec<String> = ranges
-                .iter()
-                .map(|&range| text::range_argument(range))
-                .collect();
-            let ranges: Vec<&str> = ranges.iter().map(String::as_str).collect();
-            format!("{one} (the one item in {})", text::names_text(&ranges, all))
-        }
-        _ => {
-            let ranges = ranges_text(binary, ranges, all);
-            format!("the {} items in {ranges}", names.len())
-        }
-    }
-}
-
-/// How the first line names the items in `found` when a pattern is among
-/// what was given: each of the `lead_parts`, in the order given, as "a",
-/// "a and b" or "a, b and c", with a SYMBOL by its name, the ranges as
-/// [`in_ranges`] names them, and the patterns, which `matched` holds, as
-/// [`symbol::named_by_patterns`] does, by every item they matched, as in
-/// "the 3 items named on_* and process_frame". An item that two parts pick
-/// is named by each, as in "on_button (the one item named on_b*) and
-/// on_button". A SYMBOL or ranges whose items elfq leaves out, since it
-/// doesn't know where they end, aren't named. With more than three parts,
-/// or patterns, it counts the items, "these 6 items", a pattern's by what
-/// it matched, or names the one.
-fn by_lead_parts(
-    binary: &Binary,
-    found: &[Found],
-    matched: &[PatternMatches],
-    lead_parts: &[LeadPart],
-    all: bool,
-) -> String {
-    // The items that the parts name: those found, and every item that the
-    // patterns matched, which they count even when elfq leaves it out.
-    let named: HashSet<usize> = (found.iter().map(|found| found.index))
-        .chain(
-            matched
-                .iter()
-                .flat_map(|matched| matched.matches.iter().map(|found| found.item)),
-        )
-        .collect();
-    let these = match found {
-        [one] if named.len() == 1 => one.lead_name.clone(),
-        _ => format!("these {} items", named.len()),
-    };
-    let counted = |index: usize| found.iter().any(|found| found.index == index);
-    let mut words: Vec<String> = Vec::new();
-    for part in lead_parts {
-        let words_for_part = match part {
-            LeadPart::Symbol { index, .. } if !counted(*index) => continue,
-            LeadPart::Symbol { lead_name, .. } => lead_name.clone(),
-            LeadPart::Ranges(ranges) => {
-                let names: Vec<&str> = (found.iter())
-                    .map(|found| &binary.items[found.index])
-                    .filter(|item| item.is_in(ranges))
-                    .map(|item| item.name.as_str())
-                    .collect();
-                if names.is_empty() {
-                    continue;
-                }
-                in_ranges(binary, ranges, &names, all)
-            }
-            LeadPart::Patterns => match symbol::named_by_patterns(binary, matched) {
-                Some(named) => named,
-                None => return these,
-            },
-        };
-        words.push(words_for_part);
-    }
-    match words.len() {
-        1..=3 => {
-            let words: Vec<&str> = words.iter().map(String::as_str).collect();
-            text::names_text(&words, true)
-        }
-        _ => these,
-    }
 }
 
 /// What removing the SYMBOLs called `subject` would save, as the answer's
@@ -403,62 +287,5 @@ impl<'t, 'g, 'a> Alone<'t, 'g, 'a> {
             table: Some(retained.table(shown, removal.tops(), &HashMap::new(), format)),
             notes,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::path::Path;
-
-    use super::{Found, Given, subject};
-    use crate::binary::{AddressRange, Binary};
-
-    #[test]
-    fn the_lead_names_few_symbols_counts_more_and_names_ranges() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/bin/c-cortex-m7.elf");
-        let binary = Binary::load(&path).unwrap();
-        let lead = |names: &[&str], given: &Given| {
-            let found: Vec<Found> = (names.iter())
-                .map(|&name| Found {
-                    index: binary
-                        .items
-                        .iter()
-                        .position(|item| item.name == name)
-                        .unwrap(),
-                    lead_name: name.to_string(),
-                    named: true,
-                })
-                .collect();
-            subject(&binary, &found, given, false)
-        };
-        assert_eq!(lead(&["crc32"], &Given::Symbols), "crc32");
-        assert_eq!(
-            lead(&["process_frame", "report"], &Given::Symbols),
-            "process_frame and report"
-        );
-        assert_eq!(
-            lead(
-                &["crc32", "apply_filter", "filter_tap"],
-                &Given::SymbolsAndRanges
-            ),
-            "these 3 items"
-        );
-        // With only ranges, the ranges, with the sections in them; for one
-        // item, its name, with the ranges as a note.
-        let range = |start, end| AddressRange { start, end };
-        assert_eq!(
-            lead(
-                &["SysTick_Handler", "__app_tick_veneer"],
-                &Given::Ranges(vec![range(0x0, 0x10), range(0xd0, 0xd8)])
-            ),
-            "the 2 items in 0x00000000..0x00000010 (.itcm) and 0x000000d0..0x000000d8 (.itcm)"
-        );
-        assert_eq!(
-            lead(
-                &["SysTick_Handler"],
-                &Given::Ranges(vec![range(0x0, 0x10), range(0x8, 0x10)])
-            ),
-            "SysTick_Handler (the one item in 0x00000000..0x00000010 and 0x00000008..0x00000010)"
-        );
     }
 }

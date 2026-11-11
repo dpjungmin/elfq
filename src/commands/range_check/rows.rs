@@ -268,20 +268,3 @@ pub(in crate::commands) fn group_unfollowed(
     }
     groups
 }
-
-/// The ranges as `--range` takes them, with the sections in each, joined
-/// into a phrase, every range and section with `all`. A load image in a
-/// range isn't named, since range checks look only where the program uses
-/// its code and data, and a load image is never used where it is stored.
-pub(in crate::commands) fn ranges_text(
-    binary: &Binary,
-    ranges: &[AddressRange],
-    all: bool,
-) -> String {
-    let texts: Vec<String> = ranges
-        .iter()
-        .map(|&range| text::range_sections_text(binary, range, all))
-        .collect();
-    let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
-    text::names_text(&texts, all)
-}

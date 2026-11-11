@@ -2,13 +2,14 @@
 //! about those items words it: the part of its first line that names
 //! them, as "the 3 items named on_*", and the notes on the items that a
 //! pattern matched only by the end of a longer path, or only through
-//! another of their names, since those are the matches to check.
-//! `retained` says these.
+//! another of their names, since those are the matches to check. A set
+//! names its patterns so in its first line (see `set.rs`), and `retained`
+//! puts the notes before its others.
 
 use std::cmp::Reverse;
 use std::collections::HashSet;
 
-use super::{Match, MatchedBy, Pattern};
+use super::{LeadName, Match, MatchedBy, Pattern};
 use crate::binary::Binary;
 use crate::binary::names::{self, TextKind};
 use crate::commands::text::{self, Naming};
@@ -36,10 +37,7 @@ fn matched_items(patterns: &[PatternMatches]) -> Vec<usize> {
 /// with each pattern that matched it, "on_button (the one item named
 /// on_b*)". `None` for more than three patterns that matched several
 /// items, which are too many to name there.
-pub(in crate::commands) fn named_by_patterns(
-    binary: &Binary,
-    patterns: &[PatternMatches],
-) -> Option<String> {
+pub(super) fn named_by_patterns(binary: &Binary, patterns: &[PatternMatches]) -> Option<LeadName> {
     let typed: Vec<&str> = (patterns.iter())
         .map(|matched| matched.pattern.typed())
         .collect();
@@ -49,12 +47,15 @@ pub(in crate::commands) fn named_by_patterns(
         [rest @ .., last] => format!("{} or {last}", rest.join(", ")),
     };
     match matched_items(patterns)[..] {
-        [one] => Some(format!(
+        [one] => Some(LeadName::name(format!(
             "{} (the one item named {named})",
             binary.items[one].name
-        )),
+        ))),
         _ if typed.len() > 3 => None,
-        ref items => Some(format!("the {} items named {named}", items.len())),
+        ref items => Some(LeadName::count(format!(
+            "the {} items named {named}",
+            items.len()
+        ))),
     }
 }
 
@@ -240,7 +241,9 @@ mod tests {
     #[test]
     fn the_first_line_names_the_patterns_and_how_many_items_they_match() {
         let binary = fixtures::functions(&["on_button", "on_timer", "on_data", "report"]);
-        let named = |patterns: &[&str]| named_by_patterns(&binary, &matched(&binary, patterns));
+        let named = |patterns: &[&str]| {
+            named_by_patterns(&binary, &matched(&binary, patterns)).map(|named| named.to_string())
+        };
         assert_eq!(named(&["on_*"]).unwrap(), "the 3 items named on_*");
         assert_eq!(
             named(&["on_b*"]).unwrap(),

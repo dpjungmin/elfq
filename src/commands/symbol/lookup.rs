@@ -140,7 +140,15 @@ impl<'a> Names<'a> {
     /// Finds the item or import that `query` names. When it could mean
     /// several, or none, the error lists names to try instead.
     pub(in crate::commands) fn find(&self, query: &str) -> Result<Symbol> {
-        match self.look_up(query)? {
+        let lookup = self.look_up(query)?;
+        self.one_or_error(query, lookup)
+    }
+
+    /// The one item or import that `query` finds, from `lookup`, what it
+    /// finds (see [`Names::look_up`]), or the error that [`Names::find`]
+    /// gives when it finds several or none.
+    pub(super) fn one_or_error(&self, query: &str, lookup: Lookup) -> Result<Symbol> {
+        match lookup {
             Lookup::One(symbol) => Ok(symbol),
             Lookup::NoName => bail!("{}", self.nothing_named(query)),
             Lookup::Several(nodes) => bail!("{}", self.choices(query, nodes, USE_ONE)),

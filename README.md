@@ -28,6 +28,7 @@ elfq app.elf inlined main               # the inlined code in main
 elfq app.elf callers log_msg            # what calls or uses log_msg
 elfq app.elf callees main               # what main calls or uses
 elfq app.elf callees 0x0+256K           # what the first 256 KiB uses outside it
+elfq app.elf callers 'uart_*'           # what uses the items named uart_* from outside them
 elfq app.elf reach                      # where the program starts, and the bytes each start reaches
 elfq app.elf reach SysTick_Handler      # what SysTick_Handler runs and uses, and where
 elfq app.elf browse                     # where the program starts, each start a page to read
@@ -50,17 +51,20 @@ memory, such as a microcontroller's ITCM, with `--range START..END` or
 sections and their load images occupy. `retained` takes ranges in place
 of a symbol too, each standing for every item with a byte in it, so
 `retained 0x0+256K` says what removing all that is in ITCM would save.
-It also takes a pattern such as `'uart_*'` or `'core::fmt::*'`, where `*`
-stands for any text, for every item it matches. Quote a pattern: zsh and
-fish refuse a `*` that matches no file, and bash puts the names of any
-files it matches in its place.
+`retained`, `callers` and `callees` also take a pattern such as
+`'uart_*'` or `'core::fmt::*'`, where `*` stands for any text, for every
+item it matches. Quote a pattern: zsh and fish refuse a `*` that matches
+no file, and bash puts the names of any files it matches in its place.
 
 `callers` and `callees` take ranges in place of a symbol, and then list
 only what crosses their edge, such as code in ITCM that calls a function in
 flash. elfq's exit status is then 1 if anything does or might, so a CI job
 can check that time-critical code stays in fast memory, or that code run
-from RAM never touches flash. `--from RANGE` lists only the callers in
-RANGE, and `--to RANGE` only the callees, for ranges or a symbol:
+from RAM never touches flash. Patterns and several symbols, alone or with
+ranges, answer the same way, for the items they pick, wherever those are:
+`callers 'uart_*'` lists what uses the items named uart_* from outside
+them. `--from RANGE` lists only the callers in RANGE, and `--to RANGE`
+only the callees, for any of these or one symbol:
 `callers 0x20000000+256K --from 0x0+256K` lists what in the first 256 KiB
 uses the 256 KiB at 0x20000000, and `callers crc32 --from 0x30000000+16M`
 what at 0x30000000 calls crc32. Errors go to stderr, with exit status 2
@@ -171,9 +175,14 @@ and `elfq --help` lists the commands.
   `--json`, `matches` says how each one matched.
 - `elfq FILE.elf callees 0x0+256K` lists what the code and data in that
   range use outside it, and `callers 0x0+256K` what uses them from
-  outside; both exit 1 if anything does or might. `callees --to RANGE`
-  and `callers --from RANGE` keep only what is in RANGE, with ranges or
-  SYMBOL. With ranges, `--to` or `--from`, both show every row.
+  outside; both exit 1 if anything does or might. Patterns and several
+  SYMBOLs, alone or with ranges, answer the same way, for the items they
+  pick, even a pattern that matches one item; in `--json`, `symbols`
+  lists the SYMBOLs given, `matches` says how each pattern matched, and
+  `ranges` has only the ranges given. `callees --to RANGE` and
+  `callers --from RANGE` keep only what is in RANGE, with any of these or
+  one SYMBOL. With patterns, ranges, several SYMBOLs, `--to` or `--from`,
+  both show every row.
 - `elfq FILE.elf reach SYMBOL` lists everything SYMBOL calls or uses, at
   any depth, with the bytes of code and data it takes in each block of
   memory, such as ITCM and flash: a hot function's whole footprint, and

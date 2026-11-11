@@ -54,7 +54,7 @@ fn a_command_line_splits_as_a_shell_splits_it() {
 /// Answers that between them have every key that elfq's JSON has. A key
 /// shows only in an object that is there, so for each key that holds a
 /// list, one of them has an entry in it, which the test checks.
-const JSON_ANSWERS: [&[&str]; 27] = [
+const JSON_ANSWERS: [&[&str]; 29] = [
     &[TCM_SAMPLE],
     &[SAMPLE, "top"],
     &[SAMPLE, "retained", "process_frame"],
@@ -79,6 +79,9 @@ const JSON_ANSWERS: [&[&str]; 27] = [
         "0x0+256K",
     ],
     &[TCM_SAMPLE, "callees", "0x0+256K", "--to", "0x30000000+16M"],
+    // Sets: a pattern's `matches`, and several SYMBOLs' `symbols`.
+    &[TCM_SAMPLE, "callers", "on_*"],
+    &[TCM_SAMPLE, "callees", "on_timer", "on_data"],
     &[TCM_SAMPLE, "reach", "SysTick_Handler"],
     &[SAMPLE, "reach"],
     &[TCM_SAMPLE, "reach"],

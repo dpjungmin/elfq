@@ -150,14 +150,7 @@ pub(in crate::commands) fn write_json(
                 kept_by_others: removal.is_kept_by_others(Node::Item(index)),
             })
             .collect(),
-        matches: patterns.map(|patterns| {
-            (patterns.iter())
-                .flat_map(|matched| {
-                    (matched.matches.iter())
-                        .map(|found| json::Match::new(binary, &matched.pattern, found))
-                })
-                .collect()
-        }),
+        matches: patterns.map(|patterns| json::matches(binary, patterns)),
         left_out: (left_out.iter())
             .map(|&index| json::Symbol::new(binary, Node::Item(index)))
             .collect(),

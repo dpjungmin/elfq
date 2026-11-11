@@ -5,7 +5,7 @@
 //! names of data that no symbol names. Finding what SYMBOL means, in the
 //! library, is tested in library/symbol.rs.
 
-use crate::support::{SAMPLE, TCM_SAMPLE, assert_output, stderr, stdout};
+use crate::support::{SAMPLE, TCM_SAMPLE, assert_output, crossing, stderr, stdout};
 
 #[test]
 fn the_first_line_says_what_symbol_gave_when_it_isnt_the_name() {
@@ -42,6 +42,16 @@ fn the_first_line_says_what_symbol_gave_when_it_isnt_the_name() {
     assert_eq!(
         first_line(&[SAMPLE, "inlined", "0x1700"]),
         "Of process_frame's 532 bytes, 238 are inlined copies of 3 functions:"
+    );
+    // Among several SYMBOLs too.
+    let first_line = |args: &[&str]| crossing(args).lines().next().unwrap().to_string();
+    assert_eq!(
+        first_line(&[TCM_SAMPLE, "callers", "NMI_Handler", "crc32"]),
+        "Default_Handler (also named NMI_Handler) and crc32 are used by 2 items outside them:"
+    );
+    assert_eq!(
+        first_line(&[TCM_SAMPLE, "callers", "0x14", "report"]),
+        "crc32 (which holds 0x14) and report are used by 2 functions outside them:"
     );
 }
 

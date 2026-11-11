@@ -4,11 +4,13 @@
 //! ranges' edge, but in a graph an edge is a reference.
 //!
 //! An item is in the ranges when any of its bytes are, and an import never
-//! is (see `items_in_ranges.rs`). A reference crosses the boundary when one
-//! end is in the ranges and the other isn't, such as a function in ITCM
-//! that calls one in flash. With `--to` or `--from`, only the uses whose
-//! far end is in other ranges count: [`Boundary::leaving_to`] and
-//! [`Boundary::entering_from`] narrow the crossings to them.
+//! is (see `items_in_ranges.rs`). The items of a set, which SYMBOLs and
+//! patterns pick wherever they lie, count as in them too. A reference
+//! crosses the boundary when one end is in the ranges and the other isn't,
+//! such as a function in ITCM that calls one in flash. With `--to` or
+//! `--from`, only the uses whose far end is in other ranges count:
+//! [`Boundary::leaving_to`] and [`Boundary::entering_from`] narrow the
+//! crossings to them.
 //!
 //! When a call is too far for the call instruction, the linker adds a
 //! veneer, which jumps on to the target. A call through a veneer crosses
@@ -132,7 +134,7 @@ pub(crate) struct Boundary<'a> {
     binary: &'a Binary,
     /// `binary`'s graph.
     graph: &'a Graph,
-    /// The items in the ranges.
+    /// The items inside: those in the ranges, and a set's others.
     items: ItemsInRanges<'a>,
     /// The veneers, and where each jumps to.
     veneers: Veneers<'a>,
@@ -149,16 +151,28 @@ impl<'a> Boundary<'a> {
         graph: &'a Graph,
         ranges: &'a [AddressRange],
     ) -> Boundary<'a> {
+        Boundary::around(binary, graph, ItemsInRanges::new(binary, ranges))
+    }
+
+    /// The boundary around `items`, in `binary`, whose graph is `graph`:
+    /// for a caller that has worked out the items already, as a range check
+    /// does for its checks, or picked some one by one, as a set's are (see
+    /// [`ItemsInRanges::with_items`]).
+    pub(crate) fn around(
+        binary: &'a Binary,
+        graph: &'a Graph,
+        items: ItemsInRanges<'a>,
+    ) -> Boundary<'a> {
         Boundary {
             binary,
             graph,
-            items: ItemsInRanges::new(binary, ranges),
+            items,
             veneers: Veneers::new(binary, graph),
             calls_to: OnceCell::new(),
         }
     }
 
-    /// The items in the ranges.
+    /// The items inside: those in the ranges, and a set's others.
     pub(crate) fn items(&self) -> &ItemsInRanges<'a> {
         &self.items
     }

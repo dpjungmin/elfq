@@ -1,8 +1,9 @@
 //! `callers` and `callees`: what uses SYMBOL and what it uses.
 //!
 //! The tests check them as text and as JSON, and with ranges of memory,
-//! `--from` or `--to`, what crosses the ranges' edges. The two commands
-//! share their table and their ranges, so many of these tests check both.
+//! patterns or several SYMBOLs, or with `--from` or `--to`, what crosses
+//! the edge of what those pick. The two commands share their table and
+//! their ranges, so many of these tests check both.
 
 use serde_json::{Value, json};
 
@@ -928,10 +929,6 @@ fn ranges_in_place_of_symbol_must_be_ranges_with_something_in_them() {
         "error: the file has nothing in 0x40000000..0x40001000; the overview lists its ranges\n",
     );
     assert_output(
-        &stderr(&[TCM_SAMPLE, "callees", "0x0+256K", "main"]),
-        "error: `main` isn't a range; give one SYMBOL, or ranges such as 0x0+256K\n",
-    );
-    assert_output(
         &stderr(&[TCM_SAMPLE, "callers", "0x100..0x0"]),
         "error: `0x100..0x0` isn't a range: the range must end after it starts\n",
     );
@@ -1079,6 +1076,7 @@ fn ranges_in_place_of_symbol_must_be_ranges_with_something_in_them() {
         &stderr(&[TCM_SAMPLE, "callers", "crc32x", "--range", "0+1K"]),
         "error: no function or data object is named `crc32x`; did you mean crc32?\n",
     );
+    // As with one SYMBOL, for several, or patterns.
     assert_output(
         &stderr(&[
             TCM_SAMPLE,
@@ -1088,7 +1086,14 @@ fn ranges_in_place_of_symbol_must_be_ranges_with_something_in_them() {
             "--range",
             "0+1K",
         ]),
-        "error: `crc32` isn't a range; give one SYMBOL, or ranges such as 0x0+256K\n",
+        "error: callers takes --from, not --range, to list only the callers in a range: \
+         elfq testdata/bin/c-cortex-m7.elf callers crc32 apply_filter --from \
+         0x00000000..0x00000400\n",
+    );
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "callers", "on_*", "--range", "0+1K"]),
+        "error: callers takes --from, not --range, to list only the callers in a range: \
+         elfq testdata/bin/c-cortex-m7.elf callers 'on_*' --from 0x00000000..0x00000400\n",
     );
     assert_output(
         &stderr(&[TCM_SAMPLE, "callees", "crc32", "--range", "0+1K"]),
@@ -1215,8 +1220,384 @@ fn ranges_in_place_of_symbol_must_be_ranges_with_something_in_them() {
     );
     assert_output(
         &stderr(&[TCM_SAMPLE, "callers"]),
-        "error: callers needs a SYMBOL, or ranges such as 0x0+256K\n",
+        "error: callers needs a SYMBOL, or patterns or ranges, such as 'uart_*' or 0x0+256K\n",
     );
+}
+
+#[test]
+fn a_pattern_answers_as_ranges_do() {
+    // Every row, what crosses the edge of the items it matches, and the
+    // exit status 1 when something does.
+    assert_output(
+        &crossing(&[TCM_SAMPLE, "callers", "on_*"]),
+        "The 3 items named on_* are used by 1 function outside them:\n\
+         \n\
+         ADDRESS     SIZE  HOW            AT          CALLER\n\
+         0x30000570   132  address taken  0x30000572  main, uses on_timer\n\
+         0x30000570   132  address taken  0x3000057a  main, uses on_button\n\
+         0x30000570   132  address taken  0x30000582  main, uses on_data\n\
+         \n\
+         Calls through a pointer to on_timer, on_data and on_button aren't listed, since \
+         elfq can't see them.\n",
+    );
+    // Even when it matches one item, so that the answer keeps its shape
+    // when a build adds or drops a match; its name alone keeps the answer
+    // about the item itself.
+    assert_output(
+        &crossing(&[TCM_SAMPLE, "callers", "crc3*"]),
+        "crc32 (the one item named crc3*) is used by 1 function outside it:\n\
+         \n\
+         ADDRESS     SIZE  HOW              AT          CALLER\n\
+         0x30000320   376  call via veneer  0x3000034c  process_frame, uses crc32\n",
+    );
+    assert_output(
+        &stdout(&[TCM_SAMPLE, "callers", "crc32"]),
+        "crc32 is used by 1 function:\n\
+         \n\
+         HOW        AT          CALLER\n\
+         tail call  0x300009b0  __crc32_veneer\n",
+    );
+}
+
+#[test]
+fn several_symbols_answer_together_with_ranges_and_patterns() {
+    assert_output(
+        &crossing(&[TCM_SAMPLE, "callees", "on_timer", "on_data"]),
+        "on_timer and on_data use 2 data objects outside them:\n\
+         \n\
+         ADDRESS     SIZE  HOW   AT          CALLEE\n\
+         0x2000042c     4  uses  0x30000150  data_events, used by on_data\n\
+         0x20000434     4  uses  0x30000140  timer_ticks, used by on_timer\n",
+    );
+    // An item given twice counts once, and so does a range.
+    assert_output(
+        &crossing(&[TCM_SAMPLE, "callers", "crc32", "crc32"]),
+        "crc32 is used by 1 function outside it:\n\
+         \n\
+         ADDRESS     SIZE  HOW              AT          CALLER\n\
+         0x30000320   376  call via veneer  0x3000034c  process_frame, uses crc32\n",
+    );
+    assert_output(
+        &crossing(&[TCM_SAMPLE, "callers", "0x0+16", "crc32", "0x0+16"]),
+        "SysTick_Handler and crc32 are used by 2 items outside them:\n\
+         \n\
+         ADDRESS     SIZE  HOW              AT          CALLER\n\
+         0x30000320   376  call via veneer  0x3000034c  process_frame, uses crc32\n\
+         0x30000000    64  pointer          0x3000003c  vector_table, uses SysTick_Handler\n",
+    );
+    // The first line names each part, in the order given, up to three.
+    let leaves = crossing(&[TCM_SAMPLE, "callers", "leaf_*", "0x0..0x40000"]);
+    assert!(
+        leaves.starts_with(
+            "The 3 items named leaf_* and the 6 items in 0x00000000..0x00040000 (.itcm) are \
+             used by 4 items outside them:\n"
+        ),
+        "{leaves}"
+    );
+    let six = crossing(&[TCM_SAMPLE, "callers", "on_*", "crc32", "report", "main"]);
+    assert_output(
+        &six,
+        "These 6 items are used by 2 functions outside them:\n\
+         \n\
+         ADDRESS     SIZE  HOW              AT          CALLER\n\
+         0x30000320   376  call via veneer  0x3000034c  process_frame, uses crc32\n\
+         0x300005f8   112  call             0x30000642  Reset_Handler, uses main\n\
+         \n\
+         Calls through a pointer to on_timer, on_data and on_button aren't listed, since \
+         elfq can't see them.\n",
+    );
+}
+
+#[test]
+fn a_set_names_a_range_of_code_outside_every_item_by_its_addresses() {
+    // The far sample calls a routine in the chip's ROM, at 0x1fff0000,
+    // where no item is, so no item's name can name that range.
+    let far = "testdata/bin/far-gnu-m4-nodebug.elf";
+    let first_line = |args: &[&str]| {
+        let answer = crossing(&[&[far, "callers"][..], args].concat());
+        answer.lines().next().unwrap_or_default().to_string()
+    };
+    assert_eq!(
+        first_line(&["ram_calls_rom", "0x1fff0000+64K"]),
+        "ram_calls_rom and 0x1fff0000..0x20000000 are used by 3 functions outside them:"
+    );
+    assert_eq!(
+        first_line(&["flash_*", "0x1fff0000+64K"]),
+        "The 5 items named flash_* and 0x1fff0000..0x20000000 are used by 7 functions \
+         outside them:"
+    );
+    // The errors name it the same way.
+    assert_output(
+        &stderr(&[
+            far,
+            "callers",
+            "0x1fff0000+64K",
+            "ram_leaf",
+            "--from",
+            "0x0+16",
+        ]),
+        "error: --from 0x00000000..0x00000010 holds nothing outside 0x1fff0000..0x20000000 \
+         and ram_leaf, and callers lists only what uses them from outside\n",
+    );
+}
+
+#[test]
+fn a_set_notes_how_its_patterns_matched_first() {
+    const SOFTFLOAT: &str = "testdata/bin/c-softfloat-nodebug.elf";
+    assert_output(
+        &crossing(&[SOFTFLOAT, "callers", "*df2"]),
+        "The 4 items named *df2 are used by 1 function outside them:\n\
+         \n\
+         ADDRESS    SIZE  HOW   AT         CALLER\n\
+         0x8000490    16  call  0x8000492  __aeabi_cdcmpeq, uses __cmpdf2\n\
+         \n\
+         __aeabi_f2d matches only through another of its names, __extendsfdf2.\n",
+    );
+    // With nothing to list, the note follows the first line.
+    assert_output(
+        &stdout(&[SOFTFLOAT, "callers", "__extendsf*", "__gedf*"]),
+        "Nothing outside the 2 items named __extendsf* or __gedf* uses them.\n\
+         __aeabi_f2d matches only through another of its names, __extendsfdf2.\n",
+    );
+}
+
+#[test]
+fn from_and_to_take_a_set() {
+    // What in flash, outside memset and crc32, uses them.
+    assert_output(
+        &crossing(&[
+            TCM_SAMPLE,
+            "callers",
+            "memset",
+            "crc32",
+            "--from",
+            "0x30000000+16M",
+        ]),
+        "memset and crc32 are used by 2 functions in 0x30000000..0x31000000 (.isr_vector, \
+         .text, .rodata and .ARM.exidx):\n\
+         \n\
+         ADDRESS     SIZE  HOW              AT          CALLER\n\
+         0x30000320   376  call via veneer  0x3000034c  process_frame, uses crc32\n\
+         0x300005f8   112  call             0x3000063e  Reset_Handler, uses memset\n",
+    );
+    // The ranges may hold some of the set's items, which stay inside, as
+    // one SYMBOL's item does: process_frame is in flash, so its call to
+    // crc32 isn't listed, but the veneer's jump is.
+    assert_output(
+        &crossing(&[
+            TCM_SAMPLE,
+            "callers",
+            "crc32",
+            "process_frame",
+            "--from",
+            "0x30000000+16M",
+        ]),
+        "crc32 and process_frame are used by 2 functions in 0x30000000..0x31000000 \
+         (.isr_vector, .text, .rodata and .ARM.exidx):\n\
+         \n\
+         ADDRESS     SIZE  HOW        AT                     CALLER\n\
+         0x30000570   132  call       0x30000596 and 2 more  main, uses process_frame\n\
+         0x300009b0     8  tail call  0x300009b0             __crc32_veneer, uses crc32\n",
+    );
+    assert_output(
+        &crossing(&[
+            TCM_SAMPLE,
+            "callees",
+            "crc32",
+            "process_frame",
+            "--to",
+            "0x0+256K",
+        ]),
+        "crc32 and process_frame use 1 function in 0x00000000..0x00040000 (.itcm):\n\
+         \n\
+         ADDRESS  SIZE  HOW              AT                      CALLEE\n\
+         0x74       92  call via veneer  0x30000386, 0x30000454  apply_filter, used by \
+         process_frame\n",
+    );
+    // But each range must hold something outside the set, and a range
+    // given in the set may not share an item with them.
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "callers", "on_*", "--from", "0x30000140+32"]),
+        "error: --from 0x30000140..0x30000160 holds nothing outside the 3 items named on_*, \
+         and callers lists only what uses them from outside\n",
+    );
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "callees", "on_*", "--to", "0x30000140+32"]),
+        "error: --to 0x30000140..0x30000160 holds nothing outside the 3 items named on_*, \
+         and callees lists only what they use outside them\n",
+    );
+    assert_output(
+        &stderr(&[
+            TCM_SAMPLE,
+            "callers",
+            "process_frame",
+            "0x0+16",
+            "--from",
+            "0x0+256K",
+        ]),
+        "error: --from 0x00000000..0x00040000 and 0x00000000..0x00000010 both hold \
+         SysTick_Handler; give ranges that don't share it\n",
+    );
+}
+
+#[test]
+fn a_set_stops_at_the_first_argument_it_cant_read() {
+    // A set needs each item's range, which an import has none of in the
+    // file. callees can't answer for one alone either, so it says why.
+    assert_output(
+        &stderr(&[SAMPLE, "callers", "main", "__libc_start_main"]),
+        "error: __libc_start_main is imported from a shared library, so it has no range in \
+         this file to put with the others; give it alone\n",
+    );
+    assert_output(
+        &stderr(&[SAMPLE, "callees", "log_*", "__libc_start_main"]),
+        "error: __libc_start_main is imported from a shared library, so its code isn't in \
+         this file\n",
+    );
+    assert!(
+        stdout(&[SAMPLE, "callers", "__libc_start_main"])
+            .starts_with("__libc_start_main is used by 1 function:\n"),
+    );
+    // The first argument that it can't read gives the error.
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "callers", "nosuch_*", "0x100..0x0"]),
+        "error: no function or data object is named `nosuch_*`\n",
+    );
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "callers", "0x100..0x0", "nosuch"]),
+        "error: `0x100..0x0` isn't a range: the range must end after it starts\n",
+    );
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "callers", "crc32", "0x40000000+16"]),
+        "error: the file has nothing in 0x40000000..0x40000010; the overview lists its \
+         ranges\n",
+    );
+    // A range is checked for what it holds only after every name and
+    // pattern is found, so the name's error comes first here.
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "callers", "0x40000000+16", "nosuch"]),
+        "error: no function or data object is named `nosuch`\n",
+    );
+    let error = stderr(&[
+        "testdata/bin/rust-cortex-m4.elf",
+        "callers",
+        "checksum",
+        "crc32",
+    ]);
+    assert!(
+        error.starts_with(
+            "error: `checksum` could mean 3 functions; use one on the left instead:\n"
+        ),
+        "{error}"
+    );
+    assert_output(
+        &stderr(&[SAMPLE, "callees"]),
+        "error: callees needs a SYMBOL, or patterns or ranges, such as 'uart_*' or 0x0+256K\n",
+    );
+}
+
+#[test]
+fn a_set_lists_its_symbols_and_matches_in_json() {
+    // `ranges` lists only the ranges typed, each once, `symbols` the
+    // SYMBOLs, and `matches` what each pattern matched, as in retained.
+    let text = run(&[
+        TCM_SAMPLE,
+        "callees",
+        "on_*",
+        "crc32",
+        "0x0+16",
+        "0x0+16",
+        "crc32",
+        "--to",
+        "0x20000000+256K",
+        "--json",
+    ])
+    .printed(1);
+    assert_eq!(
+        keys_in_order(&text),
+        [
+            "ranges",
+            "symbols",
+            "matches",
+            "to",
+            "callees",
+            "unresolved",
+            "unreadable",
+            "complete"
+        ]
+    );
+    let callees: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        callees["ranges"],
+        json!([{ "start": "0x0", "end": "0x10" }])
+    );
+    assert_eq!(callees["symbols"][0]["aliases"], json!([]));
+    assert_eq!(names(&callees["symbols"]), ["crc32"]);
+    assert_eq!(
+        callees["matches"][0],
+        json!({
+            "pattern": "on_*",
+            "name": "on_timer",
+            "kind": "function",
+            "section": ".text",
+            "address": "0x30000140",
+            "size": 16,
+            "size_estimated": false,
+            "matched_by": "name",
+            "matched_as": "on_timer"
+        })
+    );
+    assert_eq!(
+        names(&callees["matches"]),
+        ["on_timer", "on_data", "on_button"]
+    );
+    // Only what was given: no `matches` without a pattern, no `symbols`
+    // without a SYMBOL.
+    let text = run(&[
+        TCM_SAMPLE,
+        "callers",
+        "memset",
+        "crc32",
+        "--from",
+        "0x30000000+16M",
+        "--json",
+    ])
+    .printed(1);
+    assert_eq!(
+        keys_in_order(&text),
+        [
+            "ranges",
+            "symbols",
+            "from",
+            "callers",
+            "unresolved",
+            "unreadable",
+            "through_pointer",
+            "complete"
+        ]
+    );
+    let text = run(&[TCM_SAMPLE, "callers", "on_*", "--json"]).printed(1);
+    assert_eq!(keys_in_order(&text)[..3], ["ranges", "matches", "from"]);
+    // Ranges alone and one SYMBOL keep their JSON.
+    for args in [
+        &["0x0+16", "0x10+4"][..],
+        &["crc32", "--from", "0x30000000+16M"],
+    ] {
+        let text = run(&[&[TCM_SAMPLE, "callers", "--json"], args].concat()).printed(1);
+        assert_eq!(keys_in_order(&text)[..2], ["ranges", "from"], "{text}");
+    }
+}
+
+/// The keys of an answer's JSON, `text` as elfq printed it, in the order
+/// printed. Each is where `"key":` is first printed, so the answer's rows
+/// mustn't have a key of the same name.
+fn keys_in_order(text: &str) -> Vec<String> {
+    let answer: serde_json::Map<String, Value> = serde_json::from_str(text).unwrap();
+    let mut keys: Vec<(usize, &String)> = (answer.keys())
+        .map(|key| (text.find(&format!("\"{key}\":")).unwrap(), key))
+        .collect();
+    keys.sort();
+    keys.into_iter().map(|(_, key)| key.clone()).collect()
 }
 
 #[test]
