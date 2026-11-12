@@ -115,8 +115,10 @@ pub(super) fn kind_name(kind: ItemKind) -> &'static str {
 /// Browse asks for both, to tell whether a tab needs `--all`. Code that
 /// `--all` doesn't reach, such as an error, the hints under it and the
 /// overview, passes the one it needs: an error that must name everything
-/// passes [`Detail::All`], as `checks::ends_unknown` and
-/// `validate::asked_about` do, and the others pass [`Detail::Brief`].
+/// passes [`Detail::All`], as `checks::readable_item` and
+/// `retained::find_symbols` do for the functions whose end elfq doesn't
+/// know, and `validate::asked_about` for the ranges asked about, and the
+/// others pass [`Detail::Brief`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum Detail {
     /// What a command shows without `--all`: the first rows of a long
@@ -440,19 +442,30 @@ pub(super) fn call_and_jump_verbs<'a>(
     }
 }
 
+/// Says that elfq can't read the code of the functions called `names`,
+/// since it doesn't know where they end: "elfq doesn't know where _init
+/// ends, so it can't read its code", or for several, "where _init and _fini
+/// end, so it can't read their code", which names the first ten of a long
+/// list, then "and 5 more", or with [`Detail::All`], every one, as an error
+/// does.
+pub(super) fn ends_unknown(names: &[&str], detail: Detail) -> String {
+    match names {
+        [one] => format!("elfq doesn't know where {one} ends, so it can't read its code"),
+        _ => format!(
+            "elfq doesn't know where {} end, so it can't read their code",
+            names_text(names, detail)
+        ),
+    }
+}
+
 /// The sentence that says elfq can't read `unreadable`, the functions whose
-/// end it doesn't know, as `callees SYMBOL` says it.
+/// end it doesn't know, as `callees SYMBOL` says it (see [`ends_unknown`]).
 pub(super) fn unreadable_text(binary: &Binary, unreadable: &[usize], detail: Detail) -> String {
     let names: Vec<&str> = unreadable
         .iter()
         .map(|&index| binary.items[index].name.as_str())
         .collect();
-    format!(
-        "elfq doesn't know where {} {}, so it can't read {} code.",
-        names_text(&names, detail),
-        if names.len() == 1 { "ends" } else { "end" },
-        if names.len() == 1 { "its" } else { "their" }
-    )
+    format!("{}.", ends_unknown(&names, detail))
 }
 
 /// Examples of the names that elfq gives items without symbols: the first
