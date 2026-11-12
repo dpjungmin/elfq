@@ -10,8 +10,8 @@ use serde_json::{Value, json};
 
 use crate::support::elf::ElfBytes;
 use crate::support::{
-    DEEP_SAMPLE, Exit, LIBRARY_SAMPLE, SAMPLE, TCM_SAMPLE, assert_output, elfq_json, names, run,
-    samples, shell_words, stderr, stdout, text_rows,
+    DEEP_SAMPLE, Exit, LIBRARY_SAMPLE, SAMPLE, TCM_SAMPLE, TempFolder, assert_output, elfq_json,
+    names, run, samples, shell_words, stderr, stdout, text_rows,
 };
 
 #[test]
@@ -238,6 +238,52 @@ The program never uses them, or elfq can't see how.
              can't see how.\n"
         ),
         "{cpp}"
+    );
+}
+
+#[test]
+fn top_given_a_pattern_names_the_command_that_takes_it() {
+    let refused = |argument: &str, lines: &str| {
+        format!(
+            "error: unexpected argument '{argument}' found\n{lines}\nUsage: elfq <FILE> top \
+             [OPTIONS]\n\nFor more information, try '--help'.\n"
+        )
+    };
+    let takes = |pattern: &str| {
+        format!(
+            "top takes no SYMBOL; retained '{pattern}' lists those items, with what each keeps.\n"
+        )
+    };
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "top", "core::fmt::*"]),
+        &refused("core::fmt::*", &takes("core::fmt::*")),
+    );
+    // It names the first pattern after top, wherever clap's error stops.
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "top", "x", "on_*"]),
+        &refused("x", &takes("on_*")),
+    );
+    // A name, or one whose only `*` is a pointer's, gets clap's error alone.
+    for argument in ["main", "f(char*)"] {
+        assert_output(
+            &stderr(&[TCM_SAMPLE, "top", argument]),
+            &refused(argument, ""),
+        );
+    }
+    // Unquoted, `on_*` reaches elfq as the files that it matches here, and
+    // the line names the pattern that their names start with.
+    let here = TempFolder::new("top-files", &["on_button.c", "on_timer.c"], &[]);
+    assert_output(
+        &(here.run(TCM_SAMPLE, &["top", "on_button.c", "on_timer.c"])).error(),
+        &refused(
+            "on_button.c",
+            &format!(
+                "{}on_button.c and on_timer.c are files here: the shell may have put them in \
+                 place of a pattern. Put a pattern in single quotes, as in 'on_*', so that the \
+                 shell passes it as typed.\n",
+                takes("on_*")
+            ),
+        ),
     );
 }
 
@@ -1221,11 +1267,13 @@ error: elfq can't use 3 of the 3 SYMBOLs:
 #[test]
 fn retained_says_to_use_one_or_more_of_what_a_name_could_mean() {
     const CPP: &str = "testdata/bin/cpp-x86_64.elf";
-    // Unlike other commands, which take one SYMBOL.
+    // It says to use one or more, unlike other commands, which take one
+    // SYMBOL, and like `callers` and `callees`, which take a set too, it
+    // offers the pattern that takes both.
     assert_output(
         &stderr(&[CPP, "retained", "log"]),
         "\
-error: `log` could mean 2 functions; use one or more on the left instead:
+error: `log` could mean 2 functions; use one or more on the left instead, or 'log*' for all 2:
   'log(char const*)'   app::log(char const*)
   'log(unsigned int)'  app::log(unsigned int)
 ",
@@ -1236,12 +1284,13 @@ error: `log` could mean 2 functions; use one or more on the left instead:
         &stderr(&[CPP, "retained", "log", "log(unsigned int)", "frob"]),
         "\
 error: elfq can't use 2 of the 3 SYMBOLs:
-  `log` could mean 2 functions; use one or more on the left instead:
+  `log` could mean 2 functions; use one or more on the left instead, or 'log*' for all 2:
     'log(char const*)'   app::log(char const*)
     'log(unsigned int)'  app::log(unsigned int)
   no function or data object is named `frob`
 ",
     );
+    // 'fmt*' takes more than the 53, so it isn't offered.
     let error = stderr(&[
         "testdata/bin/rust-x86_64-nodebug.elf",
         "retained",
@@ -1257,6 +1306,7 @@ error: elfq can't use 2 of the 3 SYMBOLs:
                 .ends_with("\n    and 43 more\n  no function or data object is named `nosuch`\n"),
         "{error}"
     );
+    // `why` takes one item, so it offers no pattern.
     assert_output(
         &stderr(&[CPP, "why", "log"]),
         "\

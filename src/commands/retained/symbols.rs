@@ -18,21 +18,28 @@
 //! long list of them can be fixed in one go: one with the error it gets
 //! alone, several each with that error, under a line that counts them, and
 //! calls them SYMBOLs, or arguments once a range is among them. The errors
-//! are those of every command, with a hint of `retained`'s own, since it
+//! are those of every command that takes a set, as `callers` and `callees`
+//! do, where the error for a name that could mean several items ends its
+//! first line with the pattern for all of them, when it takes just those
+//! (see `Names::choices`). One hint is `retained`'s own, since it
 //! takes several SYMBOLs: a name that could mean several items says to use
-//! one or more of them. A pattern that matches nothing gets the error for
-//! a name that finds nothing, with a pattern like it that matches some,
-//! if there is one.
+//! one or more of them. A name that finds nothing offers first the pattern
+//! for what is in a module of that name whenever it matches an item, since
+//! `retained` takes every item it matches (`Takes::Set`). A pattern that
+//! matches nothing gets the error for a name that finds nothing, with a
+//! pattern like it that matches some, if there is one.
 
 use std::collections::HashSet;
 
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 
 use super::refuse_shared_library;
 use crate::binary::Binary;
 use crate::commands::checks::{ends_unknown, item_in_file};
 use crate::commands::range_check::check_holds_items;
-use crate::commands::symbol::{self, Argument, Lookup, LookupOrMatch, Names, Pattern, Pick, Set};
+use crate::commands::symbol::{
+    self, Argument, Lookup, LookupOrMatch, Names, Pattern, Pick, Set, Takes,
+};
 use crate::commands::text::{self, Naming};
 use crate::graph::Node;
 
@@ -56,9 +63,11 @@ pub(super) struct Symbols {
 /// in the order given, and leaves out each function whose end elfq doesn't
 /// know. Fails with an error that lists every argument that it can't use,
 /// such as an import, a pattern that matches nothing or a range that holds
-/// no item, the first 10 of them unless `all` (see [`unusable_error`]);
-/// when it leaves out every item, with an error that names them; and after
-/// those checks, for a shared library.
+/// no item, the first 10 of them unless `all` (see [`unusable_error`]),
+/// with the line that says which of the arguments it can't use are files
+/// here under it, as the shell may have put them in place of a pattern
+/// (see [`symbol::with_shell_hint`]); when it leaves out every item, with
+/// an error that names them; and after those checks, for a shared library.
 pub(super) fn find_symbols(
     binary: &Binary,
     names: &Names,
@@ -88,7 +97,10 @@ pub(super) fn find_symbols(
     }
     if !unusable.is_empty() {
         let error = unusable_error(&unusable, queries.len(), arguments_word, all, names);
-        bail!("{error}");
+        // Only an argument that it can't use may be what the shell put in
+        // place of a pattern: one that finds its item was typed as meant.
+        let unusable: Vec<&str> = unusable.iter().map(|argument| argument.query).collect();
+        return Err(symbol::with_shell_hint(anyhow!(error), &unusable));
     }
     let mut set = Set::new(binary, picks);
     let left_out = set.leave_out_unknown_ends(binary);
@@ -215,7 +227,7 @@ impl Unusable<'_, '_> {
     fn error(&self, names: &Names) -> String {
         let query = self.query;
         match &self.reason {
-            Reason::NoName => names.nothing_named(query),
+            Reason::NoName => names.nothing_named(query, Takes::Set),
             Reason::NoMatch(pattern) => names.nothing_matches(pattern),
             Reason::Several(nodes) => names.choices(query, nodes, USE_ONE_OR_MORE),
             Reason::Error(error) => error.clone(),

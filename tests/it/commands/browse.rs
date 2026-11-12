@@ -660,6 +660,51 @@ go to: log▏
 }
 
 #[test]
+fn a_module_that_holds_one_item_is_offered_as_a_pattern() {
+    // browse takes one item, so the CLI's message offers the pattern for
+    // what is in `app::Config` only because it matches one.
+    assert_output(
+        &screen("cpp-x86_64.elf", Some("app::Config"), (80, 24), &[]),
+        "\
+cpp-x86_64.elf › go to
+no function or data object is named `app::Config`; did you mean 'app::Config::*'
+(1 function), app::config, app::Config::load_defaults?
+  ADDRESS  SIZE  KIND      SECTION  ITEM
+> 0x1720     22  function  .text    app::Config::load_defaults()
+  0x4020      4  data      .bss     app::config
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+go to: app::Config▏
+↑↓ move  enter open  esc cancel
+",
+    );
+    // `app::Gain::*` matches 4 items, so `app::Gain` gets names like it
+    // alone.
+    let gain = screen("cpp-x86_64.elf", Some("app::Gain"), (80, 24), &[]);
+    assert_eq!(
+        gain.lines().skip(1).take(2).collect::<Vec<&str>>(),
+        [
+            "no function or data object is named `app::Gain`; did you mean 'vtable for",
+            "app::Gain', 'typeinfo for app::Gain', 'typeinfo name for app::Gain',"
+        ]
+    );
+}
+
+#[test]
 fn a_pattern_opens_the_item_it_matches_or_go_to_with_several() {
     // The one item that it matches opens, and the header says what the
     // pattern found.
@@ -711,6 +756,27 @@ go to: on_*▏
             "  ADDRESS  SIZE  KIND  SECTION  ITEM",
             ""
         ]
+    );
+}
+
+#[test]
+fn go_to_leaves_out_the_line_that_says_that_symbol_is_a_file_here() {
+    // The tests run in the crate's root, where Cargo.toml is a file. The
+    // box shows only the first line of the CLI's error, and the shell has
+    // no part in what is typed there.
+    let page = screen("c-x86_64.elf", Some("Cargo.toml"), (80, 24), &[]);
+    assert_eq!(
+        page.lines().skip(1).take(2).collect::<Vec<&str>>(),
+        [
+            "no function or data object is named `Cargo.toml`",
+            "  ADDRESS  SIZE  KIND  SECTION  ITEM"
+        ]
+    );
+    assert_output(
+        &stderr(&[SAMPLE, "why", "Cargo.toml"]),
+        "error: no function or data object is named `Cargo.toml`\nCargo.toml is a file here: the \
+         shell may have put it in place of a pattern. Put a pattern in single quotes, so that the \
+         shell passes it as typed.\n",
     );
 }
 

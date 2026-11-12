@@ -173,11 +173,12 @@ pointer        app::Gain::run(short*, unsigned long)
 Removing vtable for app::Gain would remove app::Gain::run(short*, unsigned long) too.
 ",
     );
-    // Overloads share a name, so their parameters tell them apart.
+    // Overloads share a name, so their parameters tell them apart, and
+    // 'log*' takes both.
     assert_output(
         &stderr(&[CPP, "callers", "log"]),
         "\
-error: `log` could mean 2 functions; use one on the left instead:
+error: `log` could mean 2 functions; use one on the left instead, or 'log*' for all 2:
   'log(char const*)'   app::log(char const*)
   'log(unsigned int)'  app::log(unsigned int)
 ",

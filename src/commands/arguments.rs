@@ -8,6 +8,13 @@
 //! every command, so that the compiler asks about a new one. An arm that
 //! lets an option through to a command that doesn't take it says where the
 //! command refuses it.
+//!
+//! clap refuses an argument that a command doesn't take before elfq sees
+//! the others, and [`unexpected_argument_hints`] words what elfq adds under
+//! the first line of that error: for `why`, `reach`, `inlined`, `browse`
+//! and `top`, which take one SYMBOL at most, that the arguments are files
+//! here, which the shell may have put in place of a pattern, and for `top`,
+//! which takes none, the command that takes a pattern given to it.
 
 use std::io::Write;
 
@@ -16,6 +23,7 @@ use anyhow::{Result, bail};
 use super::checks::{check_code_is_readable, item_in_file};
 use super::kept::freeing;
 use super::range_check::Direction;
+use super::symbol::{FilesHere, Pattern, is_here};
 use super::text::CommandLine;
 use super::{Outcome, callees, callers, symbol, text};
 use crate::binary::{AddressRange, Binary};
@@ -27,6 +35,62 @@ const RANGE_REFUSED: &str = "only the overview, top and retained take --range";
 /// The error for `--json`, `--tree` or `--range` with `browse`, which shows
 /// its pages on the screen, and prints no answer for them to change.
 const BROWSE_REFUSED: &str = "browse takes no --json, --tree or --range";
+
+/// The commands that take one SYMBOL at most, and `top`, which takes none,
+/// though a pattern may be given to it to see what those items keep. clap
+/// refuses an argument after the one that they take before the file is
+/// read, so the line that says that the arguments are files here, which
+/// the shell may have put in place of a pattern, goes under clap's error
+/// (see [`unexpected_argument_hints`]), where `retained`, `callers` and
+/// `callees`, which take several, give it under their own. `diff` and
+/// `startup` take no SYMBOL, and a pattern isn't given to them.
+const TAKE_ONE_SYMBOL_AT_MOST: [&str; 5] = ["why", "reach", "inlined", "browse", "top"];
+
+/// The lines that elfq adds under the first line of clap's error for
+/// `unexpected`, an argument that `command` doesn't take, given
+/// `arguments`, all those after the command, in the commands that take one
+/// SYMBOL at most ([`TAKE_ONE_SYMBOL_AT_MOST`]). For `top`, which takes
+/// none, first the command that takes the first of `arguments` that is a
+/// pattern and not a range, wherever clap's error stops, or failing that,
+/// the pattern that the shell may have put files in place of (see
+/// [`top_takes_no_symbol`]).
+/// Then, when `unexpected` is a file or a folder here, as the shell may
+/// have put either in place of a pattern, the line that says which of
+/// `arguments` are files here (see [`FilesHere::hint`]). The file isn't
+/// read yet, so that line names a file whose name an item has too. None
+/// for an unexpected option, such as a misspelled `--json`, nor for the
+/// other commands.
+pub fn unexpected_argument_hints(
+    command: &str,
+    arguments: &[String],
+    unexpected: &str,
+) -> Vec<String> {
+    if !TAKE_ONE_SYMBOL_AT_MOST.contains(&command) || unexpected.starts_with('-') {
+        return Vec::new();
+    }
+    let files = is_here(unexpected).then(|| FilesHere::among(arguments));
+    let mut lines = Vec::new();
+    if command == "top" {
+        let pattern = (arguments.iter())
+            .find(|argument| !symbol::is_range(argument) && Pattern::parse(argument).is_some())
+            .cloned()
+            .or_else(|| files.as_ref()?.pattern());
+        lines.extend(pattern.map(|pattern| top_takes_no_symbol(&pattern)));
+    }
+    lines.extend(files.and_then(|files| files.hint()));
+    lines
+}
+
+/// The line under clap's error for `pattern`, given to `top`, which takes
+/// no SYMBOL: the command that lists the items that it matches, "top takes
+/// no SYMBOL; retained 'core::fmt::*' lists those items, with what each
+/// keeps."
+fn top_takes_no_symbol(pattern: &str) -> String {
+    format!(
+        "top takes no SYMBOL; retained {} lists those items, with what each keeps.",
+        text::shell_quote(pattern)
+    )
+}
 
 /// Refuses arguments that don't go together, before the file is loaded, so
 /// that a mistake is reported at once, even for a large file.
@@ -352,4 +416,82 @@ fn range_option_error(
         error += &format!("; to list only the {name} in {range}: {limited_command}");
     }
     error
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+    use clap::error::ErrorKind;
+
+    use crate::cli;
+
+    use super::*;
+
+    /// What [`unexpected_argument_hints`] adds for these arguments.
+    fn hints(command: &str, arguments: &[&str], unexpected: &str) -> Vec<String> {
+        let arguments: Vec<String> = arguments
+            .iter()
+            .map(|argument| argument.to_string())
+            .collect();
+        unexpected_argument_hints(command, &arguments, unexpected)
+    }
+
+    #[test]
+    fn the_commands_listed_refuse_a_second_symbol_before_the_file_is_read() {
+        for command in TAKE_ONE_SYMBOL_AT_MOST {
+            assert!(
+                cli::command_names().contains(&command.to_string()),
+                "{command}"
+            );
+            let error = Cli::try_parse_from(["elfq", "app.elf", command, "a", "b"]).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::UnknownArgument, "{command}");
+        }
+        // Those that take several give the line under their own errors.
+        for command in ["retained", "callers", "callees"] {
+            let cli = Cli::try_parse_from(["elfq", "app.elf", command, "a", "b"]);
+            assert!(cli.is_ok(), "{command}");
+        }
+    }
+
+    #[test]
+    fn top_names_the_command_that_takes_the_first_pattern_given() {
+        let takes = |pattern: &str| {
+            vec![format!(
+                "top takes no SYMBOL; retained '{pattern}' lists those items, with what each \
+                 keeps."
+            )]
+        };
+        assert_eq!(
+            hints("top", &["core::fmt::*"], "core::fmt::*"),
+            takes("core::fmt::*")
+        );
+        // Wherever clap's error stops.
+        assert_eq!(
+            hints("top", &["--json", "x", "on_*", "uart_*"], "x"),
+            takes("on_*")
+        );
+        // Not a name, nor one whose only `*` is a pointer's, nor any after
+        // an unexpected option, which is more likely misspelled.
+        assert_eq!(hints("top", &["main"], "main"), Vec::<String>::new());
+        assert_eq!(
+            hints("top", &["f(char*)"], "f(char*)"),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            hints("top", &["--jsn", "on_*"], "--jsn"),
+            Vec::<String>::new()
+        );
+        // Nor a range, which SYMBOL reads as one.
+        assert_eq!(
+            hints("top", &["0x8000000+*"], "0x8000000+*"),
+            Vec::<String>::new()
+        );
+        // Only top names a command: why takes a pattern in place of
+        // SYMBOL, and diff takes none.
+        assert_eq!(hints("why", &["x", "on_*"], "on_*"), Vec::<String>::new());
+        assert_eq!(
+            hints("diff", &["new.elf", "on_*"], "on_*"),
+            Vec::<String>::new()
+        );
+    }
 }

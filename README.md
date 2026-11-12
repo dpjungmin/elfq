@@ -58,9 +58,27 @@ item it matches. `why`, `reach`, `inlined` and `browse` take one that
 matches one item, for that item: `why 'process_f*'` answers as
 `why process_frame` does, with the pattern in its first line. One that
 matches several is an error that lists them, and `browse` lists them in
-its go-to box, to pick one. Quote a pattern: zsh and fish refuse a `*`
+its go-to box, to pick one. A module, type or class typed without
+`*`, such as `app::Gain`, finds nothing, and the error offers the
+pattern for what is in it first, with how many items it matches, as
+in "did you mean 'app::Gain::*' (4 items), ...?", where the command
+can take them: in `why`, `reach`, `inlined` and `browse`, only when
+it matches one item. Quote a pattern: zsh and fish refuse a `*`
 that matches no file, and bash puts the names of any files it matches in
 its place.
+
+zsh and fish put the names of the files that an unquoted `*` matches in
+its place too, and bash with `failglob` set refuses one that matches no
+file, as they do, all before elfq runs. So when the arguments given in
+place of a symbol find nothing and are files in the current folder, the
+error ends with a line that says so, and shows the pattern to quote:
+"uart_driver.c and uart_hal.c are files here: ... Put a pattern in
+single quotes, as in 'uart_*', ...". `why`, `reach`, `inlined` and
+`browse` take one symbol, and `top` none, so they refuse the names after
+that before reading the file, and the line goes under that error. A
+pattern given to `top` gets a line that names the command that takes it:
+"top takes no SYMBOL; retained 'core::fmt::*' lists those items, with
+what each keeps."
 
 `callers` and `callees` take ranges in place of a symbol, and then list
 only what crosses their edge, such as code in ITCM that calls a function in

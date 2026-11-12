@@ -473,8 +473,9 @@ pattern matches an item through another of its names, as `'CAN1_*'`
 matches `Default_Handler`, whose aliases include `CAN1_RX0_IRQHandler`,
 but never through a mangled symbol, which elfq never prints. Case counts,
 since C keeps `curl_*` and `Curl_*` apart. A pattern needs quotes, since
-shells expand `*`: zsh and fish refuse one that matches no file, and bash
-puts the names of any files it matches in its place.
+every shell puts the names of the files that a `*` matches in its place,
+and zsh, fish and bash with `failglob` set refuse one that matches no
+file, all before elfq runs.
 
 The items that a pattern matches come in address order, patterns mix with
 SYMBOLs, ranges and each other, and an item that two arguments find counts
@@ -519,6 +520,52 @@ isn't in the file, and `retained` refuses their names too, but `why`, and
 `callers` given one SYMBOL, take them. Else it names names like it, as
 for a name, which helps when a C++ name typed with a space before a
 pointer's `*` made it a pattern.
+
+elfq can't see what was typed, but arguments given in place of SYMBOL
+that find nothing and are files in the current folder may be what the
+shell put in place of a pattern, so the error ends with a line that says
+so, with the pattern to quote, which the files' names start with. In a
+folder that holds `uart_driver.c` and `uart_hal.c`, `retained uart_*`
+lists the two names that find nothing, then "uart_driver.c and
+uart_hal.c are files here: the shell may have put them in place of a
+pattern. Put a pattern in single quotes, as in 'uart_*', so that the
+shell passes it as typed." In `why`, `reach` and `inlined`, the line
+follows the error for a name that finds nothing or a pattern that
+matches nothing. `callers` and `callees` stop at the first argument they
+can't use, so there it follows that one's error when that one is a file
+here, whatever the error is, as for a name that could mean several
+items. The shell puts all the files in place of one pattern, so the line
+names that file and the files after it, which they haven't read; those
+before it found their items. For one file, the line reads "uart_hal.c is
+a file here: the shell may have put it in place of a pattern. Put a
+pattern in single quotes, so that the shell passes it as typed.", with
+no example, as when the files' names start with nothing in common. It
+names up to 11 files, and past that the first 10, then how many more,
+even with `--all`. Only names in the current folder count, not paths
+such as `drivers/uart_hal.c`, and only files, or symlinks to files,
+since a folder's name, such as `build`, is more often typed as is
+(`symbol/shell_hint.rs`).
+
+`why`, `reach`, `inlined`, `browse` and `top` take one SYMBOL at most,
+so clap refuses the arguments after it before the file is read: "error:
+unexpected argument 'uart_hal.c' found". When the one it refuses is a
+file or a folder here, as the shell may put either in place of a
+pattern, the line goes under that first line, in clap's colours, and
+names the arguments after the command that are files; as the file isn't
+read yet, it names a file whose name an item has too, such as `main`.
+`top` takes no SYMBOL, so a pattern given to it gets a line there too,
+before the shell's, which names the command that takes it: "top takes no
+SYMBOL; retained 'core::fmt::*' lists those items, with what each
+keeps." It names the first argument after `top` that is a pattern as
+SYMBOL reads one, wherever clap's error stops, so not a name, nor
+`f(char*)`, whose only `*` is a pointer's, nor a range, such as
+`0x8000000+*`; when none is, but the shell put files in place of one, as
+`on_button.c on_timer.c` for `on_*`, it names the pattern that their
+names start with, `'on_*'`. An unexpected option, such as a misspelled
+`--json`, gets no line (`arguments::unexpected_argument_hints`), nor
+does an argument before the command, such as a second file. `browse`'s
+go-to box shows only the first line of the error for SYMBOL, so it
+leaves the line out: the shell has no part in what is typed there.
 
 `callers` and `callees` take patterns too, and several SYMBOLs, alone or
 mixed with ranges. Any arguments but one SYMBOL alone, or ranges alone,
@@ -567,6 +614,22 @@ error that it gives for the import alone, "...so its code isn't in this
 file". Without an argument, the error says what they take: "callers
 needs a SYMBOL, or patterns or ranges, such as 'uart_*' or 0x0+256K".
 
+A name that could mean several items gets an error that lists them in
+every command, and in `retained`, `callers` and `callees`, which take a
+set, the error's first line ends with the pattern that takes them all,
+when the name with a `*` after it matches just those items:
+`retained checksum` in `testdata/bin/rust-cortex-m4.elf` says
+"`checksum` could mean 3 functions; use one or more on the left instead,
+or 'checksum*' for all 3:". When that pattern matches more, as `'run*'`
+takes std's `run_with_cstr_allocating` besides the three functions named
+`run` in `testdata/bin/rust-x86_64-nodebug.elf`, or fewer, as when an
+import is among them, which a pattern never takes, the error stays as it
+was. A name with a pointer's `*` in it gets the pattern too, as
+`'run(short*, unsigned long)*'` for the two functions of that name in
+`testdata/bin/cpp-x86_64.elf`, since it matches just those. `why`,
+`reach`, `inlined` and `browse` take one item, so their error never
+offers it.
+
 `why`, `reach`, `inlined` and `browse` answer for one item, so they take
 a pattern that matches one item, for that item. `why`, `reach` and
 `inlined` answer for it as for its name, but in the first line, where
@@ -601,6 +664,20 @@ that typing a `*` takes away no row that a name had: `Reading*` lists
 `app::sort_readings(app::Reading*, unsigned long)` in
 `testdata/bin/cpp-x86_64.elf`. The pattern's error shows only when no
 name has the text either.
+
+A name that no item has, as a module, type or class typed without `*`,
+gets first among what it may mean the pattern for what is in it, with how
+many items that matches: `retained app::Gain` in
+`testdata/bin/cpp-x86_64.elf` says "did you mean 'app::Gain::*' (4
+items), 'vtable for app::Gain', ...?". `retained`, `callers` and
+`callees` offer it whenever it matches an item, since they take every
+item it matches. `why`, `reach`, `inlined` and `browse` take one item,
+so they offer it only when it matches one, the item it would find:
+`why app::Config` offers "'app::Config::*' (1 function)", and
+`why app::Gain` only the names like it. A `::` at the end of the name is
+left out, and a name of only colons gets no pattern, since `::*` would
+match every item. Any other name gets one, as `vtable for app` gets
+"'vtable for app::*' (2 data objects)".
 
 With `--tree`, every tree, in every command, is drawn at most 9 levels
 below its top row, so names never start more than 27 columns into the tree
@@ -1651,7 +1728,9 @@ in order. Its output is the first example under [Commands](#commands).
    stack, since elfq builds its trees recursively. `run` reads
    `elfq help top` as `elfq top --help`, then clap parses the arguments
    into a `cli::Cli`: the file, `--json`, `--tree`, `--range`, and here
-   `Command::Retained` with its SYMBOL.
+   `Command::Retained` with its SYMBOL. Under the first line of clap's
+   error for an argument that a command doesn't take, `with_hints` puts
+   the lines that `arguments::unexpected_argument_hints` words.
 2. **Dispatch.** `commands::run` checks that the arguments go together
    (`arguments::check_before_loading`), before it reads the file, then
    loads the file, prints any warnings about it, and calls `retained::run`.
@@ -1865,16 +1944,20 @@ a second, and of librustc_driver (158 MB) and libLLVM (199 MB) in 3 to 4
 seconds, most of it reading the file: decoding its code and demangling
 its names. `browse` shows its first screen in about the same time. Each
 key typed into go to then takes under 0.1 s, while the text isn't a
-pattern. The first takes up to 0.2 s in those libraries, and the first
-whose text names nothing takes about half a second, as it works out what
-to suggest. While the text is a pattern, each key has the box match
-every name again: in librustc_driver (271,936 items), the key that
-completes `on_*` takes 0.05 s, and `core::fmt::*` 0.09 s, as they match
-few items, but a broad pattern, such as `o*` or `*e`, takes 0.15 to
-0.35 s, and one that matches nothing about 0.2 s, as its error tries the
-patterns like it. Those are over the 0.1 s that the box aims for. Keys
-typed while it works wait and are taken together, so the box catches up
-in one go.
+pattern and some name has it. The first takes up to 0.2 s in those
+libraries, and the first whose text names nothing takes about half a
+second, as it works out what to suggest. Each later key whose text names
+nothing takes 0.08 to 0.12 s in librustc_driver, around the 0.1 s that
+the box aims for. Half of that is the pattern for what is in a module of
+that name, which its error offers: working it out matches every name
+against the pattern, and without it the key takes 0.04 to 0.06 s. While
+the text is a pattern, each key has the box match every name again: in
+librustc_driver (271,936 items), the key that completes `on_*` takes
+0.05 s, and `core::fmt::*` 0.09 s, as they match few items, but a broad
+pattern, such as `o*` or `*e`, takes 0.15 to 0.35 s, and one that
+matches nothing about 0.2 s, as its error tries the patterns like it.
+Those are over that 0.1 s. Keys typed while it works wait and are taken
+together, so the box catches up in one go.
 
 `retained` takes several SYMBOLs, ranges of memory that stand for the
 items in them, and patterns such as `'core::fmt::*'` that stand for the

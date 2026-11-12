@@ -34,11 +34,15 @@
 //!   `callers` and `callees` ask about.
 //! - `lookup.rs` holds [`Names`], which finds what SYMBOL names, or the one
 //!   item that a pattern matches, in the commands that take one item
-//!   ([`Names::find`]), and names items for the user in return.
+//!   ([`Names::find`]), with the line of `shell_hint.rs` under the error
+//!   for one that finds nothing, and names items for the user in return.
 //! - `not_found.rs` words the error for SYMBOL that finds several items or
 //!   none, in the words of every command, which `retained` adds to, and
 //!   for a pattern that matches none, or several in a command that takes
-//!   one item; `similar.rs` finds the names that the error suggests.
+//!   one item. For a name that finds nothing, it offers first the pattern
+//!   for what is in a module of that name, as a command that takes one
+//!   item or a set can take it ([`Takes`]). `similar.rs` finds the names
+//!   that the error suggests.
 //! - `pattern.rs` holds [`Pattern`], such as `uart_*`, when SYMBOL is one,
 //!   and finds the items that one matches ([`Names::matching`]), which
 //!   every command that takes SYMBOL takes in its place, and `debug
@@ -49,6 +53,11 @@
 //! - `set.rs` holds [`Set`], the items that several SYMBOLs, patterns and
 //!   ranges pick together, each once, and words how an answer's first line
 //!   names them, part by part.
+//! - `shell_hint.rs` words the line that says which arguments given in
+//!   place of SYMBOL are files in the current folder, which the shell may
+//!   have put there in place of a pattern, as it puts `uart_driver.c
+//!   uart_hal.c` in place of `uart_*` ([`FilesHere`]). The errors of
+//!   [`Names::find`] and [`subject`], and `retained`'s, end with it.
 //! - `fixtures.rs` builds the file of functions that unit tests read.
 
 #[cfg(test)]
@@ -58,14 +67,17 @@ mod matched;
 mod not_found;
 mod pattern;
 mod set;
+mod shell_hint;
 mod similar;
 
 pub(super) use lookup::{Lookup, Names};
 pub(super) use matched::{PatternMatches, pattern_notes};
+pub(super) use not_found::Takes;
 #[cfg(feature = "tui")]
 pub(super) use not_found::USE_ONE;
 pub(super) use pattern::{LookupOrMatch, Match, MatchedBy, Pattern};
 pub(super) use set::{Found, LeadName, Pick, Set};
+pub(super) use shell_hint::{FilesHere, is_here, with_shell_hint};
 #[cfg(feature = "tui")]
 pub(super) use similar::Needle;
 
@@ -118,25 +130,61 @@ pub(super) type ItemInSet = fn(&Binary, Node) -> Result<usize>;
 
 /// Works out what `queries` ask about, reading each as [`argument`] does
 /// and in the order given: one SYMBOL alone (see [`Names::find`]), ranges
-/// of memory alone, or else the [`Set`] of the items they pick. Stops at
+/// of memory alone, or else the [`Set`] of the items they pick. When it
+/// fails at an argument that is a file here, its error ends with the line
+/// that says so, naming that file and the files after it, which the shell
+/// may have put in place of one pattern (see [`with_shell_hint`]). Stops at
 /// the first that it can't read, such as a range it can't parse or a name
 /// or pattern that finds nothing, with its error; whether each range holds
-/// something is checked after, by `range_check`. A set holds only items,
-/// so `item_in_set` gives the item of a SYMBOL among others, or the
-/// command's error for an import.
+/// something is checked after, by `range_check`. `callers` and `callees`
+/// take a set, so a name that could mean several items gets an error that
+/// ends with the pattern that takes them all, when there is one (see
+/// [`Names::choices`]), which the error from [`Names::find`] leaves out. A
+/// set holds only items, so `item_in_set` gives the item of a SYMBOL among
+/// others, or the command's error for an import.
 pub(super) fn subject(
     binary: &Binary,
     queries: &[String],
     item_in_set: ItemInSet,
 ) -> Result<Subject> {
+    let mut reading = 0;
+    subject_without_shell_hint(binary, queries, item_in_set, &mut reading).map_err(|error| {
+        // The shell puts all the files in place of one pattern, so when the
+        // argument it stopped at is a file here, the line names it and the
+        // files after it, which it hasn't read; those before it found their
+        // items.
+        match shell_hint::is_file_here(&queries[reading]) {
+            true => with_shell_hint(error, &queries[reading..]),
+            false => error,
+        }
+    })
+}
+
+/// What [`subject`] works out, or its error, before the line that says
+/// that the argument it stopped at is a file here goes under the error
+/// (see [`with_shell_hint`]). It sets `reading` to the index of each
+/// argument as it reads it, so that when it fails, `reading` is the index
+/// of the argument that it stopped at, whatever its error is.
+fn subject_without_shell_hint(
+    binary: &Binary,
+    queries: &[String],
+    item_in_set: ItemInSet,
+    reading: &mut usize,
+) -> Result<Subject> {
     let names = Names::new(binary);
     let mut picks = Vec::new();
-    for query in queries {
+    for (index, query) in queries.iter().enumerate() {
+        *reading = index;
         let pick = match argument(query)? {
             Argument::Range(range) => Pick::Range(range),
             Argument::Symbol(query) => match names.look_up_or_match(query)? {
+                // `callers` and `callees` take a set, so the error for a name
+                // that could mean several offers the pattern for all of them.
+                LookupOrMatch::Name(Lookup::Several(nodes)) => {
+                    bail!("{}", names.choices(query, nodes, not_found::USE_ONE))
+                }
                 LookupOrMatch::Name(lookup) => {
-                    let symbol = names.one_or_error(query, lookup)?;
+                    let symbol = names.one_or_error(query, lookup, Takes::Set)?;
                     if let [_] = queries {
                         return Ok(Subject::Symbol(symbol));
                     }

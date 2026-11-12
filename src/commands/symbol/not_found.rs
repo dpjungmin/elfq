@@ -1,10 +1,16 @@
-//! The error for SYMBOL that finds several items or none: what to type
-//! for each of several, or why none has the name, as when the file has no
+//! The error for SYMBOL that finds several items or none: what to type for
+//! each of several, and in a command that takes a set, such as `retained`,
+//! the pattern that takes them all, when it takes just those (see
+//! [`Names::choices`]); or why none has the name, as when the file has no
 //! symbol table or the compiler inlined every copy of the function. For a
-//! pattern that matches no item, the error offers a pattern like it that
-//! matches some, as when only case keeps it from matching, and for one that
-//! matches several in a command that takes one item, such as `why`, it
-//! lists them as it lists what a name could mean.
+//! name that finds nothing, such as a module, type or class typed without
+//! `*`, the error offers first the pattern for what is in it, as
+//! `'core::fmt::*'` for `core::fmt`, where the command can take what that
+//! matches ([`Takes`]). For a pattern that matches no item, the error
+//! offers a pattern like it that matches some, as when only case keeps it
+//! from matching, and for one that matches several in a command that takes
+//! one item, such as `why`, it lists them as it lists what a name could
+//! mean.
 
 use std::cell::OnceCell;
 use std::cmp::Reverse;
@@ -12,7 +18,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use super::lookup::add_index;
-use super::{Names, Pattern, PatternMatches};
+use super::{LookupOrMatch, Names, Pattern, PatternMatches};
 use crate::binary::names;
 use crate::commands::checks::found_functions;
 use crate::commands::text;
@@ -28,6 +34,20 @@ pub(in crate::commands) struct InlinedEverywhere<'n> {
     /// The functions that hold them, as indices into the items, those that
     /// hold the most first, then by name.
     pub(in crate::commands) into: Vec<usize>,
+}
+
+/// What a command takes for SYMBOL, which decides whether the error for a
+/// name that finds nothing offers the pattern for what is in a module of
+/// that name (see [`Names::module_pattern`]).
+#[derive(Clone, Copy)]
+pub(in crate::commands) enum Takes {
+    /// One item, as `why`, `reach`, `inlined` and `browse` take: the
+    /// pattern is offered only when it matches one item, the item it would
+    /// find.
+    One,
+    /// A set, as `retained`, `callers` and `callees` take, of every item
+    /// that a pattern matches: the pattern is offered when it matches any.
+    Set,
 }
 
 /// The copies of functions that the compiler inlined, by function.
@@ -193,11 +213,46 @@ impl<'a> Names<'a> {
         ))
     }
 
-    /// The error for `query` when it finds nothing: no item or import has
-    /// the name, then why, when elfq can tell (see [`Names::unnamed`] and
-    /// [`Names::inlined_reason`]), and the names that it may mean.
-    pub(in crate::commands) fn nothing_named(&self, query: &str) -> String {
-        self.not_found(query, &self.similar(query))
+    /// The error for `query` when it finds nothing, in a command that
+    /// `takes` one item or a set: no item or import has the name, then why,
+    /// when elfq can tell (see [`Names::unnamed`] and
+    /// [`Names::inlined_reason`]), and what it may mean: first the pattern
+    /// for what is in a module, type or class of that name, when the
+    /// command can take what it matches (see [`Names::module_pattern`]),
+    /// then names like it.
+    pub(in crate::commands) fn nothing_named(&self, query: &str, takes: Takes) -> String {
+        let may_mean: Vec<String> = (self.module_pattern(query, takes).into_iter())
+            .chain(self.similar(query))
+            .collect();
+        self.not_found(query, &may_mean)
+    }
+
+    /// The pattern for what is in the module, type or class that `query`
+    /// would name, as the error for a name that finds nothing offers it,
+    /// with how many items it matches: "'core::fmt::*' (73 functions)" for
+    /// `core::fmt`, or for `app::Gain::`, whose `::` at the end is left
+    /// out, "'app::Gain::*' (4 items)". A command that `takes` a set gets
+    /// it when it matches any item, and one that takes one item only when
+    /// it matches one, the item it would find, since elsewhere it would
+    /// point where the command can't go. `None` when it matches no item, or
+    /// for a name of only colons, whose `::*` would match every item.
+    fn module_pattern(&self, query: &str, takes: Takes) -> Option<String> {
+        if query.chars().all(|c| c == ':') {
+            return None;
+        }
+        let module = query.strip_suffix("::").unwrap_or(query);
+        let pattern = format!("{module}::*");
+        let matched = self.items_matched(&pattern).map(Node::Item);
+        let nodes: Vec<Node> = match takes {
+            Takes::Set => matched.collect(),
+            // A second match rules it out, so the walk stops there.
+            Takes::One => matched.take(2).collect(),
+        };
+        let can_take = match takes {
+            Takes::Set => !nodes.is_empty(),
+            Takes::One => nodes.len() == 1,
+        };
+        can_take.then(|| offered(&pattern, &text::count_text(self.binary, &nodes)))
     }
 
     /// The error for `pattern` when it matches no item: as for a name that
@@ -261,7 +316,7 @@ impl<'a> Names<'a> {
         ];
         fixes.into_iter().flatten().find_map(|fix| {
             let count = self.matched_count(&fix)?;
-            Some(format!("{} ({count})", text::shell_quote(&fix)))
+            Some(offered(&fix, &count))
         })
     }
 
@@ -269,10 +324,7 @@ impl<'a> Names<'a> {
     /// them: "7 items" or "3 functions". `None` when it isn't a pattern, or
     /// matches none.
     fn matched_count(&self, typed: &str) -> Option<String> {
-        let pattern = Pattern::parse(typed)?;
-        let nodes: Vec<Node> = (self.matching(&pattern).iter())
-            .map(|found| Node::Item(found.item))
-            .collect();
+        let nodes: Vec<Node> = self.items_matched(typed).map(Node::Item).collect();
         (!nodes.is_empty()).then(|| text::count_text(self.binary, &nodes))
     }
 
@@ -287,15 +339,12 @@ impl<'a> Names<'a> {
             .collect()
     }
 
-    /// The error for `query` when it finds `nodes`, several things: that it
-    /// could mean each, then `instruction`, what to do instead, such as
+    /// The error for `query` when it finds `nodes`, several things, as the
+    /// commands that take one item, such as `why`, give it: that it could
+    /// mean each, then `instruction`, what to do instead, such as
     /// [`USE_ONE`], and what to type for each (see [`Names::choice_lines`]).
-    pub(in crate::commands) fn choices(
-        &self,
-        query: &str,
-        nodes: &[Node],
-        instruction: &str,
-    ) -> String {
+    /// The commands that take a set give it through [`Names::choices`].
+    pub(super) fn could_mean(&self, query: &str, nodes: &[Node], instruction: &str) -> String {
         let first_line = format!(
             "`{query}` could mean {}; {instruction}:",
             text::count_text(self.binary, nodes)
@@ -303,10 +352,51 @@ impl<'a> Names<'a> {
         self.with_choice_lines(first_line, nodes)
     }
 
+    /// The error for `query` when it finds `nodes`, several things, in a
+    /// command that takes a set, as `retained`, `callers` and `callees` do:
+    /// the error of [`Names::could_mean`], where `instruction` ends with
+    /// the pattern that takes them all, when there is one (see
+    /// [`Names::pattern_for_all`]): "use one or more on the left instead,
+    /// or 'checksum*' for all 3".
+    pub(in crate::commands) fn choices(
+        &self,
+        query: &str,
+        nodes: &[Node],
+        instruction: &str,
+    ) -> String {
+        let instruction = match self.pattern_for_all(query, nodes) {
+            Some(pattern) => format!("{instruction}, or {pattern} for all {}", nodes.len()),
+            None => instruction.to_string(),
+        };
+        self.could_mean(query, nodes, &instruction)
+    }
+
+    /// The pattern that takes all of `nodes`, the things that `query` could
+    /// mean, and nothing else, quoted for the shell: `query` with a `*`
+    /// after it, as 'checksum*' for `checksum`, when typing that as SYMBOL
+    /// would take just those items. `None` when it would take more, as
+    /// 'run*' takes `run_with_cstr_allocating` besides the functions named
+    /// `run`, or fewer, as when an import is among `nodes`, since a pattern
+    /// takes only items, or when it isn't read as a pattern, as when an
+    /// item has that name.
+    fn pattern_for_all(&self, query: &str, nodes: &[Node]) -> Option<String> {
+        let typed = format!("{query}*");
+        let Ok(LookupOrMatch::Pattern(matched)) = self.look_up_or_match(&typed) else {
+            return None;
+        };
+        let mut taken: Vec<Node> = (matched.matches.iter())
+            .map(|found| Node::Item(found.item))
+            .collect();
+        let mut listed = nodes.to_vec();
+        taken.sort_unstable();
+        listed.sort_unstable();
+        (taken == listed).then(|| text::shell_quote(&typed))
+    }
+
     /// The error for `matched`, a pattern that matches several items, in a
     /// command that takes one item, such as `why`: how many it matches, and
     /// what to type for each, in address order, as the error for a name
-    /// that could mean several lists them (see [`Names::choices`]).
+    /// that could mean several lists them (see [`Names::could_mean`]).
     pub(super) fn matches_several(&self, matched: &PatternMatches) -> String {
         let nodes: Vec<Node> = (matched.matches.iter())
             .map(|found| Node::Item(found.item))
@@ -376,6 +466,12 @@ impl<'a> Names<'a> {
 /// the things in its rows.
 pub(in crate::commands) const USE_ONE: &str = "use one on the left instead";
 
+/// `pattern` as the error offers it, quoted for the shell, with `count`,
+/// how many items it matches: "'uart_*' (7 items)".
+fn offered(pattern: &str, count: &str) -> String {
+    format!("{} ({count})", text::shell_quote(pattern))
+}
+
 impl Inlined {
     /// The function that `query` names, as its name or a short name, when
     /// it names only one.
@@ -413,6 +509,45 @@ mod tests {
     use crate::commands::symbol::fixtures;
 
     #[test]
+    fn a_name_that_finds_nothing_offers_the_pattern_for_what_is_in_it() {
+        let binary = fixtures::functions(&[
+            "app::Gain::run",
+            "app::Gain::new",
+            "app::Config::load",
+            "main",
+        ]);
+        let names = Names::new(&binary);
+        let offers = |query: &str, takes: Takes| names.module_pattern(query, takes);
+        let offer = |pattern: &str| Some(pattern.to_string());
+        // A command that takes a set gets it when it matches any item.
+        assert_eq!(
+            offers("app::Gain", Takes::Set),
+            offer("'app::Gain::*' (2 functions)")
+        );
+        assert_eq!(offers("app", Takes::Set), offer("'app::*' (3 functions)"));
+        // One that takes one item, only when it matches one.
+        assert_eq!(offers("app::Gain", Takes::One), None);
+        let config = offer("'app::Config::*' (1 function)");
+        assert_eq!(offers("app::Config", Takes::One), config);
+        // A `::` at the end is left out.
+        assert_eq!(offers("app::Config::", Takes::One), config);
+        assert_eq!(offers("app::Config::", Takes::Set), config);
+        // None that matches nothing, nor for a name of only colons, whose
+        // `::*` would match every item.
+        for query in ["nosuch", "main", "", "::", ":::"] {
+            for takes in [Takes::One, Takes::Set] {
+                assert_eq!(offers(query, takes), None, "{query}");
+            }
+        }
+        // The error offers it before the names like it.
+        assert_eq!(
+            names.nothing_named("app::Config", Takes::One),
+            "no function or data object is named `app::Config`; did you mean 'app::Config::*' (1 \
+             function), app::Config::load?"
+        );
+    }
+
+    #[test]
     fn a_pattern_that_matches_several_items_lists_them_in_address_order() {
         let error = |functions: &[String], typed: &str| {
             let binary = fixtures::functions(functions);
@@ -438,5 +573,51 @@ mod tests {
         );
         assert_eq!(lines[1..3], ["  irq1", "  irq2"]);
         assert_eq!(lines[10..], ["  irq10", "  and 2 more"]);
+    }
+
+    #[test]
+    fn a_set_command_offers_the_pattern_for_all_that_a_name_could_mean() {
+        let mut binary = fixtures::functions(&[
+            "app::checksum::<u8>",
+            "app::checksum::<u16>",
+            "app::send(char*)",
+            "drv::send(char*)",
+            "app::run",
+            "drv::run",
+            "drv::run_all",
+            "log",
+            "main",
+        ]);
+        binary.imports.push("log".to_string());
+        let names = Names::new(&binary);
+        let first_line = |error: String| error.lines().next().unwrap().to_string();
+        let in_set = |query: &str| first_line(names.choices(query, names.nodes(query), USE_ONE));
+        // The name with a `*` after it takes just what it could mean, even
+        // with a pointer's `*` in it.
+        assert_eq!(
+            in_set("checksum"),
+            "`checksum` could mean 2 functions; use one on the left instead, or 'checksum*' for \
+             all 2:"
+        );
+        assert_eq!(
+            in_set("send(char*)"),
+            "`send(char*)` could mean 2 functions; use one on the left instead, or \
+             'send(char*)*' for all 2:"
+        );
+        // Not when it takes more, as 'run*' takes `drv::run_all`, or fewer,
+        // as when an import is among them, which a pattern never takes.
+        assert_eq!(
+            in_set("run"),
+            "`run` could mean 2 functions; use one on the left instead:"
+        );
+        assert_eq!(
+            in_set("log"),
+            "`log` could mean 2 items; use one on the left instead:"
+        );
+        // A command that takes one item never offers it.
+        assert_eq!(
+            first_line(names.could_mean("checksum", names.nodes("checksum"), USE_ONE)),
+            "`checksum` could mean 2 functions; use one on the left instead:"
+        );
     }
 }
