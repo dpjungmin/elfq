@@ -129,8 +129,8 @@ pub(super) enum Subject {
 /// isn't in the file.
 pub(super) type ItemInSet = fn(&Binary, Node) -> Result<usize>;
 
-/// Works out what `queries` ask about, reading each as [`argument`] does
-/// and in the order given: one SYMBOL alone (see [`Names::find`]), ranges
+/// Works out what `queries` ask about, reading each with [`pick_for`] and
+/// in the order given: one SYMBOL alone (see [`Subject::Symbol`]), ranges
 /// of memory alone, or else the [`Set`] of the items they pick. When it
 /// fails at an argument that is a file here, its error ends with the line
 /// that says so, naming that file and the files after it, which the shell
@@ -148,57 +148,23 @@ pub(super) fn subject(
     queries: &[String],
     item_in_set: ItemInSet,
 ) -> Result<Subject> {
-    let mut reading = 0;
-    subject_without_shell_hint(binary, queries, item_in_set, &mut reading).map_err(|error| {
-        // The shell puts all the files in place of one pattern, so when the
-        // argument it stopped at is a file here, the line names it and the
-        // files after it, which it hasn't read; those before it found their
-        // items.
-        match shell_hint::is_file_here(&queries[reading]) {
-            true => with_shell_hint(error, &queries[reading..]),
-            false => error,
-        }
-    })
-}
-
-/// What [`subject`] works out, or its error, before the line that says
-/// that the argument it stopped at is a file here goes under the error
-/// (see [`with_shell_hint`]). It sets `reading` to the index of each
-/// argument as it reads it, so that when it fails, `reading` is the index
-/// of the argument that it stopped at, whatever its error is.
-fn subject_without_shell_hint(
-    binary: &Binary,
-    queries: &[String],
-    item_in_set: ItemInSet,
-    reading: &mut usize,
-) -> Result<Subject> {
     let names = Names::new(binary);
     let mut picks = Vec::new();
     for (index, query) in queries.iter().enumerate() {
-        *reading = index;
-        let pick = match argument(query)? {
-            Argument::Range(range) => Pick::Range(range),
-            Argument::Symbol(query) => match names.look_up_or_match(query)? {
-                // `callers` and `callees` take a set, so the error for a name
-                // that could mean several offers the pattern for all of them.
-                LookupOrMatch::Name(Lookup::Several(nodes)) => {
-                    bail!("{}", names.choices(query, nodes, not_found::USE_ONE))
-                }
-                LookupOrMatch::Name(lookup) => {
-                    let symbol = names.one_or_error(query, lookup, Takes::Set)?;
-                    if let [_] = queries {
-                        return Ok(Subject::Symbol(symbol));
-                    }
-                    Pick::Symbol {
-                        index: item_in_set(binary, symbol.node)?,
-                        lead_name: symbol.lead_name(binary),
-                    }
-                }
-                LookupOrMatch::Pattern(matched) => Pick::Pattern(matched),
-                LookupOrMatch::NoMatch(pattern) => bail!("{}", names.nothing_matches(&pattern)),
-            },
-        };
-        picks.push(pick);
+        let picked = pick_for(binary, &names, queries, index, item_in_set).map_err(|error| {
+            // The shell puts all the files in place of one pattern, so when
+            // the argument it stopped at is a file here, the line names it
+            // and the files after it, which it hasn't read; those before it
+            // found their items.
+            match shell_hint::is_file_here(query) {
+                true => with_shell_hint(error, &queries[index..]),
+                false => error,
+            }
+        })?;
+        match picked {
+            Picked::Alone(symbol) => return Ok(Subject::Symbol(symbol)),
+            Picked::Pick(pick) => picks.push(pick),
+        }
     }
     // Some only when every argument is a range: then they are ranges alone,
     // not a set, which would copy the name of every item in them.
@@ -213,6 +179,48 @@ fn subject_without_shell_hint(
         Some(ranges) => Subject::Ranges(distinct_ranges(ranges)),
         None => Subject::Set(Set::new(binary, picks)),
     })
+}
+
+/// What [`pick_for`] gives for one argument.
+enum Picked {
+    /// The item or import of one SYMBOL given alone, which `callers` and
+    /// `callees` answer about as itself, not as a set.
+    Alone(Symbol),
+    /// What the argument picks, for a set or for ranges alone.
+    Pick(Pick),
+}
+
+/// What the argument at `index` of `queries` picks, read as [`argument`]
+/// reads it, or when it is one SYMBOL alone, its item or import; or the
+/// error that [`subject`] stops at. A name that finds several items or
+/// none gets the error of a command that takes a set ([`Takes::Set`]).
+/// [`subject`] calls it for each argument in turn, so that it knows which
+/// one it stopped at, for the line that says it is a file here.
+fn pick_for(
+    binary: &Binary,
+    names: &Names,
+    queries: &[String],
+    index: usize,
+    item_in_set: ItemInSet,
+) -> Result<Picked> {
+    let pick = match argument(&queries[index])? {
+        Argument::Range(range) => Pick::Range(range),
+        Argument::Symbol(query) => match names.look_up_or_match(query)? {
+            LookupOrMatch::Name(lookup) => {
+                let symbol = names.one_or_error(query, lookup, Takes::Set)?;
+                if let [_] = queries {
+                    return Ok(Picked::Alone(symbol));
+                }
+                Pick::Symbol {
+                    index: item_in_set(binary, symbol.node)?,
+                    lead_name: symbol.lead_name(binary),
+                }
+            }
+            LookupOrMatch::Pattern(matched) => Pick::Pattern(matched),
+            LookupOrMatch::NoMatch(pattern) => bail!("{}", names.nothing_matches(&pattern)),
+        },
+    };
+    Ok(Picked::Pick(pick))
 }
 
 /// What an argument given in place of SYMBOL is.

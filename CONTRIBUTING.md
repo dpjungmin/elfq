@@ -878,9 +878,12 @@ is a short one to copy.
    `symbol::subject`, whose `Subject` holds one `Symbol`, the ranges, or
    a `Set`, and which stops at the first argument it can't read;
    `retained`, which takes ranges too, reads each argument with
-   `symbol::argument`, as `subject` does. Both word the error for a name
-   that could mean several with `Names::choices`, which ends it with the
-   pattern for all of them, where `find` words it with `could_mean`. A
+   `symbol::argument`, as `subject` does. `subject` gives what a name
+   finds to `Names::one_or_error` with `Takes::Set`, which words the
+   error for a name that finds nothing as `retained` does, and the error
+   for a name that could mean several with `Names::choices`, as
+   `retained` does too: it ends with the pattern for all of them, where
+   `find`, which passes `Takes::One`, words it with `could_mean`. A
    `Symbol`'s `node` may be an import.
    `item_in_file` or `readable_item`, in `checks.rs`, gives its item, or
    an error that says why there is none, and the command's own checks

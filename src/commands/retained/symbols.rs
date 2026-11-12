@@ -242,7 +242,7 @@ impl Unusable<'_, '_> {
     fn says(&self) -> Says<'_> {
         match &self.reason {
             Reason::Error(error) => Says::Error(error),
-            _ => Says::Query(self.query),
+            Reason::NoName | Reason::NoMatch(_) | Reason::Several(_) => Says::Query(self.query),
         }
     }
 }

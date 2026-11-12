@@ -169,11 +169,19 @@ impl<'a> Names<'a> {
         }
     }
 
-    /// The one item or import that `query` finds, from `lookup`, what it
-    /// finds as a name (see [`Names::look_up`]), or the error that
-    /// [`Names::find`] gives when a name finds several, or the error for
-    /// one that finds nothing in a command that `takes` one item, as `find`
-    /// does, or a set (see [`Names::nothing_named`]).
+    /// The one item or import that `query` finds, from `lookup`, what
+    /// [`Names::look_up_or_match`] finds for it as a name
+    /// ([`LookupOrMatch::Name`]), or the error for a name that finds
+    /// several or none, as a command that `takes` one item or a set gives
+    /// it. [`Names::find`] and browse's go-to box take one item
+    /// ([`Takes::One`]): the error for several lists them and says to use
+    /// one (see [`Names::could_mean`]), and the error for none offers the
+    /// pattern for what is in a module of that name only when it matches
+    /// one item. [`subject`](super::subject), for `callers` and `callees`,
+    /// takes a set ([`Takes::Set`]): the error for several ends with the
+    /// pattern that takes them all, when there is one (see
+    /// [`Names::choices`]), and the error for none offers the pattern for
+    /// a module whenever it matches an item (see [`Names::nothing_named`]).
     pub(in crate::commands) fn one_or_error(
         &self,
         query: &str,
@@ -183,7 +191,10 @@ impl<'a> Names<'a> {
         match lookup {
             Lookup::One(symbol) => Ok(symbol),
             Lookup::NoName => bail!("{}", self.nothing_named(query, takes)),
-            Lookup::Several(nodes) => bail!("{}", self.could_mean(query, nodes, USE_ONE)),
+            Lookup::Several(nodes) => match takes {
+                Takes::One => bail!("{}", self.could_mean(query, nodes, USE_ONE)),
+                Takes::Set => bail!("{}", self.choices(query, nodes, USE_ONE)),
+            },
         }
     }
 

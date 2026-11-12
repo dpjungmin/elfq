@@ -38,15 +38,19 @@ pub(in crate::commands) struct InlinedEverywhere<'n> {
 
 /// What a command takes for SYMBOL, which decides whether the error for a
 /// name that finds nothing offers the pattern for what is in a module of
-/// that name (see [`Names::module_pattern`]).
+/// that name (see [`Names::module_pattern`]), and whether the error for a
+/// name that could mean several items offers the pattern that takes them
+/// all (see [`Names::one_or_error`]).
 #[derive(Clone, Copy)]
 pub(in crate::commands) enum Takes {
     /// One item, as `why`, `reach`, `inlined` and `browse` take: the
-    /// pattern is offered only when it matches one item, the item it would
-    /// find.
+    /// pattern for a module is offered only when it matches one item, the
+    /// item it would find, and none for a name that could mean several.
     One,
     /// A set, as `retained`, `callers` and `callees` take, of every item
-    /// that a pattern matches: the pattern is offered when it matches any.
+    /// that a pattern matches: the pattern for a module is offered when it
+    /// matches any, and for a name that could mean several items, the
+    /// pattern that takes just those, when there is one.
     Set,
 }
 
@@ -506,7 +510,7 @@ impl Inlined {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::symbol::fixtures;
+    use crate::commands::symbol::{Lookup, fixtures};
 
     #[test]
     fn a_name_that_finds_nothing_offers_the_pattern_for_what_is_in_it() {
@@ -590,8 +594,14 @@ mod tests {
         ]);
         binary.imports.push("log".to_string());
         let names = Names::new(&binary);
-        let first_line = |error: String| error.lines().next().unwrap().to_string();
-        let in_set = |query: &str| first_line(names.choices(query, names.nodes(query), USE_ONE));
+        // The first line of the error for a name that could mean several,
+        // in a command that `takes` one item or a set.
+        let first_line = |query: &str, takes: Takes| {
+            let several = Lookup::Several(names.nodes(query));
+            let error = names.one_or_error(query, several, takes).unwrap_err();
+            error.to_string().lines().next().unwrap().to_string()
+        };
+        let in_set = |query: &str| first_line(query, Takes::Set);
         // The name with a `*` after it takes just what it could mean, even
         // with a pointer's `*` in it.
         assert_eq!(
@@ -616,7 +626,7 @@ mod tests {
         );
         // A command that takes one item never offers it.
         assert_eq!(
-            first_line(names.could_mean("checksum", names.nodes("checksum"), USE_ONE)),
+            first_line("checksum", Takes::One),
             "`checksum` could mean 2 functions; use one on the left instead:"
         );
     }
