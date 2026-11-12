@@ -88,6 +88,7 @@ mod tests {
     use crate::binary::Binary;
     use crate::cli::{Cli, Command, Format};
     use crate::commands::retained_tree::RetainedTree;
+    use crate::commands::text::Detail;
 
     #[test]
     fn the_retained_tab_lists_what_its_command_prints() {
@@ -131,24 +132,24 @@ mod tests {
                 // What it prints, as `retained` runs it, but on the graph
                 // that the session has built, with --all and without.
                 let lead_name = symbol.lead_name(&binary);
-                let output = |all| {
+                let output = |detail| {
                     let symbol = SymbolInTree {
                         retained: &whole,
                         index,
                         lead_name: &lead_name,
                     };
-                    String::from_utf8(retained::answer(&symbol, all, Format::Text).written())
+                    String::from_utf8(retained::answer(&symbol, detail, Format::Text).written())
                         .unwrap()
                 };
-                let (all, cut) = (output(true), output(false));
+                let (every, brief) = (output(Detail::All), output(Detail::Brief));
                 // The tab has every line it prints with --all.
-                let lines: Vec<&str> = all.lines().filter(|line| !line.is_empty()).collect();
+                let lines: Vec<&str> = every.lines().filter(|line| !line.is_empty()).collect();
                 assert_eq!(lines, tab.printed(), "{name}: {line}");
                 // The command has --all exactly when it needs it to list
                 // every row and name.
-                assert_eq!(line.ends_with(" --all"), all != cut, "{name}: {line}");
+                assert_eq!(line.ends_with(" --all"), every != brief, "{name}: {line}");
                 pages += 1;
-                cut_pages += usize::from(all != cut);
+                cut_pages += usize::from(every != brief);
 
                 // Under the notes, what removing it would save in each
                 // block, as `retained SYMBOL --range BLOCK` says, where

@@ -165,7 +165,8 @@ Try:
 "
         );
         // startup reads the code from the reset handler all the same.
-        let error = top::run(&binary, None, false, Format::Text, &mut Vec::new()).unwrap_err();
+        let error =
+            top::run(&binary, None, Detail::Brief, Format::Text, &mut Vec::new()).unwrap_err();
         assert_eq!(
             error.to_string(),
             "elfq can't yet find functions without symbols or an unwind table"

@@ -69,11 +69,11 @@ struct Step<'a> {
 
 /// Answers `elfq FILE why SYMBOL`: the shortest chains from where the
 /// program starts through each item that keeps SYMBOL. The text shows those
-/// through the nearest 10, or with `all`, through every one.
+/// through the nearest 10, or with [`Detail::All`], through every one.
 pub(super) fn run(
     binary: &Binary,
     symbol: &str,
-    all: bool,
+    detail: Detail,
     format: Format,
     out: &mut dyn Write,
 ) -> Result<Outcome> {
@@ -82,7 +82,7 @@ pub(super) fn run(
     let symbol = names.find(symbol)?;
     refusal(binary, symbol.node)?;
     let graph = Kept::new(Graph::build(binary));
-    why(binary, &graph, &names, &symbol, all, format, out)?;
+    why(binary, &graph, &names, &symbol, detail, format, out)?;
     Ok(Outcome::Answered)
 }
 
@@ -93,7 +93,7 @@ pub(super) fn why<'a>(
     graph: &Graph,
     names: &Names<'a>,
     symbol: &Symbol,
-    all: bool,
+    detail: Detail,
     format: Format,
     out: &mut dyn Write,
 ) -> Result<()> {
@@ -123,7 +123,7 @@ pub(super) fn why<'a>(
         return write_json(binary, graph, &tree, node, out);
     }
     let users = Users::new(binary, graph, &tree, node);
-    users.answer(names, &lead_name, all, format).write(out)
+    users.answer(names, &lead_name, detail, format).write(out)
 }
 
 /// What `why SYMBOL` writes as text about `node`, as tab 5 of browse shows
@@ -150,8 +150,8 @@ pub(super) fn answers<'a>(
         return TabAnswer::sentences(vec![sentence]);
     }
     let users = Users::new(binary, graph, tree, node);
-    let answer = |all| users.answer(names, lead_name, all, Format::Text);
-    let (answer, brief) = (answer(true), answer(false));
+    let answer = |detail| users.answer(names, lead_name, detail, Format::Text);
+    let (answer, brief) = (answer(Detail::All), answer(Detail::Brief));
     TabAnswer {
         needs_all: brief.written() != answer.written(),
         brief: brief.notes,
@@ -317,18 +317,24 @@ impl<'u, 'a> Users<'u, 'a> {
     /// What `why SYMBOL` writes as text, whose first line names SYMBOL
     /// `lead_name` (see [`Symbol::lead_name`]), with `names` for the short
     /// names of the rows: the shortest chains through the nearest 10 items
-    /// that keep SYMBOL, or with `all`, through every one, in the shape
-    /// that `format` asks for.
+    /// that keep SYMBOL, or with [`Detail::All`], through every one, in the
+    /// shape that `format` asks for.
     ///
     /// [`Symbol::lead_name`]: super::symbol::Symbol::lead_name
-    fn answer(&self, names: &Names<'a>, lead_name: &str, all: bool, format: Format) -> TreeAnswer {
+    fn answer(
+        &self,
+        names: &Names<'a>,
+        lead_name: &str,
+        detail: Detail,
+        format: Format,
+    ) -> TreeAnswer {
         let (binary, graph, node) = (self.binary, self.graph, self.node);
         let keeping = &self.keeping;
         if keeping.is_empty() {
             let unreachable = self.names(&self.unreachable);
-            return TreeAnswer::sentences(unreachable_lines(lead_name, &unreachable, all));
+            return TreeAnswer::sentences(unreachable_lines(lead_name, &unreachable, detail));
         }
-        let room = if all { usize::MAX } else { SHOWN };
+        let room = detail.room(SHOWN);
         let shown = &keeping[..text::shown_count(keeping.len(), room)];
         let chains = Chains::new(binary, graph, names, &self.paths, node, shown);
         // A chain branches only now and then, so a row names its user only
@@ -344,7 +350,7 @@ impl<'u, 'a> Users<'u, 'a> {
                 rows: chains.rows(shape),
                 shape,
             }),
-            notes: self.notes(&Naming::of(Detail::from_flag(all))),
+            notes: self.notes(&Naming::of(detail)),
         }
     }
 
@@ -418,14 +424,14 @@ fn chain(
 
 /// Says that nothing reaches SYMBOL, called `name` in this first line of
 /// the answer, nor the items that use it: as many as [`text::names_text`]
-/// names, or with `all`, every one.
-fn unreachable_lines(name: &str, users: &[&str], all: bool) -> Vec<String> {
+/// names, or with [`Detail::All`], every one.
+fn unreachable_lines(name: &str, users: &[&str], detail: Detail) -> Vec<String> {
     let mut lines = vec![text::nothing_reaches(name)];
     if !users.is_empty() {
         let (verb, pronoun) = verb_and_pronoun(users);
         lines.push(format!(
             "{} {verb} it, but nothing reaches {pronoun} either.",
-            text::names_text(users, Detail::from_flag(all)),
+            text::names_text(users, detail),
         ));
     }
     lines

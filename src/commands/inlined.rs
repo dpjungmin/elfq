@@ -32,7 +32,7 @@ pub(super) fn run(
     path: &Path,
     binary: &Binary,
     symbol: Option<&str>,
-    all: bool,
+    detail: Detail,
     format: Format,
     out: &mut dyn Write,
 ) -> Result<Outcome> {
@@ -59,9 +59,9 @@ pub(super) fn run(
             .with_context(|| format!("cannot read the DWARF debug info in {}", path.display()))?,
     );
     match function {
-        None => write_list(binary, &copies, all, format, out)?,
+        None => write_list(binary, &copies, detail, format, out)?,
         Some((index, lead_name)) => {
-            write_tree(binary, &copies, index, &lead_name, all, format, out)?
+            write_tree(binary, &copies, index, &lead_name, detail, format, out)?
         }
     }
     Ok(Outcome::Answered)
@@ -108,7 +108,7 @@ struct Total<'a> {
 fn write_list(
     binary: &Binary,
     copies: &[InlinedCopy],
-    all: bool,
+    detail: Detail,
     format: Format,
     out: &mut dyn Write,
 ) -> Result<()> {
@@ -139,13 +139,14 @@ fn write_list(
         };
         return json::write(&list, out);
     }
-    list_answer(&totals, inlined, code, all).write(out)
+    list_answer(&totals, inlined, code, detail).write(out)
 }
 
 /// What `inlined` writes as text about `totals`, each inlined function's
-/// copies added up, largest first: the largest, or with `all`, every one,
-/// and the `inlined` bytes of the `code` bytes in all that they take.
-fn list_answer(totals: &[Total], inlined: u64, code: u64, all: bool) -> FlatAnswer {
+/// copies added up, largest first: the largest, or with [`Detail::All`],
+/// every one, and the `inlined` bytes of the `code` bytes in all that they
+/// take.
+fn list_answer(totals: &[Total], inlined: u64, code: u64, detail: Detail) -> FlatAnswer {
     if totals.is_empty() {
         return FlatAnswer {
             lead: vec!["The debug info lists no inlined code.".to_string()],
@@ -157,10 +158,7 @@ fn list_answer(totals: &[Total], inlined: u64, code: u64, all: bool) -> FlatAnsw
         text::plural(totals.len(), "function", "functions"),
         text::bytes_text(code)
     );
-    let (shown, hidden) = totals.split_at(text::shown_count(
-        totals.len(),
-        text::shown(Detail::from_flag(all)),
-    ));
+    let (shown, hidden) = totals.split_at(text::shown_count(totals.len(), text::shown(detail)));
     let mut rows: Vec<FlatRow> = (shown.iter())
         .map(|total| {
             let cells = vec![total.bytes.to_string(), total.copies.to_string()];
@@ -192,7 +190,7 @@ fn write_tree(
     copies: &[InlinedCopy],
     index: usize,
     lead_name: &str,
-    all: bool,
+    detail: Detail,
     format: Format,
     out: &mut dyn Write,
 ) -> Result<()> {
@@ -206,19 +204,19 @@ fn write_tree(
         };
         return json::write(&tree, out);
     }
-    tree_answer(binary, &groups, index, lead_name, all, format).write(out)
+    tree_answer(binary, &groups, index, lead_name, detail, format).write(out)
 }
 
 /// What `inlined FUNCTION` writes as text about `groups`, the copies
 /// inlined into the item at `index`, called `lead_name` in the first line:
-/// the tree of the largest groups, or with `all`, every one, in the shape
-/// that `format` asks for.
+/// the tree of the largest groups, or with [`Detail::All`], every one, in
+/// the shape that `format` asks for.
 fn tree_answer(
     binary: &Binary,
     groups: &Groups,
     index: usize,
     lead_name: &str,
-    all: bool,
+    detail: Detail,
     format: Format,
 ) -> TreeAnswer {
     if groups.top.is_empty() {
@@ -254,7 +252,7 @@ fn tree_answer(
             of_function("code")
         )
     };
-    let shown = groups.largest(text::shown(Detail::from_flag(all)));
+    let shown = groups.largest(text::shown(detail));
     let short_names = groups.short_names(name);
     let shape = match format {
         Format::Tree => TreeShape::Drawn,

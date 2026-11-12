@@ -50,11 +50,12 @@ struct Unreachable<'a> {
     load_image: u64,
 }
 
-/// Answers `elfq FILE top`: the largest items, or every item with `all`.
+/// Answers `elfq FILE top`: the largest items, or every item with
+/// [`Detail::All`].
 pub(super) fn run(
     binary: &Binary,
     range: Option<AddressRange>,
-    all: bool,
+    detail: Detail,
     format: Format,
     out: &mut dyn Write,
 ) -> Result<Outcome> {
@@ -81,16 +82,16 @@ pub(super) fn run(
         json::write(&answer, out)?;
         return Ok(Outcome::Answered);
     }
-    answer(&retained, all, format).write(out)?;
+    answer(&retained, detail, format).write(out)?;
     Ok(Outcome::Answered)
 }
 
-/// What `top` writes as text: the tree of the largest items, or with `all`,
-/// every one, in the shape that `format` asks for, then the items that
-/// nothing reaches.
-fn answer(retained: &RetainedTree, all: bool, format: Format) -> TreeAnswer {
+/// What `top` writes as text: the tree of the largest items, or with
+/// [`Detail::All`], every one, in the shape that `format` asks for, then
+/// the items that nothing reaches.
+fn answer(retained: &RetainedTree, detail: Detail, format: Format) -> TreeAnswer {
     let binary = retained.binary;
-    let unreachable: Vec<String> = unreachable_text(retained, all).into_iter().collect();
+    let unreachable: Vec<String> = unreachable_text(retained, detail).into_iter().collect();
     // When nothing reaches the items in the range, which items nothing
     // reaches is the whole answer.
     if retained.kept() == 0 {
@@ -100,13 +101,13 @@ fn answer(retained: &RetainedTree, all: bool, format: Format) -> TreeAnswer {
     let lead = match retained.range {
         Some(range) => format!(
             "{total} in {}, by what keeps them:",
-            text::range_text(binary, range, Detail::from_flag(all))
+            text::range_text(binary, range, detail)
         ),
         None => format!("{total}, by what keeps them:"),
     };
     TreeAnswer {
         lead: vec![lead],
-        table: Some(retained.largest_table(text::shown(Detail::from_flag(all)), format)),
+        table: Some(retained.largest_table(text::shown(detail), format)),
         notes: unreachable,
     }
 }
@@ -124,9 +125,9 @@ fn unreachable(retained: &RetainedTree) -> Vec<usize> {
 }
 
 /// The sentences on the items that nothing reaches, if any, which name them
-/// largest first: as many as [`text::names_text`] names, or with `all`,
-/// every one.
-fn unreachable_text(retained: &RetainedTree, all: bool) -> Option<String> {
+/// largest first: as many as [`text::names_text`] names, or with
+/// [`Detail::All`], every one.
+fn unreachable_text(retained: &RetainedTree, detail: Detail) -> Option<String> {
     let binary = retained.binary;
     let unreachable = unreachable(retained);
     if unreachable.is_empty() {
@@ -157,7 +158,7 @@ fn unreachable_text(retained: &RetainedTree, all: bool) -> Option<String> {
         "Nothing reaches {}, {} in all: {}.\nThe program never uses them, or elfq can't see how.",
         text::count_text(binary, &nodes),
         text::bytes_text(bytes),
-        text::names_text(&names, Detail::from_flag(all))
+        text::names_text(&names, detail)
     ))
 }
 
@@ -186,7 +187,7 @@ mod tests {
         let flash = "0x30000000..0x30000edc".parse().unwrap();
         let retained = RetainedTree::new(&binary, &graph, Some(flash));
         assert_eq!(
-            unreachable_text(&retained, false).unwrap(),
+            unreachable_text(&retained, Detail::Brief).unwrap(),
             "Nothing reaches stats (load image), 32 bytes: the program never uses it, or elfq \
              can't see how."
         );
