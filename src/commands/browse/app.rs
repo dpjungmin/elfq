@@ -290,13 +290,13 @@ impl<'a> App<'a> {
         match key.code {
             KeyCode::Esc => self.picker = None,
             KeyCode::Enter => {
-                if let Some(found) = picker.selected(session) {
+                if let Some(picker_row) = picker.selected(session) {
                     // The header names the item as SYMBOL's answer does,
                     // with what holds an address typed, or the other name
                     // that found it.
-                    let name = found.node.name(session.binary);
-                    let lead = found.lead.as_deref().unwrap_or(name);
-                    let page = ItemPage::new(session, found.node, found.at, lead);
+                    let name = picker_row.node.name(session.binary);
+                    let lead = picker_row.lead.as_deref().unwrap_or(name);
+                    let page = ItemPage::new(session, picker_row.node, picker_row.at, lead);
                     self.picker = None;
                     self.message = None;
                     self.open(View::Item(Box::new(page)));

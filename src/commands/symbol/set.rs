@@ -155,9 +155,9 @@ impl Set {
                     return Vec::new();
                 }
                 let items = (matched.matches.iter())
-                    .map(|found| Found {
-                        index: found.item,
-                        lead_name: binary.items[found.item].name.clone(),
+                    .map(|item_match| Found {
+                        index: item_match.item,
+                        lead_name: binary.items[item_match.item].name.clone(),
                         named: false,
                     })
                     .collect();
@@ -301,7 +301,7 @@ impl Set {
         let named_items: HashSet<usize> = (self.items.iter().map(|found| found.index))
             .chain(
                 (self.patterns.iter())
-                    .flat_map(|matched| matched.matches.iter().map(|found| found.item)),
+                    .flat_map(|matched| matched.matches.iter().map(|item_match| item_match.item)),
             )
             .collect();
         let these = match &self.items[..] {

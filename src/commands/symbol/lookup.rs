@@ -227,7 +227,7 @@ impl<'a> Names<'a> {
             }));
         }
         Ok(match self.nodes(query) {
-            &[node] => Lookup::One(self.found(node, query)),
+            &[node] => Lookup::One(self.symbol_for(node, query)),
             [] => Lookup::NoName,
             nodes => Lookup::Several(nodes),
         })
@@ -243,8 +243,9 @@ impl<'a> Names<'a> {
         )
     }
 
-    /// The answer for `query` when it finds only `node`.
-    fn found(&self, node: Node, query: &str) -> Symbol {
+    /// What `query` finds as SYMBOL when it finds only `node`, with the
+    /// other name of `node` that it gives, if any.
+    fn symbol_for(&self, node: Node, query: &str) -> Symbol {
         Symbol {
             node,
             note: self

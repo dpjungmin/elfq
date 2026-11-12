@@ -39,7 +39,7 @@ const MOST: usize = 500;
 const NOTE_LINES: usize = 3;
 
 /// One row of the box.
-pub(in crate::commands::browse) struct Found {
+pub(in crate::commands::browse) struct PickerRow {
     /// The item or import.
     pub(in crate::commands::browse) node: Node,
     /// The address typed, when the item holds it.
@@ -73,7 +73,7 @@ pub(in crate::commands::browse) struct Picker {
 #[derive(Default)]
 struct Listed {
     /// The rows, at most [`MOST`] of them.
-    rows: Vec<Found>,
+    rows: Vec<PickerRow>,
     /// How many more items and imports the text finds than the box lists:
     /// those whose names have it, or that it matches as a pattern.
     more: usize,
@@ -168,7 +168,10 @@ impl Picker {
     }
 
     /// The selected row.
-    pub(in crate::commands::browse) fn selected(&mut self, session: &Session) -> Option<&Found> {
+    pub(in crate::commands::browse) fn selected(
+        &mut self,
+        session: &Session,
+    ) -> Option<&PickerRow> {
         self.catch_up(session);
         self.listed.rows.get(self.cursor.selected)
     }
@@ -247,8 +250,8 @@ impl Picker {
         let names = self.fitted.names(visible.clone(), room, || {
             rows.iter().map(|row| row[4].as_str()).collect()
         });
-        let items = (names.iter().zip(&listed.rows[visible])).map(|(name, found)| {
-            match found.note(binary) {
+        let items = (names.iter().zip(&listed.rows[visible])).map(|(name, picker_row)| {
+            match picker_row.note(binary) {
                 Some(note) => cut(&format!("{name}{note}"), room),
                 None => name.clone(),
             }
@@ -275,9 +278,9 @@ impl Picker {
     fn cells(&self, session: &Session, width: usize) -> (Vec<[String; 5]>, Vec<usize>, usize) {
         let binary = session.binary;
         let rows: Vec<[String; 5]> = (self.listed.rows.iter())
-            .map(|found| {
-                let name = found.node.name(binary).to_string();
-                let Node::Item(index) = found.node else {
+            .map(|picker_row| {
+                let name = picker_row.node.name(binary).to_string();
+                let Node::Item(index) = picker_row.node else {
                     // An import has no address, size or section here.
                     let blank = String::new;
                     return [blank(), blank(), "import".to_string(), blank(), name];
@@ -359,16 +362,16 @@ impl Listed {
     /// as the CLI's answer does, as in "log_msg (which holds 0x162e)".
     fn named(session: &Session, text: &str, lookup: &Lookup) -> Listed {
         let binary = session.binary;
-        let first: Vec<Found> = match lookup {
+        let first: Vec<PickerRow> = match lookup {
             Lookup::One(symbol) => {
                 // The item holds the address typed, if one was.
                 let at = hex_number(text).and_then(Result::ok);
-                vec![Found::symbol(binary, symbol, at)]
+                vec![PickerRow::symbol(binary, symbol, at)]
             }
-            Lookup::Several(nodes) => nodes.iter().map(|&node| Found::plain(node)).collect(),
+            Lookup::Several(nodes) => nodes.iter().map(|&node| PickerRow::plain(node)).collect(),
             Lookup::NoName => Vec::new(),
         };
-        let in_first: HashSet<Node> = first.iter().map(|found| found.node).collect();
+        let in_first: HashSet<Node> = first.iter().map(|picker_row| picker_row.node).collect();
         let lower = text.to_lowercase();
         let needle = Needle::new(&lower);
         let items = (0..binary.items.len()).map(Node::Item);
@@ -391,7 +394,7 @@ impl Listed {
         let binary = session.binary;
         match matched.only_item() {
             Some(symbol) => Listed {
-                rows: vec![Found::symbol(binary, &symbol, None)],
+                rows: vec![PickerRow::symbol(binary, &symbol, None)],
                 more: 0,
                 nothing: None,
             },
@@ -430,14 +433,14 @@ impl Listed {
 /// go largest first, and of the same size, first in the file, then the
 /// imports. Only those listed are sorted, which saves time when the text
 /// is in most names.
-fn keep_largest(binary: &Binary, first: Vec<Found>, others: Vec<Node>) -> Listed {
+fn keep_largest(binary: &Binary, first: Vec<PickerRow>, others: Vec<Node>) -> Listed {
     let more = (first.len() + others.len()).saturating_sub(MOST);
     let order = |&node: &Node| (Reverse(node.size(binary)), node);
     let room = MOST.saturating_sub(first.len());
     let mut others = text::first_by_key(others, room, order);
     others.sort_unstable_by_key(order);
     let mut rows = first;
-    rows.extend(others.into_iter().map(Found::plain));
+    rows.extend(others.into_iter().map(PickerRow::plain));
     rows.truncate(MOST);
     Listed {
         rows,
@@ -446,12 +449,12 @@ fn keep_largest(binary: &Binary, first: Vec<Found>, others: Vec<Node>) -> Listed
     }
 }
 
-impl Found {
+impl PickerRow {
     /// The row of `symbol`, what the text typed finds as SYMBOL, which names
     /// its item or import as the CLI's answer does, with `at`, the address
     /// typed, when one was.
-    fn symbol(binary: &Binary, symbol: &Symbol, at: Option<u64>) -> Found {
-        Found {
+    fn symbol(binary: &Binary, symbol: &Symbol, at: Option<u64>) -> PickerRow {
+        PickerRow {
             node: symbol.node,
             at,
             lead: Some(symbol.lead_name(binary)),
@@ -460,8 +463,8 @@ impl Found {
 
     /// The row of `node`, with no address typed and nothing after its
     /// name.
-    fn plain(node: Node) -> Found {
-        Found {
+    fn plain(node: Node) -> PickerRow {
+        PickerRow {
             node,
             at: None,
             lead: None,
@@ -554,10 +557,12 @@ mod tests {
                 // Each is a match, largest first, and no match left out is
                 // larger than the smallest listed.
                 let sizes: Vec<u64> = (listed.rows.iter())
-                    .map(|found| found.node.size(&binary))
+                    .map(|picker_row| picker_row.node.size(&binary))
                     .collect();
                 assert!(sizes.is_sorted_by(|a, b| a >= b), "{file}, {text}");
-                let rows: HashSet<Node> = listed.rows.iter().map(|found| found.node).collect();
+                let rows: HashSet<Node> = (listed.rows.iter())
+                    .map(|picker_row| picker_row.node)
+                    .collect();
                 assert!(
                     rows.iter().all(|node| matched.contains(node)),
                     "{file}, {text}"
@@ -573,7 +578,7 @@ mod tests {
                 // The one item that it matches alone is named as SYMBOL's
                 // answer names it.
                 let leads: Vec<Option<&str>> = (listed.rows.iter())
-                    .map(|found| found.lead.as_deref())
+                    .map(|picker_row| picker_row.lead.as_deref())
                     .collect();
                 let one_item = match matched[..] {
                     [only] => Some(format!(

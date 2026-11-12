@@ -101,23 +101,23 @@ pub(super) fn callers(
     out: &mut dyn Write,
 ) -> Result<()> {
     let node = symbol.node;
-    let found = Found::new(binary, graph, node);
+    let callers_of = CallersOf::new(binary, graph, node);
     match format {
         Format::Json => {
             let callers = Callers {
                 symbol: json::Symbol::new(binary, node),
                 callers: json::uses(
                     binary,
-                    &rows(binary, &found.references, |reference| {
+                    &rows(binary, &callers_of.references, |reference| {
                         json::how_field(reference.kind)
                     }),
                 ),
-                complete: !found.through_pointer,
+                complete: !callers_of.through_pointer,
             };
             json::write(&callers, out)
         }
         // `check_tree` refuses --tree for callers.
-        Format::Text | Format::Tree => found
+        Format::Text | Format::Tree => callers_of
             .answer(binary, graph, &symbol.lead_name(binary), detail)
             .write(out),
     }
@@ -135,12 +135,12 @@ pub(super) fn answer(
     name: &str,
     detail: Detail,
 ) -> FlatAnswer {
-    Found::new(binary, graph, node).answer(binary, graph, name, detail)
+    CallersOf::new(binary, graph, node).answer(binary, graph, name, detail)
 }
 
 /// What `callers` finds about a node, which its text and its JSON both
 /// say.
-struct Found<'g> {
+struct CallersOf<'g> {
     node: Node,
     /// The references to it (see [`references_with_stubs`]).
     references: Vec<&'g Reference>,
@@ -151,8 +151,8 @@ struct Found<'g> {
     through_pointer: bool,
 }
 
-impl<'g> Found<'g> {
-    fn new(binary: &Binary, graph: &'g Graph, node: Node) -> Found<'g> {
+impl<'g> CallersOf<'g> {
+    fn new(binary: &Binary, graph: &'g Graph, node: Node) -> CallersOf<'g> {
         let stubs = stubs_of(binary, node);
         let references = references_with_stubs(graph, node, &stubs);
         // A function's stubs all have its name, as `log_msg@plt`: glibc's
@@ -163,7 +163,7 @@ impl<'g> Found<'g> {
             .into_iter()
             .find(|&stub| references.iter().any(|r| r.to == stub && r.kind.is_call()));
         let through_pointer = can_be_called_through_pointer(binary, node, &references);
-        Found {
+        CallersOf {
             node,
             references,
             called_stub,

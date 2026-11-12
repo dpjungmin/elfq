@@ -416,7 +416,9 @@ helper type, doesn't take a word of the list; where code still does, as
   answer for it as for ranges (`Subject::Set`, `Inside::Set`). An
   instruction set (`arch::InstructionSet`), Rust's `HashSet`, and set as
   a verb, as in "sets the flags" or "sets up a section", are other
-  things.
+  things. The private `Found`s in `arch/thumb/operands.rs` and
+  `arch/thumb/values/mod.rs`, what the sweep and the last pass of values
+  find in a function's code, are unrelated.
 - **answer**: what a command has worked out, before it is written as text
   or JSON. `FlatAnswer` is the text of an answer whose table has one row
   to a line, as `callers`, `callees` and `reach` write it, and
