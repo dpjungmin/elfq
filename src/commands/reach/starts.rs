@@ -206,6 +206,7 @@ impl Starts<'_> {
     /// The answer's text: the starts as a table, then what elfq can't
     /// follow or read, and for a shared library, that its exported
     /// functions aren't counted. Each row is about its start.
+    #[expect(clippy::too_many_lines, reason = "waits to be split; see CONTRIBUTING")]
     pub(super) fn answer(&self, path: &Path, all: bool) -> FlatAnswer {
         let binary = self.binary;
         let file = path.display();

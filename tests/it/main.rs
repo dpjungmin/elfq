@@ -10,6 +10,8 @@
 //! command; `library` calls the library rather than running the program;
 //! and `support` holds what the modules share.
 
+#![allow(clippy::too_many_lines, reason = "tests list cases or pin outputs")]
+
 mod across_commands;
 mod commands;
 mod damaged;

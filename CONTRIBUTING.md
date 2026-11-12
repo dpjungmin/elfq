@@ -175,12 +175,18 @@ only with the `tui` feature.
   whose module doc numbers the steps by which it fits a name to a
   column. Unit tests longer than about 300 lines move to a `tests.rs` of
   their own (see [Tests](#tests)).
-- **A long function reads as named steps.** A function of more than
-  about 100 lines that isn't one decoding match is the usual sign that
-  it does several things: give each a function of its own, with a doc
-  line. A function that would need clippy's `too_many_arguments` allowed
-  takes a struct instead; none does. Some long functions still wait to
-  be split (see [below](#where-the-code-doesnt-follow-these-yet)).
+- **A long function reads as named steps.** A function of more than 100
+  lines of code, not counting comments and blank lines, is the usual
+  sign that it does several things: give each a function of its own,
+  with a doc line. clippy's `too_many_lines`, set in `Cargo.toml` and an
+  error in CI's clippy, is the check. One decoding match may be longer,
+  and allows the lint with that reason, as `decode::narrow` does; so may
+  tests, which list cases or pin outputs: `tests/it/main.rs` allows it
+  for the integration tests, and a `tests.rs` of unit tests that needs
+  it allows it at its top, as `arch/thumb/decode/tests.rs` does. A
+  function that would need clippy's `too_many_arguments` allowed takes a
+  struct instead; none does. Some long functions still wait to be split
+  (see [below](#where-the-code-doesnt-follow-these-yet)).
 - **Let the compiler hold the rules.** Where fields must agree, an enum
   holds the cases that make sense, as diff's `Change` does, rather than
   Options that are `None` together, bools with rules between them, or a
@@ -244,11 +250,11 @@ code.
 - Work out the facts, then word them:
   - The hidden `debug` commands write as they go.
 - A long function reads as named steps:
-  - Five functions wait for a later cleanup: `Function::execute` and
-    `Function::report` in `arch/thumb/values/mod.rs`, `Names::similar`
-    in `commands/symbol/similar.rs`, `Walker::execute` in
-    `arch/thumb/startup/execute.rs` and `Starts::answer` in
-    `commands/reach/starts.rs`.
+  - The functions that wait for a later cleanup are marked with
+    `#[expect(clippy::too_many_lines, reason = "waits to be split; see CONTRIBUTING")]`,
+    so a search for "waits to be split" lists them. Once one is split,
+    the lint no longer fires there and the unmet `expect` fails CI's
+    clippy, so the change that splits it drops the attribute too.
 - Let the compiler hold the rules:
   - The Thumb readers match `Flow` and `Operation` with `_` arms in
     places, as `Function::step` in `arch/thumb/values/mod.rs` and

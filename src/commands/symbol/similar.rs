@@ -50,6 +50,7 @@ pub(in crate::commands) struct Needle<'t> {
 impl<'a> Names<'a> {
     /// Up to five things to type for items or imports whose names contain
     /// `query`, ignoring case, or differ from it by a typo or two.
+    #[expect(clippy::too_many_lines, reason = "waits to be split; see CONTRIBUTING")]
     pub(super) fn similar(&self, query: &str) -> Vec<String> {
         let query = query.to_lowercase();
         let needle = Needle::new(&query);

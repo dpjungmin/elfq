@@ -403,6 +403,7 @@ pub(super) fn decode(address: u64, first: u16, second: u16) -> Option<Effect> {
 /// encoding" (A5.2). It decodes most of the tables under that one itself;
 /// "Data processing", "Special data instructions and branch and exchange"
 /// and "Miscellaneous 16-bit instructions" have a function each.
+#[allow(clippy::too_many_lines, reason = "one decoding match")]
 fn narrow(address: u64, op: u16) -> Option<Effect> {
     let pc = address + 4;
     // The register fields most 16-bit instructions use.
@@ -1385,6 +1386,7 @@ fn load(pc: u64, first: u16, second: u16) -> Option<Effect> {
 /// registers, and loads and stores that update their base register, touch
 /// the registers elfq follows. Those of other coprocessors, and Armv8.1-M's
 /// vector instructions, which share their encodings, aren't followed.
+#[allow(clippy::too_many_lines, reason = "one decoding match")]
 fn coprocessor(first: u16, second: u16) -> Option<Effect> {
     // Coprocessor field 15, as some vector instructions have too, with P
     // or W set.

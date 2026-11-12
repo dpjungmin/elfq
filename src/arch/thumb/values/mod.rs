@@ -528,6 +528,7 @@ impl<'a> Function<'a> {
     /// in the other registers it writes. Returns whether it turns an
     /// address on the stack into something elfq can't tell; see
     /// [`State::escaped`].
+    #[expect(clippy::too_many_lines, reason = "waits to be split; see CONTRIBUTING")]
     fn execute(&mut self, index: usize, state: &mut State) -> bool {
         let effect = self.code.effects[index];
         let pc = self.code.pc(index);
@@ -848,6 +849,7 @@ impl<'a> Function<'a> {
 
     /// Records how the instruction at `index` uses the values it reads, and
     /// where it branches when it branches through a register.
+    #[expect(clippy::too_many_lines, reason = "waits to be split; see CONTRIBUTING")]
     fn report(&mut self, index: usize, state: &State) {
         let effect = self.code.effects[index];
         let pc = self.code.pc(index);
