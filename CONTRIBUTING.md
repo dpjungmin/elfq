@@ -351,8 +351,10 @@ helper type, doesn't take a word of the list; where code still does, as
   `app`, and the `matches` of `retained`, `callers` and `callees` with
   `--json`, and `debug matches`, say `end` in `matched_by` for an item
   that a pattern matches only by the end of a longer path. The startup
-  walk's `End`, and where a function ends, which elfq may not know
-  (`Item::end_unknown`), are other things.
+  walk's `End`, where the walk stops, and where a function ends, which
+  elfq may not know (`Item::end_unknown`), are other things, and so is
+  the node at either end of a use (the `other_end` of `uses::rows`, and
+  diff's `End`, in `diff/crossings.rs`).
 - **made name**: a name made from where an item is, or from a counter or
   a hash, so that it says nothing of which function or data the item
   is: elfq's names for items that no symbol names, such as

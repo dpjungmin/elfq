@@ -45,18 +45,21 @@ use crate::cli::Format;
 use crate::graph::{Boundary, Graph, ItemsInRanges, Node};
 use crossing::{Entering, Leaving};
 
-/// Which way the references cross the boundary: out of the ranges for
-/// `callees`, into them for `callers`.
+/// Which way the uses go, and so which of `callers` and `callees` a
+/// table, a check or an error is for: out of SYMBOL, or the ranges or set
+/// given in its place, for `callees`, and into them for `callers`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Direction {
-    /// Out of the ranges: what the items in them use outside them.
+    /// Out: what SYMBOL uses, or in a check, what the items inside use
+    /// outside the boundary.
     Out,
-    /// Into the ranges: what uses the items in them from outside.
+    /// In: what uses SYMBOL, or in a check, what uses the items inside
+    /// from outside the boundary.
     In,
 }
 
 impl Direction {
-    /// The command that asks about crossings this way.
+    /// The command that lists uses this way.
     pub(super) fn command(self) -> &'static str {
         match self {
             Direction::Out => "callees",
@@ -77,6 +80,15 @@ impl Direction {
         match self {
             Direction::Out => Direction::In,
             Direction::In => Direction::Out,
+        }
+    }
+
+    /// The header of the column that names the node at the other end of
+    /// each use: the caller, or the callee.
+    pub(super) fn names_header(self) -> &'static str {
+        match self {
+            Direction::Out => "CALLEE",
+            Direction::In => "CALLER",
         }
     }
 }

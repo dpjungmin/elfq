@@ -13,7 +13,7 @@ use super::kept::Kept;
 use super::range_check::{self, Direction, Inside, RangeCheck};
 use super::symbol::{self, Subject, Symbol};
 use super::text::Detail;
-use super::uses::{self, End, Row};
+use super::uses::{self, Row};
 use super::{Outcome, json, text};
 use crate::binary::{AddressRange, Binary, ItemKind};
 use crate::cli::Format;
@@ -183,7 +183,7 @@ impl<'g> CallersOf<'g> {
                 format!("{name} is used by {callers}:")
             }
         };
-        let (columns, rows) = uses::table(binary, rows, End::Callers, text::shown(detail));
+        let (columns, rows) = uses::table(binary, rows, Direction::In, text::shown(detail));
         FlatAnswer {
             lead: vec![lead],
             memory: None,

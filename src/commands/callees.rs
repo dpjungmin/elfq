@@ -13,7 +13,7 @@ use super::kept::Kept;
 use super::range_check::{self, Direction, Inside, RangeCheck};
 use super::symbol::{self, Subject};
 use super::text::Detail;
-use super::uses::{self, End};
+use super::uses;
 use super::{Outcome, json, text};
 use crate::binary::{AddressRange, Binary};
 use crate::cli::Format;
@@ -150,7 +150,7 @@ pub(super) fn answer(
             )
         }
     };
-    let (columns, rows) = uses::table(binary, rows, End::Callees, text::shown(detail));
+    let (columns, rows) = uses::table(binary, rows, Direction::Out, text::shown(detail));
     FlatAnswer {
         lead,
         memory: None,
