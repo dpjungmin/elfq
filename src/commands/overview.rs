@@ -17,7 +17,7 @@ use super::checks::{check_code_is_readable, check_has_bytes, found_functions};
 use super::kept::Kept;
 use super::retained_tree::RetainedTree;
 use super::symbol::Names;
-use super::text::Detail;
+use super::text::{CommandLine, Detail};
 use super::{Outcome, json, startup, text};
 use crate::binary::{AddressRange, Binary, FileKind, ItemKind, MemoryBlock, memory_blocks, total};
 use crate::cli::Format;
@@ -92,10 +92,10 @@ fn write_text(path: &Path, binary: &Binary, format: Format, out: &mut dyn Write)
     let blocks = write_memory(binary, out)?;
     // Only ranges that hold something: in a stripped file whose functions
     // elfq can't find, the sections hold nothing it knows of.
-    let ranges: Vec<String> = blocks
+    let range_lines: Vec<CommandLine> = blocks
         .iter()
         .filter(|block| total_bytes(binary, Some(block.range)) > 0)
-        .map(|block| format!("--range {}", text::range_argument(block.range)))
+        .map(|block| CommandLine::file(path).ranges("--range", [block.range]))
         .collect();
 
     // elfq doesn't treat a shared library's exported functions as roots
@@ -103,17 +103,17 @@ fn write_text(path: &Path, binary: &Binary, format: Format, out: &mut dyn Write)
     // `top`, `retained` or `why` to suggest.
     if binary.kind == FileKind::SharedLibrary {
         let names = Kept::new(Names::new(binary));
-        let examples: Vec<String> = [
-            most_used(binary, &graph).map(|item| about(&names, "callers", item)),
+        let examples: Vec<CommandLine> = [
+            most_used(binary, &graph).map(|item| about(path, &names, "callers", item)),
             names
                 .starting_point()
-                .map(|item| about(&names, "callees", item)),
-            inlined(binary),
+                .map(|item| about(path, &names, "callees", item)),
+            inlined(path, binary),
         ]
         .into_iter()
         .flatten()
         .collect();
-        return text::write_try(path, &examples, out);
+        return text::write_try(&examples, out);
     }
     let retained = Kept::new(RetainedTree::new(binary, &graph, None));
     let names = retained.names();
@@ -129,25 +129,25 @@ fn write_text(path: &Path, binary: &Binary, format: Format, out: &mut dyn Write)
         0 | 1 => None,
         _ => handler_reaching_most_code(binary, &graph),
     };
-    let examples: Vec<String> = ranges
+    let examples: Vec<CommandLine> = range_lines
         .into_iter()
         .chain(
             [
-                startup::reads(path, binary).then(|| "startup".to_string()),
-                (kept > 0).then(|| "top".to_string()),
-                (kept > 0).then(|| "top --tree".to_string()),
+                startup::reads(path, binary).then(|| CommandLine::new(path, "startup")),
+                (kept > 0).then(|| CommandLine::new(path, "top")),
+                (kept > 0).then(|| CommandLine::new(path, "top").word("--tree")),
                 names
                     .starting_point()
-                    .map(|item| about(names, "retained", item)),
-                handler.map(|item| about(names, "reach", item)),
-                largest_kept(&retained).map(|item| about(names, "why", item)),
-                inlined(binary),
+                    .map(|item| about(path, names, "retained", item)),
+                handler.map(|item| about(path, names, "reach", item)),
+                largest_kept(&retained).map(|item| about(path, names, "why", item)),
+                inlined(path, binary),
             ]
             .into_iter()
             .flatten(),
         )
         .collect();
-    text::write_try(path, &examples, out)
+    text::write_try(&examples, out)
 }
 
 /// The overview of one range of memory: what elfq found in it, and which
@@ -179,14 +179,14 @@ fn write_range(
         writeln!(out)?;
         retained.largest_table(SHOWN, format).write(out)?;
     }
-    let examples: Vec<String> = [
-        Some(format!("top --range {}", text::range_argument(range))),
-        largest_kept(&retained).map(|item| about(retained.names(), "why", item)),
+    let examples: Vec<CommandLine> = [
+        Some(CommandLine::new(path, "top").ranges("--range", [range])),
+        largest_kept(&retained).map(|item| about(path, retained.names(), "why", item)),
     ]
     .into_iter()
     .flatten()
     .collect();
-    text::write_try(path, &examples, out)
+    text::write_try(&examples, out)
 }
 
 /// What the file is, such as "app.elf: x86-64 executable, stripped".
@@ -356,14 +356,13 @@ fn indirect_calls(graph: &Graph) -> usize {
 }
 
 /// `command` asked about `item`, by the shortest name that finds it.
-fn about(names: &Names, command: &str, item: usize) -> String {
-    let symbol = names.query_for(Node::Item(item));
-    format!("{command} {}", text::shell_quote(&symbol))
+fn about(path: &Path, names: &Names, command: &str, item: usize) -> CommandLine {
+    CommandLine::new(path, command).word(&names.query_for(Node::Item(item)))
 }
 
 /// `inlined`, when the file has the debug info it needs.
-fn inlined(binary: &Binary) -> Option<String> {
-    binary.has_dwarf.then(|| "inlined".to_string())
+fn inlined(path: &Path, binary: &Binary) -> Option<CommandLine> {
+    binary.has_dwarf.then(|| CommandLine::new(path, "inlined"))
 }
 
 /// The largest item that something keeps in the file, as opposed to one

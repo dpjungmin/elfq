@@ -753,16 +753,23 @@ pub(super) fn quoted_path(path: &Path) -> String {
 /// `elfq app.elf reach 'log(unsigned int)' --to 0x20000000..0x20001000`.
 /// It is built from words as they are meant, and quotes each one for the
 /// shell as it is added, so no word is quoted twice or not at all.
+#[derive(PartialEq)]
 pub(super) struct CommandLine {
     words: Vec<String>,
 }
 
 impl CommandLine {
+    /// `elfq FILE`, with the file as the user typed it, for a line with no
+    /// command, as the overview's `elfq FILE --range RANGE`.
+    pub(super) fn file(path: &Path) -> CommandLine {
+        CommandLine {
+            words: vec!["elfq".to_string(), quoted_path(path)],
+        }
+    }
+
     /// `elfq FILE COMMAND`, with the file as the user typed it.
     pub(super) fn new(path: &Path, command: &str) -> CommandLine {
-        CommandLine {
-            words: vec!["elfq".to_string(), quoted_path(path), shell_quote(command)],
-        }
+        CommandLine::file(path).word(command)
     }
 
     /// Adds `word`, such as a SYMBOL.
@@ -867,17 +874,16 @@ pub(super) fn unresolved_lines(
     lines
 }
 
-/// Writes the commands to try next, under "Try:", each given without
-/// `elfq FILE`, or nothing when there are none.
-pub(super) fn write_try(path: &Path, commands: &[String], out: &mut dyn Write) -> Result<()> {
+/// Writes the commands to try next, under "Try:", or nothing when there
+/// are none.
+pub(super) fn write_try(commands: &[CommandLine], out: &mut dyn Write) -> Result<()> {
     if commands.is_empty() {
         return Ok(());
     }
-    let file = quoted_path(path);
     writeln!(out)?;
     writeln!(out, "Try:")?;
     for command in commands {
-        writeln!(out, "  elfq {file} {command}")?;
+        writeln!(out, "  {command}")?;
     }
     Ok(())
 }
@@ -955,6 +961,33 @@ mod tests {
         assert_eq!(
             addresses_text(&[0x10, 0x20], Detail::Brief),
             "0x10 and 0x20"
+        );
+    }
+
+    #[test]
+    fn a_try_line_quotes_the_file_and_each_word_once() {
+        // The overview's lines for a range, a command and a SYMBOL, under
+        // a path with a space and a quote in it.
+        let path = Path::new("fw 'new'.elf");
+        let range = AddressRange {
+            start: 0x2000_0000,
+            end: 0x2000_0450,
+        };
+        let lines = [
+            CommandLine::file(path).ranges("--range", [range]),
+            CommandLine::new(path, "top").word("--tree"),
+            CommandLine::new(path, "why").word("log(unsigned int)"),
+        ];
+        let mut out = Vec::new();
+        write_try(&lines, &mut out).unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            r"
+Try:
+  elfq 'fw '\''new'\''.elf' --range 0x20000000..0x20000450
+  elfq 'fw '\''new'\''.elf' top --tree
+  elfq 'fw '\''new'\''.elf' why 'log(unsigned int)'
+"
         );
     }
 
