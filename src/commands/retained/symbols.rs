@@ -35,8 +35,7 @@ use anyhow::{Result, anyhow, bail};
 
 use super::refuse_shared_library;
 use crate::binary::Binary;
-use crate::commands::checks::{ends_unknown, item_in_file};
-use crate::commands::range_check::check_holds_items;
+use crate::commands::checks::{check_holds_items, ends_unknown, item_in_file};
 use crate::commands::symbol::{
     self, Argument, Lookup, LookupOrMatch, Names, Pattern, Pick, Set, Takes,
 };
