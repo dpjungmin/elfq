@@ -34,7 +34,7 @@ impl Text<'_, '_> {
                     reach.self_use,
                     reach.plt_header,
                     &found,
-                    self.all,
+                    self.detail,
                 ),
                 ..FlatAnswer::default()
             };
@@ -77,7 +77,7 @@ impl Text<'_, '_> {
             notes.push(text::unreadable_text(
                 binary,
                 &reach.unreadable,
-                Detail::from_flag(self.all),
+                self.detail,
             ));
         }
         let (rows, tree) = match self.tree {
@@ -125,7 +125,7 @@ impl Text<'_, '_> {
         let reach = self.reach;
         let reached = &reach.steps[1..];
         let unfollowed = range_check::group_unfollowed(outside);
-        if self.all {
+        if self.detail == Detail::All {
             // Each row but SYMBOL's names the item that uses what it lists,
             // and with every row, those can be most of the file's items.
             self.names.will_name(reached.len() + unfollowed.len());
@@ -282,7 +282,7 @@ impl Text<'_, '_> {
     pub(super) fn largest(&self, reached: &[Step]) -> HashSet<Node> {
         let binary = self.reach.binary;
         let mut nodes: Vec<Node> = reached.iter().map(|step| step.node).collect();
-        let shown = text::shown(Detail::from_flag(self.all));
+        let shown = text::shown(self.detail);
         if shown < nodes.len() {
             // No two steps are of one node, so no two share a key, and the
             // nodes that come before `shown` are those that a sort would
@@ -322,10 +322,7 @@ impl Text<'_, '_> {
                 let sites: Vec<u64> = pointers.iter().map(|u| u.site).collect();
                 (
                     one,
-                    format!(
-                        ", at {}",
-                        text::addresses_text(&sites, Detail::from_flag(self.all))
-                    ),
+                    format!(", at {}", text::addresses_text(&sites, self.detail)),
                 )
             }
             _ => (several, String::new()),
@@ -338,7 +335,7 @@ impl Text<'_, '_> {
         format!(
             "{} also {verb} through {through}{at}, which elfq can't follow, so {who} may reach \
              more.",
-            text::names_text(&names, Detail::from_flag(self.all))
+            text::names_text(&names, self.detail)
         )
     }
 }
@@ -346,14 +343,15 @@ impl Text<'_, '_> {
 /// The answer when SYMBOL, `name`, reaches nothing but perhaps itself:
 /// how it uses itself, if it does ("calls" or "uses"), or else what it is,
 /// then its calls and jumps that elfq can't follow, as `callees` says them,
-/// with the first few sites, or with `all`, every one. `plt_header` is
-/// whether SYMBOL is a PLT's header, whose jump is left out.
+/// with the first few sites, or with [`Detail::All`], every one.
+/// `plt_header` is whether SYMBOL is a PLT's header, whose jump is left
+/// out.
 fn nothing_reached_lines(
     name: &str,
     self_use: Option<&str>,
     plt_header: bool,
     unresolved: &[Unresolved],
-    all: bool,
+    detail: Detail,
 ) -> Vec<String> {
     let pointers = !unresolved.is_empty();
     let mut lines = match self_use {
@@ -368,12 +366,7 @@ fn nothing_reached_lines(
         None => vec![format!("{name} doesn't call or use anything.")],
     };
     let listed = self_use.is_some();
-    lines.extend(text::unresolved_lines(
-        name,
-        unresolved,
-        listed,
-        Detail::from_flag(all),
-    ));
+    lines.extend(text::unresolved_lines(name, unresolved, listed, detail));
     lines
 }
 
@@ -401,7 +394,7 @@ mod tests {
     #[test]
     fn what_reaches_nothing_says_how_it_uses_itself() {
         let lines = |self_use, plt_header, unresolved: &[Unresolved]| {
-            nothing_reached_lines("f", self_use, plt_header, unresolved, false)
+            nothing_reached_lines("f", self_use, plt_header, unresolved, Detail::Brief)
         };
         let pointer = [Unresolved {
             from: 0,
@@ -434,22 +427,22 @@ mod tests {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/bin/c-x86_64.elf");
         let binary = Binary::load(&path).unwrap();
         let graph = Graph::build(&binary);
-        // Whether wording reach's answer for `symbol`, with every row when
-        // `all` is set, tells Names that many items are to be named.
-        let names_many = |symbol: &str, all: bool| {
+        // Whether wording reach's answer for `symbol`, with every row for
+        // `Detail::All`, tells Names that many items are to be named.
+        let names_many = |symbol: &str, detail: Detail| {
             let names = Names::new(&binary);
             let Node::Item(index) = names.find(symbol).unwrap().node else {
                 panic!("{symbol} is an import");
             };
             let reach = Reach::find(&binary, &graph, index, &[]);
-            reach.text(&names, symbol, all, Format::Text).answer();
+            reach.text(&names, symbol, detail, Format::Text).answer();
             names.names_many()
         };
         // main reaches 50 of the file's 68 items and 3 imports.
-        assert!(names_many("main", true));
-        assert!(!names_many("main", false));
+        assert!(names_many("main", Detail::All));
+        assert!(!names_many("main", Detail::Brief));
         // crc32 reaches only crc_table.
-        assert!(!names_many("crc32", true));
+        assert!(!names_many("crc32", Detail::All));
     }
 
     #[test]
@@ -472,7 +465,7 @@ mod tests {
             panic!("main is an import");
         };
         let reach = Reach::find(&binary, &graph, main, &[]);
-        let text = reach.text(&names, "main", false, Format::Text);
+        let text = reach.text(&names, "main", Detail::Brief, Format::Text);
 
         // Their rows come one after the other, by index.
         let rows: Vec<Node> = (text.in_row_order(reach.steps[1..].iter().collect()))

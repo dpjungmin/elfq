@@ -150,8 +150,23 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<Outcome> {
         Some(Command::Reach(args)) => {
             let to = distinct_ranges(args.to.iter().copied());
             match &args.symbol {
-                Some(symbol) => reach::run(&binary, symbol, &to, args.all, format, out),
-                None => reach::run_starts(&cli.file, &binary, &to, range, args.all, format, out),
+                Some(symbol) => reach::run(
+                    &binary,
+                    symbol,
+                    &to,
+                    Detail::from_flag(args.all),
+                    format,
+                    out,
+                ),
+                None => reach::run_starts(
+                    &cli.file,
+                    &binary,
+                    &to,
+                    range,
+                    Detail::from_flag(args.all),
+                    format,
+                    out,
+                ),
             }
         }
         Some(Command::Startup(args)) => startup::run(&cli.file, &binary, args.all, format, out),
