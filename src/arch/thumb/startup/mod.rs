@@ -45,12 +45,13 @@ mod queries;
 mod tests;
 mod walk_state;
 
+use std::collections::HashMap;
 use std::collections::hash_map::Entry;
-use std::collections::{BTreeMap, HashMap};
 
 use object::Endianness;
 
 use super::decode::{self, Addressing, Effect, Flow, LowBit, Operation, Registers, Transfer, When};
+use super::sweep::DataMarks;
 use super::{ARGUMENTS, CALL_CLOBBERS, SP, Scanner, branch, is_wide, literal};
 use crate::arch::CodeReferenceKind;
 use crate::arch::startup::{
@@ -362,7 +363,7 @@ struct Walker<'a> {
     /// The data in each function the walk got to, by where the function
     /// starts: the constants and jump tables its code reads, as offsets
     /// from its start.
-    data: HashMap<u64, BTreeMap<usize, usize>>,
+    data: HashMap<u64, DataMarks>,
     /// What [`Walker::clobbers`] found for each function, by where it
     /// starts.
     clobbers: HashMap<u64, (Registers, u8)>,
@@ -906,12 +907,9 @@ impl Walker<'_> {
         let data = self.data.entry(start).or_insert_with(|| {
             let code = program.code(start).unwrap_or_default();
             let code = &code[..code.len().min((end - start) as usize)];
-            Scanner::swept(code, start, endianness).data
+            Scanner::swept(code, start, endianness).into_data()
         });
-        let offset = (address - start) as usize;
-        data.range(..=offset)
-            .next_back()
-            .is_some_and(|(_, &end)| offset < end)
+        data.end_at((address - start) as usize).is_some()
     }
 }
 

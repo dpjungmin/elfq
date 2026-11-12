@@ -1,7 +1,8 @@
 //! The sweep through one function's Thumb code: the [`Scanner`], which
 //! decodes the instructions that refer to addresses and notes the data
-//! they read, and [`Scanner::sweep`], which steps through the code with it
-//! and skips that data.
+//! they read ([`DataMarks`]), and [`Scanner::sweep`], which steps through
+//! the code with it and skips that data. `layout` and the startup walk read
+//! that data too.
 //!
 //! The scanner decodes those instructions itself, rather than with
 //! `decode`, which works out all that an instruction does: the sweep reads
@@ -34,13 +35,14 @@ pub(in crate::arch) fn scan_instructions(
 
 /// Decodes one function's instructions, one at a time from the start, and
 /// notes what they refer to: a reference for each instruction that calls,
-/// jumps to or uses an address (`references`), and the constants and jump
-/// tables that the instructions read (`data`), which the sweep skips. It
-/// keeps more when asked: the bits that say where something is, when
-/// `operands` is `Some`, for diff. `layout` marks more data before the
-/// sweep, the bytes that `$d` symbols mark; the startup walk reads the data
-/// that a sweep found, to tell a literal pool from code; and browse reads
-/// the tables of addresses it found (`address_tables`).
+/// jumps to or uses an address (`references`), and the constants, jump
+/// tables and tables of addresses that the instructions read (`data`),
+/// which the sweep skips. It keeps more when asked: the bits that say where
+/// something is, when `operands` is `Some`, for diff. `layout` marks more
+/// data before the sweep, the bytes that `$d` symbols mark
+/// ([`Scanner::mark_data`]); the startup walk keeps the data that a sweep
+/// found, to tell a literal pool from code ([`Scanner::into_data`]); and
+/// browse reads the tables of addresses it found (`address_tables`).
 pub(super) struct Scanner<'a> {
     code: &'a [u8],
     /// The address of `code[0]`.
@@ -49,9 +51,10 @@ pub(super) struct Scanner<'a> {
     /// are always little-endian, even in big-endian (BE8) files.
     endianness: Endianness,
     pub(super) references: Vec<CodeReference>,
-    /// Constants and jump tables found so far, as offsets into `code`: the
-    /// start of each, mapped to its end.
-    pub(super) data: BTreeMap<usize, usize>,
+    /// Constants, jump tables and tables of addresses found so far, and the
+    /// data that `layout` marked, as offsets into `code`.
+    /// [`Scanner::mark_data`] adds to it.
+    data: DataMarks,
     /// For each register, where its last `movw` is and its value, which a
     /// `movt` completes into a 32-bit address.
     low_halves: [Option<(usize, u32)>; 16],
@@ -73,7 +76,7 @@ impl<'a> Scanner<'a> {
             address,
             endianness,
             references: Vec::new(),
-            data: BTreeMap::new(),
+            data: DataMarks::default(),
             low_halves: [None; 16],
             previous: [None; 3],
             address_tables: Vec::new(),
@@ -112,14 +115,14 @@ impl<'a> Scanner<'a> {
             }
         }
         // Both lists are in order, so one pass over each drops them.
-        let mut data = self.data.iter().peekable();
+        let mut data = self.data.stretches().peekable();
         instructions.retain(|instruction| {
             while data
-                .next_if(|&(_, &end)| end <= instruction.offset)
+                .next_if(|stretch| stretch.end <= instruction.offset)
                 .is_some()
             {}
             data.peek()
-                .is_none_or(|&(&start, _)| start >= instruction.offset + instruction.size())
+                .is_none_or(|stretch| stretch.start >= instruction.offset + instruction.size())
         });
         instructions
     }
@@ -393,8 +396,7 @@ impl<'a> Scanner<'a> {
             at += 4;
         }
         if at > start {
-            let end = self.data.entry(start).or_insert(at);
-            *end = (*end).max(at);
+            self.mark_data(start, at);
             self.address_tables.push(start..at);
         }
     }
@@ -456,7 +458,7 @@ impl<'a> Scanner<'a> {
             targets.push(target);
             entry += entry_size;
         }
-        self.data.insert(start, entry.next_multiple_of(2));
+        self.mark_data(start, entry.next_multiple_of(2));
         // An entry of 0, as in the byte that pads a table, points at the
         // table itself.
         targets.retain(|&target| target >= entry);
@@ -473,8 +475,7 @@ impl<'a> Scanner<'a> {
     fn constant(&mut self, address: u64, size: usize) -> Option<u64> {
         let offset = usize::try_from(address.checked_sub(self.address)?).ok()?;
         let bytes = self.code.get(offset..offset.checked_add(size)?)?;
-        let end = self.data.entry(offset).or_insert(offset + size);
-        *end = (*end).max(offset + size);
+        self.mark_data(offset, offset + size);
         let word: [u8; 4] = bytes.try_into().ok()?;
         Some(u64::from(self.endianness.read_u32(word)))
     }
@@ -490,10 +491,28 @@ impl<'a> Scanner<'a> {
         address
     }
 
+    /// Marks the bytes from `start` up to `end` as data. Where data already
+    /// starts at `start`, the larger end stays (see [`DataMarks::mark`]).
+    pub(super) fn mark_data(&mut self, start: usize, end: usize) {
+        self.data.mark(start, end);
+    }
+
+    /// The data that the sweep found and that `layout` marked, for `layout`
+    /// to read.
+    #[cfg(feature = "tui")]
+    pub(super) fn data(&self) -> &DataMarks {
+        &self.data
+    }
+
+    /// The data that the sweep found, for the startup walk to keep once the
+    /// sweep is done.
+    pub(super) fn into_data(self) -> DataMarks {
+        self.data
+    }
+
     /// Where the data at `offset` ends, if `offset` is inside data.
     fn data_end(&self, offset: usize) -> Option<usize> {
-        let (_, &end) = self.data.range(..=offset).next_back()?;
-        (offset < end).then_some(end)
+        self.data.end_at(offset)
     }
 
     /// The 16 bits of an instruction at `offset`.
@@ -512,6 +531,49 @@ impl<'a> Scanner<'a> {
     /// runs: four bytes past the instruction.
     fn pc(&self, offset: usize) -> u64 {
         self.address + offset as u64 + 4
+    }
+}
+
+/// The data in a function's code, which the sweep skips, as offsets into
+/// the code: where each stretch of data starts, and where it ends. The
+/// scanner marks the constants, jump tables and tables of addresses that
+/// the code reads as the sweep finds them, and `layout` the bytes that `$d`
+/// symbols mark before it starts. Data marked twice at one start keeps the
+/// larger end, whichever mark comes first, so it ends in the same place in
+/// either order: a `$d` mark at a jump table's start may run past the
+/// table, and a load may mark a constant there before the sweep gets to
+/// the table; either way, the sweep skips the longer stretch. A load after
+/// the table marks the constant only once the sweep has decoded the bytes
+/// after the table, as it decodes any constant that only a later load
+/// reads (see [`Scanner::sweep_instructions`]). This is the only code that
+/// reads or writes the map.
+#[derive(Default)]
+pub(super) struct DataMarks(BTreeMap<usize, usize>);
+
+impl DataMarks {
+    /// Marks the bytes from `start` up to `end` as data, keeping the larger
+    /// end where data already starts at `start`.
+    fn mark(&mut self, start: usize, end: usize) {
+        let kept = self.0.entry(start).or_insert(end);
+        *kept = (*kept).max(end);
+    }
+
+    /// Where the data at `offset` ends, if `offset` is inside data: inside
+    /// the stretch that starts last at or before `offset`.
+    pub(super) fn end_at(&self, offset: usize) -> Option<usize> {
+        let (_, &end) = self.0.range(..=offset).next_back()?;
+        (offset < end).then_some(end)
+    }
+
+    /// Where the next stretch of data after `after` starts, if one does.
+    #[cfg(feature = "tui")]
+    pub(super) fn next_start(&self, after: usize) -> Option<usize> {
+        self.0.range(after + 1..).next().map(|(&start, _)| start)
+    }
+
+    /// Each stretch of data, in the order of their starts.
+    fn stretches(&self) -> impl Iterator<Item = std::ops::Range<usize>> {
+        self.0.iter().map(|(&start, &end)| start..end)
     }
 }
 
@@ -668,6 +730,58 @@ mod tests {
         assert_eq!(
             kinds(&code, 0),
             [(2, Jump(0xa)), (4, Jump(0xe)), (4, Jump(0x10))]
+        );
+    }
+
+    #[cfg(feature = "tui")]
+    #[test]
+    fn data_that_the_file_marks_at_a_jump_tables_start_keeps_its_end() {
+        // cmp r0, #3; bhi 0x16; tbb [pc, r0], then a table of four entries
+        // and a word that would otherwise decode as bl 0x30, then the four
+        // cases, bx lr. A `$d` mark covers the table and the word, as when
+        // a literal pool follows the table: the table's own shorter end
+        // doesn't cut the mark, so the word is data.
+        let code = [
+            0x03, 0x28, 0x08, 0xd8, 0xdf, 0xe8, 0x00, 0xf0, 0x04, 0x05, 0x06, 0x07, 0x00, 0xf0,
+            0x10, 0xf8, 0x70, 0x47, 0x70, 0x47, 0x70, 0x47, 0x70, 0x47,
+        ];
+        let table_and_word = 8..16;
+        assert_eq!(
+            layout(&code, 0, Little, &[table_and_word]),
+            [
+                (0, 2, Piece::Instruction),
+                (2, 2, Piece::Instruction),
+                (4, 4, Piece::Instruction),
+                (8, 4, Piece::Data),
+                (12, 4, Piece::Data),
+                (16, 2, Piece::Instruction),
+                (18, 2, Piece::Instruction),
+                (20, 2, Piece::Instruction),
+                (22, 2, Piece::Instruction)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_constant_at_a_jump_tables_start_keeps_its_end() {
+        // ldr r1, [pc, #8], which loads the word at 0xc; nop; cmp r0, #1;
+        // bhi 0x12; tbb [pc, r0], then a table of two entries at 0xc and the
+        // two cases, bx lr. The load marks the word as data before the sweep
+        // gets to the table, whose own shorter end doesn't cut the word, so
+        // its second half, which would otherwise decode as b.n 0xe, is
+        // data.
+        let code = [
+            0x02, 0x49, 0x00, 0xbf, 0x01, 0x28, 0x04, 0xd8, 0xdf, 0xe8, 0x00, 0xf0, 0x02, 0x03,
+            0xfe, 0xe7, 0x70, 0x47, 0x70, 0x47,
+        ];
+        assert_eq!(
+            kinds(&code, 0),
+            [
+                (0, Address(0xe7fe_0302)),
+                (6, Jump(0x12)),
+                (8, Jump(0x10)),
+                (8, Jump(0x12))
+            ]
         );
     }
 
