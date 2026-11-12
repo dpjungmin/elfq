@@ -430,16 +430,11 @@ impl Listed {
 /// go largest first, and of the same size, first in the file, then the
 /// imports. Only those listed are sorted, which saves time when the text
 /// is in most names.
-fn keep_largest(binary: &Binary, first: Vec<Found>, mut others: Vec<Node>) -> Listed {
+fn keep_largest(binary: &Binary, first: Vec<Found>, others: Vec<Node>) -> Listed {
     let more = (first.len() + others.len()).saturating_sub(MOST);
     let order = |&node: &Node| (Reverse(node.size(binary)), node);
     let room = MOST.saturating_sub(first.len());
-    if others.len() > room {
-        if room > 0 {
-            others.select_nth_unstable_by_key(room - 1, order);
-        }
-        others.truncate(room);
-    }
+    let mut others = text::first_by_key(others, room, order);
     others.sort_unstable_by_key(order);
     let mut rows = first;
     rows.extend(others.into_iter().map(Found::plain));

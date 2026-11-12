@@ -1,7 +1,9 @@
 //! How elfq words things: the counts, lists, columns and sentences that
 //! commands write, kept in one place so that every command says them the
-//! same way.
+//! same way. It also says how many rows of a long list a command shows
+//! ([`shown`]) and which of them it keeps ([`first_by_key`]).
 
+use std::cmp::Reverse;
 use std::fmt;
 use std::io::Write;
 use std::path::Path;
@@ -176,6 +178,43 @@ pub(super) fn shown_count(count: usize, room: usize) -> usize {
     } else {
         count
     }
+}
+
+/// The `count` of `items` that a sort by `key` would put first, in no
+/// order, or all of them when there are `count` or fewer. It picks them
+/// without sorting the rest, which saves time where many items compete for
+/// a few rows. The keys must differ, as they do when each ends in the
+/// item's own number or node, so that which items it keeps doesn't depend
+/// on the order they come in.
+///
+/// A key that starts with `Reverse(size)` keeps the largest, and what
+/// follows breaks ties. `callers`, `callees` and `reach` keep the first by
+/// name ([`by_size_then_name`]). The trees of retained sizes and `inlined`
+/// keep the lowest number (`tree_answer::largest`), since each command
+/// numbers the items of its tree, and has no name at hand for them. The
+/// go-to box keeps the first in the file (`keep_largest`, in
+/// `browse/views/picker.rs`), since it picks its rows again each time the
+/// text in the box changes, and so compares no names.
+pub(super) fn first_by_key<T, K: Ord>(
+    mut items: Vec<T>,
+    count: usize,
+    key: impl FnMut(&T) -> K,
+) -> Vec<T> {
+    if count < items.len() {
+        items.select_nth_unstable_by_key(count, key);
+        items.truncate(count);
+    }
+    items
+}
+
+/// The key of a node for [`first_by_key`] that keeps the largest, as
+/// [`Node::size`] gives their sizes; of the same size, the name that sorts
+/// first; and of the same size and name, the first node, so that no two
+/// nodes share a key, as [`first_by_key`] needs.
+pub(super) fn by_size_then_name<'a>(
+    binary: &'a Binary,
+) -> impl Fn(&Node) -> (Reverse<u64>, &'a str, Node) {
+    move |&node| (Reverse(node.size(binary)), node.name(binary), node)
 }
 
 /// Words joined into a phrase: "a", "a and b", "a, b and c", or for more
@@ -846,6 +885,24 @@ pub(super) fn write_try(path: &Path, commands: &[String], out: &mut dyn Write) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn first_by_key_keeps_what_a_sort_puts_first() {
+        let sizes = [4, 9, 4, 1, 9, 7];
+        let key = |&item: &usize| (Reverse(sizes[item]), item);
+        let mut sorted: Vec<usize> = (0..sizes.len()).collect();
+        sorted.sort_by_key(key);
+        for count in 0..=sizes.len() + 1 {
+            let mut kept = first_by_key((0..sizes.len()).collect(), count, key);
+            kept.sort_by_key(key);
+            assert_eq!(kept, sorted[..count.min(sizes.len())], "{count}");
+        }
+        // The largest, and of the same size, the lowest number: 2 is left
+        // out for 0.
+        let mut kept = first_by_key((0..sizes.len()).collect(), 4, key);
+        kept.sort();
+        assert_eq!(kept, [0, 1, 4, 5]);
+    }
 
     #[test]
     fn a_summary_never_stands_for_one_thing() {

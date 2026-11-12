@@ -10,8 +10,9 @@
 //! [`with_chains`]), a lone item that would be left out on its own
 //! ([`add_lone`]), and a row such as "70 more" that sums up the rest
 //! ([`with_descendants`]). `reach --tree` uses all but [`largest`]: it
-//! picks its largest items with its own `Text::largest`, which breaks ties
-//! by name where [`largest`] breaks them by number. They work on items
+//! keeps the largest items that its rows by block keep (`Text::largest`),
+//! the first by name of the same size, where [`largest`] keeps the lowest
+//! number; both pick them with [`first_by_key`]. They work on items
 //! numbered as each command numbers them, and take the tree's sizes,
 //! parents and children as closures.
 //!
@@ -23,6 +24,7 @@ use std::io::Write;
 
 use anyhow::Result;
 
+use super::text::first_by_key;
 use crate::render::{Align, Table, TreeRow, TreeShape};
 
 /// The text of an answer whose table holds a tree: its first lines, the
@@ -124,17 +126,16 @@ impl TabAnswer {
     }
 }
 
-/// The `count` largest of `items`, as `size` gives their sizes, largest
-/// first, and of the same size, the lowest number first.
+/// The `count` largest of `items`, as `size` gives their sizes, and of the
+/// same size, the lowest number, in no order: the callers need only which
+/// they are, as [`with_chains`] takes them.
 pub(super) fn largest(
     items: impl IntoIterator<Item = usize>,
     size: impl Fn(usize) -> u64,
     count: usize,
 ) -> Vec<usize> {
-    let mut by_size: Vec<usize> = items.into_iter().collect();
-    by_size.sort_by_key(|&item| (Reverse(size(item)), item));
-    by_size.truncate(count);
-    by_size
+    let items: Vec<usize> = items.into_iter().collect();
+    first_by_key(items, count, |&item| (Reverse(size(item)), item))
 }
 
 /// `items`, and every item between each of them and the top of the tree, so
@@ -232,9 +233,10 @@ mod tests {
     }
 
     #[test]
-    fn the_largest_come_first_and_of_the_same_size_the_lowest_number() {
-        let sizes = [5, 9, 9, 1];
-        assert_eq!(largest(0..4, |item| sizes[item], 3), [1, 2, 0]);
+    fn the_largest_are_kept_and_of_the_same_size_the_lowest_number() {
+        let sizes = [9, 5, 9, 5];
+        let kept: HashSet<usize> = largest(0..4, |item| sizes[item], 3).into_iter().collect();
+        assert_eq!(sorted(&kept), [0, 1, 2]);
     }
 
     #[test]

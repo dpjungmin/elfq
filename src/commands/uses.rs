@@ -1,7 +1,6 @@
 //! The rows and the table of `callers` and `callees` for SYMBOL: each row
 //! is how one node uses the other, and where.
 
-use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 
 use super::flat_answer::FlatRow;
@@ -122,14 +121,14 @@ fn left_out(nodes: usize, count: usize) -> usize {
 /// take no more room than "1 more" would. Of nodes the same size, the name
 /// that sorts first is kept.
 fn largest_rows(binary: &Binary, rows: Vec<Row>, count: usize) -> (Vec<Row>, usize) {
-    let mut nodes = distinct_nodes(&rows);
+    let nodes = distinct_nodes(&rows);
     let left_out = left_out(nodes.len(), count);
     if left_out == 0 {
         return (rows, 0);
     }
     let shown = nodes.len() - left_out;
-    nodes.sort_by_key(|&node| (Reverse(node.size(binary)), node.name(binary), node));
-    let kept: HashSet<Node> = nodes.into_iter().take(shown).collect();
+    let kept = text::first_by_key(nodes, shown, text::by_size_then_name(binary));
+    let kept: HashSet<Node> = kept.into_iter().collect();
     let rows = rows
         .into_iter()
         .filter(|row| kept.contains(&row.node))
