@@ -36,7 +36,7 @@ struct Callees<'a> {
 /// then SYMBOL is asked about as the range it occupies. For SYMBOL alone,
 /// the text lists the 30 largest callees, or with [`Detail::All`], every
 /// one; for the rest, see [`range_check::run`]. An import among several
-/// SYMBOLs gets the error it gets alone, since its code isn't in the file.
+/// SYMBOLs gets the error it gets alone (see [`item_in_set`]).
 pub(super) fn run(
     binary: &Binary,
     symbols: &[String],
@@ -46,7 +46,7 @@ pub(super) fn run(
     out: &mut dyn Write,
 ) -> Result<Outcome> {
     check_code_is_readable(binary)?;
-    let inside = match symbol::subject(binary, symbols, item_in_file)? {
+    let inside = match symbol::subject(binary, symbols, item_in_set)? {
         Subject::Symbol(symbol) => {
             let index = readable_item(binary, symbol.node)?;
             let lead_name = symbol.lead_name(binary);
@@ -70,6 +70,13 @@ pub(super) fn run(
     };
     let graph = Kept::new(Graph::build(binary));
     range_check::run(binary, &graph, &check, detail, format, out)
+}
+
+/// The item of a SYMBOL given with others, which callees puts in a set, or
+/// for an import, the error that it gets alone: its code is in another
+/// file, so callees can't read what it calls, alone or with others.
+pub(super) fn item_in_set(binary: &Binary, node: Node) -> Result<usize> {
+    item_in_file(binary, node)
 }
 
 /// What the item at `index` calls or uses. `name` is its name as the

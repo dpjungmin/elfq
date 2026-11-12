@@ -20,7 +20,7 @@ use std::io::Write;
 
 use anyhow::{Result, bail};
 
-use super::checks::{check_code_is_readable, item_in_file};
+use super::checks::check_code_is_readable;
 use super::kept::freeing;
 use super::range_check::Direction;
 use super::symbol::{FilesHere, Pattern, is_here};
@@ -251,7 +251,7 @@ impl UsesQuery<'_> {
             Command::Callees(args) => Some(UsesQuery {
                 direction: Direction::Out,
                 run: callees::run,
-                item_in_set: item_in_file,
+                item_in_set: callees::item_in_set,
                 args: &args.uses,
                 far_side: &args.to,
                 misplaced: !args.misplaced_from.is_empty(),
