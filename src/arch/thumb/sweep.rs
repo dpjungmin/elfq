@@ -55,6 +55,13 @@ pub(super) struct Scanner<'a> {
     /// data that `layout` marked, as offsets into `code`.
     /// [`Scanner::mark_data`] adds to it.
     data: DataMarks,
+    /// Where the last search of `data` found no data, up to where the next
+    /// data starts (see [`NoData`]). The sweep asks `data_end` at every
+    /// instruction, and inside this window it answers without a search.
+    /// It is `None` before the first search, after a search that finds
+    /// data, and after a mark that may cover the window, so that the next
+    /// `data_end` searches.
+    no_data: Option<NoData>,
     /// For each register, where its last `movw` is and its value, which a
     /// `movt` completes into a 32-bit address.
     low_halves: [Option<(usize, u32)>; 16],
@@ -77,6 +84,7 @@ impl<'a> Scanner<'a> {
             endianness,
             references: Vec::new(),
             data: DataMarks::default(),
+            no_data: None,
             low_halves: [None; 16],
             previous: [None; 3],
             address_tables: Vec::new(),
@@ -493,8 +501,19 @@ impl<'a> Scanner<'a> {
 
     /// Marks the bytes from `start` up to `end` as data. Where data already
     /// starts at `start`, the larger end stays (see [`DataMarks::mark`]).
+    /// It is the only code that adds data, so it keeps `no_data` right:
+    /// data that starts inside the window ends the window there, and data
+    /// that starts at or before the window's start may cover it, so the
+    /// window goes.
     pub(super) fn mark_data(&mut self, start: usize, end: usize) {
         self.data.mark(start, end);
+        if let Some(window) = &mut self.no_data {
+            if start <= window.from {
+                self.no_data = None;
+            } else if start < window.next_data {
+                window.next_data = start;
+            }
+        }
     }
 
     /// The data that the sweep found and that `layout` marked, for `layout`
@@ -510,9 +529,30 @@ impl<'a> Scanner<'a> {
         self.data
     }
 
-    /// Where the data at `offset` ends, if `offset` is inside data.
-    fn data_end(&self, offset: usize) -> Option<usize> {
-        self.data.end_at(offset)
+    /// Where the data at `offset` ends, if `offset` is inside data. Inside
+    /// the window of `no_data` it answers `None` without a search;
+    /// elsewhere it searches `data`, and where it finds no data, sets the
+    /// window from `offset` up to where the next data starts.
+    fn data_end(&mut self, offset: usize) -> Option<usize> {
+        if let Some(window) = self.no_data
+            && (window.from..window.next_data).contains(&offset)
+        {
+            debug_assert_eq!(
+                self.data.end_at(offset),
+                None,
+                "data in the window at {offset:#x}"
+            );
+            return None;
+        }
+        let end = self.data.end_at(offset);
+        self.no_data = match end {
+            Some(_) => None,
+            None => Some(NoData {
+                from: offset,
+                next_data: self.data.next_start(offset).unwrap_or(self.code.len()),
+            }),
+        };
+        end
     }
 
     /// The 16 bits of an instruction at `offset`.
@@ -552,7 +592,12 @@ pub(super) struct DataMarks(BTreeMap<usize, usize>);
 
 impl DataMarks {
     /// Marks the bytes from `start` up to `end` as data, keeping the larger
-    /// end where data already starts at `start`.
+    /// end where data already starts at `start`. Only
+    /// [`Scanner::mark_data`] calls it, which keeps the scanner's window of
+    /// no data right. A call from anywhere else could leave the window
+    /// stale, so that the sweep decodes data as instructions; in debug
+    /// builds, as in the tests, [`Scanner::data_end`] checks each answer
+    /// from the window and panics on one that is wrong.
     fn mark(&mut self, start: usize, end: usize) {
         let kept = self.0.entry(start).or_insert(end);
         *kept = (*kept).max(end);
@@ -566,7 +611,6 @@ impl DataMarks {
     }
 
     /// Where the next stretch of data after `after` starts, if one does.
-    #[cfg(feature = "tui")]
     pub(super) fn next_start(&self, after: usize) -> Option<usize> {
         self.0.range(after + 1..).next().map(|(&start, _)| start)
     }
@@ -575,6 +619,19 @@ impl DataMarks {
     fn stretches(&self) -> impl Iterator<Item = std::ops::Range<usize>> {
         self.0.iter().map(|(&start, &end)| start..end)
     }
+}
+
+/// A window of a function's code that no data covers: the offsets from
+/// `from` up to `next_data`, where the next data after `from` starts, or
+/// the end of the code. [`Scanner::data_end`] sets it where its search
+/// finds no data at `from`, and answers inside it without a search: no
+/// data starts after `from` and before `next_data`, so a search at any
+/// offset in between would find none either. [`Scanner::mark_data`], the
+/// only code that adds data, keeps the window right.
+#[derive(Clone, Copy)]
+struct NoData {
+    from: usize,
+    next_data: usize,
 }
 
 /// What [`Scanner::sweep`] finds next in the code.
@@ -906,5 +963,22 @@ mod tests {
         let adr = [0xaf, 0xf2, 0x08, 0x00];
         assert_eq!(kinds(&adr, 0), [(0, Address(0xffff_fffc))]);
         assert_eq!(kinds(&[0x5f, 0xf8, 0x08, 0x00], 0), []);
+    }
+
+    #[test]
+    fn marks_narrow_or_drop_the_window_of_no_data() {
+        // Data at 0x18, ahead of the sweep, leaves no data from 4 up to it.
+        let code = [0; 0x20];
+        let mut scanner = Scanner::new(&code, 0, Little);
+        scanner.mark_data(0x18, 0x1c);
+        assert_eq!(scanner.data_end(4), None);
+        // Data that starts inside the window ends the window there.
+        scanner.mark_data(0xc, 0x10);
+        assert_eq!(scanner.data_end(0xc), Some(0x10));
+        // A window from 0x10 goes when data starts before it, as that data
+        // may cover it.
+        assert_eq!(scanner.data_end(0x10), None);
+        scanner.mark_data(0xe, 0x14);
+        assert_eq!(scanner.data_end(0x12), Some(0x14));
     }
 }
