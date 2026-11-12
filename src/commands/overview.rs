@@ -17,6 +17,7 @@ use super::checks::{check_has_bytes, found_functions, reference_graph};
 use super::kept::Kept;
 use super::retained_tree::RetainedTree;
 use super::symbol::Names;
+use super::text::Detail;
 use super::{Outcome, json, startup, text};
 use crate::binary::{AddressRange, Binary, FileKind, ItemKind, MemoryBlock, memory_blocks, total};
 use crate::cli::Format;
@@ -169,7 +170,7 @@ fn write_range(
         out,
         "{} in {}, {}",
         items_text(binary, Some(range)),
-        text::range_text(binary, range, false),
+        text::range_text(binary, range, Detail::Brief),
         text::bytes_of_items(binary, Some(range))
     )?;
     // When nothing reaches the items in the range, there is nothing to rank.

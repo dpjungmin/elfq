@@ -12,6 +12,7 @@ use super::flat_answer::FlatAnswer;
 use super::kept::Kept;
 use super::range_check::{self, Direction, Inside, RangeCheck};
 use super::symbol::{self, Subject};
+use super::text::Detail;
 use super::uses::{self, End};
 use super::{Outcome, json, text};
 use crate::binary::{AddressRange, Binary};
@@ -130,7 +131,7 @@ pub(super) fn answer(
             Vec::new(),
         ),
         (true, false) => (
-            text::unresolved_lines(name, unresolved, false, all),
+            text::unresolved_lines(name, unresolved, false, Detail::from_flag(all)),
             Vec::new(),
         ),
         (false, _) => {
@@ -138,11 +139,16 @@ pub(super) fn answer(
             let lead = format!("{name} uses {callees}:");
             (
                 vec![lead],
-                text::unresolved_lines(name, unresolved, true, all),
+                text::unresolved_lines(name, unresolved, true, Detail::from_flag(all)),
             )
         }
     };
-    let (columns, rows) = uses::table(binary, rows, End::Callees, text::shown(all));
+    let (columns, rows) = uses::table(
+        binary,
+        rows,
+        End::Callees,
+        text::shown(Detail::from_flag(all)),
+    );
     FlatAnswer {
         lead,
         memory: None,

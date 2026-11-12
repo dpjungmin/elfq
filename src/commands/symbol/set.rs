@@ -32,7 +32,7 @@ use std::fmt;
 use super::PatternMatches;
 use super::matched::named_by_patterns;
 use crate::binary::{AddressRange, Binary, add_range_once};
-use crate::commands::text;
+use crate::commands::text::{self, Detail};
 
 /// What one argument picks, as a set takes it: the item that a SYMBOL
 /// names, or the items of a pattern or a range given in its place.
@@ -264,16 +264,16 @@ impl Set {
     /// code, which no item names (see [`Set::by_parts`]); and otherwise by
     /// their names, "a" or "a and b", or from three on, by how many, "these
     /// 6 items", so that it stays short however many there are. With
-    /// `all`, it names every range and section.
-    pub(in crate::commands) fn lead_name(&self, binary: &Binary, all: bool) -> LeadName {
+    /// [`Detail::All`], it names every range and section.
+    pub(in crate::commands) fn lead_name(&self, binary: &Binary, detail: Detail) -> LeadName {
         let names: Vec<&str> = (self.items.iter())
             .map(|found| found.lead_name.as_str())
             .collect();
         if let Some(ranges) = self.ranges_alone() {
-            return in_ranges(binary, ranges, &names, all);
+            return in_ranges(binary, ranges, &names, detail);
         }
         if !self.patterns.is_empty() || self.has_range_of_code_only(binary) {
-            return self.by_parts(binary, all);
+            return self.by_parts(binary, detail);
         }
         match &names[..] {
             [one] => LeadName::name(one.to_string()),
@@ -294,7 +294,7 @@ impl Set {
     /// since `retained` left them out, aren't named. With more than three
     /// parts, or patterns, it counts the items, "these 6 items", a
     /// pattern's by what it matched, or names the one.
-    fn by_parts(&self, binary: &Binary, all: bool) -> LeadName {
+    fn by_parts(&self, binary: &Binary, detail: Detail) -> LeadName {
         // The items that the parts name: those in the set, and every item
         // that the patterns matched, which they count even when `retained`
         // leaves it out.
@@ -320,7 +320,7 @@ impl Set {
                         .map(|item| item.name.as_str())
                         .collect();
                     if !names.is_empty() {
-                        in_ranges(binary, ranges, &names, all)
+                        in_ranges(binary, ranges, &names, detail)
                     } else if (binary.items.iter()).any(|item| item.is_in(ranges)) {
                         // `retained` left out every item in them.
                         continue;
@@ -328,7 +328,7 @@ impl Set {
                         // Code only, as in a chip's ROM, which `callers`
                         // takes: no item names it, so its addresses do, as
                         // for ranges alone.
-                        LeadName::name(text::ranges_text(binary, ranges, all))
+                        LeadName::name(text::ranges_text(binary, ranges, detail))
                     }
                 }
                 Named::Patterns => match named_by_patterns(binary, &self.patterns) {
@@ -344,7 +344,7 @@ impl Set {
                     .map(|part| part.words.as_str())
                     .collect();
                 LeadName {
-                    words: text::names_text(&words, true),
+                    words: text::names_text(&words, Detail::All),
                     opening: first.opening,
                 }
             }
@@ -433,12 +433,12 @@ fn items_in(binary: &Binary, range: AddressRange) -> Vec<Found> {
 
 /// How the first line names the items called `names` in `ranges`, as
 /// `callers` names ranges: by the ranges, each with the sections in it by
-/// where they run, every one with `all`, as in "the 6 items in
+/// where they run, every one with [`Detail::All`], as in "the 6 items in
 /// 0x00000000..0x000000e0 (.itcm)". The one item of ranges keeps its name,
 /// with the ranges as a note, as an address given as SYMBOL does in "crc32
 /// (which holds 0x14)": "SysTick_Handler (the one item in
 /// 0x00000000..0x00000010)".
-fn in_ranges(binary: &Binary, ranges: &[AddressRange], names: &[&str], all: bool) -> LeadName {
+fn in_ranges(binary: &Binary, ranges: &[AddressRange], names: &[&str], detail: Detail) -> LeadName {
     match names {
         [one] => {
             let ranges: Vec<String> = ranges
@@ -448,11 +448,11 @@ fn in_ranges(binary: &Binary, ranges: &[AddressRange], names: &[&str], all: bool
             let ranges: Vec<&str> = ranges.iter().map(String::as_str).collect();
             LeadName::name(format!(
                 "{one} (the one item in {})",
-                text::names_text(&ranges, all)
+                text::names_text(&ranges, detail)
             ))
         }
         _ => {
-            let ranges = text::ranges_text(binary, ranges, all);
+            let ranges = text::ranges_text(binary, ranges, detail);
             LeadName::count(format!("the {} items in {ranges}", names.len()))
         }
     }
@@ -507,7 +507,7 @@ mod tests {
         let binary = sample();
         let lead = |picks: Vec<Pick>| {
             Set::new(&binary, picks)
-                .lead_name(&binary, false)
+                .lead_name(&binary, Detail::Brief)
                 .to_string()
         };
         assert_eq!(lead(vec![symbol(&binary, "crc32")]), "crc32");
@@ -544,7 +544,7 @@ mod tests {
         let binary = sample();
         let lead = |picks: Vec<Pick>| {
             Set::new(&binary, picks)
-                .lead_name(&binary, false)
+                .lead_name(&binary, Detail::Brief)
                 .to_string()
         };
         assert_eq!(
@@ -659,7 +659,7 @@ mod tests {
         let binary = sample();
         let at_start = |picks: Vec<Pick>| {
             Set::new(&binary, picks)
-                .lead_name(&binary, false)
+                .lead_name(&binary, Detail::Brief)
                 .at_start()
         };
         assert_eq!(
@@ -692,7 +692,7 @@ mod tests {
             &binary,
             vec![symbol(&binary, "these"), symbol(&binary, "the")],
         )
-        .lead_name(&binary, false);
+        .lead_name(&binary, Detail::Brief);
         assert_eq!(lead.at_start(), "these and the");
         assert_eq!(lead.to_string(), "these and the");
     }

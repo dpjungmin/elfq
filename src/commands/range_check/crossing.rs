@@ -21,6 +21,7 @@ use super::rows::{
 use super::{Direction, PickedJson, RangeCheck};
 use crate::binary::{AddressRange, Binary};
 use crate::cli::Format;
+use crate::commands::text::Detail;
 use crate::commands::{json, text};
 use crate::graph::{Boundary, Crossing, Graph, ItemsInRanges, Node, Unfollowed, Unresolved};
 
@@ -105,7 +106,10 @@ fn far_side_text(binary: &Binary, far_side: &[AddressRange], it: &str, all: bool
     if far_side.is_empty() {
         format!("outside {it}")
     } else {
-        format!("in {}", text::ranges_text(binary, far_side, all))
+        format!(
+            "in {}",
+            text::ranges_text(binary, far_side, Detail::from_flag(all))
+        )
     }
 }
 
@@ -232,7 +236,7 @@ impl<'a> Leaving<'a> {
                 format!(
                     "{subject_at_start} {} {unknown} that elfq can't follow, which {go} to {}:",
                     verb("makes", "make"),
-                    text::ranges_text(binary, check.far_side, self.all)
+                    text::ranges_text(binary, check.far_side, Detail::from_flag(self.all))
                 )
             }
             (false, false) => format!(
@@ -263,7 +267,11 @@ impl<'a> Leaving<'a> {
         }
         let mut notes = check.inside.pattern_notes(binary, self.all);
         if !self.unreadable.is_empty() {
-            notes.push(text::unreadable_text(binary, &self.unreadable, self.all));
+            notes.push(text::unreadable_text(
+                binary,
+                &self.unreadable,
+                Detail::from_flag(self.all),
+            ));
         }
         let under = if listed {
             NotesUnder::Table
@@ -483,11 +491,15 @@ impl<'a> Entering<'a> {
                 .collect();
             notes.push(format!(
                 "Calls through a pointer to {} aren't listed, since elfq can't see them.",
-                text::names_text(&names, self.all)
+                text::names_text(&names, Detail::from_flag(self.all))
             ));
         }
         if !self.unreadable.is_empty() {
-            notes.push(text::unreadable_text(binary, &self.unreadable, self.all));
+            notes.push(text::unreadable_text(
+                binary,
+                &self.unreadable,
+                Detail::from_flag(self.all),
+            ));
         }
         let under = if listed {
             NotesUnder::Table

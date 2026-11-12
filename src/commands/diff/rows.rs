@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use super::changes::{Change, Items, PartnerStatus, Status};
 use super::pairing;
 use crate::binary::ItemKind;
-use crate::commands::text::shown;
+use crate::commands::text::{Detail, shown};
 use crate::graph::Node;
 
 impl<'a> Items<'a> {
@@ -161,7 +161,7 @@ impl<'a> Items<'a> {
     pub(super) fn change_rows(&self, heads: &[usize], all: bool) -> Vec<ChangeRow> {
         let rows = self.rows_by_head(heads, all);
         let rows = if all { rows } else { self.fold(rows) };
-        let ranked = self.rank(rows, shown(all));
+        let ranked = self.rank(rows, shown(Detail::from_flag(all)));
         let shown_rows = rows_shown(&ranked, all);
         by_block(ranked, shown_rows)
     }
@@ -362,7 +362,7 @@ fn rows_shown(ranked: &[Ranked], all: bool) -> Vec<bool> {
             shown_rows[position] = true;
         }
     }
-    let mut room = shown(all).saturating_sub(firsts.len());
+    let mut room = shown(Detail::from_flag(all)).saturating_sub(firsts.len());
     for is_shown in &mut shown_rows {
         if room == 0 {
             break;

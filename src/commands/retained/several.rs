@@ -29,7 +29,7 @@ use super::{Symbols, left_out_note, would_save};
 use crate::cli::Format;
 use crate::commands::retained_tree::RetainedTree;
 use crate::commands::symbol::{Found, Set};
-use crate::commands::text::{self, Naming};
+use crate::commands::text::{self, Detail, Naming};
 use crate::commands::tree_answer::TreeAnswer;
 use crate::graph::Node;
 
@@ -87,8 +87,9 @@ impl Several<'_, '_, '_, '_> {
     /// it has no table.
     fn tree_answer(&self, all: bool, format: Format) -> TreeAnswer {
         let retained = self.retained;
-        let naming = Naming::of(all);
-        let range = (retained.range).map(|range| text::range_text(retained.binary, range, all));
+        let naming = Naming::of(Detail::from_flag(all));
+        let range = (retained.range)
+            .map(|range| text::range_text(retained.binary, range, Detail::from_flag(all)));
         let removal = &self.parts.removal;
         if removal.tops().is_empty() {
             let sentence = self.unreachable_answer(range.as_deref(), &naming);
@@ -99,7 +100,10 @@ impl Several<'_, '_, '_, '_> {
                 ..TreeAnswer::sentences(vec![sentence])
             };
         }
-        let subject = self.set.lead_name(retained.binary, all).to_string();
+        let subject = self
+            .set
+            .lead_name(retained.binary, Detail::from_flag(all))
+            .to_string();
         let saves = would_save(&subject, removal.retained(), range.as_deref());
         let notes = self.notes(&naming);
         let shown = self.shown(all);
@@ -159,7 +163,7 @@ impl Several<'_, '_, '_, '_> {
             .filter(|&index| retained.has_bytes_in_range(index))
             .chain(self.parts.under_tops.iter().copied())
             .collect();
-        retained.largest(tops, &items, text::shown(all))
+        retained.largest(tops, &items, text::shown(Detail::from_flag(all)))
     }
 
     /// The words that end the row of each top in `shown` that several
@@ -184,7 +188,10 @@ impl Several<'_, '_, '_, '_> {
                 let keepers: Vec<&str> = (keepers.iter())
                     .map(|keeper| short_names[keeper].as_str())
                     .collect();
-                let words = format!("kept by {} together", text::keepers_text(&keepers, all));
+                let words = format!(
+                    "kept by {} together",
+                    text::keepers_text(&keepers, Detail::from_flag(all))
+                );
                 (index, words)
             })
             .collect()

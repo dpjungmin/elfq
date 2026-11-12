@@ -4,6 +4,7 @@
 use super::tree::{Tree, TreeRows};
 use super::{Step, Text, columns, reached_words};
 use crate::commands::flat_answer::{FlatAnswer, FlatRow};
+use crate::commands::text::Detail;
 use crate::commands::{range_check, text};
 use crate::graph::{Node, ReferenceKind, Unfollowed, Unresolved};
 
@@ -35,7 +36,8 @@ impl Text<'_, '_> {
         }
         answer.lead = vec![lead];
         if !reach.unreadable.is_empty() {
-            let unreadable = text::unreadable_text(reach.binary, &reach.unreadable, self.all);
+            let unreadable =
+                text::unreadable_text(reach.binary, &reach.unreadable, Detail::from_flag(self.all));
             answer.notes.push(unreadable);
         }
         answer
@@ -57,7 +59,7 @@ impl Text<'_, '_> {
         let name = self.lead_name;
         let others: Vec<Node> = reached.iter().map(|step| step.node).collect();
         let bytes = text::code_and_data(reach.bytes(counted.iter().copied()));
-        let ranges = text::ranges_text(binary, &reach.to, self.all);
+        let ranges = text::ranges_text(binary, &reach.to, Detail::from_flag(self.all));
         let mut lead = match (symbol_in_to, &others[..]) {
             (true, []) => {
                 format!("{name} takes {bytes} in {ranges}, and reaches nothing else there")

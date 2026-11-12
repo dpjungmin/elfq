@@ -12,6 +12,7 @@ use super::flat_answer::FlatAnswer;
 use super::kept::Kept;
 use super::range_check::{self, Direction, Inside, RangeCheck};
 use super::symbol::{self, Subject, Symbol};
+use super::text::Detail;
 use super::uses::{self, End, Row};
 use super::{Outcome, json, text};
 use crate::binary::{AddressRange, Binary, ItemKind};
@@ -181,7 +182,12 @@ impl<'g> Found<'g> {
                 format!("{name} is used by {callers}:")
             }
         };
-        let (columns, rows) = uses::table(binary, rows, End::Callers, text::shown(all));
+        let (columns, rows) = uses::table(
+            binary,
+            rows,
+            End::Callers,
+            text::shown(Detail::from_flag(all)),
+        );
         FlatAnswer {
             lead: vec![lead],
             memory: None,

@@ -9,6 +9,7 @@ use super::tree::{Tree, TreeRows};
 use super::{Step, Text, columns, reached_words};
 use crate::binary::{Binary, ItemKind, total};
 use crate::commands::flat_answer::{FlatAnswer, FlatRow};
+use crate::commands::text::Detail;
 use crate::commands::{range_check, text};
 use crate::graph::{Node, Unfollowed, Unresolved};
 use crate::render::{Align, Table};
@@ -73,7 +74,11 @@ impl Text<'_, '_> {
             notes.push(self.pointer_note(&pointers));
         }
         if !reach.unreadable.is_empty() {
-            notes.push(text::unreadable_text(binary, &reach.unreadable, self.all));
+            notes.push(text::unreadable_text(
+                binary,
+                &reach.unreadable,
+                Detail::from_flag(self.all),
+            ));
         }
         let (rows, tree) = match self.tree {
             true => (Vec::new(), Some(Tree::new(self, TreeRows::Largest).top())),
@@ -277,7 +282,7 @@ impl Text<'_, '_> {
     pub(super) fn largest(&self, reached: &[Step]) -> HashSet<Node> {
         let binary = self.reach.binary;
         let mut nodes: Vec<Node> = reached.iter().map(|step| step.node).collect();
-        let shown = text::shown(self.all);
+        let shown = text::shown(Detail::from_flag(self.all));
         if shown < nodes.len() {
             // No two steps are of one node, so no two share a key, and the
             // nodes that come before `shown` are those that a sort would
@@ -317,7 +322,10 @@ impl Text<'_, '_> {
                 let sites: Vec<u64> = pointers.iter().map(|u| u.site).collect();
                 (
                     one,
-                    format!(", at {}", text::addresses_text(&sites, self.all)),
+                    format!(
+                        ", at {}",
+                        text::addresses_text(&sites, Detail::from_flag(self.all))
+                    ),
                 )
             }
             _ => (several, String::new()),
@@ -330,7 +338,7 @@ impl Text<'_, '_> {
         format!(
             "{} also {verb} through {through}{at}, which elfq can't follow, so {who} may reach \
              more.",
-            text::names_text(&names, self.all)
+            text::names_text(&names, Detail::from_flag(self.all))
         )
     }
 }
@@ -360,7 +368,12 @@ fn nothing_reached_lines(
         None => vec![format!("{name} doesn't call or use anything.")],
     };
     let listed = self_use.is_some();
-    lines.extend(text::unresolved_lines(name, unresolved, listed, all));
+    lines.extend(text::unresolved_lines(
+        name,
+        unresolved,
+        listed,
+        Detail::from_flag(all),
+    ));
     lines
 }
 
@@ -480,7 +493,7 @@ mod tests {
         };
         let larger: Vec<usize> = (0..binary.items.len())
             .filter(|&index| binary.items[index].size > 19)
-            .take(text::shown(false) - 1)
+            .take(text::shown(Detail::Brief) - 1)
             .collect();
         for tied in [[first, second], [second, first]] {
             for steps in [[&tied[..], &larger].concat(), [&larger, &tied[..]].concat()] {

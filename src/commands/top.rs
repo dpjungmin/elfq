@@ -15,6 +15,7 @@ use serde::Serialize;
 use super::checks::{check_has_bytes, reference_graph};
 use super::kept::Kept;
 use super::retained_tree::{KeptItem, RetainedTree};
+use super::text::Detail;
 use super::tree_answer::TreeAnswer;
 use super::{Outcome, json, text};
 use crate::binary::{AddressRange, Binary, FileKind, total};
@@ -99,13 +100,13 @@ fn answer(retained: &RetainedTree, all: bool, format: Format) -> TreeAnswer {
     let lead = match retained.range {
         Some(range) => format!(
             "{total} in {}, by what keeps them:",
-            text::range_text(binary, range, all)
+            text::range_text(binary, range, Detail::from_flag(all))
         ),
         None => format!("{total}, by what keeps them:"),
     };
     TreeAnswer {
         lead: vec![lead],
-        table: Some(retained.largest_table(text::shown(all), format)),
+        table: Some(retained.largest_table(text::shown(Detail::from_flag(all)), format)),
         notes: unreachable,
     }
 }
@@ -156,7 +157,7 @@ fn unreachable_text(retained: &RetainedTree, all: bool) -> Option<String> {
         "Nothing reaches {}, {} in all: {}.\nThe program never uses them, or elfq can't see how.",
         text::count_text(binary, &nodes),
         text::bytes_text(bytes),
-        text::names_text(&names, all)
+        text::names_text(&names, Detail::from_flag(all))
     ))
 }
 

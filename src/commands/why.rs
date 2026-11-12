@@ -18,7 +18,7 @@ use serde::Serialize;
 use super::checks::check_code_is_readable;
 use super::kept::Kept;
 use super::symbol::{Names, Symbol};
-use super::text::Naming;
+use super::text::{Detail, Naming};
 #[cfg(feature = "tui")]
 use super::tree_answer::TabAnswer;
 use super::tree_answer::{self, TreeAnswer, TreeTable};
@@ -344,7 +344,7 @@ impl<'u, 'a> Users<'u, 'a> {
                 rows: chains.rows(shape),
                 shape,
             }),
-            notes: self.notes(&Naming::of(all)),
+            notes: self.notes(&Naming::of(Detail::from_flag(all))),
         }
     }
 
@@ -425,7 +425,7 @@ fn unreachable_lines(name: &str, users: &[&str], all: bool) -> Vec<String> {
         let (verb, pronoun) = verb_and_pronoun(users);
         lines.push(format!(
             "{} {verb} it, but nothing reaches {pronoun} either.",
-            text::names_text(users, all),
+            text::names_text(users, Detail::from_flag(all)),
         ));
     }
     lines

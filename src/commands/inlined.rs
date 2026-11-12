@@ -17,6 +17,7 @@ use serde::Serialize;
 use super::checks::item_in_file;
 use super::flat_answer::{FlatAnswer, FlatRow};
 use super::kept::Kept;
+use super::text::Detail;
 use super::tree_answer::{self, TreeAnswer, TreeTable};
 use super::{Outcome, json, text};
 use crate::binary::{Binary, ItemKind, names, total};
@@ -156,7 +157,10 @@ fn list_answer(totals: &[Total], inlined: u64, code: u64, all: bool) -> FlatAnsw
         text::plural(totals.len(), "function", "functions"),
         text::bytes_text(code)
     );
-    let (shown, hidden) = totals.split_at(text::shown_count(totals.len(), text::shown(all)));
+    let (shown, hidden) = totals.split_at(text::shown_count(
+        totals.len(),
+        text::shown(Detail::from_flag(all)),
+    ));
     let mut rows: Vec<FlatRow> = (shown.iter())
         .map(|total| {
             let cells = vec![total.bytes.to_string(), total.copies.to_string()];
@@ -250,7 +254,7 @@ fn tree_answer(
             of_function("code")
         )
     };
-    let shown = groups.largest(text::shown(all));
+    let shown = groups.largest(text::shown(Detail::from_flag(all)));
     let short_names = groups.short_names(name);
     let shape = match format {
         Format::Tree => TreeShape::Drawn,
@@ -274,7 +278,7 @@ fn tree_answer(
 pub(super) fn shows(copies: &[InlinedCopy], into: usize, name: &str) -> bool {
     let groups = Groups::new(copies, into);
     groups
-        .largest(text::shown(false))
+        .largest(text::shown(Detail::Brief))
         .into_iter()
         .any(|group| groups.list[group].name == name)
 }
@@ -662,7 +666,7 @@ mod tests {
     fn the_smallest_of_many_groups_needs_all() {
         // Two more than `inlined` shows: one more would be shown in place
         // of "1 more".
-        let names: Vec<String> = (0..text::shown(false) + 2)
+        let names: Vec<String> = (0..text::shown(Detail::Brief) + 2)
             .map(|n| format!("f{n}"))
             .collect();
         let copies: Vec<InlinedCopy> = names

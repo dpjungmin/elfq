@@ -17,6 +17,7 @@ use crate::binary::{
 use crate::commands::flat_answer::FlatTab;
 use crate::commands::flat_answer::{FlatAnswer, FlatRow};
 use crate::commands::symbol::Names;
+use crate::commands::text::Detail;
 use crate::commands::{json, text};
 use crate::graph::{Graph, Node, Reached, RootKind, listed_in};
 use crate::render::Align;
@@ -326,7 +327,8 @@ impl Starts<'_> {
         let mut others: Vec<usize> = (0..self.starts.len())
             .filter(|&start| is_other(&self.starts[start]))
             .collect();
-        let room = text::shown(all).saturating_sub(self.starts.len() - others.len());
+        let room =
+            text::shown(Detail::from_flag(all)).saturating_sub(self.starts.len() - others.len());
         others.sort_by_key(|&start| Reverse(self.starts[start].reached.bytes.total()));
         let left_out: HashSet<usize> = others[text::shown_count(others.len(), room)..]
             .iter()
@@ -379,7 +381,7 @@ impl Starts<'_> {
         format!(
             "{} {what}, but elfq doesn't know where {it} {ends}, so it can't count what {it} \
              {reaches}.",
-            text::names_text(&names, all)
+            text::names_text(&names, Detail::from_flag(all))
         )
     }
 

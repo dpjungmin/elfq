@@ -33,7 +33,7 @@ use std::path::Path;
 
 use anyhow::anyhow;
 
-use crate::commands::text;
+use crate::commands::text::{self, Detail};
 
 /// The arguments given in place of SYMBOL that are files in the current
 /// folder (see [`is_file_here`]), which the shell may have put there in
@@ -84,7 +84,7 @@ impl<'a> FilesHere<'a> {
         Some(format!(
             "{} {are} here: the shell may have put {them} in place of a pattern. Put a pattern \
              in single quotes{example}, so that the shell passes it as typed.",
-            text::names_text(&quoted, false)
+            text::names_text(&quoted, Detail::Brief)
         ))
     }
 

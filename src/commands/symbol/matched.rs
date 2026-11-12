@@ -251,6 +251,7 @@ fn aliases_note(binary: &Binary, patterns: &[PatternMatches], naming: &Naming) -
 mod tests {
     use super::*;
     use crate::commands::symbol::{Names, fixtures};
+    use crate::commands::text::Detail;
 
     /// What each of `patterns` matches in `binary`, in the order given.
     fn matched(binary: &Binary, patterns: &[&str]) -> Vec<PatternMatches> {
@@ -321,7 +322,11 @@ mod tests {
             "uart::read",
         ]);
         let notes = |patterns: &[&str]| {
-            pattern_notes(&binary, &matched(&binary, patterns), &Naming::of(false))
+            pattern_notes(
+                &binary,
+                &matched(&binary, patterns),
+                &Naming::of(Detail::Brief),
+            )
         };
         // The paths they are under, those under the most first.
         assert_eq!(
@@ -344,7 +349,11 @@ mod tests {
         );
         let binary = fixtures::functions(&["uart::init", "app::uart::putc"]);
         assert_eq!(
-            pattern_notes(&binary, &matched(&binary, &["uart::*"]), &Naming::of(false)),
+            pattern_notes(
+                &binary,
+                &matched(&binary, &["uart::*"]),
+                &Naming::of(Detail::Brief)
+            ),
             [
                 "1 of the 2 matches only by the end of a longer path, under app; '::uart::*' \
                  leaves it out."
@@ -377,31 +386,31 @@ mod tests {
         for (item, aliases) in binary.items.iter_mut().zip(aliases) {
             item.aliases = aliases.iter().map(|alias| alias.to_string()).collect();
         }
-        let notes = |patterns: &[&str], all| {
-            pattern_notes(&binary, &matched(&binary, patterns), &Naming::of(all))
+        let notes = |patterns: &[&str], detail| {
+            pattern_notes(&binary, &matched(&binary, patterns), &Naming::of(detail))
         };
         assert_eq!(
-            notes(&["__aeabi_d*"], false),
+            notes(&["__aeabi_d*"], Detail::Brief),
             ["__adddf3 matches only through another of its names, __aeabi_dadd."]
         );
         // Up to 3 of an item's names, or 4 when that is all, in the order of
-        // its aliases; or with `all`, every one.
+        // its aliases; or with `Detail::All`, every one.
         assert_eq!(
-            notes(&["CAN1_*"], false),
+            notes(&["CAN1_*"], Detail::Brief),
             [
                 "Default_Handler matches only through other names: CAN1_RX0_IRQHandler, \
                  CAN1_RX1_IRQHandler, CAN1_SCE_IRQHandler and CAN1_TX_IRQHandler."
             ]
         );
         assert_eq!(
-            notes(&["CAN*"], false),
+            notes(&["CAN*"], Detail::Brief),
             [
                 "Default_Handler matches only through other names: CAN1_RX0_IRQHandler, \
                  CAN1_RX1_IRQHandler, CAN1_SCE_IRQHandler and 2 more."
             ]
         );
         assert_eq!(
-            notes(&["CAN*"], true),
+            notes(&["CAN*"], Detail::All),
             [
                 "Default_Handler matches only through other names: CAN1_RX0_IRQHandler, \
                  CAN1_RX1_IRQHandler, CAN1_SCE_IRQHandler, CAN1_TX_IRQHandler and \
@@ -410,13 +419,13 @@ mod tests {
         );
         // Several items, each with the names that matched.
         assert_eq!(
-            notes(&["__aeabi_d*", "*df2"], false),
+            notes(&["__aeabi_d*", "*df2"], Detail::Brief),
             [
                 "These match only through other names: __adddf3 (as __aeabi_dadd) and \
                  __aeabi_f2d (as __extendsfdf2)."
             ]
         );
         // An item that a pattern matched by its own name needs no note.
-        assert!(notes(&["__aeabi_d*", "__add*"], false).is_empty());
+        assert!(notes(&["__aeabi_d*", "__add*"], Detail::Brief).is_empty());
     }
 }

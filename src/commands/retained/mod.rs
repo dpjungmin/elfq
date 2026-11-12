@@ -41,7 +41,7 @@ use super::retained_tree::RetainedTree;
 #[cfg(feature = "tui")]
 use super::symbol::Pick;
 use super::symbol::{self, Names, Set};
-use super::text::Naming;
+use super::text::{Detail, Naming};
 #[cfg(feature = "tui")]
 use super::tree_answer::TabAnswer;
 use super::tree_answer::TreeAnswer;
@@ -77,7 +77,7 @@ pub(super) fn run(
         range,
         names.into_inner(),
     ));
-    let naming = Naming::of(all);
+    let naming = Naming::of(Detail::from_flag(all));
     let set = &symbols.set;
     let mut answer = match (format, set.items()) {
         (Format::Json, found) => {
@@ -88,7 +88,7 @@ pub(super) fn run(
         (Format::Text | Format::Tree, [one]) => {
             // The one item of patterns or ranges given alone is named with
             // them.
-            let lead_name = set.lead_name(binary, all).to_string();
+            let lead_name = set.lead_name(binary, Detail::from_flag(all)).to_string();
             let symbol = SymbolInTree {
                 retained: &retained,
                 index: one.index,
@@ -135,7 +135,7 @@ fn refuse_shared_library(binary: &Binary, set: &Set, all: bool) -> Result<()> {
             [_] => "leads",
             _ => "lead",
         };
-        let what = set.lead_name(binary, all);
+        let what = set.lead_name(binary, Detail::from_flag(all));
         bail!("elfq can't yet tell what only {what} {lead} to in a shared library");
     }
     Ok(())
@@ -183,7 +183,7 @@ pub(super) fn answers(symbol: &SymbolInTree, shorten: &dyn Fn(&str) -> String) -
     let alone = Alone::new(*symbol);
     let (every, largest) = (alone.shown(true), alone.shown(false));
     let answer = alone.tree_answer(&every, true, Format::Text);
-    let brief = alone.parts.notes(&Naming::of(false));
+    let brief = alone.parts.notes(&Naming::of(Detail::Brief));
     // Without --all, the tree leaves out items, or the notes names.
     let needs_all = largest.len() < every.len() || brief != answer.notes;
     TabAnswer {
@@ -243,7 +243,11 @@ impl<'t, 'g, 'a> Alone<'t, 'g, 'a> {
     /// SYMBOL, the only top, shows whenever the tree has rows.
     fn shown(&self, all: bool) -> HashSet<usize> {
         let tops = self.parts.removal.tops();
-        (self.symbol.retained).largest(tops, &self.parts.under_tops, text::shown(all))
+        (self.symbol.retained).largest(
+            tops,
+            &self.parts.under_tops,
+            text::shown(Detail::from_flag(all)),
+        )
     }
 
     /// The answer about removing SYMBOL alone, with the rows of the
@@ -257,9 +261,10 @@ impl<'t, 'g, 'a> Alone<'t, 'g, 'a> {
         let index = symbol.index;
         let own = retained.own(index);
         let own_bytes = text::bytes_text(own);
-        let range = (retained.range).map(|range| text::range_text(binary, range, all));
+        let range =
+            (retained.range).map(|range| text::range_text(binary, range, Detail::from_flag(all)));
         let removal = &self.parts.removal;
-        let notes = self.parts.notes(&Naming::of(all));
+        let notes = self.parts.notes(&Naming::of(Detail::from_flag(all)));
         if self.parts.under_tops.is_empty() {
             // How many of them are in its load image, if any are.
             let load_image = match retained.load_image(index) {

@@ -24,8 +24,8 @@ use crate::commands::json::address;
 use crate::commands::range_check::{self, Direction};
 use crate::commands::symbol::Names;
 use crate::commands::text::{
-    self as house, cannot_read_code, named, names_text, plural, range_argument, range_start,
-    sections_text, shell_quote, shown_count, signed, size_text,
+    self as house, Detail, cannot_read_code, named, names_text, plural, range_argument,
+    range_start, sections_text, shell_quote, shown_count, signed, size_text,
 };
 use crate::graph::Node;
 use crate::render::{Align, Table};
@@ -250,7 +250,10 @@ fn sections_line(answer: &Answer, all: bool) -> String {
         .map(|differs| section_label(differs.name, differs.only_load_address))
         .collect();
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
-    format!("Sections that differ: {}.", names_text(&names, all))
+    format!(
+        "Sections that differ: {}.",
+        names_text(&names, Detail::from_flag(all))
+    )
 }
 
 /// Why the rows don't say what keeps items, if they don't: elfq can't
@@ -350,7 +353,7 @@ impl<'c, 'a> Rows<'c, 'a> {
                         format!(
                             "all {} items of {}",
                             moved.len(),
-                            names_text(&sections, false)
+                            names_text(&sections, Detail::Brief)
                         ),
                     )
                 }
@@ -507,10 +510,14 @@ impl<'c, 'a> Rows<'c, 'a> {
                     let names: Vec<String> =
                         into.iter().map(|&index| self.new.name(index)).collect();
                     let names: Vec<&str> = names.iter().map(String::as_str).collect();
-                    mark += &format!(", inlined into {}", names_text(&names, self.all));
+                    mark += &format!(
+                        ", inlined into {}",
+                        names_text(&names, Detail::from_flag(self.all))
+                    );
                     // "inlined into process_frame, kept by process_frame"
                     // would say it twice.
-                    let named = &names[..shown_count(names.len(), named(self.all))];
+                    let named =
+                        &names[..shown_count(names.len(), named(Detail::from_flag(self.all)))];
                     let keeper = self.old.keeper(index);
                     if keeper.is_some_and(|keeper| named.contains(&self.old.name(keeper).as_str()))
                     {

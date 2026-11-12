@@ -5,7 +5,7 @@
 
 use anyhow::{Result, bail};
 
-use super::text;
+use super::text::{self, Detail};
 use crate::binary::{AddressRange, Binary, Item, Source, memory_blocks, total};
 use crate::graph::{Graph, Node};
 
@@ -56,7 +56,7 @@ pub(super) fn ends_unknown(names: &[&str]) -> String {
         // An error names every one, however many there are.
         _ => format!(
             "elfq doesn't know where {} end, so it can't read their code",
-            text::names_text(names, true)
+            text::names_text(names, Detail::All)
         ),
     }
 }
@@ -108,7 +108,7 @@ pub(super) fn empty_place(binary: &Binary, range: Option<AddressRange>) -> Resul
                 _ => bail!("the file has nothing in {range}; the overview lists its ranges"),
             }
         }
-        Some(range) => text::range_text(binary, range, false),
+        Some(range) => text::range_text(binary, range, Detail::Brief),
         None => "the file".to_string(),
     };
     if !found_functions(binary) {

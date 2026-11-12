@@ -14,7 +14,7 @@ use super::steps::{Does, Step, Way, number};
 use super::{Answer, Ending, Facts, Firmware};
 use crate::arch::startup::{End, Through, loop_head};
 use crate::binary::{ItemKind, Section, made_names};
-use crate::commands::text::{self as house, names_text, plural, shell_quote};
+use crate::commands::text::{self as house, Detail, names_text, plural, shell_quote};
 use crate::render::{Align, Table};
 
 pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
@@ -39,7 +39,7 @@ pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
         ]);
         let count = answer.steps.len();
         // The house cap, with the last row summing up the rest.
-        let room = house::shown(answer.all);
+        let room = house::shown(Detail::from_flag(answer.all));
         let shown = if count <= room { count } else { room - 1 };
         for (index, step) in answer.steps[..shown].iter().enumerate() {
             table.row(row(answer, index, step));
@@ -173,7 +173,7 @@ fn set_up_parts(answer: &Answer, events: Range<usize>) -> Vec<String> {
             .map(|section| ram.name(section))
             .collect();
         if !names.is_empty() {
-            parts.push(format!("{verb} {}", names_text(&names, true)));
+            parts.push(format!("{verb} {}", names_text(&names, Detail::All)));
         }
     }
     parts
@@ -333,7 +333,7 @@ fn runs_before_copy_text(answer: &Answer, run: &EarlyRun) -> String {
                 .map(|early| firmware.name(early.function))
                 .collect();
             let names: Vec<&str> = names.iter().map(String::as_str).collect();
-            names_text(&names, answer.all)
+            names_text(&names, Detail::from_flag(answer.all))
         }
     };
     let direct = run.functions.iter().all(|early| {
@@ -420,7 +420,10 @@ pub(super) fn note_text(answer: &Answer, note: &Note) -> String {
             let so = if rest.is_empty() {
                 String::new()
             } else {
-                format!(", so {} may not be set up", names_text(&rest, answer.all))
+                format!(
+                    ", so {} may not be set up",
+                    names_text(&rest, Detail::from_flag(answer.all))
+                )
             };
             format!("{} may never run{so}.", steps_text(later, true))
         }
@@ -431,14 +434,18 @@ pub(super) fn note_text(answer: &Answer, note: &Note) -> String {
                     if held.is_empty() {
                         ram.name(section).to_string()
                     } else {
-                        format!("{} ({})", ram.name(section), names_text(&held, answer.all))
+                        format!(
+                            "{} ({})",
+                            ram.name(section),
+                            names_text(&held, Detail::from_flag(answer.all))
+                        )
                     }
                 })
                 .collect();
             let parts: Vec<&str> = parts.iter().map(String::as_str).collect();
             format!(
                 "Not zeroed, which may be intended: {}.",
-                names_text(&parts, true)
+                names_text(&parts, Detail::All)
             )
         }
         Note::PartlyZeroed {
@@ -514,7 +521,7 @@ fn set_up_what(answer: &Answer, step: &Step) -> String {
     let names: Vec<&str> = (step.covers().iter())
         .map(|cover| answer.facts.ram.name(cover.section))
         .collect();
-    let names = names_text(&names, answer.all);
+    let names = names_text(&names, Detail::from_flag(answer.all));
     let function = function_name(firmware, step);
     let inside = firmware.name(step.inside);
     let what = match step.way {
@@ -704,7 +711,7 @@ fn steps_text(indexes: &[usize], capital: bool) -> String {
         return format!("{} {many} from {first} to {last}", numbers.len());
     }
     let parts: Vec<&str> = parts.iter().map(String::as_str).collect();
-    format!("{word} {}", names_text(&parts, true))
+    format!("{word} {}", names_text(&parts, Detail::All))
 }
 
 /// The steps at `indexes` in `steps`, of code elfq can't follow, with what
@@ -718,7 +725,7 @@ fn unread_text(steps: &[Step], indexes: &[usize]) -> String {
     format!(
         "{} ({})",
         steps_text(indexes, false),
-        names_text(&kinds, true)
+        names_text(&kinds, Detail::All)
     )
 }
 
@@ -886,7 +893,7 @@ fn does_text(ram: &RamSections, sections: &[usize], verbs: [&str; 2], joiner: &s
             .map(|section| ram.name(section))
             .collect();
         if !names.is_empty() {
-            parts.push(format!("{verb} {}", names_text(&names, true)));
+            parts.push(format!("{verb} {}", names_text(&names, Detail::All)));
         }
     }
     parts.join(joiner)

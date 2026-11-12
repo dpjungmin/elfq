@@ -38,7 +38,7 @@ use anyhow::Result;
 use serde::Serialize;
 
 use super::symbol::{self, LeadName, Set};
-use super::text::{self, Naming};
+use super::text::{self, Detail, Naming};
 use super::{Outcome, json};
 use crate::binary::{AddressRange, Binary};
 use crate::cli::Format;
@@ -146,9 +146,11 @@ impl Inside {
     /// it, every one with `all`.
     fn lead_name(&self, binary: &Binary, all: bool) -> LeadName {
         match self {
-            Inside::Ranges(ranges) => LeadName::name(text::ranges_text(binary, ranges, all)),
+            Inside::Ranges(ranges) => {
+                LeadName::name(text::ranges_text(binary, ranges, Detail::from_flag(all)))
+            }
             Inside::Symbol { lead_name, .. } => LeadName::name(lead_name.clone()),
-            Inside::Set(set) => set.lead_name(binary, all),
+            Inside::Set(set) => set.lead_name(binary, Detail::from_flag(all)),
         }
     }
 
@@ -176,7 +178,9 @@ impl Inside {
     fn pattern_notes(&self, binary: &Binary, all: bool) -> Vec<String> {
         match self {
             Inside::Set(set) => match set.patterns() {
-                Some(patterns) => symbol::pattern_notes(binary, patterns, &Naming::of(all)),
+                Some(patterns) => {
+                    symbol::pattern_notes(binary, patterns, &Naming::of(Detail::from_flag(all)))
+                }
                 None => Vec::new(),
             },
             Inside::Ranges(_) | Inside::Symbol { .. } => Vec::new(),

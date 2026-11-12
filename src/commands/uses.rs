@@ -107,7 +107,7 @@ pub(super) fn table(
 /// `--all` to list every one.
 #[cfg(feature = "tui")]
 pub(super) fn table_needs_all(nodes: usize) -> bool {
-    left_out(nodes, text::shown(false)) > 0
+    left_out(nodes, text::shown(text::Detail::Brief)) > 0
 }
 
 /// How many of `nodes` nodes a table that lists `count` leaves out (see
@@ -201,8 +201,9 @@ mod tests {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/bin/c-x86_64.elf");
         let binary = Binary::load(&path).unwrap();
         for count in 29..=33 {
-            // The cells of the table of `count` nodes, with `all` or without.
-            let cells = |all| {
+            // The cells of the table of `count` nodes: brief, or with
+            // every row.
+            let cells = |detail| {
                 let rows = (0..count)
                     .map(|index| Row {
                         node: Node::Item(index),
@@ -210,12 +211,12 @@ mod tests {
                         sites: vec![0],
                     })
                     .collect();
-                let (_, rows) = table(&binary, rows, End::Callers, text::shown(all));
+                let (_, rows) = table(&binary, rows, End::Callers, text::shown(detail));
                 rows.iter().map(FlatRow::all_cells).collect::<Vec<_>>()
             };
             assert_eq!(
                 table_needs_all(count),
-                cells(true) != cells(false),
+                cells(text::Detail::All) != cells(text::Detail::Brief),
                 "{count} nodes"
             );
         }
