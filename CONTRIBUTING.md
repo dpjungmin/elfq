@@ -613,7 +613,7 @@ worked out. Those are names to fix, not meanings to copy.
 | `library/symbol.rs` | Looking up SYMBOL |
 | `library/inlined.rs` | Inlined copies, from DWARF |
 | `damaged.rs` | Damaged and unusual files, made by changing a sample's bytes |
-| `docs.rs` | The `$ elfq` examples in README.md, docs/design.md and docs/examples.md; that design.md names every JSON key; that the paths and module paths that CONTRIBUTING.md and design.md cite are there; and that `scripts/same-output.sh` runs every command |
+| `docs.rs` | The `$ elfq` examples in README.md, docs/design.md and docs/examples.md; that design.md names every JSON key; that the paths, module paths and type paths that CONTRIBUTING.md and design.md cite are there; and that `scripts/same-output.sh` runs every command |
 
 **Where a test goes.** A test of one command goes in that command's file
 in `commands/`, its text and its JSON together. A test that runs several
@@ -756,21 +756,33 @@ numbers and names, as docs/examples.md does, so when an example's output
 changes, check that the text around it still matches the new output.
 
 **Paths in the docs.** `the_paths_the_docs_cite_are_there`, in `docs.rs`,
-checks what CONTRIBUTING.md and docs/design.md cite outside their code
-blocks: each path in `src/`, `tests/`, `testdata/`, `scripts/` or `docs/`,
-each shorter path to a Rust file or a folder, such as `views/item.rs`,
-each link's target, and each module path, such as `symbol::find`: its
-modules must be there, and the name after them must be defined in the last
-one's file or imported there with `use`. When you move or rename a file,
-or a function cited with its module path, the test names every citation to
-change. A name cited alone or after its type, such as
-`check_code_is_readable` or `Symbol::lead_name`, isn't checked, and nor is
-a path with a placeholder, such as `src/arch/<name>.rs`, or one through a
-`target` folder: write a file to add, or one that is gone, that way or in
-a code block. Write a path into another crate from the crate's name, as
+checks what CONTRIBUTING.md and docs/design.md cite. Outside their code
+blocks, that is each path in `src/`, `tests/`, `testdata/`, `scripts/` or
+`docs/`, each shorter path to a Rust file or a folder, such as
+`views/item.rs`, each link's target, each module path, such as
+`symbol::find`: its modules must be there, and the name after them must be
+defined in the last one's file or imported there with `use`; and each type
+path, such as `Symbol::lead_name`: the name after the type must be a
+function, constant, associated type, field or variant in the type's
+definition or in an `impl` of it. In a code block that holds no `$ elfq`
+line, as design.md's map of the layers, it is each module path that
+starts with a module of elfq's, and each type path. When you move or
+rename a file, or a function cited with its module path or its type, the
+test names every citation to change. A name cited alone, such as
+`check_code_is_readable`, isn't checked, nor is a type path whose type
+elfq doesn't define as a struct, enum or trait, such as gimli's
+`EndianSlice::read_slice` or a type alias's, nor a path with a
+placeholder, such as `src/arch/<name>.rs`, or one through a `target`
+folder: write a file to add, or one that is gone, that way or in a code
+block. Write a path into another crate from the crate's name, as
 `object::elf::SHT_NOBITS`, and add the crate to the test's
 `OTHER_FIRST_NAMES`, since a short `elf::` would be read as a path into
-elfq's own module of that name.
+elfq's own module of that name. In the same way, a type that elfq
+defines is read as elfq's, so write another crate's type of the same name
+from the crate's name, as `serde_json::Value::as_str`. The test doesn't
+find a method that a derive or a trait's default body gives a type, so
+cite it after its trait, as `Parser::try_parse_from`, which isn't
+checked.
 
 **Damaged files.** `damaged.rs` makes its files from a sample's bytes, so
 that the hangs and crashes they once caused stay fixed. It and the other

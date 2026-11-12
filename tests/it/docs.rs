@@ -1,8 +1,8 @@
 //! The docs, checked against elfq: each code block whose first line is
 //! `$ elfq ...` must show what elfq prints for it, given its arguments as a
 //! shell passes them, without their quotes; design.md's JSON section must
-//! name every key that elfq's JSON has; every path and module path that
-//! CONTRIBUTING.md and design.md cite must be there; and
+//! name every key that elfq's JSON has; every path, module path and type
+//! path that CONTRIBUTING.md and design.md cite must be there; and
 //! `scripts/same-output.sh`, to which CONTRIBUTING.md says to add each
 //! command, must run every command.
 
@@ -200,10 +200,9 @@ const ROOTS: [&str; 5] = ["src", "tests", "testdata", "scripts", "docs"];
 /// Browse's `src/commands/browse/app.rs` is also named `app`, so paths into
 /// it aren't checked; the docs name its items after its types, as
 /// `App::pending`.
-const OTHER_FIRST_NAMES: [&str; 6] = ["std", "core", "alloc", "object", "u32", "app"];
+const OTHER_FIRST_NAMES: [&str; 7] = ["std", "core", "alloc", "object", "serde_json", "u32", "app"];
 
-/// Every path and module path that the [`MAPS`] cite outside their code
-/// blocks is there.
+/// Every path, module path and type path that the [`MAPS`] cite is there.
 ///
 /// A path that starts with one of the [`ROOTS`] must be a file or folder
 /// there. A shorter path to a Rust file or a folder, such as
@@ -211,36 +210,57 @@ const OTHER_FIRST_NAMES: [&str; 6] = ["std", "core", "alloc", "object", "u32", "
 /// must be there, from the doc's own folder. A module path, such as
 /// `symbol::find`, must name modules of `src/` or `tests/it/` up to its
 /// last module, and the name after that must be defined in the module's
-/// file, as `fn find` is, or imported there with `use`.
+/// file, as `fn find` is, or imported there with `use`. A type path, such
+/// as `Binary::load`, must name a function, constant, associated type,
+/// field or variant in the type's definition, in `src/` or `tests/it/`, or
+/// in an `impl` of it. The module paths and type paths in a code block are
+/// checked too, as in design.md's map of the layers, unless it holds a
+/// `$ elfq` line, whose output names the samples' items; there a module
+/// path is checked only if it starts with a module of elfq's, since a Rust
+/// snippet may name another crate's.
+///
+/// A type that elfq defines is read as elfq's. So a doc cites another
+/// crate's type of the same name from the crate's name, as
+/// `serde_json::Value::as_str`, with the crate among the
+/// [`OTHER_FIRST_NAMES`], and a method that a derive or a trait's default
+/// body gives a type after its trait, as `Parser::try_parse_from`.
 ///
 /// Not checked: a path with a placeholder or a pattern in it, as
 /// `src/arch/<name>.rs`; a path through a `target` folder, which a build
-/// makes; a module path that starts with a type, as `Binary::load`, or
-/// with one of the [`OTHER_FIRST_NAMES`]; and a name cited alone, as
-/// `check_code_is_readable`. So a doc that names a file to add, or one that
-/// is gone, writes it with a placeholder or in a code block.
+/// makes; a path to a file or folder in a code block; a module path that
+/// starts with one of the [`OTHER_FIRST_NAMES`]; a type path whose type no
+/// file of `src/` or `tests/it/` defines as a struct, enum or trait, as
+/// another crate's `EndianSlice` or a type alias; and a name cited alone,
+/// as `check_code_is_readable`. So a doc that names a file to add, or one
+/// that is gone, writes it with a placeholder or in a code block.
 #[test]
 fn the_paths_the_docs_cite_are_there() {
     let tree = Tree::read();
     let mut checked = BTreeSet::new();
+    let mut type_paths = BTreeSet::new();
     let mut missing = BTreeSet::new();
     for doc in MAPS {
         let text = std::fs::read_to_string(crate_path(doc)).unwrap();
-        // Every other piece between fences is a code block.
-        for prose in text.split("```").step_by(2) {
-            for (cited, is_there) in tree.citations(doc, prose) {
-                if !is_there {
-                    missing.insert(format!("{doc} cites `{cited}`, which isn't there"));
-                }
-                checked.insert(format!("{doc}: {cited}"));
+        for (cited, is_there) in tree.citations(doc, &text) {
+            if !is_there {
+                missing.insert(format!("{doc} cites `{cited}`, which isn't there"));
             }
+            // A type path is the only citation that starts with a capital
+            // and holds `::`.
+            if cited.starts_with(|c: char| c.is_ascii_uppercase()) && cited.contains("::") {
+                type_paths.insert(format!("{doc}: {cited}"));
+            }
+            checked.insert(format!("{doc}: {cited}"));
         }
     }
     let missing: Vec<String> = missing.into_iter().collect();
     assert!(missing.is_empty(), "{}", missing.join("\n"));
-    // Well under the number the docs cite, so that a change in how they
-    // are written can't make this test check nothing.
-    assert!(checked.len() >= 100, "checked {} paths", checked.len());
+    // Well under the numbers the docs cite, so that a change in how they
+    // are written, or in how elfq defines its types, can't make this test
+    // check nothing.
+    assert!(checked.len() >= 100, "checked {} citations", checked.len());
+    let count = type_paths.len();
+    assert!(count >= 50, "checked {count} type paths");
 }
 
 /// The path of `path`, from the crate's root.
@@ -255,6 +275,9 @@ struct Tree {
     paths: BTreeSet<String>,
     /// The modules of `src/` and `tests/it/`, other than the crates' roots.
     modules: Vec<Module>,
+    /// The text of each Rust file of `src/` and `tests/it/`, the crates'
+    /// roots among them.
+    sources: Vec<String>,
 }
 
 /// A module of `src/` or `tests/it/`.
@@ -276,16 +299,39 @@ impl Tree {
             add_paths(&format!("{root}/"), &mut paths);
         }
         let modules = paths.iter().filter_map(|file| Module::of(file)).collect();
-        Tree { paths, modules }
+        let sources = (paths.iter())
+            .filter(|path| path.starts_with("src/") || path.starts_with("tests/it/"))
+            .filter(|path| path.ends_with(".rs"))
+            .map(|file| std::fs::read_to_string(crate_path(file)).unwrap())
+            .collect();
+        Tree {
+            paths,
+            modules,
+            sources,
+        }
+    }
+
+    /// What `text`, the text of `doc`, cites, each with whether it is
+    /// there: what its prose cites, and what its code blocks do.
+    fn citations<'a>(&self, doc: &str, text: &'a str) -> Vec<(&'a str, bool)> {
+        // Every other piece between fences is a code block.
+        let pieces = text.split("```").enumerate();
+        let citations = pieces.flat_map(|(at, piece)| match at % 2 {
+            0 => self.prose_citations(doc, piece),
+            _ => self.block_citations(piece),
+        });
+        citations.collect()
     }
 
     /// What `prose`, a part of `doc` outside its code blocks, cites, each
-    /// with whether it is there: the first word of each code span that is
-    /// a path or a module path, each link's target, and each other path
-    /// that starts with one of the [`ROOTS`].
-    fn citations<'a>(&self, doc: &str, prose: &'a str) -> Vec<(&'a str, bool)> {
+    /// with whether it is there: the first word of each code span that is a
+    /// path, a module path or a type path, each link's target, and each
+    /// other path that starts with one of the [`ROOTS`].
+    fn prose_citations<'a>(&self, doc: &str, prose: &'a str) -> Vec<(&'a str, bool)> {
         let spans = code_spans(prose).filter_map(|word| {
-            let is_there = self.has_path(word).or_else(|| self.has_module_path(word))?;
+            let is_there = (self.has_path(word))
+                .or_else(|| self.has_module_path(word))
+                .or_else(|| self.has_type_path(word))?;
             Some((word, is_there))
         });
         let links = link_targets(prose).map(|target| (target, link_is_there(doc, target)));
@@ -293,6 +339,25 @@ impl Tree {
             .into_iter()
             .filter_map(|path| Some((path, self.has_path(path)?)));
         spans.chain(links).chain(rooted).collect()
+    }
+
+    /// What `block`, a code block, cites, each with whether it is there:
+    /// each word that is a module path that starts with a module of elfq's,
+    /// or a type path. Another module path may be another crate's, in a
+    /// Rust snippet, or a sample's, in output. Nothing if the block holds a
+    /// `$ elfq` line, whose output names the samples' items.
+    fn block_citations<'a>(&self, block: &'a str) -> Vec<(&'a str, bool)> {
+        if block.lines().any(|line| line.starts_with("$ elfq ")) {
+            return Vec::new();
+        }
+        let words = block.split(|c: char| c.is_whitespace() || c == ',');
+        let citations = words.filter_map(|word| {
+            let module_path = self.has_module_path(word);
+            let is_there = (module_path.filter(|_| self.starts_with_module(word)))
+                .or_else(|| self.has_type_path(word))?;
+            Some((word, is_there))
+        });
+        citations.collect()
     }
 
     /// Whether `path`, from the crate's root or the end of a path in it, is
@@ -322,8 +387,9 @@ impl Tree {
     }
 
     /// Whether the module path `path`, such as `symbol::find`, is there, or
-    /// `None` if it isn't elfq's: if it starts with a type, as
-    /// `Binary::load`, or with one of the [`OTHER_FIRST_NAMES`].
+    /// `None` if it isn't a module path of elfq's: if it starts with a type,
+    /// as `Binary::load`, which [`Tree::has_type_path`] checks, or with one
+    /// of the [`OTHER_FIRST_NAMES`].
     ///
     /// A path that starts with `crate::` or `elfq::` names its modules from
     /// `src/`. Any other may leave out the modules before its first, as
@@ -359,6 +425,39 @@ impl Tree {
             let text = std::fs::read_to_string(crate_path(file)).unwrap();
             defines(&text, item) || imports(&text, item)
         }))
+    }
+
+    /// Whether `path` starts with a module of elfq's: whether its first
+    /// name, after any `crate::` or `elfq::`, is a module of `src/` or
+    /// `tests/it/`, as `symbol` is in `symbol::find`.
+    fn starts_with_module(&self, path: &str) -> bool {
+        let in_src = (path.strip_prefix("crate::")).or_else(|| path.strip_prefix("elfq::"));
+        let first = in_src.unwrap_or(path).split("::").next().unwrap();
+        !self.files_of(&[first], in_src.is_some()).is_empty()
+    }
+
+    /// Whether the type path `path`, such as `Binary::load`, is there: the
+    /// name after the type must be a function, constant, associated type,
+    /// field or variant in the type's definition, as a struct, enum or
+    /// trait, or in an `impl` of it. `None` if `path` isn't a type and a
+    /// name, or if no file of `src/` or `tests/it/` defines the type as a
+    /// struct, enum or trait, as for another crate's `EndianSlice`, the
+    /// Rust sample's `Gain`, or a type alias, such as the startup walk's
+    /// `Memory`, which has no members of its own.
+    fn has_type_path(&self, path: &str) -> Option<bool> {
+        let path = path.split('(').next().unwrap();
+        let (type_name, name) = path.split_once("::")?;
+        let is_type = type_name.starts_with(|c: char| c.is_ascii_uppercase());
+        if !is_type || !is_identifier(type_name) || !is_identifier(name) {
+            return None;
+        }
+        // Only the files that name the type, which are quick to find.
+        let sources = || (self.sources.iter()).filter(|text| text.contains(type_name));
+        if !sources().any(|text| code_lines(text).any(|line| defines_type(line, type_name))) {
+            return None;
+        }
+        let mut lines = sources().flat_map(|text| member_lines(text, type_name));
+        Some(lines.any(|line| defines_member(line, name)))
     }
 
     /// The files of the modules whose paths are `names`, from `src/` when
@@ -460,10 +559,95 @@ fn rooted_paths(prose: &str) -> Vec<&str> {
 fn defines(text: &str, name: &str) -> bool {
     let kinds = "fn struct enum const static type trait mod macro_rules!".split(' ');
     let definitions: Vec<String> = kinds.map(|kind| format!("{kind} {name}")).collect();
-    let mut code = text
-        .lines()
-        .filter(|line| !line.trim_start().starts_with("//"));
-    code.any(|line| (definitions.iter()).any(|definition| holds_word(line, definition)))
+    code_lines(text).any(|line| (definitions.iter()).any(|definition| holds_word(line, definition)))
+}
+
+/// Whether `line`, of a Rust file, defines the type `name`, as a struct,
+/// enum or trait.
+fn defines_type(line: &str, name: &str) -> bool {
+    let kinds = ["struct", "enum", "trait"];
+    line.contains(name)
+        && kinds
+            .iter()
+            .any(|kind| holds_word(line, &format!("{kind} {name}")))
+}
+
+/// The lines one level inside each definition of the type `name` in
+/// `text`, a Rust file, as a struct, enum or trait, and inside each `impl`
+/// of it, as `impl Names {` or `impl<'a> fmt::Display for LeadName<'a> {`:
+/// those that start its fields, variants, functions, constants and
+/// associated types.
+fn member_lines<'a>(text: &'a str, name: &str) -> Vec<&'a str> {
+    let starts = |line: &str| defines_type(line, name) || implemented(line) == Some(name);
+    let mut lines = Vec::new();
+    // The indent of the definition or `impl` that is open, if one is. Its
+    // members are four spaces further in, and a `}` as far in as its first
+    // line closes it, as rustfmt writes them.
+    let mut open = None;
+    for line in code_lines(text) {
+        match open {
+            Some(indent) if line.trim_end().strip_prefix(indent) == Some("}") => open = None,
+            Some(indent) => {
+                let member = (line.strip_prefix(indent)).and_then(|rest| rest.strip_prefix("    "));
+                if member.is_some_and(|member| !member.starts_with(' ')) {
+                    lines.push(line);
+                }
+            }
+            None if starts(line) && !line.trim_end().ends_with([';', '}']) => {
+                open = Some(&line[..line.len() - line.trim_start().len()]);
+            }
+            None => {}
+        }
+    }
+    lines
+}
+
+/// The type that `line` starts an `impl` of, if it does.
+fn implemented(line: &str) -> Option<&str> {
+    let mut rest = line.trim_start().strip_prefix("impl")?;
+    if rest.starts_with('<') {
+        // Past the impl's own generics, which may nest.
+        let mut depth = 0;
+        let end = rest.find(|c| {
+            depth += match c {
+                '<' => 1,
+                '>' => -1,
+                _ => 0,
+            };
+            depth == 0
+        })?;
+        rest = &rest[end + 1..];
+    } else if !rest.starts_with(' ') {
+        return None;
+    }
+    let rest = rest.split_once(" for ").map_or(rest, |(_, after)| after);
+    let rest = rest.trim_start();
+    let in_path = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == ':';
+    let path = &rest[..rest.find(|c| !in_path(c)).unwrap_or(rest.len())];
+    path.rsplit("::").next()
+}
+
+/// Whether `line`, one level inside a type's definition or an `impl` of
+/// it, defines `name`: as a function, a constant or an associated type, or
+/// as a field, `name: Type`, or a variant, `Name`, `Name(..)` or
+/// `Name { .. }`.
+fn defines_member(line: &str, name: &str) -> bool {
+    let defines = |kind| holds_word(line, &format!("{kind} {name}"));
+    if ["fn", "const", "type"].into_iter().any(defines) {
+        return true;
+    }
+    let Some(rest) = without_visibility(line.trim()).strip_prefix(name) else {
+        return false;
+    };
+    match name.starts_with(|c: char| c.is_ascii_uppercase()) {
+        true => rest.is_empty() || rest.starts_with([',', '(', '{', ' ']),
+        false => rest.starts_with(": "),
+    }
+}
+
+/// The lines of `text`, a Rust file, that aren't comments.
+fn code_lines(text: &str) -> impl Iterator<Item = &str> {
+    (text.lines()).filter(|line| !line.trim_start().starts_with("//"))
 }
 
 /// Whether `text`, a Rust file, names `name` in a `use` declaration, which
