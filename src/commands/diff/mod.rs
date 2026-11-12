@@ -49,7 +49,7 @@ use object::Architecture;
 
 use super::kept::Kept;
 use super::symbol::Names;
-use super::text::architecture_name;
+use super::text::{Detail, architecture_name};
 use super::{Outcome, startup};
 use crate::STACK_SIZE;
 use crate::binary::{Binary, FileKind, LoadedMemory, same_memory};
@@ -102,13 +102,13 @@ struct Build {
     tree: Option<DominatorTree>,
 }
 
-/// What `elfq OLD diff NEW` asks for: the two files, as given, whether to
-/// show every row and name, and in which format.
+/// What `elfq OLD diff NEW` asks for: the two files, as given, how much to
+/// show, and in which format.
 #[derive(Clone, Copy)]
 struct Request<'a> {
     old_path: &'a Path,
     new_path: &'a Path,
-    all: bool,
+    detail: Detail,
     format: Format,
 }
 
@@ -119,7 +119,7 @@ struct Request<'a> {
 pub(super) fn run(
     old_path: &Path,
     new_path: &Path,
-    all: bool,
+    detail: Detail,
     format: Format,
     out: &mut dyn Write,
 ) -> Result<Outcome> {
@@ -137,7 +137,7 @@ pub(super) fn run(
     let request = Request {
         old_path,
         new_path,
-        all,
+        detail,
         format,
     };
     let same_memory = same_memory(&old_memory, &new_memory);
@@ -217,7 +217,7 @@ fn answer_bytes_only(
         compared: None,
         try_startup,
     };
-    write(&answer, request.all, request.format, out)
+    write(&answer, request.detail, request.format, out)
 }
 
 /// Answers from the items of `old_build` and `new_build` as well as their
@@ -263,7 +263,7 @@ fn answer_items(
         }),
         try_startup,
     };
-    write(&answer, request.all, request.format, out)
+    write(&answer, request.detail, request.format, out)
 }
 
 /// Whether the Try lines suggest `elfq NEW startup`: when a section with a
@@ -303,10 +303,10 @@ impl Build {
 }
 
 /// Writes the answer, and says what it means for the exit status.
-fn write(answer: &Answer, all: bool, format: Format, out: &mut dyn Write) -> Result<Outcome> {
+fn write(answer: &Answer, detail: Detail, format: Format, out: &mut dyn Write) -> Result<Outcome> {
     match format {
         Format::Json => json::write(answer, out)?,
-        Format::Text | Format::Tree => text::write(answer, all, out)?,
+        Format::Text | Format::Tree => text::write(answer, detail, out)?,
     }
     Ok(if answer.same_memory {
         Outcome::Answered

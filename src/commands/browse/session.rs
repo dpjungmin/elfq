@@ -60,7 +60,7 @@ use crate::commands::checks::reference_graph;
 use crate::commands::flat_answer::FlatAnswer;
 use crate::commands::retained_tree::RetainedTree;
 use crate::commands::symbol::Names;
-use crate::commands::text::CommandLine;
+use crate::commands::text::{CommandLine, Detail};
 use crate::graph::{DominatorTree, Graph, Node, ShortestPaths, VeneerTarget, Veneers};
 
 /// A loaded file, with what every page needs.
@@ -174,7 +174,7 @@ impl<'a> Session<'a> {
     /// with.
     pub(super) fn callers(&self, node: Node) -> FlatAnswer {
         let name = node.name(self.binary);
-        callers::answer(self.binary, &self.graph, node, name, true)
+        callers::answer(self.binary, &self.graph, node, name, Detail::All)
     }
 
     /// `node`'s name as the answer under tabs 2, 4, 5 and 6 gives it.
@@ -194,13 +194,14 @@ impl<'a> Session<'a> {
     /// It is about `node`, or without one, about the file, as in `$ elfq
     /// testdata/bin/cpp-x86_64.elf callers 'log(unsigned int)'`. It names
     /// the file as the user typed it, and `node` by its query as SYMBOL,
-    /// both quoted for the shell, then `--all` when `all` asks for it.
-    pub(super) fn command(&self, command: &str, node: Option<Node>, all: bool) -> String {
+    /// both quoted for the shell, then `--all` when `needs_all` says that
+    /// the command needs it to print all that the page shows.
+    pub(super) fn command(&self, command: &str, node: Option<Node>, needs_all: bool) -> String {
         let mut line = CommandLine::new(&self.path, command);
         if let Some(node) = node {
             line = line.word(&self.names.query_for(node));
         }
-        format!("$ {}", line.flag("--all", all))
+        format!("$ {}", line.flag("--all", needs_all))
     }
 
     /// The node whose page stands for `node`.

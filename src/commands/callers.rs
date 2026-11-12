@@ -33,13 +33,13 @@ struct Callers<'a> {
 /// SYMBOLs, `callers SYMBOL|PATTERN|RANGE...` (see [`symbol::subject`]).
 /// `from`, the ranges of `--from`, limits either to the callers in them,
 /// and then SYMBOL is asked about as the range it occupies. For SYMBOL
-/// alone, the text lists the 30 largest callers, or with `all`, every one;
-/// for the rest, see [`range_check::run`].
+/// alone, the text lists the 30 largest callers, or with [`Detail::All`],
+/// every one; for the rest, see [`range_check::run`].
 pub(super) fn run(
     binary: &Binary,
     symbols: &[String],
     from: &[AddressRange],
-    all: bool,
+    detail: Detail,
     format: Format,
     out: &mut dyn Write,
 ) -> Result<Outcome> {
@@ -47,7 +47,7 @@ pub(super) fn run(
     let inside = match symbol::subject(binary, symbols, item_in_set)? {
         Subject::Symbol(symbol) if from.is_empty() => {
             let graph = Kept::new(Graph::build(binary));
-            callers(binary, &graph, &symbol, all, format, out)?;
+            callers(binary, &graph, &symbol, detail, format, out)?;
             return Ok(Outcome::Answered);
         }
         Subject::Symbol(symbol) => {
@@ -72,7 +72,7 @@ pub(super) fn run(
         direction: Direction::In,
     };
     let graph = Kept::new(Graph::build(binary));
-    range_check::run(binary, &graph, &check, all, format, out)
+    range_check::run(binary, &graph, &check, detail, format, out)
 }
 
 /// The item of a SYMBOL given with others, which callers puts in a set, or
@@ -96,7 +96,7 @@ pub(super) fn callers(
     binary: &Binary,
     graph: &Graph,
     symbol: &Symbol,
-    all: bool,
+    detail: Detail,
     format: Format,
     out: &mut dyn Write,
 ) -> Result<()> {
@@ -118,23 +118,24 @@ pub(super) fn callers(
         }
         // `check_tree` refuses --tree for callers.
         Format::Text | Format::Tree => found
-            .answer(binary, graph, &symbol.lead_name(binary), all)
+            .answer(binary, graph, &symbol.lead_name(binary), detail)
             .write(out),
     }
 }
 
 /// What calls or uses `node`, as the text of `callers SYMBOL` lists it,
 /// which names `node` as `name` in its first line: the rows of the 30
-/// largest callers, or with `all`, every one, and the notes under them.
+/// largest callers, or with [`Detail::All`], every one, and the notes under
+/// them.
 #[cfg(feature = "tui")]
 pub(super) fn answer(
     binary: &Binary,
     graph: &Graph,
     node: Node,
     name: &str,
-    all: bool,
+    detail: Detail,
 ) -> FlatAnswer {
-    Found::new(binary, graph, node).answer(binary, graph, name, all)
+    Found::new(binary, graph, node).answer(binary, graph, name, detail)
 }
 
 /// What `callers` finds about a node, which its text and its JSON both
@@ -171,7 +172,7 @@ impl<'g> Found<'g> {
     }
 
     /// The text answer, which names the node `name` in its first line.
-    fn answer(&self, binary: &Binary, graph: &Graph, name: &str, all: bool) -> FlatAnswer {
+    fn answer(&self, binary: &Binary, graph: &Graph, name: &str, detail: Detail) -> FlatAnswer {
         let rows = rows(binary, &self.references, |reference| {
             text::how_column(binary, reference.to, reference.kind)
         });
@@ -182,12 +183,7 @@ impl<'g> Found<'g> {
                 format!("{name} is used by {callers}:")
             }
         };
-        let (columns, rows) = uses::table(
-            binary,
-            rows,
-            End::Callers,
-            text::shown(Detail::from_flag(all)),
-        );
+        let (columns, rows) = uses::table(binary, rows, End::Callers, text::shown(detail));
         FlatAnswer {
             lead: vec![lead],
             memory: None,

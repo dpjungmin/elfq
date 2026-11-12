@@ -102,14 +102,11 @@ struct CallerJson<'a> {
 /// Where the far side of the crossings is, for a sentence: "outside it",
 /// or with `--to` or `--from`, in their ranges, as "in 0x30000000..0x31000000
 /// (.text)". `it` is "it" or "them".
-fn far_side_text(binary: &Binary, far_side: &[AddressRange], it: &str, all: bool) -> String {
+fn far_side_text(binary: &Binary, far_side: &[AddressRange], it: &str, detail: Detail) -> String {
     if far_side.is_empty() {
         format!("outside {it}")
     } else {
-        format!(
-            "in {}",
-            text::ranges_text(binary, far_side, Detail::from_flag(all))
-        )
+        format!("in {}", text::ranges_text(binary, far_side, detail))
     }
 }
 
@@ -125,19 +122,19 @@ pub(super) struct Leaving<'a> {
     /// The functions in the ranges whose code elfq can't read, since it
     /// doesn't know where they end.
     unreadable: Vec<usize>,
-    /// Whether the sentences name every range, section and function, for
-    /// `--all`.
-    all: bool,
+    /// How much the sentences name: every range, section and function with
+    /// [`Detail::All`].
+    detail: Detail,
 }
 
 impl<'a> Leaving<'a> {
     /// What the items inside `boundary`, which `check` asks about, use
-    /// outside it, in `binary`; `all` is for `--all`.
+    /// outside it, in `binary`; `detail` says how much its sentences name.
     pub(super) fn find(
         binary: &'a Binary,
         check: &'a RangeCheck<'a>,
         boundary: &Boundary,
-        all: bool,
+        detail: Detail,
     ) -> Leaving<'a> {
         let crossings = boundary.leaving_to(check.far_side);
         Leaving {
@@ -146,7 +143,7 @@ impl<'a> Leaving<'a> {
             crossings: crossings.uses,
             unfollowed: crossings.unfollowed,
             unreadable: boundary.items().unreadable(),
-            all,
+            detail,
         }
     }
 
@@ -196,7 +193,7 @@ impl<'a> Leaving<'a> {
     fn write_text(&self, out: &mut dyn Write) -> Result<()> {
         let binary = self.binary;
         let check = self.check;
-        let subject = check.inside.lead_name(binary, self.all);
+        let subject = check.inside.lead_name(binary, self.detail);
         let subject_at_start = subject.at_start();
         let verb =
             |one: &str, many: &str| if check.inside.one(binary) { one } else { many }.to_string();
@@ -209,7 +206,7 @@ impl<'a> Leaving<'a> {
                 .iter()
                 .map(|unfollowed| &unfollowed.unresolved),
         );
-        let far_side = far_side_text(binary, check.far_side, check.inside.it(binary), self.all);
+        let far_side = far_side_text(binary, check.far_side, check.inside.it(binary), self.detail);
         let lead = match (groups.is_empty(), self.unfollowed.is_empty()) {
             (true, true) if self.unreadable.is_empty() => {
                 format!(
@@ -236,7 +233,7 @@ impl<'a> Leaving<'a> {
                 format!(
                     "{subject_at_start} {} {unknown} that elfq can't follow, which {go} to {}:",
                     verb("makes", "make"),
-                    text::ranges_text(binary, check.far_side, Detail::from_flag(self.all))
+                    text::ranges_text(binary, check.far_side, self.detail)
                 )
             }
             (false, false) => format!(
@@ -265,13 +262,9 @@ impl<'a> Leaving<'a> {
             write_groups(binary, &groups, Direction::Out, &mut table);
             table.write(out)?;
         }
-        let mut notes = check.inside.pattern_notes(binary, self.all);
+        let mut notes = check.inside.pattern_notes(binary, self.detail);
         if !self.unreadable.is_empty() {
-            notes.push(text::unreadable_text(
-                binary,
-                &self.unreadable,
-                Detail::from_flag(self.all),
-            ));
+            notes.push(text::unreadable_text(binary, &self.unreadable, self.detail));
         }
         let under = if listed {
             NotesUnder::Table
@@ -313,21 +306,21 @@ pub(super) struct Entering<'a> {
     /// The functions in the ranges of `--from`, outside the ranges, whose
     /// code elfq can't read, since it doesn't know where they end.
     unreadable: Vec<usize>,
-    /// Whether the sentences name every range, section and function, for
-    /// `--all`.
-    all: bool,
+    /// How much the sentences name: every range, section and function with
+    /// [`Detail::All`].
+    detail: Detail,
 }
 
 impl<'a> Entering<'a> {
     /// What uses the items inside `boundary`, which `check` asks about,
-    /// from outside it, in `binary`, whose graph is `graph`; `all` is for
-    /// `--all`.
+    /// from outside it, in `binary`, whose graph is `graph`; `detail` says
+    /// how much its sentences name.
     pub(super) fn find(
         binary: &'a Binary,
         graph: &Graph,
         check: &'a RangeCheck<'a>,
         boundary: &Boundary,
-        all: bool,
+        detail: Detail,
     ) -> Entering<'a> {
         let from = ItemsInRanges::new(binary, check.far_side);
         let inside = |index: usize| boundary.items().contains_item(index);
@@ -361,7 +354,7 @@ impl<'a> Entering<'a> {
             unfollowed: crossings.unfollowed,
             through_pointer,
             unreadable,
-            all,
+            detail,
         }
     }
 
@@ -418,12 +411,12 @@ impl<'a> Entering<'a> {
     fn write_text(&self, out: &mut dyn Write) -> Result<()> {
         let binary = self.binary;
         let check = self.check;
-        let subject = check.inside.lead_name(binary, self.all);
+        let subject = check.inside.lead_name(binary, self.detail);
         let it = check.inside.it(binary);
         let groups = groups(binary, &self.crossings, Direction::In, |crossing| {
             how_column(binary, crossing)
         });
-        let far_side = far_side_text(binary, check.far_side, it, self.all);
+        let far_side = far_side_text(binary, check.far_side, it, self.detail);
         // "Nothing outside X uses it", or "Nothing in Y uses X".
         let nothing = if check.far_side.is_empty() {
             format!("Nothing outside {subject} uses {it}")
@@ -482,7 +475,7 @@ impl<'a> Entering<'a> {
             write_groups(binary, &groups, Direction::In, &mut table);
             table.write(out)?;
         }
-        let mut notes = check.inside.pattern_notes(binary, self.all);
+        let mut notes = check.inside.pattern_notes(binary, self.detail);
         if !self.through_pointer.is_empty() {
             let names: Vec<&str> = self
                 .through_pointer
@@ -491,15 +484,11 @@ impl<'a> Entering<'a> {
                 .collect();
             notes.push(format!(
                 "Calls through a pointer to {} aren't listed, since elfq can't see them.",
-                text::names_text(&names, Detail::from_flag(self.all))
+                text::names_text(&names, self.detail)
             ));
         }
         if !self.unreadable.is_empty() {
-            notes.push(text::unreadable_text(
-                binary,
-                &self.unreadable,
-                Detail::from_flag(self.all),
-            ));
+            notes.push(text::unreadable_text(binary, &self.unreadable, self.detail));
         }
         let under = if listed {
             NotesUnder::Table

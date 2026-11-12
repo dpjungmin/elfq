@@ -83,6 +83,7 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<Outcome> {
     arguments::check_before_loading(cli)?;
     let format = cli.format();
     let range = cli.range;
+    let detail = Detail::from_flag(cli.all());
     // The browser takes over the terminal, so it loads the file itself,
     // and prints the warnings once it gives the terminal back.
     if let Some(Command::Browse(args)) = &cli.command {
@@ -91,7 +92,7 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<Outcome> {
     // diff reads two files, and needs only their headers and the bytes of
     // their sections.
     if let Some(Command::Diff(args)) = &cli.command {
-        return diff::run(&cli.file, &args.new, args.all, format, out);
+        return diff::run(&cli.file, &args.new, detail, format, out);
     }
     // startup refuses what isn't Cortex-M firmware from the file's headers,
     // before it loads the rest.
@@ -103,29 +104,16 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<Outcome> {
     arguments::check_after_loading(cli, &binary)?;
     match &cli.command {
         None => overview::run(&cli.file, &binary, range, format, out),
-        Some(Command::Top(args)) => {
-            top::run(&binary, range, Detail::from_flag(args.all), format, out)
+        Some(Command::Top(_)) => top::run(&binary, range, detail, format, out),
+        Some(Command::Retained(args)) => {
+            retained::run(&binary, &args.symbols, range, detail, format, out)
         }
-        Some(Command::Retained(args)) => retained::run(
-            &binary,
-            &args.symbols,
-            range,
-            Detail::from_flag(args.all),
-            format,
-            out,
-        ),
-        Some(Command::Why(args)) => why::run(
-            &binary,
-            &args.symbol,
-            Detail::from_flag(args.all),
-            format,
-            out,
-        ),
+        Some(Command::Why(args)) => why::run(&binary, &args.symbol, detail, format, out),
         Some(Command::Inlined(args)) => inlined::run(
             &cli.file,
             &binary,
             args.symbol.as_deref(),
-            Detail::from_flag(args.all),
+            detail,
             format,
             out,
         ),
@@ -135,7 +123,7 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<Outcome> {
             &binary,
             &args.uses.symbols,
             &distinct_ranges(args.from.iter().copied()),
-            args.uses.all,
+            detail,
             format,
             out,
         ),
@@ -143,33 +131,18 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<Outcome> {
             &binary,
             &args.uses.symbols,
             &distinct_ranges(args.to.iter().copied()),
-            args.uses.all,
+            detail,
             format,
             out,
         ),
         Some(Command::Reach(args)) => {
             let to = distinct_ranges(args.to.iter().copied());
             match &args.symbol {
-                Some(symbol) => reach::run(
-                    &binary,
-                    symbol,
-                    &to,
-                    Detail::from_flag(args.all),
-                    format,
-                    out,
-                ),
-                None => reach::run_starts(
-                    &cli.file,
-                    &binary,
-                    &to,
-                    range,
-                    Detail::from_flag(args.all),
-                    format,
-                    out,
-                ),
+                Some(symbol) => reach::run(&binary, symbol, &to, detail, format, out),
+                None => reach::run_starts(&cli.file, &binary, &to, range, detail, format, out),
             }
         }
-        Some(Command::Startup(args)) => startup::run(&cli.file, &binary, args.all, format, out),
+        Some(Command::Startup(_)) => startup::run(&cli.file, &binary, detail, format, out),
         Some(Command::Debug(DebugCommand::Items)) => debug_items::run(&binary, out),
         Some(Command::Debug(DebugCommand::Walk)) => startup::debug::run(&cli.file, &binary, out),
         Some(Command::Debug(DebugCommand::Matches(args))) => {

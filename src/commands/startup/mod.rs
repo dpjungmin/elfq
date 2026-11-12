@@ -71,6 +71,7 @@ use object::elf::{EM_386, EM_AARCH64, EM_ARM, EM_X86_64, ET_DYN, ET_REL};
 use super::Outcome;
 use super::checks::check_code_is_readable;
 use super::kept::Kept;
+use super::text::Detail;
 use crate::arch::startup::{Code, DEPTH, End};
 use crate::binary::{Binary, ElfHeader, ItemKind};
 use crate::cli::Format;
@@ -150,7 +151,7 @@ fn reset_handler<'a>(path: &Path, binary: &'a Binary) -> Result<(Reset, Code<'a>
 pub(super) fn run(
     path: &Path,
     binary: &Binary,
-    all: bool,
+    detail: Detail,
     format: Format,
     out: &mut dyn Write,
 ) -> Result<Outcome> {
@@ -176,7 +177,7 @@ pub(super) fn run(
         facts: &facts,
         steps: &steps,
         judged: &judged,
-        all,
+        detail,
     };
     match format {
         Format::Json => json::write(&answer, out)?,
@@ -241,7 +242,7 @@ struct Answer<'a> {
     facts: &'a Facts<'a>,
     steps: &'a [Step],
     judged: &'a Judged,
-    all: bool,
+    detail: Detail,
 }
 
 /// The file, with its code as the walk reads it, and what tells where its

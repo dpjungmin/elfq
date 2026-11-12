@@ -143,14 +143,12 @@ impl Inside {
 
     /// How the answer's sentences name what is asked about: SYMBOL, the
     /// ranges with the sections in them, or a set as its first line names
-    /// it, every one with `all`.
-    fn lead_name(&self, binary: &Binary, all: bool) -> LeadName {
+    /// it, every one with [`Detail::All`].
+    fn lead_name(&self, binary: &Binary, detail: Detail) -> LeadName {
         match self {
-            Inside::Ranges(ranges) => {
-                LeadName::name(text::ranges_text(binary, ranges, Detail::from_flag(all)))
-            }
+            Inside::Ranges(ranges) => LeadName::name(text::ranges_text(binary, ranges, detail)),
             Inside::Symbol { lead_name, .. } => LeadName::name(lead_name.clone()),
-            Inside::Set(set) => set.lead_name(binary, Detail::from_flag(all)),
+            Inside::Set(set) => set.lead_name(binary, detail),
         }
     }
 
@@ -174,13 +172,11 @@ impl Inside {
 
     /// The notes on how the patterns of a set matched, which come before
     /// the answer's others (see [`symbol::pattern_notes`]), naming every
-    /// name with `all`; none without patterns.
-    fn pattern_notes(&self, binary: &Binary, all: bool) -> Vec<String> {
+    /// name with [`Detail::All`]; none without patterns.
+    fn pattern_notes(&self, binary: &Binary, detail: Detail) -> Vec<String> {
         match self {
             Inside::Set(set) => match set.patterns() {
-                Some(patterns) => {
-                    symbol::pattern_notes(binary, patterns, &Naming::of(Detail::from_flag(all)))
-                }
+                Some(patterns) => symbol::pattern_notes(binary, patterns, &Naming::of(detail)),
                 None => Vec::new(),
             },
             Inside::Ranges(_) | Inside::Symbol { .. } => Vec::new(),
@@ -226,14 +222,14 @@ struct PickedJson<'a> {
 }
 
 /// Lists what crosses the boundary of what `check` asks about, every
-/// crossing, and with `all`, every name in its sentences. The answer is
-/// [`Outcome::Crossed`] when it lists something, or says that something
-/// may cross.
+/// crossing, and with [`Detail::All`], every name in its sentences. The
+/// answer is [`Outcome::Crossed`] when it lists something, or says that
+/// something may cross.
 pub(super) fn run(
     binary: &Binary,
     graph: &Graph,
     check: &RangeCheck,
-    all: bool,
+    detail: Detail,
     format: Format,
     out: &mut dyn Write,
 ) -> Result<Outcome> {
@@ -243,12 +239,12 @@ pub(super) fn run(
     let boundary = Boundary::around(binary, graph, items);
     let crosses = match check.direction {
         Direction::Out => {
-            let answer = Leaving::find(binary, check, &boundary, all);
+            let answer = Leaving::find(binary, check, &boundary, detail);
             answer.write(format, out)?;
             answer.crosses()
         }
         Direction::In => {
-            let answer = Entering::find(binary, graph, check, &boundary, all);
+            let answer = Entering::find(binary, graph, check, &boundary, detail);
             answer.write(format, out)?;
             answer.crosses()
         }
@@ -301,7 +297,7 @@ mod tests {
             direction,
         };
         let mut out = Vec::new();
-        let outcome = run(binary, graph, &check, false, Format::Text, &mut out).unwrap();
+        let outcome = run(binary, graph, &check, Detail::Brief, Format::Text, &mut out).unwrap();
         (outcome, String::from_utf8(out).unwrap())
     }
 

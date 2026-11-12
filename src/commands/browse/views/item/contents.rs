@@ -256,6 +256,7 @@ mod tests {
     use super::super::listing::Link;
     use super::*;
     use crate::cli::Format;
+    use crate::commands::text::Detail;
     use crate::commands::{callees, json};
 
     #[test]
@@ -287,7 +288,16 @@ mod tests {
                 }
                 let mut out = Vec::new();
                 let graph = &session.graph;
-                callees::callees(&binary, graph, index, "", false, Format::Json, &mut out).unwrap();
+                callees::callees(
+                    &binary,
+                    graph,
+                    index,
+                    "",
+                    Detail::Brief,
+                    Format::Json,
+                    &mut out,
+                )
+                .unwrap();
                 let answer: serde_json::Value = serde_json::from_slice(&out).unwrap();
                 let mut listed = Vec::new();
                 for callee in answer["callees"].as_array().unwrap() {

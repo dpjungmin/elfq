@@ -34,14 +34,14 @@ struct Callees<'a> {
 /// SYMBOLs, `callees SYMBOL|PATTERN|RANGE...` (see [`symbol::subject`]).
 /// `to`, the ranges of `--to`, limits either to the callees in them, and
 /// then SYMBOL is asked about as the range it occupies. For SYMBOL alone,
-/// the text lists the 30 largest callees, or with `all`, every one; for
-/// the rest, see [`range_check::run`]. An import among several SYMBOLs
-/// gets the error it gets alone, since its code isn't in the file.
+/// the text lists the 30 largest callees, or with [`Detail::All`], every
+/// one; for the rest, see [`range_check::run`]. An import among several
+/// SYMBOLs gets the error it gets alone, since its code isn't in the file.
 pub(super) fn run(
     binary: &Binary,
     symbols: &[String],
     to: &[AddressRange],
-    all: bool,
+    detail: Detail,
     format: Format,
     out: &mut dyn Write,
 ) -> Result<Outcome> {
@@ -52,7 +52,7 @@ pub(super) fn run(
             let lead_name = symbol.lead_name(binary);
             if to.is_empty() {
                 let graph = Kept::new(Graph::build(binary));
-                callees(binary, &graph, index, &lead_name, all, format, out)?;
+                callees(binary, &graph, index, &lead_name, detail, format, out)?;
                 return Ok(Outcome::Answered);
             }
             Inside::Symbol {
@@ -69,7 +69,7 @@ pub(super) fn run(
         direction: Direction::Out,
     };
     let graph = Kept::new(Graph::build(binary));
-    range_check::run(binary, &graph, &check, all, format, out)
+    range_check::run(binary, &graph, &check, detail, format, out)
 }
 
 /// What the item at `index` calls or uses. `name` is its name as the
@@ -81,7 +81,7 @@ pub(super) fn callees(
     graph: &Graph,
     index: usize,
     name: &str,
-    all: bool,
+    detail: Detail,
     format: Format,
     out: &mut dyn Write,
 ) -> Result<()> {
@@ -103,19 +103,19 @@ pub(super) fn callees(
         };
         return json::write(&callees, out);
     }
-    answer(binary, graph, index, name, all).write(out)
+    answer(binary, graph, index, name, detail).write(out)
 }
 
 /// What the item at `index`, `name` as the answer's first line gives it,
 /// calls or uses, as the text of `callees SYMBOL` lists it: the rows of
 /// the 30 largest callees and the first few sites of what elfq can't
-/// follow, or with `all`, every one.
+/// follow, or with [`Detail::All`], every one.
 pub(super) fn answer(
     binary: &Binary,
     graph: &Graph,
     index: usize,
     name: &str,
-    all: bool,
+    detail: Detail,
 ) -> FlatAnswer {
     let rows = uses::rows(
         graph.references_from(index),
@@ -131,7 +131,7 @@ pub(super) fn answer(
             Vec::new(),
         ),
         (true, false) => (
-            text::unresolved_lines(name, unresolved, false, Detail::from_flag(all)),
+            text::unresolved_lines(name, unresolved, false, detail),
             Vec::new(),
         ),
         (false, _) => {
@@ -139,16 +139,11 @@ pub(super) fn answer(
             let lead = format!("{name} uses {callees}:");
             (
                 vec![lead],
-                text::unresolved_lines(name, unresolved, true, Detail::from_flag(all)),
+                text::unresolved_lines(name, unresolved, true, detail),
             )
         }
     };
-    let (columns, rows) = uses::table(
-        binary,
-        rows,
-        End::Callees,
-        text::shown(Detail::from_flag(all)),
-    );
+    let (columns, rows) = uses::table(binary, rows, End::Callees, text::shown(detail));
     FlatAnswer {
         lead,
         memory: None,

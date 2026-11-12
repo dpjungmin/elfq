@@ -110,9 +110,12 @@ pub(super) fn kind_name(kind: ItemKind) -> &'static str {
 /// How much of a long answer a command shows: a brief answer, without
 /// `--all`, or all of it, with `--all`.
 ///
-/// Code that `--all` doesn't reach, such as an error, the hints under it
-/// and the overview, passes the one it needs: an error that must name
-/// everything passes [`Detail::All`], as `checks::ends_unknown` and
+/// `commands::run` makes the Detail that a command takes from `--all`,
+/// with [`Detail::from_flag`]: the only place where a bool becomes one.
+/// Browse asks for both, to tell whether a tab needs `--all`. Code that
+/// `--all` doesn't reach, such as an error, the hints under it and the
+/// overview, passes the one it needs: an error that must name everything
+/// passes [`Detail::All`], as `checks::ends_unknown` and
 /// `validate::asked_about` do, and the others pass [`Detail::Brief`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum Detail {

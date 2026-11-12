@@ -39,7 +39,7 @@ pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
         ]);
         let count = answer.steps.len();
         // The house cap, with the last row summing up the rest.
-        let room = house::shown(Detail::from_flag(answer.all));
+        let room = house::shown(answer.detail);
         let shown = if count <= room { count } else { room - 1 };
         for (index, step) in answer.steps[..shown].iter().enumerate() {
             table.row(row(answer, index, step));
@@ -333,7 +333,7 @@ fn runs_before_copy_text(answer: &Answer, run: &EarlyRun) -> String {
                 .map(|early| firmware.name(early.function))
                 .collect();
             let names: Vec<&str> = names.iter().map(String::as_str).collect();
-            names_text(&names, Detail::from_flag(answer.all))
+            names_text(&names, answer.detail)
         }
     };
     let direct = run.functions.iter().all(|early| {
@@ -422,7 +422,7 @@ pub(super) fn note_text(answer: &Answer, note: &Note) -> String {
             } else {
                 format!(
                     ", so {} may not be set up",
-                    names_text(&rest, Detail::from_flag(answer.all))
+                    names_text(&rest, answer.detail)
                 )
             };
             format!("{} may never run{so}.", steps_text(later, true))
@@ -437,7 +437,7 @@ pub(super) fn note_text(answer: &Answer, note: &Note) -> String {
                         format!(
                             "{} ({})",
                             ram.name(section),
-                            names_text(&held, Detail::from_flag(answer.all))
+                            names_text(&held, answer.detail)
                         )
                     }
                 })
@@ -521,7 +521,7 @@ fn set_up_what(answer: &Answer, step: &Step) -> String {
     let names: Vec<&str> = (step.covers().iter())
         .map(|cover| answer.facts.ram.name(cover.section))
         .collect();
-    let names = names_text(&names, Detail::from_flag(answer.all));
+    let names = names_text(&names, answer.detail);
     let function = function_name(firmware, step);
     let inside = firmware.name(step.inside);
     let what = match step.way {
