@@ -823,6 +823,8 @@ fn passes_ci_check(answer: &Value) -> bool {
 }
 
 /// Pairs of builds to compare, of every kind that diff sees.
+/// `scripts/sample-pairs.txt` lists the same pairs, for `same-output.sh`
+/// to run diff on, as [`sample_pairs_txt_lists_the_diff_pairs`] checks.
 const DIFF_PAIRS: [(&str, &str); 11] = [
     (TCM_SAMPLE, TCM_MOVED_SAMPLE),
     (TCM_SAMPLE, TCM_SDRAM_SAMPLE),
@@ -839,6 +841,16 @@ const DIFF_PAIRS: [(&str, &str); 11] = [
     ),
     (SAMPLE, "testdata/bin/cpp-x86_64.elf"),
 ];
+
+#[test]
+fn sample_pairs_txt_lists_the_diff_pairs() {
+    let path = format!("{}/scripts/sample-pairs.txt", env!("CARGO_MANIFEST_DIR"));
+    let text = std::fs::read_to_string(path).unwrap();
+    let pairs: Vec<(&str, &str)> = (text.lines())
+        .map(|pair| pair.split_once(' ').unwrap())
+        .collect();
+    assert_eq!(pairs, DIFF_PAIRS);
+}
 
 #[test]
 fn diff_blocks_add_up() {

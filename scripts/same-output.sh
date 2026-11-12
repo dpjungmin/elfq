@@ -4,15 +4,17 @@
 # and exit with the same status. For changes that shouldn't change output,
 # such as a cleanup. CONTRIBUTING.md says when and how to run it.
 #
-#   scripts/same-output.sh OLD NEW FILE_OR_FOLDER... [--pairs LIST]
+#   scripts/same-output.sh OLD NEW FILE_OR_FOLDER... [--pairs LIST]...
 #   scripts/same-output.sh --time OLD NEW FILE...
 #
 # OLD and NEW are elfq binaries, such as release builds of main and of your
 # branch. A FOLDER stands for every file in it, at any depth. LIST is a file
-# of diff pairs, one "OLD_FILE NEW_FILE" per line, with no spaces in the
-# paths. Each difference is printed, and the script exits with status 1 if
-# there is one. Files are checked as many at once as the machine has
-# processors.
+# of diff pairs, one "OLD_FILE NEW_FILE" per line, by their paths from the
+# current folder, with no spaces in them. scripts/sample-pairs.txt lists the
+# samples' pairs by their paths from the crate's root, so run the script
+# from there to give it. Each difference is printed, and the script exits
+# with status 1 if there is one. Files are checked as many at once as the
+# machine has processors.
 #
 # With --time, it runs each command in `timed` below on each FILE 9 times
 # with each build, the builds taking turns, and prints the median times in
@@ -59,8 +61,11 @@ compare() {
 # The commands run on one file. Those that take a SYMBOL take each of the
 # first three items that `top` lists, and those that take a range take the
 # first two blocks of memory that the overview lists, as old elfq prints
-# them; `reach SYMBOL --to RANGE` takes the first item with each block. A
-# command that refuses the file is compared too.
+# them; `reach SYMBOL --to RANGE` takes the first item with each block.
+# `retained` and `callers` also take the first two items as a set, when
+# there are two, `retained`, `callees` and `debug matches` a pattern made
+# from the first item's name, and `why` a name that isn't there. A command
+# that refuses the file is compared too.
 check_file() {
     file=$1
     compare "$file"
@@ -100,6 +105,23 @@ check_file() {
         compare "$file" reach "$symbol" --json
         compare "$file" inlined "$symbol"
     done <"$work/symbols"
+    # top lists nothing for a shared library. The pattern is the first
+    # item's name with a * in place of its last character, always in
+    # double quotes, so that the shell never expands it.
+    if [ -n "$first_symbol" ]; then
+        s1=$first_symbol
+        s2=$(sed -n 2p "$work/symbols")
+        p="${first_symbol%?}*"
+        if [ -n "$s2" ]; then
+            compare "$file" retained "$s1" "$s2"
+            compare "$file" retained "$s1" "$s2" --json
+            compare "$file" callers "$s1" "$s2"
+        fi
+        compare "$file" retained "$p"
+        compare "$file" callees "$p" --json
+        compare "$file" debug matches "$p"
+        compare "$file" why "${first_symbol}_"
+    fi
     "$old" "$file" 2>/dev/null |
         sed -n 's/.* --range \([^ ]*\)$/\1/p' | head -2 >"$work/ranges"
     first=
@@ -133,6 +155,7 @@ check_help() {
     done
     compare file.elf debug items --help
     compare file.elf debug walk --help
+    compare file.elf debug matches --help
 }
 
 # Prints the median times, in milliseconds, that `elfq ARGS...` takes with
@@ -206,6 +229,24 @@ if [ "${1-}" = --one ]; then
     exit 0
 fi
 
+# Adds the pairs that the file LIST lists to those to run diff on. A path
+# that isn't there, as when LIST is given from another folder, would only
+# compare two of the same errors, so the script stops with status 2.
+add_pairs() {
+    if [ ! -f "$1" ]; then
+        echo "no such file: $1" >&2
+        exit 2
+    fi
+    while read -r old_file new_file; do
+        [ -n "$old_file" ] || continue
+        if [ ! -e "$old_file" ] || [ ! -e "$new_file" ]; then
+            echo "$1: not two files from this folder: $old_file $new_file" >&2
+            exit 2
+        fi
+        echo "$old_file $new_file" >>"$work/pairs"
+    done <"$1"
+}
+
 [ $# -ge 3 ] || usage
 install_builds "$1" "$2"
 shift 2
@@ -215,7 +256,7 @@ while [ $# -gt 0 ]; do
     case $1 in
     --pairs)
         [ $# -ge 2 ] || usage
-        cat "$2" >>"$work/pairs" || exit 2
+        add_pairs "$2"
         shift 2
         ;;
     *)

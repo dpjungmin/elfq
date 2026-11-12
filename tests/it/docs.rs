@@ -1,13 +1,18 @@
 //! The docs, checked against elfq: each code block whose first line is
 //! `$ elfq ...` must show what elfq prints for it, given its arguments as a
 //! shell passes them, without their quotes; design.md's JSON section must
-//! name every key that elfq's JSON has; and every path and module path that
-//! CONTRIBUTING.md and design.md cite must be there.
+//! name every key that elfq's JSON has; every path and module path that
+//! CONTRIBUTING.md and design.md cite must be there; and
+//! `scripts/same-output.sh`, to which CONTRIBUTING.md says to add each
+//! command, must run every command.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+use clap::CommandFactory;
 use serde_json::Value;
+
+use elfq::cli::Cli;
 
 use crate::support::{
     Exit, SAMPLE, TCM_INLINED_SAMPLE, TCM_MOVED_SAMPLE, TCM_SAMPLE, assert_output, run, shell_words,
@@ -142,6 +147,41 @@ fn add_keys(value: &Value, keys: &mut BTreeSet<String>, lists: &mut BTreeMap<Str
         }
         Value::Array(values) => values.iter().for_each(|value| add_keys(value, keys, lists)),
         _ => {}
+    }
+}
+
+/// `scripts/same-output.sh` runs every command, as step 11 of
+/// CONTRIBUTING.md's 'Adding a command' asks: `check_help` compares the
+/// help of each, and `check_file` runs each `debug` command, whose help
+/// `check_help` compares too.
+#[test]
+fn same_output_sh_runs_every_command() {
+    let script = std::fs::read_to_string(crate_path("scripts/same-output.sh")).unwrap();
+    // A function's body, without its comments, and with each line that
+    // ends with `\` joined to the next.
+    let body = |function: &str| {
+        let (_, body) = script.split_once(&format!("\n{function}() {{\n")).unwrap();
+        let (body, _) = body.split_once("\n}\n").unwrap();
+        let is_code = |line: &&str| !line.trim_start().starts_with('#');
+        let lines: Vec<&str> = body.lines().filter(is_code).collect();
+        lines.join("\n").replace("\\\n", " ")
+    };
+    let (check_file, check_help) = (body("check_file"), body("check_help"));
+    let (_, commands) = check_help.split_once("for command in ").unwrap();
+    let (commands, _) = commands.split_once("; do").unwrap();
+    let commands: Vec<&str> = commands.split_whitespace().collect();
+    for command in elfq::cli::command_names() {
+        let compared = commands.contains(&command.as_str());
+        assert!(compared, "check_help doesn't compare `{command} --help`");
+    }
+    let cli = Cli::command();
+    let debug = cli.find_subcommand("debug").unwrap();
+    for command in debug.get_subcommands() {
+        let command = format!("debug {}", command.get_name());
+        let listed = check_file.contains(&format!("\"$file\" {command}"));
+        assert!(listed, "check_file doesn't run `{command}`");
+        let compared = check_help.contains(&format!(" {command} --help"));
+        assert!(compared, "check_help doesn't compare `{command} --help`");
     }
 }
 
