@@ -187,6 +187,20 @@ fn arguments_that_dont_go_together_are_refused_before_the_file_is_read() {
              missing.elf reach main --to 0x20000000..0x20000400 --to 0x00000000..0x00000400 \
              --json\n",
         ),
+        // A range given twice, even once to --range, is named once.
+        (
+            &[
+                "missing.elf",
+                "reach",
+                "main",
+                "--to",
+                "0+1K",
+                "--range",
+                "0x0..0x400",
+            ],
+            "error: reach takes --to, not --range, to list only what it reaches in a range: elfq \
+             missing.elf reach main --to 0x00000000..0x00000400\n",
+        ),
         (
             &[
                 "missing.elf",
@@ -213,6 +227,19 @@ fn arguments_that_dont_go_together_are_refused_before_the_file_is_read() {
         ),
         (
             &["missing.elf", "reach", "0x0+1K", "--to", "0x20000000+1K"],
+            "error: reach takes one SYMBOL, not ranges; for what a range uses in the --to ranges: \
+             elfq missing.elf callees 0x00000000..0x00000400 --to 0x20000000..0x20000400\n",
+        ),
+        (
+            &[
+                "missing.elf",
+                "reach",
+                "0x0+1K",
+                "--to",
+                "0x20000000+1K",
+                "--to",
+                "0x20000000..0x20000400",
+            ],
             "error: reach takes one SYMBOL, not ranges; for what a range uses in the --to ranges: \
              elfq missing.elf callees 0x00000000..0x00000400 --to 0x20000000..0x20000400\n",
         ),

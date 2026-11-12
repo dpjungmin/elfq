@@ -113,11 +113,13 @@ its size shows as `?`, and elfq can't read its code.
 written `START..END` or `START+SIZE`. With `--range`, the overview, `top`
 and `retained` count only the bytes inside one range. `callers`, `callees`
 and `retained` take ranges in place of SYMBOL, `callers` and `callees` take
-them after `--from` and `--to` too, and `reach` after `--to`. A memory
-block is a run of sections and load images less than 64 KiB apart, which
-stands for one memory, such as flash or a RAM; the overview lists the
-blocks when there are several, and `reach` adds up what SYMBOL reaches in
-each. (`binary::AddressRange`, `binary::MemoryBlock`)
+them after `--from` and `--to` too, and `reach` after `--to`. A range
+given twice in place of SYMBOL, or to `--from` or `--to`, even typed two
+ways, as `0x0+16` and `0x0..0x10`, counts once. A memory block is a run
+of sections and load images less than 64 KiB apart, which stands for one
+memory, such as flash or a RAM; the overview lists the blocks when there
+are several, and `reach` adds up what SYMBOL reaches in each.
+(`binary::AddressRange`, `binary::MemoryBlock`)
 
 **Load image.** The bytes of a section that the file stores in one place,
 such as flash, for the program to copy to where it uses them, such as RAM:
@@ -1469,11 +1471,11 @@ and several SYMBOLs, and with `--to` or `--from`, **`callees SYMBOL`** and
 
 | Key | Value |
 |---|---|
-| `ranges` | the ranges, or the range that SYMBOL occupies: its first byte when elfq doesn't know its size; for a set, only the ranges given among its arguments, which may be none |
+| `ranges` | the ranges, in the order given, each once, or the range that SYMBOL occupies: its first byte when elfq doesn't know its size; for a set, only the ranges given among its arguments, which may be none |
 | `symbols` | there only for SYMBOLs among other arguments: each one's item, in the order given, each once, with `aliases` |
 | `matches` | there only when a pattern was given: each item that each pattern matched, as in `retained`'s, above |
-| `to` | for `callees` only, the ranges of `--to`, or `null` without it |
-| `from` | for `callers` only, the ranges of `--from`, or `null` without it |
+| `to` | for `callees` only, the ranges of `--to`, in the order given, each once, or `null` without it |
+| `from` | for `callers` only, the ranges of `--from`, in the order given, each once, or `null` without it |
 | `callees` | for `callees`, the references that cross, a row for each pair of items and way of use, in the text's order, the largest item outside first: the `item` or import outside; the `caller` in the ranges that uses it; `how`, as in `callees SYMBOL`; `veneer`, the linker's veneer or PLT stub that a call goes through, or `null`; and the `sites`. With `--to`, only those into its ranges, where a call through a veneer in them that goes on elsewhere uses the veneer, as its `item` |
 | `callers` | for `callers`, the same, but with the `callee` in the ranges that `item` uses, in place of `caller` |
 | `unresolved` | for `callees`, as in `callees SYMBOL`, with the `caller` it is in and the `veneer` too; with `--to`, only those that may go to its ranges. For `callers`, the calls and jumps from outside to an address in the ranges that no item holds, as to a chip's ROM, in the same shape |
@@ -1486,7 +1488,7 @@ and several SYMBOLs, and with `--to` or `--from`, **`callees SYMBOL`** and
 | Key | Value |
 |---|---|
 | `symbol` | SYMBOL's item |
-| `to` | the ranges of `--to`, or `null` without it |
+| `to` | the ranges of `--to`, in the order given, each once, or `null` without it |
 | `code_bytes`, `data_bytes` | the bytes of the functions, and of the data objects, among SYMBOL and what it reaches, or with `--to`, among those in its ranges |
 | `blocks` | every memory block that the overview's `memory` lists, in address order, each a range with the `code_bytes` and `data_bytes` in it, counted the same way, and the `sections` there that hold what they count |
 | `items` | SYMBOL, then what it reaches, as the rows of a tree: each comes after its parent, and the items its parent uses come in the order it first uses them. Each is an item with an `id`, counting from 0; the `block` that holds it, as the block's `start`, or `null` for an import, or for an item in no block, as a damaged file can have; `how` its parent uses it, in the words of the JSON column in [Concepts](#concepts); the `sites` where it does; `through_pointer`, whether it is a function there only because something takes or stores its address, which the text marks "(through a pointer)", but in the rows of `--to`; `in_to`, whether it is in the ranges of `--to`, or `null` without it; and `parent`, the `id` of the item that uses it on its shortest chain from SYMBOL. `how` and `parent` are `null` for SYMBOL. A veneer has a row of its own, between the call to it and its target. With `--to`, only the items that `--tree` draws, numbered again: SYMBOL, the items in its ranges, those with calls and jumps in `unresolved`, and the items on their chains |

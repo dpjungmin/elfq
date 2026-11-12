@@ -73,6 +73,25 @@ impl FromStr for AddressRange {
     }
 }
 
+/// The distinct ranges in `ranges`, in the order given, so that a range
+/// given twice, even typed two ways, as `0x0+16` and `0x0..0x10`, counts
+/// once.
+pub(crate) fn distinct_ranges(ranges: impl IntoIterator<Item = AddressRange>) -> Vec<AddressRange> {
+    let mut distinct = Vec::new();
+    for range in ranges {
+        add_range_once(&mut distinct, range);
+    }
+    distinct
+}
+
+/// Adds `range` to the end of `ranges` unless it is there already, as
+/// [`distinct_ranges`] adds each range in turn.
+pub(crate) fn add_range_once(ranges: &mut Vec<AddressRange>, range: AddressRange) {
+    if !ranges.contains(&range) {
+        ranges.push(range);
+    }
+}
+
 /// What to tell someone who typed `text` for a range, with neither `..` nor
 /// `+` in it: the range it means, if it puts `-` or `:` between two
 /// numbers, as `did you mean 0x0..0x40000?` for `0x0-0x40000`, or else the
@@ -307,6 +326,17 @@ mod tests {
         for text in ["0x10-0x10", "0x40000-0x0", "0x0-x", "0x1700"] {
             assert_eq!(range_hint(text), forms, "{text}");
         }
+    }
+
+    #[test]
+    fn a_range_given_twice_counts_once_where_first_given() {
+        let [a, a_again, b, c]: [AddressRange; 4] =
+            ["0x0+16", "0x0..0x10", "0x10..0x40", "0x0..0x40"].map(|text| text.parse().unwrap());
+        // The first of each is kept where it was given, even when the
+        // repeat isn't next to it, or is typed another way.
+        assert_eq!(distinct_ranges([b, a, b, a_again]), [b, a]);
+        // A range that overlaps others is a range of its own.
+        assert_eq!(distinct_ranges([c, a, c, b, a]), [c, a, b]);
     }
 
     #[test]

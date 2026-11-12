@@ -1114,6 +1114,22 @@ fn ranges_in_place_of_symbol_must_be_ranges_with_something_in_them() {
          elfq testdata/bin/c-cortex-m7.elf callers crc32 --from 0x30000000..0x31000000 --from \
          0x00000000..0x00000400\n",
     );
+    // A range given twice, even once to --range, is named once.
+    assert_output(
+        &stderr(&[
+            TCM_SAMPLE,
+            "callers",
+            "crc32",
+            "--from",
+            "0x0+1K",
+            "--from",
+            "0x0..0x400",
+            "--range",
+            "0+1K",
+        ]),
+        "error: callers takes --from, not --range, to list only the callers in a range: \
+         elfq testdata/bin/c-cortex-m7.elf callers crc32 --from 0x00000000..0x00000400\n",
+    );
     // The ranges of --from and --to must each hold something outside the
     // ranges asked about, or they are most likely mistyped.
     assert_output(
@@ -1305,6 +1321,70 @@ fn several_symbols_answer_together_with_ranges_and_patterns() {
          \n\
          Calls through a pointer to on_timer, on_data and on_button aren't listed, since \
          elfq can't see them.\n",
+    );
+}
+
+#[test]
+fn a_range_given_twice_in_place_of_symbol_is_named_once() {
+    // Typed two ways, it is one range, which the answer names once and
+    // calls "it", as a set counts an item given twice once.
+    assert_output(
+        &crossing(&[TCM_SAMPLE, "callers", "0x0+16", "0x0..0x10"]),
+        "0x00000000..0x00000010 (.itcm) is used by 1 data object outside it:\n\
+         \n\
+         ADDRESS     SIZE  HOW      AT          CALLER\n\
+         0x30000000    64  pointer  0x3000003c  vector_table, uses SysTick_Handler\n",
+    );
+    let callees = run(&[TCM_SAMPLE, "callees", "0x0+16", "0x0+16", "--json"]).json(1);
+    assert_eq!(
+        callees["ranges"],
+        json!([{ "start": "0x0", "end": "0x10" }])
+    );
+}
+
+#[test]
+fn from_and_to_name_a_range_given_twice_once() {
+    assert_output(
+        &crossing(&[
+            TCM_SAMPLE,
+            "callers",
+            "0x20000000+256K",
+            "--from",
+            "0x0+256K",
+            "--from",
+            "0x0..0x40000",
+        ]),
+        "\
+0x20000000..0x20040000 (.data and .bss) is used by 2 functions in 0x00000000..0x00040000 (.itcm):
+
+ADDRESS  SIZE  HOW   AT    CALLER
+0x10       48  uses  0x18  crc32, uses crc_table
+0x0        16  uses  0x0   SysTick_Handler, uses systick_count
+",
+    );
+    let callees = [
+        TCM_SAMPLE,
+        "callees",
+        "0x0+256K",
+        "--to",
+        "0x30000000+16M",
+        "--to",
+        "0x30000000..0x31000000",
+    ];
+    assert_output(
+        &crossing(&callees),
+        "\
+0x00000000..0x00040000 (.itcm) uses 3 items in 0x30000000..0x31000000 (.isr_vector, .text, .rodata and .ARM.exidx):
+
+ADDRESS     SIZE  HOW                   AT    CALLEE
+0x3000087c   308  call via veneer       0xbc  memcpy, used by apply_filter
+0x300002e4    60  tail call via veneer  0x8   app_tick, used by SysTick_Handler
+0x30000eb4    32  uses                  0x56  fir_coeffs, used by filter_tap
+",
+    );
+    assert_eq!(
+        run(&[&callees[..], &["--json"]].concat()).json(1)["to"],
+        json!([{ "start": "0x30000000", "end": "0x31000000" }])
     );
 }
 
