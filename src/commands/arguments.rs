@@ -11,10 +11,10 @@
 //!
 //! clap refuses an argument that a command doesn't take before elfq sees
 //! the others, and [`unexpected_argument_hints`] words what elfq adds under
-//! the first line of that error: for `why`, `reach`, `inlined`, `browse`
-//! and `top`, which take one SYMBOL at most, that the arguments are files
-//! here, which the shell may have put in place of a pattern, and for `top`,
-//! which takes none, the command that takes a pattern given to it.
+//! the first line of that error: for the commands that take one SYMBOL at
+//! most ([`TAKE_ONE_SYMBOL_AT_MOST`]), that the arguments are files here,
+//! which the shell may have put in place of a pattern, and for `top`, which
+//! takes none, the command that takes a pattern given to it.
 
 use std::io::Write;
 
@@ -42,8 +42,13 @@ const BROWSE_REFUSED: &str = "browse takes no --json, --tree or --range";
 /// read, so the line that says that the arguments are files here, which
 /// the shell may have put in place of a pattern, goes under clap's error
 /// (see [`unexpected_argument_hints`]), where `retained`, `callers` and
-/// `callees`, which take several, give it under their own. `diff` and
-/// `startup` take no SYMBOL, and a pattern isn't given to them.
+/// `callees`, which take several, give it under their own. clap refuses an
+/// argument after those that `diff`, `startup` and `debug` take too, but
+/// none of the three is listed: `diff` and `startup` take no SYMBOL, so a
+/// pattern isn't given to them, and of the hidden `debug` commands,
+/// `items` and `walk` take none, and `matches`, which takes patterns,
+/// takes any number. A unit test checks that every other command that
+/// clap refuses one more argument for is listed.
 const TAKE_ONE_SYMBOL_AT_MOST: [&str; 5] = ["why", "reach", "inlined", "browse", "top"];
 
 /// The lines that elfq adds under the first line of clap's error for
@@ -446,10 +451,57 @@ mod tests {
             let error = Cli::try_parse_from(["elfq", "app.elf", command, "a", "b"]).unwrap_err();
             assert_eq!(error.kind(), ErrorKind::UnknownArgument, "{command}");
         }
-        // Those that take several give the line under their own errors.
-        for command in ["retained", "callers", "callees"] {
-            let cli = Cli::try_parse_from(["elfq", "app.elf", command, "a", "b"]);
-            assert!(cli.is_ok(), "{command}");
+    }
+
+    /// Arguments that `command` takes, so that one more is one too many for
+    /// a command that takes one SYMBOL at most. A new command fails the
+    /// test below until it has an arm here.
+    fn sample_arguments(command: &str) -> &'static [&'static str] {
+        match command {
+            "top" | "startup" => &[],
+            "retained" | "why" | "inlined" | "callers" | "callees" | "reach" | "browse" => &["a"],
+            "diff" => &["new.elf"],
+            "debug" => &["items"],
+            _ => panic!("give {command} sample arguments"),
+        }
+    }
+
+    #[test]
+    fn every_command_that_takes_one_symbol_at_most_is_listed() {
+        // Those that clap refuses one more argument for too, but that take
+        // no SYMBOL (see TAKE_ONE_SYMBOL_AT_MOST).
+        let take_no_symbol = ["diff", "startup", "debug"];
+        for command in cli::command_names() {
+            let command = command.as_str();
+            let arguments = [
+                &["elfq", "app.elf", command],
+                sample_arguments(command),
+                &["b"],
+            ];
+            let refused = match Cli::try_parse_from(arguments.concat()) {
+                Ok(_) => false,
+                Err(error) => {
+                    assert_eq!(
+                        error.kind(),
+                        ErrorKind::UnknownArgument,
+                        "{command}: clap refused its sample arguments for another reason: \
+                         fix its arm in sample_arguments"
+                    );
+                    true
+                }
+            };
+            let listed =
+                TAKE_ONE_SYMBOL_AT_MOST.contains(&command) || take_no_symbol.contains(&command);
+            assert!(
+                listed || !refused,
+                "{command}: clap refuses an argument after those it takes: add it to \
+                 TAKE_ONE_SYMBOL_AT_MOST, or if it takes no SYMBOL, to take_no_symbol, and say \
+                 why in the constant's doc"
+            );
+            assert!(
+                refused || !listed,
+                "{command} takes another argument: take it out of the list it is in"
+            );
         }
     }
 
