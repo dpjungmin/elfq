@@ -201,17 +201,14 @@ impl Starts<'_> {
     /// `--all` to print it all.
     #[cfg(feature = "tui")]
     pub(in crate::commands) fn tab(&self, path: &Path) -> FlatTab {
-        FlatTab::new(
-            self.answer(path, Detail::All),
-            self.answer(path, Detail::Brief),
-        )
+        FlatTab::new(self.text(path, Detail::All), self.text(path, Detail::Brief))
     }
 
     /// The answer's text: the starts as a table, then what elfq can't
     /// follow or read, and for a shared library, that its exported
     /// functions aren't counted. Each row is about its start.
     #[expect(clippy::too_many_lines, reason = "waits to be split; see CONTRIBUTING")]
-    pub(super) fn answer(&self, path: &Path, detail: Detail) -> FlatAnswer {
+    pub(super) fn text(&self, path: &Path, detail: Detail) -> FlatAnswer {
         let binary = self.binary;
         let file = path.display();
         let several = self.blocks.len() > 1;
@@ -510,10 +507,10 @@ mod tests {
         }
     }
 
-    fn text(starts: &Starts, detail: Detail) -> String {
+    fn written(starts: &Starts, detail: Detail) -> String {
         let mut out = Vec::new();
         starts
-            .answer(Path::new("app.elf"), detail)
+            .text(Path::new("app.elf"), detail)
             .write(&mut out)
             .unwrap();
         String::from_utf8(out).unwrap()
@@ -532,7 +529,7 @@ mod tests {
                 unreadable: Vec::new(),
                 blocks: memory_blocks(&binary.sections),
             };
-            text(&starts, Detail::Brief)
+            written(&starts, Detail::Brief)
                 .lines()
                 .last()
                 .unwrap()
@@ -567,7 +564,7 @@ mod tests {
         };
         let main = || vec![start(&binary, "main", None, 10, (false, false))];
         assert_eq!(
-            text(&starts(main(), &["_init", "_fini"]), Detail::Brief),
+            written(&starts(main(), &["_init", "_fini"]), Detail::Brief),
             "\
 Where app.elf starts, and the bytes of code and data that each reaches:
 
@@ -578,7 +575,7 @@ _init and _fini are starts too, but elfq doesn't know where they end, so it can'
 "
         );
         assert_eq!(
-            text(&starts(main(), &["_init"]), Detail::Brief)
+            written(&starts(main(), &["_init"]), Detail::Brief)
                 .lines()
                 .last(),
             Some(
@@ -588,12 +585,12 @@ _init and _fini are starts too, but elfq doesn't know where they end, so it can'
         );
         // Without a table, the sentence is the answer.
         assert_eq!(
-            text(&starts(Vec::new(), &["_init"]), Detail::Brief),
+            written(&starts(Vec::new(), &["_init"]), Detail::Brief),
             "_init is where app.elf starts, but elfq doesn't know where it ends, so it can't \
              count what it reaches.\n"
         );
         assert_eq!(
-            text(&starts(Vec::new(), &[]), Detail::Brief),
+            written(&starts(Vec::new(), &[]), Detail::Brief),
             "elfq found no place where app.elf starts.\n"
         );
     }
@@ -648,7 +645,7 @@ _init and _fini are starts too, but elfq doesn't know where they end, so it can'
         expected.push(format!("3 more {init_array:?}"));
         expected.extend(["100".to_string(), "0".to_string()]);
         assert_eq!(rows, expected);
-        assert!(text(&starts, Detail::Brief).contains("  listed in .init_array  3 more\n"));
+        assert!(written(&starts, Detail::Brief).contains("  listed in .init_array  3 more\n"));
         assert_eq!(starts.rows(Detail::All).len(), 34);
     }
 

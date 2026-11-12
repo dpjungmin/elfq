@@ -255,7 +255,7 @@ impl ItemPage {
         header_name: &str,
     ) -> ItemPage {
         let binary = session.binary;
-        let answer = session.callers(node);
+        let answer = session.callers_text(node);
         let listing = match node {
             Node::Item(index) => Pane::Listing(ListingPane::new(session, index, at)),
             Node::Import(_) => Pane::Refused(imported(session, node)),

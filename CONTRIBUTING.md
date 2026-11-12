@@ -122,7 +122,7 @@ overview and `top`.
 
 `commands/browse/` sits at the top of `commands/`, and nothing else uses
 it. It asks the six commands it shows for their answers, the overview,
-`reach`, `callers`, `callees`, `why` and `retained`, as `callers::answer`
+`reach`, `callers`, `callees`, `why` and `retained`, as `callers::text`
 for "used by N", so that a page says what the commands print. It is a
 child of `commands`, so it reaches their `pub(super)` helpers without
 making them public. It, `arch/listing.rs` and `binary/listing.rs` build
@@ -222,7 +222,7 @@ only with the `tui` feature.
   `App`, and for what those show, as `Graph::roots` shows `Root`. The
   helpers in `tests/it/support/` are `pub(crate)`. A declaration that
   only browse uses is behind `#[cfg(feature = "tui")]`, as
-  `callers::answer` is, since CI's clippy also builds without `tui` and
+  `callers::text` is, since CI's clippy also builds without `tui` and
   refuses dead code. A doc link counts as a use, as `arch/startup.rs`
   links to the startup walk's limits in `arch/thumb/startup/mod.rs`, and
   a `pub` declaration's doc may link to a `pub(crate)` one, which
@@ -425,8 +425,16 @@ helper type, doesn't take a word of the list; where code still does, as
   or JSON. `FlatAnswer` is the text of an answer whose table has one row
   to a line, as `callers`, `callees` and `reach` write it, and
   `TreeAnswer` the text of one whose table holds a tree, as `why` and
-  `retained` write it. Browse shows both; `TabAnswer` is a `TreeAnswer`
-  as a tab of browse shows it.
+  `retained` write it. A function that builds one is named `text`, as
+  `callers::text` is, or `list_text`, `tree_text` and the like where a
+  command builds more than one, as `inlined` does. `reach` of a SYMBOL
+  builds one through the `Text` that `Reach::text` gives, whose two
+  methods are named for the form they write: `Text::by_block`, and
+  `Text::in_to_ranges` with `--to`. Browse shows both: a `FlatTab` or a
+  `TreeTab` is the text as a tab of browse shows it, which a function
+  named `tab` builds, as `reach::tab` and `why::tab` do. The view of each
+  tab, in `browse/views/`, makes the command's text, or its tab form, a
+  `Printed` in a function also named `tab`.
 - **listing**: an item's lines as tab 1 of its page in browse shows them
   (`Listing`, in `views/item/listing.rs`). For a function, that is its
   code, one line to an instruction, as `InstructionSet::listing` prints
@@ -566,10 +574,8 @@ walk's `Step` is what an instruction leads to; `reach`'s `Step` is
 SYMBOL, or an item or import that it reaches, at its place in the tree,
 whose place in the search is a `StepId`; and a loop's `LoopStore::step`
 is how far a store moves each iteration, which `pieces.rs` reads beside
-`Piece::step`, a step index. The functions named `answer`, as
-`callers::answer`, `callees::answer` and `top`'s, return the text of an
-answer, a `FlatAnswer` or a `TreeAnswer`, rather than what the command
-worked out. Those are names to fix, not meanings to copy.
+`Piece::step`, a step index. Those are names to fix, not meanings to
+copy.
 
 ## Tests
 
@@ -901,7 +907,7 @@ is a short one to copy.
    as JSON. Every error, such as a refusal, comes before the first line
    is written, so that elfq prints a whole answer or only an error.
    `top.rs` shows this in one file: its facts are a `RetainedTree`,
-   which `run` writes as a `TopJson`, or through `answer` as a
+   which `run` writes as a `TopJson`, or through `top::text` as a
    `TreeAnswer`. A command with many facts gets a folder, and an `Answer`
    that holds them, which its own `text.rs` and `json.rs` write, as
    `startup/` and `diff/` do.
@@ -1025,7 +1031,7 @@ the biggest view, and not the one to start from.
    compiler asks for their arms, but not for `Tab::ALL`. Its key goes in
    the "1 2 3 4 5 6" row of `BINDINGS`, with its help text (step 3), which
    a test in `item.rs` checks against `Tab::ALL`. Its rows come from that
-   command's own code, as `callees::answer`, so that they can't drift from
+   command's own code, as `callees::text`, so that they can't drift from
    what it prints.
 3. **Keys.** A key goes in `BINDINGS` in `keys.rs`, with the new `Action`,
    what the help page says about it, and its hint, if the hint line names

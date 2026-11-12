@@ -1782,7 +1782,7 @@ in order. Its output is the first example under [Commands](#commands).
    retained sizes from the bottom of the tree up.
    `RetainedTree` also notes which functions something calls directly, for
    the "(through a pointer)" mark.
-7. **The answer.** `retained::answer` has `graph::Removal` search from the
+7. **The answer.** `retained::text` has `graph::Removal` search from the
    roots once more, never entering `process_frame`, for what removing it
    loses: the branches of the tree under the removal's tops. The only top
    is `process_frame` itself, so what is lost is `process_frame` and
@@ -1822,7 +1822,7 @@ that run in it:
 main.rs      1 main, run                                  8 exit status
 commands/    2 commands::run   4 retained::run, find_symbols,
                                  Names::look_up_or_match
-             7 retained::answer, RetainedTree::largest, table
+             7 retained::text, RetainedTree::largest, table
 cli/         1 Cli, Command
 render/      7 Table::tree, Table::write
 debuginfo/   (for inlined, an inlined SYMBOL, and startup's inlined main)

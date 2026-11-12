@@ -118,7 +118,7 @@ pub(super) fn callers(
         }
         // `check_tree` refuses --tree for callers.
         Format::Text | Format::Tree => callers_of
-            .answer(binary, graph, &symbol.lead_name(binary), detail)
+            .text(binary, graph, &symbol.lead_name(binary), detail)
             .write(out),
     }
 }
@@ -128,14 +128,14 @@ pub(super) fn callers(
 /// largest callers, or with [`Detail::All`], every one, and the notes under
 /// them.
 #[cfg(feature = "tui")]
-pub(super) fn answer(
+pub(super) fn text(
     binary: &Binary,
     graph: &Graph,
     node: Node,
     name: &str,
     detail: Detail,
 ) -> FlatAnswer {
-    CallersOf::new(binary, graph, node).answer(binary, graph, name, detail)
+    CallersOf::new(binary, graph, node).text(binary, graph, name, detail)
 }
 
 /// What `callers` finds about a node, which its text and its JSON both
@@ -172,7 +172,7 @@ impl<'g> CallersOf<'g> {
     }
 
     /// The text answer, which names the node `name` in its first line.
-    fn answer(&self, binary: &Binary, graph: &Graph, name: &str, detail: Detail) -> FlatAnswer {
+    fn text(&self, binary: &Binary, graph: &Graph, name: &str, detail: Detail) -> FlatAnswer {
         let rows = rows(binary, &self.references, |reference| {
             text::how_column(binary, reference.to, reference.kind)
         });

@@ -20,7 +20,7 @@ use super::{
 };
 use crate::commands::browse::{keys::Action, session::Session};
 use crate::commands::flat_answer::FlatAnswer;
-use crate::commands::tree_answer::{TabAnswer, TreeAnswer};
+use crate::commands::tree_answer::{TreeAnswer, TreeTab};
 use crate::graph::Node;
 use crate::render::{Align, flat_rows};
 
@@ -184,14 +184,13 @@ impl Printed {
         Printed::new(above, answer.columns, rows, answer.notes, command)
     }
 
-    /// `answer`, an answer of `why` or `retained` as a tab shows it,
-    /// printed by `command`, with every row and name, and its notes in
-    /// shorter forms for when they don't fit (see rule 4 of
-    /// [`Printed::lay_out`]).
-    pub(super) fn of_tab(answer: TabAnswer, command: String) -> Printed {
-        let mut printed = Printed::of_tree(answer.answer, command);
-        printed.brief = Some(answer.brief);
-        printed.briefest = Some(answer.briefest);
+    /// `tab`, the answer of `why` or `retained` as a tab shows it, printed
+    /// by `command`, with every row and name, and its notes in shorter
+    /// forms for when they don't fit (see rule 4 of [`Printed::lay_out`]).
+    pub(super) fn of_tab(tab: TreeTab, command: String) -> Printed {
+        let mut printed = Printed::of_tree(tab.answer, command);
+        printed.brief = Some(tab.brief);
+        printed.briefest = Some(tab.briefest);
         printed
     }
 

@@ -110,14 +110,14 @@ pub(super) fn callees(
         };
         return json::write(&callees, out);
     }
-    answer(binary, graph, index, name, detail).write(out)
+    text(binary, graph, index, name, detail).write(out)
 }
 
 /// What the item at `index`, `name` as the answer's first line gives it,
 /// calls or uses, as the text of `callees SYMBOL` lists it: the rows of
 /// the 30 largest callees and the first few sites of what elfq can't
 /// follow, or with [`Detail::All`], every one.
-pub(super) fn answer(
+pub(super) fn text(
     binary: &Binary,
     graph: &Graph,
     index: usize,

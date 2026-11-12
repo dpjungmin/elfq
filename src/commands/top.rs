@@ -83,14 +83,14 @@ pub(super) fn run(
         json::write(&answer, out)?;
         return Ok(Outcome::Answered);
     }
-    answer(&retained, detail, format).write(out)?;
+    text(&retained, detail, format).write(out)?;
     Ok(Outcome::Answered)
 }
 
 /// What `top` writes as text: the tree of the largest items, or with
 /// [`Detail::All`], every one, in the shape that `format` asks for, then
 /// the items that nothing reaches.
-fn answer(retained: &RetainedTree, detail: Detail, format: Format) -> TreeAnswer {
+fn text(retained: &RetainedTree, detail: Detail, format: Format) -> TreeAnswer {
     let binary = retained.binary;
     let unreachable: Vec<String> = unreachable_text(retained, detail).into_iter().collect();
     // When nothing reaches the items in the range, which items nothing

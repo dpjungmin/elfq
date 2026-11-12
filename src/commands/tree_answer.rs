@@ -98,9 +98,10 @@ pub(super) fn is_named_below(children: &[TreeRow], shape: TreeShape) -> bool {
     !children.is_empty() && shape != TreeShape::Drawn
 }
 
-/// An answer of `why` or `retained` as a tab of browse shows it.
+/// A [`TreeAnswer`] as a tab of browse shows it, `why`'s or `retained`'s,
+/// with what the command that prints it leaves out without `--all`.
 #[cfg(feature = "tui")]
-pub(super) struct TabAnswer {
+pub(super) struct TreeTab {
     /// The answer with every row and name, as with `--all`.
     pub(super) answer: TreeAnswer,
     /// Its notes as the command words them without `--all`, which name
@@ -114,10 +115,10 @@ pub(super) struct TabAnswer {
 }
 
 #[cfg(feature = "tui")]
-impl TabAnswer {
+impl TreeTab {
     /// An answer of sentences, the same with `--all` and without.
-    pub(super) fn sentences(lead: Vec<String>) -> TabAnswer {
-        TabAnswer {
+    pub(super) fn sentences(lead: Vec<String>) -> TreeTab {
+        TreeTab {
             answer: TreeAnswer::sentences(lead),
             brief: Vec::new(),
             briefest: Vec::new(),

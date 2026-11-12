@@ -38,7 +38,7 @@ use crate::graph::Node;
 /// trees of what goes, the largest 30 items or with [`Detail::All`], every
 /// one, in the shape that `format` asks for, then the notes, which name the
 /// functions it left out too.
-pub(super) fn tree_answer(
+pub(super) fn text(
     retained: &RetainedTree,
     symbols: &Symbols,
     detail: Detail,
@@ -52,7 +52,7 @@ pub(super) fn tree_answer(
         left_out: &symbols.left_out,
         parts: Parts::new(retained, &removed),
     };
-    several.tree_answer(detail, format)
+    several.tree_text(detail, format)
 }
 
 /// The names of the SYMBOLs in `found`, as the answer gives them, in the
@@ -85,13 +85,13 @@ impl Several<'_, '_, '_, '_> {
     /// SYMBOL, it says so, and what their own bytes are, and has no notes
     /// of its own but the one on the functions left out. When no row would
     /// show, it has no table.
-    fn tree_answer(&self, detail: Detail, format: Format) -> TreeAnswer {
+    fn tree_text(&self, detail: Detail, format: Format) -> TreeAnswer {
         let retained = self.retained;
         let naming = Naming::of(detail);
         let range = (retained.range).map(|range| text::range_text(retained.binary, range, detail));
         let removal = &self.parts.removal;
         if removal.tops().is_empty() {
-            let sentence = self.unreachable_answer(range.as_deref(), &naming);
+            let sentence = self.unreachable_text(range.as_deref(), &naming);
             return TreeAnswer {
                 notes: left_out_note(retained.binary, self.left_out, &naming)
                     .into_iter()
@@ -122,7 +122,7 @@ impl Several<'_, '_, '_, '_> {
     /// Says that nothing reaches any of the SYMBOLs, naming them as
     /// `naming` names them, and that removing them would save their own
     /// bytes, with a `range`, those in it.
-    fn unreachable_answer(&self, range: Option<&str>, naming: &Naming) -> String {
+    fn unreachable_text(&self, range: Option<&str>, naming: &Naming) -> String {
         let own = self.parts.removal.retained();
         let bytes = text::bytes_text(own);
         let saves = match range {

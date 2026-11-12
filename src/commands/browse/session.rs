@@ -3,7 +3,7 @@
 //! The file is loaded, and its reference graph built, once, before the
 //! screen switches, on elfq's own thread with its large stack, as for
 //! every command. Pages then ask the commands' own code for their answers,
-//! such as `callers::answer` for "used by N", so that a page says what the
+//! such as `callers::text` for "used by N", so that a page says what the
 //! commands print. What keeps each item, which the pages' headers say as
 //! `retained` and `why` do, takes a while to work out in a large program,
 //! so it is worked out once, after the first page is drawn.
@@ -17,8 +17,9 @@
 //!   column, in the link previews on the status line, and in an import's
 //!   title. Tab 3's first line has it, as in "Nothing in the file calls or
 //!   uses vfiprintf.", which shows only when nothing does (see
-//!   [`Session::callers`]). So does what u says where no one item keeps the
-//!   item, as in "Removing any single item wouldn't remove vfiprintf."
+//!   [`Session::callers_text`]). So does what u says where no one item
+//!   keeps the item, as in "Removing any single item wouldn't remove
+//!   vfiprintf."
 //! - Its row name, from [`Names::row_name`], as in `frames` or
 //!   `0x30000de8`: in the notes on tab 1's lines, as in `uses
 //!   frames+0x8`, in what tab 1 says when it has no lines, and in an
@@ -173,9 +174,9 @@ impl<'a> Session<'a> {
     ///
     /// Its first line has `node`'s full name, which the page's header starts
     /// with.
-    pub(super) fn callers(&self, node: Node) -> FlatAnswer {
+    pub(super) fn callers_text(&self, node: Node) -> FlatAnswer {
         let name = node.name(self.binary);
-        callers::answer(self.binary, &self.graph, node, name, Detail::All)
+        callers::text(self.binary, &self.graph, node, name, Detail::All)
     }
 
     /// `node`'s name as the answer under tabs 2, 4, 5 and 6 gives it.
