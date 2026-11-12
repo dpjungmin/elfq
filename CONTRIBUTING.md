@@ -855,10 +855,15 @@ is a short one to copy.
    `symbol::with_shell_hint`, as `retained` does.
 4. **SYMBOL.** If the command reads code, call `check_code_is_readable`
    first, so that a file whose code elfq can't read says so even when
-   SYMBOL names nothing. `Names`, in `commands/symbol/lookup.rs`, finds
-   what a name means and names items for the user. A command whose
-   answer names items with it keeps the one that finds SYMBOL, so that
-   the names are worked out once, as `why`, `retained` and `reach` do:
+   SYMBOL names nothing. Make the other checks that need no graph, such
+   as `readable_item` below, or `check_has_bytes` for `--range`, before
+   building the graph (step 8), as `top` and `reach` do, so that a
+   mistyped argument fails at once; a check that needs the graph, such
+   as `reach`'s check of `--to`, comes after it. `Names`, in
+   `commands/symbol/lookup.rs`, finds what a name means and names items
+   for the user. A command whose answer names items with it keeps the
+   one that finds SYMBOL, so that the names are worked out once, as
+   `why`, `retained` and `reach` do:
    `let names = Kept::new(Names::new(binary));`, then
    `names.find(symbol)?`, which gives a `Symbol`: what a name or an
    address finds, or the one item that a pattern matches, with an error

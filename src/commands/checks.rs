@@ -2,18 +2,16 @@
 //! the file's code, that SYMBOL's item is in the file and its code can be
 //! read, and that there are bytes to count. Each fails with an error that
 //! says what is missing.
+//!
+//! None of them needs the reference graph, so a command makes them before
+//! it builds the graph where it can, and a mistyped argument fails at
+//! once.
 
 use anyhow::{Result, bail};
 
 use super::text::{self, Detail};
 use crate::binary::{AddressRange, Binary, Item, Source, memory_blocks, total};
-use crate::graph::{Graph, Node};
-
-/// Builds the reference graph, or explains why elfq can't yet.
-pub(super) fn reference_graph(binary: &Binary) -> Result<Graph> {
-    check_code_is_readable(binary)?;
-    Ok(Graph::build(binary))
-}
+use crate::graph::Node;
 
 /// Explains why elfq can't build the reference graph yet, if it can't.
 pub(super) fn check_code_is_readable(binary: &Binary) -> Result<()> {

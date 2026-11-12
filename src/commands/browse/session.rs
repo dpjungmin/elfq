@@ -56,7 +56,7 @@ use anyhow::Result;
 use super::views::Listing;
 use crate::binary::{Binary, FileKind, ItemKind, MemoryBlock, memory_blocks};
 use crate::commands::callers;
-use crate::commands::checks::reference_graph;
+use crate::commands::checks::check_code_is_readable;
 use crate::commands::flat_answer::FlatAnswer;
 use crate::commands::retained_tree::RetainedTree;
 use crate::commands::symbol::Names;
@@ -112,7 +112,8 @@ impl<'a> Session<'a> {
     /// Where elfq can't read its code, it says why, as every command that
     /// reads code does.
     pub fn new(path: &Path, binary: &'a Binary) -> Result<Session<'a>> {
-        let graph = reference_graph(binary)?;
+        check_code_is_readable(binary)?;
+        let graph = Graph::build(binary);
         let veneers = {
             let finder = Veneers::new(binary, &graph);
             (0..binary.items.len())

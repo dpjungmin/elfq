@@ -13,7 +13,7 @@ use std::path::Path;
 use anyhow::{Result, bail};
 use serde::Serialize;
 
-use super::checks::{check_has_bytes, found_functions, reference_graph};
+use super::checks::{check_code_is_readable, check_has_bytes, found_functions};
 use super::kept::Kept;
 use super::retained_tree::RetainedTree;
 use super::symbol::Names;
@@ -162,9 +162,10 @@ fn write_range(
     if binary.kind == FileKind::SharedLibrary {
         bail!("elfq can't yet tell what keeps the bytes of a range in a shared library");
     }
-    let graph = Kept::new(reference_graph(binary)?);
-    let retained = Kept::new(RetainedTree::new(binary, &graph, Some(range)));
+    check_code_is_readable(binary)?;
     check_has_bytes(binary, Some(range))?;
+    let graph = Kept::new(Graph::build(binary));
+    let retained = Kept::new(RetainedTree::new(binary, &graph, Some(range)));
     writeln!(out, "{}", file_text(path, binary))?;
     writeln!(
         out,
