@@ -1267,9 +1267,9 @@ error: elfq can't use 3 of the 3 SYMBOLs:
 #[test]
 fn retained_says_to_use_one_or_more_of_what_a_name_could_mean() {
     const CPP: &str = "testdata/bin/cpp-x86_64.elf";
-    // It says to use one or more, unlike other commands, which take one
-    // SYMBOL, and like `callers` and `callees`, which take a set too, it
-    // offers the pattern that takes both.
+    // Like `callers` and `callees`, which take a set too, it says to use
+    // one or more, unlike the commands that take one SYMBOL, and offers
+    // the pattern that takes both.
     assert_output(
         &stderr(&[CPP, "retained", "log"]),
         "\

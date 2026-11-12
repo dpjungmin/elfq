@@ -38,19 +38,22 @@ pub(in crate::commands) struct InlinedEverywhere<'n> {
 
 /// What a command takes for SYMBOL, which decides whether the error for a
 /// name that finds nothing offers the pattern for what is in a module of
-/// that name (see [`Names::module_pattern`]), and whether the error for a
-/// name that could mean several items offers the pattern that takes them
-/// all (see [`Names::one_or_error`]).
+/// that name (see [`Names::module_pattern`]), and how the error for a name
+/// that could mean several items ends: whether it says to use one
+/// ([`USE_ONE`]) or one or more ([`USE_ONE_OR_MORE`]), and whether it
+/// offers the pattern that takes them all (see [`Names::one_or_error`]).
 #[derive(Clone, Copy)]
 pub(in crate::commands) enum Takes {
     /// One item, as `why`, `reach`, `inlined` and `browse` take: the
     /// pattern for a module is offered only when it matches one item, the
-    /// item it would find, and none for a name that could mean several.
+    /// item it would find, and a name that could mean several says to use
+    /// one, with no pattern for all (see [`Names::could_mean`]).
     One,
     /// A set, as `retained`, `callers` and `callees` take, of every item
     /// that a pattern matches: the pattern for a module is offered when it
-    /// matches any, and for a name that could mean several items, the
-    /// pattern that takes just those, when there is one.
+    /// matches any, and a name that could mean several items says to use
+    /// one or more, with the pattern that takes just those, when there is
+    /// one (see [`Names::choices`]).
     Set,
 }
 
@@ -358,19 +361,14 @@ impl<'a> Names<'a> {
 
     /// The error for `query` when it finds `nodes`, several things, in a
     /// command that takes a set, as `retained`, `callers` and `callees` do:
-    /// the error of [`Names::could_mean`], where `instruction` ends with
-    /// the pattern that takes them all, when there is one (see
-    /// [`Names::pattern_for_all`]): "use one or more on the left instead,
-    /// or 'checksum*' for all 3".
-    pub(in crate::commands) fn choices(
-        &self,
-        query: &str,
-        nodes: &[Node],
-        instruction: &str,
-    ) -> String {
+    /// the error of [`Names::could_mean`], which says to use one or more
+    /// of them ([`USE_ONE_OR_MORE`]) and ends with the pattern that takes
+    /// them all, when there is one (see [`Names::pattern_for_all`]): "use
+    /// one or more on the left instead, or 'checksum*' for all 3".
+    pub(in crate::commands) fn choices(&self, query: &str, nodes: &[Node]) -> String {
         let instruction = match self.pattern_for_all(query, nodes) {
-            Some(pattern) => format!("{instruction}, or {pattern} for all {}", nodes.len()),
-            None => instruction.to_string(),
+            Some(pattern) => format!("{USE_ONE_OR_MORE}, or {pattern} for all {}", nodes.len()),
+            None => USE_ONE_OR_MORE.to_string(),
         };
         self.could_mean(query, nodes, &instruction)
     }
@@ -463,12 +461,18 @@ impl<'a> Names<'a> {
     }
 }
 
-/// What the error for SYMBOL that finds several things says to do, in
-/// every command but `retained`, which takes several SYMBOLs, and the error
-/// for a pattern that matches several items in a command that takes one.
-/// Browse's go-to box takes it off the error's first line, since it lists
-/// the things in its rows.
+/// What the error for SYMBOL that finds several things says to do in a
+/// command that takes one item ([`Takes::One`]), and the error for a
+/// pattern that matches several items there. Browse's go-to box takes it
+/// off the error's first line, since it lists the things in its rows.
 pub(in crate::commands) const USE_ONE: &str = "use one on the left instead";
+
+/// What the error for SYMBOL that finds several things says to do in a
+/// command that takes a set ([`Takes::Set`]), as `retained`, `callers` and
+/// `callees` do: such a command takes several SYMBOLs, so the user can
+/// give one or more of the things. [`Names::choices`] words that error
+/// for every such command.
+const USE_ONE_OR_MORE: &str = "use one or more on the left instead";
 
 /// `pattern` as the error offers it, quoted for the shell, with `count`,
 /// how many items it matches: "'uart_*' (7 items)".
@@ -602,29 +606,29 @@ mod tests {
             error.to_string().lines().next().unwrap().to_string()
         };
         let in_set = |query: &str| first_line(query, Takes::Set);
-        // The name with a `*` after it takes just what it could mean, even
-        // with a pointer's `*` in it.
+        // It says to use one or more, and the name with a `*` after it
+        // takes just what it could mean, even with a pointer's `*` in it.
         assert_eq!(
             in_set("checksum"),
-            "`checksum` could mean 2 functions; use one on the left instead, or 'checksum*' for \
-             all 2:"
+            "`checksum` could mean 2 functions; use one or more on the left instead, or \
+             'checksum*' for all 2:"
         );
         assert_eq!(
             in_set("send(char*)"),
-            "`send(char*)` could mean 2 functions; use one on the left instead, or \
+            "`send(char*)` could mean 2 functions; use one or more on the left instead, or \
              'send(char*)*' for all 2:"
         );
         // Not when it takes more, as 'run*' takes `drv::run_all`, or fewer,
         // as when an import is among them, which a pattern never takes.
         assert_eq!(
             in_set("run"),
-            "`run` could mean 2 functions; use one on the left instead:"
+            "`run` could mean 2 functions; use one or more on the left instead:"
         );
         assert_eq!(
             in_set("log"),
-            "`log` could mean 2 items; use one on the left instead:"
+            "`log` could mean 2 items; use one or more on the left instead:"
         );
-        // A command that takes one item never offers it.
+        // A command that takes one item says to use one, and offers none.
         assert_eq!(
             first_line("checksum", Takes::One),
             "`checksum` could mean 2 functions; use one on the left instead:"

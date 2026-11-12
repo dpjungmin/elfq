@@ -37,12 +37,12 @@
 //!   ([`Names::find`]), with the line of `shell_hint.rs` under the error
 //!   for one that finds nothing, and names items for the user in return.
 //! - `not_found.rs` words the error for SYMBOL that finds several items or
-//!   none, in the words of every command, which `retained` adds to, and
-//!   for a pattern that matches none, or several in a command that takes
-//!   one item. For a name that finds nothing, it offers first the pattern
-//!   for what is in a module of that name, as a command that takes one
-//!   item or a set can take it ([`Takes`]). `similar.rs` finds the names
-//!   that the error suggests.
+//!   none, as a command that takes one item or a set needs it ([`Takes`]),
+//!   and for a pattern that matches none, or several in a command that
+//!   takes one item. For a name that finds nothing, it offers first the
+//!   pattern for what is in a module of that name, where the command can
+//!   take what it matches. `similar.rs` finds the names that the error
+//!   suggests.
 //! - `pattern.rs` holds [`Pattern`], such as `uart_*`, when SYMBOL is one,
 //!   and finds the items that one matches ([`Names::matching`]), which
 //!   every command that takes SYMBOL takes in its place, and `debug
@@ -139,10 +139,11 @@ pub(super) type ItemInSet = fn(&Binary, Node) -> Result<usize>;
 /// or pattern that finds nothing, with its error; whether each range holds
 /// something is checked after, by `range_check`. `callers` and `callees`
 /// take a set, so a name that could mean several items gets an error that
-/// ends with the pattern that takes them all, when there is one (see
-/// [`Names::choices`]), which the error from [`Names::find`] leaves out. A
-/// set holds only items, so `item_in_set` gives the item of a SYMBOL among
-/// others, or the command's error for an import.
+/// says to use one or more of them and ends with the pattern that takes
+/// them all, when there is one (see [`Names::choices`]), where the error
+/// from [`Names::find`] says to use one and offers no pattern. A set holds
+/// only items, so `item_in_set` gives the item of a SYMBOL among others,
+/// or the command's error for an import.
 pub(super) fn subject(
     binary: &Binary,
     queries: &[String],

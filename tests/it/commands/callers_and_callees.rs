@@ -1566,8 +1566,8 @@ fn a_set_stops_at_the_first_argument_it_cant_read() {
     ]);
     assert!(
         error.starts_with(
-            "error: `checksum` could mean 3 functions; use one on the left instead, or \
-             'checksum*' for all 3:\n"
+            "error: `checksum` could mean 3 functions; use one or more on the left instead, \
+             or 'checksum*' for all 3:\n"
         ),
         "{error}"
     );

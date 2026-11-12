@@ -60,8 +60,8 @@ pub(in crate::commands) struct Names<'a> {
     row_names: RefCell<HashMap<usize, String>>,
 }
 
-/// What a query finds, before an error words why it finds no one item or
-/// import (see [`Names::look_up`]).
+/// What a query finds as a name or an address, before an error words why
+/// it finds no one item or import (see [`Names::look_up_or_match`]).
 pub(in crate::commands) enum Lookup<'n> {
     /// The one item or import that it finds.
     One(Symbol),
@@ -178,10 +178,11 @@ impl<'a> Names<'a> {
     /// one (see [`Names::could_mean`]), and the error for none offers the
     /// pattern for what is in a module of that name only when it matches
     /// one item. [`subject`](super::subject), for `callers` and `callees`,
-    /// takes a set ([`Takes::Set`]): the error for several ends with the
-    /// pattern that takes them all, when there is one (see
-    /// [`Names::choices`]), and the error for none offers the pattern for
-    /// a module whenever it matches an item (see [`Names::nothing_named`]).
+    /// takes a set ([`Takes::Set`]): the error for several says to use one
+    /// or more of them and ends with the pattern that takes them all, when
+    /// there is one (see [`Names::choices`]), and the error for none
+    /// offers the pattern for a module whenever it matches an item (see
+    /// [`Names::nothing_named`]).
     pub(in crate::commands) fn one_or_error(
         &self,
         query: &str,
@@ -193,19 +194,19 @@ impl<'a> Names<'a> {
             Lookup::NoName => bail!("{}", self.nothing_named(query, takes)),
             Lookup::Several(nodes) => match takes {
                 Takes::One => bail!("{}", self.could_mean(query, nodes, USE_ONE)),
-                Takes::Set => bail!("{}", self.choices(query, nodes, USE_ONE)),
+                Takes::Set => bail!("{}", self.choices(query, nodes)),
             },
         }
     }
 
-    /// What `query` finds as a name or an address, without reading it as a
-    /// pattern (see [`Names::look_up_or_match`]), and before an error words
-    /// why it finds no one item or import, so that a command can word that
-    /// its own way, as `retained` does. An address that no item holds, or
-    /// that isn't one, is an error already. Unlike `find`, it doesn't work
-    /// out why a name finds several or none, which can take seconds in a
-    /// large file.
-    pub(in crate::commands) fn look_up(&self, query: &str) -> Result<Lookup<'_>> {
+    /// What `query` finds as a name or an address, before an error words
+    /// why it finds no one item or import: the name-or-address half of
+    /// [`Names::look_up_or_match`], which, when it finds nothing, reads
+    /// `query` as a pattern if it has a `*` that stands for any text. An
+    /// address that no item holds, or that isn't one, is an error already.
+    /// Unlike `find`, it doesn't work out why a name finds several or none,
+    /// which can take seconds in a large file.
+    pub(super) fn look_up(&self, query: &str) -> Result<Lookup<'_>> {
         if let Some(address) = hex_number(query) {
             let address =
                 address.with_context(|| format!("`{query}` is not a hexadecimal address"))?;
