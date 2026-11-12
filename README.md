@@ -33,6 +33,7 @@ elfq app.elf reach                      # where the program starts, and the byte
 elfq app.elf reach SysTick_Handler      # what SysTick_Handler runs and uses, and where
 elfq app.elf browse                     # where the program starts, each start a page to read
 elfq app.elf browse log_msg             # read log_msg's code, what it calls and reaches, its callers, and what keeps it
+elfq app.elf browse 'uart_*'            # the items named uart_*, to pick one to read
 elfq old.elf diff new.elf               # what changed from old.elf to new.elf
 elfq app.elf startup                    # whether the reset code copies and zeroes memory before it uses it
 ```
@@ -53,8 +54,13 @@ of a symbol too, each standing for every item with a byte in it, so
 `retained 0x0+256K` says what removing all that is in ITCM would save.
 `retained`, `callers` and `callees` also take a pattern such as
 `'uart_*'` or `'core::fmt::*'`, where `*` stands for any text, for every
-item it matches. Quote a pattern: zsh and fish refuse a `*` that matches
-no file, and bash puts the names of any files it matches in its place.
+item it matches. `why`, `reach`, `inlined` and `browse` take one that
+matches one item, for that item: `why 'process_f*'` answers as
+`why process_frame` does, with the pattern in its first line. One that
+matches several is an error that lists them, and `browse` lists them in
+its go-to box, to pick one. Quote a pattern: zsh and fish refuse a `*`
+that matches no file, and bash puts the names of any files it matches in
+its place.
 
 `callers` and `callees` take ranges in place of a symbol, and then list
 only what crosses their edge, such as code in ITCM that calls a function in
@@ -150,7 +156,11 @@ and `elfq --help` lists the commands.
 - SYMBOL is a name, the end of a name, or an address. `top`, `retained`,
   `callers`, `callees` and `reach` show the 30 largest items, `inlined` the
   30 largest functions, and `why` the chains through the 10 nearest users;
-  `--all` shows every row, and `--json` has every row.
+  `--all` shows every row, and `--json` has every row. `why`, `reach` and
+  `inlined` also take a quoted pattern, such as `'process_f*'`, where `*`
+  stands for any text, that matches one item, and answer for that item,
+  with the JSON of its name; for a pattern that matches several, the
+  error lists what to type for each.
 - Each table row is one line, with the name last. Each name after "kept
   by" or "used by" works as SYMBOL; rows with ranges, `--to` or `--from`
   give whole names, which several items can share, so use an address from

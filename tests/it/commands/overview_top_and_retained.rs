@@ -1550,12 +1550,6 @@ fn a_pattern_that_matches_nothing_gets_the_error_of_a_name() {
         &stderr(&[SAMPLE, "retained", "nosuch_*"]),
         "error: no function or data object is named `nosuch_*`\n",
     );
-    // Other commands, which take no patterns yet, keep their error.
-    const CPP: &str = "testdata/bin/cpp-x86_64.elf";
-    assert_output(
-        &stderr(&[CPP, "why", "app::*"]),
-        "error: no function or data object is named `app::*`\n",
-    );
     // When elfq can say more, as in a file without a symbol table, it
     // does.
     assert_output(
@@ -1566,7 +1560,11 @@ fn a_pattern_that_matches_nothing_gets_the_error_of_a_name() {
     // A mistyped C++ name with a space before a pointer's `*` is a
     // pattern, which matches nothing, but gets the names like it.
     assert_output(
-        &stderr(&[CPP, "retained", "log(char const *)"]),
+        &stderr(&[
+            "testdata/bin/cpp-x86_64.elf",
+            "retained",
+            "log(char const *)",
+        ]),
         "error: no function or data object is named `log(char const *)`; did you mean \
          'log(char const*)'?\n",
     );

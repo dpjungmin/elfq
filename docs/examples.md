@@ -669,6 +669,29 @@ same way. So does a pattern that matches one item, so that the answer
 keeps its shape when a build adds or drops a match, and elfq exits with
 status 1, as here, when something uses the items or might.
 
+`why`, `reach` and `inlined` answer for one item, so they take a pattern
+that matches one, and answer for it:
+
+```
+$ elfq testdata/bin/c-x86_64.elf why 'on_b*'
+on_button (the one item named on_b*) is used by main, through this chain:
+
+HOW            ITEM
+entry point    _start
+address taken  main
+address taken  on_button
+
+Removing main would remove on_button too.
+```
+
+The first line says which item the pattern matched; the rest, and the
+JSON, are what `why on_button` prints. `why 'on_*'` stops with an error
+that lists the three handlers, as for a name that could mean several
+items, and `why 'On_*'`, which matches nothing, with one that asks "did
+you mean 'on_*' (3 functions)?". `browse 'on_*'` opens its go-to box with
+the three listed, largest first, to pick one, and the box reads what is
+typed into it the same way, so typing `on_*` there lists only them.
+
 ## What would removing a function save?
 
 ```

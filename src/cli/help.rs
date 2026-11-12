@@ -29,9 +29,10 @@ Examples:
 The overview's table is the start of the one top shows; elfq help top
 explains it.
 
-In retained, callers and callees, SYMBOL can be a pattern such as
-'uart_*', where * stands for any text, for every item it matches. Quote it,
-so that the shell passes it as typed.
+SYMBOL can be a pattern such as 'uart_*', where * stands for any text:
+retained, callers and callees take every item it matches, and the other
+commands one item it matches. Quote it, so that the shell passes it as
+typed.
 
 Tables have one row per line: short cells such as sizes, HOW and AT come
 first, and the name last. Each name after \"kept by\" or \"used by\" works

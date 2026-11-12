@@ -660,6 +660,141 @@ go to: log▏
 }
 
 #[test]
+fn a_pattern_opens_the_item_it_matches_or_go_to_with_several() {
+    // The one item that it matches opens, and the header says what the
+    // pattern found.
+    let page = screen("c-cortex-m7.elf", Some("on_b*"), (80, 24), &[]);
+    assert_eq!(
+        page.lines().take(2).collect::<Vec<&str>>(),
+        [
+            "c-cortex-m7.elf › on_button",
+            "on_button (the one item named on_b*)  function at 0x300002a4, 24 bytes, in .text"
+        ]
+    );
+    // Several are listed in the go-to box, largest first, under the CLI's
+    // message.
+    assert_output(
+        &screen("c-cortex-m7.elf", Some("on_*"), (80, 24), &[]),
+        "\
+c-cortex-m7.elf › go to
+`on_*` matches 3 functions
+  ADDRESS     SIZE  KIND      SECTION  ITEM
+> 0x300002a4    24  function  .text    on_button
+  0x30000140    16  function  .text    on_timer
+  0x30000150    16  function  .text    on_data
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+go to: on_*▏
+↑↓ move  enter open  esc cancel
+",
+    );
+    // None opens the box with the CLI's error.
+    let none = screen("c-cortex-m7.elf", Some("On_*"), (80, 24), &[]);
+    assert_eq!(
+        none.lines().skip(1).take(3).collect::<Vec<&str>>(),
+        [
+            "no function or data object is named `On_*`; did you mean 'on_*' (3 functions)?",
+            "  ADDRESS  SIZE  KIND  SECTION  ITEM",
+            ""
+        ]
+    );
+}
+
+#[test]
+fn go_to_lists_the_items_that_a_pattern_matches() {
+    // Only the three that it matches, largest first; typed without the
+    // `*`, `on_` also lists button_presses and Default_Handler (also
+    // named DebugMon_Handler), whose names have it.
+    assert_output(
+        &screen("c-cortex-m7.elf", Some("main"), (80, 24), &["g", "on_*"]),
+        "\
+c-cortex-m7.elf › main › go to
+  ADDRESS     SIZE  KIND      SECTION  ITEM
+> 0x300002a4    24  function  .text    on_button
+  0x30000140    16  function  .text    on_timer
+  0x30000150    16  function  .text    on_data
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+go to: on_*▏
+↑↓ move  enter open  esc cancel
+",
+    );
+    // The one item that it matches has the note on its row, and on the
+    // page that Enter opens.
+    let one = screen("c-cortex-m7.elf", Some("main"), (80, 24), &["g", "on_b*"]);
+    assert_eq!(
+        selected_and_status(&one).0,
+        "> 0x300002a4    24  function  .text    on_button (the one item named on_b*)"
+    );
+    let opened = screen(
+        "c-cortex-m7.elf",
+        Some("main"),
+        (80, 24),
+        &["g", "on_b*", "Enter"],
+    );
+    assert_eq!(
+        opened.lines().take(2).collect::<Vec<&str>>(),
+        [
+            "c-cortex-m7.elf › main › on_button",
+            "on_button (the one item named on_b*)  function at 0x300002a4, 24 bytes, in .text"
+        ]
+    );
+    // One that matches nothing lists the names that have it as typed, and
+    // gives the CLI's error only when none has.
+    let cpp = |text: &str| screen("cpp-x86_64.elf", Some("main"), (100, 16), &["g", text]);
+    assert_eq!(
+        selected_and_status(&cpp("Reading*")).0,
+        "> 0x1510    169  function  .text    app::sort_readings(app::Reading*, unsigned long)"
+    );
+    assert_eq!(
+        cpp("Readingx*").lines().nth(2),
+        Some("no function or data object is named `Readingx*`")
+    );
+    // Past the rows that the box lists, it says how many more there are.
+    let all = screen(
+        "rust-x86_64-nodebug.elf",
+        Some("main"),
+        (100, 16),
+        &["g", "*"],
+    );
+    let lines: Vec<&str> = all.lines().collect();
+    assert_eq!(
+        lines[2],
+        "> 0x18c00  15332  function  .text         <Cache>::with_global::<resolve::{closure#1}>"
+    );
+    assert_eq!(lines[13], "and 801 more; type more of the name");
+}
+
+#[test]
 fn g_goes_to_what_is_typed() {
     // Names that have the text, largest first, after what SYMBOL finds.
     assert_output(

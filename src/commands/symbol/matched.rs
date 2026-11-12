@@ -4,21 +4,46 @@
 //! pattern matched only by the end of a longer path, or only through
 //! another of their names, since those are the matches to check. A set
 //! names its patterns so in its first line (see `set.rs`), and `retained`
-//! puts the notes before its others.
+//! puts the notes before its others. A command that takes one item, such
+//! as `why`, takes the one item that a pattern matched as SYMBOL's
+//! ([`PatternMatches::only_item`]), and adds no notes.
 
 use std::cmp::Reverse;
 use std::collections::HashSet;
 
-use super::{LeadName, Match, MatchedBy, Pattern};
+use super::{LeadName, Match, MatchedBy, Pattern, Symbol};
 use crate::binary::Binary;
 use crate::binary::names::{self, TextKind};
 use crate::commands::text::{self, Naming};
+use crate::graph::Node;
 
 /// A pattern given in place of SYMBOL, and the items it matched.
 pub(in crate::commands) struct PatternMatches {
     pub(in crate::commands) pattern: Pattern,
     /// The items it matched, in address order (see `Names::matching`).
     pub(in crate::commands) matches: Vec<Match>,
+}
+
+impl PatternMatches {
+    /// The one item that the pattern matched, as SYMBOL's item in a command
+    /// that takes one, such as `why`, or `None` when it matched several.
+    /// The answer's first line says that the pattern found it, as
+    /// `retained`'s does: "on_button (the one item named on_b*)".
+    pub(in crate::commands) fn only_item(&self) -> Option<Symbol> {
+        match self.matches[..] {
+            [ref only] => Some(Symbol {
+                node: Node::Item(only.item),
+                note: Some(one_item_named(self.pattern.typed())),
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// What an answer's first line adds to the name of the one item that
+/// `named`, the patterns given, matched: "the one item named on_b*".
+fn one_item_named(named: &str) -> String {
+    format!("the one item named {named}")
 }
 
 /// The items that `patterns` matched, each once, in address order.
@@ -48,8 +73,9 @@ pub(super) fn named_by_patterns(binary: &Binary, patterns: &[PatternMatches]) ->
     };
     match matched_items(patterns)[..] {
         [one] => Some(LeadName::name(format!(
-            "{} (the one item named {named})",
-            binary.items[one].name
+            "{} ({})",
+            binary.items[one].name,
+            one_item_named(&named)
         ))),
         _ if typed.len() > 3 => None,
         ref items => Some(LeadName::count(format!(
@@ -265,6 +291,24 @@ mod tests {
             named(&["on_b*", "on_bu*", "on_but*", "*_button"]).unwrap(),
             "on_button (the one item named on_b*, on_bu*, on_but* or *_button)"
         );
+    }
+
+    #[test]
+    fn the_one_item_that_a_pattern_matches_is_named_as_in_the_first_line() {
+        let binary = fixtures::functions(&["on_button", "on_timer", "on_data"]);
+        let only_item = |pattern: &str| {
+            let symbol = matched(&binary, &[pattern]).remove(0).only_item()?;
+            Some((symbol.node, symbol.lead_name(&binary)))
+        };
+        assert_eq!(
+            only_item("on_b*"),
+            Some((
+                Node::Item(0),
+                "on_button (the one item named on_b*)".to_string()
+            ))
+        );
+        // Several are no one item.
+        assert_eq!(only_item("on_*"), None);
     }
 
     #[test]

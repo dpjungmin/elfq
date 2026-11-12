@@ -92,11 +92,12 @@ enum FindFrom {
 }
 
 impl<'a> App<'a> {
-    /// Opens the page of what `symbol` names, as the commands find it, or
-    /// without one, the start page. When `symbol` finds several items or
-    /// none, the go-to box opens with `symbol` typed in, over the start
-    /// page, which is worked out only once the box is closed over it. The
-    /// file's first warning is on the status line.
+    /// Opens the page of what `symbol` names, or of the one item that it
+    /// matches as a pattern, as the commands find it, or without one, the
+    /// start page. When `symbol` finds several items, as a name or as a
+    /// pattern, or none, the go-to box opens with `symbol` typed in, over
+    /// the start page, which is worked out only once the box is closed over
+    /// it. The file's first warning is on the status line.
     pub fn new(session: Session<'a>, symbol: Option<&str>) -> App<'a> {
         let warnings = &session.binary.warnings;
         let message = warnings.first().map(|first| match warnings.len() {

@@ -9,35 +9,43 @@
 //! 3. a short name: the end of an item's path, as in `process_frame` for
 //!    `app::process_frame`, or `Gain::run` for
 //!    `<app::Gain as app::Stage>::run` (see
-//!    [`short_names`](crate::binary::names::short_names)).
+//!    [`short_names`](crate::binary::names::short_names));
+//! 4. a pattern, such as `uart_*`: SYMBOL with a `*` that stands for any
+//!    text in it, when no item or import has it as its name, so that a full
+//!    name with a `*` in it, as `<*const T as core::fmt::Debug>::fmt`, still
+//!    finds its item (see [`Names::look_up_or_match`]). `retained`,
+//!    `callers` and `callees` take every item that it matches; the other
+//!    commands take the one item that it matches, and when it matches
+//!    several, give an error that lists them (see [`Names::find`]).
 //!
-//! When SYMBOL gives another of an item's names, or an address inside it,
-//! the answer's first line says so (see [`Symbol::lead_name`]).
+//! When SYMBOL gives another of an item's names, an address inside it, or a
+//! pattern that matches only it, the answer's first line says so (see
+//! [`Symbol::lead_name`]).
 //!
 //! For `callers`, `callees` and `retained`, an argument can also be a range
-//! of memory in place of SYMBOL (see [`argument`]), or a pattern, such as
-//! `uart_*`, for every item it matches: SYMBOL with a `*` that stands for
-//! any text in it, when no item or import has it as its name, so that a
-//! full name with a `*` in it, as `<*const T as core::fmt::Debug>::fmt`,
-//! still finds its item (see [`Names::look_up_or_match`]). They take
-//! several of these, and put what they pick together in a [`Set`], each
-//! item once; `callers` and `callees` read theirs with [`subject`].
+//! of memory in place of SYMBOL (see [`argument`]). They take several
+//! SYMBOLs, patterns and ranges, and put what they pick together in a
+//! [`Set`], each item once; `callers` and `callees` read theirs with
+//! [`subject`].
 //!
 //! The files:
 //!
 //! - `mod.rs`, this file, tells ranges from SYMBOL, and reads what
 //!   `callers` and `callees` ask about.
-//! - `lookup.rs` holds [`Names`], which finds what SYMBOL names and names
-//!   items for the user in return.
+//! - `lookup.rs` holds [`Names`], which finds what SYMBOL names, or the one
+//!   item that a pattern matches, in the commands that take one item
+//!   ([`Names::find`]), and names items for the user in return.
 //! - `not_found.rs` words the error for SYMBOL that finds several items or
 //!   none, in the words of every command, which `retained` adds to, and
-//!   `similar.rs` finds the names that error suggests.
+//!   for a pattern that matches none, or several in a command that takes
+//!   one item; `similar.rs` finds the names that the error suggests.
 //! - `pattern.rs` holds [`Pattern`], such as `uart_*`, when SYMBOL is one,
 //!   and finds the items that one matches ([`Names::matching`]), which
-//!   `retained`, `callers` and `callees` take in place of SYMBOL and `debug
+//!   every command that takes SYMBOL takes in its place, and `debug
 //!   matches` lists. Its unit tests are in `pattern/tests.rs`.
 //! - `matched.rs` words what patterns matched, for an answer's first line
-//!   and its notes.
+//!   and its notes, and gives the one item that a pattern matched
+//!   ([`PatternMatches::only_item`]).
 //! - `set.rs` holds [`Set`], the items that several SYMBOLs, patterns and
 //!   ranges pick together, each once, and words how an answer's first line
 //!   names them, part by part.
@@ -226,7 +234,8 @@ pub(super) fn is_range(query: &str) -> bool {
     query.starts_with(|c: char| c.is_ascii_digit()) && (query.contains("..") || query.contains('+'))
 }
 
-/// Finds the item or import that `query` names, as `Names::find` does.
+/// Finds the item or import that `query` names, or the one item that it
+/// matches as a pattern, as `Names::find` does.
 /// Use it when the answer names nothing else; when it does, as in
 /// `retained` and `why`, keep one `Names` for the lookup and the naming,
 /// so that the names are worked out once. Here they are freed before the
