@@ -178,7 +178,7 @@ Removing vtable for app::Gain would remove app::Gain::run(short*, unsigned long)
     assert_output(
         &stderr(&[CPP, "callers", "log"]),
         "\
-error: `log` could mean 2 functions; use one on the left instead, or 'log*' for all 2:
+error: `log` could mean 2 functions; use one or more on the left instead, or 'log*' for all 2:
   'log(char const*)'   app::log(char const*)
   'log(unsigned int)'  app::log(unsigned int)
 ",

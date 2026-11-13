@@ -18,16 +18,15 @@
 //! long list of them can be fixed in one go: one with the error it gets
 //! alone, several each with that error, under a line that counts them, and
 //! calls them SYMBOLs, or arguments once a range is among them. The errors
-//! are those of every command that takes a set, as `callers` and `callees`
-//! do, where the error for a name that could mean several items ends its
+//! for a name or a pattern are those of every command that takes a set,
+//! as `callers` and `callees` give them, where the error for a name that
+//! could mean several items says to use one or more of them, and ends its
 //! first line with the pattern for all of them, when it takes just those
-//! (see `Names::choices`). One hint is `retained`'s own, since it
-//! takes several SYMBOLs: a name that could mean several items says to use
-//! one or more of them. A name that finds nothing offers first the pattern
-//! for what is in a module of that name whenever it matches an item, since
-//! `retained` takes every item it matches (`Takes::Set`). A pattern that
-//! matches nothing gets the error for a name that finds nothing, with a
-//! pattern like it that matches some, if there is one.
+//! (see `Names::choices`). A name that finds nothing offers first the
+//! pattern for what is in a module of that name whenever it matches an
+//! item, since `retained` takes every item it matches (`Takes::Set`). A
+//! pattern that matches nothing gets the error for a name that finds
+//! nothing, with a pattern like it that matches some, if there is one.
 
 use std::collections::HashSet;
 
@@ -179,10 +178,6 @@ impl From<anyhow::Error> for Reason<'_> {
 /// before "and 5 more", unless `--all` asks for every one.
 const LISTED: usize = 10;
 
-/// What `retained`'s error for SYMBOL that finds several things says to do,
-/// since it takes several SYMBOLs, where other commands say to use one.
-const USE_ONE_OR_MORE: &str = "use one or more on the left instead";
-
 /// The error for `unusable`, the arguments that `retained` can't use of the
 /// `count` that it was given, which it calls `arguments` (see
 /// [`arguments_word`]), in the order given. One whose error says what
@@ -223,14 +218,15 @@ fn unusable_error(
 }
 
 impl Unusable<'_, '_> {
-    /// The error for this argument alone: every command's, with
-    /// `retained`'s own hint for a name that could mean several items.
+    /// The error for this argument alone: for a name or a pattern, as every
+    /// command that takes a set words it, and otherwise the error in
+    /// [`Reason::Error`].
     fn error(&self, names: &Names) -> String {
         let query = self.query;
         match &self.reason {
             Reason::NoName => names.nothing_named(query, Takes::Set),
             Reason::NoMatch(pattern) => names.nothing_matches(pattern),
-            Reason::Several(nodes) => names.choices(query, nodes, USE_ONE_OR_MORE),
+            Reason::Several(nodes) => names.choices(query, nodes),
             Reason::Error(error) => error.clone(),
         }
     }
@@ -242,7 +238,7 @@ impl Unusable<'_, '_> {
     fn says(&self) -> Says<'_> {
         match &self.reason {
             Reason::Error(error) => Says::Error(error),
-            _ => Says::Query(self.query),
+            Reason::NoName | Reason::NoMatch(_) | Reason::Several(_) => Says::Query(self.query),
         }
     }
 }

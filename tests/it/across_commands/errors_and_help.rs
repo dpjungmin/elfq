@@ -410,18 +410,15 @@ fn a_name_that_could_mean_several_gets_the_pattern_for_all_where_a_set_is_taken(
   'checksum::<u32>'  elfq_sample::checksum::<u32>
   'checksum::<u16>'  elfq_sample::checksum::<u16>
 ";
-    // retained, callers and callees take every item that a pattern
-    // matches, so the first line ends with the one that takes the three.
-    for (command, instruction) in [
-        ("retained", "use one or more on the left instead"),
-        ("callers", "use one on the left instead"),
-        ("callees", "use one on the left instead"),
-    ] {
+    // retained, callers and callees take several SYMBOLs and every item
+    // that a pattern matches, so they say to use one or more, and the first
+    // line ends with the pattern that takes the three.
+    for command in ["retained", "callers", "callees"] {
         assert_output(
             &stderr(&[rust, command, "checksum"]),
             &format!(
-                "error: `checksum` could mean 3 functions; {instruction}, or 'checksum*' for all \
-                 3:{checksums}"
+                "error: `checksum` could mean 3 functions; use one or more on the left instead, \
+                 or 'checksum*' for all 3:{checksums}"
             ),
         );
     }
@@ -442,7 +439,7 @@ fn a_name_that_could_mean_several_gets_the_pattern_for_all_where_a_set_is_taken(
             "run(short*, unsigned long)",
         ]),
         "\
-error: `run(short*, unsigned long)` could mean 2 functions; use one on the left instead, or 'run(short*, unsigned long)*' for all 2:
+error: `run(short*, unsigned long)` could mean 2 functions; use one or more on the left instead, or 'run(short*, unsigned long)*' for all 2:
   Gain::run     app::Gain::run(short*, unsigned long)
   DcBlock::run  app::DcBlock::run(short*, unsigned long)
 ",
@@ -798,7 +795,9 @@ fn the_line_follows_any_error_for_the_first_argument_that_callers_cant_use() {
     // error.
     let several = (here.run("testdata/bin/cpp-x86_64.elf", &["callers", "log", "log.c"])).error();
     assert!(
-        several.starts_with("error: `log` could mean 2 functions; use one on the left instead"),
+        several.starts_with(
+            "error: `log` could mean 2 functions; use one or more on the left instead"
+        ),
         "{several}"
     );
     assert!(
