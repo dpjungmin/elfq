@@ -25,6 +25,12 @@ const ZEROED: [&str; 2] = [".bss", ".sbss"];
 /// copies or zeroes.
 const LONGEST: u32 = 1 << 28;
 
+/// Two sections of the same kind less than this many bytes apart, as
+/// alignment padding leaves them, are one run: a copy or zeroing of the
+/// first covers on into the second. Two load images must also be stored
+/// as far apart as they are (see [`RamSections::run_from`]).
+const PADDING: u64 = 8;
+
 /// The sections that startup code sets up, as indexes into
 /// [`Binary::sections`]: the RAM sections.
 pub(super) struct RamSections<'a> {
@@ -231,9 +237,10 @@ impl<'a> RamSections<'a> {
             .collect()
     }
 
-    /// `section` and the sections of its kind that follow it with no gap,
-    /// which a copy or zeroing of a region covers too: a load image whose
-    /// load image follows `section`'s with no gap either.
+    /// `section` and the sections of its kind that follow it, each less
+    /// than [`PADDING`] bytes after the one before, which a copy or
+    /// zeroing of a region covers too; for load images, only while the
+    /// file stores them as far apart.
     pub(super) fn run_from(&self, section: usize) -> Vec<usize> {
         let mut run = vec![section];
         for &next in &self.sections {
@@ -244,7 +251,7 @@ impl<'a> RamSections<'a> {
                 continue;
             }
             let gap = self.section(next).address.checked_sub(self.end(last));
-            if !gap.is_some_and(|gap| gap < 8) {
+            if !gap.is_some_and(|gap| gap < PADDING) {
                 break;
             }
             if self.is_load(section)
@@ -356,25 +363,36 @@ mod tests {
         assert_eq!(matched(&ram, 0x2000_0000, Some(0), 0x20), none);
     }
 
+    /// The names of the sections in the run from `section`.
+    fn run_names<'a>(ram: &RamSections<'a>, section: usize) -> Vec<&'a str> {
+        (ram.run_from(section).into_iter())
+            .map(|section| ram.name(section))
+            .collect()
+    }
+
     #[test]
-    fn a_run_is_the_sections_of_a_kind_that_follow_with_no_gap() {
+    fn a_run_is_the_sections_of_a_kind_that_follow_within_padding() {
         let binary = binary();
         let ram = RamSections::new(&binary);
-        let names = |section: usize| -> Vec<&str> {
-            (ram.run_from(section).into_iter())
-                .map(|section| ram.name(section))
-                .collect()
-        };
-        assert_eq!(names(1), [".data", ".ramfunc"]);
-        assert_eq!(names(3), [".bss", ".noinit"]);
+        assert_eq!(run_names(&ram, 1), [".data", ".ramfunc"]);
+        assert_eq!(run_names(&ram, 3), [".bss", ".noinit"]);
+        // Less than PADDING bytes after .bss, as alignment padding leaves
+        // it, .noinit is in .bss's run; PADDING bytes after, it isn't.
+        for (gap, run) in [
+            (4, &[".bss", ".noinit"][..]),
+            (7, &[".bss", ".noinit"]),
+            (8, &[".bss"]),
+        ] {
+            let mut apart = self::binary();
+            apart.sections[4].address += gap;
+            let ram = RamSections::new(&apart);
+            assert_eq!(run_names(&ram, 3), run, "{gap} bytes apart");
+        }
         // With .ramfunc's load image elsewhere, a copy of the run from
         // .data's would copy other bytes to it.
         let mut moved = self::binary();
         moved.sections[2].load_address = Some(0x800_0440);
         let ram = RamSections::new(&moved);
-        let run: Vec<&str> = (ram.run_from(1).into_iter())
-            .map(|section| ram.name(section))
-            .collect();
-        assert_eq!(run, [".data"]);
+        assert_eq!(run_names(&ram, 1), [".data"]);
     }
 }

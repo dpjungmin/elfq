@@ -567,8 +567,9 @@ helper type, doesn't take a word of the list; where code still does, as
   `tests/it/support/mod.rs`), which `run` gives; its `printed` is what
   elfq printed on stdout alone. `run_in_process` runs a command inside
   the test instead, and gives no `Run`. An early run, in `startup`, is
-  unrelated, and so are the private `Run`s of the startup walk and of
-  `binary/memory.rs`.
+  unrelated, and so are a run of sections, which a copy or zeroing of
+  the first covers on into (`RamSections::run_from`), and the private
+  `Run`s of the startup walk and of `binary/memory.rs`.
 
 Some code still uses one of these words for something else. The Thumb
 walk's `Step` is what an instruction leads to, and `reach`'s `Step` is
