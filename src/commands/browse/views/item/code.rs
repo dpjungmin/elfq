@@ -111,8 +111,8 @@ mod tests {
         for path in samples() {
             let binary = Binary::load(&path).unwrap();
             let session = Session::new(&path, &binary).unwrap();
-            for index in 0..binary.items.len() {
-                if binary.items[index].kind == ItemKind::Function
+            for (index, item) in binary.items.iter().enumerate() {
+                if item.kind == ItemKind::Function
                     && let Ok(code) = code(&session, index)
                 {
                     check(&session, index, &code);

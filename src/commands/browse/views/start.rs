@@ -194,9 +194,9 @@ mod tests {
         let binary = Binary::load(&path).unwrap();
         let mut session = Session::new(&path, &binary).unwrap();
         // As if the unwinder started each of the file's own functions.
-        for index in 0..binary.items.len() {
+        for (index, item) in binary.items.iter().enumerate() {
             let node = Node::Item(index);
-            if binary.items[index].is_own_function() && session.graph.root(node).is_none() {
+            if item.is_own_function() && session.graph.root(node).is_none() {
                 let kind = RootKind::Personality;
                 session.graph.roots.push(Root { node, kind });
             }
