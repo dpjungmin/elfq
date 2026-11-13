@@ -774,13 +774,14 @@ fn counted_kinds(unread: &[&Step]) -> Vec<String> {
 /// in the plural for more, unless all are branches through one register.
 fn named_kinds(unread: &[&Step]) -> Vec<String> {
     // Each kind in the plural, with what each of its steps is.
-    let mut groups: Vec<(&str, Vec<String>)> = Vec::new();
+    let mut groups: Vec<(&str, Vec<Noun>)> = Vec::new();
     for step in unread {
         let noun = |one: &str, many| Noun {
             one: one.to_string(),
             many,
+            register: None,
         };
-        let Noun { one, many } = match step.way {
+        let kind = match step.way {
             Way::Outside(_) => noun("a call outside the file", "calls outside the file"),
             Way::Stop(end) => match end {
                 End::Branches { through, .. } => branch_noun(through),
@@ -814,26 +815,22 @@ fn named_kinds(unread: &[&Step]) -> Vec<String> {
             // text gives such a step no kind.
             Way::Store => continue,
         };
-        match groups.iter_mut().find(|(group, _)| *group == many) {
-            Some((_, ones)) => ones.push(one),
-            None => groups.push((many, vec![one])),
+        match groups.iter_mut().find(|(many, _)| *many == kind.many) {
+            Some((_, ones)) => ones.push(kind),
+            None => groups.push((kind.many, vec![kind])),
         }
     }
     let mut kinds = Vec::new();
     for (many, ones) in groups {
-        match &ones[..] {
-            [one] => kinds.push(one.clone()),
-            [first, rest @ ..]
-                if rest.iter().all(|one| one == first)
-                    && first.starts_with("a branch through r") =>
-            {
-                kinds.push(format!(
-                    "branches through {}",
-                    &first["a branch through ".len()..]
-                ));
-            }
-            _ => kinds.push(many.to_string()),
-        }
+        // The register that all of them branch through, when they all go
+        // through the same one.
+        let first = ones.first().and_then(|one| one.register);
+        let register = first.filter(|_| ones.iter().all(|one| one.register == first));
+        kinds.push(match (&ones[..], register) {
+            ([only], _) => only.one.clone(),
+            (_, Some(register)) => format!("branches through {}", register_name(register)),
+            (_, None) => many.to_string(),
+        });
     }
     kinds
 }
@@ -843,23 +840,31 @@ fn named_kinds(unread: &[&Step]) -> Vec<String> {
 struct Noun {
     one: String,
     many: &'static str,
+    /// The register that a branch goes through, so that `named_kinds` can
+    /// name it for several branches through it: "branches through r3".
+    /// None for other kinds of code.
+    register: Option<u16>,
 }
 
 /// A branch that the walk can't follow, by what it goes through: "a branch
-/// through r3", and for several, "branches through registers".
+/// through r3", and for several, "branches through registers", unless all
+/// go through the same register (see `named_kinds`).
 fn branch_noun(through: Through) -> Noun {
     match through {
         Through::Register(register) => Noun {
             one: format!("a branch through {}", register_name(register)),
             many: "branches through registers",
+            register: Some(register),
         },
         Through::Memory => Noun {
             one: "a branch through a word in memory".to_string(),
             many: "branches through words in memory",
+            register: None,
         },
         Through::Table => Noun {
             one: "a jump table".to_string(),
             many: "jump tables",
+            register: None,
         },
     }
 }
@@ -969,6 +974,9 @@ mod tests {
             step(Way::SupervisorCall),
             step(Way::Conditional),
             step(Way::Outside(0x1fff_0000)),
+            branch(0x40, 14),
+            branch(0x50, 14),
+            branch(0x60, 15),
         ];
         let text = |indexes: &[usize]| unread_text(&steps, indexes);
         assert_eq!(text(&[0]), "step 1 (a loop)");
@@ -980,9 +988,18 @@ mod tests {
             text(&[0, 2, 3]),
             "steps 1, 3 and 4 (loops and a call deeper than elfq follows)"
         );
+        // One branch names the register it goes through.
+        assert_eq!(text(&[4]), "step 5 (a branch through r2)");
+        assert_eq!(text(&[10]), "step 11 (a branch through lr)");
         // Branches through the same register name it once.
         assert_eq!(text(&[4, 5]), "steps 5 and 6 (branches through r2)");
         assert_eq!(text(&[4, 6]), "steps 5 and 7 (branches through registers)");
+        // So do branches through sp, lr or pc.
+        assert_eq!(text(&[10, 11]), "steps 11 and 12 (branches through lr)");
+        assert_eq!(
+            text(&[11, 12]),
+            "steps 12 and 13 (branches through registers)"
+        );
         assert_eq!(
             text(&[7, 8, 9]),
             "steps 8 to 10 (a supervisor call, a conditional call and a call outside the file)"
