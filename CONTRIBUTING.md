@@ -184,8 +184,7 @@ only with the `tui` feature.
   for the integration tests, and a `tests.rs` of unit tests that needs
   it allows it at its top, as `arch/thumb/decode/tests.rs` does. A
   function that would need clippy's `too_many_arguments` allowed takes a
-  struct instead; none does. Some long functions still wait to be split
-  (see [below](#where-the-code-doesnt-follow-these-yet)).
+  struct instead; none does.
 - **Let the compiler hold the rules.** Where fields must agree, an enum
   holds the cases that make sense, as diff's `Change` does, rather than
   Options that are `None` together, bools with rules between them, or a
@@ -243,16 +242,13 @@ code.
 
 - Work out the facts, then word them:
   - The hidden `debug` commands write as they go.
-- A long function reads as named steps:
-  - The functions that wait for a later cleanup are marked with
-    `#[expect(clippy::too_many_lines, reason = "waits to be split; see CONTRIBUTING")]`,
-    so a search for "waits to be split" lists them. Once one is split,
-    the lint no longer fires there and the unmet `expect` fails CI's
-    clippy, so the change that splits it drops the attribute too.
 - Let the compiler hold the rules:
-  - The Thumb readers match `Flow` and `Operation` with `_` arms in
-    places, as `Function::report` in `arch/thumb/values/mod.rs` and
-    `Walker::execute` in `arch/thumb/startup/execute.rs` do.
+  - Four functions of the Thumb readers match `Flow` or `Operation`
+    with `_` arms though their docs don't state what the other variants
+    give: `Walker::execute` in `arch/thumb/startup/execute.rs`,
+    `Walker::called` and `Walker::on_jump` in
+    `arch/thumb/startup/mod.rs`, and `Code::find_jumps` in
+    `arch/thumb/values/code.rs`.
   - The startup walk gives a word that no register points to the
     pointer `NOWHERE`, the highest address, so that it sorts last
     (`arch/thumb/startup/each_iteration.rs`).

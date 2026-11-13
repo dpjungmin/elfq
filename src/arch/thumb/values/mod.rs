@@ -89,8 +89,13 @@
 //! 3. In [`Function::escapes`], list the registers it reads in a way that
 //!    `execute` follows, so that an address on the stack in one doesn't
 //!    count as out of sight.
-//! 4. In [`Function::report`], record how it uses what it reads: as an
-//!    address, as part of one, or by passing it on.
+//! 4. In [`Function::report_operation`], record how it uses what it
+//!    reads: as an address, as part of one, or by passing it on. If it has
+//!    a [`Flow`] of its own, say what that passes on in
+//!    [`Function::report_flow`] and [`Function::passes_stack_on`], which
+//!    the compiler asks for. It doesn't ask in `Code::find_jumps`,
+//!    `Walker::called` or `Walker::on_jump`, whose `_` arms CONTRIBUTING
+//!    lists.
 //! 5. In [`Function::builds_address`], say whether it builds an address,
 //!    and if it does, list it in `may_find_more`, in `code.rs`, so that
 //!    elfq follows the functions that have it.
@@ -115,7 +120,9 @@ use object::Endianness;
 use self::address_uses::{AddressUses, Use};
 use self::code::{Code, Condition};
 use self::state::{Contents, Kind, RESULT, State, Value};
-use super::decode::{Addressing, Effect, Flow, LowBit, Operation, Transfer, When, bit, each};
+use super::decode::{
+    Addressing, Effect, Flow, LowBit, Operation, Registers, Transfer, When, bit, each,
+};
 use super::{ARGUMENTS, Instruction, PC, SP};
 use crate::arch::CodeReference;
 use crate::arch::CodeReferenceKind::{self, *};
@@ -265,6 +272,17 @@ fn tests_same_flags(a: u16, b: u16) -> bool {
 struct Written {
     register: u16,
     contents: Contents,
+}
+
+/// The registers whose numbers an instruction uses, by how
+/// [`Function::report`] records what they hold.
+struct RegisterUses {
+    /// Those it reads as plain numbers, which counts as using what they
+    /// hold as addresses.
+    plain: Registers,
+    /// Those it passes on without naming them; see
+    /// [`AddressUses::pass_registers`].
+    passed: Registers,
 }
 
 impl<'a> Function<'a> {
@@ -926,15 +944,35 @@ impl<'a> Function<'a> {
 
     /// Records how the instruction at `index` uses the values it reads, and
     /// where it branches when it branches through a register.
-    #[expect(clippy::too_many_lines, reason = "waits to be split; see CONTRIBUTING")]
     fn report(&mut self, index: usize, state: &State) {
         let effect = self.code.effects[index];
         let pc = self.code.pc(index);
-        // The registers it reads as plain numbers.
-        let mut other = effect.reads;
-        // Those it passes on without naming them; see
-        // `AddressUses::pass_registers`.
-        let mut passed = 0;
+        let mut register_uses = RegisterUses {
+            plain: effect.reads,
+            passed: 0,
+        };
+        self.report_operation(&effect, pc, state, &mut register_uses);
+        self.report_flow(index, &effect, pc, state, &mut register_uses);
+        if self.passes_stack_on(effect.flow) {
+            self.uses.pass_stack(state);
+        }
+        let RegisterUses { plain, passed } = register_uses;
+        self.uses.record_registers(state, plain, pc, Use::Other);
+        self.uses.pass_registers(state, passed & !plain);
+    }
+
+    /// Records how an instruction's operation uses what it reads, from what
+    /// `effect` says it does, with `pc` what it reads in pc. It takes out
+    /// of `register_uses.plain` each register whose number it passes on,
+    /// by copying it or putting it on the stack, and each register it
+    /// builds another address from, as `movt` and a sum with pc do.
+    fn report_operation(
+        &mut self,
+        effect: &Effect,
+        pc: u32,
+        state: &State,
+        register_uses: &mut RegisterUses,
+    ) {
         match effect.operation {
             // Copying a value, or adding a constant to it, passes it on.
             Operation::Copy {
@@ -945,19 +983,19 @@ impl<'a> Function<'a> {
             }
             | Operation::ShiftLeft {
                 register, source, ..
-            } if register != PC => other &= !bit(source),
+            } if register != PC => register_uses.plain &= !bit(source),
             Operation::HighHalf { register, .. } => {
                 for value in state.read(register, pc).values() {
                     self.uses.record(value, Use::Part);
                 }
-                other &= !bit(register);
+                register_uses.plain &= !bit(register);
             }
             // Adding pc builds another address from what the other register
             // holds.
             Operation::Add { register, a, b } if register != PC && state.adds_pc(a, b) => {
                 let offsets = (bit(a) | bit(b)) & !bit(PC);
                 self.uses.record_registers(state, offsets, pc, Use::Part);
-                other &= !offsets;
+                register_uses.plain &= !offsets;
             }
             // Storing a value on the stack passes it on, to where the code
             // loads it back.
@@ -966,12 +1004,14 @@ impl<'a> Function<'a> {
                 base,
                 size: 4,
                 ..
-            } if (plain_offset(&effect))
+            } if (plain_offset(effect))
                 .is_some_and(|offset| state.held(base).word_at(offset).is_some()) =>
             {
-                other &= !bit(register);
+                register_uses.plain &= !bit(register);
             }
-            Operation::Push { registers, .. } if state.sp().is_some() => other &= !registers,
+            Operation::Push { registers, .. } if state.sp().is_some() => {
+                register_uses.plain &= !registers;
+            }
             // A load from the stack that elfq doesn't follow takes what it
             // loads out of sight: part of a word, or from a word it can't
             // tell.
@@ -981,7 +1021,7 @@ impl<'a> Function<'a> {
                 // the stack, as its base or what it adds to the base.
                 let may_be_stack =
                     each(effect.reads).any(|register| state.held(register).may_be_stack());
-                match (base.stack_offset(), plain_offset(&effect)) {
+                match (base.stack_offset(), plain_offset(effect)) {
                     (Some(at), Some(offset)) => {
                         let at = at.wrapping_add(offset);
                         if !matches!(into, Transfer::Word(_)) || at % 4 != 0 {
@@ -996,10 +1036,11 @@ impl<'a> Function<'a> {
             }
             // Where elfq can tell sp, `move_stack` follows what it loads.
             Operation::Pop { .. } if state.sp().is_none() => self.uses.record_stack(state),
-            // What these read stays in `other`, which counts as using it as
-            // an address: what a compare compares, as `cmp r0, #0` on the
-            // address of a weak function does, and what a sum that doesn't
-            // add pc adds, though `escapes` lets `execute` follow both.
+            // What these read stays in `register_uses.plain`, which counts
+            // as using it as an address: what a compare compares, as
+            // `cmp r0, #0` on the address of a weak function does, and
+            // what a sum that doesn't add pc adds, though `escapes` lets
+            // `execute` follow both.
             Operation::Compare { .. }
             | Operation::Nothing
             | Operation::Constant { .. }
@@ -1020,14 +1061,30 @@ impl<'a> Function<'a> {
             | Operation::Pop { .. }
             | Operation::CompareRegisters { .. } => {}
         }
+    }
+
+    /// Records where the instruction at `index` branches when it branches
+    /// through a register, and how its flow uses what it reads, from what
+    /// `effect` says it does, with `pc` what it reads in pc. It takes the
+    /// register it branches through out of `register_uses.plain`, and adds
+    /// to `register_uses.passed` what it passes on to another function or
+    /// back to the caller.
+    fn report_flow(
+        &mut self,
+        index: usize,
+        effect: &Effect,
+        pc: u32,
+        state: &State,
+        register_uses: &mut RegisterUses,
+    ) {
         match effect.flow {
             Flow::CallRegister(register, low_bit) | Flow::JumpRegister(register, low_bit) => {
                 let contents = state.read(register, pc);
                 self.branch(index, &contents, |number| low_bit.target(number));
                 self.uses.record_kept_result(state, register);
                 // A call or a tail call passes the arguments on.
-                other &= !bit(register);
-                passed |= ARGUMENTS & !bit(register);
+                register_uses.plain &= !bit(register);
+                register_uses.passed |= ARGUMENTS & !bit(register);
             }
             Flow::JumpRelative(register) => {
                 let contents = state.read(register, pc);
@@ -1036,8 +1093,8 @@ impl<'a> Function<'a> {
                     Some(pc.wrapping_add(offset) & !1)
                 });
                 self.uses.record_kept_result(state, register);
-                other &= !bit(register);
-                passed |= ARGUMENTS & !bit(register);
+                register_uses.plain &= !bit(register);
+                register_uses.passed |= ARGUMENTS & !bit(register);
             }
             Flow::Pop => {
                 if let (Operation::Pop { registers, .. }, Some(sp)) = (effect.operation, state.sp())
@@ -1066,18 +1123,25 @@ impl<'a> Function<'a> {
                         }
                     }
                 }
-                passed |= ARGUMENTS & !effect.writes;
+                register_uses.passed |= ARGUMENTS & !effect.writes;
             }
-            Flow::Call => passed |= ARGUMENTS,
+            Flow::Call => register_uses.passed |= ARGUMENTS,
             // A return passes the result back, and a jump to another
             // function passes the arguments on.
-            Flow::Return | Flow::JumpMemory => passed |= ARGUMENTS,
-            Flow::Branch { target, .. } if !self.code.contains(target) => passed |= ARGUMENTS,
-            _ => {}
+            Flow::Return | Flow::JumpMemory => register_uses.passed |= ARGUMENTS,
+            Flow::Branch { target, .. } if !self.code.contains(target) => {
+                register_uses.passed |= ARGUMENTS;
+            }
+            // A branch inside the function, and the flows that go on in it
+            // or stop, pass nothing on.
+            Flow::Branch { .. } | Flow::Next | Flow::It { .. } | Flow::Table | Flow::Stop => {}
         }
-        // A call, or a jump to another function, may also pass arguments on
-        // the stack.
-        let leaves = match effect.flow {
+    }
+
+    /// Whether `flow` may also pass arguments on the stack: a call does,
+    /// and so does a jump to another function.
+    fn passes_stack_on(&self, flow: Flow) -> bool {
+        match flow {
             Flow::Call
             | Flow::CallRegister(..)
             | Flow::JumpRegister(..)
@@ -1087,12 +1151,7 @@ impl<'a> Function<'a> {
             Flow::Next | Flow::It { .. } | Flow::Return | Flow::Pop | Flow::Table | Flow::Stop => {
                 false
             }
-        };
-        if leaves {
-            self.uses.pass_stack(state);
         }
-        self.uses.record_registers(state, other, pc, Use::Other);
-        self.uses.pass_registers(state, passed & !other);
     }
 
     /// Records that the branch at `index` may go to `target` of each number
