@@ -441,21 +441,25 @@ fn node_at(items: usize, index: usize) -> Node {
 }
 
 /// The item that starts at `address`, as a pointer stored in data names
-/// it. On Arm, a pointer to a Thumb function is its address plus 1.
+/// it, or the function whose code it points to as a pointer to code (see
+/// [`Binary::code_pointer`]): on Arm, a pointer to a Thumb function is its
+/// address plus 1.
 pub(crate) fn item_starting_at(binary: &Binary, address: u64) -> Option<usize> {
     let starts_at = |address| {
         let index = binary.item_at(address)?;
         (binary.items[index].address == address).then_some(index)
     };
-    // Most words in data aren't pointers: those below the first item or
-    // past the last item's start are passed over without a search.
+    // Most words in data aren't pointers: those below the first item, or
+    // past the last item's start even with bit 0 cleared, are passed over
+    // without a search. `InstructionSet::code_pointer` clears no more
+    // than bit 0.
     let first = binary.items.first()?.address;
     let last = binary.items.last()?.address;
     if address == 0 || address < first || address & !1 > last {
         return None;
     }
     starts_at(address).or_else(|| {
-        let function = starts_at(address & !1).filter(|_| binary.thumb && address & 1 == 1)?;
+        let function = binary.code_pointer(address).and_then(starts_at)?;
         (binary.items[function].kind == ItemKind::Function).then_some(function)
     })
 }

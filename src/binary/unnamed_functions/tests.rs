@@ -57,7 +57,10 @@ fn functions_with(text: &[u8], (name, kind, data): (&str, SectionKind, &[u8])) -
         section: 0,
         source: Source::EntryPoint,
     }];
-    add(&binary, &mut items);
+    let thumb = InstructionSet::Thumb {
+        endianness: Endianness::Little,
+    };
+    add(&binary, thumb, &mut items);
     let mut found: Vec<(u64, u64)> = items.iter().map(|item| (item.address, item.size)).collect();
     found.sort_unstable();
     found
@@ -307,6 +310,7 @@ fn kept_code_reads_give_the_answers_that_new_ones_do() {
     let handlers = &binary.vector_table.as_ref().unwrap().handlers;
     let seeds = KnownStarts {
         binary: &binary,
+        instruction_set: binary.instruction_set().unwrap(),
         at: (handlers.iter())
             .map(|handler| (handler.address, Start::Function))
             .collect(),

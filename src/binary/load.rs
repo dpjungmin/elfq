@@ -76,8 +76,12 @@ impl Binary {
         let listed = items
             .iter()
             .any(|item| item.kind == ItemKind::Function && item.source.lists_functions());
-        if binary.thumb && binary.kind == FileKind::Executable && !listed {
-            unnamed_functions::add(&binary, &mut items);
+        if let Some(instruction_set) = binary.instruction_set()
+            && instruction_set.finds_functions_in_stripped_code()
+            && binary.kind == FileKind::Executable
+            && !listed
+        {
+            unnamed_functions::add(&binary, instruction_set, &mut items);
         }
 
         // Every function is found. Their sizes settle before the scan,

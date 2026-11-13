@@ -489,6 +489,15 @@ impl Binary {
         InstructionSet::of(self.architecture, self.thumb, self.endianness)
     }
 
+    /// Where the code is that `value` points to, when `value` is a pointer
+    /// that says it points to code (see [`InstructionSet::code_pointer`]):
+    /// in a Thumb file, an odd value names the code at the even address
+    /// below it. `None` for any other value, and in a file whose code elfq
+    /// can't read.
+    pub(crate) fn code_pointer(&self, value: u64) -> Option<u64> {
+        self.instruction_set()?.code_pointer(value)
+    }
+
     /// Where the reset handler starts, which the vector table names, when
     /// the file has one: the code a Cortex-M processor runs from reset.
     pub(crate) fn reset_handler(&self) -> Option<u64> {
@@ -538,14 +547,11 @@ impl Binary {
             .position(|section| section.is_code() && section.contains(address))
     }
 
-    /// `value` as the address of Thumb code, where a pointer to Thumb code
-    /// has bit 0 set: when `value` is odd and in a section of code once
-    /// that bit is cleared, the address without it.
+    /// `value` as the address of Thumb code: where it points, when it is a
+    /// pointer to code (see [`Binary::code_pointer`]) into a section of
+    /// code.
     fn thumb_code_address(&self, value: u64) -> Option<u64> {
-        if value & 1 == 0 {
-            return None;
-        }
-        let address = value & !1;
+        let address = self.code_pointer(value)?;
         self.code_section_at(address).map(|_| address)
     }
 
@@ -907,9 +913,14 @@ mod tests {
             section(".rodata", 0x2000, SectionKind::ReadOnlyData),
             debug_only,
         ];
-        let binary = Binary::for_tests(sections, Vec::new(), Vec::new());
+        let mut binary = Binary::for_tests(sections, Vec::new(), Vec::new());
         assert_eq!(binary.code_section_at(0x10ff), Some(0));
         assert_eq!(binary.code_section_at(0x1100), None);
+        // An x86-64 pointer never says it points to code.
+        assert_eq!(binary.thumb_code_address(0x1041), None);
+        binary.architecture = Architecture::Arm;
+        binary.pointer_size = 4;
+        binary.thumb = true;
         assert_eq!(binary.thumb_code_address(0x1041), Some(0x1040));
         // Even, so not a pointer to Thumb code; in data; and in a section
         // that isn't in memory.

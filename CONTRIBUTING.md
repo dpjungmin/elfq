@@ -1088,30 +1088,52 @@ page, which the capture prints.
    veneers. `runs_on` lets an entry point that shares its code with the
    next function, as libgcc's `__aeabi_dsub` does with `__adddf3`, run on
    into it as a tail call; when it answers `None`, such entry points use
-   nothing. `code_size`, `leading_padding`, `ending` and
-   `scan_instructions` matter only for finding the functions in stripped
-   firmware, which elfq does only for Thumb, and `startup_code` only for
-   `startup`, which walks only Thumb code: the x86-64 arms show what to
-   answer there.
+   nothing. `code_pointer` reads a pointer that says it points to code,
+   as a Thumb pointer's bit 0 does: an odd one names the code at the even
+   address below it. The graph, a SYMBOL given as an address, and `diff`
+   ask it through `Binary::code_pointer`; a set whose pointers to code are
+   plain addresses answers `None`, as x86-64 does. Symbols, the entry
+   point and relocation targets lose the bit as elfq loads them, in
+   `binary::code_address`, which asks the architecture: loading reads
+   the entry point and relocations before it knows the instruction set.
+   `finds_functions_in_stripped_code` says whether elfq follows the code
+   to find the functions in stripped firmware, which it does only for
+   Thumb; `code_size`, `leading_padding`, `ending` and `scan_instructions`
+   matter only there, and `startup_code` only for `startup`, which walks
+   only Thumb code: the x86-64 arms show what to answer there.
 3. **Its name.** Add it to `text::architecture_name`, which the overview
    prints.
 4. **Linux programs.** Dynamic relocations (`binary/relocations.rs`) and
    PLT stubs (`binary/plt.rs`) are read only for x86-64. Without them, a
    position-independent program or a shared library has no imports and no
    pointers stored in data.
-5. **Samples.** Build the C sample for it in `testdata/build.sh`, with
+5. **Firmware.** Some rules are those of Arm's Cortex-M firmware rather
+   than of an instruction set, so they ask `Binary::thumb` or the
+   architecture rather than `InstructionSet`: the vector table, which
+   loading reads only in a Thumb file (`binary/vector_table.rs`);
+   constants that a linker script puts in a section of code, which
+   `binary/unnamed_data.rs` finds only in Thumb code; the `$d` symbols
+   that mark data among code, which `symbols::data_in_code` reads only in
+   Arm files; and `diff`'s suggestion to run `startup`, only for Arm
+   builds (`commands/diff/mod.rs`). Firmware for another instruction set
+   may need its own version of each. One rule of Thumb code itself asks
+   `Binary::thumb` too: `diff` compares the words among a function's code
+   as addresses only in Thumb code, which keeps constants among its
+   instructions (`Edits::bytes_edited`); a set that does the same needs
+   it too.
+6. **Samples.** Build the C sample for it in `testdata/build.sh`, with
    `variants` for the copies without DWARF and without symbols, and say
    what it holds in testdata/README.md. Add it to `C_SAMPLES` in
    `tests/it/support/mod.rs`; `library/graph.rs` and
    `library/retained.rs` check its answers against testdata/README.md.
-6. **Tests that need code elfq can't read.**
+7. **Tests that need code elfq can't read.**
    `ElfBytes::mark_code_unreadable`, in `tests/it/support/elf.rs`, marks a
    file as AArch64 for them. When AArch64 is the one you add, pick another
    machine there, and change the tests' text that names AArch64.
-7. **Text for `browse`.** The arm in `InstructionSet::listing`, in
+8. **Text for `browse`.** The arm in `InstructionSet::listing`, in
    `src/arch/listing.rs`, prints the code, one line per instruction,
    starting where `scan`'s references are.
-8. **Docs.** README.md and docs/design.md say which instruction sets elfq
+9. **Docs.** README.md and docs/design.md say which instruction sets elfq
    reads.
 
 ## Sample binaries

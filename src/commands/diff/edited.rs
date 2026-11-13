@@ -498,14 +498,14 @@ fn through(veneers: &Veneers, mut item: usize) -> Node {
     Node::Item(item)
 }
 
-/// Where `value` points into an item of `binary`. On Thumb, a function's
-/// address with the Thumb bit set points into the function, even when its
-/// size is 0.
+/// Where `value` points into an item of `binary`. A pointer to a
+/// function's code points into the function, even when its size is 0, as
+/// on Thumb, a function's address with the Thumb bit set does (see
+/// [`Binary::code_pointer`]).
 fn item_offset_of(binary: &Binary, value: u64) -> Option<ItemOffset> {
     let item = binary.item_at(value).or_else(|| {
-        let index = binary.item_at(value.checked_sub(1)?)?;
-        let thumb = binary.thumb && value % 2 == 1;
-        (thumb && binary.items[index].kind == ItemKind::Function).then_some(index)
+        let index = binary.item_at(binary.code_pointer(value)?)?;
+        (binary.items[index].kind == ItemKind::Function).then_some(index)
     })?;
     let offset = value - binary.items[item].address;
     Some(ItemOffset { item, offset })

@@ -145,7 +145,8 @@ table. elfq clears it, so the addresses it prints for functions are even.
 A file's code is Thumb when bit 0 is set in its entry point or a
 function's symbol, or when its build attributes name a Cortex-M core, as
 in stripped firmware whose entry point is even. elfq reads Thumb code, but
-not the older 32-bit Arm (A32) code. (`binary::Binary::thumb`)
+not the older 32-bit Arm (A32) code. (`binary::Binary::thumb`,
+`binary::Binary::code_pointer`)
 
 **Vector table.** On Cortex-M, the list of addresses that the processor
 reads at reset and on each interrupt or exception: the initial stack
