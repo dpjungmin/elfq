@@ -268,10 +268,7 @@ code.
     (address, value) pairs.
   - `Operands::targets` holds (offset, address) pairs, and the startup
     walk keeps its ways out of a loop as pairs of addresses (`pending`).
-  - `all`, which `--all` sets, goes as a bool from the `run` of each
-    command that takes it to about sixty-five of the commands'
-    functions.
-  - About fifty other arguments are bools, as in `Block::parts` in
+  - About fifty arguments are bools, as in `Block::parts` in
     `diff/blocks.rs`, `Boundary::unfollowed_from` in
     `graph/boundary.rs` and the startup walk's `Walker::execute`.
 - A test runs elfq through `support/`:
@@ -514,6 +511,18 @@ helper type, doesn't take a word of the list; where code still does, as
 - **shape**: how a table shows a tree: as rows that name the row they
   hang under, or drawn with `--tree` (`TreeShape`). A command's
   **format** is text, tree or JSON (`Format`).
+- **brief**: what a command shows without `--all` (`Detail::Brief`, in
+  `commands/text.rs`; a `Detail` is named `detail`): the first rows of a
+  long table or tree, as the command ranks them, such as `top`'s 30
+  largest items or `why`'s chains through the 10 nearest, with a row such
+  as "6 more" that sums up the rest, and in `diff`, one row for several
+  changes; and the first names or addresses of a long list in a
+  sentence, then "and 5 more". With `--all`, it shows all of it
+  (`Detail::All`). Each command says how many a brief answer has room
+  for, and `Detail::room` gives that many, or every one. Browse shows a
+  tab's notes brief when they don't fit in full, and briefest, naming
+  only the first item of each list, when they don't fit even so
+  (`Printed`, in `views/printed.rs`).
 - **step**: one thing that startup code does, such as copying a section
   (`startup::steps::Step`). Its place in the steps is a step index;
   where elfq writes a step out, it gives its number, from 1
@@ -829,7 +838,10 @@ is a short one to copy.
    `check_range` and `check_json` each have an arm for every command, and
    the compiler asks for the new one in each: put it with the commands
    that take `--tree`, `--range` or `--json`, or with those that refuse
-   it. A command that takes `--range` gets `range` from its arm in `run`;
+   it. `Cli::all`, in `cli/mod.rs`, has an arm for every command too: a
+   command that takes `--all` reads it there, and gets `detail` from its
+   arm in `run`, and one that doesn't goes with `browse` and `debug`. A
+   command that takes `--range` gets `range` from its arm in `run`;
    name it in `RANGE_REFUSED`, the error that lists the commands that
    take `--range`, in the tests that check that error, which a search of
    `tests/it/` for its text finds, and in the `--range` help in

@@ -40,7 +40,7 @@ use crate::commands::range_check::check_holds_items;
 use crate::commands::symbol::{
     self, Argument, Lookup, LookupOrMatch, Names, Pattern, Pick, Set, Takes,
 };
-use crate::commands::text::{self, Naming};
+use crate::commands::text::{self, Detail, Naming};
 use crate::graph::Node;
 
 /// What `retained` answers about: the items that its arguments pick, and
@@ -63,16 +63,17 @@ pub(super) struct Symbols {
 /// in the order given, and leaves out each function whose end elfq doesn't
 /// know. Fails with an error that lists every argument that it can't use,
 /// such as an import, a pattern that matches nothing or a range that holds
-/// no item, the first 10 of them unless `all` (see [`unusable_error`]),
-/// with the line that says which of the arguments it can't use are files
-/// here under it, as the shell may have put them in place of a pattern
-/// (see [`symbol::with_shell_hint`]); when it leaves out every item, with
-/// an error that names them; and after those checks, for a shared library.
+/// no item, the first 10 of them unless `detail` is [`Detail::All`] (see
+/// [`unusable_error`]), with the line that says which of the arguments it
+/// can't use are files here under it, as the shell may have put them in
+/// place of a pattern (see [`symbol::with_shell_hint`]); when it leaves out
+/// every item, with an error that names them; and after those checks, for a
+/// shared library.
 pub(super) fn find_symbols(
     binary: &Binary,
     names: &Names,
     queries: &[String],
-    all: bool,
+    detail: Detail,
 ) -> Result<Symbols> {
     // Each argument is read once, for what it finds and for what the error
     // that lists those it can't use calls them.
@@ -96,7 +97,7 @@ pub(super) fn find_symbols(
         }
     }
     if !unusable.is_empty() {
-        let error = unusable_error(&unusable, queries.len(), arguments_word, all, names);
+        let error = unusable_error(&unusable, queries.len(), arguments_word, detail, names);
         // Only an argument that it can't use may be what the shell put in
         // place of a pattern: one that finds its item was typed as meant.
         let unusable: Vec<&str> = unusable.iter().map(|argument| argument.query).collect();
@@ -111,7 +112,7 @@ pub(super) fn find_symbols(
             .collect();
         bail!("{}", ends_unknown(&left_out));
     }
-    refuse_shared_library(binary, &set, all)?;
+    refuse_shared_library(binary, &set, detail)?;
     Ok(Symbols { set, left_out })
 }
 
@@ -188,13 +189,13 @@ const USE_ONE_OR_MORE: &str = "use one or more on the left instead";
 /// another's does, such as a name given twice, is listed once. When that
 /// leaves one, it is the error that it gets alone; otherwise, a line that
 /// counts every argument that it can't use, then the errors of the first
-/// [`LISTED`], or of every one if `all`, each indented under it, then how
-/// many more.
+/// [`LISTED`], or of every one if `detail` is [`Detail::All`], each
+/// indented under it, then how many more.
 fn unusable_error(
     unusable: &[Unusable],
     count: usize,
     arguments: &str,
-    all: bool,
+    detail: Detail,
     names: &Names,
 ) -> String {
     let mut said = HashSet::new();
@@ -204,7 +205,7 @@ fn unusable_error(
     if let [one] = distinct[..] {
         return one.error(names);
     }
-    let room = if all { usize::MAX } else { LISTED };
+    let room = detail.room(LISTED);
     let listed = text::shown_count(distinct.len(), room);
     let mut message = format!(
         "elfq can't use {} of the {count} {arguments}:",

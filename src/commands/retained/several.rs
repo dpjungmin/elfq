@@ -29,19 +29,19 @@ use super::{Symbols, left_out_note, would_save};
 use crate::cli::Format;
 use crate::commands::retained_tree::RetainedTree;
 use crate::commands::symbol::{Found, Set};
-use crate::commands::text::{self, Naming};
+use crate::commands::text::{self, Detail, Naming};
 use crate::commands::tree_answer::TreeAnswer;
 use crate::graph::Node;
 
 /// What `retained SYMBOL...` writes as text for `symbols`, several, in the
 /// tree `retained`: what removing them all at once would save, and the
-/// trees of what goes, the largest 30 items or with `all`, every one, in
-/// the shape that `format` asks for, then the notes, which name the
+/// trees of what goes, the largest 30 items or with [`Detail::All`], every
+/// one, in the shape that `format` asks for, then the notes, which name the
 /// functions it left out too.
 pub(super) fn tree_answer(
     retained: &RetainedTree,
     symbols: &Symbols,
-    all: bool,
+    detail: Detail,
     format: Format,
 ) -> TreeAnswer {
     let set = &symbols.set;
@@ -52,7 +52,7 @@ pub(super) fn tree_answer(
         left_out: &symbols.left_out,
         parts: Parts::new(retained, &removed),
     };
-    several.tree_answer(all, format)
+    several.tree_answer(detail, format)
 }
 
 /// The names of the SYMBOLs in `found`, as the answer gives them, in the
@@ -80,15 +80,15 @@ struct Several<'f, 't, 'g, 'a> {
 }
 
 impl Several<'_, '_, '_, '_> {
-    /// The answer, with `all`, every row and every name in the notes, in
-    /// the shape that `format` asks for. When nothing reaches any SYMBOL,
-    /// it says so, and what their own bytes are, and has no notes of its
-    /// own but the one on the functions left out. When no row would show,
-    /// it has no table.
-    fn tree_answer(&self, all: bool, format: Format) -> TreeAnswer {
+    /// The answer, with [`Detail::All`], every row and every name in the
+    /// notes, in the shape that `format` asks for. When nothing reaches any
+    /// SYMBOL, it says so, and what their own bytes are, and has no notes
+    /// of its own but the one on the functions left out. When no row would
+    /// show, it has no table.
+    fn tree_answer(&self, detail: Detail, format: Format) -> TreeAnswer {
         let retained = self.retained;
-        let naming = Naming::of(all);
-        let range = (retained.range).map(|range| text::range_text(retained.binary, range, all));
+        let naming = Naming::of(detail);
+        let range = (retained.range).map(|range| text::range_text(retained.binary, range, detail));
         let removal = &self.parts.removal;
         if removal.tops().is_empty() {
             let sentence = self.unreachable_answer(range.as_deref(), &naming);
@@ -99,10 +99,10 @@ impl Several<'_, '_, '_, '_> {
                 ..TreeAnswer::sentences(vec![sentence])
             };
         }
-        let subject = self.set.lead_name(retained.binary, all).to_string();
+        let subject = self.set.lead_name(retained.binary, detail).to_string();
         let saves = would_save(&subject, removal.retained(), range.as_deref());
         let notes = self.notes(&naming);
-        let shown = self.shown(all);
+        let shown = self.shown(detail);
         // With a range, the tops may keep none of its bytes: the SYMBOLs
         // that nothing reaches may have the only ones there, or none has.
         if shown.is_empty() {
@@ -111,7 +111,7 @@ impl Several<'_, '_, '_, '_> {
                 ..TreeAnswer::sentences(vec![format!("{saves}.")])
             };
         }
-        let words = self.kept_together_words(&shown, all);
+        let words = self.kept_together_words(&shown, detail);
         TreeAnswer {
             lead: vec![format!("{saves}:")],
             table: Some(retained.table(&shown, removal.tops(), &words, format)),
@@ -143,12 +143,12 @@ impl Several<'_, '_, '_, '_> {
     }
 
     /// The items that the table shows: the 30 largest of all that goes, or
-    /// with `all`, every one, and the items between each of them and its
-    /// top. Unlike for one SYMBOL, the tops compete for rows too, so a
-    /// SYMBOL that keeps little may have none, and the row that sums up the
-    /// rest counts it. As for one SYMBOL, only items with bytes of their
-    /// own compete: with a range, those with bytes in it.
-    fn shown(&self, all: bool) -> HashSet<usize> {
+    /// with [`Detail::All`], every one, and the items between each of them
+    /// and its top. Unlike for one SYMBOL, the tops compete for rows too,
+    /// so a SYMBOL that keeps little may have none, and the row that sums
+    /// up the rest counts it. As for one SYMBOL, only items with bytes of
+    /// their own compete: with a range, those with bytes in it.
+    fn shown(&self, detail: Detail) -> HashSet<usize> {
         let retained = self.retained;
         let tops = self.parts.removal.tops();
         let items: Vec<usize> = (tops.iter())
@@ -159,16 +159,20 @@ impl Several<'_, '_, '_, '_> {
             .filter(|&index| retained.has_bytes_in_range(index))
             .chain(self.parts.under_tops.iter().copied())
             .collect();
-        retained.largest(tops, &items, text::shown(all))
+        retained.largest(tops, &items, text::shown(detail))
     }
 
     /// The words that end the row of each top in `shown` that several
     /// SYMBOLs keep together, as in "kept by process_frame and report
     /// together". They name the SYMBOLs it needs, in the order given (see
     /// [`Parts::keepers`]) and as rows name the items they hang under: up
-    /// to 3, or 4 when that is all, and then how many more, or with `all`,
-    /// every one.
-    fn kept_together_words(&self, shown: &HashSet<usize>, all: bool) -> HashMap<usize, String> {
+    /// to 3, or 4 when that is all, and then how many more, or with
+    /// [`Detail::All`], every one.
+    fn kept_together_words(
+        &self,
+        shown: &HashSet<usize>,
+        detail: Detail,
+    ) -> HashMap<usize, String> {
         let mut keepers = self.parts.keepers();
         keepers.retain(|index, _| shown.contains(index));
         // Each SYMBOL may keep many rows together; its name is worked out
@@ -184,7 +188,7 @@ impl Several<'_, '_, '_, '_> {
                 let keepers: Vec<&str> = (keepers.iter())
                     .map(|keeper| short_names[keeper].as_str())
                     .collect();
-                let words = format!("kept by {} together", text::keepers_text(&keepers, all));
+                let words = format!("kept by {} together", text::keepers_text(&keepers, detail));
                 (index, words)
             })
             .collect()

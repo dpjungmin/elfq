@@ -83,7 +83,7 @@ use super::flat_answer::FlatTab;
 use super::json::section_names;
 use super::kept::Kept;
 use super::symbol::Names;
-use super::text::{self, CommandLine};
+use super::text::{self, CommandLine, Detail};
 use super::{Outcome, range_check};
 use crate::binary::{AddressRange, Binary, CodeAndData, MemoryBlock};
 use crate::cli::Format;
@@ -91,15 +91,15 @@ use crate::graph::{Graph, Node, Reference, ReferenceKind, Unfollowed, Unresolved
 use crate::render::Align;
 
 /// Answers `elfq FILE reach SYMBOL`. The text lists SYMBOL and the 30
-/// largest items it reaches, or with `all`, every one, by block, or with
-/// `--tree`, as a tree. `to`, the ranges of `--to`, limits the answer to
-/// what SYMBOL reaches in them, with every row, and then the answer is
-/// [`Outcome::Crossed`] when it lists something.
+/// largest items it reaches, or with [`Detail::All`], every one, by block,
+/// or with `--tree`, as a tree. `to`, the ranges of `--to`, limits the
+/// answer to what SYMBOL reaches in them, with every row, and then the
+/// answer is [`Outcome::Crossed`] when it lists something.
 pub(super) fn run(
     binary: &Binary,
     symbol: &str,
     to: &[AddressRange],
-    all: bool,
+    detail: Detail,
     format: Format,
     out: &mut dyn Write,
 ) -> Result<Outcome> {
@@ -114,7 +114,7 @@ pub(super) fn run(
         Format::Json => reach.write_json(out)?,
         Format::Text | Format::Tree => {
             let lead_name = symbol.lead_name(binary);
-            reach.text(&names, &lead_name, all, format).write(out)?;
+            reach.text(&names, &lead_name, detail, format).write(out)?;
         }
     }
     Ok(reach.outcome())
@@ -132,29 +132,29 @@ fn check_to(binary: &Binary, graph: &Graph, to: &[AddressRange]) -> Result<()> {
 
 /// Answers `elfq FILE reach` without SYMBOL, for the file at `path`: where
 /// the program starts, and the bytes of code and data that each start
-/// reaches, in each block of memory when there are several. `all` lists
-/// every start, and names every function that elfq can't read. `to`, the
-/// ranges of `--to`, `range`, that of `--range`, and `--tree` need SYMBOL,
-/// and are refused.
+/// reaches, in each block of memory when there are several. [`Detail::All`]
+/// lists every start, and names every function that elfq can't read. `to`,
+/// the ranges of `--to`, `range`, that of `--range`, and `--tree` need
+/// SYMBOL, and are refused.
 pub(super) fn run_starts(
     path: &Path,
     binary: &Binary,
     to: &[AddressRange],
     range: Option<AddressRange>,
-    all: bool,
+    detail: Detail,
     format: Format,
     out: &mut dyn Write,
 ) -> Result<Outcome> {
     check_code_is_readable(binary)?;
     let names = Kept::new(Names::new(binary));
     if !to.is_empty() || range.is_some() || format == Format::Tree {
-        bail!("{}", needs_symbol(path, &names, to, range, all, format));
+        bail!("{}", needs_symbol(path, &names, to, range, detail, format));
     }
     let graph = Kept::new(Graph::build(binary));
     let starts = starts(binary, &graph, &names);
     match format {
         Format::Json => starts.write_json(out)?,
-        Format::Text | Format::Tree => starts.answer(path, all).write(out)?,
+        Format::Text | Format::Tree => starts.answer(path, detail).write(out)?,
     }
     Ok(Outcome::Answered)
 }
@@ -168,7 +168,7 @@ fn needs_symbol(
     names: &Names,
     to: &[AddressRange],
     range: Option<AddressRange>,
-    all: bool,
+    detail: Detail,
     format: Format,
 ) -> String {
     let refused = if range.is_some() {
@@ -184,7 +184,7 @@ fn needs_symbol(
     let command = CommandLine::new(path, "reach")
         .word(&names.query_for(Node::Item(start)))
         .ranges("--to", to.iter().copied().chain(range))
-        .flag("--all", all)
+        .flag("--all", detail == Detail::All)
         .flag("--tree", format == Format::Tree)
         .flag("--json", format == Format::Json);
     format!("{refused}, such as {command}")
@@ -207,8 +207,8 @@ pub(super) fn tab<'a>(
     lead_name: &str,
 ) -> FlatTab {
     let reach = Reach::find(binary, graph, index, &[]);
-    let answer = |all| reach.text(names, lead_name, all, Format::Text).answer();
-    FlatTab::new(answer(true), answer(false))
+    let answer = |detail| reach.text(names, lead_name, detail, Format::Text).answer();
+    FlatTab::new(answer(Detail::All), answer(Detail::Brief))
 }
 
 /// What `reach SYMBOL` prints as text about the item at `index`, whose
@@ -221,11 +221,11 @@ pub(super) fn text_output<'a>(
     names: &Names<'a>,
     index: usize,
     lead_name: &str,
-    all: bool,
+    detail: Detail,
 ) -> String {
     let reach = Reach::find(binary, graph, index, &[]);
     let mut out = Vec::new();
-    let text = reach.text(names, lead_name, all, Format::Text);
+    let text = reach.text(names, lead_name, detail, Format::Text);
     text.write(&mut out).expect("writing to memory");
     String::from_utf8(out).expect("elfq writes UTF-8")
 }
@@ -291,8 +291,9 @@ struct Text<'r, 'a> {
     ///
     /// [`Symbol::lead_name`]: super::symbol::Symbol::lead_name
     lead_name: &'r str,
-    /// Whether the table shows every row, and the sentences every name.
-    all: bool,
+    /// How much the answer shows: with [`Detail::All`], every row of the
+    /// table and every name in the sentences.
+    detail: Detail,
     /// Whether the answer draws a tree, with `--tree`, in place of its
     /// rows.
     tree: bool,
@@ -371,21 +372,21 @@ struct Use {
 
 impl<'g, 'a> Reach<'g, 'a> {
     /// The text answer's view of it, which names SYMBOL `lead_name` in its
-    /// first line and the other items as `names` finds them, with `all`,
-    /// shows every row and name, and as `format` says, draws a tree or
-    /// lists rows.
+    /// first line and the other items as `names` finds them, with
+    /// [`Detail::All`], shows every row and name, and as `format` says,
+    /// draws a tree or lists rows.
     fn text<'r>(
         &'r self,
         names: &'r Names<'a>,
         lead_name: &'r str,
-        all: bool,
+        detail: Detail,
         format: Format,
     ) -> Text<'r, 'a> {
         Text {
             reach: self,
             names,
             lead_name,
-            all,
+            detail,
             tree: format == Format::Tree,
         }
     }

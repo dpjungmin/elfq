@@ -24,7 +24,7 @@ use super::checks::{check_code_is_readable, item_in_file};
 use super::kept::freeing;
 use super::range_check::Direction;
 use super::symbol::{FilesHere, Pattern, is_here};
-use super::text::CommandLine;
+use super::text::{CommandLine, Detail};
 use super::{Outcome, callees, callers, symbol, text};
 use crate::binary::{AddressRange, Binary};
 use crate::cli::{Cli, Command, DebugCommand, Format, ReachArgs, UsesArgs};
@@ -209,10 +209,10 @@ fn check_json(cli: &Cli) -> Result<()> {
 }
 
 /// The `run` of `callers` and `callees`, which takes the file, SYMBOL or
-/// what is given in its place, the ranges of `--from` or `--to`, whether to
-/// list all, the format and the output.
+/// what is given in its place, the ranges of `--from` or `--to`, how much
+/// to show, the format and the output.
 type UsesRun =
-    fn(&Binary, &[String], &[AddressRange], bool, Format, &mut dyn Write) -> Result<Outcome>;
+    fn(&Binary, &[String], &[AddressRange], Detail, Format, &mut dyn Write) -> Result<Outcome>;
 
 /// What `callers` or `callees` was given.
 struct UsesQuery<'a> {
@@ -339,7 +339,7 @@ fn refuse_range(cli: &Cli, binary: &Binary, uses: &UsesQuery, range: AddressRang
     }
     let answer = |symbols: &[String], far_side: &[AddressRange]| {
         let sink = &mut std::io::sink();
-        freeing(|| (uses.run)(binary, symbols, far_side, false, Format::Json, sink))
+        freeing(|| (uses.run)(binary, symbols, far_side, Detail::Brief, Format::Json, sink))
     };
     let added = ranges
         && answer(

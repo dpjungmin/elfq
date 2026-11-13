@@ -21,7 +21,7 @@ use super::lookup::add_index;
 use super::{LookupOrMatch, Names, Pattern, PatternMatches};
 use crate::binary::names;
 use crate::commands::checks::found_functions;
-use crate::commands::text;
+use crate::commands::text::{self, Detail};
 use crate::debuginfo::{self, CopiesToName, InlinedCopy};
 use crate::graph::Node;
 
@@ -140,7 +140,7 @@ impl<'a> Names<'a> {
             }
             _ => format!(
                 "the compiler inlined {copies} into {}; {command} lists those in {}",
-                text::names_text(&names, false),
+                text::names_text(&names, Detail::Brief),
                 names[0]
             ),
         })

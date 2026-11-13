@@ -39,6 +39,7 @@ mod tests {
     use crate::binary::Binary;
     use crate::cli::{Cli, Command};
     use crate::commands::checks::readable_item;
+    use crate::commands::text::Detail;
 
     #[test]
     fn the_reach_tab_lists_what_its_command_prints() {
@@ -92,20 +93,20 @@ mod tests {
             assert_eq!(symbol.node, node, "{line}");
             // What it prints, as `reach` runs it, but on the graph that the
             // session has built, with --all and without.
-            let output = |all| {
+            let output = |detail| {
                 let (graph, names) = (&session.graph, &session.names);
                 let lead_name = symbol.lead_name(&binary);
-                reach::text_output(&binary, graph, names, index, &lead_name, all)
+                reach::text_output(&binary, graph, names, index, &lead_name, detail)
             };
-            let (all, cut) = (output(true), output(false));
+            let (every, brief) = (output(Detail::All), output(Detail::Brief));
             // The tab has every line it prints with --all.
-            let lines: Vec<&str> = all.lines().filter(|line| !line.is_empty()).collect();
+            let lines: Vec<&str> = every.lines().filter(|line| !line.is_empty()).collect();
             assert_eq!(lines, tab.printed(), "{name}: {line}");
             // The command has --all exactly when it needs it to list every
             // row and every name.
-            assert_eq!(line.ends_with(" --all"), all != cut, "{name}: {line}");
+            assert_eq!(line.ends_with(" --all"), every != brief, "{name}: {line}");
             pages += 1;
-            cut_pages += usize::from(all != cut);
+            cut_pages += usize::from(every != brief);
         }
         (pages, cut_pages)
     }

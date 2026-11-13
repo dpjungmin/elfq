@@ -120,6 +120,25 @@ impl Cli {
             Format::Text
         }
     }
+
+    /// Whether `--all` was given. Each command that takes it holds it in
+    /// its own arguments, as [`TopArgs::all`] does; the overview, `browse`
+    /// and the `debug` commands don't take it. `commands::run` turns it
+    /// into a `Detail`, how much of the answer to show.
+    pub(crate) fn all(&self) -> bool {
+        match &self.command {
+            Some(Command::Top(args)) => args.all,
+            Some(Command::Retained(args)) => args.all,
+            Some(Command::Why(args)) => args.all,
+            Some(Command::Inlined(args)) => args.all,
+            Some(Command::Callers(args)) => args.uses.all,
+            Some(Command::Callees(args)) => args.uses.all,
+            Some(Command::Reach(args)) => args.all,
+            Some(Command::Diff(args)) => args.all,
+            Some(Command::Startup(args)) => args.all,
+            None | Some(Command::Browse(_) | Command::Debug(_)) => false,
+        }
+    }
 }
 
 /// How a command prints its answer.

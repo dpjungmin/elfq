@@ -17,6 +17,7 @@ use crate::binary::{
 use crate::commands::flat_answer::FlatTab;
 use crate::commands::flat_answer::{FlatAnswer, FlatRow};
 use crate::commands::symbol::Names;
+use crate::commands::text::Detail;
 use crate::commands::{json, text};
 use crate::graph::{Graph, Node, Reached, RootKind, listed_in};
 use crate::render::Align;
@@ -200,18 +201,21 @@ impl Starts<'_> {
     /// `--all` to print it all.
     #[cfg(feature = "tui")]
     pub(in crate::commands) fn tab(&self, path: &Path) -> FlatTab {
-        FlatTab::new(self.answer(path, true), self.answer(path, false))
+        FlatTab::new(
+            self.answer(path, Detail::All),
+            self.answer(path, Detail::Brief),
+        )
     }
 
     /// The answer's text: the starts as a table, then what elfq can't
     /// follow or read, and for a shared library, that its exported
     /// functions aren't counted. Each row is about its start.
     #[expect(clippy::too_many_lines, reason = "waits to be split; see CONTRIBUTING")]
-    pub(super) fn answer(&self, path: &Path, all: bool) -> FlatAnswer {
+    pub(super) fn answer(&self, path: &Path, detail: Detail) -> FlatAnswer {
         let binary = self.binary;
         let file = path.display();
         let several = self.blocks.len() > 1;
-        let rows = self.rows(all);
+        let rows = self.rows(detail);
         let mut answer = FlatAnswer::default();
         if !self.starts.is_empty() {
             let each = if several {
@@ -304,7 +308,7 @@ impl Starts<'_> {
             ));
         }
         if !self.unreadable.is_empty() {
-            answer.notes.push(self.unreadable_text(path, all));
+            answer.notes.push(self.unreadable_text(path, detail));
         }
         if binary.kind == FileKind::SharedLibrary {
             answer.notes.push(
@@ -315,18 +319,18 @@ impl Starts<'_> {
         answer
     }
 
-    /// The rows of the table: every start with `all`; otherwise `main`, the
-    /// entry point and the handlers, and of the other starts, those that
-    /// reach the most bytes, up to [`text::shown`] rows in all, with a row
-    /// such as "650 more" after the starts of each kind that it leaves out.
-    /// Of starts that reach as many bytes, the first is kept.
-    fn rows(&self, all: bool) -> Vec<StartRow> {
+    /// The rows of the table: every start with [`Detail::All`]; otherwise
+    /// `main`, the entry point and the handlers, and of the other starts,
+    /// those that reach the most bytes, up to [`text::shown`] rows in all,
+    /// with a row such as "650 more" after the starts of each kind that it
+    /// leaves out. Of starts that reach as many bytes, the first is kept.
+    fn rows(&self, detail: Detail) -> Vec<StartRow> {
         let is_other =
             |start: &Start| !matches!(start.root, None | Some(RootKind::Entry | RootKind::Handler));
         let mut others: Vec<usize> = (0..self.starts.len())
             .filter(|&start| is_other(&self.starts[start]))
             .collect();
-        let room = text::shown(all).saturating_sub(self.starts.len() - others.len());
+        let room = text::shown(detail).saturating_sub(self.starts.len() - others.len());
         others.sort_by_key(|&start| Reverse(self.starts[start].reached.bytes.total()));
         let left_out: HashSet<usize> = others[text::shown_count(others.len(), room)..]
             .iter()
@@ -357,7 +361,7 @@ impl Starts<'_> {
     /// out, as "_init and _fini are starts too, but elfq doesn't know where
     /// they end, ...", or when they are the only roots, "_start is where
     /// FILE starts, ...".
-    fn unreadable_text(&self, path: &Path, all: bool) -> String {
+    fn unreadable_text(&self, path: &Path, detail: Detail) -> String {
         let binary = self.binary;
         let names: Vec<&str> = self
             .unreadable
@@ -379,7 +383,7 @@ impl Starts<'_> {
         format!(
             "{} {what}, but elfq doesn't know where {it} {ends}, so it can't count what {it} \
              {reaches}.",
-            text::names_text(&names, all)
+            text::names_text(&names, detail)
         )
     }
 
@@ -506,10 +510,10 @@ mod tests {
         }
     }
 
-    fn text(starts: &Starts, all: bool) -> String {
+    fn text(starts: &Starts, detail: Detail) -> String {
         let mut out = Vec::new();
         starts
-            .answer(Path::new("app.elf"), all)
+            .answer(Path::new("app.elf"), detail)
             .write(&mut out)
             .unwrap();
         String::from_utf8(out).unwrap()
@@ -528,7 +532,11 @@ mod tests {
                 unreadable: Vec::new(),
                 blocks: memory_blocks(&binary.sections),
             };
-            text(&starts, false).lines().last().unwrap().to_string()
+            text(&starts, Detail::Brief)
+                .lines()
+                .last()
+                .unwrap()
+                .to_string()
         };
         assert_eq!(
             note(&[(true, false)]),
@@ -559,7 +567,7 @@ mod tests {
         };
         let main = || vec![start(&binary, "main", None, 10, (false, false))];
         assert_eq!(
-            text(&starts(main(), &["_init", "_fini"]), false),
+            text(&starts(main(), &["_init", "_fini"]), Detail::Brief),
             "\
 Where app.elf starts, and the bytes of code and data that each reaches:
 
@@ -570,7 +578,9 @@ _init and _fini are starts too, but elfq doesn't know where they end, so it can'
 "
         );
         assert_eq!(
-            text(&starts(main(), &["_init"]), false).lines().last(),
+            text(&starts(main(), &["_init"]), Detail::Brief)
+                .lines()
+                .last(),
             Some(
                 "_init is a start too, but elfq doesn't know where it ends, so it can't count \
                  what it reaches."
@@ -578,12 +588,12 @@ _init and _fini are starts too, but elfq doesn't know where they end, so it can'
         );
         // Without a table, the sentence is the answer.
         assert_eq!(
-            text(&starts(Vec::new(), &["_init"]), false),
+            text(&starts(Vec::new(), &["_init"]), Detail::Brief),
             "_init is where app.elf starts, but elfq doesn't know where it ends, so it can't \
              count what it reaches.\n"
         );
         assert_eq!(
-            text(&starts(Vec::new(), &[]), false),
+            text(&starts(Vec::new(), &[]), Detail::Brief),
             "elfq found no place where app.elf starts.\n"
         );
     }
@@ -626,7 +636,7 @@ _init and _fini are starts too, but elfq doesn't know where they end, so it can'
         // .fini_array's, the one that reaches 100 bytes, and the other too,
         // since a row of its own takes no more room than "1 more".
         let rows: Vec<String> = starts
-            .rows(false)
+            .rows(Detail::Brief)
             .iter()
             .map(|row| match *row {
                 StartRow::Start(start) => starts.starts[start].reached.bytes.code.to_string(),
@@ -638,8 +648,8 @@ _init and _fini are starts too, but elfq doesn't know where they end, so it can'
         expected.push(format!("3 more {init_array:?}"));
         expected.extend(["100".to_string(), "0".to_string()]);
         assert_eq!(rows, expected);
-        assert!(text(&starts, false).contains("  listed in .init_array  3 more\n"));
-        assert_eq!(starts.rows(true).len(), 34);
+        assert!(text(&starts, Detail::Brief).contains("  listed in .init_array  3 more\n"));
+        assert_eq!(starts.rows(Detail::All).len(), 34);
     }
 
     #[test]

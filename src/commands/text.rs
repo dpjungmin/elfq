@@ -107,6 +107,52 @@ pub(super) fn kind_name(kind: ItemKind) -> &'static str {
     }
 }
 
+/// How much of a long answer a command shows: a brief answer, without
+/// `--all`, or all of it, with `--all`.
+///
+/// `commands::run` makes the Detail that a command takes from `--all`,
+/// with [`Detail::from_flag`]: the only place where a bool becomes one.
+/// Browse asks for both, to tell whether a tab needs `--all`. Code that
+/// `--all` doesn't reach, such as an error, the hints under it and the
+/// overview, passes the one it needs: an error that must name everything
+/// passes [`Detail::All`], as `checks::ends_unknown` and
+/// `validate::asked_about` do, and the others pass [`Detail::Brief`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Detail {
+    /// What a command shows without `--all`: the first rows of a long
+    /// table or tree, as the command ranks them, such as `top`'s 30
+    /// largest items or `why`'s chains through the 10 nearest, with a row
+    /// such as "6 more" that sums up the rest, and in `diff`, one row for
+    /// several changes; and the first names or addresses of a long list
+    /// in a sentence, followed by "and 5 more".
+    Brief,
+    /// What a command shows with `--all`: every row of a table or tree,
+    /// every chain in `why`, and every name and address in the answer's
+    /// sentences. Only the cells that come before the name, AT and
+    /// `reach`'s WHY, stay short.
+    All,
+}
+
+impl Detail {
+    /// [`Detail::All`] when `all` is set, as clap sets it for `--all`, and
+    /// otherwise [`Detail::Brief`].
+    pub(super) fn from_flag(all: bool) -> Detail {
+        if all { Detail::All } else { Detail::Brief }
+    }
+
+    /// How many to show where a brief answer has room for `brief`: `brief`,
+    /// or with [`Detail::All`], `usize::MAX`, which no list reaches. Code
+    /// that takes a room only ever cuts a list down to it, as
+    /// [`shown_count`] does, so the largest number cuts nothing and needs
+    /// no check of its own.
+    pub(super) fn room(self, brief: usize) -> usize {
+        match self {
+            Detail::Brief => brief,
+            Detail::All => usize::MAX,
+        }
+    }
+}
+
 /// How many of the largest items a table shows without `--all`, as in
 /// `top` or `callers SYMBOL`: a row such as "6 more, kept by main" sums up
 /// the rest, and an item that would be left out on its own is shown too.
@@ -114,9 +160,9 @@ pub(super) fn kind_name(kind: ItemKind) -> &'static str {
 /// rest.
 const SHOWN: usize = 30;
 
-/// How many to show: [`SHOWN`], or with `--all`, every one.
-pub(super) fn shown(all: bool) -> usize {
-    if all { usize::MAX } else { SHOWN }
+/// How many to show: [`SHOWN`], or with [`Detail::All`], every one.
+pub(super) fn shown(detail: Detail) -> usize {
+    detail.room(SHOWN)
 }
 
 /// How many of `count` things to show where `room` fit: all of them, or
@@ -158,33 +204,36 @@ pub(super) fn column_names(names: &[&str]) -> String {
 /// unless `--all` asks for every one.
 const NAMED: usize = 10;
 
-/// How many names to name: [`NAMED`], or with `--all`, every one.
-pub(super) fn named(all: bool) -> usize {
-    if all { usize::MAX } else { NAMED }
+/// How many names to name: [`NAMED`], or every one with [`Detail::All`].
+pub(super) fn named(detail: Detail) -> usize {
+    detail.room(NAMED)
 }
 
 /// Names joined into a phrase: "a", "a and b", "a, b and c", or for more
-/// than eleven, "a, b, … and 5 more" unless `all`.
-pub(super) fn names_text(names: &[&str], all: bool) -> String {
-    phrase(names, named(all))
+/// than eleven in a brief answer, "a, b, … and 5 more".
+pub(super) fn names_text(names: &[&str], detail: Detail) -> String {
+    phrase(names, named(detail))
 }
 
-/// How many names a short list names before "and 5 more", unless `--all`
-/// asks for every one: the SYMBOLs that the row of an item that several of
-/// them keep together needs, and in `retained`'s note on what patterns
-/// matched only through other names, an item's names that matched.
+/// How many names or addresses a short list names before "and 5 more",
+/// unless `--all` asks for every one: the SYMBOLs that the row of an item
+/// that several of them keep together needs, in `retained`'s note on what
+/// patterns matched only through other names, an item's names that
+/// matched, and the sites of calls and jumps in a sentence
+/// ([`addresses_text`]).
 const FEW: usize = 3;
 
-/// How many names a short list names: [`FEW`], or with `--all`, every one.
-fn few(all: bool) -> usize {
-    if all { usize::MAX } else { FEW }
+/// How many names a short list names: [`FEW`], or with [`Detail::All`],
+/// every one.
+fn few(detail: Detail) -> usize {
+    detail.room(FEW)
 }
 
 /// The SYMBOLs that keep an item together, as its row names them: "a and
-/// b", "a, b and c", or for more than four, "a, b, c and 5 more" unless
-/// `all`.
-pub(super) fn keepers_text(names: &[&str], all: bool) -> String {
-    phrase(names, few(all))
+/// b", "a, b and c", or for more than four in a brief answer, "a, b, c and
+/// 5 more".
+pub(super) fn keepers_text(names: &[&str], detail: Detail) -> String {
+    phrase(names, few(detail))
 }
 
 /// How the notes of `why` and `retained` name the items they list: as the
@@ -201,11 +250,11 @@ pub(super) struct Naming<'f> {
 }
 
 impl<'f> Naming<'f> {
-    /// As the commands name them, every one with `all`.
-    pub(super) fn of(all: bool) -> Naming<'static> {
+    /// As the commands name them, every one with [`Detail::All`].
+    pub(super) fn of(detail: Detail) -> Naming<'static> {
         Naming {
-            named: named(all),
-            few: few(all),
+            named: named(detail),
+            few: few(detail),
             shorten: None,
         }
     }
@@ -266,11 +315,11 @@ impl<'f> Naming<'f> {
 }
 
 /// Addresses for a sentence: "0x1795", "0x1795 and 0x17d4", or for more
-/// than four, "0x1795, 0x17d4, 0x17e0 and 3 more" unless `all`.
-pub(super) fn addresses_text(sites: &[u64], all: bool) -> String {
+/// than four in a brief answer, "0x1795, 0x17d4, 0x17e0 and 3 more".
+pub(super) fn addresses_text(sites: &[u64], detail: Detail) -> String {
     let sites: Vec<String> = sites.iter().map(|site| format!("{site:#x}")).collect();
     let sites: Vec<&str> = sites.iter().map(String::as_str).collect();
-    phrase(&sites, if all { usize::MAX } else { 3 })
+    phrase(&sites, few(detail))
 }
 
 /// Addresses for the AT column: "0x1795", "0x1795, 0x17d4", or for more
@@ -393,14 +442,14 @@ pub(super) fn call_and_jump_verbs<'a>(
 
 /// The sentence that says elfq can't read `unreadable`, the functions whose
 /// end it doesn't know, as `callees SYMBOL` says it.
-pub(super) fn unreadable_text(binary: &Binary, unreadable: &[usize], all: bool) -> String {
+pub(super) fn unreadable_text(binary: &Binary, unreadable: &[usize], detail: Detail) -> String {
     let names: Vec<&str> = unreadable
         .iter()
         .map(|&index| binary.items[index].name.as_str())
         .collect();
     format!(
         "elfq doesn't know where {} {}, so it can't read {} code.",
-        names_text(&names, all),
+        names_text(&names, detail),
         if names.len() == 1 { "ends" } else { "end" },
         if names.len() == 1 { "its" } else { "their" }
     )
@@ -426,7 +475,7 @@ pub(super) fn unnamed_items(binary: &Binary) -> Option<(&Item, Option<&Item>)> {
 /// Says that nothing reaches the item called `name` from where the program
 /// starts.
 pub(super) fn nothing_reaches(name: &str) -> String {
-    nothing_reaches_any(&[name], &Naming::of(false))
+    nothing_reaches_any(&[name], &Naming::of(Detail::Brief))
 }
 
 /// Says that nothing reaches any of the items called `names`, one or
@@ -560,19 +609,20 @@ fn section_names(sections: Vec<&Section>) -> Vec<&str> {
 /// A range as `--range` takes it, with the sections and load images that
 /// have bytes in it, such as `0x00000000..0x000000e0 (.itcm)` or
 /// `0x30000000..0x30000edc (.isr_vector, .text, .rodata and .ARM.exidx,
-/// with the load images of .itcm and .data)`, every one with `all`.
-pub(super) fn range_text(binary: &Binary, range: AddressRange, all: bool) -> String {
+/// with the load images of .itcm and .data)`, every one with
+/// [`Detail::All`].
+pub(super) fn range_text(binary: &Binary, range: AddressRange, detail: Detail) -> String {
     let load_images = section_names(binary.load_images_in(range));
     let load_images = match load_images[..] {
         [] => None,
         [one] => Some(format!("the load image of {one}")),
         _ => Some(format!(
             "the load images of {}",
-            names_text(&load_images, all)
+            names_text(&load_images, detail)
         )),
     };
     let sections = section_names(binary.sections_in(range));
-    let sections = (!sections.is_empty()).then(|| names_text(&sections, all));
+    let sections = (!sections.is_empty()).then(|| names_text(&sections, detail));
     let range = range_argument(range);
     match (sections, load_images) {
         (None, None) => range,
@@ -583,28 +633,34 @@ pub(super) fn range_text(binary: &Binary, range: AddressRange, all: bool) -> Str
 }
 
 /// A range as `--range` takes it, with the sections that have bytes in
-/// it, every one with `all`: [`range_text`] without the load images, for
-/// range checks, which look only where the program uses its code and data.
-fn range_sections_text(binary: &Binary, range: AddressRange, all: bool) -> String {
+/// it, every one with [`Detail::All`]: [`range_text`] without the load
+/// images, for range checks, which look only where the program uses its
+/// code and data.
+fn range_sections_text(binary: &Binary, range: AddressRange, detail: Detail) -> String {
     let sections = section_names(binary.sections_in(range));
     match sections[..] {
         [] => range_argument(range),
-        _ => format!("{} ({})", range_argument(range), names_text(&sections, all)),
+        _ => format!(
+            "{} ({})",
+            range_argument(range),
+            names_text(&sections, detail)
+        ),
     }
 }
 
 /// The ranges as `--range` takes them, with the sections in each, joined
-/// into a phrase, every range and section with `all`, as range checks and
-/// the first line of an answer about a set name them. A load image in a
-/// range isn't named, since range checks look only where the program uses
-/// its code and data, and a load image is never used where it is stored.
-pub(super) fn ranges_text(binary: &Binary, ranges: &[AddressRange], all: bool) -> String {
+/// into a phrase, every range and section with [`Detail::All`], as range
+/// checks and the first line of an answer about a set name them. A load
+/// image in a range isn't named, since range checks look only where the
+/// program uses its code and data, and a load image is never used where it
+/// is stored.
+pub(super) fn ranges_text(binary: &Binary, ranges: &[AddressRange], detail: Detail) -> String {
     let texts: Vec<String> = ranges
         .iter()
-        .map(|&range| range_sections_text(binary, range, all))
+        .map(|&range| range_sections_text(binary, range, detail))
         .collect();
     let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
-    names_text(&texts, all)
+    names_text(&texts, detail)
 }
 
 /// A range as `--range` takes it, its addresses padded to 8 hex digits so
@@ -717,13 +773,13 @@ pub(super) fn sections_text(sections: &[&str], load_images: &[&str]) -> String {
 }
 
 /// Sentences about the calls and jumps in `name` that elfq can't follow,
-/// with the first few sites, or with `all`, every one. `listed` is whether
-/// the table above lists what it does call or use.
+/// with the first few sites, or with [`Detail::All`], every one. `listed`
+/// is whether the table above lists what it does call or use.
 pub(super) fn unresolved_lines(
     name: &str,
     unresolved: &[Unresolved],
     listed: bool,
-    all: bool,
+    detail: Detail,
 ) -> Vec<String> {
     let mut lines = Vec::new();
     // Through a pointer, so that only the running program knows where
@@ -753,7 +809,7 @@ pub(super) fn unresolved_lines(
         };
         lines.push(format!(
             "{start} {what}{through}, at {}, {end}.",
-            addresses_text(&sites, all)
+            addresses_text(&sites, detail)
         ));
     }
     lines
@@ -783,41 +839,53 @@ mod tests {
         let names: Vec<String> = (1..=12).map(|n| format!("f{n}")).collect();
         let names: Vec<&str> = names.iter().map(String::as_str).collect();
         assert_eq!(
-            names_text(&names[..11], false),
+            names_text(&names[..11], Detail::Brief),
             "f1, f2, f3, f4, f5, f6, f7, f8, f9, f10 and f11"
         );
         assert_eq!(
-            names_text(&names, false),
+            names_text(&names, Detail::Brief),
             "f1, f2, f3, f4, f5, f6, f7, f8, f9, f10 and 2 more"
         );
         assert_eq!(
-            names_text(&names, true),
+            names_text(&names, Detail::All),
             "f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11 and f12"
         );
         assert_eq!(at_column(&[1]), "0x1");
         assert_eq!(at_column(&[1, 2]), "0x1, 0x2");
         assert_eq!(at_column(&[1, 2, 3]), "0x1 and 2 more");
         assert_eq!(
-            addresses_text(&[1, 2, 3, 4], false),
+            addresses_text(&[1, 2, 3, 4], Detail::Brief),
             "0x1, 0x2, 0x3 and 0x4"
         );
         assert_eq!(
-            addresses_text(&[1, 2, 3, 4, 5], false),
+            addresses_text(&[1, 2, 3, 4, 5], Detail::Brief),
             "0x1, 0x2, 0x3 and 2 more"
         );
         assert_eq!(
-            addresses_text(&[1, 2, 3, 4, 5], true),
+            addresses_text(&[1, 2, 3, 4, 5], Detail::All),
             "0x1, 0x2, 0x3, 0x4 and 0x5"
         );
-        assert_eq!(keepers_text(&names[..4], false), "f1, f2, f3 and f4");
-        assert_eq!(keepers_text(&names[..5], false), "f1, f2, f3 and 2 more");
-        assert_eq!(keepers_text(&names[..5], true), "f1, f2, f3, f4 and f5");
+        assert_eq!(
+            keepers_text(&names[..4], Detail::Brief),
+            "f1, f2, f3 and f4"
+        );
+        assert_eq!(
+            keepers_text(&names[..5], Detail::Brief),
+            "f1, f2, f3 and 2 more"
+        );
+        assert_eq!(
+            keepers_text(&names[..5], Detail::All),
+            "f1, f2, f3, f4 and f5"
+        );
     }
 
     #[test]
     fn a_sentence_joins_its_last_two_words_with_and() {
-        assert_eq!(addresses_text(&[0x10], false), "0x10");
-        assert_eq!(addresses_text(&[0x10, 0x20], false), "0x10 and 0x20");
+        assert_eq!(addresses_text(&[0x10], Detail::Brief), "0x10");
+        assert_eq!(
+            addresses_text(&[0x10, 0x20], Detail::Brief),
+            "0x10 and 0x20"
+        );
     }
 
     #[test]
@@ -843,7 +911,7 @@ mod tests {
             unresolved(0x20, false, Some(0x9000)),
         ];
         assert_eq!(
-            unresolved_lines("f", &calls, false, false),
+            unresolved_lines("f", &calls, false, Detail::Brief),
             [
                 "f makes 1 call through a pointer, at 0x10, which elfq can't follow.",
                 "Also 1 jump, at 0x20, to code outside any function.",
@@ -854,7 +922,7 @@ mod tests {
             unresolved(0x18, false, Some(0x9100)),
         ];
         assert_eq!(
-            unresolved_lines("f", &jumps, true, false),
+            unresolved_lines("f", &jumps, true, Detail::Brief),
             ["Also 2 jumps, at 0x10 and 0x18, to code outside any function."]
         );
     }

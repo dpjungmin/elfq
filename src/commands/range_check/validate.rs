@@ -8,7 +8,7 @@ use anyhow::{Result, bail};
 use super::{Direction, Inside, RangeCheck};
 use crate::binary::{AddressRange, Binary, Item};
 use crate::commands::checks::empty_place;
-use crate::commands::text;
+use crate::commands::text::{self, Detail};
 use crate::graph::{Graph, ItemsInRanges};
 
 /// Checks the ranges that `check` asks about, and those of `--from` or
@@ -62,7 +62,7 @@ pub(in crate::commands) fn check_holds_items(binary: &Binary, range: AddressRang
         let used_at: Vec<&str> = used_at.iter().map(String::as_str).collect();
         bail!(
             "elfq found no functions or data in {place}; the program uses {}",
-            text::names_text(&used_at, false)
+            text::names_text(&used_at, Detail::Brief)
         );
     }
     bail!("elfq found no functions or data in {place}");
@@ -197,10 +197,10 @@ fn asked_about(binary: &Binary, inside: &Inside) -> String {
                 .map(|&range| text::range_argument(range))
                 .collect();
             let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
-            text::names_text(&texts, true)
+            text::names_text(&texts, Detail::All)
         }
         Inside::Symbol { lead_name, .. } => lead_name.clone(),
-        Inside::Set(set) => set.lead_name(binary, true).to_string(),
+        Inside::Set(set) => set.lead_name(binary, Detail::All).to_string(),
     }
 }
 

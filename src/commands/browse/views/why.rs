@@ -32,6 +32,7 @@ mod tests {
     use super::*;
     use crate::binary::Binary;
     use crate::cli::{Cli, Command, Format};
+    use crate::commands::text::Detail;
 
     #[test]
     fn the_why_tab_shows_what_its_command_prints() {
@@ -69,21 +70,21 @@ mod tests {
                 assert_eq!(symbol.node, node, "{line}");
                 // What it prints, as `why` runs it, but on the graph that
                 // the session has built, with --all and without.
-                let output = |all| {
+                let output = |detail| {
                     let mut out = Vec::new();
                     let (graph, names, text) = (&session.graph, &session.names, Format::Text);
-                    why::why(&binary, graph, names, &symbol, all, text, &mut out).unwrap();
+                    why::why(&binary, graph, names, &symbol, detail, text, &mut out).unwrap();
                     String::from_utf8(out).unwrap()
                 };
-                let (all, cut) = (output(true), output(false));
+                let (every, brief) = (output(Detail::All), output(Detail::Brief));
                 // The tab has every line it prints with --all.
-                let lines: Vec<&str> = all.lines().filter(|line| !line.is_empty()).collect();
+                let lines: Vec<&str> = every.lines().filter(|line| !line.is_empty()).collect();
                 assert_eq!(lines, tab.printed(), "{name}: {line}");
                 // The command has --all exactly when it needs it to show
                 // every chain and name.
-                assert_eq!(line.ends_with(" --all"), all != cut, "{name}: {line}");
+                assert_eq!(line.ends_with(" --all"), every != brief, "{name}: {line}");
                 pages += 1;
-                cut_pages += usize::from(all != cut);
+                cut_pages += usize::from(every != brief);
                 roots += usize::from(session.graph.root(node).is_some());
             }
         }

@@ -41,7 +41,7 @@ use super::retained_tree::RetainedTree;
 #[cfg(feature = "tui")]
 use super::symbol::Pick;
 use super::symbol::{self, Names, Set};
-use super::text::Naming;
+use super::text::{Detail, Naming};
 #[cfg(feature = "tui")]
 use super::tree_answer::TabAnswer;
 use super::tree_answer::TreeAnswer;
@@ -63,13 +63,13 @@ pub(super) fn run(
     binary: &Binary,
     queries: &[String],
     range: Option<AddressRange>,
-    all: bool,
+    detail: Detail,
     format: Format,
     out: &mut dyn Write,
 ) -> Result<Outcome> {
     check_code_is_readable(binary)?;
     let names = Kept::new(Names::new(binary));
-    let symbols = find_symbols(binary, &names, queries, all)?;
+    let symbols = find_symbols(binary, &names, queries, detail)?;
     let graph = Kept::new(Graph::build(binary));
     let retained = Kept::new(RetainedTree::naming(
         binary,
@@ -77,7 +77,7 @@ pub(super) fn run(
         range,
         names.into_inner(),
     ));
-    let naming = Naming::of(all);
+    let naming = Naming::of(detail);
     let set = &symbols.set;
     let mut answer = match (format, set.items()) {
         (Format::Json, found) => {
@@ -88,13 +88,13 @@ pub(super) fn run(
         (Format::Text | Format::Tree, [one]) => {
             // The one item of patterns or ranges given alone is named with
             // them.
-            let lead_name = set.lead_name(binary, all).to_string();
+            let lead_name = set.lead_name(binary, detail).to_string();
             let symbol = SymbolInTree {
                 retained: &retained,
                 index: one.index,
                 lead_name: &lead_name,
             };
-            let mut answer = answer(&symbol, all, format);
+            let mut answer = answer(&symbol, detail, format);
             if let Some(note) = left_out_note(binary, &symbols.left_out, &naming) {
                 // Before the notes that every answer about removing items
                 // has.
@@ -102,7 +102,9 @@ pub(super) fn run(
             }
             answer
         }
-        (Format::Text | Format::Tree, _) => several::tree_answer(&retained, &symbols, all, format),
+        (Format::Text | Format::Tree, _) => {
+            several::tree_answer(&retained, &symbols, detail, format)
+        }
     };
     if let Some(patterns) = set.patterns() {
         answer
@@ -121,7 +123,7 @@ pub(super) fn refusal(binary: &Binary, node: Node) -> Result<usize> {
     let index = readable_item(binary, node)?;
     let lead_name = node.name(binary).to_string();
     let set = Set::new(binary, [Pick::Symbol { index, lead_name }]);
-    refuse_shared_library(binary, &set, false)?;
+    refuse_shared_library(binary, &set, Detail::Brief)?;
     Ok(index)
 }
 
@@ -129,13 +131,13 @@ pub(super) fn refusal(binary: &Binary, node: Node) -> Result<usize> {
 /// count as places where the program starts, so that it can't tell what
 /// only the items of `set` lead to. It names them as the answer's first
 /// line would (see [`Set::lead_name`]).
-fn refuse_shared_library(binary: &Binary, set: &Set, all: bool) -> Result<()> {
+fn refuse_shared_library(binary: &Binary, set: &Set, detail: Detail) -> Result<()> {
     if binary.kind == FileKind::SharedLibrary {
         let lead = match set.items() {
             [_] => "leads",
             _ => "lead",
         };
-        let what = set.lead_name(binary, all);
+        let what = set.lead_name(binary, detail);
         bail!("elfq can't yet tell what only {what} {lead} to in a shared library");
     }
     Ok(())
@@ -159,14 +161,14 @@ fn would_save(subject: &str, saved: u64, range: Option<&str>) -> String {
 
 /// What `retained SYMBOL` writes as text: what removing SYMBOL would save,
 /// and the tree of the items that only it leads to, the largest 30 or with
-/// `all`, every one, in the shape that `format` asks for, then what it
-/// shares with other code and the calls that elfq can't follow.
-pub(super) fn answer(symbol: &SymbolInTree, all: bool, format: Format) -> TreeAnswer {
+/// [`Detail::All`], every one, in the shape that `format` asks for, then
+/// what it shares with other code and the calls that elfq can't follow.
+pub(super) fn answer(symbol: &SymbolInTree, detail: Detail, format: Format) -> TreeAnswer {
     if !symbol.is_reachable() {
         return TreeAnswer::sentences(vec![text::nothing_reaches(symbol.lead_name)]);
     }
     let alone = Alone::new(*symbol);
-    alone.tree_answer(&alone.shown(all), all, format)
+    alone.tree_answer(&alone.shown(detail), detail, format)
 }
 
 /// What `retained SYMBOL` writes as text, as tab 6 of browse shows it, for
@@ -181,9 +183,9 @@ pub(super) fn answers(symbol: &SymbolInTree, shorten: &dyn Fn(&str) -> String) -
         return TabAnswer::sentences(vec![sentence]);
     }
     let alone = Alone::new(*symbol);
-    let (every, largest) = (alone.shown(true), alone.shown(false));
-    let answer = alone.tree_answer(&every, true, Format::Text);
-    let brief = alone.parts.notes(&Naming::of(false));
+    let (every, largest) = (alone.shown(Detail::All), alone.shown(Detail::Brief));
+    let answer = alone.tree_answer(&every, Detail::All, Format::Text);
+    let brief = alone.parts.notes(&Naming::of(Detail::Brief));
     // Without --all, the tree leaves out items, or the notes names.
     let needs_all = largest.len() < every.len() || brief != answer.notes;
     TabAnswer {
@@ -235,21 +237,22 @@ impl<'t, 'g, 'a> Alone<'t, 'g, 'a> {
     }
 
     /// The items that the tree shows: the largest 30 of the lost items
-    /// under the tops and the items that keep them, or with `all`, every
-    /// one. Only items with bytes of their own compete for rows; an item
-    /// that keeps bytes in a range but has none there shows only between
-    /// others and SYMBOL, unlike in `top`. The tops don't compete for
-    /// rows: a top shows only as the item that keeps rows that show. So
-    /// SYMBOL, the only top, shows whenever the tree has rows.
-    fn shown(&self, all: bool) -> HashSet<usize> {
+    /// under the tops and the items that keep them, or with
+    /// [`Detail::All`], every one. Only items with bytes of their own
+    /// compete for rows; an item that keeps bytes in a range but has none
+    /// there shows only between others and SYMBOL, unlike in `top`. The
+    /// tops don't compete for rows: a top shows only as the item that keeps
+    /// rows that show. So SYMBOL, the only top, shows whenever the tree has
+    /// rows.
+    fn shown(&self, detail: Detail) -> HashSet<usize> {
         let tops = self.parts.removal.tops();
-        (self.symbol.retained).largest(tops, &self.parts.under_tops, text::shown(all))
+        (self.symbol.retained).largest(tops, &self.parts.under_tops, text::shown(detail))
     }
 
     /// The answer about removing SYMBOL alone, with the rows of the
-    /// `shown` items, in the shape that `format` asks for, and with `all`,
-    /// every name in the notes.
-    fn tree_answer(&self, shown: &HashSet<usize>, all: bool, format: Format) -> TreeAnswer {
+    /// `shown` items, in the shape that `format` asks for, and with
+    /// [`Detail::All`], every name in the notes.
+    fn tree_answer(&self, shown: &HashSet<usize>, detail: Detail, format: Format) -> TreeAnswer {
         let symbol = &self.symbol;
         let name = symbol.lead_name;
         let retained = symbol.retained;
@@ -257,9 +260,9 @@ impl<'t, 'g, 'a> Alone<'t, 'g, 'a> {
         let index = symbol.index;
         let own = retained.own(index);
         let own_bytes = text::bytes_text(own);
-        let range = (retained.range).map(|range| text::range_text(binary, range, all));
+        let range = (retained.range).map(|range| text::range_text(binary, range, detail));
         let removal = &self.parts.removal;
-        let notes = self.parts.notes(&Naming::of(all));
+        let notes = self.parts.notes(&Naming::of(detail));
         if self.parts.under_tops.is_empty() {
             // How many of them are in its load image, if any are.
             let load_image = match retained.load_image(index) {

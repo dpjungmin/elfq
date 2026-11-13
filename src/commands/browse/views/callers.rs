@@ -19,13 +19,13 @@ use crate::graph::Node;
 pub(super) fn tab(session: &Session, node: Node, mut answer: FlatAnswer) -> Printed {
     // `callers SYMBOL` lists the rows of the 30 largest callers, unless
     // with --all, and a last row counts the rest.
-    let cut = uses::table_needs_all(answer.node_count());
+    let needs_all = uses::table_needs_all(answer.node_count());
     // The page's header counts the callers, so the tab leaves out the
     // first line, which counts them too, unless it is all there is to say.
     if !answer.rows.is_empty() {
         answer.lead.clear();
     }
-    let command = session.command("callers", Some(node), cut);
+    let command = session.command("callers", Some(node), needs_all);
     Printed::of_flat(answer, command).opening(Tab::Callers, node)
 }
 
@@ -41,6 +41,7 @@ mod tests {
     use crate::binary::Binary;
     use crate::cli::{Cli, Command, Format};
     use crate::commands::callers;
+    use crate::commands::text::Detail;
 
     /// Runs `words`, a `callers` command line, as elfq does, but on the
     /// graph that `session` has already built, and returns what it prints,
@@ -57,13 +58,13 @@ mod tests {
         };
         let symbol = session.names.find(query).unwrap();
         assert_eq!(symbol.node, node, "{words:?}");
-        let output = |all| {
+        let output = |detail| {
             let mut out = Vec::new();
             let (binary, graph) = (session.binary, &session.graph);
-            callers::callers(binary, graph, &symbol, all, Format::Text, &mut out).unwrap();
+            callers::callers(binary, graph, &symbol, detail, Format::Text, &mut out).unwrap();
             String::from_utf8(out).unwrap()
         };
-        (output(true), output(false))
+        (output(Detail::All), output(Detail::Brief))
     }
 
     #[test]
@@ -85,11 +86,11 @@ mod tests {
                 let line = tab.command().strip_prefix("$ ").unwrap();
                 let words = shell_words(line);
                 assert_eq!(words[0], "elfq", "{line}");
-                let (all, cut) = run(&session, &words, node);
+                let (every, brief) = run(&session, &words, node);
                 // Its rows and notes are the tab's, with --all, after its
                 // first line, which says what the tab says in place of the
                 // rows when nothing uses the item.
-                let (lead, rest) = all.split_once('\n').unwrap();
+                let (lead, rest) = every.split_once('\n').unwrap();
                 let rest: Vec<&str> = rest.lines().filter(|line| !line.is_empty()).collect();
                 let mut printed = tab.printed();
                 if tab.names().is_empty() {
@@ -99,9 +100,9 @@ mod tests {
                 assert_eq!(rest, printed, "{name}: {line}");
                 // The command has --all exactly when it needs it to list
                 // every row.
-                assert_eq!(line.ends_with(" --all"), all != cut, "{name}: {line}");
+                assert_eq!(line.ends_with(" --all"), every != brief, "{name}: {line}");
                 pages += 1;
-                cut_pages += usize::from(all != cut);
+                cut_pages += usize::from(every != brief);
             }
         }
         assert!(pages > 4500 && cut_pages > 0, "{pages} {cut_pages}");

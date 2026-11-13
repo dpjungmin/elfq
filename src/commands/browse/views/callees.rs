@@ -11,6 +11,7 @@ use super::item::Tab;
 use super::printed::Printed;
 use crate::commands::browse::session::Session;
 use crate::commands::callees;
+use crate::commands::text::Detail;
 use crate::graph::Node;
 
 /// What the item at `index` calls or uses, as `callees SYMBOL` lists it,
@@ -18,14 +19,14 @@ use crate::graph::Node;
 /// CALLEE, each row opening the callee.
 pub(super) fn tab(session: &Session, index: usize, name: &str) -> Printed {
     let (binary, graph) = (session.binary, &session.graph);
-    let mut answer = callees::answer(binary, graph, index, name, true);
+    let mut answer = callees::answer(binary, graph, index, name, Detail::All);
     // `callees SYMBOL` lists the rows of the 30 largest callees, unless
     // with --all, and a last row counts the rest; and it gives only the
     // first few sites of the calls and jumps that elfq can't follow.
-    let brief = callees::answer(binary, graph, index, name, false);
-    let cut = brief.written() != answer.written();
+    let brief = callees::answer(binary, graph, index, name, Detail::Brief);
+    let needs_all = brief.written() != answer.written();
     let node = Node::Item(index);
-    let command = session.command("callees", Some(node), cut);
+    let command = session.command("callees", Some(node), needs_all);
     // The rows show what the first line counts, so the tab leaves it out,
     // unless it says what the item uses in place of rows.
     if !answer.rows.is_empty() {
@@ -78,26 +79,26 @@ mod tests {
                 assert_eq!(symbol.node, node, "{line}");
                 // What it prints, as `callees` runs it, but on the graph
                 // that the session has built, with --all and without.
-                let output = |all| {
+                let output = |detail| {
                     let mut out = Vec::new();
                     let (graph, lead) = (&session.graph, symbol.lead_name(&binary));
-                    callees::callees(&binary, graph, index, &lead, all, Format::Text, &mut out)
+                    callees::callees(&binary, graph, index, &lead, detail, Format::Text, &mut out)
                         .unwrap();
                     String::from_utf8(out).unwrap()
                 };
-                let (all, cut) = (output(true), output(false));
+                let (every, brief) = (output(Detail::All), output(Detail::Brief));
                 // The tab has its lines with --all, but for the first,
                 // which counts the rows, when there are rows.
-                let mut lines: Vec<&str> = all.lines().filter(|line| !line.is_empty()).collect();
+                let mut lines: Vec<&str> = every.lines().filter(|line| !line.is_empty()).collect();
                 if !tab.names().is_empty() {
                     assert!(lines.remove(0).contains(" uses "), "{name}: {line}");
                 }
                 assert_eq!(lines, tab.printed(), "{name}: {line}");
                 // The command has --all exactly when it needs it to list
                 // every row and every site.
-                assert_eq!(line.ends_with(" --all"), all != cut, "{name}: {line}");
+                assert_eq!(line.ends_with(" --all"), every != brief, "{name}: {line}");
                 pages += 1;
-                cut_pages += usize::from(all != cut);
+                cut_pages += usize::from(every != brief);
             }
         }
         assert!(pages > 4000 && cut_pages > 0, "{pages} {cut_pages}");

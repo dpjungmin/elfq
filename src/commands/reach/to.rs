@@ -35,7 +35,7 @@ impl Text<'_, '_> {
         }
         answer.lead = vec![lead];
         if !reach.unreadable.is_empty() {
-            let unreadable = text::unreadable_text(reach.binary, &reach.unreadable, self.all);
+            let unreadable = text::unreadable_text(reach.binary, &reach.unreadable, self.detail);
             answer.notes.push(unreadable);
         }
         answer
@@ -57,7 +57,7 @@ impl Text<'_, '_> {
         let name = self.lead_name;
         let others: Vec<Node> = reached.iter().map(|step| step.node).collect();
         let bytes = text::code_and_data(reach.bytes(counted.iter().copied()));
-        let ranges = text::ranges_text(binary, &reach.to, self.all);
+        let ranges = text::ranges_text(binary, &reach.to, self.detail);
         let mut lead = match (symbol_in_to, &others[..]) {
             (true, []) => {
                 format!("{name} takes {bytes} in {ranges}, and reaches nothing else there")

@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use super::changes::{Change, Items, PartnerStatus, Status};
 use super::pairing;
 use crate::binary::ItemKind;
-use crate::commands::text::shown;
+use crate::commands::text::{Detail, shown};
 use crate::graph::Node;
 
 impl<'a> Items<'a> {
@@ -73,8 +73,8 @@ impl<'a> Items<'a> {
     /// The MOVED table's rows, largest first, before they are written: one
     /// for each item that moved, but one for all the items of whole
     /// sections that moved by one offset between the same two blocks,
-    /// unless `all`.
-    pub(super) fn moved_rows(&self, all: bool) -> Vec<MovedRow> {
+    /// unless `detail` is [`Detail::All`].
+    pub(super) fn moved_rows(&self, detail: Detail) -> Vec<MovedRow> {
         let old = &self.old.binary;
         // The items that moved by each offset between each two blocks.
         let mut groups: Vec<Vec<MovedItem>> = Vec::new();
@@ -129,7 +129,7 @@ impl<'a> Items<'a> {
             let whole = sections
                 .iter()
                 .all(|&(_, section, count)| in_section[&section] == count);
-            if all || moved.len() < 2 || !whole {
+            if detail == Detail::All || moved.len() < 2 || !whole {
                 rows.extend(moved.into_iter().map(MovedRow::Item));
             } else {
                 sections.sort_unstable();
@@ -153,30 +153,37 @@ impl<'a> Items<'a> {
 
     /// The CHANGE table's rows, grouped by block in the order of the blocks,
     /// each block's largest first: every item that changed but moved, and
-    /// unless `all`, a new or gone item with the new or gone items in its
-    /// block that only it keeps, as [`Items::heads`] gives them, as one row,
-    /// rows folded into one, and the largest rows, as many as `top` shows,
-    /// with every block that changed showing at least its largest, and a
-    /// row for the rest of each block.
-    pub(super) fn change_rows(&self, heads: &[usize], all: bool) -> Vec<ChangeRow> {
-        let rows = self.rows_by_head(heads, all);
-        let rows = if all { rows } else { self.fold(rows) };
-        let ranked = self.rank(rows, shown(all));
-        let shown_rows = rows_shown(&ranked, all);
+    /// unless `detail` is [`Detail::All`], a new or gone item with the new
+    /// or gone items in its block that only it keeps, as [`Items::heads`]
+    /// gives them, as one row, rows folded into one, and the largest rows,
+    /// as many as `top` shows, with every block that changed showing at
+    /// least its largest, and a row for the rest of each block.
+    pub(super) fn change_rows(&self, heads: &[usize], detail: Detail) -> Vec<ChangeRow> {
+        let rows = self.rows_by_head(heads, detail);
+        let rows = match detail {
+            Detail::All => rows,
+            Detail::Brief => self.fold(rows),
+        };
+        let ranked = self.rank(rows, shown(detail));
+        let shown_rows = rows_shown(&ranked, detail);
         by_block(ranked, shown_rows)
     }
 
-    /// A row for each change but those that moved, or unless `all`, for
-    /// each head in `heads`, which stands for the changes under it too, with
-    /// their deltas added up; in the order of each row's first change.
-    fn rows_by_head(&self, heads: &[usize], all: bool) -> Vec<ChangeRow> {
+    /// A row for each change but those that moved, or unless `detail` is
+    /// [`Detail::All`], for each head in `heads`, which stands for the
+    /// changes under it too, with their deltas added up; in the order of
+    /// each row's first change.
+    fn rows_by_head(&self, heads: &[usize], detail: Detail) -> Vec<ChangeRow> {
         let mut rows: Vec<ChangeRow> = Vec::new();
         let mut row_of = vec![None; self.changes.len()];
         for (at, change) in self.changes.iter().enumerate() {
             if change.status() == Status::Moved {
                 continue;
             }
-            let head = if all { at } else { heads[at] };
+            let head = match detail {
+                Detail::All => at,
+                Detail::Brief => heads[at],
+            };
             let row = *row_of[head].get_or_insert_with(|| {
                 rows.push(ChangeRow::Item {
                     at: head,
@@ -350,19 +357,19 @@ impl<'a> Items<'a> {
 }
 
 /// Which of the `ranked` rows the table shows: the largest of each block,
-/// then the largest of the rest, as many as it has room for, unless `all`
-/// shows every one; and the row of a block that has only one left, since a
-/// row for the rest would take as much room.
-fn rows_shown(ranked: &[Ranked], all: bool) -> Vec<bool> {
+/// then the largest of the rest, as many as it has room for, or with
+/// [`Detail::All`], every one; and the row of a block that has only one
+/// left, since a row for the rest would take as much room.
+fn rows_shown(ranked: &[Ranked], detail: Detail) -> Vec<bool> {
     // The largest row of each block, then the largest of the rest.
-    let mut shown_rows = vec![all; ranked.len()];
+    let mut shown_rows = vec![detail == Detail::All; ranked.len()];
     let mut firsts = HashSet::new();
     for (position, row) in ranked.iter().enumerate() {
         if firsts.insert(row.block) {
             shown_rows[position] = true;
         }
     }
-    let mut room = shown(all).saturating_sub(firsts.len());
+    let mut room = shown(detail).saturating_sub(firsts.len());
     for is_shown in &mut shown_rows {
         if room == 0 {
             break;
@@ -642,7 +649,7 @@ mod tests {
     /// The rows of CHANGE, each as its delta and what it says.
     fn table(items: &Items, heads: &[usize]) -> Vec<(i128, String)> {
         items
-            .change_rows(heads, false)
+            .change_rows(heads, Detail::Brief)
             .iter()
             .map(|row| {
                 let text = match row {

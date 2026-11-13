@@ -24,8 +24,8 @@ use crate::commands::json::address;
 use crate::commands::range_check::{self, Direction};
 use crate::commands::symbol::Names;
 use crate::commands::text::{
-    self as house, cannot_read_code, named, names_text, plural, range_argument, range_start,
-    sections_text, shell_quote, shown_count, signed, size_text,
+    self as house, Detail, cannot_read_code, named, names_text, plural, range_argument,
+    range_start, sections_text, shell_quote, shown_count, signed, size_text,
 };
 use crate::graph::Node;
 use crate::render::{Align, Table};
@@ -35,9 +35,9 @@ use crate::render::{Align, Table};
 const RESIZED_NAMED: usize = 3;
 
 /// Writes diff's answer as text (see the module doc for its parts). With
-/// `all`, it shows every row and every name, where it otherwise shows the
-/// largest and counts the rest.
-pub(super) fn write(answer: &Answer, all: bool, out: &mut dyn Write) -> Result<()> {
+/// [`Detail::All`], it shows every row and every name, where it otherwise
+/// shows the largest and counts the rest.
+pub(super) fn write(answer: &Answer, detail: Detail, out: &mut dyn Write) -> Result<()> {
     let (old_path, new_path) = (answer.old_path.display(), answer.new_path.display());
     if answer.same_memory {
         writeln!(
@@ -62,7 +62,7 @@ pub(super) fn write(answer: &Answer, all: bool, out: &mut dyn Write) -> Result<(
         // One block that both builds have gets a line, as the overview
         // gives one block no table.
         [block] if !block.old.is_empty() && !block.new.is_empty() => {
-            writeln!(out, "{}", size_line(answer, block, all))?;
+            writeln!(out, "{}", size_line(answer, block, detail))?;
             false
         }
         [] => false,
@@ -71,10 +71,10 @@ pub(super) fn write(answer: &Answer, all: bool, out: &mut dyn Write) -> Result<(
     let Some(compared) = &answer.compared else {
         if table {
             writeln!(out)?;
-            memory_table(answer, all).write(out)?;
+            memory_table(answer, detail).write(out)?;
             writeln!(out)?;
         }
-        writeln!(out, "{}", sections_line(answer, all))?;
+        writeln!(out, "{}", sections_line(answer, detail))?;
         return write_try(answer, None, out);
     };
     let items = &compared.items;
@@ -85,18 +85,18 @@ pub(super) fn write(answer: &Answer, all: bool, out: &mut dyn Write) -> Result<(
     }
     if table {
         writeln!(out)?;
-        memory_table(answer, all).write(out)?;
+        memory_table(answer, detail).write(out)?;
     }
     let heads = items.heads();
-    let moved = items.moved_rows(all);
-    let change_rows = items.change_rows(&heads, all);
+    let moved = items.moved_rows(detail);
+    let change_rows = items.change_rows(&heads, detail);
     compared
         .old_names
         .will_name(moved.len() + change_rows.len());
     compared
         .new_names
         .will_name(moved.len() + change_rows.len());
-    let rows = Rows::new(compared, &change_rows, all);
+    let rows = Rows::new(compared, &change_rows, detail);
     if !moved.is_empty() {
         writeln!(out)?;
         rows.moved_table(&moved).write(out)?;
@@ -118,7 +118,7 @@ pub(super) fn write(answer: &Answer, all: bool, out: &mut dyn Write) -> Result<(
     }
     if items.changes.is_empty() {
         // No row says which bytes differ.
-        closing.push(sections_line(answer, all));
+        closing.push(sections_line(answer, detail));
     }
     if !closing.is_empty() {
         writeln!(out)?;
@@ -243,14 +243,14 @@ fn lead(answer: &Answer) -> String {
 /// changed only their bytes or address, nor `.tbss`, which is in no block.
 /// A section whose load image alone moved is named as SECTIONS names a load
 /// image.
-fn sections_line(answer: &Answer, all: bool) -> String {
+fn sections_line(answer: &Answer, detail: Detail) -> String {
     let names: Vec<String> = answer
         .sections_that_differ
         .iter()
         .map(|differs| section_label(differs.name, differs.only_load_address))
         .collect();
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
-    format!("Sections that differ: {}.", names_text(&names, all))
+    format!("Sections that differ: {}.", names_text(&names, detail))
 }
 
 /// Why the rows don't say what keeps items, if they don't: elfq can't
@@ -282,7 +282,7 @@ struct Rows<'c, 'a> {
     inlined_into: HashMap<usize, Vec<usize>>,
     old: RowNames<'c, 'a>,
     new: RowNames<'c, 'a>,
-    all: bool,
+    detail: Detail,
 }
 
 /// A build, with the names that rows give its items, each worked out once:
@@ -296,7 +296,7 @@ struct RowNames<'c, 'a> {
 
 impl<'c, 'a> Rows<'c, 'a> {
     /// The rows for `compared`, with the CHANGE table's `change_rows`.
-    fn new(compared: &'c Compared<'a>, change_rows: &[ChangeRow], all: bool) -> Rows<'c, 'a> {
+    fn new(compared: &'c Compared<'a>, change_rows: &[ChangeRow], detail: Detail) -> Rows<'c, 'a> {
         let items = &compared.items;
         let gone = change_rows.iter().filter_map(|row| match row {
             ChangeRow::Item { at, .. } => items.changes[*at].gone_index(),
@@ -312,7 +312,7 @@ impl<'c, 'a> Rows<'c, 'a> {
             inlined_into: items.inlined_into(&compared.new_names, gone),
             old: row_names(items.old, &compared.old_names),
             new: row_names(items.new, &compared.new_names),
-            all,
+            detail,
         }
     }
 
@@ -350,7 +350,7 @@ impl<'c, 'a> Rows<'c, 'a> {
                         format!(
                             "all {} items of {}",
                             moved.len(),
-                            names_text(&sections, false)
+                            names_text(&sections, Detail::Brief)
                         ),
                     )
                 }
@@ -507,10 +507,10 @@ impl<'c, 'a> Rows<'c, 'a> {
                     let names: Vec<String> =
                         into.iter().map(|&index| self.new.name(index)).collect();
                     let names: Vec<&str> = names.iter().map(String::as_str).collect();
-                    mark += &format!(", inlined into {}", names_text(&names, self.all));
+                    mark += &format!(", inlined into {}", names_text(&names, self.detail));
                     // "inlined into process_frame, kept by process_frame"
                     // would say it twice.
-                    let named = &names[..shown_count(names.len(), named(self.all))];
+                    let named = &names[..shown_count(names.len(), named(self.detail))];
                     let keeper = self.old.keeper(index);
                     if keeper.is_some_and(|keeper| named.contains(&self.old.name(keeper).as_str()))
                     {
@@ -606,8 +606,11 @@ fn try_why(compared: &Compared, heads: &[usize]) -> Option<String> {
 
 /// "The memory stays at 15728 bytes (.text +16, .eh_frame +8)." or "The
 /// memory went from 224 to 208 bytes (.itcm -16)."
-fn size_line(answer: &Answer, block: &Block, all: bool) -> String {
-    let resized = resized_text(&block.sections(answer.old_memory, answer.new_memory), all);
+fn size_line(answer: &Answer, block: &Block, detail: Detail) -> String {
+    let resized = resized_text(
+        &block.sections(answer.old_memory, answer.new_memory),
+        detail,
+    );
     let resized = if resized.is_empty() {
         String::new()
     } else {
@@ -627,7 +630,7 @@ fn size_line(answer: &Answer, block: &Block, all: bool) -> String {
 
 /// The MEMORY table: a row for each block, with its size in each build and
 /// what changed in it.
-fn memory_table(answer: &Answer, all: bool) -> Table {
+fn memory_table(answer: &Answer, detail: Detail) -> Table {
     let mut table = Table::new(&[
         ("MEMORY", Align::Left),
         ("OLD", Align::Right),
@@ -648,7 +651,7 @@ fn memory_table(answer: &Answer, all: bool) -> Table {
             size(block.old_size()),
             size(block.new_size()),
             signed(block.delta()),
-            sections_cell(answer, block, all),
+            sections_cell(answer, block, detail),
         ]);
     }
     table
@@ -657,11 +660,11 @@ fn memory_table(answer: &Answer, all: bool) -> Table {
 /// What changed in a block: the sections whose size changed, or "bytes
 /// differ" when none did but some bytes did, or nothing. A block that only
 /// one build has names what is in it, as the overview's table does.
-fn sections_cell(answer: &Answer, block: &Block, all: bool) -> String {
+fn sections_cell(answer: &Answer, block: &Block, detail: Detail) -> String {
     let (memory, places) = match (block.old.is_empty(), block.new.is_empty()) {
         (true, _) => (answer.new_memory, &block.new),
         (_, true) => (answer.old_memory, &block.old),
-        _ => return resized_cell(answer, block, all),
+        _ => return resized_cell(answer, block, detail),
     };
     let names = |load_image: bool| -> Vec<&str> {
         places
@@ -675,9 +678,9 @@ fn sections_cell(answer: &Answer, block: &Block, all: bool) -> String {
 
 /// The sections whose size changed in a block that both builds have, or
 /// "bytes differ", or nothing.
-fn resized_cell(answer: &Answer, block: &Block, all: bool) -> String {
+fn resized_cell(answer: &Answer, block: &Block, detail: Detail) -> String {
     let sections = block.sections(answer.old_memory, answer.new_memory);
-    match resized_text(&sections, all) {
+    match resized_text(&sections, detail) {
         resized if !resized.is_empty() => resized,
         _ if block.same_bytes => String::new(),
         _ => "bytes differ".to_string(),
@@ -686,13 +689,13 @@ fn resized_cell(answer: &Answer, block: &Block, all: bool) -> String {
 
 /// The sections whose size changed, each with its delta, in address
 /// order: those that changed the most, ".itcm -16, .rodata +16", and "and 5
-/// more" for the rest, unless `all`.
-fn resized_text(sections: &[SectionPair], all: bool) -> String {
+/// more" for the rest, unless `detail` is [`Detail::All`].
+fn resized_text(sections: &[SectionPair], detail: Detail) -> String {
     let changed = sections
         .iter()
         .filter(|section| section.delta() != 0)
         .count();
-    let shown = shown_resized(sections, all);
+    let shown = shown_resized(sections, detail);
     let mut text = shown
         .iter()
         .map(|section| {
@@ -708,13 +711,16 @@ fn resized_text(sections: &[SectionPair], all: bool) -> String {
 }
 
 /// The sections whose size changed that [`resized_text`] names, in address
-/// order: those that changed the most, or with `all`, every one.
-fn shown_resized<'s, 'a>(sections: &'s [SectionPair<'a>], all: bool) -> Vec<&'s SectionPair<'a>> {
+/// order: those that changed the most, or with [`Detail::All`], every one.
+fn shown_resized<'s, 'a>(
+    sections: &'s [SectionPair<'a>],
+    detail: Detail,
+) -> Vec<&'s SectionPair<'a>> {
     let changed: Vec<&SectionPair> = sections
         .iter()
         .filter(|section| section.delta() != 0)
         .collect();
-    let shown = shown_count(changed.len(), room(all));
+    let shown = shown_count(changed.len(), detail.room(RESIZED_NAMED));
     let mut largest: Vec<usize> = (0..changed.len()).collect();
     largest.sort_by_key(|&index| Reverse(changed[index].delta().unsigned_abs()));
     largest.truncate(shown);
@@ -729,12 +735,6 @@ fn section_label(name: &str, load_image: bool) -> String {
         true => format!("load image of {name}"),
         false => name.to_string(),
     }
-}
-
-/// How many sections to name: [`RESIZED_NAMED`], or with `--all`, every
-/// one.
-fn room(all: bool) -> usize {
-    if all { usize::MAX } else { RESIZED_NAMED }
 }
 
 #[cfg(test)]
@@ -765,7 +765,7 @@ mod tests {
             try_startup: false,
         };
         let mut out = Vec::new();
-        write(&answer, false, &mut out).unwrap();
+        write(&answer, Detail::Brief, &mut out).unwrap();
         String::from_utf8(out).unwrap()
     }
 
