@@ -5,7 +5,7 @@
 use std::collections::{BTreeSet, HashSet};
 use std::rc::Rc;
 
-use crate::arch::startup::{Event, FunctionBounds, LoopStore, Source, Store};
+use crate::arch::startup::{Event, FunctionBounds, LoopStore, Progression, Source, Store};
 use crate::arch::thumb::SP;
 use crate::arch::thumb::decode::Flow;
 
@@ -606,7 +606,7 @@ fn summaries(walked: &[(u32, IterationEnd)], iterations: u32) -> Option<Vec<Loop
             let each: Vec<(u32, &Store)> = (walked.iter())
                 .filter_map(|(n, ended)| Some((*n, ended.stores.get(i)?)))
                 .collect();
-            let (address, step) = line_through(each.iter().map(|&(n, store)| (n, store.address)))?;
+            let at = line_through(each.iter().map(|&(n, store)| (n, store.address)))?;
             if each.iter().any(|(_, other)| other.size != store.size) || store.size == 0 {
                 return None;
             }
@@ -625,8 +625,7 @@ fn summaries(walked: &[(u32, IterationEnd)], iterations: u32) -> Option<Vec<Loop
                 .unwrap_or(0);
             Some(LoopStore {
                 site: store.site,
-                address,
-                step,
+                at,
                 size: store.size,
                 times: iterations - 1 + u32::from(i < last),
                 value,
@@ -637,25 +636,29 @@ fn summaries(walked: &[(u32, IterationEnd)], iterations: u32) -> Option<Vec<Loop
         .collect()
 }
 
-/// Where `points`, the `n`th iteration's number for some `n`, the first
-/// first, start and how far they move each iteration, when the walk can
-/// tell each and they move by the same amount.
+/// The progression that `points`, the `n`th iteration's number for some
+/// `n`, the first first, follow: where they start and how far they move
+/// each iteration, when the walk can tell each and they move by the same
+/// amount.
 pub(super) fn line_through(
     mut points: impl Iterator<Item = (u32, Option<u32>)>,
-) -> Option<(u32, i32)> {
+) -> Option<Progression> {
     let (1, Some(first)) = points.next()? else {
         return None;
     };
-    let mut step = None;
+    let mut moves = None;
     for (n, number) in points {
         let number = number?;
         let times = (n - 1) as i32;
-        let by = *step.get_or_insert_with(|| number.wrapping_sub(first) as i32 / times);
+        let by = *moves.get_or_insert_with(|| number.wrapping_sub(first) as i32 / times);
         if first.wrapping_add_signed(by.wrapping_mul(times)) != number {
             return None;
         }
     }
-    Some((first, step.unwrap_or(0)))
+    Some(Progression {
+        first,
+        moves: moves.unwrap_or(0),
+    })
 }
 
 #[cfg(test)]
@@ -685,7 +688,10 @@ mod tests {
 
     #[test]
     fn a_line_through_numbers_that_move_by_the_same_amount() {
-        let line = |points: &[(u32, Option<u32>)]| line_through(points.iter().copied());
+        // As (first, moves).
+        let line = |points: &[(u32, Option<u32>)]| {
+            line_through(points.iter().copied()).map(|line| (line.first, line.moves))
+        };
         // The iterations it went through need not follow each other.
         assert_eq!(
             line(&[(1, Some(0x100)), (2, Some(0x104)), (4, Some(0x10c))]),
@@ -700,8 +706,8 @@ mod tests {
             Some((0xffff_fffc, 4))
         );
         assert_eq!(line(&[(1, Some(0x100))]), Some((0x100, 0)));
-        // Not by the same amount: 5 bytes in two iterations is no whole
-        // step.
+        // Not by the same amount: 5 bytes in two iterations doesn't move
+        // by a whole number of bytes each iteration.
         assert_eq!(line(&[(1, Some(0x100)), (3, Some(0x105))]), None);
         assert_eq!(
             line(&[(1, Some(0x100)), (2, Some(0x104)), (3, Some(0x10c))]),

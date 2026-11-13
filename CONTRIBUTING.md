@@ -563,6 +563,12 @@ helper type, doesn't take a word of the list; where code still does, as
   section's status, `can't follow` for the problem and `can't tell` for
   the note, the code keeps those words (`Status::Unknown`,
   `Problem::CantFollow`, `Note::CantTell`).
+- **progression**: a number in a loop's code that moves by the same
+  amount each iteration: what it is in the first iteration, and how far
+  it moves each iteration after (`arch::startup::Progression`), as where
+  a loop's store stores and where it loads from (`LoopStore::at`,
+  `LoopStore::source`). Code names that amount `moves`, since a step is
+  one thing that startup code does.
 - **run**: in the tests, one run of the elfq program, with its exit
   status and what it printed on stdout and stderr (`Run`, in
   `tests/it/support/mod.rs`), which `run` gives; its `printed` is what
@@ -572,12 +578,10 @@ helper type, doesn't take a word of the list; where code still does, as
   `binary/memory.rs`.
 
 Some code still uses one of these words for something else. The Thumb
-walk's `Step` is what an instruction leads to; `reach`'s `Step` is
+walk's `Step` is what an instruction leads to, and `reach`'s `Step` is
 SYMBOL, or an item or import that it reaches, at its place in the tree,
-whose place in the search is a `StepId`; and a loop's `LoopStore::step`
-is how far a store moves each iteration, which `pieces.rs` reads beside
-`Piece::step`, a step index. Those are names to fix, not meanings to
-copy.
+whose place in the search is a `StepId`. Those are names to fix, not
+meanings to copy.
 
 ## Tests
 

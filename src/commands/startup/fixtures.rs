@@ -16,7 +16,7 @@ use super::steps::{Step, build};
 use super::{Facts, Firmware};
 use crate::arch::InstructionSet;
 use crate::arch::startup::{
-    Call, End, Event, How, Iteration, Loop, LoopStore, Runs, Source, Store,
+    Call, End, Event, How, Iteration, Loop, LoopStore, Progression, Runs, Source, Store,
 };
 use crate::binary::{Binary, Section};
 use crate::graph::Graph;
@@ -79,19 +79,21 @@ pub(super) fn binary() -> Binary {
 }
 
 /// A store of a loop's code at 0x8000018, over all the times the loop
-/// runs: of `size` bytes at `address` the first time, `step` bytes on
+/// runs: of `size` bytes at `address` the first time, `moves` bytes on
 /// each time, `times` times, of `value`.
 pub(super) fn each(
     address: u32,
-    step: i32,
+    moves: i32,
     size: u32,
     times: u32,
     value: Option<u32>,
 ) -> LoopStore {
     LoopStore {
         site: 0x800_0018,
-        address,
-        step,
+        at: Progression {
+            first: address,
+            moves,
+        },
         size,
         times,
         value,
@@ -102,11 +104,11 @@ pub(super) fn each(
 
 /// As `each`, of words that the loop loads from `from` the first
 /// time, and from as far on each time.
-pub(super) fn copied(address: u32, from: u32, step: i32, size: u32, times: u32) -> LoopStore {
+pub(super) fn copied(address: u32, from: u32, moves: i32, size: u32, times: u32) -> LoopStore {
     LoopStore {
-        source: Some((from, step)),
+        source: Some(Progression { first: from, moves }),
         loaded: true,
-        ..each(address, step, size, times, None)
+        ..each(address, moves, size, times, None)
     }
 }
 

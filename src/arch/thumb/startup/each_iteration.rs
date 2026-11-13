@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use crate::arch::startup::{Event, How, Iteration, LoopStore, Source, Store};
+use crate::arch::startup::{Event, How, Iteration, LoopStore, Progression, Source, Store};
 use crate::arch::thumb::PC;
 use crate::arch::thumb::decode::{Addressing, Effect, Operation, Registers, each};
 
@@ -169,7 +169,7 @@ impl Walker<'_> {
             .filter_map(|(iteration, n)| Some((n, iteration.row?)))
             .collect();
         let steady = match line_through(rows.iter().map(|&(n, row)| (n, Some(row)))) {
-            Some((_, step)) => step != 0 || rows.len() == 1,
+            Some(Progression { moves, .. }) => moves != 0 || rows.len() == 1,
             None => false,
         };
         if !tells || !steady || !same_words(&loads) {
@@ -315,12 +315,11 @@ fn copied_from(event: &Event) -> Vec<(u64, u64)> {
         }
         Event::Loop(l) => (l.stores().into_iter().flatten())
             .filter_map(|store| {
-                let (address, step) = store.source?;
-                let first = i64::from(address);
-                let last = first + i64::from(step) * i64::from(store.times.saturating_sub(1));
-                let start = u64::try_from(first.min(last)).ok()?;
-                let end = u64::try_from(first.max(last)).ok()? + u64::from(store.size);
-                Some((start, end))
+                let loaded = store.loaded_from()?;
+                Some((
+                    u64::try_from(loaded.start).ok()?,
+                    u64::try_from(loaded.end).ok()?,
+                ))
             })
             .collect(),
         _ => Vec::new(),

@@ -66,16 +66,21 @@ impl Piece {
     ///    load.
     pub(super) fn of_loop(ram: &RamSections, l: &Loop, home: Home) -> Option<Piece> {
         // 1.
+        // The bytes that a store covers, but for any below address 0.
+        let stored = |store: &LoopStore| {
+            let Range { start, end } = store.stored();
+            start.max(0) as u64..end.max(0) as u64
+        };
         let stores: Vec<&LoopStore> = (l.stores()?.iter())
-            .filter(|store| store.times > 0 && ram.overlaps(stored_bytes(store)))
+            .filter(|store| store.times > 0 && ram.overlaps(stored(store)))
             .collect();
         let first = *stores.first()?;
         // 2.
         let (to, size) = tiled(&stores)?;
         // 3. How far after each store a copy loads its words from.
         let gap = |store: &LoopStore| {
-            let (from, step) = store.source?;
-            (step == store.step).then(|| from.wrapping_sub(store.address))
+            let source = store.source?;
+            (source.moves == store.at.moves).then(|| source.first.wrapping_sub(store.at.first))
         };
         let copies = (gap(first)).filter(|&by| stores.iter().all(|&store| gap(store) == Some(by)));
         let zeroes = (stores.iter()).all(|store| store.value == Some(0) && !store.loaded);
@@ -284,14 +289,6 @@ impl Pieces {
     }
 }
 
-/// The bytes that a loop's store covers over all the times it stores.
-fn stored_bytes(store: &LoopStore) -> Range<u64> {
-    let first = i64::from(store.address);
-    let last = first + i64::from(store.step) * i64::from(store.times.saturating_sub(1));
-    let start = first.min(last).max(0) as u64;
-    start..(first.max(last) + i64::from(store.size)).max(0) as u64
-}
-
 /// Where the bytes that `stores`, a loop's stores, cover start, and how
 /// many there are, when they cover all of them once, one after another:
 /// each time the loop runs, its stores store the bytes next to those of
@@ -299,7 +296,7 @@ fn stored_bytes(store: &LoopStore) -> Range<u64> {
 /// leaves part way through, those next to them.
 fn tiled(stores: &[&LoopStore]) -> Option<(u64, u64)> {
     let mut each: Vec<(i64, i64)> = (stores.iter())
-        .map(|store| (i64::from(store.address), i64::from(store.size)))
+        .map(|store| (i64::from(store.at.first), i64::from(store.size)))
         .collect();
     each.sort_unstable();
     let low = each.first()?.0;
@@ -321,24 +318,24 @@ fn tiled(stores: &[&LoopStore]) -> Option<(u64, u64)> {
         .collect();
     let moving: Vec<i64> = (stores.iter())
         .filter(|store| store.times > 1)
-        .map(|store| i64::from(store.step))
+        .map(|store| i64::from(store.at.moves))
         .collect();
-    let step = match moving.first() {
+    let moves = match moving.first() {
         None => size,
-        Some(&step) if step.abs() == size && moving.iter().all(|&other| other == step) => step,
+        Some(&moves) if moves.abs() == size && moving.iter().all(|&other| other == moves) => moves,
         Some(_) => return None,
     };
     // The bytes that the last time stores, at one end of its stores'.
     let extra: i64 = last.iter().map(|store| i64::from(store.size)).sum();
-    let (from, to) = match step > 0 {
+    let (from, to) = match moves > 0 {
         true => (low, low + extra),
         false => (low + size - extra, low + size),
     };
     let mut ends: Vec<(i64, i64)> = (last.iter())
         .map(|store| {
             (
-                i64::from(store.address),
-                i64::from(store.address) + i64::from(store.size),
+                i64::from(store.at.first),
+                i64::from(store.at.first) + i64::from(store.size),
             )
         })
         .collect();
@@ -353,7 +350,7 @@ fn tiled(stores: &[&LoopStore]) -> Option<(u64, u64)> {
     if at != to {
         return None;
     }
-    let start = match step > 0 {
+    let start = match moves > 0 {
         true => low,
         false => low - (full - 1) * size - extra,
     };
@@ -369,7 +366,7 @@ mod tests {
         alone, binary, called, closed, copied, each, loop_with, steps, walked_each,
     };
     use super::*;
-    use crate::arch::startup::Event;
+    use crate::arch::startup::{Event, Progression};
 
     /// What the loop with `stores` does, as "copy 0x20000000 32 from
     /// 0x8000400".
@@ -470,7 +467,10 @@ mod tests {
         // for each store; nor of a 0 that the loop loaded, nor of words it
         // can't tell; nor of a loop that stores only elsewhere.
         let mut table = copied(0x2000_0000, 0x800_0400, 4, 4, 8);
-        table.source = Some((0x800_0400, 8));
+        table.source = Some(Progression {
+            first: 0x800_0400,
+            moves: 8,
+        });
         assert_eq!(piece(&ram, vec![table]), None);
         let apart = vec![
             copied(0x2000_0000, 0x800_0400, 8, 4, 4),

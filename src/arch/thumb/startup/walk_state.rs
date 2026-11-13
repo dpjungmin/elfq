@@ -221,11 +221,12 @@ impl Known {
             return;
         };
         for store in stores {
-            let span = i64::from(store.step) * i64::from(store.times - 1);
-            let ends = [i64::from(store.address), i64::from(store.address) + span];
-            let low = ends[0].min(ends[1]) & !3;
-            let high = ends[0].max(ends[1]) + i64::from(store.size) - 1;
-            let (Ok(low), Ok(high)) = (u32::try_from(low), u32::try_from(high)) else {
+            // The words that hold the bytes it stores.
+            let stored = store.stored();
+            let (Ok(low), Ok(high)) = (
+                u32::try_from(stored.start & !3),
+                u32::try_from(stored.end - 1),
+            ) else {
                 continue;
             };
             let words = self.memory.range(low..=high).map(|(&address, _)| address);

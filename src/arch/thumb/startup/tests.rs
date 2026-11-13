@@ -80,16 +80,16 @@ fn loop_stores(units: &[u16], functions: &[u64], main: Option<u64>) -> Vec<Strin
         })
         .flatten()
         .map(|store| {
-            let source = store.source.map_or(String::new(), |(address, step)| {
-                format!(", from {address:#x} {step:+}n")
+            let source = store.source.map_or(String::new(), |source| {
+                format!(", from {:#x} {:+}n", source.first, source.moves)
             });
             let loaded = if store.loaded { ", loaded" } else { "" };
             format!(
                 "{:#x}: {} bytes at {:#x} {:+}n, {} times, of {}{source}{loaded}",
                 store.site,
                 store.size,
-                store.address,
-                store.step,
+                store.at.first,
+                store.at.moves,
                 store.times,
                 number(store.value)
             )
@@ -2036,6 +2036,47 @@ fn a_loop_that_counts_down_to_zero() {
     assert_eq!(
         loop_stores(&code, &functions, Some(0x0800_0018)),
         ["0x800000c: 4 bytes at 0x2000000c -4n, 4 times, of ?, from 0x800010c -4n, loaded"]
+    );
+}
+
+#[test]
+fn a_loop_that_counts_down_too_many_times_to_go_through_each() {
+    // As a_loop_that_counts_down_to_zero, from 64: the loop runs 16
+    // times, too many for the walk to go through each, so it forgets
+    // the words that the loop may store in the iterations it doesn't
+    // go through, from 0x20000000 up to 0x2000003c. The word just
+    // above them, which the code stored before the loop, stays:
+    //   8000000: 4905       ldr   r1, [pc, #20]  ; 0x8000100
+    //   8000002: f04f 5200  mov.w r2, #0x20000000
+    //   8000006: 6411       str   r1, [r2, #64]
+    //   8000008: 2340       movs  r3, #64
+    //   800000a: 3b04       subs  r3, #4
+    //   800000c: 58c8       ldr   r0, [r1, r3]
+    //   800000e: 50d0       str   r0, [r2, r3]
+    //   8000010: dcfb       bgt.n 800000a
+    //   8000012: 6c13       ldr   r3, [r2, #64]
+    //   8000014: f000 f802  bl    800001c <main>
+    //   8000018: 08000100   .word
+    // main:
+    //   800001c: e7fe       b.n   800001c
+    let code = [
+        0x4905, 0xf04f, 0x5200, 0x6411, 0x2340, 0x3b04, 0x58c8, 0x50d0, 0xdcfb, 0x6c13, 0xf000,
+        0xf802, 0x0100, 0x0800, 0xe7fe, 0xbf00,
+    ];
+    let functions = [0x0800_0000, 0x0800_001c];
+    assert_eq!(
+        walk_lines(&code, &functions, Some(0x0800_001c)),
+        [
+            "0 0x8000006 store 0x8000100 at 0x20000040, 4 bytes",
+            "0 0x800000e store ? at 0x2000003c, 4 bytes, loaded from 0x800013c at 0x800000c",
+            "0 0x800000a loop back at 0x8000010, from event 1, runs 0x10 times",
+            "0 0x8000014 call 0x800001c (? 0x8000100 0x20000000 0x8000100)",
+            "end Main(8000014)",
+        ]
+    );
+    assert_eq!(
+        loop_stores(&code, &functions, Some(0x0800_001c)),
+        ["0x800000e: 4 bytes at 0x2000003c -4n, 16 times, of ?, from 0x800013c -4n, loaded"]
     );
 }
 
