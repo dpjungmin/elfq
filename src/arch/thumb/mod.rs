@@ -29,8 +29,10 @@
 //!   helpers that read the bits of a branch or a load, which the other
 //!   files share.
 //! - `sweep.rs` has the [`Scanner`], which decodes one instruction at a
-//!   time and notes what it refers to, and the sweep that steps through a
-//!   function with it ([`Scanner::sweep`]).
+//!   time and notes what it refers to, the sweep that steps through a
+//!   function with it ([`Scanner::sweep`]), and the data that the sweep
+//!   skips ([`DataMarks`](sweep::DataMarks)), which `layout` and the
+//!   startup walk read too.
 //! - `values/` follows the registers; its `mod.rs` says how, in four
 //!   steps, and maps its files. `decode.rs` says what each instruction
 //!   does with them, for `values` and `startup`.

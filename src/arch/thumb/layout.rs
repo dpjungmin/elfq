@@ -42,8 +42,7 @@ pub(in crate::arch) fn layout(
 ) -> Vec<(usize, usize, Piece)> {
     let mut scanner = Scanner::new(code, address, endianness);
     for range in marked {
-        let end = scanner.data.entry(range.start).or_insert(range.end);
-        *end = (*end).max(range.end);
+        scanner.mark_data(range.start, range.end);
     }
     let instructions = scanner.sweep_instructions();
     let mut pieces: Vec<(usize, usize, Piece)> = instructions
@@ -72,11 +71,7 @@ pub(in crate::arch) fn layout(
             // A word, halfword or byte, as fits before the end of the gap
             // and the start of the next stretch of data, as objdump cuts
             // data at each `$d`.
-            let next = scanner
-                .data
-                .range(at + 1..)
-                .next()
-                .map_or(gap.end, |(&start, _)| start);
+            let next = scanner.data().next_start(at).unwrap_or(gap.end);
             let aligned = |size: u64| (address + at as u64).is_multiple_of(size);
             let size = match next.min(gap.end) - at {
                 left if left >= 4 && aligned(4) => 4,
