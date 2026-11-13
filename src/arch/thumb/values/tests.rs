@@ -749,6 +749,40 @@ fn a_store_through_an_index_into_the_stack_forgets_it() {
 }
 
 #[test]
+fn a_store_that_writes_back_stores_where_its_base_pointed() {
+    // Once bic lets the stack's address out of sight, a store through an
+    // address elfq can't tell may change the stack. This one writes back
+    // its base, but stores where the base pointed before, off the stack,
+    // so the word on the stack stays known:
+    //   8000100: b510       push  {r4, lr}
+    //   8000102: b082       sub   sp, #8
+    //   8000104: 4805       ldr   r0, [pc, #20]
+    //   8000106: 9000       str   r0, [sp, #0]
+    //   8000108: f02d 0207  bic   r2, sp, #7
+    //   800010c: 4b04       ldr   r3, [pc, #16]
+    //   800010e: f843 0b04  str   r0, [r3], #4
+    //   8000112: 9a00       ldr   r2, [sp, #0]
+    //   8000114: 4790       blx   r2
+    //   8000116: b002       add   sp, #8
+    //   8000118: bd10       pop   {r4, pc}
+    //   800011a: bf00       nop
+    //   800011c: 30000101   .word 0x30000101
+    //   8000120: 20000000   .word 0x20000000
+    let code = halfwords(&[
+        0xb510, 0xb082, 0x4805, 0x9000, 0xf02d, 0x0207, 0x4b04, 0xf843, 0x0b04, 0x9a00, 0x4790,
+        0xb002, 0xbd10, 0xbf00, 0x0101, 0x3000, 0x0000, 0x2000,
+    ]);
+    assert_eq!(
+        kinds(&code),
+        [
+            (0x0800_0104, Address(0x3000_0101)),
+            (0x0800_010c, Address(0x2000_0000)),
+            (0x0800_0114, Call(0x3000_0100)),
+        ]
+    );
+}
+
+#[test]
 fn some_branches_go_to_even_addresses() {
     // blxns calls Non-secure code at an even address:
     //   8000100: b510       push  {r4, lr}
@@ -895,6 +929,24 @@ fn a_veneer_that_adds_pc_jumps_to_its_target() {
         0xb401, 0x4802, 0x46fc, 0x4484, 0xbc01, 0x4760, 0xfff9, 0x27ff,
     ]);
     assert_eq!(kinds(&code), [(0x0800_010a, TailJump(0x3000_0100))]);
+}
+
+#[test]
+fn adding_to_a_copy_of_pc_builds_an_address() {
+    // The sum writes over the register that held what code read from pc,
+    // so elfq tells that it adds pc from what the registers held before.
+    // Reading pc at 0x8000104 gives 0x8000108:
+    //   8000100: b510       push  {r4, lr}
+    //   8000102: 4a02       ldr   r2, [pc, #8]
+    //   8000104: 467b       mov   r3, pc
+    //   8000106: 4413       add   r3, r2
+    //   8000108: 681a       ldr   r2, [r3, #0]
+    //   800010a: bd10       pop   {r4, pc}
+    //   800010c: 17fffef8   .word 0x17fffef8
+    let code = halfwords(&[
+        0xb510, 0x4a02, 0x467b, 0x4413, 0x681a, 0xbd10, 0xfef8, 0x17ff,
+    ]);
+    assert_eq!(kinds(&code), [(0x0800_0106, Address(0x2000_0000))]);
 }
 
 #[test]

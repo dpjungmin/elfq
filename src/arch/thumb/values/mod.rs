@@ -83,8 +83,9 @@
 //!
 //! 1. In `decode.rs`, decode it to an [`Operation`] of its own, with a
 //!    test of its bytes.
-//! 2. In [`Function::execute`], work out what it puts in the register it
-//!    writes.
+//! 2. In [`Function::work_out`], work out what it puts in the register it
+//!    writes. If it stores, or moves sp as push and pop do, follow that in
+//!    [`Function::store_word`] or [`Function::move_stack`].
 //! 3. In [`Function::escapes`], list the registers it reads in a way that
 //!    `execute` follows, so that an address on the stack in one doesn't
 //!    count as out of sight.
@@ -97,8 +98,9 @@
 //!    and, where the walk can tell, how it sets the flags
 //!    (`Walker::flags`) and what it compares (`Walker::compare`).
 //!
-//! The compiler points to each of these but `may_find_more` and
-//! `Walker::compare`, which list only what they follow.
+//! The compiler points to each of these but `store_word`, `move_stack`,
+//! `may_find_more` and `Walker::compare`, which list only what they
+//! follow.
 
 mod address_uses;
 mod code;
@@ -155,7 +157,7 @@ struct Branch {
 ///   (`branch`), and how each instruction uses the numbers it reads, in
 ///   the [`AddressUses`] (`report`);
 /// - records the addresses that each instruction loads or builds
-///   (`execute`);
+///   (`record_built`);
 /// - records what the code passes on where it runs on past what elfq was
 ///   given (`leave_block`);
 /// - passes nothing on to the blocks the code goes to (`reach`), since what
@@ -256,6 +258,13 @@ impl Split {
 /// they are the same, or one is the opposite of the other.
 fn tests_same_flags(a: u16, b: u16) -> bool {
     a >> 1 == b >> 1
+}
+
+/// A register that an instruction writes, and what it holds after, as
+/// [`Function::work_out`] works it out before the instruction writes any.
+struct Written {
+    register: u16,
+    contents: Contents,
 }
 
 impl<'a> Function<'a> {
@@ -521,8 +530,37 @@ impl<'a> Function<'a> {
     /// in the other registers it writes. Returns whether it turns an
     /// address on the stack into something elfq can't tell; see
     /// [`State::escaped`].
-    #[expect(clippy::too_many_lines, reason = "waits to be split; see CONTRIBUTING")]
     fn execute(&mut self, index: usize, state: &mut State) -> bool {
+        // Both from the state before it runs: a sum may write over the
+        // register that held what code read from pc, and a push or pop
+        // writes sp.
+        let builds_address = self.found.is_some() && self.builds_address(index, state);
+        let sp = state.sp();
+        let mut leaks = false;
+        let written = self.work_out(index, state, &mut leaks);
+        self.store_word(index, state);
+        for register in each(self.code.effects[index].writes) {
+            state.set(register, Contents::UNKNOWN);
+        }
+        self.move_stack(index, sp, state);
+        // Through a reference: binding the contents by value copies them
+        // once more.
+        if let Some(Written { register, contents }) = &written
+            && *register != PC
+        {
+            if builds_address {
+                self.record_built(index, contents);
+            }
+            state.set(*register, *contents);
+        }
+        leaks
+    }
+
+    /// What the instruction at `index` puts in a register, worked out from
+    /// `state` before it writes any. It sets `leaks` where that turns an
+    /// address on the stack into something elfq can't tell; see
+    /// [`State::escaped`].
+    fn work_out(&mut self, index: usize, state: &State, leaks: &mut bool) -> Option<Written> {
         let effect = self.code.effects[index];
         let pc = self.code.pc(index);
         let source = Some(index as u32);
@@ -532,11 +570,7 @@ impl<'a> Function<'a> {
             source,
             stale: false,
         };
-        let builds_address = self.found.is_some() && self.builds_address(index, state);
-        let sp = state.sp();
-        let mut leaks = false;
-        // What it puts in a register, worked out before it writes any.
-        let result = match effect.operation {
+        match effect.operation {
             // No number, or one that isn't an address built in a way this
             // module follows (see its header).
             Operation::Nothing
@@ -550,31 +584,36 @@ impl<'a> Function<'a> {
             | Operation::ShiftRight { .. }
             | Operation::Push { .. }
             | Operation::Pop { .. } => None,
-            Operation::Constant { register, value } => {
-                Some((register, Contents::holding(Value::number(value))))
-            }
+            Operation::Constant { register, value } => Some(Written {
+                register,
+                contents: Contents::holding(Value::number(value)),
+            }),
             Operation::Literal {
                 register,
                 address: at,
-            } => Some((
+            } => Some(Written {
                 register,
-                match self.code.word(at) {
+                contents: match self.code.word(at) {
                     Some(word) => Contents::holding(address(word)),
                     None => Contents::UNKNOWN,
                 },
-            )),
-            Operation::Address { register, value } => {
-                Some((register, Contents::holding(address(value))))
-            }
+            }),
+            Operation::Address { register, value } => Some(Written {
+                register,
+                contents: Contents::holding(address(value)),
+            }),
             Operation::HighHalf { register, high } => {
                 let low = state.read(register, pc);
-                leaks = low.may_be_stack();
+                *leaks = low.may_be_stack();
                 let contents = low.map(|low| {
                     (low.kind == Kind::Number).then(|| address(low.number & 0xffff | high << 16))
                 });
-                Some((register, contents))
+                Some(Written { register, contents })
             }
-            Operation::Copy { register, source } => Some((register, state.read(source, pc))),
+            Operation::Copy { register, source } => Some(Written {
+                register,
+                contents: state.read(source, pc),
+            }),
             Operation::AddConstant {
                 register,
                 source,
@@ -586,7 +625,7 @@ impl<'a> Function<'a> {
                         ..value
                     })
                 });
-                Some((register, contents))
+                Some(Written { register, contents })
             }
             Operation::ShiftLeft {
                 register,
@@ -594,7 +633,7 @@ impl<'a> Function<'a> {
                 shift,
             } => {
                 let source = state.read(source, pc);
-                leaks = shift != 0 && source.may_be_stack();
+                *leaks = shift != 0 && source.may_be_stack();
                 let contents = source.map(|value| match (shift, value.kind) {
                     (0, _) => Some(value),
                     (_, Kind::Number) => Some(Value {
@@ -603,56 +642,102 @@ impl<'a> Function<'a> {
                     }),
                     _ => None,
                 });
-                Some((register, contents))
+                Some(Written { register, contents })
             }
             Operation::Add { register, a, b } => {
                 let (a, b) = (state.read(a, pc), state.read(b, pc));
-                let sum = match Contents::sum(&a, &b, source) {
-                    Some(sum) => sum,
-                    // More than elfq follows.
-                    None => {
-                        for value in a.values().iter().chain(b.values()) {
-                            self.uses.record(value, Use::Other);
-                        }
-                        Contents::UNKNOWN
-                    }
-                };
+                let sum = self.sum(&a, &b, source);
                 // An address on the stack plus something elfq can't tell.
-                leaks = sum.may_be_unknown() && (a.may_be_stack() || b.may_be_stack());
-                Some((register, sum))
+                *leaks = sum.may_be_unknown() && (a.may_be_stack() || b.may_be_stack());
+                Some(Written {
+                    register,
+                    contents: sum,
+                })
             }
-            Operation::Load { into, base, .. } => {
-                let at = plain_offset(&effect).and_then(|offset| {
-                    let base = state.read(base, pc).stack_offset()?;
-                    Some(base.wrapping_add(offset))
-                });
-                if let Some(at) = at {
-                    self.uses.loads_back(state, at.div_euclid(4) * 4);
-                }
-                match (into, at) {
-                    (Transfer::Word(register), Some(at)) if at % 4 == 0 => {
-                        Some((register, state.word(at)))
-                    }
-                    _ => None,
-                }
-            }
-            Operation::Store {
-                from, base, size, ..
-            } => {
-                let value = match from {
-                    Transfer::Word(register) => Some(state.read(register, pc)),
-                    _ => None,
-                };
-                let offset = plain_offset(&effect);
-                self.store(state, value, state.read(base, pc), offset, size);
-                None
-            }
-        };
-        for register in each(effect.writes) {
-            state.set(register, Contents::UNKNOWN);
+            Operation::Load { into, base, .. } => self.load_word(index, into, base, state),
+            // A store puts no number in a register; `store_word` follows
+            // what it stores.
+            Operation::Store { .. } => None,
         }
-        match (effect.operation, sp) {
+    }
+
+    /// The sum of what `a` and `b` hold, as [`Contents::sum`] gives it for
+    /// the instruction `source`, or something elfq can't tell where that
+    /// may be more numbers than elfq follows: the code then uses each
+    /// number they hold as a plain number.
+    fn sum(&mut self, a: &Contents, b: &Contents, source: Option<u32>) -> Contents {
+        match Contents::sum(a, b, source) {
+            Some(sum) => sum,
+            // More than elfq follows.
+            None => {
+                for value in a.values().iter().chain(b.values()) {
+                    self.uses.record(value, Use::Other);
+                }
+                Contents::UNKNOWN
+            }
+        }
+    }
+
+    /// What the load at `index` puts in the register of `into`: the word on
+    /// the stack at what register `base` holds plus the load's offset, when
+    /// elfq can tell where that is and the load takes the whole word.
+    /// Wherever elfq can tell where on the stack it loads from, it records
+    /// that the code loads that word back; see [`AddressUses::loads_back`].
+    fn load_word(
+        &mut self,
+        index: usize,
+        into: Transfer,
+        base: u16,
+        state: &State,
+    ) -> Option<Written> {
+        let pc = self.code.pc(index);
+        let at = plain_offset(&self.code.effects[index]).and_then(|offset| {
+            let base = state.read(base, pc).stack_offset()?;
+            Some(base.wrapping_add(offset))
+        });
+        if let Some(at) = at {
+            self.uses.loads_back(state, at.div_euclid(4) * 4);
+        }
+        match (into, at) {
+            (Transfer::Word(register), Some(at)) if at % 4 == 0 => Some(Written {
+                register,
+                contents: state.word(at),
+            }),
+            _ => None,
+        }
+    }
+
+    /// Changes the words on the stack as the instruction at `index` does
+    /// when it stores, from what the registers hold before it writes any.
+    /// Only a store changes the stack here: `move_stack` stores what a push
+    /// pushes, and the other operations store nothing.
+    fn store_word(&mut self, index: usize, state: &mut State) {
+        let effect = self.code.effects[index];
+        let Operation::Store {
+            from, base, size, ..
+        } = effect.operation
+        else {
+            return;
+        };
+        let pc = self.code.pc(index);
+        let value = match from {
+            Transfer::Word(register) => Some(state.read(register, pc)),
+            _ => None,
+        };
+        let offset = plain_offset(&effect);
+        self.store(state, value, state.read(base, pc), offset, size);
+    }
+
+    /// Moves the stack as the instruction at `index` does, from where sp
+    /// pointed before it ran, `sp`: a push stores the registers it pushes
+    /// below it, or anywhere on the stack where elfq can't tell sp, and a
+    /// pop loads them back. Only push and pop move the stack, and a pop
+    /// where elfq can't tell sp leaves its registers holding something elfq
+    /// can't tell.
+    fn move_stack(&mut self, index: usize, sp: Option<i32>, state: &mut State) {
+        match (self.code.effects[index].operation, sp) {
             (Operation::Push { registers, size }, Some(sp)) => {
+                let pc = self.code.pc(index);
                 let bottom = sp.wrapping_sub(size as i32);
                 for word in (bottom..sp).step_by(4) {
                     state.set_word(word, Contents::UNKNOWN);
@@ -678,20 +763,22 @@ impl<'a> Function<'a> {
             }
             _ => {}
         }
-        if let Some((register, contents)) = result
-            && register != PC
-        {
-            if builds_address && let Some(found) = &mut self.found {
-                let built = contents
-                    .values()
-                    .iter()
-                    .filter(|value| value.source == source);
-                let addresses = found.addresses.entry(index).or_default();
-                addresses.extend(built.map(|value| value.number));
-            }
-            state.set(register, contents);
+    }
+
+    /// In the last pass, records the addresses among `contents`, what the
+    /// instruction at `index` puts in a register, that it built. `execute`
+    /// calls it where the instruction loads or builds an address, as
+    /// `builds_address` says from the state before it ran.
+    fn record_built(&mut self, index: usize, contents: &Contents) {
+        if let Some(found) = &mut self.found {
+            let source = Some(index as u32);
+            let built = contents
+                .values()
+                .iter()
+                .filter(|value| value.source == source);
+            let addresses = found.addresses.entry(index).or_default();
+            addresses.extend(built.map(|value| value.number));
         }
-        leaks
     }
 
     /// Changes the words on the stack as storing `size` bytes at `base` +
@@ -907,7 +994,7 @@ impl<'a> Function<'a> {
                     _ => {}
                 }
             }
-            // Where elfq can tell sp, `execute` follows what a pop loads.
+            // Where elfq can tell sp, `move_stack` follows what it loads.
             Operation::Pop { .. } if state.sp().is_none() => self.uses.record_stack(state),
             // What these read stays in `other`, which counts as using it as
             // an address: what a compare compares, as `cmp r0, #0` on the
