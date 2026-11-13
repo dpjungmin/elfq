@@ -304,8 +304,8 @@ impl Walker<'_> {
             true => {
                 let code: HashSet<u64> = run.order[before.order..].iter().copied().collect();
                 let ways_out = (run.pending.iter())
-                    .filter(|(from, to)| code.contains(from) && !code.contains(to))
-                    .map(|&(_, to)| to)
+                    .filter(|way| code.contains(&way.site) && !code.contains(&way.to))
+                    .map(|way| way.to)
                     .collect();
                 LoopCode::Seen { code, ways_out }
             }
@@ -467,7 +467,7 @@ impl Walker<'_> {
             again,
             exit,
             order: run.order,
-            ways_out: run.pending.iter().map(|&(_, to)| to).collect(),
+            ways_out: run.pending.iter().map(|way| way.to).collect(),
             loads,
         })
     }

@@ -256,8 +256,7 @@ code.
   - About sixty functions, most of them private, return tuples, as
     `thumb::layout` returns (offset, size, piece) and `Binary::words`
     (address, value) pairs.
-  - `Operands::targets` holds (offset, address) pairs, and the startup
-    walk keeps its ways out of a loop as pairs of addresses (`pending`).
+  - `Operands::targets` holds (offset, address) pairs.
   - About fifty arguments are bools, as in `Block::parts` in
     `diff/blocks.rs`, `Boundary::unfollowed_from` in
     `graph/boundary.rs` and the startup walk's `Walker::execute`.

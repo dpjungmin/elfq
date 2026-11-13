@@ -265,7 +265,7 @@ struct Run {
     /// Where branches go that the walk didn't take, and where code goes on
     /// after branches it took, with where each branch is: the ways out of
     /// a loop.
-    pending: Vec<(u64, u64)>,
+    pending: Vec<WayOut>,
     alternatives: Vec<Alternative>,
     /// The `it` block that the next instructions are in, as the processor
     /// keeps it: the condition in the top 4 bits and what is left of the
@@ -278,6 +278,17 @@ struct Run {
     /// Whether the walk got here from a call that returned, through
     /// instructions that only go on to the next.
     after_call: bool,
+}
+
+/// A way out of a loop: a branch, and where the code goes from it the way
+/// the walk didn't (see [`Run::pending`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WayOut {
+    /// The branch.
+    site: u64,
+    /// Where the branch goes when the walk didn't take it, or the
+    /// instruction after it when the walk did.
+    to: u64,
 }
 
 /// An instruction that runs, or may, as one in an `it` block does when
@@ -834,7 +845,7 @@ impl Walker<'_> {
             taken,
         } = branch;
         if taken == Some(true) {
-            run.pending.push((site, next));
+            run.pending.push(WayOut { site, to: next });
             return Step::Next(target);
         }
         if taken.is_none() && frame.stop.is_none() {
@@ -854,7 +865,7 @@ impl Walker<'_> {
         if taken.is_none() {
             run.known.forks = true;
         }
-        run.pending.push((site, target));
+        run.pending.push(WayOut { site, to: target });
         Step::Next(next)
     }
 
@@ -981,19 +992,14 @@ impl Run {
     /// `site`, through a branch in it: the first place after it that the
     /// walk hasn't been to, or the latest one before it.
     fn way_out(&mut self, head: u64, site: u64) -> Option<u64> {
-        let open = |&&(from, to): &&(u64, u64)| {
-            (head..=site).contains(&from) && !self.visits.contains_key(&to)
-        };
-        let after = self
-            .pending
-            .iter()
-            .filter(open)
-            .filter(|&&(_, to)| to > site);
-        let exit = after.min_by_key(|&&(_, to)| to);
+        let open =
+            |way: &&WayOut| (head..=site).contains(&way.site) && !self.visits.contains_key(&way.to);
+        let after = self.pending.iter().filter(open).filter(|way| way.to > site);
+        let exit = after.min_by_key(|way| way.to);
         let exit = *exit.or_else(|| self.pending.iter().rfind(open))?;
-        let index = self.pending.iter().position(|&pending| pending == exit)?;
+        let index = self.pending.iter().position(|&way| way == exit)?;
         self.pending.remove(index);
-        Some(exit.1)
+        Some(exit.to)
     }
 }
 

@@ -14,7 +14,7 @@ use crate::arch::startup::{Event, FunctionBounds, LoopStore, Source};
 use crate::arch::thumb::SP;
 use crate::arch::thumb::decode::{Registers, each};
 
-use super::Walker;
+use super::{Walker, WayOut};
 
 /// How many more instructions the walk may go through: for what it walks,
 /// and on top, to count how many times loops run.
@@ -257,7 +257,7 @@ pub(super) struct Alternative {
     pub(super) known: Known,
     /// How many instructions the walk had gone through.
     pub(super) order: usize,
-    pub(super) pending: Vec<(u64, u64)>,
+    pub(super) pending: Vec<WayOut>,
     pub(super) bounds: Option<FunctionBounds>,
 }
 
