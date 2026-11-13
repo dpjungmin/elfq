@@ -434,25 +434,8 @@ impl Statuses {
                     bytes: Some(0),
                 };
             }
-            let size = ram.section(section).size;
-            let status = if ram.is_load(section) {
-                if setup
-                    .from
-                    .is_some_and(|from| from != ram.load_address(section))
-                {
-                    Status::CopiedFromElsewhere
-                } else if setup.bytes >= size {
-                    Status::Copied
-                } else {
-                    Status::PartlyCopied
-                }
-            } else if setup.bytes >= size {
-                Status::Zeroed
-            } else {
-                Status::PartlyZeroed
-            };
             return SectionStatus {
-                status,
+                status: setup_status(ram, section, setup),
                 step: Some(setup.step),
                 bytes: Some(setup.bytes),
             };
@@ -473,6 +456,30 @@ impl Statuses {
         } else {
             unset(Status::NotZeroed)
         }
+    }
+}
+
+/// The state that `setup`, the first step that sets up `section`, leaves
+/// it in when that step runs: a load image copied, partly copied, or
+/// copied from somewhere other than where the file stores it, and a
+/// section without contents zeroed or partly zeroed. It doesn't ask
+/// whether the step runs: [`Statuses::work_out`] asks that first, and
+/// [`set_up_wrongly`] asks about steps that may never run too.
+fn setup_status(ram: &RamSections, section: usize, setup: &Setup) -> Status {
+    let Setup { bytes, from, .. } = *setup;
+    let size = ram.section(section).size;
+    if ram.is_load(section) {
+        if from.is_some_and(|from| from != ram.load_address(section)) {
+            Status::CopiedFromElsewhere
+        } else if bytes >= size {
+            Status::Copied
+        } else {
+            Status::PartlyCopied
+        }
+    } else if bytes >= size {
+        Status::Zeroed
+    } else {
+        Status::PartlyZeroed
     }
 }
 
@@ -575,37 +582,36 @@ fn section_problems(
 }
 
 /// The problem with `setup`, the first step that sets up `section`, if it
-/// sets it up wrongly: it copies the load image from somewhere other than
+/// sets it up wrongly, by the state it leaves the section in (see
+/// [`setup_status`]): it copies the load image from somewhere other than
 /// where the file stores it, or it copies a load image, or zeroes `.bss`
 /// or `.sbss`, short of the section's size.
 fn set_up_wrongly(ram: &RamSections, section: usize, setup: &Setup) -> Option<Problem> {
     let Setup { step, bytes, from } = *setup;
-    if let Some(from) = from
-        && ram.is_load(section)
-        && from != ram.load_address(section)
-    {
-        return Some(Problem::CopiedFromElsewhere {
+    match setup_status(ram, section, setup) {
+        // setup_status gives this only for a step that copies from an
+        // address, so `from` is some.
+        Status::CopiedFromElsewhere => from.map(|from| Problem::CopiedFromElsewhere {
             section,
             step,
             from,
-        });
-    }
-    if bytes >= ram.section(section).size || !ram.required(section) {
-        return None;
-    }
-    Some(if ram.is_load(section) {
-        Problem::PartlyCopied {
+        }),
+        Status::PartlyCopied => ram.required(section).then_some(Problem::PartlyCopied {
             section,
             step,
             bytes,
-        }
-    } else {
-        Problem::PartlyZeroed {
+        }),
+        Status::PartlyZeroed => ram.required(section).then_some(Problem::PartlyZeroed {
             section,
             step,
             bytes,
-        }
-    })
+        }),
+        Status::Copied | Status::Zeroed => None,
+        // setup_status never gives these: work_out gives them to a section
+        // that no step sets up, or whose first step doesn't come before the
+        // first certain problem (see `Statuses::reached`).
+        Status::NotCopied | Status::NotZeroed | Status::Unknown | Status::NotReached => None,
+    }
 }
 
 /// The problem of code elfq can't follow that may set up a load image,
