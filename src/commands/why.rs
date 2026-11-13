@@ -20,7 +20,7 @@ use super::kept::Kept;
 use super::symbol::{Names, Symbol};
 use super::text::{Detail, Naming};
 #[cfg(feature = "tui")]
-use super::tree_answer::TabAnswer;
+use super::tree_answer::TreeTab;
 use super::tree_answer::{self, TreeAnswer, TreeTable};
 use super::{Outcome, json, text};
 use crate::binary::{Binary, FileKind};
@@ -123,7 +123,7 @@ pub(super) fn why<'a>(
         return write_json(binary, graph, &tree, node, out);
     }
     let users = Users::new(binary, graph, &tree, node);
-    users.answer(names, &lead_name, detail, format).write(out)
+    users.text(names, &lead_name, detail, format).write(out)
 }
 
 /// What `why SYMBOL` writes as text about `node`, as tab 5 of browse shows
@@ -136,7 +136,7 @@ pub(super) fn why<'a>(
 ///
 /// [`Symbol::lead_name`]: super::symbol::Symbol::lead_name
 #[cfg(feature = "tui")]
-pub(super) fn answers<'a>(
+pub(super) fn tab<'a>(
     binary: &'a Binary,
     graph: &Graph,
     names: &Names<'a>,
@@ -144,15 +144,15 @@ pub(super) fn answers<'a>(
     node: Node,
     lead_name: &str,
     shorten: &dyn Fn(&str) -> String,
-) -> TabAnswer {
+) -> TreeTab {
     if let Some(root) = graph.root(node) {
         let sentence = text::root_sentence(binary, lead_name, root);
-        return TabAnswer::sentences(vec![sentence]);
+        return TreeTab::sentences(vec![sentence]);
     }
     let users = Users::new(binary, graph, tree, node);
-    let answer = |detail| users.answer(names, lead_name, detail, Format::Text);
+    let answer = |detail| users.text(names, lead_name, detail, Format::Text);
     let (answer, brief) = (answer(Detail::All), answer(Detail::Brief));
-    TabAnswer {
+    TreeTab {
         needs_all: brief.written() != answer.written(),
         brief: brief.notes,
         briefest: users.notes(&Naming::first(shorten)),
@@ -321,7 +321,7 @@ impl<'u, 'a> Users<'u, 'a> {
     /// shape that `format` asks for.
     ///
     /// [`Symbol::lead_name`]: super::symbol::Symbol::lead_name
-    fn answer(
+    fn text(
         &self,
         names: &Names<'a>,
         lead_name: &str,

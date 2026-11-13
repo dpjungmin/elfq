@@ -45,18 +45,21 @@ use crate::cli::Format;
 use crate::graph::{Boundary, Graph, ItemsInRanges, Node};
 use crossing::{Entering, Leaving};
 
-/// Which way the references cross the boundary: out of the ranges for
-/// `callees`, into them for `callers`.
+/// Which way the uses go, and so which of `callers` and `callees` a
+/// table, a check or an error is for: out of SYMBOL, or the ranges or set
+/// given in its place, for `callees`, and into them for `callers`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Direction {
-    /// Out of the ranges: what the items in them use outside them.
+    /// Out: what SYMBOL uses, or in a check, what the items inside use
+    /// outside the boundary.
     Out,
-    /// Into the ranges: what uses the items in them from outside.
+    /// In: what uses SYMBOL, or in a check, what uses the items inside
+    /// from outside the boundary.
     In,
 }
 
 impl Direction {
-    /// The command that asks about crossings this way.
+    /// The command that lists uses this way.
     pub(super) fn command(self) -> &'static str {
         match self {
             Direction::Out => "callees",
@@ -77,6 +80,15 @@ impl Direction {
         match self {
             Direction::Out => Direction::In,
             Direction::In => Direction::Out,
+        }
+    }
+
+    /// The header of the column that names the node at the other end of
+    /// each use: the caller, or the callee.
+    pub(super) fn names_header(self) -> &'static str {
+        match self {
+            Direction::Out => "CALLEE",
+            Direction::In => "CALLER",
         }
     }
 }
@@ -282,7 +294,7 @@ mod tests {
 
     /// The text answer to the range check of `ranges`, with `far_side` for
     /// `--from` or `--to`.
-    fn answer(
+    fn text(
         binary: &Binary,
         graph: &Graph,
         ranges: &[&str],
@@ -312,7 +324,7 @@ mod tests {
             is_call: true,
             target: Some(0x1fff_0100),
         });
-        let (outcome, out) = answer(&binary, &graph, &["0x0+256K"], &[], Direction::Out);
+        let (outcome, out) = text(&binary, &graph, &["0x0+256K"], &[], Direction::Out);
         assert_eq!(outcome, Outcome::Crossed);
         assert!(out.contains("\n0x1fff0100        call  "), "{out}");
         assert!(
@@ -320,7 +332,7 @@ mod tests {
             "{out}"
         );
         // callers lists it from the other side.
-        let (outcome, out) = answer(
+        let (outcome, out) = text(
             &binary,
             &graph,
             &["0x1fff0000+64K"],
@@ -345,7 +357,7 @@ mod tests {
             target: Some(0x1fff_0100),
         });
         graph.unresolved.sort_by_key(|u| (u.from, u.site));
-        let (outcome, out) = answer(
+        let (outcome, out) = text(
             &binary,
             &graph,
             &["0x30000000+16M"],
@@ -355,7 +367,7 @@ mod tests {
         assert_eq!(outcome, Outcome::Answered, "{out}");
         // Code in flash calls through a pointer, but no pointer goes to the
         // ROM, which holds no function, and both sides say so.
-        let (outcome, out) = answer(
+        let (outcome, out) = text(
             &binary,
             &graph,
             &["0x30000000+16M"],
@@ -363,7 +375,7 @@ mod tests {
             Direction::Out,
         );
         assert_eq!(outcome, Outcome::Answered, "{out}");
-        let (outcome, out) = answer(
+        let (outcome, out) = text(
             &binary,
             &graph,
             &["0x1fff0000+64K"],
@@ -381,7 +393,7 @@ mod tests {
             target: None,
         });
         graph.unresolved.sort_by_key(|u| (u.from, u.site));
-        let (_, out) = answer(
+        let (_, out) = text(
             &binary,
             &graph,
             &["0x0..0x20000000"],

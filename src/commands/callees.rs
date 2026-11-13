@@ -13,7 +13,7 @@ use super::kept::Kept;
 use super::range_check::{self, Direction, Inside, RangeCheck};
 use super::symbol::{self, Subject};
 use super::text::Detail;
-use super::uses::{self, End};
+use super::uses;
 use super::{Outcome, json, text};
 use crate::binary::{AddressRange, Binary};
 use crate::cli::Format;
@@ -110,14 +110,14 @@ pub(super) fn callees(
         };
         return json::write(&callees, out);
     }
-    answer(binary, graph, index, name, detail).write(out)
+    text(binary, graph, index, name, detail).write(out)
 }
 
 /// What the item at `index`, `name` as the answer's first line gives it,
 /// calls or uses, as the text of `callees SYMBOL` lists it: the rows of
 /// the 30 largest callees and the first few sites of what elfq can't
 /// follow, or with [`Detail::All`], every one.
-pub(super) fn answer(
+pub(super) fn text(
     binary: &Binary,
     graph: &Graph,
     index: usize,
@@ -150,7 +150,7 @@ pub(super) fn answer(
             )
         }
     };
-    let (columns, rows) = uses::table(binary, rows, End::Callees, text::shown(detail));
+    let (columns, rows) = uses::table(binary, rows, Direction::Out, text::shown(detail));
     FlatAnswer {
         lead,
         memory: None,

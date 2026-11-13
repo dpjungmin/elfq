@@ -11,7 +11,7 @@ impl Text<'_, '_> {
     /// The answer as text with `--to`: what SYMBOL reaches in its ranges,
     /// with every row, or with `--tree`, the chains from SYMBOL to them;
     /// and the note on the code that elfq can't read, which may reach more.
-    pub(super) fn to_answer(&self) -> FlatAnswer {
+    pub(super) fn in_to_ranges(&self) -> FlatAnswer {
         let reach = self.reach;
         let counted = reach.counted();
         // SYMBOL's step is among them when it is in the ranges, and has a

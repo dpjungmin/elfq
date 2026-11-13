@@ -1,12 +1,12 @@
 //! Tab 5 of an item's page: why the item is in the file, as `elfq FILE why
-//! SYMBOL` prints it, from the same code (`why::answers`): the shortest
-//! chains from where the program starts through the items that keep it,
-//! merged into one tree, and the notes, the last of which names the item
-//! on every chain. The tab shows the chain through every item that keeps
-//! it, where the command shows those through the nearest 10, and under
-//! them is that command, ready to paste, with `--all` when the command
-//! needs it to show them all. Enter opens the selected row's item on why
-//! it is there. `printed.rs` draws it.
+//! SYMBOL` prints it, from the same code (`why::tab`): the shortest chains
+//! from where the program starts through the items that keep it, merged
+//! into one tree, and the notes, the last of which names the item on every
+//! chain. The tab shows the chain through every item that keeps it, where
+//! the command shows those through the nearest 10, and under them is that
+//! command, ready to paste, with `--all` when the command needs it to show
+//! them all. Enter opens the selected row's item on why it is there.
+//! `printed.rs` draws it.
 
 use super::item::Tab;
 use super::printed::{Printed, note_name};
@@ -19,9 +19,9 @@ use crate::graph::Node;
 /// has worked out keeps each item.
 pub(super) fn tab(session: &Session, keepers: &Keepers, node: Node, name: &str) -> Printed {
     let (binary, graph, names) = (session.binary, &session.graph, &session.names);
-    let answer = why::answers(binary, graph, names, &keepers.tree, node, name, &note_name);
-    let command = session.command("why", Some(node), answer.needs_all);
-    Printed::of_tab(answer, command).opening(Tab::Why, node)
+    let tab = why::tab(binary, graph, names, &keepers.tree, node, name, &note_name);
+    let command = session.command("why", Some(node), tab.needs_all);
+    Printed::of_tab(tab, command).opening(Tab::Why, node)
 }
 
 #[cfg(test)]

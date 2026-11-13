@@ -154,7 +154,7 @@ pub(super) fn run_starts(
     let starts = starts(binary, &graph, &names);
     match format {
         Format::Json => starts.write_json(out)?,
-        Format::Text | Format::Tree => starts.answer(path, detail).write(out)?,
+        Format::Text | Format::Tree => starts.text(path, detail).write(out)?,
     }
     Ok(Outcome::Answered)
 }
@@ -207,7 +207,11 @@ pub(super) fn tab<'a>(
     lead_name: &str,
 ) -> FlatTab {
     let reach = Reach::find(binary, graph, index, &[]);
-    let answer = |detail| reach.text(names, lead_name, detail, Format::Text).answer();
+    let answer = |detail| {
+        reach
+            .text(names, lead_name, detail, Format::Text)
+            .by_block()
+    };
     FlatTab::new(answer(Detail::All), answer(Detail::Brief))
 }
 
@@ -528,8 +532,8 @@ impl Text<'_, '_> {
     /// ranges; or with `--tree`, as a tree drawn with branches.
     fn write(&self, out: &mut dyn Write) -> Result<()> {
         let answer = match self.reach.to[..] {
-            [] => self.answer(),
-            _ => self.to_answer(),
+            [] => self.by_block(),
+            _ => self.in_to_ranges(),
         };
         answer.write(out)
     }

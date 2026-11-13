@@ -42,9 +42,9 @@ use super::retained_tree::RetainedTree;
 use super::symbol::Pick;
 use super::symbol::{self, Names, Set};
 use super::text::{Detail, Naming};
-#[cfg(feature = "tui")]
-use super::tree_answer::TabAnswer;
 use super::tree_answer::TreeAnswer;
+#[cfg(feature = "tui")]
+use super::tree_answer::TreeTab;
 use super::{Outcome, text};
 use crate::binary::{AddressRange, Binary, FileKind};
 use crate::cli::Format;
@@ -94,7 +94,7 @@ pub(super) fn run(
                 index: one.index,
                 lead_name: &lead_name,
             };
-            let mut answer = answer(&symbol, detail, format);
+            let mut answer = text(&symbol, detail, format);
             if let Some(note) = left_out_note(binary, &symbols.left_out, &naming) {
                 // Before the notes that every answer about removing items
                 // has.
@@ -102,9 +102,7 @@ pub(super) fn run(
             }
             answer
         }
-        (Format::Text | Format::Tree, _) => {
-            several::tree_answer(&retained, &symbols, detail, format)
-        }
+        (Format::Text | Format::Tree, _) => several::text(&retained, &symbols, detail, format),
     };
     if let Some(patterns) = set.patterns() {
         answer
@@ -163,12 +161,12 @@ fn would_save(subject: &str, saved: u64, range: Option<&str>) -> String {
 /// and the tree of the items that only it leads to, the largest 30 or with
 /// [`Detail::All`], every one, in the shape that `format` asks for, then
 /// what it shares with other code and the calls that elfq can't follow.
-pub(super) fn answer(symbol: &SymbolInTree, detail: Detail, format: Format) -> TreeAnswer {
+pub(super) fn text(symbol: &SymbolInTree, detail: Detail, format: Format) -> TreeAnswer {
     if !symbol.is_reachable() {
         return TreeAnswer::sentences(vec![text::nothing_reaches(symbol.lead_name)]);
     }
     let alone = Alone::new(*symbol);
-    alone.tree_answer(&alone.shown(detail), detail, format)
+    alone.tree_text(&alone.shown(detail), detail, format)
 }
 
 /// What `retained SYMBOL` writes as text, as tab 6 of browse shows it, for
@@ -177,18 +175,18 @@ pub(super) fn answer(symbol: &SymbolInTree, detail: Detail, format: Format) -> T
 /// of each list, as `shorten` writes it; and whether the command needs
 /// `--all` to print it all. What every form shares is worked out once.
 #[cfg(feature = "tui")]
-pub(super) fn answers(symbol: &SymbolInTree, shorten: &dyn Fn(&str) -> String) -> TabAnswer {
+pub(super) fn tab(symbol: &SymbolInTree, shorten: &dyn Fn(&str) -> String) -> TreeTab {
     if !symbol.is_reachable() {
         let sentence = text::nothing_reaches(symbol.lead_name);
-        return TabAnswer::sentences(vec![sentence]);
+        return TreeTab::sentences(vec![sentence]);
     }
     let alone = Alone::new(*symbol);
     let (every, largest) = (alone.shown(Detail::All), alone.shown(Detail::Brief));
-    let answer = alone.tree_answer(&every, Detail::All, Format::Text);
+    let answer = alone.tree_text(&every, Detail::All, Format::Text);
     let brief = alone.parts.notes(&Naming::of(Detail::Brief));
     // Without --all, the tree leaves out items, or the notes names.
     let needs_all = largest.len() < every.len() || brief != answer.notes;
-    TabAnswer {
+    TreeTab {
         briefest: alone.parts.notes(&Naming::first(shorten)),
         brief,
         needs_all,
@@ -252,7 +250,7 @@ impl<'t, 'g, 'a> Alone<'t, 'g, 'a> {
     /// The answer about removing SYMBOL alone, with the rows of the
     /// `shown` items, in the shape that `format` asks for, and with
     /// [`Detail::All`], every name in the notes.
-    fn tree_answer(&self, shown: &HashSet<usize>, detail: Detail, format: Format) -> TreeAnswer {
+    fn tree_text(&self, shown: &HashSet<usize>, detail: Detail, format: Format) -> TreeAnswer {
         let symbol = &self.symbol;
         let name = symbol.lead_name;
         let retained = symbol.retained;

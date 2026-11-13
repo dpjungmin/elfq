@@ -1,10 +1,10 @@
 //! Tab 3 of an item's page: what calls or uses the item, in the rows and
 //! notes that `elfq FILE callers SYMBOL` prints, from the same code
-//! (`callers::answer`). The tab lists every row, where the command lists
-//! the 30 largest callers, and under the rows is that command, ready to
-//! paste, with `--all` when the command needs it to list them all. Enter
-//! opens the selected caller's page on its callers, with its code at the
-//! call. `printed.rs` draws it.
+//! (`callers::text`). The tab lists every row, where the command lists the
+//! 30 largest callers, and under the rows is that command, ready to paste,
+//! with `--all` when the command needs it to list them all. Enter opens
+//! the selected caller's page on its callers, with its code at the call.
+//! `printed.rs` draws it.
 
 use super::item::Tab;
 use super::printed::Printed;
@@ -14,8 +14,9 @@ use crate::commands::uses;
 use crate::graph::Node;
 
 /// The callers of `node`, from `answer`, the answer that `callers SYMBOL
-/// --all` gives for it (see [`Session::callers`]): HOW, AT and CALLER,
-/// each row opening the caller at the first place where it uses `node`.
+/// --all` gives for it (see [`Session::callers_text`]): HOW, AT and
+/// CALLER, each row opening the caller at the first place where it uses
+/// `node`.
 pub(super) fn tab(session: &Session, node: Node, mut answer: FlatAnswer) -> Printed {
     // `callers SYMBOL` lists the rows of the 30 largest callers, unless
     // with --all, and a last row counts the rest.
@@ -79,7 +80,7 @@ mod tests {
             let imports = (0..binary.imports.len()).map(Node::Import);
             let nodes = items.chain(imports.filter(|&node| session.page_node(node) == node));
             for node in nodes {
-                let tab = tab(&session, node, session.callers(node));
+                let tab = tab(&session, node, session.callers_text(node));
                 let name = path.display();
                 // The command parses as elfq's arguments, after the shell
                 // has split it into words.
@@ -120,7 +121,7 @@ mod tests {
             let imports = (0..binary.imports.len()).map(Node::Import);
             let nodes = items.chain(imports.filter(|&node| session.page_node(node) == node));
             for node in nodes {
-                let tab = tab(&session, node, session.callers(node));
+                let tab = tab(&session, node, session.callers_text(node));
                 let names = tab.names();
                 for width in [60, 80, 100] {
                     let room = tab.name_room(width);
@@ -148,7 +149,7 @@ mod tests {
         let typed = Path::new("my samples/it's c-x86_64.elf");
         let session = Session::new(typed, &binary).unwrap();
         let node = session.names.find("log_msg").unwrap().node;
-        let tab = tab(&session, node, session.callers(node));
+        let tab = tab(&session, node, session.callers_text(node));
         let words = shell_words(tab.command().strip_prefix("$ ").unwrap());
         let cli = Cli::try_parse_from(&words).unwrap_or_else(|error| panic!("{words:?}: {error}"));
         assert_eq!(cli.file, typed, "{}", tab.command());

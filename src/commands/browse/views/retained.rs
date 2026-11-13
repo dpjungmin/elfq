@@ -1,13 +1,13 @@
 //! Tab 6 of an item's page: what removing the item would save, as `elfq
-//! FILE retained SYMBOL` prints it, from the same code
-//! (`retained::answers`): the tree of the items that only it leads to,
-//! and the notes. The tab lists every item, where the command lists the 30
-//! largest, and under them is that command, ready to paste, with `--all`
-//! when the command needs it to list them all. In a file with several
-//! blocks of memory, a table under the notes gives the bytes that removing
-//! the item would save in each, as `retained SYMBOL --range BLOCK` counts
-//! them: what would leave ITCM or flash. Enter opens the selected row's
-//! item on what removing it would save. `printed.rs` draws it.
+//! FILE retained SYMBOL` prints it, from the same code (`retained::tab`):
+//! the tree of the items that only it leads to, and the notes. The tab
+//! lists every item, where the command lists the 30 largest, and under
+//! them is that command, ready to paste, with `--all` when the command
+//! needs it to list them all. In a file with several blocks of memory, a
+//! table under the notes gives the bytes that removing the item would save
+//! in each, as `retained SYMBOL --range BLOCK` counts them: what would
+//! leave ITCM or flash. Enter opens the selected row's item on what
+//! removing it would save. `printed.rs` draws it.
 
 use super::item::Tab;
 use super::printed::{Lines, Printed, note_name, table_lines};
@@ -28,10 +28,10 @@ pub(super) fn tab(session: &Session, keepers: &Keepers, index: usize, name: &str
         index,
         lead_name: name,
     };
-    let answer = retained::answers(&symbol, &note_name);
+    let tab = retained::tab(&symbol, &note_name);
     let node = Node::Item(index);
-    let command = session.command("retained", Some(node), answer.needs_all);
-    (Printed::of_tab(answer, command))
+    let command = session.command("retained", Some(node), tab.needs_all);
+    (Printed::of_tab(tab, command))
         .with_below(by_block(session, &retained.tree, node))
         .opening(Tab::Retained, node)
 }
@@ -138,7 +138,7 @@ mod tests {
                         index,
                         lead_name: &lead_name,
                     };
-                    String::from_utf8(retained::answer(&symbol, detail, Format::Text).written())
+                    String::from_utf8(retained::text(&symbol, detail, Format::Text).written())
                         .unwrap()
                 };
                 let (every, brief) = (output(Detail::All), output(Detail::Brief));

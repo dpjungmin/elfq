@@ -20,7 +20,7 @@ impl Text<'_, '_> {
     /// rows by block, and the notes on what elfq can't follow or read. With
     /// `--tree`, a tree takes the place of the rows, and the first line
     /// counts the calls and jumps as the tree shows them.
-    pub(super) fn answer(&self) -> FlatAnswer {
+    pub(super) fn by_block(&self) -> FlatAnswer {
         let reach = self.reach;
         let binary = reach.binary;
         let name = self.lead_name;
@@ -427,7 +427,7 @@ mod tests {
                 panic!("{symbol} is an import");
             };
             let reach = Reach::find(&binary, &graph, index, &[]);
-            reach.text(&names, symbol, detail, Format::Text).answer();
+            reach.text(&names, symbol, detail, Format::Text).by_block();
             names.names_many()
         };
         // main reaches 50 of the file's 68 items and 3 imports.

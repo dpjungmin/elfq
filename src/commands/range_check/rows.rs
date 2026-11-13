@@ -166,16 +166,12 @@ pub(super) fn crossings_table(direction: Direction) -> Table {
 /// names, as [`names_cell`] writes them. The names come last, so that a
 /// long one that wraps moves no column.
 pub(in crate::commands) fn crossings_columns(direction: Direction) -> [(&'static str, Align); 5] {
-    let names = match direction {
-        Direction::Out => "CALLEE",
-        Direction::In => "CALLER",
-    };
     [
         ("ADDRESS", Align::Left),
         ("SIZE", Align::Right),
         ("HOW", Align::Left),
         ("AT", Align::Left),
-        (names, Align::Left),
+        (direction.names_header(), Align::Left),
     ]
 }
 

@@ -1,6 +1,6 @@
 //! Tab 2 of an item's page: what the item calls or uses, in the rows and
 //! notes that `elfq FILE callees SYMBOL` prints, from the same code
-//! (`callees::answer`). The tab lists every row and every site, where the
+//! (`callees::text`). The tab lists every row and every site, where the
 //! command lists the 30 largest callees and the first few sites that elfq
 //! can't follow, and under them is that command, ready to paste, with
 //! `--all` when the command needs it to list them all. When the notes
@@ -19,11 +19,11 @@ use crate::graph::Node;
 /// CALLEE, each row opening the callee.
 pub(super) fn tab(session: &Session, index: usize, name: &str) -> Printed {
     let (binary, graph) = (session.binary, &session.graph);
-    let mut answer = callees::answer(binary, graph, index, name, Detail::All);
+    let mut answer = callees::text(binary, graph, index, name, Detail::All);
     // `callees SYMBOL` lists the rows of the 30 largest callees, unless
     // with --all, and a last row counts the rest; and it gives only the
     // first few sites of the calls and jumps that elfq can't follow.
-    let brief = callees::answer(binary, graph, index, name, Detail::Brief);
+    let brief = callees::text(binary, graph, index, name, Detail::Brief);
     let needs_all = brief.written() != answer.written();
     let node = Node::Item(index);
     let command = session.command("callees", Some(node), needs_all);

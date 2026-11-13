@@ -139,14 +139,14 @@ fn write_list(
         };
         return json::write(&list, out);
     }
-    list_answer(&totals, inlined, code, detail).write(out)
+    list_text(&totals, inlined, code, detail).write(out)
 }
 
 /// What `inlined` writes as text about `totals`, each inlined function's
 /// copies added up, largest first: the largest, or with [`Detail::All`],
 /// every one, and the `inlined` bytes of the `code` bytes in all that they
 /// take.
-fn list_answer(totals: &[Total], inlined: u64, code: u64, detail: Detail) -> FlatAnswer {
+fn list_text(totals: &[Total], inlined: u64, code: u64, detail: Detail) -> FlatAnswer {
     if totals.is_empty() {
         return FlatAnswer {
             lead: vec!["The debug info lists no inlined code.".to_string()],
@@ -204,14 +204,14 @@ fn write_tree(
         };
         return json::write(&tree, out);
     }
-    tree_answer(binary, &groups, index, lead_name, detail, format).write(out)
+    tree_text(binary, &groups, index, lead_name, detail, format).write(out)
 }
 
 /// What `inlined FUNCTION` writes as text about `groups`, the copies
 /// inlined into the item at `index`, called `lead_name` in the first line:
 /// the tree of the largest groups, or with [`Detail::All`], every one, in
 /// the shape that `format` asks for.
-fn tree_answer(
+fn tree_text(
     binary: &Binary,
     groups: &Groups,
     index: usize,

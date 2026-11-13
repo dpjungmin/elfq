@@ -4,6 +4,7 @@
 use std::collections::{HashMap, HashSet};
 
 use super::flat_answer::FlatRow;
+use super::range_check::Direction;
 use super::text;
 use crate::binary::Binary;
 use crate::graph::{Node, Reference};
@@ -56,30 +57,18 @@ pub(super) fn distinct_nodes(rows: &[Row]) -> Vec<Node> {
         .collect()
 }
 
-/// Which end of the uses a table lists.
-#[derive(Clone, Copy)]
-pub(super) enum End {
-    /// What uses SYMBOL, as `callers` lists it.
-    Callers,
-    /// What SYMBOL uses, as `callees` lists it.
-    Callees,
-}
-
-/// The table of `callers` or `callees`: its columns, HOW, AT and the
-/// caller or callee, and the rows of the `count` largest nodes (see
-/// [`largest_rows`]), then a last row such as "70 more" that counts the
-/// rest.
+/// The table of `callers` or `callees`, as `direction` says: its columns,
+/// HOW, AT and the caller or callee, and the rows of the `count` largest
+/// nodes (see [`largest_rows`]), then a last row such as "70 more" that
+/// counts the rest.
 pub(super) fn table(
     binary: &Binary,
     rows: Vec<Row>,
-    end: End,
+    direction: Direction,
     count: usize,
 ) -> (Vec<(String, Align)>, Vec<FlatRow>) {
-    let header = match end {
-        End::Callers => "CALLER",
-        End::Callees => "CALLEE",
-    };
-    let columns = ["HOW", "AT", header].map(|header| (header.to_string(), Align::Left));
+    let columns =
+        ["HOW", "AT", direction.names_header()].map(|header| (header.to_string(), Align::Left));
     let (rows, left_out) = largest_rows(binary, rows, count);
     let mut table: Vec<FlatRow> = (rows.into_iter())
         .map(|row| {
@@ -88,9 +77,9 @@ pub(super) fn table(
             let mut flat = FlatRow::new(cells, name, Some(row.node));
             // A caller uses SYMBOL in its own code, which browse opens at
             // the first place; a callee is used in SYMBOL's code.
-            flat.at = match end {
-                End::Callers => Some(row.sites[0]),
-                End::Callees => None,
+            flat.at = match direction {
+                Direction::In => Some(row.sites[0]),
+                Direction::Out => None,
             };
             flat
         })
@@ -210,7 +199,7 @@ mod tests {
                         sites: vec![0],
                     })
                     .collect();
-                let (_, rows) = table(&binary, rows, End::Callers, text::shown(detail));
+                let (_, rows) = table(&binary, rows, Direction::In, text::shown(detail));
                 rows.iter().map(FlatRow::all_cells).collect::<Vec<_>>()
             };
             assert_eq!(
