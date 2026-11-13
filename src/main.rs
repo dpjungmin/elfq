@@ -183,13 +183,13 @@ fn exit_with_clap_error(mut err: clap::Error) -> ! {
 }
 
 /// The text of clap's error `err`, with the lines that elfq adds under its
-/// first line for an argument after the command that `why`, `reach`,
-/// `inlined`, `browse` or `top` doesn't take, in clap's "unexpected
-/// argument" error alone (see [`unexpected_argument_hints`]): "error:
-/// unexpected argument 'uart_hal.c' found", then "uart_driver.c and
-/// uart_hal.c are files here: ...". The text keeps clap's colours, which
-/// clap takes out where it wouldn't colour its own errors. `None` when elfq
-/// adds nothing.
+/// first line when a command that takes one SYMBOL at most
+/// (`TAKE_ONE_SYMBOL_AT_MOST`, in `commands/arguments.rs`) refuses an
+/// argument after it, in clap's "unexpected argument" error alone (see
+/// [`unexpected_argument_hints`]): "error: unexpected argument
+/// 'uart_hal.c' found", then "uart_driver.c and uart_hal.c are files here:
+/// ...". The text keeps clap's colours, which clap takes out where it
+/// wouldn't colour its own errors. `None` when elfq adds nothing.
 fn with_hints(err: &clap::Error) -> Option<StyledStr> {
     if err.kind() != clap::error::ErrorKind::UnknownArgument {
         return None;

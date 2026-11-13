@@ -1,7 +1,9 @@
 //! How elfq words things: the counts, lists, columns and sentences that
 //! commands write, kept in one place so that every command says them the
-//! same way.
+//! same way. It also says how many rows of a long list a command shows
+//! ([`shown`]) and which of them it keeps ([`first_by_key`]).
 
+use std::cmp::Reverse;
 use std::fmt;
 use std::io::Write;
 use std::path::Path;
@@ -115,8 +117,10 @@ pub(super) fn kind_name(kind: ItemKind) -> &'static str {
 /// Browse asks for both, to tell whether a tab needs `--all`. Code that
 /// `--all` doesn't reach, such as an error, the hints under it and the
 /// overview, passes the one it needs: an error that must name everything
-/// passes [`Detail::All`], as `checks::ends_unknown` and
-/// `validate::asked_about` do, and the others pass [`Detail::Brief`].
+/// passes [`Detail::All`], as `checks::readable_item` and
+/// `retained::find_symbols` do for the functions whose end elfq doesn't
+/// know, and `validate::asked_about` for the ranges asked about, and the
+/// others pass [`Detail::Brief`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum Detail {
     /// What a command shows without `--all`: the first rows of a long
@@ -174,6 +178,43 @@ pub(super) fn shown_count(count: usize, room: usize) -> usize {
     } else {
         count
     }
+}
+
+/// The `count` of `items` that a sort by `key` would put first, in no
+/// order, or all of them when there are `count` or fewer. It picks them
+/// without sorting the rest, which saves time where many items compete for
+/// a few rows. The keys must differ, as they do when each ends in the
+/// item's own number or node, so that which items it keeps doesn't depend
+/// on the order they come in.
+///
+/// A key that starts with `Reverse(size)` keeps the largest, and what
+/// follows breaks ties. `callers`, `callees` and `reach` keep the first by
+/// name ([`by_size_then_name`]). The trees of retained sizes and `inlined`
+/// keep the lowest number (`tree_answer::largest`), since each command
+/// numbers the items of its tree, and has no name at hand for them. The
+/// go-to box keeps the first in the file (`keep_largest`, in
+/// `browse/views/picker.rs`), since it picks its rows again each time the
+/// text in the box changes, and so compares no names.
+pub(super) fn first_by_key<T, K: Ord>(
+    mut items: Vec<T>,
+    count: usize,
+    key: impl FnMut(&T) -> K,
+) -> Vec<T> {
+    if count < items.len() {
+        items.select_nth_unstable_by_key(count, key);
+        items.truncate(count);
+    }
+    items
+}
+
+/// The key of a node for [`first_by_key`] that keeps the largest, as
+/// [`Node::size`] gives their sizes; of the same size, the name that sorts
+/// first; and of the same size and name, the first node, so that no two
+/// nodes share a key, as [`first_by_key`] needs.
+pub(super) fn by_size_then_name<'a>(
+    binary: &'a Binary,
+) -> impl Fn(&Node) -> (Reverse<u64>, &'a str, Node) {
+    move |&node| (Reverse(node.size(binary)), node.name(binary), node)
 }
 
 /// Words joined into a phrase: "a", "a and b", "a, b and c", or for more
@@ -440,19 +481,30 @@ pub(super) fn call_and_jump_verbs<'a>(
     }
 }
 
+/// Says that elfq can't read the code of the functions called `names`,
+/// since it doesn't know where they end: "elfq doesn't know where _init
+/// ends, so it can't read its code", or for several, "where _init and _fini
+/// end, so it can't read their code", which names the first ten of a long
+/// list, then "and 5 more", or with [`Detail::All`], every one, as an error
+/// does.
+pub(super) fn ends_unknown(names: &[&str], detail: Detail) -> String {
+    match names {
+        [one] => format!("elfq doesn't know where {one} ends, so it can't read its code"),
+        _ => format!(
+            "elfq doesn't know where {} end, so it can't read their code",
+            names_text(names, detail)
+        ),
+    }
+}
+
 /// The sentence that says elfq can't read `unreadable`, the functions whose
-/// end it doesn't know, as `callees SYMBOL` says it.
+/// end it doesn't know, as `callees SYMBOL` says it (see [`ends_unknown`]).
 pub(super) fn unreadable_text(binary: &Binary, unreadable: &[usize], detail: Detail) -> String {
     let names: Vec<&str> = unreadable
         .iter()
         .map(|&index| binary.items[index].name.as_str())
         .collect();
-    format!(
-        "elfq doesn't know where {} {}, so it can't read {} code.",
-        names_text(&names, detail),
-        if names.len() == 1 { "ends" } else { "end" },
-        if names.len() == 1 { "its" } else { "their" }
-    )
+    format!("{}.", ends_unknown(&names, detail))
 }
 
 /// Examples of the names that elfq gives items without symbols: the first
@@ -701,16 +753,23 @@ pub(super) fn quoted_path(path: &Path) -> String {
 /// `elfq app.elf reach 'log(unsigned int)' --to 0x20000000..0x20001000`.
 /// It is built from words as they are meant, and quotes each one for the
 /// shell as it is added, so no word is quoted twice or not at all.
+#[derive(PartialEq)]
 pub(super) struct CommandLine {
     words: Vec<String>,
 }
 
 impl CommandLine {
+    /// `elfq FILE`, with the file as the user typed it, for a line with no
+    /// command, as the overview's `elfq FILE --range RANGE`.
+    pub(super) fn file(path: &Path) -> CommandLine {
+        CommandLine {
+            words: vec!["elfq".to_string(), quoted_path(path)],
+        }
+    }
+
     /// `elfq FILE COMMAND`, with the file as the user typed it.
     pub(super) fn new(path: &Path, command: &str) -> CommandLine {
-        CommandLine {
-            words: vec!["elfq".to_string(), quoted_path(path), shell_quote(command)],
-        }
+        CommandLine::file(path).word(command)
     }
 
     /// Adds `word`, such as a SYMBOL.
@@ -815,17 +874,16 @@ pub(super) fn unresolved_lines(
     lines
 }
 
-/// Writes the commands to try next, under "Try:", each given without
-/// `elfq FILE`, or nothing when there are none.
-pub(super) fn write_try(path: &Path, commands: &[String], out: &mut dyn Write) -> Result<()> {
+/// Writes the commands to try next, under "Try:", or nothing when there
+/// are none.
+pub(super) fn write_try(commands: &[CommandLine], out: &mut dyn Write) -> Result<()> {
     if commands.is_empty() {
         return Ok(());
     }
-    let file = quoted_path(path);
     writeln!(out)?;
     writeln!(out, "Try:")?;
     for command in commands {
-        writeln!(out, "  elfq {file} {command}")?;
+        writeln!(out, "  {command}")?;
     }
     Ok(())
 }
@@ -833,6 +891,24 @@ pub(super) fn write_try(path: &Path, commands: &[String], out: &mut dyn Write) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn first_by_key_keeps_what_a_sort_puts_first() {
+        let sizes = [4, 9, 4, 1, 9, 7];
+        let key = |&item: &usize| (Reverse(sizes[item]), item);
+        let mut sorted: Vec<usize> = (0..sizes.len()).collect();
+        sorted.sort_by_key(key);
+        for count in 0..=sizes.len() + 1 {
+            let mut kept = first_by_key((0..sizes.len()).collect(), count, key);
+            kept.sort_by_key(key);
+            assert_eq!(kept, sorted[..count.min(sizes.len())], "{count}");
+        }
+        // The largest, and of the same size, the lowest number: 2 is left
+        // out for 0.
+        let mut kept = first_by_key((0..sizes.len()).collect(), 4, key);
+        kept.sort();
+        assert_eq!(kept, [0, 1, 4, 5]);
+    }
 
     #[test]
     fn a_summary_never_stands_for_one_thing() {
@@ -885,6 +961,33 @@ mod tests {
         assert_eq!(
             addresses_text(&[0x10, 0x20], Detail::Brief),
             "0x10 and 0x20"
+        );
+    }
+
+    #[test]
+    fn a_try_line_quotes_the_file_and_each_word_once() {
+        // The overview's lines for a range, a command and a SYMBOL, under
+        // a path with a space and a quote in it.
+        let path = Path::new("fw 'new'.elf");
+        let range = AddressRange {
+            start: 0x2000_0000,
+            end: 0x2000_0450,
+        };
+        let lines = [
+            CommandLine::file(path).ranges("--range", [range]),
+            CommandLine::new(path, "top").word("--tree"),
+            CommandLine::new(path, "why").word("log(unsigned int)"),
+        ];
+        let mut out = Vec::new();
+        write_try(&lines, &mut out).unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            r"
+Try:
+  elfq 'fw '\''new'\''.elf' --range 0x20000000..0x20000450
+  elfq 'fw '\''new'\''.elf' top --tree
+  elfq 'fw '\''new'\''.elf' why 'log(unsigned int)'
+"
         );
     }
 

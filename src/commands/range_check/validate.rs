@@ -1,13 +1,14 @@
 //! The checks a range check makes before it answers: that each range
 //! holds something, and that the ranges of `--from` or `--to` are on the
-//! far side. An empty range is refused by `checks::empty_place`, which
-//! [`check_holds_items`] calls.
+//! far side. A range that holds no item is refused by
+//! [`check_holds_items`], in `checks.rs`, which `retained` calls too for a
+//! range in place of SYMBOL.
 
 use anyhow::{Result, bail};
 
 use super::{Direction, Inside, RangeCheck};
 use crate::binary::{AddressRange, Binary, Item};
-use crate::commands::checks::empty_place;
+use crate::commands::checks::check_holds_items;
 use crate::commands::text::{self, Detail};
 use crate::graph::{Graph, ItemsInRanges};
 
@@ -36,36 +37,6 @@ pub(super) fn check(
 /// Whether one of `addresses` is in `range`.
 fn has_address(addresses: &[u64], range: AddressRange) -> bool {
     addresses.iter().any(|&address| range.contains(address))
-}
-
-/// Explains that no item is in `range`, as for a mistyped range, unless
-/// one is. `retained` refuses an empty range in place of SYMBOL with it
-/// too.
-pub(in crate::commands) fn check_holds_items(binary: &Binary, range: AddressRange) -> Result<()> {
-    if binary.items.iter().any(|item| item.is_in(&[range])) {
-        return Ok(());
-    }
-    let place = empty_place(binary, Some(range))?;
-    // Where the program uses what is stored in the range.
-    let used_at: Vec<String> = binary
-        .load_images_in(range)
-        .into_iter()
-        .map(|section| {
-            let used_at = AddressRange {
-                start: section.address,
-                end: section.address + section.size,
-            };
-            format!("{} at {}", section.name, text::range_argument(used_at))
-        })
-        .collect();
-    if !used_at.is_empty() {
-        let used_at: Vec<&str> = used_at.iter().map(String::as_str).collect();
-        bail!(
-            "elfq found no functions or data in {place}; the program uses {}",
-            text::names_text(&used_at, Detail::Brief)
-        );
-    }
-    bail!("elfq found no functions or data in {place}");
 }
 
 /// Checks the ranges of `--from` or `--to`: each must hold an item outside

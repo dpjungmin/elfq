@@ -35,8 +35,7 @@ use anyhow::{Result, anyhow, bail};
 
 use super::refuse_shared_library;
 use crate::binary::Binary;
-use crate::commands::checks::{ends_unknown, item_in_file};
-use crate::commands::range_check::check_holds_items;
+use crate::commands::checks::{check_holds_items, item_in_file};
 use crate::commands::symbol::{
     self, Argument, Lookup, LookupOrMatch, Names, Pattern, Pick, Set, Takes,
 };
@@ -110,7 +109,8 @@ pub(super) fn find_symbols(
         let left_out: Vec<&str> = (left_out.iter())
             .map(|&index| binary.items[index].name.as_str())
             .collect();
-        bail!("{}", ends_unknown(&left_out));
+        // An error names every one, however many there are.
+        bail!("{}", text::ends_unknown(&left_out, Detail::All));
     }
     refuse_shared_library(binary, &set, detail)?;
     Ok(Symbols { set, left_out })

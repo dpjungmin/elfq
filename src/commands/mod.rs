@@ -9,8 +9,9 @@
 //! `--to`, `flat_answer.rs` holds the answers whose table has one row to a
 //! line, and `tree_answer.rs` those whose table holds a tree, and how a
 //! tree is cut down to its largest rows, and `kept.rs` leaves what a
-//! command builds for the system to free. How elfq words things is in
-//! `text.rs`, and the shapes of its JSON in `json.rs`.
+//! command builds for the system to free. How elfq words things, and
+//! which rows of a long list it keeps, are in `text.rs`, and the shapes
+//! of its JSON in `json.rs`.
 //!
 //! A command calls no other command, except to ask whether that one would
 //! answer, for a Try line, which ends an answer with a command to run next,

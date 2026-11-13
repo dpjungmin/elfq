@@ -1,19 +1,17 @@
 //! The checks that commands make before they answer: that elfq can read
 //! the file's code, that SYMBOL's item is in the file and its code can be
-//! read, and that there are bytes to count. Each fails with an error that
-//! says what is missing.
+//! read, that there are bytes to count, and that a range holds an item.
+//! Each fails with an error that says what is missing.
+//!
+//! None of them needs the reference graph, so a command makes them before
+//! it builds the graph where it can, and a mistyped argument fails at
+//! once.
 
 use anyhow::{Result, bail};
 
 use super::text::{self, Detail};
 use crate::binary::{AddressRange, Binary, Item, Source, memory_blocks, total};
-use crate::graph::{Graph, Node};
-
-/// Builds the reference graph, or explains why elfq can't yet.
-pub(super) fn reference_graph(binary: &Binary) -> Result<Graph> {
-    check_code_is_readable(binary)?;
-    Ok(Graph::build(binary))
-}
+use crate::graph::Node;
 
 /// Explains why elfq can't build the reference graph yet, if it can't.
 pub(super) fn check_code_is_readable(binary: &Binary) -> Result<()> {
@@ -41,24 +39,9 @@ pub(super) fn readable_item(binary: &Binary, node: Node) -> Result<usize> {
     let index = item_in_file(binary, node)?;
     let item = &binary.items[index];
     if item.end_unknown() {
-        bail!("{}", ends_unknown(&[&item.name]));
+        bail!("{}", text::ends_unknown(&[&item.name], Detail::All));
     }
     Ok(index)
-}
-
-/// Says that elfq can't read the code of the functions called `names`,
-/// since it doesn't know where they end: "elfq doesn't know where _init
-/// ends, so it can't read its code", or for several, "where _init and _fini
-/// end, so it can't read their code".
-pub(super) fn ends_unknown(names: &[&str]) -> String {
-    match names {
-        [one] => format!("elfq doesn't know where {one} ends, so it can't read its code"),
-        // An error names every one, however many there are.
-        _ => format!(
-            "elfq doesn't know where {} end, so it can't read their code",
-            text::names_text(names, Detail::All)
-        ),
-    }
 }
 
 /// Explains why there are no bytes to count in the file, or with a range,
@@ -85,6 +68,37 @@ pub(super) fn check_has_bytes(binary: &Binary, range: Option<AddressRange>) -> R
         );
     }
     bail!("elfq found no functions or data in {place}")
+}
+
+/// Explains that no item is in `range`, as for a mistyped range, unless
+/// one is. `callers` and `callees` refuse such a range with it, given in
+/// place of SYMBOL or to `--from` or `--to`, and so does `retained`, given
+/// in place of SYMBOL.
+pub(super) fn check_holds_items(binary: &Binary, range: AddressRange) -> Result<()> {
+    if binary.items.iter().any(|item| item.is_in(&[range])) {
+        return Ok(());
+    }
+    let place = empty_place(binary, Some(range))?;
+    // Where the program uses what is stored in the range.
+    let used_at: Vec<String> = binary
+        .load_images_in(range)
+        .into_iter()
+        .map(|section| {
+            let used_at = AddressRange {
+                start: section.address,
+                end: section.address + section.size,
+            };
+            format!("{} at {}", section.name, text::range_argument(used_at))
+        })
+        .collect();
+    if !used_at.is_empty() {
+        let used_at: Vec<&str> = used_at.iter().map(String::as_str).collect();
+        bail!(
+            "elfq found no functions or data in {place}; the program uses {}",
+            text::names_text(&used_at, Detail::Brief)
+        );
+    }
+    bail!("elfq found no functions or data in {place}");
 }
 
 /// Where an answer that found nothing looked, for its error: `range`, such

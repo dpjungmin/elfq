@@ -14,7 +14,7 @@ use super::steps::{Does, Step, Way, number};
 use super::{Answer, Ending, Facts, Firmware};
 use crate::arch::startup::{End, Through, loop_head};
 use crate::binary::{ItemKind, Section, made_names};
-use crate::commands::text::{self as house, Detail, names_text, plural, shell_quote};
+use crate::commands::text::{self as house, CommandLine, Detail, names_text, plural};
 use crate::render::{Align, Table};
 
 pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
@@ -59,7 +59,7 @@ pub(super) fn write(answer: &Answer, out: &mut dyn Write) -> Result<()> {
             writeln!(out, "{}", note_text(answer, note))?;
         }
     }
-    house::write_try(answer.path, &try_commands(answer), out)
+    house::write_try(&try_commands(answer), out)
 }
 
 /// The first line: how many problems, or what startup does when there are
@@ -639,8 +639,8 @@ pub(super) fn register_name(register: u16) -> String {
 }
 
 /// `reach --to` for code that runs before its copy inside a call, to show
-/// how the call gets there, each given without `elfq FILE`.
-fn try_commands(answer: &Answer) -> Vec<String> {
+/// how the call gets there.
+fn try_commands(answer: &Answer) -> Vec<CommandLine> {
     let Facts { firmware, ram, .. } = *answer.facts;
     let mut lines = Vec::new();
     for p in &answer.judged.problems {
@@ -662,10 +662,10 @@ fn try_commands(answer: &Answer) -> Vec<String> {
         if run.runs(function) || (*address..ram.end(run.section)).contains(&function) {
             continue;
         }
-        let line = format!(
-            "reach {} --to {address:#x}+{size}",
-            shell_quote(&firmware.name(function)),
-        );
+        let line = CommandLine::new(answer.path, "reach")
+            .word(&firmware.name(function))
+            .word("--to")
+            .word(&format!("{address:#x}+{size}"));
         if !lines.contains(&line) {
             lines.push(line);
         }

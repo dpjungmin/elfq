@@ -280,19 +280,11 @@ impl Text<'_, '_> {
     /// or every one. Where the 30th place falls among several of one size,
     /// those first by name, then by node, are kept.
     pub(super) fn largest(&self, reached: &[Step]) -> HashSet<Node> {
-        let binary = self.reach.binary;
-        let mut nodes: Vec<Node> = reached.iter().map(|step| step.node).collect();
-        let shown = text::shown(self.detail);
-        if shown < nodes.len() {
-            // No two steps are of one node, so no two share a key, and the
-            // nodes that come before `shown` are those that a sort would
-            // put there, in some order.
-            nodes.select_nth_unstable_by_key(shown, |&node| {
-                (Reverse(node.size(binary)), node.name(binary), node)
-            });
-            nodes.truncate(shown);
-        }
-        nodes.into_iter().collect()
+        // No two steps are of one node, so no two share a key.
+        let nodes: Vec<Node> = reached.iter().map(|step| step.node).collect();
+        let by_size = text::by_size_then_name(self.reach.binary);
+        let largest = text::first_by_key(nodes, text::shown(self.detail), by_size);
+        largest.into_iter().collect()
     }
 
     /// The note on the calls and jumps through pointers in `pointers`, all

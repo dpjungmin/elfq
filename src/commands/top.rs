@@ -12,7 +12,7 @@ use std::io::Write;
 use anyhow::{Result, bail};
 use serde::Serialize;
 
-use super::checks::{check_has_bytes, reference_graph};
+use super::checks::{check_code_is_readable, check_has_bytes};
 use super::kept::Kept;
 use super::retained_tree::{KeptItem, RetainedTree};
 use super::text::Detail;
@@ -20,7 +20,7 @@ use super::tree_answer::TreeAnswer;
 use super::{Outcome, json, text};
 use crate::binary::{AddressRange, Binary, FileKind, total};
 use crate::cli::Format;
-use crate::graph::Node;
+use crate::graph::{Graph, Node};
 
 #[derive(Serialize)]
 struct TopJson<'a> {
@@ -62,9 +62,10 @@ pub(super) fn run(
     if binary.kind == FileKind::SharedLibrary {
         bail!("elfq can't yet tell what keeps the most bytes in a shared library");
     }
-    let graph = Kept::new(reference_graph(binary)?);
-    let retained = Kept::new(RetainedTree::new(binary, &graph, range));
+    check_code_is_readable(binary)?;
     check_has_bytes(binary, range)?;
+    let graph = Kept::new(Graph::build(binary));
+    let retained = Kept::new(RetainedTree::new(binary, &graph, range));
     if format == Format::Json {
         let answer = TopJson {
             range: range.map(json::Range::new),
@@ -167,7 +168,6 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::graph::Graph;
 
     #[test]
     fn an_item_that_nothing_reaches_is_marked_as_rows_are() {

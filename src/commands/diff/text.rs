@@ -24,8 +24,8 @@ use crate::commands::json::address;
 use crate::commands::range_check::{self, Direction};
 use crate::commands::symbol::Names;
 use crate::commands::text::{
-    self as house, Detail, cannot_read_code, named, names_text, plural, range_argument,
-    range_start, sections_text, shell_quote, shown_count, signed, size_text,
+    self as house, CommandLine, Detail, cannot_read_code, named, names_text, plural,
+    range_argument, range_start, sections_text, shown_count, signed, size_text,
 };
 use crate::graph::Node;
 use crate::render::{Align, Table};
@@ -133,14 +133,16 @@ pub(super) fn write(answer: &Answer, detail: Detail, out: &mut dyn Write) -> Res
 /// [`Answer::try_startup`] says to (see
 /// [`suggest_startup`](super::suggest_startup)).
 fn write_try(answer: &Answer, query: Option<String>, out: &mut dyn Write) -> Result<()> {
-    let commands: Vec<String> = [
-        query.map(|query| format!("why {query}")),
-        answer.try_startup.then(|| "startup".to_string()),
+    let commands: Vec<CommandLine> = [
+        query.map(|query| CommandLine::new(answer.new_path, "why").word(&query)),
+        answer
+            .try_startup
+            .then(|| CommandLine::new(answer.new_path, "startup")),
     ]
     .into_iter()
     .flatten()
     .collect();
-    house::write_try(answer.new_path, &commands, out)
+    house::write_try(&commands, out)
 }
 
 /// The calls between blocks that are new or gone, as `callees BLOCK` lists
@@ -601,7 +603,7 @@ fn try_why(compared: &Compared, heads: &[usize]) -> Option<String> {
         }
     }
     let (_, head) = best?;
-    Some(shell_quote(&compared.new_names.query_for(Node::Item(head))))
+    Some(compared.new_names.query_for(Node::Item(head)))
 }
 
 /// "The memory stays at 15728 bytes (.text +16, .eh_frame +8)." or "The
