@@ -8,7 +8,7 @@
 use object::Endianness;
 
 use super::sweep::{Scanner, Swept};
-use super::{Instruction, PC, is_wide};
+use super::{Instruction, PC, is_wide, it_block_length};
 use crate::arch::Ending;
 
 /// How many bytes of `code` its instructions and constants take, leaving
@@ -75,7 +75,7 @@ fn last_instruction(code: &[u8], address: u64, endianness: Endianness) -> Option
         }
         conditional = match first {
             // it, with a mask that says how many instructions follow.
-            _ if first & 0xff00 == 0xbf00 && first & 0xf != 0 => 4 - (first & 0xf).trailing_zeros(),
+            _ if first & 0xff00 == 0xbf00 && first & 0xf != 0 => it_block_length(first & 0xf),
             _ => conditional.saturating_sub(1),
         };
     }

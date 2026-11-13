@@ -11,7 +11,7 @@ use object::{Endian, Endianness};
 use crate::arch::CodeReference;
 use crate::arch::CodeReferenceKind::Jump;
 use crate::arch::thumb::decode::{self, Effect, Flow, Operation, SetsFlags, Transfer, When};
-use crate::arch::thumb::{Instruction, PC, SP};
+use crate::arch::thumb::{Instruction, PC, SP, it_block_length};
 
 /// Which instructions of an `it` block run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,7 +128,7 @@ impl<'a> Code<'a> {
             if firstcond == 0b1110 {
                 continue;
             }
-            let length = 4 - mask.trailing_zeros() as usize;
+            let length = it_block_length(mask);
             let mut flags_changed = false;
             for k in 0..length {
                 let inside = index + 1 + k;
@@ -145,11 +145,10 @@ impl<'a> Code<'a> {
                 };
                 let effect = self.effects[inside];
                 flags_changed |= effect.sets_flags(true);
-                // Only the last instruction of a block may branch.
-                let goes_on = matches!(
-                    effect.flow,
-                    Flow::Next | Flow::Call | Flow::CallRegister(..)
-                );
+                // Only the last instruction of a block may branch, and
+                // none may be an `it`: one before the last is refused
+                // here, and the last when the loop reaches it.
+                let goes_on = effect.flow.goes_on() && !matches!(effect.flow, Flow::It { .. });
                 if !goes_on && k + 1 < length {
                     return None;
                 }
@@ -190,11 +189,7 @@ impl<'a> Code<'a> {
         let mut starts = BTreeSet::from([0]);
         starts.extend(self.jumps.values().flatten().copied());
         for index in 0..self.instructions.len() - 1 {
-            let goes_on = matches!(
-                self.effects[index].flow,
-                Flow::Next | Flow::Call | Flow::CallRegister(..) | Flow::It { .. }
-            );
-            if !goes_on || !self.runs_on(index) {
+            if !self.effects[index].flow.goes_on() || !self.runs_on(index) {
                 starts.insert(index + 1);
             }
         }
@@ -317,14 +312,6 @@ fn decode_reached(
             let effect = decode_at(address, instruction)?;
             effects[index] = Some(effect);
             let goes_on = match effect.flow {
-                Flow::Next | Flow::Call | Flow::CallRegister(..) => true,
-                Flow::It { firstcond, mask } => {
-                    if firstcond != 0b1110 {
-                        let length = 4 - mask.trailing_zeros() as usize;
-                        conditional.extend(index + 1..=index + length);
-                    }
-                    true
-                }
                 Flow::Branch { target, when } => {
                     to_visit.extend(index_of(address, instructions, target));
                     when != When::Always
@@ -336,7 +323,13 @@ fn decode_reached(
                     );
                     false
                 }
-                _ => false,
+                Flow::It { firstcond, mask } => {
+                    if firstcond != 0b1110 {
+                        conditional.extend(index + 1..=index + it_block_length(mask));
+                    }
+                    true
+                }
+                flow => flow.goes_on(),
             };
             if !runs_on(instructions, index) || !(goes_on || conditional.contains(&index)) {
                 break;
@@ -405,8 +398,7 @@ fn enters_reached(address: u64, instructions: &[Instruction], effects: &[Option<
                 }
                 when != When::Always
             }
-            Flow::Next | Flow::Call | Flow::CallRegister(..) | Flow::It { .. } => true,
-            _ => false,
+            flow => flow.goes_on(),
         };
         goes_on && runs_into_reached(index)
     })
@@ -422,15 +414,13 @@ fn enters_reached(address: u64, instructions: &[Instruction], effects: &[Option<
 /// out.
 fn may_find_more(effects: impl IntoIterator<Item = Option<Effect>>) -> bool {
     let branches_or_builds = |effect: &Effect| {
-        matches!(
-            effect.flow,
-            Flow::CallRegister(..) | Flow::JumpRegister(..) | Flow::JumpRelative(_)
-        ) || match effect.operation {
-            Operation::Add { a, b, .. } => a == PC || b == PC,
-            Operation::Copy { source, .. } => source == PC,
-            Operation::HighHalf { .. } => true,
-            _ => false,
-        }
+        effect.flow.target_register().is_some()
+            || match effect.operation {
+                Operation::Add { a, b, .. } => a == PC || b == PC,
+                Operation::Copy { source, .. } => source == PC,
+                Operation::HighHalf { .. } => true,
+                _ => false,
+            }
     };
     // Compilers pop pc only to return. The stubs store the address just
     // before they pop it.

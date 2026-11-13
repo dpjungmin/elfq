@@ -249,7 +249,7 @@ code.
     clippy, so the change that splits it drops the attribute too.
 - Let the compiler hold the rules:
   - The Thumb readers match `Flow` and `Operation` with `_` arms in
-    places, as `Function::step` in `arch/thumb/values/mod.rs` and
+    places, as `Function::report` in `arch/thumb/values/mod.rs` and
     `Walker::flags` in `arch/thumb/startup/execute.rs` do.
   - The startup walk gives a word that no register points to the
     pointer `NOWHERE`, the highest address, so that it sorts last
