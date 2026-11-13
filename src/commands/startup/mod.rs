@@ -23,7 +23,7 @@
 //!   zero, which `pieces.rs` joins, the calls around them, and the code
 //!   that elfq can't follow, which may set up any section not set up yet
 //!   (`unread.rs`).
-//! - `problems.rs` works out the state of each section when `main` starts,
+//! - `problems/` works out the state of each section when `main` starts,
 //!   what runs from a load image before it is copied, the problems and the
 //!   notes.
 //! - `text.rs` and `json.rs` write the answer.

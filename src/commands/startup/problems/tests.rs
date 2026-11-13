@@ -1,7 +1,7 @@
 use super::super::fixtures::{binary, called, with_facts};
 use super::super::steps::{build, number};
 use super::*;
-use crate::arch::startup::{Call, How};
+use crate::arch::startup::{Call, Event, How};
 use crate::binary::Binary;
 
 /// Where .ramfunc is, which code can run from before it is copied.
