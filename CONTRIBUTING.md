@@ -248,8 +248,7 @@ code.
     (`arch/thumb/startup/each_iteration.rs`).
 - Name what crosses a function boundary:
   - About sixty functions, most of them private, return tuples.
-  - About forty-five arguments are bools, as in `Block::parts` in
-    `diff/blocks.rs`.
+  - About forty arguments are bools, most of them in private functions.
 - A test runs elfq through `support/`:
   - In `tests/it/commands/browse.rs`,
     `the_command_under_the_callers_runs_in_a_shell` starts elfq through

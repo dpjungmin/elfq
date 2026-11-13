@@ -96,8 +96,8 @@ enum End {
 /// the new build's uses, it keeps only those that are new, to hold less.
 pub(super) fn compare(items: &Items, blocks: &[Block]) -> Vec<Crossing> {
     let mut old = Vec::new();
-    let partner = |index| match items.pairing.old_to_new[index] {
-        Some((partner, _)) => End::New(partner as u32),
+    let partner = |index| match items.pairing.partner_in_new(index) {
+        Some(partner) => End::New(partner as u32),
         None => End::Old(index as u32),
     };
     uses(items.old, &items.old_blocks, blocks, partner, |used| {

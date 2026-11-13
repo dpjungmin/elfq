@@ -13,7 +13,7 @@ use std::io::Write;
 use anyhow::Result;
 use serde::Serialize;
 
-use super::blocks::{Block, Place};
+use super::blocks::{Block, Parts, Place};
 use super::changes::{Change, Status};
 use super::pairing::PairedBy;
 use super::{Answer, Build, Compared};
@@ -77,6 +77,32 @@ struct BlockJson<'a> {
     padding_bytes: Option<i128>,
     /// The sections and load images in the block, in address order.
     sections: Vec<SectionJson<'a>>,
+}
+
+/// The deltas of a block's [`Parts`], from the old build's to the new
+/// build's, which `item_bytes`, `section_bytes` and `padding_bytes` give.
+#[derive(Clone, Copy)]
+struct PartsDelta {
+    /// The delta of the items' bytes ([`Parts::items`]).
+    items: i128,
+    /// The delta of the bytes of the load images and of the sections that
+    /// hold no items ([`Parts::sections`]).
+    sections: i128,
+    /// The delta of the bytes between them ([`Parts::padding`]).
+    padding: i128,
+}
+
+impl PartsDelta {
+    /// From `old`, the old build's parts of a block, to `new`, the new
+    /// build's.
+    fn between(old: Parts, new: Parts) -> PartsDelta {
+        let delta = |old: u64, new: u64| i128::from(new) - i128::from(old);
+        PartsDelta {
+            items: delta(old.items, new.items),
+            sections: delta(old.sections, new.sections),
+            padding: delta(old.padding, new.padding),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -226,15 +252,10 @@ fn block_json<'a>(
     let place_address = |place: Option<Place>| place.map(|place| address(place.address));
     let place_size = |place: Option<Place>| place.map(|place| place.size);
     let parts = answer.compared.as_ref().map(|compared| {
-        let items = &compared.items;
-        let old = block.parts(true, answer.old_memory, &items.old.binary, holds_items);
-        let new = block.parts(false, answer.new_memory, &items.new.binary, holds_items);
-        let delta = |old: u64, new: u64| i128::from(new) - i128::from(old);
-        (
-            delta(old.items, new.items),
-            delta(old.sections, new.sections),
-            delta(old.padding, new.padding),
-        )
+        let (old_binary, new_binary) = (&compared.items.old.binary, &compared.items.new.binary);
+        let old = block.parts(&block.old, answer.old_memory, old_binary, holds_items);
+        let new = block.parts(&block.new, answer.new_memory, new_binary, holds_items);
+        PartsDelta::between(old, new)
     });
     BlockJson {
         range: json::Range::new(block.range),
@@ -242,9 +263,9 @@ fn block_json<'a>(
         new_size: block.new_size(),
         change: block.delta(),
         same_bytes: block.same_bytes,
-        item_bytes: parts.map(|parts| parts.0),
-        section_bytes: parts.map(|parts| parts.1),
-        padding_bytes: parts.map(|parts| parts.2),
+        item_bytes: parts.map(|parts| parts.items),
+        section_bytes: parts.map(|parts| parts.sections),
+        padding_bytes: parts.map(|parts| parts.padding),
         sections: block
             .sections(answer.old_memory, answer.new_memory)
             .into_iter()
