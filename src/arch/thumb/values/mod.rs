@@ -97,9 +97,8 @@
 //!    and, where the walk can tell, how it sets the flags
 //!    (`Walker::flags`) and what it compares (`Walker::compare`).
 //!
-//! The compiler points to each of these but `may_find_more`,
-//! `Walker::flags` and `Walker::compare`, which list only what they
-//! follow.
+//! The compiler points to each of these but `may_find_more` and
+//! `Walker::compare`, which list only what they follow.
 
 mod address_uses;
 mod code;

@@ -191,8 +191,10 @@ only with the `tui` feature.
   Options that are `None` together, bools with rules between them, or a
   number such as 0 or `u32::MAX` that means something else. A match
   where a new variant must decide names every variant, with no `_` arm
-  that returns a likely answer, as `InstructionSet`'s methods do. Some
-  code doesn't do this yet (see
+  that returns a likely answer, as `InstructionSet`'s methods do. A `_`
+  arm is fine where the function's doc states what every other variant
+  gives, as the startup walk's `Walker::compare` and `Walker::is_test`
+  do. Some code doesn't do this yet (see
   [below](#where-the-code-doesnt-follow-these-yet)).
 - **Name what crosses a function boundary.** A tuple that a function
   returns or a struct keeps gets a struct with named fields, as the
@@ -250,7 +252,7 @@ code.
 - Let the compiler hold the rules:
   - The Thumb readers match `Flow` and `Operation` with `_` arms in
     places, as `Function::report` in `arch/thumb/values/mod.rs` and
-    `Walker::flags` in `arch/thumb/startup/execute.rs` do.
+    `Walker::execute` in `arch/thumb/startup/execute.rs` do.
   - The startup walk gives a word that no register points to the
     pointer `NOWHERE`, the highest address, so that it sorts last
     (`arch/thumb/startup/each_iteration.rs`).

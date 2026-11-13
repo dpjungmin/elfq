@@ -300,7 +300,19 @@ impl Walker<'_> {
             Operation::And {
                 a, b, complement, ..
             } => logic(and(get(a), get(b), complement), old.carry),
-            _ => Flags::default(),
+            // Of these, only instructions that decode to `Nothing` set
+            // the flags, as `tst` and `adcs` do, and the walk doesn't
+            // follow how, so the flags become unknown. The others never
+            // set them.
+            Operation::Nothing
+            | Operation::Literal { .. }
+            | Operation::Address { .. }
+            | Operation::HighHalf { .. }
+            | Operation::Copy { .. }
+            | Operation::Load { .. }
+            | Operation::Store { .. }
+            | Operation::Push { .. }
+            | Operation::Pop { .. } => Flags::default(),
         }
     }
 
@@ -421,10 +433,11 @@ impl Walker<'_> {
     /// Records the numbers that an instruction that does `operation` and
     /// sets the flags compares, while the walk counts a loop (see
     /// [`Walker::count`]): `cmp a, b` compares `a` and `b`; `adds` and
-    /// `subs` compare what they add to with what they add, negated, as
-    /// the carry tells, and what they leave with 0; and any other
-    /// instruction compares what it leaves with 0, as the negative and
-    /// zero flags tell.
+    /// `subs` with an immediate, and `subs` with a register not shifted,
+    /// compare what they add to with what they add, negated, as the carry
+    /// tells, and what they leave with 0; and any other instruction, as
+    /// `adds` with a register, compares what it leaves with 0, as the
+    /// negative and zero flags tell.
     fn compare(&self, known: &mut Known, site: u64, operation: Operation) {
         if self.open_loops.is_empty() {
             return;
