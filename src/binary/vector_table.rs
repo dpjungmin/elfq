@@ -196,20 +196,21 @@ pub(super) fn find(binary: &Binary) -> Option<VectorTable> {
     let mut handlers = Vec::new();
     let mut end = reset;
     let mut next = reset;
-    for (slot, value) in binary.words(reset, section_end) {
+    for word in binary.words(reset, section_end) {
+        let slot = word.address;
         // 4. The table ends at the first entry the file holds no bytes for.
         if slot != next {
             break;
         }
         next = slot + size;
         let entry = (slot - address) / size;
-        if let Some(code) = binary.thumb_code_address(value) {
+        if let Some(code) = binary.thumb_code_address(word.value) {
             // 1.
             handlers.push(Handler {
                 exception: entry,
                 address: code,
             });
-        } else if value != 0 {
+        } else if word.value != 0 {
             // 3.
             if RESERVED.contains(&entry) {
                 continue;
@@ -234,7 +235,7 @@ fn holding_entry(binary: &Binary) -> Option<(&Section, u64)> {
         let mut before = binary.words(slot - size, slot);
         before
             .next()
-            .is_some_and(|(_, stack)| could_be_stack_pointer(binary, stack))
+            .is_some_and(|word| could_be_stack_pointer(binary, word.value))
     };
     binary.sections.iter().find_map(|section| {
         if !section.allocated || !CODE_OR_DATA.contains(&section.kind) {
@@ -248,10 +249,10 @@ fn holding_entry(binary: &Binary) -> Option<(&Section, u64)> {
         if section.is_code() {
             end = end.min(first + size);
         }
-        let (slot, _) = binary
+        let reset = binary
             .words(first, end)
-            .find(|&(slot, value)| value == binary.entry | 1 && follows_stack(slot))?;
-        Some((section, slot))
+            .find(|word| word.value == binary.entry | 1 && follows_stack(word.address))?;
+        Some((section, reset.address))
     })
 }
 
@@ -294,7 +295,7 @@ fn at_section_start(binary: &Binary) -> Option<(&Section, u64)> {
             return None;
         }
         let words: Vec<u64> = (binary.words(start, start + 4 * size))
-            .map(|(_, value)| value)
+            .map(|word| word.value)
             .collect();
         let [stack, reset, nmi, hard_fault] = words[..] else {
             return None;

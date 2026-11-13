@@ -111,6 +111,25 @@ pub(crate) struct Crossings {
     pub(crate) unfollowed: Vec<Unfollowed>,
 }
 
+/// The side of the boundary whose items' references a function reads, as
+/// [`Boundary::crossings`], [`Boundary::report`] and
+/// [`Boundary::unfollowed_from`] take it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Side {
+    /// The ranges' side: the items inside (see [`Boundary::items`]).
+    Inside,
+    /// The rest of the file: the items that aren't inside. Code outside
+    /// every item, a [`VeneerTarget::Outside`], is another thing.
+    Outside,
+}
+
+impl Side {
+    /// Whether it is the ranges' side.
+    fn is_inside(self) -> bool {
+        self == Side::Inside
+    }
+}
+
 /// How a reference across the boundary is reported, once veneers are seen
 /// through: the rules in the module doc, which [`Boundary::report`] picks
 /// from.
@@ -179,12 +198,12 @@ impl<'a> Boundary<'a> {
 
     /// The uses of the rest of the file by the items in the ranges.
     pub(crate) fn leaving(&self) -> Vec<Crossing> {
-        self.crossings(true)
+        self.crossings(Side::Inside)
     }
 
     /// The uses of the items in the ranges by the rest of the file.
     fn entering(&self) -> Vec<Crossing> {
-        self.crossings(false)
+        self.crossings(Side::Outside)
     }
 
     /// What the items in the ranges use in the rest of the file, with the
@@ -329,30 +348,29 @@ impl<'a> Boundary<'a> {
     /// ranges even when it is in them, since elfq doesn't read it: it may be
     /// a veneer whose symbol was stripped.
     fn unfollowed_leaving(&self) -> Vec<Unfollowed> {
-        self.unfollowed_from(true, |_| true)
+        self.unfollowed_from(Side::Inside, |_| true)
     }
 
     /// The calls and jumps from the rest of the file into code in the
     /// ranges that is outside every item, such as a routine in a
     /// microcontroller's ROM, directly or through a veneer.
     fn unfollowed_entering(&self) -> Vec<Unfollowed> {
-        self.unfollowed_from(false, |target| {
+        self.unfollowed_from(Side::Outside, |target| {
             target.is_some_and(|target| self.items.contains_address(target))
         })
     }
 
-    /// The calls and jumps that elfq can't follow from the items on one
-    /// side of the boundary, the ranges' side when `from_inside`, whose
-    /// target passes `target_counts`. In place of a veneer's jump, the
-    /// calls to the veneer from its own side.
+    /// The calls and jumps that elfq can't follow from the items on `side`
+    /// of the boundary, whose target passes `target_counts`. In place of a
+    /// veneer's jump, the calls to the veneer from its own side.
     fn unfollowed_from(
         &self,
-        from_inside: bool,
+        side: Side,
         target_counts: impl Fn(Option<u64>) -> bool,
     ) -> Vec<Unfollowed> {
         let mut unfollowed = Vec::new();
         for unresolved in &self.graph.unresolved {
-            if self.items.contains_item(unresolved.from) != from_inside
+            if self.items.contains_item(unresolved.from) != side.is_inside()
                 || !target_counts(unresolved.target)
             {
                 continue;
@@ -381,7 +399,7 @@ impl<'a> Boundary<'a> {
         // The calls to a veneer on the other side, which jumps to code on
         // its own side.
         for reference in &self.graph.references {
-            if self.items.contains_item(reference.from) == from_inside
+            if self.items.contains_item(reference.from) == side.is_inside()
                 && let Some((veneer, target)) = self.call_to_veneer_across(reference)
             {
                 unfollowed.push(Unfollowed::through_veneer(reference, veneer, Some(target)));
@@ -392,17 +410,16 @@ impl<'a> Boundary<'a> {
         unfollowed
     }
 
-    /// The uses across the boundary by the items on one side of it: the items
-    /// in the ranges when `from_inside`, or else the rest.
-    fn crossings(&self, from_inside: bool) -> Vec<Crossing> {
+    /// The uses across the boundary by the items on `side` of it.
+    fn crossings(&self, side: Side) -> Vec<Crossing> {
         let mut crossings = Vec::new();
         for reference in &self.graph.references {
-            if self.items.contains_item(reference.from) != from_inside
-                || self.items.contains(reference.to) == from_inside
+            if self.items.contains_item(reference.from) != side.is_inside()
+                || self.items.contains(reference.to) == side.is_inside()
             {
                 continue;
             }
-            match self.report(reference, from_inside) {
+            match self.report(reference, side) {
                 Report::AsIs => crossings.push(Crossing::new(reference, None, reference.to)),
                 Report::ByCallsToVeneer(calls) => crossings.extend(
                     calls
@@ -418,15 +435,15 @@ impl<'a> Boundary<'a> {
         crossings
     }
 
-    /// How `reference`, which crosses the boundary from the ranges' side
-    /// when `from_inside`, is reported once veneers are seen through.
+    /// How `reference`, which crosses the boundary from an item on `side`,
+    /// is reported once veneers are seen through.
     ///
     /// The rules are tried in this order, and the order decides the answer:
     /// a veneer's jump is a tail call, which counts as a call, so when one
     /// veneer jumps to another, the jump matches more than one rule. The
     /// test `a_veneer_that_jumps_to_a_veneer_is_reported_by_the_first_rule_that_matches`
     /// pins it.
-    fn report(&self, reference: &'a Reference, from_inside: bool) -> Report<'a> {
+    fn report(&self, reference: &'a Reference, side: Side) -> Report<'a> {
         let calls = self.calls_from_its_side(reference.from, VeneerTarget::Node(reference.to));
         if !calls.is_empty() {
             return Report::ByCallsToVeneer(calls);
@@ -434,7 +451,7 @@ impl<'a> Boundary<'a> {
         if reference.kind.is_call()
             && let Node::Item(veneer) = reference.to
             && let Some(VeneerTarget::Node(target)) = self.veneers.target(veneer)
-            && self.items.contains(target) != from_inside
+            && self.items.contains(target) != side.is_inside()
         {
             return Report::ToTarget { veneer, target };
         }
@@ -451,7 +468,7 @@ impl<'a> Boundary<'a> {
         if self.veneers.target(item) != Some(target) {
             return Vec::new();
         }
-        let side = self.items.contains_item(item);
+        let item_inside = self.items.contains_item(item);
         let references = &self.graph.references;
         let calls_to = self
             .calls_to
@@ -460,7 +477,7 @@ impl<'a> Boundary<'a> {
             .of(item)
             .iter()
             .map(|&index| &references[index])
-            .filter(|reference| self.items.contains_item(reference.from) == side)
+            .filter(|reference| self.items.contains_item(reference.from) == item_inside)
             .collect()
     }
 
@@ -471,12 +488,14 @@ impl<'a> Boundary<'a> {
         let Node::Item(veneer) = reference.to else {
             return None;
         };
-        let side = self.items.contains_item(veneer);
-        if !reference.kind.is_call() || self.items.contains_item(reference.from) == side {
+        let veneer_inside = self.items.contains_item(veneer);
+        if !reference.kind.is_call() || self.items.contains_item(reference.from) == veneer_inside {
             return None;
         }
         match self.veneers.target(veneer)? {
-            VeneerTarget::Outside(target) if self.items.contains_address(target) == side => {
+            VeneerTarget::Outside(target)
+                if self.items.contains_address(target) == veneer_inside =>
+            {
                 Some((veneer, target))
             }
             _ => None,

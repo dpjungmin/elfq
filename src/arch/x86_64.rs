@@ -2,7 +2,7 @@
 
 use iced_x86::{Decoder, DecoderOptions, FlowControl, Instruction, Mnemonic, OpKind};
 
-use super::{CodeReference, CodeReferenceKind, Operands};
+use super::{CodeReference, CodeReferenceKind, OperandTarget, Operands};
 
 /// The references in the x86-64 code `code`, which starts at `address`, in
 /// the order of their instructions.
@@ -48,7 +48,7 @@ pub(super) fn operands(code: &[u8], address: u64) -> Operands {
         // Where the distance is in the instruction: a branch's is its
         // immediate.
         let constants = decoder.get_constant_offsets(&instruction);
-        let (offset, size) = if branch {
+        let (distance_offset, size) = if branch {
             (constants.immediate_offset(), constants.immediate_size())
         } else {
             (
@@ -56,11 +56,15 @@ pub(super) fn operands(code: &[u8], address: u64) -> Operands {
                 constants.displacement_size(),
             )
         };
-        let site = (instruction.ip() - address) as usize;
-        if let Some(bits) = distance_bits.get_mut(site + offset..site + offset + size) {
+        let instruction_offset = (instruction.ip() - address) as usize;
+        let distance_start = instruction_offset + distance_offset;
+        if let Some(bits) = distance_bits.get_mut(distance_start..distance_start + size) {
             bits.fill(0xff);
         }
-        targets.push((site, target));
+        targets.push(OperandTarget {
+            offset: instruction_offset,
+            address: target,
+        });
     }
     Operands {
         distance_bits,
@@ -208,7 +212,13 @@ mod tests {
         // call 0x1700
         let code = [0xe8, 0xfb, 0x06, 0x00, 0x00];
         assert_eq!(distance_bits(&code), [0, 0xff, 0xff, 0xff, 0xff]);
-        assert_eq!(operands(&code, 0x1000).targets, [(0, 0x1700)]);
+        assert_eq!(
+            operands(&code, 0x1000).targets,
+            [OperandTarget {
+                offset: 0,
+                address: 0x1700
+            }]
+        );
     }
 
     #[test]

@@ -37,7 +37,7 @@ use object::{Architecture, Endianness};
 
 use super::Build;
 use super::pairing::{Pairing, is_text_byte};
-use crate::arch::{InstructionSet, Operands};
+use crate::arch::{InstructionSet, OperandTarget, Operands};
 use crate::binary::{Binary, Item, ItemKind, RelocationTarget, word};
 use crate::graph::{Node, ReferenceKind, VeneerTarget, Veneers};
 
@@ -217,8 +217,8 @@ impl<'a> Edits<'a> {
                 && new_value != old_number.value
                 && self.correspond(old_number.value, new_value)
             {
-                for &(offset, bits) in &old_number.bits {
-                    explained[offset] |= bits;
+                for byte in &old_number.bits {
+                    explained[byte.offset] |= byte.bits;
                 }
             }
         }
@@ -318,18 +318,22 @@ impl<'a> Edits<'a> {
     /// and what the code uses there tells whether it changed.
     fn distances_elsewhere(&self, operands: &PartnerOperands) -> Vec<usize> {
         let (old_operands, new_operands) = (&operands.old, &operands.new);
-        let old_targets: HashMap<usize, u64> = old_operands.targets.iter().copied().collect();
-        let new_targets: HashMap<usize, u64> = new_operands.targets.iter().copied().collect();
-        let same_offset = |offset: &usize, old_target: &u64| {
+        let old_targets: HashMap<usize, u64> = (old_operands.targets.iter())
+            .map(|target| (target.offset, target.address))
+            .collect();
+        let new_targets: HashMap<usize, u64> = (new_operands.targets.iter())
+            .map(|target| (target.offset, target.address))
+            .collect();
+        let same_offset = |old: &OperandTarget| {
             new_targets
-                .get(offset)
-                .is_some_and(|&new_target| self.same_offset_in_partners(*old_target, new_target))
+                .get(&old.offset)
+                .is_some_and(|&new_target| self.same_offset_in_partners(old.address, new_target))
         };
         let only_new = |offset: &usize| !old_targets.contains_key(offset);
-        let new_offsets = new_operands.targets.iter().map(|&(offset, _)| offset);
+        let new_offsets = new_operands.targets.iter().map(|target| target.offset);
         let mut offsets: Vec<usize> = (old_operands.targets.iter())
-            .filter(|(offset, target)| !same_offset(offset, target))
-            .map(|&(offset, _)| offset)
+            .filter(|target| !same_offset(target))
+            .map(|target| target.offset)
             .chain(new_offsets.filter(only_new))
             .collect();
         offsets.sort_unstable();

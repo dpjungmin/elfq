@@ -353,11 +353,11 @@ impl Graph {
     fn add_pointers_in_data(&mut self, binary: &Binary, from: usize) {
         let item = &binary.items[from];
         let words = binary.aligned_words(item.address, item.address + item.size);
-        for (site, value) in words {
-            if let Some(to) = item_starting_at(binary, value)
+        for word in words {
+            if let Some(to) = item_starting_at(binary, word.value)
                 && to != from
             {
-                self.add(from, Node::Item(to), ReferenceKind::Pointer, site);
+                self.add(from, Node::Item(to), ReferenceKind::Pointer, word.address);
             }
         }
     }

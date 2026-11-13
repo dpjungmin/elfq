@@ -23,7 +23,7 @@ use iced_x86::{
 use object::{Endian, Endianness};
 
 use super::InstructionSet;
-use super::thumb::{self, Piece};
+use super::thumb::{self, Piece, PieceAt};
 
 /// One instruction, or one piece of data among them.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,7 +135,12 @@ fn thumb_lines(
     // `ArmArchitecture::is_cortex_m_up_to_v7`), and thumb-asm reads the
     // others' the same way.
     let mut decoder = Decoder::at(code, 0, at(0)).target(Target::V7EM);
-    for (offset, size, piece) in layout {
+    for PieceAt {
+        offset,
+        size,
+        piece,
+    } in layout
+    {
         let bytes = &code[offset..offset + size];
         let line_address = address + offset as u64;
         if piece != Piece::Instruction {

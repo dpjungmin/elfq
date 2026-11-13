@@ -115,12 +115,23 @@ pub(crate) struct Operands {
     /// code, as a loop's jump, doesn't change when the function moves, and
     /// isn't here.
     pub(crate) distance_bits: Vec<u8>,
-    /// Where each of those distances leads, as (the offset of its
-    /// instruction in the code, the address), in the order of the
+    /// Where each of those distances leads, in the order of the
     /// instructions.
-    pub(crate) targets: Vec<(usize, u64)>,
+    pub(crate) targets: Vec<OperandTarget>,
     /// The numbers that two instructions put together, as an address mostly.
     pub(crate) split: Vec<SplitNumber>,
+}
+
+/// Where the distance in one instruction leads (see
+/// [`Operands::targets`]). They sort by offset, then by address.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct OperandTarget {
+    /// The instruction's offset in the code.
+    pub(crate) offset: usize,
+    /// The address that the distance leads to: the target of a call or
+    /// jump, or the address of a constant that a load reads or of something
+    /// whose address the code takes.
+    pub(crate) address: u64,
 }
 
 /// A 32-bit number that a pair of instructions puts together in a
@@ -129,9 +140,17 @@ pub(crate) struct Operands {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SplitNumber {
     pub(crate) value: u64,
-    /// The bits of the code that hold it, as (offset into the code, bits of
-    /// the byte there).
-    pub(crate) bits: Vec<(usize, u8)>,
+    /// The bits of the code that hold it, byte by byte.
+    pub(crate) bits: Vec<SplitBits>,
+}
+
+/// The bits of one byte of code that hold part of a [`SplitNumber`].
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct SplitBits {
+    /// The byte's offset in the code.
+    pub(crate) offset: usize,
+    /// The bits of the byte that hold the number.
+    pub(crate) bits: u8,
 }
 
 /// An instruction set that elfq can read: x86-64, or Thumb, the
