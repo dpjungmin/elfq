@@ -336,7 +336,7 @@ impl<'a> Firmware<'a> {
 
     /// The calls and jumps from the function at `address` to functions, in
     /// the order of their sites.
-    fn calls_from(&self, address: u64) -> impl Iterator<Item = Call> + 'a {
+    fn calls_from(&self, address: u64) -> impl Iterator<Item = GraphCall> + 'a {
         let references = match self.function_at(address) {
             Some(item) => self.graph.references_from(item),
             None => &[],
@@ -348,7 +348,7 @@ impl<'a> Firmware<'a> {
                 Node::Item(to)
                     if reference.kind.is_call() && binary.items[to].kind == ItemKind::Function =>
                 {
-                    Some(Call {
+                    Some(GraphCall {
                         callee: binary.items[to].address,
                         site: reference.site,
                     })
@@ -366,9 +366,11 @@ fn function_holding(binary: &Binary, address: u64) -> Option<u64> {
     (item.kind == ItemKind::Function).then_some(item.address)
 }
 
-/// A call or jump from one function to another (see
-/// [`Firmware::calls_from`]).
-struct Call {
+/// A call or jump from one function to another, as the graph records it
+/// (see [`Firmware::calls_from`]), unlike the walk's
+/// [`Call`](crate::arch::startup::Call) event, which other files of
+/// startup import.
+struct GraphCall {
     /// The address of the function it goes to.
     callee: u64,
     /// Where the call is.
