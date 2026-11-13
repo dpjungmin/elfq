@@ -27,9 +27,7 @@ use ratatui::widgets::{HighlightSpacing, Row, Table};
 use super::{Cursor, FittedRows, cut, wrap};
 use crate::binary::{Binary, ItemKind, hex_number};
 use crate::commands::browse::{keys::Action, session::Session};
-use crate::commands::symbol::{
-    Lookup, LookupOrMatch, Needle, PatternMatches, Symbol, Takes, USE_ONE,
-};
+use crate::commands::symbol::{Lookup, LookupOrMatch, Needle, PatternMatches, Symbol, USE_ONE};
 use crate::commands::text;
 use crate::graph::Node;
 
@@ -333,9 +331,7 @@ impl Listed {
         match names.look_up_or_match(text) {
             Ok(LookupOrMatch::Name(lookup)) => {
                 let listed = Listed::named(session, text, &lookup);
-                listed.or_error(explained, || {
-                    names.one_or_error(text, lookup, Takes::One).err()
-                })
+                listed.or_error(explained, || names.one_or_error(text, lookup).err())
             }
             Ok(LookupOrMatch::Pattern(matched)) => Listed::matched(session, &matched),
             // A pattern that matches no item can still be part of a name, as

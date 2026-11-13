@@ -36,6 +36,8 @@ use crate::commands::text::{self, Detail};
 
 /// What one argument picks, as a set takes it: the item that a SYMBOL
 /// names, or the items of a pattern or a range given in its place.
+/// [`Pick::new`] gives it from what
+/// [`Names::read_argument`](super::Names::read_argument) reads.
 pub(in crate::commands) enum Pick {
     /// The item that a SYMBOL names, as an index into [`Binary::items`],
     /// with its name as the answer's first line gives it (see
