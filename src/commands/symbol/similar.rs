@@ -27,17 +27,48 @@ pub(super) struct Lowercase {
 /// again. Their names are in [`Lowercase`]. Most short names are parts of
 /// those names, and are kept as where they are in them.
 pub(super) struct Suggestable {
-    /// Each item or import, with where its short names start in `ends` and
-    /// in `parts`.
-    nodes: Vec<(Node, usize, usize)>,
+    /// Each item or import, with where its short names start.
+    nodes: Vec<SuggestableNode>,
     /// The short names that aren't kept as parts, one after another.
     text: String,
     /// Where each of those ends in `text`.
     ends: Vec<usize>,
-    /// The short names that are parts of names: the name, by where it is in
-    /// [`Lowercase`]'s `ends`, where the short name starts in it, and its
-    /// length.
-    parts: Vec<(u32, u32, u32)>,
+    /// The short names that are parts of names.
+    parts: Vec<NamePart>,
+}
+
+/// An item or import that [`Names::similar`] can suggest, with where its
+/// short names start in [`Suggestable`].
+struct SuggestableNode {
+    node: Node,
+    /// Where its short names that aren't kept as parts start in `ends`.
+    first_short_name: usize,
+    /// Where those that are start in `parts`.
+    first_part: usize,
+}
+
+/// A short name that is a part of a name in [`Lowercase`]. Parts are kept
+/// only when every name is ASCII. Each number is a `u32`, so that a part
+/// takes 12 bytes.
+#[derive(PartialEq)]
+struct NamePart {
+    /// The name, by where it is in `Lowercase`'s `ends`.
+    name: u32,
+    /// Where the short name starts in it.
+    start: u32,
+    /// The short name's length, in bytes.
+    length: u32,
+}
+
+/// An item or import that [`Names::similar`] can suggest, with its short
+/// names in lowercase, as [`Suggestable::short_names`] gives them: those
+/// that aren't kept as parts, and those that are.
+struct SuggestableNames<'s, ShortNames> {
+    node: Node,
+    /// Its short names that aren't kept as parts.
+    short_names: ShortNames,
+    /// Those that are, as parts of its names in [`Lowercase`].
+    parts: &'s [NamePart],
 }
 
 /// Text to look for in names. `str::contains` is quick for text of up to
@@ -120,7 +151,11 @@ impl<'a> Names<'a> {
         let suggestable = self.suggestable();
         let mut similar: Vec<(usize, usize, &str, Node)> = (0..suggestable.nodes.len())
             .filter_map(|at| {
-                let (node, short_names, parts) = suggestable.short_names(at);
+                let SuggestableNames {
+                    node,
+                    short_names,
+                    parts,
+                } = suggestable.short_names(at);
                 let lowercase_names = lowercase.names(self.position(node));
                 let mut nearest = None;
                 for name in lowercase_names.chain(short_names) {
@@ -136,12 +171,13 @@ impl<'a> Names<'a> {
                 // A part of a name has `query` only if the name has it, so
                 // it can only come close by typos.
                 if nearest != Some(0) {
-                    for &(name, start, length) in parts {
-                        if (length as usize).abs_diff(query_length) > typos {
+                    for part in parts {
+                        let length = part.length as usize;
+                        if length.abs_diff(query_length) > typos {
                             continue;
                         }
-                        let start = start as usize;
-                        let name = &lowercase.name(name as usize)[start..start + length as usize];
+                        let start = part.start as usize;
+                        let name = &lowercase.name(part.name as usize)[start..start + length];
                         if let Some(distance) = typos_from(name) {
                             nearest = nearest.min(Some(distance)).or(Some(distance));
                         }
@@ -246,7 +282,11 @@ impl<'a> Names<'a> {
             };
             for node in items.chain(imports) {
                 let (first_end, first_part) = (suggestable.ends.len(), suggestable.parts.len());
-                suggestable.nodes.push((node, first_end, first_part));
+                suggestable.nodes.push(SuggestableNode {
+                    node,
+                    first_short_name: first_end,
+                    first_part,
+                });
                 let starts = lowercase.starts[self.position(node)]..;
                 for (at, name) in starts.zip(self.names_of(node)) {
                     // Each short name once, where it is a part of `name`
@@ -257,7 +297,11 @@ impl<'a> Names<'a> {
                         }
                         let part = start.filter(|_| lowercase.ascii).and_then(|start| {
                             let number = |at: usize| u32::try_from(at).ok();
-                            Some((number(at)?, number(start)?, number(short_name.len())?))
+                            Some(NamePart {
+                                name: number(at)?,
+                                start: number(start)?,
+                                length: number(short_name.len())?,
+                            })
                         });
                         match part {
                             Some(part) => {
@@ -273,6 +317,12 @@ impl<'a> Names<'a> {
                                         .extend(short_name.chars().map(|c| c.to_ascii_lowercase())),
                                     false => suggestable.text += &short_name.to_lowercase(),
                                 }
+                                // The item's earlier short names are
+                                // walked with a running start, not
+                                // through `packed`, which the compiler
+                                // doesn't inline here: that took about
+                                // 0.7% more instructions on the error
+                                // for a name that finds nothing.
                                 let text = &suggestable.text;
                                 let mut from = match first_end {
                                     0 => 0,
@@ -313,8 +363,7 @@ impl Lowercase {
 
     /// The name at `at` in `ends`.
     fn name(&self, at: usize) -> &str {
-        let start = at.checked_sub(1).map_or(0, |before| self.ends[before]);
-        &self.text[start..self.ends[at]]
+        packed(&self.text, &self.ends, at)
     }
 
     /// The names of the item or import at `at` in `starts`.
@@ -326,17 +375,23 @@ impl Lowercase {
 impl Suggestable {
     /// The item or import at `at` in `nodes`, with its short names that
     /// aren't kept as parts, and those that are.
-    fn short_names(&self, at: usize) -> (Node, impl Iterator<Item = &str>, &[(u32, u32, u32)]) {
-        let (node, first, first_part) = self.nodes[at];
-        let (last, last_part) = self.nodes.get(at + 1).map_or(
-            (self.ends.len(), self.parts.len()),
-            |&(_, first, first_part)| (first, first_part),
-        );
-        let short_names = (first..last).map(move |name| {
-            let start = name.checked_sub(1).map_or(0, |before| self.ends[before]);
-            &self.text[start..self.ends[name]]
-        });
-        (node, short_names, &self.parts[first_part..last_part])
+    fn short_names(&self, at: usize) -> SuggestableNames<'_, impl Iterator<Item = &str>> {
+        let SuggestableNode {
+            node,
+            first_short_name: first,
+            first_part,
+        } = self.nodes[at];
+        let (last, last_part) = self
+            .nodes
+            .get(at + 1)
+            .map_or((self.ends.len(), self.parts.len()), |next| {
+                (next.first_short_name, next.first_part)
+            });
+        SuggestableNames {
+            node,
+            short_names: (first..last).map(move |name| packed(&self.text, &self.ends, name)),
+            parts: &self.parts[first_part..last_part],
+        }
     }
 }
 
@@ -357,6 +412,13 @@ impl<'t> Needle<'t> {
         name.contains(self.start)
             && (self.start.len() == self.text.len() || name.contains(self.text))
     }
+}
+
+/// The name at `at` of names kept one after another in `text`, where
+/// `ends` says where each ends.
+fn packed<'t>(text: &'t str, ends: &[usize], at: usize) -> &'t str {
+    let start = at.checked_sub(1).map_or(0, |before| ends[before]);
+    &text[start..ends[at]]
 }
 
 /// The number of typos that turn `a` into `b`, if there are `most` or
