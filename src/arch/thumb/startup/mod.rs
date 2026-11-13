@@ -624,6 +624,9 @@ impl Walker<'_> {
     }
 
     /// What the call `instruction` calls, when the walk can tell, and how.
+    /// Only [`Walker::on_call`] asks, about a call, so a flow other than
+    /// `Flow::CallRegister` is a `Flow::Call`: `svc`, which takes 2 bytes,
+    /// or `bl`.
     fn called(&self, known: &Known, instruction: Decoded) -> (Option<u64>, How) {
         let site = instruction.address;
         match instruction.effect.flow {
@@ -678,7 +681,12 @@ impl Walker<'_> {
 
     /// A jump through a register, through a word in memory, or to a case
     /// of a jump table: on to where it goes, when the walk can tell (see
-    /// [`Walker::jump_to`]). `ldr pc, [sp, #imm]` returns.
+    /// [`Walker::jump_to`]). `ldr pc, [sp, #imm]` returns. Of the other
+    /// jumps through memory, the walk can tell where `ldr.w pc, [pc, #imm]`
+    /// goes, and `ldr.w pc, [base, #imm]`, but no other, as `ldm` with pc.
+    /// [`Walker::step`] sends only these here, so a flow other than the
+    /// jumps through a register or memory is a `Flow::Table`, whose case
+    /// the walk can't tell.
     fn on_jump(&mut self, run: &mut Run, frame: Frame, instruction: Decoded) -> Step {
         let Decoded {
             address: site,

@@ -243,12 +243,6 @@ code.
 - Work out the facts, then word them:
   - The hidden `debug` commands write as they go.
 - Let the compiler hold the rules:
-  - Four functions of the Thumb readers match `Flow` or `Operation`
-    with `_` arms though their docs don't state what the other variants
-    give: `Walker::execute` in `arch/thumb/startup/execute.rs`,
-    `Walker::called` and `Walker::on_jump` in
-    `arch/thumb/startup/mod.rs`, and `Code::find_jumps` in
-    `arch/thumb/values/code.rs`.
   - The startup walk gives a word that no register points to the
     pointer `NOWHERE`, the highest address, so that it sorts last
     (`arch/thumb/startup/each_iteration.rs`).

@@ -166,7 +166,19 @@ impl<'a> Code<'a> {
             let targets: Vec<u64> = match self.effects[index].flow {
                 Flow::Branch { target, .. } => vec![target],
                 Flow::Table => table_targets(references, self.site(index)).collect(),
-                _ => continue,
+                // The others go on to the next instruction, call, return,
+                // stop, or go through a register or memory, to where the
+                // instruction doesn't say.
+                Flow::Next
+                | Flow::Call
+                | Flow::CallRegister(..)
+                | Flow::JumpRegister(..)
+                | Flow::JumpRelative(_)
+                | Flow::Return
+                | Flow::Pop
+                | Flow::JumpMemory
+                | Flow::It { .. }
+                | Flow::Stop => continue,
             };
             let mut inside = Vec::new();
             for target in targets.into_iter().filter(|&target| self.contains(target)) {
