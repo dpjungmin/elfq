@@ -786,6 +786,32 @@ ADDRESS     SIZE  HOW        ITEM
 }
 
 #[test]
+fn reach_to_names_a_range_given_twice_once() {
+    let reach = [
+        TCM_SAMPLE,
+        "reach",
+        "crc32",
+        "--to",
+        "0x20000000+256K",
+        "--to",
+        "0x20000000..0x20040000",
+    ];
+    assert_output(
+        &crossing(&reach),
+        "\
+crc32 reaches 1 data object in 0x20000000..0x20040000 (.data and .bss), which takes 0 bytes of code and 1024 bytes of data:
+
+ADDRESS     SIZE  HOW   AT    ITEM
+0x20000000  1024  uses  0x18  crc_table, used by crc32
+",
+    );
+    assert_eq!(
+        run(&[&reach[..], &["--json"]].concat()).json(1)["to"],
+        json!([{ "start": "0x20000000", "end": "0x20040000" }])
+    );
+}
+
+#[test]
 fn reach_needs_an_item_whose_code_elfq_can_read() {
     assert_output(
         &stderr(&[SAMPLE, "reach", "_init"]),
@@ -933,7 +959,8 @@ The starts marked (may reach more) reach calls or jumps that elfq can't follow; 
 fn reach_without_symbol_refuses_what_needs_one() {
     // --to, --range and --tree need SYMBOL. The command that each refusal
     // suggests names the function that the overview starts from, as its
-    // Try line does, keeps the other options, and answers.
+    // Try line does, keeps the other options, names a range given twice
+    // once, and answers.
     for (args, expected) in [
         (
             &[TCM_SAMPLE, "reach", "--to", "0x0+1K", "--json"][..],
@@ -961,6 +988,24 @@ fn reach_without_symbol_refuses_what_needs_one() {
             "error: reach takes --to, not --range, to list only what a SYMBOL reaches in a \
              range, such as elfq testdata/bin/c-x86_64-stripped.elf reach fn_0x1170 --to \
              0x00001000..0x00002000 --tree\n",
+        ),
+        (
+            &[TCM_SAMPLE, "reach", "--to", "0x0+1K", "--to", "0x0..0x400"],
+            "error: reach --to needs a SYMBOL, such as elfq testdata/bin/c-cortex-m7.elf reach \
+             main --to 0x00000000..0x00000400\n",
+        ),
+        (
+            &[
+                TCM_SAMPLE,
+                "reach",
+                "--to",
+                "0x0+1K",
+                "--range",
+                "0x0..0x400",
+            ],
+            "error: reach takes --to, not --range, to list only what a SYMBOL reaches in a \
+             range, such as elfq testdata/bin/c-cortex-m7.elf reach main --to \
+             0x00000000..0x00000400\n",
         ),
     ] {
         assert_output(&stderr(args), expected);

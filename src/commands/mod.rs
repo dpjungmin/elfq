@@ -54,7 +54,7 @@ pub use arguments::unexpected_argument_hints;
 use kept::Kept;
 pub use kept::end_after_answer;
 
-use crate::binary::Binary;
+use crate::binary::{Binary, distinct_ranges};
 use crate::cli::{BrowseArgs, Cli, Command, DebugCommand};
 
 /// What an answer means for elfq's exit status.
@@ -115,10 +115,12 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<Outcome> {
             format,
             out,
         ),
+        // In callers, callees and reach, a range given twice to `--from` or
+        // `--to` is named once, as one given twice in place of SYMBOL is.
         Some(Command::Callers(args)) => callers::run(
             &binary,
             &args.uses.symbols,
-            &args.from,
+            &distinct_ranges(args.from.iter().copied()),
             args.uses.all,
             format,
             out,
@@ -126,15 +128,18 @@ pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<Outcome> {
         Some(Command::Callees(args)) => callees::run(
             &binary,
             &args.uses.symbols,
-            &args.to,
+            &distinct_ranges(args.to.iter().copied()),
             args.uses.all,
             format,
             out,
         ),
-        Some(Command::Reach(args)) => match &args.symbol {
-            Some(symbol) => reach::run(&binary, symbol, &args.to, args.all, format, out),
-            None => reach::run_starts(&cli.file, &binary, &args.to, range, args.all, format, out),
-        },
+        Some(Command::Reach(args)) => {
+            let to = distinct_ranges(args.to.iter().copied());
+            match &args.symbol {
+                Some(symbol) => reach::run(&binary, symbol, &to, args.all, format, out),
+                None => reach::run_starts(&cli.file, &binary, &to, range, args.all, format, out),
+            }
+        }
         Some(Command::Startup(args)) => startup::run(&cli.file, &binary, args.all, format, out),
         Some(Command::Debug(DebugCommand::Items)) => debug_items::run(&binary, out),
         Some(Command::Debug(DebugCommand::Walk)) => startup::debug::run(&cli.file, &binary, out),

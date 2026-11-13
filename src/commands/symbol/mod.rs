@@ -83,7 +83,7 @@ pub(super) use similar::Needle;
 
 use anyhow::{Result, anyhow, bail};
 
-use crate::binary::{AddressRange, Binary, range_hint};
+use crate::binary::{AddressRange, Binary, distinct_ranges, range_hint};
 use crate::graph::Node;
 
 /// The item or import that SYMBOL finds.
@@ -114,7 +114,8 @@ pub(super) enum Subject {
     /// One SYMBOL alone: an item or import, which they answer about as
     /// itself.
     Symbol(Symbol),
-    /// Ranges of memory alone: everything in them, together.
+    /// Ranges of memory alone, each once, in the order given: everything
+    /// in them, together.
     Ranges(Vec<AddressRange>),
     /// Anything else: patterns, several SYMBOLs, or SYMBOLs with ranges.
     /// They answer about the items picked together, as about ranges, even
@@ -200,7 +201,7 @@ fn subject_without_shell_hint(
         picks.push(pick);
     }
     // Some only when every argument is a range: then they are ranges alone,
-    // not a set.
+    // not a set, which would copy the name of every item in them.
     let ranges: Option<Vec<AddressRange>> = (picks.iter())
         .map(|pick| match pick {
             Pick::Range(range) => Some(*range),
@@ -208,7 +209,8 @@ fn subject_without_shell_hint(
         })
         .collect();
     Ok(match ranges {
-        Some(ranges) => Subject::Ranges(ranges),
+        // A range given twice is named once, as a set names it.
+        Some(ranges) => Subject::Ranges(distinct_ranges(ranges)),
         None => Subject::Set(Set::new(binary, picks)),
     })
 }

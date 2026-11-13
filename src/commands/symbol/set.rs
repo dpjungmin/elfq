@@ -31,7 +31,7 @@ use std::fmt;
 
 use super::PatternMatches;
 use super::matched::named_by_patterns;
-use crate::binary::{AddressRange, Binary};
+use crate::binary::{AddressRange, Binary, add_range_once};
 use crate::commands::text;
 
 /// What one argument picks, as a set takes it: the item that a SYMBOL
@@ -171,15 +171,15 @@ impl Set {
         }
     }
 
-    /// Adds `range` to the ranges that the first line names, once.
+    /// Adds `range` to the ranges that the first line names, once (see
+    /// [`add_range_once`]).
     fn add_range(&mut self, range: AddressRange) {
         let ranges = self.parts.iter_mut().find_map(|part| match part {
             Named::Ranges(ranges) => Some(ranges),
             Named::Symbol { .. } | Named::Patterns => None,
         });
         match ranges {
-            Some(ranges) if !ranges.contains(&range) => ranges.push(range),
-            Some(_) => {}
+            Some(ranges) => add_range_once(ranges, range),
             None => self.parts.push(Named::Ranges(vec![range])),
         }
     }

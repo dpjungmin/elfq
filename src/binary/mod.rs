@@ -94,7 +94,9 @@ use attributes::ArmArchitecture;
 pub(crate) use header::ElfHeader;
 pub(crate) use memory::{LoadedMemory, same_bytes_in, same_memory};
 pub use range::AddressRange;
-pub(crate) use range::{MemoryBlock, hex_number, memory_blocks, range_hint};
+pub(crate) use range::{
+    MemoryBlock, add_range_once, distinct_ranges, hex_number, memory_blocks, range_hint,
+};
 pub use vector_table::{Handler, VectorTable};
 pub(crate) use vector_table::{exception_name, is_reserved};
 

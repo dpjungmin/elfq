@@ -10,7 +10,9 @@ use anyhow::Result;
 use object::Architecture;
 
 use super::json;
-use crate::binary::{AddressRange, Binary, CodeAndData, Item, ItemKind, Section, Source, total};
+use crate::binary::{
+    AddressRange, Binary, CodeAndData, Item, ItemKind, Section, Source, distinct_ranges, total,
+};
 use crate::graph::{Node, ReferenceKind, Root, RootKind, Unresolved};
 
 /// "1 function", "2 functions".
@@ -669,13 +671,14 @@ impl CommandLine {
     /// Adds `option` before each of `ranges`, as `--range` takes a range,
     /// such as `--to 0x20000000..0x20001000`; or with an empty `option`,
     /// the ranges alone, as callers and callees take them in place of
-    /// SYMBOL.
+    /// SYMBOL. A range given twice is written once (see
+    /// [`distinct_ranges`]).
     pub(super) fn ranges(
         mut self,
         option: &str,
         ranges: impl IntoIterator<Item = AddressRange>,
     ) -> CommandLine {
-        for range in ranges {
+        for range in distinct_ranges(ranges) {
             if !option.is_empty() {
                 self = self.word(option);
             }
