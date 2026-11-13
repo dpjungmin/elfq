@@ -78,72 +78,28 @@ pub(in crate::commands) struct Needle<'t> {
     start: &'t str,
 }
 
+/// What [`Names::similar`] compares names with: the query, in lowercase,
+/// and how many typos a name may have from it and still come close.
+struct Closeness<'q> {
+    /// The query, in lowercase.
+    query: &'q str,
+    /// Its characters.
+    query_chars: Vec<char>,
+    /// The query, to look for in names.
+    needle: Needle<'q>,
+    /// The most typos that a name that comes close has: one for each three
+    /// characters of the query, and at most 2.
+    typos: usize,
+    /// Whether every name is ASCII, as [`Lowercase`] says.
+    ascii: bool,
+}
+
 impl<'a> Names<'a> {
     /// Up to five things to type for items or imports whose names contain
     /// `query`, ignoring case, or differ from it by a typo or two.
-    #[expect(clippy::too_many_lines, reason = "waits to be split; see CONTRIBUTING")]
     pub(super) fn similar(&self, query: &str) -> Vec<String> {
         let query = query.to_lowercase();
-        let needle = Needle::new(&query);
-        let query_chars: Vec<char> = query.chars().collect();
-        let query_length = query_chars.len();
-        let typos = (query_length / 3).min(2);
-        let lowercase = self.lowercase();
-        let length = |name: &str| match lowercase.ascii {
-            true => name.len(),
-            false => name.chars().count(),
-        };
-        // The typos between `name`, in lowercase, and `query`, if there are
-        // `typos` or fewer. A name whose length differs from the query's by
-        // more has more.
-        let typos_from = |name: &str| {
-            if length(name).abs_diff(query_length) > typos {
-                return None;
-            }
-            if lowercase.ascii && query.is_ascii() {
-                typos_within(name.as_bytes(), query.as_bytes(), typos)
-            } else {
-                let name: Vec<char> = name.chars().collect();
-                typos_within(&name, &query_chars, typos)
-            }
-        };
-        // How far `name`, in lowercase, is from `query`, if it is close:
-        // 0 when it contains `query`, or else the typos between them.
-        let distance = |name: &str| match needle.is_in(name) {
-            true => Some(0),
-            false => typos_from(name),
-        };
-        // How close the closest of `node`'s names and their short names
-        // comes, and those of them to suggest: the fewest typos from
-        // `query`, and of those, the ones that contain it. So `SV_Handler`
-        // gets `SVC_Handler`, not `PendSV_Handler`, and `iprintf` gets
-        // `fiprintf`, not `fprintf`.
-        let closest = |node: Node| {
-            let close: Vec<(usize, String)> = self
-                .names_of(node)
-                .into_iter()
-                .flat_map(|name| {
-                    names::short_names(name)
-                        .into_iter()
-                        .chain([name.to_string()])
-                })
-                .filter_map(|name| Some((distance(&name.to_lowercase())?, name)))
-                .collect();
-            let nearest = close.iter().map(|(distance, _)| *distance).min()?;
-            let rank = |(distance, name): &(usize, String)| {
-                // More typos than `typos` count the same.
-                let typos_from = typos_from(&name.to_lowercase()).unwrap_or(typos + 1);
-                (typos_from, *distance > 0)
-            };
-            let best = close.iter().map(rank).min()?;
-            let closest: Vec<String> = close
-                .iter()
-                .filter(|name| rank(name) == best)
-                .map(|(_, name)| name.clone())
-                .collect();
-            Some((nearest, closest))
-        };
-
+        let closeness = Closeness::new(&query, self.lowercase().ascii);
         // Closest first, then shortest. How close each item or import
         // comes is worked out from its names in lowercase, made once; which
         // of its names came closest only for those that the loop below
@@ -151,64 +107,16 @@ impl<'a> Names<'a> {
         let suggestable = self.suggestable();
         let mut similar: Vec<(usize, usize, &str, Node)> = (0..suggestable.nodes.len())
             .filter_map(|at| {
-                let SuggestableNames {
-                    node,
-                    short_names,
-                    parts,
-                } = suggestable.short_names(at);
-                let lowercase_names = lowercase.names(self.position(node));
-                let mut nearest = None;
-                for name in lowercase_names.chain(short_names) {
-                    match distance(name) {
-                        Some(0) => {
-                            nearest = Some(0);
-                            break;
-                        }
-                        Some(distance) => nearest = nearest.min(Some(distance)).or(Some(distance)),
-                        None => {}
-                    }
-                }
-                // A part of a name has `query` only if the name has it, so
-                // it can only come close by typos.
-                if nearest != Some(0) {
-                    for part in parts {
-                        let length = part.length as usize;
-                        if length.abs_diff(query_length) > typos {
-                            continue;
-                        }
-                        let start = part.start as usize;
-                        let name = &lowercase.name(part.name as usize)[start..start + length];
-                        if let Some(distance) = typos_from(name) {
-                            nearest = nearest.min(Some(distance)).or(Some(distance));
-                        }
-                    }
-                }
+                let node = suggestable.nodes[at].node;
                 let name = node.name(self.binary);
-                Some((nearest?, name.len(), name, node))
+                Some((self.nearest(at, &closeness)?, name.len(), name, node))
             })
             .collect();
         similar.sort();
 
         let mut suggestions: Vec<String> = Vec::new();
         for (distance, _, _, node) in similar {
-            let Some((_, closest)) = closest(node) else {
-                continue;
-            };
-            // The shortest of the names that came closest, which needn't be
-            // the item's shortest name: `sniprintf` for `sniprin`, though
-            // its alias `snprintf` is shorter. Failing that, when none of them
-            // finds only this item, or they are all mangled symbols, the
-            // shortest thing to type that does, but not one that has `query`
-            // only in a part that it leaves out, such as a generic argument.
-            let suggestion = closest
-                .into_iter()
-                .filter(|name| names::demangle(name).is_none() && self.finds_only(name, node))
-                .min_by(|a, b| a.len().cmp(&b.len()).then(a.cmp(b)))
-                .or_else(|| {
-                    let query_for = self.query_for(node);
-                    (distance > 0 || query_for.to_lowercase().contains(&query)).then_some(query_for)
-                });
-            let Some(suggestion) = suggestion else {
+            let Some(suggestion) = self.suggestion(node, distance, &closeness) else {
                 continue;
             };
             let suggestion = text::shell_quote(&suggestion);
@@ -220,6 +128,100 @@ impl<'a> Names<'a> {
             }
         }
         suggestions
+    }
+
+    /// How close the item or import at `at` in [`Suggestable`]'s `nodes`
+    /// comes to the query, if it comes close: the least distance of its
+    /// names and short names, in lowercase (see [`Closeness::distance`]).
+    fn nearest(&self, at: usize, closeness: &Closeness) -> Option<usize> {
+        let lowercase = self.lowercase();
+        let SuggestableNames {
+            node,
+            short_names,
+            parts,
+        } = self.suggestable().short_names(at);
+        let lowercase_names = lowercase.names(self.position(node));
+        let mut nearest = None;
+        for name in lowercase_names.chain(short_names) {
+            match closeness.distance(name) {
+                Some(0) => {
+                    nearest = Some(0);
+                    break;
+                }
+                Some(distance) => nearest = nearest.min(Some(distance)).or(Some(distance)),
+                None => {}
+            }
+        }
+        // A part of a name has the query only if the name has it, so it can
+        // only come close by typos.
+        if nearest != Some(0) {
+            for part in parts {
+                let length = part.length as usize;
+                if !closeness.length_comes_close(length) {
+                    continue;
+                }
+                let start = part.start as usize;
+                let name = &lowercase.name(part.name as usize)[start..start + length];
+                if let Some(distance) = closeness.typos_from(name) {
+                    nearest = nearest.min(Some(distance)).or(Some(distance));
+                }
+            }
+        }
+        nearest
+    }
+
+    /// Those of `node`'s names and their short names to suggest: of those
+    /// that come close to the query, the ones with the fewest typos from
+    /// it, and of those, the ones that contain it. So `SV_Handler` gets
+    /// `SVC_Handler`, not `PendSV_Handler`, and `iprintf` gets `fiprintf`,
+    /// not `fprintf`. `None` when none of them comes close.
+    fn closest_names(&self, node: Node, closeness: &Closeness) -> Option<Vec<String>> {
+        let close: Vec<(usize, String)> = self
+            .names_of(node)
+            .into_iter()
+            .flat_map(|name| {
+                names::short_names(name)
+                    .into_iter()
+                    .chain([name.to_string()])
+            })
+            .filter_map(|name| Some((closeness.distance(&name.to_lowercase())?, name)))
+            .collect();
+        let rank = |(distance, name): &(usize, String)| {
+            // More typos than `typos` count the same.
+            let typos_from = closeness
+                .typos_from(&name.to_lowercase())
+                .unwrap_or(closeness.typos + 1);
+            (typos_from, *distance > 0)
+        };
+        let best = close.iter().map(rank).min()?;
+        let closest: Vec<String> = close
+            .iter()
+            .filter(|name| rank(name) == best)
+            .map(|(_, name)| name.clone())
+            .collect();
+        Some(closest)
+    }
+
+    /// What to type for `node`, whose names come `distance` from the query
+    /// (see [`Names::nearest`]): the shortest of the names that came
+    /// closest (see [`Names::closest_names`]), which needn't be the item's
+    /// shortest name: `sniprintf` for `sniprin`, though its alias
+    /// `snprintf` is shorter. Failing that, when none of them finds only
+    /// this item, or they are all mangled symbols, the shortest thing to
+    /// type that does, but not one that has the query only in a part that
+    /// it leaves out, such as a generic argument. `None` when none of its
+    /// names comes close, or there is nothing else to type.
+    fn suggestion(&self, node: Node, distance: usize, closeness: &Closeness) -> Option<String> {
+        let closest = self.closest_names(node, closeness)?;
+        closest
+            .into_iter()
+            .filter(|name| names::demangle(name).is_none() && self.finds_only(name, node))
+            .min_by(|a, b| a.len().cmp(&b.len()).then(a.cmp(b)))
+            .or_else(|| {
+                let query_for = self.query_for(node);
+                (distance > 0 || query_for.to_lowercase().contains(closeness.query))
+                    .then_some(query_for)
+            })
     }
 
     /// Whether one of the names of `node`, an item or an import, in
@@ -411,6 +413,56 @@ impl<'t> Needle<'t> {
     fn is_in(&self, name: &str) -> bool {
         name.contains(self.start)
             && (self.start.len() == self.text.len() || name.contains(self.text))
+    }
+}
+
+impl<'q> Closeness<'q> {
+    /// Compares names, which are all ASCII if `ascii`, with `query`, which
+    /// is in lowercase.
+    fn new(query: &'q str, ascii: bool) -> Closeness<'q> {
+        let query_chars: Vec<char> = query.chars().collect();
+        let typos = (query_chars.len() / 3).min(2);
+        Closeness {
+            query,
+            needle: Needle::new(query),
+            query_chars,
+            typos,
+            ascii,
+        }
+    }
+
+    /// How far `name`, in lowercase, is from the query, if it is close: 0
+    /// when it contains the query, or else the typos between them.
+    fn distance(&self, name: &str) -> Option<usize> {
+        match self.needle.is_in(name) {
+            true => Some(0),
+            false => self.typos_from(name),
+        }
+    }
+
+    /// The typos between `name`, in lowercase, and the query, if there are
+    /// `typos` or fewer.
+    fn typos_from(&self, name: &str) -> Option<usize> {
+        let length = match self.ascii {
+            true => name.len(),
+            false => name.chars().count(),
+        };
+        if !self.length_comes_close(length) {
+            return None;
+        }
+        if self.ascii && self.query.is_ascii() {
+            typos_within(name.as_bytes(), self.query.as_bytes(), self.typos)
+        } else {
+            let name: Vec<char> = name.chars().collect();
+            typos_within(&name, &self.query_chars, self.typos)
+        }
+    }
+
+    /// Whether a name `length` characters long can come close: one whose
+    /// length differs from the query's by more than `typos` has more typos
+    /// than that.
+    fn length_comes_close(&self, length: usize) -> bool {
+        length.abs_diff(self.query_chars.len()) <= self.typos
     }
 }
 
