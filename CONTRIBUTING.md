@@ -73,7 +73,7 @@ command.
 | `src/render/` | Text output: tables, and the trees in their last column (`tree.rs`), which every command shows the same way: as rows that name the row they hang under (in `why`, only where chains branch), or drawn with `--tree`. |
 | `tests/it/` | Integration tests, built as one test program (`main.rs` lists its modules). See [Tests](#tests). |
 | `testdata/` | The sample programs and the ELF files built from them. See [Sample binaries](#sample-binaries). |
-| `scripts/` | `same-output.sh`, which checks that two builds of elfq print the same answers, and times them. See [Checking that output didn't change](#checking-that-output-didnt-change). |
+| `scripts/` | `same-output.sh`, which checks that two builds of elfq print the same answers, or with `--time` times them; and `sample-pairs.txt`, the pairs of samples for its `diff` runs, which the command in [Checking that output didn't change](#checking-that-output-didnt-change) gives it with `--pairs`. |
 | `docs/` | `design.md`, how elfq works and what comes next; `examples.md`, real questions about the sample binaries, each with the command that answers it and what elfq prints; and `survey.md`, how existing tools compare, written before elfq existed. |
 
 ## Rules that keep it approachable
@@ -175,12 +175,18 @@ only with the `tui` feature.
   whose module doc numbers the steps by which it fits a name to a
   column. Unit tests longer than about 300 lines move to a `tests.rs` of
   their own (see [Tests](#tests)).
-- **A long function reads as named steps.** A function of more than
-  about 100 lines that isn't one decoding match is the usual sign that
-  it does several things: give each a function of its own, with a doc
-  line. A function that would need clippy's `too_many_arguments` allowed
-  takes a struct instead; none does. Some long functions still wait to
-  be split (see [below](#where-the-code-doesnt-follow-these-yet)).
+- **A long function reads as named steps.** A function of more than 100
+  lines of code, not counting comments and blank lines, is the usual
+  sign that it does several things: give each a function of its own,
+  with a doc line. clippy's `too_many_lines`, set in `Cargo.toml` and an
+  error in CI's clippy, is the check. One decoding match may be longer,
+  and allows the lint with that reason, as `decode::narrow` does; so may
+  tests, which list cases or pin outputs: `tests/it/main.rs` allows it
+  for the integration tests, and a `tests.rs` of unit tests that needs
+  it allows it at its top, as `arch/thumb/decode/tests.rs` does. A
+  function that would need clippy's `too_many_arguments` allowed takes a
+  struct instead; none does. Some long functions still wait to be split
+  (see [below](#where-the-code-doesnt-follow-these-yet)).
 - **Let the compiler hold the rules.** Where fields must agree, an enum
   holds the cases that make sense, as diff's `Change` does, rather than
   Options that are `None` together, bools with rules between them, or a
@@ -244,11 +250,11 @@ code.
 - Work out the facts, then word them:
   - The hidden `debug` commands write as they go.
 - A long function reads as named steps:
-  - Five functions wait for a later cleanup: `Function::execute` and
-    `Function::report` in `arch/thumb/values/mod.rs`, `Names::similar`
-    in `commands/symbol/similar.rs`, `Walker::execute` in
-    `arch/thumb/startup/execute.rs` and `Starts::answer` in
-    `commands/reach/starts.rs`.
+  - The functions that wait for a later cleanup are marked with
+    `#[expect(clippy::too_many_lines, reason = "waits to be split; see CONTRIBUTING")]`,
+    so a search for "waits to be split" lists them. Once one is split,
+    the lint no longer fires there and the unmet `expect` fails CI's
+    clippy, so the change that splits it drops the attribute too.
 - Let the compiler hold the rules:
   - The Thumb readers match `Flow` and `Operation` with `_` arms in
     places, as `Function::step` in `arch/thumb/values/mod.rs` and
@@ -575,9 +581,10 @@ worked out. Those are names to fix, not meanings to copy.
 - **Integration tests** in `tests/it/` use the samples in `testdata/bin`.
   Most run the elfq program, the way a user would: each command's tests,
   in `commands/`; the tests of what the commands share, in
-  `across_commands/`; and `docs.rs`, which runs the examples in the docs
-  and checks the paths that CONTRIBUTING.md and design.md cite. Those in
-  `library/` call the library, as `Binary::load` and `Graph::build`.
+  `across_commands/`; and `docs.rs`, which runs the examples in the docs,
+  checks the paths that CONTRIBUTING.md and design.md cite, and checks
+  that `scripts/same-output.sh` runs every command. Those in `library/`
+  call the library, as `Binary::load` and `Graph::build`.
   `damaged.rs` and `commands/browse.rs` do both, and so do one test in
   `commands/callers_and_callees.rs`, the test in
   `across_commands/errors_and_help.rs` that takes the commands' names from
@@ -594,7 +601,7 @@ worked out. Those are names to fix, not meanings to copy.
 | `commands/browse.rs` | `browse`'s screens, driven with keys on ratatui's `TestBackend`, a screen in memory, with what a pattern opens and what the go-to box lists for one; its errors; and on Linux, the program in a terminal that `script` makes. The checks that need its private types are unit tests; see below |
 | `commands/callers_and_callees.rs` | `callers` and `callees`, which share their table and their ranges: their text and JSON for SYMBOL, for ranges of memory, for patterns and several SYMBOLs, and with `--from` and `--to`, and the errors about those ranges and sets |
 | `commands/debug.rs` | `debug items`, `debug walk` and `debug matches`; the tests that `debug walk` lists the walk that `startup` reads are in `commands/startup.rs` |
-| `commands/diff.rs` | `diff` on pairs of builds: its text, its JSON, its exit status and the builds it refuses; and at the end, on builds made by changing a sample's bytes: a warning about the new build, bytes or blocks that alone differ, and a separate debug file and a file that puts nothing in memory, which it refuses |
+| `commands/diff.rs` | `diff` on pairs of builds: its text, its JSON, its exit status and the builds it refuses, and that `scripts/sample-pairs.txt` lists its pairs of samples; and at the end, on builds made by changing a sample's bytes: a warning about the new build, bytes or blocks that alone differ, and a separate debug file and a file that puts nothing in memory, which it refuses |
 | `commands/inlined.rs` | `inlined`: its ranking and its tree, as text and JSON, for a pattern that matches one function, and its errors for a file without DWARF and for a pattern that matches several items |
 | `commands/overview_top_and_retained.rs` | The overview, `top` and `retained`, which share the tree of retained sizes and `--range`: their text and JSON, for the whole file and for a range, `retained` of several SYMBOLs, of ranges and of patterns, and the errors about ranges and patterns, with the line under clap's error for a pattern given to `top` |
 | `commands/reach.rs` | `reach`'s text and JSON, with and without SYMBOL, and for a pattern that matches one item; and, run in the test's own process, `reach` on every item of the Cortex-M samples, against `callees`, `retained` and its own `--tree`, and with `--to` against `reach` without it and `callees --to`, and on every function of each stripped one against its twin with symbols; and without SYMBOL, each start of every sample against `reach START` |
@@ -612,7 +619,7 @@ worked out. Those are names to fix, not meanings to copy.
 | `library/symbol.rs` | Looking up SYMBOL |
 | `library/inlined.rs` | Inlined copies, from DWARF |
 | `damaged.rs` | Damaged and unusual files, made by changing a sample's bytes |
-| `docs.rs` | The `$ elfq` examples in README.md, docs/design.md and docs/examples.md; that design.md names every JSON key; and that the paths and module paths that CONTRIBUTING.md and design.md cite are there |
+| `docs.rs` | The `$ elfq` examples in README.md, docs/design.md and docs/examples.md; that design.md names every JSON key; that the paths, module paths and type paths that CONTRIBUTING.md and design.md cite are there; and that `scripts/same-output.sh` runs every command |
 
 **Where a test goes.** A test of one command goes in that command's file
 in `commands/`, its text and its JSON together. A test that runs several
@@ -755,21 +762,33 @@ numbers and names, as docs/examples.md does, so when an example's output
 changes, check that the text around it still matches the new output.
 
 **Paths in the docs.** `the_paths_the_docs_cite_are_there`, in `docs.rs`,
-checks what CONTRIBUTING.md and docs/design.md cite outside their code
-blocks: each path in `src/`, `tests/`, `testdata/`, `scripts/` or `docs/`,
-each shorter path to a Rust file or a folder, such as `views/item.rs`,
-each link's target, and each module path, such as `symbol::find`: its
-modules must be there, and the name after them must be defined in the last
-one's file or imported there with `use`. When you move or rename a file,
-or a function cited with its module path, the test names every citation to
-change. A name cited alone or after its type, such as
-`check_code_is_readable` or `Symbol::lead_name`, isn't checked, and nor is
-a path with a placeholder, such as `src/arch/<name>.rs`, or one through a
-`target` folder: write a file to add, or one that is gone, that way or in
-a code block. Write a path into another crate from the crate's name, as
+checks what CONTRIBUTING.md and docs/design.md cite. Outside their code
+blocks, that is each path in `src/`, `tests/`, `testdata/`, `scripts/` or
+`docs/`, each shorter path to a Rust file or a folder, such as
+`views/item.rs`, each link's target, each module path, such as
+`symbol::find`: its modules must be there, and the name after them must be
+defined in the last one's file or imported there with `use`; and each type
+path, such as `Symbol::lead_name`: the name after the type must be a
+function, constant, associated type, field or variant in the type's
+definition or in an `impl` of it. In a code block that holds no `$ elfq`
+line, as design.md's map of the layers, it is each module path that
+starts with a module of elfq's, and each type path. When you move or
+rename a file, or a function cited with its module path or its type, the
+test names every citation to change. A name cited alone, such as
+`check_code_is_readable`, isn't checked, nor is a type path whose type
+elfq doesn't define as a struct, enum or trait, such as gimli's
+`EndianSlice::read_slice` or a type alias's, nor a path with a
+placeholder, such as `src/arch/<name>.rs`, or one through a `target`
+folder: write a file to add, or one that is gone, that way or in a code
+block. Write a path into another crate from the crate's name, as
 `object::elf::SHT_NOBITS`, and add the crate to the test's
 `OTHER_FIRST_NAMES`, since a short `elf::` would be read as a path into
-elfq's own module of that name.
+elfq's own module of that name. In the same way, a type that elfq
+defines is read as elfq's, so write another crate's type of the same name
+from the crate's name, as `serde_json::Value::as_str`. The test doesn't
+find a method that a derive or a trait's default body gives a type, so
+cite it after its trait, as `Parser::try_parse_from`, which isn't
+checked.
 
 **Damaged files.** `damaged.rs` makes its files from a sample's bytes, so
 that the hangs and crashes they once caused stay fixed. It and the other
@@ -923,6 +942,14 @@ is a short one to copy.
     answers of it to `JSON_ANSWERS` in `tests/it/docs.rs` with an entry
     in each of its lists: the test checks that the section names every
     key.
+11. **The output check.** Add it to `check_file` in
+    `scripts/same-output.sh`, with the arguments it takes, and to the
+    commands whose help `check_help` compares, so that a later change
+    that shouldn't change its output is checked (see [Checking that output
+    didn't change](#checking-that-output-didnt-change)).
+    `same_output_sh_runs_every_command`, in `tests/it/docs.rs`, checks
+    that `check_help` names every command, and that the script runs each
+    `debug` command and its help.
 
 ## Adding a view
 
@@ -1077,18 +1104,24 @@ git worktree add ../elfq-main main
 (cd ../elfq-main && cargo build --release)
 cargo build --release
 scripts/same-output.sh ../elfq-main/target/release/elfq target/release/elfq \
-    testdata/bin /usr/bin --pairs pairs.txt
+    testdata/bin /usr/bin --pairs scripts/sample-pairs.txt
 ```
 
 It runs every command, with and without `--json`, `--all` and `--tree`, on
 each file, the SYMBOL commands on the first three items that `top` lists,
 and the range commands on the first two blocks of memory that the overview
-lists, with `reach SYMBOL --to RANGE` on the first item and each block. It
-also runs every `--help`, and `diff` on each pair of files listed in
-`pairs.txt`, one pair a line. It prints each command whose stdout, stderr
-or exit status differs, with the first lines that differ, and exits with
-status 1 if one does. On the samples alone it runs about 6,200
-commands, in about 15 seconds on four processors.
+lists, with `reach SYMBOL --to RANGE` on the first item and each block.
+`retained` and `callers` also take the first two items as a set,
+`retained`, `callees` and `debug matches` a pattern made from the first
+item's name, and `why` a name that isn't there. It also runs every
+`--help`, and `diff` on each pair of files listed after `--pairs`, one
+pair a line: `scripts/sample-pairs.txt` lists the pairs of samples in
+`DIFF_PAIRS`, in `tests/it/commands/diff.rs`, by their paths from the
+crate's root, and another `--pairs` adds pairs of your own. It prints
+each command whose stdout, stderr or exit status differs, with the first
+lines that differ, and exits with status 1 if one does. On the samples
+alone, with their pairs, it runs about 6,800 commands, in about 15
+seconds on four processors.
 
 The samples are small and similar, so add other files too: programs from
 `/usr/bin`, a Rust build of elfq itself, and firmware, which

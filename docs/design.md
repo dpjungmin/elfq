@@ -1746,13 +1746,14 @@ in order. Its output is the first example under [Commands](#commands).
    (`scan_functions`), and last `unnamed_data::items` finds there the
    addresses of data that no symbol names.
 4. **SYMBOL.** `retained::run` checks that elfq can read the file's code
-   (`check_code_is_readable`), then `retained::find_symbols` turns each
-   SYMBOL, here `process_frame`, into an item with `Names::look_up`: by
-   address, by full name, or by the end of a name. Working out the ends
-   of every name takes a while in a large file, so `Names` files each
-   item under the last part of the paths that its names' ends can have
-   (`names::short_name_keys`), and works out the ends of only the items
-   filed under `process_frame`. `find_symbols` lists in one error every
+   (`check_code_is_readable`), then `retained::find_symbols` reads each
+   SYMBOL, here `process_frame`, with `Names::look_up_or_match`, which
+   looks it up with `Names::look_up`: by address, by full name, or by
+   the end of a name. Working out the ends of every name takes a while
+   in a large file, so `Names` files each item under the last part of
+   the paths that its names' ends can have (`names::short_name_keys`),
+   and works out the ends of only the items filed under
+   `process_frame`. `find_symbols` lists in one error every
    SYMBOL that fails, an import among them (`item_in_file`), and leaves
    out a function whose end elfq doesn't know (`Item::end_unknown`),
    unless nothing else is left, then refuses a shared library, before
@@ -1816,7 +1817,8 @@ that run in it:
 
 ```
 main.rs      1 main, run                                  8 exit status
-commands/    2 commands::run   4 retained::run, find_symbols, Names::find
+commands/    2 commands::run   4 retained::run, find_symbols,
+                                 Names::look_up_or_match
              7 retained::answer, RetainedTree::largest, table
 cli/         1 Cli, Command
 render/      7 Table::tree, Table::write

@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_lines, reason = "tests list cases or pin outputs")]
+
 use super::*;
 use crate::commands::symbol::fixtures;
 

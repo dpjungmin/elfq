@@ -1,0 +1,11 @@
+testdata/bin/c-cortex-m7.elf testdata/bin/c-cortex-m7-moved.elf
+testdata/bin/c-cortex-m7.elf testdata/bin/c-cortex-m7-sdram.elf
+testdata/bin/c-cortex-m7.elf testdata/bin/c-cortex-m7-inlined.elf
+testdata/bin/c-cortex-m7.elf testdata/bin/c-cortex-m7-edited.elf
+testdata/bin/c-x86_64.elf testdata/bin/c-x86_64-moved.elf
+testdata/bin/c-x86_64.so testdata/bin/c-x86_64-moved.so
+testdata/bin/c-x86_64.elf testdata/bin/c-x86_64.so
+testdata/bin/c-cortex-m4.elf testdata/bin/c-cortex-m7.elf
+testdata/bin/c-cortex-m4.elf testdata/bin/c-strtod.elf
+testdata/bin/c-cortex-m4.elf testdata/bin/rust-cortex-m4.elf
+testdata/bin/c-x86_64.elf testdata/bin/cpp-x86_64.elf
