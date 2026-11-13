@@ -12,7 +12,7 @@ use crate::arch::thumb::decode::{Addressing, Effect, Operation, Registers, each}
 use super::count::{Mode, line_through};
 use super::loops::FoundLoop;
 use super::walk_state::{Budget, Known, Mark};
-use super::{Frame, Run, WALK_EACH_BUDGET, WALK_EACH_COUNT_BUDGET, Walker};
+use super::{Executes, Frame, Run, WALK_EACH_BUDGET, WALK_EACH_COUNT_BUDGET, Walker};
 
 /// A word in the file that one iteration of a loop that the walk goes
 /// through each iteration of reads, as from a row of a table (see
@@ -222,18 +222,23 @@ impl Walker<'_> {
     /// Keeps where the words that registers held at the head of the
     /// iteration of the loop at `index` in [`Walker::open_loops`] were
     /// loaded from, of those that an instruction that `reads` and `writes`
-    /// these registers reads, as loads of the iteration, unless it is
-    /// `conditional`, when the loop's function loaded them, rather than a
-    /// function it calls; and forgets those of the registers it writes.
+    /// these registers reads, as loads of the iteration, unless `executes`
+    /// is [`Executes::Maybe`], when the loop's function loaded them, rather
+    /// than a function it calls; and forgets those of the registers it
+    /// writes.
     pub(super) fn carried_reads(
         &mut self,
         index: usize,
         reads: Registers,
         writes: Registers,
-        conditional: bool,
+        executes: Executes,
     ) {
         let open = &mut self.open_loops[index];
-        let read: Vec<Source> = (each(if conditional { 0 } else { reads }))
+        let counted = match executes {
+            Executes::Surely => reads,
+            Executes::Maybe => 0,
+        };
+        let read: Vec<Source> = (each(counted))
             .filter_map(|register| open.carried[usize::from(register)].take())
             .collect();
         for register in each(writes) {

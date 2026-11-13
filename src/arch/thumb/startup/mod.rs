@@ -60,7 +60,7 @@ use crate::arch::startup::{
 
 use calls::arguments;
 use count::{LoopCode, Mode, OpenLoop, StoppedAt};
-use execute::holds;
+use execute::{Reading, holds};
 use loops::FoundLoop;
 pub(in crate::arch) use queries::{branches_past, passes_result};
 use walk_state::{Alternative, Budget, Compare, Known, Visit};
@@ -312,6 +312,26 @@ struct WayOut {
     to: u64,
 }
 
+/// Whether an instruction runs (see [`Running::executes`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Executes {
+    /// It runs: it is outside an `it` block, or its condition holds.
+    Surely,
+    /// It is in an `it` block whose condition reads flags that the walk
+    /// can't tell, so it may run or not.
+    Maybe,
+}
+
+/// Whether an instruction changes the flags where it is (see
+/// [`Running::flags_change`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FlagsChange {
+    /// It sets the flags.
+    Sets,
+    /// It leaves them as they are.
+    Keeps,
+}
+
 /// An instruction that runs, or may, as one in an `it` block does when
 /// its condition holds.
 #[derive(Clone, Copy)]
@@ -324,14 +344,21 @@ struct Running {
 }
 
 impl Running {
-    /// Whether it runs only when flags that the walk can't tell are set.
-    fn conditional(&self) -> bool {
-        self.runs.is_none()
+    /// Whether it runs, or may when flags that the walk can't tell are set.
+    fn executes(&self) -> Executes {
+        match self.runs {
+            Some(_) => Executes::Surely,
+            None => Executes::Maybe,
+        }
     }
 
     /// Whether it sets the flags, where it is.
-    fn sets_flags(&self) -> bool {
-        self.instruction.effect.sets_flags(self.in_it_block)
+    fn flags_change(&self) -> FlagsChange {
+        if self.instruction.effect.sets_flags(self.in_it_block) {
+            FlagsChange::Sets
+        } else {
+            FlagsChange::Keeps
+        }
     }
 }
 
@@ -468,7 +495,7 @@ impl Walker<'_> {
             Flow::Next | Flow::It { .. } => self.straight(run, frame, running, after_call),
             Flow::Call | Flow::CallRegister(..) => self.on_call(run, frame, running),
             Flow::Branch { target, when } => self.on_branch(run, frame, running, target, when),
-            _ if running.conditional() => self.may_jump(run, frame, running),
+            _ if running.executes() == Executes::Maybe => self.may_jump(run, frame, running),
             Flow::Return => Step::MayBacktrack(End::Returns(address)),
             Flow::Pop => self.on_pop(run, frame, instruction),
             Flow::Stop => no_code(address, after_call),
@@ -572,20 +599,20 @@ impl Walker<'_> {
     ) -> Step {
         let Running { instruction, .. } = running;
         let (site, effect) = (instruction.address, instruction.effect);
-        let conditional = running.conditional();
+        let executes = running.executes();
         if let Some(index) = frame.rows {
-            if !conditional {
+            if executes == Executes::Surely {
                 self.row_load(run, index, site, &effect);
             }
-            self.carried_reads(index, effect.reads, effect.writes, conditional);
+            self.carried_reads(index, effect.reads, effect.writes, executes);
         }
-        let sets_flags = running.sets_flags();
+        let flags_change = running.flags_change();
         self.execute(
             &mut run.known,
             site,
             &effect,
-            sets_flags,
-            conditional,
+            flags_change,
+            executes,
             frame.depth,
         );
         // The walk is still straight after a call (see `Run::after_call`).
@@ -598,9 +625,16 @@ impl Walker<'_> {
     /// unknown.
     fn may_jump(&mut self, run: &mut Run, frame: Frame, running: Running) -> Step {
         let Running { instruction, .. } = running;
-        let sets_flags = running.sets_flags();
+        let flags_change = running.flags_change();
         let (site, effect) = (instruction.address, &instruction.effect);
-        self.execute(&mut run.known, site, effect, sets_flags, true, frame.depth);
+        self.execute(
+            &mut run.known,
+            site,
+            effect,
+            flags_change,
+            Executes::Maybe,
+            frame.depth,
+        );
         run.known.forks = true;
         Step::Next(instruction.next())
     }
@@ -609,14 +643,14 @@ impl Walker<'_> {
     /// says.
     fn on_call(&mut self, run: &mut Run, frame: Frame, running: Running) -> Step {
         let Running { instruction, .. } = running;
-        let conditional = running.conditional();
+        let executes = running.executes();
         // A call reads its arguments, in r0 to r3.
         if let Some(index) = frame.rows {
             let reads = instruction.effect.reads | ARGUMENTS;
-            self.carried_reads(index, reads, CALL_CLOBBERS, conditional);
+            self.carried_reads(index, reads, CALL_CLOBBERS, executes);
         }
         let (target, how) = self.called(&run.known, instruction);
-        if let Some(end) = self.call(run, frame, instruction.address, target, how, conditional) {
+        if let Some(end) = self.call(run, frame, instruction.address, target, how, executes) {
             return Step::Final(end);
         }
         run.after_call = true;
@@ -654,8 +688,8 @@ impl Walker<'_> {
             &mut run.known,
             site,
             &instruction.effect,
-            false,
-            false,
+            FlagsChange::Keeps,
+            Executes::Surely,
             frame.depth,
         );
         match to.and_then(|number| LowBit::Thumb.target(number)) {
@@ -675,7 +709,7 @@ impl Walker<'_> {
         self.load(
             known,
             sp.wrapping_add(4 * (registers.count_ones() - 1)),
-            false,
+            Reading::Data,
         )
     }
 
@@ -726,7 +760,7 @@ impl Walker<'_> {
                     }
                     _ => None,
                 };
-                let to = at.and_then(|at| self.load(known, at, true));
+                let to = at.and_then(|at| self.load(known, at, Reading::Literal));
                 let to = to.and_then(|number| LowBit::Thumb.target(number));
                 (to.map(u64::from), Through::Memory)
             }

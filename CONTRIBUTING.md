@@ -252,8 +252,8 @@ code.
     (address, value) pairs.
   - `Operands::targets` holds (offset, address) pairs.
   - About fifty arguments are bools, as in `Block::parts` in
-    `diff/blocks.rs`, `Boundary::unfollowed_from` in
-    `graph/boundary.rs` and the startup walk's `Walker::execute`.
+    `diff/blocks.rs` and `Boundary::unfollowed_from` in
+    `graph/boundary.rs`.
 - A test runs elfq through `support/`:
   - In `tests/it/commands/browse.rs`,
     `the_command_under_the_callers_runs_in_a_shell` starts elfq through

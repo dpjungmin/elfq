@@ -38,6 +38,25 @@ impl Program for Flash {
     }
 }
 
+/// Code that startup code copies to RAM before it runs there, as to a
+/// Cortex-M7's ITCM, laid out as `Flash` lays it out: the code is there
+/// to read, but memory holds nothing the walk can tell at reset.
+struct Copied(Flash);
+
+impl Program for Copied {
+    fn code(&self, address: u64) -> Option<&[u8]> {
+        self.0.code(address)
+    }
+
+    fn word_at_reset(&self, _: u64) -> Option<u32> {
+        None
+    }
+
+    fn function_at(&self, address: u64) -> Option<FunctionBounds> {
+        self.0.function_at(address)
+    }
+}
+
 /// What the walk from 0x8000000 finds in `units`, with the functions
 /// that start at `functions` and run to the next one, and to the end
 /// of the code for the last one: a line for each event, with its depth
@@ -46,25 +65,36 @@ fn walk_lines(units: &[u16], functions: &[u64], main: Option<u64>) -> Vec<String
     walk_lines_following(units, functions, main, DEPTH)
 }
 
-/// The walk from 0x8000000 through `units`, as `walk_lines` says, that
-/// follows calls `follow` deep.
-fn walk_units(units: &[u16], functions: &[u64], main: Option<u64>, follow: u32) -> Walk {
+/// Flash holding `units`, with the functions that start at `functions`,
+/// as `walk_lines` says.
+fn flash_with(units: &[u16], functions: &[u64]) -> Flash {
     let code: Vec<u8> = units.iter().flat_map(|unit| unit.to_le_bytes()).collect();
     let end = FLASH + code.len() as u64;
     let ends = functions.iter().skip(1).copied().chain([end]);
-    let flash = Flash {
+    Flash {
         functions: (functions.iter().copied().zip(ends))
             .map(|(start, end)| FunctionBounds { start, end })
             .collect(),
         code,
-    };
+    }
+}
+
+/// The walk from 0x8000000 through `units`, as `walk_lines` says, that
+/// follows calls `follow` deep.
+fn walk_units(units: &[u16], functions: &[u64], main: Option<u64>, follow: u32) -> Walk {
+    walk_program(&flash_with(units, functions), main, follow)
+}
+
+/// The walk of `program` from 0x8000000, with the stack at 0x20001000
+/// and `main` where it is, that follows calls `follow` deep.
+fn walk_program(program: &dyn Program, main: Option<u64>, follow: u32) -> Walk {
     let start = Start {
         address: FLASH | 1,
         stack_pointer: Some(0x2000_1000),
         main,
         follow,
     };
-    walk(Little, &flash, &start)
+    walk(Little, program, &start)
 }
 
 /// What the stores of each loop that the walk through `units` counts
@@ -104,7 +134,11 @@ fn walk_lines_following(
     main: Option<u64>,
     follow: u32,
 ) -> Vec<String> {
-    let walk = walk_units(units, functions, main, follow);
+    lines_of(&walk_units(units, functions, main, follow))
+}
+
+/// What `walk` found, as `walk_lines` says.
+fn lines_of(walk: &Walk) -> Vec<String> {
     let number = |number: Option<u32>| number.map_or("?".to_string(), |n| format!("{n:#x}"));
     let mut lines: Vec<String> = (walk.events.iter().enumerate())
         .map(|(k, event)| match event {
@@ -1207,6 +1241,80 @@ fn loads_from_flash_from_memory_the_code_wrote_and_from_ram() {
 }
 
 #[test]
+fn code_copied_to_ram_is_read_as_code_but_its_words_as_unknown_at_reset() {
+    // A literal, and the word that `ldr.w pc` jumps through, are read
+    // as the code is, as if copied into place. Other loads, `ldm` and
+    // pops, from flash read the words it holds at reset, but from code
+    // that startup code copies to RAM, words that the walk can't tell:
+    // reset:
+    //   8000000: 4806       ldr   r0, [pc, #24]  ; 0x8000020 <table>
+    //   8000002: 6801       ldr   r1, [r0, #0]
+    //   8000004: e890 000c  ldmia.w r0, {r2, r3}
+    //   8000008: 4685       mov   sp, r0
+    //   800000a: bc08       pop   {r3}
+    //   800000c: f000 f802  bl    8000014 <veneer>
+    //   8000010: e7fe       b.n   8000010
+    //   8000012: bf00       nop
+    // veneer:
+    //   8000014: f8df f000  ldr.w pc, [pc, #0]  ; 0x8000029
+    //   8000018: 08000029   .word
+    //   800001c: 08000020   .word
+    // table:
+    //   8000020: 00000001   .word
+    //   8000024: 00000002   .word
+    // main:
+    //   8000028: e7fe       b.n   8000028
+    let code = [
+        0x4806, 0x6801, 0xe890, 0x000c, 0x4685, 0xbc08, 0xf000, 0xf802, 0xe7fe, 0xbf00, 0xf8df,
+        0xf000, 0x0029, 0x0800, 0x0020, 0x0800, 0x0001, 0x0000, 0x0002, 0x0000, 0xe7fe, 0xbf00,
+    ];
+    let functions = [0x0800_0000, 0x0800_0014, 0x0800_0028];
+    let main = Some(0x0800_0028);
+    let copied = |units: &[u16], functions: &[u64]| {
+        let program = Copied(flash_with(units, functions));
+        lines_of(&walk_program(&program, main, DEPTH))
+    };
+    assert_eq!(
+        walk_lines(&code, &functions, main),
+        [
+            "0 0x800000c call 0x8000014 (0x8000020 0x1 0x1 0x1)",
+            "1 0x8000014 tail call 0x8000028 (0x8000020 0x1 0x1 0x1)",
+            "end Main(8000014)",
+        ]
+    );
+    assert_eq!(
+        copied(&code, &functions),
+        [
+            "0 0x800000c call 0x8000014 (0x8000020 ? ? ?)",
+            "1 0x8000014 tail call 0x8000028 (0x8000020 ? ? ?)",
+            "end Main(8000014)",
+        ]
+    );
+    // A pop into pc reads its word as other pops do:
+    //   8000000: 4801       ldr   r0, [pc, #4]  ; 0x800000c
+    //   8000002: 4685       mov   sp, r0
+    //   8000004: bd00       pop   {pc}
+    //   8000006: bf00       nop
+    //   8000008: 0800000c   .word
+    //   800000c: 08000011   .word
+    // main:
+    //   8000010: e7fe       b.n   8000010
+    let code = [
+        0x4801, 0x4685, 0xbd00, 0xbf00, 0x000c, 0x0800, 0x0011, 0x0800, 0xe7fe, 0xbf00,
+    ];
+    let functions = [0x0800_0000, 0x0800_0010];
+    let main = Some(0x0800_0010);
+    assert_eq!(
+        walk_lines(&code, &functions, main),
+        [
+            "0 0x8000004 tail call 0x8000010 (0x800000c ? ? ?)",
+            "end Main(8000004)",
+        ]
+    );
+    assert_eq!(copied(&code, &functions), ["end Returns(8000004)"]);
+}
+
+#[test]
 fn the_walk_ends_where_it_gets_to_main_s_code() {
     // As where a compiler inlined main into the reset handler:
     //   8000000: 2000       movs  r0, #0
@@ -1281,6 +1389,31 @@ fn a_call_in_an_it_block_isnt_followed_and_changes_only_what_it_writes() {
             "0 0x800000e call 0x8000016 (? 0x1 0x2 0x3)",
             "end Main(800000e)",
         ]
+    );
+}
+
+#[test]
+fn a_pop_into_pc_in_an_it_block_leaves_what_it_writes_unknown() {
+    // The walk can't tell whether `popeq` runs, so it goes on with r4
+    // and sp unknown, rather than as if the pop had run:
+    //   8000000: 2405       movs  r4, #5
+    //   8000002: b510       push  {r4, lr}
+    //   8000004: 2800       cmp   r0, #0
+    //   8000006: bf08       it    eq
+    //   8000008: bd10       popeq {r4, pc}
+    //   800000a: 4620       mov   r0, r4
+    //   800000c: 4669       mov   r1, sp
+    //   800000e: f000 f801  bl    8000014 <main>
+    //   8000012: bf00       nop
+    // main:
+    //   8000014: e7fe       b.n   8000014
+    let code = [
+        0x2405, 0xb510, 0x2800, 0xbf08, 0xbd10, 0x4620, 0x4669, 0xf000, 0xf801, 0xbf00, 0xe7fe,
+    ];
+    let functions = [0x0800_0000, 0x0800_0014];
+    assert_eq!(
+        walk_lines(&code, &functions, Some(0x0800_0014)),
+        ["0 0x800000e call 0x8000014 (? ? ? ?)", "end Main(800000e)"]
     );
 }
 
@@ -2415,12 +2548,7 @@ fn a_store_of_several_words_copies_only_words_loaded_one_after_another() {
 
 /// Flash holding `units`, as `walk_units` lays them out, as one function.
 fn flash(units: &[u16]) -> Flash {
-    let code: Vec<u8> = units.iter().flat_map(|unit| unit.to_le_bytes()).collect();
-    let end = FLASH + code.len() as u64;
-    Flash {
-        functions: vec![FunctionBounds { start: FLASH, end }],
-        code,
-    }
+    flash_with(units, &[FLASH])
 }
 
 #[test]

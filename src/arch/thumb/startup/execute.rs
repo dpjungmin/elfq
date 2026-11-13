@@ -11,9 +11,9 @@ use crate::arch::startup::{Event, Source, Store};
 use crate::arch::thumb::decode::{Addressing, Effect, Operation, SetsFlags, Transfer, each};
 use crate::arch::thumb::{ARGUMENTS, PC, SP};
 
-use super::Walker;
 use super::calls::results;
 use super::walk_state::{Compare, Flags, Known};
+use super::{Executes, FlagsChange, Walker};
 
 /// What an instruction writes to a register: the register, and the
 /// number when the walk can tell it.
@@ -41,10 +41,22 @@ struct StackWord {
     word: Option<u32>,
 }
 
+/// How [`Walker::load`] reads a word that code didn't store.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Reading {
+    /// A word that the code reads as part of itself, as a literal from its
+    /// pool or the address that `ldr.w pc` jumps through: read as the code
+    /// is, as if copied into place, or where there is no code, as at reset.
+    Literal,
+    /// Any other word: read as it is at reset.
+    Data,
+}
+
 impl Walker<'_> {
     /// Changes `known` as the instruction at `site` does, other than where
-    /// it goes next. When it is `conditional`, in an `it` block whose
-    /// condition the walk can't tell, what it writes becomes unknown.
+    /// it goes next. When `executes` is [`Executes::Maybe`], in an `it`
+    /// block whose condition the walk can't tell, what it writes becomes
+    /// unknown.
     ///
     /// First it works out where a load or store reads or writes
     /// ([`Walker::access`]), records a store ([`Walker::store`]) and, when
@@ -65,25 +77,25 @@ impl Walker<'_> {
         known: &mut Known,
         site: u64,
         effect: &Effect,
-        changes_flags: bool,
-        conditional: bool,
+        flags_change: FlagsChange,
+        executes: Executes,
         depth: u32,
     ) {
         known.results |= results(effect);
         known.left &= !(effect.writes & ARGUMENTS) as u8;
         let at = self.access(known, site, effect);
         if let Operation::Store { .. } = effect.operation {
-            self.store(known, site, depth, effect, at, conditional);
+            self.store(known, site, depth, effect, at, executes);
         }
-        if changes_flags {
+        if flags_change == FlagsChange::Sets {
             self.compare(known, site, effect.operation);
         }
-        let flags = match (changes_flags, conditional) {
-            (false, _) => known.flags,
-            (true, true) => Flags::default(),
-            (true, false) => self.flags(known, site, effect),
+        let flags = match (flags_change, executes) {
+            (FlagsChange::Keeps, _) => known.flags,
+            (FlagsChange::Sets, Executes::Maybe) => Flags::default(),
+            (FlagsChange::Sets, Executes::Surely) => self.flags(known, site, effect),
         };
-        if conditional {
+        if executes == Executes::Maybe {
             known.forget_registers(effect.writes);
             known.flags = flags;
             return;
@@ -130,7 +142,7 @@ impl Walker<'_> {
         match operation {
             Operation::Constant { register, value } => number(register, Some(value)),
             Operation::Literal { register, address } => {
-                number(register, self.load(known, address as u32, true))
+                number(register, self.load(known, address as u32, Reading::Literal))
             }
             Operation::Address { register, value } => number(register, Some(value)),
             Operation::HighHalf { register, high } => {
@@ -190,7 +202,10 @@ impl Walker<'_> {
             Operation::Load {
                 into: Transfer::Word(register),
                 ..
-            } => number(register, at.and_then(|at| self.load(known, at, false))),
+            } => number(
+                register,
+                at.and_then(|at| self.load(known, at, Reading::Data)),
+            ),
             Operation::Nothing
             | Operation::Load { .. }
             | Operation::Store { .. }
@@ -222,7 +237,7 @@ impl Walker<'_> {
                 let address = at.map(|at| at.wrapping_add(4 * n as u32));
                 LoadedWord {
                     register,
-                    word: address.and_then(|address| self.load(known, address, false)),
+                    word: address.and_then(|address| self.load(known, address, Reading::Data)),
                     source: address.map(|address| Source { site, address }),
                 }
             })
@@ -303,7 +318,8 @@ impl Walker<'_> {
                 for (n, register) in each(registers).enumerate() {
                     if register != PC {
                         let at = sp.wrapping_add(4 * n as u32);
-                        known.registers[usize::from(register)] = self.load(known, at, false);
+                        known.registers[usize::from(register)] =
+                            self.load(known, at, Reading::Data);
                     }
                 }
                 known.registers[usize::from(SP)] = Some(sp.wrapping_add(size));
@@ -416,7 +432,7 @@ impl Walker<'_> {
         depth: u32,
         effect: &Effect,
         address: Option<u32>,
-        conditional: bool,
+        executes: Executes,
     ) {
         let Operation::Store {
             from: transfer,
@@ -439,7 +455,7 @@ impl Walker<'_> {
             .collect();
         if let Some(address) = address {
             let memory = Rc::make_mut(&mut known.memory);
-            if !words.is_empty() && address.is_multiple_of(4) && !conditional {
+            if !words.is_empty() && address.is_multiple_of(4) && executes == Executes::Surely {
                 for (n, &word) in words.iter().enumerate() {
                     memory.insert(address.wrapping_add(4 * n as u32), word);
                 }
@@ -483,7 +499,7 @@ impl Walker<'_> {
                 size,
                 value,
                 source,
-                conditional,
+                conditional: executes == Executes::Maybe,
             }));
         }
     }
@@ -568,15 +584,17 @@ impl Walker<'_> {
         }
     }
 
-    /// The word at `address`: what code stored there on the way, or what
-    /// is there at reset. A literal pool is read as the code is, when
-    /// `literal`, as if copied into place, unless code stored a word the
-    /// walk knows there.
-    pub(super) fn load(&self, known: &Known, address: u32, literal: bool) -> Option<u32> {
+    /// The word at `address`: what code stored there on the way, or else
+    /// what `reading` says. A literal is read as the code is, as if copied
+    /// into place, unless code stored a word the walk knows there.
+    pub(super) fn load(&self, known: &Known, address: u32, reading: Reading) -> Option<u32> {
         if !address.is_multiple_of(4) {
             return None;
         }
-        let code = self.program.code(u64::from(address)).filter(|_| literal);
+        let code = self
+            .program
+            .code(u64::from(address))
+            .filter(|_| reading == Reading::Literal);
         match (
             known.memory.get(&address),
             code.and_then(|bytes| bytes.get(..4)),
