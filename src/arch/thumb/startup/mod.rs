@@ -73,7 +73,10 @@ use walk_state::{Alternative, Budget, Compare, Known, Visit};
 // spends budgets of its own in place of the two for all of it, taken from
 // two totals for all such loops. How many calls deep it follows is
 // `arch::startup::DEPTH`. `arch::startup::Code::walk` lists them with what
-// each means for what the walk finds, and links to them.
+// each means for what the walk finds, and links to them. The last five,
+// from `RUNS_INTO` on, bound where the walk looks for a loop's code and
+// how long its parts may be; only the walk uses them, and that list
+// doesn't name them.
 
 /// How many instructions the walk goes through in all, but for those it
 /// goes through to count loops ([`COUNT_BUDGET`]) and in loops that it goes
@@ -133,6 +136,24 @@ pub(in crate::arch) const WALK_EACH_COUNT_TOTAL: usize = 2 * WALK_EACH_COUNT_BUD
 /// How far before a function's start the code of a loop can begin that
 /// runs on into the function (see [`Walker::runs_into`]).
 const RUNS_INTO: u64 = 0x40;
+
+/// For a loop whose body the compiler put after the function's other code
+/// (see [`Walker::out_of_line_body`]): how far before the branch to the
+/// body the loop's test can begin, when the walk doesn't know where the
+/// function starts.
+const OUT_OF_LINE_REACH: u64 = 0x400;
+
+/// How far from its start such a body's branch back can begin: less than
+/// this many bytes.
+const OUT_OF_LINE_BODY: u64 = 64;
+
+/// How many instructions such a body has at most, its branch back among
+/// them.
+const OUT_OF_LINE_INSTRUCTIONS: usize = 16;
+
+/// How many instructions such a loop's test has at most, the branch to
+/// its body among them (see [`Walker::is_test`]).
+const TEST_INSTRUCTIONS: usize = 16;
 
 /// Walks the code from `start`; see `arch::startup::Code::walk`.
 pub(in crate::arch) fn walk(endianness: Endianness, program: &dyn Program, start: &Start) -> Walk {
