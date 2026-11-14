@@ -219,8 +219,37 @@ impl InstructionSet {
         }
     }
 
+    /// Where the code is that `value` points to, when `value` is a pointer
+    /// that says it points to code: on Thumb, a pointer to a function has
+    /// bit 0 set, as symbols, the entry point and stored pointers give it,
+    /// so an odd value names the code at the even address below it. `None`
+    /// for any other value, and always on x86-64, whose pointers to code
+    /// are plain addresses. The caller checks that code is there. The
+    /// address it gives is `value` with at most bit 0 cleared, which
+    /// [`graph::item_starting_at`](crate::graph::item_starting_at) counts
+    /// on to pass over most words in data without asking.
+    pub(crate) fn code_pointer(self, value: u64) -> Option<u64> {
+        match self {
+            Self::X86_64 => None,
+            Self::Thumb { .. } => (value & 1 == 1).then_some(value & !1),
+        }
+    }
+
+    /// Whether elfq follows the code to find the functions in a file that
+    /// nothing lists them for, with the four methods below: in stripped
+    /// Thumb firmware, only the code says where they are. Stripped x86-64
+    /// programs still list most of them in their unwind tables (see
+    /// `binary/eh_frame.rs`).
+    pub(crate) fn finds_functions_in_stripped_code(self) -> bool {
+        match self {
+            Self::X86_64 => false,
+            Self::Thumb { .. } => true,
+        }
+    }
+
     // The next four matter only for finding the functions in stripped
-    // firmware, which elfq does only for Thumb. The x86-64 arms of the last
+    // firmware, which elfq does only for the instruction sets that
+    // `finds_functions_in_stripped_code` names. The x86-64 arms of the last
     // three answer as for code with no padding between functions that may
     // always run on.
 
@@ -275,5 +304,24 @@ impl InstructionSet {
             Self::X86_64 => None,
             Self::Thumb { endianness } => Some(startup::Code::thumb(program, endianness)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_thumb_pointer_says_it_points_to_code() {
+        let thumb = InstructionSet::Thumb {
+            endianness: Endianness::Little,
+        };
+        assert_eq!(thumb.code_pointer(0x1041), Some(0x1040));
+        assert_eq!(thumb.code_pointer(0x1040), None);
+        assert_eq!(thumb.code_pointer(0), None);
+        assert_eq!(thumb.code_pointer(1), Some(0));
+        assert_eq!(thumb.code_pointer(u64::MAX), Some(u64::MAX - 1));
+        assert_eq!(InstructionSet::X86_64.code_pointer(0x1041), None);
+        assert_eq!(InstructionSet::X86_64.code_pointer(0x1040), None);
     }
 }

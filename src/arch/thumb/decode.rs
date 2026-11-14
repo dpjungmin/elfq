@@ -299,6 +299,66 @@ pub(super) enum Flow {
     Stop,
 }
 
+impl Flow {
+    /// Whether it calls a function, which returns to the next instruction:
+    /// `bl`, `svc` and `blx register`.
+    pub(super) fn is_call(self) -> bool {
+        match self {
+            Flow::Call | Flow::CallRegister(..) => true,
+            Flow::Next
+            | Flow::Branch { .. }
+            | Flow::JumpRegister(..)
+            | Flow::JumpRelative(_)
+            | Flow::Return
+            | Flow::Pop
+            | Flow::JumpMemory
+            | Flow::Table
+            | Flow::It { .. }
+            | Flow::Stop => false,
+        }
+    }
+
+    /// Whether it always goes on to the next instruction, as the flows that
+    /// never branch do: one that doesn't branch, a call, which returns
+    /// there, and `it`. A branch doesn't, though a conditional one goes on
+    /// when it isn't taken: code that follows branches asks about `Branch`
+    /// and `Table` first.
+    pub(super) fn goes_on(self) -> bool {
+        match self {
+            Flow::Next | Flow::Call | Flow::CallRegister(..) | Flow::It { .. } => true,
+            Flow::Branch { .. }
+            | Flow::JumpRegister(..)
+            | Flow::JumpRelative(_)
+            | Flow::Return
+            | Flow::Pop
+            | Flow::JumpMemory
+            | Flow::Table
+            | Flow::Stop => false,
+        }
+    }
+
+    /// The register whose number says where it goes: that of
+    /// `blx register`, `bx register`, `mov pc, register` and
+    /// `add pc, register`. A return through lr, a load into pc and a
+    /// branch to an address in the instruction have none.
+    pub(super) fn target_register(self) -> Option<u16> {
+        match self {
+            Flow::CallRegister(register, _)
+            | Flow::JumpRegister(register, _)
+            | Flow::JumpRelative(register) => Some(register),
+            Flow::Next
+            | Flow::Call
+            | Flow::Branch { .. }
+            | Flow::Return
+            | Flow::Pop
+            | Flow::JumpMemory
+            | Flow::Table
+            | Flow::It { .. }
+            | Flow::Stop => None,
+        }
+    }
+}
+
 /// What the low bit of the number in the register does, for a branch
 /// through one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

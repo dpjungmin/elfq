@@ -309,16 +309,24 @@ impl Walker<'_> {
                 | Flow::Table
                 | Flow::Stop => return None,
                 _ if matches!(effect.operation, Operation::Pop { .. }) => return None,
-                _ => {}
+                // These may go on through the body: a branch here is
+                // conditional, since one that always branches is matched
+                // above.
+                Flow::Next
+                | Flow::Call
+                | Flow::CallRegister(..)
+                | Flow::It { .. }
+                | Flow::Branch { .. } => {}
             }
         }
         None
     }
 
     /// Whether the code from `test` up to the branch at `site` is a loop's
-    /// test: no calls, jumps or returns, and only branches out of the loop,
-    /// forward to before its code at `body`. That rules out an `if`'s join
-    /// or an outer loop's test.
+    /// test: only instructions that go straight on to the next, `it`s, and
+    /// conditional branches out of the loop, forward to before its code at
+    /// `body`, which rules out an `if`'s join or an outer loop's test. Any
+    /// other flow, such as a call, jump, return or `udf`, makes it no test.
     fn is_test(&self, test: u64, site: u64, body: u64) -> bool {
         let mut address = test;
         for _ in 0..16 {

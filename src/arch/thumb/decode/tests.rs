@@ -1,7 +1,9 @@
 #![allow(clippy::too_many_lines, reason = "tests list cases or pin outputs")]
 
+use std::collections::HashSet;
+
 use super::*;
-use crate::arch::thumb::{ARGUMENTS, CALL_CLOBBERS};
+use crate::arch::thumb::{ARGUMENTS, CALL_CLOBBERS, it_block_length};
 
 /// Decodes the instruction in `bytes`, little-endian as in a file.
 fn effect(address: u64, bytes: &[u8]) -> Effect {
@@ -328,6 +330,46 @@ fn calls_write_the_return_address() {
         (call.writes, call.flow),
         (bit(LR), Flow::CallRegister(5, LowBit::Thumb))
     );
+}
+
+#[test]
+fn each_flow_says_whether_it_calls_goes_on_or_branches_through_a_register() {
+    // An instruction or more of each flow, with whether it calls, whether
+    // it always goes on to the next instruction, and the register it
+    // branches through.
+    let cases: [(&[u8], bool, bool, Option<u16>); 15] = [
+        // movs r0, #1 and ite gt
+        (&[0x01, 0x20], false, true, None),
+        (&[0xcc, 0xbf], false, true, None),
+        // bl, svc #0 and blx r3
+        (&[0xff, 0xf7, 0xd3, 0xff], true, true, None),
+        (&[0x00, 0xdf], true, true, None),
+        (&[0x98, 0x47], true, true, Some(3)),
+        // beq, which goes on only when it isn't taken, b, tbb [pc, r0] and
+        // udf #0
+        (&[0x02, 0xd0], false, false, None),
+        (&[0x02, 0xe0], false, false, None),
+        (&[0xdf, 0xe8, 0x00, 0xf0], false, false, None),
+        (&[0x00, 0xde], false, false, None),
+        // bx r3, mov pc, r3 and add pc, ip
+        (&[0x18, 0x47], false, false, Some(3)),
+        (&[0x9f, 0x46], false, false, Some(3)),
+        (&[0xe7, 0x44], false, false, Some(12)),
+        // bx lr, pop {r0, pc} and ldr.w pc, [r3, #4]
+        (&[0x70, 0x47], false, false, None),
+        (&[0x01, 0xbd], false, false, None),
+        (&[0xd3, 0xf8, 0x04, 0xf0], false, false, None),
+    ];
+    let mut flows = HashSet::new();
+    for (bytes, calls, goes_on, register) in cases {
+        let flow = effect(0x100, bytes).flow;
+        assert_eq!(flow.is_call(), calls, "{flow:?}");
+        assert_eq!(flow.goes_on(), goes_on, "{flow:?}");
+        assert_eq!(flow.target_register(), register, "{flow:?}");
+        flows.insert(std::mem::discriminant(&flow));
+    }
+    // Every flow is among them.
+    assert_eq!(flows.len(), 12);
 }
 
 #[test]
@@ -660,6 +702,11 @@ fn it_and_the_flags() {
             mask: 0xc
         }
     );
+    // ite makes two instructions conditional; the lowest bit set in the
+    // mask says how many, from `it`'s one to `itttt`'s four.
+    assert_eq!(it_block_length(0xc), 2);
+    let lengths = [0b1000, 0b0100, 0b1010, 0b0111].map(it_block_length);
+    assert_eq!(lengths, [1, 2, 3, 4]);
     // cmp r0, #5 sets the flags; adds r0, #1 doesn't inside it.
     let compare = effect(0, &[0x05, 0x28]);
     assert_eq!(compare.flags, SetsFlags::Always);

@@ -142,6 +142,13 @@ fn is_wide(first: u16) -> bool {
     first >> 11 >= 0b11101
 }
 
+/// How many instructions an `it` makes conditional, 1 to 4, from its
+/// `mask`, the instruction's low four bits, which aren't all 0: the lowest
+/// bit set ends the mask.
+fn it_block_length(mask: u16) -> usize {
+    4 - mask.trailing_zeros() as usize
+}
+
 /// `bl`, `b.w` or `b<cond>.w`, all of which spread their offset over
 /// both halves.
 fn branch(pc: u64, first: u16, second: u16) -> Option<CodeReferenceKind> {

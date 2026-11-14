@@ -202,12 +202,13 @@ impl<'a> Names<'a> {
                 bail!("no function or data object contains address {address:#x}");
             };
             // The item's start needs no note: it is what the item's name
-            // stands for. So is a Thumb function's start with bit 0 set, as
-            // symbols, pointers and the entry point give it.
+            // stands for. So is a pointer to a function's code: a Thumb
+            // function's start with bit 0 set, as symbols, pointers and the
+            // entry point give it (see `Binary::code_pointer`).
             let item = &self.binary.items[index];
-            let thumb_start =
-                self.binary.thumb && item.kind == ItemKind::Function && address == item.address | 1;
-            let note = (address != item.address && !thumb_start)
+            let code_start = item.kind == ItemKind::Function
+                && self.binary.code_pointer(address) == Some(item.address);
+            let note = (address != item.address && !code_start)
                 .then(|| format!("which holds {address:#x}"));
             return Ok(Lookup::One(Symbol {
                 node: Node::Item(index),

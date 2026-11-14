@@ -91,25 +91,21 @@ enum Start {
 }
 
 /// The addresses in a file's code where elfq knows that a function or
-/// constants start, with the file, which says where each one ends.
+/// constants start, with the file, which says where each one ends, and the
+/// instruction set its code is read in.
 #[derive(Clone)]
 struct KnownStarts<'a> {
     binary: &'a Binary,
+    instruction_set: InstructionSet,
     /// What starts at each address.
     at: BTreeMap<u64, Start>,
 }
 
-/// How this module reads code: as Thumb, since only Thumb firmware has its
-/// functions found by following its code (see `Binary::from_vec`).
-fn thumb(binary: &Binary) -> InstructionSet {
-    InstructionSet::Thumb {
-        endianness: binary.endianness,
-    }
-}
-
 /// Adds the functions that following the code finds, and gives the ones
-/// already in `items`, such as the entry point, a size.
-pub(super) fn add(binary: &Binary, items: &mut Vec<Item>) {
+/// already in `items`, such as the entry point, a size. `instruction_set`
+/// is the file's, one that finds functions in stripped code (see
+/// `InstructionSet::finds_functions_in_stripped_code`).
+pub(super) fn add(binary: &Binary, instruction_set: InstructionSet, items: &mut Vec<Item>) {
     let mut known: Vec<u64> = items
         .iter()
         .filter(|item| item.kind == ItemKind::Function)
@@ -124,6 +120,7 @@ pub(super) fn add(binary: &Binary, items: &mut Vec<Item>) {
     }));
     let mut seeds = KnownStarts {
         binary,
+        instruction_set,
         at: known
             .into_iter()
             .map(|address| (address, Start::Function))
@@ -160,7 +157,7 @@ pub(super) fn add(binary: &Binary, items: &mut Vec<Item>) {
         // Without the padding that aligns the next function.
         let size = binary
             .bytes(start, end - start)
-            .map_or(end - start, |code| thumb(binary).code_size(code, start));
+            .map_or(end - start, |code| instruction_set.code_size(code, start));
         if let Some(item) = items[..known]
             .iter_mut()
             .find(|item| item.kind == ItemKind::Function && item.address == start)
@@ -220,7 +217,7 @@ fn follow<'a>(seeds: &KnownStarts<'a>, stored: &BTreeSet<u64>) -> Followed<'a> {
                 continue;
             };
             if scanned.insert((start, end)) {
-                let leads = leads(binary, start, end);
+                let leads = leads(binary, starts.instruction_set, start, end);
                 led_to.extend(leads.functions);
                 maybe_functions.extend(leads.thumb_addresses);
                 maybe_constants.extend(leads.constants);
@@ -275,13 +272,13 @@ struct Leads {
     constants: Vec<u64>,
 }
 
-/// Where the code from `start` to `end` leads.
-fn leads(binary: &Binary, start: u64, end: u64) -> Leads {
+/// Where the code from `start` to `end`, read as `instruction_set`, leads.
+fn leads(binary: &Binary, instruction_set: InstructionSet, start: u64, end: u64) -> Leads {
     let mut leads = Leads::default();
     let code = binary.bytes(start, end - start).unwrap_or_default();
     // How far the function's other jumps reach, so far.
     let mut reach = start;
-    for reference in thumb(binary).scan(code, start) {
+    for reference in instruction_set.scan(code, start) {
         match reference.kind {
             CodeReferenceKind::Call(target) => leads.functions.push(target),
             CodeReferenceKind::Jump(target) if target < end => reach = reach.max(target),
@@ -290,11 +287,12 @@ fn leads(binary: &Binary, start: u64, end: u64) -> Leads {
             {
                 leads.functions.push(target);
             }
-            CodeReferenceKind::Address(address) if address & 1 == 1 => {
-                leads.thumb_addresses.push(address & !1);
-            }
-            CodeReferenceKind::Address(address) if !(start..end).contains(&address) => {
-                leads.constants.push(address);
+            CodeReferenceKind::Address(address) => {
+                if let Some(code) = instruction_set.code_pointer(address) {
+                    leads.thumb_addresses.push(code);
+                } else if !(start..end).contains(&address) {
+                    leads.constants.push(address);
+                }
             }
             _ => {}
         }
@@ -444,7 +442,7 @@ impl KnownStarts<'_> {
         let code = self.read_code(start, cut.end, code_reads);
         let end = code.end;
         // 4.
-        if address >= end || thumb(self.binary).leading_padding(self.bytes(address, end)) > 0 {
+        if address >= end || (self.instruction_set).leading_padding(self.bytes(address, end)) > 0 {
             return false;
         }
         // 5.
@@ -503,7 +501,7 @@ impl KnownStarts<'_> {
     fn read_code<'r>(&self, start: u64, next: u64, code_reads: &'r mut CodeReads) -> &'r CodeRead {
         let range = AddressRange { start, end: next };
         code_reads.0.entry(range).or_insert_with(|| {
-            let end = start + thumb(self.binary).code_size(self.bytes(start, next), start);
+            let end = start + (self.instruction_set).code_size(self.bytes(start, next), start);
             CodeRead {
                 end,
                 references: self.scan(start, end),
@@ -513,7 +511,7 @@ impl KnownStarts<'_> {
 
     /// How the code from `start` up to `address` ends.
     fn ending(&self, start: u64, address: u64) -> Ending {
-        thumb(self.binary).ending(self.bytes(start, address), start)
+        (self.instruction_set).ending(self.bytes(start, address), start)
     }
 
     /// The references in the code from `from` up to `to`, each instruction
@@ -522,7 +520,7 @@ impl KnownStarts<'_> {
     /// tell, an address it left in a register would make the next
     /// function's references differ when scanned with it.
     fn scan(&self, from: u64, to: u64) -> Vec<CodeReference> {
-        thumb(self.binary).scan_instructions(self.bytes(from, to), from)
+        (self.instruction_set).scan_instructions(self.bytes(from, to), from)
     }
 
     /// The bytes from `from` up to `to`, or none where the file holds none.

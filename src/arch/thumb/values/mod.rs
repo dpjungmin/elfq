@@ -97,9 +97,8 @@
 //!    and, where the walk can tell, how it sets the flags
 //!    (`Walker::flags`) and what it compares (`Walker::compare`).
 //!
-//! The compiler points to each of these but `may_find_more`,
-//! `Walker::flags` and `Walker::compare`, which list only what they
-//! follow.
+//! The compiler points to each of these but `may_find_more` and
+//! `Walker::compare`, which list only what they follow.
 
 mod address_uses;
 mod code;
@@ -360,7 +359,18 @@ impl<'a> Function<'a> {
             && match self.code.effects[index].flow {
                 Flow::It { firstcond, .. } => tests_same_flags(firstcond, split.condition),
                 Flow::Next => !self.code.changes_flags(index),
-                _ => false,
+                // A call may change the flags, and the others branch or
+                // stop.
+                Flow::Call
+                | Flow::CallRegister(..)
+                | Flow::Branch { .. }
+                | Flow::JumpRegister(..)
+                | Flow::JumpRelative(_)
+                | Flow::Return
+                | Flow::Pop
+                | Flow::JumpMemory
+                | Flow::Table
+                | Flow::Stop => false,
             }
     }
 
@@ -400,8 +410,7 @@ impl<'a> Function<'a> {
             }
         }
         // A call may change the flags too.
-        split.flags_changed |=
-            effect.sets_flags(true) || matches!(effect.flow, Flow::Call | Flow::CallRegister(..));
+        split.flags_changed |= effect.sets_flags(true) || effect.flow.is_call();
     }
 
     /// Joins the two paths of an `it` block, where the code is on them;
@@ -434,12 +443,7 @@ impl<'a> Function<'a> {
         let last = end - 1;
         if end < self.code.len() && self.code.runs_on(last) {
             self.reach(end, &state);
-        } else if self.found.is_some()
-            && !matches!(
-                self.code.effects[last].flow,
-                Flow::Call | Flow::CallRegister(..)
-            )
-        {
+        } else if self.found.is_some() && !self.code.effects[last].flow.is_call() {
             // The code runs on past what elfq was given, into code it
             // can't see, unless it ends with a call that never returns.
             self.uses.pass_registers(&state, !0);
@@ -464,15 +468,10 @@ impl<'a> Function<'a> {
         if self.found.is_some() {
             self.report(index, state);
         }
-        let calls = matches!(effect.flow, Flow::Call | Flow::CallRegister(..));
+        let calls = effect.flow.is_call();
         // What it reads in r0 after a call is the result, unless it
         // branches through r0; see `AddressUses::record_kept_result`.
-        let branches_through = match effect.flow {
-            Flow::CallRegister(register, _)
-            | Flow::JumpRegister(register, _)
-            | Flow::JumpRelative(register) => bit(register),
-            _ => 0,
-        };
+        let branches_through = effect.flow.target_register().map_or(0, bit);
         self.uses
             .reads(state, effect.reads & !bit(RESULT) | branches_through);
         state.escaped |= self.execute(index, state);
@@ -485,7 +484,6 @@ impl<'a> Function<'a> {
             }
         }
         match effect.flow {
-            Flow::Next | Flow::It { .. } | Flow::Call | Flow::CallRegister(..) => true,
             Flow::Branch { when, .. } => {
                 // A test of whether a register is 0, as in `if (f) f();`
                 // for a weak function that the program may not have.
@@ -514,12 +512,7 @@ impl<'a> Function<'a> {
                 }
                 false
             }
-            Flow::JumpRegister(..)
-            | Flow::JumpRelative(_)
-            | Flow::Return
-            | Flow::Pop
-            | Flow::JumpMemory
-            | Flow::Stop => false,
+            flow => flow.goes_on(),
         }
     }
 
@@ -797,16 +790,13 @@ impl<'a> Function<'a> {
             | Operation::CompareRegisters { .. } => 0,
         };
         followed |= match effect.flow {
-            Flow::CallRegister(register, _)
-            | Flow::JumpRegister(register, _)
-            | Flow::JumpRelative(register)
-            | Flow::Branch {
+            Flow::Branch {
                 when: When::Zero(register) | When::NotZero(register),
                 ..
             } => bit(register),
-            _ => 0,
+            flow => flow.target_register().map_or(0, bit),
         };
-        let calls = matches!(effect.flow, Flow::Call | Flow::CallRegister(..));
+        let calls = effect.flow.is_call();
         let mut passed = effect.reads & !followed & !bit(PC);
         if calls {
             passed |= ARGUMENTS;
@@ -1007,7 +997,9 @@ impl<'a> Function<'a> {
             | Flow::JumpRelative(_)
             | Flow::JumpMemory => true,
             Flow::Branch { target, .. } => !self.code.contains(target),
-            _ => false,
+            Flow::Next | Flow::It { .. } | Flow::Return | Flow::Pop | Flow::Table | Flow::Stop => {
+                false
+            }
         };
         if leaves {
             self.uses.pass_stack(state);
@@ -1056,7 +1048,7 @@ impl<'a> Function<'a> {
         let mut by_site: BTreeMap<u64, Vec<CodeReferenceKind>> = BTreeMap::new();
         for (&index, branch) in &found.branches {
             let flow = self.code.effects[index].flow;
-            let calls = matches!(flow, Flow::CallRegister(..));
+            let calls = flow.is_call();
             let mut kinds: Vec<CodeReferenceKind> = branch
                 .targets
                 .iter()

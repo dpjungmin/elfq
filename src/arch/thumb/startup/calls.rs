@@ -78,7 +78,15 @@ impl Walker<'_> {
                 Flow::Call | Flow::CallRegister(..) => true,
                 Flow::Branch { target, .. } => function && !(start..end).contains(&target),
                 Flow::JumpRegister(..) | Flow::JumpRelative(_) | Flow::JumpMemory => function,
-                _ => false,
+                // A return goes back to the code that called, a table to
+                // a case inside, and the rest go on or stop: none runs
+                // another function's code.
+                Flow::Next
+                | Flow::It { .. }
+                | Flow::Return
+                | Flow::Pop
+                | Flow::Table
+                | Flow::Stop => false,
             };
             if leaves {
                 changes.registers |= CALL_CLOBBERS;
