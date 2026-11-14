@@ -251,8 +251,11 @@ impl Pieces {
     /// tell: when a step of the same code covers only part of that
     /// section, as when the store is of a word that a loop's last time
     /// leaves to code after it, that step becomes code that elfq can't
-    /// follow, which may set up the sections it covered and those that
-    /// follow the section with no gap.
+    /// follow, which may set up the sections it covered and the run from
+    /// that section: those of its kind that follow it, each less than
+    /// `PADDING` bytes after the one before, and for load images, only
+    /// while the file stores them as far apart (see
+    /// [`RamSections::run_from`]).
     pub(super) fn unread_store(
         &mut self,
         ram: &RamSections,
