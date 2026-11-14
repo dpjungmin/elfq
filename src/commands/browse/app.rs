@@ -2,8 +2,8 @@
 //!
 //! The state is the pages the user has opened, kept as a web browser
 //! keeps its history, so that Back and Forward move through them, the
-//! go-to box, find's prompt, and what the screen has yet to work out, in
-//! order (`Work`, `App::pending`).
+//! go-to box or find's prompt (`Prompt`), and what the screen has yet to
+//! work out, in order (`Work`, `App::pending`).
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
@@ -13,7 +13,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Wrap};
 
 use super::Stop;
-use super::keys::{self, Action};
+use super::keys::{self, Action, Typing};
 use super::session::Session;
 use super::views::{
     Go, Help, ItemPage, Picker, SlowTab, StartPage, View, cut, cut_left, draw_lines, first_line,
@@ -40,10 +40,8 @@ pub struct App<'a> {
     forward: Vec<View>,
     /// Said on the status line until the next key.
     message: Option<String>,
-    /// The go-to box, while it is open.
-    picker: Option<Picker>,
-    /// What is typed after /, while find's prompt is open.
-    finding: Option<String>,
+    /// The go-to box or find's prompt, while one is open.
+    prompt: Option<Prompt>,
     /// The text that find looked for last, for n and N.
     searched: Option<String>,
 }
@@ -81,6 +79,16 @@ impl Work {
     }
 }
 
+/// A prompt that keys type into, over the page on the screen. One is open
+/// at most.
+enum Prompt {
+    /// The go-to box, which lists what the text typed finds in place of
+    /// the page.
+    GoTo(Picker),
+    /// Find's prompt, with what is typed after /.
+    Find(String),
+}
+
 /// Where find looks from the selected row.
 #[derive(Clone, Copy)]
 enum FindFrom {
@@ -108,7 +116,7 @@ impl<'a> App<'a> {
             ),
         });
         let mut first = View::Start(StartPage::new());
-        let mut picker = None;
+        let mut prompt = None;
         if let Some(typed) = symbol {
             match session.names.find(typed) {
                 Ok(found) => {
@@ -119,7 +127,8 @@ impl<'a> App<'a> {
                 }
                 // The CLI's error goes over the rows.
                 Err(error) => {
-                    picker = Some(Picker::noted(&session, typed, first_line(&error)));
+                    let picker = Picker::noted(&session, typed, first_line(&error));
+                    prompt = Some(Prompt::GoTo(picker));
                 }
             }
         }
@@ -128,8 +137,7 @@ impl<'a> App<'a> {
             history: vec![first],
             forward: Vec::new(),
             message,
-            picker,
-            finding: None,
+            prompt,
             searched: None,
         };
         // Only the start page is worked out before the first draw. What
@@ -159,8 +167,9 @@ impl<'a> App<'a> {
     /// that [`App::key`] has worked out, and what is typed there opens no
     /// page.
     fn pending(&self) -> Option<Work> {
-        if self.picker.is_some() {
-            return None;
+        match self.prompt {
+            Some(Prompt::GoTo(_)) => return None,
+            None | Some(Prompt::Find(_)) => {}
         }
         match self.history.last()? {
             View::Start(start) if !start.is_worked_out() => Some(Work::StartPage),
@@ -213,20 +222,17 @@ impl<'a> App<'a> {
     pub(super) fn key(&mut self, key: KeyEvent) -> Option<Stop> {
         // Every key acts on the page as worked out.
         self.work();
-        if self.picker.is_some() {
-            return self.key_to_picker(key);
-        }
-        if self.finding.is_some() {
-            return self.key_to_find(key);
+        if self.prompt.is_some() {
+            return self.key_to_prompt(key);
         }
         let action = keys::action(key)?;
         self.message = None;
         match action {
             Action::Quit => return Some(Stop::Quit),
             Action::Suspend => return Some(Stop::Suspend),
-            Action::GoTo => self.picker = Some(Picker::new(&self.session, "")),
+            Action::GoTo => self.prompt = Some(Prompt::GoTo(Picker::new(&self.session, ""))),
             Action::Find => match self.page().cursor() {
-                Some(_) => self.finding = Some(String::new()),
+                Some(_) => self.prompt = Some(Prompt::Find(String::new())),
                 None => self.message = Some(NO_ROWS.to_string()),
             },
             Action::FindNext | Action::FindPrevious => match self.searched.clone() {
@@ -267,9 +273,11 @@ impl<'a> App<'a> {
     /// before it: text typed into the go-to box or find's prompt,
     /// Backspace and Esc there, and a key that quits or suspends. Every
     /// other key moves by what the screen shows, such as PageDown by a
-    /// screenful, so it is handled once the screen is drawn.
+    /// screenful, so it is handled once the screen is drawn. While a
+    /// prompt is open, the key's code alone decides, so that a character
+    /// with Alt waits as the character does, though it types nothing.
     pub(super) fn can_wait_to_draw(&self, key: KeyEvent) -> bool {
-        if self.picker.is_some() || self.finding.is_some() {
+        if self.prompt.is_some() {
             return matches!(
                 key.code,
                 KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Esc
@@ -278,17 +286,25 @@ impl<'a> App<'a> {
         matches!(keys::action(key), Some(Action::Quit | Action::Suspend))
     }
 
-    /// Does what `key` asks of the go-to box. Keys type into it, so only
-    /// Ctrl-C and Ctrl-Z do what they do elsewhere.
-    fn key_to_picker(&mut self, key: KeyEvent) -> Option<Stop> {
-        if let Some(stop) = keys::while_typing(key) {
-            return Some(stop);
-        }
-        let picker = self.picker.as_mut()?;
+    /// Does what `key` asks of the go-to box or find's prompt, whichever
+    /// is open, as [`keys::typing`] reads it. Ctrl-C and Ctrl-Z stop the
+    /// browser, and Esc closes the prompt, the same in both.
+    fn key_to_prompt(&mut self, key: KeyEvent) -> Option<Stop> {
+        let typing = keys::typing(key)?;
         let session = &self.session;
-        match key.code {
-            KeyCode::Esc => self.picker = None,
-            KeyCode::Enter => {
+        match (typing, self.prompt.as_mut()?) {
+            (Typing::Stop(stop), _) => return Some(stop),
+            (Typing::Cancel, _) => self.prompt = None,
+            (Typing::Char(c), Prompt::GoTo(picker)) => picker.push(c),
+            (Typing::Char(c), Prompt::Find(typed)) => typed.push(c),
+            (Typing::Erase, Prompt::GoTo(picker)) => picker.pop(),
+            (Typing::Erase, Prompt::Find(typed)) => {
+                typed.pop();
+            }
+            (Typing::Move(action), Prompt::GoTo(picker)) => picker.handle(session, action),
+            // Find's prompt has no rows of its own to move over.
+            (Typing::Move(_), Prompt::Find(_)) => {}
+            (Typing::Submit, Prompt::GoTo(picker)) => {
                 if let Some(picker_row) = picker.selected(session) {
                     // The header names the item as SYMBOL's answer does,
                     // with what holds an address typed, or the other name
@@ -296,50 +312,17 @@ impl<'a> App<'a> {
                     let (node, at) = (picker_row.page.node, picker_row.page.at);
                     let note = picker_row.note.as_deref();
                     let page = ItemPage::new(session, node, at, note);
-                    self.picker = None;
+                    self.prompt = None;
                     self.message = None;
                     self.open(View::Item(Box::new(page)));
                 }
             }
-            KeyCode::Up => picker.handle(session, Action::Up),
-            KeyCode::Down => picker.handle(session, Action::Down),
-            KeyCode::PageUp => picker.handle(session, Action::PageUp),
-            KeyCode::PageDown => picker.handle(session, Action::PageDown),
-            KeyCode::Home => picker.handle(session, Action::First),
-            KeyCode::End => picker.handle(session, Action::Last),
-            KeyCode::Backspace => picker.type_char(None),
-            _ => {
-                if let Some(c) = keys::typed_char(key) {
-                    picker.type_char(Some(c));
-                }
-            }
-        }
-        None
-    }
-
-    /// Does what `key` asks of find's prompt. Keys type into it, so only
-    /// Ctrl-C and Ctrl-Z do what they do elsewhere.
-    fn key_to_find(&mut self, key: KeyEvent) -> Option<Stop> {
-        if let Some(stop) = keys::while_typing(key) {
-            return Some(stop);
-        }
-        let typed = self.finding.as_mut()?;
-        match key.code {
-            KeyCode::Esc => self.finding = None,
-            KeyCode::Enter => {
+            (Typing::Submit, Prompt::Find(typed)) => {
                 let text = std::mem::take(typed);
-                self.finding = None;
+                self.prompt = None;
                 if !text.is_empty() {
                     self.find(&text, FindFrom::Here);
                     self.searched = Some(text);
-                }
-            }
-            KeyCode::Backspace => {
-                typed.pop();
-            }
-            _ => {
-                if let Some(c) = keys::typed_char(key) {
-                    typed.push(c);
                 }
             }
         }
@@ -408,11 +391,11 @@ impl<'a> App<'a> {
     /// cuts it, as it cuts a long string, and the status line has nothing
     /// else to say: the status line shows it in full.
     fn value_lines(&self, width: usize) -> Vec<String> {
-        let busy = self.has_work() || self.finding.is_some() || self.message.is_some();
-        match (&self.picker, busy, self.history.last()) {
+        let busy = self.has_work() || self.prompt.is_some() || self.message.is_some();
+        match (busy, self.history.last()) {
             // Broken where each line ends, rather than at spaces, so that
             // every character shows, as the row would show it.
-            (None, false, Some(view)) => match view.value(width) {
+            (false, Some(view)) => match view.value(width) {
                 Some(value) => {
                     let characters: Vec<char> = value.chars().collect();
                     (characters.chunks(width.max(1)))
@@ -442,9 +425,11 @@ impl<'a> App<'a> {
         // The command wraps, rather than being cut, so that all of it
         // can be copied, unless that leaves the page fewer than
         // PAGE_LINES lines.
-        let command = match (&self.picker, self.history.last()) {
-            (None, Some(view)) => view.command().map_or(Vec::new(), |line| wrap(line, width)),
-            _ => Vec::new(),
+        let command = match (&self.prompt, self.history.last()) {
+            (None | Some(Prompt::Find(_)), Some(view)) => {
+                view.command().map_or(Vec::new(), |line| wrap(line, width))
+            }
+            (Some(Prompt::GoTo(_)), _) | (_, None) => Vec::new(),
         };
         let most = usize::from(area.height).saturating_sub(3 + PAGE_LINES);
         let command = keep_lines(command, most.max(1), width);
@@ -476,19 +461,22 @@ impl<'a> App<'a> {
                 trail += title;
             }
         }
-        if self.picker.is_some() {
-            trail += " › go to";
+        match self.prompt {
+            Some(Prompt::GoTo(_)) => trail += " › go to",
+            None | Some(Prompt::Find(_)) => {}
         }
         frame.render_widget(Line::raw(cut_left(&trail, width)).bold(), title);
 
-        if let Some(picker) = &mut self.picker {
-            picker.draw(&self.session, frame, body);
-            // What is typed is cut from the left, so that its end shows.
-            let typed = format!("go to: {}▏", picker.text);
-            frame.render_widget(Line::raw(cut_left(&typed, width)), status);
-            let hint = "↑↓ move  enter open  esc cancel";
-            frame.render_widget(Line::raw(hint).dim(), hints);
-            return;
+        match &mut self.prompt {
+            Some(Prompt::GoTo(picker)) => {
+                picker.draw(&self.session, frame, body);
+                // What is typed is cut from the left, so that its end shows.
+                let typed = format!("go to: {}▏", picker.text);
+                frame.render_widget(Line::raw(cut_left(&typed, width)), status);
+                frame.render_widget(Line::raw(keys::GO_TO_HINT).dim(), hints);
+                return;
+            }
+            None | Some(Prompt::Find(_)) => {}
         }
         let waiting = self.pending().map(|work| work.message(&self.session));
         let view = self
@@ -496,7 +484,11 @@ impl<'a> App<'a> {
             .last_mut()
             .expect("the first page is never closed");
         view.draw(frame, body);
-        let status_lines = match (waiting, &self.finding, &self.message) {
+        let finding = match &self.prompt {
+            Some(Prompt::Find(typed)) => Some(typed),
+            None | Some(Prompt::GoTo(_)) => None,
+        };
+        let status_lines = match (waiting, finding, &self.message) {
             (Some(waiting), _, _) => vec![Line::raw(cut(&waiting, width))],
             // What is typed is cut from the left, so that its end shows.
             (None, Some(typed), _) => vec![Line::raw(cut_left(&format!("find: {typed}▏"), width))],
@@ -516,9 +508,9 @@ impl<'a> App<'a> {
             command_area,
             command.into_iter().map(Line::raw).collect(),
         );
-        let hint = match self.finding {
-            Some(_) => "enter find  esc cancel".to_string(),
-            None => keys::hints(
+        let hint = match self.prompt {
+            Some(Prompt::Find(_)) => keys::FIND_HINT.to_string(),
+            None | Some(Prompt::GoTo(_)) => keys::hints(
                 width,
                 view.has_links(),
                 &view.tabs(),
@@ -533,7 +525,7 @@ impl<'a> App<'a> {
 mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-    use ratatui::crossterm::event::KeyModifiers;
+    use ratatui::crossterm::event::{KeyModifiers, MediaKeyCode, ModifierKeyCode};
 
     use super::super::views::samples;
     use super::*;
@@ -571,6 +563,139 @@ mod tests {
         assert!(app.has_work());
         app.work();
         assert!(worked_out(&app) && !app.has_work());
+    }
+
+    /// One key of each kind that crossterm reads, with every function key,
+    /// the printable characters of ASCII and some others, and some media
+    /// and modifier keys.
+    fn every_key_code() -> Vec<KeyCode> {
+        let mut codes = vec![
+            KeyCode::Backspace,
+            KeyCode::Enter,
+            KeyCode::Left,
+            KeyCode::Right,
+            KeyCode::Up,
+            KeyCode::Down,
+            KeyCode::Home,
+            KeyCode::End,
+            KeyCode::PageUp,
+            KeyCode::PageDown,
+            KeyCode::Tab,
+            KeyCode::BackTab,
+            KeyCode::Delete,
+            KeyCode::Insert,
+            KeyCode::Null,
+            KeyCode::Esc,
+            KeyCode::CapsLock,
+            KeyCode::ScrollLock,
+            KeyCode::NumLock,
+            KeyCode::PrintScreen,
+            KeyCode::Pause,
+            KeyCode::Menu,
+            KeyCode::KeypadBegin,
+        ];
+        codes.extend((0..=u8::MAX).map(KeyCode::F));
+        codes.extend((' '..='~').chain(['é', '→', '\t', '\0']).map(KeyCode::Char));
+        codes.extend([MediaKeyCode::Play, MediaKeyCode::Stop].map(KeyCode::Media));
+        let modifiers = [ModifierKeyCode::LeftControl, ModifierKeyCode::RightAlt];
+        codes.extend(modifiers.map(KeyCode::Modifier));
+        // A kind of key that crossterm adds must be listed above too: this
+        // match names every kind.
+        for &code in &codes {
+            match code {
+                KeyCode::Backspace
+                | KeyCode::Enter
+                | KeyCode::Left
+                | KeyCode::Right
+                | KeyCode::Up
+                | KeyCode::Down
+                | KeyCode::Home
+                | KeyCode::End
+                | KeyCode::PageUp
+                | KeyCode::PageDown
+                | KeyCode::Tab
+                | KeyCode::BackTab
+                | KeyCode::Delete
+                | KeyCode::Insert
+                | KeyCode::F(_)
+                | KeyCode::Char(_)
+                | KeyCode::Null
+                | KeyCode::Esc
+                | KeyCode::CapsLock
+                | KeyCode::ScrollLock
+                | KeyCode::NumLock
+                | KeyCode::PrintScreen
+                | KeyCode::Pause
+                | KeyCode::Menu
+                | KeyCode::KeypadBegin
+                | KeyCode::Media(_)
+                | KeyCode::Modifier(_) => {}
+            }
+        }
+        codes
+    }
+
+    #[test]
+    fn keys_that_type_into_a_prompt_or_stop_can_wait_to_draw() {
+        let path = samples()
+            .into_iter()
+            .find(|path| path.ends_with("c-x86_64.elf"));
+        let path = path.unwrap();
+        let binary = Binary::load(&path).unwrap();
+        let session = Session::new(&path, &binary).unwrap();
+        let mut app = App::new(session, None);
+        // Every key, with every set of modifiers.
+        let modifiers = (0..=KeyModifiers::all().bits()).map(KeyModifiers::from_bits_truncate);
+        let keys: Vec<KeyEvent> = (every_key_code().into_iter())
+            .flat_map(|code| modifiers.clone().map(move |with| KeyEvent::new(code, with)))
+            .collect();
+        // Without a prompt, only the keys that quit or suspend can wait.
+        for &key in &keys {
+            let pressed = (key.code, key.modifiers - KeyModifiers::SHIFT);
+            let quits = matches!(
+                pressed,
+                (KeyCode::Char('q'), KeyModifiers::NONE)
+                    | (KeyCode::Char('c'), KeyModifiers::CONTROL)
+            );
+            let suspends = cfg!(unix) && pressed == (KeyCode::Char('z'), KeyModifiers::CONTROL);
+            assert_eq!(app.can_wait_to_draw(key), quits || suspends, "{key:?}");
+        }
+        let prompts = [
+            Prompt::GoTo(Picker::new(&app.session, "")),
+            Prompt::Find(String::new()),
+        ];
+        for prompt in prompts {
+            app.prompt = Some(prompt);
+            for &key in &keys {
+                // What a key that types, erases or cancels does doesn't
+                // depend on the screen, and nor does what Ctrl-C and Ctrl-Z
+                // do. A move or Enter acts on the rows that the screen
+                // shows. A character with Ctrl or Alt types nothing, but
+                // waits as the character does.
+                let typing = keys::typing(key);
+                let waits = match typing {
+                    Some(Typing::Char(_) | Typing::Erase | Typing::Cancel | Typing::Stop(_)) => {
+                        true
+                    }
+                    Some(Typing::Move(_) | Typing::Submit) => false,
+                    None => matches!(key.code, KeyCode::Char(_)),
+                };
+                assert_eq!(app.can_wait_to_draw(key), waits, "{key:?}");
+                // The six moves that the go-to box takes, and no other
+                // action.
+                if let Some(Typing::Move(action)) = typing {
+                    let moves = [
+                        Action::Up,
+                        Action::Down,
+                        Action::PageUp,
+                        Action::PageDown,
+                        Action::First,
+                        Action::Last,
+                    ];
+                    assert!(moves.contains(&action), "{key:?}");
+                }
+            }
+        }
     }
 
     #[test]
@@ -638,8 +763,7 @@ mod tests {
                 history: Vec::new(),
                 forward: Vec::new(),
                 message: None,
-                picker: None,
-                finding: None,
+                prompt: None,
                 searched: None,
             };
             // As after the first page is drawn.

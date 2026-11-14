@@ -451,6 +451,10 @@ helper type, doesn't take a word of the list; where code still does, as
   keeps each item, or tab 4, 5 or 6 of an item's page (`Work`, in
   `app.rs`). `App::pending` gives the next, in their order. Tab 2 is
   worked out at once, the first time it is shown, so it isn't work.
+- **prompt**: in browse, the go-to box or find's prompt, which keys type
+  into while it is open, over the page (`Prompt`, in `app.rs`); one is
+  open at most. What a key does there is a `Typing`, which
+  `keys::typing` gives.
 - **header**: in browse, the lines above the tabs of an item's page
   (`Header`, in `views/item/header.rs`). The ELF header, which
   `binary/header.rs` reads, and the header line of a table are other
@@ -685,8 +689,9 @@ The checks of `browse` that need its private types are unit tests in
 - `app.rs`: that tabs 2 to 6 keep their table's header and selected row
   on a small screen, that tabs 4, 5 and 6 are worked out once the screen
   says so, that what keeps each item is worked out once, after the first
-  page is drawn, and that the start page under the go-to box is worked
-  out only once the box closes.
+  page is drawn, that the start page under the go-to box is worked out
+  only once the box closes, and which keys, of every kind, can wait for
+  the screen to be drawn, with a prompt open and without.
 
 The Thumb text that a function's page shows is tested beside the code that
 gives it, `binary/listing.rs`, in `binary/listing/thumb_text.rs`: against
@@ -1050,7 +1055,9 @@ the biggest view, and not the one to start from.
    what the help page says about it, and its hint, if the hint line names
    it. The help page and the hint line are printed from that table, and
    `no_key_does_two_things` checks it. `app.rs` handles an action that
-   opens a page, as `Action::Help` does.
+   opens a page, as `Action::Help` does. The go-to box and find's prompt
+   read keys through `keys::typing` instead, which takes from the table
+   only the keys that move and aren't characters.
 4. **Tests.** Pin its screens in `tests/it/commands/browse.rs` at 80x24
    and 100x30, and drive it with keys there, as the other tests do.
 

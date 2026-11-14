@@ -16,7 +16,8 @@
 //! - `session.rs`: the loaded file and its reference graph, and the
 //!   answers that pages ask for.
 //! - `keys.rs`: which key does what, as an `Action`, in one table that the
-//!   hint line is printed from too.
+//!   hint line is printed from too, and what a key does in a prompt, as a
+//!   `Typing`, with the prompts' hint lines.
 //! - `app.rs`: the pages the user has opened, as a browser's history, and
 //!   the screen's layout around the page on top.
 //! - `views/`: the pages, one file per kind, the tabs of an item's page

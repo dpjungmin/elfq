@@ -1740,13 +1740,28 @@ fn the_files_first_warning_is_on_the_first_page() {
     let data = past_the_end(&[".plt"]);
     let binary = Binary::parse(&data).unwrap();
     let (screen, _) = browse("plt-offset.elf", &binary, Some("main"), (80, 24), &[]);
-    assert_eq!(
-        selected_and_status(&screen).1,
-        "warning: section .plt runs past the end of the file"
-    );
+    let warning = "warning: section .plt runs past the end of the file";
+    assert_eq!(selected_and_status(&screen).1, warning);
     // Until the next key.
     let (screen, _) = browse("plt-offset.elf", &binary, Some("main"), (80, 24), &["j"]);
     assert_eq!(selected_and_status(&screen).1, "");
+    // The go-to box, which opens when SYMBOL finds nothing, hides it. Esc
+    // closes the box and leaves it, and Enter on a row clears it, as the
+    // row's page opens.
+    let going =
+        |script: &[&str]| browse("plt-offset.elf", &binary, Some("zzqx"), (80, 24), script).0;
+    assert_eq!(selected_and_status(&going(&[])).1, "go to: zzqx▏");
+    assert_eq!(selected_and_status(&going(&["Esc"])).1, warning);
+    let opened = going(&[
+        "Backspace",
+        "Backspace",
+        "Backspace",
+        "Backspace",
+        "main",
+        "Enter",
+    ]);
+    assert!(opened.starts_with("plt-offset.elf › main\n"), "{opened}");
+    assert!(!opened.contains(warning), "{opened}");
     // The others are counted.
     let data = past_the_end(&[".plt", ".plt.sec"]);
     let binary = Binary::parse(&data).unwrap();
@@ -2863,6 +2878,9 @@ from a root: _start › main
     );
     // Esc closes the prompt, and leaves the page as it was.
     assert_eq!(screen(&["Down", "/", "cal", "Esc"]), screen(&["Down"]));
+    // Backspace with nothing typed leaves the prompt open.
+    let page = screen(&["/", "Backspace"]);
+    assert_eq!(selected_and_status(&page).1, "find: ▏");
     // n and N need a text found first.
     let page = screen(&["n"]);
     assert_eq!(selected_and_status(&page).1, "press / to find text first");
@@ -2896,6 +2914,16 @@ fn find_has_no_rows_on_the_help_and_ctrl_c_and_ctrl_z_work_while_typing() {
     assert_eq!(stop(&["/", "Ctrl-C"]), Stop::Quit);
     #[cfg(unix)]
     assert_eq!(stop(&["/", "Ctrl-Z"]), Stop::Suspend);
+}
+
+#[test]
+fn the_go_to_box_hides_the_command_under_the_page_and_find_keeps_it() {
+    // Tab 3 has a command under it, which tab 1 of a function hasn't.
+    let page = |script: &[&str]| screen("c-x86_64.elf", Some("main"), (80, 24), script);
+    let command = command_under(&page(&["3"]));
+    assert_eq!(command_under(&page(&["3", "/", "x"])), command);
+    let going = page(&["3", "g", "x"]);
+    assert!(!going.lines().any(|line| line.starts_with("$ ")), "{going}");
 }
 
 #[test]

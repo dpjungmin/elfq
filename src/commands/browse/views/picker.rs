@@ -125,14 +125,15 @@ impl Picker {
         picker
     }
 
-    /// Types `c`, or with `None`, takes the last character back.
-    pub(in crate::commands::browse) fn type_char(&mut self, c: Option<char>) {
-        match c {
-            Some(c) => self.text.push(c),
-            None => {
-                self.text.pop();
-            }
-        }
+    /// Types `c` after the text.
+    pub(in crate::commands::browse) fn push(&mut self, c: char) {
+        self.text.push(c);
+        self.changed = true;
+    }
+
+    /// Takes the text's last character back, if it has one.
+    pub(in crate::commands::browse) fn pop(&mut self) {
+        self.text.pop();
         self.changed = true;
     }
 
@@ -196,8 +197,8 @@ impl Picker {
             frame.render_widget(Text::from(note), note_area);
         }
         if self.text.trim().is_empty() {
-            let prompt = "type a name, the end of a name, or an address";
-            frame.render_widget(Line::raw(prompt).dim(), area);
+            let placeholder = "type a name, the end of a name, or an address";
+            frame.render_widget(Line::raw(placeholder).dim(), area);
             return;
         }
 
@@ -516,10 +517,10 @@ mod tests {
         // the box leaves it there, until the text changes.
         let mut opened = Picker::noted(&session, "nosuch", error("nosuch"));
         assert_eq!(opened.listed.nothing, None);
-        opened.type_char(Some('x'));
+        opened.push('x');
         opened.catch_up(&session);
         assert_eq!(opened.listed.nothing, Some(error("nosuchx")));
-        opened.type_char(None);
+        opened.pop();
         opened.catch_up(&session);
         assert_eq!(opened.listed.nothing, None);
     }
