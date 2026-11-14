@@ -26,7 +26,7 @@ use crate::render::Align;
 /// and what each start reaches.
 #[derive(Serialize)]
 struct StartsJson<'a> {
-    /// Each start, in the text's order (see [`starts`]).
+    /// Each start, in the text's order (see [`Starts::find`]).
     starts: Vec<StartJson<'a>>,
     /// The functions where the program starts whose end elfq doesn't know,
     /// so it can't read their code, such as `_init`.
@@ -65,7 +65,7 @@ struct BlockBytesJson {
 /// Where the program starts, and what each start reaches.
 pub(in crate::commands) struct Starts<'a> {
     binary: &'a Binary,
-    /// The starts, in the order of [`starts`].
+    /// The starts, in the order of [`Starts::find`].
     pub(in crate::commands) starts: Vec<Start>,
     /// The roots that are functions whose end elfq doesn't know, such as
     /// `_init`, as indexes into [`Binary::items`]: elfq can't tell what
@@ -97,104 +97,111 @@ enum StartRow {
     More(RootKind, usize),
 }
 
-/// Where the program starts, as `elfq FILE reach` lists it: `main`, but
-/// not a shared library's; then each root that is a function whose code
-/// elfq can read, other than a PLT's header: the entry point; the handlers
-/// in the vector table, in the order of their first entries; the functions
-/// that the startup and exit arrays list, `.preinit_array`, `.init_array`
-/// and `.fini_array` in that order, each in its array's order; the
-/// functions in `.init` and `.fini`, by section; then the rest, such as
-/// personality routines, by address. Each comes with what it reaches, as
-/// `reach START` counts it.
-pub(in crate::commands) fn starts<'a>(
-    binary: &'a Binary,
-    graph: &Graph,
-    names: &Names,
-) -> Starts<'a> {
-    let blocks = memory_blocks(&binary.sections);
-    let is_start = |index: usize| binary.items[index].is_own_function();
-    let table = binary.vector_table.as_ref();
-    let exceptions = |index: usize| -> Vec<u64> {
-        let address = binary.items[index].address;
-        table.map_or_else(Vec::new, |table| table.exceptions_of(address).collect())
-    };
-    let mut roots: Vec<(usize, RootKind)> = Vec::new();
-    let mut unreadable = Vec::new();
-    let mut arrays = Vec::new();
-    for root in &graph.roots {
-        let Node::Item(index) = root.node else {
-            continue;
+impl<'a> Starts<'a> {
+    /// Finds where the program starts, as `elfq FILE reach` lists it:
+    /// `main`, but not a shared library's; then each root that is a
+    /// function whose code elfq can read, other than a PLT's header: the
+    /// entry point; the handlers in the vector table, in the order of their
+    /// first entries; the functions that the startup and exit arrays list,
+    /// `.preinit_array`, `.init_array` and `.fini_array` in that order,
+    /// each in its array's order; the functions in `.init` and `.fini`, by
+    /// section; then the rest, such as personality routines, by address.
+    /// Each comes with what it reaches, as `reach START` counts it.
+    pub(in crate::commands) fn find(
+        binary: &'a Binary,
+        graph: &Graph,
+        names: &Names,
+    ) -> Starts<'a> {
+        let blocks = memory_blocks(&binary.sections);
+        let is_start = |index: usize| binary.items[index].is_own_function();
+        let table = binary.vector_table.as_ref();
+        let exceptions = |index: usize| -> Vec<u64> {
+            let address = binary.items[index].address;
+            table.map_or_else(Vec::new, |table| table.exceptions_of(address).collect())
         };
-        let item = &binary.items[index];
-        if is_start(index) {
-            roots.push((index, root.kind));
-        } else if item.end_unknown() {
-            unreadable.push(index);
-        }
-        if let RootKind::ListedIn(array) = root.kind
-            && !arrays.contains(&array)
-        {
-            arrays.push(array);
-        }
-    }
-    // Where each array lists each function, from its first entry.
-    let mut listed: HashMap<(usize, Node), usize> = HashMap::new();
-    for array in arrays {
-        for (position, node) in listed_in(binary, array).into_iter().enumerate() {
-            listed.entry((array, node)).or_insert(position);
-        }
-    }
-    // The roots come by node, so by address: a stable sort keeps that order
-    // among roots of the same kind that no array lists.
-    roots.sort_by_key(|&(index, kind)| match kind {
-        RootKind::Entry => (0, 0, 0, 0),
-        RootKind::Handler => (1, 0, 0, exceptions(index).first().copied().unwrap_or(0)),
-        RootKind::ListedIn(array) => {
-            let name = binary.sections[array].name.as_str();
-            let rank = STARTUP_ARRAYS.iter().position(|&startup| startup == name);
-            let position = listed.get(&(array, Node::Item(index))).copied();
-            (
-                2,
-                rank.unwrap_or(usize::MAX),
-                array,
-                position.unwrap_or(0) as u64,
-            )
-        }
-        RootKind::InSection(section) => (3, 0, section, 0),
-        _ => (4, 0, 0, 0),
-    });
-    // A main that is a root too is listed as one. A shared library's
-    // isn't looked up: in one that has no main, looking it up would first
-    // file every item under its short names' keys.
-    let main = if binary.kind == FileKind::SharedLibrary {
-        None
-    } else {
-        match names.nodes("main") {
-            [Node::Item(index)] if is_start(*index) && graph.root(Node::Item(*index)).is_none() => {
-                Some((*index, None))
+        let mut roots: Vec<(usize, RootKind)> = Vec::new();
+        let mut unreadable = Vec::new();
+        let mut arrays = Vec::new();
+        for root in &graph.roots {
+            let Node::Item(index) = root.node else {
+                continue;
+            };
+            let item = &binary.items[index];
+            if is_start(index) {
+                roots.push((index, root.kind));
+            } else if item.end_unknown() {
+                unreadable.push(index);
             }
-            _ => None,
+            if let RootKind::ListedIn(array) = root.kind
+                && !arrays.contains(&array)
+            {
+                arrays.push(array);
+            }
         }
-    };
-    let starts = main
-        .into_iter()
-        .chain(roots.into_iter().map(|(index, kind)| (index, Some(kind))))
-        .map(|(index, root)| Start {
-            index,
-            root,
-            exceptions: exceptions(index),
-            reached: Reached::find(binary, graph, index, &blocks),
-        })
-        .collect();
-    Starts {
-        binary,
-        starts,
-        unreadable,
-        blocks,
+        // Where each array lists each function, from its first entry.
+        let mut listed: HashMap<(usize, Node), usize> = HashMap::new();
+        for array in arrays {
+            for (position, node) in listed_in(binary, array).into_iter().enumerate() {
+                listed.entry((array, node)).or_insert(position);
+            }
+        }
+        // A root's key is its kind's place, then for an array its place
+        // in STARTUP_ARRAYS, then the section (the array, or the one that
+        // the root is in), then the function's place in its array or a
+        // handler's first entry. The roots come by node, so by address: a
+        // stable sort keeps that order among roots of the same kind that
+        // no array lists. Each root's key is worked out once, not on each
+        // comparison, since a handler's reads the vector table.
+        roots.sort_by_cached_key(|&(index, kind)| match kind {
+            RootKind::Entry => (0, 0, 0, 0),
+            RootKind::Handler => (1, 0, 0, exceptions(index).first().copied().unwrap_or(0)),
+            RootKind::ListedIn(array) => {
+                let name = binary.sections[array].name.as_str();
+                let rank = STARTUP_ARRAYS.iter().position(|&startup| startup == name);
+                let position = listed.get(&(array, Node::Item(index))).copied();
+                (
+                    2,
+                    rank.unwrap_or(usize::MAX),
+                    array,
+                    position.unwrap_or(0) as u64,
+                )
+            }
+            RootKind::InSection(section) => (3, 0, section, 0),
+            RootKind::PltHeader | RootKind::Personality | RootKind::VectorTable => (4, 0, 0, 0),
+        });
+        // A main that is a root too is listed as one. A shared library's
+        // isn't looked up: in one that has no main, looking it up would
+        // first file every item under its short names' keys.
+        let main = if binary.kind == FileKind::SharedLibrary {
+            None
+        } else {
+            match names.nodes("main") {
+                [Node::Item(index)]
+                    if is_start(*index) && graph.root(Node::Item(*index)).is_none() =>
+                {
+                    Some((*index, None))
+                }
+                _ => None,
+            }
+        };
+        let starts = main
+            .into_iter()
+            .chain(roots.into_iter().map(|(index, kind)| (index, Some(kind))))
+            .map(|(index, root)| Start {
+                index,
+                root,
+                exceptions: exceptions(index),
+                reached: Reached::find(binary, graph, index, &blocks),
+            })
+            .collect();
+        Starts {
+            binary,
+            starts,
+            unreadable,
+            blocks,
+        }
     }
-}
 
-impl Starts<'_> {
     /// The answer as browse's start page shows it, for the file at `path`:
     /// with every start and name, as with `--all`, the notes as the
     /// command writes them without `--all`, and whether the command needs
@@ -207,15 +214,12 @@ impl Starts<'_> {
     /// The answer's text: the starts as a table, then what elfq can't
     /// follow or read, and for a shared library, that its exported
     /// functions aren't counted. Each row is about its start.
-    #[expect(clippy::too_many_lines, reason = "waits to be split; see CONTRIBUTING")]
     pub(super) fn text(&self, path: &Path, detail: Detail) -> FlatAnswer {
-        let binary = self.binary;
         let file = path.display();
-        let several = self.blocks.len() > 1;
         let rows = self.rows(detail);
         let mut answer = FlatAnswer::default();
         if !self.starts.is_empty() {
-            let each = if several {
+            let each = if self.several_blocks() {
                 " in each block of memory"
             } else {
                 ""
@@ -223,64 +227,92 @@ impl Starts<'_> {
             answer.lead.push(format!(
                 "Where {file} starts, and the bytes of code and data that each reaches{each}:"
             ));
-            answer.columns = if several {
-                self.blocks
-                    .iter()
-                    .map(|block| (text::range_start(block.range), Align::Right))
-                    .collect()
-            } else {
-                vec![
-                    ("CODE".to_string(), Align::Right),
-                    ("DATA".to_string(), Align::Right),
-                ]
-            };
-            answer.columns.push(("WHY".to_string(), Align::Left));
-            answer.columns.push(("START".to_string(), Align::Left));
-            let numbers = answer.columns.len() - 2;
-            for row in &rows {
-                let start = match *row {
-                    StartRow::Start(start) => &self.starts[start],
-                    StartRow::More(kind, count) => {
-                        let mut cells = vec![String::new(); numbers];
-                        cells.push(text::root_column(binary, kind));
-                        answer
-                            .rows
-                            .push(FlatRow::new(cells, format!("{count} more"), None));
-                        continue;
-                    }
-                };
-                let reached = &start.reached;
-                let mut cells: Vec<String> = if several {
-                    (reached.blocks.iter())
-                        .map(|block| block.total().to_string())
-                        .collect()
-                } else {
-                    vec![
-                        reached.bytes.code.to_string(),
-                        reached.bytes.data.to_string(),
-                    ]
-                };
-                cells.push(start.why(binary));
-                let rest = if reached.complete() {
-                    ""
-                } else {
-                    " (may reach more)"
-                };
-                answer.rows.push(
-                    FlatRow::new(
-                        cells,
-                        binary.items[start.index].name.clone(),
-                        Some(Node::Item(start.index)),
-                    )
-                    .with_rest(rest.to_string()),
-                );
-            }
+            answer.columns = self.columns();
+            answer.rows = (rows.iter())
+                .map(|row| match *row {
+                    StartRow::Start(start) => self.start_row(&self.starts[start]),
+                    StartRow::More(kind, count) => self.more_row(kind, count),
+                })
+                .collect();
         } else if self.unreadable.is_empty() {
             answer
                 .lead
                 .push(format!("elfq found no place where {file} starts."));
         }
+        answer.notes = self.notes(path, &rows, detail);
+        answer
+    }
 
+    /// Whether the file has several blocks of memory, so that the table
+    /// gives the bytes that each start reaches in each, in place of CODE
+    /// and DATA.
+    fn several_blocks(&self) -> bool {
+        self.blocks.len() > 1
+    }
+
+    /// The table's columns: the bytes that a start reaches, in each block
+    /// of memory or as CODE and DATA, then WHY and START.
+    fn columns(&self) -> Vec<(String, Align)> {
+        let mut columns: Vec<(String, Align)> = if self.several_blocks() {
+            self.blocks
+                .iter()
+                .map(|block| (text::range_start(block.range), Align::Right))
+                .collect()
+        } else {
+            vec![
+                ("CODE".to_string(), Align::Right),
+                ("DATA".to_string(), Align::Right),
+            ]
+        };
+        columns.push(("WHY".to_string(), Align::Left));
+        columns.push(("START".to_string(), Align::Left));
+        columns
+    }
+
+    /// The row of `start`: the bytes it reaches, why it is a start, and its
+    /// name, with "(may reach more)" after it when elfq can't follow or
+    /// read all that it reaches.
+    fn start_row(&self, start: &Start) -> FlatRow {
+        let binary = self.binary;
+        let reached = &start.reached;
+        let mut cells: Vec<String> = if self.several_blocks() {
+            (reached.blocks.iter())
+                .map(|block| block.total().to_string())
+                .collect()
+        } else {
+            vec![
+                reached.bytes.code.to_string(),
+                reached.bytes.data.to_string(),
+            ]
+        };
+        cells.push(start.why(binary));
+        let rest = if reached.complete() {
+            ""
+        } else {
+            " (may reach more)"
+        };
+        FlatRow::new(
+            cells,
+            binary.items[start.index].name.clone(),
+            Some(Node::Item(start.index)),
+        )
+        .with_rest(rest.to_string())
+    }
+
+    /// The row such as "650 more" that counts the `count` starts, all roots
+    /// of `kind`, that the table leaves out, with the WHY of their kind.
+    fn more_row(&self, kind: RootKind, count: usize) -> FlatRow {
+        // Empty under the columns of bytes, all but WHY and START.
+        let mut cells = vec![String::new(); self.columns().len() - 2];
+        cells.push(text::root_column(self.binary, kind));
+        FlatRow::new(cells, format!("{count} more"), None)
+    }
+
+    /// The notes under the table: what the starts marked (may reach more)
+    /// among `rows` reach, the roots whose end elfq doesn't know, and for
+    /// a shared library, that its exported functions aren't counted.
+    fn notes(&self, path: &Path, rows: &[StartRow], detail: Detail) -> Vec<String> {
+        let mut notes = Vec::new();
         // The marks in the table, of the starts that it shows.
         let shown: Vec<&Reached> = rows
             .iter()
@@ -300,20 +332,20 @@ impl Starts<'_> {
             (false, false) => None,
         };
         if let Some(marked) = marked {
-            answer.notes.push(format!(
+            notes.push(format!(
                 "The starts marked (may reach more) reach {marked}; reach START names them."
             ));
         }
         if !self.unreadable.is_empty() {
-            answer.notes.push(self.unreadable_text(path, detail));
+            notes.push(self.unreadable_text(path, detail));
         }
-        if binary.kind == FileKind::SharedLibrary {
-            answer.notes.push(
+        if self.binary.kind == FileKind::SharedLibrary {
+            notes.push(
                 "elfq doesn't count a shared library's exported functions as starting points yet."
                     .to_string(),
             );
         }
-        answer
+        notes
     }
 
     /// The rows of the table: every start with [`Detail::All`]; otherwise
@@ -661,7 +693,7 @@ _init and _fini are starts too, but elfq doesn't know where they end, so it can'
             kind: RootKind::Personality,
         });
         graph.roots.sort_by_key(|root| root.node);
-        let starts = starts(&binary, &graph, &names);
+        let starts = Starts::find(&binary, &graph, &names);
         let listed: Vec<(&str, String)> = starts
             .starts
             .iter()

@@ -69,7 +69,7 @@ mod starts;
 mod to;
 mod tree;
 
-pub(super) use starts::starts;
+pub(super) use starts::Starts;
 
 use std::collections::HashSet;
 use std::io::Write;
@@ -151,7 +151,7 @@ pub(super) fn run_starts(
         bail!("{}", needs_symbol(path, &names, to, range, detail, format));
     }
     let graph = Kept::new(Graph::build(binary));
-    let starts = starts(binary, &graph, &names);
+    let starts = Starts::find(binary, &graph, &names);
     match format {
         Format::Json => starts.write_json(out)?,
         Format::Text | Format::Tree => starts.text(path, detail).write(out)?,

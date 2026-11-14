@@ -3,10 +3,11 @@
 //! It shows what the file is and what elfq found in it, with the blocks
 //! of memory that its sections occupy, as the overview says them, then
 //! where the program starts and the bytes that each start reaches, as
-//! `elfq FILE reach` lists them, from the same code (`reach::starts`). It
-//! lists every start, and under them is that command, ready to paste,
-//! with `--all` when the command needs it to list them all. Enter opens
-//! the selected start's page. `printed.rs` draws it.
+//! `elfq FILE reach` lists them, from the same code
+//! (`reach::Starts::find`). It lists every start, and under them is that
+//! command, ready to paste, with `--all` when the command needs it to
+//! list them all. Enter opens the selected start's page. `printed.rs`
+//! draws it.
 //!
 //! In a large program, working out where it starts takes a while.
 //! Without SYMBOL, browse works it out before it takes the screen. When
@@ -114,7 +115,7 @@ fn page(session: &Session) -> Printed {
     if let Some(memory) = overview::memory_table(binary, &session.blocks) {
         overview.push(Lines::Table(table_lines(&memory)));
     }
-    let tab = reach::starts(binary, &session.graph, &session.names).tab(path);
+    let tab = reach::Starts::find(binary, &session.graph, &session.names).tab(path);
     let command = session.command("reach", None, tab.needs_all);
     Printed::of_flat(tab.answer, command)
         .with_context(overview)
@@ -202,7 +203,7 @@ mod tests {
             }
         }
         session.graph.roots.sort_by_key(|root| root.node);
-        let starts = reach::starts(&binary, &session.graph, &session.names);
+        let starts = reach::Starts::find(&binary, &session.graph, &session.names);
         assert!(starts.starts.len() > 30, "{}", starts.starts.len());
         // Every start has a row, and the command under them has --all,
         // since `reach` would list fewer.

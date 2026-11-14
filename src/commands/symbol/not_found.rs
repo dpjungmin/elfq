@@ -60,9 +60,8 @@ pub(in crate::commands) enum Takes {
 /// The copies of functions that the compiler inlined, by function.
 pub(super) struct Inlined {
     copies: Vec<InlinedCopy>,
-    /// Each function's name, which its copies share, with its copies, as
-    /// indices into `copies`.
-    functions: Vec<(Arc<str>, Vec<usize>)>,
+    /// Each function once, in the order of its first copy.
+    functions: Vec<InlinedFunction>,
     /// The function with each name, as an index into `functions`.
     by_name: HashMap<Arc<str>, usize>,
     /// The functions that each key files (see [`names::short_name_key`]).
@@ -72,6 +71,14 @@ pub(super) struct Inlined {
     /// function, as `checksum.part.0`, or in C++, `checksum(char const*)
     /// [clone .part.0]`. Each name before a dot is among them.
     kept_out_of_line: HashSet<String>,
+}
+
+/// A function that the compiler inlined, with its copies.
+struct InlinedFunction {
+    /// Its name, which its copies share.
+    name: Arc<str>,
+    /// Its copies, as indices into [`Inlined`]'s `copies`.
+    copies: Vec<usize>,
 }
 
 /// The inlined functions that one key files, and once worked out, those
@@ -96,7 +103,7 @@ impl<'a> Names<'a> {
             return None;
         }
         let inlined = self.inlined()?;
-        let (name, copies) = &inlined.functions[inlined.only_function(query)?];
+        let InlinedFunction { name, copies } = &inlined.functions[inlined.only_function(query)?];
         if inlined.kept_out_of_line.contains(name.as_ref()) {
             return None;
         }
@@ -160,17 +167,20 @@ impl<'a> Names<'a> {
             let copies = debuginfo::inlined_copies(self.binary, CopiesToName::All).ok()?;
             // A function is often inlined in many places: each is filed
             // once.
-            let mut functions: Vec<(Arc<str>, Vec<usize>)> = Vec::new();
+            let mut functions: Vec<InlinedFunction> = Vec::new();
             let mut by_name: HashMap<Arc<str>, usize> = HashMap::new();
             for (index, copy) in copies.iter().enumerate() {
                 let function = *by_name.entry(copy.name.clone()).or_insert_with(|| {
-                    functions.push((copy.name.clone(), Vec::new()));
+                    functions.push(InlinedFunction {
+                        name: copy.name.clone(),
+                        copies: Vec::new(),
+                    });
                     functions.len() - 1
                 });
-                functions[function].1.push(index);
+                functions[function].copies.push(index);
             }
             let mut filed: HashMap<String, FiledFunctions> = HashMap::new();
-            for (function, (name, _)) in functions.iter().enumerate() {
+            for (function, InlinedFunction { name, .. }) in functions.iter().enumerate() {
                 for key in names::short_name_keys(name) {
                     filed.entry(key).or_default().functions.push(function);
                 }
@@ -491,7 +501,8 @@ impl Inlined {
             let by_short_name = filed.by_short_name.get_or_init(|| {
                 let mut by_short_name: HashMap<String, Vec<usize>> = HashMap::new();
                 for &function in &filed.functions {
-                    for short_name in names::short_names_with_key(&self.functions[function].0, key)
+                    for short_name in
+                        names::short_names_with_key(&self.functions[function].name, key)
                     {
                         add_index(by_short_name.entry(short_name).or_default(), function);
                     }
