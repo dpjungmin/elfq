@@ -11,7 +11,7 @@
 use std::sync::mpsc;
 use std::time::Duration;
 
-use elfq::binary::Binary;
+use elfq::binary::{Binary, StoredWord};
 use elfq::graph::{Graph, ReferenceKind};
 use object::{LittleEndian, elf};
 
@@ -141,14 +141,17 @@ fn words_come_from_a_section_that_starts_inside_another() {
         .set_section(".isr_vector", SectionField::Offset, 0x1040)
         .set_section(".isr_vector", SectionField::Size, 0x20);
     let (binary, _) = parse(&data);
-    let one_at_a_time: Vec<(u64, u64)> = (0x0800_0000..0x0800_0040)
+    let one_at_a_time: Vec<StoredWord> = (0x0800_0000..0x0800_0040)
         .step_by(4)
-        .map(|address| (address, binary.pointer_at(address).unwrap()))
+        .map(|address| StoredWord {
+            address,
+            value: binary.pointer_at(address).unwrap(),
+        })
         .collect();
-    let words: Vec<(u64, u64)> = binary.words(0x0800_0000, 0x0800_0040).collect();
+    let words: Vec<StoredWord> = binary.words(0x0800_0000, 0x0800_0040).collect();
     assert_eq!(words, one_at_a_time);
     let table = load_sample("testdata/bin/c-cortex-m4-stripped.elf");
-    assert_ne!(Some(words[8].1), table.pointer_at(0x0800_0020));
+    assert_ne!(Some(words[8].value), table.pointer_at(0x0800_0020));
 }
 
 #[test]

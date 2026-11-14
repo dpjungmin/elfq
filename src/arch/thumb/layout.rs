@@ -18,14 +18,23 @@ pub(in crate::arch) enum Piece {
     Case,
 }
 
+/// One piece of a function's code, as [`layout`] cuts it.
+pub(in crate::arch) struct PieceAt {
+    /// Where it starts, as an offset into the code.
+    pub(in crate::arch) offset: usize,
+    /// How many bytes it takes.
+    pub(in crate::arch) size: usize,
+    /// What it is.
+    pub(in crate::arch) piece: Piece,
+}
+
 /// Where the instructions and the data in `code` are, as the sweep that
-/// [`scan`](super::scan) makes finds them, as (offset, size, piece), in
-/// order. Data is cut into words, or halfwords and bytes where a word
-/// doesn't fit, as objdump prints it, and so are the bytes that no
-/// instruction covers, such as a cut-off instruction at the end. `marked`
-/// lists more data, as ranges of offsets, such as the bytes that the file's
-/// `$d` symbols mark: the sweep skips them too, so it starts again where
-/// they end.
+/// [`scan`](super::scan) makes finds them, in order. Data is cut into
+/// words, or halfwords and bytes where a word doesn't fit, as objdump
+/// prints it, and so are the bytes that no instruction covers, such as a
+/// cut-off instruction at the end. `marked` lists more data, as ranges of
+/// offsets, such as the bytes that the file's `$d` symbols mark: the sweep
+/// skips them too, so it starts again where they end.
 ///
 /// Without `marked`, this is `scan`'s own sweep, so every reference that
 /// `scan` reports starts a piece: an instruction, or a constant that the
@@ -39,15 +48,19 @@ pub(in crate::arch) fn layout(
     address: u64,
     endianness: Endianness,
     marked: &[std::ops::Range<usize>],
-) -> Vec<(usize, usize, Piece)> {
+) -> Vec<PieceAt> {
     let mut scanner = Scanner::new(code, address, endianness);
     for range in marked {
         scanner.mark_data(range.start, range.end);
     }
     let instructions = scanner.sweep_instructions();
-    let mut pieces: Vec<(usize, usize, Piece)> = instructions
+    let mut pieces: Vec<PieceAt> = instructions
         .iter()
-        .map(|instruction| (instruction.offset, instruction.size(), Piece::Instruction))
+        .map(|instruction| PieceAt {
+            offset: instruction.offset,
+            size: instruction.size(),
+            piece: Piece::Instruction,
+        })
         .collect();
     // The bytes between instructions, in order.
     let mut gaps = Vec::new();
@@ -83,10 +96,14 @@ pub(in crate::arch) fn layout(
             } else {
                 Piece::Data
             };
-            pieces.push((at, size, piece));
+            pieces.push(PieceAt {
+                offset: at,
+                size,
+                piece,
+            });
             at += size;
         }
     }
-    pieces.sort_unstable_by_key(|&(offset, _, _)| offset);
+    pieces.sort_unstable_by_key(|piece| piece.offset);
     pieces
 }

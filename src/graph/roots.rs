@@ -119,7 +119,7 @@ pub(crate) fn listed_in(binary: &Binary, section: usize) -> Vec<Node> {
     // From the array's first byte, aligned or not, as the program reads it.
     let slots = binary.words(section.address, section.address + section.size);
     slots
-        .filter_map(|(slot, value)| stored_pointer(binary, slot, value))
+        .filter_map(|word| stored_pointer(binary, word.address, word.value))
         .collect()
 }
 

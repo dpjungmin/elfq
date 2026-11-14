@@ -5,7 +5,7 @@
 use object::Endianness;
 
 use super::sweep::Scanner;
-use crate::arch::{Operands, SplitNumber};
+use crate::arch::{OperandTarget, Operands, SplitBits, SplitNumber};
 
 /// The bits of `code`, which starts at `address`, that say where something
 /// is (see `InstructionSet::operands`): those that the sweep that
@@ -28,7 +28,10 @@ pub(in crate::arch) fn operands(code: &[u8], address: u64, endianness: Endiannes
     for (offset, halfwords, target) in found.distances {
         if kept(offset) && outside(target) {
             set_bits(&mut distance_bits, offset, halfwords);
-            targets.push((offset, target));
+            targets.push(OperandTarget {
+                offset,
+                address: target,
+            });
         }
     }
     targets.sort_unstable();
@@ -41,6 +44,7 @@ pub(in crate::arch) fn operands(code: &[u8], address: u64, endianness: Endiannes
             bits: offsets
                 .into_iter()
                 .flat_map(|offset| (offset..).zip(MOVW_IMMEDIATE))
+                .map(|(offset, bits)| SplitBits { offset, bits })
                 .collect(),
         })
         .collect();
@@ -151,7 +155,13 @@ mod tests {
     #[test]
     fn adr_holds_a_distance() {
         assert_eq!(distance_bits(&[0x05, 0xa1], 0x14), [0xff, 0x00]);
-        assert_eq!(operands(&[0x05, 0xa1], 0x14, Little).targets, [(0, 0x2c)]);
+        assert_eq!(
+            operands(&[0x05, 0xa1], 0x14, Little).targets,
+            [OperandTarget {
+                offset: 0,
+                address: 0x2c
+            }]
+        );
     }
 
     #[test]
@@ -181,20 +191,24 @@ mod tests {
         let code = [0x45, 0xf2, 0x78, 0x62, 0xc1, 0xf2, 0x34, 0x22];
         let operands = operands(&code, 0x16, Little);
         assert_eq!(operands.distance_bits, [0; 8]);
+        // The bits of each byte that hold the number, by offset.
+        let bits = [
+            (0, 0x0f),
+            (1, 0x04),
+            (2, 0xff),
+            (3, 0x70),
+            (4, 0x0f),
+            (5, 0x04),
+            (6, 0xff),
+            (7, 0x70),
+        ];
         assert_eq!(
             operands.split,
             [SplitNumber {
                 value: 0x1234_5678,
-                bits: vec![
-                    (0, 0x0f),
-                    (1, 0x04),
-                    (2, 0xff),
-                    (3, 0x70),
-                    (4, 0x0f),
-                    (5, 0x04),
-                    (6, 0xff),
-                    (7, 0x70)
-                ],
+                bits: bits
+                    .map(|(offset, bits)| SplitBits { offset, bits })
+                    .to_vec(),
             }]
         );
     }

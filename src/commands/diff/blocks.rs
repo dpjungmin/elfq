@@ -210,22 +210,19 @@ pub(super) struct Parts {
 }
 
 impl Block {
-    /// How the old build's bytes in the block split up, when `old` is
-    /// true, or the new build's, each of whose sections and items `memory`
-    /// and `binary` hold: all 0 when the build has nothing in the block.
-    /// `holds_items` names the sections that hold items in either build.
+    /// How a build's bytes in the block split up, where `places` are its
+    /// sections and load images in the block, the block's `old` or `new`,
+    /// and `memory` and `binary` hold its sections and items: all 0 when
+    /// the build has nothing in the block. `holds_items` names the sections
+    /// that hold items in either build.
     pub(super) fn parts(
         &self,
-        old: bool,
+        places: &[Place],
         memory: &LoadedMemory,
         binary: &Binary,
         holds_items: &HashSet<&str>,
     ) -> Parts {
-        let (places, span) = match old {
-            true => (&self.old, self.old_size()),
-            false => (&self.new, self.new_size()),
-        };
-        let Some(span) = span else {
+        let Some(span) = span(places) else {
             return Parts::default();
         };
         let range = self.range;

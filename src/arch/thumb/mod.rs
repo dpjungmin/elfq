@@ -62,7 +62,7 @@ use super::CodeReferenceKind;
 
 pub(super) use bounds::{code_size, ending, leading_padding, runs_on};
 #[cfg(feature = "tui")]
-pub(super) use layout::{Piece, layout};
+pub(super) use layout::{Piece, PieceAt, layout};
 pub(super) use operands::operands;
 pub(super) use sweep::scan_instructions;
 pub(super) use veneers::is_veneer;

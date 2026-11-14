@@ -73,6 +73,26 @@ fn a_short_table_in_code_ends_at_its_last_handler() {
     assert_eq!(find(&binary), Some(table));
 }
 
+#[test]
+fn an_entry_that_holds_0_does_not_end_the_table() {
+    // NMI's entry holds 0, as in firmware that doesn't handle it, and the
+    // table runs on past it to HardFault's: rule 2 of `VectorTable::size`.
+    let isr = vec![0x2000_1000, 0x1041, 0, 0x1045];
+    let binary = firmware(
+        0x1040,
+        &[
+            (".isr", 0x900, SectionKind::ReadOnlyData, isr),
+            (".text", 0x1000, SectionKind::Text, vec![0xbf00_bf00; 32]),
+        ],
+    );
+    let table = VectorTable {
+        address: 0x900,
+        size: 16,
+        handlers: vec![handler(1, 0x1040), handler(3, 0x1044)],
+    };
+    assert_eq!(find(&binary), Some(table));
+}
+
 /// Firmware whose entry point, 0x1050, isn't its reset handler, 0x1040,
 /// as when a linker script names `main` as the entry point. `.isr` holds
 /// the vector table; `.rodata`, which the file lists first and whose

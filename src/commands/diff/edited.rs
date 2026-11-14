@@ -37,7 +37,7 @@ use object::{Architecture, Endianness};
 
 use super::Build;
 use super::pairing::{Pairing, is_text_byte};
-use crate::arch::{InstructionSet, Operands};
+use crate::arch::{InstructionSet, OperandTarget, Operands};
 use crate::binary::{Binary, Item, ItemKind, RelocationTarget, word};
 use crate::graph::{Node, ReferenceKind, VeneerTarget, Veneers};
 
@@ -217,8 +217,8 @@ impl<'a> Edits<'a> {
                 && new_value != old_number.value
                 && self.correspond(old_number.value, new_value)
             {
-                for &(offset, bits) in &old_number.bits {
-                    explained[offset] |= bits;
+                for byte in &old_number.bits {
+                    explained[byte.offset] |= byte.bits;
                 }
             }
         }
@@ -281,7 +281,7 @@ impl<'a> Edits<'a> {
             item_offset_of(new_binary, new_address),
         ) {
             (Some(old), Some(new)) => {
-                self.partner(old.item) == Some(new.item) && old.offset == new.offset
+                self.pairing.partner_in_new(old.item) == Some(new.item) && old.offset == new.offset
             }
             _ => false,
         };
@@ -289,7 +289,9 @@ impl<'a> Edits<'a> {
             item_ending_at(old_binary, old_address),
             item_ending_at(new_binary, new_address),
         ) {
-            (Some(old_item), Some(new_item)) => self.partner(old_item) == Some(new_item),
+            (Some(old_item), Some(new_item)) => {
+                self.pairing.partner_in_new(old_item) == Some(new_item)
+            }
             _ => false,
         };
         into || past_the_end
@@ -299,15 +301,10 @@ impl<'a> Edits<'a> {
     /// `new_address` both point into items without a partner.
     fn in_unpaired_items(&self, old_address: u64, new_address: u64) -> bool {
         let (old_binary, new_binary) = (&self.old.binary, &self.new.binary);
-        item_offset_of(old_binary, old_address).is_some_and(|old| self.partner(old.item).is_none())
+        item_offset_of(old_binary, old_address)
+            .is_some_and(|old| self.pairing.partner_in_new(old.item).is_none())
             && item_offset_of(new_binary, new_address)
                 .is_some_and(|new| self.pairing.new_to_old[new.item].is_none())
-    }
-
-    /// The partner of the old build's item `old_item`, as an index into the
-    /// new build's items.
-    fn partner(&self, old_item: usize) -> Option<usize> {
-        self.pairing.old_to_new[old_item].map(|(partner, _)| partner)
     }
 
     /// The offsets of the instructions whose distances, in the partners'
@@ -318,18 +315,22 @@ impl<'a> Edits<'a> {
     /// and what the code uses there tells whether it changed.
     fn distances_elsewhere(&self, operands: &PartnerOperands) -> Vec<usize> {
         let (old_operands, new_operands) = (&operands.old, &operands.new);
-        let old_targets: HashMap<usize, u64> = old_operands.targets.iter().copied().collect();
-        let new_targets: HashMap<usize, u64> = new_operands.targets.iter().copied().collect();
-        let same_offset = |offset: &usize, old_target: &u64| {
+        let old_targets: HashMap<usize, u64> = (old_operands.targets.iter())
+            .map(|target| (target.offset, target.address))
+            .collect();
+        let new_targets: HashMap<usize, u64> = (new_operands.targets.iter())
+            .map(|target| (target.offset, target.address))
+            .collect();
+        let same_offset = |old: &OperandTarget| {
             new_targets
-                .get(offset)
-                .is_some_and(|&new_target| self.same_offset_in_partners(*old_target, new_target))
+                .get(&old.offset)
+                .is_some_and(|&new_target| self.same_offset_in_partners(old.address, new_target))
         };
         let only_new = |offset: &usize| !old_targets.contains_key(offset);
-        let new_offsets = new_operands.targets.iter().map(|&(offset, _)| offset);
+        let new_offsets = new_operands.targets.iter().map(|target| target.offset);
         let mut offsets: Vec<usize> = (old_operands.targets.iter())
-            .filter(|(offset, target)| !same_offset(offset, target))
-            .map(|&(offset, _)| offset)
+            .filter(|target| !same_offset(target))
+            .map(|target| target.offset)
             .chain(new_offsets.filter(only_new))
             .collect();
         offsets.sort_unstable();
@@ -344,7 +345,7 @@ impl<'a> Edits<'a> {
             return false;
         }
         let old_uses = self.uses(self.old, &self.old_veneers, old_item, offsets, |index| {
-            self.partner(index)
+            self.pairing.partner_in_new(index)
         });
         let new_uses = self.uses(self.new, &self.new_veneers, new_item, offsets, |index| {
             self.pairing.new_to_old[index].map(|_| index)

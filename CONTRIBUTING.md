@@ -247,13 +247,8 @@ code.
     pointer `NOWHERE`, the highest address, so that it sorts last
     (`arch/thumb/startup/each_iteration.rs`).
 - Name what crosses a function boundary:
-  - About sixty functions, most of them private, return tuples, as
-    `thumb::layout` returns (offset, size, piece) and `Binary::words`
-    (address, value) pairs.
-  - `Operands::targets` holds (offset, address) pairs.
-  - About fifty arguments are bools, as in `Block::parts` in
-    `diff/blocks.rs` and `Boundary::unfollowed_from` in
-    `graph/boundary.rs`.
+  - About sixty functions, most of them private, return tuples.
+  - About forty arguments are bools, most of them in private functions.
 - A test runs elfq through `support/`:
   - In `tests/it/commands/browse.rs`,
     `the_command_under_the_callers_runs_in_a_shell` starts elfq through
@@ -550,6 +545,10 @@ helper type, doesn't take a word of the list; where code still does, as
   runs, each with the function that calls it on a shortest chain from the
   first (`CallTree`). **piece**: bytes that a loop or stores copy or zero
   one after another, which join into a step (`startup`'s `pieces.rs`).
+  The pieces that `arch/thumb/layout.rs` cuts a function's code into for
+  browse's listing, each an instruction or data among them (`Piece`,
+  `PieceAt`), and the private `Piece` of `binary/memory.rs` are other
+  things.
   **unread**: code that elfq can't follow, such as a call through a
   register, which may set up any section not set up yet
   (`Does::Unread`, and `unread.rs`). Where the JSON says `unknown` for a

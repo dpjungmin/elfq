@@ -21,9 +21,10 @@ use iced_x86::{
     Decoder, DecoderOptions, FlowControl, Formatter, Instruction, IntelFormatter, OpKind,
 };
 use object::{Endian, Endianness};
+use thumb_asm::isa::{FpReg, Insn, Operand, Target};
 
 use super::InstructionSet;
-use super::thumb::{self, Piece};
+use super::thumb::{self, Piece, PieceAt};
 
 /// One instruction, or one piece of data among them.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -122,20 +123,17 @@ fn thumb_lines(
     endianness: Endianness,
     marked: &[Range<usize>],
 ) -> Vec<Line> {
-    use thumb_asm::isa::{Decoder, FpReg, Operand, Target};
-
     let layout = thumb::layout(code, address, endianness, marked);
     let mut lines = Vec::with_capacity(layout.len());
-    // The address of the byte at `offset`, as thumb-asm takes it. Thumb
-    // code has 32-bit addresses.
-    let at = |offset: usize| (address + offset as u64) as u32;
     // One decoder reads each run of instructions, so that it knows which
-    // instructions an `it` makes conditional. Armv7E-M's instructions are
-    // those of every core that gets text (see
-    // `ArmArchitecture::is_cortex_m_up_to_v7`), and thumb-asm reads the
-    // others' the same way.
-    let mut decoder = Decoder::at(code, 0, at(0)).target(Target::V7EM);
-    for (offset, size, piece) in layout {
+    // instructions an `it` makes conditional.
+    let mut decoder = decoder_at(code, 0, address);
+    for PieceAt {
+        offset,
+        size,
+        piece,
+    } in layout
+    {
         let bytes = &code[offset..offset + size];
         let line_address = address + offset as u64;
         if piece != Piece::Instruction {
@@ -143,62 +141,87 @@ fn thumb_lines(
             continue;
         }
         if decoder.pos() != offset {
-            decoder = Decoder::at(code, offset, at(offset)).target(Target::V7EM);
+            decoder = decoder_at(code, offset, address);
         }
         let Some(instruction) = decoder.next().filter(|i| i.len() == size) else {
             lines.push(inst_line(line_address, bytes));
             // Start again after it.
-            decoder = Decoder::at(code, offset + size, at(offset + size)).target(Target::V7EM);
+            decoder = decoder_at(code, offset + size, address);
             continue;
         };
         let text = instruction.to_string();
-        let (mnemonic, mut operands) = match text.split_once(' ') {
-            Some((mnemonic, operands)) => (mnemonic, operands.to_string()),
-            None => (text.as_str(), String::new()),
-        };
+        let (mnemonic, operands) = text.split_once(' ').unwrap_or((text.as_str(), ""));
         let mnemonic = condition_first(mnemonic, instruction.mnemonic, instruction.cond.is_some());
-        let reads_memory = instruction
-            .operands
-            .as_slice()
-            .any(|operand| matches!(operand, Operand::Mem(_)));
-        let refers = instruction.branch_target().and_then(|target| {
-            let target = u64::from(target);
-            if reads_memory {
-                // A load from a literal pool, which thumb-asm prints with
-                // the address it reads after the brackets:
-                // `ldr r3, [pc, #8], 0x30000314`. That word has a line of
-                // its own, so the address goes, and an offset of -0, as in
-                // a veneer's `ldr.w pc, [pc]`, is written as objdump
-                // writes it.
-                if let Some(before) = operands.strip_suffix(&format!(", {target:#x}")) {
-                    operands = before.replace("[pc, #-0]", "[pc]");
-                }
-                // The note shows what a load of a word or a double reads.
-                // Loads of a byte, a halfword or two registers from a pool
-                // are rare, and get none.
-                let size = match (instruction.mnemonic, instruction.operands.get(0)) {
-                    ("ldr", _) | ("vldr", Some(Operand::FpReg(FpReg::S(_)))) => 4,
-                    ("vldr", Some(Operand::FpReg(FpReg::D(_)))) => 8,
-                    _ => return None,
-                };
-                Some(Refers::Literal {
-                    address: target,
-                    size,
-                })
-            } else if instruction.mnemonic == "adr" {
-                Some(Refers::Address(target))
-            } else {
-                Some(Refers::Branch(target))
+        let target = instruction.branch_target().map(u64::from);
+        let operands = match target {
+            Some(target) if has_memory_operand(&instruction) => {
+                without_pool_address(operands, target)
             }
-        });
+            _ => operands.to_string(),
+        };
         lines.push(Line {
             address: line_address,
             mnemonic,
             operands,
-            refers,
+            refers: target.and_then(|target| refers(&instruction, target)),
         });
     }
     lines
+}
+
+/// A decoder of the Thumb code `code`, which starts at `address`, from
+/// `offset` on. Thumb code has 32-bit addresses. Armv7E-M's instructions
+/// are those of every core that gets text (see
+/// `ArmArchitecture::is_cortex_m_up_to_v7`), and thumb-asm reads the
+/// others' the same way.
+fn decoder_at(code: &[u8], offset: usize, address: u64) -> thumb_asm::isa::Decoder<'_> {
+    let start = (address + offset as u64) as u32;
+    thumb_asm::isa::Decoder::at(code, offset, start).target(Target::V7EM)
+}
+
+/// Whether one of `instruction`'s operands is in memory, as a load's or a
+/// store's is. When thumb-asm also gives it a branch target, that is the
+/// address of the constant in a literal pool that it loads, not where it
+/// branches.
+fn has_memory_operand(instruction: &Insn) -> bool {
+    (instruction.operands.as_slice()).any(|operand| matches!(operand, Operand::Mem(_)))
+}
+
+/// The operands of a load from a literal pool at `target` as objdump
+/// writes them, from `operands` as thumb-asm prints them, with the address
+/// that the load reads after the brackets: `ldr r3, [pc, #8], 0x30000314`.
+/// That word has a line of its own, so the address goes, and an offset of
+/// -0, as in a veneer's `ldr.w pc, [pc]`, is written as objdump writes it.
+/// `operands` that don't end with the address are given as they are.
+fn without_pool_address(operands: &str, target: u64) -> String {
+    match operands.strip_suffix(&format!(", {target:#x}")) {
+        Some(before) => before.replace("[pc, #-0]", "[pc]"),
+        None => operands.to_string(),
+    }
+}
+
+/// What `instruction` refers to at `target`, which thumb-asm gives as its
+/// branch target: the constant that a load from a literal pool reads, the
+/// address that `adr` computes, or where a branch goes.
+fn refers(instruction: &Insn, target: u64) -> Option<Refers> {
+    if has_memory_operand(instruction) {
+        // The note shows what a load of a word or a double reads. Loads of
+        // a byte, a halfword or two registers from a pool are rare, and get
+        // none.
+        let size = match (instruction.mnemonic, instruction.operands.get(0)) {
+            ("ldr", _) | ("vldr", Some(Operand::FpReg(FpReg::S(_)))) => 4,
+            ("vldr", Some(Operand::FpReg(FpReg::D(_)))) => 8,
+            _ => return None,
+        };
+        Some(Refers::Literal {
+            address: target,
+            size,
+        })
+    } else if instruction.mnemonic == "adr" {
+        Some(Refers::Address(target))
+    } else {
+        Some(Refers::Branch(target))
+    }
 }
 
 /// A line of data among Thumb code: `.word`, `.short` or `.byte`, by its
@@ -210,19 +233,17 @@ fn data_line(address: u64, bytes: &[u8], endianness: Endianness, piece: Piece) -
         _ => (".byte", u64::from(bytes[0]), 2),
     };
     let refers = match piece {
-        Piece::Case => Refers::Case(value & !1),
-        _ if mnemonic == ".word" => Refers::Word(value),
-        _ => {
-            return line(
-                address,
-                mnemonic,
-                format!("{value:#0width$x}", width = digits + 2),
-            );
-        }
+        Piece::Case => Some(Refers::Case(value & !1)),
+        _ if mnemonic == ".word" => Some(Refers::Word(value)),
+        _ => None,
     };
     Line {
-        refers: Some(refers),
-        ..line(address, mnemonic, format!("{value:#010x}"))
+        refers,
+        ..line(
+            address,
+            mnemonic,
+            format!("{value:#0width$x}", width = digits + 2),
+        )
     }
 }
 

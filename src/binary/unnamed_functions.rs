@@ -319,7 +319,7 @@ fn stored_addresses(binary: &Binary) -> BTreeSet<u64> {
 fn thumb_addresses(binary: &Binary, start: u64, end: u64) -> Vec<u64> {
     binary
         .aligned_words(start, end)
-        .filter_map(|(_, value)| binary.thumb_code_address(value))
+        .filter_map(|word| binary.thumb_code_address(word.value))
         .collect()
 }
 

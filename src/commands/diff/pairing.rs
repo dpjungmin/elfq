@@ -148,7 +148,7 @@ fn by_uses(pairing: &mut Pairing, old: &Build, new: &Build) {
         // the new build's items.
         let Some(mut partners) = users
             .iter()
-            .map(|&(user, kind)| Some((pairing.old_to_new[user]?.0, kind)))
+            .map(|&(user, kind)| Some((pairing.partner_in_new(user)?, kind)))
             .collect::<Option<Vec<_>>>()
         else {
             return Vec::new();
@@ -172,8 +172,8 @@ fn by_uses(pairing: &mut Pairing, old: &Build, new: &Build) {
         users.dedup();
         uses_keys(&new.binary, index, users)
     };
-    let old_keys = keys_of(&old.binary, pairing, true, old_key);
-    let new_keys = keys_of(&new.binary, pairing, false, new_key);
+    let old_keys = keys_of(&pairing.old_to_new, old_key);
+    let new_keys = keys_of(&pairing.new_to_old, new_key);
     pairing.pair_keys(&old.binary, &new.binary, PairedBy::Uses, old_keys, new_keys);
 }
 
@@ -192,6 +192,14 @@ fn by_place(pairing: &mut Pairing, old: &Binary, new: &Binary) {
 }
 
 impl Pairing {
+    /// The partner of the old build's item `old_item`, as an index into the
+    /// new build's items, or `None` while it has none: one not paired yet,
+    /// as `by_uses` can ask about, or once pairing is done, one that is
+    /// gone.
+    pub(super) fn partner_in_new(&self, old_item: usize) -> Option<usize> {
+        self.old_to_new[old_item].map(|(partner, _)| partner)
+    }
+
     /// Pairs, of the items still unpaired, each item of `old` with the item
     /// of `new` that has one of its keys, when only that item of each build
     /// has the key, and both are of one kind. `key` gives the keys of an
@@ -206,8 +214,8 @@ impl Pairing {
         K: Hash + Eq + Send,
         I: IntoIterator<Item = K>,
     {
-        let old_keys = keys_of(old, self, true, |index| key(old, index));
-        let new_keys = keys_of(new, self, false, |index| key(new, index));
+        let old_keys = keys_of(&self.old_to_new, |index| key(old, index));
+        let new_keys = keys_of(&self.new_to_old, |index| key(new, index));
         self.pair_keys(old, new, rule, old_keys, new_keys);
     }
 
@@ -274,24 +282,17 @@ impl Lead {
     }
 }
 
-/// The keys of the unpaired items of `binary`, the old build's when `old`,
-/// with the index of the item that has each.
-fn keys_of<K, I>(
-    binary: &Binary,
-    pairing: &Pairing,
-    old: bool,
-    key: impl Fn(usize) -> I,
-) -> Vec<(usize, K)>
+/// The keys of a build's unpaired items, with the index of the item that
+/// has each. `partners` holds each item's partner, by its index, as
+/// [`Pairing::old_to_new`] does for the old build's and
+/// [`Pairing::new_to_old`] for the new build's.
+fn keys_of<P, K, I>(partners: &[Option<P>], key: impl Fn(usize) -> I) -> Vec<(usize, K)>
 where
     I: IntoIterator<Item = K>,
 {
-    let unpaired = |index: &usize| match old {
-        true => pairing.old_to_new[*index].is_none(),
-        false => pairing.new_to_old[*index].is_none(),
-    };
-    (0..binary.items.len())
-        .filter(unpaired)
-        .flat_map(|index| key(index).into_iter().map(move |key| (index, key)))
+    (partners.iter().enumerate())
+        .filter(|(_, partner)| partner.is_none())
+        .flat_map(|(index, _)| key(index).into_iter().map(move |key| (index, key)))
         .collect()
 }
 

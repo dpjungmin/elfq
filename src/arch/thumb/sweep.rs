@@ -444,13 +444,13 @@ impl<'a> Scanner<'a> {
         (is_bhi && in_a_row && cmp_register == register).then_some(usize::from(n) + 1)
     }
 
-    /// Marks the jump table after the `tbb` or `tbh` at `site` as data, and
-    /// reports a jump to each of its targets. Its entries are distances
+    /// Marks the jump table after the `tbb` or `tbh` at `offset` as data,
+    /// and reports a jump to each of its targets. Its entries are distances
     /// forward from the table's start, in halfwords. It has `entries`
     /// entries when the code before says so, and otherwise ends where the
     /// nearest target begins.
-    fn jump_table(&mut self, site: usize, entry_size: usize, entries: Option<usize>) {
-        let start = site + 4;
+    fn jump_table(&mut self, offset: usize, entry_size: usize, entries: Option<usize>) {
+        let start = offset + 4;
         let mut end = entries.map_or(self.code.len(), |entries| start + entries * entry_size);
         let mut entry = start;
         let mut targets = Vec::new();
@@ -472,7 +472,7 @@ impl<'a> Scanner<'a> {
         targets.retain(|&target| target >= entry);
         for target in targets {
             self.references.push(CodeReference {
-                site: self.address + site as u64,
+                site: self.address + offset as u64,
                 kind: Jump(self.address + target as u64),
             });
         }
@@ -803,8 +803,12 @@ mod tests {
             0x10, 0xf8, 0x70, 0x47, 0x70, 0x47, 0x70, 0x47, 0x70, 0x47,
         ];
         let table_and_word = 8..16;
+        let pieces: Vec<(usize, usize, Piece)> = layout(&code, 0, Little, &[table_and_word])
+            .into_iter()
+            .map(|at| (at.offset, at.size, at.piece))
+            .collect();
         assert_eq!(
-            layout(&code, 0, Little, &[table_and_word]),
+            pieces,
             [
                 (0, 2, Piece::Instruction),
                 (2, 2, Piece::Instruction),
@@ -918,8 +922,8 @@ mod tests {
         {
             let cases: Vec<usize> = layout(&code, 0x2000_4800, Little, &[])
                 .into_iter()
-                .filter(|&(_, _, piece)| piece == Piece::Case)
-                .map(|(offset, _, _)| offset)
+                .filter(|at| at.piece == Piece::Case)
+                .map(|at| at.offset)
                 .collect();
             assert_eq!(cases, [0x10, 0x14]);
         }

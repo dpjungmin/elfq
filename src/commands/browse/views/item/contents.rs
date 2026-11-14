@@ -24,7 +24,7 @@
 
 use super::line_notes::LineNotes;
 use super::listing::{Listing, ListingLine};
-use crate::binary::{Binary, ItemKind, RelocationTarget, exception_name};
+use crate::binary::{Binary, ItemKind, RelocationTarget, StoredWord, exception_name};
 use crate::commands::browse::session::Session;
 use crate::commands::text;
 use crate::graph::Reference;
@@ -89,12 +89,12 @@ pub(super) fn data_listing(session: &Session, index: usize) -> Listing {
 fn entries(notes: &LineNotes, table: u64) -> (String, Vec<ListingLine>) {
     let binary = notes.session.binary;
     let item = &binary.items[notes.index];
-    let words: Vec<(u64, u64)> = binary
+    let words: Vec<StoredWord> = binary
         .words(item.address, item.address + item.size)
         .collect();
     let names: Vec<String> = (words.iter())
-        .map(|&(address, _)| {
-            let number = (address - table) / binary.pointer_size;
+        .map(|word| {
+            let number = (word.address - table) / binary.pointer_size;
             exception_name(number, binary.arm_architecture)
         })
         .collect();
@@ -103,7 +103,7 @@ fn entries(notes: &LineNotes, table: u64) -> (String, Vec<ListingLine>) {
         .max()
         .unwrap_or(0);
     let mut lines = Vec::new();
-    for (&(address, _), name) in words.iter().zip(&names) {
+    for (&StoredWord { address, .. }, name) in words.iter().zip(&names) {
         let value = format!("{name:<width$}  {}", value(binary, address));
         match notes.references.get(&address) {
             Some(references) => {

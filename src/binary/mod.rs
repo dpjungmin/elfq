@@ -410,11 +410,11 @@ impl Binary {
     }
 
     /// The pointer-sized words stored one after another from `start` up to
-    /// `end`, as `(address, value)`: each one [`Binary::pointer_at`] reads,
-    /// from the section that holds it. Words whose bytes the file doesn't
-    /// hold are left out, so `.bss`, which takes no space in the file, has
-    /// none, however large it is.
-    pub fn words(&self, start: u64, end: u64) -> impl Iterator<Item = (u64, u64)> + '_ {
+    /// `end`: each one [`Binary::pointer_at`] reads, from the section that
+    /// holds it. Words whose bytes the file doesn't hold are left out, so
+    /// `.bss`, which takes no space in the file, has none, however large it
+    /// is.
+    pub fn words(&self, start: u64, end: u64) -> impl Iterator<Item = StoredWord> + '_ {
         let size = self.pointer_size;
         let mut next = Some(start);
         // A run of words at a time, all from one section: they are read in
@@ -430,8 +430,10 @@ impl Binary {
             let words = run.bytes.chunks_exact(size as usize).take(count as usize);
             Some((slot..run.stop).step_by(size as usize).zip(words))
         });
-        runs.flatten()
-            .map(|(address, bytes)| (address, word(bytes, self.endianness)))
+        runs.flatten().map(|(address, bytes)| StoredWord {
+            address,
+            value: word(bytes, self.endianness),
+        })
     }
 
     /// The words that [`Binary::words`] reads, but only at addresses that
@@ -440,7 +442,7 @@ impl Binary {
         &self,
         start: u64,
         end: u64,
-    ) -> impl Iterator<Item = (u64, u64)> + '_ {
+    ) -> impl Iterator<Item = StoredWord> + '_ {
         let first = start.checked_next_multiple_of(self.pointer_size);
         self.words(first.unwrap_or(end), end)
     }
@@ -648,6 +650,16 @@ impl Binary {
     pub fn own_function_stubs(&self) -> HashMap<usize, usize> {
         plt::own_function_stubs(self)
     }
+}
+
+/// A pointer-sized word that the file stores, as [`Binary::words`] reads
+/// it.
+#[derive(Debug, PartialEq, Eq)]
+pub struct StoredWord {
+    /// Where it is stored.
+    pub address: u64,
+    /// What it holds, as the file holds it before the program runs.
+    pub value: u64,
 }
 
 /// A run of the words that [`Binary::words`] reads, all from the section
