@@ -93,19 +93,26 @@
 //!    reads: as an address, as part of one, or by passing it on. If it has
 //!    a [`Flow`] of its own, say what that passes on in
 //!    [`Function::report_flow`] and [`Function::passes_stack_on`], which
-//!    the compiler asks for. It doesn't ask in `Code::find_jumps`,
-//!    `Walker::called` or `Walker::on_jump`, whose `_` arms CONTRIBUTING
-//!    lists.
+//!    the compiler asks for, as it does in `Code::find_jumps`. It doesn't
+//!    ask in `Walker::called` and `Walker::on_jump`, which take the calls
+//!    and jumps that `Walker::step` sends them, as their docs say: follow
+//!    a new call or jump there too.
 //! 5. In [`Function::builds_address`], say whether it builds an address,
 //!    and if it does, list it in `may_find_more`, in `code.rs`, so that
 //!    elfq follows the functions that have it.
-//! 6. In `startup`, say what it puts in the register (`Walker::result`),
-//!    and, where the walk can tell, how it sets the flags
-//!    (`Walker::flags`) and what it compares (`Walker::compare`).
+//! 6. In `startup`, say what it puts in the register (`Walker::result`)
+//!    and where that word was loaded from (`result_source`), and, where
+//!    the walk can tell, how it sets the flags (`Walker::flags`) and what
+//!    it compares (`Walker::compare`). If it loads or stores, say where
+//!    (`Walker::access`), and record a store (`Walker::store`). If it
+//!    loads several words, writes back to its base, or pushes or pops,
+//!    follow that in `Walker::loaded_words`, `Walker::written_back`,
+//!    `Walker::pushed` and `Walker::move_stack`.
 //!
-//! The compiler points to each of these but `store_word`, `move_stack`,
-//! `may_find_more` and `Walker::compare`, which list only what they
-//! follow.
+//! The compiler points to each of these but `Function::store_word`,
+//! `Function::move_stack` and `may_find_more`, and in `startup`, to none
+//! but `Walker::result` and `Walker::flags`: the others list only what
+//! they follow.
 
 mod address_uses;
 mod code;

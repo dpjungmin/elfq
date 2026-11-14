@@ -243,12 +243,6 @@ code.
 - Work out the facts, then word them:
   - The hidden `debug` commands write as they go.
 - Let the compiler hold the rules:
-  - Four functions of the Thumb readers match `Flow` or `Operation`
-    with `_` arms though their docs don't state what the other variants
-    give: `Walker::execute` in `arch/thumb/startup/execute.rs`,
-    `Walker::called` and `Walker::on_jump` in
-    `arch/thumb/startup/mod.rs`, and `Code::find_jumps` in
-    `arch/thumb/values/code.rs`.
   - The startup walk gives a word that no register points to the
     pointer `NOWHERE`, the highest address, so that it sorts last
     (`arch/thumb/startup/each_iteration.rs`).
@@ -256,11 +250,10 @@ code.
   - About sixty functions, most of them private, return tuples, as
     `thumb::layout` returns (offset, size, piece) and `Binary::words`
     (address, value) pairs.
-  - `Operands::targets` holds (offset, address) pairs, and the startup
-    walk keeps its ways out of a loop as pairs of addresses (`pending`).
+  - `Operands::targets` holds (offset, address) pairs.
   - About fifty arguments are bools, as in `Block::parts` in
-    `diff/blocks.rs`, `Boundary::unfollowed_from` in
-    `graph/boundary.rs` and the startup walk's `Walker::execute`.
+    `diff/blocks.rs` and `Boundary::unfollowed_from` in
+    `graph/boundary.rs`.
 - A test runs elfq through `support/`:
   - In `tests/it/commands/browse.rs`,
     `the_command_under_the_callers_runs_in_a_shell` starts elfq through
@@ -563,6 +556,12 @@ helper type, doesn't take a word of the list; where code still does, as
   section's status, `can't follow` for the problem and `can't tell` for
   the note, the code keeps those words (`Status::Unknown`,
   `Problem::CantFollow`, `Note::CantTell`).
+- **progression**: a number in a loop's code that moves by the same
+  amount each iteration: what it is in the first iteration, and how far
+  it moves each iteration after (`arch::startup::Progression`), as where
+  a loop's store stores and where it loads from (`LoopStore::at`,
+  `LoopStore::source`). Code names that amount `moves`, since a step is
+  one thing that startup code does.
 - **run**: in the tests, one run of the elfq program, with its exit
   status and what it printed on stdout and stderr (`Run`, in
   `tests/it/support/mod.rs`), which `run` gives; its `printed` is what
@@ -572,12 +571,10 @@ helper type, doesn't take a word of the list; where code still does, as
   `binary/memory.rs`.
 
 Some code still uses one of these words for something else. The Thumb
-walk's `Step` is what an instruction leads to; `reach`'s `Step` is
+walk's `Step` is what an instruction leads to, and `reach`'s `Step` is
 SYMBOL, or an item or import that it reaches, at its place in the tree,
-whose place in the search is a `StepId`; and a loop's `LoopStore::step`
-is how far a store moves each iteration, which `pieces.rs` reads beside
-`Piece::step`, a step index. Those are names to fix, not meanings to
-copy.
+whose place in the search is a `StepId`. Those are names to fix, not
+meanings to copy.
 
 ## Tests
 

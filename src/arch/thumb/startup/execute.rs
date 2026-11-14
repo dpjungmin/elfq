@@ -11,122 +11,113 @@ use crate::arch::startup::{Event, Source, Store};
 use crate::arch::thumb::decode::{Addressing, Effect, Operation, SetsFlags, Transfer, each};
 use crate::arch::thumb::{ARGUMENTS, PC, SP};
 
-use super::Walker;
 use super::calls::results;
 use super::walk_state::{Compare, Flags, Known};
+use super::{Executes, FlagsChange, Walker};
+
+/// What an instruction writes to a register: the register, and the
+/// number when the walk can tell it.
+#[derive(Debug, Clone, Copy)]
+struct RegisterWrite {
+    register: u16,
+    number: Option<u32>,
+}
+
+/// A word that `ldm` or `ldrd` loads into a register (see
+/// [`Walker::loaded_words`]).
+struct LoadedWord {
+    register: u16,
+    /// The word, when the walk can tell it.
+    word: Option<u32>,
+    /// Where it was loaded from, when the walk can tell (see
+    /// [`Known::sources`]).
+    source: Option<Source>,
+}
+
+/// A word that a push stores on the stack (see [`Walker::pushed`]).
+struct StackWord {
+    address: u32,
+    /// The word, when the walk can tell it.
+    word: Option<u32>,
+}
+
+/// How [`Walker::load`] reads a word that code didn't store.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Reading {
+    /// A word that the code reads as part of itself, as a literal from its
+    /// pool or the address that `ldr.w pc` jumps through: read as the code
+    /// is, as if copied into place, or where there is no code, as at reset.
+    Literal,
+    /// Any other word: read as it is at reset.
+    Data,
+}
 
 impl Walker<'_> {
     /// Changes `known` as the instruction at `site` does, other than where
-    /// it goes next. When it is `conditional`, in an `it` block whose
-    /// condition the walk can't tell, what it writes becomes unknown.
+    /// it goes next. When `executes` is [`Executes::Maybe`], in an `it`
+    /// block whose condition the walk can't tell, what it writes becomes
+    /// unknown.
     ///
-    /// It reads all it needs from `known` before it forgets what the
-    /// instruction writes, as `ldr r0, [r0]` reads r0 for the address it
-    /// loads r0 from, and only then writes what it worked out.
+    /// First it works out where a load or store reads or writes
+    /// ([`Walker::access`]), records a store ([`Walker::store`]) and, when
+    /// the instruction sets the flags, what it compares
+    /// ([`Walker::compare`]) and the flags after ([`Walker::flags`]). An
+    /// instruction that may not run stops there. Then it reads all it
+    /// needs from `known` before it forgets what the instruction writes,
+    /// as `ldr r0, [r0]` reads r0 for the address it loads r0 from: what
+    /// the instruction puts in a register ([`Walker::result`],
+    /// [`result_source`]), the words that `ldm` and `ldrd` load
+    /// ([`Walker::loaded_words`]), what a load or store writes back to its
+    /// base register ([`Walker::written_back`]), and the words that a push
+    /// stores ([`Walker::pushed`]). Only then does it write what it worked
+    /// out, moving the stack for a push or pop first
+    /// ([`Walker::move_stack`]).
     pub(super) fn execute(
         &mut self,
         known: &mut Known,
         site: u64,
         effect: &Effect,
-        changes_flags: bool,
-        conditional: bool,
+        flags_change: FlagsChange,
+        executes: Executes,
         depth: u32,
     ) {
         known.results |= results(effect);
         known.left &= !(effect.writes & ARGUMENTS) as u8;
         let at = self.access(known, site, effect);
         if let Operation::Store { .. } = effect.operation {
-            self.store(known, site, depth, effect, at, conditional);
+            self.store(known, site, depth, effect, at, executes);
         }
-        if changes_flags {
+        if flags_change == FlagsChange::Sets {
             self.compare(known, site, effect.operation);
         }
-        let flags = match (changes_flags, conditional) {
-            (false, _) => known.flags,
-            (true, true) => Flags::default(),
-            (true, false) => self.flags(known, site, effect),
+        let flags = match (flags_change, executes) {
+            (FlagsChange::Keeps, _) => known.flags,
+            (FlagsChange::Sets, Executes::Maybe) => Flags::default(),
+            (FlagsChange::Sets, Executes::Surely) => self.flags(known, site, effect),
         };
-        if conditional {
+        if executes == Executes::Maybe {
             known.forget_registers(effect.writes);
             known.flags = flags;
             return;
         }
+        // All that it writes, read before the registers it writes are
+        // forgotten.
         let result = self.result(known, site, effect.operation, at);
-        let source = match effect.operation {
-            Operation::Copy { source, .. } if source != PC => known.sources[usize::from(source)],
-            Operation::Load {
-                into: Transfer::Word(_),
-                ..
-            } => at.map(|address| Source { site, address }),
-            _ => None,
-        };
-        // The words that `ldm` and `ldrd` load, with where from.
-        let words: Vec<(u16, Option<u32>, Option<Source>)> = match effect.operation {
-            Operation::Load { into, .. } => (word_registers(into).into_iter())
-                .enumerate()
-                .map(|(n, register)| {
-                    let address = at.map(|at| at.wrapping_add(4 * n as u32));
-                    let word = address.and_then(|address| self.load(known, address, false));
-                    let source = address.map(|address| Source { site, address });
-                    (register, word, source)
-                })
-                .collect(),
-            _ => Vec::new(),
-        };
-        // The base register after a load or store that adds to it.
-        let moved = match effect.operation {
-            Operation::Load {
-                base, addressing, ..
-            }
-            | Operation::Store {
-                base, addressing, ..
-            } => addressing.writeback().map(|amount| {
-                let after = self.register(known, base, site);
-                (base, after.map(|n| n.wrapping_add_signed(amount)))
-            }),
-            _ => None,
-        };
+        let source = result_source(known, site, effect, at);
+        let words = self.loaded_words(known, site, effect, at);
+        let moved = self.written_back(known, site, effect);
         let sp = known.registers[usize::from(SP)];
-        let mut pushed = Vec::new();
-        if let (Operation::Push { registers, size }, Some(sp)) = (effect.operation, sp) {
-            let bottom = sp.wrapping_sub(size);
-            for (n, register) in each(registers).enumerate() {
-                let word = self.register(known, register, site);
-                pushed.push((bottom.wrapping_add(4 * n as u32), word));
-            }
-            // The floating-point registers that `vpush` stores.
-            for at in (bottom..sp).step_by(4).skip(pushed.len()) {
-                pushed.push((at, None));
-            }
-        }
+        let pushed = self.pushed(known, site, effect, sp);
         known.forget_registers(effect.writes);
-        match (effect.operation, sp) {
-            (Operation::Push { size, .. }, Some(sp)) => {
-                let memory = Rc::make_mut(&mut known.memory);
-                for (at, word) in pushed {
-                    memory.insert(at, word);
-                }
-                known.registers[usize::from(SP)] = Some(sp.wrapping_sub(size));
-            }
-            (Operation::Pop { registers, size }, Some(sp)) => {
-                for (n, register) in each(registers).enumerate() {
-                    if register != PC {
-                        let at = sp.wrapping_add(4 * n as u32);
-                        known.registers[usize::from(register)] = self.load(known, at, false);
-                    }
-                }
-                known.registers[usize::from(SP)] = Some(sp.wrapping_add(size));
-            }
-            _ => {}
-        }
-        if let Some((register, _)) = result {
+        self.move_stack(known, effect, sp, pushed);
+        if let Some(RegisterWrite { register, .. }) = result {
             known.sources[usize::from(register)] = source;
         }
-        for (register, word, source) in words {
-            known.registers[usize::from(register)] = word;
-            known.sources[usize::from(register)] = source;
+        for loaded in words {
+            known.registers[usize::from(loaded.register)] = loaded.word;
+            known.sources[usize::from(loaded.register)] = loaded.source;
         }
-        for (register, number) in result.into_iter().chain(moved) {
+        for RegisterWrite { register, number } in result.into_iter().chain(moved) {
             if register != PC {
                 known.registers[usize::from(register)] = number;
             }
@@ -137,7 +128,7 @@ impl Walker<'_> {
         known.flags = flags;
     }
 
-    /// The register that `operation` writes a number to, and the number,
+    /// What `operation` writes to a register: the register, and the number
     /// when the walk can tell it. A load loads it from `at`.
     fn result(
         &self,
@@ -145,13 +136,13 @@ impl Walker<'_> {
         site: u64,
         operation: Operation,
         at: Option<u32>,
-    ) -> Option<(u16, Option<u32>)> {
+    ) -> Option<RegisterWrite> {
         let get = |register| self.register(known, register, site);
-        let number = |register, number| Some((register, number));
+        let number = |register, number| Some(RegisterWrite { register, number });
         match operation {
             Operation::Constant { register, value } => number(register, Some(value)),
             Operation::Literal { register, address } => {
-                number(register, self.load(known, address as u32, true))
+                number(register, self.load(known, address as u32, Reading::Literal))
             }
             Operation::Address { register, value } => number(register, Some(value)),
             Operation::HighHalf { register, high } => {
@@ -211,7 +202,10 @@ impl Walker<'_> {
             Operation::Load {
                 into: Transfer::Word(register),
                 ..
-            } => number(register, at.and_then(|at| self.load(known, at, false))),
+            } => number(
+                register,
+                at.and_then(|at| self.load(known, at, Reading::Data)),
+            ),
             Operation::Nothing
             | Operation::Load { .. }
             | Operation::Store { .. }
@@ -219,6 +213,118 @@ impl Walker<'_> {
             | Operation::Pop { .. }
             | Operation::Compare { .. }
             | Operation::CompareRegisters { .. } => None,
+        }
+    }
+
+    /// The words that the instruction at `site` that does what `effect`
+    /// says loads into registers when it is `ldm` or `ldrd`, one after
+    /// another from `at`, with where it loads each from. Any other
+    /// operation loads none of these: a load of one word gives its word as
+    /// [`Walker::result`] does.
+    fn loaded_words(
+        &self,
+        known: &Known,
+        site: u64,
+        effect: &Effect,
+        at: Option<u32>,
+    ) -> Vec<LoadedWord> {
+        let Operation::Load { into, .. } = effect.operation else {
+            return Vec::new();
+        };
+        (word_registers(into).into_iter())
+            .enumerate()
+            .map(|(n, register)| {
+                let address = at.map(|at| at.wrapping_add(4 * n as u32));
+                LoadedWord {
+                    register,
+                    word: address.and_then(|address| self.load(known, address, Reading::Data)),
+                    source: address.map(|address| Source { site, address }),
+                }
+            })
+            .collect()
+    }
+
+    /// What a load or store at `site` that does what `effect` says and adds
+    /// to its base register, as `ldr r0, [r1], #4` and `str r0, [r1, #-4]!`
+    /// do, leaves there, with the number when the walk can tell it. Any
+    /// other operation writes nothing back.
+    fn written_back(&self, known: &Known, site: u64, effect: &Effect) -> Option<RegisterWrite> {
+        let (Operation::Load {
+            base, addressing, ..
+        }
+        | Operation::Store {
+            base, addressing, ..
+        }) = effect.operation
+        else {
+            return None;
+        };
+        let amount = addressing.writeback()?;
+        let number = self.register(known, base, site);
+        Some(RegisterWrite {
+            register: base,
+            number: number.map(|n| n.wrapping_add_signed(amount)),
+        })
+    }
+
+    /// The words that a push at `site` that does what `effect` says stores
+    /// below `sp`, the stack pointer before it, when the walk can tell
+    /// `sp`: its registers', from the lowest address up, and then words it
+    /// can't tell for the floating-point registers that `vpush` stores. Any
+    /// other operation pushes none.
+    fn pushed(&self, known: &Known, site: u64, effect: &Effect, sp: Option<u32>) -> Vec<StackWord> {
+        let (Operation::Push { registers, size }, Some(sp)) = (effect.operation, sp) else {
+            return Vec::new();
+        };
+        let bottom = sp.wrapping_sub(size);
+        let mut pushed = Vec::new();
+        for (n, register) in each(registers).enumerate() {
+            let word = self.register(known, register, site);
+            let address = bottom.wrapping_add(4 * n as u32);
+            pushed.push(StackWord { address, word });
+        }
+        // The floating-point registers that `vpush` stores.
+        for address in (bottom..sp).step_by(4).skip(pushed.len()) {
+            pushed.push(StackWord {
+                address,
+                word: None,
+            });
+        }
+        pushed
+    }
+
+    /// Moves the stack when the instruction that does what `effect` says is
+    /// a push or pop and the walk can tell `sp`, the stack pointer before
+    /// it: a push stores the words it `pushed` and moves sp down, and a pop
+    /// loads its registers but pc and moves sp up. Any other operation, or
+    /// a push or pop where the walk can't tell sp, leaves the stack as it
+    /// is here: a load or store that adds to sp moves it as
+    /// [`Walker::written_back`] says.
+    fn move_stack(
+        &self,
+        known: &mut Known,
+        effect: &Effect,
+        sp: Option<u32>,
+        pushed: Vec<StackWord>,
+    ) {
+        match (effect.operation, sp) {
+            (Operation::Push { size, .. }, Some(sp)) => {
+                let memory = Rc::make_mut(&mut known.memory);
+                for StackWord { address, word } in pushed {
+                    memory.insert(address, word);
+                }
+                known.registers[usize::from(SP)] = Some(sp.wrapping_sub(size));
+            }
+            (Operation::Pop { registers, size }, Some(sp)) => {
+                for (n, register) in each(registers).enumerate() {
+                    if register != PC {
+                        let at = sp.wrapping_add(4 * n as u32);
+                        known.registers[usize::from(register)] =
+                            self.load(known, at, Reading::Data);
+                    }
+                }
+                known.registers[usize::from(SP)] = Some(sp.wrapping_add(size));
+            }
+            _ => {}
         }
     }
 
@@ -326,7 +432,7 @@ impl Walker<'_> {
         depth: u32,
         effect: &Effect,
         address: Option<u32>,
-        conditional: bool,
+        executes: Executes,
     ) {
         let Operation::Store {
             from: transfer,
@@ -349,7 +455,7 @@ impl Walker<'_> {
             .collect();
         if let Some(address) = address {
             let memory = Rc::make_mut(&mut known.memory);
-            if !words.is_empty() && address.is_multiple_of(4) && !conditional {
+            if !words.is_empty() && address.is_multiple_of(4) && executes == Executes::Surely {
                 for (n, &word) in words.iter().enumerate() {
                     memory.insert(address.wrapping_add(4 * n as u32), word);
                 }
@@ -393,7 +499,7 @@ impl Walker<'_> {
                 size,
                 value,
                 source,
-                conditional,
+                conditional: executes == Executes::Maybe,
             }));
         }
     }
@@ -444,7 +550,7 @@ impl Walker<'_> {
         }
         let get = |register| self.register(known, register, site);
         let left = || match self.result(known, site, operation, None) {
-            Some((_, number)) => [Some([number, Some(0)]), None],
+            Some(RegisterWrite { number, .. }) => [Some([number, Some(0)]), None],
             None => [None, None],
         };
         let compares = match operation {
@@ -478,15 +584,17 @@ impl Walker<'_> {
         }
     }
 
-    /// The word at `address`: what code stored there on the way, or what
-    /// is there at reset. A literal pool is read as the code is, when
-    /// `literal`, as if copied into place, unless code stored a word the
-    /// walk knows there.
-    pub(super) fn load(&self, known: &Known, address: u32, literal: bool) -> Option<u32> {
+    /// The word at `address`: what code stored there on the way, or else
+    /// what `reading` says. A literal is read as the code is, as if copied
+    /// into place, unless code stored a word the walk knows there.
+    pub(super) fn load(&self, known: &Known, address: u32, reading: Reading) -> Option<u32> {
         if !address.is_multiple_of(4) {
             return None;
         }
-        let code = self.program.code(u64::from(address)).filter(|_| literal);
+        let code = self
+            .program
+            .code(u64::from(address))
+            .filter(|_| reading == Reading::Literal);
         match (
             known.memory.get(&address),
             code.and_then(|bytes| bytes.get(..4)),
@@ -505,6 +613,22 @@ impl Walker<'_> {
             PC => Some((site as u32).wrapping_add(4)),
             _ => known.registers[usize::from(register)],
         }
+    }
+}
+
+/// Where the word that [`Walker::result`] gives for the instruction at
+/// `site` that does what `effect` says was loaded from, as
+/// [`Known::sources`] keeps it: for a copy from a register other than pc,
+/// where that register's word was loaded from; for a load of one word,
+/// `at`. Any other operation gives none.
+fn result_source(known: &Known, site: u64, effect: &Effect, at: Option<u32>) -> Option<Source> {
+    match effect.operation {
+        Operation::Copy { source, .. } if source != PC => known.sources[usize::from(source)],
+        Operation::Load {
+            into: Transfer::Word(_),
+            ..
+        } => at.map(|address| Source { site, address }),
+        _ => None,
     }
 }
 

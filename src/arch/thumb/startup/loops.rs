@@ -18,7 +18,8 @@ use super::each_iteration::knows_sources;
 use super::execute::holds;
 use super::walk_state::{Known, Visit, stored_since};
 use super::{
-    Branch, Finish, Frame, MOST_WALKED_ITERATIONS, NESTING, RUNS_INTO, Run, Step, Walker,
+    Branch, Finish, Frame, MOST_WALKED_ITERATIONS, NESTING, OUT_OF_LINE_BODY,
+    OUT_OF_LINE_INSTRUCTIONS, OUT_OF_LINE_REACH, RUNS_INTO, Run, Step, TEST_INSTRUCTIONS, Walker,
     decode_at, straight_line,
 };
 
@@ -284,10 +285,12 @@ impl Walker<'_> {
         site: u64,
         bounds: Option<FunctionBounds>,
     ) -> Option<u64> {
-        let lowest = bounds.map_or(site.saturating_sub(0x400), |bounds| bounds.start);
-        for instruction in straight_line(self.program, start).take(16) {
+        let lowest = bounds.map_or(site.saturating_sub(OUT_OF_LINE_REACH), |bounds| {
+            bounds.start
+        });
+        for instruction in straight_line(self.program, start).take(OUT_OF_LINE_INSTRUCTIONS) {
             let address = instruction.address;
-            if address >= start + 64 {
+            if address >= start + OUT_OF_LINE_BODY {
                 return None;
             }
             let effect = instruction.effect;
@@ -329,7 +332,7 @@ impl Walker<'_> {
     /// other flow, such as a call, jump, return or `udf`, makes it no test.
     fn is_test(&self, test: u64, site: u64, body: u64) -> bool {
         let mut address = test;
-        for _ in 0..16 {
+        for _ in 0..TEST_INSTRUCTIONS {
             if address >= site {
                 return address == site;
             }

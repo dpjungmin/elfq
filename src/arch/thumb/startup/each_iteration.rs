@@ -5,14 +5,14 @@
 
 use std::collections::HashMap;
 
-use crate::arch::startup::{Event, How, Iteration, LoopStore, Source, Store};
+use crate::arch::startup::{Event, How, Iteration, LoopStore, Progression, Source, Store};
 use crate::arch::thumb::PC;
 use crate::arch::thumb::decode::{Addressing, Effect, Operation, Registers, each};
 
 use super::count::{Mode, line_through};
 use super::loops::FoundLoop;
 use super::walk_state::{Budget, Known, Mark};
-use super::{Frame, Run, WALK_EACH_BUDGET, WALK_EACH_COUNT_BUDGET, Walker};
+use super::{Executes, Frame, Run, WALK_EACH_BUDGET, WALK_EACH_COUNT_BUDGET, Walker};
 
 /// A word in the file that one iteration of a loop that the walk goes
 /// through each iteration of reads, as from a row of a table (see
@@ -169,7 +169,7 @@ impl Walker<'_> {
             .filter_map(|(iteration, n)| Some((n, iteration.row?)))
             .collect();
         let steady = match line_through(rows.iter().map(|&(n, row)| (n, Some(row)))) {
-            Some((_, step)) => step != 0 || rows.len() == 1,
+            Some(Progression { moves, .. }) => moves != 0 || rows.len() == 1,
             None => false,
         };
         if !tells || !steady || !same_words(&loads) {
@@ -222,18 +222,23 @@ impl Walker<'_> {
     /// Keeps where the words that registers held at the head of the
     /// iteration of the loop at `index` in [`Walker::open_loops`] were
     /// loaded from, of those that an instruction that `reads` and `writes`
-    /// these registers reads, as loads of the iteration, unless it is
-    /// `conditional`, when the loop's function loaded them, rather than a
-    /// function it calls; and forgets those of the registers it writes.
+    /// these registers reads, as loads of the iteration, unless `executes`
+    /// is [`Executes::Maybe`], when the loop's function loaded them, rather
+    /// than a function it calls; and forgets those of the registers it
+    /// writes.
     pub(super) fn carried_reads(
         &mut self,
         index: usize,
         reads: Registers,
         writes: Registers,
-        conditional: bool,
+        executes: Executes,
     ) {
         let open = &mut self.open_loops[index];
-        let read: Vec<Source> = (each(if conditional { 0 } else { reads }))
+        let counted = match executes {
+            Executes::Surely => reads,
+            Executes::Maybe => 0,
+        };
+        let read: Vec<Source> = (each(counted))
             .filter_map(|register| open.carried[usize::from(register)].take())
             .collect();
         for register in each(writes) {
@@ -315,12 +320,11 @@ fn copied_from(event: &Event) -> Vec<(u64, u64)> {
         }
         Event::Loop(l) => (l.stores().into_iter().flatten())
             .filter_map(|store| {
-                let (address, step) = store.source?;
-                let first = i64::from(address);
-                let last = first + i64::from(step) * i64::from(store.times.saturating_sub(1));
-                let start = u64::try_from(first.min(last)).ok()?;
-                let end = u64::try_from(first.max(last)).ok()? + u64::from(store.size);
-                Some((start, end))
+                let loaded = store.loaded_from()?;
+                Some((
+                    u64::try_from(loaded.start).ok()?,
+                    u64::try_from(loaded.end).ok()?,
+                ))
             })
             .collect(),
         _ => Vec::new(),

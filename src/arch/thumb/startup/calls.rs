@@ -8,7 +8,7 @@ use crate::arch::thumb::decode::{Effect, Flow, Operation, Registers};
 use crate::arch::thumb::{ARGUMENTS, CALL_CLOBBERS, LR, SP};
 
 use super::walk_state::{Alternative, Known};
-use super::{Finish, Frame, Run, Step, Walker, decode_at};
+use super::{Executes, Finish, Frame, Run, Step, Walker, decode_at};
 
 /// How the walk went through the function that a call calls (see
 /// [`Walker::call`]), with what it knew where it ended.
@@ -220,12 +220,12 @@ impl Walker<'_> {
     }
 
     /// Records a call at `site`, which runs only when the flags say so
-    /// when `conditional`, and walks the function it calls. Where that
-    /// returns, the caller goes on with what it knew there, but for sp and
-    /// lr; when the function went past a branch the walk couldn't tell,
-    /// with what it changed unknown. Without a return, r0 to r3, ip, lr
-    /// and the words it stored are unknown. Returns how the walk ends,
-    /// when it gets to `main`.
+    /// when `executes` is [`Executes::Maybe`], and walks the function it
+    /// calls. Where that returns, the caller goes on with what it knew
+    /// there, but for sp and lr; when the function went past a branch the
+    /// walk couldn't tell, with what it changed unknown. Without a return,
+    /// r0 to r3, ip, lr and the words it stored are unknown. Returns how
+    /// the walk ends, when it gets to `main`.
     pub(super) fn call(
         &mut self,
         run: &mut Run,
@@ -233,9 +233,9 @@ impl Walker<'_> {
         site: u64,
         target: Option<u64>,
         how: How,
-        conditional: bool,
+        executes: Executes,
     ) -> Option<End> {
-        let follows = target.is_some() && frame.follow > 0 && !conditional;
+        let follows = target.is_some() && frame.follow > 0 && executes == Executes::Surely;
         self.events.push(Event::Call(Call {
             site,
             depth: frame.depth,
@@ -243,7 +243,7 @@ impl Walker<'_> {
             how,
             arguments: arguments(&run.known),
             left: run.known.left,
-            conditional,
+            conditional: executes == Executes::Maybe,
             followed: follows,
         }));
         if target.is_some() && self.main == target {

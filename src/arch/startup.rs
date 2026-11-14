@@ -369,10 +369,8 @@ pub(crate) struct Iteration {
 pub(crate) struct LoopStore {
     /// The store instruction.
     pub(crate) site: u64,
-    /// Where it stores in the first iteration.
-    pub(crate) address: u32,
-    /// How far that moves each iteration.
-    pub(crate) step: i32,
+    /// Where it stores, in the first iteration and each after.
+    pub(crate) at: Progression,
     /// How many bytes it stores each iteration.
     pub(crate) size: u32,
     /// How many times it stores: one fewer than the loop runs when it
@@ -380,12 +378,50 @@ pub(crate) struct LoopStore {
     pub(crate) times: u32,
     /// The word it stores, when it is the same each iteration.
     pub(crate) value: Option<u32>,
-    /// Where it loads the first word it stores from in the first
-    /// iteration, and how far that moves each iteration, when the walk can
-    /// tell.
-    pub(crate) source: Option<(u32, i32)>,
+    /// Where it loads the first word it stores from, in the first
+    /// iteration and each after, when the walk can tell.
+    pub(crate) source: Option<Progression>,
     /// Whether it stores a word that the loop's code loaded.
     pub(crate) loaded: bool,
+}
+
+impl LoopStore {
+    /// The bytes it stores over all the times it stores, from the lowest
+    /// to past the highest: the first time's bytes when it stores no times
+    /// (see [`Progression::span`]).
+    pub(crate) fn stored(&self) -> Range<i64> {
+        self.at.span(self.times, self.size)
+    }
+
+    /// The bytes it loads the words it stores from, over all the times it
+    /// stores, from the lowest to past the highest, when the walk can tell:
+    /// the first time's bytes when it stores no times, as for
+    /// [`LoopStore::stored`].
+    pub(super) fn loaded_from(&self) -> Option<Range<i64>> {
+        Some(self.source?.span(self.times, self.size))
+    }
+}
+
+/// A number in a loop's code that moves by the same amount each
+/// iteration, as where a store stores: what it is in the first iteration,
+/// and how far it moves each iteration after.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Progression {
+    /// The number in the first iteration.
+    pub(crate) first: u32,
+    /// How far it moves each iteration, less than 0 when it goes down.
+    pub(crate) moves: i32,
+}
+
+impl Progression {
+    /// The bytes that `times` iterations cover, `size` bytes from the
+    /// number each, from the lowest to past the highest: those of the
+    /// first iteration alone when `times` is 0.
+    fn span(self, times: u32, size: u32) -> Range<i64> {
+        let first = i64::from(self.first);
+        let last = first + i64::from(self.moves) * i64::from(times.saturating_sub(1));
+        first.min(last)..first.max(last) + i64::from(size)
+    }
 }
 
 /// Where a walk stops: the instruction it stopped at, and why.
@@ -602,5 +638,72 @@ impl<'p> Code<'p> {
     /// return, and the compiler put other code after it, such as a loop's.
     pub(crate) fn branches_past(&self, start: u64, call: u64) -> bool {
         thumb::startup::branches_past(self.program, start, call)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A store of 4 bytes at `at` each of `times` times, from `source`.
+    fn store(at: Progression, times: u32, source: Option<Progression>) -> LoopStore {
+        LoopStore {
+            site: 0x0800_0010,
+            at,
+            size: 4,
+            times,
+            value: None,
+            source,
+            loaded: source.is_some(),
+        }
+    }
+
+    #[test]
+    fn a_progression_spans_from_its_lowest_byte_to_past_its_highest() {
+        let up = Progression {
+            first: 0x2000_0000,
+            moves: 4,
+        };
+        let down = Progression {
+            first: 0x2000_000c,
+            moves: -4,
+        };
+        assert_eq!(up.span(4, 4), 0x2000_0000..0x2000_0010);
+        // Down, the last iteration's bytes are the lowest.
+        assert_eq!(down.span(4, 4), 0x2000_0000..0x2000_0010);
+        assert_eq!(down.span(4, 2), 0x2000_0000..0x2000_000e);
+        // Once, or no times, it covers the first iteration's bytes.
+        assert_eq!(down.span(1, 4), 0x2000_000c..0x2000_0010);
+        assert_eq!(down.span(0, 4), 0x2000_000c..0x2000_0010);
+        // Past the highest address and below 0, without wrapping.
+        let high = Progression {
+            first: 0xffff_fffc,
+            moves: 4,
+        };
+        assert_eq!(high.span(2, 4), 0xffff_fffc..0x1_0000_0004);
+        let low = Progression {
+            first: 4,
+            moves: -8,
+        };
+        assert_eq!(low.span(2, 4), -4..8);
+    }
+
+    #[test]
+    fn a_loop_store_stores_and_loads_over_the_times_it_stores() {
+        let at = Progression {
+            first: 0x2000_000c,
+            moves: -4,
+        };
+        let source = Progression {
+            first: 0x0800_010c,
+            moves: -4,
+        };
+        let copy = store(at, 4, Some(source));
+        assert_eq!(copy.stored(), 0x2000_0000..0x2000_0010);
+        assert_eq!(copy.loaded_from(), Some(0x0800_0100..0x0800_0110));
+        let none = store(at, 0, Some(source));
+        assert_eq!(none.stored(), 0x2000_000c..0x2000_0010);
+        assert_eq!(none.loaded_from(), Some(0x0800_010c..0x0800_0110));
+        assert_eq!(store(at, 4, None).loaded_from(), None);
     }
 }

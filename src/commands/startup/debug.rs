@@ -13,7 +13,9 @@ use anyhow::{Result, bail};
 use super::Firmware;
 use super::ram_sections::RamSections;
 use super::start::{self, Main, MainFrom, Reset};
-use crate::arch::startup::{Call, DEPTH, End, Event, How, Loop, LoopStore, Store, Through};
+use crate::arch::startup::{
+    Call, DEPTH, End, Event, How, Loop, LoopStore, Progression, Store, Through,
+};
 use crate::binary::Binary;
 use crate::commands::Outcome;
 use crate::commands::kept::Kept;
@@ -195,19 +197,19 @@ fn walked_text(l: &Loop) -> String {
 /// What a store in a loop's code does over all the loop's iterations:
 /// where it stores in the first, and how far that moves each time.
 fn loop_store_text(store: &LoopStore) -> String {
-    let at = |address: u32, moves: i32| match store.times {
-        1 => format!("{address:#x}"),
-        _ => format!("{address:#x} {moves:+}n"),
+    let at = |Progression { first, moves }| match store.times {
+        1 => format!("{first:#x}"),
+        _ => format!("{first:#x} {moves:+}n"),
     };
     let from = match store.source {
-        Some((address, moves)) => format!(", from {}", at(address, moves)),
+        Some(source) => format!(", from {}", at(source)),
         None => format!(", of {}", hex(store.value)),
     };
     format!(
         "; {:#x} stores {} at {} {}{from}",
         store.site,
         bytes_text(store.size),
-        at(store.address, store.step),
+        at(store.at),
         times_text(store.times)
     )
 }
