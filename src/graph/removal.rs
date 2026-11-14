@@ -39,7 +39,7 @@
 //! shared node is kept together by `process_frame` and `report`: removing
 //! either of them alone keeps it.
 
-use super::{DominatorTree, Graph, Node, index, node_at};
+use super::{DominatorTree, Graph, Node, NodeMap};
 use crate::binary::{Binary, total};
 
 /// What removing several nodes at once would remove: the nodes that are
@@ -47,9 +47,8 @@ use crate::binary::{Binary, total};
 /// removed (see the module doc).
 #[derive(Debug)]
 pub struct Removal {
-    /// What removing the nodes does to each node, indexed by
-    /// `graph::index`.
-    fates: Vec<Fate>,
+    /// What removing the nodes does to each node.
+    fates: NodeMap<Fate>,
     /// The lost nodes whose parent in the tree isn't lost, largest retained
     /// size first.
     tops: Vec<Node>,
@@ -58,9 +57,6 @@ pub struct Removal {
     /// What removing the nodes saves: the retained sizes of `tops`, and the
     /// own bytes of the removed nodes that nothing reaches.
     retained: u64,
-    /// How many items the binary has. `fates` is indexed by
-    /// `graph::index`, which puts the imports after the items.
-    items: usize,
 }
 
 /// A top that no one removed node keeps, and the removed nodes that keep it
@@ -98,35 +94,44 @@ enum Fate {
     Unreachable,
 }
 
+impl Fate {
+    /// Whether a node of this fate is lost: something reaches it, and the
+    /// search doesn't.
+    fn is_lost(self) -> bool {
+        match self {
+            Fate::Freed | Fate::Matters | Fate::KeptByOthers => true,
+            Fate::Stays | Fate::Unreachable => false,
+        }
+    }
+}
+
 impl Removal {
     /// Works out what removing the nodes in `removed` at once would remove
     /// from `binary`, whose `graph` and `tree` are given. A node given twice
     /// counts once. Sizes are the tree's: with a range, only the bytes in
     /// it count.
     pub fn find(binary: &Binary, graph: &Graph, tree: &DominatorTree, removed: &[Node]) -> Removal {
-        let items = binary.items.len();
-        Removal::find_in(items, items + binary.imports.len(), graph, tree, removed)
+        let (items, imports) = (binary.items.len(), binary.imports.len());
+        Removal::find_in(items, imports, graph, tree, removed)
     }
 
-    /// Works out the removal in a graph of `count` nodes, of which the
-    /// first `items` are items and the rest imports.
+    /// Works out the removal in a graph of `items` items and `imports`
+    /// imports.
     fn find_in(
         items: usize,
-        count: usize,
+        imports: usize,
         graph: &Graph,
         tree: &DominatorTree,
         removed: &[Node],
     ) -> Removal {
         // Until the search says otherwise, every node that something
         // reaches is lost, and every removed one adds nothing.
-        let mut fates: Vec<Fate> = (0..count)
-            .map(|index| match tree.is_reachable(node_at(items, index)) {
-                true => Fate::Freed,
-                false => Fate::Stays,
-            })
-            .collect();
+        let mut fates = NodeMap::from_fn(items, imports, |node| match tree.is_reachable(node) {
+            true => Fate::Freed,
+            false => Fate::Stays,
+        });
         for &node in removed {
-            fates[index(items, node)] = match tree.is_reachable(node) {
+            fates[node] = match tree.is_reachable(node) {
                 true => Fate::KeptByOthers,
                 false => Fate::Unreachable,
             };
@@ -136,7 +141,6 @@ impl Removal {
             tops: Vec::new(),
             kept_together: Vec::new(),
             retained: 0,
-            items,
         };
         removal.search(graph);
         removal.tops = removal.find_tops(tree);
@@ -148,10 +152,7 @@ impl Removal {
     /// Whether removing the nodes loses `node`: something reaches it, and
     /// a search from the roots that never enters a removed node doesn't.
     pub fn is_lost(&self, node: Node) -> bool {
-        match self.fate(node) {
-            Fate::Freed | Fate::Matters | Fate::KeptByOthers => true,
-            Fate::Stays | Fate::Unreachable => false,
-        }
+        self.fate(node).is_lost()
     }
 
     /// Whether `node` is one of the removed nodes.
@@ -177,10 +178,10 @@ impl Removal {
         self.fate(node) == Fate::KeptByOthers
     }
 
-    /// The lost nodes, in the order of `graph::index`: the items, then the
-    /// imports.
+    /// The lost nodes, in the order of their positions: the items, then
+    /// the imports.
     pub fn lost(&self) -> impl Iterator<Item = Node> + '_ {
-        self.nodes().filter(|&node| self.is_lost(node))
+        self.fates.nodes().filter(|&node| self.is_lost(node))
     }
 
     /// The tops of what is lost, largest retained size first: the lost
@@ -197,11 +198,10 @@ impl Removal {
         &self.kept_together
     }
 
-    /// The removed nodes that nothing reaches, in the order of
-    /// `graph::index`.
+    /// The removed nodes that nothing reaches, in the order of their
+    /// positions.
     pub fn unreachable(&self) -> impl Iterator<Item = Node> + '_ {
-        self.nodes()
-            .filter(|&node| self.fate(node) == Fate::Unreachable)
+        (self.fates.nodes()).filter(|&node| self.fate(node) == Fate::Unreachable)
     }
 
     /// What removing the nodes would save: the bytes of every lost node,
@@ -236,7 +236,7 @@ impl Removal {
     /// comes to it, it stays, and the search goes on from it. If it is
     /// removed, it matters.
     fn meet(&mut self, node: Node, next: &mut Vec<usize>) {
-        let at = self.index(node);
+        let at = self.fates.position(node);
         match self.fates[at] {
             Fate::Freed => {
                 self.fates[at] = Fate::Stays;
@@ -302,20 +302,22 @@ impl Removal {
         let users = self.lost_users(graph);
         // The top whose walk last met each node, as an index into `tops`,
         // so that each walk meets each node once.
-        let mut met: Vec<Option<usize>> = vec![None; self.fates.len()];
+        let mut met: NodeMap<Option<usize>> = self.fates.with_each(None);
         let mut kept_together = Vec::with_capacity(tops.len());
         for (walk, top) in tops.into_iter().enumerate() {
-            met[self.index(top)] = Some(walk);
+            met[top] = Some(walk);
             let mut keepers = Vec::new();
             let mut next = vec![top];
             while let Some(node) = next.pop() {
-                for &user in &users[self.index(node)] {
-                    let at = self.index(user);
+                for &user in &users[node] {
+                    // `met` and the fates are of the same nodes, so a node
+                    // has the same position in each.
+                    let at = self.fates.position(user);
                     if met[at] == Some(walk) {
                         continue;
                     }
                     met[at] = Some(walk);
-                    if self.matters(user) {
+                    if self.fates[at] == Fate::Matters {
                         keepers.push(user);
                     } else {
                         next.push(user);
@@ -336,30 +338,25 @@ impl Removal {
         total(saved.map(|node| tree.retained(node)))
     }
 
-    /// For each lost node, indexed by `graph::index`, the lost items that
-    /// use it: the references that a walk back from a top goes against.
-    fn lost_users(&self, graph: &Graph) -> Vec<Vec<Node>> {
-        let mut users = vec![Vec::new(); self.fates.len()];
+    /// For each lost node, the lost items that use it: the references that
+    /// a walk back from a top goes against.
+    fn lost_users(&self, graph: &Graph) -> NodeMap<Vec<Node>> {
+        let mut users = self.fates.with_each(Vec::new());
         for reference in &graph.references {
             let user = Node::Item(reference.from);
-            if self.is_lost(user) && self.is_lost(reference.to) {
-                users[self.index(reference.to)].push(user);
+            if !self.is_lost(user) {
+                continue;
+            }
+            let to = self.fates.position(reference.to);
+            if self.fates[to].is_lost() {
+                users[to].push(user);
             }
         }
         users
     }
 
-    /// Every node of the graph, in the order of `graph::index`.
-    fn nodes(&self) -> impl Iterator<Item = Node> + '_ {
-        (0..self.fates.len()).map(|index| node_at(self.items, index))
-    }
-
     fn fate(&self, node: Node) -> Fate {
-        self.fates[self.index(node)]
-    }
-
-    fn index(&self, node: Node) -> usize {
-        index(self.items, node)
+        self.fates[node]
     }
 }
 
@@ -377,8 +374,8 @@ mod tests {
         tree: DominatorTree,
         /// How many items it has.
         items: usize,
-        /// How many nodes it has, imports included.
-        count: usize,
+        /// How many imports it has.
+        imports: usize,
     }
 
     impl Example {
@@ -400,16 +397,17 @@ mod tests {
             }
             graph.references.sort_by_key(|reference| reference.from);
             let items = sizes.len();
-            let mut sizes = sizes.to_vec();
-            // Imports have no bytes in the file.
-            sizes.resize(items + imports, 0);
-            let tree = DominatorTree::from_graph(items, &sizes, &graph);
-            let count = sizes.len();
+            // Imports have no bytes in the file, so theirs stay 0.
+            let mut node_sizes = NodeMap::new(items, imports, 0);
+            for (item, &size) in sizes.iter().enumerate() {
+                node_sizes[Item(item)] = size;
+            }
+            let tree = DominatorTree::from_graph(&node_sizes, &graph);
             Example {
                 graph,
                 tree,
                 items,
-                count,
+                imports,
             }
         }
 
@@ -422,7 +420,7 @@ mod tests {
         }
 
         fn remove(&self, removed: &[Node]) -> Removal {
-            Removal::find_in(self.items, self.count, &self.graph, &self.tree, removed)
+            Removal::find_in(self.items, self.imports, &self.graph, &self.tree, removed)
         }
     }
 

@@ -15,93 +15,90 @@
 
 use std::collections::VecDeque;
 
-use super::{Graph, Node, Reference, index};
+use super::{Graph, Node, NodeMap, Reference};
 use crate::binary::Binary;
 
 /// How a search from the roots, or from one node, first reached each node.
+/// Its maps are of the same nodes, so a node has the same position in each.
 #[derive(Debug)]
 pub struct ShortestPaths {
-    /// The reference that first reached each node, indexed by
-    /// `graph::index`. `None` for the nodes the search started from and for
-    /// those it didn't reach.
-    via: Vec<Option<Reference>>,
+    /// The reference that first reached each node. `None` for the nodes the
+    /// search started from and for those it didn't reach.
+    via: NodeMap<Option<Reference>>,
     /// How many references lead to each node, or `None` if the search
     /// didn't reach it.
-    distance: Vec<Option<usize>>,
+    distance: NodeMap<Option<usize>>,
     /// How many of those references aren't calls.
-    not_calls: Vec<usize>,
-    items: usize,
+    not_calls: NodeMap<usize>,
 }
 
 impl ShortestPaths {
     /// Searches from the roots: the shortest chain from where the program
     /// starts to each item that it uses, directly or not.
     pub fn from_roots(binary: &Binary, graph: &Graph) -> ShortestPaths {
-        let items = binary.items.len();
-        ShortestPaths::search_from_roots(items, items + binary.imports.len(), graph, None)
+        let (items, imports) = (binary.items.len(), binary.imports.len());
+        ShortestPaths::search_from_roots(items, imports, graph, None)
     }
 
     /// Searches from the roots without passing through `avoid`.
     pub fn avoiding(binary: &Binary, graph: &Graph, avoid: Node) -> ShortestPaths {
-        let items = binary.items.len();
-        ShortestPaths::search_from_roots(items, items + binary.imports.len(), graph, Some(avoid))
+        let (items, imports) = (binary.items.len(), binary.imports.len());
+        ShortestPaths::search_from_roots(items, imports, graph, Some(avoid))
     }
 
     /// Searches from `node` alone, whether or not a root reaches it: the
     /// search reaches what `node` uses, directly or not.
     pub(crate) fn from(binary: &Binary, graph: &Graph, node: Node) -> ShortestPaths {
-        let items = binary.items.len();
-        ShortestPaths::search(items, items + binary.imports.len(), graph, [node], None)
+        let (items, imports) = (binary.items.len(), binary.imports.len());
+        ShortestPaths::search(items, imports, graph, [node], None)
     }
 
-    /// Searches a graph of `count` nodes, of which the first `items` are
-    /// items and the rest imports, from its roots, without passing through
-    /// `avoid`.
+    /// Searches a graph of `items` items and `imports` imports from its
+    /// roots, without passing through `avoid`.
     fn search_from_roots(
         items: usize,
-        count: usize,
+        imports: usize,
         graph: &Graph,
         avoid: Option<Node>,
     ) -> ShortestPaths {
         let roots = graph.roots.iter().map(|root| root.node);
-        ShortestPaths::search(items, count, graph, roots, avoid)
+        ShortestPaths::search(items, imports, graph, roots, avoid)
     }
 
-    /// Searches a graph of `count` nodes, of which the first `items` are
-    /// items and the rest imports, from `starts`, without passing through
-    /// `avoid`.
+    /// Searches a graph of `items` items and `imports` imports from
+    /// `starts`, without passing through `avoid`.
     fn search(
         items: usize,
-        count: usize,
+        imports: usize,
         graph: &Graph,
         starts: impl IntoIterator<Item = Node>,
         avoid: Option<Node>,
     ) -> ShortestPaths {
         let mut paths = ShortestPaths {
-            via: vec![None; count],
-            distance: vec![None; count],
-            not_calls: vec![0; count],
-            items,
+            via: NodeMap::new(items, imports, None),
+            distance: NodeMap::new(items, imports, None),
+            not_calls: NodeMap::new(items, imports, 0),
         };
         let mut queue = VecDeque::new();
         for start in starts {
             if Some(start) != avoid && !paths.is_reached(start) {
-                paths.distance[index(items, start)] = Some(0);
+                paths.distance[start] = Some(0);
                 queue.push_back(start);
             }
         }
         // Nodes leave the queue in order of distance, so every path of one
-        // length is seen before any longer one.
+        // length is seen before any longer one. Each node's position is
+        // worked out once, for all three maps.
         while let Some(node) = queue.pop_front() {
             // Imports use nothing in the file.
             let Node::Item(item) = node else { continue };
-            let from = index(items, node);
+            let from = paths.distance.position(node);
             let distance = paths.distance[from].map(|d| d + 1);
             for reference in graph.references_from(item) {
                 if Some(reference.to) == avoid {
                     continue;
                 }
-                let to = index(items, reference.to);
+                let to = paths.distance.position(reference.to);
                 let not_calls = paths.not_calls[from] + usize::from(!reference.kind.is_call());
                 let first = paths.distance[to].is_none();
                 // Paths of the same length are all seen before any node
@@ -130,13 +127,13 @@ impl ShortestPaths {
     /// How many references the shortest path to `node` has, or `None` when
     /// the search didn't reach it.
     pub(crate) fn distance(&self, node: Node) -> Option<usize> {
-        self.distance[index(self.items, node)]
+        self.distance[node]
     }
 
     /// The last reference on the shortest path to `node`, which reaches
     /// it. `None` when the search started from `node`, or didn't reach it.
     pub(crate) fn via(&self, node: Node) -> Option<Reference> {
-        self.via[index(self.items, node)]
+        self.via[node]
     }
 
     /// The shortest path to `node`: the references along it, from the
@@ -182,7 +179,7 @@ mod tests {
 
     /// Searches a graph of `count` items from item `start` alone.
     fn from(count: usize, graph: &Graph, start: usize) -> ShortestPaths {
-        ShortestPaths::search(count, count, graph, [Node::Item(start)], None)
+        ShortestPaths::search(count, 0, graph, [Node::Item(start)], None)
     }
 
     fn path(paths: &ShortestPaths, node: usize) -> Option<Vec<usize>> {
@@ -194,7 +191,7 @@ mod tests {
     fn takes_the_fewest_steps() {
         // 0 calls 1, which calls 2, which calls 3; 0 also calls 3.
         let graph = graph(&[(0, 1), (1, 2), (2, 3), (0, 3)]);
-        let paths = ShortestPaths::search_from_roots(4, 4, &graph, None);
+        let paths = ShortestPaths::search_from_roots(4, 0, &graph, None);
         assert_eq!(path(&paths, 3), Some(vec![0]));
         assert_eq!(path(&paths, 2), Some(vec![0, 1]));
         assert_eq!(path(&paths, 0), Some(vec![]));
@@ -209,7 +206,7 @@ mod tests {
         graph
             .references
             .sort_by_key(|reference| (reference.from, reference.site));
-        let paths = ShortestPaths::search_from_roots(4, 4, &graph, None);
+        let paths = ShortestPaths::search_from_roots(4, 0, &graph, None);
         assert_eq!(path(&paths, 3), Some(vec![0, 2]));
     }
 
@@ -217,7 +214,7 @@ mod tests {
     fn goes_around_the_item_to_avoid() {
         // 0 calls 1 and 2; 1 calls 3; 2 calls 1 and 4.
         let graph = graph(&[(0, 1), (0, 2), (1, 3), (2, 1), (2, 4)]);
-        let paths = ShortestPaths::search_from_roots(5, 5, &graph, Some(Node::Item(1)));
+        let paths = ShortestPaths::search_from_roots(5, 0, &graph, Some(Node::Item(1)));
         assert!(!paths.is_reached(Node::Item(1)));
         // Only 1 leads to 3.
         assert_eq!(path(&paths, 3), None);
@@ -259,7 +256,7 @@ mod tests {
         // still finds what 1 uses.
         let mut graph = graph(&[(1, 2), (2, 3)]);
         graph.roots.clear();
-        assert!(!ShortestPaths::search_from_roots(4, 4, &graph, None).is_reached(Node::Item(1)));
+        assert!(!ShortestPaths::search_from_roots(4, 0, &graph, None).is_reached(Node::Item(1)));
         let paths = from(4, &graph, 1);
         assert_eq!(path(&paths, 3), Some(vec![1, 2]));
         assert!(!paths.is_reached(Node::Item(0)));
