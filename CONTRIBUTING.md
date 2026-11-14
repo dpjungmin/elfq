@@ -247,8 +247,16 @@ code.
     pointer `NOWHERE`, the highest address, so that it sorts last
     (`arch/thumb/startup/each_iteration.rs`).
 - Name what crosses a function boundary:
-  - About sixty functions, most of them private, return tuples.
-  - About forty arguments are bools, most of them in private functions.
+  - About fifty-five functions, most of them private, return tuples, as
+    `uses::table` gives the columns and the rows of `callers` and
+    `callees`, and the startup walk's `Walker::run` how it finished and
+    where it went. About twenty fields of structs keep tuples too, as
+    browse's `Binding::keys` keeps each key with its modifiers and what it
+    does.
+  - About forty arguments are bools, most of them in private functions,
+    as `text::unresolved_lines` takes whether a table lists what the item
+    calls or uses, which `callees` passes as `true` or `false`, and
+    `blocks::shared_blocks` whether diff's builds hold the same memory.
 - A test runs elfq through `support/`:
   - In `tests/it/commands/browse.rs`,
     `the_command_under_the_callers_runs_in_a_shell` starts elfq through
