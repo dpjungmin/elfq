@@ -85,7 +85,8 @@ pub(super) struct ListingPane {
 /// That is a function's code, or a data object's contents. The session
 /// keeps it, so that every page opened on the item shares it, and it is
 /// worked out once. [`Listing::new`] is the only way to make one, so
-/// that the widest cells always match the lines.
+/// that the widest cells, and whether a line links to another item,
+/// always match the lines.
 pub(in crate::commands::browse) struct Listing {
     /// Whether it is a function's code or a data object's contents.
     kind: ItemKind,
@@ -101,6 +102,9 @@ pub(in crate::commands::browse) struct Listing {
     widest_address: usize,
     /// The widest text, worked out once, as `widest_address` is.
     widest_text: usize,
+    /// Whether some line links to another item, worked out once, as the
+    /// widest cells are, for the hint line that each draw writes.
+    has_links: bool,
     /// Said in place of the lines when there are none to show.
     said_instead: Option<String>,
     /// Said under the lines.
@@ -129,6 +133,7 @@ impl Listing {
             kind,
             widest_address: widest(|line| format!("{:#x}", line.address).len()),
             widest_text: widest(|line| line.text.chars().count()),
+            has_links: (lines.iter()).any(|line| matches!(line.link, Some(Link::Node { .. }))),
             lines,
             column,
             said_instead: None,
@@ -389,10 +394,7 @@ impl ListingPane {
 
     /// Whether some line links to another item.
     pub(super) fn has_links(&self) -> bool {
-        self.listing
-            .lines
-            .iter()
-            .any(|line| matches!(line.link, Some(Link::Node { .. })))
+        self.listing.has_links
     }
 
     /// The lines that have `lowercase`, ignoring case.
