@@ -6,6 +6,7 @@
 //! command, ready to paste.
 
 use std::borrow::Cow;
+use std::ops::Range;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -256,13 +257,12 @@ impl Printed {
     /// numbers.
     pub(super) fn draw(&mut self, frame: &mut Frame, area: Rect) {
         let width = usize::from(area.width);
-        self.lay_out(width, usize::from(area.height));
         let LaidOut {
             above,
             notes,
             below,
             ..
-        } = self.laid_out.as_ref().expect("laid out above");
+        } = self.lay_out(width, usize::from(area.height));
         let [top, body, foot, bottom] = Layout::vertical([
             Constraint::Length(above.len() as u16),
             Constraint::Fill(1),
@@ -282,74 +282,21 @@ impl Printed {
             .cursor
             .visible(usize::from(body.height).saturating_sub(1));
         let (widths, room) = self.columns(width);
-        // A name and what the row says after it are shown in full when
-        // they fit. Longer names are shortened, the same way on every such
-        // row shown, to leave room for what follows them, but to at least
-        // two thirds of the room, or NAME_WIDTH columns, which that is cut
-        // to; the selected one is in full on the status line. What follows
-        // them can name the row that the row hangs under, after "kept by"
-        // or "used by": that name is shortened too, to what the row's own
-        // name leaves of the room, which is NAME_WIDTH columns or more
-        // where the names can leave it.
-        let rows = &self.rows[visible.clone()];
-        let length = |text: &str| text.chars().count();
-        let fits = |row: &PrintedRow| length(&row.name) + length(&row.rest) <= room;
-        let longer = || rows.iter().filter(|row| !fits(row));
-        // The columns that what follows a name needs, with the name after
-        // "kept by" shortened to NAME_WIDTH columns.
-        let fewest_after = |row: &PrintedRow| {
-            let under = row.under.map_or(0, |at| length(&row.rest[at..]));
-            length(&row.rest) - under + under.min(NAME_WIDTH)
+        // A table with rows has columns, as both come from the command's
+        // answer, so only elfq's own mistake could leave the rows without
+        // a header; then the table isn't drawn.
+        let Some(((last_header, _), headers)) = self.columns.split_last() else {
+            return;
         };
-        let after = longer().map(fewest_after).max().unwrap_or(0);
-        let widest = longer().map(|row| length(&row.name)).max().unwrap_or(0);
-        let fewest = (room * 2 / 3).max(room.min(NAME_WIDTH));
-        let names_room = room.saturating_sub(after).max(widest.min(fewest));
-        let names = self.fitted.names(visible, names_room, || {
-            rows.iter().map(|row| row.name.as_str()).collect()
-        });
-        let rests: Vec<Cow<str>> = (rows.iter().zip(names))
-            .map(|(row, name)| match row.under {
-                Some(at) if !fits(row) => {
-                    let (words, under) = row.rest.split_at(at);
-                    let left = room.saturating_sub(length(name) + length(words));
-                    Cow::Owned(format!("{words}{}", fit_name(under, left.max(1))))
-                }
-                _ => Cow::Borrowed(row.rest.as_str()),
-            })
-            .collect();
-        let last = |row: &PrintedRow, name: &str, rest: &str| {
-            if fits(row) {
-                format!("{}{}", row.name, row.rest)
-            } else if !rest.is_empty() && length(name) + 4 > room {
-                // Too little would be left of what follows the name for it
-                // to say anything: the name takes the room.
-                cut(&format!("{}{rest}", fit_name(&row.name, room)), room)
-            } else {
-                cut(&format!("{name}{rest}"), room)
-            }
-        };
-        // Each row is one line, after the cursor's "> ".
+        let headers = headers.iter().map(|(header, _)| header.as_str());
+        let last_header = cut(last_header, room);
+        let header = row_line(headers, &self.columns, &widths, &last_header, width);
+        let last_cells = self.last_cells(visible.clone(), room);
         let columns = &self.columns;
-        let line = |cells: Vec<&str>, last: &str| {
-            let mut line = String::new();
-            for ((cell, &(_, align)), &width) in cells.into_iter().zip(columns).zip(&widths) {
-                let cell = cut(cell, width);
-                line += &match align {
-                    Align::Left => format!("{cell:<width$}  "),
-                    Align::Right => format!("{cell:>width$}  "),
-                };
-            }
-            line += last;
-            Row::new([cut(line.trim_end(), width.saturating_sub(2))])
-        };
-        let lines = (rows.iter().zip(names).zip(&rests)).map(|((row, name), rest)| {
-            let cells = row.cells.iter().map(String::as_str).collect();
-            line(cells, &last(row, name, rest))
+        let lines = (self.rows[visible].iter().zip(&last_cells)).map(|(row, last)| {
+            let cells = row.cells.iter().map(String::as_str);
+            row_line(cells, columns, &widths, last, width)
         });
-        let ((last, _), headers) = columns.split_last().expect("a table has columns");
-        let headers = headers.iter().map(|(header, _)| header.as_str()).collect();
-        let header = line(headers, &cut(last, room));
         let table = Table::new(lines, [Constraint::Fill(1)])
             .header(header.bold())
             .row_highlight_style(Style::new().reversed())
@@ -357,7 +304,54 @@ impl Printed {
         frame.render_stateful_widget(table, body, &mut state);
     }
 
-    /// Lays out the lines around the table, once for each size of screen.
+    /// The last cells of the rows `visible` on the screen, `room` columns
+    /// wide. A name and what the row says after it are shown in full when
+    /// they fit. Longer names are shortened, the same way on every such
+    /// row shown, to leave room for what follows them, but to at least two
+    /// thirds of the room, or [`NAME_WIDTH`] columns, which that is cut to;
+    /// the selected one is in full on the status line. What follows them
+    /// can name the row that the row hangs under, after "kept by" or "used
+    /// by": that name is shortened too, to what the row's own name leaves
+    /// of the room, which is [`NAME_WIDTH`] columns or more where the names
+    /// can leave it. It keeps the shortened names in `fitted`, so that a
+    /// key that only moves the cursor doesn't fit them again.
+    fn last_cells(&mut self, visible: Range<usize>, room: usize) -> Vec<String> {
+        let rows = &self.rows[visible.clone()];
+        let length = |text: &str| text.chars().count();
+        let longer = || rows.iter().filter(|row| !row.fits(room));
+        let after = longer().map(PrintedRow::fewest_after).max().unwrap_or(0);
+        let widest = longer().map(|row| length(&row.name)).max().unwrap_or(0);
+        let fewest = (room * 2 / 3).max(room.min(NAME_WIDTH));
+        let names_room = room.saturating_sub(after).max(widest.min(fewest));
+        let names = self.fitted.names(visible, names_room, || {
+            rows.iter().map(|row| row.name.as_str()).collect()
+        });
+        (rows.iter().zip(names))
+            .map(|(row, name)| {
+                if row.fits(room) {
+                    return format!("{}{}", row.name, row.rest);
+                }
+                let rest = match row.under {
+                    Some(at) => {
+                        let (words, under) = row.rest.split_at(at);
+                        let left = room.saturating_sub(length(name) + length(words));
+                        Cow::Owned(format!("{words}{}", fit_name(under, left.max(1))))
+                    }
+                    None => Cow::Borrowed(row.rest.as_str()),
+                };
+                if !rest.is_empty() && length(name) + 4 > room {
+                    // Too little would be left of what follows the name for
+                    // it to say anything: the name takes the room.
+                    cut(&format!("{}{rest}", fit_name(&row.name, room)), room)
+                } else {
+                    cut(&format!("{name}{rest}"), room)
+                }
+            })
+            .collect()
+    }
+
+    /// Lays out the lines around the table, once for each size of screen,
+    /// and gives them.
     ///
     /// The screen is `width` columns wide, with `height` lines for the
     /// lines before the table, the table, and the notes under it.
@@ -381,76 +375,94 @@ impl Printed {
     ///    and the other command's lines before the answer's own, which
     ///    come first, what is left after that.
     /// 7. What doesn't fit is cut, ending in "…".
-    fn lay_out(&mut self, width: usize, height: usize) {
+    fn lay_out(&mut self, width: usize, height: usize) -> &LaidOut {
         let size = (width, height);
-        if self
-            .laid_out
-            .as_ref()
-            .is_none_or(|laid_out| laid_out.size != size)
-        {
-            // Rule 2.
-            let table = match self.rows.len() {
-                0 => 0,
-                rows => (rows + 1).min((height / 3).max(3)),
-            };
-            let room = height.saturating_sub(table);
-            // Rule 1: every block of lines wraps.
-            let own = blocks(&self.above, width);
-            let own_lines: usize = own.iter().map(|(_, lines)| lines.len()).sum();
-            let below = blocks(&self.below, width);
-            let below_lines: usize = below.iter().map(|(_, lines)| lines.len()).sum();
-            // Rule 3.
-            let most = (room.saturating_sub(own_lines + below_lines))
-                .max((room / 3).max(2))
-                .min(room.saturating_sub(own_lines.min(1)));
-            let wrapped = |notes: &[String]| -> Vec<String> {
-                (notes.iter()).flat_map(|note| wrap(note, width)).collect()
-            };
-            // Notes with more characters than the lines hold, and the
-            // space that each line can end at, can't fit, and aren't
-            // wrapped only to be cut.
-            let fit = |notes: &Vec<String>| {
-                let length: usize = notes.iter().map(|note| note.chars().count()).sum();
-                let lines = (length <= most * (width + 1)).then(|| wrapped(notes))?;
-                (lines.len() <= most).then_some(lines)
-            };
-            // Rule 4.
-            let forms: Vec<&Vec<String>> = [Some(&self.notes), self.brief.as_ref()]
-                .into_iter()
-                .chain([self.briefest.as_ref()])
-                .flatten()
-                .collect();
-            // Whether every row shows, beside `lines` lines of notes.
-            let all_rows = |lines: usize| {
-                let rows = self.rows.len();
-                rows == 0 || rows + 1 + own_lines + below_lines + lines <= height
-            };
-            // Rule 5 first. Failing that, the first form that fits, as
-            // rule 4 says, or else the last form, cut as rule 7 says.
-            let third = (height / 3).max(2);
-            let notes = (forms.iter())
-                .find_map(|notes| {
-                    fit(notes).filter(|lines| all_rows(lines.len()) || lines.len() <= third)
-                })
-                .or_else(|| forms.iter().find_map(|notes| fit(notes)))
-                .unwrap_or_else(|| {
-                    let shortest = forms.last().expect("the notes in full are a form");
-                    keep_lines(wrapped(shortest), most, width)
-                });
-            // Rule 6, and rule 7 in each `keep_blocks`.
-            let room = room.saturating_sub(notes.len());
-            let own = keep_blocks(own, room, width);
-            let room = room - own.len();
-            let below = keep_blocks(below, room, width);
-            let mut above = keep_blocks(blocks(&self.context, width), room - below.len(), width);
-            above.extend(own);
-            self.laid_out = Some(LaidOut {
-                size,
-                above,
-                notes,
-                below,
-            });
-        }
+        let laid_out = match self.laid_out.take() {
+            Some(laid_out) if laid_out.size == size => laid_out,
+            _ => {
+                // Rule 2.
+                let table = match self.rows.len() {
+                    0 => 0,
+                    rows => (rows + 1).min((height / 3).max(3)),
+                };
+                let room = height.saturating_sub(table);
+                // Rule 1: every block of lines wraps.
+                let own = blocks(&self.above, width);
+                let own_lines: usize = own.iter().map(|(_, lines)| lines.len()).sum();
+                let below = blocks(&self.below, width);
+                let below_lines: usize = below.iter().map(|(_, lines)| lines.len()).sum();
+                // Rule 3.
+                let most = (room.saturating_sub(own_lines + below_lines))
+                    .max((room / 3).max(2))
+                    .min(room.saturating_sub(own_lines.min(1)));
+                // Rules 4, 5 and 7.
+                let notes = self.notes_form(width, height, most, own_lines, below_lines);
+                // Rule 6, and rule 7 in each `keep_blocks`.
+                let room = room.saturating_sub(notes.len());
+                let own = keep_blocks(own, room, width);
+                let room = room - own.len();
+                let below = keep_blocks(below, room, width);
+                let mut above =
+                    keep_blocks(blocks(&self.context, width), room - below.len(), width);
+                above.extend(own);
+                LaidOut {
+                    size,
+                    above,
+                    notes,
+                    below,
+                }
+            }
+        };
+        self.laid_out.insert(laid_out)
+    }
+
+    /// The lines of the notes, in the form that rules 4, 5 and 7 of
+    /// [`Printed::lay_out`] choose for a screen `width` columns wide, with
+    /// `height` lines: at most `most` lines, beside `own_lines` lines of
+    /// the answer's own before the table and `below_lines` lines of other
+    /// commands under the notes.
+    fn notes_form(
+        &self,
+        width: usize,
+        height: usize,
+        most: usize,
+        own_lines: usize,
+        below_lines: usize,
+    ) -> Vec<String> {
+        let wrapped = |notes: &[String]| -> Vec<String> {
+            (notes.iter()).flat_map(|note| wrap(note, width)).collect()
+        };
+        // Notes with more characters than the lines hold, and the space
+        // that each line can end at, can't fit, and aren't wrapped only to
+        // be cut.
+        let fit = |notes: &Vec<String>| {
+            let length: usize = notes.iter().map(|note| note.chars().count()).sum();
+            let lines = (length <= most * (width + 1)).then(|| wrapped(notes))?;
+            (lines.len() <= most).then_some(lines)
+        };
+        // Rule 4.
+        let forms: Vec<&Vec<String>> = [Some(&self.notes), self.brief.as_ref()]
+            .into_iter()
+            .chain([self.briefest.as_ref()])
+            .flatten()
+            .collect();
+        // Whether every row shows, beside `lines` lines of notes.
+        let all_rows = |lines: usize| {
+            let rows = self.rows.len();
+            rows == 0 || rows + 1 + own_lines + below_lines + lines <= height
+        };
+        // Rule 5 first. Failing that, the first form that fits, as rule 4
+        // says, or else the last form, cut as rule 7 says.
+        let third = (height / 3).max(2);
+        (forms.iter())
+            .find_map(|notes| {
+                fit(notes).filter(|lines| all_rows(lines.len()) || lines.len() <= third)
+            })
+            .or_else(|| forms.iter().find_map(|notes| fit(notes)))
+            .unwrap_or_else(|| {
+                let shortest = forms.last().expect("the notes in full are a form");
+                keep_lines(wrapped(shortest), most, width)
+            })
     }
 
     /// The width of each column but the last on a screen `width` columns
@@ -532,6 +544,44 @@ impl Printed {
             .map(|(index, _)| index)
             .collect()
     }
+}
+
+impl PrintedRow {
+    /// Whether the name and what follows it fit in `room` columns.
+    fn fits(&self, room: usize) -> bool {
+        self.name.chars().count() + self.rest.chars().count() <= room
+    }
+
+    /// The fewest columns that what follows the name takes: all of it, but
+    /// with the name of the row it hangs under, after "kept by" or "used
+    /// by", shortened to [`NAME_WIDTH`] columns.
+    fn fewest_after(&self) -> usize {
+        let under = self.under.map_or(0, |at| self.rest[at..].chars().count());
+        self.rest.chars().count() - under + under.min(NAME_WIDTH)
+    }
+}
+
+/// A row of the table as one line, after the cursor's "> ": `cells`, the
+/// cells of the columns before the last, each cut to its width in
+/// `widths` and set in it as `columns` align them, two spaces apart, then
+/// `last`, the whole cut to a screen `width` columns wide.
+fn row_line<'a>(
+    cells: impl Iterator<Item = &'a str>,
+    columns: &[(String, Align)],
+    widths: &[usize],
+    last: &str,
+    width: usize,
+) -> Row<'static> {
+    let mut line = String::new();
+    for ((cell, &(_, align)), &column_width) in cells.zip(columns).zip(widths) {
+        let cell = cut(cell, column_width);
+        line += &match align {
+            Align::Left => format!("{cell:<column_width$}  "),
+            Align::Right => format!("{cell:>column_width$}  "),
+        };
+    }
+    line += last;
+    Row::new([cut(line.trim_end(), width.saturating_sub(2))])
 }
 
 /// `lines`, wrapped to `width`, as blocks of lines: each with whether it
@@ -886,6 +936,20 @@ A note."
             "  RETAINED  ITEM
 >     1218  small_sort_general::<…>
       1218  sort8_stable::<…>, kept by small_sort_general::<…>"
+        );
+    }
+
+    #[test]
+    fn a_row_too_wide_for_the_screen_is_cut_at_its_edge() {
+        // Each row, the header's too, is cut to what the cursor's column
+        // leaves of the screen, and ends in "…" where it is cut.
+        let mut printed = starts(Vec::new(), &[]);
+        assert_eq!(
+            printed.drawn((8, 4)),
+            "  CODE …
+> 2218 …
+  2256 …
+    80 …"
         );
     }
 }

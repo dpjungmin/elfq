@@ -684,8 +684,8 @@ The checks of `browse` that need its private types are unit tests in
   overview and the command under it print, and of a file with more starts
   than that command lists.
 - `views/printed.rs`: how a command's answer gives way on a small screen,
-  which form of its notes it shows, and how the name after "kept by" is
-  shortened.
+  which form of its notes it shows, how the name after "kept by" is
+  shortened, and that a row too wide for the screen ends in "…".
 - `views/picker.rs`: that no two rows of the go-to box read the same;
   that a box opened with the error for SYMBOL over its rows doesn't work
   out that error again; that the box lists at most 500 rows, however
