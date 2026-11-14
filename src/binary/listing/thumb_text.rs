@@ -5,9 +5,9 @@
 //! symbols, against its twin with symbols, which says where data is.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 
 use crate::arch::Line;
+use crate::binary::test_samples::{self, load_sample, sample_path};
 use crate::binary::{AddressRange, Binary, ItemKind};
 
 /// The lines of each function of `binary`, as its page prints them, and
@@ -27,16 +27,11 @@ fn functions(binary: &Binary) -> Vec<(Vec<Line>, u64)> {
     functions
 }
 
-fn testdata() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata")
-}
-
 /// The Cortex-M samples' files in testdata/bin that end with `suffix`,
 /// such as `-nodebug.elf`, by the name before it.
 fn cortex_m_samples(suffix: &str) -> Vec<(String, Binary)> {
     let mut samples = Vec::new();
-    for entry in std::fs::read_dir(testdata().join("bin")).unwrap() {
-        let path = entry.unwrap().path();
+    for path in test_samples::samples() {
         let file = path.file_name().unwrap().to_string_lossy().to_string();
         let Some(name) = file.strip_suffix(suffix) else {
             continue;
@@ -55,7 +50,7 @@ fn thumb_text_says_what_objdump_says() {
     let mut lines = 0;
     let mut differences = Vec::new();
     for (name, binary) in cortex_m_samples("-nodebug.elf") {
-        let path = testdata().join(format!("tests/thumb/{name}.txt"));
+        let path = sample_path(&format!("testdata/tests/thumb/{name}.txt"));
         let text = std::fs::read_to_string(&path)
             .unwrap_or_else(|_| panic!("no {}: run testdata/thumb-text.sh", path.display()));
         // objdump's lines, by address.
@@ -113,7 +108,7 @@ fn stripped_samples_print_data_where_their_twins_mark_it() {
     let mut stretches = 0;
     let mut wrong = Vec::new();
     for (name, stripped) in cortex_m_samples("-stripped.elf") {
-        let twin = Binary::load(&testdata().join(format!("bin/{name}-nodebug.elf"))).unwrap();
+        let twin = load_sample(&format!("testdata/bin/{name}-nodebug.elf"));
         let data: Vec<AddressRange> = twin.data_in_code(0, u64::MAX).collect();
         stretches += data.len();
         for (lines, end) in functions(&stripped) {

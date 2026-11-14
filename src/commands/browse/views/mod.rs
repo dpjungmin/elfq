@@ -459,19 +459,6 @@ pub(super) fn wrap(text: &str, width: usize) -> Vec<String> {
     lines
 }
 
-/// Every sample in testdata/bin, for the tests that check every page.
-#[cfg(test)]
-pub(super) fn samples() -> Vec<std::path::PathBuf> {
-    let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/bin");
-    let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(folder)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| path.extension().is_some_and(|e| e == "elf" || e == "so"))
-        .collect();
-    paths.sort();
-    paths
-}
-
 /// `line` split into words as a shell splits it, for the words that
 /// `text::shell_quote` writes: plain, or in single quotes, with `'\''`
 /// for a quote. The tests of each tab split the command under it.

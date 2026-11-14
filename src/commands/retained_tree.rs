@@ -439,22 +439,16 @@ fn shape(format: Format) -> TreeShape {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use super::*;
+    use crate::binary::test_samples::load_sample;
     use crate::graph::ReferenceKind;
 
     #[test]
     fn a_load_image_can_be_reached_through_a_pointer() {
         // As if apply_filter only took the address of filter_tap, which
         // both run from ITCM in the Cortex-M7 sample, stored in flash.
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/bin/c-cortex-m7.elf");
-        let binary = Binary::load(&path).unwrap();
-        let filter_tap = binary
-            .items
-            .iter()
-            .position(|item| item.name == "filter_tap")
-            .unwrap();
+        let binary = load_sample("testdata/bin/c-cortex-m7.elf");
+        let filter_tap = binary.index_of("filter_tap");
         let mark = |range: &str| {
             let mut graph = Graph::build(&binary);
             for reference in &mut graph.references {

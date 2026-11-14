@@ -614,33 +614,15 @@ fn add(nodes: &mut Vec<Node>, node: Node) {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use super::*;
+    use crate::binary::test_samples::load_sample;
     use crate::commands::symbol::fixtures;
-
-    /// The sample `name` in testdata/bin.
-    fn sample(name: &str) -> Binary {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("testdata/bin")
-            .join(name);
-        Binary::load(&path).unwrap()
-    }
-
-    /// The index of the item named `name`.
-    fn index(binary: &Binary, name: &str) -> usize {
-        binary
-            .items
-            .iter()
-            .position(|item| item.name == name)
-            .unwrap()
-    }
 
     #[test]
     fn a_row_name_is_worked_out_once() {
-        let binary = sample("c-x86_64.elf");
+        let binary = load_sample("testdata/bin/c-x86_64.elf");
         let names = Names::new(&binary);
-        let stub = index(&binary, "strlen@plt");
+        let stub = binary.index_of("strlen@plt");
         assert_eq!(names.row_name(stub), "strlen@plt");
         assert_eq!(names.row_names.borrow()[&stub], "strlen@plt");
         // Asked again, it gives the name it kept, without working it out.
@@ -688,12 +670,12 @@ mod tests {
     #[test]
     fn telling_names_that_many_items_are_to_be_named_changes_no_name() {
         for file in [
-            "c-x86_64.elf",
-            "c-x86_64.so",
-            "cpp-x86_64.so",
-            "rust-x86_64-nodebug.elf",
+            "testdata/bin/c-x86_64.elf",
+            "testdata/bin/c-x86_64.so",
+            "testdata/bin/cpp-x86_64.so",
+            "testdata/bin/rust-x86_64-nodebug.elf",
         ] {
-            let binary = sample(file);
+            let binary = load_sample(file);
             // One works out the short names filed under each key that it is
             // asked about, and the other every short name at once.
             let key_by_key = Names::new(&binary);
@@ -749,7 +731,7 @@ mod tests {
         // Names finds the function that a stub jumps to from the stub's
         // bytes, which `fmt_methods` doesn't make, so each Names here is
         // told which item is the stub.
-        let stub = index(&binary, "<app::Frame10 as core::fmt::Debug>::fmt@plt");
+        let stub = binary.index_of("<app::Frame10 as core::fmt::Debug>::fmt@plt");
         let new_names = || {
             let names = Names::new(&binary);
             names.own_function_stubs.set(HashSet::from([stub])).unwrap();

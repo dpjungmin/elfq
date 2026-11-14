@@ -127,14 +127,12 @@ fn largest_rows(binary: &Binary, rows: Vec<Row>, count: usize) -> (Vec<Row>, usi
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use super::*;
+    use crate::binary::test_samples::load_sample;
 
     #[test]
     fn a_long_table_keeps_the_rows_of_its_largest_items() {
-        let path = Path::new("testdata/bin/c-x86_64.elf");
-        let mut binary = Binary::load(&Path::new(env!("CARGO_MANIFEST_DIR")).join(path)).unwrap();
+        let mut binary = load_sample("testdata/bin/c-x86_64.elf");
         for (index, (name, size)) in [("d", 20), ("b", 10), ("a", 10), ("c", 5)]
             .into_iter()
             .enumerate()
@@ -186,8 +184,7 @@ mod tests {
     fn a_table_needs_all_exactly_when_it_would_cut() {
         // A table lists 30 nodes and counts the rest in a last row, which
         // never counts one: it lists 31 nodes in full.
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/bin/c-x86_64.elf");
-        let binary = Binary::load(&path).unwrap();
+        let binary = load_sample("testdata/bin/c-x86_64.elf");
         for count in 29..=33 {
             // The cells of the table of `count` nodes: brief, or with
             // every row.

@@ -559,9 +559,9 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::crossterm::event::{KeyModifiers, MediaKeyCode, ModifierKeyCode};
 
-    use super::super::views::samples;
     use super::*;
     use crate::binary::Binary;
+    use crate::binary::test_samples::samples;
     use crate::graph::Node;
 
     /// The screen as lines of text.

@@ -256,9 +256,10 @@ fn quoted(text: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::super::super::{samples, shell_words};
+    use super::super::super::shell_words;
     use super::super::listing::Link;
     use super::*;
+    use crate::binary::test_samples::samples;
     use crate::cli::Format;
     use crate::commands::text::Detail;
     use crate::commands::{callees, json};

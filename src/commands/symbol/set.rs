@@ -462,25 +462,20 @@ fn in_ranges(binary: &Binary, ranges: &[AddressRange], names: &[&str], detail: D
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use super::*;
+    use crate::binary::test_samples::load_sample;
     use crate::commands::symbol::{Names, Pattern, fixtures};
 
     /// The Cortex-M7 sample, with code in ITCM at 0x0 and flash at
     /// 0x30000000.
     fn sample() -> Binary {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/bin/c-cortex-m7.elf");
-        Binary::load(&path).unwrap()
+        load_sample("testdata/bin/c-cortex-m7.elf")
     }
 
     /// What a SYMBOL that names the item called `name` picks.
     fn symbol(binary: &Binary, name: &str) -> Pick {
-        let index = (binary.items.iter())
-            .position(|item| item.name == name)
-            .unwrap();
         Pick::Symbol {
-            index,
+            index: binary.index_of(name),
             lead_name: name.to_string(),
         }
     }
@@ -620,7 +615,6 @@ mod tests {
     #[test]
     fn a_set_gives_its_ranges_and_symbols_each_once_in_the_order_given() {
         let binary = sample();
-        let index = |name: &str| (binary.items.iter()).position(|item| item.name == name);
         let set = Set::new(
             &binary,
             vec![
@@ -648,7 +642,7 @@ mod tests {
         );
         assert_eq!(
             set.symbols(),
-            [index("crc32").unwrap(), index("report").unwrap()]
+            [binary.index_of("crc32"), binary.index_of("report")]
         );
         // A pattern alone gives neither.
         let set = Set::new(&binary, vec![pattern(&binary, "on_*")]);

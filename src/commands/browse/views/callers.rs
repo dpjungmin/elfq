@@ -37,9 +37,10 @@ mod tests {
     use clap::Parser;
 
     use super::super::names::alike_in_a_window;
-    use super::super::{fit_name, samples, shell_words};
+    use super::super::{fit_name, shell_words};
     use super::*;
     use crate::binary::Binary;
+    use crate::binary::test_samples::{load_sample, samples};
     use crate::cli::{Cli, Command, Format};
     use crate::commands::callers;
     use crate::commands::text::Detail;
@@ -144,8 +145,7 @@ mod tests {
 
     #[test]
     fn the_command_quotes_the_file_as_typed() {
-        let real = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/bin/c-x86_64.elf");
-        let binary = Binary::load(&real).unwrap();
+        let binary = load_sample("testdata/bin/c-x86_64.elf");
         let typed = Path::new("my samples/it's c-x86_64.elf");
         let session = Session::new(typed, &binary).unwrap();
         let node = session.names.find("log_msg").unwrap().node;

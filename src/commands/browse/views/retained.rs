@@ -83,9 +83,10 @@ fn by_block(session: &Session, tree: &DominatorTree, node: Node) -> Vec<Lines> {
 mod tests {
     use clap::Parser;
 
-    use super::super::{samples, shell_words};
+    use super::super::shell_words;
     use super::*;
     use crate::binary::Binary;
+    use crate::binary::test_samples::samples;
     use crate::cli::{Cli, Command, Format};
     use crate::commands::retained_tree::RetainedTree;
     use crate::commands::text::Detail;

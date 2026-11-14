@@ -2,6 +2,7 @@ use object::{Architecture, Endianness, SectionKind};
 
 use super::*;
 use crate::binary::FileKind;
+use crate::binary::test_samples::load_sample;
 
 /// The functions found in firmware that runs `text` from its start at
 /// 0x1000 and has `rodata` at 0x2000, as (address, size).
@@ -304,9 +305,7 @@ fn constants_at_a_case_of_a_jump_table_end_nothing() {
 
 #[test]
 fn kept_code_reads_give_the_answers_that_new_ones_do() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("testdata/bin/c-cortex-m7-stripped.elf");
-    let binary = Binary::load(&path).unwrap();
+    let binary = load_sample("testdata/bin/c-cortex-m7-stripped.elf");
     let handlers = &binary.vector_table.as_ref().unwrap().handlers;
     let seeds = KnownStarts {
         binary: &binary,

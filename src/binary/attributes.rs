@@ -333,10 +333,8 @@ mod tests {
     /// not, and none for x86-64.
     #[test]
     fn every_sample_names_its_core() {
-        let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/bin");
         let mut arm = 0;
-        for entry in std::fs::read_dir(folder).unwrap() {
-            let path = entry.unwrap().path();
+        for path in crate::binary::test_samples::samples() {
             let name = path.file_name().unwrap().to_string_lossy().to_string();
             let binary = crate::binary::Binary::load(&path).unwrap();
             let expected = if binary.architecture != object::Architecture::Arm {

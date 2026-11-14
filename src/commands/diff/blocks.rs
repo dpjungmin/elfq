@@ -369,12 +369,11 @@ pub(super) fn sections_that_differ<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::binary::test_samples::sample_path;
 
-    fn sample(name: &str) -> Vec<u8> {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("testdata/bin")
-            .join(name);
-        std::fs::read(path).unwrap()
+    /// The bytes of the sample at `path`, from the crate's root.
+    fn sample(path: &str) -> Vec<u8> {
+        std::fs::read(sample_path(path)).unwrap()
     }
 
     /// The names of what a build has in a block, load images marked.
@@ -394,7 +393,10 @@ mod tests {
     #[test]
     fn both_builds_share_the_blocks() {
         // .data and .bss went from DTCM at 0x20000000 to 0x80000000.
-        let (old, new) = (sample("c-cortex-m7.elf"), sample("c-cortex-m7-sdram.elf"));
+        let (old, new) = (
+            sample("testdata/bin/c-cortex-m7.elf"),
+            sample("testdata/bin/c-cortex-m7-sdram.elf"),
+        );
         let old = LoadedMemory::read(&old).unwrap();
         let new = LoadedMemory::read(&new).unwrap();
         let blocks = shared_blocks(&old, &new, false);
@@ -432,7 +434,10 @@ mod tests {
 
     #[test]
     fn sections_pair_by_name_in_each_block() {
-        let (old, new) = (sample("c-cortex-m7.elf"), sample("c-cortex-m7-moved.elf"));
+        let (old, new) = (
+            sample("testdata/bin/c-cortex-m7.elf"),
+            sample("testdata/bin/c-cortex-m7-moved.elf"),
+        );
         let old = LoadedMemory::read(&old).unwrap();
         let new = LoadedMemory::read(&new).unwrap();
         let blocks = shared_blocks(&old, &new, false);
@@ -481,7 +486,10 @@ mod tests {
 
     #[test]
     fn sections_differ_by_address_size_or_bytes() {
-        let (old, new) = (sample("c-x86_64.elf"), sample("c-x86_64-moved.elf"));
+        let (old, new) = (
+            sample("testdata/bin/c-x86_64.elf"),
+            sample("testdata/bin/c-x86_64-moved.elf"),
+        );
         let old = LoadedMemory::read(&old).unwrap();
         let new = LoadedMemory::read(&new).unwrap();
         assert_eq!(
@@ -497,7 +505,10 @@ mod tests {
             ]
         );
         // A section that only one build has counts, where it was.
-        let (old, new) = (sample("c-x86_64.elf"), sample("c-x86_64.so"));
+        let (old, new) = (
+            sample("testdata/bin/c-x86_64.elf"),
+            sample("testdata/bin/c-x86_64.so"),
+        );
         let old = LoadedMemory::read(&old).unwrap();
         let new = LoadedMemory::read(&new).unwrap();
         let differ = names(&old, &new);
@@ -513,7 +524,10 @@ mod tests {
         );
         assert!(sections_that_differ(&old, &old).is_empty());
         // Only the load image of .data moved, as .text shrank before it.
-        let (old, new) = (sample("c-cortex-m7.elf"), sample("c-cortex-m7-inlined.elf"));
+        let (old, new) = (
+            sample("testdata/bin/c-cortex-m7.elf"),
+            sample("testdata/bin/c-cortex-m7-inlined.elf"),
+        );
         let old = LoadedMemory::read(&old).unwrap();
         let new = LoadedMemory::read(&new).unwrap();
         let data = sections_that_differ(&old, &new)
@@ -528,7 +542,10 @@ mod tests {
             })
         );
         // ITCM's code has a load image, the vector table none.
-        let (old, new) = (sample("c-cortex-m7.elf"), sample("c-cortex-m7-moved.elf"));
+        let (old, new) = (
+            sample("testdata/bin/c-cortex-m7.elf"),
+            sample("testdata/bin/c-cortex-m7-moved.elf"),
+        );
         let old = LoadedMemory::read(&old).unwrap();
         let new = LoadedMemory::read(&new).unwrap();
         let load_images: Vec<(&str, bool)> = (sections_that_differ(&old, &new).iter())
@@ -547,8 +564,14 @@ mod tests {
         // So does a section that only one build has: only the Cortex-M7's
         // has ITCM, either way round.
         for (old, new) in [
-            (sample("c-cortex-m4.elf"), sample("c-cortex-m7.elf")),
-            (sample("c-cortex-m7.elf"), sample("c-cortex-m4.elf")),
+            (
+                sample("testdata/bin/c-cortex-m4.elf"),
+                sample("testdata/bin/c-cortex-m7.elf"),
+            ),
+            (
+                sample("testdata/bin/c-cortex-m7.elf"),
+                sample("testdata/bin/c-cortex-m4.elf"),
+            ),
         ] {
             let old = LoadedMemory::read(&old).unwrap();
             let new = LoadedMemory::read(&new).unwrap();

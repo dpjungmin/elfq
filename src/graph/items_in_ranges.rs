@@ -120,26 +120,16 @@ impl<'a> ItemsInRanges<'a> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use super::*;
+    use crate::binary::test_samples::load_sample;
     use crate::graph::Reference;
 
     /// The Cortex-M7 sample, with code in ITCM at 0x0 and flash at
     /// 0x30000000.
     fn sample() -> (Binary, Graph) {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/bin/c-cortex-m7.elf");
-        let binary = Binary::load(&path).unwrap();
+        let binary = load_sample("testdata/bin/c-cortex-m7.elf");
         let graph = Graph::build(&binary);
         (binary, graph)
-    }
-
-    fn index(binary: &Binary, name: &str) -> usize {
-        binary
-            .items
-            .iter()
-            .position(|item| item.name == name)
-            .unwrap()
     }
 
     #[test]
@@ -151,12 +141,12 @@ mod tests {
         let items = ItemsInRanges::new(&binary, &ranges);
         assert!(items.callable_through_pointer(&graph).is_empty());
         // Code that takes its address can pass it on.
-        let handler = index(&binary, "SysTick_Handler");
+        let handler = binary.index_of("SysTick_Handler");
         let start = graph
             .references
-            .partition_point(|r| r.from < index(&binary, "main"));
+            .partition_point(|r| r.from < binary.index_of("main"));
         graph.references[start] = Reference {
-            from: index(&binary, "main"),
+            from: binary.index_of("main"),
             to: Node::Item(handler),
             kind: ReferenceKind::Address,
             site: graph.references[start].site,
@@ -164,7 +154,7 @@ mod tests {
         assert_eq!(items.callable_through_pointer(&graph), [handler]);
         // So can data that holds it, other than the vector table.
         let (binary, mut graph) = sample();
-        let handlers = index(&binary, "handlers");
+        let handlers = binary.index_of("handlers");
         graph.references.push(Reference {
             from: handlers,
             to: Node::Item(handler),
@@ -181,11 +171,11 @@ mod tests {
         let (binary, _) = sample();
         // SysTick_Handler is the item in 0x0..0x10; main is in flash.
         let ranges = ["0x0+0x10".parse().unwrap()];
-        let main = index(&binary, "main");
+        let main = binary.index_of("main");
         let items = ItemsInRanges::with_items(&binary, [main], &ranges);
         let mut inside: Vec<usize> = items.indices().collect();
         inside.sort();
-        let mut expected = [index(&binary, "SysTick_Handler"), main];
+        let mut expected = [binary.index_of("SysTick_Handler"), main];
         expected.sort();
         assert_eq!(inside, expected);
         // But only the ranges hold addresses.
