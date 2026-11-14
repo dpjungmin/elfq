@@ -27,7 +27,7 @@ use ratatui::layout::Rect;
 use ratatui::text::Line;
 use ratatui::widgets::TableState;
 
-use super::keys::Action;
+use super::keys::{Action, PageKeys};
 use super::session::Session;
 use crate::binary::Item;
 use crate::commands::checks::item_in_file;
@@ -144,20 +144,18 @@ impl View {
         }
     }
 
-    /// Whether the page has lines that link, which Tab moves between.
-    pub(super) fn has_links(&self) -> bool {
-        match self {
-            View::Start(start) => start.has_links(),
-            View::Item(page) => page.has_links(),
-            View::Help(_) => false,
-        }
-    }
-
-    /// The numbers of the page's tabs, whose keys show them.
-    pub(super) fn tabs(&self) -> Vec<u8> {
-        match self {
-            View::Item(page) => page.tab_numbers(),
-            View::Start(_) | View::Help(_) => Vec::new(),
+    /// What the page has that the hint line names keys for: lines that
+    /// link, which Tab moves between, tabs, and rows, which find looks in.
+    pub(super) fn page_keys(&mut self) -> PageKeys {
+        let (links, tabs) = match self {
+            View::Start(start) => (start.has_links(), Vec::new()),
+            View::Item(page) => (page.has_links(), page.tab_numbers()),
+            View::Help(_) => (false, Vec::new()),
+        };
+        PageKeys {
+            links,
+            tabs,
+            rows: self.cursor().is_some(),
         }
     }
 

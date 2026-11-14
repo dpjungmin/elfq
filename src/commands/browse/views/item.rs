@@ -43,11 +43,12 @@ use ratatui::text::{Line, Span};
 
 use super::printed::Printed;
 use super::{Cursor, Go, PageAt, draw_lines, fit_name, follow, imported};
+use crate::binary::ItemKind;
 use crate::commands::browse::{keys::Action, session::Session};
 use crate::commands::checks::readable_item;
 use crate::commands::{retained, text, why};
 use crate::graph::Node;
-use header::Header;
+use header::{Answering, Header};
 use listing::ListingPane;
 
 mod code;
@@ -120,12 +121,13 @@ impl Tab {
             .find(|tab| tab.number_and_name().0 == number)
     }
 
-    /// Its name on the tab line, such as "1 code".
+    /// Its name on the tab line of the page of an item of `kind`, such as
+    /// "1 code".
     ///
     /// On a data object's page, tab 1 is "1 contents".
-    fn label(self, data: bool) -> String {
-        let (number, name) = match (self, data) {
-            (Tab::Code, true) => (1, "contents"),
+    fn label(self, kind: ItemKind) -> String {
+        let (number, name) = match (self, kind) {
+            (Tab::Code, ItemKind::Data) => (1, "contents"),
             _ => self.number_and_name(),
         };
         format!("{number} {name}")
@@ -318,8 +320,11 @@ impl ItemPage {
     ///
     /// It adds it only where `retained` or `why` answers about the item.
     pub(in crate::commands::browse) fn add_keeping(&mut self, session: &Session) {
-        let (retained, why) = (self.has(Tab::Retained), self.has(Tab::Why));
-        self.header.add_keeping(session, retained, why);
+        let answering = Answering {
+            retained: self.has(Tab::Retained),
+            why: self.has(Tab::Why),
+        };
+        self.header.add_keeping(session, answering);
     }
 
     /// What `tab` holds.
@@ -446,8 +451,14 @@ impl ItemPage {
     /// for that, `width` columns wide, one space parts them.
     fn tab_line(&self, width: usize) -> Line<'static> {
         let tabs = self.tabs();
-        let data = matches!(self.pane_of(Tab::Code), Pane::Listing(listing) if listing.is_data());
-        let label = |tab: Tab| tab.label(data);
+        let kind = match self.pane_of(Tab::Code) {
+            Pane::Listing(listing) => listing.kind(),
+            // Only an import's page has no listing in tab 1, and its tab
+            // line doesn't name tab 1. An import is a function from a
+            // shared library.
+            Pane::Refused(_) | Pane::NotYet(_) | Pane::Printed(_) => ItemKind::Function,
+        };
+        let label = |tab: Tab| tab.label(kind);
         let wide: usize = tabs.iter().map(|&tab| label(tab).chars().count() + 3).sum();
         let pad = if wide <= width { " " } else { "" };
         let mut line = Vec::new();
@@ -630,7 +641,8 @@ mod tests {
         for (tab, named) in Tab::ALL.into_iter().zip(named) {
             // Tab 1 is "1 code or contents", as a data object's page names
             // it.
-            let (on_code, on_data) = (tab.label(false), tab.label(true));
+            let on_code = tab.label(ItemKind::Function);
+            let on_data = tab.label(ItemKind::Data);
             let words = if on_data == on_code {
                 on_code
             } else {

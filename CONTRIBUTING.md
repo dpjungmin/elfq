@@ -1030,7 +1030,8 @@ the biggest view, and not the one to start from.
    from a jump inside a function, when it can, `command` gives the
    command that prints what the page shows, which goes under it, and
    `cursor`, `rows_with` and `row_noun` give find the page's rows and
-   what to call them.
+   what to call them. `page_keys` says what the page has that the hint
+   line names keys for: lines that link, its tabs, and rows.
 
    A page or tab that shows a command's answer, as `callers.rs` does, is
    a `Printed` (`printed.rs`), made from the command's own answer: the
@@ -1060,11 +1061,15 @@ the biggest view, and not the one to start from.
    what it prints.
 3. **Keys.** A key goes in `BINDINGS` in `keys.rs`, with the new `Action`,
    what the help page says about it, and its hint, if the hint line names
-   it. The help page and the hint line are printed from that table, and
-   `no_key_does_two_things` checks it. `app.rs` handles an action that
-   opens a page, as `Action::Help` does. The go-to box and find's prompt
-   read keys through `keys::typing` instead, which takes from the table
-   only the keys that move and aren't characters.
+   it: a `Hint`, whose `drop_order` says when it goes from a screen too
+   narrow for every hint. `keys::hints` names some keys only on pages
+   that have what they act on, such as rows for find, from what
+   `View::page_keys` says the page has, a `PageKeys`. The help page and
+   the hint line are printed from that table, and `no_key_does_two_things`
+   checks it. `app.rs` handles an action that opens a page, as
+   `Action::Help` does. The go-to box and find's prompt read keys through
+   `keys::typing` instead, which takes from the table only the keys that
+   move and aren't characters.
 4. **Tests.** Pin its screens in `tests/it/commands/browse.rs` at 80x24
    and 100x30, and drive it with keys there, as the other tests do.
 

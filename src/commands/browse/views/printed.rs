@@ -36,6 +36,26 @@ pub(super) enum Lines {
     Table(Vec<String>),
 }
 
+/// One of [`Lines`], wrapped or cut to the screen's width, with where
+/// it can give way when it doesn't fit.
+struct WrappedLines {
+    /// Where its lines can stop when the screen hasn't room for all of
+    /// them.
+    breaks: Breaks,
+    /// Its lines, none of them wider than the screen.
+    lines: Vec<String>,
+}
+
+/// Where lines can stop when the screen hasn't room for all of them, the
+/// rest left out.
+enum Breaks {
+    /// Words, which can stop where any of their lines ends.
+    AtLineEnds,
+    /// A table, kept whole or left out, so that what is kept of it can't
+    /// read as all of it.
+    Never,
+}
+
 /// A row of the table.
 struct PrintedRow {
     /// Every cell but the last.
@@ -386,24 +406,24 @@ impl Printed {
                     rows => (rows + 1).min((height / 3).max(3)),
                 };
                 let room = height.saturating_sub(table);
-                // Rule 1: every block of lines wraps.
-                let own = blocks(&self.above, width);
-                let own_lines: usize = own.iter().map(|(_, lines)| lines.len()).sum();
-                let below = blocks(&self.below, width);
-                let below_lines: usize = below.iter().map(|(_, lines)| lines.len()).sum();
+                // Rule 1: the lines wrap.
+                let own = wrap_lines(&self.above, width);
+                let own_lines: usize = own.iter().map(|wrapped| wrapped.lines.len()).sum();
+                let below = wrap_lines(&self.below, width);
+                let below_lines: usize = below.iter().map(|wrapped| wrapped.lines.len()).sum();
                 // Rule 3.
                 let most = (room.saturating_sub(own_lines + below_lines))
                     .max((room / 3).max(2))
                     .min(room.saturating_sub(own_lines.min(1)));
                 // Rules 4, 5 and 7.
                 let notes = self.notes_form(width, height, most, own_lines, below_lines);
-                // Rule 6, and rule 7 in each `keep_blocks`.
+                // Rule 6, and rule 7 in each `keep_wrapped`.
                 let room = room.saturating_sub(notes.len());
-                let own = keep_blocks(own, room, width);
+                let own = keep_wrapped(own, room, width);
                 let room = room - own.len();
-                let below = keep_blocks(below, room, width);
+                let below = keep_wrapped(below, room, width);
                 let mut above =
-                    keep_blocks(blocks(&self.context, width), room - below.len(), width);
+                    keep_wrapped(wrap_lines(&self.context, width), room - below.len(), width);
                 above.extend(own);
                 LaidOut {
                     size,
@@ -584,17 +604,21 @@ fn row_line<'a>(
     Row::new([cut(line.trim_end(), width.saturating_sub(2))])
 }
 
-/// `lines`, wrapped to `width`, as blocks of lines: each with whether it
-/// is words, which can be cut where a line ends, or a table, whose lines
-/// can't be joined.
-fn blocks(lines: &[Lines], width: usize) -> Vec<(bool, Vec<String>)> {
+/// Each of `lines`, wrapped to `width`: words, which can stop where a
+/// line ends, or a table, whose lines are cut to fit and go whole.
+fn wrap_lines(lines: &[Lines], width: usize) -> Vec<WrappedLines> {
     (lines.iter())
         .map(|line| match line {
-            Lines::Words(words) => (true, wrap(words, width)),
-            Lines::Table(lines) => {
-                let lines = lines.iter().map(|line| cut(&format!("  {line}"), width));
-                (false, lines.collect())
-            }
+            Lines::Words(words) => WrappedLines {
+                breaks: Breaks::AtLineEnds,
+                lines: wrap(words, width),
+            },
+            Lines::Table(lines) => WrappedLines {
+                breaks: Breaks::Never,
+                lines: (lines.iter())
+                    .map(|line| cut(&format!("  {line}"), width))
+                    .collect(),
+            },
         })
         .collect()
 }
@@ -605,25 +629,28 @@ pub(super) fn note_name(name: &str) -> String {
     fit_name(name, NOTE_NAME_WIDTH)
 }
 
-/// At most `most` lines of `blocks`, the first blocks that fit. When a
-/// block doesn't fit, it and the blocks after it are left out, and the
-/// last line kept ends in "…", or where none is, a line of "…" takes their
-/// place; words are cut where the lines end, but a table goes whole, so
-/// that what is kept of it can't read as all of it.
-fn keep_blocks(blocks: Vec<(bool, Vec<String>)>, most: usize, width: usize) -> Vec<String> {
+/// At most `most` lines of `wrapped`, in order. Where one of them doesn't
+/// fit, it and the ones after it are left out, and the last line kept
+/// ends in "…", or where none is, a line of "…" takes their place; words
+/// stop where a line ends, but a table goes whole (see [`Breaks`]).
+fn keep_wrapped(wrapped: Vec<WrappedLines>, most: usize, width: usize) -> Vec<String> {
     let mut kept: Vec<String> = Vec::new();
-    for (words, lines) in blocks {
+    for WrappedLines { breaks, lines } in wrapped {
         let left = most - kept.len();
         if lines.len() <= left {
             kept.extend(lines);
             continue;
         }
-        if words && left > 0 {
-            kept.extend(keep_lines(lines, left, width));
-        } else if let Some(last) = kept.last_mut() {
-            *last = cut(&format!("{last} …"), width);
-        } else if left > 0 {
-            kept.push("…".to_string());
+        match breaks {
+            Breaks::AtLineEnds if left > 0 => kept.extend(keep_lines(lines, left, width)),
+            // A table, or words with no line left for them.
+            Breaks::AtLineEnds | Breaks::Never => {
+                if let Some(last) = kept.last_mut() {
+                    *last = cut(&format!("{last} …"), width);
+                } else if left > 0 {
+                    kept.push("…".to_string());
+                }
+            }
         }
         break;
     }

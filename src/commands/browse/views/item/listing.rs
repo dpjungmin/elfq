@@ -25,10 +25,11 @@ use crate::binary::ItemKind;
 use crate::commands::browse::{keys::Action, session::Session};
 use crate::graph::Node;
 
-/// The most columns that the instructions take, and the fewest.
-///
-/// They give way to the fewest when the notes after them need room.
-const INSTRUCTION_WIDTH: (usize, usize) = (48, 24);
+/// The most columns that the instructions take.
+const INSTRUCTION_MOST: usize = 48;
+/// The fewest columns that the instructions give way to when the notes
+/// after them need room.
+const INSTRUCTION_FEWEST: usize = 24;
 /// The fewest columns that a note is cut to before its section goes.
 const NOTE_WIDTH: usize = 16;
 
@@ -197,6 +198,11 @@ impl ListingPane {
         pane
     }
 
+    /// Whether it shows a function's code or a data object's contents.
+    pub(super) fn kind(&self) -> ItemKind {
+        self.listing.kind
+    }
+
     /// Whether it shows a data object's contents.
     pub(super) fn is_data(&self) -> bool {
         self.listing.kind == ItemKind::Data
@@ -307,9 +313,11 @@ impl ListingPane {
         if self.listing.column.is_none() {
             return (address_width, 0);
         }
-        let ((most, fewest), notes) = match self.listing.kind {
-            ItemKind::Function => (INSTRUCTION_WIDTH, NOTE_WIDTH),
-            ItemKind::Data => ((usize::MAX, 0), 0),
+        // A data object's values take as many columns as the widest needs,
+        // give way to as few as the screen leaves, and keep none for notes.
+        let (most, fewest, notes) = match self.listing.kind {
+            ItemKind::Function => (INSTRUCTION_MOST, INSTRUCTION_FEWEST, NOTE_WIDTH),
+            ItemKind::Data => (usize::MAX, 0, 0),
         };
         let mut text_width = self.listing.widest_text.min(most);
         // The selection's "> ", the columns, and the spaces after each.
