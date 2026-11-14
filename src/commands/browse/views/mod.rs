@@ -316,7 +316,7 @@ fn follow(session: &Session, node: Node, at: Option<u64>, this: Option<Node>, ta
         return Go::Say(imported(session, node));
     }
     let at = at.filter(|_| opened == node);
-    let page = ItemPage::new(session, opened, at, opened.name(session.binary)).on(session, tab);
+    let page = ItemPage::new(session, opened, at, None).on(session, tab);
     Go::Open(View::Item(Box::new(page)))
 }
 

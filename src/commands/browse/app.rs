@@ -114,8 +114,7 @@ impl<'a> App<'a> {
                 Ok(found) => {
                     // An address selects the line that holds it.
                     let at = hex_number(typed).and_then(Result::ok);
-                    let lead = found.lead_name(session.binary);
-                    let page = ItemPage::new(&session, found.node, at, &lead);
+                    let page = ItemPage::new(&session, found.node, at, found.note());
                     first = View::Item(Box::new(page));
                 }
                 // The CLI's error goes over the rows.
@@ -294,9 +293,8 @@ impl<'a> App<'a> {
                     // The header names the item as SYMBOL's answer does,
                     // with what holds an address typed, or the other name
                     // that found it.
-                    let name = picker_row.node.name(session.binary);
-                    let lead = picker_row.lead.as_deref().unwrap_or(name);
-                    let page = ItemPage::new(session, picker_row.node, picker_row.at, lead);
+                    let note = picker_row.note.as_deref();
+                    let page = ItemPage::new(session, picker_row.node, picker_row.at, note);
                     self.picker = None;
                     self.message = None;
                     self.open(View::Item(Box::new(page)));
@@ -656,7 +654,7 @@ mod tests {
                 .flat_map(|node| [2, 3, 4, 5, 6].map(|tab| (node, tab)))
             {
                 let name = node.name(&binary);
-                let mut page = ItemPage::new(&app.session, node, None, name);
+                let mut page = ItemPage::new(&app.session, node, None, None);
                 if page.handle(&app.session, Action::Tab(tab)).is_some() {
                     // The item doesn't have the tab.
                     continue;

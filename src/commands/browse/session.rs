@@ -32,12 +32,13 @@
 //!   or failing that, its whole name, so it is never an address.
 //! - The header's name, on an item's page: its full name, then the note of
 //!   the SYMBOL that the user typed (`Symbol::note`), as in
-//!   `Default_Handler (also named NMI_Handler)`. The page gets it as
-//!   `header_name`, from `Symbol::lead_name` or the go-to box's
-//!   `PickerRow::lead`, and a page that a link opens gets the full name
-//!   alone. `Header.name` holds the full name, and `Header.after_name`
-//!   starts with the note. It differs from the lead name only in whose
-//!   note it has: the SYMBOL that the user typed, not the query.
+//!   `Default_Handler (also named NMI_Handler)`. The page gets the note
+//!   alone, from `Symbol::note` or the go-to box's `PickerRow::note`, and
+//!   a page that a link opens gets none. `Header.name` holds the full
+//!   name and `Header.note` the note, which `symbol::with_note` puts after
+//!   the name, as `Symbol::lead_name` does. It differs from the lead name
+//!   only in whose note it has: the SYMBOL that the user typed, not the
+//!   query.
 //! - Its lead name, from [`Session::lead_name`], as in `sniprintf (also
 //!   named snprintf)`: in the first line of the answer under tabs 2, 4, 5
 //!   and 6, and in what u says of a root or of an item that nothing
