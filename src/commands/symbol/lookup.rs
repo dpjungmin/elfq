@@ -160,7 +160,7 @@ impl<'a> Names<'a> {
     /// that `query` is a file here goes under the error.
     fn find_without_shell_hint(&self, query: &str) -> Result<Symbol> {
         match self.look_up_or_match(query)? {
-            LookupOrMatch::Name(lookup) => self.one_or_error(query, lookup, Takes::One),
+            LookupOrMatch::Name(lookup) => self.one_or_error(query, lookup),
             LookupOrMatch::Pattern(matched) => match matched.only_item() {
                 Some(symbol) => Ok(symbol),
                 None => bail!("{}", self.matches_several(&matched)),
@@ -172,30 +172,18 @@ impl<'a> Names<'a> {
     /// The one item or import that `query` finds, from `lookup`, what
     /// [`Names::look_up_or_match`] finds for it as a name
     /// ([`LookupOrMatch::Name`]), or the error for a name that finds
-    /// several or none, as a command that `takes` one item or a set gives
-    /// it. [`Names::find`] and browse's go-to box take one item
-    /// ([`Takes::One`]): the error for several lists them and says to use
-    /// one (see [`Names::could_mean`]), and the error for none offers the
-    /// pattern for what is in a module of that name only when it matches
-    /// one item. [`subject`](super::subject), for `callers` and `callees`,
-    /// takes a set ([`Takes::Set`]): the error for several says to use one
-    /// or more of them and ends with the pattern that takes them all, when
-    /// there is one (see [`Names::choices`]), and the error for none
-    /// offers the pattern for a module whenever it matches an item (see
-    /// [`Names::nothing_named`]).
-    pub(in crate::commands) fn one_or_error(
-        &self,
-        query: &str,
-        lookup: Lookup,
-        takes: Takes,
-    ) -> Result<Symbol> {
+    /// several or none in a command that takes one item ([`Takes::One`]),
+    /// as [`Names::find`] and browse's go-to box give it: the error for
+    /// several lists them and says to use one (see [`Names::could_mean`]),
+    /// and the error for none offers the pattern for what is in a module
+    /// of that name only when it matches one item. A command that takes a
+    /// set reads each argument with [`Names::read_argument`] and words
+    /// these errors with [`Names::unusable_error`] instead.
+    pub(in crate::commands) fn one_or_error(&self, query: &str, lookup: Lookup) -> Result<Symbol> {
         match lookup {
             Lookup::One(symbol) => Ok(symbol),
-            Lookup::NoName => bail!("{}", self.nothing_named(query, takes)),
-            Lookup::Several(nodes) => match takes {
-                Takes::One => bail!("{}", self.could_mean(query, nodes, USE_ONE)),
-                Takes::Set => bail!("{}", self.choices(query, nodes)),
-            },
+            Lookup::NoName => bail!("{}", self.nothing_named(query, Takes::One)),
+            Lookup::Several(nodes) => bail!("{}", self.could_mean(query, nodes, USE_ONE)),
         }
     }
 

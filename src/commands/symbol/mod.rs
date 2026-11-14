@@ -23,15 +23,20 @@
 //! [`Symbol::lead_name`]).
 //!
 //! For `callers`, `callees` and `retained`, an argument can also be a range
-//! of memory in place of SYMBOL (see [`argument`]). They take several
-//! SYMBOLs, patterns and ranges, and put what they pick together in a
-//! [`Set`], each item once; `callers` and `callees` read theirs with
+//! of memory in place of SYMBOL (see [`Names::read_argument`]). They take
+//! several SYMBOLs, patterns and ranges, and put what they pick together
+//! in a [`Set`], each item once; `callers` and `callees` read theirs with
 //! [`subject`].
 //!
 //! The files:
 //!
-//! - `mod.rs`, this file, tells ranges from SYMBOL, and reads what
-//!   `callers` and `callees` ask about.
+//! - `mod.rs`, this file, reads what `callers` and `callees` ask about.
+//! - `argument.rs` reads one argument of a command that takes a set: a
+//!   range, or SYMBOL ([`Names::read_argument`]), with what it picks for a
+//!   set ([`Pick::new`]); or why the command can't use it, an
+//!   [`Unusable`], which is worded only when the error is built
+//!   ([`Names::unusable_error`]). Its module doc says how a new command
+//!   that takes a set reads its arguments.
 //! - `lookup.rs` holds [`Names`], which finds what SYMBOL names, or the one
 //!   item that a pattern matches, in the commands that take one item
 //!   ([`Names::find`]), with the line of `shell_hint.rs` under the error
@@ -60,6 +65,7 @@
 //!   [`Names::find`] and [`subject`], and `retained`'s, end with it.
 //! - `fixtures.rs` builds the file of functions that unit tests read.
 
+mod argument;
 #[cfg(test)]
 mod fixtures;
 mod lookup;
@@ -70,6 +76,7 @@ mod set;
 mod shell_hint;
 mod similar;
 
+pub(super) use argument::{Argument, Unusable, is_meant_as_range, is_range};
 pub(super) use lookup::{Lookup, Names};
 pub(super) use matched::{PatternMatches, pattern_notes};
 pub(super) use not_found::Takes;
@@ -81,9 +88,9 @@ pub(super) use shell_hint::{FilesHere, is_here, with_shell_hint};
 #[cfg(feature = "tui")]
 pub(super) use similar::Needle;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, anyhow};
 
-use crate::binary::{AddressRange, Binary, distinct_ranges, range_hint};
+use crate::binary::{AddressRange, Binary, distinct_ranges};
 use crate::graph::Node;
 
 /// The item or import that SYMBOL finds.
@@ -124,26 +131,25 @@ pub(super) enum Subject {
     Set(Set),
 }
 
-/// How `callers` or `callees` takes the item of a SYMBOL among others into
-/// a set: its index, or the command's error for an import, whose code
-/// isn't in the file.
+/// How a command takes the item of a SYMBOL among others into a set (see
+/// [`Pick::new`]): its index, or the command's error for an import, whose
+/// code isn't in the file. `callers` and `callees` each have their own,
+/// and `retained` takes `item_in_file`.
 pub(super) type ItemInSet = fn(&Binary, Node) -> Result<usize>;
 
-/// Works out what `queries` ask about, reading each with [`pick_for`] and
-/// in the order given: one SYMBOL alone (see [`Subject::Symbol`]), ranges
-/// of memory alone, or else the [`Set`] of the items they pick. When it
-/// fails at an argument that is a file here, its error ends with the line
-/// that says so, naming that file and the files after it, which the shell
-/// may have put in place of one pattern (see [`with_shell_hint`]). Stops at
-/// the first that it can't read, such as a range it can't parse or a name
-/// or pattern that finds nothing, with its error; whether each range holds
-/// something is checked after, by `range_check`. `callers` and `callees`
-/// take a set, so a name that could mean several items gets an error that
-/// says to use one or more of them and ends with the pattern that takes
-/// them all, when there is one (see [`Names::choices`]), where the error
-/// from [`Names::find`] says to use one and offers no pattern. A set holds
-/// only items, so `item_in_set` gives the item of a SYMBOL among others,
-/// or the command's error for an import.
+/// Works out what `queries` ask about, reading each with
+/// [`Names::read_argument`] and in the order given: one SYMBOL alone (see
+/// [`Subject::Symbol`]), ranges of memory alone, or else the [`Set`] of the
+/// items they pick (see [`Pick::new`]). When it fails at an argument that
+/// is a file here, its error ends with the line that says so, naming that
+/// file and the files after it, which the shell may have put in place of
+/// one pattern (see [`with_shell_hint`]). Stops at the first that it can't
+/// use, such as a range it can't parse or a name or pattern that finds
+/// nothing, with the error of a command that takes a set (see
+/// [`Names::unusable_error`]); whether each range holds something is
+/// checked after, by `range_check`. A set holds only items, so
+/// `item_in_set` gives the item of a SYMBOL among others, or the command's
+/// error for an import.
 pub(super) fn subject(
     binary: &Binary,
     queries: &[String],
@@ -152,7 +158,16 @@ pub(super) fn subject(
     let names = Names::new(binary);
     let mut picks = Vec::new();
     for (index, query) in queries.iter().enumerate() {
-        let picked = pick_for(binary, &names, queries, index, item_in_set).map_err(|error| {
+        let pick = match names.read_argument(query) {
+            // One SYMBOL alone may find an import, which no set holds, so
+            // it is answered about as itself.
+            Ok(Argument::Symbol(symbol)) if queries.len() == 1 => {
+                return Ok(Subject::Symbol(symbol));
+            }
+            read => read.and_then(|argument| Pick::new(binary, argument, item_in_set)),
+        };
+        let pick = pick.map_err(|unusable| {
+            let error = anyhow!(names.unusable_error(query, &unusable));
             // The shell puts all the files in place of one pattern, so when
             // the argument it stopped at is a file here, the line names it
             // and the files after it, which it hasn't read; those before it
@@ -162,10 +177,7 @@ pub(super) fn subject(
                 false => error,
             }
         })?;
-        match picked {
-            Picked::Alone(symbol) => return Ok(Subject::Symbol(symbol)),
-            Picked::Pick(pick) => picks.push(pick),
-        }
+        picks.push(pick);
     }
     // Some only when every argument is a range: then they are ranges alone,
     // not a set, which would copy the name of every item in them.
@@ -182,117 +194,6 @@ pub(super) fn subject(
     })
 }
 
-/// What [`pick_for`] gives for one argument.
-enum Picked {
-    /// The item or import of one SYMBOL given alone, which `callers` and
-    /// `callees` answer about as itself, not as a set.
-    Alone(Symbol),
-    /// What the argument picks, for a set or for ranges alone.
-    Pick(Pick),
-}
-
-/// What the argument at `index` of `queries` picks, read as [`argument`]
-/// reads it, or when it is one SYMBOL alone, its item or import; or the
-/// error that [`subject`] stops at. A name that finds several items or
-/// none gets the error of a command that takes a set ([`Takes::Set`]).
-/// [`subject`] calls it for each argument in turn, so that it knows which
-/// one it stopped at, for the line that says it is a file here.
-fn pick_for(
-    binary: &Binary,
-    names: &Names,
-    queries: &[String],
-    index: usize,
-    item_in_set: ItemInSet,
-) -> Result<Picked> {
-    let pick = match argument(&queries[index])? {
-        Argument::Range(range) => Pick::Range(range),
-        Argument::Symbol(query) => match names.look_up_or_match(query)? {
-            LookupOrMatch::Name(lookup) => {
-                let symbol = names.one_or_error(query, lookup, Takes::Set)?;
-                if let [_] = queries {
-                    return Ok(Picked::Alone(symbol));
-                }
-                Pick::Symbol {
-                    index: item_in_set(binary, symbol.node)?,
-                    lead_name: symbol.lead_name(binary),
-                }
-            }
-            LookupOrMatch::Pattern(matched) => Pick::Pattern(matched),
-            LookupOrMatch::NoMatch(pattern) => bail!("{}", names.nothing_matches(&pattern)),
-        },
-    };
-    Ok(Picked::Pick(pick))
-}
-
-/// What an argument given in place of SYMBOL is.
-pub(super) enum Argument<'q> {
-    /// SYMBOL, as typed, for [`Names`] to look up.
-    Symbol(&'q str),
-    /// A range of memory.
-    Range(AddressRange),
-}
-
-/// Reads `query`, given in place of SYMBOL, as `callers`, `callees` and
-/// `retained` read it: as a range when it is meant as one (see
-/// [`is_range`]), or else as SYMBOL. Fails only for a range: one that it
-/// can't read, or one typed with `-` or `:` between its ends, which can't
-/// be SYMBOL either.
-pub(super) fn argument(query: &str) -> Result<Argument<'_>> {
-    match range(query) {
-        Some(range) => Ok(Argument::Range(range?)),
-        None => {
-            check_not_a_range(query)?;
-            Ok(Argument::Symbol(query))
-        }
-    }
-}
-
-/// The range that `query` gives, if it gives one (see [`is_range`]):
-/// `START..END` or `START+SIZE`, as `--range` takes it. Ranges joined by
-/// commas are an error that says to give each on its own.
-fn range(query: &str) -> Option<Result<AddressRange>> {
-    is_range(query).then(|| {
-        if !query.contains(',') {
-            return query
-                .parse()
-                .map_err(|error| anyhow!("`{query}` isn't a range: {error}"));
-        }
-        let parts: Vec<&str> = query
-            .split(',')
-            .map(str::trim)
-            .filter(|part| !part.is_empty())
-            .collect();
-        for part in &parts {
-            if let Err(error) = part.parse::<AddressRange>() {
-                bail!("`{part}` isn't a range: {error}");
-            }
-        }
-        match parts[..] {
-            [_] => bail!("`{query}` isn't a range; leave out the comma"),
-            _ => bail!(
-                "`{query}` isn't a range; give each range as its own argument: {}",
-                parts.join(" ")
-            ),
-        }
-    })
-}
-
-/// Refuses `query` when it is a range typed with `-` or `:` between its
-/// ends, as in `0x0-0x40000`, which neither a range nor SYMBOL can be:
-/// no name starts with a digit, and no address has `-` or `:` in it.
-fn check_not_a_range(query: &str) -> Result<()> {
-    if query.starts_with(|c: char| c.is_ascii_digit()) && query.contains(['-', ':']) {
-        bail!("`{query}` isn't a range: {}", range_hint(query));
-    }
-    Ok(())
-}
-
-/// Whether `query` is meant as a range of memory rather than a symbol: it
-/// starts with a digit, as no name does, and has `..` or `+` in it.
-pub(super) fn is_range(query: &str) -> bool {
-    query.starts_with(|c: char| c.is_ascii_digit()) && (query.contains("..") || query.contains('+'))
-}
-
 /// Finds the item or import that `query` names, or the one item that it
 /// matches as a pattern, as `Names::find` does.
 /// Use it when the answer names nothing else; when it does, as in
@@ -305,28 +206,9 @@ pub fn find(binary: &Binary, query: &str) -> Result<Symbol> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use anyhow::bail;
 
-    #[test]
-    fn a_query_that_starts_with_a_digit_can_be_a_range() {
-        let range = |query| range(query).map(|range| range.map_err(|error| error.to_string()));
-        let itcm = AddressRange {
-            start: 0,
-            end: 0x40000,
-        };
-        assert_eq!(range("0x0+256K"), Some(Ok(itcm)));
-        assert_eq!(range("0..0x40000"), Some(Ok(itcm)));
-        assert_eq!(
-            range("0x40000..0x0"),
-            Some(Err(
-                "`0x40000..0x0` isn't a range: the range must end after it starts".to_string()
-            ))
-        );
-        // An address, and names, even with `+` in them.
-        assert_eq!(range("0x1700"), None);
-        assert_eq!(range("operator+"), None);
-        assert_eq!(range("Vec<T>::operator+="), None);
-    }
+    use super::*;
 
     #[test]
     fn one_symbol_alone_is_itself_and_anything_else_but_ranges_is_a_set() {
@@ -365,7 +247,7 @@ mod tests {
         // And so is a SYMBOL given twice, or with a range.
         assert_eq!(set_names(&["main", "main"]), ["main"]);
         assert_eq!(set_names(&["0x1020+0x10", "main"]), ["uart_getc", "main"]);
-        // It stops at the first argument that it can't read.
+        // It stops at the first argument that it can't use.
         let error = |queries: &[&str]| match subject(queries) {
             Err(error) => error.to_string(),
             Ok(_) => panic!("{queries:?} isn't an error"),
