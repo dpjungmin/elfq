@@ -455,6 +455,12 @@ helper type, doesn't take a word of the list; where code still does, as
   into while it is open, over the page (`Prompt`, in `app.rs`); one is
   open at most. What a key does there is a `Typing`, which
   `keys::typing` gives.
+- **status line**: in browse, the line under the page, which says the
+  first of what `StatusLine` lists that the screen has, such as what is
+  typed into a prompt or what the selected row's link opens
+  (`App::status_line`, in `app.rs`). It takes more lines only to show in
+  full a value that its row cuts. A change's status (`changes::Status`)
+  and a section's (`problems::Status`) are other things.
 - **header**: in browse, the lines above the tabs of an item's page
   (`Header`, in `views/item/header.rs`). The ELF header, which
   `binary/header.rs` reads, and the header line of a table are other
@@ -479,12 +485,12 @@ helper type, doesn't take a word of the list; where code still does, as
   other (`Change`, in `diff/changes.rs`): partners that moved to another
   block, grew, shrank or are edited (`Change::Partners`), or an item
   that only one build has (`Change::New`, `Change::Gone`); its status
-  (`changes::Status`, unrelated to `startup`'s) says which. Its place in
-  `Items::changes` is named `at`. **delta**: how many bytes something
-  grew by from one build to the other, less than 0 when it shrank: a
-  change's item, a block, a section or a row of CHANGE (`Items::delta`,
-  `Block::delta`). The CHANGE column and the JSON's `change` keys print
-  it.
+  (`changes::Status`, unrelated to `startup`'s and to browse's status
+  line) says which. Its place in `Items::changes` is named `at`.
+  **delta**: how many bytes something grew by from one build to the
+  other, less than 0 when it shrank: a change's item, a block, a section
+  or a row of CHANGE (`Items::delta`, `Block::delta`). The CHANGE column
+  and the JSON's `change` keys print it.
 - **section**: an ELF section. Its place in `Binary::sections` is a
   section index, named `section`. **block**: a run of addresses that
   sections occupy, as the overview's MEMORY table lists

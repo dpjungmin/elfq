@@ -4066,6 +4066,60 @@ testdata/bin/rust-x86_64-nodebug.elf
 }
 
 #[test]
+fn the_status_line_says_the_first_of_what_the_screen_has() {
+    // What is typed into a prompt comes before a message, as into the
+    // go-to box over the file's warning, and both come before a value
+    // that its row cuts.
+    let data = past_the_end(&[".plt"]);
+    let binary = Binary::parse(&data).unwrap();
+    let (going, _) = browse("plt-offset.elf", &binary, Some("zzqx"), (80, 24), &[]);
+    assert_eq!(selected_and_status(&going).1, "go to: zzqx▏");
+    let at_value =
+        |script: &[&str]| screen("rust-x86_64-nodebug.elf", Some("0x5d18"), (80, 24), script);
+    let finding = at_value(&["/", "st"]);
+    assert_eq!(selected_and_status(&finding).1, "find: st▏");
+    assert!(!finding.contains("cktrace/src"), "{finding}");
+    let first_page = at_value(&["Esc"]);
+    assert_eq!(
+        selected_and_status(&first_page).1,
+        "this is the first page; q quits"
+    );
+    assert!(!first_page.contains("cktrace/src"), "{first_page}");
+}
+
+#[test]
+fn what_is_typed_shows_its_end_and_a_value_keeps_to_the_room_left() {
+    // Text typed past the screen's width is cut from the left.
+    let long = "abcdefghijklmnopqrstuvwxyz_".repeat(3);
+    let typed = screen("c-x86_64.elf", None, (60, 16), &["g", &long]);
+    let line = format!("go to: {long}▏");
+    let end: String = line.chars().skip(line.chars().count() - 59).collect();
+    assert_eq!(selected_and_status(&typed).1, format!("…{end}"));
+    // A value takes the lines that the command under the page leaves: two
+    // when the command takes six, and one, cut, when it takes seven. The
+    // command names the file, so a longer path makes it longer; the
+    // browser doesn't read the file from the path.
+    let binary = load_sample("testdata/bin/rust-x86_64-nodebug.elf");
+    let lines_under_the_page = |folder: usize| {
+        let path = format!("testdata/{}/rust-x86_64-nodebug.elf", "d".repeat(folder));
+        let (screen, _) = browse(&path, &binary, Some("0x5d18"), (60, 16), &[]);
+        let lines: Vec<String> = screen.lines().map(str::to_string).collect();
+        let command = (lines.iter())
+            .position(|line| line.starts_with("$ "))
+            .unwrap();
+        let value = (lines.iter())
+            .position(|line| line.starts_with(".asciz"))
+            .unwrap();
+        (lines.len() - 1 - command, lines[value..command].to_vec())
+    };
+    let (command, value) = lines_under_the_page(150);
+    assert_eq!((command, value.len()), (6, 2), "{value:?}");
+    let (command, value) = lines_under_the_page(210);
+    assert_eq!((command, value.len()), (7, 1), "{value:?}");
+    assert!(value[0].ends_with('…'), "{value:?}");
+}
+
+#[test]
 fn data_without_pointers_or_strings_gives_the_command_that_prints_its_bytes() {
     // The page opens on its callers, and 1 shows the command.
     let page = screen("c-cortex-m7.elf", Some("crc_table"), (100, 16), &[]);

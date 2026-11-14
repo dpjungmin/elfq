@@ -89,6 +89,29 @@ enum Prompt {
     Find(String),
 }
 
+/// What the status line says: the first of these that the screen has, in
+/// this order (see [`App::status_line`]).
+enum StatusLine {
+    /// What the screen works out next, which can take a while
+    /// ([`Work::message`]).
+    Working(String),
+    /// What is typed into the go-to box or find's prompt, after the
+    /// prompt's name: "find: main▏".
+    Typed(String),
+    /// What was said, until the next key: the file's first warning on the
+    /// first screen, or what a key said, such as which of the rows that
+    /// find found is selected.
+    Message(String),
+    /// The selected row's value, when its row cuts it, as it cuts a long
+    /// string, broken into lines of the screen's width, so that the status
+    /// line shows it in full.
+    Value(Vec<String>),
+    /// What the selected row's link opens, or an empty line when it has
+    /// none ([`View::preview`]). It comes last, so it is what a screen with
+    /// nothing else to say shows.
+    Preview(String),
+}
+
 /// Where find looks from the selected row.
 #[derive(Clone, Copy)]
 enum FindFrom {
@@ -387,24 +410,93 @@ impl<'a> App<'a> {
             .expect("the first page is never closed")
     }
 
-    /// The selected row's value, wrapped to `width` columns, when its row
-    /// cuts it, as it cuts a long string, and the status line has nothing
-    /// else to say: the status line shows it in full.
-    fn value_lines(&self, width: usize) -> Vec<String> {
-        let busy = self.has_work() || self.prompt.is_some() || self.message.is_some();
-        match (busy, self.history.last()) {
+    /// What the status line says on a screen `width` columns wide: the
+    /// first of what [`StatusLine`] lists that the screen has.
+    ///
+    /// It may run before the page is drawn, as [`App::draw`] runs it to
+    /// know how many lines a value takes. That is safe: a draw moves only
+    /// which rows are on the screen, never the selected row, so the value
+    /// and the preview read the same before it as after.
+    fn status_line(&self, width: usize) -> StatusLine {
+        if let Some(work) = self.pending() {
+            return StatusLine::Working(work.message(&self.session));
+        }
+        match &self.prompt {
+            Some(Prompt::GoTo(picker)) => {
+                return StatusLine::Typed(format!("go to: {}▏", picker.text));
+            }
+            Some(Prompt::Find(typed)) => return StatusLine::Typed(format!("find: {typed}▏")),
+            None => {}
+        }
+        if let Some(message) = &self.message {
+            return StatusLine::Message(message.clone());
+        }
+        let view = (self.history.last()).expect("the first page is never closed");
+        match view.value(width) {
             // Broken where each line ends, rather than at spaces, so that
             // every character shows, as the row would show it.
-            (false, Some(view)) => match view.value(width) {
-                Some(value) => {
-                    let characters: Vec<char> = value.chars().collect();
-                    (characters.chunks(width.max(1)))
-                        .map(String::from_iter)
-                        .collect()
-                }
-                None => Vec::new(),
-            },
-            _ => Vec::new(),
+            Some(value) => {
+                let characters: Vec<char> = value.chars().collect();
+                let lines = characters.chunks(width.max(1)).map(String::from_iter);
+                StatusLine::Value(lines.collect())
+            }
+            None => StatusLine::Preview(view.preview(&self.session).unwrap_or_default()),
+        }
+    }
+
+    /// What [`App::status_line`] says, as the lines drawn on a screen
+    /// `width` columns wide: one line, or a value's lines, at most `most`
+    /// of them.
+    fn status_lines(&self, width: usize, most: usize) -> Vec<Line<'static>> {
+        match self.status_line(width) {
+            StatusLine::Working(text) | StatusLine::Message(text) => {
+                vec![Line::raw(cut(&text, width))]
+            }
+            // What is typed is cut from the left, so that its end shows.
+            StatusLine::Typed(typed) => vec![Line::raw(cut_left(&typed, width))],
+            StatusLine::Value(lines) => (keep_lines(lines, most, width).into_iter())
+                .map(|line| Line::raw(line).dim())
+                .collect(),
+            StatusLine::Preview(preview) => vec![Line::raw(cut(&preview, width)).dim()],
+        }
+    }
+
+    /// The title line's trail on a screen `width` columns wide: the file's
+    /// name, the titles of the pages that led here, and " › go to" while
+    /// the go-to box is open. Long names in it are shortened to fit after
+    /// the file's name.
+    fn trail(&mut self, width: usize) -> String {
+        let mut trail = self.session.file_name();
+        let room = width.saturating_sub(trail.chars().count() + 3).max(20);
+        for view in &mut self.history {
+            let title = view.title(room);
+            if !title.is_empty() {
+                trail += " › ";
+                trail += title;
+            }
+        }
+        match self.prompt {
+            Some(Prompt::GoTo(_)) => trail += " › go to",
+            None | Some(Prompt::Find(_)) => {}
+        }
+        trail
+    }
+
+    /// The hint line on a screen `width` columns wide: the keys of the
+    /// prompt that is open, or of the page (see [`keys::hints`]).
+    fn hint_line(&mut self, width: usize) -> String {
+        match self.prompt {
+            Some(Prompt::GoTo(_)) => keys::GO_TO_HINT.to_string(),
+            Some(Prompt::Find(_)) => keys::FIND_HINT.to_string(),
+            None => {
+                let view = self.page();
+                keys::hints(
+                    width,
+                    view.has_links(),
+                    &view.tabs(),
+                    view.cursor().is_some(),
+                )
+            }
         }
     }
 
@@ -424,7 +516,7 @@ impl<'a> App<'a> {
         let width = usize::from(area.width);
         // The command wraps, rather than being cut, so that all of it
         // can be copied, unless that leaves the page fewer than
-        // PAGE_LINES lines.
+        // PAGE_LINES lines. The go-to box hides it.
         let command = match (&self.prompt, self.history.last()) {
             (None | Some(Prompt::Find(_)), Some(view)) => {
                 view.command().map_or(Vec::new(), |line| wrap(line, width))
@@ -435,88 +527,32 @@ impl<'a> App<'a> {
         let command = keep_lines(command, most.max(1), width);
         // A value that its row cuts wraps too, in the lines that the
         // command leaves.
-        let value = keep_lines(
-            self.value_lines(width),
-            (most + 1).saturating_sub(command.len()).max(1),
-            width,
-        );
+        let status_lines =
+            self.status_lines(width, (most + 1).saturating_sub(command.len()).max(1));
         let [title, body, status, command_area, hints] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Fill(1),
-            Constraint::Length(value.len().max(1) as u16),
+            Constraint::Length(status_lines.len() as u16),
             Constraint::Length(command.len() as u16),
             Constraint::Length(1),
         ])
         .areas(area);
 
         // The trail is cut from the left, so that the page on the screen
-        // shows, and long names in it are shortened to fit after the
-        // file's name.
-        let mut trail = self.session.file_name();
-        let room = width.saturating_sub(trail.chars().count() + 3).max(20);
-        for view in &mut self.history {
-            let title = view.title(room);
-            if !title.is_empty() {
-                trail += " › ";
-                trail += title;
-            }
-        }
-        match self.prompt {
-            Some(Prompt::GoTo(_)) => trail += " › go to",
-            None | Some(Prompt::Find(_)) => {}
-        }
+        // shows.
+        let trail = self.trail(width);
         frame.render_widget(Line::raw(cut_left(&trail, width)).bold(), title);
-
         match &mut self.prompt {
-            Some(Prompt::GoTo(picker)) => {
-                picker.draw(&self.session, frame, body);
-                // What is typed is cut from the left, so that its end shows.
-                let typed = format!("go to: {}▏", picker.text);
-                frame.render_widget(Line::raw(cut_left(&typed, width)), status);
-                frame.render_widget(Line::raw(keys::GO_TO_HINT).dim(), hints);
-                return;
-            }
-            None | Some(Prompt::Find(_)) => {}
+            Some(Prompt::GoTo(picker)) => picker.draw(&self.session, frame, body),
+            None | Some(Prompt::Find(_)) => self.page().draw(frame, body),
         }
-        let waiting = self.pending().map(|work| work.message(&self.session));
-        let view = self
-            .history
-            .last_mut()
-            .expect("the first page is never closed");
-        view.draw(frame, body);
-        let finding = match &self.prompt {
-            Some(Prompt::Find(typed)) => Some(typed),
-            None | Some(Prompt::GoTo(_)) => None,
-        };
-        let status_lines = match (waiting, finding, &self.message) {
-            (Some(waiting), _, _) => vec![Line::raw(cut(&waiting, width))],
-            // What is typed is cut from the left, so that its end shows.
-            (None, Some(typed), _) => vec![Line::raw(cut_left(&format!("find: {typed}▏"), width))],
-            (None, None, Some(message)) => vec![Line::raw(cut(message, width))],
-            (None, None, None) if !value.is_empty() => value
-                .into_iter()
-                .map(|line| Line::raw(line).dim())
-                .collect(),
-            (None, None, None) => {
-                let preview = view.preview(&self.session).unwrap_or_default();
-                vec![Line::raw(cut(&preview, width)).dim()]
-            }
-        };
         draw_lines(frame, status, status_lines);
         draw_lines(
             frame,
             command_area,
             command.into_iter().map(Line::raw).collect(),
         );
-        let hint = match self.prompt {
-            Some(Prompt::Find(_)) => keys::FIND_HINT.to_string(),
-            None | Some(Prompt::GoTo(_)) => keys::hints(
-                width,
-                view.has_links(),
-                &view.tabs(),
-                view.cursor().is_some(),
-            ),
-        };
+        let hint = self.hint_line(width);
         frame.render_widget(Line::raw(hint).dim(), hints);
     }
 }
