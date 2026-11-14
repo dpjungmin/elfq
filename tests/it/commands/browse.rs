@@ -607,7 +607,7 @@ $ elfq testdata/bin/rust-x86_64-nodebug.elf callers memcpy --all
 #[test]
 fn a_symbol_that_finds_several_items_or_none_opens_go_to() {
     // On the start page, which opens without SYMBOL, with the CLI's
-    // message over the rows.
+    // error over the rows.
     assert_output(
         &screen("cpp-x86_64.elf", Some("log"), (80, 24), &[]),
         "\

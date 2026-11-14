@@ -688,7 +688,8 @@ The checks of `browse` that need its private types are unit tests in
   shortened.
 - `views/picker.rs`: that no two rows of the go-to box read the same;
   that a box opened with the error for SYMBOL over its rows doesn't work
-  out that error again; and on every sample, that a pattern lists the
+  out that error again; that the box lists at most 500 rows, however
+  many items SYMBOL finds; and on every sample, that a pattern lists the
   largest of the items it matches, and the one item it matches alone as
   SYMBOL's answer names it.
 - `views/names.rs`: each step of shortening a name.
