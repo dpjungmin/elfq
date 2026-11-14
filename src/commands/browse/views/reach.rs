@@ -23,9 +23,7 @@ pub(super) fn tab(session: &Session, index: usize, name: &str) -> Printed {
     let tab = reach::tab(binary, graph, names, index, name);
     let node = Node::Item(index);
     let command = session.command("reach", Some(node), tab.needs_all);
-    (Printed::of_flat(tab.answer, command))
-        .with_brief(tab.brief)
-        .opening(Tab::Reach, node)
+    Printed::of_flat_tab(tab, command).opening(Tab::Reach, node)
 }
 
 #[cfg(test)]

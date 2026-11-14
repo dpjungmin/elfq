@@ -117,9 +117,7 @@ fn page(session: &Session) -> Printed {
     }
     let tab = reach::Starts::find(binary, &session.graph, &session.names).tab(path);
     let command = session.command("reach", None, tab.needs_all);
-    Printed::of_flat(tab.answer, command)
-        .with_context(overview)
-        .with_brief(tab.brief)
+    Printed::of_flat_tab(tab, command).with_context(overview)
 }
 
 #[cfg(test)]

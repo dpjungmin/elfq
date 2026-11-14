@@ -20,7 +20,7 @@ use super::{
     keep_lines, link_preview, wrap,
 };
 use crate::commands::browse::{keys::Action, session::Session};
-use crate::commands::flat_answer::FlatAnswer;
+use crate::commands::flat_answer::{FlatAnswer, FlatTab};
 use crate::commands::tree_answer::{TreeAnswer, TreeTab};
 use crate::graph::Node;
 use crate::render::{Align, flat_rows};
@@ -205,10 +205,20 @@ impl Printed {
         Printed::new(above, answer.columns, rows, answer.notes, command)
     }
 
+    /// `tab`, the answer of `callees` or `reach` as a tab shows it, or the
+    /// start page's, printed by `command`, with every row and name, and its
+    /// notes as the command words them without `--all`, for when they
+    /// don't fit (see rule 4 of [`Printed::lay_out`]).
+    pub(super) fn of_flat_tab(tab: FlatTab, command: String) -> Printed {
+        let mut printed = Printed::of_flat(tab.answer, command);
+        printed.brief = Some(tab.brief);
+        printed
+    }
+
     /// `tab`, the answer of `why` or `retained` as a tab shows it, printed
     /// by `command`, with every row and name, and its notes in shorter
     /// forms for when they don't fit (see rule 4 of [`Printed::lay_out`]).
-    pub(super) fn of_tab(tab: TreeTab, command: String) -> Printed {
+    pub(super) fn of_tree_tab(tab: TreeTab, command: String) -> Printed {
         let mut printed = Printed::of_tree(tab.answer, command);
         printed.brief = Some(tab.brief);
         printed.briefest = Some(tab.briefest);
@@ -241,13 +251,6 @@ impl Printed {
     /// The same, after `context`, lines of another command.
     pub(super) fn with_context(mut self, context: Vec<Lines>) -> Printed {
         self.context = context;
-        self
-    }
-
-    /// The same, but with `brief`, the notes as the command words them
-    /// without `--all`, to show when the notes in full don't fit.
-    pub(super) fn with_brief(mut self, brief: Vec<String>) -> Printed {
-        self.brief = Some(brief);
         self
     }
 
@@ -742,6 +745,7 @@ impl Printed {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::flat_answer::FlatRow;
 
     fn row(cells: &[&str], name: &str, rest: &str) -> PrintedRow {
         PrintedRow {
@@ -753,38 +757,45 @@ mod tests {
         }
     }
 
-    /// A table of starts, as on the start page.
-    fn starts(above: Vec<Lines>, notes: &[&str]) -> Printed {
+    /// The answer of a table of starts, as on the start page, with `lead`
+    /// before it and `notes` under it.
+    fn start_answer(lead: &[&str], notes: &[&str]) -> FlatAnswer {
         let columns = [
             ("CODE", Align::Right),
             ("WHY", Align::Left),
             ("START", Align::Left),
         ];
-        let rows = vec![
-            row(&["2218", "main function"], "main", " (may reach more)"),
-            row(
-                &["2256", "entry point"],
-                "Reset_Handler",
-                " (may reach more)",
-            ),
-            row(&["80", "NMI, HardFault and 6 more"], "Default_Handler", ""),
-        ];
-        Printed::new(
-            above,
-            columns
-                .map(|(header, align)| (header.to_string(), align))
-                .into(),
-            rows,
-            notes.iter().map(|note| note.to_string()).collect(),
-            String::new(),
-        )
+        let row = |cells: [&str; 2], name: &str, rest: &str| {
+            let cells = cells.map(str::to_string).into();
+            FlatRow::new(cells, name.to_string(), None).with_rest(rest.to_string())
+        };
+        FlatAnswer {
+            lead: lead.iter().map(|line| line.to_string()).collect(),
+            columns: (columns.map(|(header, align)| (header.to_string(), align))).into(),
+            rows: vec![
+                row(["2218", "main function"], "main", " (may reach more)"),
+                row(
+                    ["2256", "entry point"],
+                    "Reset_Handler",
+                    " (may reach more)",
+                ),
+                row(["80", "NMI, HardFault and 6 more"], "Default_Handler", ""),
+            ],
+            notes: notes.iter().map(|note| note.to_string()).collect(),
+            ..FlatAnswer::default()
+        }
+    }
+
+    /// A table of starts, as on the start page.
+    fn starts(lead: &[&str], notes: &[&str]) -> Printed {
+        Printed::of_flat(start_answer(lead, notes), String::new())
     }
 
     #[test]
     fn notes_take_every_line_they_need_when_they_fit() {
         let note = "elfq can't follow 3 calls through pointers, which this note names \
                     in full, however many lines that takes on a short screen.";
-        let mut printed = starts(Vec::new(), &[note]);
+        let mut printed = starts(&[], &[note]);
         assert_eq!(
             printed.drawn((60, 7)),
             "  CODE  WHY                   START
@@ -815,7 +826,12 @@ names in full, however many lines that takes on a short scr…"
         );
         let brief = "handler_0, handler_1 and 38 more also call through pointers, \
                      which elfq can't follow.";
-        let mut printed = starts(Vec::new(), &[&note]).with_brief(vec![brief.to_string()]);
+        let tab = FlatTab {
+            answer: start_answer(&[], &[&note]),
+            brief: vec![brief.to_string()],
+            needs_all: true,
+        };
+        let mut printed = Printed::of_flat_tab(tab, String::new());
         assert_eq!(
             printed.drawn((60, 7)),
             "  CODE  WHY                   START
@@ -834,7 +850,7 @@ which elfq can't follow."
 
     #[test]
     fn names_come_before_what_follows_them_and_the_words() {
-        let mut printed = starts(Vec::new(), &[]);
+        let mut printed = starts(&[], &[]);
         assert_eq!(
             printed.drawn((62, 4)),
             "  CODE  WHY                     START
@@ -865,8 +881,8 @@ which elfq can't follow."
             Lines::Words("app.elf: 32-bit Arm executable".to_string()),
             Lines::Table(memory.map(str::to_string).into()),
         ];
-        let lead = vec![Lines::Words("Where app.elf starts:".to_string())];
-        let mut printed = starts(lead, &["A note."]).with_context(overview);
+        let lead = ["Where app.elf starts:"];
+        let mut printed = starts(&lead, &["A note."]).with_context(overview);
         assert_eq!(
             printed.drawn((60, 11)),
             "\
@@ -922,8 +938,8 @@ A note."
             rows,
             note(&every.join(", ")),
             String::new(),
-        )
-        .with_brief(note(&format!("{} and 30 more", every[..10].join(", "))));
+        );
+        printed.brief = Some(note(&format!("{} and 30 more", every[..10].join(", "))));
         printed.briefest = Some(note("handler_0 and 39 more"));
         // With room for every row and the notes in full.
         let screen = printed.drawn((40, 30));
@@ -970,7 +986,7 @@ A note."
     fn a_row_too_wide_for_the_screen_is_cut_at_its_edge() {
         // Each row, the header's too, is cut to what the cursor's column
         // leaves of the screen, and ends in "…" where it is cut.
-        let mut printed = starts(Vec::new(), &[]);
+        let mut printed = starts(&[], &[]);
         assert_eq!(
             printed.drawn((8, 4)),
             "  CODE …

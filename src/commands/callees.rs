@@ -9,6 +9,8 @@ use serde::Serialize;
 
 use super::checks::{check_code_is_readable, item_in_file, readable_item};
 use super::flat_answer::FlatAnswer;
+#[cfg(feature = "tui")]
+use super::flat_answer::FlatTab;
 use super::kept::Kept;
 use super::range_check::{self, Direction, Inside, RangeCheck};
 use super::symbol::{self, Subject};
@@ -117,13 +119,7 @@ pub(super) fn callees(
 /// calls or uses, as the text of `callees SYMBOL` lists it: the rows of
 /// the 30 largest callees and the first few sites of what elfq can't
 /// follow, or with [`Detail::All`], every one.
-pub(super) fn text(
-    binary: &Binary,
-    graph: &Graph,
-    index: usize,
-    name: &str,
-    detail: Detail,
-) -> FlatAnswer {
+fn text(binary: &Binary, graph: &Graph, index: usize, name: &str, detail: Detail) -> FlatAnswer {
     let rows = uses::rows(
         graph.references_from(index),
         |reference| reference.to,
@@ -159,4 +155,19 @@ pub(super) fn text(
         tree: None,
         notes,
     }
+}
+
+/// What `callees SYMBOL` writes as text about the item at `index`, as tab 2
+/// of browse shows it, whose first line names it `name` (see
+/// [`Symbol::lead_name`]): with every row and site, as with `--all`; its
+/// notes as the command writes them without `--all`, which name fewer
+/// sites; and whether the command needs `--all` to print it all.
+///
+/// [`Symbol::lead_name`]: symbol::Symbol::lead_name
+#[cfg(feature = "tui")]
+pub(super) fn tab(binary: &Binary, graph: &Graph, index: usize, name: &str) -> FlatTab {
+    FlatTab::new(
+        text(binary, graph, index, name, Detail::All),
+        text(binary, graph, index, name, Detail::Brief),
+    )
 }
