@@ -15,29 +15,26 @@ use std::cmp::Ordering;
 use petgraph::algo::dominators::simple_fast;
 use petgraph::graph::{DiGraph, NodeIndex};
 
-use super::{Graph, Node, index, node_at};
+use super::{Graph, Node, NodeMap, Position};
 use crate::binary::{AddressRange, Binary};
 
 /// The dominator tree of a binary's graph.
 #[derive(Debug)]
 pub struct DominatorTree {
-    /// Each node's closest dominator, indexed by `graph::index`.
-    /// `None` for nodes that no root reaches, and for the nodes directly
-    /// under the tree's top: the roots, and nodes that several roots reach.
-    parent: Vec<Option<Node>>,
+    /// Each node's closest dominator. `None` for nodes that no root
+    /// reaches, and for the nodes directly under the tree's top: the roots,
+    /// and nodes that several roots reach.
+    parent: NodeMap<Option<Node>>,
     /// The nodes each node dominates directly, largest retained size first.
-    children: Vec<Vec<Node>>,
+    children: NodeMap<Vec<Node>>,
     /// The nodes directly under the tree's top: the roots, and anything
     /// that several roots reach.
     top: Vec<Node>,
     /// Whether a path from the roots reaches each node.
-    reachable: Vec<bool>,
+    reachable: NodeMap<bool>,
     /// Each node's retained size: its own size, counting only its bytes in
     /// the range when the tree is built with one, plus its children's.
-    retained: Vec<u64>,
-    /// How many items the binary has. The lists above are indexed by
-    /// `graph::index`, which puts the imports after the items.
-    items: usize,
+    retained: NodeMap<u64>,
 }
 
 impl DominatorTree {
@@ -45,43 +42,42 @@ impl DominatorTree {
     /// the bytes inside it, load images too (see [`Binary::bytes_in`]), so
     /// an item outside it retains what it alone keeps there.
     pub fn build(binary: &Binary, graph: &Graph, range: Option<AddressRange>) -> DominatorTree {
-        let mut sizes: Vec<u64> = binary
-            .items
-            .iter()
-            .map(|item| binary.bytes_in(item, range))
-            .collect();
-        // Imports have no bytes in the file.
-        sizes.resize(binary.items.len() + binary.imports.len(), 0);
-        DominatorTree::from_graph(binary.items.len(), &sizes, graph)
+        let (items, imports) = (binary.items.len(), binary.imports.len());
+        let sizes = NodeMap::from_fn(items, imports, |node| match node {
+            Node::Item(index) => binary.bytes_in(&binary.items[index], range),
+            // Imports have no bytes in the file.
+            Node::Import(_) => 0,
+        });
+        DominatorTree::from_graph(&sizes, graph)
     }
 
-    /// Builds the tree of `graph`, whose `sizes.len()` nodes are `items`
-    /// items and then the imports, each of the size that `sizes` gives.
-    pub(super) fn from_graph(items: usize, sizes: &[u64], graph: &Graph) -> DominatorTree {
+    /// Builds the tree of `graph`, whose nodes are those of `sizes`, each of
+    /// the size that `sizes` gives.
+    pub(super) fn from_graph(sizes: &NodeMap<u64>, graph: &Graph) -> DominatorTree {
         let roots: Vec<Node> = graph.roots.iter().map(|root| root.node).collect();
         let edges = graph
             .references
             .iter()
             .map(|reference| (Node::Item(reference.from), reference.to));
-        DominatorTree::from_edges(items, sizes, &roots, edges)
+        DominatorTree::from_edges(sizes, &roots, edges)
     }
 
-    /// Builds the tree for a graph of `sizes.len()` nodes, of which the
-    /// first `items` are items and the rest imports.
+    /// Builds the tree for a graph whose nodes are those of `sizes`.
     fn from_edges(
-        items: usize,
-        sizes: &[u64],
+        sizes: &NodeMap<u64>,
         roots: &[Node],
         edges: impl Iterator<Item = (Node, Node)>,
     ) -> DominatorTree {
         let count = sizes.len();
-        // Node 0 is a virtual top that points at every root; node i + 1 is
-        // the graph node with index i.
+        // Vertex 0 is a virtual top that points at every root; vertex p + 1
+        // is the graph node at position p.
         let mut petgraph = DiGraph::<(), ()>::with_capacity(count + 1, count);
         for _ in 0..=count {
             petgraph.add_node(());
         }
-        let vertex = |node: Node| NodeIndex::new(index(items, node) + 1);
+        let vertex_at = |position: Position| NodeIndex::new(position.0 + 1);
+        let position_of = |vertex: NodeIndex| Position(vertex.index() - 1);
+        let vertex = |node: Node| vertex_at(sizes.position(node));
         let top = NodeIndex::new(0);
         for &root in roots {
             petgraph.add_edge(top, vertex(root), ());
@@ -91,28 +87,27 @@ impl DominatorTree {
         }
         let dominators = simple_fast(&petgraph, top);
 
-        let node = |vertex: NodeIndex| node_at(items, vertex.index() - 1);
         let mut tree = DominatorTree {
-            parent: vec![None; count],
-            children: vec![Vec::new(); count],
+            parent: sizes.with_each(None),
+            children: sizes.with_each(Vec::new()),
             top: Vec::new(),
-            reachable: vec![false; count],
+            reachable: sizes.with_each(false),
             // Nothing is exclusive to a node that no root reaches, so its
             // retained size stays its own.
-            retained: sizes.to_vec(),
-            items,
+            retained: sizes.clone(),
         };
-        for i in 0..count {
-            let Some(dominator) = dominators.immediate_dominator(NodeIndex::new(i + 1)) else {
+        for at in (0..count).map(Position) {
+            let Some(dominator) = dominators.immediate_dominator(vertex_at(at)) else {
                 continue;
             };
-            tree.reachable[i] = true;
+            let node = sizes.node(at);
+            tree.reachable[at] = true;
             if dominator == top {
-                tree.top.push(node(NodeIndex::new(i + 1)));
+                tree.top.push(node);
             } else {
-                let parent = node(dominator);
-                tree.parent[i] = Some(parent);
-                tree.children[index(items, parent)].push(node(NodeIndex::new(i + 1)));
+                let parent = position_of(dominator);
+                tree.parent[at] = Some(sizes.node(parent));
+                tree.children[parent].push(node);
             }
         }
         tree.add_retained_sizes(sizes);
@@ -121,25 +116,25 @@ impl DominatorTree {
 
     /// Whether any path from the roots reaches `node`.
     pub fn is_reachable(&self, node: Node) -> bool {
-        self.reachable[self.index(node)]
+        self.reachable[node]
     }
 
     /// The size of `node` plus the sizes of everything exclusive to it.
     pub fn retained(&self, node: Node) -> u64 {
-        self.retained[self.index(node)]
+        self.retained[node]
     }
 
     /// The closest node that every path to `node` passes through. `None` for
     /// the roots, for nodes that several roots reach, and for unreachable
     /// nodes.
     pub fn parent(&self, node: Node) -> Option<Node> {
-        self.parent[self.index(node)]
+        self.parent[node]
     }
 
     /// The nodes that `node` dominates directly, largest retained size
     /// first.
     pub(crate) fn children(&self, node: Node) -> &[Node] {
-        &self.children[self.index(node)]
+        &self.children[node]
     }
 
     /// The nodes directly under the tree's top: the roots, and the nodes
@@ -151,7 +146,7 @@ impl DominatorTree {
     /// Sorts `nodes` as the tree sorts the nodes under each node and under
     /// its top: largest retained size first.
     pub(super) fn sort_largest_first(&self, nodes: &mut [Node]) {
-        nodes.sort_by(largest_first(&self.retained, self.items));
+        nodes.sort_by(largest_first(&self.retained));
     }
 
     /// Everything exclusive to `node`: all the nodes below it in the tree.
@@ -167,7 +162,7 @@ impl DominatorTree {
 
     /// Adds up retained sizes from the bottom of the tree, and sorts each
     /// node's children by them.
-    fn add_retained_sizes(&mut self, sizes: &[u64]) {
+    fn add_retained_sizes(&mut self, sizes: &NodeMap<u64>) {
         // Every node after all of its children: reverse depth-first order.
         let mut order = Vec::new();
         let mut stack = self.top.clone();
@@ -179,36 +174,26 @@ impl DominatorTree {
             // Sizes stop at the largest `u64` rather than overflow: in a
             // damaged file, items can overlap, and their sizes add up to
             // more than a `u64` holds.
-            let own = sizes[self.index(node)];
-            let below = self
-                .children(node)
+            let at = sizes.position(node);
+            let below = self.children[at]
                 .iter()
                 .map(|&child| self.retained(child))
                 .fold(0, u64::saturating_add);
-            let i = self.index(node);
-            self.retained[i] = own.saturating_add(below);
+            self.retained[at] = sizes[at].saturating_add(below);
         }
-        let by_size = largest_first(&self.retained, self.items);
-        for children in &mut self.children {
+        let by_size = largest_first(&self.retained);
+        for children in self.children.values_mut() {
             children.sort_by(&by_size);
         }
         self.top.sort_by(&by_size);
     }
-
-    fn index(&self, node: Node) -> usize {
-        index(self.items, node)
-    }
 }
 
 /// The order of the nodes under each node of the tree, and under its top,
-/// given each node's `retained` size, indexed by `graph::index`: largest
-/// first, and nodes of the same size in the order of that index.
-fn largest_first(retained: &[u64], items: usize) -> impl Fn(&Node, &Node) -> Ordering + '_ {
-    move |a, b| {
-        retained[index(items, *b)]
-            .cmp(&retained[index(items, *a)])
-            .then(a.cmp(b))
-    }
+/// given each node's `retained` size: largest first, and nodes of the same
+/// size in the order of their positions.
+fn largest_first(retained: &NodeMap<u64>) -> impl Fn(&Node, &Node) -> Ordering + '_ {
+    move |a, b| retained[*b].cmp(&retained[*a]).then(a.cmp(b))
 }
 
 #[cfg(test)]
@@ -219,8 +204,12 @@ mod tests {
 
     /// A tree for items with the given sizes, where item 0 is the only root.
     fn tree(sizes: &[u64], edges: &[(usize, usize)]) -> DominatorTree {
+        let mut node_sizes = NodeMap::new(sizes.len(), 0, 0);
+        for (item, &size) in sizes.iter().enumerate() {
+            node_sizes[Item(item)] = size;
+        }
         let edges = edges.iter().map(|&(from, to)| (Item(from), Item(to)));
-        DominatorTree::from_edges(sizes.len(), sizes, &[Item(0)], edges)
+        DominatorTree::from_edges(&node_sizes, &[Item(0)], edges)
     }
 
     #[test]

@@ -30,11 +30,13 @@
 //! shortest chain to each item that it uses, directly or not.
 //! [`Removal`] works out what removing several items at once would remove,
 //! which can be more than what is exclusive to each of them (see
-//! `removal.rs`).
+//! `removal.rs`). These three keep a value for each node in a [`NodeMap`]
+//! (see `node_map.rs`).
 
 mod boundary;
 mod dominators;
 mod items_in_ranges;
+mod node_map;
 mod paths;
 mod reached;
 mod removal;
@@ -44,6 +46,7 @@ mod veneers;
 pub(crate) use boundary::{Boundary, Crossing, Unfollowed};
 pub use dominators::DominatorTree;
 pub(crate) use items_in_ranges::ItemsInRanges;
+use node_map::{NodeMap, Position};
 pub use paths::ShortestPaths;
 pub(crate) use reached::Reached;
 pub use removal::{KeptTogether, Removal};
@@ -420,24 +423,6 @@ fn section_bounds(binary: &Binary, references: &[CodeReference]) -> HashSet<u64>
         .filter(|(start, end)| used.contains(start) && used.contains(end))
         .flat_map(|(start, end)| [start, end])
         .collect()
-}
-
-/// A node's position in one list of `items` items followed by the imports,
-/// for analyses that keep a value per node.
-fn index(items: usize, node: Node) -> usize {
-    match node {
-        Node::Item(i) => i,
-        Node::Import(i) => items + i,
-    }
-}
-
-/// The node at position `index` of such a list: the opposite of [`index`].
-fn node_at(items: usize, index: usize) -> Node {
-    if index < items {
-        Node::Item(index)
-    } else {
-        Node::Import(index - items)
-    }
 }
 
 /// The item that starts at `address`, as a pointer stored in data names
