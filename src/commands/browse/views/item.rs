@@ -42,7 +42,7 @@ use ratatui::style::Stylize;
 use ratatui::text::{Line, Span};
 
 use super::printed::Printed;
-use super::{Cursor, Go, draw_lines, fit_name, follow, imported};
+use super::{Cursor, Go, PageAt, draw_lines, fit_name, follow, imported};
 use crate::commands::browse::{keys::Action, session::Session};
 use crate::commands::checks::readable_item;
 use crate::commands::{retained, text, why};
@@ -513,7 +513,13 @@ impl ItemPage {
             return Go::Say(text::nothing_reaches(&session.lead_name(node)));
         }
         match keepers.tree.parent(node) {
-            Some(parent) => follow(session, parent, None, Some(node), self.tab),
+            Some(parent) => {
+                let page = PageAt {
+                    node: parent,
+                    at: None,
+                };
+                follow(session, page, Some(node), self.tab)
+            }
             None => Go::Say(why::no_single_keeper(node.name(binary))),
         }
     }

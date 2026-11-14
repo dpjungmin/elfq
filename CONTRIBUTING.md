@@ -1001,12 +1001,15 @@ the biggest view, and not the one to start from.
    returns `Go::Open` with the page to open, and `Go::Say` puts a line on
    the status line. One whose actions only move within the page returns
    nothing, as `Help::handle` does, and its arm in `View::handle` gives
-   `None`. Pages ask `Session` and the commands' code for their answers,
-   rather than working them out again. A column of names shortens the
-   names on the screen with a `FittedRows`, which keeps rows that would
-   read the same apart, and fits them again only when other rows show or
-   the column's width changes, since long C++ names take a while;
-   `preview` names the selected one in full.
+   `None`. A line or row that opens an item or import holds a `PageAt`,
+   and `handle` passes it to `follow`, in `views/mod.rs`, which opens the
+   page that stands for it, on the tab that the link is on, or says that
+   an import's code isn't here. Pages ask `Session` and the commands' code
+   for their answers, rather than working them out again. A column of
+   names shortens the names on the screen with a `FittedRows`, which keeps
+   rows that would read the same apart, and fits them again only when
+   other rows show or the column's width changes, since long C++ names
+   take a while; `preview` names the selected one in full.
 2. **Wiring, in `views/mod.rs`.** Add `mod <name>;`, a variant to `View`,
    and its arm in each of `View`'s functions; the compiler asks for them.
    `title` names the page in the title line's trail, `preview` says what

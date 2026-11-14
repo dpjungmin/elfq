@@ -293,8 +293,9 @@ impl<'a> App<'a> {
                     // The header names the item as SYMBOL's answer does,
                     // with what holds an address typed, or the other name
                     // that found it.
+                    let (node, at) = (picker_row.page.node, picker_row.page.at);
                     let note = picker_row.note.as_deref();
-                    let page = ItemPage::new(session, picker_row.node, picker_row.at, note);
+                    let page = ItemPage::new(session, node, at, note);
                     self.picker = None;
                     self.message = None;
                     self.open(View::Item(Box::new(page)));

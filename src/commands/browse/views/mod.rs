@@ -41,6 +41,21 @@ use names::{FittedRows, fit_name, name_fitter};
 pub(super) use picker::{Picker, first_line};
 pub(super) use start::StartPage;
 
+/// An item or import to open the page of, and the address in it whose
+/// line to select: what a line of a listing, a row of a command's answer,
+/// a row of the go-to box and the u key open.
+///
+/// `at` is None where there is no address to select, as for an import,
+/// whose page has no listing, or a row that is about an item as a whole.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct PageAt {
+    /// The item or import. The page that opens is the one that stands for
+    /// it (see [`Session::page_node`]).
+    pub(super) node: Node,
+    /// The address in it, if any.
+    pub(super) at: Option<u64>,
+}
+
 /// Where an action takes the user.
 pub(super) enum Go {
     /// Opens a page after this one.
@@ -304,36 +319,38 @@ impl Cursor {
     }
 }
 
-/// What following a link to `node` does, from the page of `this`, if
-/// any, as a tab that opens pages on `tab` follows it: it opens the page
-/// that stands for `node` (see [`Session::page_node`]), with the line that
-/// holds `at` selected when that is `node`'s own page, on `tab` when the
-/// page has that tab. But on the page of an import's PLT stub, a link to
-/// the import has nowhere else to go, and says that its code isn't here.
-fn follow(session: &Session, node: Node, at: Option<u64>, this: Option<Node>, tab: Tab) -> Go {
-    let opened = session.page_node(node);
-    if is_own_import(node, opened, this) {
-        return Go::Say(imported(session, node));
+/// What following a link to `page` does, when the link is on the page of
+/// node `from_page`, if any, as a tab that opens pages on `tab` follows
+/// it: it opens the page that stands for `page.node` (see
+/// [`Session::page_node`]), with the line that holds `page.at` selected
+/// when that is the node's own page, on `tab` when the page has that tab.
+/// But on the page of an import's PLT stub, a link to the import has
+/// nowhere else to go, and says that its code isn't here.
+fn follow(session: &Session, page: PageAt, from_page: Option<Node>, tab: Tab) -> Go {
+    let opened = session.page_node(page.node);
+    if is_own_import(page.node, opened, from_page) {
+        return Go::Say(imported(session, page.node));
     }
-    let at = at.filter(|_| opened == node);
-    let page = ItemPage::new(session, opened, at, None).on(session, tab);
-    Go::Open(View::Item(Box::new(page)))
+    let at = page.at.filter(|_| opened == page.node);
+    let opened_page = ItemPage::new(session, opened, at, None).on(session, tab);
+    Go::Open(View::Item(Box::new(opened_page)))
 }
 
-/// What following a link to `node` opens, from the page of `this`, in
-/// full: "→ app_tick  function at 0x300002e4, 60 bytes, in .text", then
-/// the veneer that the code goes through to get there, if any.
+/// What following a link to `node` opens, in full, when the link is on
+/// the page of node `from_page`, if any: "→ app_tick  function at
+/// 0x300002e4, 60 bytes, in .text", then the veneer that the code goes
+/// through to get there, `via_veneer`, when there is one.
 fn link_preview(
     session: &Session,
     node: Node,
-    this: Option<Node>,
-    through: Option<usize>,
+    from_page: Option<Node>,
+    via_veneer: Option<usize>,
 ) -> String {
     let binary = session.binary;
     let opened = session.page_node(node);
     match opened {
-        Node::Item(index) if !is_own_import(node, opened, this) => {
-            let through = match through {
+        Node::Item(index) if !is_own_import(node, opened, from_page) => {
+            let through = match via_veneer {
                 Some(veneer) => format!(", through {}", binary.items[veneer].name),
                 None => String::new(),
             };
@@ -348,10 +365,10 @@ fn link_preview(
     }
 }
 
-/// Whether `node` is an import whose page, `opened`, is `this`: its PLT
-/// stub's page, which has nowhere else to go for it.
-fn is_own_import(node: Node, opened: Node, this: Option<Node>) -> bool {
-    opened != node && Some(opened) == this
+/// Whether `node` is an import whose page, `opened`, is `from_page`: its
+/// PLT stub's page, which has nowhere else to go for it.
+fn is_own_import(node: Node, opened: Node, from_page: Option<Node>) -> bool {
+    opened != node && Some(opened) == from_page
 }
 
 /// Says that `node`, an import, has no code here, as the commands say

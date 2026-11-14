@@ -24,7 +24,7 @@ use ratatui::style::{Style, Stylize};
 use ratatui::text::{Line, Text};
 use ratatui::widgets::{HighlightSpacing, Row, Table};
 
-use super::{Cursor, FittedRows, cut, wrap};
+use super::{Cursor, FittedRows, PageAt, cut, wrap};
 use crate::binary::{Binary, ItemKind, hex_number};
 use crate::commands::browse::{keys::Action, session::Session};
 use crate::commands::symbol::{
@@ -40,10 +40,9 @@ const NOTE_LINES: usize = 3;
 
 /// One row of the box.
 pub(in crate::commands::browse) struct PickerRow {
-    /// The item or import.
-    pub(in crate::commands::browse) node: Node,
-    /// The address typed, when the item holds it.
-    pub(in crate::commands::browse) at: Option<u64>,
+    /// The item or import, with the address typed, when the item holds
+    /// it.
+    pub(in crate::commands::browse) page: PageAt,
     /// For the item that the text finds as SYMBOL, what the CLI's answer
     /// adds to its name, if anything: "also named NMI_Handler", or for a
     /// pattern that matches only it, "the one item named on_b*" (see
@@ -279,8 +278,9 @@ impl Picker {
         let binary = session.binary;
         let rows: Vec<[String; 5]> = (self.listed.rows.iter())
             .map(|picker_row| {
-                let name = picker_row.node.name(binary).to_string();
-                let Node::Item(index) = picker_row.node else {
+                let node = picker_row.page.node;
+                let name = node.name(binary).to_string();
+                let Node::Item(index) = node else {
                     // An import has no address, size or section here.
                     let blank = String::new;
                     return [blank(), blank(), "import".to_string(), blank(), name];
@@ -369,7 +369,9 @@ impl Listed {
             Lookup::Several(nodes) => nodes.iter().map(|&node| PickerRow::plain(node)).collect(),
             Lookup::NoName => Vec::new(),
         };
-        let in_first: HashSet<Node> = first.iter().map(|picker_row| picker_row.node).collect();
+        let in_first: HashSet<Node> = (first.iter())
+            .map(|picker_row| picker_row.page.node)
+            .collect();
         let lower = text.to_lowercase();
         let needle = Needle::new(&lower);
         let items = (0..binary.items.len()).map(Node::Item);
@@ -453,8 +455,10 @@ impl PickerRow {
     /// typed, when one was.
     fn symbol(symbol: &Symbol, at: Option<u64>) -> PickerRow {
         PickerRow {
-            node: symbol.node,
-            at,
+            page: PageAt {
+                node: symbol.node,
+                at,
+            },
             note: symbol.note().map(str::to_string),
         }
     }
@@ -463,8 +467,7 @@ impl PickerRow {
     /// name.
     fn plain(node: Node) -> PickerRow {
         PickerRow {
-            node,
-            at: None,
+            page: PageAt { node, at: None },
             note: None,
         }
     }
@@ -547,11 +550,11 @@ mod tests {
                 // Each is a match, largest first, and no match left out is
                 // larger than the smallest listed.
                 let sizes: Vec<u64> = (listed.rows.iter())
-                    .map(|picker_row| picker_row.node.size(&binary))
+                    .map(|picker_row| picker_row.page.node.size(&binary))
                     .collect();
                 assert!(sizes.is_sorted_by(|a, b| a >= b), "{file}, {text}");
                 let rows: HashSet<Node> = (listed.rows.iter())
-                    .map(|picker_row| picker_row.node)
+                    .map(|picker_row| picker_row.page.node)
                     .collect();
                 assert!(
                     rows.iter().all(|node| matched.contains(node)),
