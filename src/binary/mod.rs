@@ -82,7 +82,7 @@ mod listing;
 mod load;
 pub(crate) mod made_names;
 mod memory;
-pub mod names;
+pub(crate) mod names;
 mod plt;
 mod range;
 mod relocations;

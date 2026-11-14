@@ -717,15 +717,18 @@ A test that goes through `samples()`, or `samples_for`, which picks from
 it, reads every `.elf` and `.so` file in `testdata/bin`, so it tests a new
 sample as soon as it is committed, wherever the test is. Such tests are in
 `commands/overview_top_and_retained.rs`, `commands/reach.rs`,
-`commands/diff.rs`, `commands/startup.rs`, `across_commands/tables.rs`,
-`library/removal.rs` and `library/symbol.rs`. The unit tests that read
-every sample, or pick from them, go through
-`binary::test_samples::samples()`, which lists the same files. They are
-browse's checks of every sample, in `src/commands/browse/`,
-`every_sample_names_its_core`, in `binary/attributes.rs`, and the tests of
-the Thumb text, in `binary/listing/thumb_text.rs`. Two of the tests in
-`tests/it/` run the overview and every command it suggests on every
-sample, and `top` on each `.elf` file:
+`commands/diff.rs`, `commands/startup.rs`, `across_commands/tables.rs`
+and `library/removal.rs`. The unit tests that read every sample, or pick
+from them, go through `binary::test_samples::samples()`, which lists the
+same files. They are browse's checks of every sample, in
+`src/commands/browse/`, `every_sample_names_its_core`, in
+`binary/attributes.rs`, the tests of the Thumb text, in
+`binary/listing/thumb_text.rs`, and
+`short_names_are_filed_under_keys_that_find_them` and
+`the_words_of_a_short_name_are_words_of_the_name`, in
+`binary/names/tests.rs`. Two of the tests in `tests/it/` run the
+overview and every command it suggests on every sample, and `top` on
+each `.elf` file:
 `every_command_the_overview_suggests_works`, in
 `commands/overview_top_and_retained.rs`, and
 `no_line_sums_up_a_single_item`, in `across_commands/tables.rs`. Each

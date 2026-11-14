@@ -142,12 +142,12 @@ fn as_cxxfilt_writes(name: String) -> String {
 /// `app::checksum::<u8>` they are `checksum`, `checksum::<u8>` and
 /// `app::checksum`. For `app::log(unsigned int)` they are `log`, `app::log`
 /// and `log(unsigned int)`. For `write@plt`, it is `write`.
-pub fn short_names(name: &str) -> Vec<String> {
+pub(crate) fn short_names(name: &str) -> Vec<String> {
     short_names_ending(name, None)
 }
 
 /// The [`short_names`] of `name` that have the [`short_name_key`] `key`.
-pub fn short_names_with_key(name: &str, key: &str) -> Vec<String> {
+pub(crate) fn short_names_with_key(name: &str, key: &str) -> Vec<String> {
     short_names_ending(name, Some(key))
 }
 
@@ -316,7 +316,7 @@ fn for_each_text(name: &str, visit: &mut dyn FnMut(&str, TextKind<'_>)) {
 /// block does through its type or trait: `Gain::run` of `app::Gain::run`
 /// or of `<app::Gain as app::Stage>::run`. A quick check for a short name:
 /// when it says no, `name` may still have it.
-pub fn ends_with_short_name(name: &str, short_name: &str) -> bool {
+pub(crate) fn ends_with_short_name(name: &str, short_name: &str) -> bool {
     // A special name's short names keep its prefix.
     if special_prefix(name).is_some() || !can_be_shorter(name) {
         return false;
@@ -363,7 +363,7 @@ fn can_start_short_name(index: usize, part: &str) -> bool {
 /// unless taking out generic arguments joins two words, as `a<b>c` would
 /// (see [`may_join_words`]). That finds the few names that may have a
 /// short name without working out their short names.
-pub fn words(text: &str) -> impl Iterator<Item = &str> {
+pub(crate) fn words(text: &str) -> impl Iterator<Item = &str> {
     let bytes = text.as_bytes();
     let mut at = 0;
     std::iter::from_fn(move || {
@@ -387,7 +387,7 @@ pub(crate) fn may_have_words<W: AsRef<str>>(name: &str, words: &[W]) -> bool {
 
 /// Whether taking out generic arguments from `name` may join two of its
 /// words into one: when a `>` comes right before a letter, digit or `_`.
-pub fn may_join_words(name: &str) -> bool {
+pub(crate) fn may_join_words(name: &str) -> bool {
     name.split('>')
         .skip(1)
         .any(|after| after.bytes().next().is_some_and(in_word))
@@ -452,13 +452,13 @@ const IN_WORD: [bool; 256] = {
 /// without a special C++ prefix. `run(short*) const` for `Gain::run(short*)
 /// const`, and `Gain` for `vtable for Gain`. `None` when the brackets
 /// don't pair up, as in no short name.
-pub fn short_name_key(short_name: &str) -> Option<&str> {
+pub(crate) fn short_name_key(short_name: &str) -> Option<&str> {
     split_path(without_special_prefixes(short_name))?.pop()
 }
 
 /// The [`short_name_key`] of every one of `name`'s [`short_names`], and
 /// perhaps a few more, worked out without joining the parts of paths.
-pub fn short_name_keys(name: &str) -> Vec<String> {
+pub(crate) fn short_name_keys(name: &str) -> Vec<String> {
     let name = without_special_prefixes(name);
     let mut keys = Vec::new();
     if !can_be_shorter(name) {
