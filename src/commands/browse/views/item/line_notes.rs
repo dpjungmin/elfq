@@ -146,7 +146,7 @@ impl<'s, 'a> LineNotes<'s, 'a> {
             (Node::Item(index), Some(at)) => self.name_at(index, at),
             // An import has no address in this file; an item without one
             // would be named at its start, as its row name is.
-            (node, _) => self.name(node),
+            (node, _) => self.session.row_name(node),
         };
         line.elsewhere = self.elsewhere(link);
         line.link = Some(link);
@@ -275,7 +275,7 @@ impl<'s, 'a> LineNotes<'s, 'a> {
                         Node::Import(_) => None,
                     };
                     UseLink {
-                        name: self.name(node),
+                        name: self.session.row_name(node),
                         via_veneer: Some(veneer),
                         link: Link::Node {
                             page: PageAt { node, at },
@@ -315,7 +315,7 @@ impl<'s, 'a> LineNotes<'s, 'a> {
                 }
                 (name, Some(at))
             }
-            Node::Import(_) => (self.name(reference.to), None),
+            Node::Import(_) => (self.session.row_name(reference.to), None),
         };
         let page = PageAt {
             node: reference.to,
@@ -328,14 +328,6 @@ impl<'s, 'a> LineNotes<'s, 'a> {
                 page,
                 via_veneer: None,
             },
-        }
-    }
-
-    /// The name that rows give `node`.
-    fn name(&self, node: Node) -> String {
-        match node {
-            Node::Item(index) => self.session.names.row_name(index),
-            Node::Import(_) => node.name(self.session.binary).to_string(),
         }
     }
 

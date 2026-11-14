@@ -70,11 +70,11 @@ impl Work {
             Work::StartPage => format!("working out where {} starts…", session.file_name()),
             Work::Keepers => "working out what keeps each item…".to_string(),
             Work::Tab(tab) => {
-                let title = session.title(tab.node());
+                let name = session.row_name(tab.node());
                 match tab {
-                    SlowTab::Reach(_) => format!("working out what {title} reaches…"),
-                    SlowTab::Why(_) => format!("working out what keeps {title} in the file…"),
-                    SlowTab::Retained(_) => format!("working out what only {title} leads to…"),
+                    SlowTab::Reach(_) => format!("working out what {name} reaches…"),
+                    SlowTab::Why(_) => format!("working out what keeps {name} in the file…"),
+                    SlowTab::Retained(_) => format!("working out what only {name} leads to…"),
                 }
             }
         }

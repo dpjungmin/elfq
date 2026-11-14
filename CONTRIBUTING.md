@@ -458,8 +458,9 @@ helper type, doesn't take a word of the list; where code still does, as
 - **row name**, **lead name**, **query**: three of the names that browse
   gives an item, with its full name, its short name and its page's
   header name. The module doc of `browse/session.rs` says where each
-  goes. An item's query, in browse, is what the command under a tab
-  gives as SYMBOL (`Names::query_for`). The queries on a type, as in
+  goes. An import's row name is its full name (`Session::row_name`). An
+  item's query, in browse, is what the command under a tab gives as
+  SYMBOL (`Names::query_for`). The queries on a type, as in
   `binary/mod.rs`, and the text that the user types as SYMBOL, which
   `commands/symbol/` calls a query, are other things.
 - **build**: in `diff`, one of the two files it compares, the old one or

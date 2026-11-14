@@ -270,7 +270,7 @@ impl ItemPage {
         let slow = |tab: Result<SlowTab>| pane(tab.map(Later::Slow));
         let mut page = ItemPage {
             node,
-            title: session.title(node),
+            title: session.row_name(node),
             short_title: None,
             header,
             tab: Tab::Callers,
