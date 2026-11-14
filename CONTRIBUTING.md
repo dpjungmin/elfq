@@ -60,7 +60,7 @@ command.
 | `src/main.rs` | The program: parses arguments, runs one command on a thread with a large stack, prints errors and sets the exit status. It also turns `elfq help COMMAND` into `--help`, suggests the right order when the command comes before the file, and puts lines under the first line of clap's error for an argument that a command listed in `arguments::TAKE_ONE_SYMBOL_AT_MOST` doesn't take (`with_hints`), which `arguments::unexpected_argument_hints` words: for `top`, the command that takes a pattern given to it, and when the arguments are files here, which the shell may have put in place of a pattern, the line that says so. `commands/symbol/shell_hint.rs` words that line, which the commands' own errors for SYMBOL end with too. |
 | `src/lib.rs` | Declares the modules below. elfq is a library plus that small program; the library exists for the program and its tests. |
 | `src/cli/` | Command-line arguments, with clap: in `mod.rs`, a `Command` variant for each command and the structs that hold their arguments, and in `help.rs`, the text of `--help`. |
-| `src/commands/` | One file per command, or a folder for the larger ones below, which looks up SYMBOL, asks `graph` or `debuginfo` and decides what the answer shows. `mod.rs` runs the command the arguments name. The rest are shared: `arguments.rs` checks which arguments go together, `checks.rs` holds the checks a command makes before it answers, such as `check_code_is_readable` and `check_holds_items`, which `range_check/` and `retained` make of a range, `symbol/` works out what a user means by SYMBOL (`mod.rs` tells ranges from SYMBOL and reads what `callers` and `callees` ask about into a `Subject`, `lookup.rs` finds what a name means, or in the commands that take one item, the one item that a pattern matches (`Names::find`), and names items for the user in return, `not_found.rs` and `similar.rs` word the error when it finds several or none, or a pattern matches none, and the error when a pattern matches several where one item is needed, and for a name that finds nothing offer first the pattern for what is in a module of that name, where the command can take what it matches (`Takes`), `pattern.rs` finds the items that a pattern such as `'uart_*'` matches, with its unit tests in `pattern/tests.rs`, `matched.rs` words what patterns matched, for an answer's first line and its notes, and gives the one item that a pattern matched (`PatternMatches::only_item`), and `set.rs` puts what several SYMBOLs, patterns and ranges pick together in a `Set`, each item once, and words how an answer's first line names it, part by part; unit tests build a file of functions with `fixtures.rs`), `retained_tree.rs` builds the trees of retained sizes that the overview, `top` and `retained` show, `uses.rs` holds the table of `callers` and `callees` for one SYMBOL, `range_check/` answers them for ranges of memory, for a set, or with `--from` or `--to` (its `mod.rs` says what a check asks about, an `Inside`, which holds the ranges, one SYMBOL or a set, and works out the items inside once, for the rest, `validate.rs` checks the ranges, `crossing.rs` holds the answers and `rows.rs` their rows, which `reach` and `diff` print too), `flat_answer.rs` holds the answers whose table has one row to a line and `tree_answer.rs` those whose table holds a tree, `text.rs` the wording that commands share, with which rows of a long list they keep (`first_by_key`), and `json.rs` the JSON shapes. `kept.rs` has `Kept`, which leaves what a command keeps until it has answered for the system to take back when elfq ends (`end_after_answer`). |
+| `src/commands/` | One file per command, or a folder for the larger ones below, which looks up SYMBOL, asks `graph` or `debuginfo` and decides what the answer shows. `mod.rs` runs the command the arguments name. The rest are shared: `arguments.rs` checks which arguments go together, `checks.rs` holds the checks a command makes before it answers, such as `check_code_is_readable` and `check_holds_items`, which `range_check/` and `retained` make of a range, `symbol/` works out what a user means by SYMBOL (`mod.rs` reads what `callers` and `callees` ask about into a `Subject`, `argument.rs` reads one argument of a command that takes a set, a range or SYMBOL, into what it picks for a `Set`, or why the command can't use it (`Unusable`), `lookup.rs` finds what a name means, or in the commands that take one item, the one item that a pattern matches (`Names::find`), and names items for the user in return, `not_found.rs` and `similar.rs` word the error when it finds several or none, or a pattern matches none, and the error when a pattern matches several where one item is needed, and for a name that finds nothing offer first the pattern for what is in a module of that name, where the command can take what it matches (`Takes`), `pattern.rs` finds the items that a pattern such as `'uart_*'` matches, with its unit tests in `pattern/tests.rs`, `matched.rs` words what patterns matched, for an answer's first line and its notes, and gives the one item that a pattern matched (`PatternMatches::only_item`), and `set.rs` puts what several SYMBOLs, patterns and ranges pick together in a `Set`, each item once, and words how an answer's first line names it, part by part; unit tests build a file of functions with `fixtures.rs`), `retained_tree.rs` builds the trees of retained sizes that the overview, `top` and `retained` show, `uses.rs` holds the table of `callers` and `callees` for one SYMBOL, `range_check/` answers them for ranges of memory, for a set, or with `--from` or `--to` (its `mod.rs` says what a check asks about, an `Inside`, which holds the ranges, one SYMBOL or a set, and works out the items inside once, for the rest, `validate.rs` checks the ranges, `crossing.rs` holds the answers and `rows.rs` their rows, which `reach` and `diff` print too), `flat_answer.rs` holds the answers whose table has one row to a line and `tree_answer.rs` those whose table holds a tree, `text.rs` the wording that commands share, with which rows of a long list they keep (`first_by_key`), and `json.rs` the JSON shapes. `kept.rs` has `Kept`, which leaves what a command keeps until it has answered for the system to take back when elfq ends (`end_after_answer`). |
 | `src/commands/browse/` | `elfq FILE browse`, with the `tui` feature: `mod.rs` takes over the terminal and runs the event loop, `session.rs` holds the loaded file and asks the commands' code for answers, `keys.rs` is the table of keys, `app.rs` the history of pages, the go-to box, find's prompt and the screen's layout, and `views/` the pages, the go-to box and the tabs of an item's page other than its tab 1, one file each (`item.rs` is an item's page, and `item/` holds its parts: the header, tab 1's lines, a function's code, a data object's contents and the notes on their lines), `printed.rs`, which draws a command's answer for the pages and tabs that show one, and `names.rs`, which shortens long C++ and Rust names to fit a column. |
 | `src/commands/reach/` | `elfq FILE reach [SYMBOL]`: `mod.rs` holds what the search from SYMBOL finds, with the words the code uses for its parts, and `Text`, which words it for people, `find.rs` the search, `rows.rs` writes the answer by block of memory, which browse shows too, `to.rs` the answer with `--to`, `tree.rs` the tree of `--tree` and `json.rs` the JSON, and `starts.rs` answers without SYMBOL, as browse's start page does. |
 | `src/commands/diff/` | `elfq FILE diff NEW`: `mod.rs` reads both files, builds the answer from their bytes alone or from their items too, and gives the exit status, `blocks.rs` works out the blocks of memory that both builds share and what changed in each, `pairing.rs` pairs the builds' items, `changes.rs` works out what changed, `edited.rs` which items of the same size are edited, `crossings.rs` the uses between blocks that are new or gone, `rows.rs` picks the rows of MOVED and CHANGE, and `text.rs` and `json.rs` write the answer. The unit tests of `pairing.rs` and `edited.rs` are in `pairing/tests.rs` and `edited/tests.rs`. |
@@ -386,12 +386,16 @@ helper type, doesn't take a word of the list; where code still does, as
   don't matter. Removing just them loses it, and removing all of them but
   one keeps it. `lost` in `arch/thumb/values`, where a value goes when
   elfq stops following it, is unrelated.
-- **unusable**: in `retained`, a SYMBOL, or a pattern or range in its
-  place, that it can't use, such as a name that no item has, a pattern
-  that matches none or a range that holds no item, which its error lists
-  with why (`Unusable`, in `retained/symbols.rs`). **left out**: in
-  `retained`, a function given as SYMBOL, or that a pattern or range
-  given in its place picks, whose end elfq doesn't know
+- **unusable**: in a command that takes a set, a SYMBOL, or a pattern or
+  range in its place, that it can't use, such as a name that no item has,
+  a pattern that matches none or a range that it can't read, with why,
+  which isn't worded until the error is built, since wording it can take a
+  while (`Unusable`, in `symbol/argument.rs`, which
+  `Names::unusable_error` words). `callers` and `callees` stop at the
+  first; `retained` lists every one, a range that holds no item among
+  them, each with what was typed (`Refused`, in `retained/symbols.rs`).
+  **left out**: in `retained`, a function given as SYMBOL, or that a
+  pattern or range given in its place picks, whose end elfq doesn't know
   (`Item::end_unknown`), such as glibc's `_init`: elfq can't read its
   code, so the answer doesn't count its bytes, though the first line
   counts it among a pattern's items, and names it in a note and in
@@ -869,33 +873,39 @@ is a short one to copy.
    `let names = Kept::new(Names::new(binary));`, then
    `names.find(symbol)?`, which gives a `Symbol`: what a name or an
    address finds, or the one item that a pattern matches, with an error
-   that lists them when it matches several. `retained`, which
-   words its errors its own way to list every argument it can't use,
-   calls `names.look_up_or_match` instead, whose `LookupOrMatch` says
-   what the name finds without wording it: a `Lookup`, or when the name
-   finds nothing and is a pattern, the items that the pattern matches.
-   It puts what its arguments pick together in a `symbol::Set`, which
-   counts each item once and names them in the first line. It words the
-   error for a name that finds nothing with `nothing_named`, and passes
-   `Takes::Set`, since it takes a set, so that the error offers the
-   pattern for what is in a module of that name whenever it matches an
-   item; `find` takes one item, so its error offers that pattern only
-   when it matches one.
-   One whose answer needs no `Names` calls
-   `symbol::find`, which frees its `Names` before the answer, as
-   `inlined` does. `callers` and `callees`, which take ranges of memory,
-   patterns and several SYMBOLs in place of SYMBOL too, call
-   `symbol::subject`, whose `Subject` holds one `Symbol`, the ranges, or
-   a `Set`, and which stops at the first argument it can't read;
-   `retained`, which takes ranges too, reads each argument with
-   `symbol::argument`, as `subject` does. `subject` gives what a name
-   finds to `Names::one_or_error` with `Takes::Set`, which words the
-   error for a name that finds nothing as `retained` does, and the error
-   for a name that could mean several with `Names::choices`, as
-   `retained` does too: it says to use one or more of them and ends with
-   the pattern for all of them, where `find`, which passes `Takes::One`,
-   words it with `could_mean`, which says to use one. A `Symbol`'s `node`
-   may be an import.
+   that lists them when it matches several. One whose answer needs no
+   `Names` calls `symbol::find`, which frees its `Names` before the
+   answer, as `inlined` does.
+   A command that takes a set, as `retained`, `callers` and `callees` take
+   several SYMBOLs, patterns and ranges of memory in place of SYMBOL,
+   reads each argument with `Names::read_argument`, in
+   `commands/symbol/argument.rs`, which gives what the argument finds, an
+   `Argument`: a `Symbol`, a pattern with the items it matches, or a
+   range; or why the command can't use it, an `Unusable`, not yet worded.
+   `Pick::new(binary, argument, item_in_set)` gives what an `Argument`
+   picks for a `symbol::Set`, which counts each item once and names them
+   in the first line; `item_in_set`, an `ItemInSet`, is the command's rule
+   for the item of a SYMBOL among others, which may be an import:
+   `retained` passes `item_in_file`, and `callers` and `callees` their
+   own. To stop at the first argument that it can't use, call
+   `symbol::subject` with the command's `ItemInSet`, as `callers` and
+   `callees` do; it also answers about one SYMBOL alone as itself, and
+   keeps ranges alone apart from a set, in a `Subject`. To list every
+   argument that it can't use instead, read each one as
+   `retained::find_symbols` does; a second command that lists them moves
+   `Refused` and `refused_error` to `symbol/argument.rs` rather than
+   copying them. Neither `read_argument` nor `Pick::new` checks that a
+   range holds an item: `retained` checks it with `check_holds_items` as
+   it reads each one, and `callers` and `callees` check it once the graph
+   is built (`range_check/validate.rs`). `Names::unusable_error` words the
+   error for an argument as every command that takes a set gives it: for a
+   name that finds nothing, it offers the pattern for what is in a module
+   of that name whenever it matches an item (`Takes::Set`), and for a name
+   that could mean several, it says to use one or more of them and ends
+   with the pattern for all of them (`Names::choices`). `find` takes one
+   item (`Takes::One`), so its error offers that pattern only when it
+   matches one, and says to use one. `retained` words only the errors that
+   it lists. A `Symbol`'s `node` may be an import.
    `item_in_file` or `readable_item`, in `checks.rs`, gives its item, or
    an error that says why there is none, and the command's own checks
    come next, as in `retained::find_symbols` and `why::refusal`; a

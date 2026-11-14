@@ -1750,7 +1750,8 @@ in order. Its output is the first example under [Commands](#commands).
    addresses of data that no symbol names.
 4. **SYMBOL.** `retained::run` checks that elfq can read the file's code
    (`check_code_is_readable`), then `retained::find_symbols` reads each
-   SYMBOL, here `process_frame`, with `Names::look_up_or_match`, which
+   SYMBOL, here `process_frame`, with `Names::read_argument`, as
+   `callers` does; it finds SYMBOL with `Names::look_up_or_match`, which
    looks it up with `Names::look_up`: by address, by full name, or by
    the end of a name. Working out the ends of every name takes a while
    in a large file, so `Names` files each item under the last part of
@@ -1761,14 +1762,13 @@ in order. Its output is the first example under [Commands](#commands).
    out a function whose end elfq doesn't know (`Item::end_unknown`),
    unless nothing else is left, then refuses a shared library, before
    `run` builds the graph. A SYMBOL given twice counts once. An argument
-   that `symbol::argument` reads as a range, as it does for `callers`,
-   stands for the items with a byte in it (`Item::is_in`), once
-   `check_holds_items` has checked that it holds one. An argument that
-   finds nothing as a name but has a `*` that stands for any text
-   (`Names::look_up_or_match`) stands for the items it matches
-   (`Names::matching`), which `symbol::pattern_notes` notes. What the
-   arguments pick goes in a `symbol::Set`, which counts each item once
-   and names them in the first line (`Set::lead_name`).
+   that `Names::read_argument` reads as a range stands for the items with
+   a byte in it (`Item::is_in`), once `check_holds_items` has checked that
+   it holds one. An argument that finds nothing as a name but has a `*`
+   that stands for any text (`Names::look_up_or_match`) stands for the
+   items it matches (`Names::matching`), which `symbol::pattern_notes`
+   notes. What the arguments pick goes in a `symbol::Set`, which counts
+   each item once and names them in the first line (`Set::lead_name`).
 5. **The graph.** `retained::run` has `graph::Graph::build` turn what
    `InstructionSet::scan` found in each function's code into references, or
    into unresolved calls. `Graph::build` then adds the pointers stored in

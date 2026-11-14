@@ -17,16 +17,10 @@
 //! Every argument that `retained` can't use is listed at once, so that a
 //! long list of them can be fixed in one go: one with the error it gets
 //! alone, several each with that error, under a line that counts them, and
-//! calls them SYMBOLs, or arguments once a range is among them. The errors
-//! for a name or a pattern are those of every command that takes a set,
-//! as `callers` and `callees` give them, where the error for a name that
-//! could mean several items says to use one or more of them, and ends its
-//! first line with the pattern for all of them, when it takes just those
-//! (see `Names::choices`). A name that finds nothing offers first the
-//! pattern for what is in a module of that name whenever it matches an
-//! item, since `retained` takes every item it matches (`Takes::Set`). A
-//! pattern that matches nothing gets the error for a name that finds
-//! nothing, with a pattern like it that matches some, if there is one.
+//! calls them SYMBOLs, or arguments once a range is among them. Each
+//! argument is read as in `callers` and `callees` (see
+//! `Names::read_argument`), and its error is theirs (see
+//! `Names::unusable_error`).
 
 use std::collections::HashSet;
 
@@ -35,11 +29,8 @@ use anyhow::{Result, anyhow, bail};
 use super::refuse_shared_library;
 use crate::binary::Binary;
 use crate::commands::checks::{check_holds_items, item_in_file};
-use crate::commands::symbol::{
-    self, Argument, Lookup, LookupOrMatch, Names, Pattern, Pick, Set, Takes,
-};
+use crate::commands::symbol::{self, Argument, Names, Pick, Set, Unusable};
 use crate::commands::text::{self, Detail, Naming};
-use crate::graph::Node;
 
 /// What `retained` answers about: the items that its arguments pick, and
 /// the functions that it leaves out.
@@ -62,7 +53,7 @@ pub(super) struct Symbols {
 /// know. Fails with an error that lists every argument that it can't use,
 /// such as an import, a pattern that matches nothing or a range that holds
 /// no item, the first 10 of them unless `detail` is [`Detail::All`] (see
-/// [`unusable_error`]), with the line that says which of the arguments it
+/// [`refused_error`]), with the line that says which of the arguments it
 /// can't use are files here under it, as the shell may have put them in
 /// place of a pattern (see [`symbol::with_shell_hint`]); when it leaves out
 /// every item, with an error that names them; and after those checks, for a
@@ -73,33 +64,30 @@ pub(super) fn find_symbols(
     queries: &[String],
     detail: Detail,
 ) -> Result<Symbols> {
-    // Each argument is read once, for what it finds and for what the error
-    // that lists those it can't use calls them.
-    let arguments: Vec<Result<Argument>> = (queries.iter())
-        .map(|query| symbol::argument(query))
-        .collect();
-    let arguments_word = arguments_word(&arguments);
     let mut picks: Vec<Pick> = Vec::new();
-    let mut unusable: Vec<Unusable> = Vec::new();
-    for (query, argument) in queries.iter().zip(arguments) {
-        let pick = match argument {
-            Ok(Argument::Symbol(query)) => find_symbol(binary, names, query),
-            Ok(Argument::Range(range)) => (check_holds_items(binary, range))
-                .map(|()| Pick::Range(range))
-                .map_err(Reason::from),
-            Err(error) => Err(Reason::from(error)),
-        };
+    let mut refused: Vec<Refused> = Vec::new();
+    for query in queries {
+        let pick = names.read_argument(query).and_then(|argument| {
+            // Only `retained` checks here that a range holds an item:
+            // `callers` and `callees` check it once the graph is built,
+            // since `callers` can ask what calls code outside every item.
+            if let Argument::Range(range) = argument {
+                check_holds_items(binary, range)?;
+            }
+            Pick::new(binary, argument, item_in_file)
+        });
         match pick {
             Ok(pick) => picks.push(pick),
-            Err(reason) => unusable.push(Unusable { query, reason }),
+            Err(unusable) => refused.push(Refused { query, unusable }),
         }
     }
-    if !unusable.is_empty() {
-        let error = unusable_error(&unusable, queries.len(), arguments_word, detail, names);
+    if !refused.is_empty() {
+        let arguments = arguments_word(queries);
+        let error = refused_error(&refused, queries.len(), arguments, detail, names);
         // Only an argument that it can't use may be what the shell put in
         // place of a pattern: one that finds its item was typed as meant.
-        let unusable: Vec<&str> = unusable.iter().map(|argument| argument.query).collect();
-        return Err(symbol::with_shell_hint(anyhow!(error), &unusable));
+        let refused: Vec<&str> = refused.iter().map(|argument| argument.query).collect();
+        return Err(symbol::with_shell_hint(anyhow!(error), &refused));
     }
     let mut set = Set::new(binary, picks);
     let left_out = set.leave_out_unknown_ends(binary);
@@ -115,99 +103,60 @@ pub(super) fn find_symbols(
     Ok(Symbols { set, left_out })
 }
 
-/// What `retained`'s error calls the arguments it was given: SYMBOLs, or
-/// once a range is among them, arguments, since a range in place of SYMBOL
-/// isn't one. [`symbol::argument`] fails only for an argument meant as a
-/// range, so one that it can't read counts as a range.
-fn arguments_word(arguments: &[Result<Argument>]) -> &'static str {
-    match (arguments.iter()).all(|argument| matches!(argument, Ok(Argument::Symbol(_)))) {
-        true => "SYMBOLs",
-        false => "arguments",
+/// What `retained`'s error calls `queries`, the arguments it was given:
+/// SYMBOLs, or once one meant as a range is among them, even one that it
+/// can't read, arguments, since a range in place of SYMBOL isn't one (see
+/// [`symbol::is_meant_as_range`]).
+fn arguments_word(queries: &[String]) -> &'static str {
+    match (queries.iter()).any(|query| symbol::is_meant_as_range(query)) {
+        true => "arguments",
+        false => "SYMBOLs",
     }
-}
-
-/// The item that `query`, SYMBOL, finds, with the name that the answer
-/// gives it, or when it is a pattern, the items that it matches (see
-/// [`Names::look_up_or_match`]), or why `retained` can't use it.
-fn find_symbol<'n>(binary: &Binary, names: &'n Names, query: &str) -> Result<Pick, Reason<'n>> {
-    let symbol = match names.look_up_or_match(query)? {
-        LookupOrMatch::Name(Lookup::One(symbol)) => symbol,
-        LookupOrMatch::Name(Lookup::NoName) => return Err(Reason::NoName),
-        LookupOrMatch::Name(Lookup::Several(nodes)) => return Err(Reason::Several(nodes)),
-        LookupOrMatch::Pattern(matched) => return Ok(Pick::Pattern(matched)),
-        LookupOrMatch::NoMatch(pattern) => return Err(Reason::NoMatch(Box::new(pattern))),
-    };
-    Ok(Pick::Symbol {
-        index: item_in_file(binary, symbol.node)?,
-        lead_name: symbol.lead_name(binary),
-    })
 }
 
 /// A SYMBOL, or a pattern or range in its place, that `retained` can't
-/// use.
-struct Unusable<'q, 'n> {
+/// use, with why.
+struct Refused<'q, 'n> {
     /// The SYMBOL, pattern or range, as typed.
     query: &'q str,
-    reason: Reason<'n>,
-}
-
-/// Why `retained` can't use a SYMBOL, or a pattern or range in its place.
-enum Reason<'n> {
-    /// No item or import has the name.
-    NoName,
-    /// The pattern matches no item. It is boxed, since a pattern takes far
-    /// more room than any other reason.
-    NoMatch(Box<Pattern>),
-    /// Several items or imports have the name.
-    Several(&'n [Node]),
-    /// The error that every command gives it, as elfq prints it: an
-    /// address that no item holds, or that isn't one, an import, whose
-    /// code isn't in the file, or a range that holds no item, or that isn't
-    /// one.
-    Error(String),
-}
-
-impl From<anyhow::Error> for Reason<'_> {
-    /// The error that every command gives, as elfq prints it.
-    fn from(error: anyhow::Error) -> Self {
-        Reason::Error(format!("{error:#}"))
-    }
+    unusable: Unusable<'n>,
 }
 
 /// How many of the arguments that it can't use `retained`'s error lists
 /// before "and 5 more", unless `--all` asks for every one.
 const LISTED: usize = 10;
 
-/// The error for `unusable`, the arguments that `retained` can't use of the
-/// `count` that it was given, which it calls `arguments` (see
+/// The error for `refused`, the arguments that `retained` can't use of
+/// the `count` that it was given, which it calls `arguments` (see
 /// [`arguments_word`]), in the order given. One whose error says what
 /// another's does, such as a name given twice, is listed once. When that
-/// leaves one, it is the error that it gets alone; otherwise, a line that
-/// counts every argument that it can't use, then the errors of the first
-/// [`LISTED`], or of every one if `detail` is [`Detail::All`], each
-/// indented under it, then how many more.
-fn unusable_error(
-    unusable: &[Unusable],
+/// leaves one, it is the error that it gets alone (see
+/// [`Names::unusable_error`]); otherwise, a line that counts every argument
+/// that it can't use, then the errors of the first [`LISTED`], or of every
+/// one if `detail` is [`Detail::All`], each indented under it, then how
+/// many more. Only those errors are worded.
+fn refused_error(
+    refused: &[Refused],
     count: usize,
     arguments: &str,
     detail: Detail,
     names: &Names,
 ) -> String {
     let mut said = HashSet::new();
-    let distinct: Vec<&Unusable> = (unusable.iter())
+    let distinct: Vec<&Refused> = (refused.iter())
         .filter(|&one| said.insert(one.says()))
         .collect();
     if let [one] = distinct[..] {
-        return one.error(names);
+        return names.unusable_error(one.query, &one.unusable);
     }
     let room = detail.room(LISTED);
     let listed = text::shown_count(distinct.len(), room);
     let mut message = format!(
         "elfq can't use {} of the {count} {arguments}:",
-        unusable.len()
+        refused.len()
     );
     for one in &distinct[..listed] {
-        for line in one.error(names).lines() {
+        for line in names.unusable_error(one.query, &one.unusable).lines() {
             message += &format!("\n  {line}");
         }
     }
@@ -217,34 +166,24 @@ fn unusable_error(
     message
 }
 
-impl Unusable<'_, '_> {
-    /// The error for this argument alone: for a name or a pattern, as every
-    /// command that takes a set words it, and otherwise the error in
-    /// [`Reason::Error`].
-    fn error(&self, names: &Names) -> String {
-        let query = self.query;
-        match &self.reason {
-            Reason::NoName => names.nothing_named(query, Takes::Set),
-            Reason::NoMatch(pattern) => names.nothing_matches(pattern),
-            Reason::Several(nodes) => names.choices(query, nodes),
-            Reason::Error(error) => error.clone(),
-        }
-    }
-
+impl Refused<'_, '_> {
     /// What two arguments' errors are compared by, to list each error once:
     /// the error that every command gives the argument, which is the same
     /// for an address typed two ways, such as 0x1 and 0x01; or else the
-    /// SYMBOL as typed, which the errors that `retained` words name.
+    /// SYMBOL as typed, which the errors that [`Names::unusable_error`]
+    /// words name.
     fn says(&self) -> Says<'_> {
-        match &self.reason {
-            Reason::Error(error) => Says::Error(error),
-            Reason::NoName | Reason::NoMatch(_) | Reason::Several(_) => Says::Query(self.query),
+        match &self.unusable {
+            Unusable::Error(error) => Says::Error(error),
+            Unusable::NoName | Unusable::NoMatch(_) | Unusable::Several(_) => {
+                Says::Query(self.query)
+            }
         }
     }
 }
 
-/// What two [`Unusable`]s' errors are compared by (see
-/// [`Unusable::says`]).
+/// What two [`Refused`]s' errors are compared by (see
+/// [`Refused::says`]).
 #[derive(PartialEq, Eq, Hash)]
 enum Says<'u> {
     /// The error that every command gives the argument.

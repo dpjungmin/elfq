@@ -41,7 +41,9 @@ pub(in crate::commands) struct InlinedEverywhere<'n> {
 /// that name (see [`Names::module_pattern`]), and how the error for a name
 /// that could mean several items ends: whether it says to use one
 /// ([`USE_ONE`]) or one or more ([`USE_ONE_OR_MORE`]), and whether it
-/// offers the pattern that takes them all (see [`Names::one_or_error`]).
+/// offers the pattern that takes them all. [`Names::one_or_error`] words
+/// those errors for a command that takes one item, and
+/// [`Names::unusable_error`] for one that takes a set.
 #[derive(Clone, Copy)]
 pub(in crate::commands) enum Takes {
     /// One item, as `why`, `reach`, `inlined` and `browse` take: the
@@ -525,7 +527,7 @@ impl Inlined {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::symbol::{Lookup, fixtures};
+    use crate::commands::symbol::{Lookup, Unusable, fixtures};
 
     #[test]
     fn a_name_that_finds_nothing_offers_the_pattern_for_what_is_in_it() {
@@ -610,13 +612,12 @@ mod tests {
         binary.imports.push("log".to_string());
         let names = Names::new(&binary);
         // The first line of the error for a name that could mean several,
-        // in a command that `takes` one item or a set.
-        let first_line = |query: &str, takes: Takes| {
-            let several = Lookup::Several(names.nodes(query));
-            let error = names.one_or_error(query, several, takes).unwrap_err();
-            error.to_string().lines().next().unwrap().to_string()
+        // as a command that takes a set gives it (`Names::unusable_error`).
+        let first_line = |error: String| error.lines().next().unwrap().to_string();
+        let in_set = |query: &str| {
+            let several = Unusable::Several(names.nodes(query));
+            first_line(names.unusable_error(query, &several))
         };
-        let in_set = |query: &str| first_line(query, Takes::Set);
         // It says to use one or more, and the name with a `*` after it
         // takes just what it could mean, even with a pointer's `*` in it.
         assert_eq!(
@@ -640,8 +641,10 @@ mod tests {
             "`log` could mean 2 items; use one or more on the left instead:"
         );
         // A command that takes one item says to use one, and offers none.
+        let several = Lookup::Several(names.nodes("checksum"));
+        let error = names.one_or_error("checksum", several).unwrap_err();
         assert_eq!(
-            first_line("checksum", Takes::One),
+            first_line(error.to_string()),
             "`checksum` could mean 2 functions; use one on the left instead:"
         );
     }
