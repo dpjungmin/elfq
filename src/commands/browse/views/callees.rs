@@ -30,13 +30,9 @@ pub(super) fn tab(session: &Session, index: usize, name: &str) -> Printed {
 
 #[cfg(test)]
 mod tests {
-    use clap::Parser;
-
-    use super::super::shell_words;
+    use super::super::test_support::{assert_has_all_when_needed, each_session, tab_command};
     use super::*;
-    use crate::binary::Binary;
-    use crate::binary::test_samples::samples;
-    use crate::cli::{Cli, Command, Format};
+    use crate::cli::{Command, Format};
     use crate::commands::checks::readable_item;
     use crate::commands::text::Detail;
 
@@ -44,38 +40,31 @@ mod tests {
     fn the_callees_tab_lists_what_its_command_prints() {
         // Pages, and those whose command needs --all.
         let (mut pages, mut cut_pages) = (0, 0);
-        for path in samples() {
-            let binary = Binary::load(&path).unwrap();
-            let session = Session::new(&path, &binary).unwrap();
+        each_session(|path, binary, session| {
             // Every item whose code `callees` reads.
             for index in 0..binary.items.len() {
                 let node = Node::Item(index);
-                if readable_item(&binary, node).is_err() {
+                if readable_item(binary, node).is_err() {
                     continue;
                 }
                 let tab = tab(&session, index, &session.lead_name(node));
                 let name = path.display();
                 // The command parses as elfq's arguments, after the shell
                 // has split it into words, and finds the item in the file.
-                let line = tab.command().strip_prefix("$ ").unwrap();
-                let words = shell_words(line);
-                assert_eq!(words[0], "elfq", "{line}");
-                let cli = Cli::try_parse_from(&words).unwrap_or_else(|e| panic!("{line}: {e}"));
-                assert_eq!(cli.file, path, "{line}");
-                let Some(Command::Callees(args)) = cli.command else {
-                    panic!("{line} is not callees");
-                };
-                let [query] = &args.uses.symbols[..] else {
-                    panic!("{line} has no one SYMBOL");
-                };
-                let symbol = session.names.find(query).unwrap();
-                assert_eq!(symbol.node, node, "{line}");
+                let command = tab_command(&session, &tab, Some(node), |parsed| match parsed {
+                    Command::Callees(args) => match &args.uses.symbols[..] {
+                        [query] => Some(query),
+                        _ => None,
+                    },
+                    _ => None,
+                });
+                let (line, symbol) = (&command.line, command.symbol.unwrap());
                 // What it prints, as `callees` runs it, but on the graph
                 // that the session has built, with --all and without.
                 let output = |detail| {
                     let mut out = Vec::new();
-                    let (graph, lead) = (&session.graph, symbol.lead_name(&binary));
-                    callees::callees(&binary, graph, index, &lead, detail, Format::Text, &mut out)
+                    let (graph, lead) = (&session.graph, symbol.lead_name(binary));
+                    callees::callees(binary, graph, index, &lead, detail, Format::Text, &mut out)
                         .unwrap();
                     String::from_utf8(out).unwrap()
                 };
@@ -89,11 +78,11 @@ mod tests {
                 assert_eq!(lines, tab.printed(), "{name}: {line}");
                 // The command has --all exactly when it needs it to list
                 // every row and every site.
-                assert_eq!(line.ends_with(" --all"), every != brief, "{name}: {line}");
+                assert_has_all_when_needed(line, &every, &brief);
                 pages += 1;
                 cut_pages += usize::from(every != brief);
             }
-        }
+        });
         assert!(pages > 4000 && cut_pages > 0, "{pages} {cut_pages}");
     }
 }

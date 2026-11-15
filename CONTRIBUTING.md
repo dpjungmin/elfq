@@ -61,7 +61,7 @@ command.
 | `src/lib.rs` | Declares the modules below. elfq is a library plus that small program; the library exists for the program and its tests. |
 | `src/cli/` | Command-line arguments, with clap: in `mod.rs`, a `Command` variant for each command and the structs that hold their arguments, and in `help.rs`, the text of `--help`. |
 | `src/commands/` | One file per command, or a folder for the larger ones below, which looks up SYMBOL, asks `graph` or `debuginfo` and decides what the answer shows. `mod.rs` runs the command the arguments name. The rest are shared: `arguments.rs` checks which arguments go together, `checks.rs` holds the checks a command makes before it answers, such as `check_code_is_readable` and `check_holds_items`, which `range_check/` and `retained` make of a range, `symbol/` works out what a user means by SYMBOL (`mod.rs` reads what `callers` and `callees` ask about into a `Subject`, `argument.rs` reads one argument of a command that takes a set, a range or SYMBOL, into what it picks for a `Set`, or why the command can't use it (`Unusable`), `lookup.rs` finds what a name means, or in the commands that take one item, the one item that a pattern matches (`Names::find`), and names items for the user in return, `not_found.rs` and `similar.rs` word the error when it finds several or none, or a pattern matches none, and the error when a pattern matches several where one item is needed, and for a name that finds nothing offer first the pattern for what is in a module of that name, where the command can take what it matches (`Takes`), `pattern.rs` finds the items that a pattern such as `'uart_*'` matches, with its unit tests in `pattern/tests.rs`, `matched.rs` words what patterns matched, for an answer's first line and its notes, and gives the one item that a pattern matched (`PatternMatches::only_item`), and `set.rs` puts what several SYMBOLs, patterns and ranges pick together in a `Set`, each item once, and words how an answer's first line names it, part by part; unit tests build a file of functions with `fixtures.rs`), `retained_tree.rs` builds the trees of retained sizes that the overview, `top` and `retained` show, `uses.rs` holds the table of `callers` and `callees` for one SYMBOL, `range_check/` answers them for ranges of memory, for a set, or with `--from` or `--to` (its `mod.rs` says what a check asks about, an `Inside`, which holds the ranges, one SYMBOL or a set, and works out the items inside once, for the rest, `validate.rs` checks the ranges, `crossing.rs` holds the answers and `rows.rs` their rows, which `reach` and `diff` print too), `flat_answer.rs` holds the answers whose table has one row to a line and `tree_answer.rs` those whose table holds a tree, `text.rs` the wording that commands share, with which rows of a long list they keep (`first_by_key`), and `json.rs` the JSON shapes. `kept.rs` has `Kept`, which leaves what a command keeps until it has answered for the system to take back when elfq ends (`end_after_answer`). |
-| `src/commands/browse/` | `elfq FILE browse`, with the `tui` feature: `mod.rs` takes over the terminal and runs the event loop, `session.rs` holds the loaded file and asks the commands' code for answers, `keys.rs` is the table of keys, `app.rs` the history of pages, the go-to box, find's prompt and the screen's layout, and `views/` the pages, the go-to box and the tabs of an item's page other than its tab 1, one file each (`item.rs` is an item's page, and `item/` holds its parts: the header, tab 1's lines, a function's code, a data object's contents and the notes on their lines), `printed.rs`, which draws a command's answer for the pages and tabs that show one, and `names.rs`, which shortens long C++ and Rust names to fit a column. |
+| `src/commands/browse/` | `elfq FILE browse`, with the `tui` feature: `mod.rs` takes over the terminal and runs the event loop, `session.rs` holds the loaded file and asks the commands' code for answers, `keys.rs` is the table of keys, `app.rs` the history of pages, the go-to box, find's prompt and the screen's layout, and `views/` the pages, the go-to box and the tabs of an item's page other than its tab 1, one file each (`item.rs` is an item's page, and `item/` holds its parts: the header, tab 1's lines, a function's code, a data object's contents and the notes on their lines), `printed.rs`, which draws a command's answer for the pages and tabs that show one, `names.rs`, which shortens long C++ and Rust names to fit a column, and `test_support.rs`, built only for tests, which holds what the tests of the tabs and pages share. |
 | `src/commands/reach/` | `elfq FILE reach [SYMBOL]`: `mod.rs` holds what the search from SYMBOL finds, with the words the code uses for its parts, and `Text`, which words it for people, `find.rs` the search, `rows.rs` writes the answer by block of memory, which browse shows too, `to.rs` the answer with `--to`, `tree.rs` the tree of `--tree` and `json.rs` the JSON, and `starts.rs` answers without SYMBOL, as browse's start page does. |
 | `src/commands/diff/` | `elfq FILE diff NEW`: `mod.rs` reads both files, builds the answer from their bytes alone or from their items too, and gives the exit status, `blocks.rs` works out the blocks of memory that both builds share and what changed in each, `pairing.rs` pairs the builds' items, `changes.rs` works out what changed, `edited.rs` which items of the same size are edited, `crossings.rs` the uses between blocks that are new or gone, `rows.rs` picks the rows of MOVED and CHANGE, and `text.rs` and `json.rs` write the answer. The unit tests of `pairing.rs` and `edited.rs` are in `pairing/tests.rs` and `edited/tests.rs`. |
 | `src/commands/startup/` | `elfq FILE startup`: `mod.rs` refuses files that aren't Cortex-M firmware from their headers, and runs the rest, `start.rs` finds the reset handler and `main`, `ram_sections.rs` lists the load images and sections without contents that startup code sets up, and matches what a call or a loop copies or zeroes to them, `events.rs` says what the steps read of each of the walk's events, `steps.rs` reads the walk's calls and loops as the steps that copy and zero sections, with `pieces.rs`, which joins the bytes that loops and stores copy or zero into steps, and `unread.rs`, which works out what code that elfq can't follow may set up, `problems/` works out the state of each section when `main` starts (`statuses.rs`), the code that runs from a load image before it is copied (`early_run.rs`), the problems (`mod.rs`) and the notes (`notes.rs`), and `text.rs` and `json.rs` write the answer. `debug.rs` lists the events of the walk that the steps read, for `elfq FILE debug walk`. The unit tests build their walks with `fixtures.rs`; those of `problems/` and `steps.rs` are in `problems/tests.rs` and `steps/tests.rs`. |
@@ -323,7 +323,9 @@ helper type, doesn't take a word of the list; where code still does, as
   paths, so that finding one needs only the short names of a few
   (`names::short_name_key`). A name's **words**, in `names`, are its
   runs of letters, digits, `_` and characters outside ASCII, unrelated
-  to the words of memory that `Binary::words` reads.
+  to the words of memory that `Binary::words` reads, and to the words
+  that a shell splits a command line into, as the tests' `shell_words`
+  does (`TabCommand::words`, in browse's tests).
 - **pattern**: a name with a `*` in it that stands for any text, such as
   `'uart_*'` (`symbol::Pattern`). `retained`, `callers` and `callees`
   take every item that it matches, and the other commands that take
@@ -707,6 +709,16 @@ The checks of `browse` that need its private types are unit tests in
   page is drawn, that the start page under the go-to box is worked out
   only once the box closes, and which keys, of every kind, can wait for
   the screen to be drawn, with a prompt open and without.
+
+The tests of the tabs and the start page share `views/test_support.rs`,
+built only for tests. `each_session` opens each sample as browse does.
+`tab_command` reads the command under a tab or page as a shell and elfq
+read it, splitting it with `shell_words`, and checks that it names the
+file and that its SYMBOL finds the page's item; the test's own match on
+its `Command` gives that SYMBOL. `assert_has_all_when_needed` checks that
+the command has `--all` exactly when it needs it, and `screen_lines` reads
+a screen that a test draws. A new tab's test uses them as the callees
+tab's does, in `views/callees.rs`.
 
 The Thumb text that a function's page shows is tested beside the code that
 gives it, `binary/listing.rs`, in `binary/listing/thumb_text.rs`: against
@@ -1092,7 +1104,11 @@ the biggest view, and not the one to start from.
    `keys::typing` instead, which takes from the table only the keys that
    move and aren't characters.
 4. **Tests.** Pin its screens in `tests/it/commands/browse.rs` at 80x24
-   and 100x30, and drive it with keys there, as the other tests do.
+   and 100x30, and drive it with keys there, as the other tests do. A tab
+   or page that shows a command's answer also gets a unit test beside it,
+   which checks on every page of every sample that it shows what the
+   command under it prints: copy `callees.rs`'s, which uses what
+   `views/test_support.rs` holds for such tests (see [Tests](#tests)).
 
 To see a page in a real terminal, run elfq in tmux and print the screen.
 Keys sent before elfq draws its first screen can be lost, so the script

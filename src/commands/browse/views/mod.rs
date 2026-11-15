@@ -6,7 +6,8 @@
 //! map). [`View`] lists the pages, so that `app.rs` can keep any of them in
 //! its history, and each `match` on it shows every page's part. A page or
 //! tab that shows a command's answer, a table whose rows open items, is a
-//! `Printed` (`printed.rs`).
+//! `Printed` (`printed.rs`). `test_support.rs`, built only for tests, holds
+//! what the tests of the tabs and pages share.
 
 mod callees;
 mod callers;
@@ -18,6 +19,8 @@ mod printed;
 mod reach;
 mod retained;
 mod start;
+#[cfg(test)]
+pub(super) mod test_support;
 mod why;
 
 use std::ops::Range;
@@ -459,29 +462,6 @@ pub(super) fn wrap(text: &str, width: usize) -> Vec<String> {
     lines
 }
 
-/// `line` split into words as a shell splits it, for the words that
-/// `text::shell_quote` writes: plain, or in single quotes, with `'\''`
-/// for a quote. The tests of each tab split the command under it.
-#[cfg(test)]
-fn shell_words(line: &str) -> Vec<String> {
-    let mut words = Vec::new();
-    let mut word: Option<String> = None;
-    let mut chars = line.chars();
-    while let Some(c) = chars.next() {
-        match c {
-            ' ' => words.extend(word.take()),
-            '\'' => {
-                let word = word.get_or_insert_with(String::new);
-                word.extend(chars.by_ref().take_while(|&c| c != '\''));
-            }
-            '\\' => word.get_or_insert_with(String::new).extend(chars.next()),
-            c => word.get_or_insert_with(String::new).push(c),
-        }
-    }
-    words.extend(word);
-    words
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -539,19 +519,5 @@ mod tests {
         short.visible(10);
         short.handle(Action::PageDown);
         assert_eq!((short.visible(10).0, short.selected), (0..4, 3));
-    }
-
-    #[test]
-    fn shell_words_undo_shell_quote() {
-        for text in [
-            "log_msg",
-            "log(unsigned int)",
-            "vtable for Gain",
-            "<&'a T>",
-            "",
-        ] {
-            let line = format!("elfq {} --all", text::shell_quote(text));
-            assert_eq!(shell_words(&line), ["elfq", text, "--all"], "{line}");
-        }
     }
 }
