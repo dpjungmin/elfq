@@ -1,6 +1,7 @@
 //! Turning answers into text for people. Commands fill a [`Table`], with
 //! rows or with a tree in its last column ([`Table::tree`]), and write it
-//! out.
+//! out. `tree.rs` shows the trees, as rows or drawn, the same way in every
+//! command.
 
 use std::io::{self, Write};
 

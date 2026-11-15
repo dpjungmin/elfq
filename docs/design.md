@@ -1833,8 +1833,8 @@ binary/      3 Binary::load, scan_functions, unnamed_data::items
 arch/        3 InstructionSet::scan
 ```
 
-[CONTRIBUTING.md](../CONTRIBUTING.md#where-things-live) says what each
-file holds, the rules that keep these layers apart, how elfq is tested, and
+[CONTRIBUTING.md](../CONTRIBUTING.md#where-things-live) says where the
+code is, the rules that keep these layers apart, how elfq is tested, and
 how to add a command or an instruction set.
 
 ### Startup, end to end

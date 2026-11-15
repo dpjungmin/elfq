@@ -1,17 +1,29 @@
 //! One module per command, and what they share. This file runs the command
-//! that the arguments name. The shared modules are libraries that commands
-//! call: `arguments.rs` checks which arguments go together, and words the
-//! lines that `main.rs` adds under clap's error for one that a command
-//! doesn't take, `checks.rs` the things a command needs before it answers,
-//! `symbol/` finds what SYMBOL names, `retained_tree.rs` builds the trees
-//! of retained sizes, `uses.rs` holds the table of `callers` and `callees`,
-//! `range_check/` answers them for ranges of memory or with `--from` or
-//! `--to`, `flat_answer.rs` holds the answers whose table has one row to a
-//! line, and `tree_answer.rs` those whose table holds a tree, and how a
-//! tree is cut down to its largest rows, and `kept.rs` leaves what a
-//! command builds for the system to free. How elfq words things, and
-//! which rows of a long list it keeps, are in `text.rs`, and the shapes
-//! of its JSON in `json.rs`.
+//! that the arguments name.
+//!
+//! The commands are `overview.rs`, for `elfq FILE`, `top.rs`, `retained/`,
+//! `why.rs`, `inlined.rs`, `callers.rs`, `callees.rs`, `reach/`, `browse/`,
+//! `diff/` and `startup/`, and the hidden `debug_items.rs` and
+//! `debug_matches.rs`; `debug walk` is in `startup/`.
+//!
+//! The shared modules are libraries that commands call:
+//!
+//! - `arguments.rs` checks which arguments go together, and words the lines
+//!   that `main.rs` adds under clap's error for one that a command doesn't
+//!   take.
+//! - `checks.rs` checks what a command needs before it answers.
+//! - `symbol/` finds what SYMBOL names.
+//! - `retained_tree.rs` builds the trees of retained sizes.
+//! - `uses.rs` holds the table of `callers` and `callees`, and
+//!   `range_check/` answers them for ranges of memory or with `--from` or
+//!   `--to`.
+//! - `flat_answer.rs` holds the answers whose table has one row to a line,
+//!   and `tree_answer.rs` those whose table holds a tree, and how a tree is
+//!   cut down to its largest rows.
+//! - `text.rs` holds how elfq words things, and which rows of a long list
+//!   it keeps, and `json.rs` the shapes of its JSON.
+//! - `kept.rs` leaves what a command builds for the system to free, once
+//!   `main.rs` says that elfq ends after the answer (`end_after_answer`).
 //!
 //! A command calls no other command, except to ask whether that one would
 //! answer, for a Try line, which ends an answer with a command to run next,

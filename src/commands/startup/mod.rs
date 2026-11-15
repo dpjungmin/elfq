@@ -6,6 +6,8 @@
 //!
 //! The answer is worked out in this order:
 //!
+//! - This file refuses a file that its headers say isn't Cortex-M
+//!   firmware, before it is loaded (`check_header`).
 //! - `start.rs` finds the reset handler.
 //! - `ram_sections.rs` lists the sections that startup code sets up: the
 //!   load images and the sections without contents.
@@ -28,7 +30,8 @@
 //!   notes.
 //! - `text.rs` and `json.rs` write the answer.
 //!
-//! The unit tests build their walks by hand, with `fixtures.rs`.
+//! The unit tests build their walks by hand, with `fixtures.rs`. Those of
+//! `steps.rs` are in `steps/tests.rs`.
 //!
 //! `debug.rs` answers `elfq FILE debug walk`, listing the events of the
 //! walk that `arch::startup` makes, from the reset handler to the `main`
