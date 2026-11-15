@@ -17,7 +17,7 @@ use serde_json::Value;
 
 use elfq::binary::Binary;
 use elfq::cli::Cli;
-use elfq::commands::{Outcome, symbol};
+use elfq::commands::symbol;
 use elfq::graph::Node;
 use object::{Architecture, Object};
 
@@ -211,7 +211,9 @@ pub(crate) struct Run {
     status: i32,
     /// What elfq printed on stdout.
     pub(crate) stdout: String,
-    /// What elfq printed on stderr.
+    /// What elfq printed on stderr. In a `Run` that [`run_in_process`]
+    /// gives, it is empty: a warning goes to the test's own stderr, and no
+    /// check sees it.
     pub(crate) stderr: String,
 }
 
@@ -457,17 +459,19 @@ pub(crate) fn shell_words(line: &str) -> Vec<String> {
     words
 }
 
-/// Runs `elfq SAMPLE ARGS` in this process, for the sample at `sample`.
+/// Runs `elfq SAMPLE ARGS` in this process, for the sample at `sample`,
+/// and returns the [`Run`], which the test reads as one that [`run`]
+/// gives.
 ///
-/// It returns what elfq printed on stdout, with the outcome that sets its
-/// exit status. It is much quicker than [`run`], which starts the
-/// program, so a test that runs elfq hundreds of times, as on each item of
-/// a sample, uses it. It sees less than a user would: an error panics,
-/// and a warning goes to the test's own stderr, where nothing checks it.
-/// A test of what elfq prints on stderr, or of its exit status as such,
-/// uses [`run`].
+/// It is much quicker than [`run`], which starts the program, so a test
+/// that runs elfq hundreds of times, as on each item of a sample, uses
+/// it. Its exit status is the one that the program takes from the answer,
+/// with `Outcome::exit_status`. It sees less than a user would: the
+/// `Run`'s stderr is empty, since a warning goes to the test's own
+/// stderr, where nothing checks it, and an error panics. A test of what
+/// elfq prints on stderr, or of its exit status as such, uses [`run`].
 #[track_caller]
-pub(crate) fn run_in_process(sample: &str, args: &[&str]) -> (Outcome, String) {
+pub(crate) fn run_in_process(sample: &str, args: &[&str]) -> Run {
     let path = sample_path(sample);
     let command_line = [&["elfq", path.to_str().unwrap()], args].concat();
     let cli = Cli::try_parse_from(command_line).unwrap();
@@ -476,7 +480,13 @@ pub(crate) fn run_in_process(sample: &str, args: &[&str]) -> (Outcome, String) {
         Ok(outcome) => outcome,
         Err(err) => panic!("{sample} {args:?}: {err:#}"),
     };
-    (outcome, String::from_utf8(out).unwrap())
+    let command = format!("elfq {sample} {}", args.join(" "));
+    Run {
+        status: i32::from(outcome.exit_status()),
+        stdout: decode(&command, "stdout", out),
+        stderr: String::new(),
+        command,
+    }
 }
 
 /// Checks that elfq printed `expected`. When it didn't, the failure names

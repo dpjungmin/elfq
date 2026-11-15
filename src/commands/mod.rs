@@ -79,6 +79,19 @@ pub enum Outcome {
     Problems,
 }
 
+impl Outcome {
+    /// elfq's exit status for the answer. As with diff(1), it is 0 for an
+    /// answer, and 1 for one that a script may want to act on. An error
+    /// gives no `Outcome`, and main.rs exits with 2 for it, as clap does
+    /// for its errors in the arguments.
+    pub fn exit_status(self) -> u8 {
+        match self {
+            Outcome::Answered => 0,
+            Outcome::Crossed | Outcome::Differs | Outcome::Problems => 1,
+        }
+    }
+}
+
 /// Runs the command in `cli`, writing its answer to `out`.
 pub fn run(cli: &Cli, out: &mut dyn Write) -> Result<Outcome> {
     arguments::check_before_loading(cli)?;

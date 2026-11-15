@@ -48,10 +48,11 @@ cargo +1.88 check --all-targets --locked --no-default-features
 The third line and the last check elfq without the `tui` feature, which
 `browse` needs. The last two lines check that elfq still compiles with
 Rust 1.88, the oldest version it supports (`rust-version` in
-`Cargo.toml`); `rustup toolchain install 1.88` gets it. On Linux, CI also
-runs `browse` in a terminal that `script` makes, and checks that q quits
-it and that the terminal is as it was; `.github/workflows/ci.yml` has the
-command.
+`Cargo.toml`); `rustup toolchain install 1.88` gets it. On Linux, the
+tests also run `browse` in a terminal that `script` makes, and check that
+q quits it and that the terminal is as it was (`in_a_terminal`, in
+`tests/it/commands/browse.rs`). They run it under `timeout`, and fail
+where `script` or `timeout` is missing.
 
 ## Where things live
 
@@ -210,8 +211,9 @@ only with the `tui` feature.
   it with `run`, or with `command` when it needs more, such as a pipe
   for its input; it changes a sample's bytes with `ElfBytes`, in
   `support/elf.rs`; and a test of one command goes in
-  `tests/it/commands/<name>.rs`. See [Tests](#tests). Two tests don't
-  do this yet (see [below](#where-the-code-doesnt-follow-these-yet)).
+  `tests/it/commands/<name>.rs`. See [Tests](#tests). Three tests in
+  `tests/it/commands/browse.rs` don't do this yet (see
+  [below](#where-the-code-doesnt-follow-these-yet)).
 - **Visibility says how far a declaration's uses reach.** A function,
   type, constant or field is private unless code outside its module uses
   it. It is `pub(super)` when only its parent module and the parent's
@@ -260,7 +262,8 @@ code.
 - A test runs elfq through `support/`:
   - In `tests/it/commands/browse.rs`,
     `the_command_under_the_callers_runs_in_a_shell` starts elfq through
-    `sh`, and `in_a_terminal` through `timeout` and `script`.
+    `sh`, and `in_a_terminal`, for two tests, through `timeout` and
+    `script`.
 
 ## Words
 
@@ -590,10 +593,11 @@ helper type, doesn't take a word of the list; where code still does, as
   status and what it printed on stdout and stderr (`Run`, in
   `tests/it/support/mod.rs`), which `run` gives; its `printed` is what
   elfq printed on stdout alone. `run_in_process` runs a command inside
-  the test instead, and gives no `Run`. An early run, in `startup`, is
-  unrelated, and so are a run of sections, which a copy or zeroing of
-  the first covers on into (`RamSections::run_from`), and the private
-  `Run`s of the startup walk and of `binary/memory.rs`.
+  the test instead, and gives a `Run` too, whose stderr is empty. An
+  early run, in `startup`, is unrelated, and so are a run of sections,
+  which a copy or zeroing of the first covers on into
+  (`RamSections::run_from`), and the private `Run`s of the startup walk
+  and of `binary/memory.rs`.
 
 Some code still uses one of these words for something else. The Thumb
 walk's `Step` is what an instruction leads to, and `reach`'s `Step` is
@@ -799,9 +803,10 @@ command run on every sample, `Exit::ZeroOrOne` stands for either. A test
 that expects a warning with the answer calls `exited(STATUS)`, which
 checks the status alone, and then reads the `Run`'s `stdout` and `stderr`
 itself.
-`run_in_process(SAMPLE, ARGS)` runs a command inside the test instead: it
-gives no `Run`, only what elfq printed on stdout and the outcome that sets
-its exit status, and an error panics.
+`run_in_process(SAMPLE, ARGS)` runs a command inside the test instead,
+and gives a `Run` that is read like any other, with the exit status that
+the program would end with. Its stderr is empty, since a warning goes to
+the test's own stderr, and an error panics.
 
 **When output changes.** Most tests in `commands/` check a command's whole
 output with `assert_output`. When you change what elfq prints on purpose,
@@ -883,6 +888,7 @@ is a short one to copy.
    does), the arguments it reads, the `Format` and the output. It returns
    `Result<Outcome>`: `Outcome::Answered`, or for exit status 1 another
    variant, as `callers` and `callees` return for ranges.
+   `Outcome::exit_status` gives each variant its status.
 3. **Wiring, in `src/commands/mod.rs` and `arguments.rs`.** Add
    `mod <name>;` and an arm in `run`. In `arguments.rs`, `check_tree`,
    `check_range` and `check_json` each have an arm for every command, and

@@ -11,7 +11,7 @@ use clap::builder::StyledStr;
 use clap::error::{ContextKind, ContextValue, ErrorFormatter};
 use elfq::STACK_SIZE;
 use elfq::cli::{self, Cli};
-use elfq::commands::{Outcome, unexpected_argument_hints};
+use elfq::commands::unexpected_argument_hints;
 
 fn main() -> ExitCode {
     // Under a limit on address space, as `ulimit -v` sets, the stack's
@@ -71,11 +71,8 @@ fn run() -> ExitCode {
         out.flush()?;
         Ok(outcome)
     });
-    // As with diff(1): 0 for an answer, 1 for one that a script may want to
-    // act on, and 2 for an error, as for clap's errors in the arguments.
     match result {
-        Ok(Outcome::Answered) => ExitCode::SUCCESS,
-        Ok(Outcome::Crossed | Outcome::Differs | Outcome::Problems) => ExitCode::from(1),
+        Ok(outcome) => ExitCode::from(outcome.exit_status()),
         Err(err) => {
             report(&format!("error: {err:#}"));
             ExitCode::from(2)

@@ -932,6 +932,15 @@ fn ranges_in_place_of_symbol_must_be_ranges_with_something_in_them() {
         &stderr(&[TCM_SAMPLE, "callers", "0x100..0x0"]),
         "error: `0x100..0x0` isn't a range: the range must end after it starts\n",
     );
+    // And something must be in place of SYMBOL.
+    assert_output(
+        &stderr(&[TCM_SAMPLE, "callers"]),
+        "error: callers needs a SYMBOL, or patterns or ranges, such as 'uart_*' or 0x0+256K\n",
+    );
+}
+
+#[test]
+fn range_option_is_refused_with_the_form_of_callers_or_callees_that_answers() {
     // --range is for sizes; ranges to check go in place of SYMBOL.
     for args in [
         &[TCM_SAMPLE, "callees", "--range", "0+1K"],
@@ -1130,6 +1139,10 @@ fn ranges_in_place_of_symbol_must_be_ranges_with_something_in_them() {
         "error: callers takes --from, not --range, to list only the callers in a range: \
          elfq testdata/bin/c-cortex-m7.elf callers crc32 --from 0x00000000..0x00000400\n",
     );
+}
+
+#[test]
+fn from_and_to_must_each_hold_something_outside_what_is_asked_about() {
     // The ranges of --from and --to must each hold something outside the
     // ranges asked about, or they are most likely mistyped.
     assert_output(
@@ -1215,6 +1228,10 @@ fn ranges_in_place_of_symbol_must_be_ranges_with_something_in_them() {
         &stderr(&[SAMPLE, "callees", "_init", "--to", "0x0+16M"]),
         "error: elfq doesn't know where _init ends, so it can't read its code\n",
     );
+}
+
+#[test]
+fn from_and_to_take_one_range_each() {
     // Each option takes one range.
     assert_output(
         &stderr(&[
@@ -1233,10 +1250,6 @@ fn ranges_in_place_of_symbol_must_be_ranges_with_something_in_them() {
         "error: invalid value '0x0+1K,' for '--to <RANGE>': --to takes one range; leave out \
          the comma\n\n\
          For more information, try '--help'.\n",
-    );
-    assert_output(
-        &stderr(&[TCM_SAMPLE, "callers"]),
-        "error: callers needs a SYMBOL, or patterns or ranges, such as 'uart_*' or 0x0+256K\n",
     );
 }
 
