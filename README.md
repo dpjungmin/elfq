@@ -42,123 +42,16 @@ elfq app.elf startup                    # whether the reset code copies and zero
 binaries in `testdata/bin`, each with the command that answers it and what
 elfq prints.
 
-Every command but `browse` also prints JSON for scripts with `--json`:
-every item, site and chain, one row per line, though the overview's JSON
-leaves its table to `top`'s. [docs/design.md](docs/design.md#json) lists
-the keys. Until 1.0 the JSON can change, and each release says how. The
-overview, `top` and `retained` can count only the bytes in one range of
-memory, such as a microcontroller's ITCM, with `--range START..END` or
-`--range START+SIZE`; for firmware, the overview lists the ranges its
-sections and their load images occupy. `retained` takes ranges in place
-of a symbol too, each standing for every item with a byte in it, so
-`retained 0x0+256K` says what removing all that is in ITCM would save.
-`retained`, `callers` and `callees` also take a pattern such as
-`'uart_*'` or `'core::fmt::*'`, where `*` stands for any text, for every
-item it matches. `why`, `reach`, `inlined` and `browse` take one that
-matches one item, for that item: `why 'process_f*'` answers as
-`why process_frame` does, with the pattern in its first line. One that
-matches several is an error that lists them, and `browse` lists them in
-its go-to box, to pick one. A module, type or class typed without
-`*`, such as `app::Gain`, finds nothing, and the error offers the
-pattern for what is in it first, with how many items it matches, as
-in "did you mean 'app::Gain::*' (4 items), ...?", where the command
-can take them: in `why`, `reach`, `inlined` and `browse`, only when
-it matches one item. Quote a pattern: zsh and fish refuse a `*`
-that matches no file, and bash puts the names of any files it matches in
-its place.
-
-zsh and fish put the names of the files that an unquoted `*` matches in
-its place too, and bash with `failglob` set refuses one that matches no
-file, as they do, all before elfq runs. So when the arguments given in
-place of a symbol find nothing and are files in the current folder, the
-error ends with a line that says so, and shows the pattern to quote:
-"uart_driver.c and uart_hal.c are files here: ... Put a pattern in
-single quotes, as in 'uart_*', ...". `why`, `reach`, `inlined` and
-`browse` take one symbol, and `top` none, so they refuse the names after
-that before reading the file, and the line goes under that error. A
-pattern given to `top` gets a line that names the command that takes it:
-"top takes no SYMBOL; retained 'core::fmt::*' lists those items, with
-what each keeps."
-
-`callers` and `callees` take ranges in place of a symbol, and then list
-only what crosses their edge, such as code in ITCM that calls a function in
-flash. elfq's exit status is then 1 if anything does or might, so a CI job
-can check that time-critical code stays in fast memory, or that code run
-from RAM never touches flash. Patterns and several symbols, alone or with
-ranges, answer the same way, for the items they pick, wherever those are:
-`callers 'uart_*'` lists what uses the items named uart_* from outside
-them. `--from RANGE` lists only the callers in RANGE, and `--to RANGE`
-only the callees, for any of these or one symbol:
-`callers 0x20000000+256K --from 0x0+256K` lists what in the first 256 KiB
-uses the 256 KiB at 0x20000000, and `callers crc32 --from 0x30000000+16M`
-what at 0x30000000 calls crc32. Errors go to stderr, with exit status 2
-and nothing on stdout.
-
-`reach SYMBOL --to RANGE` lists only what SYMBOL reaches in RANGE, at any
-depth, with the code that uses each item there, and exits 1 if it reaches
-anything there or might. To check that an interrupt handler runs only from
-TCM, give `--to` for every other block that the overview lists. A call
-through a pointer that may go there counts too; to fail only on what elfq
-is sure of, let exit status 1 through and check the JSON:
-
-```sh
-elfq app.elf reach SysTick_Handler --to 0x20240000+1M --to 0x30000000+16M \
-  --json > reach.json || [ $? -eq 1 ]
-jq -e 'all(.items[]; .in_to | not) and all(.unresolved[]; .target == null)' reach.json
-```
-
-`elfq old.elf diff new.elf` compares two builds of one program: its exit
-status is 0 when both load the same bytes at the same addresses, as a build
-and its stripped copy do, and 1 when they don't, with the blocks of memory
-whose bytes differ, the sections that changed size in each, the functions
-and data objects that moved to another block, are new or gone, changed
-size, or are edited, which is to say they kept their size and block but
-changed in more than the addresses of what moved, each with what keeps
-it, the calls between blocks that are new or gone, and when no item
-changed, the sections that differ. A CI job can check that a change
-leaves the firmware's memory as it was, or with the JSON, only that no
-call between blocks is new, such as from ITCM to flash:
-
-```sh
-elfq old.elf diff new.elf --json > diff.json || [ $? -eq 1 ]
-jq -e '(.same_bytes or .items_compared) and ([.crossings[] | select(.status=="new" and (.how=="call" or .how=="tail call"))] | length == 0)' diff.json
-```
-
-The check counts calls and tail calls only. A use of data from another
-block is new each time a relink moves the data to another block, and a
-pointer is any word of data that holds an address, so a constant that
-happens to equal a function's address reads as one. A call between
-blocks is the same in both builds when the same function calls the same
-one from and to the same blocks, so the check passes when a call only
-becomes a tail call or stops being one, or gains or loses a veneer in
-the caller's or the callee's block. It still fails when the code at
-either end of a call between blocks moves to a third block, as when
-code that calls flash moves from OCRAM into ITCM, or when a relink moves
-it to another block, as when flash starts at 0x60000000 rather than
-0x30000000: diff lists such a call as gone, and as new between the
-blocks it is between now. As diff works out the blocks over both builds
-together, a smaller relink, which leaves the two builds' flash
-overlapping or less than 64 KiB apart, as a 32 KiB bootloader offset
-does, keeps one block, and its calls stay the same. Both builds need a
-symbol table: without one, diff compares no items, so the check fails
-unless the memory is the same.
-
-`elfq app.elf startup` reads what the reset code of Cortex-M firmware
-does before `main`, in order: each copy of a load image, such as `.data`
-or code that runs from ITCM, from where the file stores it, and each
-zeroing of a section such as `.bss`. Its exit status is 1 when code runs
-from a load image before its copy, as when `memcpy` itself is linked into
-ITCM, when a load image isn't copied in full, or `.bss` isn't zeroed in
-full, and when elfq can't follow code that may set one up, such as a
-call through a pointer. It reads only
-the file, so it can't know what a boot ROM or a debugger loads, how the
-chip's memory is set up, or what interrupts and other cores do. To fail
-only on what elfq is sure of, let exit status 1 through:
-
-```sh
-elfq app.elf startup --json > startup.json || [ $? -eq 1 ]
-jq -e '.problems_certain == 0' startup.json
-```
+Every command but `browse` also prints JSON for scripts with `--json`, and
+[docs/design.md](docs/design.md#json) lists the keys. `elfq FILE COMMAND
+--help` says what a command takes: ranges of memory, patterns such as
+`'uart_*'`, several symbols, `--from` or `--to`. `callers` and `callees` of
+ranges exit with status 1 when something crosses the edge of the ranges, or
+might, `reach SYMBOL --to RANGE` when SYMBOL reaches something in RANGE, or
+might, `diff` when the two builds load different memory, and `startup` when
+it finds a problem in the reset code, or might, so a CI job can run them as
+checks. [docs/examples.md](docs/examples.md) shows each check, and how to
+read the JSON with `jq`.
 
 **For AI agents:** paste this into a project's AGENTS.md or CLAUDE.md to
 tell its agents about elfq:

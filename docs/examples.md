@@ -518,8 +518,20 @@ Each row names the code to change: for `app_tick`, the handler itself, at
 with the same ranges lists that row too, but stops there, where `reach`
 follows `app_tick` on to `log_msg`, `platform_write` and `tx_buffer`. The
 jump through a pointer in `dispatch_event` stays, since flash holds
-functions whose addresses `main` takes. `crc32`, which runs from ITCM and
-uses only DTCM, passes with exit status 0:
+functions whose addresses `main` takes. A call or jump through a pointer
+that may go to the ranges makes the exit status 1 too. To fail only on what
+elfq is sure of, let exit status 1 through and check the JSON:
+
+```sh
+elfq app.elf reach SysTick_Handler --to 0x20240000+1M --to 0x30000000+16M \
+  --json > reach.json || [ $? -eq 1 ]
+jq -e 'all(.items[]; .in_to | not) and all(.unresolved[]; .target == null)' reach.json
+```
+
+For `SysTick_Handler` here, `jq` prints `false` and exits 1, for the 7 items
+in the ranges; the jump in `dispatch_event`, whose `target` is `null`,
+doesn't fail it. `crc32`, which runs from ITCM and uses only DTCM, passes
+with exit status 0:
 
 ```
 $ elfq testdata/bin/c-cortex-m7.elf reach crc32 --to 0x20240000+1M --to 0x30000000+16M
