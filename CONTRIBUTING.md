@@ -48,10 +48,11 @@ cargo +1.88 check --all-targets --locked --no-default-features
 The third line and the last check elfq without the `tui` feature, which
 `browse` needs. The last two lines check that elfq still compiles with
 Rust 1.88, the oldest version it supports (`rust-version` in
-`Cargo.toml`); `rustup toolchain install 1.88` gets it. On Linux, CI also
-runs `browse` in a terminal that `script` makes, and checks that q quits
-it and that the terminal is as it was; `.github/workflows/ci.yml` has the
-command.
+`Cargo.toml`); `rustup toolchain install 1.88` gets it. On Linux, the
+tests also run `browse` in a terminal that `script` makes, and check that
+q quits it and that the terminal is as it was (`in_a_terminal`, in
+`tests/it/commands/browse.rs`). They run it under `timeout`, and fail
+where `script` or `timeout` is missing.
 
 ## Where things live
 
@@ -210,8 +211,9 @@ only with the `tui` feature.
   it with `run`, or with `command` when it needs more, such as a pipe
   for its input; it changes a sample's bytes with `ElfBytes`, in
   `support/elf.rs`; and a test of one command goes in
-  `tests/it/commands/<name>.rs`. See [Tests](#tests). Two tests don't
-  do this yet (see [below](#where-the-code-doesnt-follow-these-yet)).
+  `tests/it/commands/<name>.rs`. See [Tests](#tests). Three tests in
+  `tests/it/commands/browse.rs` don't do this yet (see
+  [below](#where-the-code-doesnt-follow-these-yet)).
 - **Visibility says how far a declaration's uses reach.** A function,
   type, constant or field is private unless code outside its module uses
   it. It is `pub(super)` when only its parent module and the parent's
@@ -260,7 +262,8 @@ code.
 - A test runs elfq through `support/`:
   - In `tests/it/commands/browse.rs`,
     `the_command_under_the_callers_runs_in_a_shell` starts elfq through
-    `sh`, and `in_a_terminal` through `timeout` and `script`.
+    `sh`, and `in_a_terminal`, for two tests, through `timeout` and
+    `script`.
 
 ## Words
 

@@ -54,8 +54,7 @@ fn keys(script: &[&str]) -> Vec<Event> {
 
 /// The browser on `binary`, loaded from `path`, opened at `symbol` on a
 /// screen of `width` by `height`, after `script`'s keys: the screen as
-/// text, with the spaces at the ends of lines left out, and why the event
-/// loop stopped.
+/// [`screen_text`] reads it, and why the event loop stopped.
 fn browse(
     path: &str,
     binary: &Binary,
@@ -68,16 +67,22 @@ fn browse(
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     let mut events = keys(script).into_iter();
     let stop = event_loop(&mut terminal, &mut app, || Ok(events.next()), || Ok(false)).unwrap();
+    (screen_text(&terminal), stop)
+}
+
+/// The screen of `terminal` as text, with the spaces at the ends of lines
+/// left out.
+fn screen_text(terminal: &Terminal<TestBackend>) -> String {
     let buffer = terminal.backend().buffer();
     let mut screen = String::new();
-    for row in 0..height {
-        let line: String = (0..width)
+    for row in 0..buffer.area.height {
+        let line: String = (0..buffer.area.width)
             .map(|column| buffer[(column, row)].symbol())
             .collect();
         screen += line.trim_end();
         screen.push('\n');
     }
-    (screen, stop)
+    screen
 }
 
 /// The screen of the browser on the sample named `sample` in testdata/bin.
@@ -3012,16 +3017,7 @@ fn burst(sample: &str, (width, height): (u16, u16), script: &[&str]) -> (String,
     let more_waiting = || Ok(taken.get() < events.len());
     let stop = event_loop(&mut terminal, &mut app, next_event, more_waiting).unwrap();
     assert_eq!(stop, Stop::Quit);
-    let buffer = terminal.backend().buffer();
-    let mut drawn = String::new();
-    for row in 0..height {
-        let line: String = (0..width)
-            .map(|column| buffer[(column, row)].symbol())
-            .collect();
-        drawn += line.trim_end();
-        drawn.push('\n');
-    }
-    (drawn, terminal.get_frame().count())
+    (screen_text(&terminal), terminal.get_frame().count())
 }
 
 #[test]
@@ -3118,10 +3114,11 @@ fn notes_say_where_in_an_item_a_line_uses_and_what_elfq_cant_follow() {
 /// status is 124 if `timeout` stopped it, and 127 if there is no `script`.
 /// With `keys`, it panics instead if the output ends before the hint line,
 /// as it does when there is no `script`, or when `timeout` stops elfq
-/// before it draws one. Returns `None` only when there is no `timeout` to
-/// start, and panics when starting it fails in another way.
+/// before it draws one. It panics when `timeout` can't be started, as when
+/// there is none, so that a test that calls it fails rather than passes
+/// without running elfq.
 #[cfg(target_os = "linux")]
-fn in_a_terminal(args: &[&str], keys: &str) -> Option<(Option<i32>, String)> {
+fn in_a_terminal(args: &[&str], keys: &str) -> (Option<i32>, String) {
     use std::io::{Read, Write};
     use std::process::Stdio;
 
@@ -3133,17 +3130,13 @@ fn in_a_terminal(args: &[&str], keys: &str) -> Option<(Option<i32>, String)> {
          [ \"$(stty -g)\" = \"$before\" ] || status=3; exit $status",
         elfq.join(" ")
     );
-    let child = std::process::Command::new("timeout")
+    let mut child = std::process::Command::new("timeout")
         .args(["60", "script", "-qec", &shell, "/dev/null"])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .spawn();
-    let mut child = match child {
-        Ok(child) => child,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
-        Err(error) => panic!("{error}"),
-    };
+        .spawn()
+        .unwrap_or_else(|error| panic!("can't start `timeout`: {error}"));
     let mut stdin = child.stdin.take().unwrap();
     let mut stdout = child.stdout.take().unwrap();
     let mut output = Vec::new();
@@ -3160,7 +3153,7 @@ fn in_a_terminal(args: &[&str], keys: &str) -> Option<(Option<i32>, String)> {
     stdout.read_to_end(&mut output).unwrap();
     drop(stdin);
     let status = child.wait().unwrap();
-    Some((status.code(), String::from_utf8_lossy(&output).into_owned()))
+    (status.code(), String::from_utf8_lossy(&output).into_owned())
 }
 
 #[test]
@@ -3168,10 +3161,7 @@ fn in_a_terminal(args: &[&str], keys: &str) -> Option<(Option<i32>, String)> {
 fn the_files_warnings_are_printed_when_browse_quits_or_refuses_it() {
     let warning = "warning: section .plt runs past the end of the file";
     let path = past_the_end(&[".plt"]).save("plt-offset.elf");
-    let Some((status, output)) = in_a_terminal(&[&path, "browse", "log_msg"], "q") else {
-        eprintln!("no `timeout` to run elfq in a terminal with");
-        return;
-    };
+    let (status, output) = in_a_terminal(&[&path, "browse", "log_msg"], "q");
     assert_eq!(status, Some(0), "{output:?}");
     // After the screen is back.
     let back = output.rfind("\x1b[?1049l").expect(&output);
@@ -3181,7 +3171,7 @@ fn the_files_warnings_are_printed_when_browse_quits_or_refuses_it() {
     let path = past_the_end(&[".plt"])
         .mark_code_unreadable()
         .save("plt-offset-aarch64.elf");
-    let (status, output) = in_a_terminal(&[&path, "browse"], "").unwrap();
+    let (status, output) = in_a_terminal(&[&path, "browse"], "");
     assert_eq!(status, Some(2), "{output:?}");
     assert_eq!(
         output,
@@ -3192,11 +3182,7 @@ fn the_files_warnings_are_printed_when_browse_quits_or_refuses_it() {
 #[test]
 #[cfg(target_os = "linux")]
 fn the_start_page_is_drawn_in_a_terminal() {
-    let Some((status, output)) = in_a_terminal(&["testdata/bin/c-cortex-m7.elf", "browse"], "q")
-    else {
-        eprintln!("no `timeout` to run elfq in a terminal with");
-        return;
-    };
+    let (status, output) = in_a_terminal(&["testdata/bin/c-cortex-m7.elf", "browse"], "q");
     assert_eq!(status, Some(0), "{output:?}");
     // The table of starts, and the screen given back.
     assert!(output.contains("START"), "{output:?}");
