@@ -83,8 +83,9 @@ impl Work {
 /// at most.
 enum Prompt {
     /// The go-to box, which lists what the text typed finds in place of
-    /// the page.
-    GoTo(Picker),
+    /// the page. A Picker is far larger than find's String, so it is kept
+    /// on the heap, as clippy's `large_enum_variant` asks.
+    GoTo(Box<Picker>),
     /// Find's prompt, with what is typed after /.
     Find(String),
 }
@@ -150,8 +151,8 @@ impl<'a> App<'a> {
                 }
                 // The CLI's error goes over the rows.
                 Err(error) => {
-                    let picker = Picker::noted(&session, typed, first_line(&error));
-                    prompt = Some(Prompt::GoTo(picker));
+                    let picker = Picker::with_error(&session, typed, first_line(&error));
+                    prompt = Some(Prompt::GoTo(Box::new(picker)));
                 }
             }
         }
@@ -253,7 +254,10 @@ impl<'a> App<'a> {
         match action {
             Action::Quit => return Some(Stop::Quit),
             Action::Suspend => return Some(Stop::Suspend),
-            Action::GoTo => self.prompt = Some(Prompt::GoTo(Picker::new(&self.session, ""))),
+            Action::GoTo => {
+                let picker = Picker::new(&self.session, "");
+                self.prompt = Some(Prompt::GoTo(Box::new(picker)));
+            }
             Action::Find => match self.page().cursor() {
                 Some(_) => self.prompt = Some(Prompt::Find(String::new())),
                 None => self.message = Some(NO_ROWS.to_string()),
@@ -697,7 +701,7 @@ mod tests {
             assert_eq!(app.can_wait_to_draw(key), quits || suspends, "{key:?}");
         }
         let prompts = [
-            Prompt::GoTo(Picker::new(&app.session, "")),
+            Prompt::GoTo(Box::new(Picker::new(&app.session, ""))),
             Prompt::Find(String::new()),
         ];
         for prompt in prompts {

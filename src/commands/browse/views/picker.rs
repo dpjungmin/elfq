@@ -7,9 +7,10 @@
 //! `on_*`, lists the items that it matches instead, largest first, as the
 //! commands read SYMBOL; one that matches none is read as part of a name.
 //!
-//! [`Listed`] works out the rows for the text typed, and when there are
-//! none, why, in the CLI's words; [`Picker`] keeps them while the text
-//! stays the same, and draws them with the cursor over one.
+//! [`Listed`] works out the rows for the text typed, with their cells, and
+//! when there are none, why, in the CLI's words; [`Picker`] keeps them
+//! while the text stays the same, and draws those on the screen with the
+//! cursor over one.
 //!
 //! It isn't a page: it opens over the page on the screen, and Esc closes
 //! it, so that what is typed into it can't open pages by itself.
@@ -25,7 +26,7 @@ use ratatui::text::{Line, Text};
 use ratatui::widgets::{HighlightSpacing, Row, Table};
 
 use super::{Cursor, FittedRows, PageAt, cut, wrap};
-use crate::binary::{Binary, ItemKind, hex_number};
+use crate::binary::{Binary, hex_number};
 use crate::commands::browse::{keys::Action, session::Session};
 use crate::commands::symbol::{
     Lookup, LookupOrMatch, Needle, PatternMatches, Symbol, USE_ONE, with_note,
@@ -35,10 +36,17 @@ use crate::graph::Node;
 
 /// The most rows that the box lists.
 const MOST: usize = 500;
-/// The most lines that the CLI's message over the rows takes.
-const NOTE_LINES: usize = 3;
+/// The most lines that an error takes, over the rows or under the header.
+const ERROR_LINES: usize = 3;
+/// The table's headers. The columns before ITEM are as wide as the rows
+/// listed need, so that they don't move while the cursor does. A new
+/// column needs a field of [`PickerRow`], set in [`PickerRow::new`], its
+/// cell in [`PickerRow::cells`] and its place in [`table_row`]; the
+/// compiler then asks for the rest.
+const COLUMNS: [&str; 5] = ["ADDRESS", "SIZE", "KIND", "SECTION", "ITEM"];
 
-/// One row of the box.
+/// One row of the box, with its cells, which are worked out once, when
+/// the text is listed, and not on each draw.
 pub(in crate::commands::browse) struct PickerRow {
     /// The item or import, with the address typed, when the item holds
     /// it.
@@ -46,9 +54,18 @@ pub(in crate::commands::browse) struct PickerRow {
     /// For the item that the text finds as SYMBOL, what the CLI's answer
     /// adds to its name, if anything: "also named NMI_Handler", or for a
     /// pattern that matches only it, "the one item named on_b*" (see
-    /// [`Symbol::note`]). It belongs to this row, unlike the box's own
-    /// `note`, the CLI's message over the rows.
+    /// [`Symbol::note`]). ITEM shows it after the name.
     pub(in crate::commands::browse) note: Option<String>,
+    /// The text of the ADDRESS and SIZE cells, blank for an import.
+    address: String,
+    size: String,
+    /// What the item is, "function" or "data", as
+    /// [`ItemKind`](crate::binary::ItemKind) writes it, or "import".
+    kind: String,
+    /// The name of the item's section, blank for an import.
+    section_name: String,
+    /// The name of the item or import in full, which ITEM shortens to fit.
+    name: String,
 }
 
 pub(in crate::commands::browse) struct Picker {
@@ -59,37 +76,48 @@ pub(in crate::commands::browse) struct Picker {
     cursor: Cursor,
     /// The names of the rows on the screen, shortened.
     fitted: FittedRows,
-    /// What the commands said about SYMBOL, with the SYMBOL, shown until
-    /// the text changes.
-    note: Option<(String, String)>,
+    /// SYMBOL and its error, when browse opened the box with them.
+    opened_with: Option<OpenedWith>,
     /// Whether the text has changed since the items were listed. They are
     /// listed again only when they are needed, so that keys typed all at
     /// once, as a paste types them, list them once.
     changed: bool,
 }
 
+/// What browse opens the box with when SYMBOL finds several items or none:
+/// SYMBOL, typed in, and the first line of the CLI's error for it, which
+/// shows over the rows until the text changes.
+struct OpenedWith {
+    /// SYMBOL, as typed.
+    text: String,
+    /// The error's first line, such as "`log` could mean 2 functions".
+    error: String,
+}
+
 /// The rows that the box lists for the text typed, and what goes under
 /// them.
-#[derive(Default)]
 struct Listed {
     /// The rows, at most [`MOST`] of them.
     rows: Vec<PickerRow>,
+    /// How wide each column before ITEM is: as wide as its header and the
+    /// rows' cells in it.
+    widths: [usize; 4],
     /// How many more items and imports the text finds than the box lists:
     /// those whose names have it, or that it matches as a pattern.
     more: usize,
     /// Why no item has the text, in the CLI's words, when the box lists no
-    /// row and the note over the rows doesn't say so already.
+    /// row and the error over the rows doesn't say so already.
     nothing: Option<String>,
 }
 
-/// Whether the note over the rows already says why the box lists no row,
+/// Whether the error over the rows already says why the box lists no row,
 /// so that the box needn't work that out again.
 #[derive(Clone, Copy)]
 enum Explained {
-    /// The note is SYMBOL's error, which browse opened the box with, and
-    /// the text is still SYMBOL.
+    /// The error over the rows is SYMBOL's, which browse opened the box
+    /// with, and the text is still SYMBOL.
     Already,
-    /// No note says it.
+    /// No error over the rows says it.
     NotYet,
 }
 
@@ -99,26 +127,31 @@ impl Picker {
         Picker::opened(session, text, None)
     }
 
-    /// The box with `text` typed in, and `note` over the rows until the
-    /// text changes, such as "`log` could mean 2 functions".
-    pub(in crate::commands::browse) fn noted(
+    /// The box with `text` typed in, and `error`, the first line of the
+    /// error that `text` gets as SYMBOL, such as "`log` could mean 2
+    /// functions", over the rows until the text changes.
+    pub(in crate::commands::browse) fn with_error(
         session: &Session,
         text: &str,
-        note: String,
+        error: String,
     ) -> Picker {
-        Picker::opened(session, text, Some(note))
+        Picker::opened(session, text, Some(error))
     }
 
-    /// The box with `text` typed in, and `note`, if there is one, over the
-    /// rows. The note is there before the rows are listed, so that they
-    /// know whether it says why there are none.
-    fn opened(session: &Session, text: &str, note: Option<String>) -> Picker {
+    /// The box with `text` typed in, and `error`, if there is one, over
+    /// the rows. The error is there before the rows are listed, so that
+    /// they know whether it says why there are none.
+    fn opened(session: &Session, text: &str, error: Option<String>) -> Picker {
+        let opened_with = error.map(|error| OpenedWith {
+            text: text.to_string(),
+            error,
+        });
         let mut picker = Picker {
             text: text.to_string(),
-            listed: Listed::default(),
+            listed: Listed::new(Vec::new(), 0),
             cursor: Cursor::new(0),
             fitted: FittedRows::default(),
-            note: note.map(|note| (text.to_string(), note)),
+            opened_with,
             changed: false,
         };
         picker.find(session);
@@ -151,12 +184,12 @@ impl Picker {
         let text = self.text.trim();
         // A box opened with SYMBOL's error has it over the rows while the
         // text is SYMBOL.
-        let explained = match self.note_shown() {
+        let explained = match self.error_shown() {
             true => Explained::Already,
             false => Explained::NotYet,
         };
         self.listed = match text.is_empty() {
-            true => Listed::default(),
+            true => Listed::new(Vec::new(), 0),
             false => Listed::typed(session, text, explained),
         };
         self.cursor = Cursor::new(self.listed.rows.len());
@@ -185,16 +218,16 @@ impl Picker {
     ) {
         self.catch_up(session);
         let width = usize::from(area.width);
-        let note = (self.note.as_ref())
-            .filter(|_| self.note_shown())
-            .map(|(_, note)| lines(note, width));
-        let [note_area, area] = Layout::vertical([
-            Constraint::Length(note.as_ref().map_or(0, |note| note.len() as u16)),
+        let error = (self.opened_with.as_ref())
+            .filter(|_| self.error_shown())
+            .map(|opened_with| lines(&opened_with.error, width));
+        let [error_area, area] = Layout::vertical([
+            Constraint::Length(error.as_ref().map_or(0, |error| error.len() as u16)),
             Constraint::Fill(1),
         ])
         .areas(area);
-        if let Some(note) = note {
-            frame.render_widget(Text::from(note), note_area);
+        if let Some(error) = error {
+            frame.render_widget(Text::from(error), error_area);
         }
         if self.text.trim().is_empty() {
             let placeholder = "type a name, the end of a name, or an address";
@@ -202,11 +235,9 @@ impl Picker {
             return;
         }
 
-        let (rows, widths, room) = self.cells(session, width);
-        let header = ["ADDRESS", "SIZE", "KIND", "SECTION", "ITEM"];
-
+        let room = self.name_room(width);
         // Under the rows, how many more there are, or under the header,
-        // why there are none, unless the note over them says so.
+        // why there are none, unless the error over them says so.
         let listed = &self.listed;
         let below = if listed.more > 0 {
             vec![Line::raw(format!("and {} more; type more of the name", listed.more)).dim()]
@@ -227,106 +258,73 @@ impl Picker {
         let (visible, mut state) = self
             .cursor
             .visible(usize::from(area.height.saturating_sub(1)));
-        let size_width = widths[1];
-        let line = |row: &[String; 5], name: String| {
-            Row::new([
-                row[0].clone(),
-                format!("{:>size_width$}", row[1]),
-                row[2].clone(),
-                row[3].clone(),
-                name,
-            ])
-        };
-        let header = header.map(str::to_string);
-        let header = line(&header, header[4].clone()).bold();
-        let constraints = widths
-            .iter()
+        let widths = &listed.widths;
+        let [.., item_header] = COLUMNS;
+        let header = table_row(headers_before_item(), widths, item_header.to_string());
+        let constraints = (widths.iter())
             .map(|&width| Constraint::Length(width as u16))
             .chain([Constraint::Fill(1)]);
-        // Long names are shortened the same way on every row shown, and
-        // what SYMBOL said about the row it finds, such as "(also named
-        // NMI_Handler)", goes after its name, cut to what is left.
-        let rows = &rows[visible.clone()];
-        let names = self.fitted.names(visible.clone(), room, || {
-            rows.iter().map(|row| row[4].as_str()).collect()
+        // Only the rows shown are drawn. Long names are shortened the same
+        // way on every row shown, and what SYMBOL said about the row it
+        // finds, such as "(also named NMI_Handler)", goes after its name,
+        // cut to what is left.
+        let rows = &listed.rows[visible.clone()];
+        let names = self.fitted.names(visible, room, || {
+            rows.iter().map(|row| row.name.as_str()).collect()
         });
-        let items = (names.iter().zip(&listed.rows[visible])).map(|(name, picker_row)| {
-            match picker_row.note.as_deref() {
+        let table_rows = rows.iter().zip(names).map(|(row, name)| {
+            let item_cell = match row.note.as_deref() {
                 Some(note) => cut(&with_note(name, Some(note)), room),
                 None => name.clone(),
-            }
+            };
+            table_row(row.cells(), widths, item_cell)
         });
         // The cursor's column stays when no row is selected, so that the
         // header doesn't move.
-        let table = Table::new(
-            rows.iter().zip(items).map(|(row, item)| line(row, item)),
-            constraints,
-        )
-        .column_spacing(2)
-        .header(header)
-        .row_highlight_style(Style::new().reversed())
-        .highlight_symbol("> ")
-        .highlight_spacing(HighlightSpacing::Always);
+        let table = Table::new(table_rows, constraints)
+            .column_spacing(2)
+            .header(header.bold())
+            .row_highlight_style(Style::new().reversed())
+            .highlight_symbol("> ")
+            .highlight_spacing(HighlightSpacing::Always);
         frame.render_stateful_widget(table, area, &mut state);
     }
 
-    /// The cells of every row found, with the name of its item or import
-    /// for ITEM, the widths of the columns before ITEM, and the columns
-    /// left for ITEM on a screen `width` columns wide. The columns are as
-    /// wide as the rows found need, so that they don't move while the
-    /// cursor does.
-    fn cells(&self, session: &Session, width: usize) -> (Vec<[String; 5]>, Vec<usize>, usize) {
-        let binary = session.binary;
-        let rows: Vec<[String; 5]> = (self.listed.rows.iter())
-            .map(|picker_row| {
-                let node = picker_row.page.node;
-                let name = node.name(binary).to_string();
-                let Node::Item(index) = node else {
-                    // An import has no address, size or section here.
-                    let blank = String::new;
-                    return [blank(), blank(), "import".to_string(), blank(), name];
-                };
-                let item = &binary.items[index];
-                let kind = match item.kind {
-                    ItemKind::Function => "function",
-                    ItemKind::Data => "data",
-                };
-                [
-                    format!("{:#x}", item.address),
-                    text::size_text(item),
-                    kind.to_string(),
-                    binary.sections[item.section].name.clone(),
-                    name,
-                ]
-            })
-            .collect();
-        let header = ["ADDRESS", "SIZE", "KIND", "SECTION"];
-        let widths: Vec<usize> = (0..4)
-            .map(|column| {
-                rows.iter()
-                    .map(|row| row[column].chars().count())
-                    .chain([header[column].len()])
-                    .max()
-                    .unwrap_or(0)
-            })
-            .collect();
-        // What is left for ITEM, after the cursor's "> " and two spaces
-        // after each column.
-        let room = width.saturating_sub(2 + widths.iter().map(|width| width + 2).sum::<usize>());
-        (rows, widths, room)
+    /// The columns left for ITEM on a screen `width` columns wide, after
+    /// the cursor's "> " and two spaces after each column before it.
+    fn name_room(&self, width: usize) -> usize {
+        let used: usize = self.listed.widths.iter().map(|width| width + 2).sum();
+        width.saturating_sub(2 + used)
     }
 
-    /// Whether the note over the rows shows.
-    fn note_shown(&self) -> bool {
-        self.note
-            .as_ref()
-            .is_some_and(|(text, _)| *text == self.text)
+    /// Whether the error that browse opened the box with shows over the
+    /// rows: while the text is still SYMBOL.
+    fn error_shown(&self) -> bool {
+        (self.opened_with.as_ref()).is_some_and(|opened_with| opened_with.text == self.text)
     }
 }
 
 impl Listed {
+    /// `rows`, and `more`, how many more items and imports the text finds
+    /// than the box lists, with the widths of the columns before ITEM,
+    /// worked out once for the text.
+    fn new(rows: Vec<PickerRow>, more: usize) -> Listed {
+        let mut widths = headers_before_item().map(str::len);
+        for row in &rows {
+            for (width, cell) in widths.iter_mut().zip(row.cells()) {
+                *width = (*width).max(cell.chars().count());
+            }
+        }
+        Listed {
+            rows,
+            widths,
+            more,
+            nothing: None,
+        }
+    }
+
     /// The rows for `text`, which isn't empty, and when there are none,
-    /// why, unless `explained` says that the note over them says so. The
+    /// why, unless `explained` says that the error over them says so. The
     /// text is looked up once, as SYMBOL, as a name or as a pattern, for
     /// the rows that it finds that way and for the error.
     fn typed(session: &Session, text: &str, explained: Explained) -> Listed {
@@ -361,29 +359,34 @@ impl Listed {
     /// as the CLI's answer does, as in "log_msg (which holds 0x162e)".
     fn named(session: &Session, text: &str, lookup: &Lookup) -> Listed {
         let binary = session.binary;
-        let first: Vec<PickerRow> = match lookup {
+        // Every item or import not in `first` with a name that has the
+        // text.
+        let others = |first: &[Node]| -> Vec<Node> {
+            let in_first: HashSet<Node> = first.iter().copied().collect();
+            let lower = text.to_lowercase();
+            let needle = Needle::new(&lower);
+            let items = (0..binary.items.len()).map(Node::Item);
+            let imports = (0..binary.imports.len()).map(Node::Import);
+            items
+                .chain(imports)
+                .filter(|node| !in_first.contains(node))
+                .filter(|&node| session.names.name_has(node, &needle))
+                .filter(|&node| session.page_node(node) == node)
+                .collect()
+        };
+        match lookup {
             Lookup::One(symbol) => {
                 // The item holds the address typed, if one was.
                 let at = hex_number(text).and_then(Result::ok);
-                vec![PickerRow::symbol(symbol, at)]
+                let first = [PickerRow::symbol(binary, symbol, at)];
+                keep_largest(binary, first.into_iter(), others(&[symbol.node]))
             }
-            Lookup::Several(nodes) => nodes.iter().map(|&node| PickerRow::plain(node)).collect(),
-            Lookup::NoName => Vec::new(),
-        };
-        let in_first: HashSet<Node> = (first.iter())
-            .map(|picker_row| picker_row.page.node)
-            .collect();
-        let lower = text.to_lowercase();
-        let needle = Needle::new(&lower);
-        let items = (0..binary.items.len()).map(Node::Item);
-        let imports = (0..binary.imports.len()).map(Node::Import);
-        let others: Vec<Node> = items
-            .chain(imports)
-            .filter(|node| !in_first.contains(node))
-            .filter(|&node| session.names.name_has(node, &needle))
-            .filter(|&node| session.page_node(node) == node)
-            .collect();
-        keep_largest(binary, first, others)
+            Lookup::Several(nodes) => {
+                let first = nodes.iter().map(|&node| PickerRow::plain(binary, node));
+                keep_largest(binary, first, others(nodes))
+            }
+            Lookup::NoName => keep_largest(binary, std::iter::empty(), others(&[])),
+        }
     }
 
     /// The rows for `matched`, a pattern that matches items: those items,
@@ -394,23 +397,19 @@ impl Listed {
     fn matched(session: &Session, matched: &PatternMatches) -> Listed {
         let binary = session.binary;
         match matched.only_item() {
-            Some(symbol) => Listed {
-                rows: vec![PickerRow::symbol(&symbol, None)],
-                more: 0,
-                nothing: None,
-            },
+            Some(symbol) => Listed::new(vec![PickerRow::symbol(binary, &symbol, None)], 0),
             None => {
                 let items = (matched.matches.iter())
                     .map(|found| Node::Item(found.item))
                     .collect();
-                keep_largest(binary, Vec::new(), items)
+                keep_largest(binary, std::iter::empty(), items)
             }
         }
     }
 
     /// These rows, and when there are none, why, in the first line of the
     /// CLI's error, which `error` works out, unless `explained` says that
-    /// the note over the rows says so already. Working out the error can
+    /// the error over the rows says so already. Working out the error can
     /// take a while in a large file, as it looks for names like the text,
     /// and for a name, matches every item against the pattern for what is
     /// in a module of that name, so it is done only then.
@@ -430,48 +429,103 @@ impl Listed {
 }
 
 /// The rows of `first`, then of the largest of `others`, as many as the
-/// box has room for, and how many more there are than it lists. `others`
-/// go largest first, and of the same size, first in the file, then the
-/// imports. Only those listed are sorted, which saves time when the text
-/// is in most names.
-fn keep_largest(binary: &Binary, first: Vec<PickerRow>, others: Vec<Node>) -> Listed {
+/// box has room for, and how many more there are than it lists. Only
+/// those listed are sorted, which saves time when the text is in most
+/// names, and only those listed are made into rows, with their cells,
+/// which saves time when the text finds thousands as SYMBOL. `first` is
+/// read lazily, so pass it as a map over the nodes, as [`Listed::named`]
+/// does.
+fn keep_largest(
+    binary: &Binary,
+    first: impl ExactSizeIterator<Item = PickerRow>,
+    others: Vec<Node>,
+) -> Listed {
     let more = (first.len() + others.len()).saturating_sub(MOST);
+    let others = largest(binary, others, MOST.saturating_sub(first.len()))
+        .into_iter()
+        .map(|node| PickerRow::plain(binary, node));
+    Listed::new(first.chain(others).take(MOST).collect(), more)
+}
+
+/// The largest `room` of `others`, largest first, and of the same size,
+/// first in the file, then the imports. It isn't generic, as
+/// [`keep_largest`] is, so that the sort is compiled once rather than
+/// once for each kind of `first`.
+fn largest(binary: &Binary, others: Vec<Node>, room: usize) -> Vec<Node> {
     let order = |&node: &Node| (Reverse(node.size(binary)), node);
-    let room = MOST.saturating_sub(first.len());
-    let mut others = text::first_by_key(others, room, order);
-    others.sort_unstable_by_key(order);
-    let mut rows = first;
-    rows.extend(others.into_iter().map(PickerRow::plain));
-    rows.truncate(MOST);
-    Listed {
-        rows,
-        more,
-        nothing: None,
-    }
+    let mut largest = text::first_by_key(others, room, order);
+    largest.sort_unstable_by_key(order);
+    largest
 }
 
 impl PickerRow {
     /// The row of `symbol`, what the text typed finds as SYMBOL, which names
     /// its item or import as the CLI's answer does, with `at`, the address
     /// typed, when one was.
-    fn symbol(symbol: &Symbol, at: Option<u64>) -> PickerRow {
-        PickerRow {
-            page: PageAt {
-                node: symbol.node,
-                at,
-            },
-            note: symbol.note().map(str::to_string),
-        }
+    fn symbol(binary: &Binary, symbol: &Symbol, at: Option<u64>) -> PickerRow {
+        let page = PageAt {
+            node: symbol.node,
+            at,
+        };
+        PickerRow::new(binary, page, symbol.note().map(str::to_string))
     }
 
     /// The row of `node`, with no address typed and nothing after its
     /// name.
-    fn plain(node: Node) -> PickerRow {
+    fn plain(binary: &Binary, node: Node) -> PickerRow {
+        PickerRow::new(binary, PageAt { node, at: None }, None)
+    }
+
+    /// The row that opens `page`, with `note` after its name, and the
+    /// cells of its item or import.
+    fn new(binary: &Binary, page: PageAt, note: Option<String>) -> PickerRow {
+        let node = page.node;
+        let [address, size] = text::address_and_size(binary, node);
+        let (kind, section_name) = match node {
+            Node::Item(index) => {
+                let item = &binary.items[index];
+                let section_name = binary.sections[item.section].name.clone();
+                (item.kind.to_string(), section_name)
+            }
+            // An import has no section here.
+            Node::Import(_) => ("import".to_string(), String::new()),
+        };
         PickerRow {
-            page: PageAt { node, at: None },
-            note: None,
+            page,
+            note,
+            address,
+            size,
+            kind,
+            section_name,
+            name: node.name(binary).to_string(),
         }
     }
+
+    /// The cells before ITEM, in the order of [`COLUMNS`].
+    fn cells(&self) -> [&str; 4] {
+        [&self.address, &self.size, &self.kind, &self.section_name]
+    }
+}
+
+/// The headers in [`COLUMNS`] before ITEM, which is the last.
+fn headers_before_item() -> [&'static str; 4] {
+    let [before_item @ .., _] = COLUMNS;
+    before_item
+}
+
+/// A row of the table: `cells`, the cells before ITEM, then `item_cell`.
+/// SIZE goes on the right of its column, as wide as `widths` says, as
+/// numbers do; the table sets the other cells in their columns.
+fn table_row(cells: [&str; 4], widths: &[usize; 4], item_cell: String) -> Row<'static> {
+    let [address, size, kind, section_name] = cells;
+    let [_, size_width, _, _] = *widths;
+    Row::new([
+        address.to_string(),
+        format!("{size:>size_width$}"),
+        kind.to_string(),
+        section_name.to_string(),
+        item_cell,
+    ])
 }
 
 /// The first line of an error that SYMBOL gets, such as "`log` could mean 2
@@ -484,12 +538,12 @@ pub(in crate::commands::browse) fn first_line(error: &anyhow::Error) -> String {
     line.trim_end_matches(&format!("; {USE_ONE}")).to_string()
 }
 
-/// `text` wrapped to `width`, in at most [`NOTE_LINES`] lines, the last
+/// `text` wrapped to `width`, in at most [`ERROR_LINES`] lines, the last
 /// one cut when there is more.
 fn lines(text: &str, width: usize) -> Vec<Line<'static>> {
     let mut wrapped = wrap(text, width);
-    if wrapped.len() > NOTE_LINES {
-        let rest = wrapped.split_off(NOTE_LINES - 1).join(" ");
+    if wrapped.len() > ERROR_LINES {
+        let rest = wrapped.split_off(ERROR_LINES - 1).join(" ");
         wrapped.push(cut(&rest, width));
     }
     wrapped.into_iter().map(Line::raw).collect()
@@ -515,7 +569,7 @@ mod tests {
         assert_eq!(typed.listed.nothing, Some(error("nosuch")));
         // Opened with the error over the rows, as `browse nosuch` opens it,
         // the box leaves it there, until the text changes.
-        let mut opened = Picker::noted(&session, "nosuch", error("nosuch"));
+        let mut opened = Picker::with_error(&session, "nosuch", error("nosuch"));
         assert_eq!(opened.listed.nothing, None);
         opened.push('x');
         opened.catch_up(&session);
@@ -523,6 +577,19 @@ mod tests {
         opened.pop();
         opened.catch_up(&session);
         assert_eq!(opened.listed.nothing, None);
+    }
+
+    #[test]
+    fn the_box_lists_at_most_500_rows_however_many_items_symbol_finds() {
+        // As SYMBOL, a text such as `fmt` finds hundreds of functions in
+        // a large Rust file, more than the box lists; the other items
+        // whose names have it would come after them, and are left out.
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/bin/c-x86_64.elf");
+        let binary = Binary::load(&path).unwrap();
+        let first = (0..MOST + 100).map(|_| PickerRow::plain(&binary, Node::Item(0)));
+        let listed = keep_largest(&binary, first, vec![Node::Item(1)]);
+        assert_eq!((listed.rows.len(), listed.more), (MOST, 101));
     }
 
     #[test]
@@ -592,9 +659,11 @@ mod tests {
             let session = Session::new(&path, &binary).unwrap();
             for text in ["_", "vtable", "closure", "split", "drop", "new", "log"] {
                 let picker = Picker::new(&session, text);
+                let names: Vec<&str> = (picker.listed.rows.iter())
+                    .map(|row| row.name.as_str())
+                    .collect();
                 for width in [60, 80, 100] {
-                    let (rows, _, room) = picker.cells(&session, width);
-                    let names: Vec<&str> = rows.iter().map(|row| row[4].as_str()).collect();
+                    let room = picker.name_room(width);
                     if let Some((one, other, both)) = alike_in_a_window(&names, room) {
                         panic!(
                             "{}, {text}: {one} and {other} both read {both} at {width}",
