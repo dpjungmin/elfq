@@ -14,8 +14,10 @@
 //! (`changes.rs`), with which items of the same size are edited
 //! (`edited.rs`), and which calls and other uses between blocks are new or
 //! gone (`crossings.rs`). `rows.rs` picks the rows of the MOVED and CHANGE
-//! tables from what changed, for the text, and `text.rs` and `json.rs`
-//! write the answer.
+//! tables from what changed, for the text. `text.rs` and `json.rs` write
+//! the answer, and this file gives the exit status: 1 when the memory
+//! differs. The unit tests of `pairing.rs` and `edited.rs` are in
+//! `pairing/tests.rs` and `edited/tests.rs`.
 //!
 //! Names mean the same across these files. The two files are the old and
 //! the new *build* ([`Build`]), and `old` and `new` name what is each

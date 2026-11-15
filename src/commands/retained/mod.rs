@@ -10,16 +10,17 @@
 //! What removing SYMBOL loses is what `graph::Removal` finds: the branches
 //! of the tree under the removal's tops. For a SYMBOL that something
 //! reaches, the only top is SYMBOL itself, so what is lost is SYMBOL and
-//! everything it keeps. [`Parts`] works out from the removal the bytes
-//! saved, the items under the tops and the notes; the answer adds its lead
-//! line and picks its rows. `symbols.rs` finds the SYMBOLs, and the items
-//! of a pattern or range given in place of SYMBOL, and puts them together
-//! in a `symbol::Set`, whose words name them in the lead line; it leaves
-//! out the functions whose end elfq doesn't know, and says why it can't
-//! use those it can't. This file answers about one, and `several.rs` about
-//! several, from the same parts and with the same words for the lead line,
-//! and adds the notes on how the patterns matched to both. `json.rs` gives
-//! the answer as JSON, in one shape for one SYMBOL or several.
+//! everything it keeps. [`Parts`], in `parts.rs`, works out from the
+//! removal the bytes saved, the items under the tops and the notes; the
+//! answer adds its lead line and picks its rows. `symbols.rs` finds the
+//! SYMBOLs, and the items of a pattern or range given in place of SYMBOL,
+//! and puts them together in a `symbol::Set`, whose words name them in the
+//! lead line; it leaves out the functions whose end elfq doesn't know, and
+//! says why it can't use those it can't. This file answers about one, and
+//! `several.rs` about several, from the same parts and with the same words
+//! for the lead line, and adds the notes on how the patterns matched to
+//! both. `json.rs` gives the answer as JSON, in one shape for one SYMBOL or
+//! several.
 
 mod json;
 mod parts;

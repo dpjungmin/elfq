@@ -20,13 +20,10 @@
 //!   `Typing`, with the prompts' hint lines.
 //! - `app.rs`: the pages the user has opened, as a browser's history, and
 //!   the screen's layout around the page on top.
-//! - `views/`: the pages, one file per kind, the tabs of an item's page
-//!   other than tab 1, one file each, the go-to box, `printed.rs`, which
-//!   draws a command's answer for the pages and tabs that show one, and
-//!   `names.rs`, which shortens long names to fit a column. `item.rs` is an
-//!   item's page, with its parts in `item/` (see its map). A page draws
-//!   itself, and answers an action by moving, by opening another page, or
-//!   with a message.
+//! - `views/`: the pages, the tabs of an item's page other than tab 1, the
+//!   go-to box, and what they share; its `mod.rs` maps its files. A page
+//!   draws itself, and answers an action by moving, by opening another
+//!   page, or with a message.
 //!
 //! This file takes the terminal and reads its keys. [`event_loop`] takes
 //! the keys from anywhere and draws on any ratatui backend, so that tests

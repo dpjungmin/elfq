@@ -1,12 +1,12 @@
 //! Finding references in machine code.
 //!
-//! Each instruction set has a module with a function `scan`: given a
-//! function's bytes and address, it reports every address the code calls,
-//! jumps to or otherwise uses. x86-64 needs nothing else about the
-//! instructions; Thumb also needs what each one does with the registers and
-//! the stack (`thumb/decode.rs`), to follow an address into a branch
-//! through a register. The graph module then works out which item each
-//! address belongs to.
+//! Each instruction set has a module, `x86_64.rs` or `thumb/`, with a
+//! function `scan`: given a function's bytes and address, it reports every
+//! address the code calls, jumps to or otherwise uses. x86-64 needs nothing
+//! else about the instructions; Thumb also needs what each one does with
+//! the registers and the stack (`thumb/decode.rs`), to follow an address
+//! into a branch through a register. The graph module then works out which
+//! item each address belongs to.
 //!
 //! What elfq reads of code goes through [`InstructionSet`], which has
 //! only the instruction sets elfq can read.
@@ -21,8 +21,8 @@
 //!
 //! `listing.rs` prints a function's code as text, for `elfq FILE browse`.
 //!
-//! `startup` follows the code that a Cortex-M processor runs from reset to
-//! `main`, keeping the numbers in its registers and memory, to tell what
+//! `startup.rs` follows the code that a Cortex-M processor runs from reset
+//! to `main`, keeping the numbers in its registers and memory, to tell what
 //! the startup code copies and zeroes.
 
 #[cfg(feature = "tui")]

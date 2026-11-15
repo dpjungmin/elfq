@@ -56,22 +56,30 @@ where `script` or `timeout` is missing.
 
 ## Where things live
 
+Each folder of `src/` has a map: the `//!` doc at the top of its
+`mod.rs` names each file in it but `tests.rs`, and each folder in it that
+has a `mod.rs`. `docs.rs` checks that it does. The map of `src/` is in
+`lib.rs`, and that of a folder without a `mod.rs`, such as `views/item/`,
+in the file of its name beside it. The table says what the top folders
+and each command's folder are for. To find where something lives, find
+its folder there and read its map; a new file goes on its folder's map.
+
 | Path | What it holds |
 |---|---|
 | `src/main.rs` | The program: parses arguments, runs one command on a thread with a large stack, prints errors and sets the exit status. It also turns `elfq help COMMAND` into `--help`, suggests the right order when the command comes before the file, and puts lines under the first line of clap's error for an argument that a command listed in `arguments::TAKE_ONE_SYMBOL_AT_MOST` doesn't take (`with_hints`), which `arguments::unexpected_argument_hints` words: for `top`, the command that takes a pattern given to it, and when the arguments are files here, which the shell may have put in place of a pattern, the line that says so. `commands/symbol/shell_hint.rs` words that line, which the commands' own errors for SYMBOL end with too. |
 | `src/lib.rs` | Declares the modules below. elfq is a library plus that small program; the library exists for the program and its tests. |
-| `src/cli/` | Command-line arguments, with clap: in `mod.rs`, a `Command` variant for each command and the structs that hold their arguments, and in `help.rs`, the text of `--help`. |
-| `src/commands/` | One file per command, or a folder for the larger ones below, which looks up SYMBOL, asks `graph` or `debuginfo` and decides what the answer shows. `mod.rs` runs the command the arguments name. The rest are shared: `arguments.rs` checks which arguments go together, `checks.rs` holds the checks a command makes before it answers, such as `check_code_is_readable` and `check_holds_items`, which `range_check/` and `retained` make of a range, `symbol/` works out what a user means by SYMBOL (`mod.rs` reads what `callers` and `callees` ask about into a `Subject`, `argument.rs` reads one argument of a command that takes a set, a range or SYMBOL, into what it picks for a `Set`, or why the command can't use it (`Unusable`), `lookup.rs` finds what a name means, or in the commands that take one item, the one item that a pattern matches (`Names::find`), and names items for the user in return, `not_found.rs` and `similar.rs` word the error when it finds several or none, or a pattern matches none, and the error when a pattern matches several where one item is needed, and for a name that finds nothing offer first the pattern for what is in a module of that name, where the command can take what it matches (`Takes`), `pattern.rs` finds the items that a pattern such as `'uart_*'` matches, with its unit tests in `pattern/tests.rs`, `matched.rs` words what patterns matched, for an answer's first line and its notes, and gives the one item that a pattern matched (`PatternMatches::only_item`), and `set.rs` puts what several SYMBOLs, patterns and ranges pick together in a `Set`, each item once, and words how an answer's first line names it, part by part; unit tests build a file of functions with `fixtures.rs`), `retained_tree.rs` builds the trees of retained sizes that the overview, `top` and `retained` show, `uses.rs` holds the table of `callers` and `callees` for one SYMBOL, `range_check/` answers them for ranges of memory, for a set, or with `--from` or `--to` (its `mod.rs` says what a check asks about, an `Inside`, which holds the ranges, one SYMBOL or a set, and works out the items inside once, for the rest, `validate.rs` checks the ranges, `crossing.rs` holds the answers and `rows.rs` their rows, which `reach` and `diff` print too), `flat_answer.rs` holds the answers whose table has one row to a line and `tree_answer.rs` those whose table holds a tree, `text.rs` the wording that commands share, with which rows of a long list they keep (`first_by_key`), and `json.rs` the JSON shapes. `kept.rs` has `Kept`, which leaves what a command keeps until it has answered for the system to take back when elfq ends (`end_after_answer`). |
-| `src/commands/browse/` | `elfq FILE browse`, with the `tui` feature: `mod.rs` takes over the terminal and runs the event loop, `session.rs` holds the loaded file and asks the commands' code for answers, `keys.rs` is the table of keys, `app.rs` the history of pages, the go-to box, find's prompt and the screen's layout, and `views/` the pages, the go-to box and the tabs of an item's page other than its tab 1, one file each (`item.rs` is an item's page, and `item/` holds its parts: the header, tab 1's lines, a function's code, a data object's contents and the notes on their lines), `printed.rs`, which draws a command's answer for the pages and tabs that show one, `names.rs`, which shortens long C++ and Rust names to fit a column, and `test_support.rs`, built only for tests, which holds what the tests of the tabs and pages share. |
-| `src/commands/reach/` | `elfq FILE reach [SYMBOL]`: `mod.rs` holds what the search from SYMBOL finds, with the words the code uses for its parts, and `Text`, which words it for people, `find.rs` the search, `rows.rs` writes the answer by block of memory, which browse shows too, `to.rs` the answer with `--to`, `tree.rs` the tree of `--tree` and `json.rs` the JSON, and `starts.rs` answers without SYMBOL, as browse's start page does. |
-| `src/commands/diff/` | `elfq FILE diff NEW`: `mod.rs` reads both files, builds the answer from their bytes alone or from their items too, and gives the exit status, `blocks.rs` works out the blocks of memory that both builds share and what changed in each, `pairing.rs` pairs the builds' items, `changes.rs` works out what changed, `edited.rs` which items of the same size are edited, `crossings.rs` the uses between blocks that are new or gone, `rows.rs` picks the rows of MOVED and CHANGE, and `text.rs` and `json.rs` write the answer. The unit tests of `pairing.rs` and `edited.rs` are in `pairing/tests.rs` and `edited/tests.rs`. |
-| `src/commands/startup/` | `elfq FILE startup`: `mod.rs` refuses files that aren't Cortex-M firmware from their headers, and runs the rest, `start.rs` finds the reset handler and `main`, `ram_sections.rs` lists the load images and sections without contents that startup code sets up, and matches what a call or a loop copies or zeroes to them, `events.rs` says what the steps read of each of the walk's events, `steps.rs` reads the walk's calls and loops as the steps that copy and zero sections, with `pieces.rs`, which joins the bytes that loops and stores copy or zero into steps, and `unread.rs`, which works out what code that elfq can't follow may set up, `problems/` works out the state of each section when `main` starts (`statuses.rs`), the code that runs from a load image before it is copied (`early_run.rs`), the problems (`mod.rs`) and the notes (`notes.rs`), and `text.rs` and `json.rs` write the answer. `debug.rs` lists the events of the walk that the steps read, for `elfq FILE debug walk`. The unit tests build their walks with `fixtures.rs`; those of `problems/` and `steps.rs` are in `problems/tests.rs` and `steps/tests.rs`. |
-| `src/commands/retained/` | `elfq FILE retained SYMBOL...`: `symbols.rs` finds the SYMBOLs, and the items of the ranges and patterns given in their place, puts them together in a `Set`, which `symbol/set.rs` holds with the words of the answer's first line, leaves out the functions whose end elfq doesn't know and words the error that lists every argument that retained can't use, `mod.rs` puts the notes on how the patterns matched before the others, and answers about one item as text, as browse's tab 6 shows it too, `several.rs` answers about several at once as text, with the rows that several keep together and the notes about the SYMBOLs and the bytes they save only together, `json.rs` writes the JSON, in one shape for one SYMBOL or several, and `parts.rs` works out what the answers take from what removing the SYMBOLs loses: the items under the removal's tops, what they share with other code and the calls through pointers among them, with the notes that name those, the bytes that go only when several go, and the SYMBOLs that each row kept together needs. |
-| `src/arch/` | Finding the addresses that machine code calls or uses, one module per instruction set (x86-64 and Thumb). The rest of elfq reads code through `InstructionSet`, in `mod.rs`, which a file whose code elfq can't read doesn't have. Thumb's has three parts: `thumb/sweep.rs` reads each instruction on its own, `thumb/decode.rs` says what an instruction does with the registers and the stack, and `thumb/values/` follows the addresses that code puts in registers to where a branch through one goes, as for long calls and veneers; `thumb/mod.rs` begins with a map of its files. `listing.rs` prints a function's code as text, for `browse`: x86-64 with iced-x86's formatter, and Thumb with thumb-asm, in the lines that `thumb::layout` cuts the code into with the same sweep as `scan`. `operands` finds the bits of a function's code that say where something is, such as the distance in a call, for `diff` to tell code that changed from code that only moved. `startup.rs` and `thumb/startup/` follow the code that a Cortex-M processor runs from reset, with the numbers in its registers and memory, for `startup`; `thumb/startup/mod.rs` begins with a map of its files, and design.md's [Startup, end to end](docs/design.md#startup-end-to-end) shows how the four `startup` modules hand off to each other. |
-| `src/binary/` | Reading an ELF file: its functions and data objects ("items") and where they were found, their names, imports, stored pointers and memory blocks, and in Arm files the core the code is for (`attributes.rs`) and the data that `$d` symbols mark among code. `mod.rs` holds the types and the queries on them, and begins with the steps of loading a file and a map of the files; `load.rs` takes those steps, and `sections.rs` parses the file, refusing one that isn't a linked program or library, and reads the section headers, for `load.rs` and `memory.rs`. `memory.rs` reads only the headers and the bytes that the sections put in memory, which `diff` compares, and `header.rs` only the ELF header and program headers, for `startup` to refuse a file for another processor before loading it. Unnamed data, such as string literals, is found from what code and pointers refer to. Each function's code is scanned once, as the file loads (`Binary::code_references`). `names.rs` makes mangled names readable and works out the short names that people type for long ones, and the texts of a name that patterns match; its module doc says how a short name is found quickly, and how most names are ruled out for a pattern. `made_names.rs` makes the names of items that no symbol names, such as `fn_0x8000040`, and tells them apart. `startup.rs` gives the startup walk (`arch::startup::Program`) the file's code, the words that memory holds at reset, as in flash or a load image, and where its functions are, and `listing.rs`, with the `tui` feature, gives browse a function's code as `arch` prints it, with the data that `$d` symbols mark among it. The unit tests of `names.rs`, `vector_table.rs` and `unnamed_functions.rs` are in `names/tests.rs`, `vector_table/tests.rs` and `unnamed_functions/tests.rs`, and those of `listing.rs`, which check the Thumb text against objdump's, in `listing/thumb_text.rs`. `test_samples.rs`, built only for tests, names, loads and lists the samples in `testdata/bin` for the unit tests of `binary` and the layers above it, as `tests/it/support/` does for the integration tests. |
-| `src/graph/` | The reference graph that connects items, the roots where the program starts, the dominator tree that says what is exclusive to what, the shortest paths that `why` and `reach` show, the bytes that a function reaches (`reached.rs`), what removing several items at once would remove (`removal.rs`), the items in ranges of memory (`items_in_ranges.rs`) and the references that cross the ranges' boundary, narrowed with `--from` or `--to` (`boundary.rs`), where a linker's veneers jump to, and the value for each node that the dominator tree, the shortest paths and the removal keep (`node_map.rs`). |
+| `src/cli/` | Command-line arguments, with clap, and the text of `--help`. |
+| `src/commands/` | One module per command, or a folder for the larger ones, and the modules that they share. |
+| `src/commands/browse/` | `elfq FILE browse`, built only with the `tui` feature: the code in the terminal, as pages linked as in a web browser, which ask the commands' own code for their answers. |
+| `src/commands/reach/` | `elfq FILE reach [SYMBOL]`: everything that SYMBOL calls or uses, at any depth, and where in memory it is, or without SYMBOL, where the program starts and the bytes that each start reaches. |
+| `src/commands/diff/` | `elfq FILE diff NEW`: whether two builds load the same memory, and if not, which blocks of memory and which items changed. |
+| `src/commands/startup/` | `elfq FILE startup`: what the reset code of Cortex-M firmware does before `main`, and whether that can go wrong. It also lists the walk that it reads, for `elfq FILE debug walk`. |
+| `src/commands/retained/` | `elfq FILE retained SYMBOL...`: what SYMBOL keeps in the file, or what several SYMBOLs keep when they go at once. |
+| `src/arch/` | Machine code: the addresses that it calls or uses, with one module per instruction set (x86-64 and Thumb); the code as text, for `browse`; and the walk through the code that a Cortex-M processor runs from reset, for `startup`. |
+| `src/binary/` | Reading an ELF file: its functions and data objects ("items") and where they were found, their names, imports, stored pointers and blocks of memory. Its `mod.rs` begins with the steps of loading a file. |
+| `src/graph/` | The reference graph that connects items, and what is worked out from it, such as the roots where the program starts, the dominator tree that says what is exclusive to what, and the shortest paths that `why` and `reach` show. |
 | `src/debuginfo/` | Reading DWARF, when the file has it: the copies of functions that the compiler inlined, for `inlined`, for the error when SYMBOL names a function that the compiler inlined everywhere, and for `startup`, to find a `main` that the compiler inlined. |
-| `src/render/` | Text output: tables, and the trees in their last column (`tree.rs`), which every command shows the same way: as rows that name the row they hang under (in `why`, only where chains branch), or drawn with `--tree`. |
+| `src/render/` | Text output: tables, and the trees in their last column, which every command shows the same way. |
 | `tests/it/` | Integration tests, built as one test program (`main.rs` lists its modules). See [Tests](#tests). |
 | `testdata/` | The sample programs and the ELF files built from them. See [Sample binaries](#sample-binaries). |
 | `scripts/` | `same-output.sh`, which checks that two builds of elfq print the same answers, or with `--time` times them; and `sample-pairs.txt`, the pairs of samples for its `diff` runs, which the command in [Checking that output didn't change](#checking-that-output-didnt-change) gives it with `--pairs`. |
@@ -99,13 +107,10 @@ this; a `use crate::` line that reaches up the list is a sign that the
 code belongs lower down.
 
 In `commands/`, a command calls only the shared modules beside it, which
-`commands/mod.rs` lists: `arguments.rs`, `checks.rs`, `symbol/`,
-`retained_tree.rs`, `uses.rs`, `range_check/`, `flat_answer.rs`,
-`tree_answer.rs`, `text.rs`, `json.rs` and `kept.rs`. Code that two
-commands need goes in one of those, or in a module lower down. Code
-outside a command calls it only to ask whether it would answer, for a
-Try line, which ends an answer with a command to run next, or for a
-suggestion in an error:
+`commands/mod.rs` lists. Code that two commands need goes in one of
+those, or in a module lower down. Code outside a command calls it only to
+ask whether it would answer, for a Try line, which ends an answer with a
+command to run next, or for a suggestion in an error:
 
 - The overview and `diff` ask `startup::reads` whether to suggest
   `startup`.
@@ -169,12 +174,12 @@ only with the `tui` feature.
   to be, and sums of sizes stop at the largest number rather than
   overflow.
 - **A file does one job.** A file that does several becomes a folder,
-  whose list of files is its map, as `commands/diff/` and
-  `arch/thumb/startup/` are. A long file can still do one job, as
-  `arch/thumb/decode.rs` does, and `commands/browse/views/names.rs`,
-  whose module doc numbers the steps by which it fits a name to a
-  column. Unit tests longer than about 300 lines move to a `tests.rs` of
-  their own (see [Tests](#tests)).
+  and the map in its `mod.rs`'s `//!` doc names each file in it, as
+  `commands/diff/mod.rs`'s does; `docs.rs` checks the map. A long file
+  can still do one job, as `arch/thumb/decode.rs` does, and
+  `commands/browse/views/names.rs`, whose module doc numbers the steps by
+  which it fits a name to a column. Unit tests longer than about 300 lines
+  move to a `tests.rs` of their own (see [Tests](#tests)).
 - **A long function reads as named steps.** A function of more than 100
   lines of code, not counting comments and blank lines, is the usual
   sign that it does several things: give each a function of its own,
@@ -345,8 +350,8 @@ helper type, doesn't take a word of the list; where code still does, as
   `core::fmt` (`Names::module_pattern`), when the command can take what
   that matches. `Takes` says what the command takes: a set, whose error
   offers it whenever it matches an item, or one item, whose error offers
-  it only when it matches one. elfq's own modules, as in the map above,
-  are other things.
+  it only when it matches one. elfq's own modules, as in
+  [Where things live](#where-things-live), are other things.
 - **end**: in short names and patterns, a path from one of its parts on,
   as `Gain::run` and `run` are ends of `app::Gain::run`. A text that a
   pattern matches is a whole path or the end of a longer one
@@ -620,9 +625,8 @@ meanings to copy.
 - **Integration tests** in `tests/it/` use the samples in `testdata/bin`.
   Most run the elfq program, the way a user would: each command's tests,
   in `commands/`; the tests of what the commands share, in
-  `across_commands/`; and `docs.rs`, which runs the examples in the docs,
-  checks the paths that CONTRIBUTING.md and design.md cite, and checks
-  that `scripts/same-output.sh` runs every command. Those in `library/`
+  `across_commands/`; and `docs.rs`, which checks the docs against elfq
+  and its code (see its row in the table below). Those in `library/`
   call the library, as `Binary::load` and `Graph::build`.
   `damaged.rs` and `commands/browse.rs` do both, and so do one test in
   `commands/callers_and_callees.rs`, the test in
@@ -658,7 +662,7 @@ meanings to copy.
 | `library/symbol.rs` | Looking up SYMBOL |
 | `library/inlined.rs` | Inlined copies, from DWARF |
 | `damaged.rs` | Damaged and unusual files, made by changing a sample's bytes |
-| `docs.rs` | The `$ elfq` examples in README.md, docs/design.md and docs/examples.md; that design.md names every JSON key; that the paths, module paths and type paths that CONTRIBUTING.md and design.md cite are there; and that `scripts/same-output.sh` runs every command |
+| `docs.rs` | The `$ elfq` examples in README.md, docs/design.md and docs/examples.md; that design.md names every JSON key; that the paths, module paths and type paths that CONTRIBUTING.md and design.md cite are there; that each folder's module doc names its files; and that `scripts/same-output.sh` runs every command |
 
 **Where a test goes.** A test of one command goes in that command's file
 in `commands/`, its text and its JSON together. A test that runs several
@@ -890,7 +894,8 @@ is a short one to copy.
    variant, as `callers` and `callees` return for ranges.
    `Outcome::exit_status` gives each variant its status.
 3. **Wiring, in `src/commands/mod.rs` and `arguments.rs`.** Add
-   `mod <name>;` and an arm in `run`. In `arguments.rs`, `check_tree`,
+   `mod <name>;` and an arm in `run`, and name `<name>.rs` in the list of
+   commands in the file's map. In `arguments.rs`, `check_tree`,
    `check_range` and `check_json` each have an arm for every command, and
    the compiler asks for the new one in each: put it with the commands
    that take `--tree`, `--range` or `--json`, or with those that refuse
@@ -1061,8 +1066,9 @@ the biggest view, and not the one to start from.
    rows that would read the same apart, and fits them again only when
    other rows show or the column's width changes, since long C++ names
    take a while; `preview` names the selected one in full.
-2. **Wiring, in `views/mod.rs`.** Add `mod <name>;`, a variant to `View`,
-   and its arm in each of `View`'s functions; the compiler asks for them.
+2. **Wiring, in `views/mod.rs`.** Add `mod <name>;` and name `<name>.rs`
+   with the pages and tabs in the file's map. Add a variant to `View`, and
+   its arm in each of `View`'s functions; the compiler asks for them.
    `title` names the page in the title line's trail, `preview` says what
    the selected row's link opens, `back` goes back within the page, as
    from a jump inside a function, when it can, `command` gives the
@@ -1142,7 +1148,8 @@ page, which the capture prints.
    kinds. It must not panic on any bytes: a truncated instruction ends the
    scan. Unit tests beside it check it on bytes from a sample's
    disassembly.
-2. **Wiring, in `src/arch/mod.rs`.** Add `mod <name>;`, a variant of
+2. **Wiring, in `src/arch/mod.rs`.** Add `mod <name>;`, name `<name>.rs`
+   beside `x86_64.rs` in the file's map, add a variant of
    `InstructionSet`, and an arm for it in `InstructionSet::of`: until `of`
    names it, elfq never reads the code and says it can't read it. The
    compiler then asks for an arm in each of `InstructionSet`'s methods.

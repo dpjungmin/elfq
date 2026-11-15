@@ -1,13 +1,15 @@
 //! The browser's pages, and what they share.
 //!
-//! The pages and the tabs of an item's page other than tab 1 are one file
-//! each, as is the go-to box, and `names.rs` shortens long names to fit a
-//! column. `item.rs` is an item's page, with its parts in `item/` (see its
-//! map). [`View`] lists the pages, so that `app.rs` can keep any of them in
-//! its history, and each `match` on it shows every page's part. A page or
-//! tab that shows a command's answer, a table whose rows open items, is a
-//! `Printed` (`printed.rs`). `test_support.rs`, built only for tests, holds
-//! what the tests of the tabs and pages share.
+//! The pages, the tabs of an item's page other than tab 1, and the go-to
+//! box are one file each: `start.rs` is the start page, `help.rs` the help
+//! page and `item.rs` an item's page, with its parts in `item/` (see its
+//! map); `callees.rs`, `callers.rs`, `reach.rs`, `why.rs` and `retained.rs`
+//! are tabs 2 to 6; and `picker.rs` is the go-to box. `names.rs` shortens
+//! long names to fit a column. [`View`] lists the pages, so that `app.rs`
+//! can keep any of them in its history, and each `match` on it shows every
+//! page's part. A page or tab that shows a command's answer, a table whose
+//! rows open items, is a `Printed` (`printed.rs`). `test_support.rs`, built
+//! only for tests, holds what the tests of the tabs and pages share.
 
 mod callees;
 mod callers;

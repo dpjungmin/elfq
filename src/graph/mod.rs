@@ -31,7 +31,9 @@
 //! [`Removal`] works out what removing several items at once would remove,
 //! which can be more than what is exclusive to each of them (see
 //! `removal.rs`). These three keep a value for each node in a [`NodeMap`]
-//! (see `node_map.rs`).
+//! (see `node_map.rs`). [`Reached`] only adds up the bytes that an item
+//! reaches, which is quick enough for every start of a large program (see
+//! `reached.rs`).
 
 mod boundary;
 mod dominators;

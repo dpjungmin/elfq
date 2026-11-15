@@ -2,7 +2,9 @@
 //! `$ elfq ...` must show what elfq prints for it, given its arguments as a
 //! shell passes them, without their quotes; design.md's JSON section must
 //! name every key that elfq's JSON has; every path, module path and type
-//! path that CONTRIBUTING.md and design.md cite must be there; and
+//! path that CONTRIBUTING.md and design.md cite must be there; the module
+//! doc of each folder of `src/` must name its Rust files, and the folders
+//! in it that have a `mod.rs`; and
 //! `scripts/same-output.sh`, to which CONTRIBUTING.md says to add each
 //! command, must run every command.
 
@@ -185,9 +187,74 @@ fn same_output_sh_runs_every_command() {
     }
 }
 
+/// Each folder of `src/` has a map, its module doc: the `//!` lines of its
+/// module file, which name each Rust file in it but `mod.rs` and
+/// `tests.rs` as `x.rs`, and each folder in it that has a `mod.rs` as
+/// `x/`. The module file of `src/` is `lib.rs`, which may name a module as
+/// `x` alone and needn't name itself or `main.rs`. That of a folder
+/// without a `mod.rs` is the file of its name beside it, as
+/// `views/item.rs` is for `views/item/`, so the map that names that file
+/// needn't name the folder too. A name doesn't count where it ends a path
+/// into another folder, as `reach/text.rs` doesn't name startup's
+/// `text.rs`.
+#[test]
+fn every_file_is_on_its_folders_map() {
+    let mut paths = BTreeSet::new();
+    add_paths("src/", &mut paths);
+    // The names that each folder's map must hold, by folder.
+    let mut to_find = BTreeMap::<&str, Vec<&str>>::new();
+    for path in &paths {
+        // `src/` itself is on no map.
+        let Some((folder, _)) = path.trim_end_matches('/').rsplit_once('/') else {
+            continue;
+        };
+        let name = &path[folder.len() + 1..];
+        let on_a_map = if name.ends_with('/') {
+            paths.contains(&format!("{path}mod.rs"))
+        } else {
+            // A folder's own `mod.rs`, its unit tests, `lib.rs` and
+            // `main.rs` are on no map, nor is a hidden file, as an editor
+            // leaves, or a file that isn't Rust.
+            let left_off = ["mod.rs", "tests.rs"].contains(&name)
+                || ["src/lib.rs", "src/main.rs"].contains(&path.as_str());
+            name.ends_with(".rs") && !name.starts_with('.') && !left_off
+        };
+        if on_a_map {
+            to_find.entry(folder).or_default().push(name);
+        }
+    }
+    let (mut gaps, mut checked) = (Vec::new(), 0);
+    for (folder, names) in to_find {
+        let map_file = match folder {
+            "src" => String::from("src/lib.rs"),
+            _ if paths.contains(&format!("{folder}/mod.rs")) => format!("{folder}/mod.rs"),
+            _ => format!("{folder}.rs"),
+        };
+        let text = std::fs::read_to_string(crate_path(&map_file))
+            .unwrap_or_else(|error| panic!("{map_file}: {error}"));
+        let map = text.lines().filter_map(|line| line.strip_prefix("//!"));
+        let map = map.collect::<Vec<&str>>().join("\n");
+        let (_, own) = folder.rsplit_once('/').unwrap_or(("", folder));
+        for name in names {
+            // `lib.rs` may name a module as `x` alone.
+            let module = format!("`{}`", name.trim_end_matches('/').trim_end_matches(".rs"));
+            if !is_on_map(&map, own, name) && !(folder == "src" && map.contains(&module)) {
+                gaps.push(format!("{map_file} doesn't name {name}"));
+            }
+            checked += 1;
+        }
+    }
+    let gaps = gaps.join("\n");
+    let rule = "A folder's map, the //! doc of its module file, names its files:";
+    assert!(gaps.is_empty(), "{rule}\n{gaps}");
+    // Well under the number of files, so that a change in how the folders
+    // are read can't make this test check nothing.
+    assert!(checked >= 100, "checked {checked} files and folders");
+}
+
 /// The docs that say where the code is, whose paths
 /// [`the_paths_the_docs_cite_are_there`] checks.
-const MAPS: [&str; 2] = ["CONTRIBUTING.md", "docs/design.md"];
+const CITING_DOCS: [&str; 2] = ["CONTRIBUTING.md", "docs/design.md"];
 
 /// The folders, in the crate's root, whose paths the docs cite.
 const ROOTS: [&str; 5] = ["src", "tests", "testdata", "scripts", "docs"];
@@ -202,7 +269,8 @@ const ROOTS: [&str; 5] = ["src", "tests", "testdata", "scripts", "docs"];
 /// `App::pending`.
 const OTHER_FIRST_NAMES: [&str; 7] = ["std", "core", "alloc", "object", "serde_json", "u32", "app"];
 
-/// Every path, module path and type path that the [`MAPS`] cite is there.
+/// Every path, module path and type path that the [`CITING_DOCS`] cite is
+/// there.
 ///
 /// A path that starts with one of the [`ROOTS`] must be a file or folder
 /// there. A shorter path to a Rust file or a folder, such as
@@ -239,7 +307,7 @@ fn the_paths_the_docs_cite_are_there() {
     let mut checked = BTreeSet::new();
     let mut type_paths = BTreeSet::new();
     let mut missing = BTreeSet::new();
-    for doc in MAPS {
+    for doc in CITING_DOCS {
         let text = std::fs::read_to_string(crate_path(doc)).unwrap();
         for (cited, is_there) in tree.citations(doc, &text) {
             if !is_there {
@@ -694,5 +762,21 @@ fn holds_word(text: &str, word: &str) -> bool {
     let in_word = |c: char| c.is_ascii_alphanumeric() || c == '_';
     text.match_indices(word).any(|(at, _)| {
         !text[..at].ends_with(in_word) && !text[at + word.len()..].starts_with(in_word)
+    })
+}
+
+/// Whether `map`, the map of the folder named `own`, holds `name` as a word
+/// that doesn't end a path into another folder: `name` may follow a `/`
+/// only where the path goes through `own`, as in `item/contents.rs` for
+/// `item`.
+fn is_on_map(map: &str, own: &str, name: &str) -> bool {
+    let in_word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    // A path that ends in `own`, as `views/item` does, but not `subitem`.
+    let ends_in_own =
+        |path: &str| (path.strip_suffix(own)).is_some_and(|rest| !rest.ends_with(in_word));
+    map.match_indices(name).any(|(at, _)| {
+        let (before, after) = (&map[..at], &map[at + name.len()..]);
+        let is_word = !before.ends_with(in_word) && !after.starts_with(in_word);
+        is_word && before.strip_suffix('/').is_none_or(ends_in_own)
     })
 }
