@@ -906,14 +906,13 @@ is a short one to copy.
    name it in `RANGE_REFUSED`, the error that lists the commands that
    take `--range`, in the tests that check that error, which a search of
    `tests/it/` for its text finds, and in the `--range` help in
-   `cli/mod.rs`, README.md and docs/design.md. A command that shows a
-   tree goes likewise in `check_tree`'s error, its tests and the
-   `--tree` help. A command that takes one SYMBOL at most goes in
-   `TAKE_ONE_SYMBOL_AT_MOST`, the list of commands whose clap error for
-   the arguments after it gets the line that says that they are files
-   here, which the shell may have put in place of a pattern; one that
-   takes several ends its own error with that line, with
-   `symbol::with_shell_hint`, as `retained` does.
+   `cli/mod.rs` and docs/design.md. A command that shows a tree goes
+   likewise in `check_tree`'s error, its tests and the `--tree` help. A
+   command that takes one SYMBOL at most goes in `TAKE_ONE_SYMBOL_AT_MOST`,
+   the list of commands whose clap error for the arguments after it gets the
+   line that says that they are files here, which the shell may have put in
+   place of a pattern; one that takes several ends its own error with that
+   line, with `symbol::with_shell_hint`, as `retained` does.
 4. **SYMBOL.** If the command reads code, call `check_code_is_readable`
    first, so that a file whose code elfq can't read says so even when
    SYMBOL names nothing. Make the other checks that need no graph, such
@@ -1027,11 +1026,11 @@ is a short one to copy.
    `a_file_whose_code_elfq_cant_read_says_so` if it reads code, and
    `commands_that_need_roots_refuse_a_shared_library` if it needs the
    roots.
-10. **Docs.** List it in README.md and in the Commands table in
-    docs/design.md, and its JSON keys in design.md's JSON section. Add
-    answers of it to `JSON_ANSWERS` in `tests/it/docs.rs` with an entry
-    in each of its lists: the test checks that the section names every
-    key.
+10. **Docs.** List it in the commands at the top of README.md, as in
+    `EXAMPLES`, and in the Commands table in docs/design.md, and its JSON
+    keys in design.md's JSON section. Add answers of it to `JSON_ANSWERS` in
+    `tests/it/docs.rs` with an entry in each of its lists: the test checks
+    that the section names every key.
 11. **The output check.** Add it to `check_file` in
     `scripts/same-output.sh`, with the arguments it takes, and to the
     commands whose help `check_help` compares, so that a later change
