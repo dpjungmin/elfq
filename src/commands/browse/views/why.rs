@@ -21,7 +21,7 @@ pub(super) fn tab(session: &Session, keepers: &Keepers, node: Node, name: &str) 
     let (binary, graph, names) = (session.binary, &session.graph, &session.names);
     let tab = why::tab(binary, graph, names, &keepers.tree, node, name, &note_name);
     let command = session.command("why", Some(node), tab.needs_all);
-    Printed::of_tab(tab, command).opening(Tab::Why, node)
+    Printed::of_tree_tab(tab, command).opening(Tab::Why, node)
 }
 
 #[cfg(test)]

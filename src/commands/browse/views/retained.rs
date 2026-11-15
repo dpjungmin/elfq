@@ -31,7 +31,7 @@ pub(super) fn tab(session: &Session, keepers: &Keepers, index: usize, name: &str
     let tab = retained::tab(&symbol, &note_name);
     let node = Node::Item(index);
     let command = session.command("retained", Some(node), tab.needs_all);
-    (Printed::of_tab(tab, command))
+    (Printed::of_tree_tab(tab, command))
         .with_below(by_block(session, &retained.tree, node))
         .opening(Tab::Retained, node)
 }

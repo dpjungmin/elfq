@@ -75,13 +75,42 @@ const WORDS: [(&str, &str); 14] = [
     ),
 ];
 
-/// How far in what a key or a word means starts, and its wrapped lines.
-const INDENT: usize = 23;
+/// The columns that a key or a word takes, after two spaces, before what
+/// it means.
+const NAME_WIDTH: usize = 20;
+/// How far in what a key or a word means starts, and its wrapped lines:
+/// after the two spaces, the key or word, and a space.
+const INDENT: usize = 2 + NAME_WIDTH + 1;
+
+/// A line of the help page.
+#[derive(Clone)]
+enum HelpLine {
+    /// "Keys" or "Words", in bold.
+    Heading(&'static str),
+    /// A key or a word and what it means, or a wrapped part of what it
+    /// means.
+    Entry(String),
+}
+
+impl HelpLine {
+    /// The line of `name`, a key or a word, which says `what` it means.
+    fn entry(name: &str, what: &str) -> HelpLine {
+        HelpLine::Entry(format!("  {name:<NAME_WIDTH$} {what}"))
+    }
+
+    /// Its text, as the page shows it.
+    #[cfg(test)]
+    fn text(&self) -> &str {
+        match self {
+            HelpLine::Heading(text) => text,
+            HelpLine::Entry(text) => text,
+        }
+    }
+}
 
 pub(in crate::commands::browse) struct Help {
-    /// Its lines before they are wrapped, each with whether it is a
-    /// heading.
-    lines: Vec<(String, bool)>,
+    /// Its lines before they are wrapped.
+    lines: Vec<HelpLine>,
     /// The first line on the screen.
     offset: usize,
     /// How many lines the screen held when last drawn.
@@ -92,15 +121,14 @@ pub(in crate::commands::browse) struct Help {
 
 impl Help {
     pub(in crate::commands::browse) fn new() -> Help {
-        let entry = |name: &str, what: &str| (format!("  {name:<20} {what}"), false);
-        let mut lines = vec![("Keys".to_string(), true)];
-        lines.extend(keys::bindings().map(|binding| entry(binding.label, binding.what)));
-        lines.push(("Words".to_string(), true));
+        let mut lines = vec![HelpLine::Heading("Keys")];
+        lines.extend(keys::bindings().map(|binding| HelpLine::entry(binding.label, binding.what)));
+        lines.push(HelpLine::Heading("Words"));
         lines.extend(
             HOW_WORDS
                 .iter()
                 .chain(&WORDS)
-                .map(|(word, what)| entry(word, what)),
+                .map(|(word, what)| HelpLine::entry(word, what)),
         );
         Help {
             lines,
@@ -112,11 +140,17 @@ impl Help {
 
     /// The lines wrapped to `width`, each wrapped part lined up under what
     /// the key or word means.
-    fn wrapped(&self, width: usize) -> Vec<(String, bool)> {
+    fn wrapped(&self, width: usize) -> Vec<HelpLine> {
         let mut wrapped = Vec::new();
-        for (line, heading) in &self.lines {
+        for help_line in &self.lines {
+            // The headings are shorter than INDENT, so they fit wherever
+            // the lines wrap.
+            let HelpLine::Entry(line) = help_line else {
+                wrapped.push(help_line.clone());
+                continue;
+            };
             if line.chars().count() <= width || width <= INDENT {
-                wrapped.push((line.clone(), *heading));
+                wrapped.push(help_line.clone());
                 continue;
             }
             let lead: String = line.chars().take(INDENT).collect();
@@ -127,7 +161,7 @@ impl Help {
                 } else {
                     " ".repeat(INDENT)
                 };
-                wrapped.push((lead + &part, false));
+                wrapped.push(HelpLine::Entry(lead + &part));
             }
         }
         wrapped
@@ -139,9 +173,11 @@ impl Help {
         self.page = height.max(1);
         self.last = lines.len().saturating_sub(height);
         self.offset = self.offset.min(self.last);
-        for (row, (text, heading)) in lines.iter().skip(self.offset).take(height).enumerate() {
-            let line = Line::raw(text.as_str());
-            let line = if *heading { line.bold() } else { line };
+        for (row, line) in lines.iter().skip(self.offset).take(height).enumerate() {
+            let line = match line {
+                HelpLine::Heading(text) => Line::raw(*text).bold(),
+                HelpLine::Entry(text) => Line::raw(text.as_str()),
+            };
             let y = area.y + row as u16;
             frame.render_widget(line, Rect::new(area.x, y, area.width, 1));
         }
@@ -170,8 +206,8 @@ mod tests {
     fn the_help_has_every_row_of_the_table_of_keys() {
         let help = Help::new();
         for binding in keys::BINDINGS {
-            let line = format!("  {:<20} {}", binding.label, binding.what);
-            let found = help.lines.iter().any(|(text, _)| *text == line);
+            let line = format!("  {:<NAME_WIDTH$} {}", binding.label, binding.what);
+            let found = help.lines.iter().any(|help_line| help_line.text() == line);
             // Ctrl-Z works only on Unix, and is in the help only there.
             let suspends = binding.label == "Ctrl-Z";
             assert_eq!(found, !suspends || cfg!(unix), "{line}");
@@ -184,12 +220,12 @@ mod tests {
         let wrapped = help.wrapped(60);
         let at = wrapped
             .iter()
-            .position(|(text, _)| text.starts_with("  address taken"))
+            .position(|line| line.text().starts_with("  address taken"))
             .unwrap();
         assert_eq!(
             wrapped[at..at + 3]
                 .iter()
-                .map(|(text, _)| text.as_str())
+                .map(HelpLine::text)
                 .collect::<Vec<_>>(),
             [
                 "  address taken        code loads a function's address, as",

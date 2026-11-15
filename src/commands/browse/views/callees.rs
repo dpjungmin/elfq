@@ -1,6 +1,6 @@
 //! Tab 2 of an item's page: what the item calls or uses, in the rows and
 //! notes that `elfq FILE callees SYMBOL` prints, from the same code
-//! (`callees::text`). The tab lists every row and every site, where the
+//! (`callees::tab`). The tab lists every row and every site, where the
 //! command lists the 30 largest callees and the first few sites that elfq
 //! can't follow, and under them is that command, ready to paste, with
 //! `--all` when the command needs it to list them all. When the notes
@@ -11,30 +11,21 @@ use super::item::Tab;
 use super::printed::Printed;
 use crate::commands::browse::session::Session;
 use crate::commands::callees;
-use crate::commands::text::Detail;
 use crate::graph::Node;
 
 /// What the item at `index` calls or uses, as `callees SYMBOL` lists it,
 /// which names it `name` (see [`Session::lead_name`]): HOW, AT and
 /// CALLEE, each row opening the callee.
 pub(super) fn tab(session: &Session, index: usize, name: &str) -> Printed {
-    let (binary, graph) = (session.binary, &session.graph);
-    let mut answer = callees::text(binary, graph, index, name, Detail::All);
-    // `callees SYMBOL` lists the rows of the 30 largest callees, unless
-    // with --all, and a last row counts the rest; and it gives only the
-    // first few sites of the calls and jumps that elfq can't follow.
-    let brief = callees::text(binary, graph, index, name, Detail::Brief);
-    let needs_all = brief.written() != answer.written();
+    let mut tab = callees::tab(session.binary, &session.graph, index, name);
     let node = Node::Item(index);
-    let command = session.command("callees", Some(node), needs_all);
+    let command = session.command("callees", Some(node), tab.needs_all);
     // The rows show what the first line counts, so the tab leaves it out,
     // unless it says what the item uses in place of rows.
-    if !answer.rows.is_empty() {
-        answer.lead.clear();
+    if !tab.answer.rows.is_empty() {
+        tab.answer.lead.clear();
     }
-    (Printed::of_flat(answer, command))
-        .with_brief(brief.notes)
-        .opening(Tab::Callees, node)
+    Printed::of_flat_tab(tab, command).opening(Tab::Callees, node)
 }
 
 #[cfg(test)]
@@ -46,6 +37,7 @@ mod tests {
     use crate::binary::Binary;
     use crate::cli::{Cli, Command, Format};
     use crate::commands::checks::readable_item;
+    use crate::commands::text::Detail;
 
     #[test]
     fn the_callees_tab_lists_what_its_command_prints() {

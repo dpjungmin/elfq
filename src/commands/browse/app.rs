@@ -492,15 +492,7 @@ impl<'a> App<'a> {
         match self.prompt {
             Some(Prompt::GoTo(_)) => keys::GO_TO_HINT.to_string(),
             Some(Prompt::Find(_)) => keys::FIND_HINT.to_string(),
-            None => {
-                let view = self.page();
-                keys::hints(
-                    width,
-                    view.has_links(),
-                    &view.tabs(),
-                    view.cursor().is_some(),
-                )
-            }
+            None => keys::hints(width, &self.page().page_keys()),
         }
     }
 
@@ -845,10 +837,10 @@ mod tests {
                     // The table's header and the selected row, when the
                     // tab has rows, each of which opens an item, and the
                     // header's facts.
-                    let has_rows = app.page().has_links();
+                    let has_links = app.page().page_keys().links;
                     let header = ["HOW", "ADDRESS", "RETAINED"].into_iter().any(shown);
                     let rows =
-                        !has_rows || header && lines.iter().any(|line| line.starts_with("> "));
+                        !has_links || header && lines.iter().any(|line| line.starts_with("> "));
                     let screen = lines.join("\n");
                     assert!(rows, "{}, {name}, {tab}:\n{screen}", path.display());
                     assert!(shown("used by"), "{}, {name}:\n{screen}", path.display());

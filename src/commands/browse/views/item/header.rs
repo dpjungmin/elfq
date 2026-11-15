@@ -72,11 +72,11 @@ impl Header {
 
     /// Adds what keeps the item, once the session has worked it out.
     ///
-    /// It adds it only where `retained` or `why` answers about the item, as
-    /// those commands say it.
-    pub(super) fn add_keeping(&mut self, session: &Session, retained: bool, why: bool) {
+    /// It adds it, as those commands say it, only where `answering` says
+    /// that `retained` or `why` answers about the item.
+    pub(super) fn add_keeping(&mut self, session: &Session, answering: Answering) {
         if self.keeping.is_none() {
-            self.keeping = Keeping::new(session, self.node, retained, why);
+            self.keeping = Keeping::new(session, self.node, answering);
             self.lines = None;
         }
     }
@@ -210,6 +210,19 @@ fn used_by_text(used_by: usize) -> String {
     }
 }
 
+/// Which of `retained` and `why` answer about an item, rather than refuse
+/// it, as tabs 6 and 5 of its page show.
+///
+/// The header says what each of them that answers says about what keeps
+/// the item.
+#[derive(Clone, Copy)]
+pub(super) struct Answering {
+    /// Whether `retained` answers about the item rather than refusing it.
+    pub(super) retained: bool,
+    /// Whether `why` answers about the item rather than refusing it.
+    pub(super) why: bool,
+}
+
 /// What the header says about what keeps an item.
 ///
 /// It says it as `retained` and `why` do.
@@ -237,10 +250,12 @@ struct Keeping {
 impl Keeping {
     /// What the header says about what keeps `node`, if anything.
     ///
-    /// It says something once the session has worked out what keeps each
-    /// item, where `retained` or `why` answers about `node`, as they say it.
-    fn new(session: &Session, node: Node, retained: bool, why: bool) -> Option<Keeping> {
+    /// It says something, as `retained` and `why` say it, once the session
+    /// has worked out what keeps each item, and only where `answering` says
+    /// that one of them answers about `node`.
+    fn new(session: &Session, node: Node, answering: Answering) -> Option<Keeping> {
         let keepers = session.keepers()?;
+        let Answering { retained, why } = answering;
         if !retained && !why {
             return None;
         }
@@ -358,7 +373,11 @@ mod tests {
                 let shown = format!("{}: {}", path.display(), node.name(&binary));
                 let retained_index = retained::refusal(&binary, node).ok();
                 let why_answers = why::refusal(&binary, node).is_ok();
-                let keeping = Keeping::new(&session, node, retained_index.is_some(), why_answers);
+                let answering = Answering {
+                    retained: retained_index.is_some(),
+                    why: why_answers,
+                };
+                let keeping = Keeping::new(&session, node, answering);
                 let Some(keeping) = keeping else {
                     assert!(retained_index.is_none() && !why_answers, "{shown}");
                     continue;

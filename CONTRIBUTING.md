@@ -247,8 +247,16 @@ code.
     pointer `NOWHERE`, the highest address, so that it sorts last
     (`arch/thumb/startup/each_iteration.rs`).
 - Name what crosses a function boundary:
-  - About sixty functions, most of them private, return tuples.
-  - About forty arguments are bools, most of them in private functions.
+  - About fifty-five functions, most of them private, return tuples, as
+    `uses::table` gives the columns and the rows of `callers` and
+    `callees`, and the startup walk's `Walker::run` how it finished and
+    where it went. About twenty fields of structs keep tuples too, as
+    browse's `Binding::keys` keeps each key with its modifiers and what it
+    does.
+  - About forty arguments are bools, most of them in private functions,
+    as `text::unresolved_lines` takes whether a table lists what the item
+    calls or uses, which `callees` passes as `true` or `false`, and
+    `blocks::shared_blocks` whether diff's builds hold the same memory.
 - A test runs elfq through `support/`:
   - In `tests/it/commands/browse.rs`,
     `the_command_under_the_callers_runs_in_a_shell` starts elfq through
@@ -426,9 +434,9 @@ helper type, doesn't take a word of the list; where code still does, as
   methods are named for the form they write: `Text::by_block`, and
   `Text::in_to_ranges` with `--to`. Browse shows both: a `FlatTab` or a
   `TreeTab` is the text as a tab of browse shows it, which a function
-  named `tab` builds, as `reach::tab` and `why::tab` do. The view of each
-  tab, in `browse/views/`, makes the command's text, or its tab form, a
-  `Printed` in a function also named `tab`.
+  named `tab` builds, as `callees::tab`, `reach::tab` and `why::tab` do.
+  The view of each tab, in `browse/views/`, makes the command's text, or
+  its tab form, a `Printed` in a function also named `tab`.
 - **listing**: an item's lines as tab 1 of its page in browse shows them
   (`Listing`, in `views/item/listing.rs`). For a function, that is its
   code, one line to an instruction, as `InstructionSet::listing` prints
@@ -1030,7 +1038,8 @@ the biggest view, and not the one to start from.
    from a jump inside a function, when it can, `command` gives the
    command that prints what the page shows, which goes under it, and
    `cursor`, `rows_with` and `row_noun` give find the page's rows and
-   what to call them.
+   what to call them. `page_keys` says what the page has that the hint
+   line names keys for: lines that link, its tabs, and rows.
 
    A page or tab that shows a command's answer, as `callers.rs` does, is
    a `Printed` (`printed.rs`), made from the command's own answer: the
@@ -1056,15 +1065,20 @@ the biggest view, and not the one to start from.
    compiler asks for their arms, but not for `Tab::ALL`. Its key goes in
    the "1 2 3 4 5 6" row of `BINDINGS`, with its help text (step 3), which
    a test in `item.rs` checks against `Tab::ALL`. Its rows come from that
-   command's own code, as `callees::text`, so that they can't drift from
-   what it prints.
+   command's own code, as tab 2's come from `callees::tab`, a `FlatTab`
+   that also says whether the command needs `--all` to print them all, so
+   that they can't drift from what it prints.
 3. **Keys.** A key goes in `BINDINGS` in `keys.rs`, with the new `Action`,
    what the help page says about it, and its hint, if the hint line names
-   it. The help page and the hint line are printed from that table, and
-   `no_key_does_two_things` checks it. `app.rs` handles an action that
-   opens a page, as `Action::Help` does. The go-to box and find's prompt
-   read keys through `keys::typing` instead, which takes from the table
-   only the keys that move and aren't characters.
+   it: a `Hint`, whose `drop_order` says when it goes from a screen too
+   narrow for every hint. `keys::hints` names some keys only on pages
+   that have what they act on, such as rows for find, from what
+   `View::page_keys` says the page has, a `PageKeys`. The help page and
+   the hint line are printed from that table, and `no_key_does_two_things`
+   checks it. `app.rs` handles an action that opens a page, as
+   `Action::Help` does. The go-to box and find's prompt read keys through
+   `keys::typing` instead, which takes from the table only the keys that
+   move and aren't characters.
 4. **Tests.** Pin its screens in `tests/it/commands/browse.rs` at 80x24
    and 100x30, and drive it with keys there, as the other tests do.
 

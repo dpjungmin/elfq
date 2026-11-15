@@ -51,11 +51,8 @@ pub(super) struct Binding {
     pub(super) label: &'static str,
     /// What they do, as the help page says it.
     pub(super) what: &'static str,
-    /// What the hint line says about them, if anything, and how much that
-    /// matters: 0 is always shown, and the highest goes first when the
-    /// screen is too narrow. The tab keys' hint follows the numbers of the
-    /// tabs that the page has: "1 3 tabs".
-    hint: Option<(&'static str, u8)>,
+    /// What the hint line says about them, if anything.
+    hint: Option<Hint>,
     /// Each key, with what it does.
     pub(super) keys: &'static [(KeyCode, KeyModifiers, Action)],
 }
@@ -67,6 +64,17 @@ impl Binding {
     }
 }
 
+/// What the hint line says about a row of the table of keys.
+#[derive(Clone, Copy)]
+struct Hint {
+    /// The words, such as "g go to". The tab keys' hint follows the numbers
+    /// of the tabs that the page has: "1 3 tabs".
+    text: &'static str,
+    /// When it goes from a screen too narrow for every hint: the highest
+    /// goes first, and 0 is always shown.
+    drop_order: u8,
+}
+
 const NONE: KeyModifiers = KeyModifiers::NONE;
 const CONTROL: KeyModifiers = KeyModifiers::CONTROL;
 
@@ -75,7 +83,10 @@ pub(super) const BINDINGS: &[Binding] = &[
     Binding {
         label: "↑ ↓  k j",
         what: "move",
-        hint: Some(("↑↓ move", 0)),
+        hint: Some(Hint {
+            text: "↑↓ move",
+            drop_order: 0,
+        }),
         keys: &[
             (KeyCode::Up, NONE, Action::Up),
             (KeyCode::Char('k'), NONE, Action::Up),
@@ -105,7 +116,10 @@ pub(super) const BINDINGS: &[Binding] = &[
     Binding {
         label: "Enter → l",
         what: "follow the line's link, or open the row",
-        hint: Some(("enter follow", 0)),
+        hint: Some(Hint {
+            text: "enter follow",
+            drop_order: 0,
+        }),
         keys: &[
             (KeyCode::Enter, NONE, Action::Open),
             (KeyCode::Right, NONE, Action::Open),
@@ -115,7 +129,10 @@ pub(super) const BINDINGS: &[Binding] = &[
     Binding {
         label: "Esc ← h Bksp Ctrl-O",
         what: "back to where you were",
-        hint: Some(("esc back", 0)),
+        hint: Some(Hint {
+            text: "esc back",
+            drop_order: 0,
+        }),
         keys: &[
             (KeyCode::Esc, NONE, Action::Back),
             (KeyCode::Left, NONE, Action::Back),
@@ -133,7 +150,10 @@ pub(super) const BINDINGS: &[Binding] = &[
     Binding {
         label: "Tab Shift-Tab",
         what: "the next or previous line that uses another item",
-        hint: Some(("tab next link", 2)),
+        hint: Some(Hint {
+            text: "tab next link",
+            drop_order: 2,
+        }),
         keys: &[
             (KeyCode::Tab, NONE, Action::NextLink),
             (KeyCode::BackTab, NONE, Action::PreviousLink),
@@ -142,7 +162,10 @@ pub(super) const BINDINGS: &[Binding] = &[
     Binding {
         label: "1 2 3 4 5 6",
         what: "tabs: 1 code or contents, 2 callees, 3 callers, 4 reach, 5 why, 6 retained",
-        hint: Some(("tabs", 4)),
+        hint: Some(Hint {
+            text: "tabs",
+            drop_order: 4,
+        }),
         keys: &[
             (KeyCode::Char('1'), NONE, Action::Tab(1)),
             (KeyCode::Char('2'), NONE, Action::Tab(2)),
@@ -161,7 +184,10 @@ pub(super) const BINDINGS: &[Binding] = &[
     Binding {
         label: "/",
         what: "find text in the page's rows, ignoring case",
-        hint: Some(("/ find", 3)),
+        hint: Some(Hint {
+            text: "/ find",
+            drop_order: 3,
+        }),
         keys: &[(KeyCode::Char('/'), NONE, Action::Find)],
     },
     Binding {
@@ -176,13 +202,19 @@ pub(super) const BINDINGS: &[Binding] = &[
     Binding {
         label: "g",
         what: "go to a function, data object or import, by name or address",
-        hint: Some(("g go to", 1)),
+        hint: Some(Hint {
+            text: "g go to",
+            drop_order: 1,
+        }),
         keys: &[(KeyCode::Char('g'), NONE, Action::GoTo)],
     },
     Binding {
         label: "?",
         what: "this help",
-        hint: Some(("? help", 0)),
+        hint: Some(Hint {
+            text: "? help",
+            drop_order: 0,
+        }),
         keys: &[(KeyCode::Char('?'), NONE, Action::Help)],
     },
     Binding {
@@ -194,7 +226,10 @@ pub(super) const BINDINGS: &[Binding] = &[
     Binding {
         label: "q Ctrl-C",
         what: "quit",
-        hint: Some(("q quit", 0)),
+        hint: Some(Hint {
+            text: "q quit",
+            drop_order: 0,
+        }),
         keys: &[
             (KeyCode::Char('q'), NONE, Action::Quit),
             (KeyCode::Char('c'), CONTROL, Action::Quit),
@@ -220,31 +255,44 @@ pub(super) fn action(key: KeyEvent) -> Option<Action> {
         .map(|&(_, _, action)| action)
 }
 
-/// The hint line for a screen `width` columns wide: the hints that fit,
-/// leaving out the least needed first. `links` says whether the page has
-/// lines that link, for Tab, `tabs` gives the numbers of its tabs, whose
-/// keys are named when there are two or more, and `rows` says whether it
-/// has rows, for find.
-pub(super) fn hints(width: usize, links: bool, tabs: &[u8], rows: bool) -> String {
-    let numbers: Vec<String> = tabs.iter().map(u8::to_string).collect();
+/// What the page has that the hint line names keys for.
+pub(super) struct PageKeys {
+    /// Whether it has lines that link to another item, which Tab moves
+    /// between.
+    pub(super) links: bool,
+    /// The numbers of its tabs, whose keys show them.
+    pub(super) tabs: Vec<u8>,
+    /// Whether it has rows, which find looks in.
+    pub(super) rows: bool,
+}
+
+/// The hint line for a screen `width` columns wide, on a page that has
+/// what `page` says: the hints that fit, leaving out those of the highest
+/// drop order first. Tab's hint is there only when the page has lines
+/// that link, the tab keys' only when it has two tabs or more, and find's
+/// only when it has rows.
+pub(super) fn hints(width: usize, page: &PageKeys) -> String {
+    let numbers: Vec<String> = page.tabs.iter().map(u8::to_string).collect();
     let hints: Vec<(String, u8)> = bindings()
-        .filter(|binding| links || !binding.does(Action::NextLink))
-        .filter(|binding| rows || !binding.does(Action::Find))
-        .filter(|binding| tabs.len() > 1 || !binding.does(Action::Tab(1)))
+        .filter(|binding| page.links || !binding.does(Action::NextLink))
+        .filter(|binding| page.rows || !binding.does(Action::Find))
+        .filter(|binding| page.tabs.len() > 1 || !binding.does(Action::Tab(1)))
         .filter_map(|binding| {
-            let (hint, level) = binding.hint?;
+            let Hint { text, drop_order } = binding.hint?;
             Some(match binding.does(Action::Tab(1)) {
-                true => (format!("{} {hint}", numbers.join(" ")), level),
-                false => (hint.to_string(), level),
+                true => (format!("{} {text}", numbers.join(" ")), drop_order),
+                false => (text.to_string(), drop_order),
             })
         })
         .collect();
-    let most = hints.iter().map(|&(_, level)| level).max().unwrap_or(0);
+    let most = hints.iter().map(|&(_, order)| order).max().unwrap_or(0);
     let mut line = String::new();
-    for level in (0..=most).rev() {
+    // The highest drop order kept, from every hint down to those always
+    // shown.
+    for kept in (0..=most).rev() {
         let shown: Vec<&str> = hints
             .iter()
-            .filter(|&&(_, needed)| needed <= level)
+            .filter(|&&(_, order)| order <= kept)
             .map(|(hint, _)| hint.as_str())
             .collect();
         line = shown.join("  ");
@@ -360,42 +408,56 @@ mod tests {
 
     #[test]
     fn the_hint_line_leaves_out_what_is_needed_least() {
-        let tabs = &[1, 2, 3, 4];
+        let page = PageKeys {
+            links: true,
+            tabs: vec![1, 2, 3, 4],
+            rows: true,
+        };
         let all = "↑↓ move  enter follow  esc back  tab next link  1 2 3 4 tabs  / find  g go to  \
                    ? help  q quit";
-        assert_eq!(hints(100, true, tabs, true), all);
+        assert_eq!(hints(100, &page), all);
         // The keys of the tabs that the page has.
+        let two_tabs = PageKeys {
+            tabs: vec![1, 3],
+            ..page
+        };
         assert_eq!(
-            hints(100, true, &[1, 3], true),
+            hints(100, &two_tabs),
             all.replace("1 2 3 4 tabs", "1 3 tabs")
         );
         let without_tabs =
             "↑↓ move  enter follow  esc back  tab next link  / find  g go to  ? help  q quit";
-        assert_eq!(
-            hints(all.chars().count() - 1, true, tabs, true),
-            without_tabs
-        );
-        assert_eq!(hints(100, true, &[], true), without_tabs);
+        assert_eq!(hints(all.chars().count() - 1, &page), without_tabs);
+        let no_tabs = PageKeys {
+            tabs: Vec::new(),
+            ..page
+        };
+        assert_eq!(hints(100, &no_tabs), without_tabs);
         // One tab needs no key.
-        assert_eq!(hints(100, true, &[3], true), without_tabs);
+        let one_tab = PageKeys {
+            tabs: vec![3],
+            ..page
+        };
+        assert_eq!(hints(100, &one_tab), without_tabs);
         let without_find =
             "↑↓ move  enter follow  esc back  tab next link  g go to  ? help  q quit";
-        assert_eq!(
-            hints(without_tabs.chars().count() - 1, true, tabs, true),
-            without_find
-        );
-        assert_eq!(hints(100, true, &[], false), without_find);
+        assert_eq!(hints(without_tabs.chars().count() - 1, &page), without_find);
+        let no_rows = PageKeys {
+            tabs: Vec::new(),
+            rows: false,
+            ..page
+        };
+        assert_eq!(hints(100, &no_rows), without_find);
         let without_tab = "↑↓ move  enter follow  esc back  g go to  ? help  q quit";
-        assert_eq!(
-            hints(without_find.chars().count() - 1, true, tabs, true),
-            without_tab
-        );
-        assert_eq!(hints(100, false, &[], false), without_tab);
+        assert_eq!(hints(without_find.chars().count() - 1, &page), without_tab);
+        let no_links = PageKeys {
+            links: false,
+            tabs: Vec::new(),
+            rows: false,
+        };
+        assert_eq!(hints(100, &no_links), without_tab);
         let least = "↑↓ move  enter follow  esc back  ? help  q quit";
-        assert_eq!(
-            hints(without_tab.chars().count() - 1, true, tabs, true),
-            least
-        );
+        assert_eq!(hints(without_tab.chars().count() - 1, &page), least);
     }
 
     #[test]
