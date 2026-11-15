@@ -561,28 +561,13 @@ mod tests {
 
     use super::*;
     use crate::binary::Binary;
-    use crate::binary::test_samples::samples;
+    use crate::binary::test_samples::sample_path;
+    use crate::commands::browse::views::test_support::{each_session, screen_lines};
     use crate::graph::Node;
-
-    /// The screen as lines of text.
-    fn lines(terminal: &Terminal<TestBackend>) -> Vec<String> {
-        let buffer = terminal.backend().buffer();
-        let area = buffer.area;
-        (0..area.height)
-            .map(|row| {
-                (0..area.width)
-                    .map(|column| buffer[(column, row)].symbol())
-                    .collect()
-            })
-            .collect()
-    }
 
     #[test]
     fn the_start_page_under_go_to_is_worked_out_once_the_box_closes() {
-        let path = samples()
-            .into_iter()
-            .find(|path| path.ends_with("c-x86_64.elf"));
-        let path = path.unwrap();
+        let path = sample_path("testdata/bin/c-x86_64.elf");
         let binary = Binary::load(&path).unwrap();
         let session = Session::new(&path, &binary).unwrap();
         let mut app = App::new(session, Some("no_such_symbol"));
@@ -669,10 +654,7 @@ mod tests {
 
     #[test]
     fn keys_that_type_into_a_prompt_or_stop_can_wait_to_draw() {
-        let path = samples()
-            .into_iter()
-            .find(|path| path.ends_with("c-x86_64.elf"));
-        let path = path.unwrap();
+        let path = sample_path("testdata/bin/c-x86_64.elf");
         let binary = Binary::load(&path).unwrap();
         let session = Session::new(&path, &binary).unwrap();
         let mut app = App::new(session, None);
@@ -733,13 +715,12 @@ mod tests {
     #[test]
     fn what_keeps_each_item_is_worked_out_after_the_first_draw() {
         let pages = [
-            ("c-x86_64.elf", Some("main")),
-            ("c-x86_64.elf", None),
-            ("c-x86_64.so", Some("log_msg")),
+            ("testdata/bin/c-x86_64.elf", Some("main")),
+            ("testdata/bin/c-x86_64.elf", None),
+            ("testdata/bin/c-x86_64.so", Some("log_msg")),
         ];
         for (sample, symbol) in pages {
-            let path = samples().into_iter().find(|path| path.ends_with(sample));
-            let path = path.unwrap();
+            let path = sample_path(sample);
             let binary = Binary::load(&path).unwrap();
             let session = Session::new(&path, &binary).unwrap();
             let mut app = App::new(session, symbol);
@@ -761,10 +742,7 @@ mod tests {
 
     #[test]
     fn tabs_5_and_6_are_worked_out_once_the_screen_says_so() {
-        let path = samples()
-            .into_iter()
-            .find(|path| path.ends_with("c-cortex-m7.elf"));
-        let path = path.unwrap();
+        let path = sample_path("testdata/bin/c-cortex-m7.elf");
         let binary = Binary::load(&path).unwrap();
         let session = Session::new(&path, &binary).unwrap();
         let mut app = App::new(session, Some("main"));
@@ -787,9 +765,7 @@ mod tests {
         // Long names make long headers, notes and commands, which leave
         // the tabs few lines.
         let mut pages = 0;
-        for path in samples() {
-            let binary = Binary::load(&path).unwrap();
-            let session = Session::new(&path, &binary).unwrap();
+        each_session(|path, binary, session| {
             let mut app = App {
                 session,
                 history: Vec::new(),
@@ -804,13 +780,13 @@ mod tests {
             let imports = (0..binary.imports.len()).map(Node::Import);
             let nodes: Vec<Node> = (items.chain(imports))
                 .filter(|&node| app.session.page_node(node) == node)
-                .filter(|node| node.name(&binary).chars().count() > 100)
+                .filter(|node| node.name(binary).chars().count() > 100)
                 .collect();
             for (node, tab) in nodes
                 .into_iter()
                 .flat_map(|node| [2, 3, 4, 5, 6].map(|tab| (node, tab)))
             {
-                let name = node.name(&binary);
+                let name = node.name(binary);
                 let mut page = ItemPage::new(&app.session, node, None, None);
                 if page.handle(&app.session, Action::Tab(tab)).is_some() {
                     // The item doesn't have the tab.
@@ -822,7 +798,7 @@ mod tests {
                 if app.has_work() {
                     let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
                     terminal.draw(|frame| app.draw(frame)).unwrap();
-                    let lines = lines(&terminal);
+                    let lines = screen_lines(terminal.backend().buffer());
                     let said = lines
                         .iter()
                         .any(|line| line.starts_with("working out what "));
@@ -832,7 +808,7 @@ mod tests {
                 for (width, height) in [(80, 24), (60, 16)] {
                     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
                     terminal.draw(|frame| app.draw(frame)).unwrap();
-                    let lines = lines(&terminal);
+                    let lines = screen_lines(terminal.backend().buffer());
                     let shown = |text: &str| lines.iter().any(|line| line.contains(text));
                     // The table's header and the selected row, when the
                     // tab has rows, each of which opens an item, and the
@@ -847,7 +823,7 @@ mod tests {
                 }
                 pages += 1;
             }
-        }
+        });
         assert!(pages > 500, "{pages}");
     }
 }

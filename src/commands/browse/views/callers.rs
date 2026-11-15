@@ -34,36 +34,37 @@ pub(super) fn tab(session: &Session, node: Node, mut answer: FlatAnswer) -> Prin
 mod tests {
     use std::path::Path;
 
-    use clap::Parser;
-
+    use super::super::fit_name;
     use super::super::names::alike_in_a_window;
-    use super::super::{fit_name, shell_words};
+    use super::super::test_support::{assert_has_all_when_needed, each_session, tab_command};
     use super::*;
-    use crate::binary::Binary;
-    use crate::binary::test_samples::{load_sample, samples};
-    use crate::cli::{Cli, Command, Format};
+    use crate::binary::test_samples::load_sample;
+    use crate::cli::{Command, Format};
     use crate::commands::callers;
+    use crate::commands::symbol::Symbol;
     use crate::commands::text::Detail;
 
-    /// Runs `words`, a `callers` command line, as elfq does, but on the
-    /// graph that `session` has already built, and returns what it prints,
-    /// and what it prints without `--all`. The command must ask about
-    /// `node`, in the file that `session` browses.
-    fn run(session: &Session, words: &[String], node: Node) -> (String, String) {
-        let cli = Cli::try_parse_from(words).unwrap_or_else(|error| panic!("{words:?}: {error}"));
-        assert_eq!(cli.file, session.path, "{words:?}");
-        let Some(Command::Callers(args)) = cli.command else {
-            panic!("{words:?} is not callers");
-        };
-        let [query] = &args.uses.symbols[..] else {
-            panic!("{words:?} has no one SYMBOL");
-        };
-        let symbol = session.names.find(query).unwrap();
-        assert_eq!(symbol.node, node, "{words:?}");
+    /// What `command` gives as SYMBOL, when it is `callers` with one
+    /// SYMBOL: the tests' own match on the command under the tab, for
+    /// `tab_command`.
+    fn query(command: &Command) -> Option<&str> {
+        match command {
+            Command::Callers(args) => match &args.uses.symbols[..] {
+                [query] => Some(query),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// What `callers` prints for `symbol`, as elfq runs it, but on the
+    /// graph that `session` has already built, and what it prints without
+    /// `--all`.
+    fn run(session: &Session, symbol: &Symbol) -> (String, String) {
         let output = |detail| {
             let mut out = Vec::new();
             let (binary, graph) = (session.binary, &session.graph);
-            callers::callers(binary, graph, &symbol, detail, Format::Text, &mut out).unwrap();
+            callers::callers(binary, graph, symbol, detail, Format::Text, &mut out).unwrap();
             String::from_utf8(out).unwrap()
         };
         (output(Detail::All), output(Detail::Brief))
@@ -73,9 +74,7 @@ mod tests {
     fn the_callers_tab_lists_what_its_command_prints() {
         // Pages, and those whose command needs --all.
         let (mut pages, mut cut_pages) = (0, 0);
-        for path in samples() {
-            let binary = Binary::load(&path).unwrap();
-            let session = Session::new(&path, &binary).unwrap();
+        each_session(|path, binary, session| {
             // Every item, and every import that has a page of its own.
             let items = (0..binary.items.len()).map(Node::Item);
             let imports = (0..binary.imports.len()).map(Node::Import);
@@ -84,11 +83,10 @@ mod tests {
                 let tab = tab(&session, node, session.callers_text(node));
                 let name = path.display();
                 // The command parses as elfq's arguments, after the shell
-                // has split it into words.
-                let line = tab.command().strip_prefix("$ ").unwrap();
-                let words = shell_words(line);
-                assert_eq!(words[0], "elfq", "{line}");
-                let (every, brief) = run(&session, &words, node);
+                // has split it into words, and finds the item in the file.
+                let command = tab_command(&session, &tab, Some(node), query);
+                let line = &command.line;
+                let (every, brief) = run(&session, command.symbol.as_ref().unwrap());
                 // Its rows and notes are the tab's, with --all, after its
                 // first line, which says what the tab says in place of the
                 // rows when nothing uses the item.
@@ -102,11 +100,11 @@ mod tests {
                 assert_eq!(rest, printed, "{name}: {line}");
                 // The command has --all exactly when it needs it to list
                 // every row.
-                assert_eq!(line.ends_with(" --all"), every != brief, "{name}: {line}");
+                assert_has_all_when_needed(line, &every, &brief);
                 pages += 1;
                 cut_pages += usize::from(every != brief);
             }
-        }
+        });
         assert!(pages > 4500 && cut_pages > 0, "{pages} {cut_pages}");
     }
 
@@ -115,9 +113,7 @@ mod tests {
         // The pages where some callers on the screen would read the same
         // if each name were shortened by itself.
         let mut pages = 0;
-        for path in samples() {
-            let binary = Binary::load(&path).unwrap();
-            let session = Session::new(&path, &binary).unwrap();
+        each_session(|_, binary, session| {
             let items = (0..binary.items.len()).map(Node::Item);
             let imports = (0..binary.imports.len()).map(Node::Import);
             let nodes = items.chain(imports.filter(|&node| session.page_node(node) == node));
@@ -139,7 +135,7 @@ mod tests {
                     pages += usize::from(alone.len() < distinct.len());
                 }
             }
-        }
+        });
         assert!(pages > 100, "{pages}");
     }
 
@@ -150,8 +146,9 @@ mod tests {
         let session = Session::new(typed, &binary).unwrap();
         let node = session.names.find("log_msg").unwrap().node;
         let tab = tab(&session, node, session.callers_text(node));
-        let words = shell_words(tab.command().strip_prefix("$ ").unwrap());
-        let cli = Cli::try_parse_from(&words).unwrap_or_else(|error| panic!("{words:?}: {error}"));
-        assert_eq!(cli.file, typed, "{}", tab.command());
+        let command = tab_command(&session, &tab, Some(node), query);
+        // The test's point: the command names the file as typed, which
+        // tab_command checks only against the session's path.
+        assert_eq!(command.cli.file, typed, "{}", command.line);
     }
 }

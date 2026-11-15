@@ -83,10 +83,10 @@ fn by_block(session: &Session, tree: &DominatorTree, node: Node) -> Vec<Lines> {
 mod tests {
     use clap::Parser;
 
-    use super::super::shell_words;
+    use super::super::test_support::{assert_has_all_when_needed, each_session, tab_command};
     use super::*;
     use crate::binary::Binary;
-    use crate::binary::test_samples::samples;
+    use crate::binary::test_samples::sample_path;
     use crate::cli::{Cli, Command, Format};
     use crate::commands::retained_tree::RetainedTree;
     use crate::commands::text::Detail;
@@ -96,20 +96,18 @@ mod tests {
         // Pages, those whose command needs --all, and those with the bytes
         // by block.
         let (mut pages, mut cut_pages, mut by_block) = (0, 0, 0);
-        for path in samples() {
-            let binary = Binary::load(&path).unwrap();
-            let mut session = Session::new(&path, &binary).unwrap();
+        each_session(|path, binary, mut session| {
             session.work_out_keepers();
             let graph = &session.graph;
             // The trees that the command builds, without a range and with
             // each block's.
-            let whole = RetainedTree::new(&binary, graph, None);
+            let whole = RetainedTree::new(binary, graph, None);
             let blocks: Vec<RetainedTree> = (session.blocks.iter())
-                .map(|block| RetainedTree::new(&binary, graph, Some(block.range)))
+                .map(|block| RetainedTree::new(binary, graph, Some(block.range)))
                 .collect();
             for index in 0..binary.items.len() {
                 let node = Node::Item(index);
-                if retained::refusal(&binary, node).is_err() {
+                if retained::refusal(binary, node).is_err() {
                     continue;
                 }
                 let keepers = session.keepers().unwrap();
@@ -117,22 +115,17 @@ mod tests {
                 let name = path.display();
                 // The command parses as elfq's arguments, after the shell
                 // has split it into words, and finds the item in the file.
-                let line = tab.command().strip_prefix("$ ").unwrap();
-                let words = shell_words(line);
-                assert_eq!(words[0], "elfq", "{line}");
-                let cli = Cli::try_parse_from(&words).unwrap_or_else(|e| panic!("{line}: {e}"));
-                assert_eq!(cli.file, path, "{line}");
-                let Some(Command::Retained(args)) = cli.command else {
-                    panic!("{line} is not retained");
-                };
-                let [query] = &args.symbols[..] else {
-                    panic!("{line} names several SYMBOLs");
-                };
-                let symbol = session.names.find(query).unwrap();
-                assert_eq!(symbol.node, node, "{line}");
+                let command = tab_command(&session, &tab, Some(node), |parsed| match parsed {
+                    Command::Retained(args) => match &args.symbols[..] {
+                        [query] => Some(query),
+                        _ => None,
+                    },
+                    _ => None,
+                });
+                let (line, symbol) = (&command.line, command.symbol.unwrap());
                 // What it prints, as `retained` runs it, but on the graph
                 // that the session has built, with --all and without.
-                let lead_name = symbol.lead_name(&binary);
+                let lead_name = symbol.lead_name(binary);
                 let output = |detail| {
                     let symbol = SymbolInTree {
                         retained: &whole,
@@ -148,7 +141,7 @@ mod tests {
                 assert_eq!(lines, tab.printed(), "{name}: {line}");
                 // The command has --all exactly when it needs it to list
                 // every row and name.
-                assert_eq!(line.ends_with(" --all"), every != brief, "{name}: {line}");
+                assert_has_all_when_needed(line, &every, &brief);
                 pages += 1;
                 cut_pages += usize::from(every != brief);
 
@@ -164,15 +157,15 @@ mod tests {
                 for (row, block) in below[2..].iter().zip(&blocks) {
                     let cells: Vec<&str> = row.split_whitespace().collect();
                     let range = format!("--range={}", cells[0]);
-                    let cli =
-                        Cli::try_parse_from(words.iter().map(String::as_str).chain([&*range]));
+                    let words = command.words.iter().map(String::as_str);
+                    let cli = Cli::try_parse_from(words.chain([&*range]));
                     assert_eq!(cli.unwrap().range, block.range, "{name}: {row}");
                     let bytes = block.tree.retained(node).to_string();
                     assert_eq!(cells[1], bytes, "{name}: {line} {row}");
                 }
                 by_block += 1;
             }
-        }
+        });
         assert!(
             pages > 4500 && cut_pages > 150 && by_block > 1000,
             "{pages} {cut_pages} {by_block}"
@@ -181,10 +174,7 @@ mod tests {
 
     #[test]
     fn the_answer_keeps_its_first_line_on_a_small_screen() {
-        let path = samples()
-            .into_iter()
-            .find(|path| path.ends_with("c-cortex-m7.elf"))
-            .unwrap();
+        let path = sample_path("testdata/bin/c-cortex-m7.elf");
         let binary = Binary::load(&path).unwrap();
         let mut session = Session::new(&path, &binary).unwrap();
         session.work_out_keepers();

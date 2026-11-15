@@ -124,11 +124,11 @@ fn page(session: &Session) -> Printed {
 mod tests {
     use clap::Parser;
 
-    use super::super::shell_words;
+    use super::super::test_support::{assert_has_all_when_needed, each_session, tab_command};
     use super::*;
     use crate::binary::Binary;
-    use crate::binary::test_samples::{sample_path, samples};
-    use crate::cli::Cli;
+    use crate::binary::test_samples::sample_path;
+    use crate::cli::{Cli, Command};
     use crate::commands;
     use crate::graph::{Node, Root, RootKind};
 
@@ -148,17 +148,16 @@ mod tests {
     #[test]
     fn the_start_page_shows_what_the_overview_and_reach_print() {
         let mut pages = 0;
-        for path in samples() {
-            let binary = Binary::load(&path).unwrap();
-            let session = Session::new(&path, &binary).unwrap();
+        each_session(|_, _, session| {
             let start = page(&session);
             // The command under it parses as elfq's arguments, after the
-            // shell has split it into words, and names the file.
-            let line = start.command().strip_prefix("$ ").unwrap();
-            let words = shell_words(line);
-            assert_eq!(words[0], "elfq", "{line}");
-            let cli = Cli::try_parse_from(&words).unwrap();
-            assert_eq!(cli.file, path, "{line}");
+            // shell has split it into words, and names the file, with no
+            // SYMBOL.
+            let command = tab_command(&session, &start, None, |parsed| match parsed {
+                Command::Reach(args) => args.symbol.as_deref(),
+                _ => None,
+            });
+            let (line, words) = (&command.line, &command.words);
             // The page has the overview's lines up to its blocks of memory,
             // then every line of the command's answer, with --all.
             let overview = printed(&words[..2]);
@@ -167,7 +166,7 @@ mod tests {
                 .take_while(|line| !line.starts_with("RETAINED") && *line != "Try:")
                 .cloned()
                 .collect();
-            let all = printed(&words);
+            let all = printed(words);
             head.extend(all.iter().cloned());
             assert_eq!(start.printed(), head, "{line}");
             // The command has --all exactly when it needs it to list every
@@ -177,10 +176,9 @@ mod tests {
                 .filter(|&word| word != "--all")
                 .cloned()
                 .collect();
-            let cut = printed(&without) != all;
-            assert_eq!(line.ends_with(" --all"), cut, "{line}");
+            assert_has_all_when_needed(line, &all, &printed(&without));
             pages += 1;
-        }
+        });
         // No sample has more starts than `reach` lists without --all, or
         // more than a few that elfq can't read: the next test has them.
         assert!(pages > 40, "{pages}");

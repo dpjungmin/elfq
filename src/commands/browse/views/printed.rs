@@ -725,20 +725,13 @@ impl Printed {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 
+        use super::test_support::screen_lines;
+
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal
             .draw(|frame| self.draw(frame, frame.area()))
             .unwrap();
-        let buffer = terminal.backend().buffer();
-        let lines: Vec<String> = (0..height)
-            .map(|row| {
-                let line: String = (0..width)
-                    .map(|column| buffer[(column, row)].symbol())
-                    .collect();
-                line.trim_end().to_string()
-            })
-            .collect();
-        lines.join("\n")
+        screen_lines(terminal.backend().buffer()).join("\n")
     }
 }
 
