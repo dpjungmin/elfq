@@ -238,7 +238,9 @@ names its items by address, or the compiler inlined every copy of the
 function, which `inlined` lists in the functions that hold them. Typing
 the command first, as in `elfq callers app.elf log_msg`, gets a hint
 that the file comes first, and `elfq help top` prints the same help as
-`elfq app.elf top --help`.
+`elfq app.elf top --help`. `--json`, `--tree` and `--range` go before
+the command or after it, and a command refuses one that it doesn't
+take, wherever it is given; its help lists only those that it takes.
 
 `callers` and `callees` also take one or more ranges of memory in place of
 SYMBOL, written as `--range` takes them: `0x0+256K`, or `0x0..0x40000`.
@@ -1731,10 +1733,12 @@ in order. Its output is the first example under [Commands](#commands).
 1. **Arguments.** `main`, in main.rs, runs `run` on a thread with a large
    stack, since elfq builds its trees recursively. `run` reads
    `elfq help top` as `elfq top --help`, then clap parses the arguments
-   into a `cli::Cli`: the file, `--json`, `--tree`, `--range`, and here
-   `Command::Retained` with its SYMBOL. Under the first line of clap's
-   error for an argument that a command doesn't take, `with_hints` puts
-   the lines that `arguments::unexpected_argument_hints` words.
+   into a `cli::Cli`: the file; `--json`, `--tree` and `--range`, which
+   clap gives `Cli` whether they come before the command or after it
+   (`cli/shared.rs`); and here `Command::Retained` with its SYMBOL.
+   Under the first line of clap's error for an argument that a command
+   doesn't take, `with_hints` puts the lines that
+   `arguments::unexpected_argument_hints` words.
 2. **Dispatch.** `commands::run` checks that the arguments go together
    (`arguments::check_before_loading`), before it reads the file, then
    loads the file, prints any warnings about it, and calls `retained::run`.

@@ -7,8 +7,13 @@
 //! The prose that `--help` prints after the options is in `help.rs`, so
 //! that this file reads as the command line: `Cli`, `Command` and each
 //! command's arguments.
+//!
+//! The shared options, `--json`, `--tree` and `--range`, are `Cli`'s, for
+//! the overview, and each command declares its own, as `shared.rs` builds
+//! them, so that its help lists only those that it takes.
 
 mod help;
+mod shared;
 
 #[cfg(feature = "tui")]
 pub(crate) use help::HOW_WORDS;
@@ -23,6 +28,7 @@ use help::{
     INLINED, PATTERNS, REACH, RETAINED, RETAINED_REACH, RETAINED_SET, ROW_MARKS, STARTUP, TOP, WHY,
     how_table,
 };
+use shared::{JSON_HELP, RANGE_HELP, json, range, refused, tree};
 
 // The whole command line. No `///` comment here: clap would show one of more
 // than one paragraph at the top of `elfq --help`, in place of the
@@ -42,18 +48,24 @@ pub struct Cli {
     /// What to ask about FILE. Without one, elfq prints an overview.
     #[command(subcommand)]
     pub(crate) command: Option<Command>,
-    /// Print the answer as JSON, for scripts
-    #[arg(long, global = true)]
+    // The shared options, with the overview's help. They are global: clap
+    // gives `Cli` the value that a command's own option reads (see
+    // `shared.rs`), and gives these to the debug commands, which declare
+    // none. The commands that take `--json` or `--range` say what it does
+    // in the same words, so those are in `shared.rs`.
+    #[arg(long, global = true, help = JSON_HELP)]
     pub(crate) json: bool,
     /// Draw the overview, top, retained, why, reach SYMBOL and inlined
     /// SYMBOL as trees
     #[arg(long, global = true)]
     pub(crate) tree: bool,
-    /// Count only the bytes in one range of memory, such as ITCM: START..END
-    /// or START+SIZE, like 0x20000000+256K. When the file's sections and load
-    /// images occupy several ranges, as in firmware, the overview lists them.
-    /// For the overview, top and retained.
-    #[arg(long, global = true, value_name = "RANGE", value_parser = one_range)]
+    #[arg(
+        long,
+        global = true,
+        value_name = "RANGE",
+        value_parser = one_range,
+        help = format!("{RANGE_HELP}. For the overview, top and retained")
+    )]
     pub(crate) range: Option<AddressRange>,
 }
 
@@ -153,48 +165,76 @@ pub(crate) enum Format {
 }
 
 // One variant per command. Each variant's `///` line is its line in
-// `elfq --help`.
+// `elfq --help`, and its `args` are the shared options that it takes, as
+// its help lists them, and those that it refuses (see `shared.rs`). `args`
+// is clap's `Command::args`, which the derive calls after it adds the
+// struct's arguments, so the shared options come after the command's own
+// in its help.
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
     /// Show the items that keep the most bytes in the file
-    #[command(after_help = format!("{TOP}\n\n{ROW_MARKS}"))]
+    #[command(
+        after_help = format!("{TOP}\n\n{ROW_MARKS}"),
+        args = [json(), tree().help("Draw the rows as a tree"), range()]
+    )]
     Top(TopArgs),
     /// Show what removing SYMBOL, or several at once, would save
-    #[command(after_help = format!("{RETAINED}\n\n{RETAINED_SET}\n\n{PATTERNS}\n\n{ROW_MARKS}\n\n{RETAINED_REACH}"))]
+    #[command(
+        after_help = format!("{RETAINED}\n\n{RETAINED_SET}\n\n{PATTERNS}\n\n{ROW_MARKS}\n\n{RETAINED_REACH}"),
+        args = [json(), tree().help("Draw the rows as a tree"), range()]
+    )]
     Retained(RetainedArgs),
     /// Show the chains of calls and references that keep SYMBOL in the file
-    #[command(after_help = format!("{WHY}\n\n{}\n\n{HOW_NOTES}", how_table()))]
+    #[command(
+        after_help = format!("{WHY}\n\n{}\n\n{HOW_NOTES}", how_table()),
+        args = [json(), tree().help("Draw the chains as a tree"), refused(range())]
+    )]
     Why(WhyArgs),
     /// List the functions the compiler inlined, by the bytes their copies take
-    #[command(after_help = INLINED)]
+    #[command(
+        after_help = INLINED,
+        args = [json(), tree().help("Draw the inlined code in SYMBOL as a tree"), refused(range())]
+    )]
     Inlined(InlinedArgs),
     /// List what calls or uses SYMBOL
     #[command(
         override_usage = "elfq <FILE> callers [OPTIONS] <SYMBOL>\n       \
                           elfq <FILE> callers [OPTIONS] <SYMBOL|PATTERN|RANGE>...",
-        after_help = format!("{}\n\n{HOW_NOTES}\n\n{AT}\n\n{CALLERS}\n\n{CALLERS_RANGES}\n\n{PATTERNS}", how_table())
+        after_help = format!("{}\n\n{HOW_NOTES}\n\n{AT}\n\n{CALLERS}\n\n{CALLERS_RANGES}\n\n{PATTERNS}", how_table()),
+        args = [json(), refused(tree()), refused(range())]
     )]
     Callers(CallersArgs),
     /// List what SYMBOL calls or uses
     #[command(
         override_usage = "elfq <FILE> callees [OPTIONS] <SYMBOL>\n       \
                           elfq <FILE> callees [OPTIONS] <SYMBOL|PATTERN|RANGE>...",
-        after_help = format!("{}\n\n{HOW_NOTES}\n\n{AT}\n\n{CALLEES}\n\n{CALLEES_RANGES}\n\n{PATTERNS}", how_table())
+        after_help = format!("{}\n\n{HOW_NOTES}\n\n{AT}\n\n{CALLEES}\n\n{CALLEES_RANGES}\n\n{PATTERNS}", how_table()),
+        args = [json(), refused(tree()), refused(range())]
     )]
     Callees(CalleesArgs),
     /// List everything SYMBOL calls or uses, at any depth, by memory block
-    #[command(after_help = format!("{REACH}\n\n{}\n\n{HOW_NOTES}", how_table()))]
+    #[command(
+        after_help = format!("{REACH}\n\n{}\n\n{HOW_NOTES}", how_table()),
+        args = [json(), tree().help("Draw what SYMBOL reaches as a tree"), refused(range())]
+    )]
     Reach(ReachArgs),
     /// Read a function's code in the terminal, and follow what it calls, reaches and is used by
-    #[command(after_help = format!("{BROWSE}\n\n{}", how_table()))]
+    #[command(
+        after_help = format!("{BROWSE}\n\n{}", how_table()),
+        args = [refused(json()), refused(tree()), refused(range())]
+    )]
     Browse(BrowseArgs),
     /// Show what changed from FILE to NEW, by block of memory
-    #[command(after_help = DIFF)]
+    #[command(after_help = DIFF, args = [json(), refused(tree()), refused(range())])]
     Diff(DiffArgs),
     /// Check that the reset code copies and zeroes memory before it uses it
-    #[command(after_help = STARTUP)]
+    #[command(after_help = STARTUP, args = [json(), refused(tree()), refused(range())])]
     Startup(StartupArgs),
     /// Show elfq's own view of the file (for developing elfq)
+    // No `args`: clap gives the debug commands `Cli`'s shared options, so
+    // their help lists all three, though `debug matches` takes only
+    // `--json`, and the others none. They are hidden, and only for
+    // developing elfq.
     #[command(subcommand, hide = true)]
     Debug(DebugCommand),
 }

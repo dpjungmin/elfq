@@ -4,16 +4,22 @@
 //! errors on stderr with exit status 2 and what to try instead, the line
 //! that says that the arguments are files here, which the shell may have
 //! put in place of a pattern, the exit status when what reads the answer
-//! stops early, and help before or after a command. Each command's own
-//! errors are tested in its file in commands/.
+//! stops early, help before or after a command, and the shared options
+//! that each command's help lists, against what the command does with
+//! each. Each command's own errors are tested in its file in commands/.
 
+use std::collections::BTreeMap;
 use std::process::Stdio;
 
+use clap::CommandFactory;
 use object::elf;
+
+use elfq::cli::Cli;
 
 use crate::support::elf::{ElfBytes, SectionField};
 use crate::support::{
-    LIBRARY_SAMPLE, Run, SAMPLE, TCM_SAMPLE, TempFolder, assert_output, command, stderr, stdout,
+    LIBRARY_SAMPLE, Run, SAMPLE, TCM_SAMPLE, TempFolder, assert_output, command, run, stderr,
+    stdout,
 };
 
 #[test]
@@ -595,18 +601,18 @@ fn files_that_the_shell_put_in_place_of_a_pattern_are_pointed_out() {
     let error = |args: &[&str]| here.run(TCM_SAMPLE, &[args, &uart].concat()).error();
     // why, reach, inlined and browse take one SYMBOL at most, so clap
     // refuses the second name before the file is read, and the line goes
-    // under the first line of clap's error.
-    for (command, symbol) in [
-        ("why", "<SYMBOL>"),
-        ("reach", "[SYMBOL]"),
-        ("inlined", "[SYMBOL]"),
+    // under the first line of clap's error. browse takes no options.
+    for (command, usage) in [
+        ("why", "[OPTIONS] <SYMBOL>"),
+        ("reach", "[OPTIONS] [SYMBOL]"),
+        ("inlined", "[OPTIONS] [SYMBOL]"),
         ("browse", "[SYMBOL]"),
     ] {
         assert_output(
             &error(&[command]),
             &format!(
                 "error: unexpected argument 'uart_hal.c' found\n{UART_FILES_HERE}\n\nUsage: elfq \
-                 <FILE> {command} [OPTIONS] {symbol}\n\nFor more information, try '--help'.\n"
+                 <FILE> {command} {usage}\n\nFor more information, try '--help'.\n"
             ),
         );
     }
@@ -936,6 +942,171 @@ fn help_before_a_command_is_that_commands_help() {
         assert_output(
             &stdout(&["help", &command]),
             &stdout(&[SAMPLE, &command, "--help"]),
+        );
+    }
+}
+
+/// The shared options, `Cli`'s global ones (see `cli/shared.rs`), each with
+/// what a command that takes it is given on the Cortex-M7 sample: `--range`
+/// the sample's flash.
+const SHARED_OPTIONS: [&[&str]; 3] = [&["--json"], &["--tree"], &["--range", "0x30000000+16M"]];
+
+/// Each command, with arguments that it answers for on the Cortex-M7
+/// sample, the overview as "". A command comes once for each set of
+/// arguments that changes which shared options it takes: reach and inlined
+/// with SYMBOL and without, since they take `--tree` only with it. browse
+/// needs a terminal, so it fails here, with the same error whatever it is
+/// given but an option that it refuses.
+const FORMS: [(&str, &[&str]); 13] = [
+    ("", &[]),
+    ("top", &[]),
+    ("retained", &["main"]),
+    ("why", &["tx_buffer"]),
+    ("inlined", &[]),
+    ("inlined", &["main"]),
+    ("callers", &["log_msg"]),
+    ("callees", &["main"]),
+    ("reach", &[]),
+    ("reach", &["main"]),
+    ("browse", &[]),
+    ("diff", &[TCM_SAMPLE]),
+    ("startup", &[]),
+];
+
+/// What the forms of one command in [`FORMS`] do with one of the
+/// [`SHARED_OPTIONS`]. Each form is written as it is typed after FILE,
+/// such as `reach main`.
+#[derive(Default)]
+struct Takers {
+    /// The forms that take the option.
+    taking: Vec<String>,
+    /// The forms that refuse it.
+    refusing: Vec<String>,
+}
+
+/// What each form in [`FORMS`] does with each of the [`SHARED_OPTIONS`],
+/// by command and option. A form refuses an option when the option alone
+/// makes elfq fail, with an error that it doesn't give without it,
+/// wherever elfq refuses it: before the file is loaded, or after. Given
+/// before the command's name, each option must do just what it does after
+/// it.
+fn shared_options_taken() -> BTreeMap<(&'static str, &'static str), Takers> {
+    let mut taken = BTreeMap::<_, Takers>::new();
+    for (command, arguments) in FORMS {
+        let mut form = Vec::new();
+        if !command.is_empty() {
+            form.push(command);
+        }
+        form.extend(arguments);
+        let without = run(&[&[TCM_SAMPLE], &form[..]].concat()).stderr;
+        for option in SHARED_OPTIONS {
+            let after = run(&[&[TCM_SAMPLE], &form[..], option].concat());
+            if !command.is_empty() {
+                let before = run(&[&[TCM_SAMPLE], option, &form[..]].concat());
+                assert_eq!(
+                    (before.stdout, before.stderr),
+                    (after.stdout.clone(), after.stderr.clone()),
+                    "{} before {command} and after it",
+                    option[0]
+                );
+            }
+            let takers = taken.entry((command, option[0])).or_default();
+            if after.stderr == without {
+                takers.taking.push(form.join(" "));
+            } else {
+                takers.refusing.push(form.join(" "));
+            }
+        }
+    }
+    taken
+}
+
+/// The lines of `help`'s Options, each an option and what it does.
+fn options_listed(help: &str) -> Vec<&str> {
+    let (_, options) = help.split_once("\nOptions:\n").expect(help);
+    options
+        .lines()
+        .take_while(|line| !line.is_empty())
+        .collect()
+}
+
+/// What to change in src/cli/mod.rs for `command`'s help to list
+/// `option`, with a line that says what it does.
+fn how_to_list(command: &str, option: &str) -> String {
+    match (command, option) {
+        ("", _) => "show it, with a help line, on its field on Cli".to_string(),
+        (_, "--tree") => {
+            "give it tree().help(\"Draw ... as a tree\") in its variant's args".to_string()
+        }
+        _ => format!("give it {}() in its variant's args", &option[2..]),
+    }
+}
+
+/// What to change in src/cli/mod.rs for `command`'s help to leave `option`
+/// out.
+fn how_to_leave_out(command: &str, option: &str) -> String {
+    match command {
+        "" => "hide its field on Cli".to_string(),
+        _ => format!("give it refused({}()) in its variant's args", &option[2..]),
+    }
+}
+
+#[test]
+fn each_command_s_help_lists_the_shared_options_that_it_takes() {
+    let global: Vec<String> = (Cli::command().get_arguments())
+        .filter(|option| option.is_global_set())
+        .map(|option| format!("--{}", option.get_long().unwrap()))
+        .collect();
+    assert_eq!(
+        global,
+        SHARED_OPTIONS.map(|option| option[0]),
+        "give SHARED_OPTIONS each of Cli's global options, in their order"
+    );
+    // The hidden debug commands list all three, as clap gives them (see
+    // `Command::Debug`).
+    for command in elfq::cli::command_names() {
+        let in_forms = command == "debug" || FORMS.iter().any(|(form, _)| *form == command);
+        assert!(
+            in_forms,
+            "add {command} to FORMS, with arguments that it answers for"
+        );
+    }
+    for ((command, option), takers) in shared_options_taken() {
+        let (name, help) = match command {
+            "" => ("the overview", stdout(&["--help"])),
+            _ => (command, stdout(&[TCM_SAMPLE, command, "--help"])),
+        };
+        let listed = options_listed(&help);
+        let line = (listed.iter()).find(|line| line.trim_start().split(' ').next() == Some(option));
+        let Some(line) = line else {
+            assert!(
+                takers.taking.is_empty(),
+                "{name} takes {option}, but its help leaves it out: {}, in src/cli/mod.rs",
+                how_to_list(command, option)
+            );
+            continue;
+        };
+        assert!(
+            !takers.taking.is_empty(),
+            "{name} refuses {option}, but its help lists it: {}, in src/cli/mod.rs",
+            how_to_leave_out(command, option)
+        );
+        // After the option, and its value's name, what it does.
+        let says =
+            (line.trim_start().split_once("  ")).is_some_and(|(_, says)| !says.trim().is_empty());
+        assert!(
+            says,
+            "{name}'s help lists {option} without saying what it does: {}, in src/cli/mod.rs",
+            how_to_list(command, option)
+        );
+        // Only SYMBOL changes which shared options a command takes, as
+        // reach and inlined take --tree only with it.
+        assert!(
+            takers.refusing.is_empty() || line.contains("SYMBOL"),
+            "{name} takes {option} as {:?} but refuses it as {:?}, so its help should say \
+             which, as reach's and inlined's --tree lines name SYMBOL: {line}",
+            takers.taking,
+            takers.refusing
         );
     }
 }
