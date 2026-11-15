@@ -99,8 +99,9 @@ pub struct Symbol {
     pub node: Node,
     /// What the answer's first line adds to the item's name when SYMBOL
     /// gave something other than that name: another of its names, as in
-    /// "also named snprintf", or an address inside it, as in "which holds
-    /// 0x30000290".
+    /// "also named snprintf", an address inside it, as in "which holds
+    /// 0x30000290", or a pattern that matches only it, as in "the one
+    /// item named on_b*".
     note: Option<String>,
 }
 
@@ -108,11 +109,23 @@ impl Symbol {
     /// The item's name as the answer's first line gives it, with the note
     /// if there is one: `sniprintf (also named snprintf)`.
     pub fn lead_name(&self, binary: &Binary) -> String {
-        let name = self.node.name(binary);
-        match &self.note {
-            Some(note) => format!("{name} ({note})"),
-            None => name.to_string(),
-        }
+        with_note(self.node.name(binary), self.note())
+    }
+
+    /// What the answer's first line adds to the item's name, if anything:
+    /// `also named snprintf`. Browse's header and go-to box put it after
+    /// the name with [`with_note`], as `lead_name` does.
+    pub(in crate::commands) fn note(&self) -> Option<&str> {
+        self.note.as_deref()
+    }
+}
+
+/// `name`, then `note` in brackets when there is one, as the answer's
+/// first line names an item: `sniprintf (also named snprintf)`.
+pub(in crate::commands) fn with_note(name: &str, note: Option<&str>) -> String {
+    match note {
+        Some(note) => format!("{name} ({note})"),
+        None => name.to_string(),
     }
 }
 

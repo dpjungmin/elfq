@@ -70,11 +70,11 @@ impl Work {
             Work::StartPage => format!("working out where {} starts…", session.file_name()),
             Work::Keepers => "working out what keeps each item…".to_string(),
             Work::Tab(tab) => {
-                let title = session.title(tab.node());
+                let name = session.row_name(tab.node());
                 match tab {
-                    SlowTab::Reach(_) => format!("working out what {title} reaches…"),
-                    SlowTab::Why(_) => format!("working out what keeps {title} in the file…"),
-                    SlowTab::Retained(_) => format!("working out what only {title} leads to…"),
+                    SlowTab::Reach(_) => format!("working out what {name} reaches…"),
+                    SlowTab::Why(_) => format!("working out what keeps {name} in the file…"),
+                    SlowTab::Retained(_) => format!("working out what only {name} leads to…"),
                 }
             }
         }
@@ -114,8 +114,7 @@ impl<'a> App<'a> {
                 Ok(found) => {
                     // An address selects the line that holds it.
                     let at = hex_number(typed).and_then(Result::ok);
-                    let lead = found.lead_name(session.binary);
-                    let page = ItemPage::new(&session, found.node, at, &lead);
+                    let page = ItemPage::new(&session, found.node, at, found.note());
                     first = View::Item(Box::new(page));
                 }
                 // The CLI's error goes over the rows.
@@ -294,9 +293,9 @@ impl<'a> App<'a> {
                     // The header names the item as SYMBOL's answer does,
                     // with what holds an address typed, or the other name
                     // that found it.
-                    let name = picker_row.node.name(session.binary);
-                    let lead = picker_row.lead.as_deref().unwrap_or(name);
-                    let page = ItemPage::new(session, picker_row.node, picker_row.at, lead);
+                    let (node, at) = (picker_row.page.node, picker_row.page.at);
+                    let note = picker_row.note.as_deref();
+                    let page = ItemPage::new(session, node, at, note);
                     self.picker = None;
                     self.message = None;
                     self.open(View::Item(Box::new(page)));
@@ -656,7 +655,7 @@ mod tests {
                 .flat_map(|node| [2, 3, 4, 5, 6].map(|tab| (node, tab)))
             {
                 let name = node.name(&binary);
-                let mut page = ItemPage::new(&app.session, node, None, name);
+                let mut page = ItemPage::new(&app.session, node, None, None);
                 if page.handle(&app.session, Action::Tab(tab)).is_some() {
                     // The item doesn't have the tab.
                     continue;

@@ -42,7 +42,7 @@ use ratatui::style::Stylize;
 use ratatui::text::{Line, Span};
 
 use super::printed::Printed;
-use super::{Cursor, Go, draw_lines, fit_name, follow, imported};
+use super::{Cursor, Go, PageAt, draw_lines, fit_name, follow, imported};
 use crate::commands::browse::{keys::Action, session::Session};
 use crate::commands::checks::readable_item;
 use crate::commands::{retained, text, why};
@@ -242,17 +242,17 @@ pub(in crate::commands::browse) struct ItemPage {
 impl ItemPage {
     /// The page of `node`, with the line that holds `at` selected.
     ///
-    /// `node` is an item or an import. The header names it as
-    /// `header_name`, which may say what SYMBOL gave, as in
-    /// "Default_Handler (also named NMI_Handler)" (see the names in
-    /// `session.rs`). A function's page opens on its code, and a data
-    /// object's on its contents, when they have rows. Otherwise, as for an
-    /// import, which has no code here, the page opens on its callers.
+    /// `node` is an item or an import. The header names it, then `note`,
+    /// what SYMBOL said about it, if anything, as in "Default_Handler
+    /// (also named NMI_Handler)" (see the names in `session.rs`). A
+    /// function's page opens on its code, and a data object's on its
+    /// contents, when they have rows. Otherwise, as for an import, which
+    /// has no code here, the page opens on its callers.
     pub(in crate::commands::browse) fn new(
         session: &Session,
         node: Node,
         at: Option<u64>,
-        header_name: &str,
+        note: Option<&str>,
     ) -> ItemPage {
         let binary = session.binary;
         let answer = session.callers_text(node);
@@ -260,7 +260,7 @@ impl ItemPage {
             Node::Item(index) => Pane::Listing(ListingPane::new(session, index, at)),
             Node::Import(_) => Pane::Refused(imported(session, node)),
         };
-        let header = Header::new(session, node, header_name, answer.node_count());
+        let header = Header::new(session, node, note, answer.node_count());
         // A tab worked out later, or why the item can't have it, as the
         // command that prints the tab says it.
         let pane = |tab: Result<Later>| match tab {
@@ -270,7 +270,7 @@ impl ItemPage {
         let slow = |tab: Result<SlowTab>| pane(tab.map(Later::Slow));
         let mut page = ItemPage {
             node,
-            title: session.title(node),
+            title: session.row_name(node),
             short_title: None,
             header,
             tab: Tab::Callers,
@@ -513,7 +513,13 @@ impl ItemPage {
             return Go::Say(text::nothing_reaches(&session.lead_name(node)));
         }
         match keepers.tree.parent(node) {
-            Some(parent) => follow(session, parent, None, Some(node), self.tab),
+            Some(parent) => {
+                let page = PageAt {
+                    node: parent,
+                    at: None,
+                };
+                follow(session, page, Some(node), self.tab)
+            }
             None => Go::Say(why::no_single_keeper(node.name(binary))),
         }
     }

@@ -22,7 +22,7 @@
 //! to paste, unless its section takes no room in the file, as `.bss`
 //! doesn't.
 
-use super::line_notes::LineNotes;
+use super::line_notes::{LineNotes, UseLink};
 use super::listing::{Listing, ListingLine};
 use crate::binary::{Binary, ItemKind, RelocationTarget, StoredWord, exception_name};
 use crate::commands::browse::session::Session;
@@ -132,8 +132,12 @@ fn pointers(notes: &LineNotes) -> Vec<ListingLine> {
 /// frames+0x8`.
 fn pointer(notes: &LineNotes, reference: &Reference, value: String) -> ListingLine {
     let binary = notes.session.binary;
-    let (name, via, link) = notes.target(reference);
-    let how = text::how_via(binary, reference.to, reference.kind, via);
+    let UseLink {
+        name,
+        via_veneer,
+        link,
+    } = notes.use_link(reference);
+    let how = text::how_via(binary, reference.to, reference.kind, via_veneer);
     ListingLine {
         address: reference.site,
         text: value,
@@ -281,9 +285,9 @@ mod tests {
                 // callees, run on the graph that the session has built.
                 let mut rows: Vec<(String, serde_json::Value)> = Vec::new();
                 for line in contents.lines() {
-                    if let Some(Link::Node { node, .. }) = line.link {
+                    if let Some(Link::Node { page, .. }) = line.link {
                         assert!(line.note.starts_with("pointer "), "{shown}: {}", line.note);
-                        rows.push((json::address(line.address), item_json(node)));
+                        rows.push((json::address(line.address), item_json(page.node)));
                     }
                 }
                 let mut out = Vec::new();

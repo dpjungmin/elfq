@@ -458,8 +458,9 @@ helper type, doesn't take a word of the list; where code still does, as
 - **row name**, **lead name**, **query**: three of the names that browse
   gives an item, with its full name, its short name and its page's
   header name. The module doc of `browse/session.rs` says where each
-  goes. An item's query, in browse, is what the command under a tab
-  gives as SYMBOL (`Names::query_for`). The queries on a type, as in
+  goes. An import's row name is its full name (`Session::row_name`). An
+  item's query, in browse, is what the command under a tab gives as
+  SYMBOL (`Names::query_for`). The queries on a type, as in
   `binary/mod.rs`, and the text that the user types as SYMBOL, which
   `commands/symbol/` calls a query, are other things.
 - **build**: in `diff`, one of the two files it compares, the old one or
@@ -1001,12 +1002,15 @@ the biggest view, and not the one to start from.
    returns `Go::Open` with the page to open, and `Go::Say` puts a line on
    the status line. One whose actions only move within the page returns
    nothing, as `Help::handle` does, and its arm in `View::handle` gives
-   `None`. Pages ask `Session` and the commands' code for their answers,
-   rather than working them out again. A column of names shortens the
-   names on the screen with a `FittedRows`, which keeps rows that would
-   read the same apart, and fits them again only when other rows show or
-   the column's width changes, since long C++ names take a while;
-   `preview` names the selected one in full.
+   `None`. A line or row that opens an item or import holds a `PageAt`,
+   and `handle` passes it to `follow`, in `views/mod.rs`, which opens the
+   page that stands for it, on the tab that the link is on, or says that
+   an import's code isn't here. Pages ask `Session` and the commands' code
+   for their answers, rather than working them out again. A column of
+   names shortens the names on the screen with a `FittedRows`, which keeps
+   rows that would read the same apart, and fits them again only when
+   other rows show or the column's width changes, since long C++ names
+   take a while; `preview` names the selected one in full.
 2. **Wiring, in `views/mod.rs`.** Add `mod <name>;`, a variant to `View`,
    and its arm in each of `View`'s functions; the compiler asks for them.
    `title` names the page in the title line's trail, `preview` says what

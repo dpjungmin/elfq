@@ -14,30 +14,33 @@
 //!
 //! - Its full name, from `Node::name`, as in `app::log(unsigned int)`: in
 //!   the name column of a command's rows, which `names.rs` fits to the
-//!   column, in the link previews on the status line, and in an import's
-//!   title. Tab 3's first line has it, as in "Nothing in the file calls or
-//!   uses vfiprintf.", which shows only when nothing does (see
-//!   [`Session::callers_text`]). So does what u says where no one item
-//!   keeps the item, as in "Removing any single item wouldn't remove
-//!   vfiprintf."
-//! - Its row name, from [`Names::row_name`], as in `frames` or
+//!   column, and in the link previews on the status line. Tab 3's first
+//!   line has it, as in "Nothing in the file calls or uses vfiprintf.",
+//!   which shows only when nothing does (see [`Session::callers_text`]).
+//!   So does what u says where no one item keeps the item, as in
+//!   "Removing any single item wouldn't remove vfiprintf." It is also an
+//!   import's row name.
+//! - Its row name, from [`Session::row_name`], as in `frames` or
 //!   `0x30000de8`: in the notes on tab 1's lines, as in `uses
-//!   frames+0x8`, in what tab 1 says when it has no lines, and in an
-//!   item's title. `reach` names an item so after "used by". It is the
-//!   shortest name that finds only the item as SYMBOL, keeping a PLT
-//!   stub's `@plt`, or failing that, the item's address.
+//!   frames+0x8`, in what tab 1 says when it has no lines, in the page's
+//!   title and in what the status line says while a tab of the page is
+//!   worked out. `reach` names an item so after "used by". An item's is
+//!   the shortest name that finds only the item as SYMBOL, keeping a PLT
+//!   stub's `@plt`, or failing that, the item's address
+//!   ([`Names::row_name`]); an import's is its full name.
 //! - Its short name, from [`Session::short_name`], as in `crc32`: after
 //!   "kept by" and "used by", in the rows of `retained` and `why` and in
 //!   the header. It is the shortest form of its name that finds only it,
 //!   or failing that, its whole name, so it is never an address.
 //! - The header's name, on an item's page: its full name, then the note of
 //!   the SYMBOL that the user typed (`Symbol::note`), as in
-//!   `Default_Handler (also named NMI_Handler)`. The page gets it as
-//!   `header_name`, from `Symbol::lead_name` or the go-to box's
-//!   `PickerRow::lead`, and a page that a link opens gets the full name
-//!   alone. `Header.name` holds the full name, and `Header.after_name`
-//!   starts with the note. It differs from the lead name only in whose
-//!   note it has: the SYMBOL that the user typed, not the query.
+//!   `Default_Handler (also named NMI_Handler)`. The page gets the note
+//!   alone, from `Symbol::note` or the go-to box's `PickerRow::note`, and
+//!   a page that a link opens gets none. `Header.name` holds the full
+//!   name and `Header.note` the note, which `symbol::with_note` puts after
+//!   the name, as `Symbol::lead_name` does. It differs from the lead name
+//!   only in whose note it has: the SYMBOL that the user typed, not the
+//!   query.
 //! - Its lead name, from [`Session::lead_name`], as in `sniprintf (also
 //!   named snprintf)`: in the first line of the answer under tabs 2, 4, 5
 //!   and 6, and in what u says of a root or of an item that nothing
@@ -230,12 +233,14 @@ impl<'a> Session<'a> {
             .position(|block| block.range.contains(address))
     }
 
-    /// The name of `node`'s page in the title line's trail.
+    /// The name that rows give `node`: an item's row name, and an import's
+    /// full name (see the names in the module doc).
     ///
-    /// It is an item's row name, and an import's full name (see the names
-    /// in the module doc). The status line names the page so while a tab of
-    /// it is worked out, as in "working out what main reaches…".
-    pub(super) fn title(&self, node: Node) -> String {
+    /// The notes on tab 1's lines name what they use so, as in `uses
+    /// frames+0x8`, the title line's trail names a page so, and the status
+    /// line names it so while a tab of it is worked out, as in "working out
+    /// what main reaches…".
+    pub(super) fn row_name(&self, node: Node) -> String {
         match node {
             Node::Item(index) => self.names.row_name(index),
             Node::Import(_) => node.name(self.binary).to_string(),

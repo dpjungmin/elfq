@@ -100,7 +100,7 @@ fn code(session: &Session, index: usize) -> Result<Code, String> {
 mod tests {
     use std::collections::HashMap;
 
-    use super::super::super::samples;
+    use super::super::super::{PageAt, samples};
     use super::super::listing::Link;
     use super::*;
 
@@ -152,29 +152,45 @@ mod tests {
 
     #[test]
     fn every_link_names_what_it_opens() {
-        let (mut links, mut imports) = (0, 0);
+        let (mut links, mut imports, mut outside) = (0, 0, 0);
         every_function(|session, _, code| {
             for line in lines(code) {
                 let shown = format!("{} {}", line.text, line.note);
                 match line.link {
                     Some(Link::Node {
-                        node: node @ Node::Item(index),
-                        ..
+                        page:
+                            PageAt {
+                                node: node @ Node::Item(index),
+                                at,
+                            },
+                        via_veneer,
                     }) => {
                         // The name the line shows finds the item as SYMBOL,
                         // but for a veneer to code outside every item,
-                        // which the line names by its address.
+                        // which the line names by its address. Its page
+                        // opens at the address that the line uses.
+                        assert!(at.is_some(), "{shown:?} has no address");
                         let name = session.names.row_name(index);
-                        assert!(
-                            shown.contains(&name) || shown.ends_with(", outside any function"),
-                            "{shown:?} doesn't name {name}"
-                        );
+                        if shown.ends_with(", outside any function") {
+                            // The note says the call goes through the
+                            // veneer, but the link opens the veneer, at its
+                            // start, and goes through nothing.
+                            assert_eq!(via_veneer, None, "{shown:?}");
+                            let start = session.binary.items[index].address;
+                            assert_eq!(at, Some(start), "{shown:?}");
+                            outside += 1;
+                        } else {
+                            assert!(shown.contains(&name), "{shown:?} doesn't name {name}");
+                        }
                         assert_eq!(session.names.find(&name).unwrap().node, node, "{name}");
                         links += 1;
                     }
-                    Some(Link::Node { node, .. }) => {
+                    Some(Link::Node { page, .. }) => {
+                        let node = page.node;
                         let name = node.name(session.binary);
                         assert!(shown.contains(name), "{shown:?} doesn't name {name}");
+                        // An import has no address in this file.
+                        assert_eq!(page.at, None, "{shown:?}");
                         // An import opens what its name finds as SYMBOL:
                         // its PLT stub, when it has one.
                         let found = session.names.find(name).unwrap().node;
@@ -188,6 +204,9 @@ mod tests {
                 }
             }
         });
-        assert!(links > 5000 && imports > 100, "{links} {imports}");
+        assert!(
+            links > 5000 && imports > 100 && outside > 0,
+            "{links} {imports} {outside}"
+        );
     }
 }

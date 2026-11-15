@@ -15,8 +15,8 @@ use ratatui::widgets::{Row, Table};
 
 use super::item::Tab;
 use super::{
-    Cursor, FittedRows, Go, cut, draw_lines, fit_name, follow, has_ignoring_case, keep_lines,
-    link_preview, wrap,
+    Cursor, FittedRows, Go, PageAt, cut, draw_lines, fit_name, follow, has_ignoring_case,
+    keep_lines, link_preview, wrap,
 };
 use crate::commands::browse::{keys::Action, session::Session};
 use crate::commands::flat_answer::FlatAnswer;
@@ -49,7 +49,7 @@ struct PrintedRow {
     under: Option<usize>,
     /// The item or import that Enter opens, and the address in it to
     /// select.
-    link: Option<(Node, Option<u64>)>,
+    link: Option<PageAt>,
 }
 
 /// The columns of words, which give way to the names on a narrow screen
@@ -109,7 +109,7 @@ pub(super) struct Printed {
     /// that tab.
     tab: Tab,
     /// The item or import whose page it is on, if any.
-    page: Option<Node>,
+    from_page: Option<Node>,
 }
 
 /// The lines before a table and the notes under it, laid out for a size
@@ -161,7 +161,7 @@ impl Printed {
             laid_out: None,
             command,
             tab: Tab::Code,
-            page: None,
+            from_page: None,
         }
     }
 
@@ -178,7 +178,7 @@ impl Printed {
                 name: row.name,
                 rest: row.rest,
                 under: None,
-                link: row.node.map(|node| (node, row.at)),
+                link: row.node.map(|node| PageAt { node, at: row.at }),
             })
             .collect();
         Printed::new(above, answer.columns, rows, answer.notes, command)
@@ -211,7 +211,7 @@ impl Printed {
                 name: flat.row.name.clone(),
                 rest: flat.rest,
                 under: flat.under,
-                link: flat.row.node.map(|node| (node, None)),
+                link: flat.row.node.map(|node| PageAt { node, at: None }),
             })
             .collect();
         Printed::new(above, columns, rows, answer.notes, command)
@@ -237,11 +237,11 @@ impl Printed {
     }
 
     /// The same, but Enter opens a row's item on `tab`, when it has that
-    /// tab, as a link opens a page on the tab that it is on. `page` is the
-    /// item or import whose page it is on.
-    pub(super) fn opening(mut self, tab: Tab, page: Node) -> Printed {
+    /// tab, as a link opens a page on the tab that it is on. `from_page` is
+    /// the item or import whose page it is on.
+    pub(super) fn opening(mut self, tab: Tab, from_page: Node) -> Printed {
         self.tab = tab;
-        self.page = Some(page);
+        self.from_page = Some(from_page);
         self
     }
 
@@ -492,13 +492,14 @@ impl Printed {
                 None
             }
             Action::Open => {
-                let (node, at) = self.rows.get(self.cursor.selected)?.link?;
+                let link = self.rows.get(self.cursor.selected)?.link?;
+                let node = link.node;
                 // The page's own row, as the first of what it reaches.
-                if Some(node) == self.page && session.page_node(node) == node {
+                if Some(node) == self.from_page && session.page_node(node) == node {
                     let name = node.name(session.binary);
                     return Some(Go::Say(format!("this is {name}'s page")));
                 }
-                Some(follow(session, node, at, self.page, self.tab))
+                Some(follow(session, link, self.from_page, self.tab))
             }
             _ => None,
         }
@@ -507,8 +508,8 @@ impl Printed {
     /// What the selected row opens, in full: "→ app_tick  function at
     /// 0x300002e4, 60 bytes, in .text".
     pub(super) fn preview(&self, session: &Session) -> Option<String> {
-        let (node, _) = self.rows.get(self.cursor.selected)?.link?;
-        Some(link_preview(session, node, self.page, None))
+        let link = self.rows.get(self.cursor.selected)?.link?;
+        Some(link_preview(session, link.node, self.from_page, None))
     }
 
     /// Whether some row opens an item.

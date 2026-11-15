@@ -15,7 +15,9 @@ use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Row, Table};
 
-use super::super::{Cursor, Go, cut, draw_lines, follow, has_ignoring_case, link_preview, wrap};
+use super::super::{
+    Cursor, Go, PageAt, cut, draw_lines, follow, has_ignoring_case, link_preview, wrap,
+};
 use super::Tab;
 use super::code::function_listing;
 use super::contents::data_listing;
@@ -33,14 +35,14 @@ const NOTE_WIDTH: usize = 16;
 /// Where a line's link goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Link {
-    /// An item or import, and the address in it that the line uses.
+    /// An item or import, and the address in it that the line uses, which
+    /// an import has none of.
     ///
-    /// `via` is the veneer or PLT stub that the code goes through to get
-    /// there, if any.
+    /// `via_veneer` is the veneer or PLT stub that the code goes through to
+    /// get there, if any.
     Node {
-        node: Node,
-        at: u64,
-        via: Option<usize>,
+        page: PageAt,
+        via_veneer: Option<usize>,
     },
     /// Another line of this function.
     Here(u64),
@@ -83,7 +85,8 @@ pub(super) struct ListingPane {
 /// That is a function's code, or a data object's contents. The session
 /// keeps it, so that every page opened on the item shares it, and it is
 /// worked out once. [`Listing::new`] is the only way to make one, so
-/// that the widest cells always match the lines.
+/// that the widest cells, and whether a line links to another item,
+/// always match the lines.
 pub(in crate::commands::browse) struct Listing {
     /// Whether it is a function's code or a data object's contents.
     kind: ItemKind,
@@ -99,6 +102,9 @@ pub(in crate::commands::browse) struct Listing {
     widest_address: usize,
     /// The widest text, worked out once, as `widest_address` is.
     widest_text: usize,
+    /// Whether some line links to another item, worked out once, as the
+    /// widest cells are, for the hint line that each draw writes.
+    has_links: bool,
     /// Said in place of the lines when there are none to show.
     said_instead: Option<String>,
     /// Said under the lines.
@@ -127,6 +133,7 @@ impl Listing {
             kind,
             widest_address: widest(|line| format!("{:#x}", line.address).len()),
             widest_text: widest(|line| line.text.chars().count()),
+            has_links: (lines.iter()).any(|line| matches!(line.link, Some(Link::Node { .. }))),
             lines,
             column,
             said_instead: None,
@@ -332,9 +339,9 @@ impl ListingPane {
                 None
             }
             Action::Open => match self.listing.lines.get(selected)?.link? {
-                Link::Node { node, at, .. } => {
-                    let this = Some(Node::Item(self.index));
-                    Some(follow(session, node, Some(at), this, Tab::Code))
+                Link::Node { page, .. } => {
+                    let from_page = Some(Node::Item(self.index));
+                    Some(follow(session, page, from_page, Tab::Code))
                 }
                 // A jump inside the function moves the cursor, and Back
                 // brings it back.
@@ -368,8 +375,8 @@ impl ListingPane {
     pub(super) fn preview(&self, session: &Session) -> Option<String> {
         let link = self.listing.lines.get(self.cursor.selected)?.link?;
         Some(match link {
-            Link::Node { node, via, .. } => {
-                link_preview(session, node, Some(Node::Item(self.index)), via)
+            Link::Node { page, via_veneer } => {
+                link_preview(session, page.node, Some(Node::Item(self.index)), via_veneer)
             }
             Link::Here(address) => format!("→ {address:#x}, in this function"),
         })
@@ -387,10 +394,7 @@ impl ListingPane {
 
     /// Whether some line links to another item.
     pub(super) fn has_links(&self) -> bool {
-        self.listing
-            .lines
-            .iter()
-            .any(|line| matches!(line.link, Some(Link::Node { .. })))
+        self.listing.has_links
     }
 
     /// The lines that have `lowercase`, ignoring case.
@@ -455,9 +459,10 @@ mod tests {
             for index in functions {
                 let mut pane = ListingPane::new(session, index, None);
                 for row in 0..pane.listing.lines.len() {
-                    let Some(Link::Node { node, via, .. }) = pane.listing.lines[row].link else {
+                    let Some(Link::Node { page, via_veneer }) = pane.listing.lines[row].link else {
                         continue;
                     };
+                    let node = page.node;
                     pane.cursor.select(row);
                     let preview = pane.preview(session).unwrap();
                     let opened = session.page_node(node);
@@ -469,7 +474,7 @@ mod tests {
                         Node::Item(index) => format!("{}  ", binary.items[index].name),
                         Node::Import(_) => format!("{}  imported", node.name(&binary)),
                     };
-                    to_itself += usize::from(node == Node::Item(index) && via.is_none());
+                    to_itself += usize::from(node == Node::Item(index) && via_veneer.is_none());
                     assert!(preview.starts_with(&format!("→ {name}")), "{preview}");
                 }
             }

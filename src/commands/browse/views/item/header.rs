@@ -11,6 +11,7 @@ use ratatui::text::Line;
 use super::super::{cut_left, fit_name, keep_lines, name_fitter, whereabouts, wrap};
 use crate::binary::Source;
 use crate::commands::browse::session::Session;
+use crate::commands::symbol::with_note;
 use crate::commands::{text, why};
 use crate::graph::Node;
 
@@ -26,10 +27,11 @@ pub(super) struct Header {
     node: Node,
     /// The item's full name, which the first line starts with.
     name: String,
-    /// The rest of the first line: what SYMBOL said, then where it is.
-    ///
-    /// An example: " (also named NMI_Handler)  function at …".
-    after_name: String,
+    /// What SYMBOL said after the name, if anything: "also named
+    /// NMI_Handler", which goes in brackets (see [`with_note`]).
+    note: Option<String>,
+    /// Where it is, which ends the first line: "function at …".
+    place: String,
     /// The second line: "used by 2 · uses 3".
     facts: String,
     /// What keeps the item, once the session has worked it out.
@@ -43,15 +45,10 @@ pub(super) struct Header {
 impl Header {
     /// The header of `node`, an item or an import that `used_by` items use.
     ///
-    /// It names the node as `header_name`, which may say what SYMBOL gave,
-    /// as in "Default_Handler (also named NMI_Handler)" (see the names in
-    /// `session.rs`).
-    pub(super) fn new(session: &Session, node: Node, header_name: &str, used_by: usize) -> Header {
-        let name = node.name(session.binary);
-        let (name, note) = match header_name.strip_prefix(name) {
-            Some(note) => (name, note),
-            None => (header_name, ""),
-        };
+    /// It names the node by its full name, then `note`, what SYMBOL said
+    /// about it, if anything, as in "Default_Handler (also named
+    /// NMI_Handler)" (see the names in `session.rs`).
+    pub(super) fn new(session: &Session, node: Node, note: Option<&str>, used_by: usize) -> Header {
         let (place, facts) = match node {
             Node::Item(index) => (
                 item_place(session, index),
@@ -64,8 +61,9 @@ impl Header {
         };
         Header {
             node,
-            name: name.to_string(),
-            after_name: format!("{note}  {place}"),
+            name: node.name(session.binary).to_string(),
+            note: note.map(str::to_string),
+            place,
             facts,
             keeping: None,
             lines: None,
@@ -103,8 +101,8 @@ impl Header {
         {
             return lines.clone();
         }
-        let (name, rest) = (&self.name, &self.after_name);
-        let identity = |name: &str| wrap(&format!("{name}{rest}"), width);
+        let (name, note, place) = (&self.name, self.note.as_deref(), &self.place);
+        let identity = |name: &str| wrap(&format!("{}  {place}", with_note(name, note)), width);
         let mut facts = self.facts.clone();
         let mut chain = None;
         if let Some(keeping) = &self.keeping {

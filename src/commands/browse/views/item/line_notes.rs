@@ -8,6 +8,7 @@ use std::collections::HashMap;
 
 use object::Endian;
 
+use super::super::PageAt;
 use super::contents::string_at;
 use super::listing::{Link, ListingLine};
 use crate::arch::{self, CodeReferenceKind, Refers};
@@ -15,6 +16,25 @@ use crate::binary::{ItemKind, RelocationTarget};
 use crate::commands::browse::session::Session;
 use crate::commands::text;
 use crate::graph::{Node, Reference, Unresolved, VeneerTarget, item_starting_at};
+
+/// What a line that uses another item or import notes and links to, as
+/// [`LineNotes::use_link`] works it out.
+///
+/// `via_veneer` is what the note says the use goes through, and the
+/// link's own is what its preview names. They differ for a call through a
+/// veneer to code outside every item: the note says it goes through the
+/// veneer, but the veneer is all there is to open, so the link goes to it
+/// and through nothing.
+pub(super) struct UseLink {
+    /// What the note names: the item, with how far into it the use is and
+    /// the string there, if it holds one; an import; or an address outside
+    /// every item.
+    pub(super) name: String,
+    /// The veneer or PLT stub that the use goes through, if any.
+    pub(super) via_veneer: Option<usize>,
+    /// Where the line links.
+    pub(super) link: Link,
+}
 
 /// What the graph knows about one item, by site, to note on its lines.
 ///
@@ -110,19 +130,23 @@ impl<'s, 'a> LineNotes<'s, 'a> {
         let binary = self.session.binary;
         let link = link.or_else(|| {
             let index = item_starting_at(binary, value)?;
-            let at = binary.items[index].address;
-            Some(Link::Node {
+            let page = PageAt {
                 node: Node::Item(index),
-                at,
-                via: None,
+                at: Some(binary.items[index].address),
+            };
+            Some(Link::Node {
+                page,
+                via_veneer: None,
             })
         });
-        let Some(link @ Link::Node { node, at, .. }) = link else {
+        let Some(link @ Link::Node { page, .. }) = link else {
             return;
         };
-        line.note = match node {
-            Node::Item(index) => self.name_at(index, at),
-            Node::Import(_) => self.name(node),
+        line.note = match (page.node, page.at) {
+            (Node::Item(index), Some(at)) => self.name_at(index, at),
+            // An import has no address in this file; an item without one
+            // would be named at its start, as its row name is.
+            (node, _) => self.session.row_name(node),
         };
         line.elsewhere = self.elsewhere(link);
         line.link = Some(link);
@@ -142,14 +166,18 @@ impl<'s, 'a> LineNotes<'s, 'a> {
         };
         if let Some(references) = self.references.get(&address) {
             let reference = references[0];
-            let (name, via, link) = self.target(reference);
-            let how = text::how_via(binary, reference.to, reference.kind, via);
+            let UseLink {
+                name,
+                via_veneer,
+                link,
+            } = self.use_link(reference);
+            let how = text::how_via(binary, reference.to, reference.kind, via_veneer);
             let more = match references.len() {
                 1 => String::new(),
                 count => format!(" and {} more", count - 1),
             };
             // The name only when the instruction doesn't say it already.
-            line.note = if via.is_some() {
+            line.note = if via_veneer.is_some() {
                 format!("{how} → {name}{more}")
             } else if !line.text.is_empty() && line.text.ends_with(&name) {
                 format!("{how}{more}")
@@ -232,11 +260,9 @@ impl<'s, 'a> LineNotes<'s, 'a> {
         }
     }
 
-    /// What `reference` uses, as its note names it, and how to get there.
-    ///
-    /// That is the name, the veneer or PLT stub it goes through, and the
-    /// link to it. A call through a veneer links to where the veneer goes.
-    pub(super) fn target(&self, reference: &Reference) -> (String, Option<usize>, Link) {
+    /// What `reference` uses, as its note names it, and where its line
+    /// links (see [`UseLink`] for when the two veneers differ).
+    pub(super) fn use_link(&self, reference: &Reference) -> UseLink {
         let binary = self.session.binary;
         if let Node::Item(veneer) = reference.to
             && reference.kind.is_call()
@@ -245,28 +271,32 @@ impl<'s, 'a> LineNotes<'s, 'a> {
             return match target {
                 VeneerTarget::Node(node) => {
                     let at = match node {
-                        Node::Item(index) => binary.items[index].address,
-                        Node::Import(_) => 0,
+                        Node::Item(index) => Some(binary.items[index].address),
+                        Node::Import(_) => None,
                     };
-                    let link = Link::Node {
-                        node,
-                        at,
-                        via: Some(veneer),
-                    };
-                    (self.name(node), Some(veneer), link)
+                    UseLink {
+                        name: self.session.row_name(node),
+                        via_veneer: Some(veneer),
+                        link: Link::Node {
+                            page: PageAt { node, at },
+                            via_veneer: Some(veneer),
+                        },
+                    }
                 }
                 // The veneer is all there is to open.
                 VeneerTarget::Outside(address) => {
-                    let link = Link::Node {
+                    let page = PageAt {
                         node: reference.to,
-                        at: binary.items[veneer].address,
-                        via: None,
+                        at: Some(binary.items[veneer].address),
                     };
-                    (
-                        format!("{address:#x}, outside any function"),
-                        Some(veneer),
-                        link,
-                    )
+                    UseLink {
+                        name: format!("{address:#x}, outside any function"),
+                        via_veneer: Some(veneer),
+                        link: Link::Node {
+                            page,
+                            via_veneer: None,
+                        },
+                    }
                 }
             };
         }
@@ -283,23 +313,21 @@ impl<'s, 'a> LineNotes<'s, 'a> {
                 if let Some(string) = string_at(self.session, index, at) {
                     name += &format!(" {string}");
                 }
-                (name, at)
+                (name, Some(at))
             }
-            Node::Import(_) => (self.name(reference.to), 0),
+            Node::Import(_) => (self.session.row_name(reference.to), None),
         };
-        let link = Link::Node {
+        let page = PageAt {
             node: reference.to,
             at,
-            via: None,
         };
-        (name, None, link)
-    }
-
-    /// The name that rows give `node`.
-    fn name(&self, node: Node) -> String {
-        match node {
-            Node::Item(index) => self.session.names.row_name(index),
-            Node::Import(_) => node.name(self.session.binary).to_string(),
+        UseLink {
+            name,
+            via_veneer: None,
+            link: Link::Node {
+                page,
+                via_veneer: None,
+            },
         }
     }
 
@@ -308,7 +336,10 @@ impl<'s, 'a> LineNotes<'s, 'a> {
     /// That is a block of memory other than this item's.
     pub(super) fn elsewhere(&self, link: Link) -> Option<String> {
         let Link::Node {
-            node: Node::Item(to),
+            page: PageAt {
+                node: Node::Item(to),
+                ..
+            },
             ..
         } = link
         else {

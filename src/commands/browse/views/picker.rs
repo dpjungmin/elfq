@@ -24,10 +24,12 @@ use ratatui::style::{Style, Stylize};
 use ratatui::text::{Line, Text};
 use ratatui::widgets::{HighlightSpacing, Row, Table};
 
-use super::{Cursor, FittedRows, cut, wrap};
+use super::{Cursor, FittedRows, PageAt, cut, wrap};
 use crate::binary::{Binary, ItemKind, hex_number};
 use crate::commands::browse::{keys::Action, session::Session};
-use crate::commands::symbol::{Lookup, LookupOrMatch, Needle, PatternMatches, Symbol, USE_ONE};
+use crate::commands::symbol::{
+    Lookup, LookupOrMatch, Needle, PatternMatches, Symbol, USE_ONE, with_note,
+};
 use crate::commands::text;
 use crate::graph::Node;
 
@@ -38,15 +40,15 @@ const NOTE_LINES: usize = 3;
 
 /// One row of the box.
 pub(in crate::commands::browse) struct PickerRow {
-    /// The item or import.
-    pub(in crate::commands::browse) node: Node,
-    /// The address typed, when the item holds it.
-    pub(in crate::commands::browse) at: Option<u64>,
-    /// For the item that the text finds as SYMBOL, its name as the CLI's
-    /// answer gives it: "Default_Handler (also named NMI_Handler)", or for
-    /// a pattern that matches only it, "on_button (the one item named
-    /// on_b*)".
-    pub(in crate::commands::browse) lead: Option<String>,
+    /// The item or import, with the address typed, when the item holds
+    /// it.
+    pub(in crate::commands::browse) page: PageAt,
+    /// For the item that the text finds as SYMBOL, what the CLI's answer
+    /// adds to its name, if anything: "also named NMI_Handler", or for a
+    /// pattern that matches only it, "the one item named on_b*" (see
+    /// [`Symbol::note`]). It belongs to this row, unlike the box's own
+    /// `note`, the CLI's message over the rows.
+    pub(in crate::commands::browse) note: Option<String>,
 }
 
 pub(in crate::commands::browse) struct Picker {
@@ -181,7 +183,6 @@ impl Picker {
         area: Rect,
     ) {
         self.catch_up(session);
-        let binary = session.binary;
         let width = usize::from(area.width);
         let note = (self.note.as_ref())
             .filter(|_| self.note_shown())
@@ -249,8 +250,8 @@ impl Picker {
             rows.iter().map(|row| row[4].as_str()).collect()
         });
         let items = (names.iter().zip(&listed.rows[visible])).map(|(name, picker_row)| {
-            match picker_row.note(binary) {
-                Some(note) => cut(&format!("{name}{note}"), room),
+            match picker_row.note.as_deref() {
+                Some(note) => cut(&with_note(name, Some(note)), room),
                 None => name.clone(),
             }
         });
@@ -277,8 +278,9 @@ impl Picker {
         let binary = session.binary;
         let rows: Vec<[String; 5]> = (self.listed.rows.iter())
             .map(|picker_row| {
-                let name = picker_row.node.name(binary).to_string();
-                let Node::Item(index) = picker_row.node else {
+                let node = picker_row.page.node;
+                let name = node.name(binary).to_string();
+                let Node::Item(index) = node else {
                     // An import has no address, size or section here.
                     let blank = String::new;
                     return [blank(), blank(), "import".to_string(), blank(), name];
@@ -362,12 +364,14 @@ impl Listed {
             Lookup::One(symbol) => {
                 // The item holds the address typed, if one was.
                 let at = hex_number(text).and_then(Result::ok);
-                vec![PickerRow::symbol(binary, symbol, at)]
+                vec![PickerRow::symbol(symbol, at)]
             }
             Lookup::Several(nodes) => nodes.iter().map(|&node| PickerRow::plain(node)).collect(),
             Lookup::NoName => Vec::new(),
         };
-        let in_first: HashSet<Node> = first.iter().map(|picker_row| picker_row.node).collect();
+        let in_first: HashSet<Node> = (first.iter())
+            .map(|picker_row| picker_row.page.node)
+            .collect();
         let lower = text.to_lowercase();
         let needle = Needle::new(&lower);
         let items = (0..binary.items.len()).map(Node::Item);
@@ -390,7 +394,7 @@ impl Listed {
         let binary = session.binary;
         match matched.only_item() {
             Some(symbol) => Listed {
-                rows: vec![PickerRow::symbol(binary, &symbol, None)],
+                rows: vec![PickerRow::symbol(&symbol, None)],
                 more: 0,
                 nothing: None,
             },
@@ -449,11 +453,13 @@ impl PickerRow {
     /// The row of `symbol`, what the text typed finds as SYMBOL, which names
     /// its item or import as the CLI's answer does, with `at`, the address
     /// typed, when one was.
-    fn symbol(binary: &Binary, symbol: &Symbol, at: Option<u64>) -> PickerRow {
+    fn symbol(symbol: &Symbol, at: Option<u64>) -> PickerRow {
         PickerRow {
-            node: symbol.node,
-            at,
-            lead: Some(symbol.lead_name(binary)),
+            page: PageAt {
+                node: symbol.node,
+                at,
+            },
+            note: symbol.note().map(str::to_string),
         }
     }
 
@@ -461,18 +467,9 @@ impl PickerRow {
     /// name.
     fn plain(node: Node) -> PickerRow {
         PickerRow {
-            node,
-            at: None,
-            lead: None,
+            page: PageAt { node, at: None },
+            note: None,
         }
-    }
-
-    /// What SYMBOL said about the item it finds, after its name: " (also
-    /// named NMI_Handler)".
-    fn note<'a>(&'a self, binary: &Binary) -> Option<&'a str> {
-        let lead = self.lead.as_deref()?;
-        lead.strip_prefix(self.node.name(binary))
-            .filter(|note| !note.is_empty())
     }
 }
 
@@ -553,11 +550,11 @@ mod tests {
                 // Each is a match, largest first, and no match left out is
                 // larger than the smallest listed.
                 let sizes: Vec<u64> = (listed.rows.iter())
-                    .map(|picker_row| picker_row.node.size(&binary))
+                    .map(|picker_row| picker_row.page.node.size(&binary))
                     .collect();
                 assert!(sizes.is_sorted_by(|a, b| a >= b), "{file}, {text}");
                 let rows: HashSet<Node> = (listed.rows.iter())
-                    .map(|picker_row| picker_row.node)
+                    .map(|picker_row| picker_row.page.node)
                     .collect();
                 assert!(
                     rows.iter().all(|node| matched.contains(node)),
@@ -571,21 +568,17 @@ mod tests {
                         .all(|size| size <= smallest),
                     "{file}, {text}"
                 );
-                // The one item that it matches alone is named as SYMBOL's
-                // answer names it.
-                let leads: Vec<Option<&str>> = (listed.rows.iter())
-                    .map(|picker_row| picker_row.lead.as_deref())
+                // The one item that it matches alone has the note that
+                // SYMBOL's answer gives it.
+                let notes: Vec<Option<&str>> = (listed.rows.iter())
+                    .map(|picker_row| picker_row.note.as_deref())
                     .collect();
-                let one_item = match matched[..] {
-                    [only] => Some(format!(
-                        "{} (the one item named {text})",
-                        only.name(&binary)
-                    )),
-                    _ => None,
-                };
-                match one_item {
-                    Some(lead) => assert_eq!(leads, [Some(lead.as_str())], "{file}"),
-                    None => assert!(leads.iter().all(Option::is_none), "{file}, {text}"),
+                match matched[..] {
+                    [_] => {
+                        let note = format!("the one item named {text}");
+                        assert_eq!(notes, [Some(note.as_str())], "{file}");
+                    }
+                    _ => assert!(notes.iter().all(Option::is_none), "{file}, {text}"),
                 }
             }
         }
