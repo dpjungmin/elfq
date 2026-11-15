@@ -746,12 +746,14 @@ mod tests {
     use object::SectionKind;
 
     use super::*;
+    use crate::binary::test_samples::sample_path;
     use crate::binary::{LoadedMemory, Section, same_memory};
     use crate::commands::diff::blocks::{sections_that_differ, shared_blocks};
 
     /// What diff writes for `old` and `new`, both read from `path`, when
     /// it compares only their bytes, as for a stripped `old`.
-    fn text(path: &Path, old: &mut LoadedMemory, new: &LoadedMemory) -> String {
+    fn text(path: &str, old: &mut LoadedMemory, new: &LoadedMemory) -> String {
+        let path = Path::new(path);
         old.has_symbols = false;
         let old = &*old;
         let same_memory = same_memory(old, new);
@@ -771,8 +773,9 @@ mod tests {
         String::from_utf8(out).unwrap()
     }
 
-    fn read(path: &Path) -> Vec<u8> {
-        std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join(path)).unwrap()
+    /// The bytes of the sample at `path`, from the crate's root.
+    fn read(path: &str) -> Vec<u8> {
+        std::fs::read(sample_path(path)).unwrap()
     }
 
     #[test]
@@ -780,7 +783,7 @@ mod tests {
         // .tbss puts no bytes in memory, so only its name, address and size
         // count, and the line that names the sections says why the exit
         // status is 1.
-        let path = Path::new("testdata/bin/rust-x86_64-nodebug.elf");
+        let path = "testdata/bin/rust-x86_64-nodebug.elf";
         let data = read(path);
         let mut old = LoadedMemory::read(&data).unwrap();
         let mut new = LoadedMemory::read(&data).unwrap();
@@ -798,7 +801,7 @@ mod tests {
                  {0} has no symbol table, so diff compares only bytes, not functions and data.\n\
                  The memory stays at {size} bytes.\n\
                  Sections that differ: .tbss.\n",
-                path.display()
+                path
             )
         );
     }
@@ -806,7 +809,7 @@ mod tests {
     #[test]
     fn a_change_in_tbss_is_named_under_the_table() {
         // Firmware has several blocks, none of which holds .tbss.
-        let path = Path::new("testdata/bin/c-cortex-m7.elf");
+        let path = "testdata/bin/c-cortex-m7.elf";
         let data = read(path);
         let tbss = |size| Section {
             name: ".tbss".to_string(),
@@ -835,7 +838,7 @@ mod tests {
                  0x30000000..0x30000edc  3804  3804       0\n\
                  \n\
                  Sections that differ: .tbss.\n",
-                path.display()
+                path
             )
         );
     }

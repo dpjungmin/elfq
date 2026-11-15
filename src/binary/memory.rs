@@ -370,12 +370,11 @@ fn compare_zeros(count: u64, bytes: &[u8]) -> Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::binary::test_samples::sample_path;
 
-    fn sample(name: &str) -> Vec<u8> {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("testdata/bin")
-            .join(name);
-        std::fs::read(path).unwrap()
+    /// The bytes of the sample at `path`, from the crate's root.
+    fn sample(path: &str) -> Vec<u8> {
+        std::fs::read(sample_path(path)).unwrap()
     }
 
     #[test]
@@ -441,7 +440,7 @@ mod tests {
         assert!(!Bytes::Stored(&[0, 0]).same_as(missing));
         // .data in c-x86_64.elf holds 64 bytes. Here its bytes start 32
         // before the end of the file, which ends with its first 32.
-        let data = sample("c-x86_64.elf");
+        let data = sample("testdata/bin/c-x86_64.elf");
         let memory = LoadedMemory::read(&data).unwrap();
         let index = memory
             .sections
@@ -465,11 +464,20 @@ mod tests {
     #[test]
     fn a_stripped_file_holds_the_memory_of_the_file_it_came_from() {
         for (full, stripped) in [
-            ("c-cortex-m7.elf", "c-cortex-m7-stripped.elf"),
-            ("c-x86_64.elf", "c-x86_64-stripped.elf"),
+            (
+                "testdata/bin/c-cortex-m7.elf",
+                "testdata/bin/c-cortex-m7-stripped.elf",
+            ),
+            (
+                "testdata/bin/c-x86_64.elf",
+                "testdata/bin/c-x86_64-stripped.elf",
+            ),
             // Its .tbss shares its addresses with .fini_array, .init_array
             // and .data.rel.ro.
-            ("rust-x86_64-nodebug.elf", "rust-x86_64-stripped.elf"),
+            (
+                "testdata/bin/rust-x86_64-nodebug.elf",
+                "testdata/bin/rust-x86_64-stripped.elf",
+            ),
         ] {
             let (full, stripped) = (sample(full), sample(stripped));
             let full = LoadedMemory::read(&full).unwrap();
@@ -480,7 +488,7 @@ mod tests {
 
     #[test]
     fn tbss_is_compared_apart() {
-        let data = sample("rust-x86_64-nodebug.elf");
+        let data = sample("testdata/bin/rust-x86_64-nodebug.elf");
         let memory = LoadedMemory::read(&data).unwrap();
         let tbss = memory
             .sections
@@ -519,7 +527,7 @@ mod tests {
     fn only_bytes_in_sections_count() {
         // The ELF header is in the first loadable segment of an x86-64
         // program, but in no section.
-        let data = sample("c-x86_64.elf");
+        let data = sample("testdata/bin/c-x86_64.elf");
         let mut padded = data.clone();
         padded[9..16].fill(0xff);
         let memory = LoadedMemory::read(&data).unwrap();

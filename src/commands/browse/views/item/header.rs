@@ -332,9 +332,9 @@ impl Keeping {
 mod tests {
     use std::collections::{HashMap, HashSet};
 
-    use super::super::super::samples;
     use super::*;
     use crate::binary::Binary;
+    use crate::binary::test_samples::samples;
     use crate::cli::Format;
     use crate::commands::json;
     use crate::commands::retained;

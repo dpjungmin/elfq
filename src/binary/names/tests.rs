@@ -1,4 +1,6 @@
 use super::*;
+use crate::binary::Binary;
+use crate::binary::test_samples::{sample_path, samples};
 
 #[test]
 fn copy_suffixes_come_off() {
@@ -219,17 +221,39 @@ const NAMES: [&str; 31] = [
     "process_frame",
 ];
 
+/// The names in [`NAMES`], then every name of every item of every sample,
+/// each as (where it is from, the name): `NAMES`, or the sample's path
+/// from the crate's root.
+fn names_to_check() -> Vec<(String, String)> {
+    let listed = NAMES.map(|name| ("NAMES".to_string(), name.to_string()));
+    let sampled = samples().into_iter().flat_map(|path| {
+        let binary = Binary::load(&path).unwrap();
+        let from = path.strip_prefix(sample_path("")).unwrap();
+        let from = from.display().to_string();
+        (binary.items.iter())
+            .flat_map(|item| item.names())
+            .map(|name| (from.clone(), name.to_string()))
+            .collect::<Vec<_>>()
+    });
+    listed.into_iter().chain(sampled).collect()
+}
+
 #[test]
 fn short_names_are_filed_under_keys_that_find_them() {
-    for name in NAMES {
-        let short = short_names(name);
-        let keys = short_name_keys(name);
+    // To find a short name, elfq works out the short names of only the
+    // items that one of their names files under the short name's key, and
+    // of those, only the short names that have the key.
+    let mut checked = 0;
+    for (from, name) in names_to_check() {
+        let short = short_names(&name);
+        let keys = short_name_keys(&name);
         for short_name in &short {
             let key = short_name_key(short_name);
             assert!(
                 key.is_some_and(|key| keys.iter().any(|k| k == key)),
-                "{short_name:?} of {name:?} has key {key:?}, not one of {keys:?}"
+                "{from}: {short_name:?} of {name:?} has key {key:?}, not one of {keys:?}"
             );
+            checked += 1;
         }
         for key in &keys {
             let with_key: Vec<&String> = short
@@ -237,12 +261,13 @@ fn short_names_are_filed_under_keys_that_find_them() {
                 .filter(|short_name| short_name_key(short_name) == Some(key.as_str()))
                 .collect();
             assert_eq!(
-                short_names_with_key(name, key).iter().collect::<Vec<_>>(),
+                short_names_with_key(&name, key).iter().collect::<Vec<_>>(),
                 with_key,
-                "{name:?}, key {key:?}"
+                "{from}: {name:?}, key {key:?}"
             );
         }
     }
+    assert!(checked > 1000, "{checked}");
 }
 
 #[test]
@@ -274,18 +299,25 @@ fn the_words_of_a_short_name_are_words_of_the_name() {
     );
     assert!(may_join_words("a<b>c"));
     assert!(!may_join_words("a<b>::c"));
-    for name in NAMES {
+    // Whether a short name finds only one item is worked out from only the
+    // items whose names have its words, and of those, first from whether
+    // a name ends with it.
+    let mut checked = 0;
+    for (from, name) in names_to_check() {
+        let name = name.as_str();
+        let short = short_names(name);
         let of_name: Vec<&str> = words(name).collect();
-        for short_name in short_names(name) {
+        for short_name in &short {
             if !may_join_words(name) {
-                for word in words(&short_name) {
+                for word in words(short_name) {
                     assert!(
                         of_name.contains(&word),
-                        "{word:?} of {short_name:?} isn't a word of {name:?}"
+                        "{from}: {word:?} of {short_name:?} isn't a word of {name:?}"
                     );
                 }
+                checked += 1;
             }
-            if ends_with_short_name(name, &short_name) {
+            if ends_with_short_name(name, short_name) {
                 continue;
             }
             // Only the short names that a name ends with, through its
@@ -293,13 +325,23 @@ fn the_words_of_a_short_name_are_words_of_the_name() {
             // out.
             assert!(
                 !name.ends_with(short_name.as_str()) || special_prefix(name).is_some(),
-                "{short_name:?} of {name:?}"
+                "{from}: {short_name:?} of {name:?}"
+            );
+        }
+        // Whatever the name ends with, from any of its characters on,
+        // that ends_with_short_name says yes to is one of its short names.
+        for (at, _) in name.char_indices() {
+            let tail = &name[at..];
+            assert!(
+                !ends_with_short_name(name, tail) || short.iter().any(|s| s == tail),
+                "{from}: {tail:?} isn't a short name of {name:?}"
             );
         }
         let not_short = format!("{name}x");
-        assert!(!ends_with_short_name(name, &not_short), "{name:?}");
-        assert!(!ends_with_short_name(name, name), "{name:?}");
+        assert!(!ends_with_short_name(name, &not_short), "{from}: {name:?}");
+        assert!(!ends_with_short_name(name, name), "{from}: {name:?}");
     }
+    assert!(checked > 1000, "{checked}");
     assert!(ends_with_short_name(
         "<app::Gain as app::Stage>::run",
         "Stage::run"

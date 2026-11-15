@@ -552,15 +552,14 @@ fn lines(text: &str, width: usize) -> Vec<Line<'static>> {
 #[cfg(test)]
 mod tests {
     use super::super::names::alike_in_a_window;
-    use super::super::samples;
     use super::*;
     use crate::binary::Binary;
+    use crate::binary::test_samples::{load_sample, sample_path, samples};
     use crate::commands::symbol::Pattern;
 
     #[test]
     fn a_box_opened_with_the_error_for_symbol_doesnt_work_it_out_again() {
-        let path =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/bin/c-x86_64.elf");
+        let path = sample_path("testdata/bin/c-x86_64.elf");
         let binary = Binary::load(&path).unwrap();
         let session = Session::new(&path, &binary).unwrap();
         let error = |text: &str| format!("no function or data object is named `{text}`");
@@ -584,9 +583,7 @@ mod tests {
         // As SYMBOL, a text such as `fmt` finds hundreds of functions in
         // a large Rust file, more than the box lists; the other items
         // whose names have it would come after them, and are left out.
-        let path =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/bin/c-x86_64.elf");
-        let binary = Binary::load(&path).unwrap();
+        let binary = load_sample("testdata/bin/c-x86_64.elf");
         let first = (0..MOST + 100).map(|_| PickerRow::plain(&binary, Node::Item(0)));
         let listed = keep_largest(&binary, first, vec![Node::Item(1)]);
         assert_eq!((listed.rows.len(), listed.more), (MOST, 101));

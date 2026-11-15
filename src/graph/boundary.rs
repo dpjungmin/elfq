@@ -549,29 +549,19 @@ impl CallsTo {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use super::*;
+    use crate::binary::test_samples::load_sample;
 
     /// The Cortex-M7 sample, with code in ITCM at 0x0 and flash at
     /// 0x30000000, and the veneers GNU ld added between them.
     fn sample() -> (Binary, Graph) {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/bin/c-cortex-m7.elf");
-        let binary = Binary::load(&path).unwrap();
+        let binary = load_sample("testdata/bin/c-cortex-m7.elf");
         let graph = Graph::build(&binary);
         (binary, graph)
     }
 
     fn range(text: &str) -> AddressRange {
         text.parse().unwrap()
-    }
-
-    fn index(binary: &Binary, name: &str) -> usize {
-        binary
-            .items
-            .iter()
-            .position(|item| item.name == name)
-            .unwrap()
     }
 
     /// The crossings as (from, to, veneer) names.
@@ -668,8 +658,8 @@ mod tests {
         // rules decides how it is reported.
         let (binary, mut graph) = sample();
         let (first, second) = (
-            index(&binary, "__app_tick_veneer"),
-            index(&binary, "__memcpy_veneer"),
+            binary.index_of("__app_tick_veneer"),
+            binary.index_of("__memcpy_veneer"),
         );
         let jump = graph
             .references
@@ -753,7 +743,10 @@ mod tests {
         // on_timer, outside the flash range below, calls crc32 through the
         // veneer in it too, as process_frame does.
         let (binary, mut graph) = sample();
-        let (on_timer, veneer) = (index(&binary, "on_timer"), index(&binary, "__crc32_veneer"));
+        let (on_timer, veneer) = (
+            binary.index_of("on_timer"),
+            binary.index_of("__crc32_veneer"),
+        );
         graph.references.push(Reference {
             from: on_timer,
             to: Node::Item(veneer),
@@ -784,7 +777,7 @@ mod tests {
     #[test]
     fn calls_that_may_leave_the_ranges_are_unfollowed() {
         let (binary, mut graph) = sample();
-        let from = index(&binary, "crc32");
+        let from = binary.index_of("crc32");
         let unresolved = |target| Unresolved {
             from,
             site: 0x18,
@@ -808,7 +801,7 @@ mod tests {
         assert_eq!(targets, [None, Some(0x100), Some(0x1fff_0000)]);
         // A call from flash, outside the range, isn't one.
         for unresolved in &mut graph.unresolved[..2] {
-            unresolved.from = index(&binary, "process_frame");
+            unresolved.from = binary.index_of("process_frame");
         }
         let boundary = Boundary::new(&binary, &graph, &ranges);
         let targets: Vec<Option<u64>> = boundary

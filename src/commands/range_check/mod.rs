@@ -270,26 +270,16 @@ pub(super) fn run(
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use super::*;
+    use crate::binary::test_samples::load_sample;
     use crate::graph::Unresolved;
 
     /// The Cortex-M7 sample, with code in ITCM at 0x0 and flash at
     /// 0x30000000, and the veneers GNU ld added between them.
     fn sample() -> (Binary, Graph) {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/bin/c-cortex-m7.elf");
-        let binary = Binary::load(&path).unwrap();
+        let binary = load_sample("testdata/bin/c-cortex-m7.elf");
         let graph = Graph::build(&binary);
         (binary, graph)
-    }
-
-    fn index(binary: &Binary, name: &str) -> usize {
-        binary
-            .items
-            .iter()
-            .position(|item| item.name == name)
-            .unwrap()
     }
 
     /// The text answer to the range check of `ranges`, with `far_side` for
@@ -319,7 +309,7 @@ mod tests {
         // which the file has no symbol for.
         let (binary, mut graph) = sample();
         graph.unresolved.push(Unresolved {
-            from: index(&binary, "crc32"),
+            from: binary.index_of("crc32"),
             site: 0x20,
             is_call: true,
             target: Some(0x1fff_0100),
@@ -351,7 +341,7 @@ mod tests {
         let (binary, mut graph) = sample();
         // crc32, in ITCM, calls the ROM, but through no pointer.
         graph.unresolved.push(Unresolved {
-            from: index(&binary, "crc32"),
+            from: binary.index_of("crc32"),
             site: 0x20,
             is_call: true,
             target: Some(0x1fff_0100),
@@ -385,7 +375,7 @@ mod tests {
         assert_eq!(outcome, Outcome::Answered, "{out}");
         // But not when that code is in the ranges asked about too: a call
         // there doesn't leave them.
-        let crc32 = index(&binary, "crc32");
+        let crc32 = binary.index_of("crc32");
         graph.unresolved.push(Unresolved {
             from: crc32,
             site: 0x24,

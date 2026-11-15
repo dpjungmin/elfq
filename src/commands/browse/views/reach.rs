@@ -32,9 +32,10 @@ mod tests {
 
     use clap::Parser;
 
-    use super::super::{samples, shell_words};
+    use super::super::shell_words;
     use super::*;
     use crate::binary::Binary;
+    use crate::binary::test_samples::samples;
     use crate::cli::{Cli, Command};
     use crate::commands::checks::readable_item;
     use crate::commands::text::Detail;

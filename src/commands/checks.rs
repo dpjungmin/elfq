@@ -147,6 +147,7 @@ mod tests {
     use std::path::Path;
 
     use super::super::{overview, top};
+    use crate::binary::test_samples::load_sample;
     use crate::cli::Format;
 
     use super::*;
@@ -155,14 +156,14 @@ mod tests {
     fn a_file_whose_functions_elfq_cant_find_says_so() {
         // Such as stripped firmware for a processor whose code elfq can
         // read but not follow yet: it has only its entry point.
-        let path = Path::new("testdata/bin/c-cortex-m4-stripped.elf");
-        let mut binary = Binary::load(&Path::new(env!("CARGO_MANIFEST_DIR")).join(path)).unwrap();
+        let path = "testdata/bin/c-cortex-m4-stripped.elf";
+        let mut binary = load_sample(path);
         binary
             .items
             .retain(|item| item.source == Source::EntryPoint);
         binary.items[0].size = 0;
         let mut out = Vec::new();
-        overview::run(path, &binary, None, Format::Text, &mut out).unwrap();
+        overview::run(Path::new(path), &binary, None, Format::Text, &mut out).unwrap();
         assert_eq!(
             String::from_utf8(out).unwrap(),
             "\

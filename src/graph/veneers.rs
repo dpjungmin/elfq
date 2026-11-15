@@ -90,69 +90,58 @@ impl<'a> Veneers<'a> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use super::*;
+    use crate::binary::test_samples::load_sample;
 
-    fn load(name: &str) -> (Binary, Graph) {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("testdata/bin")
-            .join(name);
-        let binary = Binary::load(&path).unwrap();
+    /// The sample at `path`, from the crate's root, and its graph.
+    fn load(path: &str) -> (Binary, Graph) {
+        let binary = load_sample(path);
         let graph = Graph::build(&binary);
         (binary, graph)
-    }
-
-    fn index(binary: &Binary, name: &str) -> usize {
-        binary
-            .items
-            .iter()
-            .position(|item| item.name == name)
-            .unwrap()
     }
 
     #[test]
     fn a_veneer_jumps_to_its_target() {
         // The veneers GNU ld added between ITCM and flash.
-        let (binary, graph) = load("c-cortex-m7.elf");
+        let (binary, graph) = load("testdata/bin/c-cortex-m7.elf");
         let veneers = Veneers::new(&binary, &graph);
-        let target = |name| veneers.target(index(&binary, name));
-        let function = |name| Some(VeneerTarget::Node(Node::Item(index(&binary, name))));
+        let target = |name| veneers.target(binary.index_of(name));
+        let function = |name| Some(VeneerTarget::Node(Node::Item(binary.index_of(name))));
         assert_eq!(target("__app_tick_veneer"), function("app_tick"));
         assert_eq!(target("__memcpy_veneer"), function("memcpy"));
         assert_eq!(target("SysTick_Handler"), None);
         assert_eq!(target("fir_coeffs"), None);
         // One to a routine in the chip's ROM, outside every item.
-        let (binary, graph) = load("far-gnu-m4-nodebug.elf");
+        let (binary, graph) = load("testdata/bin/far-gnu-m4-nodebug.elf");
         let veneers = Veneers::new(&binary, &graph);
         assert_eq!(
-            veneers.target(index(&binary, "__rom_routine_veneer")),
+            veneers.target(binary.index_of("__rom_routine_veneer")),
             Some(VeneerTarget::Outside(0x1fff_0000))
         );
     }
 
     #[test]
     fn a_plt_stub_for_the_files_own_function_is_a_veneer() {
-        let (binary, graph) = load("c-plt.so");
+        let (binary, graph) = load("testdata/bin/c-plt.so");
         let veneers = Veneers::new(&binary, &graph);
         assert_eq!(
-            veneers.target(index(&binary, "negate@plt")),
-            Some(VeneerTarget::Node(Node::Item(index(&binary, "negate"))))
+            veneers.target(binary.index_of("negate@plt")),
+            Some(VeneerTarget::Node(Node::Item(binary.index_of("negate"))))
         );
-        assert_eq!(veneers.target(index(&binary, "negate")), None);
+        assert_eq!(veneers.target(binary.index_of("negate")), None);
     }
 
     #[test]
     fn a_veneer_only_jumps_to_one_function() {
-        let (binary, mut graph) = load("c-cortex-m7.elf");
+        let (binary, mut graph) = load("testdata/bin/c-cortex-m7.elf");
         // Calling on is not what a veneer does.
-        let veneer = index(&binary, "__memcpy_veneer");
+        let veneer = binary.index_of("__memcpy_veneer");
         let start = graph.references.partition_point(|r| r.from < veneer);
         graph.references[start].kind = ReferenceKind::Call;
         assert_eq!(Veneers::new(&binary, &graph).target(veneer), None);
         // Nor is a function a veneer when it only makes one tail call, but
         // its code isn't a veneer's.
-        let handler = index(&binary, "SysTick_Handler");
+        let handler = binary.index_of("SysTick_Handler");
         graph
             .references
             .retain(|r| r.from != handler || r.kind == ReferenceKind::TailCall);

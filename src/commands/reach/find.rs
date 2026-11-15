@@ -283,9 +283,8 @@ fn keep_those_that_may_go_to(
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use super::*;
+    use crate::binary::test_samples::load_sample;
 
     /// The steps from every item that elfq can read in four samples, as
     /// SYMBOL, keep the rules that leave them one order: SYMBOL's step
@@ -296,16 +295,13 @@ mod tests {
     #[test]
     fn steps_go_depth_first_each_under_its_item_in_the_order_it_uses_them() {
         let samples = [
-            "c-x86_64.elf",
-            "c-cortex-m7.elf",
-            "far-gnu-m4-nodebug.elf",
-            "rust-cortex-m4.elf",
+            "testdata/bin/c-x86_64.elf",
+            "testdata/bin/c-cortex-m7.elf",
+            "testdata/bin/far-gnu-m4-nodebug.elf",
+            "testdata/bin/rust-cortex-m4.elf",
         ];
         for sample in samples {
-            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("testdata/bin")
-                .join(sample);
-            let binary = Binary::load(&path).unwrap();
+            let binary = load_sample(sample);
             let graph = Graph::build(&binary);
             let nodes: Vec<Node> = (0..binary.items.len())
                 .map(Node::Item)

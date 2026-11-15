@@ -375,10 +375,9 @@ pub(super) fn more_size(binary: &Binary, nodes: impl IntoIterator<Item = Node>) 
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use super::super::Reach;
     use super::*;
+    use crate::binary::test_samples::load_sample;
     use crate::cli::Format;
     use crate::commands::symbol::Names;
     use crate::graph::Graph;
@@ -416,8 +415,7 @@ mod tests {
 
     #[test]
     fn every_row_tells_names_how_many_items_it_names() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/bin/c-x86_64.elf");
-        let binary = Binary::load(&path).unwrap();
+        let binary = load_sample("testdata/bin/c-x86_64.elf");
         let graph = Graph::build(&binary);
         // Whether wording reach's answer for `symbol`, with every row for
         // `Detail::All`, tells Names that many items are to be named.
@@ -439,9 +437,7 @@ mod tests {
 
     #[test]
     fn items_as_large_as_each_other_with_one_name_go_by_index() {
-        let path =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/bin/rust-x86_64-nodebug.elf");
-        let binary = Binary::load(&path).unwrap();
+        let binary = load_sample("testdata/bin/rust-x86_64-nodebug.elf");
         let graph = Graph::build(&binary);
         let names = Names::new(&binary);
         // Two functions in .text, of 19 bytes each, which main reaches.

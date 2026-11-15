@@ -70,6 +70,9 @@
 //! `unnamed_functions.rs` are in `names/tests.rs`, `vector_table/tests.rs`
 //! and `unnamed_functions/tests.rs`, and those of `listing.rs`, which check
 //! the Thumb text against objdump's, in `listing/thumb_text.rs`.
+//! `test_samples.rs`, built only for tests, names, loads and lists the
+//! samples in testdata/bin for the unit tests of `binary` and the layers
+//! above it.
 
 mod attributes;
 mod eh_frame;
@@ -79,13 +82,15 @@ mod listing;
 mod load;
 pub(crate) mod made_names;
 mod memory;
-pub mod names;
+pub(crate) mod names;
 mod plt;
 mod range;
 mod relocations;
 mod sections;
 mod startup;
 mod symbols;
+#[cfg(test)]
+pub(crate) mod test_samples;
 mod unnamed_data;
 mod unnamed_functions;
 mod vector_table;
@@ -878,6 +883,15 @@ impl Binary {
             code_references: HashMap::new(),
             data,
         }
+    }
+
+    /// The index of the item named `name`, for unit tests. It panics when
+    /// no item has that name.
+    #[cfg(test)]
+    pub(crate) fn index_of(&self, name: &str) -> usize {
+        (self.items.iter())
+            .position(|item| item.name == name)
+            .unwrap_or_else(|| panic!("no item is named {name}"))
     }
 }
 

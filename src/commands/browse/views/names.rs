@@ -972,9 +972,9 @@ pub(super) fn alike_in_a_window<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::super::samples;
     use super::*;
     use crate::binary::Binary;
+    use crate::binary::test_samples::samples;
     use crate::graph::Node;
 
     const INTERNAL: &str = "<alloc::collections::btree::node::Handle<alloc::collections::btree::node::NodeRef<alloc::collections::btree::node::marker::Mut, u64, gimli::read::abbrev::Abbreviation, alloc::collections::btree::node::marker::Internal>, alloc::collections::btree::node::marker::KV>>::split::<alloc::alloc::Global>";

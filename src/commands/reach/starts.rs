@@ -491,20 +491,12 @@ impl Start {
 mod tests {
     use super::*;
     use crate::binary::CodeAndData;
+    use crate::binary::test_samples::load_sample;
     use crate::graph::Root;
 
     /// c-x86_64.elf, whose functions the tests below make starts of.
     fn sample() -> Binary {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/bin/c-x86_64.elf");
-        Binary::load(&path).unwrap()
-    }
-
-    fn index(binary: &Binary, name: &str) -> usize {
-        binary
-            .items
-            .iter()
-            .position(|item| item.name == name)
-            .unwrap()
+        load_sample("testdata/bin/c-x86_64.elf")
     }
 
     fn section(binary: &Binary, name: &str) -> usize {
@@ -526,7 +518,7 @@ mod tests {
         (unfollowed, unreadable): (bool, bool),
     ) -> Start {
         Start {
-            index: index(binary, name),
+            index: binary.index_of(name),
             root,
             exceptions: Vec::new(),
             reached: Reached {
@@ -591,7 +583,10 @@ mod tests {
         let starts = |starts, unreadable: &[&str]| Starts {
             binary: &binary,
             starts,
-            unreadable: unreadable.iter().map(|name| index(&binary, name)).collect(),
+            unreadable: unreadable
+                .iter()
+                .map(|name| binary.index_of(name))
+                .collect(),
             blocks: memory_blocks(&binary.sections),
         };
         let main = || vec![start(&binary, "main", None, 10, (false, false))];
@@ -687,7 +682,7 @@ _init and _fini are starts too, but elfq doesn't know where they end, so it can'
         let mut graph = Graph::build(&binary);
         let names = Names::new(&binary);
         // As if the unwinder called main.
-        let main = Node::Item(index(&binary, "main"));
+        let main = Node::Item(binary.index_of("main"));
         graph.roots.push(Root {
             node: main,
             kind: RootKind::Personality,

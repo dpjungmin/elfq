@@ -108,10 +108,7 @@ fn edited(old: &Build, new: &Build, name: &str) -> bool {
             .collect(),
         new_to_old: partners(new, old),
     };
-    let index = |build: &Build| {
-        let items = &build.binary.items;
-        items.iter().position(|item| item.name == name).unwrap()
-    };
+    let index = |build: &Build| build.binary.index_of(name);
     Edits::new(old, new, &pairing).edited(index(old), index(new))
 }
 

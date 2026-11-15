@@ -165,21 +165,15 @@ fn unreachable_text(retained: &RetainedTree, detail: Detail) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use super::*;
+    use crate::binary::test_samples::load_sample;
 
     #[test]
     fn an_item_that_nothing_reaches_is_marked_as_rows_are() {
         // As if nothing used `stats`, a variable in .data: in flash, the
         // range counts its load image.
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/bin/c-cortex-m7.elf");
-        let binary = Binary::load(&path).unwrap();
-        let stats = binary
-            .items
-            .iter()
-            .position(|item| item.name == "stats")
-            .unwrap();
+        let binary = load_sample("testdata/bin/c-cortex-m7.elf");
+        let stats = binary.index_of("stats");
         let mut graph = Graph::build(&binary);
         graph
             .references

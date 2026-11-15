@@ -2,6 +2,9 @@
 //!
 //! It holds the sample files, running elfq the way a user would, and
 //! checking whole outputs; and in [`elf`], changing a sample's bytes.
+//! The unit tests, in src, can't use it, since it is part of this test
+//! program: src/binary/test_samples.rs gives them [`sample_path`],
+//! [`load_sample`] and [`samples`] of their own, under the same names.
 
 pub(crate) mod elf;
 

@@ -100,9 +100,10 @@ fn code(session: &Session, index: usize) -> Result<Code, String> {
 mod tests {
     use std::collections::HashMap;
 
-    use super::super::super::{PageAt, samples};
+    use super::super::super::PageAt;
     use super::super::listing::Link;
     use super::*;
+    use crate::binary::test_samples::samples;
 
     /// Calls `check` on every function of every sample that has code.
     ///

@@ -122,13 +122,12 @@ fn page(session: &Session) -> Printed {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use clap::Parser;
 
-    use super::super::{samples, shell_words};
+    use super::super::shell_words;
     use super::*;
     use crate::binary::Binary;
+    use crate::binary::test_samples::{sample_path, samples};
     use crate::cli::Cli;
     use crate::commands;
     use crate::graph::{Node, Root, RootKind};
@@ -189,7 +188,7 @@ mod tests {
 
     #[test]
     fn a_page_of_more_starts_than_reach_lists_lists_them_all() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/bin/c-deep.elf");
+        let path = sample_path("testdata/bin/c-deep.elf");
         let binary = Binary::load(&path).unwrap();
         let mut session = Session::new(&path, &binary).unwrap();
         // As if the unwinder started each of the file's own functions.

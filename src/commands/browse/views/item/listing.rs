@@ -450,9 +450,9 @@ fn note_cell(line: &ListingLine, room: usize) -> Line<'static> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::super::samples;
     use super::*;
     use crate::binary::Binary;
+    use crate::binary::test_samples::samples;
 
     #[test]
     fn the_status_line_names_what_enter_opens() {
