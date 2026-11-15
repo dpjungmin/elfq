@@ -590,10 +590,11 @@ helper type, doesn't take a word of the list; where code still does, as
   status and what it printed on stdout and stderr (`Run`, in
   `tests/it/support/mod.rs`), which `run` gives; its `printed` is what
   elfq printed on stdout alone. `run_in_process` runs a command inside
-  the test instead, and gives no `Run`. An early run, in `startup`, is
-  unrelated, and so are a run of sections, which a copy or zeroing of
-  the first covers on into (`RamSections::run_from`), and the private
-  `Run`s of the startup walk and of `binary/memory.rs`.
+  the test instead, and gives a `Run` too, whose stderr is empty. An
+  early run, in `startup`, is unrelated, and so are a run of sections,
+  which a copy or zeroing of the first covers on into
+  (`RamSections::run_from`), and the private `Run`s of the startup walk
+  and of `binary/memory.rs`.
 
 Some code still uses one of these words for something else. The Thumb
 walk's `Step` is what an instruction leads to, and `reach`'s `Step` is
@@ -799,9 +800,10 @@ command run on every sample, `Exit::ZeroOrOne` stands for either. A test
 that expects a warning with the answer calls `exited(STATUS)`, which
 checks the status alone, and then reads the `Run`'s `stdout` and `stderr`
 itself.
-`run_in_process(SAMPLE, ARGS)` runs a command inside the test instead: it
-gives no `Run`, only what elfq printed on stdout and the outcome that sets
-its exit status, and an error panics.
+`run_in_process(SAMPLE, ARGS)` runs a command inside the test instead,
+and gives a `Run` that is read like any other, with the exit status that
+the program would end with. Its stderr is empty, since a warning goes to
+the test's own stderr, and an error panics.
 
 **When output changes.** Most tests in `commands/` check a command's whole
 output with `assert_output`. When you change what elfq prints on purpose,
@@ -883,6 +885,7 @@ is a short one to copy.
    does), the arguments it reads, the `Format` and the output. It returns
    `Result<Outcome>`: `Outcome::Answered`, or for exit status 1 another
    variant, as `callers` and `callees` return for ranges.
+   `Outcome::exit_status` gives each variant its status.
 3. **Wiring, in `src/commands/mod.rs` and `arguments.rs`.** Add
    `mod <name>;` and an arm in `run`. In `arguments.rs`, `check_tree`,
    `check_range` and `check_json` each have an arm for every command, and
