@@ -1,6 +1,8 @@
 //! Which key does what. One table, [`BINDINGS`], says which keys make each
 //! [`Action`], and the help page and the hint line are printed from it too,
-//! so that what they say can't drift from what the keys do.
+//! so that what they say can't drift from what the keys do. The go-to box
+//! and find's prompt read their keys through [`typing`], which takes the
+//! keys that move from the same table, and their hint lines are beside it.
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -253,25 +255,76 @@ pub(super) fn hints(width: usize, links: bool, tabs: &[u8], rows: bool) -> Strin
     line
 }
 
-/// How `key` stops the browser while text is typed, as into the go-to
-/// box: only Ctrl-C and Ctrl-Z do, since other keys type.
-pub(super) fn while_typing(key: KeyEvent) -> Option<Stop> {
-    if !key.modifiers.contains(CONTROL) {
-        return None;
-    }
-    match action(key)? {
-        Action::Quit => Some(Stop::Quit),
-        Action::Suspend => Some(Stop::Suspend),
-        _ => None,
-    }
+/// What a key does while a prompt is open (see [`typing`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Typing {
+    /// Types the character.
+    Char(char),
+    /// Takes the last character back, as Backspace does.
+    Erase,
+    /// Closes the prompt, as Esc does.
+    Cancel,
+    /// Does what the prompt is for, as Enter does: the go-to box opens the
+    /// selected row's page, and find looks for the text.
+    Submit,
+    /// Moves the go-to box's cursor. It holds only the six moves that
+    /// [`typing`] gives: [`Action::Up`], [`Action::Down`],
+    /// [`Action::PageUp`], [`Action::PageDown`], [`Action::First`] and
+    /// [`Action::Last`].
+    Move(Action),
+    /// Stops the browser, as Ctrl-C and Ctrl-Z do everywhere.
+    Stop(Stop),
 }
 
-/// The character that `key` types into a box, if it types one: other Ctrl
-/// and Alt keys type nothing.
-pub(super) fn typed_char(key: KeyEvent) -> Option<char> {
+/// The hint line while the go-to box is open. The prompts' hint lines
+/// are written out, rather than printed from [`BINDINGS`], since in a
+/// prompt Enter and Esc do what [`Typing`] says, not what their rows of
+/// the table say.
+pub(super) const GO_TO_HINT: &str = "↑↓ move  enter open  esc cancel";
+/// The hint line while find's prompt is open, written out as
+/// [`GO_TO_HINT`] is.
+pub(super) const FIND_HINT: &str = "enter find  esc cancel";
+
+/// What `key` does while a prompt is open, if anything. Of the keys that
+/// stop the browser, only Ctrl-C and Ctrl-Z do, since q types; other Ctrl
+/// and Alt characters type nothing. Esc cancels, Enter submits and
+/// Backspace erases, and the keys of [`BINDINGS`] that move and aren't
+/// characters move: Up, Down, PageUp, PageDown, Home and End. Those nine
+/// are matched on the key alone, so Ctrl-Up moves as Up does, while k, j
+/// and Space type.
+pub(super) fn typing(key: KeyEvent) -> Option<Typing> {
+    if key.modifiers.contains(CONTROL) {
+        match action(key) {
+            Some(Action::Quit) => return Some(Typing::Stop(Stop::Quit)),
+            Some(Action::Suspend) => return Some(Typing::Stop(Stop::Suspend)),
+            _ => {}
+        }
+    }
     match key.code {
-        KeyCode::Char(c) if !key.modifiers.intersects(CONTROL | KeyModifiers::ALT) => Some(c),
-        _ => None,
+        KeyCode::Esc => Some(Typing::Cancel),
+        KeyCode::Enter => Some(Typing::Submit),
+        KeyCode::Backspace => Some(Typing::Erase),
+        KeyCode::Char(c) if !key.modifiers.intersects(CONTROL | KeyModifiers::ALT) => {
+            Some(Typing::Char(c))
+        }
+        KeyCode::Char(_) => None,
+        code => {
+            let moves = |action: Action| {
+                matches!(
+                    action,
+                    Action::Up
+                        | Action::Down
+                        | Action::PageUp
+                        | Action::PageDown
+                        | Action::First
+                        | Action::Last
+                )
+            };
+            bindings()
+                .flat_map(|binding| binding.keys)
+                .find(|&&(bound, _, action)| bound == code && moves(action))
+                .map(|&(_, _, action)| Typing::Move(action))
+        }
     }
 }
 
@@ -347,10 +400,60 @@ mod tests {
 
     #[test]
     fn only_ctrl_c_and_ctrl_z_work_while_typing() {
-        let typing = |code, modifiers| while_typing(KeyEvent::new(code, modifiers));
-        assert_eq!(typing(KeyCode::Char('c'), CONTROL), Some(Stop::Quit));
-        assert_eq!(typing(KeyCode::Char('z'), CONTROL), Some(Stop::Suspend));
-        assert_eq!(typing(KeyCode::Char('q'), NONE), None);
-        assert_eq!(typing(KeyCode::Char('o'), CONTROL), None);
+        let typed = |code, modifiers| typing(KeyEvent::new(code, modifiers));
+        assert_eq!(
+            typed(KeyCode::Char('c'), CONTROL),
+            Some(Typing::Stop(Stop::Quit))
+        );
+        assert_eq!(
+            typed(KeyCode::Char('z'), CONTROL),
+            Some(Typing::Stop(Stop::Suspend))
+        );
+        assert_eq!(typed(KeyCode::Char('q'), NONE), Some(Typing::Char('q')));
+        assert_eq!(
+            typed(KeyCode::Char('Q'), KeyModifiers::SHIFT),
+            Some(Typing::Char('Q'))
+        );
+        // Other Ctrl and Alt keys type nothing.
+        assert_eq!(typed(KeyCode::Char('o'), CONTROL), None);
+        assert_eq!(typed(KeyCode::Char('x'), KeyModifiers::ALT), None);
+        assert_eq!(typed(KeyCode::Char('k'), KeyModifiers::ALT), None);
+    }
+
+    #[test]
+    fn while_typing_only_the_keys_that_arent_characters_move() {
+        let typed = |code, modifiers| typing(KeyEvent::new(code, modifiers));
+        let moves = [
+            (KeyCode::Up, Action::Up),
+            (KeyCode::Down, Action::Down),
+            (KeyCode::PageUp, Action::PageUp),
+            (KeyCode::PageDown, Action::PageDown),
+            (KeyCode::Home, Action::First),
+            (KeyCode::End, Action::Last),
+        ];
+        // With Ctrl, Alt or Shift too.
+        for modifiers in [NONE, CONTROL, KeyModifiers::ALT, KeyModifiers::SHIFT] {
+            for (code, action) in moves {
+                let moved = Some(Typing::Move(action));
+                assert_eq!(typed(code, modifiers), moved, "{code:?} {modifiers:?}");
+            }
+            assert_eq!(typed(KeyCode::Esc, modifiers), Some(Typing::Cancel));
+            assert_eq!(typed(KeyCode::Enter, modifiers), Some(Typing::Submit));
+            assert_eq!(typed(KeyCode::Backspace, modifiers), Some(Typing::Erase));
+        }
+        // The keys that move, open or go back and are characters type: k,
+        // j, Space, l and h. Left and Right, which open and go back, do
+        // nothing, and so do Tab and Shift-Tab.
+        for c in ['k', 'j', ' ', 'l', 'h'] {
+            assert_eq!(typed(KeyCode::Char(c), NONE), Some(Typing::Char(c)));
+        }
+        for code in [
+            KeyCode::Left,
+            KeyCode::Right,
+            KeyCode::Tab,
+            KeyCode::BackTab,
+        ] {
+            assert_eq!(typed(code, NONE), None, "{code:?}");
+        }
     }
 }
