@@ -1311,3 +1311,19 @@ which should not change unless you mean it to.
 Keep them small and focused: one change at a time, each merged before the
 next. [docs/design.md](docs/design.md#status-and-roadmap) says what comes
 next.
+
+## Releases
+
+`.github/workflows/release.yml` publishes a release. To make one:
+
+1. Raise `version` in `Cargo.toml`, run `cargo build` so that `Cargo.lock`
+   follows, and merge that.
+2. Tag that commit of `main` with the version, and push the tag:
+   `git tag v0.2.0 && git push origin v0.2.0`.
+
+The workflow tests elfq on each platform it builds for, builds it there,
+and publishes a release named for the tag, with a file for each platform,
+`SHA256SUMS`, and notes that list the pull requests merged since the last
+release. It stops before publishing if the tag isn't `v` and the version
+in `Cargo.toml`. A pull request that changes the workflow runs all of it
+but the publishing, and keeps the files on its run's page, to try first.
