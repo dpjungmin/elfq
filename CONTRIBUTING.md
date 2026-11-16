@@ -538,6 +538,14 @@ helper type, doesn't take a word of the list; where code still does, as
 - **shape**: how a table shows a tree: as rows that name the row they
   hang under, or drawn with `--tree` (`TreeShape`). A command's
   **format** is text, tree or JSON (`Format`).
+- **shared options**: `--json`, `--tree` and `--range`, which the
+  overview takes. Every command reads all three, before its name or
+  after it, so that `arguments.rs` refuses one that the command doesn't
+  take with its own error, which says which commands take it or what to
+  type instead. A command's help lists only those that it takes
+  (`cli/shared.rs`), but the hidden debug commands' lists all three. A
+  shared library, and what `retained`'s `shares` lists, are other
+  things.
 - **brief**: what a command shows without `--all` (`Detail::Brief`, in
   `commands/text.rs`; a `Detail` is named `detail`): the first rows of a
   long table or tree, as the command ranks them, such as `top`'s 30
@@ -629,8 +637,8 @@ meanings to copy.
   and its code (see its row in the table below). Those in `library/`
   call the library, as `Binary::load` and `Graph::build`.
   `damaged.rs` and `commands/browse.rs` do both, and so do one test in
-  `commands/callers_and_callees.rs`, the test in
-  `across_commands/errors_and_help.rs` that takes the commands' names from
+  `commands/callers_and_callees.rs`, the two tests in
+  `across_commands/errors_and_help.rs` that take the commands' names from
   `cli::command_names`, and the checks at the end of `commands/reach.rs`.
   Those checks load samples to list the items they check, and run commands
   in the test's own process, with `run_in_process`, which is quicker for
@@ -653,7 +661,7 @@ meanings to copy.
 | `across_commands/json.rs` | What the commands' JSON shares: the keys of every item, each row on a line of its own, and the other names of SYMBOL's item |
 | `across_commands/tables.rs` | What the commands' tables share: the tree of `--tree`, at most nine levels deep, the lines that sum up the rest of a long list, and `--all` |
 | `across_commands/names.rs` | The names that the commands print and take: what SYMBOL gave when it isn't the item's name, as a pattern that matches one item, readable Rust and C++ names and their short forms, and the names of data that no symbol names |
-| `across_commands/errors_and_help.rs` | What the commands share in their errors and help: the arguments and files they refuse, errors on stderr with exit status 2 and what to try instead, the line that says that the arguments are files here, which the shell may have put in place of a pattern, in a `TempFolder`, under the commands' own errors and clap's, in its colours, the exit status when what reads the answer stops early, and help |
+| `across_commands/errors_and_help.rs` | What the commands share in their errors and help: the arguments and files they refuse, errors on stderr with exit status 2 and what to try instead, the line that says that the arguments are files here, which the shell may have put in place of a pattern, in a `TempFolder`, under the commands' own errors and clap's, in its colours, the exit status when what reads the answer stops early, and help, with the shared options that each command's help lists, against what the command does with each |
 | `library/items.rs` | Finding items: symbols, PLT stubs, unwind tables, functions in stripped firmware, unnamed data |
 | `library/graph.rs` | The reference graph: callers, callees, pointers in data, veneers |
 | `library/retained.rs` | Roots, and what is exclusive to what |
@@ -881,10 +889,14 @@ is a short one to copy.
    `///` line is what `elfq --help` lists. Give it an `after_help` with a
    longer explanation, a constant in `help.rs` in `Command`'s order, as
    the others have, and a line in `EXAMPLES` there. Its arguments go in a
-   struct of their own, as `RetainedArgs` holds SYMBOL and `--all`.
-   `--json`, `--tree` and `--range` are global, so don't declare them
-   again. `elfq help COMMAND` and the hint for a command typed before the
-   file find the new command by themselves.
+   struct of their own, as `RetainedArgs` holds SYMBOL and `--all`. The
+   shared options, `--json`, `--tree` and `--range`, go in the variant's
+   `args`, as the others' do: each that it takes as `shared.rs` builds
+   it, `--tree` with a help line that says what it draws, and each that
+   it refuses through `refused`, which elfq still reads, so that
+   `arguments.rs` can refuse it (step 3), but which the help leaves out.
+   `elfq help COMMAND` and the hint for a command typed before the file
+   find the new command by themselves.
 2. **The command, in `src/commands/<name>.rs`.** Start with a `//!` line
    that shows how to type it, then a `pub(super) fn run`, which
    `commands/mod.rs` calls. It takes what the command needs: the `Binary`
@@ -899,15 +911,16 @@ is a short one to copy.
    `check_range` and `check_json` each have an arm for every command, and
    the compiler asks for the new one in each: put it with the commands
    that take `--tree`, `--range` or `--json`, or with those that refuse
-   it. `Cli::all`, in `cli/mod.rs`, has an arm for every command too: a
-   command that takes `--all` reads it there, and gets `detail` from its
-   arm in `run`, and one that doesn't goes with `browse` and `debug`. A
-   command that takes `--range` gets `range` from its arm in `run`;
-   name it in `RANGE_REFUSED`, the error that lists the commands that
-   take `--range`, in the tests that check that error, which a search of
-   `tests/it/` for its text finds, and in the `--range` help in
-   `cli/mod.rs` and docs/design.md. A command that shows a tree goes
-   likewise in `check_tree`'s error, its tests and the `--tree` help. A
+   it, as its `args` say (step 1). `Cli::all`, in `cli/mod.rs`, has an
+   arm for every command too: a command that takes `--all` reads it
+   there, and gets `detail` from its arm in `run`, and one that doesn't
+   goes with `browse` and `debug`. A command that takes `--range` gets
+   `range` from its arm in `run`; name it in `RANGE_REFUSED`, the error
+   that lists the commands that take `--range`, in the tests that check
+   that error, which a search of `tests/it/` for its text finds, and in
+   the overview's `--range` help, on `Cli` in `cli/mod.rs`, and
+   docs/design.md. A command that shows a tree goes likewise in
+   `check_tree`'s error, its tests and the overview's `--tree` help. A
    command that takes one SYMBOL at most goes in `TAKE_ONE_SYMBOL_AT_MOST`,
    the list of commands whose clap error for the arguments after it gets the
    line that says that they are files here, which the shell may have put in
@@ -1019,9 +1032,15 @@ is a short one to copy.
    whose exit status means something checks it on every sample it reads,
    as `every_arm_sample_gets_an_answer_and_the_exit_status_it_means` in
    `startup.rs` does, and one that refuses some files tests those, as
-   `startup_reads_only_cortex_m_firmware` does. Add the command to the
-   tests in `tests/it/across_commands/errors_and_help.rs` that go through
-   commands one by one:
+   `startup_reads_only_cortex_m_firmware` does. Add the command to
+   `FORMS`, in `tests/it/across_commands/errors_and_help.rs`, with
+   arguments that it answers for, once for each set of arguments that
+   changes which shared options it takes, as reach and inlined come with
+   SYMBOL and without, so that
+   `each_command_s_help_lists_the_shared_options_that_it_takes` checks
+   that its help lists the shared options that it takes, and only those;
+   the test fails until it is there. Add it too to the tests there that
+   go through commands one by one:
    `arguments_that_dont_go_together_are_refused_before_the_file_is_read`,
    `a_file_whose_code_elfq_cant_read_says_so` if it reads code, and
    `commands_that_need_roots_refuse_a_shared_library` if it needs the

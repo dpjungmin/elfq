@@ -7,7 +7,10 @@
 //! Each option that only some commands take has one match with an arm for
 //! every command, so that the compiler asks about a new one. An arm that
 //! lets an option through to a command that doesn't take it says where the
-//! command refuses it.
+//! command refuses it. Each command's `args`, in `cli/mod.rs`, list in its
+//! help the shared options that it takes, and
+//! `each_command_s_help_lists_the_shared_options_that_it_takes` checks
+//! that the two agree.
 //!
 //! clap refuses an argument that a command doesn't take before elfq sees
 //! the others, and [`unexpected_argument_hints`] words what elfq adds under
