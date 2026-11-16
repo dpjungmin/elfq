@@ -1318,12 +1318,15 @@ next.
 
 1. Raise `version` in `Cargo.toml`, run `cargo build` so that `Cargo.lock`
    follows, and merge that.
-2. Tag that commit of `main` with the version, and push the tag:
+2. Start the Release workflow on `main` from the Actions tab, with
+   Publish ticked. Or tag that commit with the version, and push the tag:
    `git tag v0.2.0 && git push origin v0.2.0`.
 
 The workflow tests elfq on each platform it builds for, builds it there,
-and publishes a release named for the tag, with a file for each platform,
-`SHA256SUMS`, and notes that list the pull requests merged since the last
-release. It stops before publishing if the tag isn't `v` and the version
-in `Cargo.toml`. A pull request that changes the workflow runs all of it
-but the publishing, and keeps the files on its run's page, to try first.
+and publishes a release named `v` and the version in `Cargo.toml`, with a
+file for each platform, `SHA256SUMS`, and notes that list the pull
+requests merged since the last release. Started by hand, it makes the tag
+too. It stops before publishing if a pushed tag isn't that name, or if a
+run started by hand finds the tag already there. A pull request that
+changes the workflow runs all of it but the publishing, and keeps the
+files on its run's page, to try first.

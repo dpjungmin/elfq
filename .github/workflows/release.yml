@@ -1,17 +1,25 @@
 name: Release
 
 # Builds elfq for each platform below, tests it there, and packs each build
-# with README.md and LICENSE. On a tag such as v0.2.0, which must match the
-# version in Cargo.toml, it then publishes a GitHub release with the files.
-# A pull request that changes this file, and a run started by hand from the
-# Actions tab, do everything but publish, and keep the files on the run's
-# page to try.
+# with README.md and LICENSE. It then publishes a GitHub release with the
+# files, named v and the version in Cargo.toml, such as v0.2.0:
+# - when that tag is pushed;
+# - or when a run is started by hand on main, from the Actions tab, with
+#   Publish ticked. The run then makes the tag, on the commit it built.
+# A pull request that changes this file, and a run started by hand without
+# Publish, do everything but publish, and keep the files on the run's page
+# to try.
 on:
   push:
     tags: ["v*"]
   pull_request:
     paths: [.github/workflows/release.yml]
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish a release of the version in Cargo.toml (from main only)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -127,13 +135,27 @@ jobs:
 
       - name: Publish the release
         # Pushes start this workflow only for tags.
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || inputs.publish
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          EVENT: ${{ github.event_name }}
+          # The tag that was pushed, or the branch that a run started on.
+          REF: ${{ github.ref_name }}
         run: |
-          if [ "$TAG" != "v$VERSION" ]; then
-            echo "The tag $TAG doesn't match the version in Cargo.toml, $VERSION."
+          tag=v$VERSION
+          if [ "$EVENT" = push ] && [ "$REF" != "$tag" ]; then
+            echo "The tag $REF doesn't match the version in Cargo.toml, $VERSION."
             exit 1
           fi
-          gh release create "$TAG" dist/* --verify-tag --title "elfq $TAG" --generate-notes
+          if [ "$EVENT" != push ]; then
+            if [ "$REF" != main ]; then
+              echo "Releases are made from main, not $REF."
+              exit 1
+            fi
+            if git ls-remote --exit-code origin "refs/tags/$tag" > /dev/null; then
+              echo "$tag is already tagged. Raise the version in Cargo.toml first."
+              exit 1
+            fi
+          fi
+          # Makes the tag on the commit built here, unless it was pushed.
+          gh release create "$tag" dist/* --target "$GITHUB_SHA" --title "elfq $tag" --generate-notes
