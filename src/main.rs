@@ -126,9 +126,14 @@ impl Write for Stdout {
 /// is left for clap to report.
 fn args() -> Vec<OsString> {
     let mut args: Vec<OsString> = std::env::args_os().collect();
+    if args.get(1).is_none_or(|arg| arg != "help") {
+        return args;
+    }
+    // Only after `help`: reading the commands' names builds clap's whole
+    // command, which parsing the arguments builds again.
     let commands = cli::command_names();
     let is_command = |arg: &OsString| commands.iter().any(|command| arg == command.as_str());
-    if args.get(1).is_some_and(|arg| arg == "help") && args.get(2).is_none_or(is_command) {
+    if args.get(2).is_none_or(is_command) {
         args.remove(1);
         args.insert(args.len().min(2), "--help".into());
     }
