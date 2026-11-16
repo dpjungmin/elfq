@@ -168,7 +168,8 @@ impl TempFolder {
     }
 
     /// Where the folder is, for a test that puts more in it, such as a
-    /// symlink.
+    /// symlink, which the tests make only on Unix.
+    #[cfg(unix)]
     pub(crate) fn path(&self) -> &Path {
         &self.path
     }

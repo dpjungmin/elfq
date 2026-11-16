@@ -467,9 +467,10 @@ mod tests {
             typed(KeyCode::Char('c'), CONTROL),
             Some(Typing::Stop(Stop::Quit))
         );
+        // Ctrl-Z only on Unix, as `bindings` says.
         assert_eq!(
             typed(KeyCode::Char('z'), CONTROL),
-            Some(Typing::Stop(Stop::Suspend))
+            cfg!(unix).then_some(Typing::Stop(Stop::Suspend))
         );
         assert_eq!(typed(KeyCode::Char('q'), NONE), Some(Typing::Char('q')));
         assert_eq!(

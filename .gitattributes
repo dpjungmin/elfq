@@ -1,2 +1,5 @@
+# Text files check out with LF on Windows too, as the tests compare them
+# with what elfq prints.
+* text=auto eol=lf
 testdata/bin/*.elf binary
 testdata/bin/*.so binary

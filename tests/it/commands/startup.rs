@@ -657,21 +657,23 @@ fn startup_reads_a_pipe_and_extended_section_numbers() {
     use std::process::Stdio;
 
     let expected = startup(TCM_SAMPLE, &[]).printed(0);
-    // A pipe, which can be read only once.
-    let mut child = command()
-        .args(["/dev/stdin", "startup"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let data = std::fs::read(sample_path(TCM_SAMPLE)).unwrap();
-    let mut stdin = child.stdin.take().unwrap();
-    let writer = std::thread::spawn(move || stdin.write_all(&data));
-    let output = child.wait_with_output().unwrap();
-    writer.join().unwrap().unwrap();
-    let printed = Run::new("elfq /dev/stdin startup", output).printed(0);
-    assert_output(&printed, &expected);
+    // A pipe, which can be read only once. Only Unix names it /dev/stdin.
+    if cfg!(unix) {
+        let mut child = command()
+            .args(["/dev/stdin", "startup"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let data = std::fs::read(sample_path(TCM_SAMPLE)).unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        let writer = std::thread::spawn(move || stdin.write_all(&data));
+        let output = child.wait_with_output().unwrap();
+        writer.join().unwrap().unwrap();
+        let printed = Run::new("elfq /dev/stdin startup", output).printed(0);
+        assert_output(&printed, &expected);
+    }
     // e_shnum 0, with the number of sections in the first section header's
     // sh_size, as in a file with more sections than e_shnum holds.
     let mut data = ElfBytes::sample(TCM_SAMPLE);
@@ -992,9 +994,11 @@ fn startup_reads_only_cortex_m_firmware() {
         &startup("Cargo.toml", &[]).error(),
         "error: cannot load Cargo.toml: not an ELF file\n",
     );
+    // The system words the error, which reads otherwise on Windows.
+    let not_found = std::io::Error::from_raw_os_error(2);
     assert_output(
         &startup("missing.elf", &[]).error(),
-        "error: cannot read missing.elf: No such file or directory (os error 2)\n",
+        &format!("error: cannot read missing.elf: {not_found}\n"),
     );
 }
 

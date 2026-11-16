@@ -960,6 +960,8 @@ from a root: _start › main › app_tick › log_msg
     );
 }
 
+// Only on Unix, where the help lists Ctrl-Z.
+#[cfg(unix)]
 #[test]
 fn question_mark_opens_the_help() {
     assert_output(
@@ -1079,6 +1081,18 @@ Words
     );
     let back = screen("c-x86_64.elf", Some("main"), (80, 24), &["?", "Esc"]);
     assert!(back.starts_with("c-x86_64.elf › main\n"), "{back}");
+}
+
+// Elsewhere, where Ctrl-Z can't give the terminal back to a shell, the help
+// leaves it out.
+#[cfg(not(unix))]
+#[test]
+fn question_mark_opens_the_help_without_ctrl_z() {
+    let help = screen("c-cortex-m7.elf", Some("app_tick"), (100, 34), &["?"]);
+    assert!(
+        help.contains("\n  ?                    this help\n  q Ctrl-C             quit\n"),
+        "{help}"
+    );
 }
 
 #[test]

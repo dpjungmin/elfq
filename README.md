@@ -131,7 +131,23 @@ and `elfq --help` lists the commands.
 - elfq reads the built file, not the source: rebuild before asking again.
 ```
 
-**Install** with Rust 1.88 or later:
+**Install** a build of elfq from the
+[latest release](https://github.com/dpjungmin/elfq/releases/latest), for
+Linux, macOS or Windows, on x86-64 or ARM. On a Mac with Apple silicon:
+
+```sh
+curl -L https://github.com/dpjungmin/elfq/releases/latest/download/elfq-aarch64-apple-darwin.tar.gz | tar xz
+elfq-aarch64-apple-darwin/elfq --version
+```
+
+The other files end in `x86_64-apple-darwin` (an Intel Mac),
+`x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu` (Linux with
+glibc 2.17 or later, so not Alpine), and `x86_64-pc-windows-msvc` and
+`aarch64-pc-windows-msvc` (Windows, in a .zip). macOS may refuse to run
+elfq if a browser downloaded it, as Apple hasn't notarized it: `xattr -d
+com.apple.quarantine elfq` lets it run.
+
+Or build it with Rust 1.88 or later:
 
 ```sh
 cargo install --locked --git https://github.com/dpjungmin/elfq elfq
