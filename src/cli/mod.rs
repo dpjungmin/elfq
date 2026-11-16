@@ -36,6 +36,8 @@ use shared::{JSON_HELP, RANGE_HELP, json, range, refused, tree};
 #[derive(Debug, Parser)]
 #[command(
     name = "elfq",
+    // Not the program's file name, which is elfq.exe on Windows.
+    bin_name = "elfq",
     version,
     about,
     arg_required_else_help = true,

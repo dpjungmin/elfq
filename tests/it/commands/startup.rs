@@ -992,9 +992,11 @@ fn startup_reads_only_cortex_m_firmware() {
         &startup("Cargo.toml", &[]).error(),
         "error: cannot load Cargo.toml: not an ELF file\n",
     );
+    // The system words the error, which reads otherwise on Windows.
+    let not_found = std::io::Error::from_raw_os_error(2);
     assert_output(
         &startup("missing.elf", &[]).error(),
-        "error: cannot read missing.elf: No such file or directory (os error 2)\n",
+        &format!("error: cannot read missing.elf: {not_found}\n"),
     );
 }
 

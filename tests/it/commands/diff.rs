@@ -538,9 +538,11 @@ fn diff_needs_two_builds_of_one_program_with_section_headers() {
         &stderr(&[TCM_SAMPLE, "diff", "Cargo.toml"]),
         "error: cannot load Cargo.toml: not an ELF file\n",
     );
+    // The system words the error, which reads otherwise on Windows.
+    let not_found = std::io::Error::from_raw_os_error(2);
     assert_output(
         &stderr(&["missing.elf", "diff", TCM_SAMPLE]),
-        "error: cannot read missing.elf: No such file or directory (os error 2)\n",
+        &format!("error: cannot read missing.elf: {not_found}\n"),
     );
 }
 

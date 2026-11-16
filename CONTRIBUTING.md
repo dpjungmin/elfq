@@ -54,6 +54,10 @@ q quits it and that the terminal is as it was (`in_a_terminal`, in
 `tests/it/commands/browse.rs`). They run it under `timeout`, and fail
 where `script` or `timeout` is missing.
 
+CI runs the tests on Linux, macOS and Windows, as releases ship builds for
+all three. A test that holds only on some, such as one that makes a
+symlink, says so with `#[cfg(unix)]`.
+
 ## Where things live
 
 Each folder of `src/` has a map: the `//!` doc at the top of its
